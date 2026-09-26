@@ -6,6 +6,18 @@ export type {
   AiSettings,
   CodexModelCatalog,
 } from './types'
+export type { GeminiModelInfo } from './gemini-models'
+export {
+  createGeminiRouter,
+  GEMINI_DEFAULT_ORDER,
+  GEMINI_ROUTING_EVENT,
+  readGeminiChoice,
+  readGeminiModels,
+  readGeminiUsage,
+  saveGeminiChoice,
+  saveGeminiModels,
+} from './gemini-routing'
+export type { GeminiModelChoice } from './gemini-routing'
 export {
   AI_PROVIDERS,
   activeProvider,

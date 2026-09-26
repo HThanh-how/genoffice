@@ -92,17 +92,16 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
   {
     id: 'gemini',
     label: 'Gemini',
-    // 3.x lineup per ai.google.dev/gemini-api/docs/models (2026-08). 3.7 Flash is
-    // the current stable Flash; 3.1 Pro is still preview-only. 3.8 Flash and the
-    // gemini-flash-latest alias (serving 3.8 Flash as of 2026-09-27) are listed
-    // too, so a key can move off 3.7 Flash when it is overloaded.
+    // Useful defaults; the chat picker loads the complete live catalog from models.list.
     models: [
       'gemini-3.8-flash',
       'gemini-flash-latest',
       'gemini-3.7-flash',
       'gemini-3.1-pro-preview',
       'gemini-3.6-flash',
+      'gemini-3.5-flash',
       'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite',
     ],
     defaultModel: 'gemini-3.7-flash',
     keyPlaceholder: 'AIza...',

@@ -63,6 +63,7 @@ import {
   AiTimeoutError,
   isAiNetworkError,
   isAiOverloadedError,
+  listGeminiModels,
   chatForProvider,
   defaultAiSettings,
   activeProvider,
@@ -3275,6 +3276,15 @@ export function registerSheetsAiIpc(): void {
     // a stored BYOK provider is honored when usable; half-filled configs fall back to genspark
     settings.provider = activeProvider(settings)
     return settings
+  })
+
+  ipcMain.handle('ai:gemini-chat-models', async (event) => {
+    sessionFor(event)
+    const settings = resolveAiSettings(
+      readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {}),
+      defaultAiSettings(),
+    )
+    return listGeminiModels(settings.providers.gemini.apiKey)
   })
 
   // Genspark account (gsk login state): the auth source for AI features; the

@@ -1,10 +1,12 @@
 import { createIpcTransport, type AgentTransport } from '@genoffice/agent-core'
+import { createGeminiRouter } from '@genoffice/ai-provider/browser'
 import type { AiSettings } from '@genoffice/ai-provider'
 import { t } from '../i18n/locale'
 
 /** The shared IPC transport wired to the pdf preload bridge (window.pdfApi). */
 export function createElectronTransport(getSettings: () => AiSettings): AgentTransport {
   return createIpcTransport<AiSettings>({
+    route: createGeminiRouter(),
     onStream: (listener) => window.pdfApi.onAiStream(listener),
     start: (request) => window.pdfApi.aiStream(request),
     cancel: (requestId) => void window.pdfApi.aiStreamCancel(requestId),

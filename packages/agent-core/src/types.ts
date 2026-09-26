@@ -12,6 +12,8 @@ export interface AgentToolCall {
   input: Record<string, unknown>
   /** Opaque Gemini signature attached to this functionCall part; echoed in tool-loop history. */
   thoughtSignature?: string | undefined
+  /** Model that produced this function call; used when replaying Gemini history after routing. */
+  sourceModel?: string | undefined
   /** Parse error when the model emitted invalid input JSON; the loop feeds back an is_error result for retry instead of aborting the run */
   inputError?: string | undefined
   /** The argument stream was cut off by the token limit (stop_reason max_tokens); the loop asks the model to split the call instead of "fixing JSON" */
@@ -93,6 +95,8 @@ export interface AgentPhase {
 // ---- LLM transport (how one model turn is streamed; app supplies the impl) ----
 
 export interface AgentStreamRequest {
+  /** Stable across all model turns for one user request; used by model routers. */
+  runId?: string
   system: string
   messages: AgentMessage[]
   tools: AgentToolDef[]
@@ -119,4 +123,6 @@ export interface AgentStreamHandle {
 
 export interface AgentTransport {
   stream(request: AgentStreamRequest, callbacks: AgentStreamCallbacks): AgentStreamHandle
+  /** Optional provider-specific conversation budget; measured in UTF-8 bytes. */
+  compactionBudget?(): { maxBytes: number; keepRecentBytes: number } | undefined
 }

@@ -53,6 +53,12 @@ export interface IpcTransportOptions<S> {
   /** abort the in-flight turn in the main process */
   cancel(requestId: string): void
   getSettings(): S
+  /** Optional per-turn routing and safe retry before any model output reaches the loop. */
+  route?: {
+    prepare(settings: S, request?: AgentStreamRequest): S
+    fallback(settings: S, error: string, emitted: boolean): S | null
+    onAttempt?(settings: S): void
+  }
   /** localized fallback when an error chunk carries no message */
   unknownErrorText(): string
   /** localized message for timeouts (errorCode 'timeout' and the silence watchdog) */
@@ -74,10 +80,20 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
   const timeoutText = () => options.timeoutErrorText?.() ?? options.unknownErrorText()
   const sessionId = crypto.randomUUID()
   return {
+    compactionBudget() {
+      const settings = options.getSettings() as { provider?: string } | null
+      return settings?.provider === 'gemini'
+        ? { maxBytes: 128 * 1024, keepRecentBytes: 48 * 1024 }
+        : undefined
+    },
     stream(request: AgentStreamRequest, cb) {
-      const requestId = crypto.randomUUID()
-      let settled = false
+      let requestId = ''
+      let cancelled = false
       let silenceTimer: ReturnType<typeof setTimeout> | undefined
+      let unsubscribe = () => {}
+      let settled = false
+      const baseSettings = options.getSettings()
+      let settings = options.route?.prepare(baseSettings, request) ?? baseSettings
       const settle = () => {
         settled = true
         clearTimeout(silenceTimer)
@@ -88,64 +104,97 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         settle()
         cb.onError(error)
       }
-      const armSilence = () => {
-        clearTimeout(silenceTimer)
-        silenceTimer = setTimeout(() => {
-          options.cancel(requestId)
-          fail(timeoutText())
-        }, IPC_STREAM_SILENCE_TIMEOUT_MS)
-      }
-      const unsubscribe = options.onStream((chunk) => {
-        if (chunk.requestId !== requestId || settled) return
-        if (chunk.type === 'ping') {
-          armSilence()
-        } else if (chunk.type === 'delta') {
-          armSilence()
-          cb.onDelta(chunk.text ?? '')
-        } else if (chunk.type === 'reasoning') {
-          armSilence()
-          if (chunk.text) cb.onReasoning?.(chunk.text)
-        } else if (chunk.type === 'tool-call') {
-          armSilence()
-          if (chunk.toolCall) cb.onToolCall(chunk.toolCall)
-        } else if (chunk.type === 'done') {
-          settle()
-          if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason)
-          cb.onDone()
-        } else {
-          settle()
-          cb.onError(
-            chunk.errorCode === 'timeout'
-              ? timeoutText()
-              : chunk.errorCode === 'credits'
-                ? (options.creditsErrorText?.() ?? chunk.error ?? options.unknownErrorText())
-                : chunk.errorCode === 'network'
-                  ? (options.networkErrorText?.() ?? chunk.error ?? options.unknownErrorText())
-                  : chunk.errorCode === 'overloaded'
-                    ? (options.overloadedErrorText?.() ?? chunk.error ?? options.unknownErrorText())
-                    : (chunk.error ?? options.unknownErrorText()),
-          )
+      const attempt = (): void => {
+        requestId = crypto.randomUUID()
+        settled = false
+        let emitted = false
+        const armSilence = () => {
+          clearTimeout(silenceTimer)
+          silenceTimer = setTimeout(() => {
+            options.cancel(requestId)
+            fail(timeoutText())
+          }, IPC_STREAM_SILENCE_TIMEOUT_MS)
         }
-      })
-      armSilence()
-      try {
-        // a rejected/thrown start would otherwise leave the run pending until the watchdog
-        Promise.resolve(
-          options.start({
-            requestId,
-            sessionId,
-            settings: options.getSettings(),
-            system: request.system,
-            messages: request.messages,
-            tools: request.tools,
-          }),
-        ).catch((err: unknown) => {
-          fail(err instanceof Error ? err.message : options.unknownErrorText())
+        unsubscribe = options.onStream((chunk) => {
+          if (chunk.requestId !== requestId || settled) return
+          if (chunk.type === 'ping') {
+            armSilence()
+          } else if (chunk.type === 'delta') {
+            armSilence()
+            if (chunk.text) emitted = true
+            cb.onDelta(chunk.text ?? '')
+          } else if (chunk.type === 'reasoning') {
+            armSilence()
+            if (chunk.text) emitted = true
+            if (chunk.text) cb.onReasoning?.(chunk.text)
+          } else if (chunk.type === 'tool-call') {
+            armSilence()
+            if (chunk.toolCall) {
+              emitted = true
+              const routeSettings = settings as {
+                provider?: string
+                providers?: { gemini?: { model?: string } }
+              }
+              const model =
+                routeSettings.provider === 'gemini'
+                  ? routeSettings.providers?.gemini?.model
+                  : undefined
+              cb.onToolCall(model ? { ...chunk.toolCall, sourceModel: model } : chunk.toolCall)
+            }
+          } else if (chunk.type === 'done') {
+            settle()
+            if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason)
+            cb.onDone()
+          } else {
+            const next = !cancelled && options.route?.fallback(settings, chunk.error ?? '', emitted)
+            if (next) {
+              settle()
+              settings = next
+              attempt()
+              return
+            }
+            settle()
+            cb.onError(
+              chunk.errorCode === 'timeout'
+                ? timeoutText()
+                : chunk.errorCode === 'credits'
+                  ? (options.creditsErrorText?.() ?? chunk.error ?? options.unknownErrorText())
+                  : chunk.errorCode === 'network'
+                    ? (options.networkErrorText?.() ?? chunk.error ?? options.unknownErrorText())
+                    : chunk.errorCode === 'overloaded'
+                      ? (options.overloadedErrorText?.() ??
+                        chunk.error ??
+                        options.unknownErrorText())
+                      : (chunk.error ?? options.unknownErrorText()),
+            )
+          }
         })
-      } catch (err) {
-        fail(err instanceof Error ? err.message : options.unknownErrorText())
+        armSilence()
+        try {
+          options.route?.onAttempt?.(settings)
+          Promise.resolve(
+            options.start({
+              requestId,
+              sessionId,
+              settings,
+              system: request.system,
+              messages: request.messages,
+              tools: request.tools,
+            }),
+          ).catch((err: unknown) => {
+            fail(err instanceof Error ? err.message : options.unknownErrorText())
+          })
+        } catch (err) {
+          fail(err instanceof Error ? err.message : options.unknownErrorText())
+        }
       }
-      return { cancel: () => options.cancel(requestId) }
+      attempt()
+      return {
+        cancel: () => {
+          cancelled = true
+          options.cancel(requestId)
+        },
+      }
     },
   }
 }

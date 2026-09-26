@@ -26,6 +26,7 @@ import type {
   AiChatRequest,
   AiChatResponse,
   AiSettings,
+  GeminiModelInfo,
   AiStreamChunk,
   AiStreamRequest,
   GenSparkAccountStatus,
@@ -2269,6 +2270,7 @@ const agentToolCallSchema = z
     name: z.string(),
     input: z.record(z.string(), z.unknown()),
     thoughtSignature: z.string().optional(),
+    sourceModel: z.string().optional(),
   })
   .strict()
 
@@ -2656,6 +2658,7 @@ export interface DesktopApi {
   /// Headless export mode: report the export outcome so the main process can quit.
   headlessExportDone(result: { ok: boolean; error?: string }): void
   getAiSettings(): Promise<AiSettings>
+  getGeminiModels(): Promise<GeminiModelInfo[]>
   setAiSettings(settings: AiSettings): Promise<void>
   aiChat(request: AiChatRequest): Promise<AiChatResponse>
   /// start a streaming AI call; deltas arrive via onAiStream with the same requestId

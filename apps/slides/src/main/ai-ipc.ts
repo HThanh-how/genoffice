@@ -20,6 +20,7 @@ import {
   AiTimeoutError,
   isAiNetworkError,
   isAiOverloadedError,
+  listGeminiModels,
   defaultAiSettings,
   activeProvider,
   maxOutputTokensOf,
@@ -131,6 +132,14 @@ export function registerAiIpc(): void {
 
   ipcMain.handle('ai:set-settings', async (_event, settings: AiSettings) => {
     await writeJsonAtomic(AI_SETTINGS_PATH(), settings)
+  })
+
+  ipcMain.handle('ai:gemini-chat-models', async () => {
+    const settings = resolveAiSettings(
+      readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {}),
+      defaultAiSettings(),
+    )
+    return listGeminiModels(settings.providers.gemini.apiKey)
   })
 
   ipcMain.handle('ai:log-run-failure', (_event, entry: AiRunFailure) => {

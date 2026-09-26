@@ -659,6 +659,47 @@ describe('streamForProvider: gemini', () => {
     ])
   })
 
+  it('uses the documented placeholder signature when a tool trace came from another Gemini model', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        okResponse(
+          sseStream([
+            'data: {"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}',
+          ]),
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    await streamForProvider(
+      'gemini',
+      { apiKey: 'k', model: 'gemini-3.5-flash-lite' },
+      'sys',
+      [
+        { role: 'user', text: 'edit document' },
+        {
+          role: 'assistant',
+          text: '',
+          toolCalls: [
+            {
+              id: 'call-1',
+              name: 'write_document',
+              input: { title: 'A' },
+              thoughtSignature: 'signature-from-3.8',
+              sourceModel: 'gemini-3.8-flash',
+            },
+          ],
+        },
+        { role: 'tool', results: [{ id: 'call-1', name: 'write_document', output: 'ok' }] },
+      ],
+      [],
+      100,
+      collector().cb,
+    )
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)
+    expect(body.contents[1].parts[0].thoughtSignature).toBe('context_engineering_is_the_way_to_go')
+    expect(body.contents[2].parts[0].functionResponse.response).toEqual({ result: 'ok' })
+  })
+
   it('captures snake-case function-call signatures from a JSON response', async () => {
     vi.stubGlobal(
       'fetch',

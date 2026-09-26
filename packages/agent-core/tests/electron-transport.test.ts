@@ -54,6 +54,38 @@ function setup(
 }
 
 describe('createIpcTransport', () => {
+  it('retries a 429 with another model only when the failed turn emitted nothing', () => {
+    let listener: ((chunk: IpcStreamChunk) => void) | undefined
+    const started: IpcStreamStart<{ provider: string; model: string }>[] = []
+    const callbacks = { onDelta: vi.fn(), onToolCall: vi.fn(), onDone: vi.fn(), onError: vi.fn() }
+    const transport = createIpcTransport({
+      onStream: (next) => {
+        listener = next
+        return () => {
+          listener = undefined
+        }
+      },
+      start: (request) => {
+        started.push(request)
+      },
+      cancel: vi.fn(),
+      getSettings: () => ({ provider: 'gemini', model: 'first' }),
+      unknownErrorText: () => 'unknown',
+      route: {
+        prepare: (settings) => settings,
+        fallback: (settings, error, emitted) =>
+          error.includes('429') && !emitted ? { ...settings, model: 'second' } : null,
+      },
+    })
+    transport.stream({ system: 'sys', messages: [], tools: [] }, callbacks)
+    listener?.({ requestId: started[0]!.requestId, type: 'error', error: 'Gemini HTTP 429' })
+    expect(started.map((request) => request.settings.model)).toEqual(['first', 'second'])
+    listener?.({ requestId: started[1]!.requestId, type: 'delta', text: 'partial' })
+    listener?.({ requestId: started[1]!.requestId, type: 'error', error: 'Gemini HTTP 429' })
+    expect(started).toHaveLength(2)
+    expect(callbacks.onDelta).toHaveBeenCalledWith('partial')
+    expect(callbacks.onError).toHaveBeenCalledWith('Gemini HTTP 429')
+  })
   it('starts one request with settings and forwards deltas and tool calls', () => {
     const { started, cb, emit } = setup()
     expect(started).toHaveLength(1)

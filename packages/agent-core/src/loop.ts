@@ -256,6 +256,7 @@ export class AgentLoop<TSnapshot = unknown> {
   private runUserMsg: AgentMessage | null = null
   /** invalidates stale transport callbacks after cancel/reset */
   private generation = 0
+  private runSequence = 0
   /** per-run abort: aborted on cancel(); long tools (e.g. generate_deck) use it to break internal loops */
   private abortController: AbortController | null = null
 
@@ -316,6 +317,7 @@ export class AgentLoop<TSnapshot = unknown> {
   /** images: inline attachments for this user turn (vision input; see AgentImage) */
   run(instruction: string, images?: AgentImage[]): void {
     if (this.running || !instruction) return
+    this.runSequence++
     this.running = true
     this.cancelled = false
     this.turns = 0
@@ -391,9 +393,11 @@ export class AgentLoop<TSnapshot = unknown> {
 
   private compactBudget(): { maxBytes: number; keepRecentBytes: number } {
     const opt = this.options.compaction === false ? undefined : this.options.compaction
+    const providerBudget = this.options.transport.compactionBudget?.()
     return {
-      maxBytes: opt?.maxBytes ?? COMPACT_MAX_BYTES,
-      keepRecentBytes: opt?.keepRecentBytes ?? COMPACT_KEEP_RECENT_BYTES,
+      maxBytes: opt?.maxBytes ?? providerBudget?.maxBytes ?? COMPACT_MAX_BYTES,
+      keepRecentBytes:
+        opt?.keepRecentBytes ?? providerBudget?.keepRecentBytes ?? COMPACT_KEEP_RECENT_BYTES,
     }
   }
 
@@ -570,6 +574,7 @@ export class AgentLoop<TSnapshot = unknown> {
     let settled = false
     this.handle = this.options.transport.stream(
       {
+        runId: String(this.runSequence),
         system:
           runtimePreamble() +
           this.options.skill.systemPrompt +
@@ -714,11 +719,12 @@ export class AgentLoop<TSnapshot = unknown> {
     this.history.push({
       role: 'assistant',
       text: this.turnText,
-      toolCalls: toolCalls.map(({ id, name, input, thoughtSignature }) => ({
+      toolCalls: toolCalls.map(({ id, name, input, thoughtSignature, sourceModel }) => ({
         id,
         name,
         input,
         ...(thoughtSignature ? { thoughtSignature } : {}),
+        ...(sourceModel ? { sourceModel } : {}),
       })),
       // interleaved-thinking models degrade in tool loops unless their reasoning is echoed back
       ...(this.turnReasoning ? { reasoning: this.turnReasoning } : {}),

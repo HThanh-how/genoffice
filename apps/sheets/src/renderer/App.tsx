@@ -4521,6 +4521,7 @@ export function App({
         />
       )}
       <ExcelShell
+        aiProvider={aiSettings?.provider}
         openingWorkbook={openingWorkbook}
         prompt={prompt}
         preview={preview}

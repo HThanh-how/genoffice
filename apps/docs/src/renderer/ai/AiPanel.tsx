@@ -1,4 +1,4 @@
-import { aiPanelWidthAtPointer, AiPanelSideButton } from '@genoffice/ui'
+import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@genoffice/docx-engine'
@@ -1313,6 +1313,11 @@ export function AiPanel({
         </div>
       </div>
 
+      <GeminiModelPicker
+        lang={lang}
+        getProvider={() => settings.provider}
+        loadModels={() => window.desktop.getGeminiModels()}
+      />
       <div ref={logRef} className="ai-chat" onScroll={onLogScroll}>
         {/* past conversation (read-only transcript, not fed to the model), shown continuously with the current turn */}
         {historicChat.length > 0 && (

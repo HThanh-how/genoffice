@@ -444,6 +444,9 @@ const desktopApi: DesktopApi = {
     if (!isRecord(result)) throw new Error('Invalid AI settings response.')
     return result as unknown as AiSettings
   },
+  async getGeminiModels() {
+    return ipcRenderer.invoke('ai:gemini-chat-models')
+  },
   async setAiSettings(settings) {
     await ipcRenderer.invoke(IPC_CHANNELS.aiSetSettings, settings)
   },

@@ -13,6 +13,7 @@ import type { CustGeomPathCmd, SlideComment, SectionInfo } from '@genoffice/pptx
 import type { FontSizeStep } from '@genoffice/pptx-ops/font-size'
 import type {
   AiSettings,
+  GeminiModelInfo,
   AiStreamChunk,
   AiStreamRequest,
   GenSparkAccountStatus,
@@ -1693,6 +1694,7 @@ export interface SlidesApi {
   /** The file was renamed externally (shell Home list rename) — pushes the new path, the renderer updates the title bar */
   onRenamed: (handler: (newPath: string) => void) => () => void
   getAiSettings: () => Promise<AiSettings>
+  getGeminiModels: () => Promise<GeminiModelInfo[]>
   setAiSettings: (settings: AiSettings) => Promise<void>
   aiStream: (request: AiStreamRequest) => Promise<void>
   aiStreamCancel: (requestId: string) => Promise<void>

@@ -1,4 +1,4 @@
-import { aiPanelWidthAtPointer, AiPanelSideButton } from '@genoffice/ui'
+import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from 'react'
 import { AgentLoop, composeSkills } from '@genoffice/agent-core'
@@ -1161,6 +1161,11 @@ export function AiPanel({
         </div>
       </header>
 
+      <GeminiModelPicker
+        lang={lang}
+        getProvider={() => settingsRef.current?.provider}
+        loadModels={() => window.htmlApi.getGeminiModels()}
+      />
       <div className="ai-chat" ref={chatRef} onScroll={onChatScroll}>
         {chat.length === 0 && (
           <div className="ai-chat-empty">

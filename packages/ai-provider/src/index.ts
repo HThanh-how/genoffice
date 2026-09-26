@@ -75,6 +75,8 @@ export type {
   ResolvedEndpoint,
 } from './registry'
 export { chatForProvider } from './chat'
+export { listGeminiModels } from './gemini-models'
+export type { GeminiModelInfo } from './gemini-models'
 export { setAiUserAgent, setRescueFetch } from './fetch'
 export { isAiNetworkError } from './network-error'
 export { isAiOverloadedError } from './overload-error'

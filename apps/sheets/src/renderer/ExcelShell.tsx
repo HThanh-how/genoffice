@@ -162,6 +162,7 @@ function ToolSymbol({ symbol }: { readonly symbol: string }): React.JSX.Element 
 }
 
 interface ExcelShellProps {
+  readonly aiProvider: string | undefined
   readonly openingWorkbook: boolean
   readonly prompt: string
   readonly preview: ChangePlan | null
@@ -317,6 +318,7 @@ export interface PageLayoutEcho {
 }
 
 export function ExcelShell({
+  aiProvider,
   prompt,
   preview,
   selectionFormat,
@@ -667,6 +669,7 @@ export function ExcelShell({
       {/* AI panel docks on the left, full height under the ribbon (unified with docs) */}
       <div className="sheet-body">
         <AiChatPanel
+          aiProvider={aiProvider}
           isOpen={isCopilotOpen}
           hasContent={sheetHasContent}
           chat={chat}

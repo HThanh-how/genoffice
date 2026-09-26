@@ -1,4 +1,4 @@
-import { aiPanelWidthAtPointer, AiPanelSideButton } from '@genoffice/ui'
+import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@genoffice/ui'
 import React, { useEffect, useRef, useState } from 'react'
 import { AiComposer, AiScopeQuote, AiTypingIndicator, type AiScopeQuoteData } from '@genoffice/ui'
 import { GensparkMark } from '../ribbon-icons'
@@ -211,6 +211,7 @@ export interface AiChatMessage {
 
 export function AiChatPanel({
   isOpen,
+  aiProvider,
   hasContent,
   chat,
   historicChat = [],
@@ -237,6 +238,7 @@ export function AiChatPanel({
   onCollapse,
 }: {
   readonly isOpen: boolean
+  readonly aiProvider: string | undefined
   /** the workbook has cells with content — empty workbooks get "build me a sheet" copy instead */
   readonly hasContent: boolean
   readonly chat: readonly AiChatMessage[]
@@ -543,6 +545,11 @@ export function AiChatPanel({
         </div>
       </header>
 
+      <GeminiModelPicker
+        lang={lang}
+        getProvider={() => aiProvider}
+        loadModels={() => window.desktopApi.getGeminiModels()}
+      />
       <div className="ai-chat" ref={chatRef} onScroll={onChatScroll}>
         {/* Past conversation (read-only transcript), shown continuously with the current turn */}
         {historicChat.length > 0 && (

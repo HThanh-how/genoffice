@@ -1,4 +1,4 @@
-import { aiPanelWidthAtPointer, AiPanelSideButton } from '@genoffice/ui'
+import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@genoffice/ui'
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import {
   AgentLoop,
@@ -2097,6 +2097,11 @@ export function AiPanel({
         </div>
       </div>
 
+      <GeminiModelPicker
+        lang={lang}
+        getProvider={() => settings.provider}
+        loadModels={() => window.slidesApi.getGeminiModels()}
+      />
       <div ref={logRef} className="ai-chat" onScroll={onLogScroll}>
         {/* Past conversation (read-only transcript, not fed to the model), displayed continuously with the current turn */}
         {historicChat.length > 0 && (

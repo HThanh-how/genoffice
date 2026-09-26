@@ -18,7 +18,7 @@ import {
 
 export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
 
-function geminiContents(messages: AgentMessage[]): unknown[] {
+function geminiContents(messages: AgentMessage[], targetModel: string): unknown[] {
   return messages.map((m) => {
     if (m.role === 'user') {
       if (!m.images?.length) return { role: 'user', parts: [{ text: m.text }] }
@@ -33,10 +33,16 @@ function geminiContents(messages: AgentMessage[]): unknown[] {
     if (m.role === 'assistant') {
       const parts: unknown[] = []
       if (m.text) parts.push({ text: m.text })
-      for (const call of m.toolCalls ?? []) {
+      for (const [index, call] of (m.toolCalls ?? []).entries()) {
         parts.push({
           functionCall: { name: call.name, args: call.input },
-          ...(call.thoughtSignature ? { thoughtSignature: call.thoughtSignature } : {}),
+          ...(call.sourceModel && call.sourceModel !== targetModel
+            ? call.thoughtSignature || index === 0
+              ? { thoughtSignature: 'context_engineering_is_the_way_to_go' }
+              : {}
+            : call.thoughtSignature
+              ? { thoughtSignature: call.thoughtSignature }
+              : {}),
         })
       }
       // Gemini rejects model turns with empty parts lists.
@@ -168,7 +174,7 @@ async function geminiTurn(
     },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
-      contents: geminiContents(messages),
+      contents: geminiContents(messages, config.model),
       ...(tools.length > 0
         ? {
             tools: [

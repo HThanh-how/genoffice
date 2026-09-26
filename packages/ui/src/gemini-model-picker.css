@@ -1,0 +1,60 @@
+.ai-model-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-subtle, #eee);
+  background: var(--surface, #fff);
+  font-size: 11px;
+  color: var(--text-secondary, #677287);
+}
+.ai-model-picker-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 65%;
+  padding: 4px 8px;
+  border: 1px solid var(--border-strong, #d9dfe9);
+  border-radius: 999px;
+  background: var(--surface-subtle, #f6f7f9);
+  color: var(--text-primary, #253047);
+}
+.ai-model-picker-control:hover {
+  border-color: var(--border-hover, #7e8ed4);
+  background: var(--hover, #f3f4f7);
+}
+.ai-model-picker-control select {
+  min-width: 0;
+  max-width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+}
+.ai-model-picker-control:focus-within {
+  outline: 2px solid #596cdb;
+  outline-offset: 2px;
+}
+.ai-model-picker-control select option,
+.ai-model-picker-control select optgroup {
+  background: var(--surface, #fff);
+  color: var(--text-primary, #253047);
+}
+.ai-model-picker-status {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-model-picker .sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
