@@ -22,6 +22,9 @@ jobs:
           node-version: 22
           cache: npm
 
+      - name: Verify artifact staging
+        run: node --test tools/stage-ci-installer.test.mjs
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
         with:
@@ -42,12 +45,14 @@ jobs:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
         run: npm run dist:mac
 
-      - name: Upload installer
+      - name: Stage versioned installer
+        id: stage
+        run: node tools/stage-ci-installer.mjs macos arm64
+
+      - name: Upload versioned installer
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: genoffice-macos-arm64-gemini-fix
-          path: |
-            apps/shell/release/*.dmg
-            apps/shell/release/*.zip
+          name: ${{ steps.stage.outputs.name }}
+          path: ${{ steps.stage.outputs.path }}
           if-no-files-found: error
           retention-days: 7
