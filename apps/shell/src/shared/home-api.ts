@@ -304,6 +304,8 @@ export interface HomeApi {
   getCodexModels(cliPath?: string): Promise<CodexModelCatalog>
   /** live model list advertised by a user-hosted OpenAI-compatible endpoint; empty when it cannot answer */
   getCustomModels(baseUrl: string, apiKey?: string): Promise<CodexModelCatalog>
+  /** live Gemini chat models the given API key can call; empty when it cannot answer */
+  getGeminiModels?(apiKey: string): Promise<CodexModelCatalog>
   /** one-shot round trip against the given (possibly unsaved) settings — the settings-UI connection test */
   testAiSettings(settings: AiSettings): Promise<AiChatResponse>
   /** image generation / media analysis provider catalog */

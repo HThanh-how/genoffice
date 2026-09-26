@@ -103,7 +103,7 @@ import {
   type LegacyAiSettings,
 } from '@genoffice/ai-provider'
 import { listCodexModels, shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
-import { listCustomModelsForIpc } from '@genoffice/ai-provider/custom-models'
+import { listCustomModelsForIpc, listGeminiModelsForIpc } from '@genoffice/ai-provider/custom-models'
 import {
   ensureGenofficeLogin,
   gskApiKey,
@@ -2948,6 +2948,8 @@ export function registerAiIpc(): void {
   })
 
   ipcMain.handle('ai:custom-models', (_event, input: unknown) => listCustomModelsForIpc(input))
+
+  ipcMain.handle('ai:gemini-models', (_event, input: unknown) => listGeminiModelsForIpc(input))
 
   ipcMain.handle('ai:stream', async (event, request: AiStreamRequest) => {
     const { requestId, settings, system, messages } = request

@@ -10,6 +10,7 @@
 // have added is still set, since gateways reject a bare `node`.
 import type { CodexModelCatalog } from './types'
 import { withUserAgent } from './fetch'
+import { GEMINI_BASE_URL } from './protocols/gemini'
 import { endpointUrl } from './protocols/shared'
 import { createStreamWatchdog } from './watchdog'
 
@@ -135,4 +136,75 @@ export function listCustomModelsForIpc(input: unknown): Promise<CodexModelCatalo
     typeof raw.baseUrl === 'string' ? raw.baseUrl : '',
     typeof raw.apiKey === 'string' ? raw.apiKey : undefined,
   )
+}
+
+/**
+ * Gemini ids that answer `generateContent` but are not chat models the agent
+ * can drive: speech, image, video, music, embeddings, live/audio streams, and
+ * the agent products and tool-specialised variants that reject ordinary turns.
+ */
+const GEMINI_NON_CHAT =
+  /(tts|image|embedding|veo|lyria|transcribe|robotics|computer-use|native-audio|live|deep-research|antigravity|omni|nano-banana|customtools|aqa)/i
+
+/** `gemini-flash-latest` → Infinity, `gemini-3.8-flash` → 3.8, anything else → 0 */
+function geminiRank(id: string): number {
+  if (/-latest$/.test(id)) return Number.POSITIVE_INFINITY
+  const match = /^gemini-(\d+(?:\.\d+)?)/.exec(id)
+  return match ? Number(match[1]) : 0
+}
+
+/**
+ * The chat models a Gemini API key can call, read live from
+ * `GET /v1beta/models` so the picker follows Google's lineup instead of a list
+ * baked into the build.
+ *
+ * Same contract as `listCustomModels`: never throws, and an empty catalogue
+ * (no key, refused key, network failure, odd body) tells the settings screen
+ * to keep the built-in list. The key travels in `x-goog-api-key`, never in the
+ * query string. Only `gemini-*` ids that support `generateContent` and are not
+ * speech/image/video/embedding/live variants are kept, ordered with the
+ * `-latest` aliases first and then newest version first.
+ */
+export async function listGeminiModels(apiKey: string): Promise<CodexModelCatalog> {
+  const key = apiKey.trim()
+  if (!key) return emptyCatalog()
+  const watchdog = createStreamWatchdog(undefined, REQUEST_TIMEOUT_MS)
+  try {
+    return await watchdog.guard(async () => {
+      const response = await fetch(
+        endpointUrl(GEMINI_BASE_URL, 'models', 'pageSize=1000'),
+        withUserAgent({
+          headers: { Accept: 'application/json', 'x-goog-api-key': key },
+          signal: watchdog.signal,
+        }),
+      )
+      if (!response.ok) return emptyCatalog()
+      const text = await readCappedBody(response)
+      if (text === null) return emptyCatalog()
+      const body = JSON.parse(text) as { models?: unknown } | null
+      const entries = body?.models
+      if (!Array.isArray(entries)) return emptyCatalog()
+      const seen = new Set<string>()
+      for (const entry of entries) {
+        const raw = entry as { name?: unknown; supportedGenerationMethods?: unknown } | null
+        if (typeof raw?.name !== 'string') continue
+        const methods = raw.supportedGenerationMethods
+        if (!Array.isArray(methods) || !methods.includes('generateContent')) continue
+        const id = raw.name.replace(/^models\//, '').trim()
+        if (!id.startsWith('gemini-') || GEMINI_NON_CHAT.test(id)) continue
+        seen.add(id)
+        if (seen.size >= MAX_MODELS) break
+      }
+      const models = [...seen].sort((a, b) => geminiRank(b) - geminiRank(a) || 0)
+      return { models, defaultModel: '' }
+    })
+  } catch {
+    return emptyCatalog()
+  }
+}
+
+/** `listGeminiModels` behind an `unknown` IPC payload: `{ apiKey: string }` */
+export function listGeminiModelsForIpc(input: unknown): Promise<CodexModelCatalog> {
+  const raw = (input ?? {}) as { apiKey?: unknown }
+  return listGeminiModels(typeof raw.apiKey === 'string' ? raw.apiKey : '')
 }

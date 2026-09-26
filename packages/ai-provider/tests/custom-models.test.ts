@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { listCustomModels, listCustomModelsForIpc } from '../src/custom-models'
+import {
+  listCustomModels,
+  listCustomModelsForIpc,
+  listGeminiModels,
+  listGeminiModelsForIpc,
+} from '../src/custom-models'
 import { AI_DEFAULT_USER_AGENT, setRescueFetch } from '../src/fetch'
 
 /**
@@ -307,5 +312,74 @@ describe('listCustomModelsForIpc validates the payload', () => {
     const keyless = await listCustomModelsForIpc({ baseUrl: BASE_URL, apiKey: 99 })
     expect(keyless.models).toHaveLength(16)
     expect(sentHeaders(mock).has('authorization')).toBe(false)
+  })
+})
+
+// ── Gemini ────────────────────────────────────────────────
+
+/** trimmed from a real GET /v1beta/models answer (2026-09-27): one entry per kind the filter must handle */
+const GEMINI_BODY = JSON.stringify({
+  models: [
+    { name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent', 'countTokens'] },
+    { name: 'models/gemini-2.5-flash-preview-tts', supportedGenerationMethods: ['countTokens', 'generateContent'] },
+    { name: 'models/gemma-4-31b-it', supportedGenerationMethods: ['generateContent', 'countTokens'] },
+    { name: 'models/gemini-flash-latest', supportedGenerationMethods: ['generateContent', 'countTokens'] },
+    { name: 'models/gemini-3.5-flash-lite', supportedGenerationMethods: ['generateContent', 'countTokens'] },
+    { name: 'models/gemini-3.1-pro-preview', supportedGenerationMethods: ['generateContent', 'countTokens'] },
+    { name: 'models/gemini-3.1-pro-preview-customtools', supportedGenerationMethods: ['generateContent'] },
+    { name: 'models/gemini-3.1-flash-image', supportedGenerationMethods: ['generateContent', 'countTokens'] },
+    { name: 'models/gemini-3.8-flash', supportedGenerationMethods: ['generateContent', 'countTokens'] },
+    { name: 'models/gemini-omni-flash-preview', supportedGenerationMethods: ['generateContent'] },
+    { name: 'models/gemini-embedding-2', supportedGenerationMethods: ['embedContent', 'countTokens'] },
+    { name: 'models/gemini-3.8-live', supportedGenerationMethods: ['bidiGenerateContent'] },
+    { name: 'models/deep-research-preview-04-2026', supportedGenerationMethods: ['generateContent'] },
+  ],
+})
+
+describe('listGeminiModels', () => {
+  it('keeps only callable chat models, -latest aliases first, then newest first', async () => {
+    stubFetch(jsonBody(GEMINI_BODY))
+    const catalog = await listGeminiModels('AIza-key')
+    expect(catalog).toEqual({
+      models: [
+        'gemini-flash-latest',
+        'gemini-3.8-flash',
+        'gemini-3.5-flash-lite',
+        'gemini-3.1-pro-preview',
+        'gemini-2.5-flash',
+      ],
+      defaultModel: '',
+    })
+  })
+
+  it('sends the key as x-goog-api-key and never in the URL', async () => {
+    const mock = stubFetch(jsonBody(GEMINI_BODY))
+    await listGeminiModels('  AIza-key  ')
+    expect(requestedUrl(mock)).toBe(
+      'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000',
+    )
+    expect(sentHeaders(mock).get('x-goog-api-key')).toBe('AIza-key')
+  })
+
+  it('makes no request without a key', async () => {
+    const mock = stubFetch(jsonBody(GEMINI_BODY))
+    expect(await listGeminiModels('  ')).toEqual({ models: [], defaultModel: '' })
+    expect(mock).not.toHaveBeenCalled()
+  })
+
+  it('returns an empty catalogue on a refused key or an odd body', async () => {
+    stubFetch(jsonBody('{"error":{"code":400,"message":"API key not valid."}}', 400))
+    expect((await listGeminiModels('bad')).models).toEqual([])
+    stubFetch(jsonBody('not json'))
+    expect((await listGeminiModels('k')).models).toEqual([])
+    stubFetch(jsonBody('{"models":"nope"}'))
+    expect((await listGeminiModels('k')).models).toEqual([])
+  })
+
+  it('coerces an unknown IPC payload', async () => {
+    const mock = stubFetch(jsonBody(GEMINI_BODY))
+    expect(await listGeminiModelsForIpc(null)).toEqual({ models: [], defaultModel: '' })
+    expect(await listGeminiModelsForIpc({ apiKey: 42 })).toEqual({ models: [], defaultModel: '' })
+    expect(mock).not.toHaveBeenCalled()
   })
 })

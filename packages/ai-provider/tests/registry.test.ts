@@ -105,6 +105,14 @@ describe('provider registry', () => {
     expect(modelHasFixedSampling('gpt-50')).toBe(false)
   })
 
+  it('treats the gemini-*-latest aliases as the Gemini 3 family', () => {
+    expect(modelHasFixedSampling('gemini-flash-latest')).toBe(true)
+    expect(modelHasFixedSampling('gemini-flash-lite-latest')).toBe(true)
+    expect(modelHasFixedSampling('gemini-pro-latest')).toBe(true)
+    expect(modelHasFixedSampling('gemini-3.8-flash')).toBe(true)
+    expect(modelHasFixedSampling('gemini-flash-latestx')).toBe(false)
+  })
+
   it('resolves the catalog additions to their OpenAI-compatible endpoints', () => {
     const cases: Array<[AiProviderId, string, string]> = [
       ['glm', 'glm-5.3', 'https://open.bigmodel.cn/api/paas/v4'],

@@ -381,6 +381,39 @@ function AiModelPane({ t }: { t: TFunc }) {
     }
   }, [endpointProvider, endpointBaseUrl, endpointApiKey])
 
+  // Gemini's picker follows the models the key can actually call, read from
+  // Google's own list, so a new release shows up without a new build. The
+  // built-in list stays until a live answer arrives, and a failed probe leaves
+  // whatever is showing alone.
+  const geminiApiKey =
+    settings?.provider === 'gemini' ? (settings.providers.gemini?.apiKey ?? '').trim() : ''
+  const geminiModelRef = useRef('')
+  useEffect(() => {
+    geminiModelRef.current = settings?.providers.gemini?.model ?? ''
+  })
+  useEffect(() => {
+    if (!geminiApiKey || !window.aiOffice.getGeminiModels) return
+    let cancelled = false
+    const timer = setTimeout(() => {
+      void window.aiOffice
+        .getGeminiModels?.(geminiApiKey)
+        .then((live) => {
+          if (cancelled || !live || live.models.length === 0) return
+          const selected = geminiModelRef.current.trim()
+          const models =
+            selected && !live.models.includes(selected) ? [selected, ...live.models] : live.models
+          setCatalog((current) =>
+            current.map((entry) => (entry.id === 'gemini' ? { ...entry, models } : entry)),
+          )
+        })
+        .catch(() => undefined)
+    }, CUSTOM_MODELS_DEBOUNCE_MS)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+    }
+  }, [geminiApiKey])
+
   if (!settings) return null
   const provider = settings.provider
   const meta = catalog.find((c) => c.id === provider)

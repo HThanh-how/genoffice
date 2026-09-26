@@ -46,10 +46,11 @@ function metaOf(id: AiProviderId): AiProviderMeta {
  * only accept the default. Google's Gemini 3 docs strongly recommend keeping
  * the default temperature of 1.0 for the whole Gemini 3 family, since lower
  * values may cause looping or degraded reasoning, so our hard-coded 0.3
- * must not be sent there either.
+ * must not be sent there either. The gemini-*-latest aliases serve Gemini 3
+ * models, so they count as that family too.
  */
 export function modelHasFixedSampling(model: string): boolean {
-  return /(^|\/)(kimi-k3([^\w]|$)|gpt-[5-9]([^\w]|$)|gemini-3([^\w]|$)|o1(-mini|-preview)?([^\w]|$)|o3(-mini)?([^\w]|$)|o4-mini([^\w]|$))/i.test(
+  return /(^|\/)(kimi-k3([^\w]|$)|gpt-[5-9]([^\w]|$)|gemini-3([^\w]|$)|gemini-(flash|flash-lite|pro)-latest([^\w]|$)|o1(-mini|-preview)?([^\w]|$)|o3(-mini)?([^\w]|$)|o4-mini([^\w]|$))/i.test(
     model,
   )
 }
