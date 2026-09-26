@@ -54,6 +54,96 @@ function setup(
 }
 
 describe('createIpcTransport', () => {
+  it('retries the same model after overload, then falls back', async () => {
+    vi.useFakeTimers()
+    try {
+      let listener: ((chunk: IpcStreamChunk) => void) | undefined
+      const started: IpcStreamStart<{ provider: string; model: string }>[] = []
+      let retries = 0
+      const callbacks = { onDelta: vi.fn(), onToolCall: vi.fn(), onDone: vi.fn(), onError: vi.fn() }
+      const transport = createIpcTransport({
+        onStream: (next) => {
+          listener = next
+          return () => {
+            listener = undefined
+          }
+        },
+        start: (request) => {
+          started.push(request)
+        },
+        cancel: vi.fn(),
+        getSettings: () => ({ provider: 'gemini', model: 'first' }),
+        unknownErrorText: () => 'unknown',
+        route: {
+          prepare: (settings) => settings,
+          retry: () => (retries++ < 2 ? 400 : null),
+          fallback: (settings) => ({ ...settings, model: 'second' }),
+        },
+      })
+      transport.stream({ system: 'sys', messages: [], tools: [] }, callbacks)
+      listener?.({ requestId: started[0]!.requestId, type: 'error', error: 'Gemini HTTP 503' })
+      expect(started).toHaveLength(1)
+      await vi.advanceTimersByTimeAsync(400)
+      expect(started.map((request) => request.settings.model)).toEqual(['first', 'first'])
+      listener?.({ requestId: started[1]!.requestId, type: 'error', error: 'Gemini HTTP 503' })
+      await vi.advanceTimersByTimeAsync(400)
+      listener?.({ requestId: started[2]!.requestId, type: 'error', error: 'Gemini HTTP 503' })
+      expect(started.map((request) => request.settings.model)).toEqual([
+        'first',
+        'first',
+        'first',
+        'second',
+      ])
+      listener?.({ requestId: started[3]!.requestId, type: 'done' })
+      expect(started).toHaveLength(4)
+      expect(callbacks.onError).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not restart a model after cancellation during an overload wait', async () => {
+    vi.useFakeTimers()
+    try {
+      let listener: ((chunk: IpcStreamChunk) => void) | undefined
+      const started: IpcStreamStart<{ provider: string }>[] = []
+      const transport = createIpcTransport({
+        onStream: (next) => {
+          listener = next
+          return () => {
+            listener = undefined
+          }
+        },
+        start: (request) => {
+          started.push(request)
+        },
+        cancel: vi.fn(),
+        getSettings: () => ({ provider: 'gemini' }),
+        unknownErrorText: () => 'unknown',
+        route: {
+          prepare: (settings) => settings,
+          retry: () => 400,
+          fallback: () => null,
+        },
+      })
+      const handle = transport.stream(
+        { system: 'sys', messages: [], tools: [] },
+        {
+          onDelta: vi.fn(),
+          onToolCall: vi.fn(),
+          onDone: vi.fn(),
+          onError: vi.fn(),
+        },
+      )
+      listener?.({ requestId: started[0]!.requestId, type: 'error', error: 'Gemini HTTP 503' })
+      handle.cancel()
+      await vi.advanceTimersByTimeAsync(500)
+      expect(started).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('retries a 429 with another model only when the failed turn emitted nothing', () => {
     let listener: ((chunk: IpcStreamChunk) => void) | undefined
     const started: IpcStreamStart<{ provider: string; model: string }>[] = []

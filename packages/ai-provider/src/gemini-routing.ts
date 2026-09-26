@@ -131,6 +131,23 @@ function coolDown(model: string, error: string): void {
   }
 }
 
+function isGeminiOverload(error: string): boolean {
+  return /Gemini HTTP (429|503|529)\b|RESOURCE_EXHAUSTED|UNAVAILABLE|overload|rate.?limit|too many requests|service is busy|capacity/i.test(
+    error,
+  )
+}
+
+function retryDelayMs(error: string): number | null {
+  const delay = /retryDelay["']?\s*[:=]\s*["']?(\d+(?:\.\d+)?)s/i.exec(error)
+  return delay ? Number(delay[1]) * 1_000 : null
+}
+
+function shouldSkipRetry(error: string): boolean {
+  if (/quota_exceeded|per.?day|daily|\bRPD\b/i.test(error)) return true
+  const delay = retryDelayMs(error)
+  return delay !== null && delay > 2_000
+}
+
 function candidates(choice: GeminiModelChoice, configured: string): string[] {
   if (choice.startsWith('model:')) return [choice.slice(6)]
   const live = readGeminiModels()
@@ -171,7 +188,8 @@ export function createGeminiRouter() {
   let activeModel = ''
   let activeDay = pacificDate()
   let activeRunId = ''
-  let retryCount = 0
+  let fallbackCount = 0
+  let overloadRetries = 0
   return {
     onAttempt(settings: AiSettings): void {
       if (settings.provider === 'gemini') recordGeminiAttempt(settings.providers.gemini.model)
@@ -207,19 +225,26 @@ export function createGeminiRouter() {
       )
       if (!activeModel || !order.includes(activeModel))
         activeModel = order[0] || settings.providers.gemini.model
-      retryCount = 0
+      fallbackCount = 0
+      overloadRetries = 0
       return withModel(settings, activeModel)
+    },
+    retry(settings: AiSettings, error: string, emitted: boolean): number | null {
+      if (settings.provider !== 'gemini' || emitted || !isGeminiOverload(error)) return null
+      if (shouldSkipRetry(error) || overloadRetries >= 2) return null
+      return Math.max([400, 1_000][overloadRetries++] ?? 0, retryDelayMs(error) ?? 0)
     },
     fallback(settings: AiSettings, error: string, emitted: boolean): AiSettings | null {
       if (settings.provider !== 'gemini' || emitted || choice.startsWith('model:')) return null
-      if (!/Gemini HTTP (429|503)\b|RESOURCE_EXHAUSTED|UNAVAILABLE/i.test(error)) return null
-      if (retryCount++ >= 5) return null
+      if (!isGeminiOverload(error)) return null
+      if (fallbackCount++ >= 5) return null
       coolDown(settings.providers.gemini.model, error)
       const order = candidates(choice, settings.providers.gemini.model)
       const current = settings.providers.gemini.model
       const next = order.slice(order.indexOf(current) + 1).find((model) => !onCooldown(model))
       if (!next) return null
       activeModel = next
+      overloadRetries = 0
       window.dispatchEvent(
         new CustomEvent(GEMINI_ROUTING_EVENT, { detail: { from: current, to: next } }),
       )

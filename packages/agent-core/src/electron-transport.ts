@@ -56,6 +56,8 @@ export interface IpcTransportOptions<S> {
   /** Optional per-turn routing and safe retry before any model output reaches the loop. */
   route?: {
     prepare(settings: S, request?: AgentStreamRequest): S
+    /** Return a short delay to retry the same model before falling back. */
+    retry?(settings: S, error: string, emitted: boolean): number | null
     fallback(settings: S, error: string, emitted: boolean): S | null
     onAttempt?(settings: S): void
   }
@@ -90,6 +92,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
       let requestId = ''
       let cancelled = false
       let silenceTimer: ReturnType<typeof setTimeout> | undefined
+      let retryTimer: ReturnType<typeof setTimeout> | undefined
       let unsubscribe = () => {}
       let settled = false
       const baseSettings = options.getSettings()
@@ -146,6 +149,16 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
             if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason)
             cb.onDone()
           } else {
+            const retryDelay =
+              !cancelled && options.route?.retry?.(settings, chunk.error ?? '', emitted)
+            if (typeof retryDelay === 'number' && Number.isFinite(retryDelay) && retryDelay >= 0) {
+              settle()
+              retryTimer = setTimeout(() => {
+                retryTimer = undefined
+                if (!cancelled) attempt()
+              }, retryDelay)
+              return
+            }
             const next = !cancelled && options.route?.fallback(settings, chunk.error ?? '', emitted)
             if (next) {
               settle()
@@ -192,6 +205,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
       return {
         cancel: () => {
           cancelled = true
+          clearTimeout(retryTimer)
           options.cancel(requestId)
         },
       }
