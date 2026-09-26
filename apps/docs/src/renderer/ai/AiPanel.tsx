@@ -701,6 +701,8 @@ export function AiPanel({
         user,
         signal,
         maxChars: DOC_MAX_CHARS,
+        firstDeltaTimeoutMs: 90_000,
+        idleDeltaTimeoutMs: 30_000,
         extract: (raw) => ({ text: extractFragment(raw) }),
         onProgress: (html) => {
           if (closed) return
@@ -710,7 +712,13 @@ export function AiPanel({
         },
       })
     let outcome = await attempt()
-    if (outcome.status === 'empty' && !signal?.aborted) outcome = await attempt()
+    if (
+      outcome.status === 'empty' &&
+      !outcome.stalled &&
+      /^(empty reply|.*returned no content\b)/i.test(outcome.error) &&
+      !signal?.aborted
+    )
+      outcome = await attempt()
     closed = true
     if (chipTimer !== null) clearTimeout(chipTimer)
     if (outcome.status === 'complete') return { ok: true, html: outcome.text }
@@ -1397,9 +1405,13 @@ export function AiPanel({
               )}
               {entry.role === 'assistant' && !entry.text && entry.streaming ? (
                 <span className="ai-typing-row">
-                  <AiTypingIndicator
-                    label={entry.tools?.length ? t('aiWorking') : t('aiThinking')}
-                  />
+                  {activePartial && isLast ? (
+                    <span role="status">{t('aiPartialTitle')}</span>
+                  ) : (
+                    <AiTypingIndicator
+                      label={entry.tools?.length ? t('aiWorking') : t('aiThinking')}
+                    />
+                  )}
                 </span>
               ) : entry.role === 'assistant' ? (
                 <div dir="auto">
@@ -1408,7 +1420,9 @@ export function AiPanel({
               ) : (
                 <span dir="auto">{entry.text}</span>
               )}
-              {entry.tools && entry.tools.length > 0 && <ToolChipList tools={entry.tools} />}
+              {entry.tools && entry.tools.length > 0 && (
+                <ToolChipList tools={entry.tools} awaitingDecision={!!activePartial && isLast} />
+              )}
               {entry.error && (
                 <div className="ai-msg-error">{t('aiErrorPrefix', { error: entry.error })}</div>
               )}
@@ -1763,7 +1777,13 @@ function RollbackButton({ disabled, onClick }: { disabled: boolean; onClick: () 
 /** Tool activity group: a single quiet summary row
  *  that auto-opens while tools run, auto-collapses into "Worked · N steps" when they finish,
  *  and a manual toggle that always wins. Rows inside are step rows with 1px connectors. */
-function ToolChipList({ tools }: { tools: ToolActivity[] }) {
+function ToolChipList({
+  tools,
+  awaitingDecision = false,
+}: {
+  tools: ToolActivity[]
+  awaitingDecision?: boolean
+}) {
   const { t: tr } = useI18n()
   const [expanded, setExpanded] = useState<Set<number>>(new Set())
   const [userOpen, setUserOpen] = useState<boolean | null>(null)
@@ -1777,9 +1797,13 @@ function ToolChipList({ tools }: { tools: ToolActivity[] }) {
     })
   }
 
-  const anyRunning = tools.some((tool) => tool.running)
+  const anyRunning = !awaitingDecision && tools.some((tool) => tool.running)
   const open = userOpen ?? anyRunning
-  const label = anyRunning ? tr('aiGroupWorking') : tr('aiWorkedSteps', { n: tools.length })
+  const label = awaitingDecision
+    ? tr('aiPartialTitle')
+    : anyRunning
+      ? tr('aiGroupWorking')
+      : tr('aiWorkedSteps', { n: tools.length })
 
   return (
     <div className="ai-work-group">

@@ -14,6 +14,10 @@ export interface StreamTextOptions {
   signal?: AbortSignal
   /** the stream is cancelled and reported as partial once the raw reply exceeds this */
   maxChars: number
+  /** Maximum wait for the first content delta; independent of network keepalives. */
+  firstDeltaTimeoutMs?: number
+  /** Maximum wait between content deltas after writing has started. */
+  idleDeltaTimeoutMs?: number
   /**
    * Maps the raw reply so far to the artifact. `complete` says the format's own
    * terminator arrived (e.g. `</html>`); omit it for formats without one, and
@@ -26,8 +30,14 @@ export interface StreamTextOptions {
 
 export type StreamTextOutcome =
   | { status: 'complete'; text: string }
-  | { status: 'partial'; text: string; reason: 'error' | 'stopped' | 'max_tokens'; error?: string }
-  | { status: 'empty'; error: string }
+  | {
+      status: 'partial'
+      text: string
+      reason: 'error' | 'stopped' | 'max_tokens'
+      error?: string
+      stalled?: true
+    }
+  | { status: 'empty'; error: string; stalled?: true }
 
 /** Resolves with what arrived, never throws. */
 export function streamText(opts: StreamTextOptions): Promise<StreamTextOutcome> {
@@ -38,6 +48,7 @@ export function streamText(opts: StreamTextOptions): Promise<StreamTextOutcome> 
     let handle: AgentStreamHandle | null = null
     let onAbort: () => void = () => undefined
     let cancelRequested = false
+    let progressTimer: ReturnType<typeof setTimeout> | undefined
     // Fallback cap when the caller passes NaN, Infinity, zero, or a negative limit.
     const FALLBACK_MAX_CHARS = 200000
     const maxChars =
@@ -53,13 +64,14 @@ export function streamText(opts: StreamTextOptions): Promise<StreamTextOutcome> 
     const finish = (outcome: StreamTextOutcome) => {
       if (settled) return
       settled = true
+      clearTimeout(progressTimer)
       opts.signal?.removeEventListener('abort', onAbort)
       resolve(outcome)
     }
     const partialOrEmpty = (
       reason: 'error' | 'stopped' | 'max_tokens',
       error?: string,
-    ): StreamTextOutcome => {
+    ): Exclude<StreamTextOutcome, { status: 'complete' }> => {
       const extracted = safeExtract(raw)
       const resolvedError = error ?? extracted.error
       if (!extracted.text.trim()) return { status: 'empty', error: resolvedError ?? reason }
@@ -71,6 +83,15 @@ export function streamText(opts: StreamTextOptions): Promise<StreamTextOutcome> 
       cancelRequested = true
       handle?.cancel()
     }
+    const armProgressTimeout = (ms: number | undefined) => {
+      clearTimeout(progressTimer)
+      if (ms === undefined || !Number.isFinite(ms) || ms <= 0) return
+      progressTimer = setTimeout(() => {
+        const error = `Document writer stopped sending content for ${Math.ceil(ms / 1000)} seconds`
+        finish({ ...partialOrEmpty('error', error), stalled: true })
+        cancelTransport()
+      }, ms)
+    }
     onAbort = () => {
       if (settled) return
       finish(partialOrEmpty('stopped'))
@@ -80,11 +101,13 @@ export function streamText(opts: StreamTextOptions): Promise<StreamTextOutcome> 
       onAbort()
       return
     }
+    armProgressTimeout(opts.firstDeltaTimeoutMs)
     handle = opts.transport.stream(
       { system: opts.system, messages: [{ role: 'user', text: opts.user }], tools: [] },
       {
         onDelta: (delta) => {
           if (settled) return
+          if (delta) armProgressTimeout(opts.idleDeltaTimeoutMs)
           raw += delta
           if (raw.length > maxChars) {
             finish(partialOrEmpty('max_tokens', `output exceeded ${maxChars} chars`))

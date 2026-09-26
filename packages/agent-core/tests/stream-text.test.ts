@@ -17,6 +17,83 @@ function fakeTransport(
 const passthrough = (raw: string) => ({ text: raw.trim() })
 
 describe('streamText', () => {
+  it('stops a silent writer before the network watchdog and does not retry empty stalled output', async () => {
+    vi.useFakeTimers()
+    try {
+      let cancelled = false
+      let callbacks!: AgentStreamCallbacks
+      const promise = streamText({
+        transport: {
+          stream: (_request, cb) => {
+            callbacks = cb
+            return {
+              cancel: () => {
+                cancelled = true
+              },
+            }
+          },
+        },
+        system: 's',
+        user: 'u',
+        maxChars: 1000,
+        extract: passthrough,
+        firstDeltaTimeoutMs: 90,
+        idleDeltaTimeoutMs: 30,
+      })
+      await vi.advanceTimersByTimeAsync(90)
+      expect(await promise).toMatchObject({ status: 'empty', stalled: true })
+      expect(cancelled).toBe(true)
+      callbacks.onDelta('late')
+      callbacks.onDone()
+      expect(await promise).toMatchObject({ status: 'empty', stalled: true })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('resets the writer timeout on new text and offers the partial draft after a stall', async () => {
+    vi.useFakeTimers()
+    try {
+      let cancelled = false
+      let callbacks!: AgentStreamCallbacks
+      const promise = streamText({
+        transport: {
+          stream: (_request, cb) => {
+            callbacks = cb
+            return {
+              cancel: () => {
+                cancelled = true
+              },
+            }
+          },
+        },
+        system: 's',
+        user: 'u',
+        maxChars: 1000,
+        extract: passthrough,
+        firstDeltaTimeoutMs: 90,
+        idleDeltaTimeoutMs: 30,
+      })
+      await vi.advanceTimersByTimeAsync(80)
+      callbacks.onDelta('<p>First</p>')
+      await vi.advanceTimersByTimeAsync(25)
+      callbacks.onDelta('<p>Second</p>')
+      await vi.advanceTimersByTimeAsync(29)
+      expect(cancelled).toBe(false)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(await promise).toEqual({
+        status: 'partial',
+        text: '<p>First</p><p>Second</p>',
+        reason: 'error',
+        error: 'Document writer stopped sending content for 1 seconds',
+        stalled: true,
+      })
+      expect(cancelled).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends a tool-less request and reports cumulative progress', async () => {
     const progress: string[] = []
     let request: { tools: unknown[]; messages: unknown[] } | undefined
