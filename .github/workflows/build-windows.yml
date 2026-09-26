@@ -1,0 +1,61 @@
+name: Build Windows installer
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify Gemini tool-call signatures
+        run: npm run test -w @genoffice/ai-provider
+
+      - name: Generate document fixtures
+        run: npm run fixtures
+
+      - name: Build unsigned Windows x64 installer
+        shell: pwsh
+        run: |
+          npm run notices
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $source = 'apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe'
+          $target = 'apps/sheets/native/xlsx-engine/target/x86_64-pc-windows-gnu/release/xlsx-sidecar.exe'
+          if (-not (Test-Path -LiteralPath $source)) { throw "Missing built sidecar: $source" }
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+          Copy-Item -LiteralPath $source -Destination $target
+          npm run dist:win -w @genoffice/shell
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload installer
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: genoffice-windows-x64-gemini-fix
+          path: apps/shell/release/*.exe
+          if-no-files-found: error
+          retention-days: 7
