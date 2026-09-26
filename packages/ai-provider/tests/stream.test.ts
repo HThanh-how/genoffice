@@ -609,6 +609,30 @@ describe('streamForProvider: anthropic', () => {
 })
 
 describe('streamForProvider: gemini', () => {
+  it('keeps retry and daily quota metadata when the API error is longer than the UI preview', async () => {
+    const body = JSON.stringify({
+      error: {
+        message: 'rate limit '.repeat(70),
+        details: [
+          { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '37s' },
+          { quotaId: 'GenerateRequestsPerDayPerProjectPerModel-FreeTier' },
+        ],
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 429 })))
+    await expect(
+      streamForProvider(
+        'gemini',
+        { apiKey: 'k', model: 'gemini-flash-latest' },
+        'sys',
+        [],
+        [],
+        100,
+        collector().cb,
+      ),
+    ).rejects.toThrow(/retryDelay="37s" quota_exceeded/)
+  })
+
   it('returns a streamed function-call signature in the same part on the next turn', async () => {
     const first = okResponse(
       sseStream([

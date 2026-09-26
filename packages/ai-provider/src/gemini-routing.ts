@@ -133,18 +133,22 @@ function coolDown(model: string, error: string): void {
 
 function candidates(choice: GeminiModelChoice, configured: string): string[] {
   if (choice.startsWith('model:')) return [choice.slice(6)]
-  const allowed = new Set(
-    readGeminiModels()
-      .filter((m) => m.usableForChat)
-      .map((m) => m.id),
-  )
+  const live = readGeminiModels()
+    .filter((model) => model.usableForChat)
+    .map((model) => model.id)
+  const allowed = new Set(live)
+  // Keep preferred Flash models first, but include newly released chat models
+  // returned by the API rather than silently falling back to a stale setting.
   const defaults = GEMINI_DEFAULT_ORDER.filter((id) => allowed.size === 0 || allowed.has(id))
+  const preferred = new Set<string>(defaults)
+  const others = live.filter((id) => !preferred.has(id))
+  const order = [...defaults, ...others]
   const list =
     choice === 'fast'
-      ? defaults.filter((id) => id.includes('lite'))
+      ? order.filter((id) => id.includes('lite'))
       : choice === 'smart'
-        ? defaults.filter((id) => !id.includes('lite'))
-        : defaults
+        ? order.filter((id) => !id.includes('lite'))
+        : order
   if (choice === 'auto' && allowed.size === 0 && configured) {
     return [configured, ...list.filter((id) => id !== configured)]
   }

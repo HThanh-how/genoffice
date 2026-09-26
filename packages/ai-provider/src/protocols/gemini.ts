@@ -202,8 +202,16 @@ async function geminiTurn(
   // headers arrived: ping the renderer watchdog too, or a slow first chunk could trip it
   onBytes()
   if (!response.ok || !response.body) {
+    const body = await readCappedResponseText(response, onBytes)
+    const retryInfo = /["']retryDelay["']\s*:\s*["'](\d+(?:\.\d+)?)s["']/i.exec(body)?.[1]
+    const retryHeader = response.headers.get('retry-after')
+    const retrySeconds =
+      retryInfo ?? (retryHeader && /^\d+(?:\.\d+)?$/.test(retryHeader) ? retryHeader : null)
+    const dailyQuota = /quota_exceeded|per.?day|daily|\bRPD\b/i.test(body)
     throw new Error(
-      `Gemini HTTP ${response.status}: ${httpBodyDetail(await readCappedResponseText(response, onBytes))}`,
+      `Gemini HTTP ${response.status}: ${httpBodyDetail(body)}` +
+        (retrySeconds ? ` retryDelay="${retrySeconds}s"` : '') +
+        (dailyQuota ? ' quota_exceeded' : ''),
     )
   }
   const jsonBody = await jsonBodyInsteadOfSse(response, onBytes)

@@ -5,6 +5,32 @@ import { defaultAiSettings } from '../src/providers'
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Gemini chat routing', () => {
+  it('includes newly listed chat models in automatic fallback', () => {
+    const saved = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => saved.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        saved.set(key, value)
+      },
+    })
+    vi.stubGlobal('window', { dispatchEvent: vi.fn() })
+    saved.set(
+      GEMINI_MODELS_KEY,
+      JSON.stringify([
+        { id: 'gemini-3.8-flash', displayName: 'Flash', usableForChat: true },
+        { id: 'gemini-4-flash', displayName: 'New Flash', usableForChat: true },
+      ]),
+    )
+    const settings = defaultAiSettings()
+    settings.provider = 'gemini'
+    const router = createGeminiRouter()
+    const first = router.prepare(settings)
+    expect(first.providers.gemini.model).toBe('gemini-3.8-flash')
+    expect(router.fallback(first, 'Gemini HTTP 429', false)?.providers.gemini.model).toBe(
+      'gemini-4-flash',
+    )
+  })
+
   it('uses live chat-capable models, keeps a fallback through tool turns, and honors a manual choice', () => {
     const saved = new Map<string, string>()
     vi.stubGlobal('localStorage', {
