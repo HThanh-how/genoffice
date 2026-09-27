@@ -12,6 +12,8 @@ export interface AgentToolCall {
   input: Record<string, unknown>
   /** Opaque Gemini signature attached to this functionCall part; echoed in tool-loop history. */
   thoughtSignature?: string | undefined
+  /** Alias used by upstream transports and persisted traces. */
+  signature?: string | undefined
   /** Model that produced this function call; used when replaying Gemini history after routing. */
   sourceModel?: string | undefined
   /** Parse error when the model emitted invalid input JSON; the loop feeds back an is_error result for retry instead of aborting the run */

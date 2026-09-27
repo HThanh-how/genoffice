@@ -1,8 +1,9 @@
 /**
  * electron-builder configuration (moved out of package.json "build" so the
- * auto-update feed URL can be injected at build time instead of living in
- * the repo).
+ * auto-update provider can be injected at build time instead of living in
+ * every CI smoke build).
  *
+ * GENOFFICE_UPDATE_REPOSITORY — owner/repo of a signed GitHub release feed.
  * GENOFFICE_UPDATE_URL — public base URL of the update channel (the generic
  * provider prefix that serves latest.yml / latest-mac.yml). Required for
  * release builds; CI provides it as a repository secret. For local release
@@ -44,6 +45,12 @@ function normalizeHttpsBaseUrl(name, value) {
 }
 
 const updateUrl = process.env.GENOFFICE_UPDATE_URL
+const updateRepository = process.env.GENOFFICE_UPDATE_REPOSITORY
+if (updateUrl && updateRepository) {
+  throw new Error(
+    'Choose only one update provider: GENOFFICE_UPDATE_URL or GENOFFICE_UPDATE_REPOSITORY',
+  )
+}
 const ga4MeasurementId = process.env.GENOFFICE_GA4_MEASUREMENT_ID
 const ga4ApiSecret = process.env.GENOFFICE_GA4_API_SECRET
 const fontCdnUrl = normalizeHttpsBaseUrl(
@@ -463,6 +470,14 @@ const config = {
       mimeType: 'text/csv',
     },
     {
+      // opens as a converted copy and saves as .xlsx (genoffice#1146)
+      ext: 'tsv',
+      name: 'TSV Document',
+      role: 'Editor',
+      icon: 'xlsx',
+      mimeType: 'text/tab-separated-values',
+    },
+    {
       ext: 'pdf',
       name: 'PDF Document',
       role: 'Editor',
@@ -627,6 +642,13 @@ const config = {
     publish: null,
     afterInstall: 'build/linux-after-install.sh',
     afterRemove: 'build/linux-after-remove.sh',
+    // rpmbuild links every packaged ELF file into /usr/lib/.build-id/<hash>.
+    // Two Electron apps built on the same Electron release ship identical
+    // binaries, so the links are identical too and dnf refuses the install
+    // with a file conflict against the other app (#1145). The links exist only
+    // to locate detached debuginfo, which this package does not ship, so turn
+    // them off. rpm-level `fpm` (not linux-level) keeps it away from the deb.
+    fpm: ['--rpm-rpmbuild-define=_build_id_links none'],
   },
   nsis: {
     oneClick: false,
@@ -687,7 +709,19 @@ if (winSignMode) {
   }
 }
 
-if (updateUrl) {
+if (updateRepository) {
+  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(updateRepository)
+  if (!match) throw new Error('GENOFFICE_UPDATE_REPOSITORY must be owner/repo')
+  const signed =
+    process.platform === 'win32'
+      ? Boolean(process.env.WIN_CSC_LINK && process.env.WIN_CSC_KEY_PASSWORD)
+      : process.platform === 'darwin'
+        ? Boolean(process.env.CSC_LINK && process.env.CSC_KEY_PASSWORD)
+        : false
+  if (!signed)
+    throw new Error('GitHub auto-update releases require platform code-signing credentials')
+  config.publish = [{ provider: 'github', owner: match[1], repo: match[2] }]
+} else if (updateUrl) {
   config.publish = [
     {
       provider: 'generic',

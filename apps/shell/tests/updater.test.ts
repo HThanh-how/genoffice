@@ -14,6 +14,7 @@ const showMessageBox = vi.hoisted(() =>
   vi.fn<(opts: unknown) => Promise<{ response: number }>>(() => Promise.resolve({ response: 0 })),
 )
 const readFileSyncMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => string>())
+const existsSyncMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => boolean>())
 
 vi.mock('electron', () => ({
   app: {
@@ -32,6 +33,7 @@ vi.mock('electron', () => ({
 
 vi.mock('node:fs', () => ({
   readFileSync: (...args: unknown[]) => readFileSyncMock(...args),
+  existsSync: (...args: unknown[]) => existsSyncMock(...args),
 }))
 
 type Listener = (...args: unknown[]) => unknown
@@ -135,6 +137,7 @@ function lastShownActions(): UpdateActions {
 beforeEach(() => {
   vi.resetModules()
   vi.useFakeTimers()
+  Object.defineProperty(process, 'resourcesPath', { value: '/test/resources', configurable: true })
   appState.isPackaged = true
   delete process.env.GENOFFICE_FAKE_UPDATE
   updaterState.listeners.clear()
@@ -154,6 +157,8 @@ beforeEach(() => {
   showMessageBox.mockReset()
   showMessageBox.mockImplementation(() => Promise.resolve({ response: 0 }))
   readFileSyncMock.mockReset()
+  existsSyncMock.mockReset()
+  existsSyncMock.mockReturnValue(true)
   readFileSyncMock.mockImplementation(() => {
     throw new Error('no app-update.yml')
   })
@@ -162,12 +167,22 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers()
+  delete (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
   platformSpy?.restore()
   platformSpy = null
   delete process.env.GENOFFICE_FAKE_UPDATE
 })
 
 describe('initAutoUpdater', () => {
+  it('leaves unsigned CI installers without an update feed inactive', async () => {
+    existsSyncMock.mockReturnValue(false)
+    const { initAutoUpdater } = await loadUpdater()
+    initAutoUpdater(() => null)
+    vi.advanceTimersByTime(FIRST_CHECK_DELAY_MS)
+    expect(updaterState.listeners.size).toBe(0)
+    expect(checkForUpdates).not.toHaveBeenCalled()
+  })
+
   it('does nothing in unpacked (dev) runs without the fake-update env', async () => {
     appState.isPackaged = false
     const { initAutoUpdater } = await loadUpdater()
@@ -192,7 +207,7 @@ describe('initAutoUpdater', () => {
     const { initAutoUpdater } = await loadUpdater()
     initAutoUpdater(() => null)
     expect(updaterState.autoDownload).toBe(false)
-    expect(updaterState.autoInstallOnAppQuit).toBe(true)
+    expect(updaterState.autoInstallOnAppQuit).toBe(false)
     expect(updaterState.disableDifferentialDownload).toBe(true)
     expect(checkForUpdates).not.toHaveBeenCalled()
     vi.advanceTimersByTime(FIRST_CHECK_DELAY_MS)
@@ -474,7 +489,7 @@ describe('manual download fallback', () => {
     const actions = await failTwiceIntoManual(macFiles)
     actions.onOpenDownload()
     expect(openExternal).toHaveBeenCalledWith(
-      'https://github.com/genspark-ai/genoffice/releases/latest',
+      'https://github.com/HThanh-how/genoffice/releases/latest',
     )
   })
 
@@ -485,7 +500,7 @@ describe('manual download fallback', () => {
     ])
     actions.onOpenDownload()
     expect(openExternal).toHaveBeenCalledWith(
-      'https://github.com/genspark-ai/genoffice/releases/latest',
+      'https://github.com/HThanh-how/genoffice/releases/latest',
     )
   })
 })
@@ -543,7 +558,7 @@ describe('checkForUpdatesNow (r148 manual check)', () => {
     expect(showMessageBox).toHaveBeenCalledTimes(1)
     expect(lastDialogOpts().buttons.length).toBe(2)
     expect(openExternal).toHaveBeenCalledWith(
-      'https://github.com/genspark-ai/genoffice/releases/latest',
+      'https://github.com/HThanh-how/genoffice/releases/latest',
     )
     expect(checkForUpdates).not.toHaveBeenCalled()
   })

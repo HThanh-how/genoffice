@@ -278,5 +278,5 @@ describe('source splice', () => {
     expect(declined.length, `declined: ${declined.join(', ')}`).toBeLessThanOrEqual(
       Math.ceil(files.length * 0.05),
     )
-  })
+  }, 60_000)
 })

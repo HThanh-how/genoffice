@@ -109,7 +109,8 @@ describe('startGenofficeLogin', () => {
       key_id: 'kid-1',
       access_token: 'bearer-token',
     })
-    expect(statSync(genofficeAuthPath()).mode & 0o777).toBe(0o600)
+    // Windows ACLs do not expose POSIX mode bits through stat().
+    if (process.platform !== 'win32') expect(statSync(genofficeAuthPath()).mode & 0o777).toBe(0o600)
     expect(genofficeApiKey()).toBe('gsk-genoffice-key')
     expect(genofficeLoginInFlight()).toBe(false)
 

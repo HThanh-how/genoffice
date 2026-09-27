@@ -4,6 +4,7 @@ import type {
   AgentMessage,
   AgentStreamHandle,
   AgentToolCall,
+  AgentToolDef,
   AgentToolResult,
   AgentTransport,
   ToolExecution,
@@ -117,6 +118,17 @@ export const TOOL_ABORTED_OUTPUT =
   '(the user stopped the run while this tool was still executing; its result was discarded)'
 
 const TOOL_ABORTED = Symbol('tool-aborted')
+
+export function missingRequiredFields(
+  tool: AgentToolDef | undefined,
+  input: Record<string, unknown>,
+): string[] {
+  const required = tool?.inputSchema.required
+  if (!Array.isArray(required)) return []
+  return required.filter(
+    (field): field is string => typeof field === 'string' && input[field] === undefined,
+  )
+}
 
 async function awaitToolOrAbort(
   tool: ToolExecution | Promise<ToolExecution>,
@@ -719,11 +731,12 @@ export class AgentLoop<TSnapshot = unknown> {
     this.history.push({
       role: 'assistant',
       text: this.turnText,
-      toolCalls: toolCalls.map(({ id, name, input, thoughtSignature, sourceModel }) => ({
+      toolCalls: toolCalls.map(({ id, name, input, thoughtSignature, signature, sourceModel }) => ({
         id,
         name,
         input,
         ...(thoughtSignature ? { thoughtSignature } : {}),
+        ...(signature ? { signature } : {}),
         ...(sourceModel ? { sourceModel } : {}),
       })),
       // interleaved-thinking models degrade in tool loops unless their reasoning is echoed back
@@ -732,6 +745,8 @@ export class AgentLoop<TSnapshot = unknown> {
     const generation = this.generation
     const results: AgentToolResult[] = []
     let turnMutated = false
+    let unusableInTurn = false
+    let executedInTurn = false
     for (const call of toolCalls) {
       // The user hit stop while an earlier tool was running: skip remaining tools,
       // but fill in paired error results to keep tool_use/tool_result pairs valid for the next request
@@ -746,11 +761,20 @@ export class AgentLoop<TSnapshot = unknown> {
       }
       // Unusable input (truncated by the token limit, or JSON that failed to parse):
       // don't execute; feed a targeted error back so the model retries correctly
-      if (call.truncated || call.inputError) {
-        this.inputParseFails++
+      const missing =
+        call.truncated || call.inputError
+          ? []
+          : missingRequiredFields(
+              skill.tools.find((tool) => tool.name === call.name),
+              call.input,
+            )
+      if (call.truncated || call.inputError || missing.length > 0) {
+        unusableInTurn = true
         const output = call.truncated
           ? 'Tool arguments were cut off by the output length limit; the tool was not executed. Split this operation into several smaller tool calls (less content per call) and try again.'
-          : `Tool input JSON failed to parse; the tool was not executed: ${call.inputError}\nFix the arguments (make sure quotes inside strings are escaped) and call again.`
+          : call.inputError
+            ? `Tool input JSON failed to parse; the tool was not executed: ${call.inputError}\nFix the arguments (make sure quotes inside strings are escaped) and call again.`
+            : `Tool call ${call.name} is missing the required argument(s) ${missing.map((field) => `"${field}"`).join(', ')}; the tool was not executed. Call again with every required field.`
         results.push({ id: call.id, name: call.name, output, isError: true })
         events?.onToolExecuted?.({
           call,
@@ -758,7 +782,7 @@ export class AgentLoop<TSnapshot = unknown> {
         })
         continue
       }
-      this.inputParseFails = 0
+      executedInTurn = true
       events?.onToolStart?.(call)
       const snapshot = !this.mutationSeen ? captureSnapshot?.() : undefined
       let raced: ToolExecution | typeof TOOL_ABORTED
@@ -806,6 +830,8 @@ export class AgentLoop<TSnapshot = unknown> {
       })
     }
     this.history.push({ role: 'tool', results })
+    if (executedInTurn) this.inputParseFails = 0
+    else if (unusableInTurn) this.inputParseFails++
 
     // Cancelled while tools were executing: finish immediately, no further model request
     if (this.cancelled) {
@@ -820,7 +846,7 @@ export class AgentLoop<TSnapshot = unknown> {
       this.running = false
       this.rollbackFailedRun()
       events?.onError?.(
-        `Tool input was unusable (unparseable or truncated) ${MAX_INPUT_PARSE_RETRIES} times in a row; retries stopped, please send the request again`,
+        `Tool input was unusable (unparseable, truncated or missing required arguments) ${MAX_INPUT_PARSE_RETRIES} times in a row; retries stopped, please send the request again`,
       )
       return
     }
@@ -886,10 +912,24 @@ export class AgentLoop<TSnapshot = unknown> {
  */
 export function sanitizeAgentPayload(payload: string): string {
   return payload
+    .replace(
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+      '[REDACTED_PRIVATE_KEY]',
+    )
+    .replace(
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----(?:\r?\n[A-Za-z0-9+/=]+(?=\r?\n|$))*/g,
+      '[REDACTED_PRIVATE_KEY]',
+    )
     .replace(/\b(?:sk-|AIza|ghp_|secret_)[A-Za-z0-9_-]{16,}/g, '[REDACTED_API_KEY]')
+    .replace(/\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/g, '[REDACTED_API_KEY]')
+    .replace(/\bxox[abeoprs]-[A-Za-z0-9-]{10,}/g, '[REDACTED_API_KEY]')
     .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s:@/]+):[^\s@/]+@/gi, '$1:[REDACTED_CREDENTIALS]@')
     .replace(
       /(password|passwd|secret_key|private_key)(\s*[:=]\s*)["'][^"']+["']/gi,
       '$1$2"[REDACTED_SECURE_TOKEN]"',
+    )
+    .replace(
+      /(?<!\/)(\w*(?:password|passwd|secret_key|private_key))(\s*[:=]\s*)(?=[^\s"',;]*[^A-Za-z\s"',;])[^\s"',;]{6,}/gi,
+      '$1$2[REDACTED_SECURE_TOKEN]',
     )
 }

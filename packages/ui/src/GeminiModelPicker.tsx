@@ -321,9 +321,9 @@ export function GeminiModelPicker({
         </span>
         <select value={choice} onChange={(event) => select(event.target.value)}>
           <optgroup label={vi ? 'Chế độ' : 'Mode'}>
-            <option value="auto">{vi ? 'Tự động' : 'Auto'} · Flash → Lite</option>
+            <option value="auto">{vi ? 'Tự động' : 'Auto'} · Flash → Lite → Gemma</option>
             <option value="smart">{vi ? 'Khôn · chỉ Flash' : 'Smart · Flash only'}</option>
-            <option value="fast">{vi ? 'Nhanh · chỉ Flash-Lite' : 'Fast · Flash-Lite only'}</option>
+            <option value="fast">{vi ? 'Nhanh · Lite → Gemma' : 'Fast · Lite → Gemma'}</option>
           </optgroup>
           <optgroup
             label={`${vi ? 'Dùng được trong chat' : 'Chat models'} (${available.length || fallback.length})`}

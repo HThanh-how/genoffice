@@ -724,6 +724,48 @@ describe('streamForProvider: gemini', () => {
     expect(body.contents[2].parts[0].functionResponse.response).toEqual({ result: 'ok' })
   })
 
+  it('omits Gemini thought signatures when a tool trace falls back to Gemma', async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(
+        okResponse(
+          sseStream([
+            'data: {"candidates":[{"content":{"parts":[{"text":"done"}]},"finishReason":"STOP"}]}',
+          ]),
+        ),
+      )
+    vi.stubGlobal('fetch', fetchMock)
+    await streamForProvider(
+      'gemini',
+      { apiKey: 'k', model: 'gemma-4-26b-a4b-it' },
+      'sys',
+      [
+        { role: 'user', text: 'edit' },
+        {
+          role: 'assistant',
+          text: '',
+          toolCalls: [
+            {
+              id: 'c1',
+              name: 'write_document',
+              input: {},
+              thoughtSignature: 'opaque',
+              sourceModel: 'gemini-3.8-flash',
+            },
+          ],
+        },
+        { role: 'tool', results: [{ id: 'c1', name: 'write_document', output: 'ok' }] },
+      ],
+      [],
+      100,
+      collector().cb,
+    )
+    const body = JSON.parse((fetchMock.mock.calls[0]![1] as RequestInit).body as string)
+    expect(body.contents[1].parts[0]).toEqual({
+      functionCall: { name: 'write_document', args: {} },
+    })
+  })
+
   it('captures snake-case function-call signatures from a JSON response', async () => {
     vi.stubGlobal(
       'fetch',
@@ -757,6 +799,36 @@ describe('streamForProvider: gemini', () => {
     expect(toolCalls[0]).toMatchObject({
       name: 'write_document',
       thoughtSignature: 'json-signature',
+    })
+  })
+
+  it('rejects non-object tool arguments before they reach an editor', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          okResponse(
+            sseStream([
+              'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"write_document","args":[1,2]}}]},"finishReason":"STOP"}]}',
+            ]),
+          ),
+        ),
+    )
+    const { toolCalls, cb } = collector()
+    await streamForProvider(
+      'gemini',
+      { apiKey: 'k', model: 'gemini-3.8-flash' },
+      'sys',
+      [],
+      [],
+      100,
+      cb,
+    )
+    expect(toolCalls[0]).toMatchObject({
+      name: 'write_document',
+      input: {},
+      inputError: expect.stringContaining('JSON object'),
     })
   })
 

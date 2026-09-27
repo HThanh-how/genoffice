@@ -50,7 +50,7 @@ export async function listGeminiModels(apiKey: string): Promise<GeminiModelInfo[
           : {}),
         usableForChat:
           (model.supportedGenerationMethods?.includes('generateContent') ?? false) &&
-          /^gemini-/i.test(id) &&
+          (/^gemini-/i.test(id) || /^gemma-4-(26b-a4b|31b)-it$/i.test(id)) &&
           !/(image|tts|live|transcribe|embedding|native-audio|robotics|video)/i.test(id),
       })
     }

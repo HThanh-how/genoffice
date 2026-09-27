@@ -23,6 +23,8 @@ export const GEMINI_DEFAULT_ORDER = [
   'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.1-flash-lite',
+  'gemma-4-26b-a4b-it',
+  'gemma-4-31b-it',
 ] as const
 
 export function readGeminiChoice(): GeminiModelChoice {
@@ -312,13 +314,13 @@ function candidates(choice: GeminiModelChoice, configured: string): string[] {
   // returned by the API rather than silently falling back to a stale setting.
   const defaults = GEMINI_DEFAULT_ORDER.filter((id) => allowed.size === 0 || allowed.has(id))
   const preferred = new Set<string>(defaults)
-  const others = live.filter((id) => !preferred.has(id))
+  const others = live.filter((id) => !preferred.has(id) && /^gemini-.*flash/i.test(id))
   const order = [...defaults, ...others]
   const list =
     choice === 'fast'
-      ? order.filter((id) => id.includes('lite'))
+      ? order.filter((id) => id.includes('lite') || id.startsWith('gemma-4-'))
       : choice === 'smart'
-        ? order.filter((id) => !id.includes('lite'))
+        ? order.filter((id) => !id.includes('lite') && !id.startsWith('gemma-'))
         : order
   if (choice === 'auto' && allowed.size === 0 && configured) {
     return [configured, ...list.filter((id) => id !== configured)]
@@ -516,7 +518,19 @@ export function createGeminiRouter() {
       coolDown(settings.providers.gemini.model, error)
       const order = candidates(choice, settings.providers.gemini.model)
       const current = settings.providers.gemini.model
-      const next = order.slice(order.indexOf(current) + 1).find((model) => !onCooldown(model))
+      const remaining = order
+        .slice(order.indexOf(current) + 1)
+        .filter((model) => !onCooldown(model))
+      const capacityFailure =
+        errorCode === 'timeout' ||
+        ['daily_quota', 'rate_limit', 'overloaded'].includes(failureReason(error))
+      // A busy/quota-limited Flash should reach the economical backup promptly.
+      // If Lite is also unavailable, move straight to a listed Gemma 4 model.
+      const next = capacityFailure
+        ? (remaining.find((model) => model.includes('flash-lite')) ??
+          remaining.find((model) => model.startsWith('gemma-4-')) ??
+          remaining[0])
+        : remaining[0]
       if (!next) {
         recordRoutingEvent({
           at: Date.now(),

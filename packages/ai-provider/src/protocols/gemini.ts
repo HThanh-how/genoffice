@@ -1,4 +1,4 @@
-import type { AgentMessage, AgentToolDef } from '@genoffice/agent-core'
+import type { AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
 import { gensparkAttributionHeaders, opencodeSessionHeaders } from '../providers'
@@ -7,6 +7,7 @@ import { createStreamWatchdog, type StreamWatchdog } from '../watchdog'
 import { toGeminiSchema } from './gemini-schema'
 import {
   endpointUrl,
+  isPlainObject,
   jsonBodyInsteadOfSse,
   readCappedResponseText,
   sseErrorText,
@@ -17,6 +18,29 @@ import {
 } from './shared'
 
 export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
+
+interface GeminiPart {
+  text?: string
+  functionCall?: { name?: string; args?: unknown }
+  thoughtSignature?: string
+  thought_signature?: string
+}
+
+function geminiToolCall(part: GeminiPart): AgentToolCall {
+  const args = part.functionCall?.args
+  const signature = part.thoughtSignature ?? part.thought_signature
+  const inputError =
+    args === undefined || isPlainObject(args)
+      ? undefined
+      : `tool input must be a JSON object; raw: ${JSON.stringify(args).slice(0, 500)}`
+  return {
+    id: crypto.randomUUID(),
+    name: part.functionCall?.name ?? '',
+    input: isPlainObject(args) ? args : {},
+    ...(inputError ? { inputError } : {}),
+    ...(signature ? { thoughtSignature: signature, signature } : {}),
+  }
+}
 
 function emitUsageMetadata(raw: unknown, cb: StreamCallbacks): void {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
@@ -54,15 +78,18 @@ function geminiContents(messages: AgentMessage[], targetModel: string): unknown[
       const parts: unknown[] = []
       if (m.text) parts.push({ text: m.text })
       for (const [index, call] of (m.toolCalls ?? []).entries()) {
+        const signature = call.thoughtSignature ?? call.signature
         parts.push({
           functionCall: { name: call.name, args: call.input },
-          ...(call.sourceModel && call.sourceModel !== targetModel
-            ? call.thoughtSignature || index === 0
-              ? { thoughtSignature: 'context_engineering_is_the_way_to_go' }
-              : {}
-            : call.thoughtSignature
-              ? { thoughtSignature: call.thoughtSignature }
-              : {}),
+          ...(targetModel.startsWith('gemma-')
+            ? {}
+            : call.sourceModel && call.sourceModel !== targetModel
+              ? signature || index === 0
+                ? { thoughtSignature: 'context_engineering_is_the_way_to_go' }
+                : {}
+              : signature || index === 0
+                ? { thoughtSignature: signature ?? 'skip_thought_signature_validator' }
+                : {}),
         })
       }
       // Gemini rejects model turns with empty parts lists.
@@ -95,14 +122,7 @@ function emitGeminiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
   }
   const events = (Array.isArray(parsed) ? parsed : [parsed]) as Array<{
     candidates?: Array<{
-      content?: {
-        parts?: Array<{
-          text?: string
-          functionCall?: { name?: string; args?: Record<string, unknown> }
-          thoughtSignature?: string
-          thought_signature?: string
-        }>
-      }
+      content?: { parts?: GeminiPart[] }
       finishReason?: string
     }>
     promptFeedback?: { blockReason?: string }
@@ -128,13 +148,7 @@ function emitGeminiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
       }
       if (part.functionCall?.name) {
         emitted = true
-        const thoughtSignature = part.thoughtSignature ?? part.thought_signature
-        cb.onToolCall({
-          id: crypto.randomUUID(),
-          name: part.functionCall.name,
-          input: part.functionCall.args ?? {},
-          ...(typeof thoughtSignature === 'string' && thoughtSignature ? { thoughtSignature } : {}),
-        })
+        cb.onToolCall(geminiToolCall(part))
       }
     }
   }
@@ -260,14 +274,7 @@ async function geminiTurn(
     try {
       event = JSON.parse(payload) as {
         candidates?: Array<{
-          content?: {
-            parts?: Array<{
-              text?: string
-              functionCall?: { name?: string; args?: Record<string, unknown> }
-              thoughtSignature?: string
-              thought_signature?: string
-            }>
-          }
+          content?: { parts?: GeminiPart[] }
           finishReason?: string
         }>
         promptFeedback?: { blockReason?: string }
@@ -295,13 +302,7 @@ async function geminiTurn(
       if (part.functionCall?.name) {
         throwIfToolCountOverBudget(++toolCallCount, 'gemini')
         emitted = true
-        const thoughtSignature = part.thoughtSignature ?? part.thought_signature
-        cb.onToolCall({
-          id: crypto.randomUUID(),
-          name: part.functionCall.name,
-          input: part.functionCall.args ?? {},
-          ...(typeof thoughtSignature === 'string' && thoughtSignature ? { thoughtSignature } : {}),
-        })
+        cb.onToolCall(geminiToolCall(part))
       }
     }
   }

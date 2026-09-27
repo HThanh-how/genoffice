@@ -36,6 +36,16 @@ describe('listGeminiModels', () => {
                 displayName: 'Image',
                 supportedGenerationMethods: ['generateContent'],
               },
+              {
+                name: 'models/gemma-4-26b-a4b-it',
+                displayName: 'Gemma 4',
+                supportedGenerationMethods: ['generateContent'],
+              },
+              {
+                name: 'models/gemma-3-27b-it',
+                displayName: 'Gemma 3',
+                supportedGenerationMethods: ['generateContent'],
+              },
             ],
           }),
           { status: 200 },
@@ -47,6 +57,8 @@ describe('listGeminiModels', () => {
       ['gemini-flash-latest', true],
       ['gemini-embedding-001', false],
       ['gemini-3.1-flash-image', false],
+      ['gemma-4-26b-a4b-it', true],
+      ['gemma-3-27b-it', false],
     ])
     expect(fetchMock.mock.calls[1]![0]).toContain('pageToken=next-page')
     expect(fetchMock.mock.calls[0]![0]).not.toContain('secret-example')

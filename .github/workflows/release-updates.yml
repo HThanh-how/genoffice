@@ -1,0 +1,120 @@
+name: Publish signed auto-update release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Verify release version and signing credentials
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          test "$GITHUB_REF_NAME" = "v$(node -p "require('./apps/shell/package.json').version")"
+          for name in WIN_CSC_LINK WIN_CSC_KEY_PASSWORD MAC_CSC_LINK MAC_CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
+            test -n "${!name}" || { echo "Missing signing secret: $name"; exit 1; }
+          done
+      - name: Create private draft until both platform builds pass
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --draft --title "GenOffice $GITHUB_REF_NAME" --generate-notes
+
+  windows:
+    needs: prepare
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          toolchain: stable
+          targets: x86_64-pc-windows-msvc
+      - run: npm ci
+      - run: npm run fixtures
+      - name: Build and publish signed NSIS update
+        shell: pwsh
+        env:
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          GENOFFICE_UPDATE_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          npm run notices
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm run build:all
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $source = 'apps/sheets/native/xlsx-engine/target/release/xlsx-sidecar.exe'
+          $target = 'apps/sheets/native/xlsx-engine/target/x86_64-pc-windows-gnu/release/xlsx-sidecar.exe'
+          if (-not (Test-Path -LiteralPath $source)) { throw "Missing built sidecar: $source" }
+          New-Item -ItemType Directory -Force -Path (Split-Path -Parent $target) | Out-Null
+          Copy-Item -LiteralPath $source -Destination $target
+          npm run dist:win -w @genoffice/shell -- --publish always
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $installer = Get-ChildItem apps/shell/release -Filter '*.exe' | Select-Object -First 1
+          if (-not $installer -or (Get-AuthenticodeSignature -LiteralPath $installer.FullName).Status -ne 'Valid') {
+            throw 'Release installer is not Authenticode signed'
+          }
+
+  macos:
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
+        with:
+          toolchain: stable
+          targets: aarch64-apple-darwin
+      - run: npm ci
+      - run: npm run fixtures
+      - name: Build and publish signed Apple Silicon update
+        env:
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          GENOFFICE_UPDATE_REPOSITORY: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+        run: npm run dist:mac -w @genoffice/shell -- --publish always
+      - name: Verify app signing and notarization
+        run: |
+          app_path=$(find apps/shell/release -path '*/mac-arm64/GenOffice.app' -type d -print -quit)
+          test -n "$app_path"
+          codesign --verify --deep --strict --verbose=2 "$app_path"
+          dmg_path=$(find apps/shell/release -maxdepth 1 -name '*.dmg' -print -quit)
+          test -n "$dmg_path"
+          xcrun stapler validate "$dmg_path"
+
+  publish:
+    needs: [windows, macos]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify both update feeds and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
+          printf '%s\n' "$assets" | grep -qx latest.yml
+          printf '%s\n' "$assets" | grep -qx latest-mac.yml
+          gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest

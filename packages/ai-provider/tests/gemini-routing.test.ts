@@ -140,6 +140,40 @@ describe('Gemini chat routing', () => {
     expect(router.retry(first, 'Gemini HTTP 503: overloaded', true)).toBeNull()
   })
 
+  it('jumps from a busy Flash to Lite, then Gemma when both are listed', () => {
+    const saved = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => saved.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        saved.set(key, value)
+      },
+    })
+    vi.stubGlobal('window', { dispatchEvent: vi.fn() })
+    vi.stubGlobal(
+      'CustomEvent',
+      class {
+        constructor(_name: string, _init: unknown) {}
+      },
+    )
+    saved.set(
+      GEMINI_MODELS_KEY,
+      JSON.stringify([
+        { id: 'gemini-3.8-flash', displayName: 'Flash', usableForChat: true },
+        { id: 'gemini-3.7-flash', displayName: 'Older Flash', usableForChat: true },
+        { id: 'gemini-3.5-flash-lite', displayName: 'Lite', usableForChat: true },
+        { id: 'gemma-4-26b-a4b-it', displayName: 'Gemma', usableForChat: true },
+      ]),
+    )
+    const settings = defaultAiSettings()
+    settings.provider = 'gemini'
+    const router = createGeminiRouter()
+    const first = router.prepare(settings)
+    const lite = router.fallback(first, 'Gemini HTTP 503: overloaded', false)
+    expect(lite?.providers.gemini.model).toBe('gemini-3.5-flash-lite')
+    const gemma = router.fallback(lite!, 'Gemini HTTP 429: quota_exceeded', false)
+    expect(gemma?.providers.gemini.model).toBe('gemma-4-26b-a4b-it')
+  })
+
   it('switches immediately for daily quota or a long RetryInfo delay', () => {
     const saved = new Map<string, string>()
     vi.stubGlobal('localStorage', {

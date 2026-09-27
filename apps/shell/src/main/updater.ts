@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { app, dialog, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
@@ -19,14 +19,11 @@ import {
 } from './update-window'
 
 /**
- * Full-package auto-update over the generic provider (Azure CDN).
+ * Full-package auto-update over the configured signed release provider.
  *
- * The release pipeline publishes `latest.yml` + the versioned installer to
- * the update channel prefix (production builds only). The packaged app reads
- * that URL from resources/app-update.yml, which electron-builder bakes in
- * from the `publish` config in apps/shell/electron-builder.cjs — the URL
- * itself is injected at build time via the GENOFFICE_UPDATE_URL env var and
- * is intentionally not committed to the repo.
+ * The release pipeline publishes matching update metadata and signed packages.
+ * The packaged app reads its provider from resources/app-update.yml, baked in
+ * by electron-builder. Unsigned CI artifacts have no update provider.
  *
  * UX is the strong-guidance modal card (update-window.ts), not a native
  * dialog. Windows updates through the NSIS installer (latest.yml); macOS
@@ -391,7 +388,7 @@ const MANUAL_FALLBACK_AFTER = 2
 // and signing track, so a stable/legacy-track user could land on the wrong
 // build. Preferred is the CDN installer derived from the user's own update
 // feed (see manualDownloadUrlFor), which matches channel, track, and arch.
-const DOWNLOAD_PAGE_URL = 'https://github.com/genspark-ai/genoffice/releases/latest'
+const DOWNLOAD_PAGE_URL = 'https://github.com/HThanh-how/genoffice/releases/latest'
 
 /// Trusted HTTPS base URL baked into resources/app-update.yml. Manual download
 /// links are always rebuilt from this base rather than trusting URLs supplied
@@ -589,6 +586,9 @@ export function initAutoUpdater(
   // (electron-updater's AppImageUpdater needs the APPIMAGE env var the
   // AppImage runtime sets); deb installs update manually via apt.
   if (!app.isPackaged) return
+  // Unsigned CI smoke installers carry no update provider. Do not start a
+  // background checker that can never succeed or report a false update state.
+  if (!existsSync(path.join(process.resourcesPath, 'app-update.yml'))) return
   const isLinuxAppImage = process.platform === 'linux' && Boolean(process.env.APPIMAGE)
   if (process.platform !== 'win32' && process.platform !== 'darwin' && !isLinuxAppImage) return
 
@@ -598,8 +598,8 @@ export function initAutoUpdater(
   // back off since a beta user switching to stable must not downgrade
   autoUpdater.allowDowngrade = false
   autoUpdater.autoDownload = false
-  // if the user picked "later" after download, install on normal quit
-  autoUpdater.autoInstallOnAppQuit = true
+  // Installation is explicit; an ordinary quit may be handling unsaved edits.
+  autoUpdater.autoInstallOnAppQuit = false
   // full-package policy: never attempt blockmap differential downloads
   // (CI does not publish .blockmap files)
   autoUpdater.disableDifferentialDownload = true
