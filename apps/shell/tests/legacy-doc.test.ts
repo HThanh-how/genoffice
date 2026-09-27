@@ -12,7 +12,7 @@ describe('legacy .doc import', () => {
   it('produces an editable .docx copy while leaving the source unchanged', async () => {
     const before = await readFile(fixture)
     const converted = await convertLegacyDoc(fixture)
-    expect(['formatted', 'text']).toContain(converted.fidelity)
+    expect(converted.fidelity).toBe(process.platform === 'darwin' ? 'formatted' : 'text')
     expect(await docxToText(converted.bytes)).toContain('Legacy DOC body text')
     expect(await readFile(fixture)).toEqual(before)
   })

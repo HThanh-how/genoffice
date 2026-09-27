@@ -34,6 +34,9 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify macOS legacy Word conversion
+        run: npm run test -w @genoffice/shell -- --run legacy-doc.test.ts
+
       - name: Verify Gemini tool-call signatures
         run: npm run test -w @genoffice/ai-provider
 
