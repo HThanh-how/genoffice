@@ -187,11 +187,20 @@ export interface AiStreamRequest {
   maxTokens?: number
 }
 
+/** Counts reported by Gemini's usageMetadata. Absent fields are unknown, not zero. */
+export interface AiTokenUsage {
+  promptTokenCount?: number
+  candidatesTokenCount?: number
+  thoughtsTokenCount?: number
+  cachedContentTokenCount?: number
+  totalTokenCount?: number
+}
+
 export interface AiStreamChunk {
   requestId: string
   /** 'ping' = wire-level keepalive so the renderer can tell a live stream from a dead one;
    * 'reasoning' = model thinking delta (text carries it), stored for interleaved-thinking echo */
-  type: 'delta' | 'reasoning' | 'tool-call' | 'done' | 'error' | 'ping'
+  type: 'delta' | 'reasoning' | 'tool-call' | 'done' | 'error' | 'ping' | 'usage'
   text?: string
   /** complete parsed tool call (emitted once its arguments finish streaming) */
   toolCall?: AgentToolCall
@@ -200,4 +209,5 @@ export interface AiStreamChunk {
   errorCode?: 'timeout' | 'credits' | 'network' | 'overloaded'
   /** normalized stop reason carried on 'done' ('max_tokens' = output cut off by the token limit) */
   stopReason?: string
+  usage?: AiTokenUsage
 }

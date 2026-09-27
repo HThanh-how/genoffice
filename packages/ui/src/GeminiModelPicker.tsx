@@ -12,6 +12,7 @@ const CHOICE_KEY = 'genoffice-gemini-model-choice-v1'
 const MODELS_KEY = 'genoffice-gemini-models-v1'
 const USAGE_KEY = 'genoffice-gemini-usage-v1'
 const ROUTING_LOG_KEY = 'genoffice-gemini-routing-log-v1'
+const CALL_LOG_KEY = 'genoffice-gemini-call-log-v1'
 const CHANGE_EVENT = 'genoffice-gemini-routing-changed'
 const DEFAULTS = [
   'gemini-3.8-flash',
@@ -57,6 +58,50 @@ interface RoutingLogEntry {
   delayMs?: number
 }
 
+interface CallLogEntry {
+  id: string
+  at: number
+  model: string
+  purpose: 'chat' | 'generation' | 'compaction'
+  messageCount: number
+  inputTextChars: number
+  toolNames: string[]
+  status: 'pending' | 'ok' | 'error' | 'cancelled' | 'interrupted'
+  durationMs?: number
+  reason?: RoutingLogEntry['reason'] | 'network'
+  httpStatus?: number
+  quotaId?: string
+  quotaMetric?: string
+  retryAfterSeconds?: number
+  usage?: {
+    promptTokenCount?: number
+    candidatesTokenCount?: number
+    thoughtsTokenCount?: number
+    cachedContentTokenCount?: number
+    totalTokenCount?: number
+  }
+}
+
+function readCallLog(): CallLogEntry[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(CALL_LOG_KEY) || '[]') as unknown
+    return Array.isArray(saved)
+      ? saved.filter(
+          (entry): entry is CallLogEntry =>
+            !!entry &&
+            typeof entry === 'object' &&
+            Number.isFinite(entry.at) &&
+            entry.at >= Date.now() - 7 * 24 * 60 * 60_000 &&
+            entry.at <= Date.now() &&
+            typeof entry.model === 'string' &&
+            typeof entry.status === 'string',
+        )
+      : []
+  } catch {
+    return []
+  }
+}
+
 function readRoutingLog(): RoutingLogEntry[] {
   try {
     const saved = JSON.parse(localStorage.getItem(ROUTING_LOG_KEY) || '[]') as unknown
@@ -65,7 +110,9 @@ function readRoutingLog(): RoutingLogEntry[] {
       (entry): entry is RoutingLogEntry =>
         !!entry &&
         typeof entry === 'object' &&
-        typeof entry.at === 'number' &&
+        Number.isFinite(entry.at) &&
+        entry.at >= Date.now() - 7 * 24 * 60 * 60_000 &&
+        entry.at <= Date.now() &&
         typeof entry.model === 'string' &&
         ['selected', 'retry', 'fallback', 'exhausted'].includes(entry.action),
     )
@@ -74,15 +121,48 @@ function readRoutingLog(): RoutingLogEntry[] {
   }
 }
 
-function describeRouting(entry: RoutingLogEntry, vi: boolean): string {
-  const reason = {
+function reasonLabel(reason: CallLogEntry['reason'], vi: boolean): string {
+  return {
     daily_quota: vi ? 'hết hạn mức ngày' : 'daily quota',
     rate_limit: vi ? 'giới hạn tốc độ' : 'rate limit',
     overloaded: vi ? 'quá tải' : 'overloaded',
     timeout: vi ? 'quá thời gian chờ' : 'timed out',
     unavailable: vi ? 'model không khả dụng' : 'model unavailable',
+    network: vi ? 'lỗi mạng' : 'network error',
     other: vi ? 'lỗi khác' : 'other error',
-  }[entry.reason || 'other']
+  }[reason || 'other']
+}
+
+function describeCall(entry: CallLogEntry, vi: boolean): string {
+  const task =
+    {
+      chat: vi ? 'trò chuyện / thao tác' : 'chat / tools',
+      generation: vi ? 'tạo nội dung' : 'content generation',
+      compaction: vi ? 'rút gọn ngữ cảnh' : 'context compaction',
+    }[entry.purpose] || entry.purpose
+  const result =
+    entry.status === 'ok'
+      ? vi
+        ? 'xong'
+        : 'done'
+      : entry.status === 'pending'
+        ? vi
+          ? 'đang chạy'
+          : 'running'
+        : entry.status === 'cancelled'
+          ? vi
+            ? 'đã hủy'
+            : 'cancelled'
+          : entry.status === 'interrupted'
+            ? vi
+              ? 'bị gián đoạn'
+              : 'interrupted'
+            : `${entry.httpStatus || ''} ${reasonLabel(entry.reason, vi)}`.trim()
+  return `${task} · ${result}`
+}
+
+function describeRouting(entry: RoutingLogEntry, vi: boolean): string {
+  const reason = reasonLabel(entry.reason, vi)
   if (entry.action === 'selected') return `${entry.model} · ${vi ? 'đã chọn' : 'selected'}`
   if (entry.action === 'retry')
     return `${entry.model} · ${vi ? 'thử lại' : 'retry'} (${reason}, ${entry.delayMs ?? 0} ms)`
@@ -102,6 +182,7 @@ export function GeminiModelPicker({
 }) {
   const getProviderRef = useRef(getProvider)
   const loadModelsRef = useRef(loadModels)
+  const logDialogRef = useRef<HTMLDialogElement>(null)
   getProviderRef.current = getProvider
   loadModelsRef.current = loadModels
   const [provider, setProvider] = useState(getProvider())
@@ -112,6 +193,7 @@ export function GeminiModelPicker({
   const [notice, setNotice] = useState('')
   const [usage, setUsage] = useState(readUsage)
   const [routingLog, setRoutingLog] = useState(readRoutingLog)
+  const [callLog, setCallLog] = useState(readCallLog)
 
   useEffect(() => {
     const timer = setInterval(() => setProvider(getProviderRef.current()), 2_000)
@@ -153,6 +235,7 @@ export function GeminiModelPicker({
       setChoice(readChoice())
       setUsage(readUsage())
       setRoutingLog(readRoutingLog())
+      setCallLog(readCallLog())
       const detail = (event as CustomEvent<{ from?: string; to?: string }>).detail
       if (detail?.to) setNotice(`${detail.from} → ${detail.to}`)
     }
@@ -174,6 +257,51 @@ export function GeminiModelPicker({
     ? usage[choice.slice(6)] || 0
     : Object.values(usage).reduce((total, count) => total + count, 0)
   const latest = routingLog[0]
+  const latestCall = callLog[0]
+  const today = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date())
+  const callsToday = callLog.filter(
+    (entry) =>
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Los_Angeles',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(new Date(entry.at)) === today,
+  )
+  const tokensToday = callsToday.reduce(
+    (total, entry) => total + (entry.usage?.totalTokenCount || 0),
+    0,
+  )
+  const measuredToday = callsToday.filter(
+    (entry) => entry.usage?.totalTokenCount !== undefined,
+  ).length
+  const modelStats = new Map<
+    string,
+    { calls: number; ok: number; busy: number; tokens: number; measured: number }
+  >()
+  for (const entry of callsToday) {
+    const row = modelStats.get(entry.model) || { calls: 0, ok: 0, busy: 0, tokens: 0, measured: 0 }
+    row.calls++
+    if (entry.status === 'ok') row.ok++
+    if (
+      entry.httpStatus === 429 ||
+      entry.httpStatus === 503 ||
+      entry.httpStatus === 529 ||
+      entry.reason === 'rate_limit' ||
+      entry.reason === 'overloaded'
+    )
+      row.busy++
+    if (entry.usage?.totalTokenCount !== undefined) {
+      row.tokens += entry.usage.totalTokenCount
+      row.measured++
+    }
+    modelStats.set(entry.model, row)
+  }
   const select = (value: string) => {
     try {
       localStorage.setItem(CHOICE_KEY, value)
@@ -243,24 +371,115 @@ export function GeminiModelPicker({
               ? 'Đang tải model…'
               : 'Loading models…'
             : error ||
-              (latest
-                ? describeRouting(latest, vi)
-                : vi
-                  ? `${used} lượt ghi nhận hôm nay · hạn mức không rõ`
-                  : `${used} calls recorded today · quota unknown`))}
+              (latestCall
+                ? `${latestCall.model} · ${describeCall(latestCall, vi)}`
+                : latest
+                  ? describeRouting(latest, vi)
+                  : vi
+                    ? `${used} lượt ghi nhận hôm nay · hạn mức không rõ`
+                    : `${used} calls recorded today · quota unknown`))}
       </span>
-      <details className="ai-model-picker-log">
-        <summary>{vi ? 'Nhật ký' : 'Log'}</summary>
+      <button
+        className="ai-model-picker-log-button"
+        type="button"
+        onClick={() => logDialogRef.current?.showModal()}
+      >
+        {vi ? 'Nhật ký' : 'Log'}
+      </button>
+      <dialog ref={logDialogRef} className="ai-model-picker-log-dialog">
+        <div className="ai-model-picker-log-header">
+          <strong>{vi ? 'Chẩn đoán Gemini' : 'Gemini diagnostics'}</strong>
+          <button
+            type="button"
+            aria-label={vi ? 'Đóng nhật ký' : 'Close log'}
+            onClick={() => logDialogRef.current?.close()}
+          >
+            ×
+          </button>
+        </div>
         <div className="ai-model-picker-log-content">
-          <strong>{vi ? 'Hoạt động AI gần đây' : 'Recent AI activity'}</strong>
+          <strong>{vi ? 'Lượt chat Gemini' : 'Gemini chat calls'}</strong>
           <p>
             {vi
-              ? `${used} lượt gọi ghi nhận hôm nay. Chỉ lưu model, thời gian và loại lỗi trên máy này; hạn mức thực tế xem trong Google AI Studio.`
-              : `${used} calls recorded today. Only model, time and error type are saved on this device; check actual quota in Google AI Studio.`}
+              ? `${callsToday.length} lượt hôm nay · ${measuredToday} lượt có số token · ${tokensToday.toLocaleString('vi-VN')} token đã đo. Log tự xóa sau 7 ngày, tối đa 200 lượt / 128 KB. Không lưu nội dung tài liệu hoặc API key.`
+              : `${callsToday.length} calls today · ${measuredToday} with token counts · ${tokensToday.toLocaleString('en-US')} measured tokens. Logs expire after 7 days, capped at 200 calls / 128 KB. No document content or API keys stored.`}
           </p>
+          {modelStats.size > 0 && (
+            <table className="ai-model-picker-stats">
+              <thead>
+                <tr>
+                  <th>{vi ? 'Model' : 'Model'}</th>
+                  <th>{vi ? 'Lượt' : 'Calls'}</th>
+                  <th>{vi ? 'Xong' : 'Done'}</th>
+                  <th>{vi ? 'Bận/giới hạn' : 'Busy/limited'}</th>
+                  <th>{vi ? 'Token đo được' : 'Measured tokens'}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...modelStats].map(([model, stats]) => (
+                  <tr key={model}>
+                    <td>{model}</td>
+                    <td>{stats.calls}</td>
+                    <td>{stats.ok}</td>
+                    <td>{stats.busy}</td>
+                    <td>
+                      {stats.tokens.toLocaleString(vi ? 'vi-VN' : 'en-US')} ({stats.measured})
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {callLog.length ? (
+            <ol className="ai-model-picker-calls">
+              {callLog.map((entry) => (
+                <li key={entry.id}>
+                  <div>
+                    <strong>{entry.model}</strong> ·{' '}
+                    <time dateTime={new Date(entry.at).toISOString()}>
+                      {new Date(entry.at).toLocaleString(vi ? 'vi-VN' : 'en-US')}
+                    </time>
+                  </div>
+                  <div>
+                    {describeCall(entry, vi)}
+                    {entry.durationMs !== undefined
+                      ? ` · ${(entry.durationMs / 1000).toFixed(1)}s`
+                      : ''}
+                  </div>
+                  <div>
+                    {vi ? 'Token vào/ra/suy nghĩ/tổng' : 'Tokens in/out/thinking/total'}:{' '}
+                    {entry.usage?.promptTokenCount ?? '?'} /{' '}
+                    {entry.usage?.candidatesTokenCount ?? '?'} /{' '}
+                    {entry.usage?.thoughtsTokenCount ?? '?'} / {entry.usage?.totalTokenCount ?? '?'}
+                    {entry.usage?.cachedContentTokenCount !== undefined
+                      ? ` · ${vi ? 'cache' : 'cached'} ${entry.usage.cachedContentTokenCount}`
+                      : ''}
+                  </div>
+                  <div>
+                    {entry.messageCount} {vi ? 'tin nhắn' : 'messages'} · {entry.inputTextChars}{' '}
+                    {vi ? 'ký tự văn bản gửi đi' : 'input text characters'}
+                    {entry.toolNames?.length ? ` · ${entry.toolNames.join(', ')}` : ''}
+                  </div>
+                  {(entry.quotaId ||
+                    entry.quotaMetric ||
+                    entry.retryAfterSeconds !== undefined) && (
+                    <div>
+                      {entry.quotaId || entry.quotaMetric}
+                      {entry.retryAfterSeconds !== undefined
+                        ? ` · ${vi ? 'thử lại sau' : 'retry after'} ${entry.retryAfterSeconds}s`
+                        : ''}
+                    </div>
+                  )}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p>{vi ? 'Chưa có lượt gọi nào được ghi.' : 'No calls recorded yet.'}</p>
+          )}
+          <strong>{vi ? 'Chuyển model' : 'Model routing'}</strong>
           {routingLog.length ? (
             <ol>
-              {routingLog.slice(0, 12).map((entry, index) => (
+              {routingLog.map((entry, index) => (
                 <li key={`${entry.at}-${index}`}>
                   <time dateTime={new Date(entry.at).toISOString()}>
                     {new Date(entry.at).toLocaleString(vi ? 'vi-VN' : 'en-US')}
@@ -273,7 +492,7 @@ export function GeminiModelPicker({
             <p>{vi ? 'Chưa có hoạt động nào được ghi.' : 'No activity recorded yet.'}</p>
           )}
         </div>
-      </details>
+      </dialog>
     </div>
   )
 }

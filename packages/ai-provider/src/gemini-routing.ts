@@ -7,7 +7,12 @@ export const GEMINI_MODELS_KEY = 'genoffice-gemini-models-v1'
 export const GEMINI_ROUTING_EVENT = 'genoffice-gemini-routing-changed'
 export const GEMINI_USAGE_KEY = 'genoffice-gemini-usage-v1'
 export const GEMINI_ROUTING_LOG_KEY = 'genoffice-gemini-routing-log-v1'
+export const GEMINI_CALL_LOG_KEY = 'genoffice-gemini-call-log-v1'
 const GEMINI_COOLDOWN_KEY = 'genoffice-gemini-cooldowns-v1'
+const LOG_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000
+const CALL_LOG_LIMIT = 200
+const CALL_LOG_MAX_BYTES = 128 * 1024
+const ROUTING_LOG_MAX_BYTES = 64 * 1024
 
 export type GeminiModelChoice = 'auto' | 'smart' | 'fast' | `model:${string}`
 
@@ -107,11 +112,116 @@ export interface GeminiRoutingLogEntry {
   delayMs?: number
 }
 
+export interface GeminiCallLogEntry {
+  id: string
+  at: number
+  model: string
+  purpose: 'chat' | 'generation' | 'compaction'
+  messageCount: number
+  inputTextChars: number
+  toolNames: string[]
+  status: 'pending' | 'ok' | 'error' | 'cancelled' | 'interrupted'
+  durationMs?: number
+  reason?: GeminiRoutingLogEntry['reason'] | 'network'
+  httpStatus?: number
+  quotaId?: string
+  quotaMetric?: string
+  retryAfterSeconds?: number
+  usage?: {
+    promptTokenCount?: number
+    candidatesTokenCount?: number
+    thoughtsTokenCount?: number
+    cachedContentTokenCount?: number
+    totalTokenCount?: number
+  }
+}
+
+function pruneLog<T extends { at: number }>(
+  entries: T[],
+  maxEntries: number,
+  maxBytes: number,
+): T[] {
+  const now = Date.now()
+  const kept = entries
+    .filter(
+      (entry) =>
+        !!entry &&
+        typeof entry === 'object' &&
+        Number.isFinite(entry.at) &&
+        entry.at >= now - LOG_RETENTION_MS &&
+        entry.at <= now,
+    )
+    .slice(0, maxEntries)
+  while (kept.length && new TextEncoder().encode(JSON.stringify(kept)).byteLength > maxBytes)
+    kept.pop()
+  return kept
+}
+
+export function readGeminiCallLog(): GeminiCallLogEntry[] {
+  try {
+    const raw = JSON.parse(localStorage.getItem(GEMINI_CALL_LOG_KEY) || '[]') as unknown
+    if (!Array.isArray(raw)) return []
+    const entries = pruneLog(
+      raw.filter(
+        (entry): entry is GeminiCallLogEntry =>
+          !!entry &&
+          typeof entry === 'object' &&
+          typeof entry.id === 'string' &&
+          typeof entry.model === 'string' &&
+          typeof entry.at === 'number' &&
+          ['pending', 'ok', 'error', 'cancelled', 'interrupted'].includes(entry.status),
+      ),
+      CALL_LOG_LIMIT,
+      CALL_LOG_MAX_BYTES,
+    ).map((entry) =>
+      entry.status === 'pending' && Date.now() - entry.at > 5 * 60_000
+        ? { ...entry, status: 'interrupted' as const }
+        : entry,
+    )
+    if (entries.length !== raw.length || entries.some((entry, index) => entry !== raw[index])) {
+      try {
+        localStorage.setItem(GEMINI_CALL_LOG_KEY, JSON.stringify(entries))
+      } catch {
+        // Keep the readable entries even when storage is temporarily full.
+      }
+    }
+    return entries
+  } catch {
+    return []
+  }
+}
+
+function writeGeminiCallLog(entries: GeminiCallLogEntry[]): void {
+  try {
+    localStorage.setItem(
+      GEMINI_CALL_LOG_KEY,
+      JSON.stringify(pruneLog(entries, CALL_LOG_LIMIT, CALL_LOG_MAX_BYTES)),
+    )
+    window.dispatchEvent(new Event(GEMINI_ROUTING_EVENT))
+  } catch {
+    // Diagnostics must never interrupt a model request.
+  }
+}
+
+function updateGeminiCall(
+  id: string,
+  update: (entry: GeminiCallLogEntry) => GeminiCallLogEntry,
+): void {
+  const entries = readGeminiCallLog()
+  const index = entries.findIndex((entry) => entry.id === id)
+  if (index < 0) return
+  entries[index] = update(entries[index]!)
+  writeGeminiCallLog(entries)
+}
+
 function recordRoutingEvent(entry: GeminiRoutingLogEntry): void {
   try {
     const raw = JSON.parse(localStorage.getItem(GEMINI_ROUTING_LOG_KEY) || '[]') as unknown
     const entries = Array.isArray(raw) ? raw : []
-    localStorage.setItem(GEMINI_ROUTING_LOG_KEY, JSON.stringify([entry, ...entries].slice(0, 40)))
+    localStorage.setItem(
+      GEMINI_ROUTING_LOG_KEY,
+      JSON.stringify(pruneLog([entry, ...entries], 40, ROUTING_LOG_MAX_BYTES)),
+    )
     window.dispatchEvent(new Event(GEMINI_ROUTING_EVENT))
   } catch {
     // Diagnostics are local and best effort; never interrupt a request.
@@ -247,8 +357,93 @@ export function createGeminiRouter() {
         reason: reason === 'deadline' ? 'timeout' : 'other',
       })
     },
-    onAttempt(settings: AiSettings): void {
-      if (settings.provider === 'gemini') recordGeminiAttempt(settings.providers.gemini.model)
+    onAttempt(settings: AiSettings, requestId?: string, request?: AgentStreamRequest): void {
+      if (settings.provider !== 'gemini') return
+      recordGeminiAttempt(settings.providers.gemini.model)
+      if (!requestId || !request) return
+      const inputTextChars =
+        request.system.length +
+        request.messages.reduce(
+          (total, message) =>
+            total +
+            (message.role === 'tool'
+              ? message.results.reduce((sum, result) => sum + result.output.length, 0)
+              : message.text.length),
+          0,
+        )
+      writeGeminiCallLog([
+        {
+          id: requestId,
+          at: Date.now(),
+          model: settings.providers.gemini.model,
+          purpose: request.system.startsWith('You are a conversation compressor.')
+            ? 'compaction'
+            : request.tools.length
+              ? 'chat'
+              : 'generation',
+          messageCount: request.messages.length,
+          inputTextChars,
+          toolNames: [],
+          status: 'pending',
+        },
+        ...readGeminiCallLog(),
+      ])
+    },
+    onUsage(_settings: AiSettings, requestId: string, usage: GeminiCallLogEntry['usage']): void {
+      if (!usage) return
+      const cleaned: NonNullable<GeminiCallLogEntry['usage']> = {}
+      for (const field of [
+        'promptTokenCount',
+        'candidatesTokenCount',
+        'thoughtsTokenCount',
+        'cachedContentTokenCount',
+        'totalTokenCount',
+      ] as const) {
+        const value = usage[field]
+        if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0)
+          cleaned[field] = value
+      }
+      if (Object.keys(cleaned).length)
+        updateGeminiCall(requestId, (entry) => ({ ...entry, usage: cleaned }))
+    },
+    onToolCall(_settings: AiSettings, requestId: string, toolName: string): void {
+      updateGeminiCall(requestId, (entry) => ({
+        ...entry,
+        toolNames: [...(entry.toolNames || []), toolName.slice(0, 80)].slice(0, 10),
+      }))
+    },
+    onResult(
+      _settings: AiSettings,
+      requestId: string,
+      outcome: {
+        status: 'ok' | 'error' | 'cancelled'
+        error?: string | undefined
+        errorCode?: string | undefined
+      },
+    ): void {
+      const httpStatus = /Gemini HTTP (\d{3})\b/.exec(outcome.error || '')?.[1]
+      const quotaId = /quotaId="([A-Za-z0-9_.-]{1,120})"/.exec(outcome.error || '')?.[1]
+      const quotaMetric = /quotaMetric="([A-Za-z0-9_./-]{1,160})"/.exec(outcome.error || '')?.[1]
+      const retryAfter = /retryDelay="(\d+(?:\.\d+)?)s"/.exec(outcome.error || '')?.[1]
+      updateGeminiCall(requestId, (entry) => ({
+        ...entry,
+        status: outcome.status,
+        durationMs: Math.max(0, Date.now() - entry.at),
+        ...(outcome.status === 'error'
+          ? {
+              reason:
+                outcome.errorCode === 'network'
+                  ? ('network' as const)
+                  : outcome.errorCode === 'timeout'
+                    ? ('timeout' as const)
+                    : failureReason(outcome.error || ''),
+              ...(httpStatus ? { httpStatus: Number(httpStatus) } : {}),
+              ...(quotaId ? { quotaId } : {}),
+              ...(quotaMetric ? { quotaMetric } : {}),
+              ...(retryAfter ? { retryAfterSeconds: Number(retryAfter) } : {}),
+            }
+          : {}),
+      }))
     },
     prepare(settings: AiSettings, request?: AgentStreamRequest): AiSettings {
       if (settings.provider !== 'gemini') return settings

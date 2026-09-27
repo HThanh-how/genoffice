@@ -54,6 +54,76 @@ function setup(
 }
 
 describe('createIpcTransport', () => {
+  it('passes per-attempt usage and outcomes to the diagnostic route', () => {
+    let listener: ((chunk: IpcStreamChunk) => void) | undefined
+    const started: IpcStreamStart<{ model: string }>[] = []
+    const onAttempt = vi.fn()
+    const onUsage = vi.fn()
+    const onToolCall = vi.fn()
+    const onResult = vi.fn()
+    const transport = createIpcTransport({
+      onStream: (next) => {
+        listener = next
+        return () => {
+          listener = undefined
+        }
+      },
+      start: (request) => {
+        started.push(request)
+      },
+      cancel: vi.fn(),
+      getSettings: () => ({ model: 'first' }),
+      unknownErrorText: () => 'unknown',
+      route: {
+        prepare: (settings) => settings,
+        fallback: (settings) => ({ ...settings, model: 'second' }),
+        onAttempt,
+        onUsage,
+        onToolCall,
+        onResult,
+      },
+    })
+    transport.stream(
+      { system: 'sys', messages: [], tools: [] },
+      {
+        onDelta: vi.fn(),
+        onToolCall: vi.fn(),
+        onDone: vi.fn(),
+        onError: vi.fn(),
+      },
+    )
+    listener?.({ requestId: started[0]!.requestId, type: 'error', error: 'Gemini HTTP 503' })
+    listener?.({
+      requestId: started[1]!.requestId,
+      type: 'usage',
+      usage: { promptTokenCount: 8, candidatesTokenCount: 2, totalTokenCount: 10 },
+    })
+    listener?.({
+      requestId: started[1]!.requestId,
+      type: 'tool-call',
+      toolCall: { id: 'tool-1', name: 'edit_document', input: {} },
+    })
+    listener?.({ requestId: started[1]!.requestId, type: 'done' })
+    expect(onAttempt).toHaveBeenCalledTimes(2)
+    expect(onResult).toHaveBeenNthCalledWith(1, { model: 'first' }, started[0]!.requestId, {
+      status: 'error',
+      error: 'Gemini HTTP 503',
+      errorCode: undefined,
+    })
+    expect(onUsage).toHaveBeenCalledWith({ model: 'second' }, started[1]!.requestId, {
+      promptTokenCount: 8,
+      candidatesTokenCount: 2,
+      totalTokenCount: 10,
+    })
+    expect(onToolCall).toHaveBeenCalledWith(
+      { model: 'second' },
+      started[1]!.requestId,
+      'edit_document',
+    )
+    expect(onResult).toHaveBeenNthCalledWith(2, { model: 'second' }, started[1]!.requestId, {
+      status: 'ok',
+    })
+  })
   it('retries the same model after overload, then falls back', async () => {
     vi.useFakeTimers()
     try {

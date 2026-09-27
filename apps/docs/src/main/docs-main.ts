@@ -3007,6 +3007,7 @@ export function registerAiIpc(): void {
         onReasoningDelta: (text) => send({ requestId, type: 'reasoning', text }),
         onToolCall: (toolCall) => send({ requestId, type: 'tool-call', toolCall }),
         onActivity: ping,
+        onUsage: (usage) => send({ requestId, type: 'usage', usage }),
         onStopReason: (reason) => {
           stopReason = reason
         },

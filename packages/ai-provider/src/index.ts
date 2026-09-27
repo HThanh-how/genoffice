@@ -16,6 +16,7 @@ export type {
   AiProviderMeta,
   AiSettings,
   AiStreamChunk,
+  AiTokenUsage,
   AiStreamRequest,
   GenSparkAccountStatus,
   LegacyAiSettings,

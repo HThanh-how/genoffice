@@ -52,29 +52,55 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ai-model-picker-log {
-  position: relative;
+.ai-model-picker-log-button {
   flex: none;
-}
-.ai-model-picker-log summary {
+  padding: 2px 4px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
   cursor: pointer;
   white-space: nowrap;
 }
-.ai-model-picker-log-content {
-  position: absolute;
-  z-index: 20;
-  top: calc(100% + 12px);
-  right: 0;
-  width: min(360px, 75vw);
-  max-height: 280px;
+.ai-model-picker-log-button:hover {
+  text-decoration: underline;
+}
+.ai-model-picker-log-dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: min(700px, calc(100vh - 32px));
   overflow: auto;
-  padding: 12px;
+  padding: 0;
   border: 1px solid var(--border-strong, #d9dfe9);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface, #fff);
   color: var(--text-primary, #253047);
-  box-shadow: 0 8px 24px #0002;
+  box-shadow: 0 20px 60px #0004;
+  font: inherit;
   white-space: normal;
+}
+.ai-model-picker-log-dialog::backdrop {
+  background: #0008;
+}
+.ai-model-picker-log-header {
+  position: sticky;
+  top: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-subtle, #eee);
+  background: var(--surface, #fff);
+  font-size: 14px;
+}
+.ai-model-picker-log-header button {
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 22px;
+}
+.ai-model-picker-log-content {
+  padding: 12px 16px 16px;
 }
 .ai-model-picker-log-content p {
   margin: 6px 0;
@@ -86,6 +112,28 @@
 }
 .ai-model-picker-log-content li {
   margin: 5px 0;
+}
+.ai-model-picker-stats {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+.ai-model-picker-stats th,
+.ai-model-picker-stats td {
+  padding: 4px;
+  border-bottom: 1px solid var(--border-subtle, #eee);
+  text-align: left;
+}
+.ai-model-picker-stats th {
+  color: var(--text-secondary, #677287);
+}
+.ai-model-picker-calls {
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-subtle, #eee);
+}
+.ai-model-picker-calls li {
+  margin: 8px 0;
+  line-height: 1.5;
 }
 .ai-model-picker-log-content time {
   color: var(--text-secondary, #677287);

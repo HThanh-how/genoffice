@@ -159,6 +159,8 @@ export interface StreamCallbacks {
   onStopReason?: (reason: string) => void
   /** bytes arrived on the wire (fires per network chunk, including SSE pings; used for keepalive) */
   onActivity?: () => void
+  /** Provider-reported cumulative token counts; repeated stream updates replace earlier counts. */
+  onUsage?: (usage: import('../types').AiTokenUsage) => void
   /** Stable renderer transport id for providers with native sessions. */
   sessionId?: string
   signal: AbortSignal

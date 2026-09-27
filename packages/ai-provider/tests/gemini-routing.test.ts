@@ -4,12 +4,101 @@ import {
   GEMINI_CHOICE_KEY,
   GEMINI_MODELS_KEY,
   GEMINI_ROUTING_LOG_KEY,
+  GEMINI_CALL_LOG_KEY,
+  readGeminiCallLog,
 } from '../src/gemini-routing'
 import { defaultAiSettings } from '../src/providers'
 
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Gemini chat routing', () => {
+  it('records each call without prompt or key and keeps provider token counts distinct from errors', () => {
+    const saved = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => saved.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        saved.set(key, value)
+      },
+    })
+    vi.stubGlobal('window', { dispatchEvent: vi.fn() })
+    const settings = defaultAiSettings()
+    settings.provider = 'gemini'
+    settings.providers.gemini.apiKey = 'secret-api-key'
+    const router = createGeminiRouter()
+    const request = {
+      system: 'system confidential',
+      messages: [{ role: 'user' as const, text: 'private document content' }],
+      tools: [{ name: 'edit_document', description: 'edit', inputSchema: {} }],
+    }
+    router.onAttempt(settings, 'call-1', request)
+    router.onToolCall(settings, 'call-1', 'edit_document')
+    router.onUsage(settings, 'call-1', {
+      promptTokenCount: 200,
+      candidatesTokenCount: 30,
+      thoughtsTokenCount: 10,
+      totalTokenCount: 240,
+    })
+    router.onResult(settings, 'call-1', { status: 'ok' })
+    router.onAttempt(settings, 'call-2', request)
+    router.onResult(settings, 'call-2', {
+      status: 'error',
+      error:
+        'Gemini HTTP 429: quota_exceeded private document content quotaId="RequestsPerDay" quotaMetric="generativelanguage.googleapis.com/generate_content_requests" retryDelay="33s"',
+    })
+    const calls = readGeminiCallLog()
+    expect(calls[0]).toMatchObject({
+      id: 'call-2',
+      status: 'error',
+      httpStatus: 429,
+      reason: 'daily_quota',
+      quotaId: 'RequestsPerDay',
+      retryAfterSeconds: 33,
+    })
+    expect(calls[0]?.usage).toBeUndefined()
+    expect(calls[1]).toMatchObject({
+      id: 'call-1',
+      status: 'ok',
+      toolNames: ['edit_document'],
+      usage: { totalTokenCount: 240 },
+    })
+    const stored = saved.get(GEMINI_CALL_LOG_KEY) || ''
+    expect(stored).not.toContain('secret-api-key')
+    expect(stored).not.toContain('private document content')
+    expect(stored).not.toContain('system confidential')
+  })
+
+  it('expires call diagnostics after seven days and caps the retained calls', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-27T12:00:00Z'))
+    try {
+      const saved = new Map<string, string>()
+      vi.stubGlobal('localStorage', {
+        getItem: (key: string) => saved.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          saved.set(key, value)
+        },
+      })
+      vi.stubGlobal('window', { dispatchEvent: vi.fn() })
+      const settings = defaultAiSettings()
+      settings.provider = 'gemini'
+      const router = createGeminiRouter()
+      const request = { system: 'sys', messages: [], tools: [] }
+      for (let index = 0; index < 205; index++) router.onAttempt(settings, `call-${index}`, request)
+      expect(readGeminiCallLog()).toHaveLength(200)
+      expect(
+        new TextEncoder().encode(saved.get(GEMINI_CALL_LOG_KEY) || '').byteLength,
+      ).toBeLessThanOrEqual(128 * 1024)
+      const oversized = { ...readGeminiCallLog()[0]!, toolNames: ['x'.repeat(200_000)] }
+      saved.set(GEMINI_CALL_LOG_KEY, JSON.stringify([oversized]))
+      expect(readGeminiCallLog()).toEqual([])
+      router.onAttempt(settings, 'fresh-call', request)
+      vi.advanceTimersByTime(8 * 24 * 60 * 60_000)
+      expect(readGeminiCallLog()).toEqual([])
+      expect(saved.get(GEMINI_CALL_LOG_KEY)).toBe('[]')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
   it('keeps the no-output wait and whole turn within a short user-facing budget', () => {
     const router = createGeminiRouter()
     expect(router.firstContentTimeoutMs).toBe(45_000)

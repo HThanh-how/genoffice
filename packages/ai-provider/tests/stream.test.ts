@@ -781,6 +781,77 @@ describe('streamForProvider: gemini', () => {
     expect(toolCalls[0]).toMatchObject({ name: 'set_cell', input: { a1: '42' } })
   })
 
+  it('forwards Gemini-reported token counts from streamed and JSON replies', async () => {
+    const onUsage = vi.fn()
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          okResponse(
+            sseStream([
+              'data: {"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":120,"candidatesTokenCount":20,"thoughtsTokenCount":8,"totalTokenCount":148}}',
+            ]),
+          ),
+        ),
+    )
+    await streamForProvider('gemini', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, {
+      ...collector().cb,
+      onUsage,
+    })
+    expect(onUsage).toHaveBeenCalledWith({
+      promptTokenCount: 120,
+      candidatesTokenCount: 20,
+      thoughtsTokenCount: 8,
+      totalTokenCount: 148,
+    })
+
+    onUsage.mockClear()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+          usageMetadata: { promptTokenCount: 9, candidatesTokenCount: 2, totalTokenCount: 11 },
+        }),
+      ),
+    )
+    await streamForProvider('gemini', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, {
+      ...collector().cb,
+      onUsage,
+    })
+    expect(onUsage).toHaveBeenCalledWith({
+      promptTokenCount: 9,
+      candidatesTokenCount: 2,
+      totalTokenCount: 11,
+    })
+  })
+
+  it('keeps only safe quota identifiers and retry time from a Gemini 429', async () => {
+    const body = JSON.stringify({
+      error: {
+        message: 'quota hit',
+        details: [
+          {
+            violations: [
+              {
+                quotaId: 'InputTokensPerModelPerMinute',
+                quotaMetric: 'generativelanguage.googleapis.com/generate_content_input_token_count',
+              },
+            ],
+          },
+          { retryDelay: '33s' },
+        ],
+      },
+    })
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { status: 429 })))
+    await expect(
+      streamForProvider('gemini', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, collector().cb),
+    ).rejects.toThrow(
+      /retryDelay="33s" quotaId="InputTokensPerModelPerMinute" quotaMetric="generativelanguage.googleapis.com\/generate_content_input_token_count"/,
+    )
+  })
+
   it('aborts when a turn starts more tool calls than the count cap', async () => {
     const calls = Array.from(
       { length: 101 },

@@ -2,7 +2,7 @@ import type { AgentMessage, AgentToolDef } from '@genoffice/agent-core'
 import { aiFetch } from '../fetch'
 import { httpBodyDetail } from '../http-error'
 import { gensparkAttributionHeaders, opencodeSessionHeaders } from '../providers'
-import type { AiChatResponse, AiProviderConfig } from '../types'
+import type { AiChatResponse, AiProviderConfig, AiTokenUsage } from '../types'
 import { createStreamWatchdog, type StreamWatchdog } from '../watchdog'
 import { toGeminiSchema } from './gemini-schema'
 import {
@@ -17,6 +17,26 @@ import {
 } from './shared'
 
 export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
+
+function emitUsageMetadata(raw: unknown, cb: StreamCallbacks): void {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return
+  const source = raw as Record<string, unknown>
+  const fields: Array<keyof AiTokenUsage> = [
+    'promptTokenCount',
+    'candidatesTokenCount',
+    'thoughtsTokenCount',
+    'cachedContentTokenCount',
+    'totalTokenCount',
+  ]
+  const usage: AiTokenUsage = {}
+  for (const field of fields) {
+    const value = source[field]
+    if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) {
+      usage[field] = value
+    }
+  }
+  if (Object.keys(usage).length) cb.onUsage?.(usage)
+}
 
 function geminiContents(messages: AgentMessage[], targetModel: string): unknown[] {
   return messages.map((m) => {
@@ -87,11 +107,13 @@ function emitGeminiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
     }>
     promptFeedback?: { blockReason?: string }
     error?: { message?: string } | string
+    usageMetadata?: unknown
   }>
   let emitted = false
   let stopReason: string | undefined
   let abnormalFinish: string | undefined
   for (const event of events) {
+    emitUsageMetadata(event.usageMetadata, cb)
     if (event.error) throw new Error(sseErrorText(event.error, 'Gemini error'))
     if (event.promptFeedback?.blockReason) {
       throw new Error(`Gemini blocked the prompt (${event.promptFeedback.blockReason})`)
@@ -208,10 +230,14 @@ async function geminiTurn(
     const retrySeconds =
       retryInfo ?? (retryHeader && /^\d+(?:\.\d+)?$/.test(retryHeader) ? retryHeader : null)
     const dailyQuota = /quota_exceeded|per.?day|daily|\bRPD\b/i.test(body)
+    const quotaId = /"quotaId"\s*:\s*"([A-Za-z0-9_.-]{1,120})"/.exec(body)?.[1]
+    const quotaMetric = /"quotaMetric"\s*:\s*"([A-Za-z0-9_./-]{1,160})"/.exec(body)?.[1]
     throw new Error(
       `Gemini HTTP ${response.status}: ${httpBodyDetail(body)}` +
         (retrySeconds ? ` retryDelay="${retrySeconds}s"` : '') +
-        (dailyQuota ? ' quota_exceeded' : ''),
+        (dailyQuota ? ' quota_exceeded' : '') +
+        (quotaId ? ` quotaId="${quotaId}"` : '') +
+        (quotaMetric ? ` quotaMetric="${quotaMetric}"` : ''),
     )
   }
   const jsonBody = await jsonBodyInsteadOfSse(response, onBytes)
@@ -246,10 +272,12 @@ async function geminiTurn(
         }>
         promptFeedback?: { blockReason?: string }
         error?: { message?: string } | string
+        usageMetadata?: unknown
       }
     } catch {
       continue
     }
+    emitUsageMetadata(event.usageMetadata, cb)
     if (event.error) throw new Error(sseErrorText(event.error, 'Gemini stream error'))
     if (event.promptFeedback?.blockReason) {
       throw new Error(`Gemini blocked the prompt (${event.promptFeedback.blockReason})`)
