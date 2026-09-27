@@ -133,8 +133,8 @@ describe('partitionDropPayload', () => {
   })
 
   it('classifies openable extensions case-insensitively', () => {
-    const result = partitionDropPayload(['REPORT.DOCX', 'data.CSV', 'notes.MarkDown'])
-    expect(result.supported).toEqual(['REPORT.DOCX', 'data.CSV', 'notes.MarkDown'])
+    const result = partitionDropPayload(['REPORT.DOCX', 'OLD.DOC', 'data.CSV', 'notes.MarkDown'])
+    expect(result.supported).toEqual(['REPORT.DOCX', 'OLD.DOC', 'data.CSV', 'notes.MarkDown'])
   })
 
   it('treats a dropped .tsv as openable, not as unsupported', () => {
@@ -144,9 +144,9 @@ describe('partitionDropPayload', () => {
   })
 
   it('collects known-unsupported extensions uniquely, first-seen order', () => {
-    const result = partitionDropPayload(['old.doc', 'x.pages', 'y.rtf', 'z.doc'])
+    const result = partitionDropPayload(['x.pages', 'y.rtf', 'z.pages'])
     expect(result.supported).toEqual([])
-    expect(result.unsupportedExts).toEqual(['doc', 'pages', 'rtf'])
+    expect(result.unsupportedExts).toEqual(['pages', 'rtf'])
   })
 
   it('caps the number of openable files at 20', () => {

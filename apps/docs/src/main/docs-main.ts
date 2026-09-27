@@ -4103,10 +4103,14 @@ export function registerDocsIpc(): void {
   ipcMain.handle('docs:open', async (event) => {
     const result = await openDialog(event, {
       title: tm('dlgOpenDoc'),
-      filters: [{ name: tm('filterWord'), extensions: ['docx'] }],
+      filters: [{ name: tm('filterWord'), extensions: shellHooks ? ['docx', 'doc'] : ['docx'] }],
       properties: ['openFile'],
     })
     if (result.canceled || result.filePaths.length === 0) return null
+    if (/\.doc$/i.test(result.filePaths[0]) && shellHooks?.openDocumentPath) {
+      shellHooks.openDocumentPath(result.filePaths[0])
+      return null
+    }
     return loadDocx(result.filePaths[0], event.sender.id)
   })
 
@@ -5058,6 +5062,8 @@ export function registerDocsIpc(): void {
  * and falls back to real multi-BrowserWindow behavior. */
 interface DocsShellHooks {
   openTab(openPath?: string, options?: { newBlank?: boolean }): void
+  /** Import a legacy .doc through the shell before opening its .docx copy. */
+  openDocumentPath?(path: string): boolean
   /** open a blank docs tab that consumes the queued AI content on boot (create_document) */
   openAiDocTab?(content: AiDocContent): void
   listTabs(): DocsTabInfo[]

@@ -25,6 +25,7 @@ import {
 } from 'electron'
 import type { MenuItemConstructorOptions, NativeImage, WebContents } from 'electron'
 import { atomicWriteFile } from './atomic-write'
+import { convertLegacyDoc } from './legacy-doc'
 import { tabStripOverlay } from './title-bar-overlay'
 import menuDocxIcon1x from './assets/menu-docx.png?asset'
 import menuDocxIcon2x from './assets/menu-docx@2x.png?asset'
@@ -2869,6 +2870,7 @@ function createShellWindow(): void {
       else tabManager?.closeActiveTab()
     },
     openGeneratedPath: (path) => openGeneratedDocument(path),
+    openDocumentPath,
   })
   setSheetsCloseTabHook(() => {
     const focused = BrowserWindow.getFocusedWindow()
@@ -3025,6 +3027,7 @@ function createShellWindow(): void {
 // ---- routing: one dispatch function for every open path ----
 
 const DOCX_RE = /\.docx$/i
+const DOC_RE = /\.doc$/i
 const XLSX_RE = /\.(xlsx|xlsm|xls|csv|tsv)$/i
 const PPTX_RE = /\.pptx$/i
 const PDF_RE = /\.pdf$/i
@@ -3033,8 +3036,8 @@ const HTML_RE = /\.html?$/i
 
 /**
  * Single source of truth for the open-dialog filter. Includes the
- * legacy .doc/.ppt binaries so they are selectable and surface the explicit
- * "not supported" dialog via openDocumentPath instead of being grayed out.
+ * Legacy .doc opens as a converted .docx copy; .ppt still surfaces an explicit
+ * unsupported warning instead of being grayed out.
  */
 const OPEN_DIALOG_EXTENSIONS = [
   'docx',
@@ -3099,6 +3102,39 @@ function openDocumentPath(filePath: string): boolean {
   return opened
 }
 
+const pendingLegacyDocImports = new Set<string>()
+
+async function openLegacyDoc(filePath: string): Promise<void> {
+  if (pendingLegacyDocImports.has(filePath)) return
+  pendingLegacyDocImports.add(filePath)
+  try {
+    const result = await convertLegacyDoc(filePath)
+    const suggestedName = `${basename(filePath, extname(filePath))}.docx`
+    let convertedPath = uniquePathIn(dirname(filePath), suggestedName)
+    try {
+      await atomicWriteFile(convertedPath, result.bytes)
+    } catch (error) {
+      if (!['EACCES', 'EPERM', 'EROFS'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        throw error
+      }
+      convertedPath = uniquePathIn(defaultSaveDir(), suggestedName)
+      await atomicWriteFile(convertedPath, result.bytes)
+    }
+    if (!openDocumentPath(convertedPath)) throw new Error('Converted document could not be opened')
+    if (result.fidelity === 'text') {
+      showAppWarning(
+        'The legacy .doc was opened as an editable .docx copy containing its text. ' +
+          'Formatting, images and tables may be missing. The original .doc was left unchanged.',
+      )
+    }
+  } catch (error) {
+    console.error('[shell] legacy .doc import failed:', error)
+    showAppWarning('Could not read this .doc file. It may be damaged or password-protected.')
+  } finally {
+    pendingLegacyDocImports.delete(filePath)
+  }
+}
+
 /**
  * Open a just-written export. Unlike File > Open, an already-open PDF tab is
  * reloaded from disk so a re-export to the same path shows the new bytes
@@ -3120,6 +3156,10 @@ function openGeneratedDocument(filePath: string): boolean {
 
 function routeDocumentPath(filePath: string): boolean {
   if (!existsSync(filePath)) return false
+  if (DOC_RE.test(filePath)) {
+    void openLegacyDoc(filePath)
+    return true
+  }
   // a detached editor window already shows this file — focus it, never a second copy
   if (focusDetachedByPath(filePath)) return true
   if (!tabManager) return false
