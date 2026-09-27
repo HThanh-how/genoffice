@@ -94,6 +94,40 @@ describe('streamText', () => {
     }
   })
 
+  it('does not treat whitespace-only network chunks as document progress', async () => {
+    vi.useFakeTimers()
+    try {
+      let callbacks!: AgentStreamCallbacks
+      const cancel = vi.fn()
+      const promise = streamText({
+        transport: {
+          stream: (_request, cb) => {
+            callbacks = cb
+            return { cancel }
+          },
+        },
+        system: 's',
+        user: 'u',
+        maxChars: 1000,
+        extract: passthrough,
+        firstDeltaTimeoutMs: 90,
+        idleDeltaTimeoutMs: 30,
+      })
+      callbacks.onDelta('<p>Visible</p>')
+      await vi.advanceTimersByTimeAsync(25)
+      callbacks.onDelta('   ')
+      await vi.advanceTimersByTimeAsync(5)
+      expect(await promise).toMatchObject({
+        status: 'partial',
+        text: '<p>Visible</p>',
+        stalled: true,
+      })
+      expect(cancel).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('sends a tool-less request and reports cumulative progress', async () => {
     const progress: string[] = []
     let request: { tools: unknown[]; messages: unknown[] } | undefined

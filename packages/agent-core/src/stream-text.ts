@@ -43,6 +43,7 @@ export type StreamTextOutcome =
 export function streamText(opts: StreamTextOptions): Promise<StreamTextOutcome> {
   return new Promise((resolve) => {
     let raw = ''
+    let lastProgressText = ''
     let stopReason: string | undefined
     let settled = false
     let handle: AgentStreamHandle | null = null
@@ -107,15 +108,19 @@ export function streamText(opts: StreamTextOptions): Promise<StreamTextOutcome> 
       {
         onDelta: (delta) => {
           if (settled) return
-          if (delta) armProgressTimeout(opts.idleDeltaTimeoutMs)
           raw += delta
           if (raw.length > maxChars) {
             finish(partialOrEmpty('max_tokens', `output exceeded ${maxChars} chars`))
             cancelTransport()
             return
           }
+          const progressText = safeExtract(raw).text
+          if (progressText !== lastProgressText) {
+            lastProgressText = progressText
+            armProgressTimeout(opts.idleDeltaTimeoutMs)
+          }
           try {
-            opts.onProgress?.(safeExtract(raw).text)
+            opts.onProgress?.(progressText)
           } catch {
             // Ignore progress listener failures so the stream can still settle.
           }
