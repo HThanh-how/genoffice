@@ -235,8 +235,8 @@ export function createGeminiRouter() {
   let fallbackCount = 0
   let overloadRetries = 0
   return {
-    firstContentTimeoutMs: 120_000,
-    maxDurationMs: 300_000,
+    firstContentTimeoutMs: 45_000,
+    maxDurationMs: 120_000,
     maxAttempts: 10,
     onExhausted(settings: AiSettings, reason: 'deadline' | 'attempt_limit'): void {
       if (settings.provider !== 'gemini') return

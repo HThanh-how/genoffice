@@ -10,6 +10,12 @@ import { defaultAiSettings } from '../src/providers'
 afterEach(() => vi.unstubAllGlobals())
 
 describe('Gemini chat routing', () => {
+  it('keeps the no-output wait and whole turn within a short user-facing budget', () => {
+    const router = createGeminiRouter()
+    expect(router.firstContentTimeoutMs).toBe(45_000)
+    expect(router.maxDurationMs).toBe(120_000)
+  })
+
   it('retries temporary overload twice, then switches models', () => {
     const saved = new Map<string, string>()
     vi.stubGlobal('localStorage', {
