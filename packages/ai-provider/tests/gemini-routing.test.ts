@@ -229,4 +229,78 @@ describe('Gemini chat routing', () => {
       vi.useRealTimers()
     }
   })
+
+  it('switches immediately for a timeout or 429, but not for a local network failure', () => {
+    const saved = new Map<string, string>()
+    vi.stubGlobal('localStorage', {
+      getItem: (key: string) => saved.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        saved.set(key, value)
+      },
+    })
+    vi.stubGlobal('window', { dispatchEvent: vi.fn() })
+    vi.stubGlobal(
+      'CustomEvent',
+      class {
+        constructor(_name: string, _init: unknown) {}
+      },
+    )
+    saved.set(
+      GEMINI_MODELS_KEY,
+      JSON.stringify([
+        { id: 'gemini-3.8-flash', displayName: 'Primary', usableForChat: true },
+        { id: 'gemini-3.7-flash', displayName: 'Backup', usableForChat: true },
+      ]),
+    )
+    const settings = defaultAiSettings()
+    settings.provider = 'gemini'
+    const router = createGeminiRouter()
+    const first = router.prepare(settings)
+    expect(router.retry(first, 'Gemini HTTP 429: rate_limit_exceeded', false)).toBeNull()
+    expect(router.retry(first, 'AI request timed out', false, 'timeout')).toBeNull()
+    expect(router.fallback(first, 'fetch failed', false, 'network')).toBeNull()
+    expect(
+      router.fallback(first, 'AI request timed out', false, 'timeout')?.providers.gemini.model,
+    ).toBe('gemini-3.7-flash')
+    expect(saved.get(GEMINI_ROUTING_LOG_KEY)).toContain('timeout')
+  })
+
+  it('reconsiders the preferred model for a fresh standalone request', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-09-27T12:00:00Z'))
+    try {
+      const saved = new Map<string, string>()
+      vi.stubGlobal('localStorage', {
+        getItem: (key: string) => saved.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          saved.set(key, value)
+        },
+      })
+      vi.stubGlobal('window', { dispatchEvent: vi.fn() })
+      vi.stubGlobal(
+        'CustomEvent',
+        class {
+          constructor(_name: string, _init: unknown) {}
+        },
+      )
+      saved.set(
+        GEMINI_MODELS_KEY,
+        JSON.stringify([
+          { id: 'gemini-3.8-flash', displayName: 'Primary', usableForChat: true },
+          { id: 'gemini-3.7-flash', displayName: 'Backup', usableForChat: true },
+        ]),
+      )
+      const settings = defaultAiSettings()
+      settings.provider = 'gemini'
+      const router = createGeminiRouter()
+      const first = router.prepare(settings)
+      expect(router.fallback(first, 'Gemini HTTP 503', false)?.providers.gemini.model).toBe(
+        'gemini-3.7-flash',
+      )
+      vi.advanceTimersByTime(61_000)
+      expect(router.prepare(settings).providers.gemini.model).toBe('gemini-3.8-flash')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })

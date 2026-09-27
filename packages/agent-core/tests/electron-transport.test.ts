@@ -176,6 +176,157 @@ describe('createIpcTransport', () => {
     expect(callbacks.onDelta).toHaveBeenCalledWith('partial')
     expect(callbacks.onError).toHaveBeenCalledWith('Gemini HTTP 429')
   })
+  it('falls back when keepalives arrive but the model produces no content', () => {
+    vi.useFakeTimers()
+    try {
+      let listener: ((chunk: IpcStreamChunk) => void) | undefined
+      const started: IpcStreamStart<{ model: string }>[] = []
+      const cancelled: string[] = []
+      const callbacks = { onDelta: vi.fn(), onToolCall: vi.fn(), onDone: vi.fn(), onError: vi.fn() }
+      const transport = createIpcTransport({
+        onStream: (next) => {
+          listener = next
+          return () => {
+            listener = undefined
+          }
+        },
+        start: (request) => {
+          started.push(request)
+        },
+        cancel: (id) => {
+          cancelled.push(id)
+        },
+        getSettings: () => ({ model: 'first' }),
+        unknownErrorText: () => 'unknown',
+        timeoutErrorText: () => 'timed out',
+        route: {
+          prepare: (settings) => settings,
+          firstContentTimeoutMs: 1_000,
+          fallback: (settings, _error, emitted, code) =>
+            !emitted && code === 'timeout' ? { ...settings, model: 'second' } : null,
+        },
+      })
+      transport.stream({ system: 'sys', messages: [], tools: [] }, callbacks)
+      listener?.({ requestId: started[0]!.requestId, type: 'ping' })
+      vi.advanceTimersByTime(1_000)
+      expect(cancelled).toEqual([started[0]!.requestId])
+      expect(started.map((request) => request.settings.model)).toEqual(['first', 'second'])
+      listener?.({ requestId: started[1]!.requestId, type: 'delta', text: 'answer' })
+      vi.advanceTimersByTime(1_000)
+      expect(started).toHaveLength(2)
+      expect(callbacks.onError).not.toHaveBeenCalled()
+      listener?.({ requestId: started[1]!.requestId, type: 'done' })
+      expect(callbacks.onDone).toHaveBeenCalledOnce()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ends a retry chain at its deadline even while waiting for a retry', () => {
+    vi.useFakeTimers()
+    try {
+      let listener: ((chunk: IpcStreamChunk) => void) | undefined
+      const started: IpcStreamStart<{ model: string }>[] = []
+      const callbacks = { onDelta: vi.fn(), onToolCall: vi.fn(), onDone: vi.fn(), onError: vi.fn() }
+      const transport = createIpcTransport({
+        onStream: (next) => {
+          listener = next
+          return () => {
+            listener = undefined
+          }
+        },
+        start: (request) => {
+          started.push(request)
+        },
+        cancel: vi.fn(),
+        getSettings: () => ({ model: 'first' }),
+        unknownErrorText: () => 'unknown',
+        timeoutErrorText: () => 'timed out',
+        route: {
+          prepare: (settings) => settings,
+          maxDurationMs: 1_000,
+          retry: () => 2_000,
+          fallback: () => null,
+        },
+      })
+      transport.stream({ system: 'sys', messages: [], tools: [] }, callbacks)
+      listener?.({ requestId: started[0]!.requestId, type: 'error', error: 'busy' })
+      vi.advanceTimersByTime(3_000)
+      expect(started).toHaveLength(1)
+      expect(callbacks.onError).toHaveBeenCalledExactlyOnceWith('timed out')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('caps repeated attempts', () => {
+    let listener: ((chunk: IpcStreamChunk) => void) | undefined
+    const started: IpcStreamStart<{ model: string }>[] = []
+    const callbacks = { onDelta: vi.fn(), onToolCall: vi.fn(), onDone: vi.fn(), onError: vi.fn() }
+    const onExhausted = vi.fn()
+    const transport = createIpcTransport({
+      onStream: (next) => {
+        listener = next
+        return () => {
+          listener = undefined
+        }
+      },
+      start: (request) => {
+        started.push(request)
+      },
+      cancel: vi.fn(),
+      getSettings: () => ({ model: 'first' }),
+      unknownErrorText: () => 'unknown',
+      route: {
+        prepare: (settings) => settings,
+        maxAttempts: 2,
+        fallback: (settings) => ({ ...settings, model: 'next' }),
+        onExhausted,
+      },
+    })
+    transport.stream({ system: 'sys', messages: [], tools: [] }, callbacks)
+    listener?.({ requestId: started[0]!.requestId, type: 'error', error: 'busy' })
+    listener?.({ requestId: started[1]!.requestId, type: 'error', error: 'busy' })
+    expect(started).toHaveLength(2)
+    expect(callbacks.onError).toHaveBeenCalledExactlyOnceWith('busy')
+    expect(onExhausted).toHaveBeenCalledExactlyOnceWith({ model: 'next' }, 'attempt_limit')
+  })
+
+  it('ignores a late start rejection from an attempt already replaced by fallback', async () => {
+    let listener: ((chunk: IpcStreamChunk) => void) | undefined
+    const started: IpcStreamStart<{ model: string }>[] = []
+    let rejectFirst: (error: Error) => void = () => undefined
+    const callbacks = { onDelta: vi.fn(), onToolCall: vi.fn(), onDone: vi.fn(), onError: vi.fn() }
+    const transport = createIpcTransport({
+      onStream: (next) => {
+        listener = next
+        return () => {
+          listener = undefined
+        }
+      },
+      start: (request) => {
+        started.push(request)
+        if (started.length === 1)
+          return new Promise((_resolve, reject) => {
+            rejectFirst = reject
+          })
+      },
+      cancel: vi.fn(),
+      getSettings: () => ({ model: 'first' }),
+      unknownErrorText: () => 'unknown',
+      route: {
+        prepare: (settings) => settings,
+        fallback: (settings) => ({ ...settings, model: 'second' }),
+      },
+    })
+    transport.stream({ system: 'sys', messages: [], tools: [] }, callbacks)
+    listener?.({ requestId: started[0]!.requestId, type: 'error', error: 'busy' })
+    rejectFirst(new Error('late failure'))
+    await Promise.resolve()
+    expect(callbacks.onError).not.toHaveBeenCalled()
+    listener?.({ requestId: started[1]!.requestId, type: 'done' })
+    expect(callbacks.onDone).toHaveBeenCalledOnce()
+  })
   it('starts one request with settings and forwards deltas and tool calls', () => {
     const { started, cb, emit } = setup()
     expect(started).toHaveLength(1)

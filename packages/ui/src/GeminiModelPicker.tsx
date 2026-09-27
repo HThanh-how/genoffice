@@ -52,7 +52,7 @@ interface RoutingLogEntry {
   at: number
   model: string
   action: 'selected' | 'retry' | 'fallback' | 'exhausted'
-  reason?: 'daily_quota' | 'rate_limit' | 'overloaded' | 'other'
+  reason?: 'daily_quota' | 'rate_limit' | 'overloaded' | 'timeout' | 'unavailable' | 'other'
   to?: string
   delayMs?: number
 }
@@ -79,13 +79,15 @@ function describeRouting(entry: RoutingLogEntry, vi: boolean): string {
     daily_quota: vi ? 'hết hạn mức ngày' : 'daily quota',
     rate_limit: vi ? 'giới hạn tốc độ' : 'rate limit',
     overloaded: vi ? 'quá tải' : 'overloaded',
+    timeout: vi ? 'quá thời gian chờ' : 'timed out',
+    unavailable: vi ? 'model không khả dụng' : 'model unavailable',
     other: vi ? 'lỗi khác' : 'other error',
   }[entry.reason || 'other']
   if (entry.action === 'selected') return `${entry.model} · ${vi ? 'đã chọn' : 'selected'}`
   if (entry.action === 'retry')
     return `${entry.model} · ${vi ? 'thử lại' : 'retry'} (${reason}, ${entry.delayMs ?? 0} ms)`
   if (entry.action === 'fallback') return `${entry.model} → ${entry.to} · ${reason}`
-  return `${entry.model} · ${vi ? 'không còn model dự phòng' : 'no backup model'} (${reason})`
+  return `${entry.model} · ${vi ? 'đã dừng chuyển model' : 'routing stopped'} (${reason})`
 }
 
 /** Compact model selector shared by all six chat panels. */

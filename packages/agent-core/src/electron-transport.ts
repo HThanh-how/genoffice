@@ -56,10 +56,26 @@ export interface IpcTransportOptions<S> {
   /** Optional per-turn routing and safe retry before any model output reaches the loop. */
   route?: {
     prepare(settings: S, request?: AgentStreamRequest): S
+    /** Deadline for the first useful model output; wire keepalives do not satisfy it. */
+    firstContentTimeoutMs?: number
+    /** Upper bound for all retries and fallbacks in this streaming turn. */
+    maxDurationMs?: number
+    maxAttempts?: number
     /** Return a short delay to retry the same model before falling back. */
-    retry?(settings: S, error: string, emitted: boolean): number | null
-    fallback(settings: S, error: string, emitted: boolean): S | null
+    retry?(
+      settings: S,
+      error: string,
+      emitted: boolean,
+      errorCode?: IpcStreamChunk['errorCode'],
+    ): number | null
+    fallback(
+      settings: S,
+      error: string,
+      emitted: boolean,
+      errorCode?: IpcStreamChunk['errorCode'],
+    ): S | null
     onAttempt?(settings: S): void
+    onExhausted?(settings: S, reason: 'deadline' | 'attempt_limit'): void
   }
   /** localized fallback when an error chunk carries no message */
   unknownErrorText(): string
@@ -92,31 +108,94 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
       let requestId = ''
       let cancelled = false
       let silenceTimer: ReturnType<typeof setTimeout> | undefined
+      let firstContentTimer: ReturnType<typeof setTimeout> | undefined
+      let deadlineTimer: ReturnType<typeof setTimeout> | undefined
       let retryTimer: ReturnType<typeof setTimeout> | undefined
       let unsubscribe = () => {}
       let settled = false
+      let finished = false
+      let attempts = 0
       const baseSettings = options.getSettings()
       let settings = options.route?.prepare(baseSettings, request) ?? baseSettings
       const settle = () => {
         settled = true
         clearTimeout(silenceTimer)
+        clearTimeout(firstContentTimer)
         unsubscribe()
       }
-      const fail = (error: string) => {
-        if (settled) return
+      const finish = () => {
+        finished = true
+        clearTimeout(deadlineTimer)
+        clearTimeout(retryTimer)
         settle()
+      }
+      const fail = (error: string) => {
+        if (finished) return
+        finish()
         cb.onError(error)
       }
+      const errorText = (error: string, errorCode?: IpcStreamChunk['errorCode']) =>
+        errorCode === 'timeout'
+          ? timeoutText()
+          : errorCode === 'credits'
+            ? (options.creditsErrorText?.() ?? (error || options.unknownErrorText()))
+            : errorCode === 'network'
+              ? (options.networkErrorText?.() ?? (error || options.unknownErrorText()))
+              : errorCode === 'overloaded'
+                ? (options.overloadedErrorText?.() ?? (error || options.unknownErrorText()))
+                : error || options.unknownErrorText()
+      const handleError = (
+        error: string,
+        emitted: boolean,
+        errorCode?: IpcStreamChunk['errorCode'],
+      ) => {
+        if (cancelled || settled || finished) return
+        const canAttempt = attempts < (options.route?.maxAttempts ?? Infinity)
+        if (!canAttempt) options.route?.onExhausted?.(settings, 'attempt_limit')
+        const retryDelay = canAttempt && options.route?.retry?.(settings, error, emitted, errorCode)
+        if (typeof retryDelay === 'number' && Number.isFinite(retryDelay) && retryDelay >= 0) {
+          settle()
+          retryTimer = setTimeout(() => {
+            retryTimer = undefined
+            if (!cancelled) attempt()
+          }, retryDelay)
+          return
+        }
+        const next = canAttempt && options.route?.fallback(settings, error, emitted, errorCode)
+        if (next) {
+          settle()
+          settings = next
+          attempt()
+          return
+        }
+        fail(errorText(error, errorCode))
+      }
+      if (options.route?.maxDurationMs) {
+        deadlineTimer = setTimeout(() => {
+          options.route?.onExhausted?.(settings, 'deadline')
+          options.cancel(requestId)
+          fail(timeoutText())
+        }, options.route.maxDurationMs)
+      }
       const attempt = (): void => {
+        if (cancelled || finished) return
         requestId = crypto.randomUUID()
+        const thisRequestId = requestId
+        attempts++
         settled = false
         let emitted = false
         const armSilence = () => {
           clearTimeout(silenceTimer)
           silenceTimer = setTimeout(() => {
             options.cancel(requestId)
-            fail(timeoutText())
+            handleError('AI request timed out: no stream activity', emitted, 'timeout')
           }, IPC_STREAM_SILENCE_TIMEOUT_MS)
+        }
+        if (options.route?.firstContentTimeoutMs) {
+          firstContentTimer = setTimeout(() => {
+            options.cancel(thisRequestId)
+            handleError('AI request timed out: no model output', false, 'timeout')
+          }, options.route.firstContentTimeoutMs)
         }
         unsubscribe = options.onStream((chunk) => {
           if (chunk.requestId !== requestId || settled) return
@@ -124,16 +203,23 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
             armSilence()
           } else if (chunk.type === 'delta') {
             armSilence()
-            if (chunk.text) emitted = true
+            if (chunk.text) {
+              emitted = true
+              clearTimeout(firstContentTimer)
+            }
             cb.onDelta(chunk.text ?? '')
           } else if (chunk.type === 'reasoning') {
             armSilence()
-            if (chunk.text) emitted = true
+            if (chunk.text) {
+              emitted = true
+              clearTimeout(firstContentTimer)
+            }
             if (chunk.text) cb.onReasoning?.(chunk.text)
           } else if (chunk.type === 'tool-call') {
             armSilence()
             if (chunk.toolCall) {
               emitted = true
+              clearTimeout(firstContentTimer)
               const routeSettings = settings as {
                 provider?: string
                 providers?: { gemini?: { model?: string } }
@@ -145,41 +231,11 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
               cb.onToolCall(model ? { ...chunk.toolCall, sourceModel: model } : chunk.toolCall)
             }
           } else if (chunk.type === 'done') {
-            settle()
+            finish()
             if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason)
             cb.onDone()
           } else {
-            const retryDelay =
-              !cancelled && options.route?.retry?.(settings, chunk.error ?? '', emitted)
-            if (typeof retryDelay === 'number' && Number.isFinite(retryDelay) && retryDelay >= 0) {
-              settle()
-              retryTimer = setTimeout(() => {
-                retryTimer = undefined
-                if (!cancelled) attempt()
-              }, retryDelay)
-              return
-            }
-            const next = !cancelled && options.route?.fallback(settings, chunk.error ?? '', emitted)
-            if (next) {
-              settle()
-              settings = next
-              attempt()
-              return
-            }
-            settle()
-            cb.onError(
-              chunk.errorCode === 'timeout'
-                ? timeoutText()
-                : chunk.errorCode === 'credits'
-                  ? (options.creditsErrorText?.() ?? chunk.error ?? options.unknownErrorText())
-                  : chunk.errorCode === 'network'
-                    ? (options.networkErrorText?.() ?? chunk.error ?? options.unknownErrorText())
-                    : chunk.errorCode === 'overloaded'
-                      ? (options.overloadedErrorText?.() ??
-                        chunk.error ??
-                        options.unknownErrorText())
-                      : (chunk.error ?? options.unknownErrorText()),
-            )
+            handleError(chunk.error ?? '', emitted, chunk.errorCode)
           }
         })
         armSilence()
@@ -195,7 +251,9 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
               tools: request.tools,
             }),
           ).catch((err: unknown) => {
-            fail(err instanceof Error ? err.message : options.unknownErrorText())
+            if (requestId === thisRequestId && !settled && !finished) {
+              fail(err instanceof Error ? err.message : options.unknownErrorText())
+            }
           })
         } catch (err) {
           fail(err instanceof Error ? err.message : options.unknownErrorText())
@@ -205,8 +263,8 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
       return {
         cancel: () => {
           cancelled = true
-          clearTimeout(retryTimer)
           options.cancel(requestId)
+          finish()
         },
       }
     },

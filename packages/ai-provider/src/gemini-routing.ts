@@ -102,7 +102,7 @@ export interface GeminiRoutingLogEntry {
   at: number
   model: string
   action: 'selected' | 'retry' | 'fallback' | 'exhausted'
-  reason?: 'daily_quota' | 'rate_limit' | 'overloaded' | 'other'
+  reason?: 'daily_quota' | 'rate_limit' | 'overloaded' | 'timeout' | 'unavailable' | 'other'
   to?: string
   delayMs?: number
 }
@@ -120,9 +120,13 @@ function recordRoutingEvent(entry: GeminiRoutingLogEntry): void {
 
 function failureReason(error: string): NonNullable<GeminiRoutingLogEntry['reason']> {
   if (/quota_exceeded|per.?day|daily|\bRPD\b/i.test(error)) return 'daily_quota'
+  if (/Gemini HTTP 404\b/i.test(error)) return 'unavailable'
+  if (/Gemini HTTP (408|504)\b|timed out|timeout/i.test(error)) return 'timeout'
   if (/Gemini HTTP 429\b|RESOURCE_EXHAUSTED|rate.?limit|too many requests/i.test(error))
     return 'rate_limit'
-  if (/Gemini HTTP (503|529)\b|UNAVAILABLE|overload|service is busy|capacity/i.test(error))
+  if (
+    /Gemini HTTP (500|502|503|504|529)\b|UNAVAILABLE|overload|service is busy|capacity/i.test(error)
+  )
     return 'overloaded'
   return 'other'
 }
@@ -151,7 +155,11 @@ function onCooldown(model: string): boolean {
 function coolDown(model: string, error: string): void {
   const daily = /quota_exceeded|per.?day|daily|\bRPD\b/i.test(error)
   const retryDelay = /retryDelay["']?\s*[:=]\s*["']?(\d+(?:\.\d+)?)s/i.exec(error)
-  const seconds = retryDelay ? Math.min(3600, Number(retryDelay[1])) : 60
+  const seconds = retryDelay
+    ? Math.min(3600, Number(retryDelay[1]))
+    : /Gemini HTTP 404\b/i.test(error)
+      ? 3600
+      : 60
   const saved = readCooldowns()
   saved[model] = daily ? { day: pacificDate() } : { until: Date.now() + seconds * 1000 }
   try {
@@ -161,8 +169,10 @@ function coolDown(model: string, error: string): void {
   }
 }
 
-function isGeminiOverload(error: string): boolean {
-  return /Gemini HTTP (429|503|529)\b|RESOURCE_EXHAUSTED|UNAVAILABLE|overload|rate.?limit|too many requests|service is busy|capacity/i.test(
+function isRecoverableGeminiError(error: string, errorCode?: string): boolean {
+  if (errorCode === 'timeout') return true
+  if (errorCode === 'network' || errorCode === 'credits') return false
+  return /Gemini HTTP (408|404|429|500|502|503|504|529)\b|RESOURCE_EXHAUSTED|UNAVAILABLE|overload|rate.?limit|too many requests|service is busy|capacity/i.test(
     error,
   )
 }
@@ -172,8 +182,12 @@ function retryDelayMs(error: string): number | null {
   return delay ? Number(delay[1]) * 1_000 : null
 }
 
-function shouldSkipRetry(error: string): boolean {
-  if (/quota_exceeded|per.?day|daily|\bRPD\b/i.test(error)) return true
+function shouldSkipRetry(error: string, errorCode?: string): boolean {
+  if (
+    errorCode === 'timeout' ||
+    /Gemini HTTP (404|429)\b|quota_exceeded|per.?day|daily|\bRPD\b/i.test(error)
+  )
+    return true
   const delay = retryDelayMs(error)
   return delay !== null && delay > 2_000
 }
@@ -221,6 +235,18 @@ export function createGeminiRouter() {
   let fallbackCount = 0
   let overloadRetries = 0
   return {
+    firstContentTimeoutMs: 120_000,
+    maxDurationMs: 300_000,
+    maxAttempts: 10,
+    onExhausted(settings: AiSettings, reason: 'deadline' | 'attempt_limit'): void {
+      if (settings.provider !== 'gemini') return
+      recordRoutingEvent({
+        at: Date.now(),
+        model: settings.providers.gemini.model,
+        action: 'exhausted',
+        reason: reason === 'deadline' ? 'timeout' : 'other',
+      })
+    },
     onAttempt(settings: AiSettings): void {
       if (settings.provider === 'gemini') recordGeminiAttempt(settings.providers.gemini.model)
     },
@@ -245,6 +271,9 @@ export function createGeminiRouter() {
       if (request?.runId && request.runId !== activeRunId) {
         activeRunId = request.runId
         activeModel = ''
+      } else if (!request?.runId) {
+        // Standalone writer calls have no run id; each is a fresh routing decision.
+        activeModel = ''
       }
       if (activeDay !== pacificDate()) {
         activeDay = pacificDate()
@@ -261,22 +290,33 @@ export function createGeminiRouter() {
       overloadRetries = 0
       return withModel(settings, activeModel)
     },
-    retry(settings: AiSettings, error: string, emitted: boolean): number | null {
-      if (settings.provider !== 'gemini' || emitted || !isGeminiOverload(error)) return null
-      if (shouldSkipRetry(error) || overloadRetries >= 2) return null
+    retry(
+      settings: AiSettings,
+      error: string,
+      emitted: boolean,
+      errorCode?: string,
+    ): number | null {
+      if (settings.provider !== 'gemini' || emitted || !isRecoverableGeminiError(error, errorCode))
+        return null
+      if (shouldSkipRetry(error, errorCode) || overloadRetries >= 2) return null
       const delayMs = Math.max([400, 1_000][overloadRetries++] ?? 0, retryDelayMs(error) ?? 0)
       recordRoutingEvent({
         at: Date.now(),
         model: settings.providers.gemini.model,
         action: 'retry',
-        reason: failureReason(error),
+        reason: errorCode === 'timeout' ? 'timeout' : failureReason(error),
         delayMs,
       })
       return delayMs
     },
-    fallback(settings: AiSettings, error: string, emitted: boolean): AiSettings | null {
+    fallback(
+      settings: AiSettings,
+      error: string,
+      emitted: boolean,
+      errorCode?: string,
+    ): AiSettings | null {
       if (settings.provider !== 'gemini' || emitted || choice.startsWith('model:')) return null
-      if (!isGeminiOverload(error)) return null
+      if (!isRecoverableGeminiError(error, errorCode)) return null
       if (fallbackCount++ >= 5) return null
       coolDown(settings.providers.gemini.model, error)
       const order = candidates(choice, settings.providers.gemini.model)
@@ -287,7 +327,7 @@ export function createGeminiRouter() {
           at: Date.now(),
           model: current,
           action: 'exhausted',
-          reason: failureReason(error),
+          reason: errorCode === 'timeout' ? 'timeout' : failureReason(error),
         })
         return null
       }
@@ -297,7 +337,7 @@ export function createGeminiRouter() {
         at: Date.now(),
         model: current,
         action: 'fallback',
-        reason: failureReason(error),
+        reason: errorCode === 'timeout' ? 'timeout' : failureReason(error),
         to: next,
       })
       window.dispatchEvent(
