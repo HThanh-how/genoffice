@@ -6,6 +6,7 @@ export const GEMINI_CHOICE_KEY = 'genoffice-gemini-model-choice-v1'
 export const GEMINI_MODELS_KEY = 'genoffice-gemini-models-v1'
 export const GEMINI_ROUTING_EVENT = 'genoffice-gemini-routing-changed'
 export const GEMINI_USAGE_KEY = 'genoffice-gemini-usage-v1'
+export const GEMINI_ROUTING_LOG_KEY = 'genoffice-gemini-routing-log-v1'
 const GEMINI_COOLDOWN_KEY = 'genoffice-gemini-cooldowns-v1'
 
 export type GeminiModelChoice = 'auto' | 'smart' | 'fast' | `model:${string}`
@@ -95,6 +96,35 @@ function recordGeminiAttempt(model: string): void {
   } catch {
     /* usage display is best effort */
   }
+}
+
+export interface GeminiRoutingLogEntry {
+  at: number
+  model: string
+  action: 'selected' | 'retry' | 'fallback' | 'exhausted'
+  reason?: 'daily_quota' | 'rate_limit' | 'overloaded' | 'other'
+  to?: string
+  delayMs?: number
+}
+
+function recordRoutingEvent(entry: GeminiRoutingLogEntry): void {
+  try {
+    const raw = JSON.parse(localStorage.getItem(GEMINI_ROUTING_LOG_KEY) || '[]') as unknown
+    const entries = Array.isArray(raw) ? raw : []
+    localStorage.setItem(GEMINI_ROUTING_LOG_KEY, JSON.stringify([entry, ...entries].slice(0, 40)))
+    window.dispatchEvent(new Event(GEMINI_ROUTING_EVENT))
+  } catch {
+    // Diagnostics are local and best effort; never interrupt a request.
+  }
+}
+
+function failureReason(error: string): NonNullable<GeminiRoutingLogEntry['reason']> {
+  if (/quota_exceeded|per.?day|daily|\bRPD\b/i.test(error)) return 'daily_quota'
+  if (/Gemini HTTP 429\b|RESOURCE_EXHAUSTED|rate.?limit|too many requests/i.test(error))
+    return 'rate_limit'
+  if (/Gemini HTTP (503|529)\b|UNAVAILABLE|overload|service is busy|capacity/i.test(error))
+    return 'overloaded'
+  return 'other'
 }
 
 interface Cooldown {
@@ -223,8 +253,10 @@ export function createGeminiRouter() {
       const order = candidates(choice, settings.providers.gemini.model).filter(
         (model) => choice.startsWith('model:') || !onCooldown(model),
       )
-      if (!activeModel || !order.includes(activeModel))
+      if (!activeModel || !order.includes(activeModel)) {
         activeModel = order[0] || settings.providers.gemini.model
+        recordRoutingEvent({ at: Date.now(), model: activeModel, action: 'selected' })
+      }
       fallbackCount = 0
       overloadRetries = 0
       return withModel(settings, activeModel)
@@ -232,7 +264,15 @@ export function createGeminiRouter() {
     retry(settings: AiSettings, error: string, emitted: boolean): number | null {
       if (settings.provider !== 'gemini' || emitted || !isGeminiOverload(error)) return null
       if (shouldSkipRetry(error) || overloadRetries >= 2) return null
-      return Math.max([400, 1_000][overloadRetries++] ?? 0, retryDelayMs(error) ?? 0)
+      const delayMs = Math.max([400, 1_000][overloadRetries++] ?? 0, retryDelayMs(error) ?? 0)
+      recordRoutingEvent({
+        at: Date.now(),
+        model: settings.providers.gemini.model,
+        action: 'retry',
+        reason: failureReason(error),
+        delayMs,
+      })
+      return delayMs
     },
     fallback(settings: AiSettings, error: string, emitted: boolean): AiSettings | null {
       if (settings.provider !== 'gemini' || emitted || choice.startsWith('model:')) return null
@@ -242,9 +282,24 @@ export function createGeminiRouter() {
       const order = candidates(choice, settings.providers.gemini.model)
       const current = settings.providers.gemini.model
       const next = order.slice(order.indexOf(current) + 1).find((model) => !onCooldown(model))
-      if (!next) return null
+      if (!next) {
+        recordRoutingEvent({
+          at: Date.now(),
+          model: current,
+          action: 'exhausted',
+          reason: failureReason(error),
+        })
+        return null
+      }
       activeModel = next
       overloadRetries = 0
+      recordRoutingEvent({
+        at: Date.now(),
+        model: current,
+        action: 'fallback',
+        reason: failureReason(error),
+        to: next,
+      })
       window.dispatchEvent(
         new CustomEvent(GEMINI_ROUTING_EVENT, { detail: { from: current, to: next } }),
       )

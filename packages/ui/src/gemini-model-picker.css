@@ -46,9 +46,49 @@
   color: var(--text-primary, #253047);
 }
 .ai-model-picker-status {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.ai-model-picker-log {
+  position: relative;
+  flex: none;
+}
+.ai-model-picker-log summary {
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ai-model-picker-log-content {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 12px);
+  right: 0;
+  width: min(360px, 75vw);
+  max-height: 280px;
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border-strong, #d9dfe9);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  color: var(--text-primary, #253047);
+  box-shadow: 0 8px 24px #0002;
+  white-space: normal;
+}
+.ai-model-picker-log-content p {
+  margin: 6px 0;
+  color: var(--text-secondary, #677287);
+}
+.ai-model-picker-log-content ol {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+.ai-model-picker-log-content li {
+  margin: 5px 0;
+}
+.ai-model-picker-log-content time {
+  color: var(--text-secondary, #677287);
 }
 .ai-model-picker .sr-only {
   position: absolute;

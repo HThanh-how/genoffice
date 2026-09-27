@@ -11,6 +11,7 @@ export interface GeminiPickerModel {
 const CHOICE_KEY = 'genoffice-gemini-model-choice-v1'
 const MODELS_KEY = 'genoffice-gemini-models-v1'
 const USAGE_KEY = 'genoffice-gemini-usage-v1'
+const ROUTING_LOG_KEY = 'genoffice-gemini-routing-log-v1'
 const CHANGE_EVENT = 'genoffice-gemini-routing-changed'
 const DEFAULTS = [
   'gemini-3.8-flash',
@@ -47,6 +48,46 @@ function readUsage(): Record<string, number> {
   }
 }
 
+interface RoutingLogEntry {
+  at: number
+  model: string
+  action: 'selected' | 'retry' | 'fallback' | 'exhausted'
+  reason?: 'daily_quota' | 'rate_limit' | 'overloaded' | 'other'
+  to?: string
+  delayMs?: number
+}
+
+function readRoutingLog(): RoutingLogEntry[] {
+  try {
+    const saved = JSON.parse(localStorage.getItem(ROUTING_LOG_KEY) || '[]') as unknown
+    if (!Array.isArray(saved)) return []
+    return saved.filter(
+      (entry): entry is RoutingLogEntry =>
+        !!entry &&
+        typeof entry === 'object' &&
+        typeof entry.at === 'number' &&
+        typeof entry.model === 'string' &&
+        ['selected', 'retry', 'fallback', 'exhausted'].includes(entry.action),
+    )
+  } catch {
+    return []
+  }
+}
+
+function describeRouting(entry: RoutingLogEntry, vi: boolean): string {
+  const reason = {
+    daily_quota: vi ? 'hết hạn mức ngày' : 'daily quota',
+    rate_limit: vi ? 'giới hạn tốc độ' : 'rate limit',
+    overloaded: vi ? 'quá tải' : 'overloaded',
+    other: vi ? 'lỗi khác' : 'other error',
+  }[entry.reason || 'other']
+  if (entry.action === 'selected') return `${entry.model} · ${vi ? 'đã chọn' : 'selected'}`
+  if (entry.action === 'retry')
+    return `${entry.model} · ${vi ? 'thử lại' : 'retry'} (${reason}, ${entry.delayMs ?? 0} ms)`
+  if (entry.action === 'fallback') return `${entry.model} → ${entry.to} · ${reason}`
+  return `${entry.model} · ${vi ? 'không còn model dự phòng' : 'no backup model'} (${reason})`
+}
+
 /** Compact model selector shared by all six chat panels. */
 export function GeminiModelPicker({
   getProvider,
@@ -68,6 +109,7 @@ export function GeminiModelPicker({
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [usage, setUsage] = useState(readUsage)
+  const [routingLog, setRoutingLog] = useState(readRoutingLog)
 
   useEffect(() => {
     const timer = setInterval(() => setProvider(getProviderRef.current()), 2_000)
@@ -108,6 +150,7 @@ export function GeminiModelPicker({
     const changed = (event: Event) => {
       setChoice(readChoice())
       setUsage(readUsage())
+      setRoutingLog(readRoutingLog())
       const detail = (event as CustomEvent<{ from?: string; to?: string }>).detail
       if (detail?.to) setNotice(`${detail.from} → ${detail.to}`)
     }
@@ -128,6 +171,7 @@ export function GeminiModelPicker({
   const used = choice.startsWith('model:')
     ? usage[choice.slice(6)] || 0
     : Object.values(usage).reduce((total, count) => total + count, 0)
+  const latest = routingLog[0]
   const select = (value: string) => {
     try {
       localStorage.setItem(CHOICE_KEY, value)
@@ -197,10 +241,37 @@ export function GeminiModelPicker({
               ? 'Đang tải model…'
               : 'Loading models…'
             : error ||
-              (vi
-                ? `${used} lượt ghi nhận hôm nay · ${models.length} model · hạn mức không rõ`
-                : `${used} calls recorded today · ${models.length} models · quota unknown`))}
+              (latest
+                ? describeRouting(latest, vi)
+                : vi
+                  ? `${used} lượt ghi nhận hôm nay · hạn mức không rõ`
+                  : `${used} calls recorded today · quota unknown`))}
       </span>
+      <details className="ai-model-picker-log">
+        <summary>{vi ? 'Nhật ký' : 'Log'}</summary>
+        <div className="ai-model-picker-log-content">
+          <strong>{vi ? 'Hoạt động AI gần đây' : 'Recent AI activity'}</strong>
+          <p>
+            {vi
+              ? `${used} lượt gọi ghi nhận hôm nay. Chỉ lưu model, thời gian và loại lỗi trên máy này; hạn mức thực tế xem trong Google AI Studio.`
+              : `${used} calls recorded today. Only model, time and error type are saved on this device; check actual quota in Google AI Studio.`}
+          </p>
+          {routingLog.length ? (
+            <ol>
+              {routingLog.slice(0, 12).map((entry, index) => (
+                <li key={`${entry.at}-${index}`}>
+                  <time dateTime={new Date(entry.at).toISOString()}>
+                    {new Date(entry.at).toLocaleString(vi ? 'vi-VN' : 'en-US')}
+                  </time>{' '}
+                  {describeRouting(entry, vi)}
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p>{vi ? 'Chưa có hoạt động nào được ghi.' : 'No activity recorded yet.'}</p>
+          )}
+        </div>
+      </details>
     </div>
   )
 }
