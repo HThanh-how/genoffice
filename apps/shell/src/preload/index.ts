@@ -25,6 +25,7 @@ import type {
   FileSearchPage,
   FileSearchRerank,
   FileSearchSettings,
+  LegacyDocSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
 import { INTEGRATIONS_CHANNELS } from '../shared/integrations-api'
@@ -285,6 +286,15 @@ const homeApi: HomeApi = {
     if (theme !== 'light' && theme !== 'dark' && theme !== 'system')
       throw new Error('Invalid theme.')
     await ipcRenderer.invoke(HOME_CHANNELS.setTheme, theme)
+  },
+  async getLegacyDocSettings() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.getLegacyDocSettings)) as LegacyDocSettings
+  },
+  async setLegacyDocSettings(settings) {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.setLegacyDocSettings,
+      settings,
+    )) as LegacyDocSettings
   },
   async getAutoSaveDefault() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getAutoSaveDefault)

@@ -38,6 +38,11 @@ export type UiLanguage =
 /** UI theme preference */
 export type UiTheme = 'light' | 'dark' | 'system'
 
+export interface LegacyDocSettings {
+  mode: 'ask' | 'online' | 'text'
+  endpoint: string
+}
+
 /** shell-wide AutoSave default for every editor; updatedAt is 0 until first set */
 export interface AutoSaveDefault {
   on: boolean
@@ -253,6 +258,9 @@ export interface HomeApi {
   getTheme(): Promise<UiTheme>
   /** switch + persist the UI theme; broadcasts 'app:theme-changed' to all web contents */
   setTheme(theme: UiTheme): Promise<void>
+  /** Legacy Word conversion privacy preference and optional self-hosted endpoint. */
+  getLegacyDocSettings(): Promise<LegacyDocSettings>
+  setLegacyDocSettings(settings: LegacyDocSettings): Promise<LegacyDocSettings>
   /** AutoSave default applied by every editor window (persisted in userData/app-settings.json) */
   getAutoSaveDefault(): Promise<AutoSaveDefault>
   /** persist the AutoSave default; broadcasts 'app:auto-save-default-changed' to all web contents */
@@ -512,6 +520,8 @@ export const HOME_CHANNELS = {
   setOnboardingSeen: 'home:set-onboarding-seen',
   getTheme: 'home:get-theme',
   setTheme: 'home:set-theme',
+  getLegacyDocSettings: 'home:get-legacy-doc-settings',
+  setLegacyDocSettings: 'home:set-legacy-doc-settings',
   getAutoSaveDefault: 'home:get-auto-save-default',
   setAutoSaveDefault: 'home:set-auto-save-default',
   getMcpStatus: 'home:get-mcp-status',

@@ -9,7 +9,12 @@ import {
   clampAiCustomFontSize,
 } from '@genoffice/ui'
 import type { AiFontSize, AiPanelPrefs, AiPanelSide } from '@genoffice/ui'
-import type { DefaultAppStatus, FileSearchSettings, JevEndpoint } from '../../shared/home-api'
+import type {
+  DefaultAppStatus,
+  FileSearchSettings,
+  JevEndpoint,
+  LegacyDocSettings,
+} from '../../shared/home-api'
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   MAX_MAX_OUTPUT_TOKENS,
@@ -1289,6 +1294,10 @@ export function SettingsModal({
   const [defaultAppFailed, setDefaultAppFailed] = useState(false)
   const [aiPrefs, setAiPrefs] = useState<AiPanelPrefs>(DEFAULT_AI_PANEL_PREFS)
   const [channel, setChannel] = useState<'stable' | 'beta'>('stable')
+  const [legacyDoc, setLegacyDoc] = useState<LegacyDocSettings>({
+    mode: 'ask',
+    endpoint: 'https://d2x.clouds.io.vn',
+  })
   const [appVersion, setAppVersion] = useState('')
   const [githubStars, setGithubStars] = useState<number | null>(null)
 
@@ -1315,6 +1324,9 @@ export function SettingsModal({
     void window.aiOffice.getUpdateChannel?.().then((ch) => {
       if (alive) setChannel(ch)
     })
+    void window.aiOffice.getLegacyDocSettings?.().then((value) => {
+      if (alive) setLegacyDoc(value)
+    })
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
     })
@@ -1339,6 +1351,12 @@ export function SettingsModal({
     void window.aiOffice.setTheme(next)
     if (next === 'system') document.documentElement.removeAttribute('data-theme')
     else document.documentElement.setAttribute('data-theme', next)
+  }
+
+  const updateLegacyDoc = (patch: Partial<LegacyDocSettings>) => {
+    const next = { ...legacyDoc, ...patch }
+    setLegacyDoc(next)
+    void window.aiOffice.setLegacyDocSettings(next).then(setLegacyDoc)
   }
 
   const updateAiPrefs = (patch: Partial<AiPanelPrefs>) => {
@@ -1485,6 +1503,50 @@ export function SettingsModal({
             {section === 'general' && (
               <>
                 <h3 className="set-pane-title">{t('setSecGeneral')}</h3>
+                <div className="set-field">
+                  <div className="set-field-text">
+                    <div className="set-field-stack">
+                      <div className="set-field-label">Legacy Word files (.doc)</div>
+                      <div className="set-field-desc">
+                        Online conversion sends the file to the service below. The original stays on
+                        your device.
+                      </div>
+                    </div>
+                  </div>
+                  <Dropdown
+                    className="set-dd"
+                    value={legacyDoc.mode}
+                    ariaLabel="Legacy Word conversion"
+                    options={[
+                      { value: 'ask', label: 'Ask each time' },
+                      { value: 'online', label: 'Convert online' },
+                      { value: 'text', label: 'Never upload' },
+                    ]}
+                    onPick={(mode) => updateLegacyDoc({ mode: mode as LegacyDocSettings['mode'] })}
+                  />
+                </div>
+                <div className="set-field">
+                  <div className="set-field-text">
+                    <div className="set-field-stack">
+                      <label className="set-field-label" htmlFor="set-legacy-doc-endpoint">
+                        Conversion service
+                      </label>
+                      <div className="set-field-desc">
+                        Use the default service or your own HTTPS server.
+                      </div>
+                    </div>
+                  </div>
+                  <input
+                    id="set-legacy-doc-endpoint"
+                    className="set-input"
+                    type="url"
+                    value={legacyDoc.endpoint}
+                    onChange={(event) =>
+                      setLegacyDoc({ ...legacyDoc, endpoint: event.target.value })
+                    }
+                    onBlur={() => updateLegacyDoc({ endpoint: legacyDoc.endpoint.trim() })}
+                  />
+                </div>
                 <div className="set-field">
                   <div className="set-field-text">
                     <label className="set-field-label">{t('language')}</label>

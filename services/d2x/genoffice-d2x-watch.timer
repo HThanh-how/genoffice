@@ -1,0 +1,11 @@
+[Unit]
+Description=Check GenOffice converter replica health every 15 seconds
+
+[Timer]
+OnBootSec=15s
+OnUnitActiveSec=15s
+AccuracySec=2s
+Unit=genoffice-d2x-watch.service
+
+[Install]
+WantedBy=timers.target

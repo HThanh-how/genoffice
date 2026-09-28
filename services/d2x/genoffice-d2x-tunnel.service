@@ -1,0 +1,19 @@
+[Unit]
+Description=Cloudflare Tunnel replica for GenOffice DOC conversion
+After=network-online.target genoffice-d2x.service
+Wants=network-online.target
+BindsTo=genoffice-d2x.service
+
+[Service]
+Type=simple
+ExecStartPre=/usr/bin/python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8765/health', timeout=3)"
+ExecStart=/usr/local/bin/cloudflared --no-autoupdate tunnel --config /etc/genoffice-d2x/config.yml run
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/genoffice-d2x/config.yml /etc/genoffice-d2x/credentials.json
+
+[Install]
+WantedBy=multi-user.target

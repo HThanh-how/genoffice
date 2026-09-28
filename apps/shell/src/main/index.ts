@@ -25,7 +25,7 @@ import {
 } from 'electron'
 import type { MenuItemConstructorOptions, NativeImage, WebContents } from 'electron'
 import { atomicWriteFile } from './atomic-write'
-import { convertLegacyDoc } from './legacy-doc'
+import { convertLegacyDoc, DEFAULT_LEGACY_DOC_SERVICE } from './legacy-doc'
 import { tabStripOverlay } from './title-bar-overlay'
 import menuDocxIcon1x from './assets/menu-docx.png?asset'
 import menuDocxIcon2x from './assets/menu-docx@2x.png?asset'
@@ -265,6 +265,7 @@ import type {
   FileSearchQuery,
   FileSearchRerank,
   FileSearchSettings,
+  LegacyDocSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
 import {
@@ -447,6 +448,37 @@ registerPrivilegedSchemes()
 // same file when they pick up i18n later. GENOFFICE_LANG overrides for tests.
 
 const APP_SETTINGS_PATH = () => join(app.getPath('userData'), 'app-settings.json')
+
+function legacyDocSettings(): LegacyDocSettings {
+  const saved = readAppSettings(APP_SETTINGS_PATH())
+  return {
+    mode:
+      saved.legacyDocMode === 'online' || saved.legacyDocMode === 'text'
+        ? saved.legacyDocMode
+        : 'ask',
+    endpoint:
+      typeof saved.legacyDocEndpoint === 'string' && saved.legacyDocEndpoint.trim()
+        ? saved.legacyDocEndpoint.trim()
+        : DEFAULT_LEGACY_DOC_SERVICE,
+  }
+}
+
+function validLegacyDocEndpoint(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length > 256) return false
+  try {
+    const url = new URL(value)
+    return (
+      (url.protocol === 'https:' || (url.protocol === 'http:' && url.hostname === '127.0.0.1')) &&
+      !url.username &&
+      !url.password &&
+      url.pathname === '/' &&
+      !url.search &&
+      !url.hash
+    )
+  } catch {
+    return false
+  }
+}
 const OPEN_DOCUMENTS_PATH = () => join(app.getPath('userData'), OPEN_DOCUMENTS_FILE)
 /** only the instance holding the single-instance lock may write or remove the registry */
 let ownsOpenDocumentsRegistry = false
@@ -3108,12 +3140,44 @@ async function openLegacyDoc(filePath: string): Promise<void> {
   if (pendingLegacyDocImports.has(filePath)) return
   pendingLegacyDocImports.add(filePath)
   try {
-    const result = await convertLegacyDoc(filePath)
+    const settings = legacyDocSettings()
+    let online = settings.mode === 'online'
+    // macOS has a built-in converter: use it before asking to upload a file.
+    const localResult =
+      settings.mode === 'ask' && process.platform === 'darwin'
+        ? await convertLegacyDoc(filePath)
+        : null
+    if (settings.mode === 'ask' && localResult?.fidelity !== 'formatted') {
+      const options = {
+        type: 'question' as const,
+        title: 'Open legacy Word document',
+        message: 'How should GenOffice convert this .doc file?',
+        detail: `Online conversion sends the file to ${settings.endpoint}. The original file stays unchanged.`,
+        buttons: ['Convert online', 'Open text-only copy', 'Cancel'],
+        defaultId: 0,
+        cancelId: 2,
+        checkboxLabel: 'Remember my choice',
+      }
+      const choice = shellWindow
+        ? await dialog.showMessageBox(shellWindow, options)
+        : await dialog.showMessageBox(options)
+      if (choice.response === 2) return
+      online = choice.response === 0
+      if (choice.checkboxChecked) {
+        writeAppSetting(APP_SETTINGS_PATH(), 'legacyDocMode', online ? 'online' : 'text')
+      }
+    }
+    const result =
+      localResult && (localResult.fidelity === 'formatted' || !online)
+        ? localResult
+        : await convertLegacyDoc(filePath, online ? settings.endpoint : undefined)
     if (result.fidelity === 'text') {
       const options = {
         type: 'warning' as const,
         title: 'Limited legacy Word import',
-        message: 'A full .doc converter is not available on this device.',
+        message: online
+          ? 'The online .doc converter could not process this file.'
+          : 'A full .doc converter is not available on this device.',
         detail:
           'GenOffice can open an editable .docx copy containing the readable text. Tables, images and formatting may be missing. The original .doc will remain unchanged.',
         buttons: ['Open text-only copy', 'Cancel'],
@@ -3771,6 +3835,20 @@ function registerHomeIpc(): void {
   })
 
   ipcMain.handle(HOME_CHANNELS.getTheme, (): UiTheme => currentTheme())
+  ipcMain.handle(HOME_CHANNELS.getLegacyDocSettings, (): LegacyDocSettings => legacyDocSettings())
+  ipcMain.handle(HOME_CHANNELS.setLegacyDocSettings, (_event, input: unknown) => {
+    if (!input || typeof input !== 'object') return legacyDocSettings()
+    const request = input as Partial<LegacyDocSettings>
+    if (request.mode !== 'ask' && request.mode !== 'online' && request.mode !== 'text') {
+      return legacyDocSettings()
+    }
+    if (!validLegacyDocEndpoint(request.endpoint)) return legacyDocSettings()
+    writeAppSettings(APP_SETTINGS_PATH(), {
+      legacyDocMode: request.mode,
+      legacyDocEndpoint: request.endpoint,
+    })
+    return legacyDocSettings()
+  })
   // editor tabs ask via the app-wide channel (symmetric with app:get-language)
   ipcMain.handle('app:get-theme', (): UiTheme => currentTheme())
 

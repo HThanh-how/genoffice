@@ -1,0 +1,31 @@
+[Unit]
+Description=GenOffice legacy Word conversion gateway
+After=network.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+ExecStart=/usr/bin/python3 /opt/genoffice-d2x/server.py
+Restart=on-failure
+RestartSec=3
+Environment=D2X_HOST=127.0.0.1
+Environment=D2X_PORT=8765
+Environment=D2X_MAX_INPUT=20971520
+Environment=D2X_TIMEOUT=45
+Environment=D2X_HOURLY_LIMIT=30
+Environment=D2X_GLOBAL_HOURLY_LIMIT=120
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+MemoryMax=1536M
+TasksMax=80
+LogRateLimitIntervalSec=60s
+LogRateLimitBurst=200
+
+[Install]
+WantedBy=multi-user.target

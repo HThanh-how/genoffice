@@ -1,0 +1,6 @@
+tunnel: 9b24459b-7227-476c-9c01-7c21a175e3ec
+credentials-file: /etc/genoffice-d2x/credentials.json
+ingress:
+  - hostname: d2x.clouds.io.vn
+    service: http://127.0.0.1:8765
+  - service: http_status:404

@@ -1,0 +1,6 @@
+[Unit]
+Description=Check GenOffice converter before accepting tunnel traffic
+
+[Service]
+Type=oneshot
+ExecStart=/opt/genoffice-d2x/tunnel-watch.sh
