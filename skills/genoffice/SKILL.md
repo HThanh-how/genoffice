@@ -125,7 +125,7 @@ Branch on `error`, do what `suggestion` says, then resend the **whole** batch (a
 | `resource_limit`                       | The package has too many or too large parts, an implausible compression ratio or an entry path that escapes the archive; `detail` names the entry and the limit. Do not retry; tell the user |
 | `unsupported`                          | `detail.supported` lists what this command accepts; pick another route from the table above                                                                                                  |
 | `conversion_failed`, `app_unavailable` | The file or the app: retry once; if `capabilities --json` says the app is missing, tell the user (PDF and `→html`/`html→` routes need GenOffice)                                             |
-| `app_crashed`                          | GenOffice crashed during a headless export (`detail.signal`): retry once; if it repeats, tell the user and name the document and the crash log path from `suggestion`                       |
+| `app_crashed`                          | GenOffice crashed during a headless export (`detail.signal`): retry once; if it repeats, tell the user and name the document and the crash log path from `suggestion`                        |
 
 A successful result may still carry `warnings[]` (`{code, message, suggestion?}`): `formulas_not_cached`, `op_warning` (a sheets op was adjusted), `images_dropped` (`convert docx→md`), `output_renamed` (`image` saved with the provider's real extension), `unresolved_placeholder` (`merge` left placeholders without a value in place). Read them, report what matters, do not retry.
 

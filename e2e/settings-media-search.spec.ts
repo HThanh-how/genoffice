@@ -12,7 +12,18 @@ test('Jev reranking lives in the AI Media & Search pane, saves with it, and repo
   })
   const { page, userDataDir } = launched
   try {
-    await page.getByRole('button', { name: 'Settings', exact: true }).click()
+    const settingsButton = page.getByRole('button', { name: 'Settings', exact: true })
+    await expect(settingsButton).toBeVisible()
+    // This test checks Jev's local validation; keep unrelated provider probes
+    // deterministic instead of waiting for external search or media services.
+    await page.evaluate(() => {
+      window.aiOffice = {
+        ...window.aiOffice,
+        testAiSearchSettings: async () => ({ ok: true }),
+        testAiMediaSettings: async () => ({ ok: true }),
+      }
+    })
+    await settingsButton.click()
     await page.locator('.set-nav-item').filter({ hasText: 'General' }).click()
     await expect(page.getByRole('switch', { name: 'Jev search reranking' })).toHaveCount(0)
 
@@ -29,10 +40,9 @@ test('Jev reranking lives in the AI Media & Search pane, saves with it, and repo
     // the block reports its own verdict: no key entered, nothing leaves the machine
     await page.getByRole('button', { name: 'Test connection', exact: true }).click()
     await expect(block.locator('.set-ai-status.err')).toHaveText('Enter an API key')
-    // the footer names the first failing block and its provider; which one comes
-    // first depends on whether this machine is signed in to Genspark
+    // The footer names the failing local file search block and provider.
     await expect(page.locator('.set-pane-actions .set-ai-status.err')).toHaveText(
-      /^(Web search · Genspark|Local file search · TypeSafe): .+/,
+      /^Local file search · TypeSafe: .+/,
     )
     await page.screenshot({ path: screenshotPath('settings-media-search-test') })
 
