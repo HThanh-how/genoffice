@@ -25,13 +25,14 @@ export { blockRangePositions, isTrackedDeleted, liveText }
  * (block list with numbered addressing), reads full block content on demand,
  * and mutates the document exclusively through tools (tools.ts). Questions
  * are answered directly in chat without touching the document. Context size
- * stays bounded: previews are clipped and full content is pulled lazily.
+ * stays bounded: short documents include a full snapshot; longer ones are read lazily.
  */
 
 // ---- context budgets (characters, ≈4 chars/token) ----
 
 const SELECTION_MAX_CHARS = 24_000
 const DOC_CONTEXT_MAX_CHARS = 8_000
+const FULL_SNAPSHOT_MAX_CHARS = 8_000
 const PREVIEW_MAX_CHARS = 60
 const PREVIEW_TIGHT_CHARS = 20
 
@@ -113,7 +114,7 @@ export const AGENT_SYSTEM_PROMPT = [
   '',
   '# Tool usage',
   '- Every user message carries the latest "document block list" (index|type|content preview; previews may be truncated); after modifications, call get_document_context if you need the latest state;',
-  '- When a list preview is truncated, read the full content with read_blocks before rewriting; never rewrite based on a truncated preview;',
+  '- For a short document, the message may include a full document HTML snapshot. Use it directly without calling read_blocks again while it is current. If there is no snapshot or the target content has changed, call read_blocks before rewriting; never rewrite from a truncated preview;',
   '- Content changes: use insert_content for new content, and replace_blocks to rewrite/replace existing blocks (pass a block index range and the new HTML); replaced blocks pass their paragraph and text formatting (font, size, color, indent, spacing, alignment) on to the new blocks automatically, and a rewritten table keeps its widths, borders, shading and cell formatting, so a rewrite never needs follow-up formatting commands;',
   '- Long new content (drafting a whole document, a chapter, a full report/article/translation — anything beyond a few paragraphs) goes through write_document: you pass the plan and the reference material, and the system writer streams the text into the document while the user watches; never paste long content into insert_content. When the document is blank and the user asks for content, use write_document;',
   '- Formatting, structure, and batch operations (color/font size/line spacing/alignment/indent/heading level/find & replace/delete/move/list conversion) go through apply_ops — do not rewrite whole blocks with replace_blocks;',
@@ -773,6 +774,14 @@ export function buildDocContext(
   const selectedText = partial
     ? editor.state.doc.textBetween(partial.from, partial.to, '\n', ' ')
     : ''
+  // One local serialization often saves an entire model round trip for short
+  // documents. The block list remains authoritative for numeric addresses.
+  const fullSnapshot =
+    !isEmptyDoc &&
+    editor.state.doc.childCount <= 80 &&
+    editor.state.doc.content.size <= FULL_SNAPSHOT_MAX_CHARS
+      ? serializeRangeToHtml(editor, 0, editor.state.doc.childCount - 1)
+      : ''
   const selectionLines = partial
     ? [
         `Content selected by the user (blocks ${scope.startIndex}-${scope.endIndex}; ONLY the span inside <sel>…</sel> is selected, the rest of these blocks is shown for context):`,
@@ -787,6 +796,9 @@ export function buildDocContext(
     isEmptyDoc
       ? 'The document is currently blank.'
       : `Document block list:\n${buildDocumentContext(editor, scope, hf)}`,
+    fullSnapshot && fullSnapshot.length <= FULL_SNAPSHOT_MAX_CHARS
+      ? `Full document HTML snapshot (blocks 0-${editor.state.doc.childCount - 1} in order; current at the start of this turn, so there is no need to call read_blocks for these unchanged blocks):\n${fullSnapshot}`
+      : '',
     // a blank body can still carry headers/footers (template setup): keep them visible
     isEmptyDoc && hf ? hfContextLines(hf).join('\n') : '',
     sections ? pageSetupContextLines(sections).join('\n') : '',

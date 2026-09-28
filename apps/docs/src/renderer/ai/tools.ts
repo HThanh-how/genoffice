@@ -94,7 +94,7 @@ export const AGENT_TOOLS: AgentToolDef[] = [
   {
     name: 'read_blocks',
     description:
-      'Read the full content of a block range (restricted HTML). Previews in the block list are truncated; you must read the full original text with this tool before rewriting. ' +
+      'Read the full content of a block range (restricted HTML). Use this when the message has no full document HTML snapshot or when edits made that snapshot stale; do not spend another model turn rereading content already present in a current snapshot. ' +
       'Long ranges are paged: a truncated result says which offset to continue from; concatenate the slices in order to get the full HTML.',
     inputSchema: {
       type: 'object',

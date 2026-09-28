@@ -85,6 +85,21 @@ function makeLoop(editor: Editor, transport: AgentTransport, onDone: (text: stri
   })
 }
 
+describe('document context latency', () => {
+  it('includes full restricted HTML for a short document so a separate read is unnecessary', () => {
+    const context = buildDocContext(createEditor(fixture()))
+    expect(context).toContain('Full document HTML snapshot')
+    expect(context).toContain('<h1>Chapter 1 Overview</h1>')
+    expect(context).toContain('<p>This document is for reference only.</p>')
+  })
+
+  it('keeps a long document on the paged read path', () => {
+    const context = buildDocContext(createEditor([para('Long content '.repeat(900))]))
+    expect(context).not.toContain('Full document HTML snapshot')
+    expect(context).toContain('Document block list:')
+  })
+})
+
 describe('word-count stats (answer-style requests)', () => {
   it('each turn context carries full-text stats matching the status bar so the model can quote them directly', async () => {
     const editor = createEditor(fixture())

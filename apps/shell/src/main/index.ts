@@ -3109,6 +3109,22 @@ async function openLegacyDoc(filePath: string): Promise<void> {
   pendingLegacyDocImports.add(filePath)
   try {
     const result = await convertLegacyDoc(filePath)
+    if (result.fidelity === 'text') {
+      const options = {
+        type: 'warning' as const,
+        title: 'Limited legacy Word import',
+        message: 'A full .doc converter is not available on this device.',
+        detail:
+          'GenOffice can open an editable .docx copy containing the readable text. Tables, images and formatting may be missing. The original .doc will remain unchanged.',
+        buttons: ['Open text-only copy', 'Cancel'],
+        defaultId: 1,
+        cancelId: 1,
+      }
+      const choice = shellWindow
+        ? await dialog.showMessageBox(shellWindow, options)
+        : await dialog.showMessageBox(options)
+      if (choice.response !== 0) return
+    }
     const suggestedName = `${basename(filePath, extname(filePath))}.docx`
     let convertedPath = uniquePathIn(dirname(filePath), suggestedName)
     try {
@@ -3121,12 +3137,6 @@ async function openLegacyDoc(filePath: string): Promise<void> {
       await atomicWriteFile(convertedPath, result.bytes)
     }
     if (!openDocumentPath(convertedPath)) throw new Error('Converted document could not be opened')
-    if (result.fidelity === 'text') {
-      showAppWarning(
-        'The legacy .doc was opened as an editable .docx copy containing its text. ' +
-          'Formatting, images and tables may be missing. The original .doc was left unchanged.',
-      )
-    }
   } catch (error) {
     console.error('[shell] legacy .doc import failed:', error)
     showAppWarning('Could not read this .doc file. It may be damaged or password-protected.')
