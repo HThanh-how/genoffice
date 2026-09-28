@@ -433,6 +433,14 @@ const config = {
       mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     },
     {
+      ext: 'doc',
+      name: 'Legacy Word Document',
+      description: 'Word 97-2003 Document',
+      role: 'Editor',
+      icon: 'docx',
+      mimeType: 'application/msword',
+    },
+    {
       ext: 'xlsx',
       name: 'Excel Workbook',
       description: 'Excel Workbook',
