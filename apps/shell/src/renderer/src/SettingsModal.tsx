@@ -1508,19 +1508,22 @@ export function SettingsModal({
                     <div className="set-field-stack">
                       <div className="set-field-label">Legacy Word files (.doc)</div>
                       <div className="set-field-desc">
-                        Online conversion sends the file to the service below. The original stays on
-                        your device.
+                        {legacyDoc.mode === 'text'
+                          ? 'Keep files on this device. macOS can preserve formatting; Windows and Linux open a text-only copy, so images and layout may be lost.'
+                          : legacyDoc.mode === 'online'
+                            ? 'Convert automatically. macOS tries its built-in converter first; other files are sent to the service below.'
+                            : 'Ask before sending a file. macOS tries its built-in converter first. The original file is never changed.'}
                       </div>
                     </div>
                   </div>
                   <Dropdown
                     className="set-dd"
                     value={legacyDoc.mode}
-                    ariaLabel="Legacy Word conversion"
+                    ariaLabel="Legacy Word conversion and upload preference"
                     options={[
-                      { value: 'ask', label: 'Ask each time' },
-                      { value: 'online', label: 'Convert online' },
-                      { value: 'text', label: 'Never upload' },
+                      { value: 'ask', label: 'Ask before upload' },
+                      { value: 'online', label: 'Convert automatically' },
+                      { value: 'text', label: 'On-device only' },
                     ]}
                     onPick={(mode) => updateLegacyDoc({ mode: mode as LegacyDocSettings['mode'] })}
                   />
@@ -1532,7 +1535,9 @@ export function SettingsModal({
                         Conversion service
                       </label>
                       <div className="set-field-desc">
-                        Use the default service or your own HTTPS server.
+                        Online conversion sends the entire document over HTTPS. The default public
+                        service deletes temporary files after conversion; it does not verify that
+                        requests come from GenOffice. You can use your own HTTPS service.
                       </div>
                     </div>
                   </div>
@@ -1541,6 +1546,7 @@ export function SettingsModal({
                     className="set-input"
                     type="url"
                     value={legacyDoc.endpoint}
+                    disabled={legacyDoc.mode === 'text'}
                     onChange={(event) =>
                       setLegacyDoc({ ...legacyDoc, endpoint: event.target.value })
                     }
