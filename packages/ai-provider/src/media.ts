@@ -224,9 +224,9 @@ export function defaultAiMediaSettings(): AiMediaSettings {
     }
   }
   return {
-    imageProvider: 'genspark',
-    analysisProvider: 'genspark',
-    videoAnalysisProvider: 'genspark',
+    imageProvider: 'gemini',
+    analysisProvider: 'gemini',
+    videoAnalysisProvider: 'gemini',
     providers,
   }
 }
@@ -261,12 +261,17 @@ export function resolveAiMediaSettings(
     }
   }
   const legacy = stored.provider
-  const analysisProvider = stored.analysisProvider ?? legacy ?? defaults.analysisProvider
+  const withoutGenspark = (id: AiMediaProviderId | undefined, fallback: AiMediaProviderId) =>
+    id && id !== 'genspark' ? id : fallback
+  const analysisProvider = withoutGenspark(
+    stored.analysisProvider ?? legacy,
+    defaults.analysisProvider,
+  )
   return {
-    imageProvider: stored.imageProvider ?? legacy ?? defaults.imageProvider,
+    imageProvider: withoutGenspark(stored.imageProvider ?? legacy, defaults.imageProvider),
     analysisProvider,
     // a pre-split file used one vendor for all media analysis
-    videoAnalysisProvider: stored.videoAnalysisProvider ?? analysisProvider,
+    videoAnalysisProvider: withoutGenspark(stored.videoAnalysisProvider, analysisProvider),
     providers,
   }
 }
@@ -334,10 +339,10 @@ function capabilityAvailable(
   gskLoggedIn: boolean,
   capability: MediaCapability,
 ): boolean {
-  if (!settings) return gskLoggedIn
+  if (!settings) return false
   const model = byokModel(settings, capability)
   if (model !== null) return model !== ''
-  return gskLoggedIn && settings.gskToolsEnabled !== false
+  return gskLoggedIn && settings.gskToolsEnabled === true
 }
 
 /** live predicate for the generate_image tool: BYOK image model configured, or gsk login + cloud tools on */

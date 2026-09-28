@@ -11,6 +11,7 @@
 
 import { aiFetch } from './fetch'
 import { httpBodyDetail } from './http-error'
+import { openAiContentText, readCappedResponseText } from './protocols/shared'
 import {
   DASHSCOPE_BASE_URL,
   GEMINI_MEDIA_BASE_URL,
@@ -133,7 +134,10 @@ function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
 }
 
 async function failFrom(label: string, resp: Response): Promise<never> {
-  const body = await resp.text().catch(() => '')
+  const body = await readCappedResponseText(resp, {
+    maxBytes: MAX_ERROR_BODY_BYTES,
+    onOverflow: 'truncate',
+  })
   throw new Error(`${label} ${resp.status}: ${httpBodyDetail(body)}`)
 }
 
@@ -147,6 +151,11 @@ function withTimeout(signal: AbortSignal | undefined, ms: number): AbortSignal {
 }
 
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024
+
+/** An error body is only ever read for a short diagnostic (httpBodyDetail keeps 500
+ * characters), so it is capped hard: a vendor answering an error with a multi-megabyte
+ * HTML page must not be buffered whole just to be truncated afterwards. */
+const MAX_ERROR_BODY_BYTES = 64 * 1024
 
 /** the body counted as it streams and dropped past the cap; a missing Content-Length is unknown, not zero */
 async function readCapped(resp: Response, label: string): Promise<Uint8Array> {
@@ -415,19 +424,6 @@ async function generateImageMinimax(
 }
 
 // ── OpenAI-compatible chat understanding ───────────────────────────
-
-function openAiContentText(content: unknown): string {
-  if (typeof content === 'string') return content
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        const p = asRecord(part)
-        return typeof p.text === 'string' ? p.text : ''
-      })
-      .join('')
-  }
-  return ''
-}
 
 async function analyzeMediaOpenAi(
   provider: ByokMediaProviderId,
@@ -746,7 +742,10 @@ export async function testMediaProvider(
     // Vendors without a model-listing endpoint answer 404/405 to a valid
     // key, so those statuses still mean the credentials are usable.
     if (resp.status === 404 || resp.status === 405) return { ok: true }
-    const body = await resp.text().catch(() => '')
+    const body = await readCappedResponseText(resp, {
+      maxBytes: MAX_ERROR_BODY_BYTES,
+      onOverflow: 'truncate',
+    })
     const detail = httpBodyDetail(body)
     if (resp.status === 429) {
       return {

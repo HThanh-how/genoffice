@@ -7,12 +7,17 @@ import {
 } from '../src/search-settings'
 
 describe('search settings', () => {
-  it('defaults to genspark with empty keys and rides along in defaultAiSettings', () => {
+  it('defaults to keyless Parallel with empty keys and rides along in defaultAiSettings', () => {
     expect(defaultAiSearchSettings()).toEqual({
-      provider: 'genspark',
-      providers: { serper: { apiKey: '' }, tavily: { apiKey: '' }, parallel: { apiKey: '' } },
+      provider: 'parallel',
+      providers: {
+        serper: { apiKey: '' },
+        serply: { apiKey: '' },
+        tavily: { apiKey: '' },
+        parallel: { apiKey: '' },
+      },
     })
-    expect(defaultAiSettings().search?.provider).toBe('genspark')
+    expect(defaultAiSettings().search?.provider).toBe('parallel')
     const resolved = resolveAiSettings(
       { provider: 'genspark', providers: {} as never },
       defaultAiSettings(),
@@ -31,20 +36,30 @@ describe('search settings', () => {
   })
 
   it('activates a BYOK search provider only with a key', () => {
-    expect(activeSearchProvider({ search: undefined })).toBe('genspark')
+    expect(activeSearchProvider({ search: undefined })).toBe('parallel')
     expect(
       activeSearchProvider({
         search: {
           provider: 'serper',
-          providers: { serper: { apiKey: '' }, tavily: { apiKey: '' }, parallel: { apiKey: '' } },
+          providers: {
+            serper: { apiKey: '' },
+            serply: { apiKey: '' },
+            tavily: { apiKey: '' },
+            parallel: { apiKey: '' },
+          },
         },
       }),
-    ).toBe('genspark')
+    ).toBe('parallel')
     expect(
       activeSearchProvider({
         search: {
           provider: 'serper',
-          providers: { serper: { apiKey: 'k' }, tavily: { apiKey: '' }, parallel: { apiKey: '' } },
+          providers: {
+            serper: { apiKey: 'k' },
+            serply: { apiKey: '' },
+            tavily: { apiKey: '' },
+            parallel: { apiKey: '' },
+          },
         },
       }),
     ).toBe('serper')
@@ -54,15 +69,33 @@ describe('search settings', () => {
           provider: 'serper',
           providers: {
             serper: { apiKey: '   ' },
+            serply: { apiKey: '' },
             tavily: { apiKey: '' },
             parallel: { apiKey: '' },
           },
         },
       }),
-    ).toBe('genspark')
+    ).toBe('parallel')
     expect(activeSearchProvider({ search: { provider: 'bing', providers: {} } as never })).toBe(
-      'genspark',
+      'parallel',
     )
+  })
+})
+
+describe('Serply search settings', () => {
+  it('restores and trims a saved Serply key and activates it only with a key', () => {
+    const settings = resolveAiSearchSettings({
+      provider: 'serply',
+      providers: { serply: { apiKey: ' serply-key ' } } as never,
+    })
+    expect(settings.provider).toBe('serply')
+    expect(settings.providers.serply.apiKey).toBe('serply-key')
+    expect(activeSearchProvider({ search: settings })).toBe('serply')
+    expect(
+      activeSearchProvider({
+        search: { ...settings, providers: { ...settings.providers, serply: { apiKey: '  ' } } },
+      }),
+    ).toBe('parallel')
   })
 })
 

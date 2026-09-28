@@ -321,45 +321,25 @@ export function defaultAiSettings(
     }
   }
   return {
-    provider: 'genspark',
+    provider: 'gemini',
     providers,
-    gskToolsEnabled: true,
+    gskToolsEnabled: false,
     media: defaultAiMediaSettings(),
     search: defaultAiSearchSettings(),
   }
 }
 
-/** false only on an explicit opt-out; absent (pre-toggle settings files) means on */
+/** Cloud tools require an explicit opt-in; old settings are normalized to false. */
 export function cloudToolsEnabled(settings: Pick<AiSettings, 'gskToolsEnabled'>): boolean {
-  return settings.gskToolsEnabled !== false
+  return settings.gskToolsEnabled === true
 }
 
-/**
- * The stored provider selection is honored only when its config is usable
- * (api-key providers need a key and a model id; custom also needs a base URL).
- * Codex can auto-discover its executable. Anything else — including unknown
- * ids from a hand-edited
- * settings file — falls back to genspark, so a half-filled setup degrades
- * to the signed-in default instead of silently disabling AI.
- */
+/** Keep the user's choice even before its key is configured; never silently route through Genspark. */
 export function activeProvider(settings: AiSettings): AiProviderId {
   const provider = settings.provider
-  if (provider === 'genspark') return 'genspark'
-  const meta = AI_PROVIDERS.find((m) => m.id === provider)
-  const config = settings.providers?.[provider]
-  if (!meta || !config) return 'genspark'
-  if (meta.needsCliPath) return provider
-  // Trim-aware: in-memory settings bypass the trimConfigs applied to
-  // persisted files, and a whitespace-only key/URL/model is a 401, not a config.
-  if (!config.model?.trim()) return 'genspark'
-  if (meta.needsBaseUrl) {
-    // Custom OpenAI-compatible endpoints (Ollama, LM Studio, vLLM) accept
-    // anonymous requests: base URL + model suffice, the key stays optional.
-    if (!config.baseUrl?.trim()) return 'genspark'
-    return provider
-  }
-  if (!config.apiKey?.trim()) return 'genspark'
-  return provider
+  return provider !== 'genspark' && AI_PROVIDERS.some((m) => m.id === provider)
+    ? provider
+    : 'gemini'
 }
 
 /**
@@ -481,13 +461,16 @@ export function resolveAiSettings(stored: unknown, defaults: AiSettings): AiSett
     return defaults
   }
   return {
-    provider: settings.provider ?? defaults.provider,
+    provider:
+      settings.provider === 'genspark'
+        ? defaults.provider
+        : (settings.provider ?? defaults.provider),
     // Trim before migrating: a pasted " deepseek-reasoner " must still hit
     // the retired-id remap instead of being sent to the API verbatim.
     providers: migrateRetiredModels(
       trimConfigs(mergeProviderConfigs(defaults.providers, storedProviders)),
     ),
-    gskToolsEnabled: settings.gskToolsEnabled ?? defaults.gskToolsEnabled ?? true,
+    gskToolsEnabled: false,
     media: resolveAiMediaSettings(settings.media ?? defaults.media),
     search: resolveAiSearchSettings(settings.search ?? defaults.search),
     // clamped on read: a hand-edited settings file with an absurd cap must not be

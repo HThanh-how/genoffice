@@ -21,24 +21,21 @@ describe('legacy .doc import', () => {
     await expect(convertLegacyDoc('example.docx')).rejects.toThrow('Expected a .doc file')
   })
 
-  it.skipIf(process.platform === 'darwin')(
-    'uses a configured conversion service for formatted DOCX',
-    async () => {
-      const copy = await convertLegacyDoc(fixture)
-      const fetchMock = vi
-        .spyOn(globalThis, 'fetch')
-        .mockResolvedValue(new Response(Buffer.from(copy.bytes), { status: 200 }))
-      try {
-        const converted = await convertLegacyDoc(fixture, 'https://d2x.clouds.io.vn')
-        expect(converted.fidelity).toBe('formatted')
-        expect(await docxToText(converted.bytes)).toContain('Legacy DOC body text')
-        expect(fetchMock).toHaveBeenCalledWith(
-          new URL('https://d2x.clouds.io.vn/v1/convert/docx'),
-          expect.objectContaining({ method: 'POST' }),
-        )
-      } finally {
-        fetchMock.mockRestore()
-      }
-    },
-  )
+  it('uses a configured conversion service first for formatted DOCX', async () => {
+    const copy = await convertLegacyDoc(fixture)
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(Buffer.from(copy.bytes), { status: 200 }))
+    try {
+      const converted = await convertLegacyDoc(fixture, 'https://d2x.clouds.io.vn')
+      expect(converted.fidelity).toBe('formatted')
+      expect(await docxToText(converted.bytes)).toContain('Legacy DOC body text')
+      expect(fetchMock).toHaveBeenCalledWith(
+        new URL('https://d2x.clouds.io.vn/v1/convert/docx'),
+        expect.objectContaining({ method: 'POST' }),
+      )
+    } finally {
+      fetchMock.mockRestore()
+    }
+  })
 })

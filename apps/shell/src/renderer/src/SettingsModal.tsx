@@ -31,7 +31,7 @@ import type {
 } from '@genoffice/ai-provider'
 import { useI18n } from './locale'
 import type { StringKey, TFunc } from './locale'
-import type { AccountStatus, AiCatalogEntry, UiTheme } from '../../shared/home-api'
+import type { AiCatalogEntry, UiTheme } from '../../shared/home-api'
 import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import './settings.css'
@@ -61,6 +61,7 @@ const LANG_OPTIONS = [
   { value: 'pt', label: 'Português' },
   { value: 'ru', label: 'Русский' },
   { value: 'th', label: 'ไทย' },
+  { value: 'vi', label: 'Tiếng Việt' },
   { value: 'zh', label: '简体中文' },
   { value: 'zh-TW', label: '繁體中文' },
 ] as const
@@ -144,10 +145,9 @@ function CustomFontSizeInput({
   )
 }
 
-export type SectionId = 'account' | 'aiModel' | 'aiMedia' | 'general' | 'integrations' | 'about'
+export type SectionId = 'aiModel' | 'aiMedia' | 'general' | 'integrations' | 'about'
 
 const SECTIONS: readonly { id: SectionId; labelKey: StringKey }[] = [
-  { id: 'account', labelKey: 'setSecAccount' },
   { id: 'aiModel', labelKey: 'setSecAiModel' },
   { id: 'aiMedia', labelKey: 'setSecAiMedia' },
   { id: 'general', labelKey: 'setSecGeneral' },
@@ -186,19 +186,6 @@ function SectionIcon({ id }: { id: SectionId }) {
           strokeLinejoin="round"
         />
         <circle cx="10.5" cy="6" r="1.1" fill="currentColor" />
-      </svg>
-    )
-  }
-  if (id === 'account') {
-    return (
-      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-        <circle cx="8" cy="5.2" r="2.9" stroke="currentColor" strokeWidth="1.3" />
-        <path
-          d="M2.7 13.6a5.5 5.5 0 0 1 10.6 0"
-          stroke="currentColor"
-          strokeWidth="1.3"
-          strokeLinecap="round"
-        />
       </svg>
     )
   }
@@ -279,8 +266,8 @@ function foldModels(providerId: string, models: string[]) {
 
 /** AI model pane: provider / model / key / base URL, saved to userData/ai-settings.json */
 function AiModelPane({ t }: { t: TFunc }) {
-  const [catalog, setCatalog] = useState<AiCatalogEntry[]>(
-    () => window.aiOffice.getAiProviders?.() ?? [],
+  const [catalog, setCatalog] = useState<AiCatalogEntry[]>(() =>
+    (window.aiOffice.getAiProviders?.() ?? []).filter((entry) => entry.id !== 'genspark'),
   )
   const [settings, setSettings] = useState<AiSettings | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -654,26 +641,6 @@ function AiModelPane({ t }: { t: TFunc }) {
           onBlur={commitMaxTokens}
         />
       </div>
-      <div className="set-field">
-        <div className="set-field-text">
-          <div className="set-field-stack">
-            <div className="set-field-label">{t('setAiGskTools')}</div>
-            <div className="set-field-desc">{t('setAiGskToolsDesc')}</div>
-          </div>
-        </div>
-        {/* locked on with the genspark provider — chat runs through gsk anyway */}
-        <button
-          className="set-switch"
-          role="switch"
-          aria-checked={settings.gskToolsEnabled !== false}
-          aria-label={t('setAiGskTools')}
-          disabled={isGenspark}
-          onClick={() => {
-            setSettings({ ...settings, gskToolsEnabled: settings.gskToolsEnabled === false })
-            touch()
-          }}
-        />
-      </div>
     </>
   )
 }
@@ -709,8 +676,8 @@ function AiMediaPane({
   onFileSearchChange?: () => void
   focusBlock?: TestedBlock
 }) {
-  const [mediaCatalog] = useState<AiMediaProviderMeta[]>(
-    () => window.aiOffice.getAiMediaProviders?.() ?? [],
+  const [mediaCatalog] = useState<AiMediaProviderMeta[]>(() =>
+    (window.aiOffice.getAiMediaProviders?.() ?? []).filter((entry) => entry.id !== 'genspark'),
   )
   const [searchCatalog] = useState<AiSearchProviderMeta[]>(
     () => window.aiOffice.getAiSearchProviders?.() ?? [],
@@ -1120,9 +1087,11 @@ function AiMediaPane({
             ? t('setAiSearchGensparkHint')
             : search.provider === 'parallel'
               ? t('setAiSearchParallelHint')
-              : searchMeta?.imageSearch
-                ? t('setAiSearchSerperHint')
-                : t('setAiSearchTavilyHint')}
+              : search.provider === 'serply'
+                ? t('setAiSearchSerplyHint')
+                : searchMeta?.imageSearch
+                  ? t('setAiSearchSerperHint')
+                  : t('setAiSearchTavilyHint')}
         </div>
         {search.provider !== 'genspark' &&
           keyRow('set-ai-search-key', searchKey, searchMeta?.keyPlaceholder ?? 'API Key', (v) =>
@@ -1244,46 +1213,25 @@ function AiStatusPill({ status }: { status: AiStatus | null }) {
 }
 
 export interface SettingsModalProps {
-  status: AccountStatus | null
-  loggingOut: boolean
-  /** browser sign-in in progress (spinner shows on the account entry) */
-  loginWaiting: boolean
-  /** device auth URL while waiting — rescue actions when the browser did not auto-open */
-  loginUrl: string | null
-  urlCopied: boolean
-  onOpenLoginUrl: () => void
-  onCopyLoginUrl: () => void
   onClose: () => void
   /** the Jev search settings were saved; the home search re-judges or drops its current order */
   onFileSearchChange?: () => void
-  /** closes the modal and launches the Genspark login flow (progress shows on the account entry) */
-  onLogin: () => void
-  onLogout: () => void
   /** an installed skill is older than the bundled one: dot on the Integrations entry */
   skillUpdateDue?: boolean
   onSkillUpdateDue?: (due: boolean) => void
-  /** open on this section / block instead of the account page */
+  /** open on this section / block instead of the general page */
   target?: SettingsTarget | null
 }
 
 export function SettingsModal({
-  status,
-  loggingOut,
-  loginWaiting,
-  loginUrl,
-  urlCopied,
-  onOpenLoginUrl,
-  onCopyLoginUrl,
   onClose,
   onFileSearchChange,
-  onLogin,
-  onLogout,
   skillUpdateDue: updateDue = false,
   onSkillUpdateDue,
   target,
 }: SettingsModalProps) {
   const { lang, setLang, t } = useI18n()
-  const [section, setSection] = useState<SectionId>(target?.section ?? 'account')
+  const [section, setSection] = useState<SectionId>(target?.section ?? 'general')
   const [theme, setTheme] = useState<UiTheme>('system')
   const [saveDir, setSaveDir] = useState('')
   const [analyticsOn, setAnalyticsOn] = useState(true)
@@ -1295,7 +1243,7 @@ export function SettingsModal({
   const [aiPrefs, setAiPrefs] = useState<AiPanelPrefs>(DEFAULT_AI_PANEL_PREFS)
   const [channel, setChannel] = useState<'stable' | 'beta'>('stable')
   const [legacyDoc, setLegacyDoc] = useState<LegacyDocSettings>({
-    mode: 'ask',
+    mode: 'online',
     endpoint: 'https://d2x.clouds.io.vn',
   })
   const [appVersion, setAppVersion] = useState('')
@@ -1402,9 +1350,6 @@ export function SettingsModal({
     return t('setDefaultAppDesc')
   })()
 
-  const loggedIn = status?.loggedIn ?? false
-  const email = status?.email ?? ''
-
   return (
     <div
       className="set-overlay"
@@ -1444,54 +1389,6 @@ export function SettingsModal({
             ))}
           </nav>
           <div className="set-pane">
-            {section === 'account' && (
-              <>
-                <h3 className="set-pane-title">{t('setSecAccount')}</h3>
-                <Field label={t('setEmail')} value={loggedIn ? email : t('setNotLoggedIn')} />
-                {loggedIn && (
-                  <Field
-                    label={t('credits')}
-                    value={
-                      status?.creditBalance === undefined
-                        ? '—'
-                        : Math.floor(status.creditBalance).toLocaleString('en-US')
-                    }
-                    action={
-                      <button
-                        className="set-btn"
-                        data-tip={t('creditsTip')}
-                        onClick={() => void window.aiOffice.openCreditUsage?.()}
-                      >
-                        {t('setViewUsage')}
-                      </button>
-                    }
-                  />
-                )}
-                <div className="set-pane-footer">
-                  {loggedIn ? (
-                    <button className="set-btn danger" disabled={loggingOut} onClick={onLogout}>
-                      {loggingOut ? t('loggingOut') : t('logout')}
-                    </button>
-                  ) : (
-                    <>
-                      {loginWaiting && loginUrl && (
-                        <>
-                          <button className="set-btn" onClick={onOpenLoginUrl}>
-                            {t('loginOpenManually')}
-                          </button>
-                          <button className="set-btn" onClick={onCopyLoginUrl}>
-                            {urlCopied ? t('loginCopied') : t('loginCopyUrl')}
-                          </button>
-                        </>
-                      )}
-                      <button className="set-btn primary" onClick={onLogin}>
-                        {loginWaiting ? t('waitingShort') : t('loginGenspark')}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </>
-            )}
             {section === 'aiModel' && <AiModelPane t={t} />}
             {section === 'aiMedia' && (
               <AiMediaPane
@@ -1638,6 +1535,21 @@ export function SettingsModal({
                     aria-checked={aiPrefs.spellcheck}
                     aria-label={t('setAiSpellcheck')}
                     onClick={() => updateAiPrefs({ spellcheck: !aiPrefs.spellcheck })}
+                  />
+                </div>
+                <div className="set-field">
+                  <div className="set-field-text">
+                    <div className="set-field-stack">
+                      <div className="set-field-label">{t('setAiOpenInNewDocs')}</div>
+                      <div className="set-field-desc">{t('setAiOpenInNewDocsDesc')}</div>
+                    </div>
+                  </div>
+                  <button
+                    className="set-switch"
+                    role="switch"
+                    aria-checked={aiPrefs.openInNewDocs}
+                    aria-label={t('setAiOpenInNewDocs')}
+                    onClick={() => updateAiPrefs({ openInNewDocs: !aiPrefs.openInNewDocs })}
                   />
                 </div>
                 {defaultApp && defaultApp.state !== 'unsupported' && (

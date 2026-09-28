@@ -1957,7 +1957,10 @@ function replaceSheetName(workbookXml: string, before: string, after: string): s
 }
 
 function patchCell(worksheetXml: string, address: string, cell: CellState): string {
-  const cellPattern = new RegExp(`<c\\b[^>]*\\br="${address}"[^>]*(?:/>|>[\\s\\S]*?</c>)`)
+  // Lazy trailing attributes: greedy `[^>]*` swallows the "/" of a
+  // self-closing <c/>, so `/>` never matches and the match runs on to the
+  // next </c>, taking the sibling cell with it.
+  const cellPattern = new RegExp(`<c\\b[^>]*?\\br="${address}"[^>]*?(?:/>|>[\\s\\S]*?</c>)`)
   const replacement = serializeCell(address, cell)
   if (cellPattern.test(worksheetXml)) {
     return worksheetXml.replace(cellPattern, replacement)
@@ -1966,9 +1969,15 @@ function patchCell(worksheetXml: string, address: string, cell: CellState): stri
 
   const rowNumber = address.match(/[1-9][0-9]*$/)?.[0]
   if (!rowNumber) throw new Error(`Invalid cell address: ${address}`)
-  const rowPattern = new RegExp(`(<row\\b[^>]*\\br="${rowNumber}"[^>]*>)([\\s\\S]*?)(</row>)`)
-  if (rowPattern.test(worksheetXml)) {
-    return worksheetXml.replace(rowPattern, `$1$2${replacement}$3`)
+  const rowPattern = new RegExp(
+    `<row\\b([^>]*?\\br="${rowNumber}"[^>]*?)(?:/>|>([\\s\\S]*?)</row>)`,
+  )
+  const row = rowPattern.exec(worksheetXml)
+  if (row) {
+    return worksheetXml.replace(
+      rowPattern,
+      () => `<row${row[1] ?? ''}>${row[2] ?? ''}${replacement}</row>`,
+    )
   }
   const newRow = `<row r="${rowNumber}">${replacement}</row>`
   if (worksheetXml.includes('</sheetData>')) {
@@ -2158,10 +2167,11 @@ function patchFormulaCachedValue(
   address: string,
   value: FormulaCachedValue,
 ): string {
-  // Paired form only: a self-closing <c/> has no formula to keep.
-  const cellPattern = new RegExp(`<c\\b([^>]*)\\br="${address}"([^>]*)>([\\s\\S]*?)</c>`)
+  // A self-closing <c/> has no formula to keep; it must match itself rather
+  // than run on into the next cell.
+  const cellPattern = new RegExp(`<c\\b([^>]*?)\\br="${address}"([^>]*?)(?:/>|>([\\s\\S]*?)</c>)`)
   const existing = cellPattern.exec(worksheetXml)
-  if (!existing) return worksheetXml
+  if (!existing || existing[3] === undefined) return worksheetXml
   const body = existing[3] ?? ''
   if (!/<f[\s/>]/.test(body)) return worksheetXml
   const attrs = `${existing[1] ?? ''}${existing[2] ?? ''}`
@@ -2891,7 +2901,7 @@ function serializeCell(address: string, cell: CellState): string {
 }
 
 function parseCell(worksheetXml: string, address: string): CellState {
-  const cellPattern = new RegExp(`<c\\b([^>]*)\\br="${address}"([^>]*)(?:/>|>([\\s\\S]*?)</c>)`)
+  const cellPattern = new RegExp(`<c\\b([^>]*?)\\br="${address}"([^>]*?)(?:/>|>([\\s\\S]*?)</c>)`)
   const match = cellPattern.exec(worksheetXml)
   if (!match) return { value: null }
   const attributes = `${match[1] ?? ''}${match[2] ?? ''}`

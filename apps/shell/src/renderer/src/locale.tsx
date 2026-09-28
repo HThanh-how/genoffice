@@ -21,9 +21,15 @@ export function LocaleProvider({ initial, children }: { initial: Lang; children:
     () => ({
       lang,
       setLang: (next) => {
-        setLangState(next)
-        document.documentElement.lang = htmlLang(next)
-        void window.aiOffice.setLanguage(next)
+        // the main process rejects when app-settings.json is unwritable; a language
+        // committed here first would survive only until the next launch
+        window.aiOffice.setLanguage(next).then(
+          () => {
+            setLangState(next)
+            document.documentElement.lang = htmlLang(next)
+          },
+          (err: unknown) => console.warn('language not saved', err),
+        )
       },
     }),
     [lang],
@@ -61,6 +67,7 @@ const DATE_LOCALES: Record<Lang, string> = {
   he: 'he-IL',
   hi: 'hi-IN',
   'zh-TW': 'zh-TW',
+  vi: 'vi-VN',
 }
 
 export function useI18n(): I18n {

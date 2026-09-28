@@ -207,8 +207,10 @@ export async function xlsxToText(bytes: Uint8Array): Promise<string> {
   if (relsXml) {
     const rels = parser.parse(relsXml) as Record<string, any>
     for (const rel of asArray(rels.Relationships?.Relationship) as Array<Record<string, unknown>>) {
+      const id = String(rel['@_Id'] ?? '')
       const target = String(rel['@_Target'] ?? '')
-      relTargets.set(String(rel['@_Id'] ?? ''), resolveTarget('xl/workbook.xml', target))
+      const resolved = target.trim() === '' ? '' : resolveTarget('xl/workbook.xml', target)
+      if (id !== '' && resolved !== '') relTargets.set(id, resolved)
     }
   }
 
@@ -243,6 +245,11 @@ export async function xlsxToText(bytes: Uint8Array): Promise<string> {
         // Clamp wild columns (e.g. XXXXXX99) to append: padding millions of
         // empty cells would OOM on a hostile file.
         const col = ref ? columnIndex(ref) : cells.length
+        // A ref landing on a slot an earlier ref-less or malformed cell was
+        // appended to would drop that value silently: push it right instead.
+        // An empty slot (unsorted but valid refs like C1,A1) is just taken.
+        if (col >= 0 && col < MAX_XLSX_COLS && col < cells.length && cells[col] !== '')
+          cells.splice(col, 0, '')
         const target = col >= 0 && col < MAX_XLSX_COLS ? col : cells.length
         while (cells.length < target) cells.push('')
         cells[target] = text
@@ -261,6 +268,15 @@ export async function xlsxToText(bytes: Uint8Array): Promise<string> {
       )
     }
     sections.push(lines.join('\n'))
+  }
+  if (sheets.length > 0 && sections.length === 0) {
+    throw new Error(
+      relsXml === undefined
+        ? `Invalid xlsx: xl/_rels/workbook.xml.rels is missing, so none of the ` +
+            `${sheets.length} declared sheet${sheets.length === 1 ? '' : 's'} can be resolved`
+        : `Invalid xlsx: no sheet relationship in xl/_rels/workbook.xml.rels resolves to a ` +
+            `readable worksheet part (${sheets.length} declared)`,
+    )
   }
   const body = sections.join('\n\n')
   if (sheetsWithData > 0 || imageOnlySheets === 0) return body

@@ -4,13 +4,13 @@ import { Plugin } from '@tiptap/pm/state'
 import { DOMParser as ProseMirrorDOMParser, DOMSerializer } from '@tiptap/pm/model'
 import { BlockMath, InlineMath } from '@tiptap/extension-mathematics'
 import { openMathEditor } from './mathEdit'
-import { matchInlineMath } from './mathSyntax'
+import { matchInlineMath, strictInlineMathStart } from './mathSyntax'
 
 const StrictInlineMath = InlineMath.extend({
   markdownTokenizer: {
     name: 'inlineMath',
     level: 'inline',
-    start: (src: string) => src.indexOf('$'),
+    start: strictInlineMathStart,
     tokenize: (src: string) => {
       const match = matchInlineMath(src)
       return match && { type: 'inlineMath', ...match }

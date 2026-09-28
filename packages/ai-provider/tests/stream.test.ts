@@ -1030,6 +1030,34 @@ describe('streamForProvider: gemini', () => {
 })
 
 describe('streamForProvider: openai-compatible', () => {
+  it('flattens a content array into text (streamed and JSON body)', async () => {
+    const parts = [
+      { type: 'text', text: 'Here is ' },
+      { type: 'text', text: 'the change.' },
+    ]
+    const body = sseStream([
+      `data: {"choices":[{"delta":{"content":${JSON.stringify(parts)}}}]}`,
+      'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ])
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(okResponse(body)))
+    const streamed = collector()
+    await streamForProvider('openai', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, streamed.cb)
+    expect(streamed.deltas.join('')).toBe('Here is the change.')
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          choices: [{ message: { content: parts }, finish_reason: 'stop' }],
+        }),
+      ),
+    )
+    const complete = collector()
+    await streamForProvider('openai', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, complete.cb)
+    expect(complete.deltas.join('')).toBe('Here is the change.')
+  })
+
   it('reassembles fragmented tool call arguments and flushes on finish_reason', async () => {
     const body = sseStream([
       'data: {"choices":[{"delta":{"content":"partial "}}]}',
@@ -1380,59 +1408,21 @@ describe('streamForProvider: openai-compatible', () => {
 })
 
 describe('streamForProvider: genspark', () => {
-  it('routes claude models to the Anthropic-compatible proxy endpoint', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
+  it('rejects legacy Genspark requests without calling fetch', async () => {
+    const fetchMock = vi.fn()
     vi.stubGlobal('fetch', fetchMock)
-    const { cb } = collector()
-    await streamForProvider(
-      'genspark',
-      { apiKey: 'gsk-k', model: 'claude-opus-4-7' },
-      'sys',
-      [],
-      [],
-      100,
-      cb,
-    ).catch(() => {})
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://www.genspark.ai/api/anthropic/v1/messages',
-      expect.objectContaining({ headers: expect.objectContaining({ 'x-api-key': 'gsk-k' }) }),
-    )
-  })
-
-  it('routes other models to the OpenAI-compatible proxy', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream(['data: [DONE]'])))
-    vi.stubGlobal('fetch', fetchMock)
-    const { cb } = collector()
-    await streamForProvider(
-      'genspark',
-      { apiKey: 'gsk-k', model: 'gpt-5.2' },
-      'sys',
-      [],
-      [],
-      100,
-      cb,
-    ).catch(() => {})
-    expect(fetchMock).toHaveBeenCalledWith(
-      'https://www.genspark.ai/api/llm_proxy/v1/chat/completions',
-      expect.anything(),
-    )
-  })
-
-  it('stamps X-Agent-Type on both proxy routes for billing attribution', async () => {
-    for (const model of ['claude-opus-4-7', 'gpt-5.2']) {
-      const fetchMock = vi.fn().mockResolvedValue(okResponse(sseStream([])))
-      vi.stubGlobal('fetch', fetchMock)
-      const { cb } = collector()
-      await streamForProvider('genspark', { apiKey: 'gsk-k', model }, 'sys', [], [], 100, cb).catch(
-        () => {},
-      )
-      expect(fetchMock).toHaveBeenCalledWith(
-        expect.anything(),
-        expect.objectContaining({
-          headers: expect.objectContaining({ 'X-Agent-Type': 'genoffice' }),
-        }),
-      )
-    }
+    await expect(
+      streamForProvider(
+        'genspark',
+        { apiKey: 'k', model: 'm' },
+        'sys',
+        [],
+        [],
+        100,
+        collector().cb,
+      ),
+    ).rejects.toThrow(/disabled/)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('never sends X-Agent-Type to direct vendor APIs', async () => {
@@ -1582,6 +1572,75 @@ describe('streamForProvider: 200 + non-stream JSON instead of SSE', () => {
     expect(deltas.join('')).toBe('The service is under maintenance until 06:00 UTC.')
   })
 
+  it('anthropic route: a JSON body over the per-turn tool-call budget stops at the same cap as SSE', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        json({
+          type: 'message',
+          content: Array.from({ length: 150 }, (_, i) => ({
+            type: 'tool_use',
+            id: `t${i}`,
+            name: 'do_thing',
+            input: { index: i },
+          })),
+          stop_reason: 'tool_use',
+        }),
+      ),
+    )
+    const { toolCalls, cb } = collector()
+    await expect(
+      streamForProvider('anthropic', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, cb),
+    ).rejects.toThrow(/Too many streamed tool calls/)
+    expect(toolCalls).toHaveLength(0)
+  })
+
+  it('gemini route: a JSON body over the per-turn tool-call budget stops at the same cap as SSE', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        json(
+          Array.from({ length: 150 }, (_, i) => ({
+            candidates: [
+              { content: { parts: [{ functionCall: { name: 'do_thing', args: { index: i } } }] } },
+            ],
+          })),
+        ),
+      ),
+    )
+    const { toolCalls, cb } = collector()
+    await expect(
+      streamForProvider('gemini', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, cb),
+    ).rejects.toThrow(/Too many streamed tool calls/)
+    expect(toolCalls).toHaveLength(100)
+  })
+
+  it('openai route: a JSON body over the per-turn tool-call budget stops at the same cap as SSE', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        json({
+          choices: [
+            {
+              message: {
+                tool_calls: Array.from({ length: 150 }, (_, i) => ({
+                  id: `c${i}`,
+                  function: { name: 'do_thing', arguments: `{"index":${i}}` },
+                })),
+              },
+              finish_reason: 'tool_calls',
+            },
+          ],
+        }),
+      ),
+    )
+    const { toolCalls, cb } = collector()
+    await expect(
+      streamForProvider('openai', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, cb),
+    ).rejects.toThrow(/Too many streamed tool calls/)
+    expect(toolCalls).toHaveLength(0)
+  })
+
   it('an unextractable body throws with a body summary', async () => {
     vi.stubGlobal(
       'fetch',
@@ -1651,8 +1710,8 @@ describe('streamForProvider: interleaved-thinking reasoning', () => {
     const reasoning: string[] = []
     const { deltas, cb } = collector()
     await streamForProvider(
-      'genspark',
-      { apiKey: 'k', model: 'deep-seek-v4-flash' },
+      'deepseek',
+      { apiKey: 'k', model: 'deep-seek-v4.1-flash' },
       'sys',
       toolLoopMessages,
       [],
@@ -1670,7 +1729,7 @@ describe('streamForProvider: interleaved-thinking reasoning', () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(reasoningTurn()))
     vi.stubGlobal('fetch', fetchMock)
     await streamForProvider(
-      'genspark',
+      'openai',
       { apiKey: 'k', model: 'gpt-5.6-luna' },
       'sys',
       toolLoopMessages,

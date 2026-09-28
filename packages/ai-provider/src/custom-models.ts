@@ -11,7 +11,7 @@
 import type { CodexModelCatalog } from './types'
 import { withUserAgent } from './fetch'
 import { GEMINI_BASE_URL } from './protocols/gemini'
-import { endpointUrl } from './protocols/shared'
+import { endpointUrl, readCappedResponseText } from './protocols/shared'
 import { createStreamWatchdog } from './watchdog'
 
 /** a server this slow is not usable for chat either, and the settings field must stay responsive */
@@ -26,42 +26,6 @@ const MAX_BODY_BYTES = 2 * 1024 * 1024
 /** "no list" — the caller leaves the free-text model box in place */
 function emptyCatalog(): CodexModelCatalog {
   return { models: [], defaultModel: '' }
-}
-
-/**
- * The body as text, or `null` if it runs past the cap.
- *
- * Read chunk by chunk rather than through `response.text()`: a chunked body
- * declares no length, so the declared-length check alone would let an endpoint
- * stream gigabytes into memory until the watchdog fired. Passing the cap
- * cancels the stream instead of finishing the read and discarding it.
- */
-async function readCappedBody(response: Response): Promise<string | null> {
-  if (Number(response.headers.get('content-length')) > MAX_BODY_BYTES) {
-    await response.body?.cancel()
-    return null
-  }
-  const body = response.body
-  if (!body) return null
-  const reader = body.getReader()
-  const decoder = new TextDecoder()
-  let text = ''
-  let bytes = 0
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      bytes += value.byteLength
-      if (bytes > MAX_BODY_BYTES) {
-        await reader.cancel()
-        return null
-      }
-      text += decoder.decode(value, { stream: true })
-    }
-  } finally {
-    reader.releaseLock()
-  }
-  return text + decoder.decode()
 }
 
 /**
@@ -103,8 +67,7 @@ export async function listCustomModels(
         withUserAgent({ headers, signal: watchdog.signal }),
       )
       if (!response.ok) return emptyCatalog()
-      const text = await readCappedBody(response)
-      if (text === null) return emptyCatalog()
+      const text = await readCappedResponseText(response, { maxBytes: MAX_BODY_BYTES })
       const body = JSON.parse(text) as { data?: unknown } | null
       const data = body?.data
       if (!Array.isArray(data)) return emptyCatalog()
@@ -179,8 +142,7 @@ export async function listGeminiModels(apiKey: string): Promise<CodexModelCatalo
         }),
       )
       if (!response.ok) return emptyCatalog()
-      const text = await readCappedBody(response)
-      if (text === null) return emptyCatalog()
+      const text = await readCappedResponseText(response, { maxBytes: MAX_BODY_BYTES })
       const body = JSON.parse(text) as { models?: unknown } | null
       const entries = body?.models
       if (!Array.isArray(entries)) return emptyCatalog()

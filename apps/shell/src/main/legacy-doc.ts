@@ -14,7 +14,7 @@ export type LegacyDocConversion = { bytes: Uint8Array; fidelity: 'formatted' | '
 
 export const DEFAULT_LEGACY_DOC_SERVICE = 'https://d2x.clouds.io.vn'
 
-/** A document leaves the device only when the caller explicitly supplies an endpoint. */
+/** A document is sent online only when the caller supplies an endpoint. */
 async function convertWithService(
   source: Uint8Array,
   endpoint: string,
@@ -96,12 +96,12 @@ export async function convertLegacyDoc(
   if (source.byteLength === 0 || source.byteLength > MAX_DOC_BYTES) {
     throw new Error('The .doc file is empty or exceeds the 50 MB import limit')
   }
-  const formatted = await convertWithMacTextutil(filePath)
-  if (formatted) return { bytes: formatted, fidelity: 'formatted' }
   if (serviceEndpoint) {
     const remote = await convertWithService(source, serviceEndpoint)
     if (remote) return { bytes: remote, fidelity: 'formatted' }
   }
+  const formatted = await convertWithMacTextutil(filePath)
+  if (formatted) return { bytes: formatted, fidelity: 'formatted' }
 
   const text = await docToText(source)
   if (!text.trim()) throw new Error('No readable text found in the .doc file')

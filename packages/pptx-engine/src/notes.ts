@@ -11,7 +11,12 @@
  */
 import type { OpenedPptx } from './index'
 import { relsPathFor, resolveTarget, type PackageArchive } from './zip'
-import { decodeNumericCharRefs, escapeXmlText } from './xml-utils'
+import {
+  decodeNumericCharRefs,
+  escapeXmlText,
+  hasContentTypeOverride,
+  maxRelationshipIdNumber,
+} from './xml-utils'
 
 const XMLDECL = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
 const NS_A = 'http://schemas.openxmlformats.org/drawingml/2006/main'
@@ -53,7 +58,8 @@ export function notesPathForSlide(archive: PackageArchive, slidePath: string): s
 /** Find the body placeholder sp block in the notesSlide xml. */
 function findBodySp(xml: string): { xml: string; start: number; end: number } | null {
   for (const m of xml.matchAll(/<p:sp>[\s\S]*?<\/p:sp>/g)) {
-    if (/<p:ph\b[^>]*type="body"/.test(m[0])) {
+    // quote-agnostic: a deck written with type='body' is still a body placeholder
+    if (/<p:ph\b[^>]*\btype=["']body["']/.test(m[0])) {
       return { xml: m[0], start: m.index!, end: m.index! + m[0].length }
     }
   }
@@ -134,7 +140,7 @@ function addContentTypeOverride(
 ): void {
   const ctPath = '[Content_Types].xml'
   const ct = archive.readText(ctPath)
-  if (!ct || ct.includes(`PartName="/${partPath}"`)) return
+  if (!ct || hasContentTypeOverride(ct, partPath)) return
   setEntry(
     archive,
     ctPath,
@@ -157,8 +163,7 @@ export function appendRelationship(
     archive.readText(relsPath) ??
     XMLDECL +
       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>'
-  let maxRid = 0
-  for (const m of xml.matchAll(/Id="rId(\d+)"/g)) maxRid = Math.max(maxRid, Number(m[1]))
+  const maxRid = maxRelationshipIdNumber(xml)
   const rid = `rId${maxRid + 1}`
   xml = xml.replace(
     '</Relationships>',

@@ -124,16 +124,13 @@ describe('media tool aggregate budget', () => {
     expect(gskAnalyze).not.toHaveBeenCalled()
   })
 
-  it('analyze_media still hands a budget failure to Genspark when only one provider is configured', async () => {
-    gskAnalyze.mockResolvedValue('from genspark' as never)
-    // openai reads images but not video, so a budget failure still has a
-    // Genspark route to fall back to (the pre-existing size-cap behavior)
+  it('analyze_media does not fall back to Genspark on a budget failure', async () => {
     const result = await analyzeMediaTool(writeSettings('openai'), {
       mediaUrls: Array.from({ length: 13 }, () => dataUrl(8)),
       requirements: 'describe these',
     })
-    expect(result.text).toBe('from genspark')
-    expect(gskAnalyze).toHaveBeenCalledTimes(1)
+    expect(result.error).toBeDefined()
+    expect(gskAnalyze).not.toHaveBeenCalled()
   })
 
   it('generate_image refuses too many references', async () => {

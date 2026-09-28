@@ -38,11 +38,11 @@ function openaiSettings(apiKey = 'sk-test', imageModel = 'gpt-image-2'): AiSetti
 }
 
 describe('media settings', () => {
-  it('defaults every provider to its default models and genspark as the active one', () => {
+  it('defaults every provider to its default models and Gemini as the active one', () => {
     const media = defaultAiMediaSettings()
-    expect(media.imageProvider).toBe('genspark')
-    expect(media.analysisProvider).toBe('genspark')
-    expect(media.videoAnalysisProvider).toBe('genspark')
+    expect(media.imageProvider).toBe('gemini')
+    expect(media.analysisProvider).toBe('gemini')
+    expect(media.videoAnalysisProvider).toBe('gemini')
     for (const meta of AI_MEDIA_PROVIDERS) {
       expect(media.providers[meta.id].imageModel).toBe(meta.defaultImageModel)
       expect(media.providers[meta.id].apiKey).toBe('')
@@ -53,7 +53,7 @@ describe('media settings', () => {
 
   it('is carried by defaultAiSettings and healed in from a pre-media settings file', () => {
     const defaults = defaultAiSettings()
-    expect(defaults.media?.imageProvider).toBe('genspark')
+    expect(defaults.media?.imageProvider).toBe('gemini')
     const resolved = resolveAiSettings(
       { provider: 'genspark', providers: defaults.providers },
       defaultAiSettings(),
@@ -142,7 +142,7 @@ describe('media settings', () => {
 
   it('gates the tools on gsk login + toggle without BYOK, and on the BYOK model with it', () => {
     const genspark = defaultAiSettings()
-    expect(imageGenerationAvailable(genspark, true)).toBe(true)
+    expect(imageGenerationAvailable(genspark, true)).toBe(false)
     expect(imageGenerationAvailable(genspark, false)).toBe(false)
     expect(imageGenerationAvailable({ ...genspark, gskToolsEnabled: false }, true)).toBe(false)
     expect(mediaAnalysisAvailable({ ...genspark, gskToolsEnabled: false }, true)).toBe(false)
@@ -167,7 +167,7 @@ describe('media settings', () => {
     }
     expect(mediaAnalysisAvailable(withMedia(custom), false)).toBe(false)
     expect(imageGenerationAvailable(withMedia(custom), false)).toBe(true)
-    expect(imageGenerationAvailable(null, true)).toBe(true)
+    expect(imageGenerationAvailable(null, true)).toBe(false)
   })
 })
 
@@ -570,5 +570,58 @@ describe('testMediaProvider', () => {
     })
     expect(failed.ok).toBe(false)
     expect(failed.error).toMatch(/403/)
+  })
+})
+
+describe('a failed media request does not buffer the whole error body', () => {
+  /** an error body far larger than any diagnostic needs; counts what the reader pulls */
+  function hugeErrorBody(): { response: Response; pulled: () => number } {
+    const chunk = new TextEncoder().encode('x'.repeat(64 * 1024))
+    const chunks = 64
+    let sent = 0
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent >= chunks) return controller.close()
+        sent += 1
+        controller.enqueue(chunk)
+      },
+    })
+    return {
+      response: new Response(body, { status: 500 }),
+      pulled: () => sent * chunk.byteLength,
+    }
+  }
+
+  it('reads only the diagnostic prefix of an analysis failure', async () => {
+    const { response, pulled } = hugeErrorBody()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => response),
+    )
+    await expect(
+      analyzeMediaWithProvider(
+        'openai',
+        { apiKey: 'sk', imageModel: '', analysisModel: 'gpt-5.6-luna' },
+        { media: [{ bytes: PNG, mime: 'image/png', name: 'logo.png' }], requirements: 'describe' },
+      ),
+    ).rejects.toThrow(/Media analysis failed: 500/)
+    // httpBodyDetail keeps 500 characters; the rest of the 4 MB body is never buffered
+    expect(pulled()).toBeLessThanOrEqual(128 * 1024)
+  })
+
+  it('reads only the diagnostic prefix of a credential-test failure', async () => {
+    const { response, pulled } = hugeErrorBody()
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => response),
+    )
+    const failed = await testMediaProvider('openai', {
+      apiKey: 'sk',
+      imageModel: '',
+      analysisModel: '',
+    })
+    expect(failed.ok).toBe(false)
+    expect(failed.error).toMatch(/500/)
+    expect(pulled()).toBeLessThanOrEqual(128 * 1024)
   })
 })

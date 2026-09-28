@@ -24,6 +24,15 @@ export async function streamForProvider(
   maxTokens: number,
   cb: StreamCallbacks,
 ): Promise<void> {
+  if (provider === 'genspark') throw new Error('Genspark sign-in is disabled in this build')
+  if (provider !== 'codex' && !config.model?.trim()) {
+    throw new Error('Choose an AI model in Settings → AI Model')
+  }
+  if (provider === 'custom') {
+    if (!config.baseUrl?.trim()) throw new Error('Set the Base URL in Settings → AI Model')
+  } else if (provider !== 'codex' && !config.apiKey?.trim()) {
+    throw new Error('Set an API key in Settings → AI Model')
+  }
   const endpoint = getProviderAdapter(provider).resolveEndpoint(config)
   const { baseUrl } = endpoint
   if (endpoint.model) config = { ...config, model: endpoint.model }

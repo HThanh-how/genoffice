@@ -16,7 +16,7 @@ import type { AiProviderId } from '../src/types'
 describe('defaultAiSettings', () => {
   it('gives every provider its default model and an empty key by default', () => {
     const settings = defaultAiSettings()
-    expect(settings.provider).toBe('genspark')
+    expect(settings.provider).toBe('gemini')
     for (const meta of AI_PROVIDERS) {
       expect(settings.providers[meta.id].apiKey).toBe('')
       expect(settings.providers[meta.id].model).toBe(meta.defaultModel)
@@ -111,7 +111,7 @@ describe('resolveAiSettings', () => {
         defaults,
       )
       expect(resolved.providers.anthropic).toEqual(defaults.providers.anthropic)
-      expect(activeProvider(resolved)).toBe('genspark')
+      expect(activeProvider(resolved)).toBe('anthropic')
     }
   })
 
@@ -303,93 +303,34 @@ describe('clampMaxOutputTokens', () => {
 })
 
 describe('activeProvider', () => {
-  it('honors a configured BYOK provider and falls back to genspark otherwise', () => {
+  it('keeps the selected provider while its key is being configured', () => {
     const settings = defaultAiSettings()
-    expect(activeProvider(settings)).toBe('genspark')
-
+    expect(activeProvider(settings)).toBe('gemini')
     settings.provider = 'kimi'
-    expect(activeProvider(settings)).toBe('genspark') // no key yet
-    settings.providers.kimi.apiKey = 'sk-user'
     expect(activeProvider(settings)).toBe('kimi')
-  })
-
-  it('requires a base URL for providers that declare needsBaseUrl', () => {
-    const settings = defaultAiSettings()
     settings.provider = 'custom'
-    settings.providers.custom.apiKey = 'k'
-    expect(activeProvider(settings)).toBe('genspark')
-    settings.providers.custom.baseUrl = 'http://localhost:1234/v1'
-    expect(activeProvider(settings)).toBe('genspark') // custom's default model is empty
-    settings.providers.custom.model = 'my-model'
     expect(activeProvider(settings)).toBe('custom')
-  })
-
-  it('allows keyless custom endpoints for local servers', () => {
-    const settings = defaultAiSettings()
-    settings.provider = 'custom'
-    settings.providers.custom.apiKey = ''
-    settings.providers.custom.baseUrl = 'http://localhost:11434/v1'
-    settings.providers.custom.model = 'llama3'
-    expect(activeProvider(settings)).toBe('custom')
-  })
-
-  it('auto-discovers Codex without an API key and preserves an optional override', () => {
-    const settings = defaultAiSettings()
     settings.provider = 'codex'
     expect(activeProvider(settings)).toBe('codex')
-    settings.providers.codex.cliPath = ' C:\\Tools\\codex.exe '
-    expect(activeProvider(settings)).toBe('codex')
-
-    const resolved = resolveAiSettings(
-      { providers: { codex: settings.providers.codex } as never },
-      defaultAiSettings(),
-    )
-    expect(resolved.providers.codex.cliPath).toBe('C:\\Tools\\codex.exe')
-    expect(resolved.providers.codex.apiKey).toBe('')
   })
 
-  it('treats whitespace-only keys, URLs, and models as unconfigured', () => {
-    const settings = defaultAiSettings()
-    settings.provider = 'kimi'
-    settings.providers.kimi.apiKey = '   '
-    expect(activeProvider(settings)).toBe('genspark')
-    settings.providers.kimi.apiKey = 'sk-user'
-    settings.providers.kimi.model = '  '
-    expect(activeProvider(settings)).toBe('genspark')
-    settings.providers.kimi.model = 'kimi-k2'
-    expect(activeProvider(settings)).toBe('kimi')
-
-    const custom = defaultAiSettings()
-    custom.provider = 'custom'
-    custom.providers.custom.baseUrl = '   '
-    custom.providers.custom.model = 'my-model'
-    expect(activeProvider(custom)).toBe('genspark')
-  })
-
-  it('falls back to genspark for unknown ids from a hand-edited settings file', () => {
-    const settings = defaultAiSettings()
-    settings.provider = 'nonsense' as AiProviderId
-    expect(activeProvider(settings)).toBe('genspark')
-  })
-
-  it('genspark never requires a key (injected from the gsk login at request time)', () => {
+  it('never selects Genspark or an unknown provider from saved settings', () => {
     const settings = defaultAiSettings()
     settings.provider = 'genspark'
-    expect(activeProvider(settings)).toBe('genspark')
+    expect(activeProvider(settings)).toBe('gemini')
+    settings.provider = 'nonsense' as AiProviderId
+    expect(activeProvider(settings)).toBe('gemini')
   })
 })
 
 describe('gskToolsEnabled', () => {
-  it('defaults on, survives resolveAiSettings, and only an explicit false turns it off', () => {
-    expect(cloudToolsEnabled(defaultAiSettings())).toBe(true)
-    // pre-toggle settings file (field absent) stays on
-    const legacy = resolveAiSettings({ providers: {} as never }, defaultAiSettings())
-    expect(cloudToolsEnabled(legacy)).toBe(true)
-    const off = resolveAiSettings(
-      { providers: {} as never, gskToolsEnabled: false },
+  it('stays off by default and when loading a saved Genspark toggle', () => {
+    expect(cloudToolsEnabled(defaultAiSettings())).toBe(false)
+    const resolved = resolveAiSettings(
+      { provider: 'genspark', providers: {}, gskToolsEnabled: true },
       defaultAiSettings(),
     )
-    expect(off.gskToolsEnabled).toBe(false)
-    expect(cloudToolsEnabled(off)).toBe(false)
+    expect(resolved.provider).toBe('gemini')
+    expect(cloudToolsEnabled(resolved)).toBe(false)
   })
 })

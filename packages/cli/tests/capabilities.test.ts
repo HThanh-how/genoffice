@@ -27,7 +27,7 @@ function settingsFile(dir: string, settings: Record<string, unknown>): string {
 }
 
 describe('genoffice capabilities', () => {
-  it('reports nothing configured when signed out with default settings', async () => {
+  it('reports keyless Parallel search when signed out with default settings', async () => {
     const dir = tempDir()
     const r = await run(['capabilities', '--json'], {
       env: {
@@ -38,7 +38,7 @@ describe('genoffice capabilities', () => {
     })
     expect(r.code).toBe(0)
     const d = r.json().detail
-    expect(d.search.available).toBe(false)
+    expect(d.search).toEqual({ available: true, via: 'parallel' })
     expect(d.image_search.available).toBe(false)
     expect(d.image_generation.available).toBe(false)
     expect(d.media_analysis.available).toBe(false)
@@ -74,6 +74,18 @@ describe('genoffice capabilities', () => {
     expect(r.json().summary).toContain('image_generation')
   })
 
+  it('counts a Serply key as search + image search', async () => {
+    const settings = settingsFile(tempDir(), {
+      search: { provider: 'serply', providers: { serply: { apiKey: 'k' } } },
+    })
+    const r = await run(['capabilities', '--json'], {
+      env: { ...process.env, GENOFFICE_AI_SETTINGS: settings },
+    })
+    const d = r.json().detail
+    expect(d.search).toEqual({ available: true, via: 'serply' })
+    expect(d.image_search).toEqual({ available: true, via: 'serply' })
+  })
+
   it.each(['tavily', 'parallel'])('%s gives web search but no image search', async (provider) => {
     const dir = tempDir()
     const settings = settingsFile(dir, {
@@ -103,8 +115,8 @@ describe('genoffice capabilities', () => {
       const d = r.json().detail
       expect(d.search).toEqual({ available: true, via: provider })
       expect(d.image_search).toEqual({ available: false, via: null })
-      expect(d.image_generation).toEqual({ available: true, via: 'genspark' })
-      expect(d.media_analysis).toEqual({ available: true, via: 'genspark' })
+      expect(d.image_generation).toEqual({ available: false, via: null })
+      expect(d.media_analysis).toEqual({ available: false, via: null })
     },
   )
 

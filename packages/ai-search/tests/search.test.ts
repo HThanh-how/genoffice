@@ -13,6 +13,7 @@ afterEach(() => {
   vi.useRealTimers()
   globalThis.fetch = realFetch
   delete process.env.SERPER_API_KEY
+  delete process.env.SERPLY_API_KEY
   delete process.env.PARALLEL_API_KEY
   delete process.env.TAVILY_API_KEY
 })
@@ -275,7 +276,7 @@ describe('webSearch (SearchOptions)', () => {
       seen.push(String((init?.headers as Record<string, string>)['X-API-KEY']))
       return { ok: true, json: { organic: [{ title: 'A', link: 'https://a.com', snippet: 's' }] } }
     })
-    const r = await webSearch('q', 3, { useGsk: false, serperKey: 'user-key' })
+    const r = await webSearch('q', 3, { useGsk: false, serperKey: 'user-key', prefer: 'serper' })
     expect(r.method).toBe('serper')
     expect(seen).toEqual(['user-key'])
   })
@@ -300,23 +301,43 @@ describe('webSearch (SearchOptions)', () => {
 describe('search-tools', () => {
   it('maps the settings block onto SearchOptions', () => {
     const base = defaultAiSettings()
-    expect(searchOptionsFromSettings(base)).toEqual({ useGsk: true })
+    expect(searchOptionsFromSettings(base)).toEqual({
+      useGsk: false,
+      parallelKey: '',
+      prefer: 'parallel',
+    })
     expect(searchOptionsFromSettings({ ...base, gskToolsEnabled: false })).toEqual({
       useGsk: false,
+      parallelKey: '',
+      prefer: 'parallel',
     })
     const serper = {
       ...base,
       search: {
         provider: 'serper' as const,
-        providers: { serper: { apiKey: 'k' }, tavily: { apiKey: '' }, parallel: { apiKey: '' } },
+        providers: {
+          serper: { apiKey: 'k' },
+          serply: { apiKey: '' },
+          tavily: { apiKey: '' },
+          parallel: { apiKey: '' },
+        },
       },
     }
-    expect(searchOptionsFromSettings(serper)).toEqual({ useGsk: false, serperKey: 'k' })
+    expect(searchOptionsFromSettings(serper)).toEqual({
+      useGsk: false,
+      serperKey: 'k',
+      prefer: 'serper',
+    })
     const tavily = {
       ...base,
       search: {
         provider: 'tavily' as const,
-        providers: { serper: { apiKey: '' }, tavily: { apiKey: 't' }, parallel: { apiKey: '' } },
+        providers: {
+          serper: { apiKey: '' },
+          serply: { apiKey: '' },
+          tavily: { apiKey: 't' },
+          parallel: { apiKey: '' },
+        },
       },
     }
     expect(searchOptionsFromSettings(tavily)).toEqual({
@@ -324,15 +345,24 @@ describe('search-tools', () => {
       tavilyKey: 't',
       prefer: 'tavily',
     })
-    // no key → genspark chain
+    // no key → keyless Parallel
     const empty = {
       ...base,
       search: {
         provider: 'serper' as const,
-        providers: { serper: { apiKey: '' }, tavily: { apiKey: '' }, parallel: { apiKey: '' } },
+        providers: {
+          serper: { apiKey: '' },
+          serply: { apiKey: '' },
+          tavily: { apiKey: '' },
+          parallel: { apiKey: '' },
+        },
       },
     }
-    expect(searchOptionsFromSettings(empty)).toEqual({ useGsk: true })
+    expect(searchOptionsFromSettings(empty)).toEqual({
+      useGsk: false,
+      parallelKey: '',
+      prefer: 'parallel',
+    })
   })
 
   it('reports a rejected key as a failure instead of the silent free fallback', async () => {

@@ -6,21 +6,21 @@ import type {
 } from './types'
 
 export const AI_SEARCH_PROVIDERS: AiSearchProviderMeta[] = [
-  {
-    id: 'genspark',
-    label: 'Genspark',
-    keyPlaceholder: 'Not required - sign in to Genspark',
-    imageSearch: true,
-  },
   { id: 'serper', label: 'Serper', keyPlaceholder: 'Serper API key', imageSearch: true },
+  { id: 'serply', label: 'Serply', keyPlaceholder: 'Serply API key', imageSearch: true },
   { id: 'tavily', label: 'Tavily', keyPlaceholder: 'tvly-...', imageSearch: false },
   { id: 'parallel', label: 'Parallel', keyPlaceholder: 'Parallel API key', imageSearch: false },
 ]
 
 export function defaultAiSearchSettings(): AiSearchSettings {
   return {
-    provider: 'genspark',
-    providers: { serper: { apiKey: '' }, tavily: { apiKey: '' }, parallel: { apiKey: '' } },
+    provider: 'parallel',
+    providers: {
+      serper: { apiKey: '' },
+      serply: { apiKey: '' },
+      tavily: { apiKey: '' },
+      parallel: { apiKey: '' },
+    },
   }
 }
 
@@ -30,20 +30,26 @@ export function resolveAiSearchSettings(
   const defaults = defaultAiSearchSettings()
   if (!stored) return defaults
   const providers = { ...defaults.providers }
-  for (const id of ['serper', 'tavily', 'parallel'] as const) {
+  for (const id of ['serper', 'serply', 'tavily', 'parallel'] as const) {
     const key = stored.providers?.[id]?.apiKey
     if (typeof key === 'string') providers[id] = { apiKey: key.trim() }
   }
-  return { provider: stored.provider ?? defaults.provider, providers }
+  return {
+    provider:
+      stored.provider === 'genspark' ? defaults.provider : (stored.provider ?? defaults.provider),
+    providers,
+  }
 }
 
-/** Parallel can run keylessly; other custom providers require a key or fall back to Genspark. */
-export function activeSearchProvider(settings: Pick<AiSettings, 'search'>): AiSearchProviderId {
+/** Parallel can run keylessly; a missing key never routes a query through Genspark. */
+export function activeSearchProvider(
+  settings: Pick<AiSettings, 'search'>,
+): Exclude<AiSearchProviderId, 'genspark'> {
   const search = settings.search
-  if (!search || search.provider === 'genspark') return 'genspark'
-  if (!AI_SEARCH_PROVIDERS.some((m) => m.id === search.provider)) return 'genspark'
+  if (!search || search.provider === 'genspark') return 'parallel'
+  if (!AI_SEARCH_PROVIDERS.some((m) => m.id === search.provider)) return 'parallel'
   if (search.provider === 'parallel') return 'parallel'
   // Trim-aware: a whitespace-only key from in-memory settings falls back
   // instead of sending `Bearer    ` to the search backend.
-  return search.providers?.[search.provider]?.apiKey?.trim() ? search.provider : 'genspark'
+  return search.providers?.[search.provider]?.apiKey?.trim() ? search.provider : 'parallel'
 }

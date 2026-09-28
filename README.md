@@ -44,18 +44,17 @@ file, makes the change, and shows you exactly what it touched.
 - **AI you can review.** Edits land as tracked changes and diffs with one-click
   rollback. Spreadsheets get live formulas, not pasted numbers. Decks and pages
   are generated onto the canvas and stay fully editable.
-- **Local by design.** Files open, edit, save and convert on your machine.
-  PDF → Word / Excel / PowerPoint, Markdown → Word and HTML → Word all run
-  on-device. Only the AI calls leave the machine, to the provider you choose.
+- **Local by design.** Files open, edit and save on your machine. PDF → Word /
+  Excel / PowerPoint, Markdown → Word and HTML → Word run on-device. Legacy `.doc`
+  files use the configured online d2x converter by default; you can change this
+  under Settings → General.
 - **Find files by what they say.** The home screen searches the names,
   folders and full text of your `.docx`, `.xlsx`, `.pptx`, PDF, Markdown and
   HTML files from a local SQLite index, CJK included. Optionally, the top hits
   are reranked by **[TypeSafe Jev](https://typesafe.ai/)**, the System One
   judgment model, so the file that answers your question comes first.
-- **Your keys or none.** Sign in with Genspark and skip keys, or bring your own
-  key for Claude, OpenAI, Gemini, DeepSeek, Kimi, GLM, Qwen, Doubao, MiniMax,
-  Grok, Mistral, OpenRouter, Requesty, Opper, or any OpenAI-compatible endpoint, local
-  servers included.
+- **Your model.** Configure a provider key, use Codex CLI, or connect a local
+  OpenAI-compatible server. Web search uses Parallel without a key by default.
 - **Scriptable and agent-ready.** The app ships a `genoffice` command line and
   a skill for Claude Code, Codex, Cursor, Gemini CLI, GitHub Copilot, OpenCode
   and Windsurf, so a coding agent can create, convert, read and edit real
@@ -260,16 +259,12 @@ document in a visible editor tab while you watch.
 
 ## AI backends
 
-**Sign in with Genspark** and there is nothing to configure: model calls route
-through the Genspark proxy (Claude, GPT and Gemini families) and the agents get
-web and image search, image generation, and image/audio/video analysis.
-
-**Or bring your own key.** Settings → AI lists Claude, OpenAI, Gemini,
+**Choose an AI provider.** Settings → AI lists Claude, OpenAI, Gemini,
 DeepSeek, Kimi, GLM, Qwen, Doubao, MiniMax, Grok, Mistral, OpenRouter, Requesty, Opper
 and OpenCode Zen/Go, plus a custom slot for any OpenAI-compatible endpoint (base
 URL + key), including local model servers. Search and media have their own
-per-capability providers under **AI Media & Search**: Serper, Tavily or Parallel for web
-search, and OpenAI, Gemini, Doubao/Seedream, GLM, Grok, Qwen, MiniMax or any
+per-capability providers under **AI Media & Search**: Serper, Serply, Tavily or Parallel for
+web search, and OpenAI, Gemini, Doubao/Seedream, GLM, Grok, Qwen, MiniMax or any
 OpenAI-compatible images endpoint for image generation and image/video
 analysis, plus DeepSeek V4.1 Flash for image analysis.
 
@@ -281,8 +276,7 @@ default; when on, the excerpts of the top 20 local hits are sent for judgment
 and nothing else leaves the machine.
 
 **Parallel** works without an account: its free Search MCP (rate-limited) is the
-default web search whenever no Genspark login or search key is configured, and
-it runs ahead of the DuckDuckGo scrape. Select Parallel under Web search and
+default web search and runs ahead of the DuckDuckGo fallback. Select Parallel under Web search and
 enter a [Parallel](https://platform.parallel.ai/) key to use the Search API
 instead.
 
