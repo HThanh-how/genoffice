@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -10,7 +11,11 @@ const execFileAsync = promisify(execFile)
 const MAX_DOC_BYTES = 50 * 1024 * 1024
 const MAX_CONVERTED_BYTES = 50 * 1024 * 1024
 
-export type LegacyDocConversion = { bytes: Uint8Array; fidelity: 'formatted' | 'text' }
+export type LegacyDocConversion = {
+  bytes: Uint8Array
+  fidelity: 'formatted' | 'text'
+  sourceHash: string
+}
 
 export const DEFAULT_LEGACY_DOC_SERVICE = 'https://d2x.clouds.io.vn'
 
@@ -96,12 +101,13 @@ export async function convertLegacyDoc(
   if (source.byteLength === 0 || source.byteLength > MAX_DOC_BYTES) {
     throw new Error('The .doc file is empty or exceeds the 50 MB import limit')
   }
+  const sourceHash = createHash('sha256').update(source).digest('hex')
   if (serviceEndpoint) {
     const remote = await convertWithService(source, serviceEndpoint)
-    if (remote) return { bytes: remote, fidelity: 'formatted' }
+    if (remote) return { bytes: remote, fidelity: 'formatted', sourceHash }
   }
   const formatted = await convertWithMacTextutil(filePath)
-  if (formatted) return { bytes: formatted, fidelity: 'formatted' }
+  if (formatted) return { bytes: formatted, fidelity: 'formatted', sourceHash }
 
   const text = await docToText(source)
   if (!text.trim()) throw new Error('No readable text found in the .doc file')
@@ -114,5 +120,5 @@ export async function convertLegacyDoc(
       block: { type: 'paragraph' as const, runs: [{ text: line }] },
     })),
   )
-  return { bytes, fidelity: 'text' }
+  return { bytes, fidelity: 'text', sourceHash }
 }

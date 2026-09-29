@@ -297,6 +297,15 @@ const homeApi: HomeApi = {
       settings,
     )) as LegacyDocSettings
   },
+  async listLegacyRecovery() {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.listLegacyRecovery,
+    )) as import('../shared/home-api').LegacyRecoveryEntry[]
+  },
+  async restoreLegacyDoc(id) {
+    if (typeof id !== 'string') throw new Error('Invalid recovery ID')
+    return (await ipcRenderer.invoke(HOME_CHANNELS.restoreLegacyDoc, id)) as string
+  },
   async getAutoSaveDefault() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getAutoSaveDefault)
     const r = result as { on?: unknown; updatedAt?: unknown } | null

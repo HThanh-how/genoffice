@@ -474,6 +474,50 @@
   background: var(--bg-hover-strong);
 }
 
+.set-legacy-recovery .set-field-stack {
+  width: 100%;
+}
+
+.set-legacy-recovery-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.set-legacy-recovery-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+}
+
+.set-legacy-recovery-info {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.set-legacy-recovery-info span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  opacity: 0.7;
+}
+
+.set-legacy-recovery-info small {
+  opacity: 0.7;
+}
+
+.set-legacy-recovery-error {
+  color: var(--danger);
+}
+
 .set-btn:disabled {
   opacity: 0.55;
   cursor: default;

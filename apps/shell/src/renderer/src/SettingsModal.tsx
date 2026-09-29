@@ -14,6 +14,7 @@ import type {
   FileSearchSettings,
   JevEndpoint,
   LegacyDocSettings,
+  LegacyRecoveryEntry,
 } from '../../shared/home-api'
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -1246,6 +1247,9 @@ export function SettingsModal({
     mode: 'online',
     endpoint: 'https://d2x.clouds.io.vn',
   })
+  const [legacyRecovery, setLegacyRecovery] = useState<LegacyRecoveryEntry[]>([])
+  const [legacyRecoveryBusy, setLegacyRecoveryBusy] = useState<string | null>(null)
+  const [legacyRecoveryError, setLegacyRecoveryError] = useState('')
   const [appVersion, setAppVersion] = useState('')
   const [githubStars, setGithubStars] = useState<number | null>(null)
 
@@ -1275,6 +1279,12 @@ export function SettingsModal({
     void window.aiOffice.getLegacyDocSettings?.().then((value) => {
       if (alive) setLegacyDoc(value)
     })
+    void window.aiOffice
+      .listLegacyRecovery?.()
+      .then((entries) => {
+        if (alive) setLegacyRecovery(entries)
+      })
+      .catch(() => {})
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
     })
@@ -1305,6 +1315,24 @@ export function SettingsModal({
     const next = { ...legacyDoc, ...patch }
     setLegacyDoc(next)
     void window.aiOffice.setLegacyDocSettings(next).then(setLegacyDoc)
+  }
+
+  const restoreOriginal = (id: string) => {
+    setLegacyRecoveryBusy(id)
+    setLegacyRecoveryError('')
+    void window.aiOffice
+      .restoreLegacyDoc(id)
+      .then(() => window.aiOffice.listLegacyRecovery())
+      .then(setLegacyRecovery)
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        setLegacyRecoveryError(
+          lang === 'vi' && message.includes('already exists')
+            ? 'Đã có tệp cùng tên ở vị trí cũ. Hãy đổi tên tệp đó trước khi khôi phục.'
+            : message,
+        )
+      })
+      .finally(() => setLegacyRecoveryBusy(null))
   }
 
   const updateAiPrefs = (patch: Partial<AiPanelPrefs>) => {
@@ -1409,7 +1437,7 @@ export function SettingsModal({
                           ? 'Keep files on this device. .doc opens locally (text-only on Windows and Linux). .ppt needs the conversion service and will not open in this mode.'
                           : legacyDoc.mode === 'online'
                             ? 'Convert automatically. macOS tries its built-in converter for .doc; .ppt and other .doc files are sent to the service below.'
-                            : 'Ask before sending .doc or .ppt. macOS tries its built-in converter for .doc first. The original file is never changed.'}
+                            : 'Ask before sending .doc or .ppt. macOS tries its built-in converter for .doc first.'}
                       </div>
                     </div>
                   </div>
@@ -1424,6 +1452,58 @@ export function SettingsModal({
                     ]}
                     onPick={(mode) => updateLegacyDoc({ mode: mode as LegacyDocSettings['mode'] })}
                   />
+                </div>
+                <div className="set-field set-legacy-recovery">
+                  <div className="set-field-stack">
+                    <div className="set-field-label">
+                      {lang === 'vi' ? 'Khôi phục tệp .doc gốc' : 'Recover original .doc files'}
+                    </div>
+                    <div className="set-field-desc">
+                      {lang === 'vi'
+                        ? 'Sau khi chuyển giữ nguyên định dạng, tệp .doc gốc được cất trong thư mục .genoffice ẩn cạnh tài liệu trong 30 ngày. Bản chuyển chỉ lấy được chữ sẽ giữ nguyên tệp gốc.'
+                        : 'After a formatted conversion, the original .doc is kept for 30 days in a hidden .genoffice folder beside the document. Text-only imports leave the original in place.'}
+                    </div>
+                    {legacyRecovery.length === 0 ? (
+                      <div className="set-field-desc">
+                        {lang === 'vi'
+                          ? 'Chưa có tệp gốc nào cần khôi phục.'
+                          : 'No originals are waiting for recovery.'}
+                      </div>
+                    ) : (
+                      <div className="set-legacy-recovery-list">
+                        {legacyRecovery.map((entry) => (
+                          <div className="set-legacy-recovery-item" key={entry.id}>
+                            <div className="set-legacy-recovery-info">
+                              <strong>{entry.sourcePath.split(/[\\/]/).pop()}</strong>
+                              <span title={entry.sourcePath}>{entry.sourcePath}</span>
+                              <small>
+                                {lang === 'vi' ? 'Tự xóa: ' : 'Expires: '}
+                                {new Date(entry.expiresAt).toLocaleDateString()}
+                              </small>
+                            </div>
+                            <button
+                              className="set-btn"
+                              disabled={legacyRecoveryBusy !== null}
+                              onClick={() => restoreOriginal(entry.id)}
+                            >
+                              {legacyRecoveryBusy === entry.id
+                                ? lang === 'vi'
+                                  ? 'Đang khôi phục…'
+                                  : 'Restoring…'
+                                : lang === 'vi'
+                                  ? 'Khôi phục'
+                                  : 'Restore'}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {legacyRecoveryError && (
+                      <div className="set-field-desc set-legacy-recovery-error" role="alert">
+                        {legacyRecoveryError}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="set-field">
                   <div className="set-field-text">

@@ -27,6 +27,13 @@ import {
 import type { MenuItemConstructorOptions, NativeImage, WebContents } from 'electron'
 import { atomicCopyFile, atomicWriteFile } from './atomic-write'
 import { convertLegacyDoc, DEFAULT_LEGACY_DOC_SERVICE } from './legacy-doc'
+import {
+  archiveLegacyDoc,
+  linkedLegacyDocCopy,
+  listLegacyRecovery,
+  rememberLegacyDocCopy,
+  restoreLegacyDoc,
+} from './legacy-recovery'
 import { convertLegacyPpt } from './legacy-ppt'
 import { tabStripOverlay } from './title-bar-overlay'
 import menuDocxIcon1x from './assets/menu-docx.png?asset'
@@ -3470,6 +3477,8 @@ async function openLegacyDoc(filePath: string): Promise<void> {
   if (pendingLegacyDocImports.has(filePath)) return
   pendingLegacyDocImports.add(filePath)
   try {
+    const linkedCopy = await linkedLegacyDocCopy(filePath, app.getPath('userData'))
+    if (linkedCopy && openDocumentPath(linkedCopy)) return
     const settings = legacyDocSettings()
     let online = settings.mode === 'online'
     // macOS has a built-in converter: use it before asking to upload a file.
@@ -3482,7 +3491,7 @@ async function openLegacyDoc(filePath: string): Promise<void> {
         type: 'question' as const,
         title: 'Open legacy Word document',
         message: 'How should GenOffice convert this .doc file?',
-        detail: `Online conversion sends the file to ${settings.endpoint}. The original file stays unchanged.`,
+        detail: `Online conversion sends the file to ${settings.endpoint}. After a successful formatted conversion, GenOffice keeps the original for 30 days in a hidden .genoffice folder beside the document.`,
         buttons: ['Convert online', 'Open text-only copy', 'Cancel'],
         defaultId: 0,
         cancelId: 2,
@@ -3531,6 +3540,49 @@ async function openLegacyDoc(filePath: string): Promise<void> {
       await atomicWriteFile(convertedPath, result.bytes)
     }
     if (!openDocumentPath(convertedPath)) throw new Error('Converted document could not be opened')
+    if (result.fidelity === 'text') {
+      await rememberLegacyDocCopy(
+        filePath,
+        convertedPath,
+        result.sourceHash,
+        app.getPath('userData'),
+      ).catch((error) => console.warn('[shell] could not remember text-only copy:', error))
+    }
+    if (result.fidelity === 'formatted' && dirname(convertedPath) === dirname(filePath)) {
+      try {
+        await archiveLegacyDoc(filePath, convertedPath, app.getPath('userData'), result.sourceHash)
+        replaceRecentFile(filePath, convertedPath)
+        if (readAppSettings(APP_SETTINGS_PATH()).legacyRecoveryNoticeSeen !== true) {
+          try {
+            writeAppSetting(APP_SETTINGS_PATH(), 'legacyRecoveryNoticeSeen', true)
+          } catch (error) {
+            console.warn('[shell] could not save legacy recovery notice state:', error)
+          }
+          const vietnamese = currentLang() === 'vi'
+          const notice = {
+            type: 'info' as const,
+            title: vietnamese
+              ? 'Đã lưu tệp gốc để khôi phục'
+              : 'Original document saved for recovery',
+            message: vietnamese
+              ? 'Tài liệu .doc đã được chuyển thành .docx.'
+              : 'Your .doc has been upgraded to .docx.',
+            detail: vietnamese
+              ? 'Tệp gốc nằm trong thư mục .genoffice ẩn cạnh tài liệu trong 30 ngày. Bạn có thể khôi phục tại Cài đặt → Chung → Khôi phục tệp .doc gốc.'
+              : 'The original is in a hidden .genoffice folder beside the document for 30 days. You can restore it in Settings → General → Recover original .doc files.',
+            buttons: [vietnamese ? 'Đã hiểu' : 'OK'],
+          }
+          void (shellWindow
+            ? dialog.showMessageBox(shellWindow, notice)
+            : dialog.showMessageBox(notice))
+        }
+      } catch (error) {
+        console.warn('[shell] could not archive original .doc:', error)
+        showAppWarning(
+          'The converted .docx is ready, but the original .doc could not be moved into the 30-day recovery folder. Both files have been kept.',
+        )
+      }
+    }
   } catch (error) {
     console.error('[shell] legacy .doc import failed:', error)
     showAppWarning('Could not read this .doc file. It may be damaged or password-protected.')
@@ -4210,6 +4262,13 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.getTheme, (): UiTheme => currentTheme())
   ipcMain.handle(HOME_CHANNELS.getLegacyDocSettings, (): LegacyDocSettings => legacyDocSettings())
+  ipcMain.handle(HOME_CHANNELS.listLegacyRecovery, () =>
+    listLegacyRecovery(app.getPath('userData')),
+  )
+  ipcMain.handle(HOME_CHANNELS.restoreLegacyDoc, async (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('Invalid recovery ID')
+    return restoreLegacyDoc(app.getPath('userData'), id)
+  })
   ipcMain.handle(HOME_CHANNELS.setLegacyDocSettings, (_event, input: unknown) => {
     if (!input || typeof input !== 'object') return legacyDocSettings()
     const request = input as Partial<LegacyDocSettings>
@@ -5852,6 +5911,17 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
+  void listLegacyRecovery(app.getPath('userData')).catch((error) =>
+    console.warn('[shell] legacy recovery cleanup failed:', error),
+  )
+  setInterval(
+    () => {
+      void listLegacyRecovery(app.getPath('userData')).catch((error) =>
+        console.warn('[shell] legacy recovery cleanup failed:', error),
+      )
+    },
+    24 * 60 * 60 * 1000,
+  ).unref()
   // another GenOffice-family app re-logging in rotates the shared key; the
   // home page re-reads its account status. A logout that leaves only the
   // gsk CLI fallback key is not a login
