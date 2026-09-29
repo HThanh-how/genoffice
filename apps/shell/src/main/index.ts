@@ -32,6 +32,7 @@ import {
   linkedLegacyDocCopy,
   listLegacyRecovery,
   rememberLegacyDocCopy,
+  rebaseLegacyRecovery,
   restoreLegacyDoc,
 } from './legacy-recovery'
 import { convertLegacyPpt } from './legacy-ppt'
@@ -2965,6 +2966,9 @@ function trackedFilesUnder(dir: string): string[] {
 /** a folder moved/renamed: re-key every tracked file that lived under it */
 function afterFolderMoved(oldDir: string, newDir: string, filesBefore: readonly string[]): void {
   for (const file of filesBefore) afterFileMoved(file, rebasePath(file, oldDir, newDir))
+  void rebaseLegacyRecovery(app.getPath('userData'), oldDir, newDir).catch((error) =>
+    console.warn('[shell] could not update legacy recovery paths:', error),
+  )
 }
 
 const folderWatchers = new Map<string, FolderWatcher>()

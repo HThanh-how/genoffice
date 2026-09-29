@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -9,6 +9,7 @@ import {
   linkedLegacyDocCopy,
   listLegacyRecovery,
   rememberLegacyDocCopy,
+  rebaseLegacyRecovery,
   restoreLegacyDoc,
 } from '../src/main/legacy-recovery'
 
@@ -93,5 +94,23 @@ describe('legacy document recovery', () => {
       archiveLegacyDoc(secondSource, secondTarget, userData, hash(original)),
     ])
     expect(await listLegacyRecovery(userData)).toHaveLength(2)
+  })
+
+  it('keeps recovery available after GenOffice moves the containing folder', async () => {
+    const { root, userData, original } = await fixture()
+    const oldDir = join(root, 'old')
+    const newDir = join(root, 'new')
+    await mkdir(oldDir)
+    const source = join(oldDir, 'moved.doc')
+    const target = join(oldDir, 'moved.docx')
+    await writeFile(source, original)
+    await writeFile(target, 'converted')
+    const entry = await archiveLegacyDoc(source, target, userData, hash(original))
+    await rename(oldDir, newDir)
+    await rebaseLegacyRecovery(userData, oldDir, newDir)
+    expect(await listLegacyRecovery(userData)).toMatchObject([
+      { sourcePath: join(newDir, 'moved.doc'), convertedPath: join(newDir, 'moved.docx') },
+    ])
+    expect(await restoreLegacyDoc(userData, entry.id)).toBe(join(newDir, 'moved.doc'))
   })
 })

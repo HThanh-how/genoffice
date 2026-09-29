@@ -11,7 +11,7 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { atomicWriteFile } from './atomic-write'
 
@@ -138,7 +138,7 @@ function backupPath(vault: string, entry: StoredEntry): string {
   return join(vault, ORIGINALS, entry.backupName)
 }
 
-async function readEntries(vault: string): Promise<StoredEntry[]> {
+async function readEntries(vault: string, allowMoved = false): Promise<StoredEntry[]> {
   let names: string[]
   try {
     names = await readdir(join(vault, ORIGINALS))
@@ -154,7 +154,7 @@ async function readEntries(vault: string): Promise<StoredEntry[]> {
         item.id + '.json' !== name ||
         !item.backupName ||
         basename(item.backupName) !== item.backupName ||
-        dirname(item.sourcePath) !== dirname(vault) ||
+        (!allowMoved && dirname(item.sourcePath) !== dirname(vault)) ||
         !/\.doc$/i.test(item.sourcePath) ||
         !/\.docx$/i.test(item.convertedPath) ||
         !Number.isFinite(item.archivedAt)
@@ -166,6 +166,53 @@ async function readEntries(vault: string): Promise<StoredEntry[]> {
     }
   }
   return entries
+}
+
+function rebasePath(path: string, oldDir: string, newDir: string): string {
+  const rel = relative(oldDir, path)
+  if (rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))) return join(newDir, rel)
+  return path
+}
+
+async function rebaseLegacyRecoveryInternal(
+  userData: string,
+  oldDir: string,
+  newDir: string,
+): Promise<void> {
+  const current = await folders(userData)
+  const rebased: string[] = []
+  for (const vault of current) {
+    const newVault = rebasePath(vault, oldDir, newDir)
+    rebased.push(newVault)
+    if (newVault === vault) continue
+    for (const entry of await readEntries(newVault, true)) {
+      await atomicWriteFile(
+        metadataPath(newVault, entry.id),
+        Buffer.from(
+          JSON.stringify({
+            ...entry,
+            sourcePath: rebasePath(entry.sourcePath, oldDir, newDir),
+            convertedPath: rebasePath(entry.convertedPath, oldDir, newDir),
+          }),
+        ),
+      )
+    }
+  }
+  if (rebased.some((vault, i) => vault !== current[i])) await saveFolders(userData, rebased)
+  const currentLinks = await links(userData)
+  const rebasedLinks = currentLinks.map((link) => ({
+    ...link,
+    sourcePath: rebasePath(link.sourcePath, oldDir, newDir),
+    convertedPath: rebasePath(link.convertedPath, oldDir, newDir),
+  }))
+  if (
+    rebasedLinks.some(
+      (link, i) =>
+        link.sourcePath !== currentLinks[i].sourcePath ||
+        link.convertedPath !== currentLinks[i].convertedPath,
+    )
+  )
+    await atomicWriteFile(join(userData, LINKS_FILE), Buffer.from(JSON.stringify(rebasedLinks)))
 }
 
 async function removeEmptyVault(vault: string): Promise<boolean> {
@@ -354,4 +401,13 @@ export function listLegacyRecovery(
 
 export function restoreLegacyDoc(userData: string, id: string): Promise<string> {
   return serialized(() => restoreLegacyDocInternal(userData, id))
+}
+
+/** Keep recovery locations valid when a folder is renamed or moved inside GenOffice. */
+export function rebaseLegacyRecovery(
+  userData: string,
+  oldDir: string,
+  newDir: string,
+): Promise<void> {
+  return serialized(() => rebaseLegacyRecoveryInternal(userData, oldDir, newDir))
 }
