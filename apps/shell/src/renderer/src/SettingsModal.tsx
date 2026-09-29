@@ -1403,20 +1403,20 @@ export function SettingsModal({
                 <div className="set-field">
                   <div className="set-field-text">
                     <div className="set-field-stack">
-                      <div className="set-field-label">Legacy Word files (.doc)</div>
+                      <div className="set-field-label">Legacy Office files (.doc, .ppt)</div>
                       <div className="set-field-desc">
                         {legacyDoc.mode === 'text'
-                          ? 'Keep files on this device. macOS can preserve formatting; Windows and Linux open a text-only copy, so images and layout may be lost.'
+                          ? 'Keep files on this device. .doc opens locally (text-only on Windows and Linux). .ppt needs the conversion service and will not open in this mode.'
                           : legacyDoc.mode === 'online'
-                            ? 'Convert automatically. macOS tries its built-in converter first; other files are sent to the service below.'
-                            : 'Ask before sending a file. macOS tries its built-in converter first. The original file is never changed.'}
+                            ? 'Convert automatically. macOS tries its built-in converter for .doc; .ppt and other .doc files are sent to the service below.'
+                            : 'Ask before sending .doc or .ppt. macOS tries its built-in converter for .doc first. The original file is never changed.'}
                       </div>
                     </div>
                   </div>
                   <Dropdown
                     className="set-dd"
                     value={legacyDoc.mode}
-                    ariaLabel="Legacy Word conversion and upload preference"
+                    ariaLabel="Legacy Office conversion and upload preference"
                     options={[
                       { value: 'ask', label: 'Ask before upload' },
                       { value: 'online', label: 'Convert automatically' },
@@ -1432,7 +1432,7 @@ export function SettingsModal({
                         Conversion service
                       </label>
                       <div className="set-field-desc">
-                        Online conversion sends the entire document over HTTPS. The default public
+                        Online conversion sends the entire file over HTTPS. The default public
                         service deletes temporary files after conversion; it does not verify that
                         requests come from GenOffice. You can use your own HTTPS service.
                       </div>

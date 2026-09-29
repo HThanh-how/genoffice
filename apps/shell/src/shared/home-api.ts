@@ -259,7 +259,7 @@ export interface HomeApi {
   getTheme(): Promise<UiTheme>
   /** switch + persist the UI theme; broadcasts 'app:theme-changed' to all web contents */
   setTheme(theme: UiTheme): Promise<void>
-  /** Legacy Word conversion privacy preference and optional self-hosted endpoint. */
+  /** Legacy Office conversion privacy preference and optional self-hosted endpoint. */
   getLegacyDocSettings(): Promise<LegacyDocSettings>
   setLegacyDocSettings(settings: LegacyDocSettings): Promise<LegacyDocSettings>
   /** AutoSave default applied by every editor window (persisted in userData/app-settings.json) */

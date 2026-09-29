@@ -21,10 +21,11 @@ class GatewayTest(unittest.TestCase):
         self.thread.join()
 
     def request(
-        self, method: str, path: str, body: bytes = b"", declared_length: int | None = None
+        self, method: str, path: str, body: bytes = b"", declared_length: int | None = None,
+        content_type: str = "application/msword",
     ) -> tuple[int, bytes]:
         connection = http.client.HTTPConnection("127.0.0.1", self.http.server_port, timeout=5)
-        headers = {"Content-Type": "application/msword"}
+        headers = {"Content-Type": content_type}
         if declared_length is not None:
             headers["Content-Length"] = str(declared_length)
         connection.request(method, path, body, headers)
@@ -42,6 +43,16 @@ class GatewayTest(unittest.TestCase):
     def test_size_limit(self) -> None:
         status, _ = self.request("POST", "/v1/convert/docx", b"x", server.MAX_INPUT + 1)
         self.assertEqual(status, 413)
+
+    def test_legacy_presentation_endpoint(self) -> None:
+        status, message = self.request(
+            "POST", "/v1/convert/pptx", b"not-a-presentation",
+            content_type="application/vnd.ms-powerpoint",
+        )
+        self.assertEqual(status, 422)
+        self.assertIn(b".ppt", message)
+        status, _ = self.request("POST", "/v1/convert/pptx", b"bad-mime")
+        self.assertEqual(status, 415)
 
 
 if __name__ == "__main__":

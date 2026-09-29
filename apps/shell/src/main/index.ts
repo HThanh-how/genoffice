@@ -27,6 +27,7 @@ import {
 import type { MenuItemConstructorOptions, NativeImage, WebContents } from 'electron'
 import { atomicCopyFile, atomicWriteFile } from './atomic-write'
 import { convertLegacyDoc, DEFAULT_LEGACY_DOC_SERVICE } from './legacy-doc'
+import { convertLegacyPpt } from './legacy-ppt'
 import { tabStripOverlay } from './title-bar-overlay'
 import menuDocxIcon1x from './assets/menu-docx.png?asset'
 import menuDocxIcon2x from './assets/menu-docx@2x.png?asset'
@@ -205,6 +206,7 @@ import {
   setSlidesExtraFileMenuItems,
   setSlidesOpenedHook,
   setSlidesHostWindowHook,
+  setSlidesLegacyPptOpenHook,
   setSlidesShellWindow,
   setSlidesShowBleed,
   slidesFileRenamed,
@@ -474,7 +476,9 @@ function legacyDocSettings(): LegacyDocSettings {
   const saved = readAppSettings(APP_SETTINGS_PATH())
   return {
     mode:
-      saved.legacyDocMode === 'online' || saved.legacyDocMode === 'text'
+      saved.legacyDocMode === 'online' ||
+      saved.legacyDocMode === 'text' ||
+      saved.legacyDocMode === 'ask'
         ? saved.legacyDocMode
         : 'online',
     endpoint:
@@ -3135,6 +3139,7 @@ function createShellWindow(): void {
   setDocsHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
   setSheetsHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
   setSlidesShellWindow(win)
+  setSlidesLegacyPptOpenHook(openLegacyPpt)
   setSlidesHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
   setSlidesShowBleed((wc, on) => manager.setContentBleed(wc, on))
   setHtmlPresentHooks({
@@ -3335,6 +3340,7 @@ function createShellWindow(): void {
 
 const DOCX_RE = /\.docx$/i
 const DOC_RE = /\.doc$/i
+const PPT_RE = /\.ppt$/i
 const XLSX_RE = /\.(xlsx|xlsm|xls|csv|tsv)$/i
 const PPTX_RE = /\.pptx$/i
 const PDF_RE = /\.pdf$/i
@@ -3343,8 +3349,7 @@ const HTML_RE = /\.html?$/i
 
 /**
  * Single source of truth for the open-dialog filter. Includes the
- * Legacy .doc opens as a converted .docx copy; .ppt still surfaces an explicit
- * unsupported warning instead of being grayed out.
+ * Legacy .doc and .ppt open as converted OOXML copies.
  */
 const OPEN_DIALOG_EXTENSIONS = [
   'docx',
@@ -3410,6 +3415,56 @@ function openDocumentPath(filePath: string): boolean {
 }
 
 const pendingLegacyDocImports = new Set<string>()
+const pendingLegacyPptImports = new Set<string>()
+
+async function openLegacyPpt(filePath: string): Promise<void> {
+  if (pendingLegacyPptImports.has(filePath)) return
+  pendingLegacyPptImports.add(filePath)
+  try {
+    const settings = legacyDocSettings()
+    if (settings.mode === 'text') {
+      showAppWarning(
+        'Opening .ppt requires conversion. On-device only is selected, so the file was not uploaded. Choose Ask before upload or Convert automatically in Settings to open it.',
+      )
+      return
+    }
+    if (settings.mode === 'ask') {
+      const options = {
+        type: 'question' as const,
+        title: 'Open legacy PowerPoint presentation',
+        message: 'Convert this .ppt file to .pptx online?',
+        detail: `Conversion sends the file to ${settings.endpoint}. The original file stays unchanged.`,
+        buttons: ['Convert online', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+      }
+      const choice = shellWindow
+        ? await dialog.showMessageBox(shellWindow, options)
+        : await dialog.showMessageBox(options)
+      if (choice.response !== 0) return
+    }
+    const bytes = await convertLegacyPpt(filePath, settings.endpoint)
+    const suggestedName = `${basename(filePath, extname(filePath))}.pptx`
+    let convertedPath = uniquePathIn(dirname(filePath), suggestedName)
+    try {
+      await atomicWriteFile(convertedPath, bytes)
+    } catch (error) {
+      if (!['EACCES', 'EPERM', 'EROFS'].includes((error as NodeJS.ErrnoException).code ?? ''))
+        throw error
+      convertedPath = uniquePathIn(defaultSaveDir(), suggestedName)
+      await atomicWriteFile(convertedPath, bytes)
+    }
+    if (!openDocumentPath(convertedPath))
+      throw new Error('Converted presentation could not be opened')
+  } catch (error) {
+    console.error('[shell] legacy .ppt import failed:', error)
+    showAppWarning(
+      'Could not convert this .ppt file. It may be damaged, password-protected, or the conversion service is unavailable.',
+    )
+  } finally {
+    pendingLegacyPptImports.delete(filePath)
+  }
+}
 
 async function openLegacyDoc(filePath: string): Promise<void> {
   if (pendingLegacyDocImports.has(filePath)) return
@@ -3505,6 +3560,10 @@ function openGeneratedDocument(filePath: string): boolean {
 
 function routeDocumentPath(filePath: string): boolean {
   if (!existsSync(filePath)) return false
+  if (PPT_RE.test(filePath)) {
+    void openLegacyPpt(filePath)
+    return true
+  }
   if (DOC_RE.test(filePath)) {
     void openLegacyDoc(filePath)
     return true

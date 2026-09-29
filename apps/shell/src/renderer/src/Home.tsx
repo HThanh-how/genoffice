@@ -57,7 +57,9 @@ const FILE_ICONS: Record<string, string> = {
   doc: iconDocx,
   xlsx: iconXlsx,
   xlsm: iconXlsx,
+  xls: iconXlsx,
   pptx: iconPptx,
+  ppt: iconPptx,
   pdf: iconPdf,
   md: iconMd,
   markdown: iconMd,
@@ -69,7 +71,7 @@ const FILE_ICONS: Record<string, string> = {
    width, so it ellipsizes and a hover ScreenTip carries the full list. Keep in
    sync with the main-process open-dialog filter (OPEN_DIALOG_EXTENSIONS). */
 const OPEN_LOCAL_EXTENSIONS =
-  '.docx / .doc / .xlsx / .xlsm / .xls / .csv / .tsv / .pptx / .pdf / .md / .html'
+  '.docx / .doc / .xlsx / .xlsm / .xls / .csv / .tsv / .pptx / .ppt / .pdf / .md / .html'
 
 /** drag payload of home file/folder rows (JSON array of absolute paths) */
 const DRAG_PATHS_MIME = 'application/x-genoffice-paths'

@@ -464,6 +464,14 @@ const config = {
       mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     },
     {
+      ext: 'ppt',
+      name: 'Legacy PowerPoint Presentation',
+      description: 'PowerPoint 97-2003 Presentation',
+      role: 'Editor',
+      icon: 'pptx',
+      mimeType: 'application/vnd.ms-powerpoint',
+    },
+    {
       ext: 'xls',
       name: 'Excel 97-2003 Workbook',
       role: 'Editor',
