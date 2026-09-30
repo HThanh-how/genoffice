@@ -23,6 +23,8 @@ afterEach(() => {
 class FakeWorker extends EventEmitter {
   delay = 0
   failEmbedding = false
+  embeddingCalls: string[][] = []
+  stopAfterBatches = Infinity
   constructor(private readonly dbPath: string) {
     super()
   }
@@ -53,6 +55,8 @@ class FakeWorker extends EventEmitter {
             },
           })
         } else if (message.type === 'embed') {
+          this.embeddingCalls.push(message.texts ?? [])
+          if (this.embeddingCalls.length > this.stopAfterBatches) return
           if (this.failEmbedding) {
             this.emit('message', { type: 'model', state: 'error', error: 'model unavailable' })
             this.emit('message', { id: message.id, error: 'model unavailable' })
@@ -110,6 +114,51 @@ function manager(fake: FakeWorker) {
 }
 
 describe('DocumentMemoryManager', () => {
+  it('resumes committed batches after shutdown without re-embedding finished chunks', async () => {
+    const path = join(dir, 'interrupted.txt')
+    const text = Array.from({ length: 10 }, (_, i) => `Section ${i}: ${'A'.repeat(550)}`).join(
+      '\n\n',
+    )
+    writeFileSync(path, text)
+    const chunks = chunkDocumentText(text)
+    const secondPath = join(dir, 'zz-other.txt')
+    writeFileSync(secondPath, text)
+    const interrupted = new FakeWorker(join(dir, 'document-memory.db'))
+    interrupted.stopAfterBatches = 1
+    const first = manager(interrupted)
+    first.remember(path)
+    first.remember(secondPath)
+    await until(() => first.status().vectors === 8)
+    const checkpoint = new DocumentMemoryStore(join(dir, 'document-memory.db'))
+    const idsBefore = checkpoint.search('Section', null, 20).map((hit) => hit.chunkId)
+    checkpoint.close()
+    first.close()
+    const resumedWorker = new FakeWorker(join(dir, 'document-memory.db'))
+    const reopened = manager(resumedWorker)
+    await until(
+      () => reopened.status().vectors === chunks.length * 2 && reopened.status().pending === 0,
+    )
+    expect(resumedWorker.embeddingCalls[0]).toEqual(chunks.slice(8, 16).map((chunk) => chunk.text))
+    const completed = new DocumentMemoryStore(join(dir, 'document-memory.db'))
+    const idsAfter = completed.search('Section', null, 20).map((hit) => hit.chunkId)
+    completed.close()
+    expect(idsAfter.sort((a, b) => a - b)).toEqual(idsBefore.sort((a, b) => a - b))
+    expect(reopened.status().files[0]?.status).toBe('ready')
+  })
+
+  it('restarts pending extraction when shutdown happened before text was committed', async () => {
+    const path = join(dir, 'not-extracted.txt')
+    writeFileSync(path, 'Pending content after reopening')
+    const first = manager(new FakeWorker(join(dir, 'document-memory.db')))
+    first.setEnabled(false)
+    first.remember(path)
+    first.setEnabled(true)
+    first.close()
+    const reopened = manager(new FakeWorker(join(dir, 'document-memory.db')))
+    await until(() => reopened.status().vectors === 1)
+    expect((await reopened.search('Pending content')).hits[0]?.path).toBe(path)
+  })
+
   it('indexes opened files, adds vectors, searches, and verifies reads against current content', async () => {
     const path = join(dir, 'opened.txt')
     writeFileSync(path, 'Lớp 2-1 học cộng 7 + 5 = 12')

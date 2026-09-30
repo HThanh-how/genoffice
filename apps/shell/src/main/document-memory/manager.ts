@@ -46,6 +46,7 @@ interface EmbedJob {
   mtimeMs: number
   sizeBytes: number
   chunks: DocumentChunk[]
+  startOffset?: number
 }
 interface ManagerOptions {
   workerPath?: string
@@ -69,6 +70,7 @@ export class DocumentMemoryManager {
   private readonly searchTimeoutMs: number
   private readonly queue: string[] = []
   private readonly queued = new Set<string>()
+  private readonly activeExtractions = new Set<string>()
   private readonly embeds: EmbedJob[] = []
   private readonly pathGeneration = new Map<string, number>()
   private readonly waiting = new Map<number, PendingRequest>()
@@ -360,7 +362,9 @@ export class DocumentMemoryManager {
 
   private async poll(): Promise<void> {
     if (this.stopped || !this.enabled) return
+    const resumeIncomplete = !this.embedding && !this.extracting
     for (const path of this.store.listPaths()) {
+      if (this.activeExtractions.has(path)) continue
       if (this.stopped || !this.enabled) return
       const doc = this.store.documentByPath(path)
       if (!doc || doc.status === 'excluded') continue
@@ -372,6 +376,7 @@ export class DocumentMemoryManager {
       }
       if (
         doc.status === 'pending' ||
+        (doc.status === 'text-only' && resumeIncomplete) ||
         doc.mtimeMs !== current.mtimeMs ||
         doc.sizeBytes !== current.sizeBytes
       )
@@ -405,6 +410,7 @@ export class DocumentMemoryManager {
       while (!this.stopped && this.enabled && this.queue.length) {
         const path = this.queue.shift()!
         this.queued.delete(path)
+        this.activeExtractions.add(path)
         const generation = this.currentGeneration(path)
         const epoch = this.epoch
         this.pendingCount++
@@ -421,15 +427,22 @@ export class DocumentMemoryManager {
             continue
           }
           const extracted = reply.result
-          this.store.replaceDocument(path, {
-            hash: extracted.hash,
-            mtimeMs: extracted.mtimeMs,
-            sizeBytes: extracted.sizeBytes,
-            chunks: extracted.chunks,
-            embeddingModel: null,
-            status: extracted.chunks.length ? 'text-only' : 'empty',
-            error: extracted.error,
-          })
+          const previous = this.store.documentByPath(path)
+          const resumeOffset =
+            previous?.mtimeMs === extracted.mtimeMs && previous.sizeBytes === extracted.sizeBytes
+              ? this.store.resumeVectorOffset(path, extracted.hash, EMBEDDING_MODEL_ID)
+              : null
+          if (resumeOffset === null) {
+            this.store.replaceDocument(path, {
+              hash: extracted.hash,
+              mtimeMs: extracted.mtimeMs,
+              sizeBytes: extracted.sizeBytes,
+              chunks: extracted.chunks,
+              embeddingModel: null,
+              status: extracted.chunks.length ? 'text-only' : 'empty',
+              error: extracted.error,
+            })
+          }
           this.lastError = undefined
           if (extracted.chunks.length) {
             this.embeds.push({
@@ -440,6 +453,7 @@ export class DocumentMemoryManager {
               mtimeMs: extracted.mtimeMs,
               sizeBytes: extracted.sizeBytes,
               chunks: extracted.chunks,
+              startOffset: resumeOffset ?? 0,
             })
             this.drain()
           }
@@ -450,6 +464,7 @@ export class DocumentMemoryManager {
             this.lastError = message
           }
         } finally {
+          this.activeExtractions.delete(path)
           this.pendingCount--
         }
       }
@@ -468,8 +483,8 @@ export class DocumentMemoryManager {
         if (!this.isCurrent(job.path, job.generation, job.epoch)) continue
         this.pendingCount++
         try {
-          // The worker tokenizer clips inputs at 512 tokens; keep inference batches small.
-          for (let start = 0; start < job.chunks.length; start += 8) {
+          // Commit each small batch so shutdown loses at most the in-flight batch.
+          for (let start = job.startOffset ?? 0; start < job.chunks.length; start += 8) {
             if (!this.isCurrent(job.path, job.generation, job.epoch)) break
             const part = job.chunks.slice(start, start + 8)
             const reply = await this.ask(
@@ -549,6 +564,7 @@ export class DocumentMemoryManager {
       this.enabled &&
       epoch === this.epoch &&
       generation === this.currentGeneration(path) &&
+      !!this.store.documentByPath(path) &&
       this.store.documentByPath(path)?.status !== 'excluded'
     )
   }

@@ -13,6 +13,8 @@ GenOffice automatically enrolls saved documents when the user opens them, and re
 
 ## Lifecycle and controls
 
+Each embedding batch is committed independently. If the application closes or loses power, the next launch automatically resumes pending files and starts from the first missing vector for unchanged files. Completed chunk IDs and vectors are retained; only an unfinished batch needs recomputation. Closing a document tab does not stop its background job. Full application quit stops processing until the next launch.
+
 Settings → General → Document Memory shows indexing/model status and database location. Users can pause background indexing, exclude individual remembered files, or clear the index. Exclusions persist. Clearing never causes an automatic reimport of Recent on restart.
 
 Saved changes trigger refresh; periodic checks also refresh known files changed outside GenOffice. Missing files cannot supply verified answers. A changed source invalidates the old chunk and asks the AI to search again. Rename/move operations inside GenOffice update the remembered path.

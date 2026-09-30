@@ -279,6 +279,28 @@ export class DocumentMemoryStore {
     })
   }
 
+  /** Find a committed embedding checkpoint, retaining chunk IDs and completed vectors. */
+  resumeVectorOffset(path: string, hash: string, model: string): number | null {
+    const doc = this.db
+      .prepare('SELECT id, hash, embedding_model, excluded FROM documents WHERE path = ?')
+      .get(resolve(path)) as
+      | { id: number; hash: string | null; embedding_model: string | null; excluded: number }
+      | undefined
+    if (
+      !doc ||
+      doc.excluded ||
+      doc.hash !== hash ||
+      (doc.embedding_model && doc.embedding_model !== model)
+    )
+      return null
+    const row = this.db
+      .prepare(
+        'SELECT min(CASE WHEN vector IS NULL THEN ordinal END) AS missing, count(*) AS total FROM chunks WHERE document_id = ?',
+      )
+      .get(doc.id) as { missing: number | null; total: number }
+    return row.missing ?? row.total
+  }
+
   move(oldPath: string, newPath: string): void {
     const oldResolved = resolve(oldPath)
     const nextResolved = resolve(newPath)
