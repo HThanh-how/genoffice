@@ -21,6 +21,12 @@ describe('collectLaunchPaths', () => {
     expect(collectLaunchPaths(['GenOffice.app', '/notes.txt'], undefined, () => true)).toEqual([])
   })
 
+  it('collects legacy Office files for conversion on launch', () => {
+    expect(
+      collectLaunchPaths(['GenOffice.exe', 'letter.doc', 'slides.ppt'], undefined, () => true),
+    ).toEqual(['letter.doc', 'slides.ppt'])
+  })
+
   it('collects argv and second-instance payload files without duplicates', () => {
     expect(
       collectLaunchPaths(

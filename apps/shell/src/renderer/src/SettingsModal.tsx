@@ -15,6 +15,7 @@ import type {
   FileSearchSettings,
   JevEndpoint,
   LegacyDocSettings,
+  LegacyRecoveryEntry,
 } from '../../shared/home-api'
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -275,6 +276,13 @@ function AiModelPane({ t }: { t: TFunc }) {
   const [saved, setSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
+  const [modelListState, setModelListState] = useState<'idle' | 'loading' | 'live' | 'fallback'>(
+    'idle',
+  )
+  const [modelListCount, setModelListCount] = useState(0)
+  const [modelRefresh, setModelRefresh] = useState(0)
+  const [manualModel, setManualModel] = useState(false)
+  const builtInCatalog = useRef(catalog)
   /** free-typed value of the output-cap field; committed (and clamped) on blur */
   const [maxTokensDraft, setMaxTokensDraft] = useState<string | null>(null)
 
@@ -316,16 +324,15 @@ function AiModelPane({ t }: { t: TFunc }) {
     }
   }, [refreshCodexModels])
 
-  // A user-hosted endpoint gets the same live model list as Codex, asked of the
-  // endpoint itself. Keyed on the catalog's `needsBaseUrl` flag rather than on
-  // the literal 'custom' id, so it follows the slot rather than the name, and
-  // stays a no-op while any other provider is selected — a local server saved
-  // months ago is never contacted while Genspark is in use.
-  const endpointProvider = catalog.find(
-    (entry) => entry.id === settings?.provider && entry.needsBaseUrl,
-  )?.id
+  // Probe only the selected provider, using its unsaved key and endpoint.
+  // A stored custom server is never contacted while another provider is selected.
+  const selectedProvider = settings?.provider
+  const selectedMeta = catalog.find((entry) => entry.id === selectedProvider)
+  const endpointProvider =
+    selectedProvider === 'codex' || selectedProvider === 'genspark' ? undefined : selectedProvider
   const endpointConfig = settings ? settings.providers[settings.provider] : undefined
-  const endpointBaseUrl = (endpointConfig?.baseUrl ?? '').trim()
+  const configuredBaseUrl = endpointConfig?.baseUrl?.trim() || ''
+  const endpointBaseUrl = (configuredBaseUrl || selectedMeta?.defaultBaseUrl || '').trim()
   const endpointApiKey = endpointConfig?.apiKey ?? ''
   // The stored model decides where the pin goes below, but changing it must not
   // send another request, so it is read when the reply lands rather than keyed on.
@@ -333,27 +340,59 @@ function AiModelPane({ t }: { t: TFunc }) {
   useEffect(() => {
     selectedModelRef.current = endpointConfig?.model ?? ''
   })
-  /** the address that produced the list currently folded in; '' when none is */
-  const listedForRef = useRef('')
+  /** Addresses that produced each provider's current live list. */
+  const listedForRef = useRef(new Map<string, string>())
 
   useEffect(() => {
+    setModelListState('idle')
     if (!endpointProvider) return
     // A list belonging to a different server — or to no server, once the address
     // is cleared — is misinformation, so it goes the moment the address changes:
     // the free-text box is the honest thing to show while the answer is unknown.
-    if (listedForRef.current && listedForRef.current !== endpointBaseUrl) {
-      listedForRef.current = ''
-      setCatalog(foldModels(endpointProvider, []))
+    const previousBase = listedForRef.current.get(endpointProvider)
+    if (previousBase !== undefined && previousBase !== endpointBaseUrl) {
+      listedForRef.current.delete(endpointProvider)
+      const baseline = builtInCatalog.current.find((entry) => entry.id === endpointProvider)
+      setCatalog(foldModels(endpointProvider, baseline?.models ?? []))
     }
-    if (!endpointBaseUrl || !window.aiOffice.getCustomModels) return
+    if (endpointProvider === 'custom' && !endpointBaseUrl) return
+    if (
+      !endpointApiKey.trim() &&
+      endpointProvider !== 'custom' &&
+      endpointProvider !== 'openrouter' &&
+      endpointProvider !== 'opper'
+    )
+      return
+    const canDiscover =
+      window.aiOffice.getProviderModels ||
+      (endpointProvider === 'gemini'
+        ? window.aiOffice.getGeminiModels
+        : selectedMeta?.needsBaseUrl
+          ? window.aiOffice.getCustomModels
+          : undefined)
+    if (!canDiscover) return
     let cancelled = false
     const timer = setTimeout(() => {
-      void window.aiOffice
-        .getCustomModels(endpointBaseUrl, endpointApiKey)
+      setModelListState('loading')
+      const config = {
+        apiKey: endpointApiKey,
+        model: selectedModelRef.current,
+        baseUrl: configuredBaseUrl || undefined,
+      }
+      const request = window.aiOffice.getProviderModels
+        ? window.aiOffice.getProviderModels(endpointProvider, config)
+        : endpointProvider === 'gemini'
+          ? window.aiOffice.getGeminiModels!(endpointApiKey)
+          : window.aiOffice.getCustomModels(endpointBaseUrl, endpointApiKey)
+      void request
         .then((live) => {
           // A server that will not answer leaves the current list alone: a blip
           // must not wipe a picker mid-use.
-          if (cancelled || !live || live.models.length === 0) return
+          if (cancelled) return
+          if (!live || live.models.length === 0) {
+            setModelListState('fallback')
+            return
+          }
           // A hand-typed id is pinned to the top so it never vanishes from the
           // picker. The catalog is the only thing written — writing settings
           // here would revert whatever the user typed while the probe was in
@@ -361,10 +400,14 @@ function AiModelPane({ t }: { t: TFunc }) {
           const selected = selectedModelRef.current.trim()
           const models =
             selected && !live.models.includes(selected) ? [selected, ...live.models] : live.models
-          listedForRef.current = endpointBaseUrl
+          listedForRef.current.set(endpointProvider, endpointBaseUrl)
           setCatalog(foldModels(endpointProvider, models))
+          setModelListCount(live.models.length)
+          setModelListState('live')
         })
-        .catch(() => undefined)
+        .catch(() => {
+          if (!cancelled) setModelListState('fallback')
+        })
     }, CUSTOM_MODELS_DEBOUNCE_MS)
     // React's own cleanup drops a superseded reply, so a slow answer from the
     // previous address can never overwrite a fast one from the current address.
@@ -372,40 +415,14 @@ function AiModelPane({ t }: { t: TFunc }) {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [endpointProvider, endpointBaseUrl, endpointApiKey])
-
-  // Gemini's picker follows the models the key can actually call, read from
-  // Google's own list, so a new release shows up without a new build. The
-  // built-in list stays until a live answer arrives, and a failed probe leaves
-  // whatever is showing alone.
-  const geminiApiKey =
-    settings?.provider === 'gemini' ? (settings.providers.gemini?.apiKey ?? '').trim() : ''
-  const geminiModelRef = useRef('')
-  useEffect(() => {
-    geminiModelRef.current = settings?.providers.gemini?.model ?? ''
-  })
-  useEffect(() => {
-    if (!geminiApiKey || !window.aiOffice.getGeminiModels) return
-    let cancelled = false
-    const timer = setTimeout(() => {
-      void window.aiOffice
-        .getGeminiModels?.(geminiApiKey)
-        .then((live) => {
-          if (cancelled || !live || live.models.length === 0) return
-          const selected = geminiModelRef.current.trim()
-          const models =
-            selected && !live.models.includes(selected) ? [selected, ...live.models] : live.models
-          setCatalog((current) =>
-            current.map((entry) => (entry.id === 'gemini' ? { ...entry, models } : entry)),
-          )
-        })
-        .catch(() => undefined)
-    }, CUSTOM_MODELS_DEBOUNCE_MS)
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [geminiApiKey])
+  }, [
+    endpointProvider,
+    endpointBaseUrl,
+    endpointApiKey,
+    configuredBaseUrl,
+    selectedMeta?.needsBaseUrl,
+    modelRefresh,
+  ])
 
   if (!settings) return null
   const provider = settings.provider
@@ -441,6 +458,7 @@ function AiModelPane({ t }: { t: TFunc }) {
     touch()
   }
   const selectProvider = (id: AiSettings['provider']) => {
+    setManualModel(false)
     // cloud tools cannot be off with genspark (chat runs through gsk anyway)
     setSettings({
       ...settings,
@@ -531,7 +549,7 @@ function AiModelPane({ t }: { t: TFunc }) {
         <div className="set-field-text">
           <label className="set-field-label">{t('setAiModelId')}</label>
         </div>
-        {meta && meta.models.length > 0 ? (
+        {!manualModel && meta && meta.models.length > 0 ? (
           <Dropdown
             className="set-dd"
             value={config.model || meta.defaultModel}
@@ -551,6 +569,36 @@ function AiModelPane({ t }: { t: TFunc }) {
           />
         )}
       </div>
+      {!isCodex && !isGenspark && (
+        <div className="set-field-desc set-model-discovery" aria-live="polite">
+          <span>
+            {modelListState === 'loading'
+              ? t('setAiModelsLoading')
+              : modelListState === 'live'
+                ? t('setAiModelsLive', { n: modelListCount })
+                : modelListState === 'fallback'
+                  ? t('setAiModelsFallback')
+                  : t('setAiModelsHint')}
+          </span>
+          <button
+            className="set-btn"
+            type="button"
+            disabled={modelListState === 'loading'}
+            onClick={() => setModelRefresh((value) => value + 1)}
+          >
+            {t('setAiModelsRefresh')}
+          </button>
+          {meta && meta.models.length > 0 && (
+            <button
+              className="set-btn"
+              type="button"
+              onClick={() => setManualModel((value) => !value)}
+            >
+              {manualModel ? t('setAiModelsChoose') : t('setAiModelsManual')}
+            </button>
+          )}
+        </div>
+      )}
       {isCodex ? (
         <div className="set-field">
           <div className="set-field-text">
@@ -1255,6 +1303,9 @@ export function SettingsModal({
     mode: 'online',
     endpoint: 'https://d2x.clouds.io.vn',
   })
+  const [legacyRecovery, setLegacyRecovery] = useState<LegacyRecoveryEntry[]>([])
+  const [legacyRecoveryBusy, setLegacyRecoveryBusy] = useState<string | null>(null)
+  const [legacyRecoveryError, setLegacyRecoveryError] = useState('')
   const [appVersion, setAppVersion] = useState('')
   const [githubStars, setGithubStars] = useState<number | null>(null)
 
@@ -1295,6 +1346,12 @@ export function SettingsModal({
     void window.aiOffice.getLegacyDocSettings?.().then((value) => {
       if (alive) setLegacyDoc(value)
     })
+    void window.aiOffice
+      .listLegacyRecovery?.()
+      .then((entries) => {
+        if (alive) setLegacyRecovery(entries)
+      })
+      .catch(() => {})
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
     })
@@ -1325,6 +1382,24 @@ export function SettingsModal({
     const next = { ...legacyDoc, ...patch }
     setLegacyDoc(next)
     void window.aiOffice.setLegacyDocSettings(next).then(setLegacyDoc)
+  }
+
+  const restoreOriginal = (id: string) => {
+    setLegacyRecoveryBusy(id)
+    setLegacyRecoveryError('')
+    void window.aiOffice
+      .restoreLegacyDoc(id)
+      .then(() => window.aiOffice.listLegacyRecovery())
+      .then(setLegacyRecovery)
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error)
+        setLegacyRecoveryError(
+          lang === 'vi' && message.includes('already exists')
+            ? 'Đã có tệp cùng tên ở vị trí cũ. Hãy đổi tên tệp đó trước khi khôi phục.'
+            : message,
+        )
+      })
+      .finally(() => setLegacyRecoveryBusy(null))
   }
 
   const updateAiPrefs = (patch: Partial<AiPanelPrefs>) => {
@@ -1423,20 +1498,20 @@ export function SettingsModal({
                 <div className="set-field">
                   <div className="set-field-text">
                     <div className="set-field-stack">
-                      <div className="set-field-label">Legacy Word files (.doc)</div>
+                      <div className="set-field-label">Legacy Office files (.doc, .ppt)</div>
                       <div className="set-field-desc">
                         {legacyDoc.mode === 'text'
-                          ? 'Keep files on this device. macOS can preserve formatting; Windows and Linux open a text-only copy, so images and layout may be lost.'
+                          ? 'Keep files on this device. .doc opens locally (text-only on Windows and Linux). .ppt needs the conversion service and will not open in this mode.'
                           : legacyDoc.mode === 'online'
-                            ? 'Convert automatically. macOS tries its built-in converter first; other files are sent to the service below.'
-                            : 'Ask before sending a file. macOS tries its built-in converter first. The original file is never changed.'}
+                            ? 'Convert automatically. macOS tries its built-in converter for .doc; .ppt and other .doc files are sent to the service below.'
+                            : 'Ask before sending .doc or .ppt. macOS tries its built-in converter for .doc first.'}
                       </div>
                     </div>
                   </div>
                   <Dropdown
                     className="set-dd"
                     value={legacyDoc.mode}
-                    ariaLabel="Legacy Word conversion and upload preference"
+                    ariaLabel="Legacy Office conversion and upload preference"
                     options={[
                       { value: 'ask', label: 'Ask before upload' },
                       { value: 'online', label: 'Convert automatically' },
@@ -1445,6 +1520,58 @@ export function SettingsModal({
                     onPick={(mode) => updateLegacyDoc({ mode: mode as LegacyDocSettings['mode'] })}
                   />
                 </div>
+                <div className="set-field set-legacy-recovery">
+                  <div className="set-field-stack">
+                    <div className="set-field-label">
+                      {lang === 'vi' ? 'Khôi phục tệp .doc gốc' : 'Recover original .doc files'}
+                    </div>
+                    <div className="set-field-desc">
+                      {lang === 'vi'
+                        ? 'Sau khi chuyển giữ nguyên định dạng, tệp .doc gốc được cất trong thư mục .genoffice ẩn cạnh tài liệu trong 30 ngày. Bản chuyển chỉ lấy được chữ sẽ giữ nguyên tệp gốc.'
+                        : 'After a formatted conversion, the original .doc is kept for 30 days in a hidden .genoffice folder beside the document. Text-only imports leave the original in place.'}
+                    </div>
+                    {legacyRecovery.length === 0 ? (
+                      <div className="set-field-desc">
+                        {lang === 'vi'
+                          ? 'Chưa có tệp gốc nào cần khôi phục.'
+                          : 'No originals are waiting for recovery.'}
+                      </div>
+                    ) : (
+                      <div className="set-legacy-recovery-list">
+                        {legacyRecovery.map((entry) => (
+                          <div className="set-legacy-recovery-item" key={entry.id}>
+                            <div className="set-legacy-recovery-info">
+                              <strong>{entry.sourcePath.split(/[\\/]/).pop()}</strong>
+                              <span title={entry.sourcePath}>{entry.sourcePath}</span>
+                              <small>
+                                {lang === 'vi' ? 'Tự xóa: ' : 'Expires: '}
+                                {new Date(entry.expiresAt).toLocaleDateString()}
+                              </small>
+                            </div>
+                            <button
+                              className="set-btn"
+                              disabled={legacyRecoveryBusy !== null}
+                              onClick={() => restoreOriginal(entry.id)}
+                            >
+                              {legacyRecoveryBusy === entry.id
+                                ? lang === 'vi'
+                                  ? 'Đang khôi phục…'
+                                  : 'Restoring…'
+                                : lang === 'vi'
+                                  ? 'Khôi phục'
+                                  : 'Restore'}
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {legacyRecoveryError && (
+                      <div className="set-field-desc set-legacy-recovery-error" role="alert">
+                        {legacyRecoveryError}
+                      </div>
+                    )}
+                  </div>
+                </div>
                 <div className="set-field">
                   <div className="set-field-text">
                     <div className="set-field-stack">
@@ -1452,7 +1579,7 @@ export function SettingsModal({
                         Conversion service
                       </label>
                       <div className="set-field-desc">
-                        Online conversion sends the entire document over HTTPS. The default public
+                        Online conversion sends the entire file over HTTPS. The default public
                         service deletes temporary files after conversion; it does not verify that
                         requests come from GenOffice. You can use your own HTTPS service.
                       </div>

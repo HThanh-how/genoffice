@@ -1,8 +1,8 @@
 # d2x.clouds.io.vn
 
-Deployed 2026-09-28. GenOffice sends legacy `.doc` bytes to this endpoint only
-after the user chooses online conversion (or selects it in Settings). The
-service responds with a temporary `.docx` and does not retain the document.
+Deployed 2026-09-28. GenOffice sends legacy `.doc` or `.ppt` bytes to this
+endpoint when online conversion is enabled or accepted. The service responds
+with `.docx` or `.pptx` bytes and does not retain the document.
 
 ## Nodes
 
@@ -27,7 +27,7 @@ can retry.
 
 ## Limits and privacy
 
-The gateway accepts only raw OLE `.doc` uploads up to 20 MiB, runs each
+The gateway accepts only raw OLE `.doc` or `.ppt` uploads up to 20 MiB, runs each
 conversion for at most 45 seconds, and rejects output over 50 MiB. Each node
 allows up to 30 requests per IP and 120 total per hour. These are local
 in-memory limits and reset on service restart. All conversion files live in a
@@ -49,7 +49,7 @@ older than 35 days. A backup was taken and verified on both hosts on
 service source and systemd units are versioned in this repository. Uploaded
 documents have no backup because they are intentionally ephemeral.
 
-To rebuild a converter node: install LibreOffice Writer, restore `server.py`
+To rebuild a converter node: install LibreOffice Writer and Impress, restore `server.py`
 and the systemd units from this repository, restore the private tunnel
 credential from another healthy node with mode `0600`, then enable the
 converter and watch timer. For CT 195, restore a verified `vzdump-lxc-195`

@@ -61,6 +61,7 @@ import {
 } from './plan-operations'
 import { isNumericIdentifierText } from './cell-warning'
 import { consumePendingUndoCarry, undoStackDepth } from './undo-carry'
+import { shouldRunSaveTick } from './save-scheduler'
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import { useAutoSavePref, type AiScopeQuoteData } from '@genoffice/ui'
 
@@ -71,15 +72,19 @@ import {
   InterceptorEffectEnum,
   isRealNum,
   IUndoRedoService,
+  IUniverInstanceService,
   LocaleType,
   mergeLocales,
   ThemeService,
+  UniverInstanceType,
   type ICellData,
   type IRange,
   type IStyleData,
+  type Workbook,
 } from '@univerjs/core'
 import { FormulaExecutedStateType } from '@univerjs/engine-formula'
-import { IFindReplaceService } from '@univerjs/find-replace'
+import { FindReplaceController, IFindReplaceService } from '@univerjs/find-replace'
+import { ILayoutService } from '@univerjs/ui'
 import { UniverSheetsConditionalFormattingPreset } from '@univerjs/preset-sheets-conditional-formatting'
 import UniverPresetSheetsConditionalFormattingEnUS from '@univerjs/preset-sheets-conditional-formatting/locales/en-US'
 import '@univerjs/preset-sheets-conditional-formatting/lib/index.css'
@@ -138,6 +143,7 @@ import { InMemoryWorkbookAdapter } from '@genoffice/xlsx-gateway/domain/in-memor
 import { cfRuleUnsaveableReason, iconSetSaveable } from '@genoffice/xlsx-gateway/gateway/xlsx-cf'
 import { installLazyFindBridge } from './lazy-find'
 import { installReplaceAutoSearch } from './replace-autosearch'
+import { FindReplacePanel } from './FindReplacePanel'
 import {
   installCrossHighlight,
   loadCrossHighlightPreference,
@@ -478,6 +484,8 @@ export function App({
   const lazyWorkbookRef = useRef<LazyWorkbookState | null>(null)
   /// Univer undo/redo stack occupancy (subscribed at mount): drives the QAT button gray states
   const [univerHist, setUniverHist] = useState({ canUndo: false, canRedo: false })
+  /// Set once Univer boots; mounts the app's Excel-style Find & Replace panel.
+  const [findReplaceService, setFindReplaceService] = useState<IFindReplaceService | null>(null)
   /// True while Univer's in-cell editor is open (AutoSave must not save-reload then).
   const editingCellRef = useRef(false)
   const visualDisposablesRef = useRef<{ dispose(): void }[]>([])
@@ -546,29 +554,43 @@ export function App({
   // Ref mirror for callbacks captured when an AI run starts
   const autoSaveRef = useRef(autoSave)
   autoSaveRef.current = autoSave
+  // One save at a time, shared by BOTH timers below: AutoSave ('save') and the
+  // crash-recovery copy ('recovery') used to carry independent in-flight flags,
+  // so with AutoSave on a dirty workbook could start both saves concurrently;
+  // the first finisher tears the workbook session down while the second is
+  // still reading, and the survivor reports "Unknown workbook session."
+  // (save failed) although the file was written.
+  const saveInFlightRef = useRef(false)
   // AutoSave tick (docs/slides parity): every 30 s and on window blur, flush
   // pending edits of the open workbook. The journal is read at tick time so
   // the interval stays stable; demo mode has no backing file and is skipped.
   useEffect(() => {
     if (!autoSave) return
-    let saving = false
     const tick = () => {
       const state = lazyWorkbookRef.current
-      if (saving || !state || journalSize(state.editJournal) === 0) return
       // Never while the in-cell editor is open (saving reloads the workbook
       // and would wipe the edit), never for converted .xls imports whose
       // first save opens a Save As dialog (a new unsaved workbook saves its
       // backing file quietly instead), and never for CSV sessions —
       // AutoSave would silently flatten the user's file.
       if (
-        editingCellRef.current ||
-        (state.file.needsSaveAs && !state.file.unsavedNew) ||
-        state.file.csvPath !== undefined
+        !state ||
+        !shouldRunSaveTick({
+          saveInFlight: saveInFlightRef.current,
+          hasWorkbook: true,
+          journalEmpty: journalSize(state.editJournal) === 0,
+          editingCell: editingCellRef.current,
+          needsSaveAsNotUnsavedNew: Boolean(state.file.needsSaveAs) && !state.file.unsavedNew,
+          isCsv: state.file.csvPath !== undefined,
+          kind: 'save',
+          restoredFromRecovery: false,
+          automaticRecoveryDisabled: false,
+        })
       )
         return
-      saving = true
+      saveInFlightRef.current = true
       void handleSaveRef.current('save', true).finally(() => {
-        saving = false
+        saveInFlightRef.current = false
       })
     }
     const id = window.setInterval(tick, 30_000)
@@ -584,24 +606,31 @@ export function App({
   // renderer crash no longer costs everything since the last manual save. A normal
   // save removes the copy; reopening a file whose copy is newer offers Restore.
   useEffect(() => {
-    let writing = false
     const tick = () => {
       const state = lazyWorkbookRef.current
-      if (writing || !state || journalSize(state.editJournal) === 0) return
       // The in-cell editor's pending text is not in the journal yet, a
       // converted import has no original file to recover into, and a restored
-      // recovery session is backed by the recovery copy itself.
+      // recovery session is backed by the recovery copy itself. Shares the
+      // in-flight gate with the AutoSave tick above so the two saves can
+      // never race (see save-scheduler.ts).
       if (
-        editingCellRef.current ||
-        (state.file.needsSaveAs && !state.file.unsavedNew) ||
-        state.file.csvPath !== undefined ||
-        state.file.restoredFromRecovery ||
-        state.file.automaticRecoveryDisabled
+        !state ||
+        !shouldRunSaveTick({
+          saveInFlight: saveInFlightRef.current,
+          hasWorkbook: true,
+          journalEmpty: journalSize(state.editJournal) === 0,
+          editingCell: editingCellRef.current,
+          needsSaveAsNotUnsavedNew: Boolean(state.file.needsSaveAs) && !state.file.unsavedNew,
+          isCsv: state.file.csvPath !== undefined,
+          kind: 'recovery',
+          restoredFromRecovery: state.file.restoredFromRecovery === true,
+          automaticRecoveryDisabled: state.file.automaticRecoveryDisabled === true,
+        })
       )
         return
-      writing = true
+      saveInFlightRef.current = true
       void handleSaveRef.current('recovery').finally(() => {
-        writing = false
+        saveInFlightRef.current = false
       })
     }
     const id = window.setInterval(tick, 30_000)
@@ -1854,6 +1883,10 @@ export function App({
     const replaceAutoSearchDisposable = installReplaceAutoSearch(
       runtime.univer.__getInjector().get(IFindReplaceService),
     )
+    // Ctrl+F / Ctrl+H open the app's Excel-style Find & Replace panel; the
+    // stock Univer dialog still mounts (it carries the session lifecycle) but
+    // a styles.css rule keeps it invisible.
+    setFindReplaceService(runtime.univer.__getInjector().get(IFindReplaceService))
     // A canvas extension highlights the active row and column without
     // allocating per-selection float DOM or covering interactive visuals.
     crossHighlightRef.current = installCrossHighlight(runtime, {
@@ -2979,6 +3012,7 @@ export function App({
       ruleDetailDisposable()
       lazyFindDisposable.dispose()
       replaceAutoSearchDisposable.dispose()
+      setFindReplaceService(null)
       crossHighlightRef.current?.dispose()
       crossHighlightRef.current = null
       scrollDisposable.dispose()
@@ -3969,6 +4003,7 @@ export function App({
     if ((window as unknown as Record<string, unknown>).__genofficeDebugHooks === true) {
       ;(window as unknown as Record<string, unknown>).__genofficeDebug = {
         univerAPI: univerRef.current?.univerAPI,
+        findReplaceService: univerRef.current?.univer.__getInjector().get(IFindReplaceService),
       }
     }
     setRevision(0)
@@ -4130,6 +4165,22 @@ export function App({
     return true
   }
 
+  // A workbook loaded into an already-mounted view (the prewarmed spare) can
+  // leave document focus on a node Univer no longer reads keys from; hand it
+  // back to the cell editor unless chrome (AI composer, dialogs) holds it.
+  function focusSheetGrid(): void {
+    const runtime = univerRef.current
+    if (!runtime || !document.hasFocus()) return
+    const active = document.activeElement
+    const chromeHoldsFocus =
+      active !== null &&
+      active !== document.body &&
+      active.isConnected &&
+      !active.closest('#univer-container')
+    if (chromeHoldsFocus) return
+    runtime.univer.__getInjector().get(ILayoutService).focus()
+  }
+
   async function handleInspectWorkbook(): Promise<void> {
     if (workbookOpeningRef.current) return
     workbookOpeningRef.current = true
@@ -4137,6 +4188,7 @@ export function App({
     const finishOpening = (): void => {
       workbookOpeningRef.current = false
       setOpeningWorkbook(false)
+      focusSheetGrid()
     }
     try {
       if (!window.desktopApi) {
@@ -4642,6 +4694,30 @@ export function App({
         <div className="workbook-opening-screen" role="status" aria-live="polite">
           {t('appOpeningWorkbook')}
         </div>
+      )}
+      {findReplaceService && (
+        <FindReplacePanel
+          service={findReplaceService}
+          getWorkbook={() =>
+            univerRef.current?.univer
+              .__getInjector()
+              .get(IUniverInstanceService)
+              .getCurrentUnitOfType<Workbook>(UniverInstanceType.UNIVER_SHEET) ?? null
+          }
+          onJumpTo={(sheetId, bounds) =>
+            void selectWorkbookRange(readContext(), sheetId, bounds, setMessage)
+          }
+          onClose={() =>
+            univerRef.current?.univer.__getInjector().get(FindReplaceController).closePanel()
+          }
+          registerContainer={(element) => {
+            const disposable = univerRef.current?.univer
+              .__getInjector()
+              .get(ILayoutService)
+              .registerContainerElement(element)
+            return () => disposable?.dispose()
+          }}
+        />
       )}
       {cellsDialog !== null && univerRef.current && (
         <InsertDeleteCellsDialog

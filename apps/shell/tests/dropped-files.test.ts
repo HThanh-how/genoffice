@@ -58,8 +58,8 @@ describe('handleDroppedFiles', () => {
 
   it('opens the supported files and warns about the rest in a mixed drop', () => {
     const deps = fakeDeps()
-    handleDroppedFiles(['/tmp/new.docx', '/tmp/old.doc'], deps)
-    expect(deps.opened).toEqual(['/tmp/new.docx', '/tmp/old.doc'])
+    handleDroppedFiles(['/tmp/new.docx', '/tmp/old.doc', '/tmp/deck.ppt'], deps)
+    expect(deps.opened).toEqual(['/tmp/new.docx', '/tmp/old.doc', '/tmp/deck.ppt'])
     expect(deps.revealed).toHaveBeenCalledOnce()
     expect(deps.warned).toEqual([])
   })

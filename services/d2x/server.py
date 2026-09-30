@@ -1,4 +1,4 @@
-"""Small, bounded HTTP gateway for LibreOffice's DOC to DOCX converter.
+"""Small, bounded HTTP gateway for LibreOffice legacy Office conversion.
 
 Run behind a Cloudflare Tunnel or another trusted reverse proxy. The converter
 itself never listens on a public interface and uploaded documents are only
@@ -24,6 +24,10 @@ TIMEOUT = int(os.environ.get("D2X_TIMEOUT", "45"))
 HOURLY_LIMIT = int(os.environ.get("D2X_HOURLY_LIMIT", "30"))
 GLOBAL_HOURLY_LIMIT = int(os.environ.get("D2X_GLOBAL_HOURLY_LIMIT", "120"))
 CONVERTER = os.environ.get("D2X_SOFFICE", "/usr/bin/soffice")
+FORMATS = {
+    "/v1/convert/docx": ("doc", "docx", "application/msword", "docx:Office Open XML Text", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    "/v1/convert/pptx": ("ppt", "pptx", "application/vnd.ms-powerpoint", "pptx:Impress MS PowerPoint 2007 XML", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+}
 
 _rate_lock = threading.Lock()
 _requests = defaultdict(deque)
@@ -78,9 +82,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send(200, b"ok")
 
     def do_POST(self) -> None:
-        if self.path != "/v1/convert/docx":
+        format_info = FORMATS.get(self.path)
+        if format_info is None:
             self.send(404, b"Not found")
             return
+        source_ext, target_ext, input_mime, output_filter, output_mime = format_info
         try:
             size = int(self.headers.get("Content-Length", "0"))
         except ValueError:
@@ -88,8 +94,8 @@ class Handler(BaseHTTPRequestHandler):
         if size < 1 or size > MAX_INPUT:
             self.send(413, b"Document is empty or too large")
             return
-        if self.headers.get("Content-Type", "").split(";", 1)[0] != "application/msword":
-            self.send(415, b"Only legacy .doc files are accepted")
+        if self.headers.get("Content-Type", "").split(";", 1)[0] != input_mime:
+            self.send(415, f"Only legacy .{source_ext} files are accepted".encode())
             return
         # CF-Connecting-IP is overwritten by Cloudflare; the listener is bound
         # to loopback, so only the local tunnel or trusted local processes reach it.
@@ -103,12 +109,12 @@ class Handler(BaseHTTPRequestHandler):
         try:
             source = self.rfile.read(size)
             if len(source) != size or not source.startswith(b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"):
-                self.send(422, b"Invalid legacy .doc file")
+                self.send(422, f"Invalid legacy .{source_ext} file".encode())
                 return
             with tempfile.TemporaryDirectory(prefix="genoffice-d2x-") as directory:
                 root = Path(directory)
-                input_path = root / "input.doc"
-                output_path = root / "input.docx"
+                input_path = root / f"input.{source_ext}"
+                output_path = root / f"input.{target_ext}"
                 input_path.write_bytes(source)
                 try:
                     result = subprocess.run(
@@ -117,7 +123,7 @@ class Handler(BaseHTTPRequestHandler):
                             f"-env:UserInstallation={(root / 'profile').as_uri()}",
                             "--headless",
                             "--convert-to",
-                            "docx:Office Open XML Text",
+                            output_filter,
                             "--outdir",
                             directory,
                             str(input_path),
@@ -139,9 +145,9 @@ class Handler(BaseHTTPRequestHandler):
                     return
                 converted = output_path.read_bytes()
                 if not converted.startswith(b"PK"):
-                    self.send(502, b"Converter returned an invalid DOCX")
+                    self.send(502, f"Converter returned an invalid {target_ext.upper()}".encode())
                     return
-                self.send(200, converted, "application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+                self.send(200, converted, output_mime)
         finally:
             _conversion_slot.release()
 

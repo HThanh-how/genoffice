@@ -9,7 +9,8 @@
     ".": "./src/index.ts",
     "./browser": "./src/browser.ts",
     "./codex-app-server": "./src/codex-app-server.ts",
-    "./custom-models": "./src/custom-models.ts"
+    "./custom-models": "./src/custom-models.ts",
+    "./provider-models": "./src/provider-models.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

@@ -28,6 +28,15 @@ import {
 import type { MenuItemConstructorOptions, NativeImage, WebContents } from 'electron'
 import { atomicCopyFile, atomicWriteFile } from './atomic-write'
 import { convertLegacyDoc, DEFAULT_LEGACY_DOC_SERVICE } from './legacy-doc'
+import {
+  archiveLegacyDoc,
+  linkedLegacyDocCopy,
+  listLegacyRecovery,
+  rememberLegacyDocCopy,
+  rebaseLegacyRecovery,
+  restoreLegacyDoc,
+} from './legacy-recovery'
+import { convertLegacyPpt } from './legacy-ppt'
 import { tabStripOverlay } from './title-bar-overlay'
 import menuDocxIcon1x from './assets/menu-docx.png?asset'
 import menuDocxIcon2x from './assets/menu-docx@2x.png?asset'
@@ -175,6 +184,7 @@ import {
   hasActiveQueuedWorkbook,
   installSheetsMenu,
   markSheetsShuttingDown,
+  resetSheetsShuttingDown,
   requestSheetsClose,
   resolveSheetsSessionPath,
   markSheetsUnsavedNew,
@@ -205,6 +215,7 @@ import {
   setSlidesExtraFileMenuItems,
   setSlidesOpenedHook,
   setSlidesHostWindowHook,
+  setSlidesLegacyPptOpenHook,
   setSlidesShellWindow,
   setSlidesShowBleed,
   slidesFileRenamed,
@@ -506,7 +517,9 @@ function legacyDocSettings(): LegacyDocSettings {
   const saved = readAppSettings(APP_SETTINGS_PATH())
   return {
     mode:
-      saved.legacyDocMode === 'online' || saved.legacyDocMode === 'text'
+      saved.legacyDocMode === 'online' ||
+      saved.legacyDocMode === 'text' ||
+      saved.legacyDocMode === 'ask'
         ? saved.legacyDocMode
         : 'online',
     endpoint:
@@ -2853,6 +2866,32 @@ const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[
 let shellWindow: BrowserWindow | null = null
 let tabManager: TabManager | null = null
 
+async function showLegacyDocInfoToast(path: string, text: string): Promise<void> {
+  const tab = tabManager?.findTabByPath(path)
+  const wc = tab?.kind === 'docs' ? tab.webContents : null
+  if (!wc || wc.isDestroyed()) return
+  if (wc.isLoading()) {
+    const loaded = await new Promise<boolean>((resolve) => {
+      const settle = (success: boolean) => {
+        clearTimeout(timeout)
+        wc.removeListener('did-finish-load', finish)
+        wc.removeListener('did-fail-load', stop)
+        wc.removeListener('destroyed', stop)
+        resolve(success)
+      }
+      const finish = () => settle(true)
+      const stop = () => settle(false)
+      const timeout = setTimeout(stop, 15000)
+      wc.once('did-finish-load', finish)
+      wc.once('did-fail-load', stop)
+      wc.once('destroyed', stop)
+      if (!wc.isLoading()) finish()
+    })
+    if (!loaded || wc.isDestroyed()) return
+  }
+  if (!wc.isDestroyed()) wc.send('docs:info-toast', text)
+}
+
 /**
  * New file from a folder view: the click remembers the folder per kind, the
  * new-tab code consumes it right away. Sheets / PDF write their blank file
@@ -2986,6 +3025,9 @@ function trackedFilesUnder(dir: string): string[] {
 /** a folder moved/renamed: re-key every tracked file that lived under it */
 function afterFolderMoved(oldDir: string, newDir: string, filesBefore: readonly string[]): void {
   for (const file of filesBefore) afterFileMoved(file, rebasePath(file, oldDir, newDir))
+  void rebaseLegacyRecovery(app.getPath('userData'), oldDir, newDir).catch((error) =>
+    console.warn('[shell] could not update legacy recovery paths:', error),
+  )
 }
 
 const folderWatchers = new Map<string, FolderWatcher>()
@@ -3167,6 +3209,7 @@ function createShellWindow(): void {
   setDocsHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
   setSheetsHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
   setSlidesShellWindow(win)
+  setSlidesLegacyPptOpenHook(openLegacyPpt)
   setSlidesHostWindowHook((wc) => detachedWindowForWebContents(wc.id))
   setSlidesShowBleed((wc, on) => manager.setContentBleed(wc, on))
   setHtmlPresentHooks({
@@ -3317,33 +3360,41 @@ function createShellWindow(): void {
       return
     event.preventDefault()
     void (async () => {
-      for (const tab of dirtySheets) {
-        manager.activateTab(tab.id)
-        if (!(await requestSheetsClose(tab.webContents, win))) return
+      const denied = await (async () => {
+        for (const tab of dirtySheets) {
+          manager.activateTab(tab.id)
+          if (!(await requestSheetsClose(tab.webContents, win))) return true
+        }
+        for (const tab of dirtyPdf) {
+          manager.activateTab(tab.id)
+          if (!(await requestPdfClose(tab.webContents, win))) return true
+        }
+        for (const tab of dirtyMarkdown) {
+          manager.activateTab(tab.id)
+          if (!(await requestMarkdownClose(tab.webContents, win))) return true
+        }
+        for (const tab of dirtyHtml) {
+          manager.activateTab(tab.id)
+          if (!(await requestHtmlClose(tab.webContents, win))) return true
+        }
+        for (const tab of dirtySlides) {
+          manager.activateTab(tab.id)
+          if (!(await requestSlidesClose(tab.webContents, win))) return true
+        }
+        for (const tab of docsTabs) {
+          if (!(await docsQueryDirty(tab.webContents))) continue
+          manager.activateTab(tab.id)
+          if (!(await requestDocsClose(tab.webContents, win))) return true
+        }
+        return false
+      })()
+      // a denied close vetoes any quit that was in flight: the sheets close
+      // guard must prompt again on later closes instead of silently proceeding
+      if (denied) resetSheetsShuttingDown()
+      else {
+        closeConfirmed = true
+        if (!win.isDestroyed()) win.close()
       }
-      for (const tab of dirtyPdf) {
-        manager.activateTab(tab.id)
-        if (!(await requestPdfClose(tab.webContents, win))) return
-      }
-      for (const tab of dirtyMarkdown) {
-        manager.activateTab(tab.id)
-        if (!(await requestMarkdownClose(tab.webContents, win))) return
-      }
-      for (const tab of dirtyHtml) {
-        manager.activateTab(tab.id)
-        if (!(await requestHtmlClose(tab.webContents, win))) return
-      }
-      for (const tab of dirtySlides) {
-        manager.activateTab(tab.id)
-        if (!(await requestSlidesClose(tab.webContents, win))) return
-      }
-      for (const tab of docsTabs) {
-        if (!(await docsQueryDirty(tab.webContents))) continue
-        manager.activateTab(tab.id)
-        if (!(await requestDocsClose(tab.webContents, win))) return
-      }
-      closeConfirmed = true
-      if (!win.isDestroyed()) win.close()
     })()
   })
 
@@ -3367,6 +3418,7 @@ function createShellWindow(): void {
 
 const DOCX_RE = /\.docx$/i
 const DOC_RE = /\.doc$/i
+const PPT_RE = /\.ppt$/i
 const XLSX_RE = /\.(xlsx|xlsm|xls|csv|tsv)$/i
 const PPTX_RE = /\.pptx$/i
 const PDF_RE = /\.pdf$/i
@@ -3375,8 +3427,7 @@ const HTML_RE = /\.html?$/i
 
 /**
  * Single source of truth for the open-dialog filter. Includes the
- * Legacy .doc opens as a converted .docx copy; .ppt still surfaces an explicit
- * unsupported warning instead of being grayed out.
+ * Legacy .doc and .ppt open as converted OOXML copies.
  */
 const OPEN_DIALOG_EXTENSIONS = [
   'docx',
@@ -3442,11 +3493,63 @@ function openDocumentPath(filePath: string): boolean {
 }
 
 const pendingLegacyDocImports = new Set<string>()
+const pendingLegacyPptImports = new Set<string>()
+
+async function openLegacyPpt(filePath: string): Promise<void> {
+  if (pendingLegacyPptImports.has(filePath)) return
+  pendingLegacyPptImports.add(filePath)
+  try {
+    const settings = legacyDocSettings()
+    if (settings.mode === 'text') {
+      showAppWarning(
+        'Opening .ppt requires conversion. On-device only is selected, so the file was not uploaded. Choose Ask before upload or Convert automatically in Settings to open it.',
+      )
+      return
+    }
+    if (settings.mode === 'ask') {
+      const options = {
+        type: 'question' as const,
+        title: 'Open legacy PowerPoint presentation',
+        message: 'Convert this .ppt file to .pptx online?',
+        detail: `Conversion sends the file to ${settings.endpoint}. The original file stays unchanged.`,
+        buttons: ['Convert online', 'Cancel'],
+        defaultId: 0,
+        cancelId: 1,
+      }
+      const choice = shellWindow
+        ? await dialog.showMessageBox(shellWindow, options)
+        : await dialog.showMessageBox(options)
+      if (choice.response !== 0) return
+    }
+    const bytes = await convertLegacyPpt(filePath, settings.endpoint)
+    const suggestedName = `${basename(filePath, extname(filePath))}.pptx`
+    let convertedPath = uniquePathIn(dirname(filePath), suggestedName)
+    try {
+      await atomicWriteFile(convertedPath, bytes)
+    } catch (error) {
+      if (!['EACCES', 'EPERM', 'EROFS'].includes((error as NodeJS.ErrnoException).code ?? ''))
+        throw error
+      convertedPath = uniquePathIn(defaultSaveDir(), suggestedName)
+      await atomicWriteFile(convertedPath, bytes)
+    }
+    if (!openDocumentPath(convertedPath))
+      throw new Error('Converted presentation could not be opened')
+  } catch (error) {
+    console.error('[shell] legacy .ppt import failed:', error)
+    showAppWarning(
+      'Could not convert this .ppt file. It may be damaged, password-protected, or the conversion service is unavailable.',
+    )
+  } finally {
+    pendingLegacyPptImports.delete(filePath)
+  }
+}
 
 async function openLegacyDoc(filePath: string): Promise<void> {
   if (pendingLegacyDocImports.has(filePath)) return
   pendingLegacyDocImports.add(filePath)
   try {
+    const linkedCopy = await linkedLegacyDocCopy(filePath, app.getPath('userData'))
+    if (linkedCopy && openDocumentPath(linkedCopy)) return
     const settings = legacyDocSettings()
     let online = settings.mode === 'online'
     // macOS has a built-in converter: use it before asking to upload a file.
@@ -3459,7 +3562,7 @@ async function openLegacyDoc(filePath: string): Promise<void> {
         type: 'question' as const,
         title: 'Open legacy Word document',
         message: 'How should GenOffice convert this .doc file?',
-        detail: `Online conversion sends the file to ${settings.endpoint}. The original file stays unchanged.`,
+        detail: `Online conversion sends the file to ${settings.endpoint}. After a successful formatted conversion, GenOffice keeps the original for 30 days in a hidden .genoffice folder beside the document.`,
         buttons: ['Convert online', 'Open text-only copy', 'Cancel'],
         defaultId: 0,
         cancelId: 2,
@@ -3508,6 +3611,43 @@ async function openLegacyDoc(filePath: string): Promise<void> {
       await atomicWriteFile(convertedPath, result.bytes)
     }
     if (!openDocumentPath(convertedPath)) throw new Error('Converted document could not be opened')
+    if (result.fidelity === 'text') {
+      await rememberLegacyDocCopy(
+        filePath,
+        convertedPath,
+        result.sourceHash,
+        app.getPath('userData'),
+      ).catch((error) => console.warn('[shell] could not remember text-only copy:', error))
+    }
+    if (result.fidelity === 'formatted' && dirname(convertedPath) === dirname(filePath)) {
+      try {
+        await archiveLegacyDoc(filePath, convertedPath, app.getPath('userData'), result.sourceHash)
+        replaceRecentFile(filePath, convertedPath)
+        if (readAppSettings(APP_SETTINGS_PATH()).legacyRecoveryNoticeSeen !== true) {
+          try {
+            writeAppSetting(APP_SETTINGS_PATH(), 'legacyRecoveryNoticeSeen', true)
+          } catch (error) {
+            console.warn('[shell] could not save legacy recovery notice state:', error)
+          }
+          const vietnamese = currentLang() === 'vi'
+          void showLegacyDocInfoToast(
+            convertedPath,
+            vietnamese
+              ? 'Tệp .docx đã mở. Bản gốc .doc được giữ trong thư mục khôi phục ẩn trong 30 ngày.'
+              : 'Your .docx is open. The original .doc is kept in a hidden recovery folder for 30 days.',
+          )
+        }
+      } catch (error) {
+        console.warn('[shell] could not archive original .doc:', error)
+        const vietnamese = currentLang() === 'vi'
+        void showLegacyDocInfoToast(
+          convertedPath,
+          vietnamese
+            ? 'Tệp .docx đã mở. Bản gốc .doc vẫn ở thư mục hiện tại vì không thể chuyển vào thư mục khôi phục.'
+            : 'Your converted .docx is open. The original .doc remains in its folder because it could not be moved to recovery.',
+        )
+      }
+    }
   } catch (error) {
     console.error('[shell] legacy .doc import failed:', error)
     showAppWarning('Could not read this .doc file. It may be damaged or password-protected.')
@@ -3537,6 +3677,10 @@ function openGeneratedDocument(filePath: string): boolean {
 
 function routeDocumentPath(filePath: string): boolean {
   if (!existsSync(filePath)) return false
+  if (PPT_RE.test(filePath)) {
+    void openLegacyPpt(filePath)
+    return true
+  }
   if (DOC_RE.test(filePath)) {
     void openLegacyDoc(filePath)
     return true
@@ -4191,6 +4335,13 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.getTheme, (): UiTheme => currentTheme())
   ipcMain.handle(HOME_CHANNELS.getLegacyDocSettings, (): LegacyDocSettings => legacyDocSettings())
+  ipcMain.handle(HOME_CHANNELS.listLegacyRecovery, () =>
+    listLegacyRecovery(app.getPath('userData')),
+  )
+  ipcMain.handle(HOME_CHANNELS.restoreLegacyDoc, async (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('Invalid recovery ID')
+    return restoreLegacyDoc(app.getPath('userData'), id)
+  })
   ipcMain.handle(HOME_CHANNELS.setLegacyDocSettings, (_event, input: unknown) => {
     if (!input || typeof input !== 'object') return legacyDocSettings()
     const request = input as Partial<LegacyDocSettings>
@@ -5833,6 +5984,17 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
+  void listLegacyRecovery(app.getPath('userData')).catch((error) =>
+    console.warn('[shell] legacy recovery cleanup failed:', error),
+  )
+  setInterval(
+    () => {
+      void listLegacyRecovery(app.getPath('userData')).catch((error) =>
+        console.warn('[shell] legacy recovery cleanup failed:', error),
+      )
+    },
+    24 * 60 * 60 * 1000,
+  ).unref()
   // another GenOffice-family app re-logging in rotates the shared key; the
   // home page re-reads its account status. A logout that leaves only the
   // gsk CLI fallback key is not a login

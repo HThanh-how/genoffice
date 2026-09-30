@@ -1,13 +1,15 @@
-# GenOffice DOC conversion service
+# GenOffice legacy Office conversion service
 
-The service uses LibreOffice Writer to convert one legacy `.doc` at a time to a
-temporary `.docx`. It does not persist uploaded documents. The public interface
+The service uses LibreOffice Writer and Impress to convert legacy `.doc` and
+`.ppt` files to `.docx` and `.pptx`. It does not persist uploaded documents. The public interface
 is intentionally bound to `127.0.0.1:8765`; publish it only through a tunnel or
 reverse proxy that has an abuse policy. The endpoint is
-`POST /v1/convert/docx` with `Content-Type: application/msword` and a raw `.doc`
-request body. `GET /health` returns `ok` when the converter binary exists.
+`POST /v1/convert/docx` with `Content-Type: application/msword` or
+`POST /v1/convert/pptx` with `Content-Type: application/vnd.ms-powerpoint`.
+Both accept the corresponding raw legacy file body. `GET /health` returns `ok`
+when the converter binary exists.
 
-Install `libreoffice-writer`, copy `server.py` to `/opt/genoffice-d2x/`, copy
+Install `libreoffice-writer` and `libreoffice-impress`, copy `server.py` to `/opt/genoffice-d2x/`, copy
 `genoffice-d2x.service` to `/etc/systemd/system/`, then run
 `systemctl daemon-reload && systemctl enable --now genoffice-d2x`.
 

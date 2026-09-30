@@ -981,7 +981,8 @@ export class ProjectStore {
    * Moves a file from its current project into a target project:
    * 1. Update fileMap
    * 2. Update the files lists in both project.json files
-   * 3. Move the corresponding chat's jsonl file to the new project directory
+   * 3. Relocate the corresponding chat's jsonl file to the new project directory
+   *    (merged into any transcript already there under the same chat id)
    */
   moveFileToProject(filePath: string, targetProjectId: string): void {
     this.ensureDefaultProject()
@@ -1016,26 +1017,12 @@ export class ProjectStore {
     targetProj.updatedAt = nowIso()
     this.writeProject(targetProj)
 
-    // 4. Move the corresponding chat's JSONL (materialize buffered opening messages first)
+    // 4. Relocate the corresponding chat's JSONL. The same chat id can already exist in the
+    // target project, so go through renameOrMergeChat: it renumbers and appends instead of
+    // clobbering the target transcript, and migrates the seq counter (materializing buffered
+    // opening messages first).
     const chatId = this.chatIdForPath(filePath, fromProjectId)
-    this.flushPending(fromProjectId, chatId)
-    const srcChatPath = this.chatPath(fromProjectId, chatId)
-    const dstChatPath = this.chatPath(targetProjectId, chatId)
-    try {
-      if (existsSync(srcChatPath)) {
-        ensureDir(this.chatsDir(targetProjectId))
-        renameSync(srcChatPath, dstChatPath)
-      }
-    } catch (err) {
-      console.warn('[project-store] moveFileToProject chat rename failed:', err)
-    }
-
-    // 5. Migrate the seq counter cache
-    const oldKey = this.seqKey(fromProjectId, chatId)
-    const movedSeqKey = this.seqKey(targetProjectId, chatId)
-    const cur = this.seqCounters.get(oldKey)
-    this.seqCounters.delete(oldKey)
-    if (cur !== undefined) this.seqCounters.set(movedSeqKey, cur)
+    this.renameOrMergeChat(fromProjectId, chatId, targetProjectId, chatId)
   }
 
   /**

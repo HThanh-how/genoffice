@@ -4,6 +4,8 @@ import type {
   AiMediaProviderId,
   AiMediaProviderMeta,
   AiProviderMeta,
+  AiProviderConfig,
+  AiProviderId,
   AiSearchProviderId,
   AiSearchProviderMeta,
   AiSettings,
@@ -43,6 +45,14 @@ export type UiTheme = 'light' | 'dark' | 'system'
 export interface LegacyDocSettings {
   mode: 'ask' | 'online' | 'text'
   endpoint: string
+}
+
+export interface LegacyRecoveryEntry {
+  id: string
+  sourcePath: string
+  convertedPath: string
+  archivedAt: number
+  expiresAt: number
 }
 
 /** shell-wide AutoSave default for every editor; updatedAt is 0 until first set */
@@ -263,9 +273,13 @@ export interface HomeApi {
   getTheme(): Promise<UiTheme>
   /** switch + persist the UI theme; broadcasts 'app:theme-changed' to all web contents */
   setTheme(theme: UiTheme): Promise<void>
-  /** Legacy Word conversion privacy preference and optional self-hosted endpoint. */
+  /** Legacy Office conversion privacy preference and optional self-hosted endpoint. */
   getLegacyDocSettings(): Promise<LegacyDocSettings>
   setLegacyDocSettings(settings: LegacyDocSettings): Promise<LegacyDocSettings>
+  /** .doc originals retained for 30 days beside their converted documents. */
+  listLegacyRecovery(): Promise<LegacyRecoveryEntry[]>
+  /** Restore without overwriting a file at the original path. */
+  restoreLegacyDoc(id: string): Promise<string>
   /** AutoSave default applied by every editor window (persisted in userData/app-settings.json) */
   getAutoSaveDefault(): Promise<AutoSaveDefault>
   /** persist the AutoSave default; broadcasts 'app:auto-save-default-changed' to all web contents */
@@ -334,6 +348,8 @@ export interface HomeApi {
   getCustomModels(baseUrl: string, apiKey?: string): Promise<CodexModelCatalog>
   /** live Gemini chat models the given API key can call; empty when it cannot answer */
   getGeminiModels?(apiKey: string): Promise<CodexModelCatalog>
+  /** live models from the selected API provider, using the unsaved key and base URL */
+  getProviderModels?(provider: AiProviderId, config: AiProviderConfig): Promise<CodexModelCatalog>
   /** one-shot round trip against the given (possibly unsaved) settings — the settings-UI connection test */
   testAiSettings(settings: AiSettings): Promise<AiChatResponse>
   /** image generation / media analysis provider catalog */
@@ -530,6 +546,8 @@ export const HOME_CHANNELS = {
   setTheme: 'home:set-theme',
   getLegacyDocSettings: 'home:get-legacy-doc-settings',
   setLegacyDocSettings: 'home:set-legacy-doc-settings',
+  listLegacyRecovery: 'home:list-legacy-recovery',
+  restoreLegacyDoc: 'home:restore-legacy-doc',
   getAutoSaveDefault: 'home:get-auto-save-default',
   setAutoSaveDefault: 'home:set-auto-save-default',
   getMcpStatus: 'home:get-mcp-status',

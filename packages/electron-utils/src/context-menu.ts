@@ -304,9 +304,15 @@ export function installContextMenu(app: App, getLabels: () => ContextMenuLabels)
   holder[INSTALLED] = true
   app.on('web-contents-created', (_event, contents) => {
     contents.on('context-menu', async (_e, params) => {
-      const intercept = interceptorMap(app).get(contents.id)
-      if (intercept && (await intercept(contents, params))) return
-      void popupMenu(contents, params, getLabels())
+      // Electron ignores the promise a listener returns, so anything escaping
+      // here becomes an unhandled rejection in the main process
+      try {
+        const intercept = interceptorMap(app).get(contents.id)
+        if (intercept && (await intercept(contents, params))) return
+      } catch {
+        // the interceptor did not handle it after all: show the native menu
+      }
+      void popupMenu(contents, params, getLabels()).catch(() => {})
     })
   })
 }

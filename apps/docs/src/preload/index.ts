@@ -17,6 +17,18 @@ import type {
 import type { ProjectApi } from '@genoffice/project-store'
 import { installDropOpenBridge } from '@genoffice/electron-utils/drop-open'
 
+// Queue shell notices until the React editor has mounted its toast host.
+const pendingInfoToasts: string[] = []
+const infoToastHandlers = new Set<(text: string) => void>()
+ipcRenderer.on('docs:info-toast', (_event, value: unknown) => {
+  if (typeof value !== 'string' || !value) return
+  if (infoToastHandlers.size) for (const handler of infoToastHandlers) handler(value)
+  else {
+    pendingInfoToasts.push(value)
+    if (pendingInfoToasts.length > 3) pendingInfoToasts.shift()
+  }
+})
+
 const api: DesktopApi = {
   getLanguage: () => ipcRenderer.invoke('app:get-language'),
   getSystemLocale: () => ipcRenderer.invoke('docs:system-locale'),
@@ -33,6 +45,11 @@ const api: DesktopApi = {
     const listener = (_event: IpcRendererEvent, theme: UiTheme) => handler(theme)
     ipcRenderer.on('app:theme-changed', listener)
     return () => ipcRenderer.removeListener('app:theme-changed', listener)
+  },
+  onInfoToast: (handler) => {
+    infoToastHandlers.add(handler)
+    while (pendingInfoToasts.length) handler(pendingInfoToasts.shift()!)
+    return () => infoToastHandlers.delete(handler)
   },
   getAutoSaveDefault: () => ipcRenderer.invoke('app:get-auto-save-default'),
   onAutoSaveDefaultChanged: (handler) => {

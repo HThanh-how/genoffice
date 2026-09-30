@@ -437,6 +437,10 @@ let elementClipboard: {
 
 /** Shell hook: a view opened a file (including ⌘O inside a tab) — used to update tab titles and de-duplicate paths */
 let slidesOpenedHook: ((wc: WebContents, path: string) => void) | null = null
+let legacyPptOpenHook: ((path: string) => Promise<void>) | null = null
+export function setSlidesLegacyPptOpenHook(fn: ((path: string) => Promise<void>) | null): void {
+  legacyPptOpenHook = fn
+}
 export function setSlidesOpenedHook(fn: ((wc: WebContents, path: string) => void) | null): void {
   slidesOpenedHook = fn
 }
@@ -1384,6 +1388,10 @@ export function registerSlidesIpc(): void {
     }
     const r = await showOpenDialogWithMemory(dialog, parent, options)
     if (r.canceled || !r.filePaths[0]) return null
+    if (/\.ppt$/i.test(r.filePaths[0]) && legacyPptOpenHook) {
+      await legacyPptOpenHook(r.filePaths[0])
+      return null
+    }
     if (await rejectLegacyPpt(r.filePaths[0])) return null
     return openAndBuild(e.sender, r.filePaths[0], fitWidthPx)
   })
@@ -4510,7 +4518,13 @@ export function registerSlidesIpc(): void {
   ipcMain.handle('slides:export-pdf', async (_e, op: ExportPdfOp): Promise<ExportPdfResult> => {
     return exportSlidesPdf({
       ...op,
-      createWindow: () => new BrowserWindow({ show: false, webPreferences: { sandbox: true } }),
+      // hidden window: without this, throttled timers/rAF stall the
+      // PRINT_READY_SCRIPT settle wait (same as the headless export window)
+      createWindow: () =>
+        new BrowserWindow({
+          show: false,
+          webPreferences: { sandbox: true, backgroundThrottling: false },
+        }),
       openExportedPdf,
     })
   })
