@@ -1,5 +1,7 @@
 import type {
   AiChatResponse,
+  AiStreamChunk,
+  AiStreamRequest,
   AiMediaProviderConfig,
   AiMediaProviderId,
   AiMediaProviderMeta,
@@ -11,6 +13,7 @@ import type {
   AiSettings,
   CodexModelCatalog,
 } from '@genoffice/ai-provider'
+import type { DocumentMemoryReadResult, DocumentMemorySearchResult } from '@genoffice/agent-core'
 import type { UpdateChannel } from './update-api'
 import type { UpdateSource } from './update-source'
 import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
@@ -320,6 +323,12 @@ export interface HomeApi {
   setAnalyticsEnabled(enabled: boolean): Promise<boolean>
   /** Read local document memory settings, index counts and recent files. */
   getDocumentMemoryStatus(): Promise<DocumentMemoryStatus>
+  /** Search content from documents previously opened in GenOffice. */
+  documentMemorySearch(query: string, limit?: number): Promise<DocumentMemorySearchResult>
+  /** Read a source chunk, freshly verified against the document on disk. */
+  documentMemoryRead(chunkId: number): Promise<DocumentMemoryReadResult>
+  /** Open a remembered document by the document id returned from search. */
+  documentMemoryOpen(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** Enable or pause indexing and return the updated local status. */
   setDocumentMemoryEnabled(enabled: boolean): Promise<DocumentMemoryStatus>
   /** Keep a file out of document memory and remove its indexed content. */
@@ -361,6 +370,12 @@ export interface HomeApi {
   openCloudProject(projectUrl: string): Promise<void>
   /** AI settings (userData/ai-settings.json, shared by every editor); the genspark key never appears here */
   getAiSettings(): Promise<AiSettings>
+  /** Start a streaming AI request; deltas arrive through onAiStream. */
+  aiStream(request: AiStreamRequest): Promise<void>
+  /** Abort a streaming AI request. */
+  aiStreamCancel(requestId: string): Promise<void>
+  /** Subscribe to AI stream chunks; returns an unsubscribe function. */
+  onAiStream(handler: (chunk: AiStreamChunk) => void): () => void
   /** persist AI settings; open editors pick the change up on their next settings read */
   setAiSettings(settings: AiSettings): Promise<void>
   /** provider catalog with each fixed endpoint's default base URL (empty for genspark/custom) */

@@ -31,6 +31,7 @@ import { SettingsModal } from './SettingsModal'
 import type { SettingsTarget } from './SettingsModal'
 import { skillUpdateDue } from './IntegrationsPane'
 import { onFilesChanged } from './file-events'
+import { HomeChat } from './HomeChat'
 
 declare global {
   interface Window {
@@ -3184,6 +3185,7 @@ export function Home() {
       )}
 
       <DropToOpenOverlay />
+      <HomeChat api={window.aiOffice} i18n={i18n} />
     </div>
   )
 }

@@ -24,6 +24,7 @@ class FakeWorker extends EventEmitter {
   delay = 0
   failEmbedding = false
   embeddingCalls: string[][] = []
+  extractionCalls: string[] = []
   stopAfterBatches = Infinity
   constructor(private readonly dbPath: string) {
     super()
@@ -41,6 +42,7 @@ class FakeWorker extends EventEmitter {
     setTimeout(() => {
       try {
         if (message.type === 'extract') {
+          this.extractionCalls.push(message.path!)
           const bytes = readFileSync(message.path!)
           const text = bytes.toString('utf8')
           const stat = statSync(message.path!)
@@ -114,6 +116,22 @@ function manager(fake: FakeWorker) {
 }
 
 describe('DocumentMemoryManager', () => {
+  it('starts pending extraction with the most recently opened file', async () => {
+    const oldPath = join(dir, 'old-pending.txt')
+    const recentPath = join(dir, 'recent-pending.txt')
+    writeFileSync(oldPath, 'older queued content')
+    writeFileSync(recentPath, 'newer queued content')
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    const instance = manager(fake)
+    instance.setEnabled(false)
+    instance.remember(oldPath)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    instance.remember(recentPath)
+    instance.setEnabled(true)
+    await until(() => fake.extractionCalls.length >= 2)
+    expect(fake.extractionCalls[0]).toBe(recentPath)
+  })
+
   it('resumes committed batches after shutdown without re-embedding finished chunks', async () => {
     const path = join(dir, 'interrupted.txt')
     const text = Array.from({ length: 10 }, (_, i) => `Section ${i}: ${'A'.repeat(550)}`).join(
@@ -138,7 +156,10 @@ describe('DocumentMemoryManager', () => {
     await until(
       () => reopened.status().vectors === chunks.length * 2 && reopened.status().pending === 0,
     )
-    expect(resumedWorker.embeddingCalls[0]).toEqual(chunks.slice(8, 16).map((chunk) => chunk.text))
+    // Priority can resume either file first; only the unfinished vectors may be computed.
+    expect(resumedWorker.embeddingCalls.flat().sort()).toEqual(
+      [...chunks, ...chunks.slice(8)].map((chunk) => chunk.text).sort(),
+    )
     const completed = new DocumentMemoryStore(join(dir, 'document-memory.db'))
     const idsAfter = completed.search('Section', null, 20).map((hit) => hit.chunkId)
     completed.close()
@@ -218,6 +239,26 @@ describe('DocumentMemoryManager', () => {
     expect(instance.status().chunks).toBeGreaterThan(8)
     expect(instance.status().vectors).toBe(instance.status().chunks)
     expect(instance.status().errors).toBe(0)
+  })
+
+  it('rotates large embedding jobs so a newly opened file gets a prompt batch', async () => {
+    const largePath = join(dir, 'large-old.txt')
+    const newerPath = join(dir, 'new-small.txt')
+    writeFileSync(largePath, `${'LARGEDOC '.repeat(5000)}\n\n`)
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    fake.delay = 5
+    const instance = manager(fake)
+    instance.remember(largePath)
+    await until(() => fake.embeddingCalls.length > 0)
+    writeFileSync(newerPath, 'NEWLYOPENED marker content')
+    instance.remember(newerPath)
+    await until(() =>
+      fake.embeddingCalls.some((batch) => batch.some((text) => text.includes('NEWLYOPENED'))),
+    )
+    const newBatch = fake.embeddingCalls.findIndex((batch) =>
+      batch.some((text) => text.includes('NEWLYOPENED')),
+    )
+    expect(newBatch).toBeLessThan(4)
   })
 
   it('does not restore old text when a file changes during passage embedding', async () => {

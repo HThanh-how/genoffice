@@ -4,9 +4,9 @@ interface ScoredVector {
 }
 
 /** Keep only the best candidates while scanning, without retaining the corpus in RAM. */
-export function topVectors(rows: Iterable<ScoredVector>, limit: number): ScoredVector[] {
+export function topVectors<T extends ScoredVector>(rows: Iterable<T>, limit: number): T[] {
   if (limit <= 0) return []
-  const heap: ScoredVector[] = []
+  const heap: T[] = []
   const worse = (a: ScoredVector, b: ScoredVector) =>
     a.score < b.score || (a.score === b.score && a.id > b.id)
   for (const row of rows) {

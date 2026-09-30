@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS documents (
   embedding_model TEXT,
   error TEXT,
   excluded INTEGER NOT NULL DEFAULT 0 CHECK (excluded IN (0, 1)),
+  last_opened_at INTEGER NOT NULL DEFAULT 0,
+  priority_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE TABLE IF NOT EXISTS chunks (
@@ -72,19 +74,59 @@ CREATE TABLE IF NOT EXISTS chunks (
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 CREATE INDEX IF NOT EXISTS chunks_document_id ON chunks(document_id);
+CREATE INDEX IF NOT EXISTS chunks_vector_lookup ON chunks(vector_dim, document_id) WHERE vector IS NOT NULL;
 CREATE INDEX IF NOT EXISTS documents_excluded_status ON documents(excluded, status);
 `
+
+/** Bound semantic work on large stores; weak results widen the scan to protect recall. */
+export const SEMANTIC_RECENT_SCAN = 12_000
+export const SEMANTIC_WIDE_SCAN = 48_000
+export const SEMANTIC_FULL_SCAN_THRESHOLD = 15_000
+export const SEMANTIC_RELEVANCE_THRESHOLD = 0.82
+export const SEMANTIC_RELEVANCE_MARGIN = 0.12
+export const SEMANTIC_RECENT_DOCUMENTS = 1_024
+export const SEMANTIC_WIDE_DOCUMENTS = 4_096
+export interface DocumentMemorySearchOptions {
+  semanticRecentScan?: number
+  semanticWideScan?: number
+  semanticFullScanThreshold?: number
+  semanticRelevanceThreshold?: number
+  semanticRecentDocuments?: number
+  semanticWideDocuments?: number
+}
 
 /** Durable memory for explicitly opened documents. Only enrolled documents are searchable. */
 export class DocumentMemoryStore {
   private readonly db: DatabaseSync
+  private readonly searchOptions: Required<DocumentMemorySearchOptions>
 
-  constructor(dbPath: string) {
+  constructor(dbPath: string, options: DocumentMemorySearchOptions = {}) {
+    this.searchOptions = {
+      semanticRecentScan: options.semanticRecentScan ?? SEMANTIC_RECENT_SCAN,
+      semanticWideScan: options.semanticWideScan ?? SEMANTIC_WIDE_SCAN,
+      semanticFullScanThreshold: options.semanticFullScanThreshold ?? SEMANTIC_FULL_SCAN_THRESHOLD,
+      semanticRelevanceThreshold:
+        options.semanticRelevanceThreshold ?? SEMANTIC_RELEVANCE_THRESHOLD,
+      semanticRecentDocuments: options.semanticRecentDocuments ?? SEMANTIC_RECENT_DOCUMENTS,
+      semanticWideDocuments: options.semanticWideDocuments ?? SEMANTIC_WIDE_DOCUMENTS,
+    }
     this.db = new DatabaseSync(dbPath)
     this.db.exec(
       'PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;',
     )
     this.db.exec(SCHEMA)
+    // Older databases predate explicit open timestamps. Preserve all existing rows and vectors.
+    const columns = this.db.prepare('PRAGMA table_info(documents)').all() as Array<{ name: string }>
+    if (!columns.some((column) => column.name === 'last_opened_at'))
+      this.db.exec('ALTER TABLE documents ADD COLUMN last_opened_at INTEGER NOT NULL DEFAULT 0')
+    if (!columns.some((column) => column.name === 'priority_at')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN priority_at INTEGER NOT NULL DEFAULT 0')
+      this.db.exec(`UPDATE documents SET priority_at = max(last_opened_at,
+        coalesce(mtime_ms, 0))`)
+    }
+    this.db.exec(
+      'CREATE INDEX IF NOT EXISTS documents_priority ON documents(excluded, priority_at DESC)',
+    )
     try {
       chmodSync(resolve(dbPath), 0o600)
     } catch {
@@ -94,12 +136,23 @@ export class DocumentMemoryStore {
 
   remember(path: string): void {
     const normalizedPath = resolve(path)
+    const openedAt = Date.now()
     this.db
       .prepare(
-        `INSERT INTO documents(path, name, status) VALUES (?, ?, 'pending')
-      ON CONFLICT(path) DO UPDATE SET name = excluded.name, updated_at = CASE WHEN documents.excluded = 0 THEN unixepoch() ELSE documents.updated_at END`,
+        `INSERT INTO documents(path, name, status, last_opened_at, priority_at) VALUES (?, ?, 'pending', ?, ?)
+      ON CONFLICT(path) DO UPDATE SET name = excluded.name,
+        last_opened_at = CASE WHEN documents.excluded = 0 THEN excluded.last_opened_at ELSE documents.last_opened_at END,
+        priority_at = CASE WHEN documents.excluded = 0 THEN max(excluded.priority_at, coalesce(documents.mtime_ms, 0)) ELSE documents.priority_at END`,
       )
-      .run(normalizedPath, basename(normalizedPath))
+      .run(normalizedPath, basename(normalizedPath), openedAt, openedAt)
+  }
+
+  private ensureDocument(path: string): void {
+    this.db
+      .prepare(
+        `INSERT INTO documents(path, name, status) VALUES (?, ?, 'pending') ON CONFLICT(path) DO NOTHING`,
+      )
+      .run(path, basename(path))
   }
 
   listDocuments(): StoredDocument[] {
@@ -107,7 +160,7 @@ export class DocumentMemoryStore {
       this.db
         .prepare(
           `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error
-      FROM documents ORDER BY updated_at DESC, id DESC`,
+      FROM documents ORDER BY priority_at DESC, id DESC`,
         )
         .all() as unknown as DocRow[]
     ).map(toDocument)
@@ -136,7 +189,10 @@ export class DocumentMemoryStore {
   listPaths(): string[] {
     return (
       this.db
-        .prepare('SELECT path FROM documents WHERE excluded = 0 ORDER BY path')
+        .prepare(
+          `SELECT path FROM documents WHERE excluded = 0
+          ORDER BY priority_at DESC, id DESC`,
+        )
         .all() as Array<{ path: string }>
     ).map((r) => r.path)
   }
@@ -151,7 +207,7 @@ export class DocumentMemoryStore {
       throw new Error('Document vectors must contain only finite numbers')
 
     this.transaction(() => {
-      this.remember(normalizedPath)
+      this.ensureDocument(normalizedPath)
       const row = this.db
         .prepare('SELECT id, excluded FROM documents WHERE path = ?')
         .get(normalizedPath) as { id: number; excluded: number }
@@ -159,12 +215,13 @@ export class DocumentMemoryStore {
       this.deleteChunks(row.id)
       this.db
         .prepare(
-          `UPDATE documents SET name = ?, status = ?, mtime_ms = ?, size_bytes = ?, hash = ?,
+          `UPDATE documents SET name = ?, status = ?, mtime_ms = ?, priority_at = max(last_opened_at, ?), size_bytes = ?, hash = ?,
         embedding_model = ?, error = ?, excluded = 0, updated_at = unixepoch() WHERE id = ?`,
         )
         .run(
           basename(normalizedPath),
           replacement.status,
+          replacement.mtimeMs,
           replacement.mtimeMs,
           replacement.sizeBytes,
           replacement.hash,
@@ -199,7 +256,7 @@ export class DocumentMemoryStore {
   ): void {
     const p = resolve(path)
     this.transaction(() => {
-      this.remember(p)
+      this.ensureDocument(p)
       const row = this.db.prepare('SELECT id, excluded FROM documents WHERE path = ?').get(p) as {
         id: number
         excluded: number
@@ -358,35 +415,146 @@ export class DocumentMemoryStore {
         WHERE chunk_fts MATCH ? AND d.excluded = 0 ORDER BY rank LIMIT 200`,
         )
         .all(match) as Array<{ chunk_id: number; rank: number }>
-      rows.forEach((r, i) => lexical.set(r.chunk_id, i + 1))
+      let rank = 0
+      let previousRank: number | undefined
+      rows.forEach((row, index) => {
+        if (previousRank !== row.rank) rank = index + 1
+        lexical.set(row.chunk_id, rank)
+        previousRank = row.rank
+      })
     }
 
     const semantic = new Map<number, number>()
     if (vector?.length) {
-      const rows = this.db
-        .prepare(
-          `SELECT c.id, c.vector, c.vector_dim FROM chunks c
-        JOIN documents d ON d.id = c.document_id
-        WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
-          AND (? IS NULL OR d.embedding_model = ?)`,
-        )
-        .iterate(vector.length, embeddingModel ?? null, embeddingModel ?? null) as Iterable<{
-        id: number
-        vector: Uint8Array
-        vector_dim: number
-      }>
-      function* scoredRows() {
-        for (const r of rows)
-          yield { id: r.id, score: cosine(vector!, blobVector(r.vector, r.vector_dim)) }
+      const docsQuery = this.db.prepare(
+        `SELECT d.id, d.priority_at FROM documents d WHERE d.excluded = 0 AND EXISTS (
+          SELECT 1 FROM chunks c WHERE c.document_id = d.id AND c.vector IS NOT NULL AND c.vector_dim = ?
+        ) AND (? IS NULL OR d.embedding_model = ?)
+        ORDER BY d.priority_at DESC, d.id DESC LIMIT ?`,
+      )
+      const chunksQuery = this.db.prepare(`SELECT c.id, c.vector, c.vector_dim FROM chunks c
+        WHERE c.document_id = ? AND c.vector IS NOT NULL AND c.vector_dim = ?`)
+      const vectorCount = (
+        this.db
+          .prepare(
+            `SELECT count(*) AS count FROM chunks c JOIN documents d ON d.id = c.document_id
+            WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
+              AND (? IS NULL OR d.embedding_model = ?)`,
+          )
+          .get(vector.length, embeddingModel ?? null, embeddingModel ?? null) as { count: number }
+      ).count
+      const vectorDocumentCount = (
+        this.db
+          .prepare(
+            `SELECT count(DISTINCT d.id) AS count FROM chunks c JOIN documents d ON d.id = c.document_id
+            WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
+              AND (? IS NULL OR d.embedding_model = ?)`,
+          )
+          .get(vector.length, embeddingModel ?? null, embeddingModel ?? null) as { count: number }
+      ).count
+      const scanLimit =
+        vectorCount <= this.searchOptions.semanticFullScanThreshold
+          ? vectorCount
+          : this.searchOptions.semanticRecentScan
+      const scan = (maxRows: number, maxDocuments: number) => {
+        function* scoredRows() {
+          let scanned = 0
+          let documentRank = 0
+          const docs = docsQuery.iterate(
+            vector!.length,
+            embeddingModel ?? null,
+            embeddingModel ?? null,
+            maxDocuments,
+          ) as Iterable<{ id: number; priority_at: number }>
+          for (const doc of docs) {
+            documentRank++
+            const rows = chunksQuery.iterate(doc.id, vector!.length) as Iterable<{
+              id: number
+              vector: Uint8Array
+              vector_dim: number
+            }>
+            for (const row of rows) {
+              const score = cosine(vector!, blobVector(row.vector, row.vector_dim))
+              // Preserve equal semantic scores in the top-200 heap by recent document order.
+              yield { id: row.id, score: score + 1e-8 / documentRank, cosineScore: score }
+              if (++scanned >= maxRows) return
+            }
+          }
+        }
+        return topVectors(scoredRows(), 200)
       }
-      topVectors(scoredRows(), 200).forEach((r, i) => semantic.set(r.id, i + 1))
+      let best = scan(
+        scanLimit,
+        vectorCount <= this.searchOptions.semanticFullScanThreshold
+          ? Number.MAX_SAFE_INTEGER
+          : this.searchOptions.semanticRecentDocuments,
+      )
+      let semanticRelevance = best[0] ? best[0].cosineScore : Number.NEGATIVE_INFINITY
+      const informativeTokens = tokens.filter((token) => token.length >= 4 || /^\d+$/.test(token))
+      const strongLexical =
+        informativeTokens.length > 0
+          ? !!this.db
+              .prepare(
+                `SELECT 1 FROM chunk_fts f JOIN chunks c ON c.id = f.rowid
+          JOIN documents d ON d.id = c.document_id
+          WHERE chunk_fts MATCH ? AND d.excluded = 0 LIMIT 1`,
+              )
+              .get(informativeTokens.map(quoteFtsToken).join(' AND '))
+          : false
+      const margin =
+        best.length > 1 ? semanticRelevance - best[1]!.cosineScore : Number.NEGATIVE_INFINITY
+      const enoughEvidence =
+        strongLexical ||
+        (semanticRelevance >= this.searchOptions.semanticRelevanceThreshold &&
+          margin >= SEMANTIC_RELEVANCE_MARGIN)
+      if (vectorCount > this.searchOptions.semanticFullScanThreshold && !enoughEvidence) {
+        best = scan(
+          Math.min(vectorCount, this.searchOptions.semanticWideScan),
+          this.searchOptions.semanticWideDocuments,
+        )
+        semanticRelevance = best[0] ? best[0].cosineScore : Number.NEGATIVE_INFINITY
+        const wideMargin =
+          best.length > 1 ? semanticRelevance - best[1]!.cosineScore : Number.NEGATIVE_INFINITY
+        if (
+          !strongLexical &&
+          (semanticRelevance < this.searchOptions.semanticRelevanceThreshold ||
+            wideMargin < SEMANTIC_RELEVANCE_MARGIN) &&
+          (vectorCount > this.searchOptions.semanticWideScan ||
+            vectorDocumentCount > this.searchOptions.semanticWideDocuments)
+        )
+          best = scan(vectorCount, Number.MAX_SAFE_INTEGER)
+      }
+      let semanticRank = 0
+      let previousScore: number | undefined
+      best.forEach((row, index) => {
+        const score = row.cosineScore
+        if (previousScore !== score) semanticRank = index + 1
+        semantic.set(row.id, semanticRank)
+        previousScore = score
+      })
     }
 
     const scores = new Map<number, number>()
-    for (const [id, rank] of lexical) scores.set(id, (scores.get(id) ?? 0) + 1 / (60 + rank))
+    for (const [id, rank] of lexical) scores.set(id, (scores.get(id) ?? 0) + 2 / (60 + rank))
     for (const [id, rank] of semantic) scores.set(id, (scores.get(id) ?? 0) + 1 / (60 + rank))
+    const recency = new Map<number, number>()
+    if (scores.size) {
+      const placeholders = [...scores.keys()].map(() => '?').join(',')
+      const rows = this.db
+        .prepare(
+          `SELECT c.id, max(d.last_opened_at, coalesce(d.mtime_ms, 0)) AS recent
+          FROM chunks c JOIN documents d ON d.id = c.document_id WHERE c.id IN (${placeholders})`,
+        )
+        .all(...scores.keys()) as Array<{ id: number; recent: number }>
+      const now = Date.now()
+      for (const row of rows) {
+        const age = Math.max(0, now - row.recent)
+        // At most 0.00002: enough to settle near-ties, never enough to eclipse a strong match.
+        recency.set(row.id, Math.max(0, 1 - age / (90 * 24 * 60 * 60 * 1000)) * 0.00002)
+      }
+    }
     const ids = [...scores]
-      .sort((a, b) => b[1] - a[1])
+      .sort((a, b) => b[1] + (recency.get(b[0]) ?? 0) - (a[1] + (recency.get(a[0]) ?? 0)))
       .slice(0, Math.max(0, limit))
       .map(([id]) => id)
     if (!ids.length) return []
@@ -405,7 +573,7 @@ export class DocumentMemoryStore {
               chunkId: row.chunk_id,
               text: row.text,
               location: row.location,
-              score: scores.get(id)!,
+              score: scores.get(id)! + (recency.get(id) ?? 0),
               hash: row.hash,
               mtimeMs: row.mtime_ms,
               sizeBytes: row.size_bytes,

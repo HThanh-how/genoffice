@@ -117,10 +117,11 @@ export class DocumentMemoryManager {
       this.enabled &&
       (!current ||
         document.status === 'pending' ||
+        document.status === 'text-only' ||
         document.mtimeMs !== current.mtimeMs ||
         document.sizeBytes !== current.sizeBytes)
     )
-      this.enqueue(p)
+      this.enqueue(p, true)
   }
 
   move(oldPath: string, newPath: string): void {
@@ -384,15 +385,24 @@ export class DocumentMemoryManager {
     }
   }
 
-  private enqueue(path: string): void {
-    if (this.stopped || !this.enabled || this.queued.has(path)) return
+  private enqueue(path: string, prioritize = false): void {
+    if (this.stopped || !this.enabled) return
+    if (this.queued.has(path)) {
+      if (prioritize) {
+        const index = this.queue.indexOf(path)
+        if (index > 0) this.queue.splice(index, 1)
+        if (index > 0) this.queue.unshift(path)
+      }
+      return
+    }
     const doc = this.store.documentByPath(path)
     if (!doc || doc.status === 'excluded') return
     this.pathGeneration.set(path, this.currentGeneration(path) + 1)
     for (let i = this.embeds.length - 1; i >= 0; i--)
       if (this.embeds[i]?.path === path) this.embeds.splice(i, 1)
     this.queued.add(path)
-    this.queue.push(path)
+    if (prioritize) this.queue.unshift(path)
+    else this.queue.push(path)
     void this.drain()
   }
 
@@ -445,7 +455,7 @@ export class DocumentMemoryManager {
           }
           this.lastError = undefined
           if (extracted.chunks.length) {
-            this.embeds.push({
+            this.enqueueEmbed({
               path,
               generation,
               epoch,
@@ -483,47 +493,46 @@ export class DocumentMemoryManager {
         if (!this.isCurrent(job.path, job.generation, job.epoch)) continue
         this.pendingCount++
         try {
-          // Commit each small batch so shutdown loses at most the in-flight batch.
-          for (let start = job.startOffset ?? 0; start < job.chunks.length; start += 8) {
-            if (!this.isCurrent(job.path, job.generation, job.epoch)) break
-            const part = job.chunks.slice(start, start + 8)
-            const reply = await this.ask(
-              { type: 'embed', texts: part.map((chunk) => chunk.text), kind: 'passage' },
-              WORKER_TIMEOUT_MS,
-            )
-            if (!this.isCurrent(job.path, job.generation, job.epoch)) break
-            if (
-              !reply ||
-              !('result' in reply) ||
-              !Array.isArray(reply.result) ||
-              !reply.result.every((v) => Array.isArray(v))
-            ) {
-              const error = reply && 'error' in reply ? reply.error : 'Embedding timed out.'
-              this.lastError = error
-              break
-            }
-            const vectors = reply.result as number[][]
-            if (vectors.length !== part.length)
-              throw new Error('Embedding count did not match chunk count')
-            const current = safeStat(job.path)
-            if (
-              !current ||
-              current.mtimeMs !== job.mtimeMs ||
-              current.sizeBytes !== job.sizeBytes
-            ) {
-              if (current) this.enqueue(job.path)
-              break
-            }
-            const complete = start + vectors.length >= job.chunks.length
-            this.store.setChunkVectors(
-              job.path,
-              job.hash,
-              start,
-              vectors,
-              EMBEDDING_MODEL_ID,
-              complete,
-            )
-            this.lastError = undefined
+          // Commit one small batch per turn, then rotate incomplete files for fair queue progress.
+          const start = job.startOffset ?? 0
+          if (!this.isCurrent(job.path, job.generation, job.epoch)) break
+          const part = job.chunks.slice(start, start + 8)
+          const reply = await this.ask(
+            { type: 'embed', texts: part.map((chunk) => chunk.text), kind: 'passage' },
+            WORKER_TIMEOUT_MS,
+          )
+          if (!this.isCurrent(job.path, job.generation, job.epoch)) break
+          if (
+            !reply ||
+            !('result' in reply) ||
+            !Array.isArray(reply.result) ||
+            !reply.result.every((v) => Array.isArray(v))
+          ) {
+            const error = reply && 'error' in reply ? reply.error : 'Embedding timed out.'
+            this.lastError = error
+            break
+          }
+          const vectors = reply.result as number[][]
+          if (vectors.length !== part.length)
+            throw new Error('Embedding count did not match chunk count')
+          const current = safeStat(job.path)
+          if (!current || current.mtimeMs !== job.mtimeMs || current.sizeBytes !== job.sizeBytes) {
+            if (current) this.enqueue(job.path)
+            break
+          }
+          const complete = start + vectors.length >= job.chunks.length
+          this.store.setChunkVectors(
+            job.path,
+            job.hash,
+            start,
+            vectors,
+            EMBEDDING_MODEL_ID,
+            complete,
+          )
+          this.lastError = undefined
+          if (!complete && this.isCurrent(job.path, job.generation, job.epoch)) {
+            this.embeds.push({ ...job, startOffset: start + vectors.length })
+            break
           }
         } catch (error) {
           if (this.isCurrent(job.path, job.generation, job.epoch)) {
@@ -542,7 +551,14 @@ export class DocumentMemoryManager {
 
   private enqueueEmbed(job: EmbedJob): void {
     if (this.stopped || !this.enabled) return
-    this.embeds.push(job)
+    const documentPaths = this.store.listPaths()
+    const priority = documentPaths.indexOf(job.path)
+    const position = this.embeds.findIndex((queued) => {
+      const queuedPriority = documentPaths.indexOf(queued.path)
+      return priority >= 0 && queuedPriority >= 0 && priority < queuedPriority
+    })
+    if (position < 0) this.embeds.push(job)
+    else this.embeds.splice(position, 0, job)
     void this.drain()
   }
 

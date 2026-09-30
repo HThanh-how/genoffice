@@ -7,6 +7,7 @@ import {
   getProviderAdapter,
 } from '@genoffice/ai-provider/browser'
 import type { AiSettings, CodexModelCatalog } from '@genoffice/ai-provider/browser'
+import type { AiStreamChunk, AiStreamRequest } from '@genoffice/ai-provider'
 import { installDropOpenBridge } from '@genoffice/electron-utils/drop-open'
 import { normalizeAiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 import type {
@@ -443,6 +444,45 @@ const homeApi: HomeApi = {
       await ipcRenderer.invoke(HOME_CHANNELS.getDocumentMemoryStatus),
     )
   },
+  async documentMemorySearch(query, limit) {
+    if (
+      typeof query !== 'string' ||
+      query.trim().length === 0 ||
+      query.length > 2_000 ||
+      (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1 || limit > 10))
+    ) {
+      return { hits: [], pending: 0, errors: 1, modelState: 'invalid-request' }
+    }
+    return (await ipcRenderer.invoke(
+      'document-memory:search',
+      query.trim(),
+      limit,
+    )) as import('@genoffice/agent-core').DocumentMemorySearchResult
+  },
+  async documentMemoryRead(chunkId) {
+    if (!Number.isSafeInteger(chunkId) || chunkId < 1) {
+      return {
+        path: '',
+        name: '',
+        location: '',
+        text: '',
+        verified: false,
+        error: 'Invalid chunk id',
+      }
+    }
+    return (await ipcRenderer.invoke(
+      'document-memory:read',
+      chunkId,
+    )) as import('@genoffice/agent-core').DocumentMemoryReadResult
+  },
+  async documentMemoryOpen(documentId) {
+    if (!Number.isSafeInteger(documentId) || documentId < 1)
+      return { ok: false, error: 'Invalid document id' }
+    return (await ipcRenderer.invoke('document-memory:open', documentId)) as {
+      ok: boolean
+      error?: string
+    }
+  },
   async setDocumentMemoryEnabled(enabled) {
     if (typeof enabled !== 'boolean') throw new Error('Invalid document memory setting.')
     return normalizeDocumentMemoryStatus(
@@ -529,6 +569,30 @@ const homeApi: HomeApi = {
   // AI settings channels are registered once by the shell's aggregated docs handlers
   async getAiSettings() {
     return (await ipcRenderer.invoke('ai:get-settings')) as AiSettings
+  },
+  async aiStream(request) {
+    if (!request || typeof request.requestId !== 'string' || !request.requestId.trim())
+      throw new Error('Invalid AI stream request.')
+    await ipcRenderer.invoke('ai:stream', request as AiStreamRequest)
+  },
+  async aiStreamCancel(requestId) {
+    if (typeof requestId !== 'string' || !requestId.trim()) return
+    await ipcRenderer.invoke('ai:stream-cancel', requestId)
+  },
+  onAiStream(handler) {
+    if (typeof handler !== 'function') return () => undefined
+    const listener = (_event: IpcRendererEvent, chunk: AiStreamChunk) => {
+      if (
+        chunk &&
+        typeof chunk === 'object' &&
+        typeof chunk.requestId === 'string' &&
+        typeof chunk.type === 'string'
+      ) {
+        handler(chunk)
+      }
+    }
+    ipcRenderer.on('ai:stream-chunk', listener)
+    return () => ipcRenderer.removeListener('ai:stream-chunk', listener)
   },
   async setAiSettings(settings) {
     await ipcRenderer.invoke('ai:set-settings', settings)
