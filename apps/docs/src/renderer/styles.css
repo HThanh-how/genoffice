@@ -12338,6 +12338,54 @@ tr > .page-gap-cut {
   color: var(--docs-toast-ok);
 }
 
+.app-toast.info {
+  top: auto;
+  right: 20px;
+  bottom: 24px;
+  left: auto;
+  max-width: min(520px, calc(100vw - 40px));
+  white-space: normal;
+  transform: translateY(8px);
+  background: var(--docs-toast-bg);
+  border: 1px solid color-mix(in srgb, var(--docs-toast-ink) 18%, transparent);
+}
+
+.app-toast.info.show {
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.app-toast.info .app-toast-icon {
+  color: var(--docs-toast-ink);
+}
+
+.app-toast-dismiss {
+  flex: none;
+  margin: -4px -8px -4px 4px;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.app-toast-dismiss:hover,
+.app-toast-dismiss:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+  background: color-mix(in srgb, var(--docs-toast-ink) 16%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-toast {
+    transition: none;
+  }
+}
+
 /* body row (AI dock + content column) — the status bar spans only the content
    column so the dock runs the full height of the window */
 .app-main {

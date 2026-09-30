@@ -2834,6 +2834,32 @@ const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[
 let shellWindow: BrowserWindow | null = null
 let tabManager: TabManager | null = null
 
+async function showLegacyDocInfoToast(path: string, text: string): Promise<void> {
+  const tab = tabManager?.findTabByPath(path)
+  const wc = tab?.kind === 'docs' ? tab.webContents : null
+  if (!wc || wc.isDestroyed()) return
+  if (wc.isLoading()) {
+    const loaded = await new Promise<boolean>((resolve) => {
+      const settle = (success: boolean) => {
+        clearTimeout(timeout)
+        wc.removeListener('did-finish-load', finish)
+        wc.removeListener('did-fail-load', stop)
+        wc.removeListener('destroyed', stop)
+        resolve(success)
+      }
+      const finish = () => settle(true)
+      const stop = () => settle(false)
+      const timeout = setTimeout(stop, 15000)
+      wc.once('did-finish-load', finish)
+      wc.once('did-fail-load', stop)
+      wc.once('destroyed', stop)
+      if (!wc.isLoading()) finish()
+    })
+    if (!loaded || wc.isDestroyed()) return
+  }
+  if (!wc.isDestroyed()) wc.send('docs:info-toast', text)
+}
+
 /**
  * New file from a folder view: the click remembers the folder per kind, the
  * new-tab code consumes it right away. Sheets / PDF write their blank file
@@ -3572,27 +3598,21 @@ async function openLegacyDoc(filePath: string): Promise<void> {
             console.warn('[shell] could not save legacy recovery notice state:', error)
           }
           const vietnamese = currentLang() === 'vi'
-          const notice = {
-            type: 'info' as const,
-            title: vietnamese
-              ? 'Đã lưu tệp gốc để khôi phục'
-              : 'Original document saved for recovery',
-            message: vietnamese
-              ? 'Tài liệu .doc đã được chuyển thành .docx.'
-              : 'Your .doc has been upgraded to .docx.',
-            detail: vietnamese
-              ? 'Tệp gốc nằm trong thư mục .genoffice ẩn cạnh tài liệu trong 30 ngày. Bạn có thể khôi phục tại Cài đặt → Chung → Khôi phục tệp .doc gốc.'
-              : 'The original is in a hidden .genoffice folder beside the document for 30 days. You can restore it in Settings → General → Recover original .doc files.',
-            buttons: [vietnamese ? 'Đã hiểu' : 'OK'],
-          }
-          void (shellWindow
-            ? dialog.showMessageBox(shellWindow, notice)
-            : dialog.showMessageBox(notice))
+          void showLegacyDocInfoToast(
+            convertedPath,
+            vietnamese
+              ? 'Tệp .docx đã mở. Bản gốc .doc được giữ trong thư mục khôi phục ẩn trong 30 ngày.'
+              : 'Your .docx is open. The original .doc is kept in a hidden recovery folder for 30 days.',
+          )
         }
       } catch (error) {
         console.warn('[shell] could not archive original .doc:', error)
-        showAppWarning(
-          'The converted .docx is ready, but the original .doc could not be moved into the 30-day recovery folder. Both files have been kept.',
+        const vietnamese = currentLang() === 'vi'
+        void showLegacyDocInfoToast(
+          convertedPath,
+          vietnamese
+            ? 'Tệp .docx đã mở. Bản gốc .doc vẫn ở thư mục hiện tại vì không thể chuyển vào thư mục khôi phục.'
+            : 'Your converted .docx is open. The original .doc remains in its folder because it could not be moved to recovery.',
         )
       }
     }
