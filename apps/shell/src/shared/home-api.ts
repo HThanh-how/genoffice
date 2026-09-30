@@ -10,6 +10,7 @@ import type {
   CodexModelCatalog,
 } from '@genoffice/ai-provider'
 import type { UpdateChannel } from './update-api'
+import type { UpdateSource } from './update-source'
 import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 
 /** UI language; kept self-contained here (mirrors Lang in @genoffice/i18n) */
@@ -236,6 +237,9 @@ export interface HomeApi {
   /** switch + persist the UI language; main rebuilds its menus to match */
   setLanguage(lang: UiLanguage): Promise<void>
   /** current update channel (persisted in userData/app-settings.json; default 'stable') */
+  getUpdateSource(): Promise<UpdateSource>
+  setUpdateSource(source: UpdateSource): Promise<UpdateSource>
+  checkForUpdates(): Promise<void>
   getUpdateChannel(): Promise<UpdateChannel>
   /** switch + persist the update channel; triggers an immediate update check */
   setUpdateChannel(channel: UpdateChannel): Promise<void>
@@ -509,6 +513,9 @@ export const HOME_CHANNELS = {
   folderChanged: 'home:folder-changed',
   getLanguage: 'home:get-language',
   setLanguage: 'home:set-language',
+  getUpdateSource: 'home:get-update-source',
+  setUpdateSource: 'home:set-update-source',
+  checkForUpdates: 'home:check-for-updates',
   getUpdateChannel: 'home:get-update-channel',
   setUpdateChannel: 'home:set-update-channel',
   accountStatus: 'home:account-status',

@@ -144,6 +144,24 @@ cargo build --release --target x86_64-pc-windows-gnu   # from apps/sheets/native
 or copy an existing `target/release/xlsx-sidecar.exe` to
 `target/x86_64-pc-windows-gnu/release/`.
 
+### Publishing fork builds
+
+Pushes to `main` build unsigned Apple Silicon macOS (`.dmg` and `.zip`) and
+Windows x64 (`.exe`) installers. The workflows keep their short-lived Actions
+artifacts and also publish each platform's installer, `<platform>-<arch>-SHA256SUMS`, and
+`<platform>-<arch>-manifest.json` to the GitHub Release tagged `v<apps/shell/package.json
+version>` in the repository receiving the push. The release tag targets that
+workflow's commit, so the two platform jobs can safely add their assets to the
+same release. No personal access token or Actions-artifact download session is
+needed to install a published build; the release assets are public.
+
+When preparing a new build, bump `apps/shell/package.json` to a version that
+has not already been published in this repository. The workflow refuses to
+attach files when that version's tag points to a different commit; publish a
+new version instead of moving an existing release tag. GitHub Actions' default
+`GITHUB_TOKEN` is sufficient because the build workflows request write access
+to repository contents for release creation and upload.
+
 ## Environment variables
 
 None are required — the apps run with all of these unset. They exist for
@@ -213,3 +231,39 @@ The `ee/` directory is reserved for future enterprise modules under a
 [separate license](ee/LICENSE) and does not accept external contributions —
 pull requests from outside the maintainer team must not modify files under
 `ee/` (enforced via [CODEOWNERS](.github/CODEOWNERS)).
+
+### Fork update source
+
+Settings → About → Check for updates checks immediately. The default source is
+`HThanh-how/genoffice` public GitHub Releases (no token required). Installers
+must include platform/architecture in the filename and have GitHub's SHA-256
+digest. An unsigned build downloads and verifies the installer, then offers to
+open it. Complete the OS installer; on macOS drag GenOffice into Applications.
+Save documents and close the running app before replacing it. This flow does
+not use Squirrel.Mac, which requires a signed application for automatic installs.
+
+You can save a different GitHub `owner/repository` or an HTTPS JSON manifest in
+Settings. The saved `updateSource` in `app-settings.json` overrides environment
+fallbacks `GENOFFICE_UPDATE_REPOSITORY` and `GENOFFICE_UPDATE_MANIFEST_URL`.
+Example custom feed:
+
+```json
+{
+  "version": "0.11.2",
+  "assets": [
+    {
+      "platform": "darwin",
+      "arch": "arm64",
+      "url": "https://example.com/GenOffice-0.11.2.dmg",
+      "sha256": "<64 hexadecimal characters>"
+    }
+  ]
+}
+```
+
+Use `win32` / `x64` / `.exe` for Windows, or `linux` / the machine architecture /
+`.AppImage` for Linux. A beta version must have a SemVer prerelease suffix.
+
+AI failures now write metadata only (time, provider, HTTP status when available,
+and category) to `userData/ai-errors.jsonl`, rotated at 1 MiB. The log excludes
+prompts, document contents, keys, URLs, and raw provider error bodies.

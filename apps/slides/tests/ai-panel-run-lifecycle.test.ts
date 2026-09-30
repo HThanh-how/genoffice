@@ -195,6 +195,38 @@ describe('AiPanel agent run lifecycle (slides)', () => {
     )
   })
 
+  it('does not render a restored Genspark login-required flag', async () => {
+    const aiGskStatus = vi.fn(async () => ({ loggedIn: false }))
+    Object.defineProperty(window, 'slidesApi', {
+      configurable: true,
+      value: {
+        aiGskStatus,
+        beginHistoryBatch: vi.fn(async () => false),
+        endHistoryBatch: vi.fn(async () => null),
+        aiLogRunFailure: vi.fn(async () => undefined),
+      },
+    })
+    Object.defineProperty(window, 'projectApi', {
+      configurable: true,
+      value: {
+        resolveChat: vi.fn(async () => ({ projectId: 'default', chatId: 'deck-chat' })),
+        loadChat: vi.fn(async () => [
+          { role: 'assistant', text: 'Previous error', tools: [], loginRequired: true },
+        ]),
+        appendChat: vi.fn(async () => undefined),
+        rebindChat: vi.fn(async () => ({ projectId: 'default', chatId: 'deck-chat' })),
+      },
+    })
+
+    const { container } = mount(
+      createElement(AiPanel, panelProps({ currentFilePath: '/tmp/deck.pptx' })),
+    )
+    await flushEffects()
+
+    expect(container.textContent).not.toContain('Sign in to Genspark')
+    expect(aiGskStatus).toHaveBeenCalled()
+  })
+
   it('keeps readable images and continues the run when another attachment read rejects', async () => {
     const readAttachmentImage = vi.fn(async (path: string) => {
       if (path.endsWith('good.png')) return { ok: true, base64: 'AAAA', mime: 'image/png' }

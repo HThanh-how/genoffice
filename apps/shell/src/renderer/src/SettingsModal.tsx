@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
+import type { UpdateSource } from '../../shared/update-source'
 import {
   AI_CUSTOM_FONT_MAX_PX,
   AI_CUSTOM_FONT_MIN_PX,
@@ -1241,6 +1242,14 @@ export function SettingsModal({
   const [defaultAppBusy, setDefaultAppBusy] = useState(false)
   const [defaultAppFailed, setDefaultAppFailed] = useState(false)
   const [aiPrefs, setAiPrefs] = useState<AiPanelPrefs>(DEFAULT_AI_PANEL_PREFS)
+  const [updateSource, setUpdateSource] = useState<UpdateSource>({
+    kind: 'github',
+    value: 'HThanh-how/genoffice',
+  })
+  const [savedUpdateSource, setSavedUpdateSource] = useState('github:HThanh-how/genoffice')
+  const [updateBusy, setUpdateBusy] = useState(false)
+  const [updateSaving, setUpdateSaving] = useState(false)
+  const [updateNotice, setUpdateNotice] = useState('')
   const [channel, setChannel] = useState<'stable' | 'beta'>('stable')
   const [legacyDoc, setLegacyDoc] = useState<LegacyDocSettings>({
     mode: 'online',
@@ -1269,6 +1278,17 @@ export function SettingsModal({
     void window.aiOffice.getAiPanelPrefs?.().then((prefs) => {
       if (alive) setAiPrefs(prefs)
     })
+    void window.aiOffice
+      .getUpdateSource?.()
+      .then((source) => {
+        if (alive) {
+          setUpdateSource(source)
+          setSavedUpdateSource(`${source.kind}:${source.value}`)
+        }
+      })
+      .catch(() => {
+        if (alive) setUpdateNotice('—')
+      })
     void window.aiOffice.getUpdateChannel?.().then((ch) => {
       if (alive) setChannel(ch)
     })
@@ -1634,7 +1654,88 @@ export function SettingsModal({
             {section === 'about' && (
               <>
                 <h3 className="set-pane-title">{t('setSecAbout')}</h3>
-                <Field label={t('versionLabel')} value={appVersion || '—'} />
+                <Field
+                  label={t('versionLabel')}
+                  value={appVersion || '—'}
+                  action={
+                    <button
+                      className="set-btn"
+                      disabled={
+                        updateBusy ||
+                        updateSaving ||
+                        `${updateSource.kind}:${updateSource.value}` !== savedUpdateSource
+                      }
+                      onClick={() => {
+                        setUpdateBusy(true)
+                        setUpdateNotice('')
+                        void window.aiOffice
+                          .checkForUpdates()
+                          .catch(() => setUpdateNotice(t('updateSourceError')))
+                          .finally(() => setUpdateBusy(false))
+                      }}
+                    >
+                      {t(updateBusy ? 'updateChecking' : 'updateNow')}
+                    </button>
+                  }
+                />
+                <div className="set-field">
+                  <label className="set-field-label">{t('updateSourceLabel')}</label>
+                  <Dropdown
+                    className="set-dd"
+                    value={updateSource.kind}
+                    ariaLabel={t('updateSourceLabel')}
+                    options={[
+                      { value: 'github', label: 'GitHub' },
+                      { value: 'manifest', label: 'HTTPS JSON' },
+                    ]}
+                    onPick={(kind) => {
+                      setUpdateNotice('')
+                      setUpdateSource({
+                        kind: kind === 'manifest' ? 'manifest' : 'github',
+                        value: kind === 'manifest' ? '' : 'HThanh-how/genoffice',
+                      })
+                    }}
+                  />
+                </div>
+                <div className="set-field">
+                  <input
+                    className="set-input"
+                    aria-label={t('updateSourceLabel')}
+                    value={updateSource.value}
+                    placeholder={
+                      updateSource.kind === 'github'
+                        ? 'HThanh-how/genoffice'
+                        : 'https://example.com/updates.json'
+                    }
+                    disabled={updateBusy || updateSaving}
+                    onChange={(event) => {
+                      setUpdateNotice('')
+                      setUpdateSource({ ...updateSource, value: event.target.value })
+                    }}
+                  />
+                  <button
+                    className="set-btn"
+                    disabled={updateSaving || updateBusy || !updateSource.value.trim()}
+                    onClick={() => {
+                      setUpdateSaving(true)
+                      setUpdateNotice('')
+                      void window.aiOffice
+                        .setUpdateSource(updateSource)
+                        .then((source) => {
+                          setUpdateSource(source)
+                          setSavedUpdateSource(`${source.kind}:${source.value}`)
+                          setUpdateNotice(t('setAiSaved'))
+                        })
+                        .catch(() => setUpdateNotice(t('updateSourceError')))
+                        .finally(() => setUpdateSaving(false))
+                    }}
+                  >
+                    {t('setAiSave')}
+                  </button>
+                </div>
+                <p className="set-field-desc" role="status">
+                  {updateNotice || t('updateSourceHint')}
+                </p>
                 <div className="set-field">
                   <div className="set-field-text">
                     <label className="set-field-label">{t('updateChannel')}</label>
@@ -1658,8 +1759,8 @@ export function SettingsModal({
                   label={t('setGithub')}
                   value={
                     githubStars === null
-                      ? 'github.com/genspark-ai/genoffice'
-                      : `github.com/genspark-ai/genoffice · ★ ${formatStars(githubStars)}`
+                      ? 'github.com/HThanh-how/genoffice'
+                      : `github.com/HThanh-how/genoffice · ★ ${formatStars(githubStars)}`
                   }
                   action={
                     <button

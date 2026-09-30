@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   macos:
@@ -59,3 +59,10 @@ jobs:
           path: ${{ steps.stage.outputs.path }}
           if-no-files-found: error
           retention-days: 7
+
+      - name: Publish installer to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ASSET_DIRECTORY: ${{ steps.stage.outputs.path }}
+        run: node tools/publish-fork-release.mjs "$ASSET_DIRECTORY"

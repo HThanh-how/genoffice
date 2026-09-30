@@ -236,6 +236,21 @@ const homeApi: HomeApi = {
     if (!isUiLanguage(lang)) throw new Error('Invalid language.')
     await ipcRenderer.invoke(HOME_CHANNELS.setLanguage, lang)
   },
+  async getUpdateSource() {
+    return await ipcRenderer.invoke(HOME_CHANNELS.getUpdateSource)
+  },
+  async setUpdateSource(source) {
+    if (
+      !source ||
+      (source.kind !== 'github' && source.kind !== 'manifest') ||
+      typeof source.value !== 'string'
+    )
+      throw new Error('Invalid update source')
+    return await ipcRenderer.invoke(HOME_CHANNELS.setUpdateSource, source)
+  },
+  async checkForUpdates() {
+    await ipcRenderer.invoke(HOME_CHANNELS.checkForUpdates)
+  },
   async getUpdateChannel() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getUpdateChannel)
     return result === 'beta' ? 'beta' : 'stable'

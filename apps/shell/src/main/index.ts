@@ -1,5 +1,6 @@
 import { execSync, spawn } from 'node:child_process'
 import {
+  appendFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -46,7 +47,6 @@ import { createI18n, isLang, normalizeLang, setUiLang, type Lang } from '@genoff
 import {
   DEFAULT_SAVE_DIR_KEY,
   DROP_OPEN_CHANNEL,
-  GITHUB_REPO_URL,
   appMenuLabels,
   contextMenuLabels,
   editMenuTemplate,
@@ -351,7 +351,19 @@ import {
   setDockHost,
   takeTornTab,
 } from './detached-windows'
-import { applyUpdateChannel, checkForUpdatesNow, initAutoUpdater } from './updater'
+import {
+  applyUpdateChannel,
+  checkForUpdatesNow,
+  initAutoUpdater,
+  setManualUpdateCheck,
+} from './updater'
+import { setAiErrorLogger } from '@genoffice/ai-provider'
+import { checkForkUpdates } from './fork-updater'
+import {
+  DEFAULT_UPDATE_SOURCE,
+  validateUpdateSource,
+  type UpdateSource,
+} from '../shared/update-source'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
 
 /**
@@ -467,6 +479,26 @@ registerPrivilegedSchemes()
 // ---- UI language ----
 // Persisted in userData/app-settings.json so the editor modules can read the
 // same file when they pick up i18n later. GENOFFICE_LANG overrides for tests.
+
+function currentUpdateSource(): UpdateSource {
+  const configured = readAppSettings(APP_SETTINGS_PATH()).updateSource
+  try {
+    if (configured) return validateUpdateSource(configured)
+    if (process.env.GENOFFICE_UPDATE_MANIFEST_URL)
+      return validateUpdateSource({
+        kind: 'manifest',
+        value: process.env.GENOFFICE_UPDATE_MANIFEST_URL,
+      })
+    if (process.env.GENOFFICE_UPDATE_REPOSITORY)
+      return validateUpdateSource({
+        kind: 'github',
+        value: process.env.GENOFFICE_UPDATE_REPOSITORY,
+      })
+  } catch {
+    /* Invalid saved settings fall back to the fork's release source. */
+  }
+  return { ...DEFAULT_UPDATE_SOURCE }
+}
 
 const APP_SETTINGS_PATH = () => join(app.getPath('userData'), 'app-settings.json')
 
@@ -711,7 +743,7 @@ let cachedGithubStars: number | null = null
 async function fetchGithubStars(): Promise<number | null> {
   if (cachedGithubStars !== null) return cachedGithubStars
   try {
-    const response = await fetch('https://api.github.com/repos/genspark-ai/genoffice', {
+    const response = await fetch('https://api.github.com/repos/HThanh-how/genoffice', {
       headers: { Accept: 'application/vnd.github+json' },
       signal: AbortSignal.timeout(5000),
     })
@@ -4126,6 +4158,14 @@ function registerHomeIpc(): void {
     for (const wc of webContents.getAllWebContents()) wc.send('app:language-changed', lang)
   })
 
+  ipcMain.handle(HOME_CHANNELS.getUpdateSource, () => currentUpdateSource())
+  ipcMain.handle(HOME_CHANNELS.setUpdateSource, (_event, input: unknown) => {
+    const source = validateUpdateSource(input)
+    writeAppSetting(APP_SETTINGS_PATH(), 'updateSource', source)
+    return source
+  })
+  ipcMain.handle(HOME_CHANNELS.checkForUpdates, () => checkForUpdatesNow())
+
   ipcMain.handle(HOME_CHANNELS.getUpdateChannel, (): UpdateChannel => currentUpdateChannel())
 
   ipcMain.handle(HOME_CHANNELS.setUpdateChannel, (_event, channel: unknown) => {
@@ -4483,7 +4523,7 @@ function registerHomeIpc(): void {
   })
 
   ipcMain.handle(HOME_CHANNELS.openGitHubRepo, () => {
-    shell.openExternal(GITHUB_REPO_URL).catch(() => {
+    shell.openExternal('https://github.com/HThanh-how/genoffice').catch(() => {
       // no browser handler available; nothing actionable for the user here
     })
   })
@@ -5941,12 +5981,31 @@ app.whenReady().then(async () => {
   void startMcpFromSettings(currentMcpSettings()).catch((error) => {
     console.error('[mcp] failed to start on boot:', error)
   })
+  setAiErrorLogger((record) => {
+    try {
+      const file = join(app.getPath('userData'), 'ai-errors.jsonl')
+      if (existsSync(file) && statSync(file).size > 1024 * 1024) {
+        const old = file + '.1'
+        rmSync(old, { force: true })
+        renameSync(file, old)
+      }
+      appendFileSync(file, JSON.stringify(record) + '\n', { mode: 0o600 })
+    } catch {
+      /* Logging must not interrupt a document's AI request. */
+    }
+  })
   createShellWindow()
   // deferred to ready: labels need currentLang(), which reads app.getLocale()
   installBackToHomeItems()
   installDockMenu()
   setUpdateCheckInvoker(() => void checkForUpdatesNow())
-  initAutoUpdater(() => shellWindow, currentUpdateChannel())
+  if (process.env.GENOFFICE_FAKE_UPDATE && !app.isPackaged) {
+    initAutoUpdater(() => shellWindow, currentUpdateChannel())
+  } else {
+    setManualUpdateCheck(() =>
+      checkForkUpdates(currentUpdateSource(), currentUpdateChannel(), () => shellWindow),
+    )
+  }
   // resource watchdog: a renderer that stays hot for minutes gets diagnostics
   // recorded and the user an offer to close the document (headless exports
   // are short-lived and unattended)

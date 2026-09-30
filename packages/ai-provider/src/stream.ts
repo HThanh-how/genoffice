@@ -15,7 +15,7 @@ export { AiCreditsError, sseLines } from './protocols/shared'
 export type { StreamCallbacks } from './protocols/shared'
 
 /** route a streaming, tool-calling-capable turn by provider id */
-export async function streamForProvider(
+async function streamForProviderInner(
   provider: AiProviderId,
   config: AiProviderConfig,
   system: string,
@@ -56,4 +56,46 @@ export async function streamForProvider(
         })
     }
   })
+}
+
+export interface AiErrorDiagnostic {
+  timestamp: string
+  provider: AiProviderId
+  status: number | null
+  category: 'rate-limit' | 'overloaded' | 'auth' | 'network' | 'other'
+}
+let errorLogger: ((record: AiErrorDiagnostic) => void) | null = null
+export function setAiErrorLogger(logger: (record: AiErrorDiagnostic) => void): void {
+  errorLogger = logger
+}
+
+/** Record metadata only. Provider bodies can contain credentials or document text. */
+export async function streamForProvider(
+  ...args: Parameters<typeof streamForProviderInner>
+): Promise<void> {
+  try {
+    await streamForProviderInner(...args)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (!(error instanceof Error && error.name === 'AbortError')) {
+      const match = /(?:HTTP|status|code)[ :="']+(\d{3})\b/i.exec(message)
+      const status = match ? Number(match[1]) : null
+      const category =
+        status === 429 || /quota|rate.?limit|resource.exhausted/i.test(message)
+          ? 'rate-limit'
+          : status === 503 || status === 529 || /overload|unavailable|busy/i.test(message)
+            ? 'overloaded'
+            : status === 401 || status === 403
+              ? 'auth'
+              : /fetch failed|network|timeout|ECONN|ENOTFOUND/i.test(message)
+                ? 'network'
+                : 'other'
+      try {
+        errorLogger?.({ timestamp: new Date().toISOString(), provider: args[0], status, category })
+      } catch {
+        /* Diagnostics must never mask the provider failure. */
+      }
+    }
+    throw error
+  }
 }

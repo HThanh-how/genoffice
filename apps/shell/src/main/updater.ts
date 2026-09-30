@@ -501,7 +501,7 @@ function uiStrings(): UpdateUiStrings {
   }
 }
 
-function initialState(version: string): UpdateUiState {
+export function initialState(version: string): UpdateUiState {
   return {
     phase: 'available',
     version,
@@ -529,7 +529,13 @@ export function applyUpdateChannel(channel: UpdateChannel): void {
  * up-to-date and failure each get a dialog, and installs with no self-update
  * mechanism (dev runs, Linux .deb) are pointed at the download page instead
  * of being told they're current. */
+let explicitUpdateCheck: (() => Promise<void>) | null = null
+export function setManualUpdateCheck(handler: () => Promise<void>): void {
+  explicitUpdateCheck = handler
+}
+
 export async function checkForUpdatesNow(): Promise<void> {
+  if (explicitUpdateCheck) return explicitUpdateCheck()
   if (manualCheckInFlight) return
   manualCheckInFlight = true
   try {
