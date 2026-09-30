@@ -68,8 +68,8 @@ export async function listCustomModels(
       )
       if (!response.ok) return emptyCatalog()
       const text = await readCappedResponseText(response, { maxBytes: MAX_BODY_BYTES })
-      const body = JSON.parse(text) as { data?: unknown } | null
-      const data = body?.data
+      const body = JSON.parse(text) as { data?: unknown } | unknown[] | null
+      const data = Array.isArray(body) ? body : body?.data
       if (!Array.isArray(data)) return emptyCatalog()
       const seen = new Set<string>()
       for (const entry of data) {
@@ -128,34 +128,48 @@ function geminiRank(id: string): number {
  * speech/image/video/embedding/live variants are kept, ordered with the
  * `-latest` aliases first and then newest version first.
  */
-export async function listGeminiModels(apiKey: string): Promise<CodexModelCatalog> {
+export async function listGeminiModels(
+  apiKey: string,
+  baseUrl = GEMINI_BASE_URL,
+): Promise<CodexModelCatalog> {
   const key = apiKey.trim()
   if (!key) return emptyCatalog()
   const watchdog = createStreamWatchdog(undefined, REQUEST_TIMEOUT_MS)
   try {
     return await watchdog.guard(async () => {
-      const response = await fetch(
-        endpointUrl(GEMINI_BASE_URL, 'models', 'pageSize=1000'),
-        withUserAgent({
-          headers: { Accept: 'application/json', 'x-goog-api-key': key },
-          signal: watchdog.signal,
-        }),
-      )
-      if (!response.ok) return emptyCatalog()
-      const text = await readCappedResponseText(response, { maxBytes: MAX_BODY_BYTES })
-      const body = JSON.parse(text) as { models?: unknown } | null
-      const entries = body?.models
-      if (!Array.isArray(entries)) return emptyCatalog()
       const seen = new Set<string>()
-      for (const entry of entries) {
-        const raw = entry as { name?: unknown; supportedGenerationMethods?: unknown } | null
-        if (typeof raw?.name !== 'string') continue
-        const methods = raw.supportedGenerationMethods
-        if (!Array.isArray(methods) || !methods.includes('generateContent')) continue
-        const id = raw.name.replace(/^models\//, '').trim()
-        if (!id.startsWith('gemini-') || GEMINI_NON_CHAT.test(id)) continue
-        seen.add(id)
-        if (seen.size >= MAX_MODELS) break
+      let pageToken = ''
+      for (let page = 0; page < 20; page++) {
+        const url = new URL(endpointUrl(baseUrl, 'models'))
+        url.searchParams.set('pageSize', '1000')
+        if (pageToken) url.searchParams.set('pageToken', pageToken)
+        const response = await fetch(
+          url.toString(),
+          withUserAgent({
+            headers: { Accept: 'application/json', 'x-goog-api-key': key },
+            signal: watchdog.signal,
+          }),
+        )
+        if (!response.ok) return emptyCatalog()
+        const text = await readCappedResponseText(response, { maxBytes: MAX_BODY_BYTES })
+        const body = JSON.parse(text) as { models?: unknown; nextPageToken?: unknown } | null
+        const entries = body?.models
+        if (!Array.isArray(entries)) return emptyCatalog()
+        for (const entry of entries) {
+          const raw = entry as { name?: unknown; supportedGenerationMethods?: unknown } | null
+          if (typeof raw?.name !== 'string') continue
+          const methods = raw.supportedGenerationMethods
+          if (!Array.isArray(methods) || !methods.includes('generateContent')) continue
+          const id = raw.name.replace(/^models\//, '').trim()
+          if (!id.startsWith('gemini-') || GEMINI_NON_CHAT.test(id)) continue
+          seen.add(id)
+          if (seen.size >= MAX_MODELS) break
+        }
+        if (seen.size >= MAX_MODELS || !body?.nextPageToken) break
+        if (typeof body.nextPageToken !== 'string' || body.nextPageToken === pageToken)
+          return emptyCatalog()
+        pageToken = body.nextPageToken
+        if (page === 19) return emptyCatalog()
       }
       const models = [...seen].sort((a, b) => geminiRank(b) - geminiRank(a) || 0)
       return { models, defaultModel: '' }
@@ -167,6 +181,9 @@ export async function listGeminiModels(apiKey: string): Promise<CodexModelCatalo
 
 /** `listGeminiModels` behind an `unknown` IPC payload: `{ apiKey: string }` */
 export function listGeminiModelsForIpc(input: unknown): Promise<CodexModelCatalog> {
-  const raw = (input ?? {}) as { apiKey?: unknown }
-  return listGeminiModels(typeof raw.apiKey === 'string' ? raw.apiKey : '')
+  const raw = (input ?? {}) as { apiKey?: unknown; baseUrl?: unknown }
+  return listGeminiModels(
+    typeof raw.apiKey === 'string' ? raw.apiKey : '',
+    typeof raw.baseUrl === 'string' && raw.baseUrl.trim() ? raw.baseUrl : GEMINI_BASE_URL,
+  )
 }

@@ -4,6 +4,8 @@ import type {
   AiMediaProviderId,
   AiMediaProviderMeta,
   AiProviderMeta,
+  AiProviderConfig,
+  AiProviderId,
   AiSearchProviderId,
   AiSearchProviderMeta,
   AiSettings,
@@ -342,6 +344,8 @@ export interface HomeApi {
   getCustomModels(baseUrl: string, apiKey?: string): Promise<CodexModelCatalog>
   /** live Gemini chat models the given API key can call; empty when it cannot answer */
   getGeminiModels?(apiKey: string): Promise<CodexModelCatalog>
+  /** live models from the selected API provider, using the unsaved key and base URL */
+  getProviderModels?(provider: AiProviderId, config: AiProviderConfig): Promise<CodexModelCatalog>
   /** one-shot round trip against the given (possibly unsaved) settings — the settings-UI connection test */
   testAiSettings(settings: AiSettings): Promise<AiChatResponse>
   /** image generation / media analysis provider catalog */

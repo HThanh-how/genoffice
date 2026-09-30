@@ -275,6 +275,13 @@ function AiModelPane({ t }: { t: TFunc }) {
   const [saved, setSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState<{ ok: boolean; error?: string } | null>(null)
+  const [modelListState, setModelListState] = useState<'idle' | 'loading' | 'live' | 'fallback'>(
+    'idle',
+  )
+  const [modelListCount, setModelListCount] = useState(0)
+  const [modelRefresh, setModelRefresh] = useState(0)
+  const [manualModel, setManualModel] = useState(false)
+  const builtInCatalog = useRef(catalog)
   /** free-typed value of the output-cap field; committed (and clamped) on blur */
   const [maxTokensDraft, setMaxTokensDraft] = useState<string | null>(null)
 
@@ -316,16 +323,15 @@ function AiModelPane({ t }: { t: TFunc }) {
     }
   }, [refreshCodexModels])
 
-  // A user-hosted endpoint gets the same live model list as Codex, asked of the
-  // endpoint itself. Keyed on the catalog's `needsBaseUrl` flag rather than on
-  // the literal 'custom' id, so it follows the slot rather than the name, and
-  // stays a no-op while any other provider is selected — a local server saved
-  // months ago is never contacted while Genspark is in use.
-  const endpointProvider = catalog.find(
-    (entry) => entry.id === settings?.provider && entry.needsBaseUrl,
-  )?.id
+  // Probe only the selected provider, using its unsaved key and endpoint.
+  // A stored custom server is never contacted while another provider is selected.
+  const selectedProvider = settings?.provider
+  const selectedMeta = catalog.find((entry) => entry.id === selectedProvider)
+  const endpointProvider =
+    selectedProvider === 'codex' || selectedProvider === 'genspark' ? undefined : selectedProvider
   const endpointConfig = settings ? settings.providers[settings.provider] : undefined
-  const endpointBaseUrl = (endpointConfig?.baseUrl ?? '').trim()
+  const configuredBaseUrl = endpointConfig?.baseUrl?.trim() || ''
+  const endpointBaseUrl = (configuredBaseUrl || selectedMeta?.defaultBaseUrl || '').trim()
   const endpointApiKey = endpointConfig?.apiKey ?? ''
   // The stored model decides where the pin goes below, but changing it must not
   // send another request, so it is read when the reply lands rather than keyed on.
@@ -333,27 +339,59 @@ function AiModelPane({ t }: { t: TFunc }) {
   useEffect(() => {
     selectedModelRef.current = endpointConfig?.model ?? ''
   })
-  /** the address that produced the list currently folded in; '' when none is */
-  const listedForRef = useRef('')
+  /** Addresses that produced each provider's current live list. */
+  const listedForRef = useRef(new Map<string, string>())
 
   useEffect(() => {
+    setModelListState('idle')
     if (!endpointProvider) return
     // A list belonging to a different server — or to no server, once the address
     // is cleared — is misinformation, so it goes the moment the address changes:
     // the free-text box is the honest thing to show while the answer is unknown.
-    if (listedForRef.current && listedForRef.current !== endpointBaseUrl) {
-      listedForRef.current = ''
-      setCatalog(foldModels(endpointProvider, []))
+    const previousBase = listedForRef.current.get(endpointProvider)
+    if (previousBase !== undefined && previousBase !== endpointBaseUrl) {
+      listedForRef.current.delete(endpointProvider)
+      const baseline = builtInCatalog.current.find((entry) => entry.id === endpointProvider)
+      setCatalog(foldModels(endpointProvider, baseline?.models ?? []))
     }
-    if (!endpointBaseUrl || !window.aiOffice.getCustomModels) return
+    if (endpointProvider === 'custom' && !endpointBaseUrl) return
+    if (
+      !endpointApiKey.trim() &&
+      endpointProvider !== 'custom' &&
+      endpointProvider !== 'openrouter' &&
+      endpointProvider !== 'opper'
+    )
+      return
+    const canDiscover =
+      window.aiOffice.getProviderModels ||
+      (endpointProvider === 'gemini'
+        ? window.aiOffice.getGeminiModels
+        : selectedMeta?.needsBaseUrl
+          ? window.aiOffice.getCustomModels
+          : undefined)
+    if (!canDiscover) return
     let cancelled = false
     const timer = setTimeout(() => {
-      void window.aiOffice
-        .getCustomModels(endpointBaseUrl, endpointApiKey)
+      setModelListState('loading')
+      const config = {
+        apiKey: endpointApiKey,
+        model: selectedModelRef.current,
+        baseUrl: configuredBaseUrl || undefined,
+      }
+      const request = window.aiOffice.getProviderModels
+        ? window.aiOffice.getProviderModels(endpointProvider, config)
+        : endpointProvider === 'gemini'
+          ? window.aiOffice.getGeminiModels!(endpointApiKey)
+          : window.aiOffice.getCustomModels(endpointBaseUrl, endpointApiKey)
+      void request
         .then((live) => {
           // A server that will not answer leaves the current list alone: a blip
           // must not wipe a picker mid-use.
-          if (cancelled || !live || live.models.length === 0) return
+          if (cancelled) return
+          if (!live || live.models.length === 0) {
+            setModelListState('fallback')
+            return
+          }
           // A hand-typed id is pinned to the top so it never vanishes from the
           // picker. The catalog is the only thing written — writing settings
           // here would revert whatever the user typed while the probe was in
@@ -361,10 +399,14 @@ function AiModelPane({ t }: { t: TFunc }) {
           const selected = selectedModelRef.current.trim()
           const models =
             selected && !live.models.includes(selected) ? [selected, ...live.models] : live.models
-          listedForRef.current = endpointBaseUrl
+          listedForRef.current.set(endpointProvider, endpointBaseUrl)
           setCatalog(foldModels(endpointProvider, models))
+          setModelListCount(live.models.length)
+          setModelListState('live')
         })
-        .catch(() => undefined)
+        .catch(() => {
+          if (!cancelled) setModelListState('fallback')
+        })
     }, CUSTOM_MODELS_DEBOUNCE_MS)
     // React's own cleanup drops a superseded reply, so a slow answer from the
     // previous address can never overwrite a fast one from the current address.
@@ -372,40 +414,14 @@ function AiModelPane({ t }: { t: TFunc }) {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [endpointProvider, endpointBaseUrl, endpointApiKey])
-
-  // Gemini's picker follows the models the key can actually call, read from
-  // Google's own list, so a new release shows up without a new build. The
-  // built-in list stays until a live answer arrives, and a failed probe leaves
-  // whatever is showing alone.
-  const geminiApiKey =
-    settings?.provider === 'gemini' ? (settings.providers.gemini?.apiKey ?? '').trim() : ''
-  const geminiModelRef = useRef('')
-  useEffect(() => {
-    geminiModelRef.current = settings?.providers.gemini?.model ?? ''
-  })
-  useEffect(() => {
-    if (!geminiApiKey || !window.aiOffice.getGeminiModels) return
-    let cancelled = false
-    const timer = setTimeout(() => {
-      void window.aiOffice
-        .getGeminiModels?.(geminiApiKey)
-        .then((live) => {
-          if (cancelled || !live || live.models.length === 0) return
-          const selected = geminiModelRef.current.trim()
-          const models =
-            selected && !live.models.includes(selected) ? [selected, ...live.models] : live.models
-          setCatalog((current) =>
-            current.map((entry) => (entry.id === 'gemini' ? { ...entry, models } : entry)),
-          )
-        })
-        .catch(() => undefined)
-    }, CUSTOM_MODELS_DEBOUNCE_MS)
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-    }
-  }, [geminiApiKey])
+  }, [
+    endpointProvider,
+    endpointBaseUrl,
+    endpointApiKey,
+    configuredBaseUrl,
+    selectedMeta?.needsBaseUrl,
+    modelRefresh,
+  ])
 
   if (!settings) return null
   const provider = settings.provider
@@ -441,6 +457,7 @@ function AiModelPane({ t }: { t: TFunc }) {
     touch()
   }
   const selectProvider = (id: AiSettings['provider']) => {
+    setManualModel(false)
     // cloud tools cannot be off with genspark (chat runs through gsk anyway)
     setSettings({
       ...settings,
@@ -531,7 +548,7 @@ function AiModelPane({ t }: { t: TFunc }) {
         <div className="set-field-text">
           <label className="set-field-label">{t('setAiModelId')}</label>
         </div>
-        {meta && meta.models.length > 0 ? (
+        {!manualModel && meta && meta.models.length > 0 ? (
           <Dropdown
             className="set-dd"
             value={config.model || meta.defaultModel}
@@ -551,6 +568,36 @@ function AiModelPane({ t }: { t: TFunc }) {
           />
         )}
       </div>
+      {!isCodex && !isGenspark && (
+        <div className="set-field-desc set-model-discovery" aria-live="polite">
+          <span>
+            {modelListState === 'loading'
+              ? t('setAiModelsLoading')
+              : modelListState === 'live'
+                ? t('setAiModelsLive', { n: modelListCount })
+                : modelListState === 'fallback'
+                  ? t('setAiModelsFallback')
+                  : t('setAiModelsHint')}
+          </span>
+          <button
+            className="set-btn"
+            type="button"
+            disabled={modelListState === 'loading'}
+            onClick={() => setModelRefresh((value) => value + 1)}
+          >
+            {t('setAiModelsRefresh')}
+          </button>
+          {meta && meta.models.length > 0 && (
+            <button
+              className="set-btn"
+              type="button"
+              onClick={() => setManualModel((value) => !value)}
+            >
+              {manualModel ? t('setAiModelsChoose') : t('setAiModelsManual')}
+            </button>
+          )}
+        </div>
+      )}
       {isCodex ? (
         <div className="set-field">
           <div className="set-field-text">

@@ -106,6 +106,7 @@ import {
   type LegacyAiSettings,
 } from '@genoffice/ai-provider'
 import { listCodexModels, shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
+import { listProviderModelsForIpc } from '@genoffice/ai-provider/provider-models'
 import {
   listCustomModelsForIpc,
   listGeminiModelsForIpc,
@@ -3794,6 +3795,8 @@ export function registerAiIpc(): void {
   })
 
   ipcMain.handle('ai:custom-models', (_event, input: unknown) => listCustomModelsForIpc(input))
+
+  ipcMain.handle('ai:provider-models', (_event, input: unknown) => listProviderModelsForIpc(input))
 
   ipcMain.handle('ai:gemini-models', (_event, input: unknown) => listGeminiModelsForIpc(input))
 

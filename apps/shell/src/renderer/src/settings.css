@@ -289,6 +289,18 @@
   gap: 8px;
 }
 
+.set-model-discovery {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.set-model-discovery > span {
+  flex: 1;
+  min-width: 180px;
+}
+
 /* MCP pane: copyable config snippet */
 .set-code {
   margin: 0;

@@ -491,6 +491,12 @@ const homeApi: HomeApi = {
   async getGeminiModels(apiKey) {
     return (await ipcRenderer.invoke('ai:gemini-models', { apiKey })) as CodexModelCatalog
   },
+  async getProviderModels(provider, config) {
+    return (await ipcRenderer.invoke('ai:provider-models', {
+      provider,
+      config,
+    })) as CodexModelCatalog
+  },
   async testAiSettings(settings) {
     const result: unknown = await ipcRenderer.invoke('ai:chat', {
       settings,
