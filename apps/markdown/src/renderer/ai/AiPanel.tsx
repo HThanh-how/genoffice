@@ -1,7 +1,12 @@
 import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from 'react'
-import { AgentLoop, composeSkills, streamText } from '@genoffice/agent-core'
+import {
+  AgentLoop,
+  composeSkills,
+  createDocumentMemorySkill,
+  streamText,
+} from '@genoffice/agent-core'
 import { imageGenerationAvailable, type AiSettings } from '@genoffice/ai-provider/browser'
 import {
   AiComposer,
@@ -359,7 +364,7 @@ export function AiPanel({
   if (!loopRef.current) {
     loopRef.current = new AgentLoop<DocSnapshot>({
       transport: transportRef.current,
-      skill: composeSkills('markdown+search', '', [
+      skill: composeSkills('markdown+search+memory', '', [
         createMarkdownSkill(
           () => depsRef.current.getEditor(),
           {
@@ -372,6 +377,7 @@ export function AiPanel({
           }),
         ),
         createSearchSkill(),
+        createDocumentMemorySkill(window.markdownApi),
       ]),
       captureSnapshot: () => depsRef.current.getSnapshot(),
       systemSuffix: () => aiLangDirective(langRef.current),

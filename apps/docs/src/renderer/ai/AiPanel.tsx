@@ -2,7 +2,13 @@ import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@ge
 import { useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@genoffice/docx-engine'
-import { AgentLoop, composeSkills, streamText, type AgentImage } from '@genoffice/agent-core'
+import {
+  AgentLoop,
+  composeSkills,
+  createDocumentMemorySkill,
+  streamText,
+  type AgentImage,
+} from '@genoffice/agent-core'
 import { imageGenerationAvailable, mediaAnalysisAvailable } from '@genoffice/ai-provider/browser'
 import type { AiSettings, AttachmentAddResult, AttachmentMeta } from '../../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
@@ -757,7 +763,7 @@ export function AiPanel({
     loopRef.current = new AgentLoop<PmNode>({
       transport: transportRef.current,
       systemSuffix: aiLangDirective,
-      skill: composeSkills('docs+files', '', [
+      skill: composeSkills('docs+files+memory', '', [
         createDocsSkill(
           () => editorRef.current,
           numIds,
@@ -774,6 +780,7 @@ export function AiPanel({
           () => mediaAnalysisAvailable(settingsRef.current, gskLoggedInRef.current),
         ),
         createFilesSkill(availableAttachments),
+        createDocumentMemorySkill(window.desktop),
       ]),
       captureSnapshot: () => editorRef.current.getJSON() as PmNode,
       events: {

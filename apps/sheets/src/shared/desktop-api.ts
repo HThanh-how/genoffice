@@ -2566,6 +2566,35 @@ export interface McpCommandResult {
 }
 
 export interface DesktopApi {
+  /** Search content indexed from documents previously opened in GenOffice. */
+  documentMemorySearch(
+    query: string,
+    limit?: number,
+  ): Promise<{
+    hits: Array<{
+      documentId: number
+      chunkId: number
+      path: string
+      name: string
+      text: string
+      location: string
+      score: number
+    }>
+    pending: number
+    errors: number
+    modelState: string
+  }>
+  /** Read a full source chunk, freshly verified against its document. */
+  documentMemoryRead(chunkId: number): Promise<{
+    path: string
+    name: string
+    location: string
+    text: string
+    verified: boolean
+    error?: string
+  }>
+  /** Open a previously indexed document by its search result id. */
+  documentMemoryOpen(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** current UI language (persisted by the shell in app-settings.json) */
   getLanguage(): Promise<'zh' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'th' | 'id' | 'ru' | 'ar'>
   /** language switched from the shell home page */

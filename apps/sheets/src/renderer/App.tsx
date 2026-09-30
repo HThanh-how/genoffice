@@ -119,6 +119,7 @@ import { createUniver } from './create-univer'
 
 import {
   AgentLoop,
+  createDocumentMemorySkill,
   COMPLETED_VIA_TOOLS_TEXT,
   composeSkills,
   type AgentImage,
@@ -1248,7 +1249,7 @@ export function App({
     agentLoopRef.current = new AgentLoop({
       transport: createElectronTransport(() => aiSettingsRef.current!),
       systemSuffix: aiLangDirective,
-      skill: composeSkills('sheets+files', '', [
+      skill: composeSkills('sheets+files+memory', '', [
         createWorkbookSkill(sheetsSkillDeps()),
         createFilesSkill(availableAttachments),
         createMergeSkill({
@@ -1263,6 +1264,7 @@ export function App({
         createImageSkill(() =>
           imageGenerationAvailable(aiSettingsRef.current, gskLoggedInRef.current),
         ),
+        createDocumentMemorySkill(window.desktopApi),
       ]),
       events: {
         onText: (text) => {

@@ -1,7 +1,7 @@
 import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from 'react'
-import { AgentLoop, composeSkills } from '@genoffice/agent-core'
+import { AgentLoop, composeSkills, createDocumentMemorySkill } from '@genoffice/agent-core'
 import type { AgentImage } from '@genoffice/agent-core'
 import type { AiSettings } from '@genoffice/ai-provider'
 import { ATTACHMENT_IMAGE_EXTS } from '../../shared/ipc'
@@ -643,7 +643,7 @@ export function AiPanel({
   if (!loopRef.current) {
     loopRef.current = new AgentLoop<DocSnapshot>({
       transport: transportRef.current,
-      skill: composeSkills('html+search', '', [
+      skill: composeSkills('html+search+memory', '', [
         createDocumentSkill({
           getText: () => depsRef.current.access.getText(),
           getVersion: () => depsRef.current.access.getVersion(),
@@ -676,6 +676,7 @@ export function AiPanel({
           () => intentRef.current,
           () => isDocEmpty(depsRef.current.access.getText()),
         ),
+        createDocumentMemorySkill(window.htmlApi),
       ]),
       captureSnapshot: () => depsRef.current.getSnapshot(),
       systemSuffix: () => aiLangDirective(langRef.current),

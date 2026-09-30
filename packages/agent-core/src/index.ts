@@ -13,6 +13,13 @@ export type {
 } from './types'
 export { composeSkills } from './skill'
 export type { AgentSkill, ExecutedToolCall } from './skill'
+export { createDocumentMemorySkill } from './document-memory-skill'
+export type {
+  DocumentMemoryBridge,
+  DocumentMemoryHit,
+  DocumentMemoryReadResult,
+  DocumentMemorySearchResult,
+} from './document-memory-skill'
 export {
   AgentLoop,
   COMPLETED_VIA_TOOLS_TEXT,

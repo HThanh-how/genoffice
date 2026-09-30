@@ -8,7 +8,9 @@ export default defineConfig({
   // so externalizing them would break Node ESM resolution at runtime.
   main: {
     // node:sqlite is a Node 22+ builtin the bundler's builtin list may predate
-    build: { rollupOptions: { external: ['node:sqlite'] } },
+    build: {
+      rollupOptions: { external: ['node:sqlite', 'onnxruntime-node', '@huggingface/tokenizers'] },
+    },
   },
   preload: {
     build: {

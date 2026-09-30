@@ -14,6 +14,7 @@ import type {
   AccountStatus,
   CloudProjectsSnapshot,
   DefaultAppStatus,
+  DocumentMemoryStatus,
   FolderListing,
   FolderRoot,
   MoveResult,
@@ -94,6 +95,36 @@ function normalizeDefaultAppStatus(result: unknown): DefaultAppStatus {
     state: state === 'default' || state === 'other' || state === 'unknown' ? state : 'unsupported',
     others: Array.isArray(r.others) ? r.others.filter((x) => typeof x === 'string') : [],
     manualOnly: r.manualOnly === true,
+  }
+}
+
+function normalizeDocumentMemoryStatus(result: unknown): DocumentMemoryStatus {
+  const r = (result && typeof result === 'object' ? result : {}) as Partial<DocumentMemoryStatus>
+  const modelState = r.modelState
+  return {
+    enabled: r.enabled === true,
+    modelState:
+      modelState === 'downloading' || modelState === 'ready' || modelState === 'error'
+        ? modelState
+        : 'not-loaded',
+    ...(typeof r.modelProgress === 'number' ? { modelProgress: r.modelProgress } : {}),
+    documents: typeof r.documents === 'number' ? r.documents : 0,
+    chunks: typeof r.chunks === 'number' ? r.chunks : 0,
+    vectors: typeof r.vectors === 'number' ? r.vectors : 0,
+    pending: typeof r.pending === 'number' ? r.pending : 0,
+    errors: typeof r.errors === 'number' ? r.errors : 0,
+    dbPath: typeof r.dbPath === 'string' ? r.dbPath : '',
+    ...(typeof r.lastError === 'string' ? { lastError: r.lastError } : {}),
+    files: Array.isArray(r.files)
+      ? r.files.filter(
+          (file): file is DocumentMemoryStatus['files'][number] =>
+            !!file &&
+            typeof file.id === 'number' &&
+            typeof file.path === 'string' &&
+            typeof file.name === 'string' &&
+            typeof file.status === 'string',
+        )
+      : [],
   }
 }
 
@@ -406,6 +437,24 @@ const homeApi: HomeApi = {
     if (typeof enabled !== 'boolean') throw new Error('Invalid analytics consent.')
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.setAnalyticsEnabled, enabled)
     return result === true
+  },
+  async getDocumentMemoryStatus() {
+    return normalizeDocumentMemoryStatus(
+      await ipcRenderer.invoke(HOME_CHANNELS.getDocumentMemoryStatus),
+    )
+  },
+  async setDocumentMemoryEnabled(enabled) {
+    if (typeof enabled !== 'boolean') throw new Error('Invalid document memory setting.')
+    return normalizeDocumentMemoryStatus(
+      await ipcRenderer.invoke(HOME_CHANNELS.setDocumentMemoryEnabled, enabled),
+    )
+  },
+  async excludeDocumentMemory(path) {
+    if (typeof path !== 'string' || !path.trim()) throw new Error('Invalid document path.')
+    await ipcRenderer.invoke(HOME_CHANNELS.excludeDocumentMemory, path)
+  },
+  async clearDocumentMemory() {
+    await ipcRenderer.invoke(HOME_CHANNELS.clearDocumentMemory)
   },
   async getAiPanelPrefs() {
     return normalizeAiPanelPrefs(await ipcRenderer.invoke(HOME_CHANNELS.getAiPanelPrefs))

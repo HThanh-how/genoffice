@@ -1,3 +1,4 @@
+import { DocumentMemoryManager } from './document-memory/manager'
 import { execSync, spawn } from 'node:child_process'
 import {
   appendFileSync,
@@ -134,7 +135,7 @@ import {
   requestDocsClose,
   readRecentFiles,
   readStarredFiles,
-  recordRecentFile,
+  recordRecentFile as recordDocsRecentFile,
   removeRecentFiles,
   removeStarredFiles,
   replaceRecentFile,
@@ -2995,6 +2996,7 @@ function applyPendingDir(wcId: number, filePath: string): string {
  * open tab (which re-grants the new path and refreshes its title).
  */
 function afterFileMoved(oldPath: string, newPath: string): void {
+  documentMemory?.move(oldPath, newPath)
   replaceRecentFile(oldPath, newPath)
   projectFileRenamed(oldPath, newPath)
   if (/\.pptx$/i.test(newPath)) void replaceSlidesRecentFile(oldPath, newPath)
@@ -3013,6 +3015,7 @@ function afterFileMoved(oldPath: string, newPath: string): void {
 
 function trackedFilesUnder(dir: string): string[] {
   return pathsUnder(dir, [
+    ...(documentMemory?.listPaths() ?? []),
     ...readRecentFiles(),
     ...readStarredFiles(),
     ...projectFilePaths(),
@@ -3479,6 +3482,12 @@ function registerDroppedFilesIpc(): void {
   ipcMain.on(DROP_OPEN_CHANNEL, (_event, raw: unknown) =>
     handleDroppedFiles(raw, droppedFilesDeps()),
   )
+}
+
+let documentMemory: DocumentMemoryManager | null = null
+function recordRecentFile(path: string): void {
+  recordDocsRecentFile(path)
+  documentMemory?.remember(path)
 }
 
 /** the single router: extension decides which module owns the file; false = nothing opened */
@@ -4010,6 +4019,38 @@ function statEntries(paths: string[]): RecentEntry[] {
 }
 
 function registerHomeIpc(): void {
+  ipcMain.handle(HOME_CHANNELS.getDocumentMemoryStatus, () => documentMemory?.status())
+  ipcMain.handle(HOME_CHANNELS.setDocumentMemoryEnabled, (_event, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') throw new Error('Invalid memory setting')
+    return documentMemory?.setEnabled(enabled)
+  })
+  ipcMain.handle(HOME_CHANNELS.excludeDocumentMemory, (_event, path: unknown) => {
+    if (typeof path !== 'string' || !documentMemory?.listPaths().includes(path))
+      throw new Error('Unknown document')
+    documentMemory.exclude(path)
+  })
+  ipcMain.handle(HOME_CHANNELS.clearDocumentMemory, () => documentMemory?.clear())
+  ipcMain.handle('document-memory:search', (_event, query: unknown, limit: unknown) => {
+    if (typeof query !== 'string' || !query.trim() || query.length > 2000)
+      throw new Error('Invalid memory query')
+    const count = limit === undefined ? 8 : limit
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > 20)
+      throw new Error('Invalid search limit')
+    return documentMemory?.search(query, count)
+  })
+  ipcMain.handle('document-memory:read', (_event, id: unknown) => {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
+      throw new Error('Invalid chunk id')
+    return documentMemory?.read(id)
+  })
+  ipcMain.handle('document-memory:open', (_event, id: unknown) => {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
+      throw new Error('Invalid document id')
+    const path = documentMemory?.open(id)
+    return path && existsSync(path) && openDocumentPath(path)
+      ? { ok: true }
+      : { ok: false, error: 'Document is unavailable' }
+  })
   // signed-in means GenOffice's own device-code login; the shared gsk CLI key
   // is only a silent fallback, deliberately not shown here to nudge users onto our key
   ipcMain.handle(HOME_CHANNELS.accountStatus, async () => {
@@ -5938,6 +5979,9 @@ async function runHeadlessExportEntry(
 }
 
 app.whenReady().then(async () => {
+  if (headlessArgv.kind === 'none') {
+    documentMemory = new DocumentMemoryManager(app.getPath('userData'))
+  }
   // first scan waits for the windows to come up; later ones follow folder changes
   setTimeout(() => ensureFileIndexer()?.refresh(), 4000)
   installRendererProtocol({
@@ -6228,6 +6272,7 @@ app.on('before-quit', () => {
 
 // after every window has closed, so the shell window's own 'closed' republish cannot revive the file
 app.on('will-quit', () => {
+  documentMemory?.close()
   fileIndexer?.stop()
   fileIndexStore?.close()
   stopAuthWatch?.()

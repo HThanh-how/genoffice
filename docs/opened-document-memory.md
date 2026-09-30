@@ -1,65 +1,30 @@
-# Memory for documents opened in GenOffice
+# Opened document memory
 
-Design specification; this feature is not enabled by the update-button change.
+GenOffice automatically enrolls saved documents when the user opens them, and refreshes their content after saves. It does not crawl an entire drive. The persistent enrollment list survives removal from Recent.
 
-## User flow
+## Storage and retrieval
 
-Parents open documents as usual. GenOffice indexes content in the background
-and refreshes the index after a successful save. A question in the AI panel
-can find previously opened files by their contents, read the matching file,
-and answer with a source reference and an Open file action. No indexing wizard
-or sign-in prompt is shown when a document opens.
+- SQLite database: Electron userData / `document-memory.db` (macOS: `~/Library/Application Support/GenOffice/document-memory.db`). Original documents stay at their existing paths.
+- Readable paragraphs and table contents are split into overlapping chunks, including content at the end of large documents. Each chunk has its source path and an ordinal location; page numbers are not invented.
+- Local multilingual E5-small ONNX embeddings: 384 dimensions, quantized CPU model pinned to revision `761b726dd34fb83930e26aab4e9ac3899aa1fa78`. First use downloads the model/tokenizer from Hugging Face into `document-memory-models`; later uses the local cache. No embedding API key is required. The 118 MB ONNX file is verified with its published SHA-256.
+- Hybrid retrieval combines Vietnamese accent-insensitive SQLite FTS5 with cosine vector ranking using reciprocal rank fusion. Extraction, model inference and vector scans run in a background worker.
+- AI tools are available in Docs, Sheets, Slides, PDF, Markdown and HTML. The assistant searches remembered document contents, verifies the current source before returning facts, cites the file and chunk, and can open the matched source document.
+- Local indexing sends no document content to an embedding service. Retrieved excerpts used to answer a question are supplied to the AI provider already configured for that conversation.
 
-For example, a file named “Danh sách tháng 9.xlsx” contains a table of student
-names, class 2/1 and phone numbers. “Tìm file có số điện thoại học sinh lớp 2/1”
-must find this file from its table contents even though its title contains none
-of those terms. A summary such as “school document” is insufficient.
+## Lifecycle and controls
 
-## What to retain
+Settings → General → Document Memory shows indexing/model status and database location. Users can pause background indexing, exclude individual remembered files, or clear the index. Exclusions persist. Clearing never causes an automatic reimport of Recent on restart.
 
-- Persistent identity, current path, hash, modified time, extraction status and
-  last opened time for every successfully opened local document. The collection
-  survives the Recent list's size limit. Opening a folder does not enroll all its
-  files.
-- Compact extracted text split into addressable passages, preserving table
-  headers, row context, page/slide/sheet locations and paragraph boundaries.
-  Store the searchable text, not another original Word/PDF copy.
-- Exact searchable terms and entities (names, class identifiers such as 2/1,
-  numbers, contact information), plus embeddings for meaning-based retrieval.
-  A short overview can help display results, but never replaces the content
-  index.
-- An explicit incomplete/indexing status. Large files, scans, unsupported text
-  extraction or password protection must not silently become “no matching file”.
+Saved changes trigger refresh; periodic checks also refresh known files changed outside GenOffice. Missing files cannot supply verified answers. A changed source invalidates the old chunk and asks the AI to search again. Rename/move operations inside GenOffice update the remembered path.
 
-Retaining just a title or a few sampled paragraphs cannot guarantee that an
-arbitrary detail buried elsewhere will be found. Compact text indexing is the
-reliable baseline; embeddings need passage-level coverage too.
+## Limits
 
-## Retrieval
+Text extraction covers the document formats supported by the existing file parser: Word, spreadsheets, presentations, text PDFs, Markdown and HTML. Image-only scans need OCR; empty extraction is shown explicitly. Files above 128 MB produce an indexing error, with no silent content truncation. Unsaved changes must be saved before document memory can read them.
 
-Normalize Vietnamese accents and class variants (2/1, 2-1, lớp 2 1) without
-conflating them with class 21. Combine exact keyword/number search with semantic
-passage search, group matches by document, and return a small candidate set.
-Fetch the original file again, verify freshness, read the relevant table or
-passages, then answer using those contents. If candidates disagree, show the
-sources or ask which year/class the user means. If a file moved, disappeared
-or is unreadable, report that rather than inventing a contact number.
+If model download or inference fails, indexed text remains searchable. The next indexing retry can load the model again. Vectors are stored in SQLite and scanned in a worker; this first version does not yet use an approximate nearest-neighbor index for millions of chunks. Each machine has its own database; shared PVE storage is a separate future deployment.
 
-## Implementation direction
+## Model attribution
 
-Reuse the existing `file-index` SQLite FTS and `file-parse` extraction where
-appropriate. Add a distinct opened-document collection and chunk/location
-schema; today's root-folder/Recent index is not this persistent collection.
-Use a local embedding worker/model for background ingestion so opening a file
-requires no paid API call. Serialize jobs and debounce saves to keep the editor
-responsive. Reindex only changed files; retry failures in the background.
-
-Expose provider-independent local tools to all editor AI panels for searching
-this collection and reading source passages. Model generation uses the configured
-AI provider only when a question is asked. Add a Settings control to pause
-indexing, exclude a file or clear this collection.
-
-Acceptance tests must include content-only matches, student tables with class
-2/1, Vietnamese paraphrases, file edits/moves/deletion, a collection larger than
-Recent retention, scanned PDFs and extraction failures. Return references and
-never generate a phone number from a document overview alone.
+Model: https://huggingface.co/intfloat/multilingual-e5-small (MIT license).
+ONNX conversion: https://huggingface.co/Xenova/multilingual-e5-small.
+Runtime: ONNX Runtime (MIT); Hugging Face Tokenizers.js (Apache-2.0).

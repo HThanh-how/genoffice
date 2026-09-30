@@ -472,6 +472,28 @@ contextBridge.exposeInMainWorld('slidesApi', api)
 
 // Chat attachment bridge: method names/signatures match the window.desktop attachment subset in docs, so the renderer's files-skill is copied over wholesale
 const filesApi: DesktopFilesApi = {
+  documentMemorySearch: (query, limit) =>
+    typeof query === 'string' &&
+    query.trim().length > 0 &&
+    query.length <= 2_000 &&
+    (limit === undefined || (Number.isSafeInteger(limit) && limit >= 1 && limit <= 10))
+      ? ipcRenderer.invoke('document-memory:search', query.trim(), limit)
+      : Promise.resolve({ hits: [], pending: 0, errors: 1, modelState: 'invalid-request' }),
+  documentMemoryRead: (chunkId) =>
+    Number.isSafeInteger(chunkId) && chunkId > 0
+      ? ipcRenderer.invoke('document-memory:read', chunkId)
+      : Promise.resolve({
+          path: '',
+          name: '',
+          location: '',
+          text: '',
+          verified: false,
+          error: 'Invalid chunk id',
+        }),
+  documentMemoryOpen: (documentId) =>
+    Number.isSafeInteger(documentId) && documentId > 0
+      ? ipcRenderer.invoke('document-memory:open', documentId)
+      : Promise.resolve({ ok: false, error: 'Invalid document id' }),
   pickAttachments: () => ipcRenderer.invoke('slides:files-pick'),
   addAttachmentPaths: (paths: string[]) => ipcRenderer.invoke('slides:files-add', paths),
   addPastedImage: (data: ArrayBuffer, ext: string) =>

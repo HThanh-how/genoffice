@@ -7,6 +7,28 @@ import { AI_CHANNELS, PDF_CHANNELS } from '../shared/ipc'
 import type { PdfApi, UiTheme } from '../shared/ipc'
 
 const api: PdfApi = {
+  documentMemorySearch: (query, limit) =>
+    typeof query === 'string' &&
+    query.trim().length > 0 &&
+    query.length <= 2_000 &&
+    (limit === undefined || (Number.isSafeInteger(limit) && limit >= 1 && limit <= 10))
+      ? ipcRenderer.invoke('document-memory:search', query.trim(), limit)
+      : Promise.resolve({ hits: [], pending: 0, errors: 1, modelState: 'invalid-request' }),
+  documentMemoryRead: (chunkId) =>
+    Number.isSafeInteger(chunkId) && chunkId > 0
+      ? ipcRenderer.invoke('document-memory:read', chunkId)
+      : Promise.resolve({
+          path: '',
+          name: '',
+          location: '',
+          text: '',
+          verified: false,
+          error: 'Invalid chunk id',
+        }),
+  documentMemoryOpen: (documentId) =>
+    Number.isSafeInteger(documentId) && documentId > 0
+      ? ipcRenderer.invoke('document-memory:open', documentId)
+      : Promise.resolve({ ok: false, error: 'Invalid document id' }),
   consumePending: () => ipcRenderer.invoke(PDF_CHANNELS.consumePending),
   readFile: (path) => ipcRenderer.invoke(PDF_CHANNELS.readFile, path),
   save: (request) => ipcRenderer.invoke(PDF_CHANNELS.save, request),

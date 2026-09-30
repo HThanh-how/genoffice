@@ -172,6 +172,21 @@ export interface DefaultAppStatus {
   manualOnly: boolean
 }
 
+/** Status of the local document-content index shown in Settings → General. */
+export interface DocumentMemoryStatus {
+  enabled: boolean
+  modelState: 'not-loaded' | 'downloading' | 'ready' | 'error'
+  modelProgress?: number
+  documents: number
+  chunks: number
+  vectors: number
+  pending: number
+  errors: number
+  dbPath: string
+  lastError?: string
+  files: Array<{ id: number; path: string; name: string; status: string }>
+}
+
 export interface HomeApi {
   /** unified recents across document types, newest first (paged) */
   recents(query?: RecentQuery): Promise<RecentPage>
@@ -303,6 +318,14 @@ export interface HomeApi {
   getAnalyticsEnabled(): Promise<boolean>
   /** persist an explicit analytics opt-in or opt-out */
   setAnalyticsEnabled(enabled: boolean): Promise<boolean>
+  /** Read local document memory settings, index counts and recent files. */
+  getDocumentMemoryStatus(): Promise<DocumentMemoryStatus>
+  /** Enable or pause indexing and return the updated local status. */
+  setDocumentMemoryEnabled(enabled: boolean): Promise<DocumentMemoryStatus>
+  /** Keep a file out of document memory and remove its indexed content. */
+  excludeDocumentMemory(path: string): Promise<void>
+  /** Delete all locally stored document memory index data. */
+  clearDocumentMemory(): Promise<void>
   /** AI panel text size + chat-input spellcheck (persisted in userData/app-settings.json) */
   getAiPanelPrefs(): Promise<AiPanelPrefs>
   /** merge + persist; broadcasts 'app:ai-panel-prefs-changed' to all web contents */
@@ -557,6 +580,10 @@ export const HOME_CHANNELS = {
   openMcpLogFile: 'home:open-mcp-log-file',
   getAnalyticsEnabled: 'home:get-analytics-enabled',
   setAnalyticsEnabled: 'home:set-analytics-enabled',
+  getDocumentMemoryStatus: 'home:get-document-memory-status',
+  setDocumentMemoryEnabled: 'home:set-document-memory-enabled',
+  excludeDocumentMemory: 'home:exclude-document-memory',
+  clearDocumentMemory: 'home:clear-document-memory',
   getAiPanelPrefs: 'home:get-ai-panel-prefs',
   setAiPanelPrefs: 'home:set-ai-panel-prefs',
   getDefaultSaveDir: 'home:get-default-save-dir',

@@ -56,6 +56,28 @@ import {
 import { installDropOpenBridge } from '@genoffice/electron-utils/drop-open'
 
 const desktopApi: DesktopApi = {
+  documentMemorySearch: (query, limit) =>
+    typeof query === 'string' &&
+    query.trim().length > 0 &&
+    query.length <= 2_000 &&
+    (limit === undefined || (Number.isSafeInteger(limit) && limit >= 1 && limit <= 10))
+      ? ipcRenderer.invoke('document-memory:search', query.trim(), limit)
+      : Promise.resolve({ hits: [], pending: 0, errors: 1, modelState: 'invalid-request' }),
+  documentMemoryRead: (chunkId) =>
+    Number.isSafeInteger(chunkId) && chunkId > 0
+      ? ipcRenderer.invoke('document-memory:read', chunkId)
+      : Promise.resolve({
+          path: '',
+          name: '',
+          location: '',
+          text: '',
+          verified: false,
+          error: 'Invalid chunk id',
+        }),
+  documentMemoryOpen: (documentId) =>
+    Number.isSafeInteger(documentId) && documentId > 0
+      ? ipcRenderer.invoke('document-memory:open', documentId)
+      : Promise.resolve({ ok: false, error: 'Invalid document id' }),
   getLanguage: () => ipcRenderer.invoke('app:get-language'),
   onLanguageChanged(handler) {
     const listener = (

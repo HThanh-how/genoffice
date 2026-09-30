@@ -190,6 +190,35 @@ export interface ImageData {
 
 /** API exposed by preload to the renderer (window.htmlApi) */
 export interface HtmlApi {
+  /** Search content indexed from documents previously opened in GenOffice. */
+  documentMemorySearch(
+    query: string,
+    limit?: number,
+  ): Promise<{
+    hits: Array<{
+      documentId: number
+      chunkId: number
+      path: string
+      name: string
+      text: string
+      location: string
+      score: number
+    }>
+    pending: number
+    errors: number
+    modelState: string
+  }>
+  /** Read a full source chunk, freshly verified against its document. */
+  documentMemoryRead(chunkId: number): Promise<{
+    path: string
+    name: string
+    location: string
+    text: string
+    verified: boolean
+    error?: string
+  }>
+  /** Open a previously indexed document by its search result id. */
+  documentMemoryOpen(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** Take the md path pending for this view (queued at tab creation); null = new untitled document */
   consumePending(): Promise<string | null>
   /** Headless export mode: the path and format this hidden renderer must export, null in normal use */
