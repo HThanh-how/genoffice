@@ -557,3 +557,74 @@ describe('createIpcTransport', () => {
     expect(cb.onDone).not.toHaveBeenCalled()
   })
 })
+
+describe('partial answer recovery', () => {
+  function recoveringTransport() {
+    let listener: ((chunk: IpcStreamChunk) => void) | undefined
+    const started: IpcStreamStart<{ model: string }>[] = []
+    const fallback = vi.fn((settings, _error, emitted) => (emitted ? null : { model: 'backup' }))
+    const transport = createIpcTransport({
+      onStream: (next) => {
+        listener = next
+        return () => {
+          listener = undefined
+        }
+      },
+      start: (request: IpcStreamStart<{ model: string }>) => {
+        started.push(request)
+      },
+      cancel: vi.fn(),
+      getSettings: () => ({ model: 'first' }),
+      unknownErrorText: () => 'unknown',
+      route: { prepare: (s) => s, fallback, maxAttempts: 3, continuePartialTextOnOverload: true },
+    })
+    const cb = { onDelta: vi.fn(), onDone: vi.fn(), onToolCall: vi.fn(), onError: vi.fn() }
+    transport.stream(
+      {
+        system: 'sys',
+        messages: [{ role: 'user', text: 'find a document' }],
+        tools: [{ name: 'edit', description: 'edit', inputSchema: {} }],
+      },
+      cb,
+    )
+    const emit = (chunk: Omit<IpcStreamChunk, 'requestId'>) =>
+      listener?.({ requestId: started.at(-1)!.requestId, ...chunk })
+    return { started, emit, cb, fallback }
+  }
+
+  it('continues an interrupted answer using the existing text and without edit tools', () => {
+    const { started, emit, cb } = recoveringTransport()
+    emit({ type: 'delta', text: 'Found the file. ' })
+    emit({ type: 'error', error: 'high demand', errorCode: 'overloaded' })
+    expect(started).toHaveLength(2)
+    expect(started[1]!.tools).toEqual([])
+    expect(started[1]!.messages[1]).toEqual({ role: 'assistant', text: 'Found the file. ' })
+    emit({ type: 'delta', text: 'Its location is here.' })
+    emit({ type: 'error', error: 'high demand', errorCode: 'overloaded' })
+    expect(started[2]!.messages[1]).toEqual({
+      role: 'assistant',
+      text: 'Found the file. Its location is here.',
+    })
+    expect(started[2]!.messages).toHaveLength(3)
+    emit({ type: 'done' })
+    expect(cb.onDone).toHaveBeenCalledOnce()
+    expect(cb.onError).not.toHaveBeenCalled()
+  })
+
+  it('never replays an emitted tool call after overload', () => {
+    const { started, emit, cb } = recoveringTransport()
+    emit({ type: 'delta', text: 'Editing. ' })
+    emit({ type: 'tool-call', toolCall: { id: '1', name: 'edit', input: {} } })
+    emit({ type: 'error', error: 'high demand', errorCode: 'overloaded' })
+    expect(started).toHaveLength(1)
+    expect(cb.onError).toHaveBeenCalledOnce()
+  })
+
+  it('does not resume partial text for a non-overload failure', () => {
+    const { started, emit, cb } = recoveringTransport()
+    emit({ type: 'delta', text: 'Partial' })
+    emit({ type: 'error', error: 'invalid key' })
+    expect(started).toHaveLength(1)
+    expect(cb.onError).toHaveBeenCalledOnce()
+  })
+})

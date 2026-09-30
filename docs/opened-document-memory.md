@@ -23,7 +23,11 @@ Saved changes trigger refresh; periodic checks also refresh known files changed 
 
 Text extraction covers the document formats supported by the existing file parser: Word, spreadsheets, presentations, text PDFs, Markdown and HTML. Image-only scans need OCR; empty extraction is shown explicitly. Files above 128 MB produce an indexing error, with no silent content truncation. Unsaved changes must be saved before document memory can read them.
 
-If model download or inference fails, indexed text remains searchable. The next indexing retry can load the model again. Vectors are stored in SQLite and scanned in a worker; this first version does not yet use an approximate nearest-neighbor index for millions of chunks. Each machine has its own database; shared PVE storage is a separate future deployment.
+If model download or inference fails, indexed text remains searchable. The next indexing retry can load the model again. Vectors are stored in SQLite and scanned in a worker using a cursor and a bounded heap of 200 candidates; vector retrieval does not load all vectors or sort the entire corpus in RAM. Search still examines every compatible vector, so latency grows with chunk count; this first version does not yet use an approximate nearest-neighbor index for millions of chunks. Each machine has its own database; shared PVE storage is a separate future deployment.
+
+## Capacity errors while answering
+
+Gemini HTTP 503 and statusless high-demand messages are classified as temporary overload. Bounded retries and automatic model routing can continue an interrupted text answer using the already visible text and existing evidence. Continuation requests disable tools. Once a tool call has been emitted, the transport does not replay that attempt. A manually selected model remains selected, and cancellation, attempt limits and the total routing deadline still apply. Exhausted recovery shows the localized busy message.
 
 ## Model attribution
 

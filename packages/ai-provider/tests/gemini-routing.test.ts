@@ -433,3 +433,15 @@ describe('Gemini chat routing', () => {
     }
   })
 })
+
+it('retries high-demand failures with or without a structured overload code', () => {
+  const settings = defaultAiSettings()
+  settings.provider = 'gemini'
+  const router = createGeminiRouter()
+  expect(router.continuePartialTextOnOverload).toBe(true)
+  expect(router.retry(settings, 'This model is currently experiencing high demand.', false)).toBe(
+    400,
+  )
+  expect(router.retry(settings, 'temporary failure', false, 'overloaded')).toBe(1000)
+  expect(router.retry(settings, 'high demand', false, 'overloaded')).toBeNull()
+})

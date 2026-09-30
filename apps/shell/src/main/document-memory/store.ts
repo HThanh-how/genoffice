@@ -1,3 +1,4 @@
+import { topVectors } from './top-vectors'
 import { DatabaseSync } from 'node:sqlite'
 import { chmodSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
@@ -369,17 +370,16 @@ export class DocumentMemoryStore {
         WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
           AND (? IS NULL OR d.embedding_model = ?)`,
         )
-        .all(vector.length, embeddingModel ?? null, embeddingModel ?? null) as Array<{
+        .iterate(vector.length, embeddingModel ?? null, embeddingModel ?? null) as Iterable<{
         id: number
         vector: Uint8Array
         vector_dim: number
       }>
-      rows
-        .map((r) => ({ id: r.id, score: cosine(vector, blobVector(r.vector, r.vector_dim)) }))
-        .filter((r) => Number.isFinite(r.score))
-        .sort((a, b) => b.score - a.score)
-        .slice(0, 200)
-        .forEach((r, i) => semantic.set(r.id, i + 1))
+      function* scoredRows() {
+        for (const r of rows)
+          yield { id: r.id, score: cosine(vector!, blobVector(r.vector, r.vector_dim)) }
+      }
+      topVectors(scoredRows(), 200).forEach((r, i) => semantic.set(r.id, i + 1))
     }
 
     const scores = new Map<number, number>()

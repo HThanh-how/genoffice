@@ -1,4 +1,5 @@
 import type { AgentMessage, AgentToolDef } from '@genoffice/agent-core'
+import { isAiOverloadedError } from './overload-error'
 import { withOutputCapFallback } from './output-cap'
 import { streamAnthropic } from './protocols/anthropic'
 import { streamGemini } from './protocols/gemini'
@@ -83,7 +84,10 @@ export async function streamForProvider(
       const category =
         status === 429 || /quota|rate.?limit|resource.exhausted/i.test(message)
           ? 'rate-limit'
-          : status === 503 || status === 529 || /overload|unavailable|busy/i.test(message)
+          : status === 503 ||
+              status === 529 ||
+              isAiOverloadedError(message) ||
+              /unavailable|busy/i.test(message)
             ? 'overloaded'
             : status === 401 || status === 403
               ? 'auth'

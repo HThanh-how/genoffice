@@ -65,6 +65,8 @@ export interface IpcTransportOptions<S> {
     prepare(settings: S, request?: AgentStreamRequest): S
     /** Deadline for the first useful model output; wire keepalives do not satisfy it. */
     firstContentTimeoutMs?: number
+    /** Resume text after a transient overload; never replay an emitted tool call. */
+    continuePartialTextOnOverload?: boolean
     /** Upper bound for all retries and fallbacks in this streaming turn. */
     maxDurationMs?: number
     maxAttempts?: number
@@ -133,6 +135,9 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
       let settled = false
       let finished = false
       let attempts = 0
+      let partialText = ''
+      let toolCallEmitted = false
+      let attemptRequest = request
       const baseSettings = options.getSettings()
       let settings = options.route?.prepare(baseSettings, request) ?? baseSettings
       const settle = () => {
@@ -171,8 +176,31 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         options.route?.onResult?.(settings, requestId, { status: 'error', error, errorCode })
         const canAttempt = attempts < (options.route?.maxAttempts ?? Infinity)
         if (!canAttempt) options.route?.onExhausted?.(settings, 'attempt_limit')
-        const retryDelay = canAttempt && options.route?.retry?.(settings, error, emitted, errorCode)
+        const continueText =
+          options.route?.continuePartialTextOnOverload &&
+          errorCode === 'overloaded' &&
+          partialText.length > 0 &&
+          !toolCallEmitted
+        const routedEmitted = toolCallEmitted || (emitted && !continueText)
+        const prepareContinuation = () => {
+          if (!continueText) return
+          attemptRequest = {
+            ...request,
+            tools: [],
+            messages: [
+              ...request.messages,
+              { role: 'assistant', text: partialText },
+              {
+                role: 'user',
+                text: 'The answer was interrupted by a temporary service overload. Continue exactly from the end of the preceding answer, in the same language. Do not repeat its text. Use only the evidence already in this conversation; if evidence is insufficient, say so. Do not perform any document changes.',
+              },
+            ],
+          }
+        }
+        const retryDelay =
+          canAttempt && options.route?.retry?.(settings, error, routedEmitted, errorCode)
         if (typeof retryDelay === 'number' && Number.isFinite(retryDelay) && retryDelay >= 0) {
+          prepareContinuation()
           settle()
           retryTimer = setTimeout(() => {
             retryTimer = undefined
@@ -180,8 +208,10 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
           }, retryDelay)
           return
         }
-        const next = canAttempt && options.route?.fallback(settings, error, emitted, errorCode)
+        const next =
+          canAttempt && options.route?.fallback(settings, error, routedEmitted, errorCode)
         if (next) {
+          prepareContinuation()
           settle()
           settings = next
           attempt()
@@ -230,6 +260,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
             armSilence()
             if (chunk.text) {
               emitted = true
+              partialText += chunk.text
               clearTimeout(firstContentTimer)
             }
             cb.onDelta(chunk.text ?? '')
@@ -243,6 +274,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
           } else if (chunk.type === 'tool-call') {
             armSilence()
             if (chunk.toolCall) {
+              toolCallEmitted = true
               emitted = true
               clearTimeout(firstContentTimer)
               const routeSettings = settings as {
@@ -270,15 +302,15 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         })
         armSilence()
         try {
-          options.route?.onAttempt?.(settings, requestId, request)
+          options.route?.onAttempt?.(settings, requestId, attemptRequest)
           Promise.resolve(
             options.start({
               requestId,
               sessionId,
               settings,
-              system: request.system,
-              messages: request.messages,
-              tools: request.tools,
+              system: attemptRequest.system,
+              messages: attemptRequest.messages,
+              tools: attemptRequest.tools,
             }),
           ).catch((err: unknown) => {
             if (requestId === thisRequestId && !settled && !finished) {

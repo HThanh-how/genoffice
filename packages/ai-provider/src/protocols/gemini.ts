@@ -17,6 +17,14 @@ import {
   type StreamCallbacks,
 } from './shared'
 
+function geminiErrorText(error: unknown, fallback: string): string {
+  const message = sseErrorText(error, fallback)
+  const code = isPlainObject(error) ? error.code : undefined
+  return typeof code === 'number' && code >= 400 && code <= 599
+    ? `Gemini HTTP ${code}: ${message}`
+    : message
+}
+
 export const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
 
 interface GeminiPart {
@@ -135,7 +143,7 @@ function emitGeminiJsonMessage(bodyText: string, cb: StreamCallbacks): void {
   let abnormalFinish: string | undefined
   for (const event of events) {
     emitUsageMetadata(event.usageMetadata, cb)
-    if (event.error) throw new Error(sseErrorText(event.error, 'Gemini error'))
+    if (event.error) throw new Error(geminiErrorText(event.error, 'Gemini error'))
     if (event.promptFeedback?.blockReason) {
       throw new Error(`Gemini blocked the prompt (${event.promptFeedback.blockReason})`)
     }
@@ -289,7 +297,7 @@ async function geminiTurn(
       continue
     }
     emitUsageMetadata(event.usageMetadata, cb)
-    if (event.error) throw new Error(sseErrorText(event.error, 'Gemini stream error'))
+    if (event.error) throw new Error(geminiErrorText(event.error, 'Gemini stream error'))
     if (event.promptFeedback?.blockReason) {
       throw new Error(`Gemini blocked the prompt (${event.promptFeedback.blockReason})`)
     }

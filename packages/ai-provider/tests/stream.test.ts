@@ -1846,3 +1846,26 @@ describe('jsonBodyInsteadOfSse', () => {
     await expect(jsonBodyInsteadOfSse(sse)).resolves.toBeNull()
   })
 })
+
+describe('Gemini capacity errors during output', () => {
+  it('preserves an SSE error status after a partial answer', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          okResponse(
+            sseStream([
+              'data: {"candidates":[{"content":{"parts":[{"text":"Found the document. "}]}}]}',
+              'data: {"error":{"code":503,"status":"UNAVAILABLE","message":"This model is currently experiencing high demand."}}',
+            ]),
+          ),
+        ),
+    )
+    const { cb, deltas } = collector()
+    await expect(
+      streamForProvider('gemini', { apiKey: 'k', model: 'm' }, 'sys', [], [], 100, cb),
+    ).rejects.toThrow('Gemini HTTP 503: This model is currently experiencing high demand.')
+    expect(deltas).toEqual(['Found the document. '])
+  })
+})

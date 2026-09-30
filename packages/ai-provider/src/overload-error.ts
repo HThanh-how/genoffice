@@ -10,6 +10,8 @@
 const OVERLOADED_PATTERN = new RegExp(
   [
     '\\bHTTP (429|503|529)\\b',
+    'high demand',
+    'service is busy',
     'overload', // "overloaded", "engine_overloaded_error", Anthropic's "Overloaded"
     'rate.?limit',
     'too many requests',

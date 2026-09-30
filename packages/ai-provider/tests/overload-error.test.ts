@@ -47,3 +47,12 @@ describe('isAiOverloadedError', () => {
     expect(isAiOverloadedError(undefined)).toBe(false)
   })
 })
+
+it('recognizes Gemini high demand without an HTTP status', () => {
+  expect(
+    isAiOverloadedError(
+      'This model is currently experiencing high demand. Spikes in demand are usually temporary. Please try again later.',
+    ),
+  ).toBe(true)
+  expect(isAiOverloadedError('Analyze demand for school supplies')).toBe(false)
+})

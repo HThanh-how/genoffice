@@ -1,3 +1,4 @@
+import { isAiOverloadedError } from './overload-error'
 import type { AiSettings } from './types'
 import type { AgentStreamRequest } from '@genoffice/agent-core'
 import type { GeminiModelInfo } from './gemini-models'
@@ -237,7 +238,9 @@ function failureReason(error: string): NonNullable<GeminiRoutingLogEntry['reason
   if (/Gemini HTTP 429\b|RESOURCE_EXHAUSTED|rate.?limit|too many requests/i.test(error))
     return 'rate_limit'
   if (
-    /Gemini HTTP (500|502|503|504|529)\b|UNAVAILABLE|overload|service is busy|capacity/i.test(error)
+    /Gemini HTTP (500|502|503|504|529)\b|UNAVAILABLE|overload|high demand|service is busy|capacity/i.test(
+      error,
+    )
   )
     return 'overloaded'
   return 'other'
@@ -282,8 +285,9 @@ function coolDown(model: string, error: string): void {
 }
 
 function isRecoverableGeminiError(error: string, errorCode?: string): boolean {
-  if (errorCode === 'timeout') return true
+  if (errorCode === 'timeout' || errorCode === 'overloaded') return true
   if (errorCode === 'network' || errorCode === 'credits') return false
+  if (isAiOverloadedError(error)) return true
   return /Gemini HTTP (408|404|429|500|502|503|504|529)\b|RESOURCE_EXHAUSTED|UNAVAILABLE|overload|rate.?limit|too many requests|service is busy|capacity/i.test(
     error,
   )
@@ -347,6 +351,7 @@ export function createGeminiRouter() {
   let fallbackCount = 0
   let overloadRetries = 0
   return {
+    continuePartialTextOnOverload: true,
     firstContentTimeoutMs: 45_000,
     maxDurationMs: 120_000,
     maxAttempts: 10,
