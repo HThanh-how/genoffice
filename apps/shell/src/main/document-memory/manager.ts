@@ -1,6 +1,7 @@
 import { stat } from 'node:fs/promises'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
-import { Worker } from 'node:worker_threads'
+import type { Worker } from 'node:worker_threads'
+import { createIndexProcess } from './process-worker'
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import workerPath from './worker?modulePath'
@@ -102,8 +103,7 @@ export class DocumentMemoryManager {
     this.settingsPath = join(userData, 'document-memory-settings.json')
     this.cacheDir = join(userData, 'document-memory-models')
     this.pathToWorker = options.workerPath ?? workerPath
-    this.workerFactory =
-      options.workerFactory ?? ((path, workerData) => new Worker(path, { workerData }))
+    this.workerFactory = options.workerFactory ?? createIndexProcess
     this.pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
     this.searchTimeoutMs = options.searchTimeoutMs ?? SEARCH_EMBED_TIMEOUT_MS
     this.store = new DocumentMemoryStore(this.dbPath)
@@ -152,6 +152,24 @@ export class DocumentMemoryManager {
     )
       this.enqueue(p)
     return needsIndex
+  }
+
+  indexIssues(root: string, offset = 0) {
+    return this.store.indexIssues(root, offset)
+  }
+
+  retryDocument(id: number): { ok: boolean; error?: string } {
+    if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
+    const path = this.store.retryDocument(id)
+    if (!path) return { ok: false, error: 'unavailable' }
+    this.invalidatePath(path)
+    this.enqueue(path, true)
+    return { ok: true }
+  }
+
+  indexDocumentPath(id: number): string | null {
+    const document = this.store.documentById(id)
+    return document && document.status !== 'excluded' ? document.path : null
   }
 
   move(oldPath: string, newPath: string): void {
@@ -223,6 +241,7 @@ export class DocumentMemoryManager {
     readyFiles: number
     pendingFiles: number
     errorFiles: number
+    emptyFiles?: number
     completedChunks: number
     totalChunks: number
     percent: number | null
@@ -241,6 +260,7 @@ export class DocumentMemoryManager {
       readyFiles: counts.readyFiles,
       pendingFiles: counts.pendingFiles,
       errorFiles: counts.errorFiles,
+      emptyFiles: counts.emptyFiles ?? 0,
       completedChunks: counts.completedChunks,
       totalChunks: counts.totalChunks,
       percent,
@@ -790,8 +810,9 @@ export class DocumentMemoryManager {
       }
     }
     worker.on('error', (error) => fail(safeError(error)))
-    worker.on('exit', (code) => {
-      if (code !== 0) fail('Document memory worker exited unexpectedly.')
+    worker.on('exit', () => {
+      if (!this.stopped && this.worker === worker)
+        fail('Document memory worker exited unexpectedly.')
     })
     this.worker = worker
     return worker

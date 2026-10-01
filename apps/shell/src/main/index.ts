@@ -4049,6 +4049,38 @@ function registerHomeIpc(): void {
     return folderScan?.start(result.filePaths[0]) ?? null
   })
   ipcMain.handle(HOME_CHANNELS.getDocumentMemoryStatus, () => documentMemory?.status())
+  ipcMain.handle(
+    HOME_CHANNELS.getDocumentIndexIssues,
+    (_event, root: unknown, offset: unknown = 0) => {
+      if (
+        typeof root !== 'string' ||
+        root !== folderScan?.status().root ||
+        typeof offset !== 'number' ||
+        !Number.isSafeInteger(offset) ||
+        offset < 0
+      )
+        throw new Error('Invalid index issue page')
+      return documentMemory?.indexIssues(root, offset) ?? { total: 0, items: [] }
+    },
+  )
+  ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, (_event, id: unknown) => {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
+      throw new Error('Invalid document id')
+    return documentMemory?.retryDocument(id) ?? { ok: false, error: 'unavailable' }
+  })
+  ipcMain.handle(HOME_CHANNELS.revealDocumentIndexFile, async (_event, id: unknown) => {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
+      throw new Error('Invalid document id')
+    const path = documentMemory?.indexDocumentPath(id)
+    if (!path) return { ok: false, error: 'unavailable' }
+    try {
+      await import('node:fs/promises').then((fs) => fs.stat(path))
+      shell.showItemInFolder(path)
+      return { ok: true }
+    } catch {
+      return { ok: false, error: 'unavailable' }
+    }
+  })
   ipcMain.handle(HOME_CHANNELS.getIndexingActivity, () => {
     const folder = folderScan?.status() ?? null
     const memory = documentMemory?.indexingActivityStatus()
@@ -4056,6 +4088,7 @@ function registerHomeIpc(): void {
       folder,
       memory: {
         enabled: memory?.enabled ?? false,
+        cpuMode: 'gentle',
         modelState: memory?.modelState ?? 'not-loaded',
         ...(memory?.modelProgress === undefined ? {} : { modelProgress: memory.modelProgress }),
         pending: memory?.pending ?? 0,

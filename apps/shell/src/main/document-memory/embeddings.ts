@@ -1,4 +1,5 @@
-import { parentPort, workerData } from 'node:worker_threads'
+import { indexingWorkerData, postIndexMessage } from './runtime'
+import { withBackgroundBudget } from './cpu-budget'
 import { mkdir, readFile, rename, rm } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -36,7 +37,7 @@ async function cachedFile(cache: string, file: string): Promise<string> {
       if (done) break
       await handle.write(chunk)
       received += chunk.length
-      parentPort?.postMessage({
+      postIndexMessage({
         type: 'model',
         state: 'downloading',
         progress: total > 0 ? (received / total) * 100 : undefined,
@@ -67,8 +68,9 @@ export async function loadEmbeddingModel(cacheDir: string) {
   )
   const session = await InferenceSession.create(modelPath, {
     executionProviders: ['cpu'],
-    intraOpNumThreads: 2,
+    intraOpNumThreads: 1,
     interOpNumThreads: 1,
+    executionMode: 'sequential',
   })
   return { tokenizer, session }
 }
@@ -76,19 +78,19 @@ export async function loadEmbeddingModel(cacheDir: string) {
 export async function embedTexts(
   texts: string[],
   kind: 'query' | 'passage',
-  cacheDir = workerData?.cacheDir,
+  cacheDir = indexingWorkerData.cacheDir,
 ): Promise<number[][]> {
   if (!cacheDir) throw new Error('Embedding cache unavailable')
   if (!loading) {
-    parentPort?.postMessage({ type: 'model', state: 'downloading' })
+    postIndexMessage({ type: 'model', state: 'downloading' })
     loading = loadEmbeddingModel(cacheDir)
       .then((model) => {
-        parentPort?.postMessage({ type: 'model', state: 'ready' })
+        postIndexMessage({ type: 'model', state: 'ready' })
         return model
       })
       .catch(() => {
         loading = undefined
-        parentPort?.postMessage({
+        postIndexMessage({
           type: 'model',
           state: 'error',
           error: 'Local embedding model unavailable; text search remains available',
@@ -126,7 +128,10 @@ export async function embedTexts(
     return normalize(vector)
   }
   const vectors: number[][] = []
-  for (const text of texts) vectors.push(await encode(text))
+  for (const text of texts)
+    vectors.push(
+      await (kind === 'passage' ? withBackgroundBudget(() => encode(text)) : encode(text)),
+    )
   return vectors
 }
 function normalize(vector: number[]): number[] {

@@ -1,3 +1,4 @@
+import { issueReason, type IndexIssue } from './issues'
 import { topVectors } from './top-vectors'
 import { DatabaseSync } from 'node:sqlite'
 import { chmodSync } from 'node:fs'
@@ -52,6 +53,7 @@ export interface FolderChunkProgress {
   readyFiles: number
   pendingFiles: number
   errorFiles: number
+  emptyFiles?: number
   completedChunks: number
   totalChunks: number
   partialFileProgress: number
@@ -272,6 +274,7 @@ export class DocumentMemoryStore {
           sum(CASE WHEN status IN ('ready', 'empty') THEN 1 ELSE 0 END) AS ready_files,
           sum(CASE WHEN status IN ('pending', 'text-only') THEN 1 ELSE 0 END) AS pending_files,
           sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_files,
+          sum(CASE WHEN status = 'empty' THEN 1 ELSE 0 END) AS empty_files,
           coalesce(sum(completed_chunks), 0) AS completed_chunks,
           coalesce(sum(total_chunks), 0) AS total_chunks,
           coalesce(sum(CASE WHEN status IN ('ready','empty') THEN 1.0
@@ -286,6 +289,7 @@ export class DocumentMemoryStore {
           ready_files: number
           pending_files: number
           error_files: number
+          empty_files: number
           completed_chunks: number
           total_chunks: number
           partial_file_progress: number
@@ -296,10 +300,55 @@ export class DocumentMemoryStore {
       readyFiles: row?.ready_files ?? 0,
       pendingFiles: row?.pending_files ?? 0,
       errorFiles: row?.error_files ?? 0,
+      emptyFiles: row?.empty_files ?? 0,
       completedChunks: row?.completed_chunks ?? 0,
       totalChunks: row?.total_chunks ?? 0,
       partialFileProgress: row?.partial_file_progress ?? 0,
     }
+  }
+
+  indexIssues(root: string, offset = 0): { total: number; items: IndexIssue[] } {
+    const normalized = resolve(root)
+    const prefix = normalized + (normalized.includes('\\') ? '\\' : '/')
+    const where =
+      "excluded = 0 AND status IN ('error', 'empty') AND (path = ? OR substr(path, 1, length(?)) = ?)"
+    const total = (
+      this.db
+        .prepare(`SELECT count(*) n FROM documents WHERE ${where}`)
+        .get(normalized, prefix, prefix) as { n: number }
+    ).n
+    const rows = this.db
+      .prepare(
+        `SELECT id, path, name, status, error FROM documents WHERE ${where}
+      ORDER BY status ASC, priority_at DESC, id DESC LIMIT 10 OFFSET ?`,
+      )
+      .all(normalized, prefix, prefix, offset) as Array<{
+      id: number
+      path: string
+      name: string
+      status: string
+      error: string | null
+    }>
+    return {
+      total,
+      items: rows.map(({ status, error, ...row }) => ({
+        ...row,
+        reason: issueReason(error, status),
+        ...(error ? { error } : {}),
+      })),
+    }
+  }
+
+  retryDocument(id: number): string | null {
+    const document = this.documentById(id)
+    if (!document || document.status === 'excluded') return null
+    if (document.status === 'error' || document.status === 'empty')
+      this.db
+        .prepare(
+          "UPDATE documents SET status = 'pending', error = NULL WHERE id = ? AND excluded = 0",
+        )
+        .run(id)
+    return document.path
   }
 
   documentPriority(path: string): number {

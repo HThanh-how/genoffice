@@ -453,6 +453,15 @@ const homeApi: HomeApi = {
       await ipcRenderer.invoke(HOME_CHANNELS.getDocumentMemoryStatus),
     )
   },
+  async getDocumentIndexIssues(root, offset = 0) {
+    return ipcRenderer.invoke(HOME_CHANNELS.getDocumentIndexIssues, root, offset)
+  },
+  async retryDocumentIndex(documentId) {
+    return ipcRenderer.invoke(HOME_CHANNELS.retryDocumentIndex, documentId)
+  },
+  async revealDocumentIndexFile(documentId) {
+    return ipcRenderer.invoke(HOME_CHANNELS.revealDocumentIndexFile, documentId)
+  },
   async getIndexingActivity() {
     return (await ipcRenderer.invoke(
       HOME_CHANNELS.getIndexingActivity,

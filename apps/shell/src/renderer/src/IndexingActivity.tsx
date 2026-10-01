@@ -6,6 +6,30 @@ import type { Lang } from '@genoffice/i18n'
 import './indexing-activity.css'
 
 type Activity = Awaited<ReturnType<HomeApi['getIndexingActivity']>>
+type IndexIssueReason =
+  | 'unavailable'
+  | 'password'
+  | 'unsupported'
+  | 'timeout'
+  | 'no-text'
+  | 'too-large'
+  | 'changed'
+  | 'other'
+type IndexIssue = {
+  id: number
+  path: string
+  name: string
+  reason: IndexIssueReason
+  error?: string
+}
+type IndexIssuePage = { total: number; items: IndexIssue[] }
+type IndexIssueApi = HomeApi & {
+  getDocumentIndexIssues?: (root: string, offset?: number) => Promise<IndexIssuePage>
+  retryDocumentIndex?: (documentId: number) => Promise<{ ok: boolean; error?: string }>
+  revealDocumentIndexFile?: (documentId: number) => Promise<{ ok: boolean; error?: string }>
+}
+
+const ISSUE_PAGE_SIZE = 10
 
 const en = {
   title: 'Document index',
@@ -410,15 +434,526 @@ const strings: Record<Lang, typeof en> = {
   },
 }
 
+const issueWords: Record<
+  Lang,
+  {
+    issues: string
+    warnings: string
+    retry: string
+    showInFolder: string
+    next: string
+    previous: string
+    page: string
+    loading: string
+    noIssues: string
+    actionFailed: string
+    gentle: string
+    reasons: Record<IndexIssueReason, string>
+  }
+> = {
+  en: {
+    issues: 'Files needing attention',
+    warnings: '{count} warnings',
+    retry: 'Retry',
+    showInFolder: 'Show in folder',
+    next: 'Next',
+    previous: 'Previous',
+    page: 'Page {page} of {pages}',
+    loading: 'Loading files…',
+    noIssues: 'No files need attention',
+    actionFailed: 'Action failed',
+    gentle: 'Gentle CPU mode',
+    reasons: {
+      unavailable: 'File unavailable',
+      password: 'Password protected',
+      unsupported: 'Unsupported format',
+      timeout: 'Timed out',
+      'no-text': 'No readable text; scanned PDFs need OCR',
+      'too-large': 'File too large',
+      changed: 'File changed',
+      other: 'Could not index',
+    },
+  },
+  zh: {
+    issues: '需要处理的文件',
+    warnings: '{count} 个警告',
+    retry: '重试',
+    showInFolder: '在文件夹中显示',
+    next: '下一页',
+    previous: '上一页',
+    page: '第 {page}/{pages} 页',
+    loading: '正在加载文件…',
+    noIssues: '没有需要处理的文件',
+    actionFailed: '操作失败',
+    gentle: '低负载模式',
+    reasons: {
+      unavailable: '文件不可用',
+      password: '文件受密码保护',
+      unsupported: '不支持的格式',
+      timeout: '处理超时',
+      'no-text': '没有可读取的文本；扫描 PDF 需要 OCR',
+      'too-large': '文件过大',
+      changed: '文件已更改',
+      other: '无法建立索引',
+    },
+  },
+  ja: {
+    issues: '対応が必要なファイル',
+    warnings: '警告 {count} 件',
+    retry: '再試行',
+    showInFolder: 'フォルダーに表示',
+    next: '次へ',
+    previous: '前へ',
+    page: '{pages} ページ中 {page} ページ',
+    loading: 'ファイルを読み込み中…',
+    noIssues: '対応が必要なファイルはありません',
+    actionFailed: '操作に失敗しました',
+    gentle: '低負荷モード',
+    reasons: {
+      unavailable: 'ファイルを利用できません',
+      password: 'パスワードで保護されています',
+      unsupported: '未対応の形式です',
+      timeout: '処理がタイムアウトしました',
+      'no-text': '読み取れる文字がありません。スキャン PDF は OCR が必要です',
+      'too-large': 'ファイルが大きすぎます',
+      changed: 'ファイルが変更されました',
+      other: '索引を作成できませんでした',
+    },
+  },
+  ko: {
+    issues: '확인이 필요한 파일',
+    warnings: '경고 {count}개',
+    retry: '다시 시도',
+    showInFolder: '폴더에서 보기',
+    next: '다음',
+    previous: '이전',
+    page: '{pages}페이지 중 {page}페이지',
+    loading: '파일을 불러오는 중…',
+    noIssues: '확인이 필요한 파일이 없습니다',
+    actionFailed: '작업 실패',
+    gentle: '저부하 모드',
+    reasons: {
+      unavailable: '파일을 사용할 수 없음',
+      password: '암호로 보호된 파일',
+      unsupported: '지원되지 않는 형식',
+      timeout: '시간 초과',
+      'no-text': '읽을 수 있는 텍스트 없음; 스캔 PDF는 OCR 필요',
+      'too-large': '파일이 너무 큼',
+      changed: '파일이 변경됨',
+      other: '색인할 수 없음',
+    },
+  },
+  fr: {
+    issues: 'Fichiers à vérifier',
+    warnings: '{count} avertissements',
+    retry: 'Réessayer',
+    showInFolder: 'Afficher dans le dossier',
+    next: 'Suivant',
+    previous: 'Précédent',
+    page: 'Page {page} sur {pages}',
+    loading: 'Chargement des fichiers…',
+    noIssues: 'Aucun fichier à vérifier',
+    actionFailed: 'Échec de l’action',
+    gentle: 'Mode CPU réduit',
+    reasons: {
+      unavailable: 'Fichier indisponible',
+      password: 'Protégé par mot de passe',
+      unsupported: 'Format non pris en charge',
+      timeout: 'Délai dépassé',
+      'no-text': 'Aucun texte lisible ; les PDF scannés nécessitent un OCR',
+      'too-large': 'Fichier trop volumineux',
+      changed: 'Fichier modifié',
+      other: 'Indexation impossible',
+    },
+  },
+  de: {
+    issues: 'Dateien mit Handlungsbedarf',
+    warnings: '{count} Warnungen',
+    retry: 'Erneut versuchen',
+    showInFolder: 'Im Ordner anzeigen',
+    next: 'Weiter',
+    previous: 'Zurück',
+    page: 'Seite {page} von {pages}',
+    loading: 'Dateien werden geladen…',
+    noIssues: 'Keine Dateien mit Handlungsbedarf',
+    actionFailed: 'Aktion fehlgeschlagen',
+    gentle: 'CPU-Schonmodus',
+    reasons: {
+      unavailable: 'Datei nicht verfügbar',
+      password: 'Passwortgeschützt',
+      unsupported: 'Nicht unterstütztes Format',
+      timeout: 'Zeitüberschreitung',
+      'no-text': 'Kein lesbarer Text; gescannte PDFs benötigen OCR',
+      'too-large': 'Datei zu groß',
+      changed: 'Datei geändert',
+      other: 'Indexierung nicht möglich',
+    },
+  },
+  es: {
+    issues: 'Archivos que requieren atención',
+    warnings: '{count} advertencias',
+    retry: 'Reintentar',
+    showInFolder: 'Mostrar en la carpeta',
+    next: 'Siguiente',
+    previous: 'Anterior',
+    page: 'Página {page} de {pages}',
+    loading: 'Cargando archivos…',
+    noIssues: 'No hay archivos que requieran atención',
+    actionFailed: 'Error en la acción',
+    gentle: 'Modo de bajo uso de CPU',
+    reasons: {
+      unavailable: 'Archivo no disponible',
+      password: 'Protegido con contraseña',
+      unsupported: 'Formato no compatible',
+      timeout: 'Tiempo de espera agotado',
+      'no-text': 'No hay texto legible; los PDF escaneados necesitan OCR',
+      'too-large': 'Archivo demasiado grande',
+      changed: 'El archivo cambió',
+      other: 'No se pudo indexar',
+    },
+  },
+  th: {
+    issues: 'ไฟล์ที่ต้องตรวจสอบ',
+    warnings: 'คำเตือน {count} รายการ',
+    retry: 'ลองอีกครั้ง',
+    showInFolder: 'แสดงในโฟลเดอร์',
+    next: 'ถัดไป',
+    previous: 'ก่อนหน้า',
+    page: 'หน้า {page} จาก {pages}',
+    loading: 'กำลังโหลดไฟล์…',
+    noIssues: 'ไม่มีไฟล์ที่ต้องตรวจสอบ',
+    actionFailed: 'ดำเนินการไม่สำเร็จ',
+    gentle: 'โหมดลดการใช้ CPU',
+    reasons: {
+      unavailable: 'ไฟล์ไม่พร้อมใช้งาน',
+      password: 'ไฟล์มีรหัสผ่าน',
+      unsupported: 'รูปแบบไม่รองรับ',
+      timeout: 'หมดเวลา',
+      'no-text': 'ไม่มีข้อความให้อ่าน; PDF สแกนต้องใช้ OCR',
+      'too-large': 'ไฟล์ใหญ่เกินไป',
+      changed: 'ไฟล์มีการเปลี่ยนแปลง',
+      other: 'จัดทำดัชนีไม่ได้',
+    },
+  },
+  id: {
+    issues: 'File yang perlu diperhatikan',
+    warnings: '{count} peringatan',
+    retry: 'Coba lagi',
+    showInFolder: 'Tampilkan di folder',
+    next: 'Berikutnya',
+    previous: 'Sebelumnya',
+    page: 'Halaman {page} dari {pages}',
+    loading: 'Memuat file…',
+    noIssues: 'Tidak ada file yang perlu diperhatikan',
+    actionFailed: 'Tindakan gagal',
+    gentle: 'Mode CPU ringan',
+    reasons: {
+      unavailable: 'File tidak tersedia',
+      password: 'Dilindungi kata sandi',
+      unsupported: 'Format tidak didukung',
+      timeout: 'Waktu habis',
+      'no-text': 'Tidak ada teks yang dapat dibaca; PDF pindai perlu OCR',
+      'too-large': 'File terlalu besar',
+      changed: 'File berubah',
+      other: 'Tidak dapat diindeks',
+    },
+  },
+  ru: {
+    issues: 'Файлы, требующие внимания',
+    warnings: 'Предупреждений: {count}',
+    retry: 'Повторить',
+    showInFolder: 'Показать в папке',
+    next: 'Далее',
+    previous: 'Назад',
+    page: 'Страница {page} из {pages}',
+    loading: 'Загрузка файлов…',
+    noIssues: 'Нет файлов, требующих внимания',
+    actionFailed: 'Не удалось выполнить действие',
+    gentle: 'Щадящий режим CPU',
+    reasons: {
+      unavailable: 'Файл недоступен',
+      password: 'Защищён паролем',
+      unsupported: 'Формат не поддерживается',
+      timeout: 'Истекло время ожидания',
+      'no-text': 'Нет читаемого текста; сканированным PDF нужен OCR',
+      'too-large': 'Файл слишком большой',
+      changed: 'Файл изменён',
+      other: 'Не удалось проиндексировать',
+    },
+  },
+  ar: {
+    issues: 'ملفات تحتاج إلى مراجعة',
+    warnings: '{count} تحذيرات',
+    retry: 'إعادة المحاولة',
+    showInFolder: 'إظهار في المجلد',
+    next: 'التالي',
+    previous: 'السابق',
+    page: 'الصفحة {page} من {pages}',
+    loading: 'جارٍ تحميل الملفات…',
+    noIssues: 'لا توجد ملفات تحتاج إلى مراجعة',
+    actionFailed: 'تعذر تنفيذ الإجراء',
+    gentle: 'وضع خفيف على المعالج',
+    reasons: {
+      unavailable: 'الملف غير متاح',
+      password: 'محمي بكلمة مرور',
+      unsupported: 'تنسيق غير مدعوم',
+      timeout: 'انتهت مهلة المعالجة',
+      'no-text': 'لا يوجد نص قابل للقراءة؛ ملفات PDF الممسوحة تحتاج OCR',
+      'too-large': 'الملف كبير جدًا',
+      changed: 'تم تغيير الملف',
+      other: 'تعذرت الفهرسة',
+    },
+  },
+  pt: {
+    issues: 'Arquivos que precisam de atenção',
+    warnings: '{count} avisos',
+    retry: 'Tentar novamente',
+    showInFolder: 'Mostrar na pasta',
+    next: 'Próxima',
+    previous: 'Anterior',
+    page: 'Página {page} de {pages}',
+    loading: 'Carregando arquivos…',
+    noIssues: 'Nenhum arquivo precisa de atenção',
+    actionFailed: 'A ação falhou',
+    gentle: 'Modo de baixo uso de CPU',
+    reasons: {
+      unavailable: 'Arquivo indisponível',
+      password: 'Protegido por senha',
+      unsupported: 'Formato não compatível',
+      timeout: 'Tempo esgotado',
+      'no-text': 'Nenhum texto legível; PDFs digitalizados precisam de OCR',
+      'too-large': 'Arquivo muito grande',
+      changed: 'Arquivo alterado',
+      other: 'Não foi possível indexar',
+    },
+  },
+  it: {
+    issues: 'File che richiedono attenzione',
+    warnings: '{count} avvisi',
+    retry: 'Riprova',
+    showInFolder: 'Mostra nella cartella',
+    next: 'Successivo',
+    previous: 'Precedente',
+    page: 'Pagina {page} di {pages}',
+    loading: 'Caricamento dei file…',
+    noIssues: 'Nessun file richiede attenzione',
+    actionFailed: 'Operazione non riuscita',
+    gentle: 'Modalità CPU ridotta',
+    reasons: {
+      unavailable: 'File non disponibile',
+      password: 'Protetto da password',
+      unsupported: 'Formato non supportato',
+      timeout: 'Timeout',
+      'no-text': 'Nessun testo leggibile; i PDF scansionati richiedono OCR',
+      'too-large': 'File troppo grande',
+      changed: 'File modificato',
+      other: 'Impossibile indicizzare',
+    },
+  },
+  pl: {
+    issues: 'Pliki wymagające uwagi',
+    warnings: 'Ostrzeżenia: {count}',
+    retry: 'Ponów próbę',
+    showInFolder: 'Pokaż w folderze',
+    next: 'Dalej',
+    previous: 'Wstecz',
+    page: 'Strona {page} z {pages}',
+    loading: 'Wczytywanie plików…',
+    noIssues: 'Brak plików wymagających uwagi',
+    actionFailed: 'Nie udało się wykonać działania',
+    gentle: 'Tryb oszczędzania CPU',
+    reasons: {
+      unavailable: 'Plik jest niedostępny',
+      password: 'Plik chroniony hasłem',
+      unsupported: 'Nieobsługiwany format',
+      timeout: 'Przekroczono limit czasu',
+      'no-text': 'Brak czytelnego tekstu; skanowane PDF wymagają OCR',
+      'too-large': 'Plik jest za duży',
+      changed: 'Plik został zmieniony',
+      other: 'Nie można zaindeksować',
+    },
+  },
+  cs: {
+    issues: 'Soubory vyžadující pozornost',
+    warnings: 'Počet upozornění: {count}',
+    retry: 'Zkusit znovu',
+    showInFolder: 'Zobrazit ve složce',
+    next: 'Další',
+    previous: 'Předchozí',
+    page: 'Stránka {page} z {pages}',
+    loading: 'Načítání souborů…',
+    noIssues: 'Žádné soubory nevyžadují pozornost',
+    actionFailed: 'Akce se nezdařila',
+    gentle: 'Úsporný režim CPU',
+    reasons: {
+      unavailable: 'Soubor není dostupný',
+      password: 'Chráněno heslem',
+      unsupported: 'Nepodporovaný formát',
+      timeout: 'Vypršel časový limit',
+      'no-text': 'Žádný čitelný text; naskenované PDF vyžaduje OCR',
+      'too-large': 'Soubor je příliš velký',
+      changed: 'Soubor byl změněn',
+      other: 'Nelze indexovat',
+    },
+  },
+  nl: {
+    issues: 'Bestanden die aandacht nodig hebben',
+    warnings: '{count} waarschuwingen',
+    retry: 'Opnieuw proberen',
+    showInFolder: 'In map weergeven',
+    next: 'Volgende',
+    previous: 'Vorige',
+    page: 'Pagina {page} van {pages}',
+    loading: 'Bestanden laden…',
+    noIssues: 'Geen bestanden vereisen aandacht',
+    actionFailed: 'Actie mislukt',
+    gentle: 'CPU-spaarstand',
+    reasons: {
+      unavailable: 'Bestand niet beschikbaar',
+      password: 'Beveiligd met wachtwoord',
+      unsupported: 'Niet-ondersteunde indeling',
+      timeout: 'Time-out',
+      'no-text': 'Geen leesbare tekst; gescande PDF vereist OCR',
+      'too-large': 'Bestand is te groot',
+      changed: 'Bestand gewijzigd',
+      other: 'Kan niet indexeren',
+    },
+  },
+  ms: {
+    issues: 'Fail yang memerlukan perhatian',
+    warnings: '{count} amaran',
+    retry: 'Cuba lagi',
+    showInFolder: 'Tunjukkan dalam folder',
+    next: 'Seterusnya',
+    previous: 'Sebelumnya',
+    page: 'Halaman {page} daripada {pages}',
+    loading: 'Memuatkan fail…',
+    noIssues: 'Tiada fail yang memerlukan perhatian',
+    actionFailed: 'Tindakan gagal',
+    gentle: 'Mod CPU ringan',
+    reasons: {
+      unavailable: 'Fail tidak tersedia',
+      password: 'Dilindungi kata laluan',
+      unsupported: 'Format tidak disokong',
+      timeout: 'Masa tamat',
+      'no-text': 'Tiada teks boleh dibaca; PDF imbasan memerlukan OCR',
+      'too-large': 'Fail terlalu besar',
+      changed: 'Fail telah berubah',
+      other: 'Tidak dapat diindeks',
+    },
+  },
+  he: {
+    issues: 'קבצים שדורשים טיפול',
+    warnings: '{count} אזהרות',
+    retry: 'נסה שוב',
+    showInFolder: 'הצג בתיקייה',
+    next: 'הבא',
+    previous: 'הקודם',
+    page: 'עמוד {page} מתוך {pages}',
+    loading: 'טוען קבצים…',
+    noIssues: 'אין קבצים שדורשים טיפול',
+    actionFailed: 'הפעולה נכשלה',
+    gentle: 'מצב חסכוני למעבד',
+    reasons: {
+      unavailable: 'הקובץ אינו זמין',
+      password: 'מוגן בסיסמה',
+      unsupported: 'תבנית לא נתמכת',
+      timeout: 'תם הזמן שהוקצב',
+      'no-text': 'אין טקסט קריא; PDF סרוק דורש OCR',
+      'too-large': 'הקובץ גדול מדי',
+      changed: 'הקובץ השתנה',
+      other: 'לא ניתן לאנדקס',
+    },
+  },
+  hi: {
+    issues: 'ध्यान देने योग्य फ़ाइलें',
+    warnings: '{count} चेतावनियाँ',
+    retry: 'फिर कोशिश करें',
+    showInFolder: 'फ़ोल्डर में दिखाएँ',
+    next: 'अगला',
+    previous: 'पिछला',
+    page: 'पृष्ठ {page} / {pages}',
+    loading: 'फ़ाइलें लोड हो रही हैं…',
+    noIssues: 'ध्यान देने योग्य फ़ाइलें नहीं हैं',
+    actionFailed: 'कार्रवाई विफल',
+    gentle: 'कम CPU उपयोग मोड',
+    reasons: {
+      unavailable: 'फ़ाइल उपलब्ध नहीं',
+      password: 'पासवर्ड से सुरक्षित',
+      unsupported: 'असमर्थित फ़ॉर्मैट',
+      timeout: 'समय सीमा समाप्त',
+      'no-text': 'पढ़ने योग्य पाठ नहीं; स्कैन PDF के लिए OCR चाहिए',
+      'too-large': 'फ़ाइल बहुत बड़ी है',
+      changed: 'फ़ाइल बदल गई',
+      other: 'अनुक्रमित नहीं कर सके',
+    },
+  },
+  'zh-TW': {
+    issues: '需要處理的檔案',
+    warnings: '{count} 個警告',
+    retry: '重試',
+    showInFolder: '在資料夾中顯示',
+    next: '下一頁',
+    previous: '上一頁',
+    page: '第 {page}/{pages} 頁',
+    loading: '正在載入檔案…',
+    noIssues: '沒有需要處理的檔案',
+    actionFailed: '操作失敗',
+    gentle: '低負載模式',
+    reasons: {
+      unavailable: '檔案無法使用',
+      password: '檔案受密碼保護',
+      unsupported: '不支援的格式',
+      timeout: '處理逾時',
+      'no-text': '沒有可讀取的文字；掃描 PDF 需要 OCR',
+      'too-large': '檔案過大',
+      changed: '檔案已變更',
+      other: '無法建立索引',
+    },
+  },
+  vi: {
+    issues: 'Tệp cần xử lý',
+    warnings: '{count} cảnh báo',
+    retry: 'Thử lại',
+    showInFolder: 'Hiện trong thư mục',
+    next: 'Tiếp',
+    previous: 'Trước',
+    page: 'Trang {page}/{pages}',
+    loading: 'Đang tải tệp…',
+    noIssues: 'Không có tệp cần xử lý',
+    actionFailed: 'Thao tác thất bại',
+    gentle: 'Chế độ giảm tải CPU',
+    reasons: {
+      unavailable: 'Tệp không khả dụng',
+      password: 'Tệp được bảo vệ bằng mật khẩu',
+      unsupported: 'Định dạng không được hỗ trợ',
+      timeout: 'Đã hết thời gian xử lý',
+      'no-text': 'Tệp trống hoặc PDF ảnh cần OCR',
+      'too-large': 'Tệp quá lớn',
+      changed: 'Tệp đã thay đổi',
+      other: 'Không thể lập chỉ mục',
+    },
+  },
+}
+
 export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
   const [activity, setActivity] = useState<Activity | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [dismissed, setDismissed] = useState(false)
+  const [issuesExpanded, setIssuesExpanded] = useState(false)
+  const [issuePage, setIssuePage] = useState<IndexIssuePage | null>(null)
+  const [issuesOffset, setIssuesOffset] = useState(0)
+  const [issuesLoading, setIssuesLoading] = useState(false)
+  const [issuesLoadError, setIssuesLoadError] = useState('')
+  const [issueBusy, setIssueBusy] = useState<Record<number, 'retry' | 'reveal'>>({})
+  const [issueActionErrors, setIssueActionErrors] = useState<Record<number, string>>({})
   const lastJob = useRef('')
   const lastActive = useRef(false)
   const rootRef = useRef<HTMLDivElement>(null)
   const mounted = useRef(false)
+  const issueRequestRef = useRef(0)
   const words = strings[lang] ?? en
+  const issueText = issueWords[lang]
   useEffect(() => {
     mounted.current = true
     let busy = false
@@ -462,40 +997,117 @@ export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
     document.addEventListener('pointerdown', collapse, true)
     return () => document.removeEventListener('pointerdown', collapse, true)
   }, [expanded])
+  useEffect(() => {
+    issueRequestRef.current += 1
+    setIssuesExpanded(false)
+    setIssuePage(null)
+    setIssuesOffset(0)
+    setIssuesLoading(false)
+    setIssuesLoadError('')
+    setIssueActionErrors({})
+  }, [activity?.folder?.root])
   const folder = activity?.folder
   const progress = activity?.folderProgress
   if (!folder?.root || dismissed) return null
+  const folderRoot = folder.root
+  const issueApi = api as IndexIssueApi
+  const loadIssues = async (root: string, offset: number) => {
+    const request = ++issueRequestRef.current
+    setIssuesLoading(true)
+    setIssuesLoadError('')
+    try {
+      if (!issueApi.getDocumentIndexIssues) throw new Error(issueText.actionFailed)
+      let page = await issueApi.getDocumentIndexIssues(root, offset)
+      let resolvedOffset = offset
+      if (page.items.length === 0 && page.total > 0 && offset >= page.total) {
+        resolvedOffset = Math.floor((page.total - 1) / ISSUE_PAGE_SIZE) * ISSUE_PAGE_SIZE
+        page = await issueApi.getDocumentIndexIssues(root, resolvedOffset)
+      }
+      if (request === issueRequestRef.current) {
+        setIssuePage(page)
+        setIssuesOffset(resolvedOffset)
+      }
+    } catch (error) {
+      if (request === issueRequestRef.current) {
+        setIssuesLoadError(error instanceof Error ? error.message : issueText.actionFailed)
+      }
+    } finally {
+      if (request === issueRequestRef.current) setIssuesLoading(false)
+    }
+  }
+  const toggleIssues = () => {
+    const open = !issuesExpanded
+    setIssuesExpanded(open)
+    if (open && !issuePage && !issuesLoading) void loadIssues(folderRoot, 0)
+  }
+  const performIssueAction = async (issue: IndexIssue, action: 'retry' | 'reveal') => {
+    setIssueBusy((current) => ({ ...current, [issue.id]: action }))
+    setIssueActionErrors((current) => ({ ...current, [issue.id]: '' }))
+    try {
+      const result =
+        action === 'retry'
+          ? await issueApi.retryDocumentIndex?.(issue.id)
+          : await issueApi.revealDocumentIndexFile?.(issue.id)
+      if (!result) throw new Error(issueText.actionFailed)
+      if (!result.ok) {
+        const message =
+          result.error === 'paused'
+            ? words.paused
+            : result.error === 'unavailable'
+              ? issueText.reasons.unavailable
+              : result.error || issueText.actionFailed
+        throw new Error(message)
+      }
+      if (action === 'retry') await loadIssues(folderRoot, issuesOffset)
+    } catch (error) {
+      setIssueActionErrors((current) => ({
+        ...current,
+        [issue.id]: error instanceof Error ? error.message : issueText.actionFailed,
+      }))
+    } finally {
+      setIssueBusy((current) => {
+        const next = { ...current }
+        delete next[issue.id]
+        return next
+      })
+    }
+  }
   const pendingFiles = progress?.pendingFiles ?? 0
-  const hasErrors =
-    folder.errors > 0 ||
-    (progress?.errorFiles ?? 0) > 0 ||
-    (activity?.memory.modelState === 'error' && pendingFiles > 0)
+  const warningCount = folder.errors + (progress?.errorFiles ?? 0) + (progress?.emptyFiles ?? 0)
+  const hasFileIssues = warningCount > 0
+  const modelFailure = activity?.memory.modelState === 'error' && pendingFiles > 0
   const paused = !activity?.memory.enabled
   const stopped = folder.state === 'stopped'
   const complete =
-    !stopped && !paused && !hasErrors && !folder.running && !!progress && pendingFiles === 0
-  const ringState = hasErrors ? 'error' : paused ? 'paused' : 'running'
+    !stopped && !paused && !modelFailure && !folder.running && !!progress && pendingFiles === 0
+  const ringState = modelFailure ? 'error' : paused ? 'paused' : 'running'
   const percent =
-    folder.running || paused || hasErrors || (stopped && !progress?.pendingFiles)
+    paused || modelFailure || (stopped && !progress?.pendingFiles)
       ? null
       : (progress?.percent ?? null)
+  const active = !paused && !modelFailure && (folder.running || pendingFiles > 0)
   const label = paused
     ? words.paused
-    : folder.running
-      ? words.scanning
-      : hasErrors
-        ? words.error
+    : modelFailure
+      ? words.error
+      : folder.running
+        ? words.scanning
         : stopped && !progress?.pendingFiles
           ? words.stopped
           : complete
-            ? words.done
+            ? hasFileIssues
+              ? `${words.done} · ${issueText.warnings.replace('{count}', String(warningCount))}`
+              : words.done
             : activity?.memory.modelState === 'downloading'
               ? words.downloading
               : words.indexing
   const ringPercent = complete ? 100 : percent
   const folderName = folder.root.split(/[\\/]/).filter(Boolean).at(-1) || folder.root
   return (
-    <div className="indexing-activity" ref={rootRef}>
+    <div
+      className={`indexing-activity${hasFileIssues ? ' has-file-issues' : ''}${complete && hasFileIssues ? ' is-indexing-complete' : ''}`}
+      ref={rootRef}
+    >
       {expanded && (
         <section className="indexing-activity-panel" aria-label={words.title}>
           <header>
@@ -509,12 +1121,17 @@ export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
               percent={ringPercent}
               complete={complete}
               state={ringState}
-              active={!paused && !hasErrors && (folder.running || pendingFiles > 0)}
+              active={active}
               label={label}
             />
             <div>
               <strong>{label}</strong>
               <span title={folder.root}>{folderName}</span>
+              {hasFileIssues && !modelFailure && (
+                <span className="indexing-activity-warning" title={issueText.issues}>
+                  {warningCount}
+                </span>
+              )}
             </div>
           </div>
           <div className="indexing-activity-counts" aria-live="polite">
@@ -531,10 +1148,102 @@ export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
               <strong>{progress?.pendingFiles ?? 0}</strong>
             </span>
             <span>
-              {words.errors}
-              <strong>{folder.errors + (progress?.errorFiles ?? 0)}</strong>
+              {issueText.issues}
+              <strong>{warningCount}</strong>
             </span>
           </div>
+          {hasFileIssues && (
+            <div className="indexing-activity-issues-wrap">
+              <button
+                type="button"
+                className="indexing-activity-issues-toggle"
+                aria-expanded={issuesExpanded}
+                onClick={toggleIssues}
+              >
+                <span>{issueText.issues}</span>
+                <strong>{warningCount}</strong>
+                <span aria-hidden>{issuesExpanded ? '−' : '+'}</span>
+              </button>
+              {issuesExpanded && (
+                <section className="indexing-activity-issues" aria-label={issueText.issues}>
+                  {issuesLoading && <p>{issueText.loading}</p>}
+                  {issuesLoadError && (
+                    <p className="indexing-activity-action-error" role="alert">
+                      {issuesLoadError}
+                    </p>
+                  )}
+                  {!issuesLoading && !issuesLoadError && issuePage?.items.length === 0 && (
+                    <p>{folder.lastError || words.error}</p>
+                  )}
+                  {issuePage?.items.map((issue) => (
+                    <article className="indexing-activity-issue" key={issue.id}>
+                      <div className="indexing-activity-issue-copy">
+                        <strong title={issue.path}>{issue.name}</strong>
+                        <span title={issueText.reasons[issue.reason]}>
+                          {issueText.reasons[issue.reason]}
+                        </span>
+                      </div>
+                      <div className="indexing-activity-issue-actions">
+                        <button
+                          type="button"
+                          disabled={!!issueBusy[issue.id]}
+                          onClick={() => void performIssueAction(issue, 'retry')}
+                        >
+                          {issueBusy[issue.id] === 'retry'
+                            ? `${issueText.retry}…`
+                            : issueText.retry}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={!!issueBusy[issue.id]}
+                          onClick={() => void performIssueAction(issue, 'reveal')}
+                        >
+                          {issueBusy[issue.id] === 'reveal'
+                            ? `${issueText.showInFolder}…`
+                            : issueText.showInFolder}
+                        </button>
+                      </div>
+                      {issueActionErrors[issue.id] && (
+                        <p className="indexing-activity-action-error" role="alert">
+                          {issueActionErrors[issue.id]}
+                        </p>
+                      )}
+                    </article>
+                  ))}
+                  {(issuePage?.total ?? 0) > ISSUE_PAGE_SIZE && (
+                    <nav className="indexing-activity-issue-pages" aria-label={issueText.issues}>
+                      <button
+                        type="button"
+                        disabled={issuesLoading || issuesOffset === 0}
+                        onClick={() =>
+                          void loadIssues(folderRoot, Math.max(0, issuesOffset - ISSUE_PAGE_SIZE))
+                        }
+                      >
+                        {issueText.previous}
+                      </button>
+                      <span>
+                        {issueText.page
+                          .replace('{page}', String(Math.floor(issuesOffset / ISSUE_PAGE_SIZE) + 1))
+                          .replace(
+                            '{pages}',
+                            String(Math.ceil((issuePage?.total ?? 0) / ISSUE_PAGE_SIZE)),
+                          )}
+                      </span>
+                      <button
+                        type="button"
+                        disabled={
+                          issuesLoading || issuesOffset + ISSUE_PAGE_SIZE >= (issuePage?.total ?? 0)
+                        }
+                        onClick={() => void loadIssues(folderRoot, issuesOffset + ISSUE_PAGE_SIZE)}
+                      >
+                        {issueText.next}
+                      </button>
+                    </nav>
+                  )}
+                </section>
+              )}
+            </div>
+          )}
           {activity?.memory.modelState === 'downloading' && (
             <p>
               {words.downloading} · {Math.round(activity.memory.modelProgress ?? 0)}%
@@ -542,7 +1251,10 @@ export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
           )}
           {folder.lastError && <p role="alert">{folder.lastError}</p>}
           <footer>
-            <span>{words.local}</span>
+            <span>
+              {words.local}
+              {activity?.memory.cpuMode === 'gentle' && ` · ${issueText.gentle}`}
+            </span>
             {folder.running ? (
               <button
                 type="button"
@@ -569,11 +1281,16 @@ export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
           percent={ringPercent}
           complete={complete}
           state={ringState}
-          active={!paused && !hasErrors && (folder.running || pendingFiles > 0)}
+          active={active}
           label={label}
         />
         <span>
           <strong>{label}</strong>
+          {hasFileIssues && !modelFailure && (
+            <span className="indexing-activity-warning" title={issueText.issues}>
+              {warningCount}
+            </span>
+          )}
           <small>{folderName}</small>
         </span>
       </button>

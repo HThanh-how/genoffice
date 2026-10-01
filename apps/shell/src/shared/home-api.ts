@@ -1,3 +1,4 @@
+import type { IndexIssue } from '../main/document-memory/issues'
 import type { FolderScanStatus } from '../main/document-memory/folder-scan'
 import type {
   AiChatResponse,
@@ -200,12 +201,14 @@ export interface HomeIndexingActivity {
     modelProgress?: number
     pending: number
     errors: number
+    cpuMode?: 'gentle'
   }
   folderProgress: {
     totalFiles: number
     readyFiles: number
     pendingFiles: number
     errorFiles: number
+    emptyFiles?: number
     completedChunks: number
     totalChunks: number
     percent: number | null
@@ -346,6 +349,12 @@ export interface HomeApi {
   /** Read local document memory settings, index counts and recent files. */
   getDocumentMemoryStatus(): Promise<DocumentMemoryStatus>
   getIndexingActivity(): Promise<HomeIndexingActivity>
+  getDocumentIndexIssues(
+    root: string,
+    offset?: number,
+  ): Promise<{ total: number; items: IndexIssue[] }>
+  retryDocumentIndex(documentId: number): Promise<{ ok: boolean; error?: string }>
+  revealDocumentIndexFile(documentId: number): Promise<{ ok: boolean; error?: string }>
   getDocumentIndexProgress(path: string): Promise<DocumentIndexProgress>
   getDocumentFolderScanStatus(): Promise<FolderScanStatus | null>
   scanDocumentFolder(): Promise<FolderScanStatus | null>
@@ -624,6 +633,9 @@ export const HOME_CHANNELS = {
   setAnalyticsEnabled: 'home:set-analytics-enabled',
   getDocumentMemoryStatus: 'home:get-document-memory-status',
   getIndexingActivity: 'home:get-indexing-activity',
+  getDocumentIndexIssues: 'home:get-document-index-issues',
+  retryDocumentIndex: 'home:retry-document-index',
+  revealDocumentIndexFile: 'home:reveal-document-index-file',
   getDocumentFolderScanStatus: 'home:get-document-folder-scan-status',
   scanDocumentFolder: 'home:scan-document-folder',
   stopDocumentFolderScan: 'home:stop-document-folder-scan',
