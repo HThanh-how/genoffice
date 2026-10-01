@@ -17,7 +17,10 @@ export const AGY_TOOL_RESULT_CHARS = 12_000
 export function agyToolNote(tools: AgentToolDef[]): string {
   if (!tools.length) return ''
   const list = tools
-    .map((tool) => `- ${tool.name}: ${tool.description}\n  input schema: ${JSON.stringify(tool.inputSchema)}`)
+    .map(
+      (tool) =>
+        `- ${tool.name}: ${tool.description}\n  input schema: ${JSON.stringify(tool.inputSchema)}`,
+    )
     .join('\n')
   return (
     'The host application exposes the tools below. You cannot run them yourself: to use one, end your reply with ' +
@@ -79,7 +82,10 @@ function parseOne(raw: string, known: ReadonlySet<string>, index: number): Agent
 
 export function renderAgyToolCalls(calls: AgentToolCall[]): string {
   return calls
-    .map((c) => `${AGY_TOOL_OPEN}${JSON.stringify({ name: c.name, arguments: c.input })}${AGY_TOOL_CLOSE}`)
+    .map(
+      (c) =>
+        `${AGY_TOOL_OPEN}${JSON.stringify({ name: c.name, arguments: c.input })}${AGY_TOOL_CLOSE}`,
+    )
     .join('\n')
 }
 

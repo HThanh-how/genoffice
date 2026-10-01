@@ -65,19 +65,14 @@ export function IndexingModeSettings() {
           const keys = indexingModeKeys(mode)
           const selected = state?.mode === mode
           return (
-            <label
-              key={mode}
-              className={`set-indexmode-card${selected ? ' is-selected' : ''}`}
-            >
+            <label key={mode} className={`set-indexmode-card${selected ? ' is-selected' : ''}`}>
               <input
                 type="radio"
                 name="indexing-mode"
                 value={mode}
                 checked={selected}
                 disabled={!state || saving}
-                onChange={() =>
-                  change(() => window.aiOffice.setIndexingMode(mode), { mode })
-                }
+                onChange={() => change(() => window.aiOffice.setIndexingMode(mode), { mode })}
               />
               <span className="set-indexmode-name">{indexingString(lang, keys.label)}</span>
               <span className="set-indexmode-desc">{indexingString(lang, keys.desc)}</span>
@@ -88,9 +83,7 @@ export function IndexingModeSettings() {
       <div className="set-indexmode-status" data-tone={tone} role="status" aria-live="polite">
         <span className="set-indexmode-dot" aria-hidden="true" />
         <span>
-          {effective
-            ? indexingStateLine(lang, effective)
-            : indexingString(lang, 'statusChecking')}
+          {effective ? indexingStateLine(lang, effective) : indexingString(lang, 'statusChecking')}
         </span>
       </div>
       <div className="set-field set-field-top">
