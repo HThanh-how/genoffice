@@ -419,6 +419,38 @@ export const AGY_TOOLS_SYSTEM_NOTE =
   'The only files you may read are the attachments listed below, which sit in the current directory. ' +
   'Everything you can do to the user’s documents goes through the host tools described below.'
 
+const AGY_TOOLS_RETRY_NOTE =
+  'The previous attempt did not follow the host tool protocol. This is a plain-text-only turn: do not make native function/API calls or emit function-call JSON. For a document action, return only a valid GenOffice <tool_call>{"name":"tool_name","arguments":{...}}</tool_call> block using one of the listed host tools, then stop. Do not claim completion unless a Tool result confirms it.'
+
+const MALFORMED_NATIVE_FUNCTION_CALL =
+  /your previous response contained an improperly formatted function call/i
+
+function isMalformedNativeFunctionCall(value: unknown): boolean {
+  const message = value instanceof Error ? value.message : typeof value === 'string' ? value : ''
+  return MALFORMED_NATIVE_FUNCTION_CALL.test(message)
+}
+
+function reportAgyDiagnostic(
+  cb: StreamCallbacks,
+  record: {
+    provider: 'agy'
+    status: 'retry' | 'success' | 'failure'
+    reason: 'malformed_native_call' | 'malformed_host_tool_call' | 'cli_result'
+    attempts: number
+    toolCallCount?: number
+  },
+): void {
+  try {
+    cb.onDiagnostic?.(record)
+  } catch {
+    // Optional diagnostics must never interrupt a document action.
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError'
+}
+
 function imageExtension(image: AgentImage): string {
   const subtype = image.mime.split('/')[1]?.toLowerCase() ?? ''
   if (subtype === 'jpeg' || subtype === 'jpg') return '.jpg'
@@ -853,27 +885,145 @@ export async function streamAgy(
   deps?: AgyRunDeps,
 ): Promise<void> {
   const plan = buildAgyPrompt(system, messages, tools)
-  const result = await runAgy(
-    {
-      cliPath: config.cliPath,
-      model: config.model?.trim() || AGY_DEFAULT_MODEL,
-      prompt: plan.prompt,
-      files: plan.files,
-      signal: cb.signal,
-      ...(tools.length ? {} : { onText: cb.onDelta }),
-      ...(cb.onUsage ? { onUsage: cb.onUsage } : {}),
-      ...(cb.onActivity ? { onActivity: cb.onActivity } : {}),
-    },
-    deps,
-  )
-  if (!result.text.trim()) throw new Error('Antigravity CLI returned no content')
+  const deadline = Date.now() + AGY_REQUEST_TIMEOUT_MS
+  const run = async (prompt: AgyPromptPlan, timeoutMs: number) =>
+    runAgy(
+      {
+        cliPath: config.cliPath,
+        model: config.model?.trim() || AGY_DEFAULT_MODEL,
+        prompt: prompt.prompt,
+        files: prompt.files,
+        signal: cb.signal,
+        timeoutMs,
+        ...(tools.length ? {} : { onText: cb.onDelta }),
+        ...(cb.onUsage ? { onUsage: cb.onUsage } : {}),
+        ...(cb.onActivity ? { onActivity: cb.onActivity } : {}),
+      },
+      deps,
+    )
+
+  let attempts = 1
+  let result: AgyRunResult
+
+  const retryMalformedNativeCall = async (): Promise<AgyRunResult> => {
+    reportAgyDiagnostic(cb, {
+      provider: 'agy',
+      status: 'retry',
+      reason: 'malformed_native_call',
+      attempts,
+    })
+    if (cb.signal.aborted) throw abortError()
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) {
+      reportAgyDiagnostic(cb, {
+        provider: 'agy',
+        status: 'failure',
+        reason: 'malformed_native_call',
+        attempts,
+      })
+      throw new AiTimeoutError(AGY_REQUEST_TIMEOUT_MS)
+    }
+    attempts++
+    const retryPlan = buildAgyPrompt(
+      [system, AGY_TOOLS_RETRY_NOTE].filter(Boolean).join('\n\n'),
+      messages,
+      tools,
+    )
+    let retried: AgyRunResult
+    try {
+      retried = await run(retryPlan, remainingMs)
+    } catch (error) {
+      const stillMalformed = isMalformedNativeFunctionCall(error)
+      if (!isAbortError(error))
+        reportAgyDiagnostic(cb, {
+          provider: 'agy',
+          status: 'failure',
+          reason: stillMalformed ? 'malformed_native_call' : 'cli_result',
+          attempts,
+        })
+      if (stillMalformed) {
+        throw new Error(
+          'Antigravity could not format a GenOffice tool request after one retry. Retry the document action; no host tool was run.',
+          { cause: error },
+        )
+      }
+      throw error
+    }
+    if (isMalformedNativeFunctionCall(retried.text)) {
+      reportAgyDiagnostic(cb, {
+        provider: 'agy',
+        status: 'failure',
+        reason: 'malformed_native_call',
+        attempts,
+      })
+      throw new Error(
+        'Antigravity could not format a GenOffice tool request after one retry. Retry the document action; no host tool was run.',
+      )
+    }
+    return retried
+  }
+
+  try {
+    result = await run(plan, AGY_REQUEST_TIMEOUT_MS)
+  } catch (error) {
+    if (tools.length && isMalformedNativeFunctionCall(error)) {
+      result = await retryMalformedNativeCall()
+    } else {
+      if (!isAbortError(error))
+        reportAgyDiagnostic(cb, {
+          provider: 'agy',
+          status: 'failure',
+          reason: 'cli_result',
+          attempts,
+        })
+      throw error
+    }
+  }
+
+  if (tools.length && isMalformedNativeFunctionCall(result.text)) {
+    result = await retryMalformedNativeCall()
+  }
+  if (!result.text.trim()) {
+    reportAgyDiagnostic(cb, {
+      provider: 'agy',
+      status: 'failure',
+      reason: 'cli_result',
+      attempts,
+    })
+    throw new Error('Antigravity CLI returned no content')
+  }
   if (tools.length) {
     const parsed = parseAgyToolCalls(result.text, new Set(tools.map((t) => t.name)))
+    if (parsed.invalidBlocks > 0) {
+      reportAgyDiagnostic(cb, {
+        provider: 'agy',
+        status: 'failure',
+        reason: 'malformed_host_tool_call',
+        attempts,
+      })
+      throw new Error(
+        `Antigravity returned ${parsed.invalidBlocks} malformed GenOffice <tool_call> block(s). No host tool was run; retry the document action.`,
+      )
+    }
     if (parsed.text) cb.onDelta(parsed.text)
     for (const call of parsed.calls) cb.onToolCall(call)
+    reportAgyDiagnostic(cb, {
+      provider: 'agy',
+      status: 'success',
+      reason: 'cli_result',
+      attempts,
+      toolCallCount: parsed.calls.length,
+    })
     cb.onStopReason?.(parsed.calls.length ? 'tool_use' : 'end_turn')
     return
   }
+  reportAgyDiagnostic(cb, {
+    provider: 'agy',
+    status: 'success',
+    reason: 'cli_result',
+    attempts,
+    toolCallCount: 0,
+  })
   cb.onStopReason?.('end_turn')
 }
 

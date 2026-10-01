@@ -285,6 +285,12 @@ export interface ContextMenuRequest {
   suggestions: string[]
 }
 
+export interface ClipboardHistoryEntry {
+  id: string
+  text: string
+  copiedAt: number
+}
+
 export interface SpellLanguages {
   active: string[]
   /** empty on macOS: the OS checker picks the language itself */
@@ -414,6 +420,9 @@ export interface DesktopApi {
   spellDiag(line: string): void
   /** opt this renderer into claiming right-clicks: claimed clicks get no native menu */
   armContextMenu(): void
+  /** local text history, when enabled in GenOffice Settings */
+  getClipboardHistory?: () => Promise<ClipboardHistoryEntry[]>
+  getClipboardHistoryEnabled?: () => Promise<boolean>
   /** synchronous, from the DOM contextmenu handler: the React menu answers this
    *  right-click, so Blink's request for it must not pop the native menu */
   claimContextMenu(seq: number): void

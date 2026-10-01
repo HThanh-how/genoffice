@@ -430,7 +430,11 @@ function matchTarget(doc: PmDocNode, target: Target, sel: SelRange): TopBlock[] 
       const overlaps = to > scoped.from && from < scoped.to
       const caretInside = scoped.from === scoped.to && scoped.from >= from && scoped.from <= to
       if (!overlaps && !caretInside) return false
-      if (overlaps && scoped.from < scoped.to && b.node.isTextblock) {
+      if (
+        overlaps &&
+        scoped.from < scoped.to &&
+        (b.node.isTextblock || b.node.type.name === 'docTable')
+      ) {
         const contentFrom = from + 1
         const contentTo = contentFrom + b.node.content.size
         const clipFrom = Math.max(scoped.from, contentFrom)
@@ -598,7 +602,7 @@ function applyFontRange(
   }
   if (Object.keys(markPatch).length === 0) return
   // merge per text node: only the given attrs change, the rest survive
-  node.forEach((child, offset) => {
+  node.descendants((child, offset) => {
     if (!child.isText) return
     const childFrom = Math.max(contentFrom + offset, from)
     const childTo = Math.min(contentFrom + offset + child.nodeSize, to)
@@ -807,7 +811,7 @@ function runFindReplace(op: Op, env: RunEnv): OpResult {
       continue
     }
     const blockDeleted = isTrackedDeleted(b.node)
-    b.node.forEach((child, offset) => {
+    b.node.descendants((child, offset) => {
       if (!child.isText || !child.text) return
       const struck = blockDeleted || child.marks.some((m) => m.type.name === 'del')
       const hay = matchCase ? child.text : child.text.toLowerCase()
@@ -865,7 +869,7 @@ function runSetMatchedFont(op: Op, env: RunEnv): OpResult {
     }
     const blockDeleted = isTrackedDeleted(b.node)
     const contentFrom = b.pos + 1
-    b.node.forEach((child, offset) => {
+    b.node.descendants((child, offset) => {
       if (!child.isText || !child.text) return
       const struck = blockDeleted || child.marks.some((m) => m.type.name === 'del')
       const hay = matchCase ? child.text : child.text.toLowerCase()
@@ -1091,7 +1095,7 @@ const FONT_SIGNATURE_FIELDS =
 
 register({
   name: 'setFont',
-  signature: `{ op: "setFont", target, ${FONT_SIGNATURE_FIELDS} }  // run-level style of the targeted blocks (only the selected characters when the target is a partial selection); a present field is set, null clears it, absent fields stay; fontFamily applies to its own script slot (an East Asian font keeps the run's Latin font and vice versa)`,
+  signature: `{ op: "setFont", target, ${FONT_SIGNATURE_FIELDS} }  // run-level style of the targeted blocks, including text inside table cells (only the selected characters when the target is a partial selection); a present field is set, null clears it, absent fields stay; fontFamily applies to its own script slot (an East Asian font keeps the run's Latin font and vice versa)`,
   keys: FONT_KEYS,
   target: 'required',
   validate(op, where) {

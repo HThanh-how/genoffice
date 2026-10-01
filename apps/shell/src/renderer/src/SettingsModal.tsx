@@ -38,6 +38,7 @@ import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import { DocumentMemorySettings } from './DocumentMemorySettings'
 import { ClipboardSettingsToggle } from './fork/ClipboardSettingsToggle'
+import { ClipboardHistorySettings } from './fork/ClipboardHistorySettings'
 import { AgyProviderFields, ProviderNote, testAiSettingsFor } from './fork/AgyProviderFields'
 import { AgyMediaFields } from './fork/AgyMediaFields'
 import { agyMediaTestConfig } from './fork/agy-media-state'
@@ -1802,6 +1803,7 @@ export function SettingsModal({
                   />
                 </div>
                 <ClipboardSettingsToggle />
+                <ClipboardHistorySettings />
                 <DocumentMemorySettings />
               </>
             )}

@@ -297,6 +297,7 @@ import { HOME_CHANNELS } from '../shared/home-api'
 import { registerHomeChatIpc } from './fork/home-chat-ipc'
 import { registerDocumentIndexIpc } from './fork/document-index-ipc'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
+import { initClipboardHistory, registerClipboardHistory } from './fork/clipboard-history-ipc'
 import { registerIndexingMode } from './fork/indexing-mode-ipc'
 import { registerAgyOcr } from './fork/agy-ocr-ipc'
 import { startLoopMonitor } from './fork/loop-monitor'
@@ -4045,6 +4046,11 @@ function startFolderScan(path: string): void {
 
 function registerHomeIpc(): void {
   registerClipboardSuggest({ ipcMain, settingsPath: APP_SETTINGS_PATH })
+  registerClipboardHistory({
+    ipcMain,
+    settingsPath: APP_SETTINGS_PATH,
+    historyPath: () => join(app.getPath('userData'), 'clipboard-history.json'),
+  })
   registerIndexingMode({ ipcMain, settingsPath: APP_SETTINGS_PATH })
   registerAgyOcr({
     ipcMain,
@@ -6285,6 +6291,7 @@ app.whenReady().then(async () => {
   })
   createShellWindow()
   initClipboardSuggest()
+  initClipboardHistory()
   // deferred to ready: labels need currentLang(), which reads app.getLocale()
   installBackToHomeItems()
   installDockMenu()

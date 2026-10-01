@@ -26,7 +26,7 @@ export function agyToolNote(tools: AgentToolDef[]): string {
     'Use only the GenOffice host tools listed below. Do not invoke Antigravity CLI tools such as run_command, Generic, MCP, search_web, or file tools; do not request permission or wait for approval. ' +
     'To use a listed GenOffice tool, output one or more plain-text blocks of the exact form ' +
     `${AGY_TOOL_OPEN}{"name":"<tool>","arguments":{...}}${AGY_TOOL_CLOSE} ` +
-    'with valid JSON, then stop. Do not make a native CLI tool call. The host runs these blocks and sends results back as "Tool result" turns. ' +
+    'with valid JSON, then stop. This is a plain-text protocol: do not make or imitate native function/API calls, emit function-call JSON, or invoke a native CLI tool. The host runs these blocks and sends results back as "Tool result" turns. ' +
     'Call a tool whenever the user asks you to read or change the document; do not claim an edit is done until a tool result confirms it. ' +
     'When no listed host tool is needed, reply normally without any block.\n\nGenOffice tools:\n' +
     list
@@ -41,8 +41,9 @@ function callId(index: number): string {
 export function parseAgyToolCalls(
   text: string,
   known: ReadonlySet<string>,
-): { text: string; calls: AgentToolCall[] } {
+): { text: string; calls: AgentToolCall[]; invalidBlocks: number } {
   const calls: AgentToolCall[] = []
+  let invalidBlocks = 0
   let visible = ''
   let rest = text
   for (;;) {
@@ -57,13 +58,19 @@ export function parseAgyToolCalls(
       // unterminated block: treat the tail as the JSON so a cut-off reply still works
       const parsed = parseOne(rest.slice(start + AGY_TOOL_OPEN.length), known, calls.length)
       if (parsed) calls.push(parsed)
+      else invalidBlocks++
       break
     }
     const parsed = parseOne(rest.slice(start + AGY_TOOL_OPEN.length, end), known, calls.length)
     if (parsed) calls.push(parsed)
+    else invalidBlocks++
     rest = rest.slice(end + AGY_TOOL_CLOSE.length)
   }
-  return { text: visible.trim(), calls: calls.slice(0, AGY_MAX_TOOL_CALLS_PER_TURN) }
+  return {
+    text: visible.trim(),
+    calls: calls.slice(0, AGY_MAX_TOOL_CALLS_PER_TURN),
+    invalidBlocks,
+  }
 }
 
 function parseOne(raw: string, known: ReadonlySet<string>, index: number): AgentToolCall | null {

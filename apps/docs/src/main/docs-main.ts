@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { handOffBytes } from './byte-handoff'
+import { appendAiDiagnostic } from './ai-diagnostics'
 import {
   appendFileSync,
   existsSync,
@@ -3854,6 +3855,7 @@ export function registerAiIpc(): void {
         onToolCall: (toolCall) => send({ requestId, type: 'tool-call', toolCall }),
         onActivity: ping,
         onUsage: (usage) => send({ requestId, type: 'usage', usage }),
+        onDiagnostic: (record) => appendAiDiagnostic(userDataPath('ai-diagnostics.jsonl'), record),
         onStopReason: (reason) => {
           stopReason = reason
         },

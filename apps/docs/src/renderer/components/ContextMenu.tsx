@@ -14,6 +14,7 @@ import {
   splitCell,
 } from '@tiptap/pm/tables'
 import { platformShortcuts } from '@genoffice/i18n'
+import { clipboardHistoryLabels } from '@genoffice/electron-utils/clipboard-history-labels'
 
 import { useI18n, type StringKey } from '../i18n/locale'
 import { wordRangeAtCaret } from '../editor/comments'
@@ -39,6 +40,7 @@ import { applySpellingSuggestion } from '../editor/spell-replace'
 import { linkRangeAt, linkTarget, removeLink } from '../editor/link-actions'
 import { fieldRangeAt, toggleFieldCodes, type FieldRange } from '../editor/field-codes'
 import type { SpellLanguages } from '../../shared/ipc'
+import type { ClipboardHistoryEntry } from '../../shared/ipc'
 
 export { FontDialog } from './FontDialog'
 
@@ -150,6 +152,25 @@ export function EditorContextMenu({
   const { t, lang } = useI18n()
   const ref = useRef<HTMLDivElement>(null)
   const [submenu, setSubmenu] = useState<string | null>(null)
+  const [clipboardHistory, setClipboardHistory] = useState<ClipboardHistoryEntry[]>([])
+  const [clipboardHistoryEnabled, setClipboardHistoryEnabled] = useState(false)
+  useEffect(() => {
+    let alive = true
+    void Promise.all([
+      window.desktop.getClipboardHistoryEnabled?.() ?? Promise.resolve(false),
+      window.desktop.getClipboardHistory?.() ?? Promise.resolve([]),
+    ])
+      .then(([enabled, items]) => {
+        if (alive) {
+          setClipboardHistoryEnabled(enabled)
+          setClipboardHistory(items)
+        }
+      })
+      .catch(() => {})
+    return () => {
+      alive = false
+    }
+  }, [menu])
 
   // ---- spelling section (Word: suggestions · Add to Dictionary · Language) ----
   const spell = spellcheckEnabled() && editor.isEditable ? menu.spell : null
@@ -432,6 +453,41 @@ export function EditorContextMenu({
         disabled: !canEdit,
         onClick: run(() => void pasteFromClipboard(editor, 'text')),
       })}
+      {clipboardHistoryEnabled && (
+        <div className="ctx-item-wrap" onMouseLeave={() => setSubmenu(null)}>
+          {item(clipboardHistoryLabels(lang).pasteMore, {
+            submenuKey: 'clipboardHistory',
+            disabled: !canEdit,
+          })}
+          {submenu === 'clipboardHistory' && canEdit && (
+            <div className="ctx-submenu ctx-submenu-scroll">
+              {clipboardHistory.length === 0 ? (
+                <button className="ctx-item" disabled>
+                  <span className="ctx-label">{clipboardHistoryLabels(lang).pasteMoreEmpty}</span>
+                </button>
+              ) : (
+                clipboardHistory.map((entry) => {
+                  const preview = entry.text.replace(/\s+/g, ' ').trim()
+                  const label = preview.length > 64 ? `${preview.slice(0, 64)}…` : preview
+                  return (
+                    <button
+                      key={entry.id}
+                      className="ctx-item"
+                      title={preview}
+                      onClick={run(() => {
+                        editor.view.focus()
+                        editor.view.pasteText(entry.text)
+                      })}
+                    >
+                      <span className="ctx-label">{label || '(empty)'}</span>
+                    </button>
+                  )
+                })
+              )}
+            </div>
+          )}
+        </div>
+      )}
       <div className="ctx-sep" />
       {item(t('appFontMenu'), { key: '⌘D', onClick: run(onFontDialog) })}
       {item(t('appParagraphMenu'), { key: '⌥⌘M', onClick: run(onParagraphDialog) })}

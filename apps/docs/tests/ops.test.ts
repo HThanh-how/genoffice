@@ -1110,3 +1110,102 @@ describe('UI ops: the ribbon issues the same ops as the model', () => {
     expect(bad.error).toContain('delta must be 1 or -1')
   })
 })
+
+describe('font changes in table cells', () => {
+  const cellTable = (): JsonNode => ({
+    type: 'docTable',
+    attrs: { docxIndex: null, colWidths: [2000, 3000] },
+    content: [
+      {
+        type: 'docTableRow',
+        content: [
+          {
+            type: 'docTableCell',
+            content: [
+              para([
+                text('First', [
+                  { type: 'bold' },
+                  { type: 'docTextStyle', attrs: { color: '123456', fontAscii: 'Calibri' } },
+                ]),
+              ]),
+            ],
+          },
+          { type: 'docTableCell', content: [para([text('Second')]), para([text('Signature')])] },
+        ],
+      },
+    ],
+  })
+
+  it('sets table fonts recursively and preserves other formatting and table geometry', () => {
+    const editor = createEditor([cellTable()])
+    const before = editor.state.doc.child(0)
+    const outcome = executeOps(editor, [
+      { op: 'setFont', target: { nodeType: 'table' }, fontFamily: 'Times New Roman' },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(outcome.results[0]).toMatchObject({ matched: 1, changed: 1 })
+    const table = editor.state.doc.child(0)
+    expect(table.attrs.colWidths).toEqual(before.attrs.colWidths)
+    table.descendants((node) => {
+      if (node.isText)
+        expect(node.marks.find((m) => m.type.name === 'docTextStyle')?.attrs.fontAscii).toBe(
+          'Times New Roman',
+        )
+    })
+    const first = table.child(0).child(0).child(0).child(0)
+    expect(first.marks.some((m) => m.type.name === 'bold')).toBe(true)
+    expect(first.marks.find((m) => m.type.name === 'docTextStyle')?.attrs.color).toBe('123456')
+    expect(table.textContent).toBe(before.textContent)
+    const repeated = executeOps(editor, [
+      { op: 'setFont', target: { nodeType: 'table' }, fontFamily: 'Times New Roman' },
+    ])
+    expect(repeated.results[0].changed).toBe(0)
+  })
+
+  it('limits a selection-scoped table font change to selected characters', () => {
+    const editor = createEditor([cellTable()])
+    let firstPos = 0
+    editor.state.doc.descendants((node, pos) => {
+      if (node.isText && node.text === 'First') firstPos = pos
+    })
+    editor.commands.setTextSelection({ from: firstPos + 1, to: firstPos + 4 })
+    executeOps(editor, [
+      { op: 'setFont', target: { scope: 'selection' }, fontFamily: 'Times New Roman' },
+    ])
+    const paragraph = editor.state.doc.child(0).child(0).child(0).child(0)
+    expect(paragraph.child(0).text).toBe('F')
+    expect(
+      paragraph.child(0).marks.find((m) => m.type.name === 'docTextStyle')?.attrs.fontAscii,
+    ).toBe('Calibri')
+    expect(paragraph.child(1).text).toBe('irs')
+    expect(
+      paragraph.child(1).marks.find((m) => m.type.name === 'docTextStyle')?.attrs.fontAscii,
+    ).toBe('Times New Roman')
+    const otherCell = editor.state.doc.child(0).child(0).child(1)
+    otherCell.descendants((node) => {
+      if (node.isText) expect(node.marks.some((m) => m.type.name === 'docTextStyle')).toBe(false)
+    })
+  })
+
+  it('finds and formats matching words inside nested cell paragraphs', () => {
+    const editor = createEditor([cellTable()])
+    const outcome = executeOps(editor, [
+      { op: 'setMatchedFont', text: 'Signature', fontFamily: 'Times New Roman' },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(outcome.results[0]).toMatchObject({ matched: 1, changed: 1 })
+    const cell = editor.state.doc.child(0).child(0).child(1)
+    expect(
+      cell
+        .child(1)
+        .child(0)
+        .marks.find((m) => m.type.name === 'docTextStyle')?.attrs.fontAscii,
+    ).toBe('Times New Roman')
+    expect(
+      cell
+        .child(0)
+        .child(0)
+        .marks.some((m) => m.type.name === 'docTextStyle'),
+    ).toBe(false)
+  })
+})

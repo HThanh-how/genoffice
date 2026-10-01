@@ -192,6 +192,14 @@ export interface StreamCallbacks {
   onActivity?: () => void
   /** Provider-reported cumulative token counts; repeated stream updates replace earlier counts. */
   onUsage?: (usage: import('../types').AiTokenUsage) => void
+  /** Safe provider metadata only; must never include prompts, outputs, or raw errors. */
+  onDiagnostic?: (record: {
+    provider: 'agy'
+    status: 'retry' | 'success' | 'failure'
+    reason: 'malformed_native_call' | 'malformed_host_tool_call' | 'cli_result'
+    attempts: number
+    toolCallCount?: number
+  }) => void
   /** Stable renderer transport id for providers with native sessions. */
   sessionId?: string
   signal: AbortSignal

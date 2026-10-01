@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./atomic-write": "./src/atomic-write.ts",
+    "./clipboard-history-labels": "./src/clipboard-history-labels.ts",
     "./drop-open": "./src/drop-open.ts",
     "./generated-images": "./src/generated-images.ts",
     "./headless-export": "./src/headless-export.ts",

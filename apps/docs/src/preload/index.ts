@@ -11,6 +11,7 @@ import type {
   MenuCommand,
   AutoSaveDefault,
   ContextMenuRequest,
+  ClipboardHistoryEntry,
   UiTheme,
   ZoteroRendererRequest,
 } from '../shared/ipc'
@@ -146,6 +147,20 @@ const api: DesktopApi = {
   respellKick: () => ipcRenderer.invoke('docs:respell-kick'),
   spellDiag: (line: string) => ipcRenderer.send('docs:spell-diag', line),
   armContextMenu: () => ipcRenderer.send('docs:context-menu-arm'),
+  getClipboardHistoryEnabled: async () =>
+    (await ipcRenderer.invoke('clipboardHistory:get-enabled')) === true,
+  getClipboardHistory: async () => {
+    const value: unknown = await ipcRenderer.invoke('clipboardHistory:get-entries')
+    return Array.isArray(value)
+      ? value.filter(
+          (entry): entry is ClipboardHistoryEntry =>
+            !!entry &&
+            typeof entry.id === 'string' &&
+            typeof entry.text === 'string' &&
+            typeof entry.copiedAt === 'number',
+        )
+      : []
+  },
   claimContextMenu: (seq: number) => {
     ipcRenderer.sendSync('docs:context-menu-claim', seq)
   },

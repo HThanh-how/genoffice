@@ -39,6 +39,7 @@ import type {
 import type { TabsApi, TabSummary } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
 import { createClipboardSuggestPreloadApi } from './fork/clipboard-suggest-api'
+import { createClipboardHistoryPreloadApi } from './fork/clipboard-history-api'
 import { createDocumentIndexPreloadApi } from './fork/document-index-api'
 import { createHomeChatPreloadApi } from './fork/home-chat-api'
 
@@ -134,6 +135,7 @@ function normalizeDocumentMemoryStatus(result: unknown): DocumentMemoryStatus {
 
 const homeApi: HomeApi = {
   ...createClipboardSuggestPreloadApi(ipcRenderer),
+  ...createClipboardHistoryPreloadApi(ipcRenderer),
   ...createDocumentIndexPreloadApi(ipcRenderer),
   ...createHomeChatPreloadApi(ipcRenderer),
   async recents(query) {

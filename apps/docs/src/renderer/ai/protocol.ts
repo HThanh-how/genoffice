@@ -78,7 +78,7 @@ export const OPS_GUIDE = [
   'Discipline:',
   '- Read the "document block list" before issuing ops; anything like "paragraph N / a certain section" must be addressed with block indexes from the list — never guess;',
   '- Only give the fields the user explicitly asked to change;',
-  '- Protected blocks such as images cannot be modified with style ops (they are skipped); to change table content, use read_blocks to get the <table> and rewrite it wholesale with replace_blocks (the table keeps its column widths, borders, shading and cell formatting; cells whose text you leave unchanged keep their content untouched).',
+  '- setFont supports table targets and recursively formats cell text; to change the font everywhere, use {"op":"setFont","target":{"scope":"document"},"fontFamily":"Times New Roman"}. Do not rewrite a table just to change its font. Protected blocks such as images cannot be modified with style ops (they are skipped); to change table content, use read_blocks to get the <table> and rewrite it wholesale with replace_blocks (the table keeps its column widths, borders, shading and cell formatting; cells whose text you leave unchanged keep their content untouched).',
   '',
   'Known error cases (must avoid):',
   'BC-1 Giving fields the user did not ask for, wiping existing formatting by mistake;',
