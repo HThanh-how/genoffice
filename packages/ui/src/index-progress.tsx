@@ -48,7 +48,7 @@ export function IndexProgressRing({
 
   return (
     <svg
-      className={`index-progress-ring is-${state}`}
+      className={`index-progress-ring is-${state}${complete ? ' is-complete' : ''}`}
       viewBox="0 0 32 32"
       role="progressbar"
       aria-label={describedLabel}
@@ -57,12 +57,9 @@ export function IndexProgressRing({
       aria-valuenow={complete ? 100 : determinate ? boundedPercent : undefined}
       aria-valuetext={spokenValue}
     >
-      <circle className="index-progress-ring-track" cx="16" cy="16" r="13" />
+      {!complete && <circle className="index-progress-ring-track" cx="16" cy="16" r="13" />}
       {complete ? (
-        <>
-          <circle className="index-progress-ring-value" cx="16" cy="16" r="13" />
-          <path className="index-progress-ring-check" d="m10.7 16.2 3.4 3.4 7.2-7.3" />
-        </>
+        <circle className="index-progress-ring-dot" cx="16" cy="16" r="6" />
       ) : state === 'error' ? (
         <path className="index-progress-ring-symbol" d="M16 9.5v8m0 4v.1" />
       ) : state === 'paused' ? (

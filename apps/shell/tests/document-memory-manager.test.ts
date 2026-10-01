@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
 
 let dir: string
 let managers: DocumentMemoryManager[]
@@ -17,6 +18,7 @@ beforeEach(() => {
 })
 afterEach(() => {
   for (const manager of managers) manager.close()
+  resetIndexingPolicyBus()
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -116,6 +118,53 @@ function manager(fake: FakeWorker) {
 }
 
 describe('DocumentMemoryManager', () => {
+  it('does not show old completed counters while a changed snapshot is paused, then completes', async () => {
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    const instance = manager(fake)
+    const path = join(dir, 'changed.txt')
+    writeFileSync(path, 'new document content')
+    const store = new DocumentMemoryStore(join(dir, 'document-memory.db'))
+    store.replaceDocument(path, {
+      hash: 'old',
+      mtimeMs: 1,
+      sizeBytes: 3,
+      chunks: Array.from({ length: 5 }, (_, i) => ({
+        text: `old ${i}`,
+        location: `${i}`,
+        vector: [1, 0],
+      })),
+      embeddingModel: 'test-v1',
+      status: 'ready',
+    })
+    store.close()
+    const policy = {
+      paused: true,
+      pauseReason: 'low-memory' as const,
+      threads: 1,
+      cpuShare: 0,
+      priority: 'idle' as const,
+      tier: 'paused' as const,
+      reason: 'test pause',
+      onBattery: false,
+    }
+    publishIndexingPolicy(policy)
+    instance.indexDiscoveredFile(path)
+    expect(instance.getDocumentIndexProgress(path)).toMatchObject({
+      state: 'paused',
+      percent: null,
+      completedChunks: 0,
+      totalChunks: 0,
+    })
+    publishIndexingPolicy({ ...policy, paused: false, tier: 'active', cpuShare: 0.5 })
+    await until(() => instance.getDocumentIndexProgress(path).state === 'ready')
+    expect(instance.getDocumentIndexProgress(path)).toMatchObject({
+      state: 'ready',
+      percent: 100,
+      completedChunks: 1,
+      totalChunks: 1,
+    })
+  })
+
   it('reports paused partial vectors, durable errors, and folder-scoped progress', () => {
     const fake = new FakeWorker(join(dir, 'document-memory.db'))
     const instance = manager(fake)

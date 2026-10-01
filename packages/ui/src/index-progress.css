@@ -25,9 +25,9 @@
 
 .index-progress-ring {
   display: block;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 22px;
   overflow: visible;
   color: var(--accent, var(--color-brand-secondary));
 }
@@ -115,4 +115,18 @@
     animation: none;
     stroke-dasharray: 24 58;
   }
+}
+
+.document-index-indicator .index-progress-ring {
+  width: 18px;
+  height: 18px;
+  flex-basis: 18px;
+}
+
+.index-progress-ring.is-complete {
+  color: var(--success);
+}
+
+.index-progress-ring-dot {
+  fill: currentColor;
 }

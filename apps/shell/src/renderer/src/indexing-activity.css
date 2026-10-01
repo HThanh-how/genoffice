@@ -71,9 +71,9 @@
   font-weight: 700;
   line-height: 1;
 }
-/* A finished index is calm: neutral ring, no accent. */
+/* Completed work uses the same success dot as the document status bar. */
 .indexing-activity.is-done .index-progress-ring {
-  color: var(--text-secondary);
+  color: var(--success);
 }
 .indexing-activity.is-model-error .indexing-activity-launcher {
   border-color: var(--danger-border);

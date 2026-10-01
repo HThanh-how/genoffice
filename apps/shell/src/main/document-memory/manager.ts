@@ -369,8 +369,11 @@ export class DocumentMemoryManager {
       ...(document.truncated ? { truncated: true } : {}),
     }
     if (document.status === 'excluded') return { ...base, state: 'excluded', percent: null }
-    if (this.activeExtractions.has(p)) return { ...base, state: 'extracting', percent: null }
-    if (this.queued.has(p)) return { ...base, state: 'queued', percent: null }
+    // Queued/extracting work belongs to a new snapshot; stored counters describe the old one.
+    const awaitingSnapshot = { ...base, completedChunks: 0, totalChunks: 0, percent: null }
+    if (this.activeExtractions.has(p)) return { ...awaitingSnapshot, state: 'extracting' }
+    if (this.queued.has(p))
+      return { ...awaitingSnapshot, state: isIndexingPaused() ? 'paused' : 'queued' }
     if (document.status === 'empty') return { ...base, state: 'empty', percent: 100 }
     if (document.status === 'ready') return { ...base, state: 'ready', percent: 100 }
     if (document.status === 'error')
@@ -381,7 +384,8 @@ export class DocumentMemoryManager {
         ...(document.error ? { error: document.error } : {}),
       }
     if (document.status === 'text-only') {
-      if (!this.enabled) return { ...base, state: 'paused', percent: progressPercent(progress) }
+      if (!this.enabled || isIndexingPaused())
+        return { ...base, state: 'paused', percent: progressPercent(progress) }
       if (this.modelState === 'error')
         return {
           ...base,
