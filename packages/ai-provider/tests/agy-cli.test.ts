@@ -23,8 +23,6 @@ import {
   runAgy,
   streamAgy,
   validateAgyCliPath,
-  type AgyFsDeps,
-  type AgyRunDeps,
 } from '../src/agy-cli'
 
 // --- fixtures recorded from `agy 2026-10 -p ... --output-format stream-json` (init event trimmed) ---
