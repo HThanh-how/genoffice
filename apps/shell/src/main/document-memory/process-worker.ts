@@ -16,6 +16,10 @@ export function createIndexProcess(
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
       GENOFFICE_INDEX_WORKER_DATA: JSON.stringify(data),
+      // the packaged pdfium.wasm lives in Resources/wasm; plain Node has no resourcesPath
+      ...((process as { resourcesPath?: string }).resourcesPath
+        ? { GENOFFICE_RESOURCES_PATH: (process as { resourcesPath?: string }).resourcesPath }
+        : {}),
     },
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
     windowsHide: true,

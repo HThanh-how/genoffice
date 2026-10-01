@@ -298,6 +298,7 @@ import { registerHomeChatIpc } from './fork/home-chat-ipc'
 import { registerDocumentIndexIpc } from './fork/document-index-ipc'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
 import { registerIndexingMode } from './fork/indexing-mode-ipc'
+import { registerAgyOcr } from './fork/agy-ocr-ipc'
 import { startLoopMonitor } from './fork/loop-monitor'
 import {
   normalizeAiPanelPrefs,
@@ -4045,6 +4046,12 @@ function startFolderScan(path: string): void {
 function registerHomeIpc(): void {
   registerClipboardSuggest({ ipcMain, settingsPath: APP_SETTINGS_PATH })
   registerIndexingMode({ ipcMain, settingsPath: APP_SETTINGS_PATH })
+  registerAgyOcr({
+    ipcMain,
+    settingsPath: APP_SETTINGS_PATH,
+    userDataPath: () => app.getPath('userData'),
+    getDocumentMemory: () => documentMemory,
+  })
   registerDocumentIndexIpc({
     ipcMain,
     getDocumentMemory: () => documentMemory,

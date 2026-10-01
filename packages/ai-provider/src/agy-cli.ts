@@ -279,16 +279,44 @@ export interface AgyUsage {
   total_tokens?: number
 }
 
+/** an action the sandboxed headless agent was not allowed to take (`result.denied_actions`) */
+export interface AgyDeniedAction {
+  action: string
+  displayName: string
+}
+
 export type AgyEvent =
-  | { kind: 'init'; model?: string }
+  | { kind: 'init'; model?: string; conversationId?: string }
   | { kind: 'text'; text: string; stepIndex: number; done: boolean }
   | { kind: 'step'; stepType: string }
-  | { kind: 'result'; ok: boolean; response: string; error?: string; usage?: AgyUsage }
+  | {
+      kind: 'result'
+      ok: boolean
+      response: string
+      error?: string
+      usage?: AgyUsage
+      conversationId?: string
+      deniedActions?: AgyDeniedAction[]
+    }
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined
+}
+
+function parseDeniedActions(value: unknown): AgyDeniedAction[] | undefined {
+  if (!Array.isArray(value) || value.length === 0) return undefined
+  return value.flatMap((item) => {
+    const entry = record(item)
+    if (!entry) return []
+    return [
+      {
+        action: typeof entry.action === 'string' ? entry.action : '',
+        displayName: typeof entry.display_name === 'string' ? entry.display_name : '',
+      },
+    ]
+  })
 }
 
 /** One NDJSON line of `--output-format stream-json`; unknown or malformed lines yield null. */
@@ -305,7 +333,11 @@ export function parseAgyStreamLine(line: string): AgyEvent | null {
   if (!obj) return null
   if (obj.event === 'init') {
     const init = record(obj.init)
-    return { kind: 'init', ...(typeof init?.model === 'string' ? { model: init.model } : {}) }
+    return {
+      kind: 'init',
+      ...(typeof init?.model === 'string' ? { model: init.model } : {}),
+      ...(typeof obj.conversation_id === 'string' ? { conversationId: obj.conversation_id } : {}),
+    }
   }
   if (obj.event === 'step_update') {
     const step = record(obj.step_update)
@@ -331,6 +363,12 @@ export function parseAgyStreamLine(line: string): AgyEvent | null {
       response: typeof result.response === 'string' ? result.response : '',
       ...(typeof result.error === 'string' ? { error: result.error } : {}),
       ...(record(result.usage) ? { usage: result.usage as AgyUsage } : {}),
+      ...(typeof result.conversation_id === 'string'
+        ? { conversationId: result.conversation_id }
+        : {}),
+      ...(parseDeniedActions(result.denied_actions)
+        ? { deniedActions: parseDeniedActions(result.denied_actions)! }
+        : {}),
     }
   }
   return null
@@ -621,6 +659,10 @@ export interface AgyRunOptions {
 export interface AgyRunResult {
   text: string
   usage?: AiTokenUsage
+  /** agy's own conversation id (names its `brain/<id>` working folder) */
+  conversationId?: string
+  /** sandbox refusals reported with the result, if any */
+  deniedActions?: AgyDeniedAction[]
 }
 
 /**
@@ -658,6 +700,7 @@ export async function runAgy(
       let text = ''
       let lastStep = -1
       let usage: AiTokenUsage | undefined
+      let conversationId: string | undefined
       let resultSeen: Extract<AgyEvent, { kind: 'result' }> | undefined
       let stderr = ''
       const decoder = new StringDecoder('utf8')
@@ -687,6 +730,7 @@ export async function runAgy(
       const handleLine = (line: string) => {
         const event = parseAgyStreamLine(line)
         if (!event) return
+        if (event.kind === 'init' && event.conversationId) conversationId = event.conversationId
         if (event.kind === 'text') {
           // a new agent_response step (after tool use) starts a new paragraph
           const prefix = text && lastStep !== -1 && event.stepIndex !== lastStep ? '\n\n' : ''
@@ -698,6 +742,7 @@ export async function runAgy(
           }
         } else if (event.kind === 'result') {
           resultSeen = event
+          conversationId = event.conversationId || conversationId
           if (event.usage) {
             usage = agyUsageToTokenUsage(event.usage)
             options.onUsage?.(usage)
@@ -732,7 +777,12 @@ export async function runAgy(
             // some turns carry the text only in the final result
             const full = text || resultSeen.response
             if (!text && resultSeen.response) options.onText?.(resultSeen.response)
-            resolve({ text: full, ...(usage ? { usage } : {}) })
+            resolve({
+              text: full,
+              ...(usage ? { usage } : {}),
+              ...(conversationId ? { conversationId } : {}),
+              ...(resultSeen.deniedActions ? { deniedActions: resultSeen.deniedActions } : {}),
+            })
             return
           }
           const detail = resultSeen?.error ?? stderr.trim().split(/\r?\n/).pop() ?? ''

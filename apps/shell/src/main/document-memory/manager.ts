@@ -16,6 +16,9 @@ import { DocumentMemoryStore, type DocumentMemoryHit, type StoredDocument } from
 import type { DocumentChunk } from './chunks'
 import type { DocumentMemoryStatus } from '../../shared/home-api'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'
+import { createOcrHost } from './ocr-host'
+import type { OcrJobHost } from './agy-ocr-job'
+import type { OcrRenderRequest, OcrRenderResult } from './agy-ocr-render'
 
 const EMBEDDING_MODEL_ID =
   'Xenova/multilingual-e5-small@761b726dd34fb83930e26aab4e9ac3899aa1fa78:q8'
@@ -74,6 +77,7 @@ type WorkerReply =
 type WorkerRequest =
   | { type: 'extract'; path: string; interactive?: boolean }
   | { type: 'embed'; texts: string[]; kind: 'query' | 'passage' }
+  | { type: 'ocr-render'; path: string; ocr: OcrRenderRequest }
   | {
       type: 'search'
       query: string
@@ -301,6 +305,29 @@ export class DocumentMemoryManager {
     this.invalidatePath(path)
     this.enqueue(path, true)
     return { ok: true }
+  }
+
+  /** Storage, page rendering (in the index process) and re-indexing for the scanned-PDF reader. */
+  ocrHost(): OcrJobHost {
+    return createOcrHost({
+      store: this.store,
+      isEnabled: () => this.isEnabled(),
+      renderInWorker: async (path, ocr): Promise<OcrRenderResult | null> => {
+        const reply = await this.ask({ type: 'ocr-render', path, ocr }, this.workerTimeoutMs, true)
+        if (!reply) return null
+        if ('result' in reply) return reply.result as unknown as OcrRenderResult
+        return {
+          ok: false,
+          code: 'render',
+          message:
+            'error' in reply && typeof reply.error === 'string' ? reply.error : 'Render failed',
+        }
+      },
+      reindex: (path) => {
+        this.invalidatePath(path)
+        this.enqueue(path, true)
+      },
+    })
   }
 
   indexDocumentPath(id: number): string | null {

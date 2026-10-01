@@ -8,6 +8,8 @@
   "exports": {
     ".": "./src/index.ts",
     "./agy-cli": "./src/agy-cli.ts",
+    "./agy-ocr": "./src/agy-ocr.ts",
+    "./agy-usage": "./src/agy-usage.ts",
     "./browser": "./src/browser.ts",
     "./codex-app-server": "./src/codex-app-server.ts",
     "./custom-models": "./src/custom-models.ts",

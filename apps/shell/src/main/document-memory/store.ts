@@ -5,6 +5,7 @@ import { chmodSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { documentIndexFields, queryTokens } from './normalization'
+import { OcrSidecar, isOcrLocation } from './ocr-sidecar'
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
 export interface StoredDocument {
@@ -44,6 +45,8 @@ export interface DocumentMemoryHit {
   indexedAt: number | null
   /** The document is only partially indexed (chunk cap or sampled rows). */
   truncated: boolean
+  /** The text was transcribed from page images (OCR) and may contain recognition errors. */
+  ocr?: boolean
 }
 /** Options for the time-sliced write paths (large documents are written in short turns). */
 export interface SliceOptions {
@@ -180,6 +183,12 @@ export interface DocumentMemorySearchOptions {
 export class DocumentMemoryStore {
   private readonly db: DatabaseSync
   private readonly searchOptions: Required<DocumentMemorySearchOptions>
+  private ocrSidecar: OcrSidecar | null = null
+
+  /** Text transcribed by the scanned-PDF reader (see ocr-sidecar.ts). */
+  get ocr(): OcrSidecar {
+    return (this.ocrSidecar ??= new OcrSidecar(this.db))
+  }
 
   constructor(dbPath: string, options: DocumentMemorySearchOptions = {}) {
     this.searchOptions = {
@@ -196,6 +205,7 @@ export class DocumentMemoryStore {
       'PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;',
     )
     this.db.exec(SCHEMA)
+    OcrSidecar.ensureSchema(this.db)
     // Older databases predate explicit open timestamps. Preserve all existing rows and vectors.
     const columns = this.db.prepare('PRAGMA table_info(documents)').all() as Array<{ name: string }>
     if (!columns.some((column) => column.name === 'last_opened_at'))
@@ -845,6 +855,7 @@ export class DocumentMemoryStore {
       this.db
         .prepare('UPDATE documents SET path = ?, name = ?, updated_at = unixepoch() WHERE id = ?')
         .run(nextResolved, basename(nextResolved), row.id)
+      this.ocr.rename(oldResolved, nextResolved)
     })
   }
 
@@ -861,6 +872,7 @@ export class DocumentMemoryStore {
       if (!row || row.excluded) return
       this.deleteChunks(row.id)
       this.db.prepare('DELETE FROM documents WHERE id = ?').run(row.id)
+      this.ocr.remove(p)
       removed = true
     })
     return removed
@@ -876,6 +888,7 @@ export class DocumentMemoryStore {
       if (!row || row.excluded) return 'done'
       if (!this.deleteChunksBudgeted(row.id, outOfBudget)) return 'more'
       this.db.prepare('DELETE FROM documents WHERE id = ?').run(row.id)
+      this.ocr.remove(p)
       removed = true
       return 'done'
     })
@@ -969,6 +982,7 @@ export class DocumentMemoryStore {
         { id: number } | undefined
       if (!row) return
       this.deleteChunks(row.id)
+      this.ocr.remove(p)
       this.db
         .prepare(
           `UPDATE documents SET excluded = 1, status = 'excluded', hash = NULL, embedding_model = NULL,
@@ -985,6 +999,7 @@ export class DocumentMemoryStore {
       this.db.prepare('DELETE FROM chunk_fts').run()
       this.db.prepare('DELETE FROM chunks').run()
       this.db.prepare('DELETE FROM documents WHERE excluded = 0').run()
+      this.ocr.clearAll()
       this.db.exec(
         'UPDATE documents SET chunk_total = 0, chunk_done = 0 WHERE chunk_total <> 0 OR chunk_done <> 0',
       )
@@ -1177,6 +1192,7 @@ export class DocumentMemoryStore {
               sizeBytes: row.size_bytes,
               indexedAt: indexedAt(row.updated_at),
               truncated: !!row.truncated,
+              ...(isOcrLocation(row.location) ? { ocr: true } : {}),
             },
           ]
         : []
@@ -1205,6 +1221,7 @@ export class DocumentMemoryStore {
           sizeBytes: row.size_bytes,
           indexedAt: indexedAt(row.updated_at),
           truncated: !!row.truncated,
+          ...(isOcrLocation(row.location) ? { ocr: true } : {}),
         }
       : null
   }

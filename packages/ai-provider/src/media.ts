@@ -5,6 +5,7 @@ import type {
   AiMediaSettings,
   AiSettings,
 } from './types'
+import { AGY_DEFAULT_MODEL, isCliProvider } from './agy-meta'
 
 export const OPENAI_IMAGES_BASE_URL = 'https://api.openai.com/v1'
 export const GEMINI_MEDIA_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta'
@@ -182,6 +183,25 @@ export const AI_MEDIA_PROVIDERS: AiMediaProviderMeta[] = [
     videoAnalysis: false,
   },
   {
+    id: 'agy',
+    label: 'Antigravity CLI',
+    // no API key: the local Antigravity agent signs in with the user's own account. Generation
+    // and analysis run in the agent (about 10-40 s per call, counted on the Antigravity quota);
+    // the model list is the live `agy models` output, this seed only serves until it loads.
+    description:
+      'Gemini through your Antigravity account: image generation and analysis, no API key',
+    keyPlaceholder: '',
+    defaultBaseUrl: '',
+    imageProtocol: 'agy-cli',
+    imageModels: [AGY_DEFAULT_MODEL],
+    defaultImageModel: AGY_DEFAULT_MODEL,
+    analysisProtocol: 'agy-cli',
+    analysisModels: [AGY_DEFAULT_MODEL],
+    defaultAnalysisModel: AGY_DEFAULT_MODEL,
+    // verified 2026-10: the agent reads short mp4 clips and wav speech staged next to the prompt
+    videoAnalysis: true,
+  },
+  {
     id: 'custom',
     label: 'Custom',
     description: 'Any OpenAI-compatible endpoint: /images/generations and /chat/completions',
@@ -253,6 +273,9 @@ export function resolveAiMediaSettings(
       apiKey: str(config.apiKey, base?.apiKey ?? ''),
       imageModel: str(config.imageModel, base?.imageModel ?? ''),
       analysisModel: str(config.analysisModel, base?.analysisModel ?? ''),
+      ...(typeof config.cliPath === 'string' && config.cliPath.trim()
+        ? { cliPath: config.cliPath.trim() }
+        : {}),
       ...(config.baseUrl !== undefined
         ? { baseUrl: str(config.baseUrl, base?.baseUrl ?? '') }
         : base?.baseUrl !== undefined
@@ -282,6 +305,8 @@ export function mediaConfigUsable(
   config: AiMediaProviderConfig | undefined,
 ): boolean {
   if (!config) return false
+  // CLI providers sign in through their own login: nothing to store, usable once selected
+  if (isCliProvider(meta.id)) return true
   // Trim-aware like activeProvider: whitespace-only survivors of in-memory
   // settings are not usable configs.
   if (meta.needsBaseUrl) return !!config.baseUrl?.trim()
@@ -314,12 +339,18 @@ export function activeMediaProvider(
 
 /** the active BYOK config for one capability, or null when it runs through Genspark */
 export function activeMediaConfig(
-  settings: Pick<AiSettings, 'media'>,
+  settings: Pick<AiSettings, 'media'> & Partial<Pick<AiSettings, 'providers'>>,
   capability: MediaCapability,
 ): { provider: Exclude<AiMediaProviderId, 'genspark'>; config: AiMediaProviderConfig } | null {
   const provider = activeMediaProvider(settings, capability)
   if (provider === 'genspark') return null
-  return { provider, config: settings.media!.providers[provider] }
+  const config = settings.media!.providers[provider]
+  // one Antigravity path for chat and media: the media override wins, else the chat provider's
+  const sharedPath = provider === 'agy' ? settings.providers?.agy?.cliPath?.trim() : undefined
+  return {
+    provider,
+    config: sharedPath && !config.cliPath?.trim() ? { ...config, cliPath: sharedPath } : config,
+  }
 }
 
 function byokModel(

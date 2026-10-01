@@ -342,7 +342,11 @@ describe('listAgyModels', () => {
 describe('stream-json parsing (recorded fixtures)', () => {
   it('parses init, step updates and the result with usage', () => {
     const events = FIXTURE_OK.map(parseAgyStreamLine)
-    expect(events[0]).toEqual({ kind: 'init', model: 'gemini-3.7-flash-low' })
+    expect(events[0]).toEqual({
+      kind: 'init',
+      model: 'gemini-3.7-flash-low',
+      conversationId: 'c1',
+    })
     expect(events[1]).toEqual({ kind: 'step', stepType: 'user_input' })
     expect(events[2]).toEqual({
       kind: 'text',

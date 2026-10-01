@@ -39,6 +39,8 @@ import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import { DocumentMemorySettings } from './DocumentMemorySettings'
 import { ClipboardSettingsToggle } from './fork/ClipboardSettingsToggle'
 import { AgyProviderFields, ProviderNote, testAiSettingsFor } from './fork/AgyProviderFields'
+import { AgyMediaFields } from './fork/AgyMediaFields'
+import { agyMediaTestConfig } from './fork/agy-media-state'
 import './settings.css'
 
 // ── Settings modal (opened from the account menu) ─────────
@@ -829,8 +831,10 @@ function AiMediaPane({
       let pending = vendorChecks.get(id)
       if (!pending) {
         pending =
-          window.aiOffice.testAiMediaSettings?.({ provider: id, config: mediaConfigOf(id) }) ??
-          Promise.resolve(fallback)
+          window.aiOffice.testAiMediaSettings?.({
+            provider: id,
+            config: agyMediaTestConfig(id, mediaConfigOf(id), settings.providers.agy?.cliPath),
+          }) ?? Promise.resolve(fallback)
         vendorChecks.set(id, pending)
       }
       return pending
@@ -1091,7 +1095,18 @@ function AiMediaPane({
         <div className="set-field-desc set-ai-note">
           {id === 'genspark' ? t('setAiMediaGensparkHint') : meta.description}
         </div>
-        {id !== 'genspark' && (
+        {id === 'agy' && (
+          <AgyMediaFields
+            idPrefix={`set-ai-${cap}`}
+            modelField={modelField}
+            config={config}
+            seedModels={cap === 'image' ? meta.imageModels : meta.analysisModels}
+            defaultModel={cap === 'image' ? meta.defaultImageModel : meta.defaultAnalysisModel}
+            chatCliPath={settings.providers.agy?.cliPath}
+            update={(patch) => updateMediaConfig(id, patch)}
+          />
+        )}
+        {id !== 'genspark' && id !== 'agy' && (
           <>
             {modelRow(
               `set-ai-${cap}-model`,

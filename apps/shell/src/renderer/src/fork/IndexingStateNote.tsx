@@ -1,13 +1,16 @@
 import { useEffect, useState } from 'react'
 import type { Lang } from '@genoffice/i18n'
+import type { AgyOcrStatus } from '../../../shared/fork/agy-ocr'
 import type { IndexingEffectiveState } from '../../../shared/fork/indexing-mode'
 import { indexingStateLine } from './indexing-mode-strings'
+import { AgyOcrNote } from './AgyOcrNote'
 import './indexing-mode.css'
 
 const POLL_MS = 4000
 
 interface StateApi {
   getIndexingModeState?: () => Promise<{ effective: IndexingEffectiveState | null }>
+  getAgyOcrStatus?: () => Promise<AgyOcrStatus | null>
 }
 
 /**
@@ -36,10 +39,14 @@ export function IndexingStateNote({ api, lang }: { api: StateApi; lang: Lang }) 
       window.clearInterval(timer)
     }
   }, [api])
-  if (!state) return null
   return (
-    <p className="indexing-activity-power" data-paused={state.paused} aria-live="polite">
-      {indexingStateLine(lang, state, true)}
-    </p>
+    <>
+      {state && (
+        <p className="indexing-activity-power" data-paused={state.paused} aria-live="polite">
+          {indexingStateLine(lang, state, true)}
+        </p>
+      )}
+      <AgyOcrNote api={api} lang={lang} />
+    </>
   )
 }

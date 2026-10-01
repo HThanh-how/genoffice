@@ -89,7 +89,7 @@ export function issueReason(error: string | null, status: string): IndexIssueRea
   if (/128 mb|exceeds|too large/.test(value)) return 'too-large'
   if (/changed/.test(value)) return 'changed'
   if (
-    /unavailable|enoent|enotdir|not found|cannot find|no such file|moved|deleted|file is missing|missing file/.test(
+    /unavailable|enoent|enotdir|not found|cannot find|no such file|moved|deleted|file is missing|missing file|unknown: unknown error|unknown error, (?:stat|open|read|scandir)/.test(
       value,
     )
   )

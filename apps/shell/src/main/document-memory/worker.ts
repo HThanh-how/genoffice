@@ -8,7 +8,10 @@ import { parseFileToText } from '@genoffice/file-parse'
 import { capChunks, chunkDocumentText, chunkTabularText } from './chunks'
 import { DocumentMemoryStore } from './store'
 import { embedTexts } from './embeddings'
-export async function extractDocument(path: string) {
+import { renderPdfPagesForOcr, type OcrRenderRequest } from './agy-ocr-render'
+import { ocrChunksFromPages, ocrDocumentHash, type OcrLookup } from './ocr-sidecar'
+/** `ocr` finds text the scanned-PDF reader stored for a PDF that has no text layer of its own. */
+export async function extractDocument(path: string, ocr?: OcrLookup) {
   const before = await stat(path)
   if (before.size > 128 * 1024 * 1024) throw new Error('Document exceeds the 128 MB indexing limit')
   const bytes = await readFile(path)
@@ -30,11 +33,26 @@ export async function extractDocument(path: string) {
   }
   // Cost control: tabular exports index header + sampled rows; everything else is capped.
   const tabular = /^\.(csv|tsv)$/.test(extname(path).toLowerCase())
-  const { chunks, truncated, numeric } = tabular
+  const base = tabular
     ? chunkTabularText(text)
     : { ...capChunks(chunkDocumentText(text)), numeric: false }
+  const numeric = base.numeric
+  let chunks = base.chunks
+  let truncated = base.truncated
+  const fileHash = createHash('sha256').update(bytes).digest('hex')
+  let hash = fileHash
+  let ocrRead = false
+  if (!chunks.length && ocr && /\.pdf$/i.test(path)) {
+    // a scanned PDF the user let Antigravity read: its transcribed pages become the chunks
+    const stored = ocr(path, fileHash)
+    if (stored?.pages.length) {
+      ocrRead = true
+      ;({ chunks, truncated } = ocrChunksFromPages(stored))
+      hash = ocrDocumentHash(fileHash, stored.pages)
+    }
+  }
   return {
-    hash: createHash('sha256').update(bytes).digest('hex'),
+    hash,
     mtimeMs: after.mtimeMs,
     sizeBytes: after.size,
     chunks,
@@ -42,7 +60,13 @@ export async function extractDocument(path: string) {
     ...(truncated ? { truncated: true } : {}),
     // Numeric tables stay searchable through FTS; vectors for digits are wasted work.
     ...(numeric && chunks.length ? { skipEmbeddings: true } : {}),
-    ...(chunks.length ? {} : { error: 'No readable text; scanned documents need OCR' }),
+    ...(chunks.length
+      ? {}
+      : {
+          error: ocrRead
+            ? 'No readable text; the scanned pages were read but contained no text'
+            : 'No readable text; scanned documents need OCR',
+        }),
   }
 }
 
@@ -102,14 +126,24 @@ onIndexRequest(
     limit: number
     embeddingModel: string
     interactive?: boolean
+    ocr?: OcrRenderRequest
   }) => {
     const execute = async () => {
       try {
         let result: unknown
+        const lookup: OcrLookup = (path, hash) =>
+          (searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!)).ocr.pages(
+            path,
+            hash,
+          )
         if (request.type === 'extract')
           result = request.interactive
-            ? await extractDocument(request.path)
-            : await withBackgroundBudget(() => extractDocument(request.path))
+            ? await extractDocument(request.path, lookup)
+            : await withBackgroundBudget(() => extractDocument(request.path, lookup))
+        else if (request.type === 'ocr-render')
+          result = await withBackgroundBudget(() =>
+            renderPdfPagesForOcr(request.path, request.ocr!),
+          )
         else if (request.type === 'search') {
           searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!)
           result = searchStore.search(

@@ -10,6 +10,8 @@
  */
 
 import { aiFetch } from './fetch'
+import { generateImageWithAgy } from './agy-image'
+import { analyzeMediaWithAgy, testAgyMediaProvider } from './agy-media'
 import { endpointUrl } from './protocols/shared'
 import { httpBodyDetail } from './http-error'
 import { openAiContentText, readCappedResponseText } from './protocols/shared'
@@ -693,6 +695,8 @@ export async function generateImageWithProvider(
       return generateImageMinimax(config, model, input, guard)
     case 'openai-images':
       return generateImageOpenAi(provider, config, model, input, guard)
+    case 'agy-cli':
+      return generateImageWithAgy(config, input, guard)
   }
 }
 
@@ -707,6 +711,7 @@ export async function analyzeMediaWithProvider(
   if (!meta.analysisProtocol) throw new Error(`${meta.label} does not analyze media`)
   const model = modelOf(meta, config, 'analysisModel')
   const guard = withTimeout(signal, ANALYZE_TIMEOUT_MS)
+  if (meta.analysisProtocol === 'agy-cli') return analyzeMediaWithAgy(config, input, guard)
   return meta.analysisProtocol === 'gemini'
     ? analyzeMediaGemini(config, model, input, guard)
     : analyzeMediaOpenAi(provider, config, model, input, guard)
@@ -726,6 +731,7 @@ export async function testMediaProvider(
   signal?: AbortSignal,
 ): Promise<{ ok: boolean; error?: string }> {
   try {
+    if (provider === 'agy') return await testAgyMediaProvider(config)
     const meta = metaOf(provider)
     requireBaseUrl(meta, config)
     const guard = withTimeout(signal, TEST_TIMEOUT_MS)

@@ -64,12 +64,13 @@ export type AiMediaProviderId =
   | 'qwen'
   | 'minimax'
   | 'deepseek'
+  | 'agy'
   | 'custom'
 
-/** wire shape of the image endpoint */
-export type AiImageProtocol = 'openai-images' | 'gemini' | 'dashscope' | 'minimax'
+/** wire shape of the image endpoint ('agy-cli' = the local Antigravity agent, no HTTP) */
+export type AiImageProtocol = 'openai-images' | 'gemini' | 'dashscope' | 'minimax' | 'agy-cli'
 /** wire shape of the understanding endpoint */
-export type AiAnalysisProtocol = 'openai-chat' | 'gemini'
+export type AiAnalysisProtocol = 'openai-chat' | 'gemini' | 'agy-cli'
 
 export interface AiMediaProviderConfig {
   apiKey: string
@@ -79,6 +80,8 @@ export interface AiMediaProviderConfig {
   imageModel: string
   /** image/video understanding model (empty = the provider default) */
   analysisModel: string
+  /** agy only: Antigravity CLI path override; empty falls back to the chat provider's path, then auto-detect */
+  cliPath?: string | undefined
 }
 
 export interface AiMediaProviderMeta {

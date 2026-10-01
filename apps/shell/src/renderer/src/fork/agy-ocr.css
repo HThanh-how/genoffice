@@ -1,0 +1,105 @@
+/* Scanned-PDF reader (Settings -> Document memory). Colors come only from semantic tokens. */
+.set-agyocr {
+  margin: 20px 0 8px;
+}
+
+.set-agyocr .set-field {
+  align-items: flex-start;
+}
+
+/* the consent sentence is the one line that must not be skimmed past */
+.set-agyocr-consent {
+  color: var(--text-primary);
+}
+
+.set-agyocr-status {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.set-agyocr-status li[data-tone='warn'] {
+  color: var(--text-primary);
+}
+
+/* one-line note in the Document index popup, same voice as the power note above it */
+.indexing-activity-ocr {
+  margin: 0 16px 10px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* manual "read now" action in the no-text problem group */
+.indexing-activity-file-actions .indexing-activity-ocr-note {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.set-agyocr-subtitle {
+  margin: 18px 0 2px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+/* one quota bucket: its own limits, set slightly apart so the two read as separate rules */
+.set-agyocr-bucket {
+  margin: 8px 0;
+  padding: 2px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-8);
+}
+
+.set-agyocr-bucket[data-ignored='true'] .set-field-label {
+  color: var(--text-secondary);
+}
+
+.set-agyocr-ignore {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.set-agyocr-error {
+  margin: 0 0 10px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--danger);
+}
+
+/* Day 1..7 reserve schedule */
+.set-agyocr-plan {
+  padding: 0 0 10px;
+}
+
+.set-agyocr-plan table {
+  width: 100%;
+  margin-top: 6px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-size: 12px;
+  text-align: center;
+}
+
+.set-agyocr-plan th {
+  padding: 4px 2px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.set-agyocr-plan td {
+  padding: 4px 2px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}

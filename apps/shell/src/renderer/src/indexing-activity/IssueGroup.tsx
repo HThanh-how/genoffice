@@ -5,6 +5,7 @@ import type { IndexIssue, IndexIssueReason } from '../../../main/document-memory
 import { isRetryableReason } from '../../../main/document-memory/issues'
 import type { ActivityCopy } from '../indexing-activity-copy'
 import { formatCount, issueWordsFor, type ActionResult, type Words } from './format'
+import { agyOcrString } from '../fork/agy-ocr-strings'
 
 interface GroupFiles {
   items: IndexIssue[]
@@ -38,6 +39,7 @@ export const IssueGroup = memo(function IssueGroup({
   const [files, setFiles] = useState<GroupFiles>({ items: [], total: 0, loading: false, error: '' })
   const [busy, setBusy] = useState<Record<number, string>>({})
   const [errors, setErrors] = useState<Record<number, string>>({})
+  const [notes, setNotes] = useState<Record<number, string>>({})
   const [retryingAll, setRetryingAll] = useState(false)
   const request = useRef(0)
   const iw = issueWordsFor(lang)
@@ -123,6 +125,47 @@ export const IssueGroup = memo(function IssueGroup({
     }
   }
 
+  /** Scanned PDFs: read this one now with Antigravity (explicit confirmation, ignores today's budget). */
+  const readWithAgy = async (issue: IndexIssue) => {
+    const t = (key: Parameters<typeof agyOcrString>[1], params?: Record<string, string | number>) =>
+      agyOcrString(lang, key, params)
+    const maxPages =
+      (await api.getAgyOcrStatus?.().catch(() => null))?.settings.maxPagesPerFile ?? 5
+    if (!window.confirm(t('readNowConfirm', { n: maxPages }))) return
+    setBusy((current) => ({ ...current, [issue.id]: 'ocr' }))
+    setErrors((current) => ({ ...current, [issue.id]: '' }))
+    setNotes((current) => ({ ...current, [issue.id]: '' }))
+    try {
+      const result = await api.readScannedPdfWithAgy(issue.id, true)
+      if (!result.ok) {
+        const text =
+          result.error === 'busy'
+            ? t('readNowBusyElsewhere')
+            : result.error === 'nothing-to-read'
+              ? t('readNowNothing')
+              : t('readNowFailed', { error: result.error ?? iw.actionFailed })
+        setErrors((current) => ({ ...current, [issue.id]: text }))
+        return
+      }
+      setNotes((current) => ({
+        ...current,
+        [issue.id]: t('readNowDone', { n: result.pages ?? 0 }),
+      }))
+      onChanged()
+    } catch (error) {
+      setErrors((current) => ({
+        ...current,
+        [issue.id]: error instanceof Error ? error.message : iw.actionFailed,
+      }))
+    } finally {
+      setBusy((current) => {
+        const next = { ...current }
+        delete next[issue.id]
+        return next
+      })
+    }
+  }
+
   const toggle = () => {
     const next = !open
     setOpen(next)
@@ -184,6 +227,19 @@ export const IssueGroup = memo(function IssueGroup({
                       {busy[issue.id] === 'retry' ? copy.retrying : iw.retry}
                     </button>
                   )}
+                  {reason === 'no-text' &&
+                    /\.pdf$/i.test(issue.name) &&
+                    typeof api.readScannedPdfWithAgy === 'function' && (
+                      <button
+                        type="button"
+                        disabled={!!busy[issue.id]}
+                        onClick={() => void readWithAgy(issue)}
+                      >
+                        {busy[issue.id] === 'ocr'
+                          ? agyOcrString(lang, 'readNowBusy')
+                          : agyOcrString(lang, 'readNow')}
+                      </button>
+                    )}
                   <button
                     type="button"
                     disabled={!!busy[issue.id]}
@@ -202,6 +258,11 @@ export const IssueGroup = memo(function IssueGroup({
                 {errors[issue.id] && (
                   <p className="indexing-activity-action-error" role="alert">
                     {errors[issue.id]}
+                  </p>
+                )}
+                {notes[issue.id] && (
+                  <p className="indexing-activity-ocr-note" role="status">
+                    {notes[issue.id]}
                   </p>
                 )}
                 {issue.error && (
