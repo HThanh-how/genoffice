@@ -260,7 +260,13 @@ describe('provider registry', () => {
   it('only genspark authenticates through the gsk login', () => {
     for (const [id, adapter] of Object.entries(AI_PROVIDER_ADAPTERS)) {
       expect(adapter.capabilities.auth).toBe(
-        id === 'genspark' ? 'gsk-login' : id === 'codex' ? 'codex-chatgpt' : 'api-key',
+        id === 'genspark'
+          ? 'gsk-login'
+          : id === 'codex'
+            ? 'codex-chatgpt'
+            : id === 'agy'
+              ? 'agy-cli'
+              : 'api-key',
       )
     }
   })

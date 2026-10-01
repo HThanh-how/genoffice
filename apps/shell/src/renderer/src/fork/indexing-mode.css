@@ -1,0 +1,123 @@
+/* Indexing effort cards + live status (Settings -> Document memory).
+   Colors come only from the semantic tokens in packages/ui/src/tokens.css. */
+.set-indexmode {
+  margin: 4px 0 8px;
+}
+
+.set-indexmode-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 10px 0 12px;
+}
+
+@media (max-width: 560px) {
+  .set-indexmode-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.set-indexmode-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-8);
+  background: var(--surface);
+  cursor: pointer;
+  transition:
+    border-color var(--transition-fast),
+    background var(--transition-fast);
+}
+
+.set-indexmode-card:hover {
+  border-color: var(--border-hover);
+  background: var(--bg-hover);
+}
+
+.set-indexmode-card.is-selected {
+  border-color: var(--color-btn-primary);
+  background: var(--surface-subtle);
+  box-shadow: inset 0 0 0 1px var(--color-btn-primary);
+}
+
+.set-indexmode-card:focus-within {
+  outline: 2px solid var(--color-border-brand);
+  outline-offset: 2px;
+}
+
+/* the native radio stays in the tab order and handles arrow keys; the card is its label */
+.set-indexmode-card input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.set-indexmode-card input:disabled {
+  cursor: default;
+}
+
+.set-indexmode-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.set-indexmode-desc {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.set-indexmode-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-secondary);
+}
+
+.set-indexmode-dot {
+  flex: 0 0 auto;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--icon-muted);
+}
+
+.set-indexmode-status[data-tone='idle'] .set-indexmode-dot,
+.set-indexmode-status[data-tone='active'] .set-indexmode-dot,
+.set-indexmode-status[data-tone='light'] .set-indexmode-dot,
+.set-indexmode-status[data-tone='battery'] .set-indexmode-dot {
+  background: var(--success);
+}
+
+.set-indexmode-status[data-tone='paused'] .set-indexmode-dot {
+  background: var(--text-tertiary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .set-indexmode-card {
+    transition: none;
+  }
+}
+
+/* one-line power/effort note inside the Document index popup */
+.indexing-activity-power {
+  margin: 0 16px 10px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.indexing-activity-power[data-paused='true'] {
+  color: var(--text-secondary);
+}

@@ -29,6 +29,22 @@ import { ChatMessage, type ChatItem, type ChatLabels } from './home-chat/ChatMes
 import { Composer, type ComposerLabels } from './home-chat/Composer'
 import { EmptyState } from './home-chat/EmptyState'
 import { HistoryRail, type HistoryLabels } from './home-chat/HistoryRail'
+import { Launcher, type LauncherLabels } from './home-chat/Launcher'
+import {
+  IDLE_STATE,
+  createLauncherController,
+  finishOf,
+  type LauncherController,
+  type LauncherState,
+} from './home-chat/launcher-status'
+import {
+  agySystemSuffix,
+  buildRetrievalContext,
+  buildRetrievalQuery,
+  hitsToSources,
+  type RetrievalContext,
+} from './home-chat/agy-retrieval'
+import { agyString } from './fork/agy-strings'
 import { translateChat, type ChatKey } from './home-chat/translate'
 import {
   WINDOW_PAGE,
@@ -147,6 +163,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
   const [visibleCount, setVisibleCount] = useState(WINDOW_PAGE)
   const [showJump, setShowJump] = useState(false)
   const [pendingSend, setPendingSend] = useState<string | null>(null)
+  const [launcherState, setLauncherState] = useState<LauncherState>(IDLE_STATE)
   const rootRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -171,7 +188,18 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
   const initRef = useRef(false)
   const touchedRef = useRef(false)
   const toastTimerRef = useRef(0)
+  /** minimize is presentation only: the scroll spot to come back to when the panel reopens */
+  const scrollMemoRef = useRef<{ top: number; stick: boolean } | null>(null)
+  const restoreTopRef = useRef<number | null>(null)
+  const resizingRef = useRef(false)
+  const stoppedRef = useRef(false)
+  const prevBusyRef = useRef(false)
+  const launcherCtlRef = useRef<LauncherController | null>(null)
+  if (!launcherCtlRef.current) launcherCtlRef.current = createLauncherController(setLauncherState)
+  const launcherCtl = launcherCtlRef.current
   const settingsRef = useRef<Awaited<ReturnType<HomeApi['getAiSettings']>> | null>(null)
+  /** retrieval-first context for the current turn when the provider cannot call tools (agy) */
+  const agyContextRef = useRef<RetrievalContext | null>(null)
   const tRef = useRef<(key: ChatKey, params?: Params) => string>(() => '')
   const langRef = useRef(i18n.lang)
   tRef.current = (key, params) => translateChat(i18n, key, params)
@@ -319,7 +347,9 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
       skill: composeSkills('home+remembered-documents', '', [createDocumentMemorySkill(api)]),
       maxTurns: 12,
       systemSuffix: () =>
-        `Reply in ${LANGUAGE_NAMES[langRef.current] ?? 'English'}. This is a home assistant: answer questions and help find files the user has opened before. Use remembered-document tools when relevant. Never guess document contents or source identifiers.`,
+        agyContextRef.current
+          ? agySystemSuffix(LANGUAGE_NAMES[langRef.current] ?? 'English', agyContextRef.current)
+          : `Reply in ${LANGUAGE_NAMES[langRef.current] ?? 'English'}. This is a home assistant: answer questions and help find files the user has opened before. Use remembered-document tools when relevant. Never guess document contents or source identifiers.`,
       events: {
         onText: (text) => {
           if (live()) batcherRef.current?.push(text)
@@ -453,7 +483,10 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    if (prependHeightRef.current !== null) {
+    if (restoreTopRef.current !== null) {
+      el.scrollTop = restoreTopRef.current
+      restoreTopRef.current = null
+    } else if (prependHeightRef.current !== null) {
       // "Show earlier messages" grew the list above; keep the reading position.
       el.scrollTop += el.scrollHeight - prependHeightRef.current
       prependHeightRef.current = null
@@ -476,10 +509,17 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
     }, 0)
   }, [])
 
-  const closePanel = useCallback(() => {
+  /**
+   * Minimize (the panel is never destroyed, only hidden): the conversation, draft and any
+   * running reply live in this component. Focus goes back to the launcher unless the user
+   * clicked somewhere else on purpose.
+   */
+  const closePanel = useCallback((restoreFocus = true) => {
+    const el = scrollRef.current
+    if (el) scrollMemoRef.current = { top: el.scrollTop, stick: stickRef.current }
     openRef.current = false
     setOpen(false)
-    window.setTimeout(() => launcherRef.current?.focus(), 0)
+    if (restoreFocus) window.setTimeout(() => launcherRef.current?.focus(), 0)
   }, [])
 
   useEffect(() => {
@@ -487,9 +527,45 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape' && !event.defaultPrevented) closePanel()
     }
+    // A press outside the assistant minimizes it. Not while the resize handle is being
+    // dragged, and not on the launcher or the clipboard chip, which have their own jobs.
+    const onPointerDown = (event: PointerEvent) => {
+      if (event.button !== 0 || resizingRef.current) return
+      const path = event.composedPath()
+      if (rootRef.current && path.includes(rootRef.current)) return
+      if (
+        path.some((node) => node instanceof HTMLElement && node.classList.contains('clip-suggest'))
+      )
+        return
+      closePanel(false)
+    }
     window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      document.removeEventListener('pointerdown', onPointerDown, true)
+    }
   }, [closePanel, open])
+
+  // Launcher status: the controller owns the working / answer-ready / error chip.
+  useEffect(() => {
+    launcherCtl.setPanelOpen(open)
+    if (!open) return
+    const onFocus = () => launcherCtl.acknowledge()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [launcherCtl, open])
+  useEffect(() => {
+    if (busy && !prevBusyRef.current) {
+      stoppedRef.current = false
+      launcherCtl.runStarted()
+    } else if (!busy && prevBusyRef.current) {
+      launcherCtl.runFinished(finishOf(itemsRef.current.at(-1), stoppedRef.current))
+      stoppedRef.current = false
+    }
+    prevBusyRef.current = busy
+  }, [busy, launcherCtl])
+  useEffect(() => () => launcherCtl.dispose(), [launcherCtl])
 
   useEffect(() => {
     const onResize = () => setSize((previous) => clampSize(previous.w, previous.h))
@@ -514,6 +590,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
     const start = size
     const target = event.currentTarget
     target.setPointerCapture(event.pointerId)
+    resizingRef.current = true
     let latest = start
     const move = (e: PointerEvent) => {
       // the panel is anchored bottom-right, so dragging up/left grows it
@@ -521,6 +598,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
       setSize(latest)
     }
     const end = () => {
+      resizingRef.current = false
       target.removeEventListener('pointermove', move)
       target.removeEventListener('pointerup', end)
       target.removeEventListener('pointercancel', end)
@@ -580,6 +658,8 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
     itemId.current = nextItems.length
     lastSavedRef.current = nextItems
     stickRef.current = true
+    scrollMemoRef.current = null
+    restoreTopRef.current = null
     setItems(nextItems)
     setActiveId(conv.id)
     setTitle(nextTitle)
@@ -727,13 +807,18 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
 
   const openPanel = useCallback(() => {
     openRef.current = true
-    stickRef.current = true
+    // Reopening from the "answer ready" chip lands on the latest message; a plain
+    // restore returns to where the user was reading.
+    const memo = scrollMemoRef.current
+    const resume = memo && !memo.stick && !launcherCtl.getState().unread
+    stickRef.current = !resume
+    restoreTopRef.current = resume ? memo.top : null
     setOpen(true)
     setInvitation(true)
     focusInput()
     void loadSettings()
     void restoreLast()
-  }, [focusInput, loadSettings, restoreLast])
+  }, [focusInput, launcherCtl, loadSettings, restoreLast])
 
   // ---- sending ------------------------------------------------------------
 
@@ -776,7 +861,27 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
         setBusy(false)
         return
       }
+      agyContextRef.current = null
       try {
+        if (settingsRef.current?.provider === 'agy') {
+          // agy cannot call GenOffice tools: search remembered documents first and inject the hits.
+          updateLastAssistant((last) => ({
+            ...last,
+            status: agyString(langRef.current, 'agyStarting'),
+          }))
+          let hits: Awaited<ReturnType<HomeApi['documentMemorySearch']>>['hits'] = []
+          try {
+            const query = buildRetrievalQuery(message, toMessages(base))
+            hits = (await api.documentMemorySearch(query, 8)).hits
+          } catch {
+            // search is best-effort; the answer then says nothing matched
+          }
+          if (generation !== runGenerationRef.current || !mountedRef.current) return
+          const context = buildRetrievalContext(hits)
+          agyContextRef.current = context
+          const sources = hitsToSources(context.used)
+          if (sources.length > 0) updateLastAssistant((last) => ({ ...last, sources }))
+        }
         await loop.run(message)
       } catch (error) {
         if (generation !== runGenerationRef.current) return
@@ -785,12 +890,13 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
         setBusy(false)
       }
     },
-    [loadSettings, settingsReady],
+    [api, loadSettings, settingsReady],
   )
   const submitRef = useRef(submit)
   submitRef.current = submit
 
   const stop = () => {
+    stoppedRef.current = true
     runGenerationRef.current++
     batcherRef.current?.flush()
     loopRef.current?.reset()
@@ -879,6 +985,17 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
   const handleSend = useCallback((text: string) => void submitRef.current(text), [])
   const handleStop = useCallback(() => stopRef.current(), [])
   const heading = title || t('homeChatNew')
+  const lastItem = items.at(-1)
+  const launcherLabels: LauncherLabels = {
+    launch: t('homeChatLaunch'),
+    close: t('homeChatClose'),
+    invite: t('homeChatInvite'),
+    working: t('homeChatWorking'),
+    done: t('homeChatDone'),
+    error: t('homeChatErrorChip'),
+    stop: t('homeChatStopChip'),
+    elapsed: (n) => t('homeChatElapsed', { n }),
+  }
 
   const showEarlier = () => {
     prependHeightRef.current = scrollRef.current?.scrollHeight ?? null
@@ -979,7 +1096,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
                 className="hc-icon-button"
                 aria-label={t('homeChatClose')}
                 title={t('homeChatClose')}
-                onClick={closePanel}
+                onClick={() => closePanel()}
               >
                 <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
                   <path
@@ -1078,39 +1195,22 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           </div>
         </section>
       )}
-      <button
-        type="button"
-        ref={launcherRef}
-        className={`home-chat-launcher${invitation ? ' invitation-visible' : ''}${open ? ' panel-open' : ''}`}
-        aria-expanded={open}
-        aria-haspopup="dialog"
-        aria-label={open ? t('homeChatClose') : t('homeChatLaunch')}
-        onMouseEnter={() => setInvitation(true)}
-        onMouseLeave={() => setInvitation(false)}
-        onFocus={() => setInvitation(true)}
-        onBlur={() => setInvitation(false)}
-        onClick={() => {
-          if (open) closePanel()
-          else openPanel()
-        }}
-      >
-        <span className="home-chat-launch-icon" aria-hidden="true">
-          <svg viewBox="0 0 20 20" fill="none">
-            <path
-              d="M10 2.5 11.8 8.2 17.5 10l-5.7 1.8L10 17.5l-1.8-5.7L2.5 10l5.7-1.8L10 2.5Z"
-              stroke="currentColor"
-              strokeWidth="1.5"
-              strokeLinejoin="round"
-            />
-          </svg>
-        </span>
-        <span className="home-chat-launch-label">{t('homeChatLaunch')}</span>
-      </button>
-      {!open && invitation && (
-        <span className="home-chat-idle-hint" aria-hidden="true">
-          {t('homeChatInvite')}
-        </span>
-      )}
+      <Launcher
+        state={launcherState}
+        open={open}
+        invitation={invitation}
+        starting={
+          lastItem?.role === 'assistant' && lastItem.streaming && !lastItem.text
+            ? (lastItem.status ?? '')
+            : ''
+        }
+        labels={launcherLabels}
+        buttonRef={launcherRef}
+        onToggle={() => (open ? closePanel() : openPanel())}
+        onStop={handleStop}
+        onInvitation={setInvitation}
+        onHold={launcherCtl.setHovered}
+      />
     </div>
   )
 }

@@ -1,5 +1,7 @@
 import { indexingWorkerData, postIndexMessage } from './runtime'
 import { withBackgroundBudget } from './cpu-budget'
+import { createEmbeddingSessionKeeper } from '../fork/embedding-ort'
+import type { SessionKeeper } from '../fork/embedding-session'
 import { mkdir, readFile, rename, rm } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -10,7 +12,13 @@ export const EMBEDDING_MODEL = 'Xenova/multilingual-e5-small'
 export const EMBEDDING_REVISION = '761b726dd34fb83930e26aab4e9ac3899aa1fa78'
 export const EMBEDDING_ID = `${EMBEDDING_MODEL}@${EMBEDDING_REVISION}:q8`
 const MODEL_SHA256 = 'f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193'
-let loading: Promise<{ tokenizer: Tokenizer; session: InferenceSession }> | undefined
+let loading:
+  | Promise<{
+      tokenizer: Tokenizer
+      session: InferenceSession
+      keeper: SessionKeeper<InferenceSession>
+    }>
+  | undefined
 
 async function cachedFile(cache: string, file: string): Promise<string> {
   const path = join(cache, EMBEDDING_MODEL, EMBEDDING_REVISION, file)
@@ -66,13 +74,9 @@ export async function loadEmbeddingModel(cacheDir: string) {
     JSON.parse(await readFile(tokenizerPath, 'utf8')),
     JSON.parse(await readFile(configPath, 'utf8')),
   )
-  const session = await InferenceSession.create(modelPath, {
-    executionProviders: ['cpu'],
-    intraOpNumThreads: 1,
-    interOpNumThreads: 1,
-    executionMode: 'sequential',
-  })
-  return { tokenizer, session }
+  // Sized to the indexing policy; the keeper re-creates it between batches when that changes.
+  const keeper = await createEmbeddingSessionKeeper(modelPath)
+  return { tokenizer, session: keeper.current(), keeper }
 }
 
 export async function embedTexts(
@@ -98,7 +102,9 @@ export async function embedTexts(
         throw new Error('Local embedding model unavailable')
       })
   }
-  const { tokenizer, session } = await loading
+  const { tokenizer, keeper } = await loading
+  if (kind === 'passage') await keeper.align()
+  const session = keeper.current()
   async function encode(text: string): Promise<number[]> {
     const { ids, attention_mask } = tokenizer.encode(`${kind}: ${text}`)
     // Never silently truncate a chunk: split unusually token-dense text and pool both vectors.

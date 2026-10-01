@@ -3,7 +3,9 @@ import type { FolderScanManager } from '../document-memory/folder-scan'
 import { IndexIssueReader } from '../document-memory/issue-reader'
 import { shortCause, type IndexIssueReason } from '../document-memory/issues'
 import type { DocumentMemoryManager } from '../document-memory/manager'
-import { createActivityCache } from '../indexing-activity-cache'
+import { foldFolderProgress } from '../document-memory/folder-progress'
+import type { FolderChunkProgress } from '../document-memory/store'
+import { createSwrCache } from './activity-cache'
 import { HOME_CHANNELS, type HomeIndexingActivity } from '../../shared/home-api'
 import { DOCUMENT_INDEX_CHANNELS } from '../../shared/fork/document-index-api'
 
@@ -36,8 +38,9 @@ const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set([
  */
 export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
   const { ipcMain, getDocumentMemory, getFolderScan } = deps
-  const activityCache =
-    createActivityCache<Pick<HomeIndexingActivity, 'memory' | 'folderProgress'>>()
+  // Folder chunk counts are the only database aggregate in the popup poll. They are served
+  // stale-while-revalidate (see activity-cache.ts); everything else is live and in-memory.
+  const folderCounts = createSwrCache<FolderChunkProgress>()
   let issueReader: IndexIssueReader | null = null
   const reader = (): IndexIssueReader => (issueReader ??= new IndexIssueReader(deps.dbPath()))
   const activeRoot = (root: unknown): string => {
@@ -79,7 +82,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
         if (!wasEnabled) return { ok: false, retried: 0, error: 'paused' }
         documentMemory.setEnabled(false)
         documentMemory.setEnabled(true)
-        activityCache.invalidate()
+        folderCounts.invalidate()
         return { ok: true, retried: 0 }
       }
       let retried = 0
@@ -91,46 +94,45 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
         }
         retried++
       }
-      activityCache.invalidate()
+      folderCounts.invalidate()
       return { ok: true, retried }
     },
   )
   ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid document id')
-    activityCache.invalidate()
+    folderCounts.invalidate()
     return getDocumentMemory()?.retryDocument(id) ?? { ok: false, error: 'unavailable' }
   })
   ipcMain.handle(HOME_CHANNELS.getIndexingActivity, (): HomeIndexingActivity => {
-    // Cheap, in-memory state is read live; the aggregate SQL (chunk counts over the whole
-    // store) is cached with a TTL scaled to its cost. See indexing-activity-cache.ts.
+    // Runs on the main thread for every renderer poll, so it does no database work of its own:
+    // scan state and pending/error counts are read live (in-memory or a one-row index count),
+    // and the folder chunk counts come from a stale-while-revalidate cache that refreshes
+    // off this call. The scan state and error count are folded into the cached counts live.
     const folder = getFolderScan()?.status() ?? null
-    const key = `${folder?.root ?? ''}|${folder?.state ?? ''}|${folder?.errors ?? 0}`
-    const heavy = activityCache.get(key, () => {
-      const documentMemory = getDocumentMemory()
-      const memory = documentMemory?.indexingActivityStatus()
-      const modelError =
-        memory?.modelState === 'error' ? shortCause(documentMemory?.status().lastError) : ''
-      return {
-        memory: {
-          enabled: memory?.enabled ?? false,
-          cpuMode: 'gentle' as const,
-          modelState: memory?.modelState ?? 'not-loaded',
-          ...(memory?.modelProgress === undefined ? {} : { modelProgress: memory.modelProgress }),
-          pending: memory?.pending ?? 0,
-          errors: memory?.errors ?? 0,
-          ...(modelError ? { lastError: modelError } : {}),
-        },
-        folderProgress:
-          folder?.root && documentMemory
-            ? documentMemory.getFolderIndexProgress(
-                folder.root,
-                folder.state === 'complete',
-                folder.errors,
-              )
-            : null,
-      }
-    })
-    return { folder, ...heavy }
+    const documentMemory = getDocumentMemory()
+    const memory = documentMemory?.indexingActivityStatus()
+    const modelError =
+      memory?.modelState === 'error' ? shortCause(documentMemory?.lastIndexError()) : ''
+    const root = folder?.root
+    const counts =
+      root && documentMemory
+        ? folderCounts.get(root, () => documentMemory.getFolderIndexCounts(root))
+        : null
+    return {
+      folder,
+      memory: {
+        enabled: memory?.enabled ?? false,
+        cpuMode: 'gentle' as const,
+        modelState: memory?.modelState ?? 'not-loaded',
+        ...(memory?.modelProgress === undefined ? {} : { modelProgress: memory.modelProgress }),
+        pending: memory?.pending ?? 0,
+        errors: memory?.errors ?? 0,
+        ...(modelError ? { lastError: modelError } : {}),
+      },
+      folderProgress: counts
+        ? foldFolderProgress(counts, folder?.state === 'complete', folder?.errors ?? 0)
+        : null,
+    }
   })
 }

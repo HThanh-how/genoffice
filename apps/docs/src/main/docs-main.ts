@@ -106,6 +106,7 @@ import {
   type LegacyAiSettings,
 } from '@genoffice/ai-provider'
 import { listCodexModels, shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
+import { isCliProvider } from '@genoffice/ai-provider/agy-cli'
 import { listProviderModelsForIpc } from '@genoffice/ai-provider/provider-models'
 import {
   listCustomModelsForIpc,
@@ -3821,7 +3822,7 @@ export function registerAiIpc(): void {
     const send = (chunk: AiStreamChunk) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:stream-chunk', chunk)
     }
-    if (!config || (provider !== 'codex' && !config.apiKey)) {
+    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
       send({
         requestId,
         type: 'error',
@@ -3829,7 +3830,7 @@ export function registerAiIpc(): void {
       })
       return
     }
-    if (provider !== 'codex' && !config.model) {
+    if (!isCliProvider(provider) && !config.model) {
       send({ requestId, type: 'error', error: tm('errNoModel') })
       return
     }
@@ -3995,13 +3996,13 @@ export function registerAiIpc(): void {
     if (provider === 'genspark' && config && !config.apiKey) {
       config = { ...config, apiKey: gskApiKey() }
     }
-    if (!config || (provider !== 'codex' && !config.apiKey)) {
+    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
       return {
         ok: false,
         error: provider === 'genspark' ? tm('errGskNotLoggedIn') : tm('errNoApiKey', { provider }),
       }
     }
-    if (provider !== 'codex' && !config.model) return { ok: false, error: tm('errNoModel') }
+    if (!isCliProvider(provider) && !config.model) return { ok: false, error: tm('errNoModel') }
     try {
       const result = await chatForProvider(provider, config, system, user)
       // the one-shot path reports HTTP failures as ok:false with the raw body —

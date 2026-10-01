@@ -135,7 +135,7 @@ export function looksSecret(text: string): boolean {
 
 const URL_RE = /^https?:\/\/[^\s<>"]+$/i
 const WIN_PATH = /^(?:[A-Za-z]:[\\/]|\\\\[^\\/\s]+[\\/])[^<>"|?*\r\n]+$/
-const POSIX_PATH = /^~?(?:\/[\w .@+~()-]+)+\/?$/
+const POSIX_PATH = /^~?(?:\/[\p{L}\p{N}_ .@+~()-]+)+\/?$/u
 const FILE_URI = /^file:\/\/\/?[^\s]+$/i
 const EMAIL_RE = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/
 const PHONE_RE = /(?:\+?\d[\d ().-]{7,}\d)/

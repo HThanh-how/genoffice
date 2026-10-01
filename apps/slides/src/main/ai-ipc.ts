@@ -35,6 +35,7 @@ import {
   type LegacyAiSettings,
 } from '@genoffice/ai-provider'
 import { shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
+import { isCliProvider } from '@genoffice/ai-provider/agy-cli'
 import {
   MAX_REMOTE_IMAGE_BYTES,
   fetchRemoteImage,
@@ -159,7 +160,7 @@ export function registerAiIpc(): void {
     const send = (chunk: AiStreamChunk) => {
       if (!event.sender.isDestroyed()) event.sender.send('ai:stream-chunk', chunk)
     }
-    if (!config || (provider !== 'codex' && !config.apiKey)) {
+    if (!config || (!isCliProvider(provider) && !config.apiKey)) {
       send({
         requestId,
         type: 'error',
@@ -167,7 +168,7 @@ export function registerAiIpc(): void {
       })
       return
     }
-    if (provider !== 'codex' && !config.model) {
+    if (!isCliProvider(provider) && !config.model) {
       send({ requestId, type: 'error', error: tm('errNoModel') })
       return
     }

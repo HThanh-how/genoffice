@@ -1,4 +1,5 @@
 import { parentPort, workerData } from 'node:worker_threads'
+import { applyPolicyMessage, isPolicyMessage } from '../fork/indexing-worker-policy'
 
 export const indexingWorkerData: { cacheDir?: string; dbPath?: string } =
   workerData ?? JSON.parse(process.env.GENOFFICE_INDEX_WORKER_DATA ?? '{}')
@@ -10,9 +11,11 @@ export function postIndexMessage(message: unknown): void {
 }
 
 export function onIndexRequest<T>(handler: (request: T) => void): void {
-  if (parentPort) parentPort.on('message', handler)
-  else if (process.env.GENOFFICE_INDEX_WORKER_DATA && process.send)
-    process.on('message', (request) => handler(request as T))
+  // Policy messages (threads / duty cycle) are consumed here and never reach the queue.
+  const route = (request: unknown) =>
+    isPolicyMessage(request) ? applyPolicyMessage(request) : handler(request as T)
+  if (parentPort) parentPort.on('message', route)
+  else if (process.env.GENOFFICE_INDEX_WORKER_DATA && process.send) process.on('message', route)
 }
 
 if (!parentPort && process.env.GENOFFICE_INDEX_WORKER_DATA && process.send)

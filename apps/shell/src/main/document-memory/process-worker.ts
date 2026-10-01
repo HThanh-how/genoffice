@@ -2,14 +2,16 @@ import { spawn } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { constants, setPriority } from 'node:os'
 import type { Worker } from 'node:worker_threads'
+import { attachChildToPolicy } from '../fork/indexing-child-policy'
 
 /** A separate, lower-priority process keeps model CPU and memory away from the UI. */
 export function createIndexProcess(
   path: string,
   data: { cacheDir: string; dbPath: string },
+  spawnProcess: typeof spawn = spawn,
 ): Worker {
   const channel = new EventEmitter()
-  const child = spawn(process.execPath, [path], {
+  const child = spawnProcess(process.execPath, [path], {
     env: {
       ...process.env,
       ELECTRON_RUN_AS_NODE: '1',
@@ -19,16 +21,27 @@ export function createIndexProcess(
     windowsHide: true,
     serialization: 'advanced',
   })
+  let detachPolicy: (() => void) | null = null
   child.on('spawn', () => {
     try {
       if (child.pid) setPriority(child.pid, constants.priority.PRIORITY_BELOW_NORMAL)
     } catch {
       // Duty-cycle limits still apply where process priority changes are unavailable.
     }
+    // Threads, duty cycle and OS priority follow the power / idle policy from here on.
+    detachPolicy = attachChildToPolicy({
+      pid: child.pid,
+      connected: () => child.connected,
+      send: (message) => child.send(message, () => {}),
+      setPriority,
+    })
   })
   child.on('message', (message) => channel.emit('message', message))
   child.on('error', (error) => channel.emit('error', error))
-  child.on('exit', (code) => channel.emit('exit', code ?? 1))
+  child.on('exit', (code) => {
+    detachPolicy?.()
+    channel.emit('exit', code ?? 1)
+  })
   return Object.assign(channel, {
     postMessage(message: unknown) {
       if (!child.connected) throw new Error('Index process is unavailable')

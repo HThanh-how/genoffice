@@ -38,6 +38,7 @@ import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import { DocumentMemorySettings } from './DocumentMemorySettings'
 import { ClipboardSettingsToggle } from './fork/ClipboardSettingsToggle'
+import { AgyProviderFields, ProviderNote, testAiSettingsFor } from './fork/AgyProviderFields'
 import './settings.css'
 
 // ── Settings modal (opened from the account menu) ─────────
@@ -437,6 +438,7 @@ function AiModelPane({ t }: { t: TFunc }) {
   }
   const isGenspark = provider === 'genspark'
   const isCodex = provider === 'codex'
+  const isAgy = provider === 'agy'
 
   const touch = () => {
     setDirty(true)
@@ -483,9 +485,8 @@ function AiModelPane({ t }: { t: TFunc }) {
   const test = () => {
     setTesting(true)
     setTestResult(null)
-    window.aiOffice
-      .testAiSettings?.(settings)
-      .then((r) => {
+    testAiSettingsFor(settings, t('setAiTestFail'))
+      ?.then((r) => {
         setTestResult(r ?? { ok: false })
         if (r?.ok && isCodex) {
           void refreshCodexModels(config.cliPath ?? '', config.model).catch(() => undefined)
@@ -545,7 +546,7 @@ function AiModelPane({ t }: { t: TFunc }) {
         />
       </div>
       <div className="set-field-desc set-ai-note">
-        {isGenspark ? t('setAiGensparkHint') : isCodex ? t('setAiCodexHint') : t('setAiByokNote')}
+        <ProviderNote provider={provider} t={t} />
       </div>
       <div className="set-field">
         <div className="set-field-text">
@@ -571,7 +572,7 @@ function AiModelPane({ t }: { t: TFunc }) {
           />
         )}
       </div>
-      {!isCodex && !isGenspark && (
+      {!isCodex && !isGenspark && !isAgy && (
         <div className="set-field-desc set-model-discovery" aria-live="polite">
           <span>
             {modelListState === 'loading'
@@ -626,6 +627,8 @@ function AiModelPane({ t }: { t: TFunc }) {
             }}
           />
         </div>
+      ) : isAgy ? (
+        <AgyProviderFields config={config} update={updateConfig} setCatalog={setCatalog} />
       ) : !isGenspark ? (
         <>
           <div className="set-field">

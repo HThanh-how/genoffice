@@ -3,7 +3,8 @@ import { topVectors } from './top-vectors'
 import { DatabaseSync } from 'node:sqlite'
 import { chmodSync } from 'node:fs'
 import { basename, resolve } from 'node:path'
-import { documentSearchTokens, normalizeDocumentText, queryTokens } from './normalization'
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
+import { documentIndexFields, queryTokens } from './normalization'
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
 export interface StoredDocument {
@@ -43,6 +44,15 @@ export interface DocumentMemoryHit {
   indexedAt: number | null
   /** The document is only partially indexed (chunk cap or sampled rows). */
   truncated: boolean
+}
+/** Options for the time-sliced write paths (large documents are written in short turns). */
+export interface SliceOptions {
+  /** Let the event loop run between slices (default: setImmediate). */
+  yield?: () => Promise<void>
+  /** Return false to abandon a half-finished write; the document stays `pending` and resumes. */
+  shouldContinue?: () => boolean
+  /** Longest one write transaction may run (default {@link WRITE_SLICE_MS}). */
+  budgetMs?: number
 }
 export interface DocumentMemoryStats {
   docs: number
@@ -84,7 +94,10 @@ CREATE TABLE IF NOT EXISTS documents (
   truncated INTEGER NOT NULL DEFAULT 0,
   last_opened_at INTEGER NOT NULL DEFAULT 0,
   priority_at INTEGER NOT NULL DEFAULT 0,
-  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  chunk_total INTEGER NOT NULL DEFAULT 0,
+  chunk_done INTEGER NOT NULL DEFAULT 0,
+  chunk_counted INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -103,6 +116,48 @@ CREATE INDEX IF NOT EXISTS chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS chunks_vector_lookup ON chunks(vector_dim, document_id) WHERE vector IS NOT NULL;
 CREATE INDEX IF NOT EXISTS documents_excluded_status ON documents(excluded, status);
 `
+
+/**
+ * Per-document chunk counters (`documents.chunk_total` / `chunk_done`) are maintained by triggers
+ * on `chunks`, so every writer (replace, embedding batches, delete, tombstone, exclude, retry,
+ * either process, even an older build) keeps them exact inside the writer's own transaction.
+ * Progress aggregates then read the small documents table instead of scanning the vector BLOBs
+ * of every chunk (hundreds of milliseconds on a store with ~100k chunks).
+ */
+const COUNTER_TRIGGER_NAMES = [
+  'chunks_counter_insert',
+  'chunks_counter_delete',
+  'chunks_counter_vector',
+] as const
+const COUNTER_TRIGGERS = `
+CREATE TRIGGER IF NOT EXISTS chunks_counter_insert AFTER INSERT ON chunks
+BEGIN
+  UPDATE documents SET chunk_total = chunk_total + 1,
+    chunk_done = chunk_done + (new.vector IS NOT NULL) WHERE id = new.document_id;
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_counter_delete AFTER DELETE ON chunks
+BEGIN
+  UPDATE documents SET chunk_total = chunk_total - 1,
+    chunk_done = chunk_done - (old.vector IS NOT NULL) WHERE id = old.document_id;
+END;
+CREATE TRIGGER IF NOT EXISTS chunks_counter_vector AFTER UPDATE OF vector ON chunks
+WHEN (old.vector IS NULL) <> (new.vector IS NULL)
+BEGIN
+  UPDATE documents SET chunk_done = chunk_done + (new.vector IS NOT NULL) - (old.vector IS NOT NULL)
+  WHERE id = new.document_id;
+END;
+`
+/**
+ * FTS5 merges segments while it commits a write ("automerge"). On a store with ~100k chunks a
+ * merge of the larger levels takes 50-400 ms inside one commit, which stalled the main thread
+ * every few dozen documents. Automerge is switched off (the setting persists in the database)
+ * and {@link DocumentMemoryStore.mergeFtsStep} merges a few pages at a time between writes.
+ */
+export const FTS_MERGE_PAGES = 8
+/** Documents handled per backfill slice; each slice is one short transaction. */
+export const COUNTER_BACKFILL_SLICE = 200
+/** Time budget of one sliced write transaction (replace / delete of a large document). */
+export const WRITE_SLICE_MS = 8
 
 /** Bound semantic work on large stores; weak results widen the scan to protect recall. */
 export const SEMANTIC_RECENT_SCAN = 12_000
@@ -155,6 +210,7 @@ export class DocumentMemoryStore {
     this.db.exec(
       'CREATE INDEX IF NOT EXISTS documents_priority ON documents(excluded, priority_at DESC)',
     )
+    this.migrateChunkCounters()
     try {
       chmodSync(resolve(dbPath), 0o600)
     } catch {
@@ -162,12 +218,129 @@ export class DocumentMemoryStore {
     }
   }
 
+  /**
+   * Add the counter columns and triggers. Idempotent and safe when the main-process manager and
+   * the index process open the same file at once: the check-and-alter runs in one IMMEDIATE
+   * transaction, so the second opener waits (busy_timeout) and then finds everything in place.
+   * Existing rows keep `chunk_counted = 0` and are filled by {@link backfillCounters}.
+   */
+  private migrateChunkCounters(): void {
+    const present = () =>
+      (this.db.prepare('PRAGMA table_info(documents)').all() as Array<{ name: string }>).map(
+        (column) => column.name,
+      )
+    const triggers = () =>
+      (
+        this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger'").all() as Array<{
+          name: string
+        }>
+      ).map((row) => row.name)
+    const complete = (): boolean => {
+      const columns = present()
+      const names = triggers()
+      return (
+        ['chunk_total', 'chunk_done', 'chunk_counted'].every((name) => columns.includes(name)) &&
+        COUNTER_TRIGGER_NAMES.every((name) => names.includes(name)) &&
+        this.ftsAutomergeDisabled()
+      )
+    }
+    if (complete()) return
+    this.transaction(() => {
+      const columns = present()
+      for (const name of ['chunk_total', 'chunk_done', 'chunk_counted'])
+        if (!columns.includes(name))
+          this.db.exec(`ALTER TABLE documents ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
+      this.db.exec(COUNTER_TRIGGERS)
+      this.db.exec(
+        'CREATE INDEX IF NOT EXISTS documents_uncounted ON documents(id) WHERE chunk_counted = 0',
+      )
+      if (!this.ftsAutomergeDisabled())
+        this.db.exec("INSERT INTO chunk_fts(chunk_fts, rank) VALUES('automerge', 0)")
+    })
+  }
+
+  private ftsAutomergeDisabled(): boolean {
+    const row = this.db.prepare("SELECT v FROM chunk_fts_config WHERE k = 'automerge'").get() as
+      { v: unknown } | undefined
+    return row !== undefined && Number(row.v) === 0
+  }
+
+  /**
+   * One bounded step of FTS5 segment merging (about `pages` pages of output, ~1 ms). Returns true
+   * while more merging may remain, so callers loop with a yield between steps. Safe to call at
+   * any time outside a write transaction; a no-op when the index is already compact.
+   */
+  mergeFtsStep(pages = FTS_MERGE_PAGES): boolean {
+    const changes = () => (this.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n
+    const before = changes()
+    this.db.exec(`INSERT INTO chunk_fts(chunk_fts, rank) VALUES('merge', ${Math.trunc(pages)})`)
+    return changes() - before > 1
+  }
+
+  /**
+   * Fill the counters of documents written before they existed, one short transaction per call.
+   * Counts come from covering indexes only (`chunks_document_id`, and the partial
+   * `chunks_vector_lookup`), so no vector BLOB is read. Returns whether documents remain.
+   */
+  backfillCounters(maxDocuments = COUNTER_BACKFILL_SLICE): boolean {
+    this.transaction(() => {
+      const ids = (
+        this.db
+          .prepare('SELECT id FROM documents WHERE chunk_counted = 0 ORDER BY id LIMIT ?')
+          .all(maxDocuments) as Array<{ id: number }>
+      ).map((row) => row.id)
+      if (!ids.length) return
+      const first = ids[0]!
+      const last = ids[ids.length - 1]!
+      const totals = new Map<number, number>()
+      for (const row of this.db
+        .prepare(
+          'SELECT document_id, count(*) AS n FROM chunks WHERE document_id BETWEEN ? AND ? GROUP BY document_id',
+        )
+        .all(first, last) as Array<{ document_id: number; n: number }>)
+        totals.set(row.document_id, row.n)
+      // The partial index (vector_dim, document_id) holds exactly the vectored chunks, so the
+      // count never touches a BLOB. Walk the (normally single) distinct dimension by index seek;
+      // the planner would otherwise prefer chunks_document_id and read every row.
+      const done = new Map<number, number>()
+      const nextDimension = this.db.prepare(
+        `SELECT vector_dim FROM chunks INDEXED BY chunks_vector_lookup
+        WHERE vector IS NOT NULL AND vector_dim > ? ORDER BY vector_dim LIMIT 1`,
+      )
+      const countDone = this.db.prepare(
+        `SELECT document_id, count(*) AS n FROM chunks INDEXED BY chunks_vector_lookup
+        WHERE vector IS NOT NULL AND vector_dim = ? AND document_id BETWEEN ? AND ?
+        GROUP BY document_id`,
+      )
+      for (let dimension = 0; ;) {
+        const next = nextDimension.get(dimension) as { vector_dim: number } | undefined
+        if (!next) break
+        dimension = next.vector_dim
+        for (const hit of countDone.all(dimension, first, last) as Array<{
+          document_id: number
+          n: number
+        }>)
+          done.set(hit.document_id, (done.get(hit.document_id) ?? 0) + hit.n)
+      }
+      const update = this.db.prepare(
+        'UPDATE documents SET chunk_total = ?, chunk_done = ?, chunk_counted = 1 WHERE id = ?',
+      )
+      for (const id of ids) update.run(totals.get(id) ?? 0, done.get(id) ?? 0, id)
+    })
+    return this.hasUncountedDocuments()
+  }
+
+  /** True while some document still lacks exact counters (a backfill is outstanding). */
+  hasUncountedDocuments(): boolean {
+    return !!this.db.prepare('SELECT 1 FROM documents WHERE chunk_counted = 0 LIMIT 1').get()
+  }
+
   remember(path: string): void {
     const normalizedPath = resolve(path)
     const openedAt = Date.now()
     this.db
       .prepare(
-        `INSERT INTO documents(path, name, status, last_opened_at, priority_at) VALUES (?, ?, 'pending', ?, ?)
+        `INSERT INTO documents(path, name, status, last_opened_at, priority_at, chunk_counted) VALUES (?, ?, 'pending', ?, ?, 1)
       ON CONFLICT(path) DO UPDATE SET name = excluded.name,
         last_opened_at = CASE WHEN documents.excluded = 0 THEN excluded.last_opened_at ELSE documents.last_opened_at END,
         priority_at = CASE WHEN documents.excluded = 0 THEN max(excluded.priority_at, coalesce(documents.mtime_ms, 0)) ELSE documents.priority_at END`,
@@ -180,8 +353,8 @@ export class DocumentMemoryStore {
     const normalizedPath = resolve(path)
     this.db
       .prepare(
-        `INSERT INTO documents(path, name, status, last_opened_at, priority_at)
-         VALUES (?, ?, 'pending', 0, ?)
+        `INSERT INTO documents(path, name, status, last_opened_at, priority_at, chunk_counted)
+         VALUES (?, ?, 'pending', 0, ?, 1)
          ON CONFLICT(path) DO NOTHING`,
       )
       .run(normalizedPath, basename(normalizedPath), mtimeMs)
@@ -200,7 +373,7 @@ export class DocumentMemoryStore {
   private ensureDocument(path: string): void {
     this.db
       .prepare(
-        `INSERT INTO documents(path, name, status) VALUES (?, ?, 'pending') ON CONFLICT(path) DO NOTHING`,
+        `INSERT INTO documents(path, name, status, chunk_counted) VALUES (?, ?, 'pending', 1) ON CONFLICT(path) DO NOTHING`,
       )
       .run(path, basename(path))
   }
@@ -247,15 +420,17 @@ export class DocumentMemoryStore {
     return row ? toDocument(row) : null
   }
 
-  /** Read one document's persisted vector counts without loading its chunks or vectors. */
+  /** Read one document's persisted vector counts from its counters (no chunk or vector reads). */
   chunkProgress(path: string): DocumentChunkProgress {
     const row = this.db
       .prepare(
         `SELECT d.id, d.path, d.name, d.status, d.mtime_ms, d.size_bytes, d.hash, d.error, d.truncated,
-          count(c.id) AS total_chunks,
-          sum(CASE WHEN c.vector IS NOT NULL THEN 1 ELSE 0 END) AS completed_chunks
-        FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
-        WHERE d.path = ? GROUP BY d.id`,
+          CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
+            ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END AS total_chunks,
+          CASE WHEN d.chunk_counted = 1 THEN d.chunk_done
+            ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id AND c.vector IS NOT NULL) END
+            AS completed_chunks
+        FROM documents d WHERE d.path = ?`,
       )
       .get(resolve(path)) as
       (DocRow & { total_chunks: number; completed_chunks: number | null }) | undefined
@@ -266,35 +441,36 @@ export class DocumentMemoryStore {
     }
   }
 
-  /** Aggregate enrolled documents below a selected root with one bounded SQL query. */
+  /**
+   * Aggregate enrolled documents below a selected root from the per-document counters: one pass
+   * over the documents table, no chunk or vector access. Documents whose counters are not
+   * backfilled yet are counted from the covering indexes instead, so the figures are always exact.
+   */
   folderChunkProgress(root: string): FolderChunkProgress {
     const normalized = resolve(root)
     const prefix =
       normalized.endsWith('/') || normalized.endsWith('\\')
         ? normalized
         : `${normalized}${normalized.includes('\\') ? '\\' : '/'}`
+    const counts = this.countSource()
     const row = this.db
       .prepare(
-        `WITH per_document AS (
-          SELECT d.id, d.status, d.truncated, count(c.id) AS total_chunks,
-            coalesce(sum(CASE WHEN c.vector IS NOT NULL THEN 1 ELSE 0 END), 0) AS completed_chunks
-          FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
-          WHERE d.excluded = 0 AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)
-          GROUP BY d.id
-        )
+        `${counts.with}
         SELECT count(*) AS total_files,
           sum(CASE WHEN status IN ('ready', 'empty') THEN 1 ELSE 0 END) AS ready_files,
           sum(CASE WHEN status IN ('pending', 'text-only') THEN 1 ELSE 0 END) AS pending_files,
           sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_files,
           sum(CASE WHEN status = 'empty' THEN 1 ELSE 0 END) AS empty_files,
           coalesce(sum(truncated), 0) AS truncated_files,
-          coalesce(sum(completed_chunks), 0) AS completed_chunks,
+          coalesce(sum(done_chunks), 0) AS completed_chunks,
           coalesce(sum(total_chunks), 0) AS total_chunks,
           coalesce(sum(CASE WHEN status IN ('ready','empty') THEN 1.0
             WHEN status = 'text-only' AND total_chunks > 0
-              THEN (completed_chunks * 1.0 / total_chunks)
+              THEN (done_chunks * 1.0 / total_chunks)
             ELSE 0.0 END), 0.0) AS partial_file_progress
-        FROM per_document`,
+        FROM (SELECT d.status, d.truncated, ${counts.total} AS total_chunks, ${counts.done} AS done_chunks
+          FROM documents d
+          WHERE d.excluded = 0 AND (d.path = ? OR substr(d.path, 1, length(?)) = ?))`,
       )
       .get(normalized, prefix, prefix) as
       | {
@@ -387,54 +563,126 @@ export class DocumentMemoryStore {
   replaceDocument(path: string, replacement: ReplacementDocument): void {
     const normalizedPath = resolve(path)
     validateReplacement(replacement)
-    const vectors = replacement.chunks.map((chunk) => chunk.vector)
-    const dimensions = new Set(vectors.filter((v): v is number[] => !!v).map((v) => v.length))
-    if (dimensions.size > 1) throw new Error('Document vectors must have a consistent dimension')
-    if (vectors.some((v) => v && v.some((n) => !Number.isFinite(n))))
-      throw new Error('Document vectors must contain only finite numbers')
-
     this.transaction(() => {
-      this.ensureDocument(normalizedPath)
-      const row = this.db
-        .prepare('SELECT id, excluded FROM documents WHERE path = ?')
-        .get(normalizedPath) as { id: number; excluded: number }
-      if (row.excluded) throw new Error('Excluded document cannot be indexed')
+      const row = this.lockDocumentForReplace(normalizedPath)
       this.deleteChunks(row.id)
-      this.db
-        .prepare(
-          `UPDATE documents SET name = ?, status = ?, mtime_ms = ?, priority_at = max(last_opened_at, ?), size_bytes = ?, hash = ?,
-        embedding_model = ?, error = ?, truncated = ?, excluded = 0, updated_at = unixepoch() WHERE id = ?`,
-        )
-        .run(
-          basename(normalizedPath),
-          replacement.status,
-          replacement.mtimeMs,
-          replacement.mtimeMs,
-          replacement.sizeBytes,
-          replacement.hash,
-          replacement.embeddingModel,
-          replacement.error ?? null,
-          replacement.truncated ? 1 : 0,
-          row.id,
-        )
-      const addChunk = this.db
-        .prepare(`INSERT INTO chunks(document_id, ordinal, text, normalized, location, vector, vector_dim)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      const addFts = this.db.prepare('INSERT INTO chunk_fts(rowid, text) VALUES (?, ?)')
-      replacement.chunks.forEach((chunk, ordinal) => {
-        const vec = chunk.vector ? floatBlob(chunk.vector) : null
-        const result = addChunk.run(
-          row.id,
-          ordinal,
-          chunk.text,
-          normalizeDocumentText(chunk.text),
-          chunk.location,
-          vec,
-          chunk.vector?.length ?? null,
-        )
-        addFts.run(result.lastInsertRowid, documentSearchTokens(chunk.text).join(' '))
-      })
+      this.updateReplacedDocument(row.id, normalizedPath, replacement)
+      const insert = this.chunkInserter(row.id)
+      replacement.chunks.forEach((chunk, ordinal) => insert(chunk, ordinal))
     })
+  }
+
+  /**
+   * Same result as {@link replaceDocument}, but written in short transactions so a document with
+   * hundreds of chunks never blocks the event loop for more than about one slice. A document
+   * that fits one slice is still replaced atomically. Between slices the row is marked
+   * `pending` (no hash), so an interrupted replacement is simply extracted again on resume.
+   * Returns false when the write was abandoned (document excluded/removed or `shouldContinue`).
+   */
+  async replaceDocumentSliced(
+    path: string,
+    replacement: ReplacementDocument,
+    options: SliceOptions = {},
+  ): Promise<boolean> {
+    const normalizedPath = resolve(path)
+    validateReplacement(replacement)
+    let phase: 'delete' | 'insert' = 'delete'
+    let next = 0
+    let first = true
+    let documentId = 0
+    let insert: ReturnType<DocumentMemoryStore['chunkInserter']> | null = null
+    return this.runSliced(
+      options,
+      (outOfBudget) => {
+        if (first) {
+          documentId = this.lockDocumentForReplace(normalizedPath).id
+          first = false
+        } else {
+          const row = this.db
+            .prepare('SELECT excluded FROM documents WHERE id = ?')
+            .get(documentId) as { excluded: number } | undefined
+          if (!row || row.excluded) return 'abort'
+        }
+        if (phase === 'delete') {
+          if (!this.deleteChunksBudgeted(documentId, outOfBudget)) return 'more'
+          phase = 'insert'
+        }
+        insert ??= this.chunkInserter(documentId)
+        while (next < replacement.chunks.length) {
+          insert(replacement.chunks[next]!, next)
+          next++
+          if (next < replacement.chunks.length && outOfBudget()) return 'more'
+        }
+        this.updateReplacedDocument(documentId, normalizedPath, replacement)
+        return 'done'
+      },
+      () => this.markPending(documentId),
+    )
+  }
+
+  private lockDocumentForReplace(normalizedPath: string): { id: number } {
+    this.ensureDocument(normalizedPath)
+    const row = this.db
+      .prepare('SELECT id, excluded FROM documents WHERE path = ?')
+      .get(normalizedPath) as { id: number; excluded: number }
+    if (row.excluded) throw new Error('Excluded document cannot be indexed')
+    return row
+  }
+
+  private updateReplacedDocument(
+    id: number,
+    normalizedPath: string,
+    replacement: ReplacementDocument,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE documents SET name = ?, status = ?, mtime_ms = ?, priority_at = max(last_opened_at, ?), size_bytes = ?, hash = ?,
+        embedding_model = ?, error = ?, truncated = ?, excluded = 0, updated_at = unixepoch() WHERE id = ?`,
+      )
+      .run(
+        basename(normalizedPath),
+        replacement.status,
+        replacement.mtimeMs,
+        replacement.mtimeMs,
+        replacement.sizeBytes,
+        replacement.hash,
+        replacement.embeddingModel,
+        replacement.error ?? null,
+        replacement.truncated ? 1 : 0,
+        id,
+      )
+  }
+
+  private chunkInserter(
+    documentId: number,
+  ): (chunk: ReplacementDocument['chunks'][number], ordinal: number) => void {
+    const addChunk = this.db
+      .prepare(`INSERT INTO chunks(document_id, ordinal, text, normalized, location, vector, vector_dim)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+    const addFts = this.db.prepare('INSERT INTO chunk_fts(rowid, text) VALUES (?, ?)')
+    return (chunk, ordinal) => {
+      const fields = documentIndexFields(chunk.text)
+      const result = addChunk.run(
+        documentId,
+        ordinal,
+        chunk.text,
+        fields.normalized,
+        chunk.location,
+        chunk.vector ? floatBlob(chunk.vector) : null,
+        chunk.vector?.length ?? null,
+      )
+      addFts.run(result.lastInsertRowid, fields.searchText)
+    }
+  }
+
+  /** Between slices a half-written document must not look finished. */
+  private markPending(documentId: number): void {
+    this.db
+      .prepare(
+        `UPDATE documents SET status = 'pending', hash = NULL, embedding_model = NULL, error = NULL
+        WHERE id = ?`,
+      )
+      .run(documentId)
   }
 
   markError(
@@ -451,22 +699,62 @@ export class DocumentMemoryStore {
       }
       if (row.excluded) return
       this.deleteChunks(row.id)
-      this.db
-        .prepare(
-          `UPDATE documents SET status = 'error', error = ?, hash = NULL, embedding_model = NULL, truncated = 0,
+      this.applyError(row.id, error, metadata)
+    })
+  }
+
+  /** {@link markError} written in short transactions (dropping a large document's chunks is slow). */
+  async markErrorSliced(
+    path: string,
+    error: string,
+    metadata?: { mtimeMs: number; sizeBytes: number } | null,
+    options: SliceOptions = {},
+  ): Promise<boolean> {
+    const p = resolve(path)
+    let documentId = 0
+    let first = true
+    return this.runSliced(
+      options,
+      (outOfBudget) => {
+        if (first) {
+          this.ensureDocument(p)
+          first = false
+        }
+        const row = (
+          documentId
+            ? this.db.prepare('SELECT id, excluded FROM documents WHERE id = ?').get(documentId)
+            : this.db.prepare('SELECT id, excluded FROM documents WHERE path = ?').get(p)
+        ) as { id: number; excluded: number } | undefined
+        if (!row || row.excluded) return 'abort'
+        documentId = row.id
+        if (!this.deleteChunksBudgeted(documentId, outOfBudget)) return 'more'
+        this.applyError(documentId, error, metadata)
+        return 'done'
+      },
+      () => this.markPending(documentId),
+    )
+  }
+
+  private applyError(
+    id: number,
+    error: string,
+    metadata?: { mtimeMs: number; sizeBytes: number } | null,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE documents SET status = 'error', error = ?, hash = NULL, embedding_model = NULL, truncated = 0,
         mtime_ms = CASE WHEN ? = 0 THEN mtime_ms ELSE ? END,
         size_bytes = CASE WHEN ? = 0 THEN size_bytes ELSE ? END,
         updated_at = unixepoch() WHERE id = ?`,
-        )
-        .run(
-          error,
-          metadata === undefined ? 0 : 1,
-          metadata?.mtimeMs ?? null,
-          metadata === undefined ? 0 : 1,
-          metadata?.sizeBytes ?? null,
-          row.id,
-        )
-    })
+      )
+      .run(
+        error,
+        metadata === undefined ? 0 : 1,
+        metadata?.mtimeMs ?? null,
+        metadata === undefined ? 0 : 1,
+        metadata?.sizeBytes ?? null,
+        id,
+      )
   }
 
   /** Add one embedding batch without replacing chunks or invalidating their IDs. */
@@ -578,6 +866,42 @@ export class DocumentMemoryStore {
     return removed
   }
 
+  /** {@link tombstone} written in short transactions; resolves true when the row was removed. */
+  async tombstoneSliced(path: string, options: SliceOptions = {}): Promise<boolean> {
+    const p = resolve(path)
+    let removed = false
+    await this.runSliced(options, (outOfBudget) => {
+      const row = this.db.prepare('SELECT id, excluded FROM documents WHERE path = ?').get(p) as
+        { id: number; excluded: number } | undefined
+      if (!row || row.excluded) return 'done'
+      if (!this.deleteChunksBudgeted(row.id, outOfBudget)) return 'more'
+      this.db.prepare('DELETE FROM documents WHERE id = ?').run(row.id)
+      removed = true
+      return 'done'
+    })
+    return removed
+  }
+
+  /**
+   * Drop scan-discovered rows (never opened by the user) whose file name is a lock or temp
+   * artifact, such as Word's `~$name.doc`. Earlier scans enrolled them before the filter existed.
+   */
+  purgeDiscoveredByName(isIgnored: (name: string) => boolean): number {
+    let removed = 0
+    this.transaction(() => {
+      const rows = this.db
+        .prepare('SELECT id, name FROM documents WHERE last_opened_at = 0')
+        .all() as Array<{ id: number; name: string }>
+      for (const row of rows) {
+        if (!isIgnored(row.name)) continue
+        this.deleteChunks(row.id)
+        this.db.prepare('DELETE FROM documents WHERE id = ?').run(row.id)
+        removed++
+      }
+    })
+    return removed
+  }
+
   /** Record fresh source metadata after a file was moved, without re-extracting it. */
   touchMetadata(path: string, mtimeMs: number, sizeBytes: number): void {
     this.db
@@ -611,6 +935,21 @@ export class DocumentMemoryStore {
     ).map((r) => r.path)
   }
 
+  /** One id-ordered page of {@link documentsUnder}, so a large folder can be read in slices. */
+  documentsUnderPage(root: string, afterId: number, limit: number): StoredDocument[] {
+    const normalized = resolve(root)
+    const prefix = normalized + (normalized.includes('\\') ? '\\' : '/')
+    return (
+      this.db
+        .prepare(
+          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated
+          FROM documents WHERE excluded = 0 AND id > ? AND (path = ? OR substr(path, 1, length(?)) = ?)
+          ORDER BY id LIMIT ?`,
+        )
+        .all(afterId, normalized, prefix, prefix, limit) as unknown as DocRow[]
+    ).map(toDocument)
+  }
+
   /** The most recently user-opened documents, for the cheap safety poll. */
   openedPaths(limit: number): string[] {
     return (
@@ -641,9 +980,15 @@ export class DocumentMemoryStore {
 
   clear(): void {
     this.transaction(() => {
+      // Row triggers would update a counter once per chunk; the deletes below zero them anyway.
+      for (const name of COUNTER_TRIGGER_NAMES) this.db.exec(`DROP TRIGGER IF EXISTS ${name}`)
       this.db.prepare('DELETE FROM chunk_fts').run()
       this.db.prepare('DELETE FROM chunks').run()
       this.db.prepare('DELETE FROM documents WHERE excluded = 0').run()
+      this.db.exec(
+        'UPDATE documents SET chunk_total = 0, chunk_done = 0 WHERE chunk_total <> 0 OR chunk_done <> 0',
+      )
+      this.db.exec(COUNTER_TRIGGERS)
     })
   }
 
@@ -864,17 +1209,38 @@ export class DocumentMemoryStore {
       : null
   }
 
+  /** Library totals from the per-document counters (one pass over the documents table). */
   stats(): DocumentMemoryStats {
-    const row = this.db
+    const counts = this.countSource()
+    return this.db
       .prepare(
-        `SELECT
-      (SELECT count(*) FROM documents WHERE excluded = 0) AS docs,
-      (SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.excluded = 0) AS chunks,
-      (SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.excluded = 0 AND c.vector IS NOT NULL) AS vectors,
-      (SELECT count(*) FROM documents WHERE excluded = 0 AND status = 'error') AS errors`,
+        `${counts.with}
+        SELECT count(*) AS docs,
+          coalesce(sum(${counts.total}), 0) AS chunks,
+          coalesce(sum(${counts.done}), 0) AS vectors,
+          coalesce(sum(CASE WHEN d.status = 'error' THEN 1 ELSE 0 END), 0) AS errors
+        FROM documents d WHERE d.excluded = 0`,
       )
       .get() as unknown as DocumentMemoryStats
-    return row
+  }
+
+  /**
+   * SQL fragments giving every document's chunk and vector counts (alias `d`). Normally these are
+   * the stored counters. While a backfill is outstanding, documents without counters are counted
+   * from the covering indexes (still no BLOB reads) so aggregates stay exact in the meantime.
+   */
+  private countSource(): { with: string; total: string; done: string } {
+    if (!this.hasUncountedDocuments())
+      return { with: '', total: 'd.chunk_total', done: 'd.chunk_done' }
+    return {
+      with: `WITH tot AS MATERIALIZED (SELECT document_id, count(*) AS n FROM chunks GROUP BY document_id),
+        dn AS MATERIALIZED (SELECT document_id, count(*) AS n FROM chunks INDEXED BY chunks_vector_lookup
+          WHERE vector IS NOT NULL AND vector_dim > 0 GROUP BY document_id)`,
+      total: `CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
+        ELSE coalesce((SELECT n FROM tot WHERE tot.document_id = d.id), 0) END`,
+      done: `CASE WHEN d.chunk_counted = 1 THEN d.chunk_done
+        ELSE coalesce((SELECT n FROM dn WHERE dn.document_id = d.id), 0) END`,
+    }
   }
 
   /** Cheap count of documents in the error state (no chunk scan; safe for progress polling). */
@@ -897,6 +1263,46 @@ export class DocumentMemoryStore {
     const delFts = this.db.prepare('DELETE FROM chunk_fts WHERE rowid = ?')
     for (const { id } of ids) delFts.run(id)
     this.db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId)
+  }
+
+  /** Delete a document's chunks until `outOfBudget()`; true when none remain. */
+  private deleteChunksBudgeted(documentId: number, outOfBudget: () => boolean): boolean {
+    const delFts = this.db.prepare('DELETE FROM chunk_fts WHERE rowid = ?')
+    const delChunk = this.db.prepare('DELETE FROM chunks WHERE id = ?')
+    const list = this.db.prepare('SELECT id FROM chunks WHERE document_id = ? LIMIT 64')
+    for (;;) {
+      const ids = list.all(documentId) as Array<{ id: number }>
+      if (!ids.length) return true
+      for (const { id } of ids) {
+        delFts.run(id)
+        delChunk.run(id)
+        if (outOfBudget()) return false
+      }
+    }
+  }
+
+  /**
+   * Run `step` in repeated short transactions until it reports `done` or `abort`. A step that
+   * returns `more` has already done as much as fits the budget; `onMore` runs inside the same
+   * transaction to leave the data in a consistent (resumable) state before it commits.
+   */
+  private async runSliced(
+    options: SliceOptions,
+    step: (outOfBudget: () => boolean) => 'done' | 'more' | 'abort',
+    onMore?: () => void,
+  ): Promise<boolean> {
+    const budget = options.budgetMs ?? WRITE_SLICE_MS
+    for (;;) {
+      const started = performance.now()
+      let outcome = 'done' as 'done' | 'more' | 'abort'
+      this.transaction(() => {
+        outcome = step(() => performance.now() - started >= budget)
+        if (outcome === 'more') onMore?.()
+      })
+      if (outcome !== 'more') return outcome === 'done'
+      await (options.yield ?? yieldToEventLoop)()
+      if (options.shouldContinue && !options.shouldContinue()) return false
+    }
   }
 
   private transaction(work: () => void): void {
@@ -992,4 +1398,9 @@ function validateReplacement(replacement: ReplacementDocument): void {
     throw new Error('Document vectors cannot be empty')
   if (replacement.chunks.some((chunk) => !!chunk.vector && !replacement.embeddingModel))
     throw new Error('An embedding model is required when vectors are stored')
+  const vectors = replacement.chunks.map((chunk) => chunk.vector)
+  const dimensions = new Set(vectors.filter((v): v is number[] => !!v).map((v) => v.length))
+  if (dimensions.size > 1) throw new Error('Document vectors must have a consistent dimension')
+  if (vectors.some((v) => v && v.some((n) => !Number.isFinite(n))))
+    throw new Error('Document vectors must contain only finite numbers')
 }

@@ -90,6 +90,7 @@ describe('classifyClipboardText', () => {
     ['C:\\Users\\Admin\\Documents\\report.docx', 'paths'],
     ['"C:\\Users\\Admin\\a.docx"\n"C:\\Users\\Admin\\b.xlsx"', 'paths'],
     ['/home/user/projects/notes.md', 'paths'],
+    ['/Users/ban/Tài liệu/Hợp đồng 2026.docx', 'paths'],
     ['name\tqty\tprice\nwidget\t4\t9.50\ngadget\t2\t3.20', 'table'],
     ['id,name,city\n1,An,Hanoi\n2,Binh,Hue\n3,Chi,Hue', 'table'],
     ['function add(a, b) {\n  return a + b;\n}\nconst x = add(1, 2);', 'code'],

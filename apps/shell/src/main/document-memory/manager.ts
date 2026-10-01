@@ -2,11 +2,16 @@ import { stat } from 'node:fs/promises'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import type { Worker } from 'node:worker_threads'
 import { createIndexProcess } from './process-worker'
+import { isIndexingPaused, subscribeIndexingPolicy } from '../fork/indexing-policy-bus'
 import { createReadStream, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { extname, join, parse, resolve } from 'node:path'
+import { extname, join, resolve } from 'node:path'
 import workerPath from './worker?modulePath'
-import { MAX_DOCUMENT_BYTES, SUPPORTED_EXTENSIONS } from './folder-scan'
+import { isIgnoredFileName, MAX_DOCUMENT_BYTES, SUPPORTED_EXTENSIONS } from './folder-scan'
+import { volumeRootOf } from './volume-root'
+import { createYielder } from './yield-budget'
+import { foldFolderProgress, type FolderIndexProgress } from './folder-progress'
+import type { FolderChunkProgress } from './store'
 import { DocumentMemoryStore, type DocumentMemoryHit, type StoredDocument } from './store'
 import type { DocumentChunk } from './chunks'
 import type { DocumentMemoryStatus } from '../../shared/home-api'
@@ -28,6 +33,10 @@ const SEARCH_EMBED_TIMEOUT_MS = 10_000
 const WORKER_TIMEOUT_MS = 5 * 60_000
 const MAX_PENDING_EMBED_DOCUMENTS = 16
 const EMBED_RETRY_DELAY_MS = 30_000
+/** Wait after an index write before merging full-text segments (one pending run at a time). */
+const FTS_MAINTENANCE_DELAY_MS = 250
+/** Longest one maintenance run may keep going before it reschedules itself. */
+const FTS_MAINTENANCE_RUN_MS = 2_000
 
 interface ExtractResult {
   hash: string
@@ -92,6 +101,8 @@ interface ManagerOptions {
   workerFactory?: (path: string, workerData: { cacheDir: string; dbPath: string }) => Worker
   pollIntervalMs?: number
   searchTimeoutMs?: number
+  /** How long a background extract/embed step may stay silent before the worker is restarted. */
+  workerTimeoutMs?: number
   tombstoneGraceMs?: number
 }
 
@@ -108,6 +119,7 @@ export class DocumentMemoryManager {
   ) => Worker
   private readonly pollIntervalMs: number
   private readonly searchTimeoutMs: number
+  private readonly workerTimeoutMs: number
   private readonly tombstoneGraceMs: number
   private readonly missing = new Map<
     string,
@@ -137,6 +149,9 @@ export class DocumentMemoryManager {
   private modelProgress: number | undefined
   private lastError: string | undefined
   private pollTimer: NodeJS.Timeout | null = null
+  private counterBackfill: Promise<void> = Promise.resolve()
+  private ftsTimer: NodeJS.Timeout | null = null
+  private stopPolicyWatch: () => void = () => {}
 
   constructor(userData: string, options: ManagerOptions = {}) {
     mkdirSync(userData, { recursive: true })
@@ -147,13 +162,20 @@ export class DocumentMemoryManager {
     this.workerFactory = options.workerFactory ?? createIndexProcess
     this.pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
     this.searchTimeoutMs = options.searchTimeoutMs ?? SEARCH_EMBED_TIMEOUT_MS
+    this.workerTimeoutMs = options.workerTimeoutMs ?? WORKER_TIMEOUT_MS
     this.tombstoneGraceMs = options.tombstoneGraceMs ?? TOMBSTONE_GRACE_MS
     this.store = new DocumentMemoryStore(this.dbPath)
     this.enabled = readEnabled(this.settingsPath)
+    this.store.purgeDiscoveredByName(isIgnoredFileName)
+    this.counterBackfill = this.runCounterBackfill()
+    this.scheduleFtsMaintenance()
 
     if (this.enabled) void this.poll()
     this.pollTimer = setInterval(() => void this.poll(), this.pollIntervalMs)
     this.pollTimer.unref?.()
+    this.stopPolicyWatch = subscribeIndexingPolicy((policy) => {
+      if (!policy.paused) this.drain()
+    })
   }
 
   /** Enroll a document because the user opened it; recent-file retention is irrelevant. */
@@ -162,17 +184,73 @@ export class DocumentMemoryManager {
     const p = resolve(path)
     this.store.remember(p)
     const document = this.store.documentByPath(p)
-    if (!document || document.status === 'excluded') return
-    const current = safeStat(p)
-    if (
-      this.enabled &&
-      (!current ||
-        document.status === 'pending' ||
-        document.status === 'text-only' ||
-        document.mtimeMs !== current.mtimeMs ||
-        document.sizeBytes !== current.sizeBytes)
-    )
+    if (!document || document.status === 'excluded' || !this.enabled) return
+    // Unfinished documents are queued right away; only a finished one needs its file metadata
+    // compared, and that stat is asynchronous (a network or virtual drive can take long).
+    if (document.status === 'pending' || document.status === 'text-only') {
       this.enqueue(p, true)
+      return
+    }
+    void statMeta(p).then((current) => {
+      if (this.stopped || !this.enabled) return
+      const latest = this.store.documentByPath(p)
+      if (!latest || latest.status === 'excluded') return
+      if (
+        !current ||
+        latest.status === 'pending' ||
+        latest.status === 'text-only' ||
+        latest.mtimeMs !== current.mtimeMs ||
+        latest.sizeBytes !== current.sizeBytes
+      )
+        this.enqueue(p, true)
+    })
+  }
+
+  /**
+   * Fill the per-document chunk counters of an older database in short slices (see
+   * {@link DocumentMemoryStore.backfillCounters}). Resolves when every document is counted.
+   */
+  private async runCounterBackfill(): Promise<void> {
+    try {
+      await yieldToEventLoop()
+      while (!this.stopped && this.store.backfillCounters()) await yieldToEventLoop()
+    } catch {
+      // Counting is an optimisation: aggregates fall back to exact index counts meanwhile.
+    }
+  }
+
+  /**
+   * Merge full-text segments in ~1 ms steps between writes (FTS5's own merge, which runs inside a
+   * commit, caused 50-400 ms stalls). At most one run is pending; writes do not postpone it, so
+   * the segment count stays far below the point where FTS5 forces a merge on its own.
+   */
+  private scheduleFtsMaintenance(): void {
+    if (this.stopped || this.ftsTimer) return
+    this.ftsTimer = setTimeout(() => {
+      this.ftsTimer = null
+      void this.runFtsMaintenance()
+    }, FTS_MAINTENANCE_DELAY_MS)
+    this.ftsTimer.unref?.()
+  }
+
+  private async runFtsMaintenance(): Promise<void> {
+    const started = Date.now()
+    try {
+      while (!this.stopped && this.store.mergeFtsStep()) {
+        await yieldToEventLoop()
+        if (Date.now() - started > FTS_MAINTENANCE_RUN_MS) {
+          this.scheduleFtsMaintenance()
+          return
+        }
+      }
+    } catch {
+      // Merging is housekeeping; a locked or closed database is simply retried after a later write.
+    }
+  }
+
+  /** Resolves once the counter backfill has finished (immediately on an up-to-date database). */
+  countersReady(): Promise<void> {
+    return this.counterBackfill
   }
 
   /** Enroll a file discovered under a user-selected folder without changing recency. */
@@ -295,38 +373,22 @@ export class DocumentMemoryManager {
     root: string,
     discoveryComplete: boolean,
     scanErrors = 0,
-  ): {
-    totalFiles: number
-    readyFiles: number
-    pendingFiles: number
-    errorFiles: number
-    emptyFiles?: number
-    /** Files indexed only in part (chunk cap or sampled rows). */
-    truncatedFiles?: number
-    completedChunks: number
-    totalChunks: number
-    percent: number | null
-  } {
-    const counts = this.store.folderChunkProgress(root)
-    let percent: number | null = null
-    if (discoveryComplete) {
-      if (counts.totalFiles === 0) percent = scanErrors ? 99 : 100
-      else {
-        percent = Math.floor((counts.partialFileProgress / counts.totalFiles) * 100)
-        if (counts.pendingFiles || counts.errorFiles || scanErrors) percent = Math.min(percent, 99)
-      }
-    }
-    return {
-      totalFiles: counts.totalFiles,
-      readyFiles: counts.readyFiles,
-      pendingFiles: counts.pendingFiles,
-      errorFiles: counts.errorFiles,
-      emptyFiles: counts.emptyFiles ?? 0,
-      truncatedFiles: counts.truncatedFiles,
-      completedChunks: counts.completedChunks,
-      totalChunks: counts.totalChunks,
-      percent,
-    }
+  ): FolderIndexProgress {
+    return foldFolderProgress(this.store.folderChunkProgress(root), discoveryComplete, scanErrors)
+  }
+
+  /**
+   * The stored per-folder counts behind {@link getFolderIndexProgress}. They are read from the
+   * per-document counters (milliseconds), and can be cached and folded with
+   * {@link foldFolderProgress} once the live scan state is known.
+   */
+  getFolderIndexCounts(root: string): FolderChunkProgress {
+    return this.store.folderChunkProgress(root)
+  }
+
+  /** Last error reported by the model or worker (in-memory; no database access). */
+  lastIndexError(): string | undefined {
+    return this.lastError
   }
 
   status(): DocumentMemoryStatus {
@@ -521,7 +583,7 @@ export class DocumentMemoryManager {
     }
     const reply = await this.ask(
       { type: 'extract', path: hit.path, interactive: true },
-      WORKER_TIMEOUT_MS,
+      this.workerTimeoutMs,
     )
     if (!reply || !('result' in reply) || !isExtractResult(reply.result)) {
       const error =
@@ -529,7 +591,9 @@ export class DocumentMemoryManager {
           ? reply.error
           : 'Document verification timed out.'
       if (this.isCurrent(hit.path, generation, epoch))
-        this.store.markError(hit.path, error, safeStat(hit.path))
+        await this.store.markErrorSliced(hit.path, error, await statMeta(hit.path), {
+          shouldContinue: () => this.isCurrent(hit.path, generation, epoch),
+        })
       return {
         path: hit.path,
         name: hit.name,
@@ -556,7 +620,7 @@ export class DocumentMemoryManager {
         error: 'Document memory changed during verification.',
       }
     }
-    const after = safeStat(hit.path)
+    const after = await statMeta(hit.path)
     if (
       !after ||
       after.mtimeMs !== fresh.mtimeMs ||
@@ -565,17 +629,21 @@ export class DocumentMemoryManager {
     ) {
       this.invalidatePath(hit.path)
       const freshGeneration = this.currentGeneration(hit.path)
-      this.store.replaceDocument(hit.path, {
-        hash: fresh.hash,
-        mtimeMs: fresh.mtimeMs,
-        sizeBytes: fresh.sizeBytes,
-        chunks: fresh.chunks,
-        embeddingModel: null,
-        status: extractedStatus(fresh),
-        error: fresh.error,
-        truncated: fresh.truncated,
-      })
-      if (fresh.chunks.length && !fresh.skipEmbeddings && this.enabled)
+      const replaced = await this.store.replaceDocumentSliced(
+        hit.path,
+        {
+          hash: fresh.hash,
+          mtimeMs: fresh.mtimeMs,
+          sizeBytes: fresh.sizeBytes,
+          chunks: fresh.chunks,
+          embeddingModel: null,
+          status: extractedStatus(fresh),
+          error: fresh.error,
+          truncated: fresh.truncated,
+        },
+        { shouldContinue: () => !this.stopped && epoch === this.epoch },
+      )
+      if (replaced && fresh.chunks.length && !fresh.skipEmbeddings && this.enabled)
         this.enqueueEmbed({
           path: hit.path,
           generation: freshGeneration,
@@ -613,11 +681,14 @@ export class DocumentMemoryManager {
   close(): void {
     if (this.stopped) return
     this.stopped = true
+    this.stopPolicyWatch()
     this.epoch++
     if (this.retryTimer) clearTimeout(this.retryTimer)
     this.retryTimer = null
     if (this.pollTimer) clearInterval(this.pollTimer)
     this.pollTimer = null
+    if (this.ftsTimer) clearTimeout(this.ftsTimer)
+    this.ftsTimer = null
     for (const entry of this.missing.values()) clearTimeout(entry.timer)
     this.missing.clear()
     this.enabledListeners.clear()
@@ -657,7 +728,7 @@ export class DocumentMemoryManager {
 
   private async resumeIncomplete(): Promise<void> {
     const idle = !this.embedding && !this.extracting
-    let count = 0
+    const maybeYield = createYielder()
     for (const path of this.store.incompletePaths()) {
       if (this.stopped || !this.enabled) return
       if (this.activeExtractions.has(path)) continue
@@ -666,7 +737,7 @@ export class DocumentMemoryManager {
       if (doc.status === 'text-only' && (!idle || this.embeds.some((job) => job.path === path)))
         continue
       this.enqueue(path)
-      if (++count % 200 === 0) await yieldToEventLoop()
+      await maybeYield()
     }
   }
 
@@ -700,10 +771,10 @@ export class DocumentMemoryManager {
   async handleFileEvents(paths: string[]): Promise<void> {
     if (this.stopped || !this.enabled) return
     const present: Array<{ path: string; meta: { mtimeMs: number; sizeBytes: number } }> = []
-    let count = 0
+    const maybeYield = createYielder()
     for (const raw of paths) {
       if (this.stopped || !this.enabled) return
-      if (++count % 25 === 0) await yieldToEventLoop()
+      await maybeYield()
       const path = resolve(raw)
       const current = await this.statOutcome(path)
       if (current.kind === 'gone') {
@@ -720,6 +791,7 @@ export class DocumentMemoryManager {
       if (entry.candidate) addCandidate(candidates, entry.candidate)
     for (const { path, meta } of present) {
       if (this.stopped || !this.enabled) return
+      await maybeYield()
       if (this.store.documentByPath(path)) this.indexDiscoveredFile(path, meta)
       else await this.enrollNew(path, meta, candidates)
     }
@@ -740,20 +812,26 @@ export class DocumentMemoryManager {
     for (const path of files.keys()) seen.add(pathKey(path))
     const candidates = new Map<number, MissingCandidate[]>()
     const gone: StoredDocument[] = []
-    let count = 0
-    for (const row of this.store.documentsUnder(root)) {
-      if (seen.has(pathKey(row.path))) continue
-      if (++count % 50 === 0) await yieldToEventLoop()
-      if (this.stopped || !this.enabled) return result
-      if (!(await this.isGone(row.path))) continue
-      gone.push(row)
-      if (row.hash && row.sizeBytes !== null)
-        addCandidate(candidates, { path: row.path, sizeBytes: row.sizeBytes, hash: row.hash })
+    const maybeYield = createYielder()
+    // Read the stored rows a page at a time so a large folder never costs one long SQL call.
+    for (let afterId = 0; ;) {
+      const page = this.store.documentsUnderPage(root, afterId, 500)
+      if (!page.length) break
+      afterId = page[page.length - 1]!.id
+      for (const row of page) {
+        if (seen.has(pathKey(row.path))) continue
+        await maybeYield()
+        if (this.stopped || !this.enabled) return result
+        if (!(await this.isGone(row.path))) continue
+        gone.push(row)
+        if (row.hash && row.sizeBytes !== null)
+          addCandidate(candidates, { path: row.path, sizeBytes: row.sizeBytes, hash: row.hash })
+      }
+      await maybeYield()
     }
-    count = 0
     for (const [path, meta] of files) {
       if (this.stopped || !this.enabled) return result
-      if (++count % 100 === 0) await yieldToEventLoop()
+      await maybeYield()
       if (this.store.documentByPath(path)) {
         if (this.indexDiscoveredFile(path, meta)) result.changed++
         continue
@@ -766,7 +844,7 @@ export class DocumentMemoryManager {
       if (this.stopped || !this.enabled) return result
       // A moved original already left the table; anything still here is truly gone.
       if (!this.store.documentByPath(row.path)) continue
-      this.tombstone(row.path)
+      await this.tombstone(row.path)
       result.removed++
     }
     return result
@@ -829,11 +907,11 @@ export class DocumentMemoryManager {
   private async finalizeMissing(path: string): Promise<void> {
     this.missing.delete(path)
     if (this.stopped || !this.enabled) return
-    if ((await this.isGone(path)) && !this.stopped) this.tombstone(path)
+    if ((await this.isGone(path)) && !this.stopped) await this.tombstone(path)
   }
 
   /** Drop chunks, FTS rows and vectors for a deleted file. User exclusions are kept. */
-  private tombstone(path: string): void {
+  private async tombstone(path: string): Promise<void> {
     const entry = this.missing.get(path)
     if (entry) {
       clearTimeout(entry.timer)
@@ -841,16 +919,17 @@ export class DocumentMemoryManager {
     }
     this.invalidatePath(path)
     try {
-      this.store.tombstone(path)
+      await this.store.tombstoneSliced(path, { shouldContinue: () => !this.stopped })
+      this.scheduleFtsMaintenance()
     } catch (error) {
-      this.lastError = safeError(error)
+      if (!this.stopped) this.lastError = safeError(error)
     }
   }
 
   /** True only when the file is certainly gone, not when its drive or share is unreachable. */
   private async isGone(path: string): Promise<boolean> {
     if ((await this.statOutcome(path)).kind !== 'gone') return false
-    const root = await this.statOutcome(parse(path).root)
+    const root = await this.statOutcome(volumeRootOf(path))
     return root.kind === 'other' || root.kind === 'file'
   }
 
@@ -900,7 +979,8 @@ export class DocumentMemoryManager {
   }
 
   private drain(): void {
-    if (this.stopped || !this.enabled) return
+    // The indexing policy (battery, lock, memory...) can pause new work; resume() re-drains.
+    if (this.stopped || !this.enabled || isIndexingPaused()) return
     if (
       !this.extracting &&
       !this.embedding &&
@@ -925,6 +1005,7 @@ export class DocumentMemoryManager {
       while (
         !this.stopped &&
         this.enabled &&
+        !isIndexingPaused() &&
         this.queue.length &&
         this.embeds.length < MAX_PENDING_EMBED_DOCUMENTS
       ) {
@@ -935,14 +1016,16 @@ export class DocumentMemoryManager {
         const epoch = this.epoch
         this.pendingCount++
         try {
-          const reply = await this.ask({ type: 'extract', path }, WORKER_TIMEOUT_MS)
+          const reply = await this.ask({ type: 'extract', path }, this.workerTimeoutMs, true)
           if (!this.isCurrent(path, generation, epoch)) continue
           if (!reply || !('result' in reply) || !isExtractResult(reply.result)) {
             const error =
               reply && 'error' in reply && typeof reply.error === 'string'
                 ? reply.error
                 : 'Document extraction timed out.'
-            this.store.markError(path, error, safeStat(path))
+            await this.store.markErrorSliced(path, error, await statMeta(path), {
+              shouldContinue: () => this.isCurrent(path, generation, epoch),
+            })
             this.lastError = error
             continue
           }
@@ -956,16 +1039,24 @@ export class DocumentMemoryManager {
               ? this.store.resumeVectorOffset(path, extracted.hash, EMBEDDING_MODEL_ID)
               : null
           if (resumeOffset === null) {
-            this.store.replaceDocument(path, {
-              hash: extracted.hash,
-              mtimeMs: extracted.mtimeMs,
-              sizeBytes: extracted.sizeBytes,
-              chunks: extracted.chunks,
-              embeddingModel: null,
-              status: extractedStatus(extracted),
-              error: extracted.error,
-              truncated: extracted.truncated,
-            })
+            // Written in short transactions: a 400-chunk document used to hold the main thread
+            // for ~100 ms. Abandoned (and re-extracted later) if the document changes meanwhile.
+            const written = await this.store.replaceDocumentSliced(
+              path,
+              {
+                hash: extracted.hash,
+                mtimeMs: extracted.mtimeMs,
+                sizeBytes: extracted.sizeBytes,
+                chunks: extracted.chunks,
+                embeddingModel: null,
+                status: extractedStatus(extracted),
+                error: extracted.error,
+                truncated: extracted.truncated,
+              },
+              { shouldContinue: () => this.isCurrent(path, generation, epoch) },
+            )
+            if (!written) continue
+            this.scheduleFtsMaintenance()
           }
           this.lastError = undefined
           if (extracted.chunks.length && !lexicalOnly) {
@@ -984,7 +1075,11 @@ export class DocumentMemoryManager {
         } catch (error) {
           if (this.isCurrent(path, generation, epoch)) {
             const message = safeError(error)
-            this.store.markError(path, message, safeStat(path))
+            await this.store
+              .markErrorSliced(path, message, await statMeta(path), {
+                shouldContinue: () => this.isCurrent(path, generation, epoch),
+              })
+              .catch(() => undefined)
             this.lastError = message
           }
         } finally {
@@ -1002,7 +1097,7 @@ export class DocumentMemoryManager {
     if (this.embedding || this.stopped) return
     this.embedding = true
     try {
-      while (!this.stopped && this.enabled && this.embeds.length) {
+      while (!this.stopped && this.enabled && !isIndexingPaused() && this.embeds.length) {
         const job = this.embeds.shift()!
         if (!this.isCurrent(job.path, job.generation, job.epoch)) continue
         this.pendingCount++
@@ -1013,7 +1108,8 @@ export class DocumentMemoryManager {
           const part = job.chunks.slice(start, start + 8)
           const reply = await this.ask(
             { type: 'embed', texts: part.map((chunk) => chunk.text), kind: 'passage' },
-            WORKER_TIMEOUT_MS,
+            this.workerTimeoutMs,
+            true,
           )
           if (!this.isCurrent(job.path, job.generation, job.epoch)) break
           if (
@@ -1030,7 +1126,8 @@ export class DocumentMemoryManager {
           const vectors = reply.result as number[][]
           if (vectors.length !== part.length)
             throw new Error('Embedding count did not match chunk count')
-          const current = safeStat(job.path)
+          const current = await statMeta(job.path)
+          if (!this.isCurrent(job.path, job.generation, job.epoch)) break
           if (!current || current.mtimeMs !== job.mtimeMs || current.sizeBytes !== job.sizeBytes) {
             if (current) this.enqueue(job.path)
             break
@@ -1096,23 +1193,47 @@ export class DocumentMemoryManager {
     return this.pathGeneration.get(path) ?? 0
   }
   private isCurrent(path: string, generation: number, epoch: number): boolean {
-    return (
-      !this.stopped &&
-      this.enabled &&
-      epoch === this.epoch &&
-      generation === this.currentGeneration(path) &&
-      !!this.store.documentByPath(path) &&
-      this.store.documentByPath(path)?.status !== 'excluded'
+    if (
+      this.stopped ||
+      !this.enabled ||
+      epoch !== this.epoch ||
+      generation !== this.currentGeneration(path)
     )
+      return false
+    const document = this.store.documentByPath(path)
+    return !!document && document.status !== 'excluded'
   }
 
-  private ask(request: WorkerRequest, timeoutMs: number): Promise<WorkerReply | null> {
+  /**
+   * Replace a worker that stopped answering. Terminating it also frees whatever native call it
+   * was stuck in; the next request starts a fresh one and every waiter gets an error.
+   */
+  private recycleWorker(reason: string): void {
+    const worker = this.worker
+    if (!worker) return
+    this.worker = null
+    this.lastError = reason
+    void worker.terminate()
+    for (const [id, pending] of this.waiting) {
+      clearTimeout(pending.timer)
+      pending.resolve({ id, error: reason })
+      this.waiting.delete(id)
+    }
+  }
+
+  private ask(
+    request: WorkerRequest,
+    timeoutMs: number,
+    recycleOnTimeout = false,
+  ): Promise<WorkerReply | null> {
     if (this.stopped) return Promise.resolve(null)
     const id = this.nextRequestId++
     return new Promise((resolveReply) => {
       const timer = setTimeout(() => {
         this.waiting.delete(id)
         resolveReply(null)
+        if (recycleOnTimeout && !this.stopped)
+          this.recycleWorker('Indexing stalled and was restarted.')
       }, timeoutMs)
       this.waiting.set(id, { resolve: resolveReply, timer })
       try {
@@ -1190,6 +1311,15 @@ function readEnabled(path: string): boolean {
 }
 function saveEnabled(path: string, enabled: boolean): void {
   writeFileSync(path, JSON.stringify({ enabled }), { mode: 0o600 })
+}
+/** Asynchronous {@link safeStat}: never blocks the main thread on a slow or network drive. */
+async function statMeta(path: string): Promise<{ mtimeMs: number; sizeBytes: number } | null> {
+  try {
+    const result = await stat(path)
+    return { mtimeMs: result.mtimeMs, sizeBytes: result.size }
+  } catch {
+    return null
+  }
 }
 function safeStat(path: string): { mtimeMs: number; sizeBytes: number } | null {
   try {

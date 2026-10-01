@@ -24,6 +24,7 @@ import { PanelHeader } from './indexing-activity/PanelHeader'
 import { ProblemSections } from './indexing-activity/ProblemSections'
 import { StatusBlock } from './indexing-activity/StatusBlock'
 import { formatCount, headline, issueWordsFor, type ActionResult } from './indexing-activity/format'
+import { IndexingStateNote } from './fork/IndexingStateNote'
 import './indexing-activity.css'
 
 export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
@@ -219,6 +220,7 @@ export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
             onClose={() => setExpanded(false)}
           />
           <StatusBlock view={view} ring={ring} label={label} eta={eta} lang={lang} copy={copy} />
+          <IndexingStateNote api={api} lang={lang} />
           <ModelErrorBox
             view={view}
             copy={copy}

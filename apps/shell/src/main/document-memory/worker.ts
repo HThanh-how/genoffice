@@ -49,8 +49,16 @@ export async function extractDocument(path: string) {
 // Serialize extraction and embedding on one queue so the background CPU budget really bounds
 // the sustained load (they used to overlap). Interactive work (query embeddings, verification
 // reads) goes first and wakes a budget sleep instead of waiting behind it.
-const urgent: Array<() => Promise<void>> = []
-const background: Array<() => Promise<void>> = []
+interface QueuedTask {
+  run: () => Promise<void>
+  /** Reports a timeout to the requester; the queue then moves on without the stuck step. */
+  onTimeout: () => void
+}
+// A step that never settles (a parser or native call that stalls without using CPU) must not
+// block everything queued behind it. The requester gets an error and the queue continues.
+const TASK_TIMEOUT_MS = 150_000
+const urgent: QueuedTask[] = []
+const background: QueuedTask[] = []
 let pumping = false
 async function pump(): Promise<void> {
   if (pumping) return
@@ -59,13 +67,22 @@ async function pump(): Promise<void> {
     for (;;) {
       const task = urgent.shift() ?? background.shift()
       if (!task) break
-      await task()
+      let timer: NodeJS.Timeout | undefined
+      const timedOut = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), TASK_TIMEOUT_MS)
+      })
+      try {
+        if ((await Promise.race([task.run().then(() => 'done' as const), timedOut])) === 'timeout')
+          task.onTimeout()
+      } finally {
+        clearTimeout(timer)
+      }
     }
   } finally {
     pumping = false
   }
 }
-function schedule(task: () => Promise<void>, interactive: boolean): void {
+function schedule(task: QueuedTask, interactive: boolean): void {
   if (interactive) {
     urgent.push(task)
     interruptBackgroundSleep()
@@ -111,6 +128,14 @@ onIndexRequest(
       }
     }
     if (request.type === 'search') void execute()
-    else schedule(execute, request.interactive === true || request.kind === 'query')
+    else
+      schedule(
+        {
+          run: execute,
+          onTimeout: () =>
+            postIndexMessage({ id: request.id, error: 'Indexing step timed out and was skipped' }),
+        },
+        request.interactive === true || request.kind === 'query',
+      )
   },
 )

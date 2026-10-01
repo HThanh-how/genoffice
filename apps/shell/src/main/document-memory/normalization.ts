@@ -20,6 +20,12 @@ export function documentSearchTokens(input: string): string[] {
   return tokenize(normalizeDocumentText(input)).bi
 }
 
+/** Stored `normalized` text and FTS text of a chunk, normalizing once (same values as the helpers above). */
+export function documentIndexFields(input: string): { normalized: string; searchText: string } {
+  const normalized = normalizeDocumentText(input)
+  return { normalized, searchText: tokenize(normalized).bi.join(' ') }
+}
+
 const GENERIC_WORDS = new Set([
   'tim',
   'kiem',

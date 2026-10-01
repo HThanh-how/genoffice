@@ -39,6 +39,11 @@ const zh = {
   homeChatSourceMissingHint: '此文件已不在原来保存的位置。',
   homeChatLoadFailed: '无法打开此对话。',
   homeChatInterrupted: '此回复被中断。',
+  homeChatWorking: '正在回复…',
+  homeChatDone: '已回复',
+  homeChatErrorChip: '出错了，点击查看',
+  homeChatStopChip: '停止',
+  homeChatElapsed: '{n} 秒',
 }
 
 type Dict = Record<keyof typeof zh, string>
@@ -76,6 +81,11 @@ const en = {
   homeChatSourceMissingHint: 'This file is no longer at its saved location.',
   homeChatLoadFailed: 'Could not open this chat.',
   homeChatInterrupted: 'This reply was interrupted.',
+  homeChatWorking: 'Replying…',
+  homeChatDone: 'Replied',
+  homeChatErrorChip: 'Something went wrong — click to view',
+  homeChatStopChip: 'Stop',
+  homeChatElapsed: '{n}s',
 } satisfies Dict
 
 const vi = {
@@ -111,6 +121,11 @@ const vi = {
   homeChatSourceMissingHint: 'Tệp không còn ở vị trí đã lưu.',
   homeChatLoadFailed: 'Không mở được cuộc trò chuyện này.',
   homeChatInterrupted: 'Câu trả lời này bị gián đoạn.',
+  homeChatWorking: 'Đang trả lời…',
+  homeChatDone: 'Đã trả lời',
+  homeChatErrorChip: 'Có lỗi — bấm để xem',
+  homeChatStopChip: 'Dừng',
+  homeChatElapsed: '{n} giây',
 } satisfies Dict
 
 const ja = {
@@ -146,6 +161,11 @@ const ja = {
   homeChatSourceMissingHint: 'このファイルは保存場所にありません。',
   homeChatLoadFailed: 'このチャットを開けませんでした。',
   homeChatInterrupted: 'この返信は中断されました。',
+  homeChatWorking: '返信中…',
+  homeChatDone: '返信しました',
+  homeChatErrorChip: 'エラーが発生しました。クリックして確認',
+  homeChatStopChip: '停止',
+  homeChatElapsed: '{n} 秒',
 } satisfies Dict
 
 const ko = {
@@ -181,6 +201,11 @@ const ko = {
   homeChatSourceMissingHint: '이 파일이 저장된 위치에 없습니다.',
   homeChatLoadFailed: '이 채팅을 열 수 없습니다.',
   homeChatInterrupted: '이 답변이 중단되었습니다.',
+  homeChatWorking: '답변 중…',
+  homeChatDone: '답변 완료',
+  homeChatErrorChip: '오류가 발생했습니다. 눌러서 확인',
+  homeChatStopChip: '중지',
+  homeChatElapsed: '{n}초',
 } satisfies Dict
 
 const zhTW = {
@@ -216,6 +241,11 @@ const zhTW = {
   homeChatSourceMissingHint: '此檔案已不在原本儲存的位置。',
   homeChatLoadFailed: '無法開啟此對話。',
   homeChatInterrupted: '此回覆已中斷。',
+  homeChatWorking: '正在回覆…',
+  homeChatDone: '已回覆',
+  homeChatErrorChip: '發生錯誤，點擊查看',
+  homeChatStopChip: '停止',
+  homeChatElapsed: '{n} 秒',
 } satisfies Dict
 
 const dicts: LangDicts<Dict> = {

@@ -5,6 +5,7 @@ import { streamAnthropic } from './protocols/anthropic'
 import { streamGemini } from './protocols/gemini'
 import { streamOpenAiCompatible } from './protocols/openai-compatible'
 import { streamCodexAppServer } from './codex-app-server'
+import { isCliProvider, streamAgy } from './agy-cli'
 import type { StreamCallbacks } from './protocols/shared'
 import { getProviderAdapter, type AiProtocol } from './registry'
 import type { AiProviderConfig, AiProviderId } from './types'
@@ -26,12 +27,12 @@ async function streamForProviderInner(
   cb: StreamCallbacks,
 ): Promise<void> {
   if (provider === 'genspark') throw new Error('Genspark sign-in is disabled in this build')
-  if (provider !== 'codex' && !config.model?.trim()) {
+  if (!isCliProvider(provider) && !config.model?.trim()) {
     throw new Error('Choose an AI model in Settings → AI Model')
   }
   if (provider === 'custom') {
     if (!config.baseUrl?.trim()) throw new Error('Set the Base URL in Settings → AI Model')
-  } else if (provider !== 'codex' && !config.apiKey?.trim()) {
+  } else if (!isCliProvider(provider) && !config.apiKey?.trim()) {
     throw new Error('Set an API key in Settings → AI Model')
   }
   const endpoint = getProviderAdapter(provider).resolveEndpoint(config)
@@ -40,7 +41,9 @@ async function streamForProviderInner(
   if (endpoint.protocol === 'codex-app-server') {
     return streamCodexAppServer(config, system, messages, tools, maxTokens, cb)
   }
-  const protocol: Exclude<AiProtocol, 'codex-app-server'> = endpoint.protocol
+  if (endpoint.protocol === 'agy-cli')
+    return streamAgy(config, system, messages, tools, maxTokens, cb)
+  const protocol: Exclude<AiProtocol, 'codex-app-server' | 'agy-cli'> = endpoint.protocol
   return withOutputCapFallback(baseUrl, config.model, maxTokens, (cap) => {
     switch (protocol) {
       case 'anthropic':

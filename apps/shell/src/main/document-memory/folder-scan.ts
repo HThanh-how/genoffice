@@ -7,6 +7,8 @@ import { FolderWatchManager } from './folder-watch'
 export const MAX_DOCUMENT_BYTES = 128 * 1024 * 1024
 const MAX_ROOT_LENGTH = 32_768
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024
+/** Progress counters are persisted at most this often while a scan runs (state changes save at once). */
+const MANIFEST_SAVE_INTERVAL_MS = 2_000
 export const IGNORED_DIRECTORIES = new Set([
   '.git',
   '.cache',
@@ -123,6 +125,8 @@ export class FolderScanManager {
   private reconciling = false
   private watcher: FolderWatchManager | null = null
   private readonly rootListeners = new Set<() => void>()
+  private saveTimer: NodeJS.Timeout | null = null
+  private saveDirty = false
 
   constructor(userData: string, memory: DiscoveredDocumentIndexer) {
     mkdirSync(userData, { recursive: true })
@@ -309,6 +313,7 @@ export class FolderScanManager {
   close(): void {
     this.closed = true
     this.stopRequested = true
+    if (this.saveDirty) this.save()
     this.watcher?.close()
     this.watcher = null
     this.rootListeners.clear()
@@ -375,9 +380,10 @@ export class FolderScanManager {
           }
           return true
         },
-        // Saving after each directory bounds restart replay while keeping traversal off
-        // Electron's main event loop. Enrollment itself is idempotent in SQLite.
-        afterDirectory: () => this.save(),
+        // Counters are saved after each directory, throttled: a synchronous write + rename per
+        // directory used to run thousands of times on Electron's main thread. A restart replays
+        // at most a couple of seconds of traversal; enrollment itself is idempotent in SQLite.
+        afterDirectory: () => this.saveSoon(),
       },
       () => this.closed || this.stopRequested,
     )
@@ -453,8 +459,27 @@ export class FolderScanManager {
     return this.manifest.jobs.find((job) => job.root === root)
   }
 
+  /** Write the manifest now (atomic temp + rename) and drop any pending throttled write. */
   private save(): void {
+    if (this.saveTimer) clearTimeout(this.saveTimer)
+    this.saveTimer = null
+    this.saveDirty = false
     saveManifest(this.manifestPath, this.manifest)
+  }
+
+  /** Throttled {@link save}: coalesces bursts into one trailing write. */
+  private saveSoon(): void {
+    this.saveDirty = true
+    if (this.saveTimer) return
+    this.saveTimer = setTimeout(() => {
+      this.saveTimer = null
+      try {
+        if (this.saveDirty) this.save()
+      } catch {
+        // A transient write failure must not crash the main process; the next save retries.
+      }
+    }, MANIFEST_SAVE_INTERVAL_MS)
+    this.saveTimer.unref?.()
   }
 }
 

@@ -1,5 +1,6 @@
 import { performance } from 'node:perf_hooks'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { workerPolicy } from '../fork/indexing-worker-policy'
 
 let sleeper: AbortController | null = null
 
@@ -8,23 +9,35 @@ export function interruptBackgroundSleep(): void {
   sleeper?.abort()
 }
 
-/** Limit sustained background work to roughly 35% of one logical CPU. */
+/** Cool-down after `activeMs` of work so the duty cycle matches the policy share. */
+export function coolDownMs(activeMs: number, share: number): number {
+  // Uncapped (idle machine on AC): the task boundary is the only yield.
+  if (share >= 0.999) return 0
+  const safeShare = Math.max(0.05, share)
+  return Math.min(2000, Math.max(10, Math.ceil(activeMs * (1 / safeShare - 1))))
+}
+
+/**
+ * Limit sustained background work to the indexing policy's duty cycle. Without a policy
+ * message the share stays at the historic ~35% of one logical CPU.
+ */
 export async function withBackgroundBudget<T>(work: () => Promise<T>): Promise<T> {
   const started = performance.now()
   try {
     return await work()
   } finally {
     const activeMs = Math.max(0, performance.now() - started)
-    const controller = new AbortController()
-    sleeper = controller
-    try {
-      await sleep(Math.min(2000, Math.max(10, Math.ceil(activeMs * (1 / 0.35 - 1)))), undefined, {
-        signal: controller.signal,
-      })
-    } catch {
-      // Interrupted by interactive work.
-    } finally {
-      if (sleeper === controller) sleeper = null
+    const wait = coolDownMs(activeMs, workerPolicy.cpuShare)
+    if (wait > 0) {
+      const controller = new AbortController()
+      sleeper = controller
+      try {
+        await sleep(wait, undefined, { signal: controller.signal })
+      } catch {
+        // Interrupted by interactive work.
+      } finally {
+        if (sleeper === controller) sleeper = null
+      }
     }
   }
 }

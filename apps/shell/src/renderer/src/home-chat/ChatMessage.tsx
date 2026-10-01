@@ -7,6 +7,8 @@ export type ChatItem = {
   role: 'user' | 'assistant'
   text: string
   streaming?: boolean
+  /** transient line shown beside the typing dots until the first token (e.g. "Starting Antigravity…") */
+  status?: string
   error?: string
   sources?: HomeChatSource[]
 }
@@ -62,6 +64,7 @@ export const ChatMessage = memo(function ChatMessage({
           <i />
           <i />
           <i />
+          {item.status && <span className="hc-status">{item.status}</span>}
         </span>
       ) : (
         item.text && (

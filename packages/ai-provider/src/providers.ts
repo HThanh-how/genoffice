@@ -1,3 +1,4 @@
+import { AGY_PROVIDER_META } from './agy-meta'
 import { defaultAiMediaSettings, resolveAiMediaSettings } from './media'
 import { defaultAiSearchSettings, resolveAiSearchSettings } from './search-settings'
 import type { AiProviderId, AiProviderMeta, AiSettings, LegacyAiSettings } from './types'
@@ -73,6 +74,7 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     keyPlaceholder: '',
     needsCliPath: true,
   },
+  AGY_PROVIDER_META,
   {
     id: 'anthropic',
     label: 'Claude',

@@ -1,3 +1,4 @@
+import { listAgyModelsForIpc } from './agy-cli'
 import { AI_PROVIDERS } from './providers'
 import { getProviderAdapter } from './registry'
 import { listCustomModels, listGeminiModelsForIpc } from './custom-models'
@@ -12,6 +13,7 @@ export async function listProviderModelsForIpc(input: unknown): Promise<CodexMod
   const raw = input as { provider?: unknown; config?: unknown } | null
   if (!AI_PROVIDERS.some((entry) => entry.id === raw?.provider)) return EMPTY
   const provider = raw!.provider as AiProviderId
+  if (provider === 'agy') return listAgyModelsForIpc(raw!.config)
   if (provider === 'genspark' || provider === 'codex') return EMPTY
   const stored = raw!.config as Partial<AiProviderConfig> | null
   const config: AiProviderConfig = {

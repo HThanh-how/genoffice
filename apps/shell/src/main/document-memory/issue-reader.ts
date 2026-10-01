@@ -9,6 +9,8 @@ import {
 } from './issues'
 
 export const ISSUE_PAGE_SIZE = 10
+/** Above this many distinct (status, error) pairs a reason filter is applied in memory. */
+const MAX_REASON_PAIRS = 5_000
 
 export interface IndexIssueSummary {
   /** files with a problem (status error or empty) below the selected folder */
@@ -92,21 +94,68 @@ export class IndexIssueReader {
     }
   }
 
-  /** One page of problem files, optionally limited to one reason. */
+  /**
+   * One page of problem files, optionally limited to one reason. The page and the total come
+   * from SQL (LIMIT/OFFSET and a count) rather than loading every problem row: a reason is a
+   * pure function of (status, error), so it is turned into a filter over the few distinct pairs.
+   */
   page(
     root: string,
     offset = 0,
     reason?: IndexIssueReason,
     pageSize = ISSUE_PAGE_SIZE,
   ): { total: number; items: IndexIssue[] } {
-    const issues = this.rows(root).map((row) => this.toIssue(row))
-    const matching = reason ? issues.filter((issue) => issue.reason === reason) : issues
+    const { where, args } = this.scope(root)
+    let filter = ''
+    let filterArgs: Array<string | null> = []
+    if (reason) {
+      const pairs = (
+        this.connection()
+          .prepare(`SELECT status, error FROM documents WHERE ${where} GROUP BY status, error`)
+          .all(...args) as unknown as Array<{ status: string; error: string | null }>
+      ).filter((pair) => issueReason(pair.error, pair.status) === reason)
+      if (!pairs.length) return { total: 0, items: [] }
+      if (pairs.length > MAX_REASON_PAIRS) return this.pageInMemory(root, offset, reason, pageSize)
+      filter = ` AND (${pairs.map(() => '(status = ? AND error IS ?)').join(' OR ')})`
+      filterArgs = pairs.flatMap((pair) => [pair.status, pair.error])
+    }
+    const total = (
+      this.connection()
+        .prepare(`SELECT count(*) AS n FROM documents WHERE ${where}${filter}`)
+        .get(...args, ...filterArgs) as { n: number }
+    ).n
+    const rows = this.connection()
+      .prepare(
+        `SELECT id, path, name, status, error FROM documents WHERE ${where}${filter}
+        ORDER BY status ASC, priority_at DESC, id DESC LIMIT ? OFFSET ?`,
+      )
+      .all(...args, ...filterArgs, pageSize, offset) as unknown as IssueRow[]
+    return { total, items: rows.map((row) => this.toIssue(row)) }
+  }
+
+  private pageInMemory(
+    root: string,
+    offset: number,
+    reason: IndexIssueReason,
+    pageSize: number,
+  ): { total: number; items: IndexIssue[] } {
+    const matching = this.rows(root)
+      .map((row) => this.toIssue(row))
+      .filter((issue) => issue.reason === reason)
     return { total: matching.length, items: matching.slice(offset, offset + pageSize) }
   }
 
   /** Ids of every problem file (optionally of one reason), for "Retry all". */
   ids(root: string, reason?: IndexIssueReason): number[] {
-    return this.rows(root)
+    const { where, args } = this.scope(root)
+    return (
+      this.connection()
+        .prepare(
+          `SELECT id, status, error FROM documents WHERE ${where}
+          ORDER BY status ASC, priority_at DESC, id DESC`,
+        )
+        .all(...args) as unknown as Array<{ id: number; status: string; error: string | null }>
+    )
       .filter((row) => !reason || issueReason(row.error, row.status) === reason)
       .map((row) => row.id)
   }

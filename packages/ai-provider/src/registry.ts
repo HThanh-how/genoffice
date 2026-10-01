@@ -1,16 +1,20 @@
+import { AGY_CAPABILITIES } from './agy-meta'
 import { ANTHROPIC_BASE_URL } from './protocols/anthropic'
 import { GEMINI_BASE_URL } from './protocols/gemini'
 import { AI_PROVIDERS, DEEPSEEK_V41_FLASH, GENSPARK_LLM_BASE_URLS } from './providers'
 import type { AiProviderConfig, AiProviderId, AiProviderMeta } from './types'
 
 /** Wire protocols every provider maps onto, including the official Codex app-server bridge. */
-export type AiProtocol = 'anthropic' | 'gemini' | 'openai-compatible' | 'codex-app-server'
+export type AiProtocol =
+  'anthropic' | 'gemini' | 'openai-compatible' | 'codex-app-server' | 'agy-cli'
 
 export interface ProviderCapabilities {
   /** How the provider authenticates: app login, user key, or the Codex CLI's existing login. */
-  auth: 'gsk-login' | 'api-key' | 'codex-chatgpt'
+  auth: 'gsk-login' | 'api-key' | 'codex-chatgpt' | 'agy-cli'
   /** chat models accept image input (declarative; for custom endpoints it is assumed, not known) */
   vision: boolean
+  /** the provider can call GenOffice tools (absent = yes); agy cannot, so callers must retrieve context up front */
+  tools?: boolean
 }
 
 export interface ResolvedEndpoint {
@@ -202,6 +206,11 @@ export const AI_PROVIDER_ADAPTERS: Record<AiProviderId, ProviderAdapter> = {
     resolveEndpoint() {
       return { protocol: 'codex-app-server', baseUrl: '' }
     },
+  },
+  agy: {
+    meta: metaOf('agy'),
+    capabilities: AGY_CAPABILITIES,
+    resolveEndpoint: () => ({ protocol: 'agy-cli', baseUrl: '' }),
   },
   anthropic: {
     meta: metaOf('anthropic'),

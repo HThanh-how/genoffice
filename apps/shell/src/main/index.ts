@@ -297,6 +297,8 @@ import { HOME_CHANNELS } from '../shared/home-api'
 import { registerHomeChatIpc } from './fork/home-chat-ipc'
 import { registerDocumentIndexIpc } from './fork/document-index-ipc'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
+import { registerIndexingMode } from './fork/indexing-mode-ipc'
+import { startLoopMonitor } from './fork/loop-monitor'
 import {
   normalizeAiPanelPrefs,
   sameAiPanelPrefs,
@@ -4042,6 +4044,7 @@ function startFolderScan(path: string): void {
 
 function registerHomeIpc(): void {
   registerClipboardSuggest({ ipcMain, settingsPath: APP_SETTINGS_PATH })
+  registerIndexingMode({ ipcMain, settingsPath: APP_SETTINGS_PATH })
   registerDocumentIndexIpc({
     ipcMain,
     getDocumentMemory: () => documentMemory,
@@ -6099,6 +6102,7 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
+  startLoopMonitor() // dev diagnostic; no-op unless GENOFFICE_DEBUG_LOOP=1
   documentMemory = new DocumentMemoryManager(app.getPath('userData'))
   void listLegacyRecovery(app.getPath('userData')).catch((error) =>
     console.warn('[shell] legacy recovery cleanup failed:', error),
