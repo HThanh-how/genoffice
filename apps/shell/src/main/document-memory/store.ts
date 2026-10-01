@@ -15,6 +15,8 @@ export interface StoredDocument {
   sizeBytes: number | null
   hash: string | null
   error: string | null
+  /** The index holds only part of this file (chunk cap or sampled tabular rows). */
+  truncated: boolean
 }
 export interface ReplacementDocument {
   hash: string
@@ -24,6 +26,7 @@ export interface ReplacementDocument {
   embeddingModel: string | null
   status: 'ready' | 'text-only' | 'empty' | 'error'
   error?: string
+  truncated?: boolean
 }
 export interface DocumentMemoryHit {
   documentId: number
@@ -36,6 +39,10 @@ export interface DocumentMemoryHit {
   hash: string | null
   mtimeMs: number | null
   sizeBytes: number | null
+  /** Epoch ms of the last index write for this document (null when unknown). */
+  indexedAt: number | null
+  /** The document is only partially indexed (chunk cap or sampled rows). */
+  truncated: boolean
 }
 export interface DocumentMemoryStats {
   docs: number
@@ -57,6 +64,8 @@ export interface FolderChunkProgress {
   completedChunks: number
   totalChunks: number
   partialFileProgress: number
+  /** Files that are only partially indexed (chunk cap or sampled rows). */
+  truncatedFiles: number
 }
 
 const SCHEMA = `
@@ -72,6 +81,7 @@ CREATE TABLE IF NOT EXISTS documents (
   embedding_model TEXT,
   error TEXT,
   excluded INTEGER NOT NULL DEFAULT 0 CHECK (excluded IN (0, 1)),
+  truncated INTEGER NOT NULL DEFAULT 0,
   last_opened_at INTEGER NOT NULL DEFAULT 0,
   priority_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
@@ -135,6 +145,8 @@ export class DocumentMemoryStore {
     const columns = this.db.prepare('PRAGMA table_info(documents)').all() as Array<{ name: string }>
     if (!columns.some((column) => column.name === 'last_opened_at'))
       this.db.exec('ALTER TABLE documents ADD COLUMN last_opened_at INTEGER NOT NULL DEFAULT 0')
+    if (!columns.some((column) => column.name === 'truncated'))
+      this.db.exec('ALTER TABLE documents ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0')
     if (!columns.some((column) => column.name === 'priority_at')) {
       this.db.exec('ALTER TABLE documents ADD COLUMN priority_at INTEGER NOT NULL DEFAULT 0')
       this.db.exec(`UPDATE documents SET priority_at = max(last_opened_at,
@@ -197,7 +209,7 @@ export class DocumentMemoryStore {
     return (
       this.db
         .prepare(
-          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error
+          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated
       FROM documents ORDER BY priority_at DESC, id DESC`,
         )
         .all() as unknown as DocRow[]
@@ -208,7 +220,7 @@ export class DocumentMemoryStore {
     return (
       this.db
         .prepare(
-          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error
+          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated
       FROM documents WHERE excluded = 0 ORDER BY priority_at DESC, id DESC LIMIT ?`,
         )
         .all(limit) as unknown as DocRow[]
@@ -218,7 +230,7 @@ export class DocumentMemoryStore {
   documentByPath(path: string): StoredDocument | null {
     const row = this.db
       .prepare(
-        `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error
+        `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated
       FROM documents WHERE path = ?`,
       )
       .get(resolve(path)) as DocRow | undefined
@@ -228,7 +240,7 @@ export class DocumentMemoryStore {
   documentById(id: number): StoredDocument | null {
     const row = this.db
       .prepare(
-        `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error
+        `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated
       FROM documents WHERE id = ?`,
       )
       .get(id) as DocRow | undefined
@@ -239,7 +251,7 @@ export class DocumentMemoryStore {
   chunkProgress(path: string): DocumentChunkProgress {
     const row = this.db
       .prepare(
-        `SELECT d.id, d.path, d.name, d.status, d.mtime_ms, d.size_bytes, d.hash, d.error,
+        `SELECT d.id, d.path, d.name, d.status, d.mtime_ms, d.size_bytes, d.hash, d.error, d.truncated,
           count(c.id) AS total_chunks,
           sum(CASE WHEN c.vector IS NOT NULL THEN 1 ELSE 0 END) AS completed_chunks
         FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
@@ -264,7 +276,7 @@ export class DocumentMemoryStore {
     const row = this.db
       .prepare(
         `WITH per_document AS (
-          SELECT d.id, d.status, count(c.id) AS total_chunks,
+          SELECT d.id, d.status, d.truncated, count(c.id) AS total_chunks,
             coalesce(sum(CASE WHEN c.vector IS NOT NULL THEN 1 ELSE 0 END), 0) AS completed_chunks
           FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
           WHERE d.excluded = 0 AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)
@@ -275,6 +287,7 @@ export class DocumentMemoryStore {
           sum(CASE WHEN status IN ('pending', 'text-only') THEN 1 ELSE 0 END) AS pending_files,
           sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_files,
           sum(CASE WHEN status = 'empty' THEN 1 ELSE 0 END) AS empty_files,
+          coalesce(sum(truncated), 0) AS truncated_files,
           coalesce(sum(completed_chunks), 0) AS completed_chunks,
           coalesce(sum(total_chunks), 0) AS total_chunks,
           coalesce(sum(CASE WHEN status IN ('ready','empty') THEN 1.0
@@ -290,6 +303,7 @@ export class DocumentMemoryStore {
           pending_files: number
           error_files: number
           empty_files: number
+          truncated_files: number
           completed_chunks: number
           total_chunks: number
           partial_file_progress: number
@@ -304,6 +318,7 @@ export class DocumentMemoryStore {
       completedChunks: row?.completed_chunks ?? 0,
       totalChunks: row?.total_chunks ?? 0,
       partialFileProgress: row?.partial_file_progress ?? 0,
+      truncatedFiles: row?.truncated_files ?? 0,
     }
   }
 
@@ -388,7 +403,7 @@ export class DocumentMemoryStore {
       this.db
         .prepare(
           `UPDATE documents SET name = ?, status = ?, mtime_ms = ?, priority_at = max(last_opened_at, ?), size_bytes = ?, hash = ?,
-        embedding_model = ?, error = ?, excluded = 0, updated_at = unixepoch() WHERE id = ?`,
+        embedding_model = ?, error = ?, truncated = ?, excluded = 0, updated_at = unixepoch() WHERE id = ?`,
         )
         .run(
           basename(normalizedPath),
@@ -399,6 +414,7 @@ export class DocumentMemoryStore {
           replacement.hash,
           replacement.embeddingModel,
           replacement.error ?? null,
+          replacement.truncated ? 1 : 0,
           row.id,
         )
       const addChunk = this.db
@@ -437,7 +453,7 @@ export class DocumentMemoryStore {
       this.deleteChunks(row.id)
       this.db
         .prepare(
-          `UPDATE documents SET status = 'error', error = ?, hash = NULL, embedding_model = NULL,
+          `UPDATE documents SET status = 'error', error = ?, hash = NULL, embedding_model = NULL, truncated = 0,
         mtime_ms = CASE WHEN ? = 0 THEN mtime_ms ELSE ? END,
         size_bytes = CASE WHEN ? = 0 THEN size_bytes ELSE ? END,
         updated_at = unixepoch() WHERE id = ?`,
@@ -544,6 +560,69 @@ export class DocumentMemoryStore {
     })
   }
 
+  /**
+   * Forget a document whose file is gone: delete its chunks, FTS rows and vectors and the
+   * row itself. An `excluded` row is the user's choice and is never touched.
+   */
+  tombstone(path: string): boolean {
+    const p = resolve(path)
+    let removed = false
+    this.transaction(() => {
+      const row = this.db.prepare('SELECT id, excluded FROM documents WHERE path = ?').get(p) as
+        { id: number; excluded: number } | undefined
+      if (!row || row.excluded) return
+      this.deleteChunks(row.id)
+      this.db.prepare('DELETE FROM documents WHERE id = ?').run(row.id)
+      removed = true
+    })
+    return removed
+  }
+
+  /** Record fresh source metadata after a file was moved, without re-extracting it. */
+  touchMetadata(path: string, mtimeMs: number, sizeBytes: number): void {
+    this.db
+      .prepare('UPDATE documents SET mtime_ms = ?, size_bytes = ? WHERE path = ? AND excluded = 0')
+      .run(mtimeMs, sizeBytes, resolve(path))
+  }
+
+  /** Non-excluded documents at or below a folder (SQL only; no filesystem access). */
+  documentsUnder(root: string): StoredDocument[] {
+    const normalized = resolve(root)
+    const prefix = normalized + (normalized.includes('\\') ? '\\' : '/')
+    return (
+      this.db
+        .prepare(
+          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated
+          FROM documents WHERE excluded = 0 AND (path = ? OR substr(path, 1, length(?)) = ?)`,
+        )
+        .all(normalized, prefix, prefix) as unknown as DocRow[]
+    ).map(toDocument)
+  }
+
+  /** Paths whose extraction or embedding was interrupted and should resume on launch. */
+  incompletePaths(): string[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT path FROM documents WHERE excluded = 0 AND status IN ('pending', 'text-only')
+          ORDER BY priority_at DESC, id DESC`,
+        )
+        .all() as Array<{ path: string }>
+    ).map((r) => r.path)
+  }
+
+  /** The most recently user-opened documents, for the cheap safety poll. */
+  openedPaths(limit: number): string[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT path FROM documents WHERE excluded = 0 AND last_opened_at > 0
+          ORDER BY last_opened_at DESC LIMIT ?`,
+        )
+        .all(limit) as Array<{ path: string }>
+    ).map((r) => r.path)
+  }
+
   exclude(path: string): void {
     const p = resolve(path)
     this.transaction(() => {
@@ -628,6 +707,8 @@ export class DocumentMemoryStore {
         vectorCount <= this.searchOptions.semanticFullScanThreshold
           ? vectorCount
           : this.searchOptions.semanticRecentScan
+      let queryNorm = 0
+      for (const value of vector) queryNorm += value * value
       const scan = (maxRows: number, maxDocuments: number) => {
         function* scoredRows() {
           let scanned = 0
@@ -646,7 +727,7 @@ export class DocumentMemoryStore {
               vector_dim: number
             }>
             for (const row of rows) {
-              const score = cosine(vector!, blobVector(row.vector, row.vector_dim))
+              const score = cosine(vector!, blobVector(row.vector, row.vector_dim), queryNorm)
               // Preserve equal semantic scores in the top-200 heap by recent document order.
               yield { id: row.id, score: score + 1e-8 / documentRank, cosineScore: score }
               if (++scanned >= maxRows) return
@@ -731,7 +812,7 @@ export class DocumentMemoryStore {
       .map(([id]) => id)
     if (!ids.length) return []
     const get = this.db
-      .prepare(`SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, c.id AS chunk_id, c.text, c.location
+      .prepare(`SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, c.id AS chunk_id, c.text, c.location
       FROM chunks c JOIN documents d ON d.id = c.document_id
       WHERE c.id = ? AND d.excluded = 0`)
     return ids.flatMap((id) => {
@@ -749,6 +830,8 @@ export class DocumentMemoryStore {
               hash: row.hash,
               mtimeMs: row.mtime_ms,
               sizeBytes: row.size_bytes,
+              indexedAt: indexedAt(row.updated_at),
+              truncated: !!row.truncated,
             },
           ]
         : []
@@ -758,7 +841,7 @@ export class DocumentMemoryStore {
   readChunk(chunkId: number): DocumentMemoryHit | null {
     const row = this.db
       .prepare(
-        `SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, c.id AS chunk_id, c.text, c.location
+        `SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, c.id AS chunk_id, c.text, c.location
       FROM chunks c JOIN documents d ON d.id = c.document_id
       WHERE c.id = ? AND d.excluded = 0`,
       )
@@ -775,6 +858,8 @@ export class DocumentMemoryStore {
           hash: row.hash,
           mtimeMs: row.mtime_ms,
           sizeBytes: row.size_bytes,
+          indexedAt: indexedAt(row.updated_at),
+          truncated: !!row.truncated,
         }
       : null
   }
@@ -790,6 +875,15 @@ export class DocumentMemoryStore {
       )
       .get() as unknown as DocumentMemoryStats
     return row
+  }
+
+  /** Cheap count of documents in the error state (no chunk scan; safe for progress polling). */
+  errorCount(): number {
+    return (
+      this.db
+        .prepare("SELECT count(*) AS n FROM documents WHERE excluded = 0 AND status = 'error'")
+        .get() as { n: number }
+    ).n
   }
 
   close(): void {
@@ -826,6 +920,7 @@ interface DocRow {
   size_bytes: number | null
   hash: string | null
   error: string | null
+  truncated: number
 }
 interface HitRow {
   document_id: number
@@ -834,6 +929,8 @@ interface HitRow {
   hash: string | null
   mtime_ms: number | null
   size_bytes: number | null
+  updated_at: number | null
+  truncated: number
   chunk_id: number
   text: string
   location: string
@@ -848,6 +945,7 @@ function toDocument(row: DocRow): StoredDocument {
     sizeBytes: row.size_bytes,
     hash: row.hash,
     error: row.error,
+    truncated: !!row.truncated,
   }
 }
 function quoteFtsToken(token: string): string {
@@ -857,20 +955,26 @@ function floatBlob(vector: number[]): Uint8Array {
   const copy = new Float32Array(vector)
   return new Uint8Array(copy.buffer)
 }
-function blobVector(blob: Uint8Array, dim: number): number[] {
-  if (blob.byteLength !== dim * Float32Array.BYTES_PER_ELEMENT) return []
+/** View a stored BLOB as float32 without per-element copies (copy once only if misaligned). */
+function blobVector(blob: Uint8Array, dim: number): Float32Array {
+  if (blob.byteLength !== dim * Float32Array.BYTES_PER_ELEMENT) return new Float32Array(0)
+  if (blob.byteOffset % Float32Array.BYTES_PER_ELEMENT === 0)
+    return new Float32Array(blob.buffer, blob.byteOffset, dim)
   const copy = blob.slice()
-  return Array.from(new Float32Array(copy.buffer, copy.byteOffset, dim))
+  return new Float32Array(copy.buffer, copy.byteOffset, dim)
 }
-function cosine(a: number[], b: number[]): number {
-  if (a.length !== b.length || !a.length || b.some((v) => !Number.isFinite(v))) return Number.NaN
+function indexedAt(updatedAtSeconds: number | null): number | null {
+  return typeof updatedAtSeconds === 'number' ? updatedAtSeconds * 1000 : null
+}
+function cosine(a: ArrayLike<number>, b: ArrayLike<number>, aa: number): number {
+  if (a.length !== b.length || !a.length) return Number.NaN
   let dot = 0,
-    aa = 0,
     bb = 0
   for (let i = 0; i < a.length; i++) {
-    dot += a[i]! * b[i]!
-    aa += a[i]! * a[i]!
-    bb += b[i]! * b[i]!
+    const y = b[i]!
+    if (!Number.isFinite(y)) return Number.NaN
+    dot += a[i]! * y
+    bb += y * y
   }
   return aa && bb ? dot / Math.sqrt(aa * bb) : 0
 }

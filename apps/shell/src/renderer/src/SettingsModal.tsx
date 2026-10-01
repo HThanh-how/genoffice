@@ -37,6 +37,7 @@ import type { AiCatalogEntry, UiTheme } from '../../shared/home-api'
 import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import { DocumentMemorySettings } from './DocumentMemorySettings'
+import { ClipboardSettingsToggle } from './fork/ClipboardSettingsToggle'
 import './settings.css'
 
 // ── Settings modal (opened from the account menu) ─────────
@@ -1774,6 +1775,7 @@ export function SettingsModal({
                     }}
                   />
                 </div>
+                <ClipboardSettingsToggle />
                 <DocumentMemorySettings />
               </>
             )}

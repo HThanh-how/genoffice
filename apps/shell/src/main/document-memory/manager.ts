@@ -2,17 +2,28 @@ import { stat } from 'node:fs/promises'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import type { Worker } from 'node:worker_threads'
 import { createIndexProcess } from './process-worker'
-import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { createReadStream, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { extname, join, parse, resolve } from 'node:path'
 import workerPath from './worker?modulePath'
-import { DocumentMemoryStore, type DocumentMemoryHit } from './store'
+import { MAX_DOCUMENT_BYTES, SUPPORTED_EXTENSIONS } from './folder-scan'
+import { DocumentMemoryStore, type DocumentMemoryHit, type StoredDocument } from './store'
 import type { DocumentChunk } from './chunks'
 import type { DocumentMemoryStatus } from '../../shared/home-api'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'
 
 const EMBEDDING_MODEL_ID =
   'Xenova/multilingual-e5-small@761b726dd34fb83930e26aab4e9ac3899aa1fa78:q8'
+/** Cheap safety poll: resumes interrupted work (SQL only); never stats the whole index. */
 const POLL_INTERVAL_MS = 60_000
+/** How often user-opened documents are stat()ed by the safety poll, and how many. */
+const OPENED_CHECK_INTERVAL_MS = 5 * 60_000
+const OPENED_CHECK_LIMIT = 200
+/** A vanished file may be a move in progress; wait before forgetting its chunks. */
+const TOMBSTONE_GRACE_MS = 30_000
+/** Moves are detected by size + SHA-256; larger files are simply re-indexed. */
+const RENAME_HASH_MAX_BYTES = 64 * 1024 * 1024
+const FRESHNESS_STAT_TIMEOUT_MS = 1_500
 const SEARCH_EMBED_TIMEOUT_MS = 10_000
 const WORKER_TIMEOUT_MS = 5 * 60_000
 const MAX_PENDING_EMBED_DOCUMENTS = 16
@@ -25,13 +36,34 @@ interface ExtractResult {
   chunks: DocumentChunk[]
   status: 'text-only' | 'empty' | 'ready'
   error?: string
+  /** Only part of the file was indexed (chunk cap or sampled tabular rows). */
+  truncated?: boolean
+  /** Lexical-only: embedding adds nothing (numeric tables). */
+  skipEmbeddings?: boolean
 }
+/** A search hit annotated with a cheap query-time freshness check (no hashing). */
+export interface FreshDocumentMemoryHit extends DocumentMemoryHit {
+  /** The file changed or vanished since it was indexed; do not quote `text` as current. */
+  stale: boolean
+  /** The file is no longer at `path` (`stale` is also true). */
+  missing: boolean
+}
+interface MissingCandidate {
+  path: string
+  sizeBytes: number
+  hash: string
+}
+type StatOutcome =
+  | { kind: 'file'; mtimeMs: number; sizeBytes: number }
+  | { kind: 'other' }
+  | { kind: 'gone' }
+  | { kind: 'unknown' }
 type WorkerReply =
   | { id: number; result: ExtractResult | number[][] | DocumentMemoryHit[] }
   | { id: number; error: string }
   | { type: 'model'; state: 'downloading' | 'ready' | 'error'; progress?: number; error?: string }
 type WorkerRequest =
-  | { type: 'extract'; path: string }
+  | { type: 'extract'; path: string; interactive?: boolean }
   | { type: 'embed'; texts: string[]; kind: 'query' | 'passage' }
   | {
       type: 'search'
@@ -60,6 +92,7 @@ interface ManagerOptions {
   workerFactory?: (path: string, workerData: { cacheDir: string; dbPath: string }) => Worker
   pollIntervalMs?: number
   searchTimeoutMs?: number
+  tombstoneGraceMs?: number
 }
 
 /** Coordinates opened-document enrollment, local extraction, embedding and fresh reads. */
@@ -75,6 +108,14 @@ export class DocumentMemoryManager {
   ) => Worker
   private readonly pollIntervalMs: number
   private readonly searchTimeoutMs: number
+  private readonly tombstoneGraceMs: number
+  private readonly missing = new Map<
+    string,
+    { candidate: MissingCandidate | null; timer: NodeJS.Timeout }
+  >()
+  private readonly enabledListeners = new Set<() => void>()
+  private readonly clearedListeners = new Set<() => void>()
+  private lastOpenedCheck = 0
   private readonly queue: string[] = []
   private readonly queued = new Set<string>()
   private readonly activeExtractions = new Set<string>()
@@ -106,6 +147,7 @@ export class DocumentMemoryManager {
     this.workerFactory = options.workerFactory ?? createIndexProcess
     this.pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
     this.searchTimeoutMs = options.searchTimeoutMs ?? SEARCH_EMBED_TIMEOUT_MS
+    this.tombstoneGraceMs = options.tombstoneGraceMs ?? TOMBSTONE_GRACE_MS
     this.store = new DocumentMemoryStore(this.dbPath)
     this.enabled = readEnabled(this.settingsPath)
 
@@ -152,6 +194,22 @@ export class DocumentMemoryManager {
     )
       this.enqueue(p)
     return needsIndex
+  }
+
+  isEnabled(): boolean {
+    return this.enabled && !this.stopped
+  }
+
+  /** Subscribe to pause/resume; returns an unsubscribe function. */
+  onEnabledChange(listener: () => void): () => void {
+    this.enabledListeners.add(listener)
+    return () => this.enabledListeners.delete(listener)
+  }
+
+  /** Subscribe to the index being cleared; returns an unsubscribe function. */
+  onCleared(listener: () => void): () => void {
+    this.clearedListeners.add(listener)
+    return () => this.clearedListeners.delete(listener)
   }
 
   indexIssues(root: string, offset = 0) {
@@ -203,6 +261,7 @@ export class DocumentMemoryManager {
       name: document.name,
       completedChunks: progress.completedChunks,
       totalChunks: progress.totalChunks,
+      ...(document.truncated ? { truncated: true } : {}),
     }
     if (document.status === 'excluded') return { ...base, state: 'excluded', percent: null }
     if (this.activeExtractions.has(p)) return { ...base, state: 'extracting', percent: null }
@@ -242,6 +301,8 @@ export class DocumentMemoryManager {
     pendingFiles: number
     errorFiles: number
     emptyFiles?: number
+    /** Files indexed only in part (chunk cap or sampled rows). */
+    truncatedFiles?: number
     completedChunks: number
     totalChunks: number
     percent: number | null
@@ -261,6 +322,7 @@ export class DocumentMemoryManager {
       pendingFiles: counts.pendingFiles,
       errorFiles: counts.errorFiles,
       emptyFiles: counts.emptyFiles ?? 0,
+      truncatedFiles: counts.truncatedFiles,
       completedChunks: counts.completedChunks,
       totalChunks: counts.totalChunks,
       percent,
@@ -300,7 +362,7 @@ export class DocumentMemoryManager {
       modelState: this.modelState,
       ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }),
       pending: this.pendingCount + this.queue.length + this.embeds.length,
-      errors: this.store.stats().errors,
+      errors: this.store.errorCount(),
     }
   }
 
@@ -314,7 +376,18 @@ export class DocumentMemoryManager {
       this.queued.clear()
       this.embeds.length = 0
     } else void this.poll()
+    this.notify(this.enabledListeners)
     return this.status()
+  }
+
+  private notify(listeners: Set<() => void>): void {
+    for (const listener of [...listeners]) {
+      try {
+        listener()
+      } catch {
+        // Lifecycle listeners must never break the manager.
+      }
+    }
   }
 
   exclude(path: string): void {
@@ -328,13 +401,21 @@ export class DocumentMemoryManager {
     this.queue.length = 0
     this.queued.clear()
     this.embeds.length = 0
+    for (const entry of this.missing.values()) clearTimeout(entry.timer)
+    this.missing.clear()
     this.store.clear()
+    this.notify(this.clearedListeners)
   }
 
   async search(
     query: string,
     limit = 8,
-  ): Promise<{ hits: DocumentMemoryHit[]; pending: number; errors: number; modelState: string }> {
+  ): Promise<{
+    hits: FreshDocumentMemoryHit[]
+    pending: number
+    errors: number
+    modelState: string
+  }> {
     let vector: number[] | null = null
     // Do not place a query behind a long passage batch; lexical FTS answers now.
     if (
@@ -365,11 +446,45 @@ export class DocumentMemoryManager {
         ? (reply.result as DocumentMemoryHit[])
         : this.store.search(query, null, limit)
     return {
-      hits: result,
+      hits: await this.annotateFreshness(result),
       pending: this.queue.length + this.embeds.length + this.pendingCount,
-      errors: this.store.stats().errors,
+      errors: this.store.errorCount(),
       modelState: this.modelState,
     }
+  }
+
+  /**
+   * Compare each hit's file (at most `limit` stat calls, no hashing) with the indexed
+   * mtime/size. Changed files are queued for a prioritized re-index; vanished ones are
+   * flagged and scheduled for removal (guarded against an unplugged drive).
+   */
+  private async annotateFreshness(hits: DocumentMemoryHit[]): Promise<FreshDocumentMemoryHit[]> {
+    const byPath = new Map<string, Promise<'fresh' | 'stale' | 'missing'>>()
+    for (const hit of hits) {
+      if (!byPath.has(hit.path)) byPath.set(hit.path, this.checkFreshness(hit))
+    }
+    const outcomes = new Map<string, 'fresh' | 'stale' | 'missing'>()
+    for (const [path, outcome] of byPath) outcomes.set(path, await outcome)
+    for (const [path, outcome] of outcomes) {
+      if (!this.enabled || this.stopped) break
+      if (outcome === 'stale') this.enqueue(path, true)
+      else if (outcome === 'missing') this.markMissing(path)
+    }
+    return hits.map((hit) => {
+      const outcome = outcomes.get(hit.path) ?? 'fresh'
+      return { ...hit, stale: outcome !== 'fresh', missing: outcome === 'missing' }
+    })
+  }
+
+  private async checkFreshness(hit: DocumentMemoryHit): Promise<'fresh' | 'stale' | 'missing'> {
+    if (hit.mtimeMs === null || hit.sizeBytes === null) return 'fresh'
+    const current = await this.statOutcome(hit.path, FRESHNESS_STAT_TIMEOUT_MS)
+    if (current.kind === 'gone') return 'missing'
+    if (current.kind === 'file')
+      return current.mtimeMs !== hit.mtimeMs || current.sizeBytes !== hit.sizeBytes
+        ? 'stale'
+        : 'fresh'
+    return 'fresh'
   }
 
   /** Verify the indexed hash against a fresh worker extraction before exposing full text. */
@@ -393,7 +508,21 @@ export class DocumentMemoryManager {
       }
     const generation = this.currentGeneration(hit.path)
     const epoch = this.epoch
-    const reply = await this.ask({ type: 'extract', path: hit.path }, WORKER_TIMEOUT_MS)
+    if ((await this.statOutcome(hit.path)).kind === 'gone') {
+      this.markMissing(hit.path)
+      return {
+        path: hit.path,
+        name: hit.name,
+        location: hit.location,
+        text: '',
+        verified: false,
+        error: 'The source file no longer exists at its indexed path.',
+      }
+    }
+    const reply = await this.ask(
+      { type: 'extract', path: hit.path, interactive: true },
+      WORKER_TIMEOUT_MS,
+    )
     if (!reply || !('result' in reply) || !isExtractResult(reply.result)) {
       const error =
         reply && 'error' in reply && typeof reply.error === 'string'
@@ -442,10 +571,11 @@ export class DocumentMemoryManager {
         sizeBytes: fresh.sizeBytes,
         chunks: fresh.chunks,
         embeddingModel: null,
-        status: fresh.status === 'empty' ? 'empty' : 'text-only',
+        status: extractedStatus(fresh),
         error: fresh.error,
+        truncated: fresh.truncated,
       })
-      if (fresh.chunks.length && this.enabled)
+      if (fresh.chunks.length && !fresh.skipEmbeddings && this.enabled)
         this.enqueueEmbed({
           path: hit.path,
           generation: freshGeneration,
@@ -488,6 +618,10 @@ export class DocumentMemoryManager {
     this.retryTimer = null
     if (this.pollTimer) clearInterval(this.pollTimer)
     this.pollTimer = null
+    for (const entry of this.missing.values()) clearTimeout(entry.timer)
+    this.missing.clear()
+    this.enabledListeners.clear()
+    this.clearedListeners.clear()
     this.queue.length = 0
     this.embeds.length = 0
     for (const [id, pending] of this.waiting) {
@@ -501,35 +635,246 @@ export class DocumentMemoryManager {
     this.store.close()
   }
 
+  /**
+   * Safety poll. Change detection for folders is the watcher plus the periodic reconcile
+   * pass; this only resumes interrupted work (SQL) and, rarely, stats the documents the
+   * user opened by hand. It never stats the whole index.
+   */
   private async poll(): Promise<void> {
     if (this.stopped || !this.enabled || this.polling) return
     this.polling = true
     try {
-      const resumeIncomplete = !this.embedding && !this.extracting
-      for (const path of this.store.listPaths()) {
-        if (this.stopped || !this.enabled) return
-        if (this.activeExtractions.has(path)) continue
-        const doc = this.store.documentByPath(path)
-        if (!doc || doc.status === 'excluded') continue
-        const current = await stat(path).then(
-          (value) => ({ mtimeMs: value.mtimeMs, sizeBytes: value.size }),
-          () => null,
-        )
-        if (this.stopped || !this.enabled) return
-        if (!current) {
-          if (doc.status !== 'error' || doc.mtimeMs !== null || doc.sizeBytes !== null)
-            this.store.markError(path, 'Document is unavailable.', null)
-        } else if (
-          doc.status === 'pending' ||
-          (doc.status === 'text-only' && resumeIncomplete) ||
-          doc.mtimeMs !== current.mtimeMs ||
-          doc.sizeBytes !== current.sizeBytes
-        )
-          this.enqueue(path)
-        await yieldToEventLoop()
+      await this.resumeIncomplete()
+      if (this.stopped) return
+      if (Date.now() - this.lastOpenedCheck >= OPENED_CHECK_INTERVAL_MS) {
+        this.lastOpenedCheck = Date.now()
+        await this.checkOpenedDocuments()
       }
     } finally {
       this.polling = false
+    }
+  }
+
+  private async resumeIncomplete(): Promise<void> {
+    const idle = !this.embedding && !this.extracting
+    let count = 0
+    for (const path of this.store.incompletePaths()) {
+      if (this.stopped || !this.enabled) return
+      if (this.activeExtractions.has(path)) continue
+      const doc = this.store.documentByPath(path)
+      if (!doc || doc.status === 'excluded') continue
+      if (doc.status === 'text-only' && (!idle || this.embeds.some((job) => job.path === path)))
+        continue
+      this.enqueue(path)
+      if (++count % 200 === 0) await yieldToEventLoop()
+    }
+  }
+
+  private async checkOpenedDocuments(): Promise<void> {
+    for (const path of this.store.openedPaths(OPENED_CHECK_LIMIT)) {
+      if (this.stopped || !this.enabled) return
+      if (this.activeExtractions.has(path)) continue
+      const doc = this.store.documentByPath(path)
+      if (!doc || doc.status === 'excluded') continue
+      const current = await this.statOutcome(path)
+      if (this.stopped || !this.enabled) return
+      if (current.kind === 'gone') this.markMissing(path)
+      else if (
+        current.kind === 'file' &&
+        (doc.status === 'pending' ||
+          doc.mtimeMs !== current.mtimeMs ||
+          doc.sizeBytes !== current.sizeBytes)
+      )
+        this.enqueue(path)
+      await yieldToEventLoop()
+    }
+  }
+
+  // ---- file lifecycle: watcher events, reconcile, tombstones, move detection ----
+
+  /**
+   * Apply coalesced watcher events. Removals are noted first (with a grace period) so a file
+   * that reappears elsewhere with the same size and hash is recognised as a move instead of
+   * being re-extracted and re-embedded.
+   */
+  async handleFileEvents(paths: string[]): Promise<void> {
+    if (this.stopped || !this.enabled) return
+    const present: Array<{ path: string; meta: { mtimeMs: number; sizeBytes: number } }> = []
+    let count = 0
+    for (const raw of paths) {
+      if (this.stopped || !this.enabled) return
+      if (++count % 25 === 0) await yieldToEventLoop()
+      const path = resolve(raw)
+      const current = await this.statOutcome(path)
+      if (current.kind === 'gone') {
+        if (this.store.documentByPath(path)) this.markMissing(path)
+      } else if (
+        current.kind === 'file' &&
+        SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase()) &&
+        current.sizeBytes <= MAX_DOCUMENT_BYTES
+      )
+        present.push({ path, meta: { mtimeMs: current.mtimeMs, sizeBytes: current.sizeBytes } })
+    }
+    const candidates = new Map<number, MissingCandidate[]>()
+    for (const entry of this.missing.values())
+      if (entry.candidate) addCandidate(candidates, entry.candidate)
+    for (const { path, meta } of present) {
+      if (this.stopped || !this.enabled) return
+      if (this.store.documentByPath(path)) this.indexDiscoveredFile(path, meta)
+      else await this.enrollNew(path, meta, candidates)
+    }
+  }
+
+  /**
+   * Reconcile one scanned root with a fresh metadata-only listing: enroll new files, queue
+   * changed ones, turn move pairs (same size + hash) into path updates and forget the rest of
+   * the vanished files. Never reads file contents except to hash a move candidate.
+   */
+  async reconcileFolder(
+    root: string,
+    files: Map<string, { mtimeMs: number; sizeBytes: number }>,
+  ): Promise<{ added: number; changed: number; moved: number; removed: number }> {
+    const result = { added: 0, changed: 0, moved: 0, removed: 0 }
+    if (this.stopped || !this.enabled) return result
+    const seen = new Set<string>()
+    for (const path of files.keys()) seen.add(pathKey(path))
+    const candidates = new Map<number, MissingCandidate[]>()
+    const gone: StoredDocument[] = []
+    let count = 0
+    for (const row of this.store.documentsUnder(root)) {
+      if (seen.has(pathKey(row.path))) continue
+      if (++count % 50 === 0) await yieldToEventLoop()
+      if (this.stopped || !this.enabled) return result
+      if (!(await this.isGone(row.path))) continue
+      gone.push(row)
+      if (row.hash && row.sizeBytes !== null)
+        addCandidate(candidates, { path: row.path, sizeBytes: row.sizeBytes, hash: row.hash })
+    }
+    count = 0
+    for (const [path, meta] of files) {
+      if (this.stopped || !this.enabled) return result
+      if (++count % 100 === 0) await yieldToEventLoop()
+      if (this.store.documentByPath(path)) {
+        if (this.indexDiscoveredFile(path, meta)) result.changed++
+        continue
+      }
+      const outcome = await this.enrollNew(path, meta, candidates)
+      if (outcome === 'moved') result.moved++
+      else if (outcome === 'indexed') result.added++
+    }
+    for (const row of gone) {
+      if (this.stopped || !this.enabled) return result
+      // A moved original already left the table; anything still here is truly gone.
+      if (!this.store.documentByPath(row.path)) continue
+      this.tombstone(row.path)
+      result.removed++
+    }
+    return result
+  }
+
+  private async enrollNew(
+    path: string,
+    meta: { mtimeMs: number; sizeBytes: number },
+    candidates: Map<number, MissingCandidate[]>,
+  ): Promise<'moved' | 'indexed' | 'skipped'> {
+    const list = candidates.get(meta.sizeBytes)
+    if (list?.length && meta.sizeBytes <= RENAME_HASH_MAX_BYTES) {
+      const hash = await hashFile(path).catch(() => null)
+      const index = hash ? list.findIndex((candidate) => candidate.hash === hash) : -1
+      if (index >= 0 && this.moveIndexed(list[index]!.path, path, meta)) {
+        list.splice(index, 1)
+        return 'moved'
+      }
+    }
+    return this.indexDiscoveredFile(path, meta) ? 'indexed' : 'skipped'
+  }
+
+  /** Carry an indexed document to its new path, keeping chunks, FTS rows and vectors. */
+  private moveIndexed(
+    oldPath: string,
+    newPath: string,
+    meta: { mtimeMs: number; sizeBytes: number },
+  ): boolean {
+    if (this.stopped) return false
+    this.invalidatePath(oldPath)
+    const pending = this.missing.get(oldPath)
+    if (pending) {
+      clearTimeout(pending.timer)
+      this.missing.delete(oldPath)
+    }
+    if (this.store.documentByPath(newPath)) return false
+    try {
+      this.store.move(oldPath, newPath)
+    } catch {
+      return false
+    }
+    this.store.touchMetadata(newPath, meta.mtimeMs, meta.sizeBytes)
+    const status = this.store.documentByPath(newPath)?.status
+    if (this.enabled && (status === 'pending' || status === 'text-only')) this.enqueue(newPath)
+    return true
+  }
+
+  /** Note a vanished file; its index is dropped after a grace period unless it reappears. */
+  private markMissing(path: string): void {
+    if (this.stopped || this.missing.has(path)) return
+    const doc = this.store.documentByPath(path)
+    if (!doc || doc.status === 'excluded') return
+    const candidate: MissingCandidate | null =
+      doc.hash && doc.sizeBytes !== null ? { path, sizeBytes: doc.sizeBytes, hash: doc.hash } : null
+    const timer = setTimeout(() => void this.finalizeMissing(path), this.tombstoneGraceMs)
+    timer.unref?.()
+    this.missing.set(path, { candidate, timer })
+  }
+
+  private async finalizeMissing(path: string): Promise<void> {
+    this.missing.delete(path)
+    if (this.stopped || !this.enabled) return
+    if ((await this.isGone(path)) && !this.stopped) this.tombstone(path)
+  }
+
+  /** Drop chunks, FTS rows and vectors for a deleted file. User exclusions are kept. */
+  private tombstone(path: string): void {
+    const entry = this.missing.get(path)
+    if (entry) {
+      clearTimeout(entry.timer)
+      this.missing.delete(path)
+    }
+    this.invalidatePath(path)
+    try {
+      this.store.tombstone(path)
+    } catch (error) {
+      this.lastError = safeError(error)
+    }
+  }
+
+  /** True only when the file is certainly gone, not when its drive or share is unreachable. */
+  private async isGone(path: string): Promise<boolean> {
+    if ((await this.statOutcome(path)).kind !== 'gone') return false
+    const root = await this.statOutcome(parse(path).root)
+    return root.kind === 'other' || root.kind === 'file'
+  }
+
+  private async statOutcome(path: string, timeoutMs?: number): Promise<StatOutcome> {
+    let timer: NodeJS.Timeout | undefined
+    const lookup: Promise<StatOutcome> = stat(path).then(
+      (value): StatOutcome =>
+        value.isFile()
+          ? { kind: 'file', mtimeMs: value.mtimeMs, sizeBytes: value.size }
+          : { kind: 'other' },
+      (error: NodeJS.ErrnoException): StatOutcome =>
+        error.code === 'ENOENT' || error.code === 'ENOTDIR'
+          ? { kind: 'gone' }
+          : { kind: 'unknown' },
+    )
+    if (!timeoutMs) return lookup
+    const timeout = new Promise<StatOutcome>((done) => {
+      timer = setTimeout(() => done({ kind: 'unknown' }), timeoutMs)
+      timer.unref?.()
+    })
+    try {
+      return await Promise.race([lookup, timeout])
+    } finally {
+      clearTimeout(timer)
     }
   }
 
@@ -603,8 +948,11 @@ export class DocumentMemoryManager {
           }
           const extracted = reply.result
           const previous = this.store.documentByPath(path)
+          const lexicalOnly = !!extracted.skipEmbeddings && extracted.chunks.length > 0
           const resumeOffset =
-            previous?.mtimeMs === extracted.mtimeMs && previous.sizeBytes === extracted.sizeBytes
+            !lexicalOnly &&
+            previous?.mtimeMs === extracted.mtimeMs &&
+            previous.sizeBytes === extracted.sizeBytes
               ? this.store.resumeVectorOffset(path, extracted.hash, EMBEDDING_MODEL_ID)
               : null
           if (resumeOffset === null) {
@@ -614,12 +962,13 @@ export class DocumentMemoryManager {
               sizeBytes: extracted.sizeBytes,
               chunks: extracted.chunks,
               embeddingModel: null,
-              status: extracted.chunks.length ? 'text-only' : 'empty',
+              status: extractedStatus(extracted),
               error: extracted.error,
+              truncated: extracted.truncated,
             })
           }
           this.lastError = undefined
-          if (extracted.chunks.length) {
+          if (extracted.chunks.length && !lexicalOnly) {
             this.enqueueEmbed({
               path,
               generation,
@@ -849,6 +1198,29 @@ function safeStat(path: string): { mtimeMs: number; sizeBytes: number } | null {
   } catch {
     return null
   }
+}
+/** Numeric tables skip embedding: they are complete (and FTS-searchable) once stored. */
+function extractedStatus(result: ExtractResult): 'text-only' | 'empty' | 'ready' {
+  if (!result.chunks.length) return 'empty'
+  return result.skipEmbeddings ? 'ready' : 'text-only'
+}
+function addCandidate(map: Map<number, MissingCandidate[]>, candidate: MissingCandidate): void {
+  const list = map.get(candidate.sizeBytes)
+  if (list) list.push(candidate)
+  else map.set(candidate.sizeBytes, [candidate])
+}
+/** Windows paths are case-insensitive; compare them that way when matching listings. */
+function pathKey(path: string): string {
+  return process.platform === 'win32' ? path.toLowerCase() : path
+}
+function hashFile(path: string): Promise<string> {
+  return new Promise((resolveHash, reject) => {
+    const hash = createHash('sha256')
+    const stream = createReadStream(path)
+    stream.on('data', (chunk) => hash.update(chunk))
+    stream.on('error', reject)
+    stream.on('end', () => resolveHash(hash.digest('hex')))
+  })
 }
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : 'Document memory operation failed.'

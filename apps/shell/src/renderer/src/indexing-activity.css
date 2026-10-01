@@ -1,3 +1,8 @@
+/*
+ * "Document index" popup. Semantic tokens only. Type scale: 14 title, 13 body, 12 detail,
+ * 11 caption. Warm accent (--color-ai-action) is reserved for "needs attention" counts and
+ * --danger for the one real failure state (the search model could not load).
+ */
 .indexing-activity {
   position: fixed;
   z-index: 81;
@@ -9,248 +14,390 @@
   gap: 10px;
   color: var(--text);
 }
+
+/* ---- collapsed chip ---- */
 .indexing-activity-launcher {
   display: flex;
   align-items: center;
   gap: 10px;
-  max-width: 320px;
-  padding: 9px 16px 9px 11px;
+  min-height: 48px;
+  max-width: 340px;
+  padding: 6px 14px 6px 10px;
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 24px;
   background: color-mix(in srgb, var(--surface) 94%, transparent);
   backdrop-filter: blur(16px);
   box-shadow: var(--shadow-menu);
   color: var(--text);
+  font: inherit;
   cursor: pointer;
 }
-.indexing-activity-launcher span {
+.indexing-activity-launcher:hover {
+  border-color: var(--border-hover);
+}
+.indexing-activity-launcher-copy {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
   min-width: 0;
-  gap: 3px;
+  gap: 2px;
 }
 .indexing-activity-launcher strong {
   font-size: 13px;
   font-weight: 600;
+  line-height: 1.25;
 }
 .indexing-activity-launcher small {
-  font-size: 11px;
-  color: var(--text-secondary);
   max-width: 230px;
   overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.indexing-activity-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid color-mix(in srgb, var(--color-ai-action) 30%, var(--border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-ai-action) 12%, var(--surface));
+  color: var(--color-ai-action);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+}
+/* A finished index is calm: neutral ring, no accent. */
+.indexing-activity.is-done .index-progress-ring {
+  color: var(--text-secondary);
+}
+.indexing-activity.is-model-error .indexing-activity-launcher {
+  border-color: var(--danger-border);
+}
+
+/* ---- expanded panel ---- */
 .indexing-activity-panel {
-  width: 340px;
-  max-width: calc(100vw - 32px);
-  max-height: calc(100vh - 130px);
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--surface) 96%, transparent);
-  backdrop-filter: blur(18px);
-  box-shadow: var(--shadow-menu);
+  width: 360px;
+  max-width: calc(100vw - 32px);
+  max-height: calc(100vh - 130px);
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--surface) 97%, transparent);
+  backdrop-filter: blur(18px);
+  box-shadow: var(--shadow-menu);
 }
 .indexing-activity-panel header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 12px 16px;
+  gap: 8px;
+  padding: 8px 8px 8px 16px;
   border-bottom: 1px solid var(--border-subtle);
+}
+.indexing-activity-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+.indexing-activity-title strong {
   font-size: 14px;
+  font-weight: 600;
+}
+.indexing-activity-title span {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .indexing-activity-panel button {
   color: var(--text-secondary);
   background: transparent;
   border: 0;
-  padding: 5px;
-  cursor: pointer;
   font: inherit;
+  cursor: pointer;
 }
-.indexing-activity-panel button:hover {
+.indexing-activity-panel button:hover:not(:disabled) {
   color: var(--text);
   background: var(--hover);
-  border-radius: 6px;
 }
-.indexing-activity-current {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 18px 16px;
+.indexing-activity-panel button:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
-.indexing-activity-current div {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  gap: 5px;
-}
-.indexing-activity-current strong {
-  font-size: 14px;
-}
-.indexing-activity-current span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--text-secondary);
-  font-size: 12px;
-}
-.indexing-activity.has-file-issues.is-indexing-complete .index-progress-ring {
-  color: var(--text-secondary);
-}
-.indexing-activity-warning {
-  display: inline-flex !important;
-  align-items: center;
-  justify-content: center;
+.indexing-activity-close {
+  display: grid;
+  place-items: center;
   flex: 0 0 auto;
-  min-width: 19px;
-  height: 19px;
-  padding: 0 5px;
-  border: 1px solid color-mix(in srgb, var(--color-ai-action) 30%, var(--border));
+  width: 40px;
+  height: 40px;
   border-radius: 10px;
-  background: color-mix(in srgb, var(--color-ai-action) 12%, var(--surface));
-  color: var(--color-ai-action) !important;
-  font-size: 10px !important;
-  font-weight: 700;
+  font-size: 20px;
   line-height: 1;
 }
-.indexing-activity-counts {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  padding: 0 16px 18px;
-  gap: 10px;
-}
-.indexing-activity-counts span {
-  display: flex;
-  flex-direction: column;
-  gap: 7px;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-.indexing-activity-counts strong {
-  color: var(--text);
-  font-size: 18px;
-  font-weight: 600;
-}
-.indexing-activity-issues-wrap {
-  padding: 0 12px 12px;
-}
-.indexing-activity-issues-toggle {
+
+/* status: ring + one headline + one plain sentence */
+.indexing-activity-status {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  width: 100%;
-  gap: 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 10px !important;
-  text-align: left;
-  color: var(--text) !important;
+  gap: 14px;
+  padding: 16px;
 }
-.indexing-activity-issues-toggle strong {
-  margin-left: auto;
-  color: var(--color-ai-action);
-}
-.indexing-activity-issues {
-  padding-top: 6px;
-}
-.indexing-activity-issues > p {
-  margin: 8px 4px;
-  padding: 0;
-}
-.indexing-activity-issue {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 6px 8px;
-  padding: 9px 4px;
-  border-bottom: 1px solid var(--border-subtle);
-}
-.indexing-activity-issue-copy {
+.indexing-activity-status-copy {
   display: flex;
   flex-direction: column;
   min-width: 0;
   gap: 3px;
 }
-.indexing-activity-issue-copy strong {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.indexing-activity-status-copy strong {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
 }
-.indexing-activity-issue-copy strong {
+.indexing-activity-status-copy span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.indexing-activity-status-copy .indexing-activity-eta {
+  color: var(--text-tertiary);
+}
+.indexing-activity-percent {
+  margin-left: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.indexing-activity.is-model-error .indexing-activity-status-copy strong {
+  color: var(--danger);
+}
+
+/* the one failure state: model could not load */
+.indexing-activity-problem {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 16px 14px;
+  padding: 12px;
+  border: 1px solid var(--danger-border);
+  border-radius: 10px;
+  background: var(--danger-bg);
+}
+.indexing-activity-problem p {
+  margin: 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.indexing-activity-problem p span {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+.indexing-activity-panel .indexing-activity-primary {
+  min-height: 36px;
+  padding: 0 16px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--color-ai-action-text);
+  font-size: 13px;
+  font-weight: 600;
+}
+.indexing-activity-panel .indexing-activity-primary:hover:not(:disabled) {
+  background: var(--accent-dark, var(--accent));
+  color: var(--color-ai-action-text);
+}
+.indexing-activity-panel .indexing-activity-secondary {
+  align-self: flex-start;
+  min-height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 12px;
+}
+.indexing-activity-note {
+  margin: 0 16px 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+/* issue sections and groups */
+.indexing-activity-section {
+  padding: 4px 8px 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+.indexing-activity-section h3 {
+  margin: 0;
+  padding: 10px 8px 4px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+.indexing-activity-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  padding: 0 8px;
+  border-radius: 8px;
+  color: var(--text);
+  text-align: left;
+}
+.indexing-activity-group-head > span:first-child {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.3;
+}
+.indexing-activity-group-head strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.indexing-activity-chevron {
+  color: var(--text-tertiary);
+  font-size: 16px;
+  transition: transform var(--transition-fast);
+}
+.indexing-activity-group.is-open .indexing-activity-chevron {
+  transform: rotate(90deg);
+}
+.indexing-activity-group.is-static {
+  padding-bottom: 6px;
+}
+.indexing-activity-group.is-static .indexing-activity-group-head {
+  min-height: 40px;
+}
+.indexing-activity-group.is-static > p,
+.indexing-activity-group.is-static > details {
+  margin: 0 8px 4px;
+}
+.indexing-activity-group-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 8px 10px;
+}
+.indexing-activity-group-body > p,
+.indexing-activity-group.is-static > p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.indexing-activity-group-body ul {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.indexing-activity-file {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.indexing-activity-file > strong {
+  overflow: hidden;
   color: var(--text);
   font-size: 12px;
   font-weight: 600;
-}
-.indexing-activity-issue-copy span {
-  white-space: normal;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-  color: var(--text-secondary);
-  font-size: 11px;
-}
-.indexing-activity-issue-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-.indexing-activity-issue-actions button {
-  font-size: 11px !important;
-  padding: 4px 6px !important;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-.indexing-activity-issue-actions button:disabled {
-  opacity: 0.6;
-  cursor: wait;
-}
-.indexing-activity-action-error {
-  grid-column: 1 / -1;
-  margin: 0 !important;
-  padding: 2px 0 !important;
-  color: var(--danger) !important;
-  font-size: 11px !important;
-  overflow-wrap: anywhere;
-}
-.indexing-activity-issue-pages {
+.indexing-activity-file-actions {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 0 2px;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-left: -8px;
+}
+.indexing-activity-file-actions button {
+  min-height: 32px;
+  padding: 0 8px;
+  border-radius: 6px;
+  color: var(--accent);
+  font-size: 12px;
+  white-space: nowrap;
+}
+.indexing-activity-details {
   color: var(--text-secondary);
   font-size: 11px;
 }
-.indexing-activity-issue-pages button {
-  padding: 5px 7px !important;
+.indexing-activity-details summary {
+  cursor: pointer;
+  width: fit-content;
 }
-.indexing-activity-issue-pages button:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-.indexing-activity-panel p {
-  padding: 0 16px;
+.indexing-activity-details code {
+  display: block;
+  max-height: 96px;
+  margin-top: 4px;
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--surface-subtle);
   color: var(--text-secondary);
-  font-size: 12px;
+  font-family: ui-monospace, 'Cascadia Mono', Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.indexing-activity-action-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 11px;
   overflow-wrap: anywhere;
 }
+
 .indexing-activity-panel footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  padding: 10px 16px;
+  margin-top: auto;
+  padding: 6px 8px 6px 16px;
   border-top: 1px solid var(--border-subtle);
-  font-size: 11px;
   color: var(--text-tertiary);
+  font-size: 11px;
 }
+.indexing-activity-panel footer button {
+  min-height: 36px;
+  padding: 0 10px;
+  border-radius: 8px;
+  font-size: 12px;
+}
+
 .indexing-activity-launcher:focus-visible,
-.indexing-activity-panel button:focus-visible {
+.indexing-activity-panel button:focus-visible,
+.indexing-activity-details summary:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 3px;
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .indexing-activity-chevron {
+    transition: none;
+  }
 }
 @media (max-width: 700px) {
   .indexing-activity {
@@ -259,8 +406,5 @@
   }
   .indexing-activity-panel {
     max-height: calc(100vh - 160px);
-  }
-  .indexing-activity-issue {
-    grid-template-columns: minmax(0, 1fr);
   }
 }

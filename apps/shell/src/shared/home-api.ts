@@ -1,4 +1,5 @@
 import type { IndexIssue } from '../main/document-memory/issues'
+import type { IndexIssueReason } from '../main/document-memory/issues'
 import type { FolderScanStatus } from '../main/document-memory/folder-scan'
 import type {
   AiChatResponse,
@@ -20,6 +21,7 @@ import type { DocumentIndexProgress } from '@genoffice/agent-core'
 import type { UpdateChannel } from './update-api'
 import type { UpdateSource } from './update-source'
 import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
+import type { ForkHomeApi } from './fork/fork-home-api'
 
 /** UI language; kept self-contained here (mirrors Lang in @genoffice/i18n) */
 export type UiLanguage =
@@ -202,6 +204,8 @@ export interface HomeIndexingActivity {
     pending: number
     errors: number
     cpuMode?: 'gentle'
+    /** Short cause reported by the embedding model or worker; set while modelState is 'error'. */
+    lastError?: string
   }
   folderProgress: {
     totalFiles: number
@@ -215,7 +219,7 @@ export interface HomeIndexingActivity {
   } | null
 }
 
-export interface HomeApi {
+export interface HomeApi extends ForkHomeApi {
   /** unified recents across document types, newest first (paged) */
   recents(query?: RecentQuery): Promise<RecentPage>
   /** search indexed files by name, folder and content */
@@ -352,6 +356,7 @@ export interface HomeApi {
   getDocumentIndexIssues(
     root: string,
     offset?: number,
+    reason?: IndexIssueReason,
   ): Promise<{ total: number; items: IndexIssue[] }>
   retryDocumentIndex(documentId: number): Promise<{ ok: boolean; error?: string }>
   revealDocumentIndexFile(documentId: number): Promise<{ ok: boolean; error?: string }>

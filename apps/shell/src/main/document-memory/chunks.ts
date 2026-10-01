@@ -69,3 +69,90 @@ function splitLongUnit(text: string): string[] {
   }
   return parts.filter(Boolean)
 }
+
+/** Upper bound of chunks stored for one file; a bigger file is truncated and flagged. */
+export const MAX_CHUNKS_PER_FILE = 400
+/** Tabular files keep their header plus sampled rows within this many chunks. */
+export const MAX_TABULAR_CHUNKS = 120
+const MAX_HEADER_CHARS = 160
+const NUMERIC_LETTER_RATIO = 0.2
+
+export interface CappedChunks {
+  chunks: DocumentChunk[]
+  /** True when content beyond the cap was left out of the index. */
+  truncated: boolean
+}
+
+/** Keep the first `max` chunks and report whether anything was dropped. */
+export function capChunks(chunks: DocumentChunk[], max = MAX_CHUNKS_PER_FILE): CappedChunks {
+  return chunks.length > max
+    ? { chunks: chunks.slice(0, max), truncated: true }
+    : { chunks, truncated: false }
+}
+
+export interface TabularChunks extends CappedChunks {
+  /** Mostly digits/symbols: lexical search is kept, but vectors add nothing. */
+  numeric: boolean
+}
+
+/**
+ * Index a CSV/TSV as its header plus evenly sampled rows. Every chunk repeats the header so
+ * a matching row stays interpretable; a huge export can no longer produce thousands of chunks.
+ */
+export function chunkTabularText(input: string): TabularChunks {
+  const lines = input
+    .replace(/\r\n?/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (!lines.length) return { chunks: [], truncated: false, numeric: false }
+  const header = lines[0]!.slice(0, MAX_HEADER_CHARS)
+  const rows = lines.slice(1)
+  const body = MAX_CHARS - header.length - 1
+  const budget = MAX_TABULAR_CHUNKS * body
+  const total = rows.reduce((sum, row) => sum + row.length + 1, 0)
+  const stride = total > budget ? Math.ceil(total / budget) : 1
+  let truncated = stride > 1
+  const selected: Array<{ line: number; text: string }> = []
+  rows.forEach((row, index) => {
+    if (index % stride !== 0) return
+    if (row.length > body) truncated = true
+    selected.push({ line: index + 2, text: row.slice(0, body) })
+  })
+  const chunks: DocumentChunk[] = []
+  let current: string[] = []
+  let currentChars = 0
+  let first = 0
+  let last = 0
+  const flush = () => {
+    if (!current.length) return
+    const range = first === last ? `${first}` : `${first}-${last}`
+    chunks.push({
+      text: `${header}\n${current.join('\n')}`,
+      location: `${stride > 1 ? 'Sampled rows' : 'Rows'} ${range}`,
+    })
+    current = []
+    currentChars = 0
+  }
+  for (const row of selected) {
+    if (currentChars + row.text.length + 1 > body) flush()
+    if (!current.length) first = row.line
+    current.push(row.text)
+    currentChars += row.text.length + 1
+    last = row.line
+  }
+  flush()
+  if (!chunks.length) chunks.push({ text: header, location: 'Header' })
+  if (chunks.length > MAX_TABULAR_CHUNKS) {
+    chunks.length = MAX_TABULAR_CHUNKS
+    truncated = true
+  }
+  const sample = selected.map((row) => row.text).join(' ')
+  const nonSpace = sample.replace(/\s/g, '').length
+  const letters = (sample.match(/\p{L}/gu) ?? []).length
+  return {
+    chunks,
+    truncated,
+    numeric: nonSpace > 0 && letters / nonSpace < NUMERIC_LETTER_RATIO,
+  }
+}

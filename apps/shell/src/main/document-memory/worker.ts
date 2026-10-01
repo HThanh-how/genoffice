@@ -1,11 +1,11 @@
 /** CPU extraction and real multilingual embeddings, isolated from Electron's UI thread. */
 import { indexingWorkerData, postIndexMessage, onIndexRequest } from './runtime'
-import { withBackgroundBudget } from './cpu-budget'
+import { interruptBackgroundSleep, withBackgroundBudget } from './cpu-budget'
 import { readFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { extname } from 'node:path'
 import { parseFileToText } from '@genoffice/file-parse'
-import { chunkDocumentText } from './chunks'
+import { capChunks, chunkDocumentText, chunkTabularText } from './chunks'
 import { DocumentMemoryStore } from './store'
 import { embedTexts } from './embeddings'
 export async function extractDocument(path: string) {
@@ -28,19 +28,50 @@ export async function extractDocument(path: string) {
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
   }
-  const chunks = chunkDocumentText(text)
+  // Cost control: tabular exports index header + sampled rows; everything else is capped.
+  const tabular = /^\.(csv|tsv)$/.test(extname(path).toLowerCase())
+  const { chunks, truncated, numeric } = tabular
+    ? chunkTabularText(text)
+    : { ...capChunks(chunkDocumentText(text)), numeric: false }
   return {
     hash: createHash('sha256').update(bytes).digest('hex'),
     mtimeMs: after.mtimeMs,
     sizeBytes: after.size,
     chunks,
     status: chunks.length ? 'text-only' : 'empty',
+    ...(truncated ? { truncated: true } : {}),
+    // Numeric tables stay searchable through FTS; vectors for digits are wasted work.
+    ...(numeric && chunks.length ? { skipEmbeddings: true } : {}),
     ...(chunks.length ? {} : { error: 'No readable text; scanned documents need OCR' }),
   }
 }
 
-// Serialize requests so concurrent searches cannot race model initialization or extraction.
-let queue = Promise.resolve()
+// Serialize extraction and embedding on one queue so the background CPU budget really bounds
+// the sustained load (they used to overlap). Interactive work (query embeddings, verification
+// reads) goes first and wakes a budget sleep instead of waiting behind it.
+const urgent: Array<() => Promise<void>> = []
+const background: Array<() => Promise<void>> = []
+let pumping = false
+async function pump(): Promise<void> {
+  if (pumping) return
+  pumping = true
+  try {
+    for (;;) {
+      const task = urgent.shift() ?? background.shift()
+      if (!task) break
+      await task()
+    }
+  } finally {
+    pumping = false
+  }
+}
+function schedule(task: () => Promise<void>, interactive: boolean): void {
+  if (interactive) {
+    urgent.push(task)
+    interruptBackgroundSleep()
+  } else background.push(task)
+  void pump()
+}
 let searchStore: DocumentMemoryStore | undefined
 onIndexRequest(
   (request: {
@@ -53,12 +84,15 @@ onIndexRequest(
     vector: number[] | null
     limit: number
     embeddingModel: string
+    interactive?: boolean
   }) => {
     const execute = async () => {
       try {
         let result: unknown
         if (request.type === 'extract')
-          result = await withBackgroundBudget(() => extractDocument(request.path))
+          result = request.interactive
+            ? await extractDocument(request.path)
+            : await withBackgroundBudget(() => extractDocument(request.path))
         else if (request.type === 'search') {
           searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!)
           result = searchStore.search(
@@ -76,7 +110,7 @@ onIndexRequest(
         })
       }
     }
-    if (request.type === 'extract' || request.type === 'search') void execute()
-    else queue = queue.then(execute)
+    if (request.type === 'search') void execute()
+    else schedule(execute, request.interactive === true || request.kind === 'query')
   },
 )

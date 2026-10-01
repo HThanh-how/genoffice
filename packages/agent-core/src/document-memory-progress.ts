@@ -16,4 +16,6 @@ export interface DocumentIndexProgress {
   completedChunks: number
   totalChunks: number
   error?: string
+  /** Only part of the document is indexed (chunk cap or sampled spreadsheet rows). */
+  truncated?: boolean
 }

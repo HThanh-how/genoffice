@@ -38,6 +38,9 @@ import type {
 } from '../shared/integrations-api'
 import type { TabsApi, TabSummary } from '../shared/tabs-api'
 import { TABS_CHANNELS } from '../shared/tabs-api'
+import { createClipboardSuggestPreloadApi } from './fork/clipboard-suggest-api'
+import { createDocumentIndexPreloadApi } from './fork/document-index-api'
+import { createHomeChatPreloadApi } from './fork/home-chat-api'
 
 const UI_LANGUAGES: readonly UiLanguage[] = [
   'zh',
@@ -130,6 +133,9 @@ function normalizeDocumentMemoryStatus(result: unknown): DocumentMemoryStatus {
 }
 
 const homeApi: HomeApi = {
+  ...createClipboardSuggestPreloadApi(ipcRenderer),
+  ...createDocumentIndexPreloadApi(ipcRenderer),
+  ...createHomeChatPreloadApi(ipcRenderer),
   async recents(query) {
     return asRecentPage(await ipcRenderer.invoke(HOME_CHANNELS.recents, query))
   },
@@ -453,8 +459,8 @@ const homeApi: HomeApi = {
       await ipcRenderer.invoke(HOME_CHANNELS.getDocumentMemoryStatus),
     )
   },
-  async getDocumentIndexIssues(root, offset = 0) {
-    return ipcRenderer.invoke(HOME_CHANNELS.getDocumentIndexIssues, root, offset)
+  async getDocumentIndexIssues(root, offset = 0, reason) {
+    return ipcRenderer.invoke(HOME_CHANNELS.getDocumentIndexIssues, root, offset, reason)
   },
   async retryDocumentIndex(documentId) {
     return ipcRenderer.invoke(HOME_CHANNELS.retryDocumentIndex, documentId)

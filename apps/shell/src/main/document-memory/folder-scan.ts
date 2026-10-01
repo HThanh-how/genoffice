@@ -2,11 +2,12 @@ import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { opendir, stat } from 'node:fs/promises'
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, extname, isAbsolute, parse, resolve } from 'node:path'
+import { FolderWatchManager } from './folder-watch'
 
-const MAX_DOCUMENT_BYTES = 128 * 1024 * 1024
+export const MAX_DOCUMENT_BYTES = 128 * 1024 * 1024
 const MAX_ROOT_LENGTH = 32_768
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024
-const IGNORED_DIRECTORIES = new Set([
+export const IGNORED_DIRECTORIES = new Set([
   '.git',
   '.cache',
   '.next',
@@ -18,7 +19,7 @@ const IGNORED_DIRECTORIES = new Set([
   'dist',
   'venv',
 ])
-const SUPPORTED_EXTENSIONS = new Set([
+export const SUPPORTED_EXTENSIONS = new Set([
   '.doc',
   '.docx',
   '.xls',
@@ -36,6 +37,26 @@ const SUPPORTED_EXTENSIONS = new Set([
   '.txt',
 ])
 
+/** Office/editor lock files and partial downloads never hold indexable content. */
+const TEMPORARY_FILE = /\.(tmp|temp|crdownload|partial|part|lock|lck|swp|bak)$/i
+
+/** Hidden files plus lock/temp artifacts (`~$doc.docx`, `x.crdownload`, `.~lock.x#`). */
+export function isIgnoredFileName(name: string): boolean {
+  return name.startsWith('.') || name.startsWith('~$') || TEMPORARY_FILE.test(name)
+}
+
+/** Whether a path below a scanned root is one the scanner would index. */
+export function isIndexablePath(root: string, path: string): boolean {
+  const relative = path
+    .slice(root.length)
+    .split(/[\\/]+/)
+    .filter(Boolean)
+  const name = relative.pop()
+  if (!name || isIgnoredFileName(name)) return false
+  if (relative.some(shouldSkipDirectory)) return false
+  return SUPPORTED_EXTENSIONS.has(extname(name).toLowerCase())
+}
+
 export interface FolderScanStatus {
   state?: 'running' | 'complete' | 'stopped'
   running: boolean
@@ -46,10 +67,30 @@ export interface FolderScanStatus {
   skipped: number
   errors: number
   lastError?: string
+  reconciledAt?: number
 }
 
 export interface DiscoveredDocumentIndexer {
   indexDiscoveredFile(path: string, metadata?: { mtimeMs: number; sizeBytes: number }): boolean
+  /** Reconcile a root against a fresh metadata-only listing (adds, changes, moves, deletions). */
+  reconcileFolder?(
+    root: string,
+    files: Map<string, { mtimeMs: number; sizeBytes: number }>,
+  ): Promise<unknown>
+  /** Subscribe to the index being cleared; returns an unsubscribe function. */
+  onCleared?(listener: () => void): () => void
+  /** Live watching is started when the indexer also provides these three hooks. */
+  isEnabled?(): boolean
+  onEnabledChange?(listener: () => void): () => void
+  handleFileEvents?(paths: string[]): Promise<void>
+}
+
+interface TraverseHandlers {
+  onSkipped(): void
+  onError(error: unknown): void
+  /** Return false to stop the traversal. */
+  onFile(path: string): Promise<boolean>
+  afterDirectory?(): void
 }
 
 interface ScanJob {
@@ -61,6 +102,8 @@ interface ScanJob {
   skipped: number
   errors: number
   lastError?: string
+  /** Epoch ms of the last completed metadata-only reconcile pass. */
+  reconciledAt?: number
 }
 
 interface Manifest {
@@ -77,12 +120,16 @@ export class FolderScanManager {
   private stopRequested = false
   private closed = false
   private runner: Promise<void> | null = null
+  private reconciling = false
+  private watcher: FolderWatchManager | null = null
+  private readonly rootListeners = new Set<() => void>()
 
   constructor(userData: string, memory: DiscoveredDocumentIndexer) {
     mkdirSync(userData, { recursive: true })
     this.manifestPath = resolve(userData, 'document-memory-folders.json')
     this.memory = memory
     this.manifest = readManifest(this.manifestPath)
+    memory.onCleared?.(() => this.unregisterAll())
     const interrupted = this.manifest.jobs.find((job) => job.state === 'running')
     if (interrupted) {
       // Traversal restarts at the selected root. Reset traversal counters so they
@@ -94,6 +141,78 @@ export class FolderScanManager {
       delete interrupted.lastError
       this.save()
       queueMicrotask(() => this.resume(interrupted.root))
+    }
+    const { isEnabled, onEnabledChange, handleFileEvents } = memory
+    // Live change detection (watcher + periodic reconcile) is owned by the scanner so the
+    // app shell needs no extra wiring; it closes with the scanner.
+    if (isEnabled && onEnabledChange && handleFileEvents)
+      this.watcher = new FolderWatchManager(this, {
+        isEnabled: () => isEnabled.call(memory),
+        onEnabledChange: (listener) => onEnabledChange.call(memory, listener),
+        handleFileEvents: (paths) => handleFileEvents.call(memory, paths),
+      })
+  }
+
+  /** Roots that should be live-watched: scans that are running or finished (not stopped). */
+  watchedRoots(): string[] {
+    return this.manifest.jobs
+      .filter((job) => job.state === 'running' || job.state === 'complete')
+      .map((job) => job.root)
+  }
+
+  /** Subscribe to changes of {@link watchedRoots}; returns an unsubscribe function. */
+  onRootsChanged(listener: () => void): () => void {
+    this.rootListeners.add(listener)
+    return () => this.rootListeners.delete(listener)
+  }
+
+  /**
+   * Cheap metadata-only re-walk of a finished root to catch events the watcher missed. It never
+   * reads or hashes file contents and leaves the job's discovery counters untouched, so the UI
+   * does not look like the index restarted from zero.
+   */
+  async reconcile(root: string): Promise<{ ok: boolean; reason?: string; files?: number }> {
+    const normalized = resolve(root)
+    if (this.closed || this.activeRoot || this.reconciling) return { ok: false, reason: 'busy' }
+    const job = this.jobFor(normalized)
+    if (!job || job.state !== 'complete') return { ok: false, reason: 'not-complete' }
+    if (!this.memory.reconcileFolder) return { ok: false, reason: 'unsupported' }
+    this.reconciling = true
+    try {
+      try {
+        if (!(await stat(job.root)).isDirectory()) return { ok: false, reason: 'unavailable' }
+      } catch {
+        // An unplugged drive or deleted root: never treat its files as deleted.
+        return { ok: false, reason: 'unavailable' }
+      }
+      const files = new Map<string, { mtimeMs: number; sizeBytes: number }>()
+      const completed = await this.traverse(
+        job.root,
+        {
+          onSkipped: () => undefined,
+          onError: () => undefined,
+          onFile: async (path) => {
+            try {
+              const fileStat = await stat(path)
+              if (fileStat.isFile() && fileStat.size <= MAX_DOCUMENT_BYTES)
+                files.set(path, { mtimeMs: fileStat.mtimeMs, sizeBytes: fileStat.size })
+            } catch {
+              // Vanished mid-walk; the next pass sees it.
+            }
+            return true
+          },
+        },
+        () => this.closed,
+      )
+      if (!completed) return { ok: false, reason: 'interrupted' }
+      await this.memory.reconcileFolder(job.root, files)
+      job.reconciledAt = Date.now()
+      this.save()
+      return { ok: true, files: files.size }
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : 'failed' }
+    } finally {
+      this.reconciling = false
     }
   }
 
@@ -129,6 +248,7 @@ export class FolderScanManager {
     }
     this.save()
     this.run(job)
+    this.emitRootsChanged()
     return this.status()
   }
 
@@ -144,9 +264,28 @@ export class FolderScanManager {
       if (job?.state === 'running') {
         job.state = 'stopped'
         this.save()
+        this.emitRootsChanged()
       }
     }
     return this.status()
+  }
+
+  /** The index was cleared: forget every folder so nothing re-imports it. */
+  private unregisterAll(): void {
+    this.stopRequested = true
+    this.manifest.jobs = []
+    this.save()
+    this.emitRootsChanged()
+  }
+
+  private emitRootsChanged(): void {
+    for (const listener of this.rootListeners) {
+      try {
+        listener()
+      } catch {
+        // A faulty listener must not break scanning.
+      }
+    }
   }
 
   status(): FolderScanStatus {
@@ -163,12 +302,16 @@ export class FolderScanManager {
       skipped: job?.skipped ?? 0,
       errors: job?.errors ?? 0,
       ...(job?.lastError ? { lastError: job.lastError } : {}),
+      ...(job?.reconciledAt ? { reconciledAt: job.reconciledAt } : {}),
     }
   }
 
   close(): void {
     this.closed = true
     this.stopRequested = true
+    this.watcher?.close()
+    this.watcher = null
+    this.rootListeners.clear()
   }
 
   private resume(root: string): void {
@@ -203,48 +346,18 @@ export class FolderScanManager {
   }
 
   private async walk(job: ScanJob): Promise<void> {
-    const pending = [job.root]
-    const visitedDirectories = new Set<string>()
-    while (pending.length && !this.closed && !this.stopRequested) {
-      const directory = pending.pop()!
-      const canonical = resolve(directory)
-      if (visitedDirectories.has(canonical)) continue
-      visitedDirectories.add(canonical)
-      let handle
-      try {
-        handle = await opendir(canonical)
-      } catch (error) {
-        this.recordError(job, error)
-        this.save()
-        continue
-      }
-
-      try {
-        for await (const entry of handle) {
-          if (this.closed || this.stopRequested) break
-          await yieldToEventLoop()
-          const path = resolve(canonical, entry.name)
-          if (entry.isSymbolicLink()) {
-            job.skipped++
-            continue
-          }
-          if (entry.isDirectory()) {
-            if (shouldSkipDirectory(entry.name)) job.skipped++
-            else pending.push(path)
-            continue
-          }
-          if (!entry.isFile() || entry.name.startsWith('.')) {
-            job.skipped++
-            continue
-          }
-          if (!SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-            job.skipped++
-            continue
-          }
+    const completed = await this.traverse(
+      job.root,
+      {
+        onSkipped: () => {
+          job.skipped++
+        },
+        onError: (error) => this.recordError(job, error),
+        onFile: async (path) => {
           job.discovered++
           try {
             const fileStat = await stat(path)
-            if (this.closed || this.stopRequested) break
+            if (this.closed || this.stopRequested) return false
             if (!fileStat.isFile()) {
               job.skipped++
             } else if (fileStat.size > MAX_DOCUMENT_BYTES) {
@@ -260,20 +373,75 @@ export class FolderScanManager {
           } catch (error) {
             this.recordError(job, error)
           }
+          return true
+        },
+        // Saving after each directory bounds restart replay while keeping traversal off
+        // Electron's main event loop. Enrollment itself is idempotent in SQLite.
+        afterDirectory: () => this.save(),
+      },
+      () => this.closed || this.stopRequested,
+    )
+    if (completed) {
+      job.state = 'complete'
+      this.save()
+      this.emitRootsChanged()
+    }
+  }
+
+  /** Walk supported files below `root`; resolves true when the whole tree was visited. */
+  private async traverse(
+    root: string,
+    handlers: TraverseHandlers,
+    shouldStop: () => boolean,
+  ): Promise<boolean> {
+    const pending = [root]
+    const visitedDirectories = new Set<string>()
+    while (pending.length && !shouldStop()) {
+      const directory = pending.pop()!
+      const canonical = resolve(directory)
+      if (visitedDirectories.has(canonical)) continue
+      visitedDirectories.add(canonical)
+      let handle
+      try {
+        handle = await opendir(canonical)
+      } catch (error) {
+        handlers.onError(error)
+        handlers.afterDirectory?.()
+        continue
+      }
+
+      try {
+        for await (const entry of handle) {
+          if (shouldStop()) break
+          await yieldToEventLoop()
+          const path = resolve(canonical, entry.name)
+          if (entry.isSymbolicLink()) {
+            handlers.onSkipped()
+            continue
+          }
+          if (entry.isDirectory()) {
+            if (shouldSkipDirectory(entry.name)) handlers.onSkipped()
+            else pending.push(path)
+            continue
+          }
+          if (!entry.isFile() || isIgnoredFileName(entry.name)) {
+            handlers.onSkipped()
+            continue
+          }
+          if (!SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+            handlers.onSkipped()
+            continue
+          }
+          if (!(await handlers.onFile(path))) break
         }
       } catch (error) {
-        this.recordError(job, error)
+        handlers.onError(error)
       } finally {
         await handle.close().catch(() => undefined)
       }
-      // Saving after each directory bounds restart replay while keeping traversal off
-      // Electron's main event loop. Enrollment itself is idempotent in SQLite.
-      this.save()
+      handlers.afterDirectory?.()
     }
-    if (!this.stopRequested && !this.closed && pending.length === 0) {
-      job.state = 'complete'
-      this.save()
-    }
+    return !shouldStop() && pending.length === 0
   }
 
   private recordError(job: ScanJob, error: unknown): void {
@@ -316,7 +484,7 @@ function validateRoot(root: string): string {
   return normalized
 }
 
-function shouldSkipDirectory(name: string): boolean {
+export function shouldSkipDirectory(name: string): boolean {
   return name.startsWith('.') || IGNORED_DIRECTORIES.has(name.toLowerCase())
 }
 

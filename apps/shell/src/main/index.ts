@@ -294,6 +294,9 @@ import type {
   LegacyDocSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
+import { registerHomeChatIpc } from './fork/home-chat-ipc'
+import { registerDocumentIndexIpc } from './fork/document-index-ipc'
+import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
 import {
   normalizeAiPanelPrefs,
   sameAiPanelPrefs,
@@ -4038,6 +4041,14 @@ function startFolderScan(path: string): void {
 }
 
 function registerHomeIpc(): void {
+  registerClipboardSuggest({ ipcMain, settingsPath: APP_SETTINGS_PATH })
+  registerDocumentIndexIpc({
+    ipcMain,
+    getDocumentMemory: () => documentMemory,
+    getFolderScan: () => folderScan,
+    dbPath: () => join(app.getPath('userData'), 'document-memory.db'),
+  })
+  registerHomeChatIpc(ipcMain, join(app.getPath('userData'), 'home-chat-sessions'))
   ipcMain.handle(HOME_CHANNELS.getDocumentFolderScanStatus, () => folderScan?.status() ?? null)
   ipcMain.handle(HOME_CHANNELS.stopDocumentFolderScan, () => folderScan?.stop() ?? null)
   ipcMain.handle(HOME_CHANNELS.scanDocumentFolder, async () => {
@@ -4049,25 +4060,6 @@ function registerHomeIpc(): void {
     return folderScan?.start(result.filePaths[0]) ?? null
   })
   ipcMain.handle(HOME_CHANNELS.getDocumentMemoryStatus, () => documentMemory?.status())
-  ipcMain.handle(
-    HOME_CHANNELS.getDocumentIndexIssues,
-    (_event, root: unknown, offset: unknown = 0) => {
-      if (
-        typeof root !== 'string' ||
-        root !== folderScan?.status().root ||
-        typeof offset !== 'number' ||
-        !Number.isSafeInteger(offset) ||
-        offset < 0
-      )
-        throw new Error('Invalid index issue page')
-      return documentMemory?.indexIssues(root, offset) ?? { total: 0, items: [] }
-    },
-  )
-  ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, (_event, id: unknown) => {
-    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
-      throw new Error('Invalid document id')
-    return documentMemory?.retryDocument(id) ?? { ok: false, error: 'unavailable' }
-  })
   ipcMain.handle(HOME_CHANNELS.revealDocumentIndexFile, async (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid document id')
@@ -4079,29 +4071,6 @@ function registerHomeIpc(): void {
       return { ok: true }
     } catch {
       return { ok: false, error: 'unavailable' }
-    }
-  })
-  ipcMain.handle(HOME_CHANNELS.getIndexingActivity, () => {
-    const folder = folderScan?.status() ?? null
-    const memory = documentMemory?.indexingActivityStatus()
-    return {
-      folder,
-      memory: {
-        enabled: memory?.enabled ?? false,
-        cpuMode: 'gentle',
-        modelState: memory?.modelState ?? 'not-loaded',
-        ...(memory?.modelProgress === undefined ? {} : { modelProgress: memory.modelProgress }),
-        pending: memory?.pending ?? 0,
-        errors: memory?.errors ?? 0,
-      },
-      folderProgress:
-        folder?.root && documentMemory
-          ? documentMemory.getFolderIndexProgress(
-              folder.root,
-              folder.state === 'complete',
-              folder.errors,
-            )
-          : null,
     }
   })
   ipcMain.handle('document-memory:progress', (_event, path: unknown) => {
@@ -6304,6 +6273,7 @@ app.whenReady().then(async () => {
     }
   })
   createShellWindow()
+  initClipboardSuggest()
   // deferred to ready: labels need currentLang(), which reads app.getLocale()
   installBackToHomeItems()
   installDockMenu()
