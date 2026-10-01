@@ -57,6 +57,13 @@ export {
   type RibbonCollapseLabels,
 } from './ribbon-collapse'
 export { AiTypingIndicator } from './AiTypingIndicator'
+export {
+  DocumentIndexIndicator,
+  IndexProgressRing,
+  type DocumentIndexIndicatorProps,
+  type DocumentIndexProgress,
+  type IndexProgressRingProps,
+} from './index-progress'
 export { IconSend, IconStop, type IconProps } from './icons'
 export { Markdown, type MarkdownNav } from './Markdown'
 export { isSymbolFontFamily } from './symbol-fonts'

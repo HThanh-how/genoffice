@@ -1,3 +1,5 @@
+import { DocumentIndexIndicator } from '@genoffice/ui'
+import '@genoffice/ui/index-progress.css'
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { handlePdfControl, type ControlRequest } from './control'
 import type { CSSProperties, MouseEvent as ReactMouseEvent } from 'react'
@@ -9092,6 +9094,7 @@ export default function App() {
               </span>
             </div>
             <div className="status-right">
+              <DocumentIndexIndicator path={filePath} api={window.pdfApi} lang={lang} />
               <button
                 className="zoom-btn"
                 data-tip={t('zoomOut')}

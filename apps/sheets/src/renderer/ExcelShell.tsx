@@ -1,3 +1,5 @@
+import { DocumentIndexIndicator } from '@genoffice/ui'
+import '@genoffice/ui/index-progress.css'
 import type { IFunctionInfo } from '@univerjs/engine-formula'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { platformShortcuts } from '@genoffice/i18n'
@@ -174,6 +176,7 @@ function ToolSymbol({ symbol }: { readonly symbol: string }): React.JSX.Element 
 }
 
 interface ExcelShellProps {
+  readonly indexDocumentPath?: string | null
   readonly aiProvider: string | undefined
   readonly openingWorkbook: boolean
   readonly prompt: string
@@ -334,6 +337,7 @@ export interface PageLayoutEcho {
 }
 
 export function ExcelShell({
+  indexDocumentPath,
   aiProvider,
   prompt,
   preview,
@@ -412,7 +416,7 @@ export function ExcelShell({
   calcManual,
   onGoalSeek,
 }: ExcelShellProps): React.JSX.Element {
-  const { t } = useI18n()
+  const { lang, t } = useI18n()
   const [activeTab, setActiveTab] = useState<RibbonTab>('Home')
   const collapse = useRibbonCollapse('ai-sheets-ribbon-collapsed', {
     collapse: t('appRibbonCollapse'),
@@ -808,6 +812,11 @@ export function ExcelShell({
                   ┆
                 </button>
               </div>
+              <DocumentIndexIndicator
+                path={indexDocumentPath ?? null}
+                api={window.desktopApi}
+                lang={lang}
+              />
               <button
                 className="zoom-btn"
                 data-tip={t('appZoomOut')}

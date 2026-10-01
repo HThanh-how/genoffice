@@ -20,6 +20,7 @@ export type {
   DocumentMemoryReadResult,
   DocumentMemorySearchResult,
 } from './document-memory-skill'
+export type { DocumentIndexProgress } from './document-memory-progress'
 export {
   AgentLoop,
   COMPLETED_VIA_TOOLS_TEXT,

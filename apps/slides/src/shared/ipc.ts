@@ -1,3 +1,4 @@
+import type { DocumentIndexProgress } from '@genoffice/agent-core'
 import type { AiPanelPrefs } from '@genoffice/ui'
 /**
  * slides main-process <-> renderer IPC contract (Phase 3: open/save/edit, AI not included yet).
@@ -165,6 +166,7 @@ export interface DesktopFilesApi {
     error?: string
   }>
   /** Open a previously indexed document by its search result id. */
+  getDocumentIndexProgress(path: string): Promise<DocumentIndexProgress>
   documentMemoryOpen(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** Multi-select attachment file dialog */
   pickAttachments(): Promise<AttachmentAddResult | null>

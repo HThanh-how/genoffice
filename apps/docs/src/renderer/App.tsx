@@ -1,3 +1,5 @@
+import { DocumentIndexIndicator } from '@genoffice/ui'
+import '@genoffice/ui/index-progress.css'
 import { scriptFontHtml } from './editor/script-fonts'
 import { DOC_CSS_COMMITTED_EVENT } from './editor/cjk-punct-shrink'
 import { justifyShrinkPluginKey } from './editor/justify-shrink'
@@ -7314,6 +7316,11 @@ export function App() {
                   </button>
                 </div>
               )}
+              <DocumentIndexIndicator
+                path={doc?.filePath ?? null}
+                api={window.desktop}
+                lang={lang}
+              />
               <button className="zoom-btn" onClick={() => setZoom((z) => stepDocsZoom(z, -1))}>
                 −
               </button>

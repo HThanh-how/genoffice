@@ -5,6 +5,7 @@ import workerPath from './worker?modulePath'
 import { DocumentMemoryStore, type DocumentMemoryHit } from './store'
 import type { DocumentChunk } from './chunks'
 import type { DocumentMemoryStatus } from '../../shared/home-api'
+import type { DocumentIndexProgress } from '@genoffice/agent-core'
 
 const EMBEDDING_MODEL_ID =
   'Xenova/multilingual-e5-small@761b726dd34fb83930e26aab4e9ac3899aa1fa78:q8'
@@ -165,6 +166,79 @@ export class DocumentMemoryManager {
     return this.store.listPaths()
   }
 
+  /** Return durable per-document vector progress using a single path-scoped SQL count. */
+  getDocumentIndexProgress(path: string): DocumentIndexProgress {
+    const p = resolve(path)
+    const progress = this.store.chunkProgress(p)
+    const document = progress.document
+    if (!document) return { state: 'idle', percent: null, completedChunks: 0, totalChunks: 0 }
+    const base = {
+      path: document.path,
+      name: document.name,
+      completedChunks: progress.completedChunks,
+      totalChunks: progress.totalChunks,
+    }
+    if (document.status === 'excluded') return { ...base, state: 'excluded', percent: null }
+    if (this.activeExtractions.has(p)) return { ...base, state: 'extracting', percent: null }
+    if (this.queued.has(p)) return { ...base, state: 'queued', percent: null }
+    if (document.status === 'empty') return { ...base, state: 'empty', percent: 100 }
+    if (document.status === 'ready') return { ...base, state: 'ready', percent: 100 }
+    if (document.status === 'error')
+      return {
+        ...base,
+        state: 'error',
+        percent: progressPercent(progress),
+        ...(document.error ? { error: document.error } : {}),
+      }
+    if (document.status === 'text-only') {
+      if (!this.enabled) return { ...base, state: 'paused', percent: progressPercent(progress) }
+      if (this.modelState === 'error')
+        return {
+          ...base,
+          state: 'error',
+          percent: progressPercent(progress),
+          ...(this.lastError ? { error: this.lastError } : {}),
+        }
+      return { ...base, state: 'indexing', percent: progressPercent(progress) }
+    }
+    if (!this.enabled) return { ...base, state: 'paused', percent: null }
+    return { ...base, state: 'queued', percent: null }
+  }
+
+  /** SQL-only aggregate for a selected folder; excluded documents are omitted. */
+  getFolderIndexProgress(
+    root: string,
+    discoveryComplete: boolean,
+    scanErrors = 0,
+  ): {
+    totalFiles: number
+    readyFiles: number
+    pendingFiles: number
+    errorFiles: number
+    completedChunks: number
+    totalChunks: number
+    percent: number | null
+  } {
+    const counts = this.store.folderChunkProgress(root)
+    let percent: number | null = null
+    if (discoveryComplete) {
+      if (counts.totalFiles === 0) percent = scanErrors ? 99 : 100
+      else {
+        percent = Math.floor((counts.partialFileProgress / counts.totalFiles) * 100)
+        if (counts.pendingFiles || counts.errorFiles || scanErrors) percent = Math.min(percent, 99)
+      }
+    }
+    return {
+      totalFiles: counts.totalFiles,
+      readyFiles: counts.readyFiles,
+      pendingFiles: counts.pendingFiles,
+      errorFiles: counts.errorFiles,
+      completedChunks: counts.completedChunks,
+      totalChunks: counts.totalChunks,
+      percent,
+    }
+  }
+
   status(): DocumentMemoryStatus {
     const stats = this.store.stats()
     const files = this.store
@@ -184,6 +258,23 @@ export class DocumentMemoryManager {
       dbPath: this.dbPath,
       ...(this.lastError ? { lastError: this.lastError } : {}),
       files,
+    }
+  }
+
+  /** Lightweight status for progress polling; does not enumerate document rows. */
+  indexingActivityStatus(): {
+    enabled: boolean
+    modelState: string
+    modelProgress?: number
+    pending: number
+    errors: number
+  } {
+    return {
+      enabled: this.enabled,
+      modelState: this.modelState,
+      ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }),
+      pending: this.pendingCount + this.queue.length + this.embeds.length,
+      errors: this.store.stats().errors,
     }
   }
 
@@ -665,6 +756,14 @@ export class DocumentMemoryManager {
     this.worker = worker
     return worker
   }
+}
+
+function progressPercent(progress: {
+  completedChunks: number
+  totalChunks: number
+}): number | null {
+  if (!progress.totalChunks) return null
+  return Math.min(99, Math.floor((progress.completedChunks / progress.totalChunks) * 100))
 }
 
 function readEnabled(path: string): boolean {

@@ -1,3 +1,4 @@
+import type { DocumentIndexProgress } from '@genoffice/agent-core'
 export interface OpenFileResult {
   path: string
   name: string
@@ -319,6 +320,7 @@ export interface DesktopApi {
     error?: string
   }>
   /** Open a previously indexed document by its search result id. */
+  getDocumentIndexProgress(path: string): Promise<DocumentIndexProgress>
   documentMemoryOpen(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** current UI language (persisted by the shell in app-settings.json) */
   getLanguage(): Promise<'zh' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'th' | 'id' | 'ru' | 'ar'>

@@ -42,6 +42,20 @@ export interface DocumentMemoryStats {
   vectors: number
   errors: number
 }
+export interface DocumentChunkProgress {
+  document: StoredDocument | null
+  completedChunks: number
+  totalChunks: number
+}
+export interface FolderChunkProgress {
+  totalFiles: number
+  readyFiles: number
+  pendingFiles: number
+  errorFiles: number
+  completedChunks: number
+  totalChunks: number
+  partialFileProgress: number
+}
 
 const SCHEMA = `
 PRAGMA foreign_keys = ON;
@@ -206,6 +220,75 @@ export class DocumentMemoryStore {
       )
       .get(id) as DocRow | undefined
     return row ? toDocument(row) : null
+  }
+
+  /** Read one document's persisted vector counts without loading its chunks or vectors. */
+  chunkProgress(path: string): DocumentChunkProgress {
+    const row = this.db
+      .prepare(
+        `SELECT d.id, d.path, d.name, d.status, d.mtime_ms, d.size_bytes, d.hash, d.error,
+          count(c.id) AS total_chunks,
+          sum(CASE WHEN c.vector IS NOT NULL THEN 1 ELSE 0 END) AS completed_chunks
+        FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
+        WHERE d.path = ? GROUP BY d.id`,
+      )
+      .get(resolve(path)) as
+      (DocRow & { total_chunks: number; completed_chunks: number | null }) | undefined
+    return {
+      document: row ? toDocument(row) : null,
+      completedChunks: row?.completed_chunks ?? 0,
+      totalChunks: row?.total_chunks ?? 0,
+    }
+  }
+
+  /** Aggregate enrolled documents below a selected root with one bounded SQL query. */
+  folderChunkProgress(root: string): FolderChunkProgress {
+    const normalized = resolve(root)
+    const prefix =
+      normalized.endsWith('/') || normalized.endsWith('\\')
+        ? normalized
+        : `${normalized}${normalized.includes('\\') ? '\\' : '/'}`
+    const row = this.db
+      .prepare(
+        `WITH per_document AS (
+          SELECT d.id, d.status, count(c.id) AS total_chunks,
+            coalesce(sum(CASE WHEN c.vector IS NOT NULL THEN 1 ELSE 0 END), 0) AS completed_chunks
+          FROM documents d LEFT JOIN chunks c ON c.document_id = d.id
+          WHERE d.excluded = 0 AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)
+          GROUP BY d.id
+        )
+        SELECT count(*) AS total_files,
+          sum(CASE WHEN status IN ('ready', 'empty') THEN 1 ELSE 0 END) AS ready_files,
+          sum(CASE WHEN status IN ('pending', 'text-only') THEN 1 ELSE 0 END) AS pending_files,
+          sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_files,
+          coalesce(sum(completed_chunks), 0) AS completed_chunks,
+          coalesce(sum(total_chunks), 0) AS total_chunks,
+          coalesce(sum(CASE WHEN status IN ('ready','empty') THEN 1.0
+            WHEN status = 'text-only' AND total_chunks > 0
+              THEN (completed_chunks * 1.0 / total_chunks)
+            ELSE 0.0 END), 0.0) AS partial_file_progress
+        FROM per_document`,
+      )
+      .get(normalized, prefix, prefix) as
+      | {
+          total_files: number
+          ready_files: number
+          pending_files: number
+          error_files: number
+          completed_chunks: number
+          total_chunks: number
+          partial_file_progress: number
+        }
+      | undefined
+    return {
+      totalFiles: row?.total_files ?? 0,
+      readyFiles: row?.ready_files ?? 0,
+      pendingFiles: row?.pending_files ?? 0,
+      errorFiles: row?.error_files ?? 0,
+      completedChunks: row?.completed_chunks ?? 0,
+      totalChunks: row?.total_chunks ?? 0,
+      partialFileProgress: row?.partial_file_progress ?? 0,
+    }
   }
 
   listPaths(): string[] {

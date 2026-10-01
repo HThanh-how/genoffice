@@ -1,3 +1,5 @@
+import { DocumentIndexIndicator } from '@genoffice/ui'
+import '@genoffice/ui/index-progress.css'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import {
   Dropdown,
@@ -1648,6 +1650,7 @@ export default function App() {
                 }))}
                 onPick={setDevice}
               />
+              <DocumentIndexIndicator path={path} api={window.htmlApi} lang={lang} />
               <button
                 type="button"
                 className="zoom-btn"

@@ -4604,6 +4604,7 @@ export function App({
         />
       )}
       <ExcelShell
+        indexDocumentPath={workbookFile?.csvPath ?? workbookFile?.path ?? null}
         aiProvider={aiSettings?.provider}
         openingWorkbook={openingWorkbook}
         prompt={prompt}

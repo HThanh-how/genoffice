@@ -8,6 +8,7 @@ import { AI_CHANNELS, MARKDOWN_CHANNELS } from '../shared/ipc'
 import type { AutoSaveDefault, ExportFormat, MarkdownApi, SaveMode, UiTheme } from '../shared/ipc'
 
 const api: MarkdownApi = {
+  getDocumentIndexProgress: (path) => ipcRenderer.invoke('document-memory:progress', path),
   documentMemorySearch: (query, limit) =>
     typeof query === 'string' &&
     query.trim().length > 0 &&

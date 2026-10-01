@@ -7,6 +7,7 @@ import { AI_CHANNELS, PDF_CHANNELS } from '../shared/ipc'
 import type { PdfApi, UiTheme } from '../shared/ipc'
 
 const api: PdfApi = {
+  getDocumentIndexProgress: (path) => ipcRenderer.invoke('document-memory:progress', path),
   documentMemorySearch: (query, limit) =>
     typeof query === 'string' &&
     query.trim().length > 0 &&

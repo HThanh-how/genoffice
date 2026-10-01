@@ -453,6 +453,18 @@ const homeApi: HomeApi = {
       await ipcRenderer.invoke(HOME_CHANNELS.getDocumentMemoryStatus),
     )
   },
+  async getIndexingActivity() {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.getIndexingActivity,
+    )) as import('../shared/home-api').HomeIndexingActivity
+  },
+  async getDocumentIndexProgress(path) {
+    if (typeof path !== 'string' || !path.trim()) throw new Error('Invalid document path.')
+    return (await ipcRenderer.invoke(
+      'document-memory:progress',
+      path,
+    )) as import('@genoffice/agent-core').DocumentIndexProgress
+  },
   async documentMemorySearch(query, limit) {
     if (
       typeof query !== 'string' ||

@@ -472,6 +472,7 @@ contextBridge.exposeInMainWorld('slidesApi', api)
 
 // Chat attachment bridge: method names/signatures match the window.desktop attachment subset in docs, so the renderer's files-skill is copied over wholesale
 const filesApi: DesktopFilesApi = {
+  getDocumentIndexProgress: (path) => ipcRenderer.invoke('document-memory:progress', path),
   documentMemorySearch: (query, limit) =>
     typeof query === 'string' &&
     query.trim().length > 0 &&

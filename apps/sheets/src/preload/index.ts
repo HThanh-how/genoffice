@@ -56,6 +56,7 @@ import {
 import { installDropOpenBridge } from '@genoffice/electron-utils/drop-open'
 
 const desktopApi: DesktopApi = {
+  getDocumentIndexProgress: (path) => ipcRenderer.invoke('document-memory:progress', path),
   documentMemorySearch: (query, limit) =>
     typeof query === 'string' &&
     query.trim().length > 0 &&

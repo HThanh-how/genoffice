@@ -116,6 +116,77 @@ function manager(fake: FakeWorker) {
 }
 
 describe('DocumentMemoryManager', () => {
+  it('reports paused partial vectors, durable errors, and folder-scoped progress', () => {
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    const instance = manager(fake)
+    instance.setEnabled(false)
+    const selectedRoot = join(dir, 'selected')
+    const partialPath = join(selectedRoot, 'partial.txt')
+    const excludedPath = join(selectedRoot, 'excluded.txt')
+    const outsidePath = join(dir, 'outside.txt')
+    const store = new DocumentMemoryStore(join(dir, 'document-memory.db'))
+    store.replaceDocument(partialPath, {
+      hash: 'partial',
+      mtimeMs: 1,
+      sizeBytes: 2,
+      chunks: [
+        { text: 'one', location: '1', vector: [1, 0] },
+        { text: 'two', location: '2' },
+      ],
+      embeddingModel: 'test-v1',
+      status: 'text-only',
+    })
+    store.replaceDocument(excludedPath, {
+      hash: 'excluded',
+      mtimeMs: 1,
+      sizeBytes: 1,
+      chunks: [{ text: 'excluded', location: '1' }],
+      embeddingModel: null,
+      status: 'text-only',
+    })
+    store.exclude(excludedPath)
+    store.replaceDocument(outsidePath, {
+      hash: 'outside',
+      mtimeMs: 1,
+      sizeBytes: 1,
+      chunks: [{ text: 'outside', location: '1', vector: [1, 0] }],
+      embeddingModel: 'test-v1',
+      status: 'ready',
+    })
+
+    expect(instance.getDocumentIndexProgress(partialPath)).toMatchObject({
+      state: 'paused',
+      percent: 50,
+      completedChunks: 1,
+      totalChunks: 2,
+    })
+    expect(instance.getFolderIndexProgress(selectedRoot, true)).toMatchObject({
+      totalFiles: 1,
+      readyFiles: 0,
+      pendingFiles: 1,
+      errorFiles: 0,
+      completedChunks: 1,
+      totalChunks: 2,
+      percent: 50,
+    })
+
+    store.markError(partialPath, 'extract failed', null)
+    expect(instance.getDocumentIndexProgress(partialPath)).toMatchObject({
+      state: 'error',
+      percent: null,
+      completedChunks: 0,
+      totalChunks: 0,
+      error: 'extract failed',
+    })
+    expect(instance.getFolderIndexProgress(selectedRoot, true)).toMatchObject({
+      totalFiles: 1,
+      pendingFiles: 0,
+      errorFiles: 1,
+      percent: 0,
+    })
+    store.close()
+  })
+
   it('indexes folder-discovered files once without turning rescans into recent opens', async () => {
     const path = join(dir, 'folder-file.txt')
     writeFileSync(path, 'discovered content that gets embedded')

@@ -1,3 +1,4 @@
+import type { DocumentIndexProgress } from '@genoffice/agent-core'
 import type { AiPanelPrefs } from '@genoffice/ui'
 import type { Lang } from '@genoffice/i18n'
 import type {
@@ -173,6 +174,7 @@ export interface MarkdownApi {
     error?: string
   }>
   /** Open a previously indexed document by its search result id. */
+  getDocumentIndexProgress(path: string): Promise<DocumentIndexProgress>
   documentMemoryOpen(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** Take the md path pending for this view (queued at tab creation); null = new untitled document */
   consumePending(): Promise<string | null>

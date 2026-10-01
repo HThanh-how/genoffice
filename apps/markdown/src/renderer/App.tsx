@@ -1,3 +1,5 @@
+import { DocumentIndexIndicator } from '@genoffice/ui'
+import '@genoffice/ui/index-progress.css'
 import {
   captureMarkdownSource,
   roundTripMarkdownEnabled,
@@ -905,6 +907,7 @@ export default function App() {
               {statusText && (
                 <span className={`status-save status-${saveState}`}>{statusText}</span>
               )}
+              <DocumentIndexIndicator path={filePath} api={window.markdownApi} lang={lang} />
               <button
                 type="button"
                 className="zoom-btn"

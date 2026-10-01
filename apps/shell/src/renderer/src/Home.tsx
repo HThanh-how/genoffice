@@ -1,3 +1,4 @@
+import { IndexingActivity } from './IndexingActivity'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
@@ -3186,6 +3187,7 @@ export function Home() {
 
       <DropToOpenOverlay />
       <HomeChat api={window.aiOffice} i18n={i18n} />
+      <IndexingActivity api={window.aiOffice} lang={lang} />
     </div>
   )
 }

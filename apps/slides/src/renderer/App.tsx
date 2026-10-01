@@ -1,3 +1,5 @@
+import { DocumentIndexIndicator } from '@genoffice/ui'
+import '@genoffice/ui/index-progress.css'
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type {
   GroupRenderNode,
@@ -4350,6 +4352,7 @@ export function App() {
                   <IconPlayBoxed size={18} />
                 </button>
               )}
+              <DocumentIndexIndicator path={path} api={window.desktop} lang={lang} />
               <ZoomControls zoom={zoom} onPreview={previewZoom} />
             </div>
           </footer>

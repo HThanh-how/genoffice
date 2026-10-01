@@ -15,6 +15,7 @@ import type {
   CodexModelCatalog,
 } from '@genoffice/ai-provider'
 import type { DocumentMemoryReadResult, DocumentMemorySearchResult } from '@genoffice/agent-core'
+import type { DocumentIndexProgress } from '@genoffice/agent-core'
 import type { UpdateChannel } from './update-api'
 import type { UpdateSource } from './update-source'
 import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
@@ -191,6 +192,26 @@ export interface DocumentMemoryStatus {
   files: Array<{ id: number; path: string; name: string; status: string }>
 }
 
+export interface HomeIndexingActivity {
+  folder: FolderScanStatus | null
+  memory: {
+    enabled: boolean
+    modelState: string
+    modelProgress?: number
+    pending: number
+    errors: number
+  }
+  folderProgress: {
+    totalFiles: number
+    readyFiles: number
+    pendingFiles: number
+    errorFiles: number
+    completedChunks: number
+    totalChunks: number
+    percent: number | null
+  } | null
+}
+
 export interface HomeApi {
   /** unified recents across document types, newest first (paged) */
   recents(query?: RecentQuery): Promise<RecentPage>
@@ -324,6 +345,8 @@ export interface HomeApi {
   setAnalyticsEnabled(enabled: boolean): Promise<boolean>
   /** Read local document memory settings, index counts and recent files. */
   getDocumentMemoryStatus(): Promise<DocumentMemoryStatus>
+  getIndexingActivity(): Promise<HomeIndexingActivity>
+  getDocumentIndexProgress(path: string): Promise<DocumentIndexProgress>
   getDocumentFolderScanStatus(): Promise<FolderScanStatus | null>
   scanDocumentFolder(): Promise<FolderScanStatus | null>
   stopDocumentFolderScan(): Promise<FolderScanStatus | null>
@@ -600,6 +623,7 @@ export const HOME_CHANNELS = {
   getAnalyticsEnabled: 'home:get-analytics-enabled',
   setAnalyticsEnabled: 'home:set-analytics-enabled',
   getDocumentMemoryStatus: 'home:get-document-memory-status',
+  getIndexingActivity: 'home:get-indexing-activity',
   getDocumentFolderScanStatus: 'home:get-document-folder-scan-status',
   scanDocumentFolder: 'home:scan-document-folder',
   stopDocumentFolderScan: 'home:stop-document-folder-scan',

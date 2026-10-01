@@ -8,6 +8,7 @@ import { AI_CHANNELS, HTML_CHANNELS } from '../shared/ipc'
 import type { AutoSaveDefault, ExportFormat, HtmlApi, SaveMode, UiTheme } from '../shared/ipc'
 
 const api: HtmlApi = {
+  getDocumentIndexProgress: (path) => ipcRenderer.invoke('document-memory:progress', path),
   documentMemorySearch: (query, limit) =>
     typeof query === 'string' &&
     query.trim().length > 0 &&

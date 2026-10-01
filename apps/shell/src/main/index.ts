@@ -4049,6 +4049,39 @@ function registerHomeIpc(): void {
     return folderScan?.start(result.filePaths[0]) ?? null
   })
   ipcMain.handle(HOME_CHANNELS.getDocumentMemoryStatus, () => documentMemory?.status())
+  ipcMain.handle(HOME_CHANNELS.getIndexingActivity, () => {
+    const folder = folderScan?.status() ?? null
+    const memory = documentMemory?.indexingActivityStatus()
+    return {
+      folder,
+      memory: {
+        enabled: memory?.enabled ?? false,
+        modelState: memory?.modelState ?? 'not-loaded',
+        ...(memory?.modelProgress === undefined ? {} : { modelProgress: memory.modelProgress }),
+        pending: memory?.pending ?? 0,
+        errors: memory?.errors ?? 0,
+      },
+      folderProgress:
+        folder?.root && documentMemory
+          ? documentMemory.getFolderIndexProgress(
+              folder.root,
+              folder.state === 'complete',
+              folder.errors,
+            )
+          : null,
+    }
+  })
+  ipcMain.handle('document-memory:progress', (_event, path: unknown) => {
+    if (typeof path !== 'string' || !path.trim()) throw new Error('Invalid document path')
+    return (
+      documentMemory?.getDocumentIndexProgress(path) ?? {
+        state: 'idle',
+        percent: null,
+        completedChunks: 0,
+        totalChunks: 0,
+      }
+    )
+  })
   ipcMain.handle(HOME_CHANNELS.setDocumentMemoryEnabled, (_event, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new Error('Invalid memory setting')
     if (!enabled) folderScan?.stop()

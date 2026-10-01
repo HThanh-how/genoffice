@@ -39,6 +39,7 @@ export interface FolderScanStatus {
   state?: 'running' | 'complete' | 'stopped'
   running: boolean
   root?: string
+  startedAt?: number
   discovered: number
   enrolled: number
   skipped: number
@@ -52,6 +53,7 @@ export interface DiscoveredDocumentIndexer {
 
 interface ScanJob {
   root: string
+  startedAt?: number
   state: 'running' | 'complete' | 'stopped'
   discovered: number
   enrolled: number
@@ -107,6 +109,7 @@ export class FolderScanManager {
     if (!job) {
       job = {
         root: normalizedRoot,
+        startedAt: Date.now(),
         state: 'running',
         discovered: 0,
         enrolled: 0,
@@ -116,6 +119,7 @@ export class FolderScanManager {
       this.manifest.jobs.push(job)
     } else if (job.state !== 'running') {
       job.state = 'running'
+      job.startedAt = Date.now()
       job.discovered = 0
       job.enrolled = 0
       job.skipped = 0
@@ -152,6 +156,7 @@ export class FolderScanManager {
       state: job?.state,
       running: !!this.activeRoot,
       ...(job ? { root: job.root } : {}),
+      ...(job?.startedAt === undefined ? {} : { startedAt: job.startedAt }),
       discovered: job?.discovered ?? 0,
       enrolled: job?.enrolled ?? 0,
       skipped: job?.skipped ?? 0,
