@@ -1,3 +1,4 @@
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { opendir, stat } from 'node:fs/promises'
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, extname, isAbsolute, parse, resolve } from 'node:path'
@@ -48,7 +49,7 @@ export interface FolderScanStatus {
 }
 
 export interface DiscoveredDocumentIndexer {
-  indexDiscoveredFile(path: string): boolean
+  indexDiscoveredFile(path: string, metadata?: { mtimeMs: number; sizeBytes: number }): boolean
 }
 
 interface ScanJob {
@@ -221,6 +222,7 @@ export class FolderScanManager {
       try {
         for await (const entry of handle) {
           if (this.closed || this.stopRequested) break
+          await yieldToEventLoop()
           const path = resolve(canonical, entry.name)
           if (entry.isSymbolicLink()) {
             job.skipped++
@@ -247,7 +249,12 @@ export class FolderScanManager {
               job.skipped++
             } else if (fileStat.size > MAX_DOCUMENT_BYTES) {
               job.skipped++
-            } else if (this.memory.indexDiscoveredFile(path)) {
+            } else if (
+              this.memory.indexDiscoveredFile(path, {
+                mtimeMs: fileStat.mtimeMs,
+                sizeBytes: fileStat.size,
+              })
+            ) {
               job.enrolled++
             }
           } catch (error) {

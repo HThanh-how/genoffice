@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Worker } from 'node:worker_threads'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
@@ -374,6 +374,43 @@ describe('DocumentMemoryManager', () => {
     await until(() => instance.status().chunks > 0 && instance.status().pending === 0)
     expect(instance.status().modelState).toBe('error')
     expect((await instance.search('rare lexical')).hits[0]?.path).toBe(path)
+  })
+
+  it('bounds extracted documents while embedding stalls and avoids rescanning all paths for priority', async () => {
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    fake.stopAfterBatches = 0
+    const instance = manager(fake)
+    const listPaths = vi.spyOn(DocumentMemoryStore.prototype, 'listPaths')
+    try {
+      for (let i = 0; i < 64; i++) {
+        const path = join(dir, `bulk-${i}.txt`)
+        writeFileSync(path, `Bulk document ${i}`)
+        instance.indexDiscoveredFile(path)
+      }
+      await until(() => fake.embeddingCalls.length === 1)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(fake.extractionCalls.length).toBe(16)
+      expect(listPaths).not.toHaveBeenCalled()
+      expect(instance.getDocumentIndexProgress(join(dir, 'bulk-63.txt')).state).toBe('queued')
+    } finally {
+      listPaths.mockRestore()
+    }
+  })
+
+  it('backs off failed embeddings instead of exhausting a large queue in a retry burst', async () => {
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    fake.failEmbedding = true
+    const instance = manager(fake)
+    for (let i = 0; i < 48; i++) {
+      const path = join(dir, `failure-${i}.txt`)
+      writeFileSync(path, `Failure test ${i}`)
+      instance.indexDiscoveredFile(path)
+    }
+    await until(() => fake.embeddingCalls.length === 1)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    expect(fake.embeddingCalls).toHaveLength(1)
+    expect(fake.extractionCalls.length).toBeLessThanOrEqual(17)
+    expect(instance.status().modelState).toBe('error')
   })
 
   it('persists enabled state and never enrolls a path moved from an unknown source', () => {

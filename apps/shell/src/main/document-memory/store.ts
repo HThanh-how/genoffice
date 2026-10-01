@@ -202,6 +202,17 @@ export class DocumentMemoryStore {
     ).map(toDocument)
   }
 
+  recentDocuments(limit = 20): StoredDocument[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error
+      FROM documents WHERE excluded = 0 ORDER BY priority_at DESC, id DESC LIMIT ?`,
+        )
+        .all(limit) as unknown as DocRow[]
+    ).map(toDocument)
+  }
+
   documentByPath(path: string): StoredDocument | null {
     const row = this.db
       .prepare(
@@ -289,6 +300,13 @@ export class DocumentMemoryStore {
       totalChunks: row?.total_chunks ?? 0,
       partialFileProgress: row?.partial_file_progress ?? 0,
     }
+  }
+
+  documentPriority(path: string): number {
+    const row = this.db
+      .prepare('SELECT priority_at FROM documents WHERE path = ?')
+      .get(resolve(path)) as { priority_at: number } | undefined
+    return row?.priority_at ?? 0
   }
 
   listPaths(): string[] {

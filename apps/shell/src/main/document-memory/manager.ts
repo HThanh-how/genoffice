@@ -1,3 +1,5 @@
+import { stat } from 'node:fs/promises'
+import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { Worker } from 'node:worker_threads'
 import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -12,6 +14,8 @@ const EMBEDDING_MODEL_ID =
 const POLL_INTERVAL_MS = 60_000
 const SEARCH_EMBED_TIMEOUT_MS = 10_000
 const WORKER_TIMEOUT_MS = 5 * 60_000
+const MAX_PENDING_EMBED_DOCUMENTS = 16
+const EMBED_RETRY_DELAY_MS = 30_000
 
 interface ExtractResult {
   hash: string
@@ -47,6 +51,7 @@ interface EmbedJob {
   mtimeMs: number
   sizeBytes: number
   chunks: DocumentChunk[]
+  priority?: number
   startOffset?: number
 }
 interface ManagerOptions {
@@ -78,6 +83,9 @@ export class DocumentMemoryManager {
   private worker: Worker | null = null
   private nextRequestId = 1
   private epoch = 0
+  private polling = false
+  private embeddingRetryAt = 0
+  private retryTimer: NodeJS.Timeout | null = null
   private extracting = false
   private embedding = false
   private pendingCount = 0
@@ -126,10 +134,10 @@ export class DocumentMemoryManager {
   }
 
   /** Enroll a file discovered under a user-selected folder without changing recency. */
-  indexDiscoveredFile(path: string): boolean {
+  indexDiscoveredFile(path: string, metadata?: { mtimeMs: number; sizeBytes: number }): boolean {
     if (this.stopped) return false
     const p = resolve(path)
-    const current = safeStat(p)
+    const current = metadata ?? safeStat(p)
     if (!current) return false
     const needsIndex = this.store.enrollDiscovered(p, current.mtimeMs, current.sizeBytes)
     const document = this.store.documentByPath(p)
@@ -242,9 +250,7 @@ export class DocumentMemoryManager {
   status(): DocumentMemoryStatus {
     const stats = this.store.stats()
     const files = this.store
-      .listDocuments()
-      .filter((file) => file.status !== 'excluded')
-      .slice(0, 20)
+      .recentDocuments(20)
       .map(({ id, path, name, status }) => ({ id, path, name, status }))
     return {
       enabled: this.enabled,
@@ -458,6 +464,8 @@ export class DocumentMemoryManager {
     if (this.stopped) return
     this.stopped = true
     this.epoch++
+    if (this.retryTimer) clearTimeout(this.retryTimer)
+    this.retryTimer = null
     if (this.pollTimer) clearInterval(this.pollTimer)
     this.pollTimer = null
     this.queue.length = 0
@@ -474,26 +482,34 @@ export class DocumentMemoryManager {
   }
 
   private async poll(): Promise<void> {
-    if (this.stopped || !this.enabled) return
-    const resumeIncomplete = !this.embedding && !this.extracting
-    for (const path of this.store.listPaths()) {
-      if (this.activeExtractions.has(path)) continue
-      if (this.stopped || !this.enabled) return
-      const doc = this.store.documentByPath(path)
-      if (!doc || doc.status === 'excluded') continue
-      const current = safeStat(path)
-      if (!current) {
-        if (doc.status !== 'error' || doc.mtimeMs !== null || doc.sizeBytes !== null)
-          this.store.markError(path, 'Document is unavailable.', null)
-        continue
+    if (this.stopped || !this.enabled || this.polling) return
+    this.polling = true
+    try {
+      const resumeIncomplete = !this.embedding && !this.extracting
+      for (const path of this.store.listPaths()) {
+        if (this.stopped || !this.enabled) return
+        if (this.activeExtractions.has(path)) continue
+        const doc = this.store.documentByPath(path)
+        if (!doc || doc.status === 'excluded') continue
+        const current = await stat(path).then(
+          (value) => ({ mtimeMs: value.mtimeMs, sizeBytes: value.size }),
+          () => null,
+        )
+        if (this.stopped || !this.enabled) return
+        if (!current) {
+          if (doc.status !== 'error' || doc.mtimeMs !== null || doc.sizeBytes !== null)
+            this.store.markError(path, 'Document is unavailable.', null)
+        } else if (
+          doc.status === 'pending' ||
+          (doc.status === 'text-only' && resumeIncomplete) ||
+          doc.mtimeMs !== current.mtimeMs ||
+          doc.sizeBytes !== current.sizeBytes
+        )
+          this.enqueue(path)
+        await yieldToEventLoop()
       }
-      if (
-        doc.status === 'pending' ||
-        (doc.status === 'text-only' && resumeIncomplete) ||
-        doc.mtimeMs !== current.mtimeMs ||
-        doc.sizeBytes !== current.sizeBytes
-      )
-        this.enqueue(path)
+    } finally {
+      this.polling = false
     }
   }
 
@@ -520,8 +536,20 @@ export class DocumentMemoryManager {
 
   private drain(): void {
     if (this.stopped || !this.enabled) return
-    if (!this.extracting && this.queue.length) void this.drainExtractions()
-    if (!this.embedding && !this.extracting && this.queue.length === 0 && this.embeds.length)
+    if (
+      !this.extracting &&
+      !this.embedding &&
+      this.queue.length &&
+      this.embeds.length < MAX_PENDING_EMBED_DOCUMENTS
+    )
+      void this.drainExtractions()
+    if (
+      !this.embedding &&
+      !this.extracting &&
+      this.embeds.length &&
+      Date.now() >= this.embeddingRetryAt &&
+      (this.queue.length === 0 || this.embeds.length >= MAX_PENDING_EMBED_DOCUMENTS)
+    )
       void this.drainEmbeddings()
   }
 
@@ -529,7 +557,12 @@ export class DocumentMemoryManager {
     if (this.extracting || this.stopped) return
     this.extracting = true
     try {
-      while (!this.stopped && this.enabled && this.queue.length) {
+      while (
+        !this.stopped &&
+        this.enabled &&
+        this.queue.length &&
+        this.embeds.length < MAX_PENDING_EMBED_DOCUMENTS
+      ) {
         const path = this.queue.shift()!
         this.queued.delete(path)
         this.activeExtractions.add(path)
@@ -622,6 +655,7 @@ export class DocumentMemoryManager {
           ) {
             const error = reply && 'error' in reply ? reply.error : 'Embedding timed out.'
             this.lastError = error
+            this.deferEmbeddingRetry()
             break
           }
           const vectors = reply.result as number[][]
@@ -649,6 +683,7 @@ export class DocumentMemoryManager {
         } catch (error) {
           if (this.isCurrent(job.path, job.generation, job.epoch)) {
             this.lastError = safeError(error)
+            this.deferEmbeddingRetry()
           }
         } finally {
           this.pendingCount--
@@ -656,22 +691,27 @@ export class DocumentMemoryManager {
       }
     } finally {
       this.embedding = false
-      if (!this.stopped && this.enabled && this.embeds.length && this.queue.length === 0)
-        this.drain()
+      if (!this.stopped && this.enabled) this.drain()
     }
   }
 
   private enqueueEmbed(job: EmbedJob): void {
     if (this.stopped || !this.enabled) return
-    const documentPaths = this.store.listPaths()
-    const priority = documentPaths.indexOf(job.path)
-    const position = this.embeds.findIndex((queued) => {
-      const queuedPriority = documentPaths.indexOf(queued.path)
-      return priority >= 0 && queuedPriority >= 0 && priority < queuedPriority
-    })
+    job.priority = this.store.documentPriority(job.path)
+    const position = this.embeds.findIndex((queued) => (job.priority ?? 0) > (queued.priority ?? 0))
     if (position < 0) this.embeds.push(job)
     else this.embeds.splice(position, 0, job)
     void this.drain()
+  }
+
+  private deferEmbeddingRetry(): void {
+    this.embeddingRetryAt = Date.now() + EMBED_RETRY_DELAY_MS
+    if (this.retryTimer) clearTimeout(this.retryTimer)
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null
+      this.drain()
+    }, EMBED_RETRY_DELAY_MS)
+    this.retryTimer.unref?.()
   }
 
   private invalidatePath(path: string): void {
