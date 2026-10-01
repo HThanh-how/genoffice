@@ -25,14 +25,21 @@ import { AiTimeoutError } from './watchdog'
  *
  * Limits (by design, not bugs):
  *  - text + image only: GenOffice's function-calling tools cannot be mapped onto
- *    agy's internal tools, so tool schemas are never sent and tool calls are
- *    never produced (see AGY_CAPABILITIES);
+ *    agy's internal tools, so they go through a text protocol instead: the tools are
+ *    described in the prompt, agy answers with <tool_call> blocks and the host runs
+ *    them (see agy-tools.ts);
  *  - stateless: every call flattens the chat history into one prompt;
  *  - slower than an API call: each request starts the agent (several seconds)
  *    and carries ~15-30k tokens of agent overhead on the account's quota.
  */
 
 import { AGY_DEFAULT_MODEL } from './agy-meta'
+import {
+  agyToolNote,
+  parseAgyToolCalls,
+  renderAgyToolCalls,
+  renderAgyToolResult,
+} from './agy-tools'
 
 export {
   AGY_CAPABILITIES,
@@ -405,6 +412,13 @@ export const AGY_SYSTEM_NOTE =
   'The only files you may read are the attachments listed below, which sit in the current directory. ' +
   'If the user asks for an edit you cannot perform, say so briefly and provide the revised text they can paste.'
 
+/** Same text channel, but the host runs the document tools that agy requests in <tool_call> blocks. */
+export const AGY_TOOLS_SYSTEM_NOTE =
+  'You are answering inside a desktop office suite through a plain text channel. ' +
+  'You cannot open, edit or save documents yourself, and you must not run shell commands, browse the web or modify any file. ' +
+  'The only files you may read are the attachments listed below, which sit in the current directory. ' +
+  'Everything you can do to the user’s documents goes through the host tools described below.'
+
 function imageExtension(image: AgentImage): string {
   const subtype = image.mime.split('/')[1]?.toLowerCase() ?? ''
   if (subtype === 'jpeg' || subtype === 'jpg') return '.jpg'
@@ -438,7 +452,11 @@ function base64Bytes(base64: string): number {
  * only the newest AGY_MAX_FILES images within the size caps are staged (an image
  * that cannot be staged is mentioned in the prompt so the model does not guess).
  */
-export function buildAgyPrompt(system: string, messages: AgentMessage[]): AgyPromptPlan {
+export function buildAgyPrompt(
+  system: string,
+  messages: AgentMessage[],
+  tools: AgentToolDef[] = [],
+): AgyPromptPlan {
   // newest-first image budget
   const staged = new Map<AgentImage, string>()
   const skipped = new Set<AgentImage>()
@@ -477,16 +495,23 @@ export function buildAgyPrompt(system: string, messages: AgentMessage[]): AgyPro
       )
       turns.push(`User: ${[m.text, ...refs].filter(Boolean).join('\n')}`)
     } else if (m.role === 'assistant') {
-      if (m.text.trim()) turns.push(`Assistant: ${m.text}`)
+      const calls = m.toolCalls?.length ? renderAgyToolCalls(m.toolCalls) : ''
+      const said = [m.text.trim(), calls].filter(Boolean).join('\n')
+      if (said) turns.push(`Assistant: ${said}`)
     } else {
       for (const r of m.results) {
+        if (tools.length) {
+          turns.push(renderAgyToolResult(r))
+          continue
+        }
         const out = r.output.length > 2000 ? `${r.output.slice(0, 2000)}…` : r.output
         turns.push(`Tool result (${r.name}): ${out}`)
       }
     }
   }
   const header =
-    `${AGY_SYSTEM_NOTE}\n\n` +
+    `${tools.length ? AGY_TOOLS_SYSTEM_NOTE : AGY_SYSTEM_NOTE}\n\n` +
+    (tools.length ? `${agyToolNote(tools)}\n\n` : '') +
     (system.trim() ? `Instructions from the application:\n${system.trim()}\n\n` : '') +
     (files.length
       ? `Attachments in the current directory: ${files.map((f) => f.name).join(', ')}\n\n`
@@ -806,17 +831,20 @@ export async function runAgy(
 // Provider entry points (same shapes as the other transports)
 // ---------------------------------------------------------------------------
 
-/** Streaming turn. `tools` are intentionally ignored: agy cannot call GenOffice tools. */
+/**
+ * Streaming turn. With tools, agy asks for them through <tool_call> blocks (see agy-tools.ts);
+ * the reply is then shown once complete so a block never leaks into the visible text.
+ */
 export async function streamAgy(
   config: AiProviderConfig,
   system: string,
   messages: AgentMessage[],
-  _tools: AgentToolDef[],
+  tools: AgentToolDef[],
   _maxTokens: number,
   cb: StreamCallbacks,
   deps?: AgyRunDeps,
 ): Promise<void> {
-  const plan = buildAgyPrompt(system, messages)
+  const plan = buildAgyPrompt(system, messages, tools)
   const result = await runAgy(
     {
       cliPath: config.cliPath,
@@ -824,13 +852,20 @@ export async function streamAgy(
       prompt: plan.prompt,
       files: plan.files,
       signal: cb.signal,
-      onText: cb.onDelta,
+      ...(tools.length ? {} : { onText: cb.onDelta }),
       ...(cb.onUsage ? { onUsage: cb.onUsage } : {}),
       ...(cb.onActivity ? { onActivity: cb.onActivity } : {}),
     },
     deps,
   )
   if (!result.text.trim()) throw new Error('Antigravity CLI returned no content')
+  if (tools.length) {
+    const parsed = parseAgyToolCalls(result.text, new Set(tools.map((t) => t.name)))
+    if (parsed.text) cb.onDelta(parsed.text)
+    for (const call of parsed.calls) cb.onToolCall(call)
+    cb.onStopReason?.(parsed.calls.length ? 'tool_use' : 'end_turn')
+    return
+  }
   cb.onStopReason?.('end_turn')
 }
 
