@@ -329,6 +329,66 @@ describe('createIpcTransport', () => {
     }
   })
 
+  it('does not apply Gemini route deadlines to AGY streams with keepalives', () => {
+    vi.useFakeTimers()
+    try {
+      let listener: ((chunk: IpcStreamChunk) => void) | undefined
+      const started: IpcStreamStart<FakeSettings>[] = []
+      const onAttempt = vi.fn()
+      const onToolCall = vi.fn()
+      const onResult = vi.fn()
+      const callbacks = { onDelta: vi.fn(), onToolCall: vi.fn(), onDone: vi.fn(), onError: vi.fn() }
+      const transport = createIpcTransport({
+        onStream: (next) => {
+          listener = next
+          return () => {
+            listener = undefined
+          }
+        },
+        start: (request) => {
+          started.push(request)
+        },
+        cancel: vi.fn(),
+        getSettings: () => ({ provider: 'agy' }),
+        unknownErrorText: () => 'unknown',
+        timeoutErrorText: () => 'timed out',
+        route: {
+          appliesTo: (settings) => settings.provider === 'gemini',
+          prepare: (settings) => settings,
+          firstContentTimeoutMs: 45_000,
+          maxDurationMs: 120_000,
+          fallback: () => null,
+          onAttempt,
+          onToolCall,
+          onResult,
+        },
+      })
+      transport.stream({ system: 'sys', messages: [], tools: [] }, callbacks)
+
+      listener?.({ requestId: started[0]!.requestId, type: 'ping' })
+      vi.advanceTimersByTime(46_000)
+      listener?.({ requestId: started[0]!.requestId, type: 'ping' })
+      vi.advanceTimersByTime(46_000)
+      listener?.({ requestId: started[0]!.requestId, type: 'ping' })
+      vi.advanceTimersByTime(30_000)
+      listener?.({
+        requestId: started[0]!.requestId,
+        type: 'tool-call',
+        toolCall: { id: 'tool-1', name: 'edit_document', input: {} },
+      })
+      listener?.({ requestId: started[0]!.requestId, type: 'done' })
+
+      expect(callbacks.onToolCall).toHaveBeenCalledOnce()
+      expect(callbacks.onDone).toHaveBeenCalledOnce()
+      expect(callbacks.onError).not.toHaveBeenCalled()
+      expect(onAttempt).not.toHaveBeenCalled()
+      expect(onToolCall).not.toHaveBeenCalled()
+      expect(onResult).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('caps repeated attempts', () => {
     let listener: ((chunk: IpcStreamChunk) => void) | undefined
     const started: IpcStreamStart<{ model: string }>[] = []

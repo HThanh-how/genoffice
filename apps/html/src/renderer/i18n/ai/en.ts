@@ -46,7 +46,8 @@ export const en = {
   aiStop: 'Stop',
   aiStopped: 'Stopped',
   aiThinking: 'Thinking',
-  aiTimeoutError: 'AI response timed out',
+  aiTimeoutError:
+    'The AI request exceeded its time limit and was stopped. Try again, or choose a faster model for a long request.',
   aiToolWebSearch: 'Web search',
   aiToolWebSearchDone: 'Searched "{query}" · {count} results',
   aiTruncatedNote: '(The reply was cut off by the length limit and may be incomplete.)',

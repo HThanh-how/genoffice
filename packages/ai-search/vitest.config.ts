@@ -23,6 +23,7 @@ export default defineConfig({
         here,
         '../electron-utils/src/generated-images.ts',
       ),
+      '@genoffice/ai-provider/agy-cli': resolve(here, '../ai-provider/src/agy-cli.ts'),
       '@genoffice/ai-provider': resolve(here, '../ai-provider/src/index.ts'),
     },
   },

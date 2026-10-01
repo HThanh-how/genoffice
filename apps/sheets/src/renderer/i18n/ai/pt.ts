@@ -61,7 +61,7 @@ export const pt = {
   aiSave: 'Salvar',
   aiUnknownError: 'Erro desconhecido',
   aiTimeoutError:
-    'A solicitação de IA expirou: sem resposta da rede, a execução foi interrompida. Verifique sua conexão e tente novamente',
+    'A solicitação de IA excedeu o limite de tempo e foi interrompida. Tente novamente ou escolha um modelo mais rápido para uma solicitação longa.',
   aiOverloadedError:
     'O serviço de IA está sobrecarregado no momento — tente novamente em instantes',
   aiNetworkError:

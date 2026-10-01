@@ -23,11 +23,12 @@ export function agyToolNote(tools: AgentToolDef[]): string {
     )
     .join('\n')
   return (
-    'The host application exposes the tools below. You cannot run them yourself: to use one, end your reply with ' +
-    `one or more blocks of the exact form ${AGY_TOOL_OPEN}{"name":"<tool>","arguments":{...}}${AGY_TOOL_CLOSE} ` +
-    'with valid JSON, then stop. The host runs them and sends the results back as "Tool result" turns. ' +
+    'Use only the GenOffice host tools listed below. Do not invoke Antigravity CLI tools such as run_command, Generic, MCP, search_web, or file tools; do not request permission or wait for approval. ' +
+    'To use a listed GenOffice tool, output one or more plain-text blocks of the exact form ' +
+    `${AGY_TOOL_OPEN}{"name":"<tool>","arguments":{...}}${AGY_TOOL_CLOSE} ` +
+    'with valid JSON, then stop. Do not make a native CLI tool call. The host runs these blocks and sends results back as "Tool result" turns. ' +
     'Call a tool whenever the user asks you to read or change the document; do not claim an edit is done until a tool result confirms it. ' +
-    'When no tool is needed, reply normally without any block.\n\nTools:\n' +
+    'When no listed host tool is needed, reply normally without any block.\n\nGenOffice tools:\n' +
     list
   )
 }

@@ -110,7 +110,7 @@ export const pt = {
   aiErrEmptyOutput: 'Saída vazia',
   aiErrUnknown: 'Erro desconhecido',
   aiErrStreamTimeout:
-    'A solicitação de IA expirou: sem resposta da rede, a execução foi interrompida. Verifique sua conexão e tente novamente',
+    'A solicitação de IA excedeu o limite de tempo e foi interrompida. Tente novamente ou escolha um modelo mais rápido para uma solicitação longa.',
   aiErrOverloaded: 'O serviço de IA está sobrecarregado no momento — tente novamente em instantes',
   aiErrNetwork:
     'Problema de rede: não foi possível conectar ao serviço de IA. Verifique sua conexão e tente novamente',

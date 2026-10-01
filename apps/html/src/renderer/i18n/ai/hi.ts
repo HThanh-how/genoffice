@@ -46,7 +46,8 @@ export const hi = {
   aiStop: 'रोकें',
   aiStopped: 'रोका गया',
   aiThinking: 'सोच रहा है',
-  aiTimeoutError: 'AI प्रतिक्रिया समय समाप्त',
+  aiTimeoutError:
+    'AI अनुरोध समय सीमा से अधिक हो गया और रोक दिया गया। फिर से प्रयास करें या लंबे अनुरोध के लिए तेज़ मॉडल चुनें।',
   aiToolWebSearch: 'वेब खोज',
   aiToolWebSearchDone: '"{query}" खोजा · {count} परिणाम',
   aiTruncatedNote: '(उत्तर लंबाई सीमा के कारण कट गया और अधूरा हो सकता है।)',

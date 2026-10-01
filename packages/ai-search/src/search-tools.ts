@@ -11,10 +11,14 @@ import {
 } from '@genoffice/ai-provider'
 import { imageSearch, webSearch, type SearchOptions } from './index'
 import { readAiSettingsFile } from './media-tools'
+import { agyWebSearch } from './agy-search'
 
 export function searchOptionsFromSettings(settings: AiSettings): SearchOptions {
   const provider = activeSearchProvider(settings)
   const key = settings.search!.providers?.[provider]?.apiKey?.trim() ?? ''
+  // Antigravity CLI has no image-search protocol: its image-search action uses
+  // the established keyless source chain (Parallel, then DuckDuckGo).
+  if (provider === 'agy') return { useGsk: false, parallelKey: '', prefer: 'parallel' }
   if (provider === 'parallel') return { useGsk: false, parallelKey: key, prefer: 'parallel' }
   if (provider === 'serply') return { useGsk: false, serplyKey: key, prefer: 'serply' }
   return provider === 'tavily'
@@ -23,7 +27,16 @@ export function searchOptionsFromSettings(settings: AiSettings): SearchOptions {
 }
 
 export function webSearchTool(settingsPath: string, query: string, maxResults = 6) {
-  return webSearch(query, maxResults, searchOptionsFromSettings(readAiSettingsFile(settingsPath)))
+  const settings = readAiSettingsFile(settingsPath)
+  if (activeSearchProvider(settings) === 'agy') {
+    const searchConfig = settings.search?.providers.agy
+    const chatConfig = settings.providers.agy
+    return agyWebSearch(query, maxResults, {
+      cliPath: searchConfig?.cliPath?.trim() || chatConfig?.cliPath?.trim(),
+      model: searchConfig?.model?.trim() || chatConfig?.model?.trim(),
+    })
+  }
+  return webSearch(query, maxResults, searchOptionsFromSettings(settings))
 }
 
 export function imageSearchTool(settingsPath: string, query: string, maxResults = 8) {
@@ -34,8 +47,15 @@ export function imageSearchTool(settingsPath: string, query: string, maxResults 
 export async function testSearchProvider(
   provider: AiSearchProviderId,
   apiKey: string,
+  config?: { cliPath?: string | undefined; model?: string | undefined },
 ): Promise<{ ok: boolean; error?: string }> {
   if (provider === 'genspark') return { ok: false, error: 'Genspark search is disabled' }
+  if (provider === 'agy') {
+    const r = await agyWebSearch('GenOffice', 1, config)
+    return r.method === 'agy'
+      ? { ok: true }
+      : { ok: false, error: r.error ?? 'Antigravity search failed' }
+  }
   apiKey = apiKey.trim()
   if (!apiKey && provider !== 'parallel') return { ok: false, error: 'API key is empty' }
   const options: SearchOptions = {

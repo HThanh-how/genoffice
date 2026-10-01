@@ -46,7 +46,8 @@ export const vi = {
   aiStop: 'Dừng',
   aiStopped: 'Đã dừng',
   aiThinking: 'Đang suy nghĩ',
-  aiTimeoutError: 'Phản hồi từ AI đã hết thời gian chờ',
+  aiTimeoutError:
+    'Yêu cầu AI đã vượt quá thời gian chờ nên được dừng. Hãy thử lại hoặc chọn model nhanh hơn cho yêu cầu dài.',
   aiToolWebSearch: 'Tìm kiếm trên web',
   aiToolWebSearchDone: 'Đã tìm kiếm "{query}" · {count} kết quả',
   aiTruncatedNote: '(Câu trả lời bị cắt ngắn do giới hạn độ dài và có thể chưa hoàn chỉnh.)',

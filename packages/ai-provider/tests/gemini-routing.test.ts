@@ -101,6 +101,11 @@ describe('Gemini chat routing', () => {
   })
   it('keeps the no-output wait and whole turn within a short user-facing budget', () => {
     const router = createGeminiRouter()
+    const settings = defaultAiSettings()
+    settings.provider = 'gemini'
+    expect(router.appliesTo(settings)).toBe(true)
+    settings.provider = 'agy' as typeof settings.provider
+    expect(router.appliesTo(settings)).toBe(false)
     expect(router.firstContentTimeoutMs).toBe(45_000)
     expect(router.maxDurationMs).toBe(120_000)
   })

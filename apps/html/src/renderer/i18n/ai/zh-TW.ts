@@ -40,7 +40,7 @@ export const zhTW = {
   aiStop: '停止',
   aiStopped: '已停止',
   aiThinking: '思考中',
-  aiTimeoutError: 'AI 回應逾時',
+  aiTimeoutError: 'AI 請求已超出時間限制並停止。請重試，或為較長的請求選擇更快的模型。',
   aiToolWebSearch: '網路搜尋',
   aiToolWebSearchDone: '搜尋「{query}」· {count} 筆結果',
   aiTruncatedNote: '（回覆因長度限制被截斷,內容可能不完整。）',

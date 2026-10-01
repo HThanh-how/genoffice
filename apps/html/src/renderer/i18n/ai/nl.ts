@@ -46,7 +46,8 @@ export const nl = {
   aiStop: 'Stoppen',
   aiStopped: 'Gestopt',
   aiThinking: 'Denkt na',
-  aiTimeoutError: 'AI-antwoord time-out',
+  aiTimeoutError:
+    'Het AI-verzoek overschreed de tijdslimiet en is gestopt. Probeer het opnieuw of kies een sneller model voor een lang verzoek.',
   aiToolWebSearch: 'Zoeken op internet',
   aiToolWebSearchDone: 'Gezocht naar "{query}" · {count} resultaten',
   aiTruncatedNote: '(Het antwoord is afgekapt door de lengtelimiet en is mogelijk onvolledig.)',

@@ -444,6 +444,8 @@ export interface HomeApi extends ForkHomeApi {
   testAiSearchSettings(input: {
     provider: AiSearchProviderId
     apiKey: string
+    cliPath?: string | undefined
+    model?: string | undefined
   }): Promise<{ ok: boolean; error?: string }>
 }
 

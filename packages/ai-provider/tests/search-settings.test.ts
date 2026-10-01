@@ -15,6 +15,7 @@ describe('search settings', () => {
         serply: { apiKey: '' },
         tavily: { apiKey: '' },
         parallel: { apiKey: '' },
+        agy: { apiKey: '', cliPath: '', model: '' },
       },
     })
     expect(defaultAiSettings().search?.provider).toBe('parallel')
@@ -35,6 +36,19 @@ describe('search settings', () => {
     expect(s.providers.serper.apiKey).toBe('')
   })
 
+  it('restores Antigravity CLI settings keylessly and leaves an unset model available for shared chat settings', () => {
+    const s = resolveAiSearchSettings({
+      provider: 'agy',
+      providers: {
+        agy: { apiKey: '', cliPath: ' /opt/bin/agy ', model: ' custom-model ' },
+      } as never,
+    })
+    expect(s.provider).toBe('agy')
+    expect(s.providers.agy).toEqual({ apiKey: '', cliPath: '/opt/bin/agy', model: 'custom-model' })
+    expect(activeSearchProvider({ search: s })).toBe('agy')
+    expect(resolveAiSearchSettings({ provider: 'agy' } as never).providers.agy.model).toBe('')
+  })
+
   it('activates a BYOK search provider only with a key', () => {
     expect(activeSearchProvider({ search: undefined })).toBe('parallel')
     expect(
@@ -46,6 +60,7 @@ describe('search settings', () => {
             serply: { apiKey: '' },
             tavily: { apiKey: '' },
             parallel: { apiKey: '' },
+            agy: { apiKey: '' },
           },
         },
       }),
@@ -59,6 +74,7 @@ describe('search settings', () => {
             serply: { apiKey: '' },
             tavily: { apiKey: '' },
             parallel: { apiKey: '' },
+            agy: { apiKey: '' },
           },
         },
       }),
@@ -72,6 +88,7 @@ describe('search settings', () => {
             serply: { apiKey: '' },
             tavily: { apiKey: '' },
             parallel: { apiKey: '' },
+            agy: { apiKey: '' },
           },
         },
       }),

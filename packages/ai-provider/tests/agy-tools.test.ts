@@ -44,7 +44,11 @@ describe('parseAgyToolCalls', () => {
 
 describe('agy tool prompt', () => {
   it('lists the tools and replays calls and results in history', () => {
-    expect(agyToolNote(tools)).toContain('replace_text')
+    const note = agyToolNote(tools)
+    expect(note).toContain('replace_text')
+    expect(note).toContain('Do not invoke Antigravity CLI tools')
+    expect(note).toContain('do not request permission or wait for approval')
+    expect(note).toContain('plain-text blocks')
     const call = { id: '1', name: 'replace_text', input: { find: 'a' } }
     const { prompt } = buildAgyPrompt(
       '',

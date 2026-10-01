@@ -326,6 +326,31 @@ describe('stream-json parsing (recorded fixtures)', () => {
 describe('prompt flattening', () => {
   const png = Buffer.from('fake png bytes').toString('base64')
 
+  it('puts the host tool protocol after app instructions and repeats it after history', () => {
+    const hostTools = [
+      {
+        name: 'replace_text',
+        description: 'Replace text in the document',
+        inputSchema: { type: 'object', properties: {} },
+      },
+    ]
+    const { prompt } = buildAgyPrompt(
+      'Use available tools to edit the open document.',
+      [{ role: 'user', text: 'Replace the title.' }],
+      hostTools,
+    )
+    const appInstructions = prompt.indexOf('Instructions from the application:')
+    const hostProtocol = prompt.indexOf('Do not invoke Antigravity CLI tools')
+    const conversation = prompt.indexOf('Conversation:')
+
+    expect(appInstructions).toBeGreaterThanOrEqual(0)
+    expect(hostProtocol).toBeGreaterThan(appInstructions)
+    expect(conversation).toBeGreaterThan(hostProtocol)
+    expect(prompt.trimEnd()).toMatch(
+      /For document actions, output GenOffice <tool_call> blocks only; never invoke native Antigravity tools or request their approval\.$/,
+    )
+  })
+
   it('flattens history, names attachments and keeps the system note', () => {
     const messages: AgentMessage[] = [
       { role: 'user', text: 'Hello' },

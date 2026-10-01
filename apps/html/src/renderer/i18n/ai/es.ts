@@ -47,7 +47,8 @@ export const es = {
   aiStop: 'Detener',
   aiStopped: 'Detenido',
   aiThinking: 'Pensando',
-  aiTimeoutError: 'La respuesta de IA agotó el tiempo',
+  aiTimeoutError:
+    'La solicitud de IA superó el límite de tiempo y se detuvo. Inténtalo de nuevo o elige un modelo más rápido para solicitudes largas.',
   aiToolWebSearch: 'Búsqueda web',
   aiToolWebSearchDone: 'Búsqueda de «{query}» · {count} resultados',
   aiTruncatedNote: '(La respuesta fue cortada por el límite de longitud y puede estar incompleta.)',

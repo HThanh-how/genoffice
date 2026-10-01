@@ -511,12 +511,16 @@ export function buildAgyPrompt(
   }
   const header =
     `${tools.length ? AGY_TOOLS_SYSTEM_NOTE : AGY_SYSTEM_NOTE}\n\n` +
-    (tools.length ? `${agyToolNote(tools)}\n\n` : '') +
     (system.trim() ? `Instructions from the application:\n${system.trim()}\n\n` : '') +
+    (tools.length ? `${agyToolNote(tools)}\n\n` : '') +
     (files.length
       ? `Attachments in the current directory: ${files.map((f) => f.name).join(', ')}\n\n`
       : '')
-  const footer = '\n\nWrite the Assistant’s next reply to the last User message.'
+  const footer =
+    '\n\nWrite the Assistant’s next reply to the last User message.' +
+    (tools.length
+      ? ' For document actions, output GenOffice <tool_call> blocks only; never invoke native Antigravity tools or request their approval.'
+      : '')
   const budget = AGY_MAX_PROMPT_CHARS - header.length - footer.length
   // keep the newest turns that fit; the last turn is always kept (truncated if huge)
   const kept: string[] = []

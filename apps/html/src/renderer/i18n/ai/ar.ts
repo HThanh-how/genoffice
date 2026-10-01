@@ -46,7 +46,8 @@ export const ar = {
   aiStop: 'إيقاف',
   aiStopped: 'تم الإيقاف',
   aiThinking: 'يفكر',
-  aiTimeoutError: 'انتهت مهلة استجابة الذكاء الاصطناعي',
+  aiTimeoutError:
+    'تجاوز طلب الذكاء الاصطناعي الحد الزمني وتم إيقافه. حاول مرة أخرى أو اختر نموذجًا أسرع للطلبات الطويلة.',
   aiToolWebSearch: 'بحث ويب',
   aiToolWebSearchDone: 'بحث عن "{query}" · {count} نتيجة',
   aiTruncatedNote: '(تم اقتطاع الرد بسبب حد الطول وقد يكون غير مكتمل.)',

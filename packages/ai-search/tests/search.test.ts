@@ -334,6 +334,7 @@ describe('search-tools', () => {
           serply: { apiKey: '' },
           tavily: { apiKey: '' },
           parallel: { apiKey: '' },
+          agy: { apiKey: '' },
         },
       },
     }
@@ -351,6 +352,7 @@ describe('search-tools', () => {
           serply: { apiKey: '' },
           tavily: { apiKey: 't' },
           parallel: { apiKey: '' },
+          agy: { apiKey: '' },
         },
       },
     }
@@ -369,6 +371,7 @@ describe('search-tools', () => {
           serply: { apiKey: '' },
           tavily: { apiKey: '' },
           parallel: { apiKey: '' },
+          agy: { apiKey: '' },
         },
       },
     }

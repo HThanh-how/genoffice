@@ -111,7 +111,7 @@ export const it = {
   aiErrEmptyOutput: 'Output vuoto',
   aiErrUnknown: 'Errore sconosciuto',
   aiErrStreamTimeout:
-    'Richiesta IA scaduta: nessuna risposta dalla rete, esecuzione interrotta. Controlla la connessione e riprova',
+    'La richiesta AI ha superato il limite di tempo ed è stata interrotta. Riprova oppure scegli un modello più veloce per una richiesta lunga.',
   aiErrOverloaded: 'Il servizio IA è momentaneamente sovraccarico — riprova tra poco',
   aiErrNetwork:
     'Problema di rete: impossibile raggiungere il servizio IA. Controlla la connessione e riprova',

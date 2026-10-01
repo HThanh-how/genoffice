@@ -103,7 +103,7 @@ export const zh = {
   aiImageReadFail: '{name}: 读取失败',
   aiTooManyImages: '图片最多随消息发送 {max} 张,多余的已忽略',
   aiUnknownError: '未知错误',
-  aiTimeoutError: 'AI 请求超时：网络长时间无响应，已停止。请检查网络后重试',
+  aiTimeoutError: 'AI 请求已超出时间限制并停止。请重试，或为较长的请求选择更快的模型。',
   aiOverloadedError: 'AI 服务当前繁忙，请稍后重试',
   aiNetworkError: '网络有问题，无法连接 AI 服务。请检查网络后重试',
   aiCreditsExhausted: 'Genspark 积分已用完，请前往 genspark.ai/pricing 充值后重试',

@@ -60,7 +60,7 @@ export const id = {
   aiSave: 'Simpan',
   aiUnknownError: 'Kesalahan tidak dikenal',
   aiTimeoutError:
-    'Permintaan AI habis waktu: jaringan tidak merespons sehingga proses dihentikan. Periksa koneksi Anda lalu coba lagi',
+    'Permintaan AI melewati batas waktu dan dihentikan. Coba lagi, atau pilih model yang lebih cepat untuk permintaan panjang.',
   aiOverloadedError: 'Layanan AI sedang sibuk — silakan coba lagi sebentar lagi',
   aiNetworkError:
     'Masalah jaringan: tidak dapat terhubung ke layanan AI. Periksa koneksi Anda lalu coba lagi',

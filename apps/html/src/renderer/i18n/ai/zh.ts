@@ -39,7 +39,7 @@ export const zh = {
   aiStop: '停止',
   aiStopped: '已停止',
   aiThinking: '思考中',
-  aiTimeoutError: 'AI 响应超时',
+  aiTimeoutError: 'AI 请求已超出时间限制并停止。请重试，或为较长的请求选择更快的模型。',
   aiToolWebSearch: '联网搜索',
   aiToolWebSearchDone: '搜索"{query}" · {count} 条结果',
   aiTruncatedNote: '（回复因长度限制被截断,内容可能不完整。）',

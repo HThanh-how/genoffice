@@ -46,7 +46,8 @@ export const cs = {
   aiStop: 'Zastavit',
   aiStopped: 'Zastaveno',
   aiThinking: 'Přemýšlím',
-  aiTimeoutError: 'Odpověď AI vypršela',
+  aiTimeoutError:
+    'Požadavek AI překročil časový limit a byl zastaven. Zkuste to znovu nebo pro dlouhý požadavek vyberte rychlejší model.',
   aiToolWebSearch: 'Hledání na webu',
   aiToolWebSearchDone: 'Hledáno „{query}“ · {count} výsledků',
   aiTruncatedNote: '(Odpověď byla zkrácena limitem délky a může být neúplná.)',

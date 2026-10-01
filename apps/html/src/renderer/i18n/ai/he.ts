@@ -44,7 +44,7 @@ export const he = {
   aiStop: 'עצור',
   aiStopped: 'נעצר',
   aiThinking: 'חושב',
-  aiTimeoutError: 'תגובת ה-AI חרגה מהזמן',
+  aiTimeoutError: 'בקשת ה-AI חרגה ממגבלת הזמן והופסקה. נסו שוב או בחרו מודל מהיר יותר לבקשה ארוכה.',
   aiToolWebSearch: 'חיפוש ברשת',
   aiToolWebSearchDone: 'חיפוש "{query}" · {count} תוצאות',
   aiTruncatedNote: '(התשובה נחתכה בגלל מגבלת האורך וייתכן שאינה שלמה.)',

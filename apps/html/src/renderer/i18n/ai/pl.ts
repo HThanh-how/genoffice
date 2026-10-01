@@ -46,7 +46,8 @@ export const pl = {
   aiStop: 'Zatrzymaj',
   aiStopped: 'Zatrzymano',
   aiThinking: 'Myśli',
-  aiTimeoutError: 'Przekroczono czas odpowiedzi AI',
+  aiTimeoutError:
+    'Żądanie AI przekroczyło limit czasu i zostało zatrzymane. Spróbuj ponownie lub wybierz szybszy model dla długiego żądania.',
   aiToolWebSearch: 'Wyszukiwanie w sieci',
   aiToolWebSearchDone: 'Wyszukano „{query}" · {count} wyników',
   aiTruncatedNote: '(Odpowiedź została ucięta przez limit długości i może być niepełna.)',

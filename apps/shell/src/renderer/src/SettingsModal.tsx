@@ -41,6 +41,7 @@ import { ClipboardSettingsToggle } from './fork/ClipboardSettingsToggle'
 import { AgyProviderFields, ProviderNote, testAiSettingsFor } from './fork/AgyProviderFields'
 import { AgyMediaFields } from './fork/AgyMediaFields'
 import { agyMediaTestConfig } from './fork/agy-media-state'
+import { agyString } from './fork/agy-strings'
 import './settings.css'
 
 // ── Settings modal (opened from the account menu) ─────────
@@ -732,6 +733,7 @@ function AiMediaPane({
   onFileSearchChange?: () => void
   focusBlock?: TestedBlock
 }) {
+  const { lang } = useI18n()
   const [mediaCatalog] = useState<AiMediaProviderMeta[]>(() =>
     (window.aiOffice.getAiMediaProviders?.() ?? []).filter((entry) => entry.id !== 'genspark'),
   )
@@ -845,6 +847,9 @@ function AiMediaPane({
         () =>
           window.aiOffice.testAiSearchSettings?.({
             provider: search.provider,
+            ...(search.provider === 'agy'
+              ? { cliPath: settings.providers.agy?.cliPath, model: settings.providers.agy?.model }
+              : {}),
             apiKey:
               search.provider === 'genspark'
                 ? ''
@@ -1152,17 +1157,20 @@ function AiMediaPane({
           setSearch({ ...search, provider: v as AiSearchSettings['provider'] }),
         )}
         <div className="set-field-desc set-ai-note">
-          {search.provider === 'genspark'
-            ? t('setAiSearchGensparkHint')
-            : search.provider === 'parallel'
-              ? t('setAiSearchParallelHint')
-              : search.provider === 'serply'
-                ? t('setAiSearchSerplyHint')
-                : searchMeta?.imageSearch
-                  ? t('setAiSearchSerperHint')
-                  : t('setAiSearchTavilyHint')}
+          {search.provider === 'agy'
+            ? agyString(lang, 'agySearchNote')
+            : search.provider === 'genspark'
+              ? t('setAiSearchGensparkHint')
+              : search.provider === 'parallel'
+                ? t('setAiSearchParallelHint')
+                : search.provider === 'serply'
+                  ? t('setAiSearchSerplyHint')
+                  : searchMeta?.imageSearch
+                    ? t('setAiSearchSerperHint')
+                    : t('setAiSearchTavilyHint')}
         </div>
         {search.provider !== 'genspark' &&
+          search.provider !== 'agy' &&
           keyRow('set-ai-search-key', searchKey, searchMeta?.keyPlaceholder ?? 'API Key', (v) =>
             setSearch({
               ...search,

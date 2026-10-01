@@ -10,6 +10,7 @@ export const AI_SEARCH_PROVIDERS: AiSearchProviderMeta[] = [
   { id: 'serply', label: 'Serply', keyPlaceholder: 'Serply API key', imageSearch: true },
   { id: 'tavily', label: 'Tavily', keyPlaceholder: 'tvly-...', imageSearch: false },
   { id: 'parallel', label: 'Parallel', keyPlaceholder: 'Parallel API key', imageSearch: false },
+  { id: 'agy', label: 'Antigravity CLI', keyPlaceholder: '', imageSearch: false, keyless: true },
 ]
 
 export function defaultAiSearchSettings(): AiSearchSettings {
@@ -20,6 +21,7 @@ export function defaultAiSearchSettings(): AiSearchSettings {
       serply: { apiKey: '' },
       tavily: { apiKey: '' },
       parallel: { apiKey: '' },
+      agy: { apiKey: '', cliPath: '', model: '' },
     },
   }
 }
@@ -33,6 +35,12 @@ export function resolveAiSearchSettings(
   for (const id of ['serper', 'serply', 'tavily', 'parallel'] as const) {
     const key = stored.providers?.[id]?.apiKey
     if (typeof key === 'string') providers[id] = { apiKey: key.trim() }
+  }
+  const agy = stored.providers?.agy
+  providers.agy = {
+    apiKey: '',
+    cliPath: typeof agy?.cliPath === 'string' ? agy.cliPath.trim() : '',
+    model: typeof agy?.model === 'string' ? agy.model.trim() : '',
   }
   return {
     provider:
@@ -48,7 +56,7 @@ export function activeSearchProvider(
   const search = settings.search
   if (!search || search.provider === 'genspark') return 'parallel'
   if (!AI_SEARCH_PROVIDERS.some((m) => m.id === search.provider)) return 'parallel'
-  if (search.provider === 'parallel') return 'parallel'
+  if (search.provider === 'parallel' || search.provider === 'agy') return search.provider
   // Trim-aware: a whitespace-only key from in-memory settings falls back
   // instead of sending `Bearer    ` to the search backend.
   return search.providers?.[search.provider]?.apiKey?.trim() ? search.provider : 'parallel'

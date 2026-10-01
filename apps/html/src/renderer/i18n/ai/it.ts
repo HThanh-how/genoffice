@@ -46,7 +46,8 @@ export const it = {
   aiStop: 'Interrompi',
   aiStopped: 'Interrotto',
   aiThinking: 'Sta pensando',
-  aiTimeoutError: 'Timeout della risposta IA',
+  aiTimeoutError:
+    'La richiesta AI ha superato il limite di tempo ed è stata interrotta. Riprova oppure scegli un modello più veloce per una richiesta lunga.',
   aiToolWebSearch: 'Ricerca web',
   aiToolWebSearchDone: 'Cercato "{query}" · {count} risultati',
   aiTruncatedNote:

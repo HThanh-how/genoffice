@@ -46,7 +46,8 @@ export const fr = {
   aiStop: 'Arrêter',
   aiStopped: 'Arrêté',
   aiThinking: 'Réflexion',
-  aiTimeoutError: 'Délai de réponse IA dépassé',
+  aiTimeoutError:
+    'La requête de l’IA a dépassé le délai imparti et a été arrêtée. Réessayez ou choisissez un modèle plus rapide pour une longue requête.',
   aiToolWebSearch: 'Recherche Web',
   aiToolWebSearchDone: 'Recherche « {query} » · {count} résultats',
   aiTruncatedNote: '(La réponse a été tronquée par la limite de longueur et peut être incomplète.)',

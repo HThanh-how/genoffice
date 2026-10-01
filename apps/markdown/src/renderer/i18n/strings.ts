@@ -151,7 +151,7 @@ export const strings = {
     blockDelete: '删除',
     blockGripHint: '拖拽移动，点击打开菜单',
     aiUnknownError: 'AI 请求失败，请重试',
-    aiTimeoutError: 'AI 响应超时',
+    aiTimeoutError: 'AI 请求已超出时间限制并停止。请重试，或为较长的请求选择更快的模型。',
     aiOverloadedError: 'AI 服务当前繁忙，请稍后重试',
     aiNetworkError: '网络有问题，无法连接 AI 服务。请检查网络后重试',
     aiCreditsExhausted: '积分不足，请前往 genspark.ai 充值',
@@ -357,7 +357,8 @@ export const strings = {
     blockDelete: 'Delete',
     blockGripHint: 'Drag to move, click for menu',
     aiUnknownError: 'AI request failed, please retry',
-    aiTimeoutError: 'AI response timed out',
+    aiTimeoutError:
+      'The AI request exceeded its time limit and was stopped. Try again, or choose a faster model for a long request.',
     aiOverloadedError: 'The AI service is busy right now — please try again in a moment',
     aiNetworkError:
       'Network problem: could not reach the AI service. Check your connection and try again',
@@ -564,7 +565,8 @@ export const strings = {
     blockDelete: 'Xóa',
     blockGripHint: 'Kéo để di chuyển, nhấp để mở menu',
     aiUnknownError: 'Yêu cầu AI thất bại, vui lòng thử lại',
-    aiTimeoutError: 'Phản hồi từ AI đã hết thời gian chờ',
+    aiTimeoutError:
+      'Yêu cầu AI đã vượt quá thời gian chờ nên được dừng. Hãy thử lại hoặc chọn model nhanh hơn cho yêu cầu dài.',
     aiOverloadedError: 'Dịch vụ AI hiện đang bận — vui lòng thử lại sau giây lát',
     aiNetworkError: 'Sự cố mạng: không thể kết nối với dịch vụ AI. Kiểm tra kết nối và thử lại',
     aiCreditsExhausted: 'Đã hết tín dụng — nạp thêm tại genspark.ai',
@@ -769,7 +771,8 @@ export const strings = {
     blockDelete: '削除',
     blockGripHint: 'ドラッグで移動、クリックでメニュー',
     aiUnknownError: 'AI リクエストに失敗しました。再試行してください',
-    aiTimeoutError: 'AI の応答がタイムアウトしました',
+    aiTimeoutError:
+      'AI リクエストは制限時間を超えたため停止しました。もう一度試すか、長いリクエストにはより高速なモデルを選んでください。',
     aiOverloadedError: 'AI サービスが混み合っています。しばらくしてからもう一度お試しください',
     aiNetworkError:
       'ネットワークに問題があり、AI サービスに接続できません。接続を確認して再試行してください',
@@ -976,7 +979,8 @@ export const strings = {
     blockDelete: '삭제',
     blockGripHint: '드래그로 이동, 클릭하면 메뉴',
     aiUnknownError: 'AI 요청이 실패했습니다. 다시 시도하세요',
-    aiTimeoutError: 'AI 응답 시간 초과',
+    aiTimeoutError:
+      'AI 요청이 제한 시간을 초과해 중지되었습니다. 다시 시도하거나 긴 요청에는 더 빠른 모델을 선택하세요.',
     aiOverloadedError: 'AI 서비스가 혼잡합니다. 잠시 후 다시 시도해 주세요',
     aiNetworkError:
       '네트워크에 문제가 있어 AI 서비스에 연결할 수 없습니다. 연결을 확인한 후 다시 시도해 주세요',
@@ -1186,7 +1190,8 @@ export const strings = {
     blockDelete: 'Supprimer',
     blockGripHint: 'Glisser pour déplacer, cliquer pour le menu',
     aiUnknownError: 'La requête IA a échoué, réessayez',
-    aiTimeoutError: 'Délai de réponse IA dépassé',
+    aiTimeoutError:
+      'La requête de l’IA a dépassé le délai imparti et a été arrêtée. Réessayez ou choisissez un modèle plus rapide pour une longue requête.',
     aiOverloadedError: "Le service d'IA est actuellement surchargé — réessayez dans un instant",
     aiNetworkError:
       'Problème réseau : impossible de joindre le service IA. Vérifiez votre connexion et réessayez',
@@ -1398,7 +1403,8 @@ export const strings = {
     blockDelete: 'Löschen',
     blockGripHint: 'Ziehen zum Verschieben, Klick für Menü',
     aiUnknownError: 'KI-Anfrage fehlgeschlagen, bitte erneut versuchen',
-    aiTimeoutError: 'Zeitüberschreitung der KI-Antwort',
+    aiTimeoutError:
+      'Die KI-Anfrage hat das Zeitlimit überschritten und wurde gestoppt. Versuche es erneut oder wähle für eine lange Anfrage ein schnelleres Modell.',
     aiOverloadedError: 'Der KI-Dienst ist derzeit überlastet — bitte gleich erneut versuchen',
     aiNetworkError:
       'Netzwerkproblem: Der KI-Dienst ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut',
@@ -1608,7 +1614,8 @@ export const strings = {
     blockDelete: 'Eliminar',
     blockGripHint: 'Arrastra para mover, clic para el menú',
     aiUnknownError: 'La solicitud de IA falló, reinténtalo',
-    aiTimeoutError: 'La respuesta de IA agotó el tiempo',
+    aiTimeoutError:
+      'La solicitud de IA superó el límite de tiempo y se detuvo. Inténtalo de nuevo o elige un modelo más rápido para solicitudes largas.',
     aiOverloadedError:
       'El servicio de IA está saturado en este momento; inténtalo de nuevo en unos instantes',
     aiNetworkError:
@@ -1815,7 +1822,8 @@ export const strings = {
     blockDelete: 'ลบ',
     blockGripHint: 'ลากเพื่อย้าย คลิกเพื่อเปิดเมนู',
     aiUnknownError: 'คำขอ AI ล้มเหลว โปรดลองอีกครั้ง',
-    aiTimeoutError: 'การตอบกลับของ AI หมดเวลา',
+    aiTimeoutError:
+      'คำขอ AI ใช้เวลาเกินกำหนดและหยุดทำงานแล้ว ลองอีกครั้งหรือเลือกโมเดลที่เร็วขึ้นสำหรับคำขอที่ยาว',
     aiOverloadedError: 'บริการ AI มีผู้ใช้งานจำนวนมากในขณะนี้ โปรดลองอีกครั้งในอีกสักครู่',
     aiNetworkError:
       'เครือข่ายมีปัญหา ไม่สามารถเชื่อมต่อบริการ AI ได้ โปรดตรวจสอบการเชื่อมต่อแล้วลองใหม่',
@@ -2022,7 +2030,8 @@ export const strings = {
     blockDelete: 'Hapus',
     blockGripHint: 'Seret untuk memindahkan, klik untuk menu',
     aiUnknownError: 'Permintaan AI gagal, coba lagi',
-    aiTimeoutError: 'Respons AI kehabisan waktu',
+    aiTimeoutError:
+      'Permintaan AI melewati batas waktu dan dihentikan. Coba lagi, atau pilih model yang lebih cepat untuk permintaan panjang.',
     aiOverloadedError: 'Layanan AI sedang sibuk — silakan coba lagi sebentar lagi',
     aiNetworkError:
       'Masalah jaringan: tidak dapat terhubung ke layanan AI. Periksa koneksi Anda lalu coba lagi',
@@ -2230,7 +2239,8 @@ export const strings = {
     blockDelete: 'Удалить',
     blockGripHint: 'Перетащите для перемещения, клик — меню',
     aiUnknownError: 'Сбой запроса ИИ, попробуйте ещё раз',
-    aiTimeoutError: 'Тайм-аут ответа ИИ',
+    aiTimeoutError:
+      'Время ожидания запроса ИИ истекло, и он был остановлен. Попробуйте ещё раз или выберите более быструю модель для длинного запроса.',
     aiOverloadedError: 'Сервис ИИ сейчас перегружен — повторите попытку чуть позже',
     aiNetworkError:
       'Проблема с сетью: не удалось подключиться к сервису ИИ. Проверьте подключение и повторите попытку',
@@ -2434,7 +2444,8 @@ export const strings = {
     blockDelete: 'حذف',
     blockGripHint: 'اسحب للنقل، وانقر لفتح القائمة',
     aiUnknownError: 'فشل طلب الذكاء الاصطناعي، أعد المحاولة',
-    aiTimeoutError: 'انتهت مهلة استجابة الذكاء الاصطناعي',
+    aiTimeoutError:
+      'تجاوز طلب الذكاء الاصطناعي الحد الزمني وتم إيقافه. حاول مرة أخرى أو اختر نموذجًا أسرع للطلبات الطويلة.',
     aiOverloadedError: 'خدمة الذكاء الاصطناعي مشغولة حاليًا — يرجى المحاولة مرة أخرى بعد قليل',
     aiNetworkError:
       'مشكلة في الشبكة: تعذّر الوصول إلى خدمة الذكاء الاصطناعي. تحقق من الاتصال وحاول مجددًا',
@@ -2643,7 +2654,8 @@ export const strings = {
     blockDelete: 'Excluir',
     blockGripHint: 'Arraste para mover, clique para o menu',
     aiUnknownError: 'A solicitação de IA falhou, tente novamente',
-    aiTimeoutError: 'A resposta da IA expirou',
+    aiTimeoutError:
+      'A solicitação de IA excedeu o limite de tempo e foi interrompida. Tente novamente ou escolha um modelo mais rápido para uma solicitação longa.',
     aiOverloadedError:
       'O serviço de IA está sobrecarregado no momento — tente novamente em instantes',
     aiNetworkError:
@@ -2853,7 +2865,8 @@ export const strings = {
     blockDelete: 'Elimina',
     blockGripHint: 'Trascina per spostare, clicca per il menu',
     aiUnknownError: 'Richiesta IA non riuscita, riprova',
-    aiTimeoutError: 'Timeout della risposta IA',
+    aiTimeoutError:
+      'La richiesta AI ha superato il limite di tempo ed è stata interrotta. Riprova oppure scegli un modello più veloce per una richiesta lunga.',
     aiOverloadedError: 'Il servizio IA è momentaneamente sovraccarico — riprova tra poco',
     aiNetworkError:
       'Problema di rete: impossibile raggiungere il servizio IA. Controlla la connessione e riprova',
@@ -3062,7 +3075,8 @@ export const strings = {
     blockDelete: 'Usuń',
     blockGripHint: 'Przeciągnij, aby przenieść; kliknij, aby otworzyć menu',
     aiUnknownError: 'Żądanie AI nie powiodło się, spróbuj ponownie',
-    aiTimeoutError: 'Przekroczono czas odpowiedzi AI',
+    aiTimeoutError:
+      'Żądanie AI przekroczyło limit czasu i zostało zatrzymane. Spróbuj ponownie lub wybierz szybszy model dla długiego żądania.',
     aiOverloadedError: 'Usługa AI jest obecnie przeciążona — spróbuj ponownie za chwilę',
     aiNetworkError:
       'Problem z siecią: nie można połączyć się z usługą AI. Sprawdź połączenie i spróbuj ponownie',
@@ -3255,7 +3269,8 @@ export const strings = {
     blockDelete: 'Odstranit',
     blockGripHint: 'Přetažením přesunete, kliknutím otevřete nabídku',
     aiUnknownError: 'Požadavek na AI se nezdařil, zkuste to znovu',
-    aiTimeoutError: 'Odpověď AI vypršela',
+    aiTimeoutError:
+      'Požadavek AI překročil časový limit a byl zastaven. Zkuste to znovu nebo pro dlouhý požadavek vyberte rychlejší model.',
     aiOverloadedError: 'Služba AI je právě zaneprázdněna – zkuste to za chvíli znovu',
     aiNetworkError:
       'Problém se sítí: službu AI se nepodařilo kontaktovat. Zkontrolujte připojení a zkuste to znovu',
@@ -3478,7 +3493,8 @@ export const strings = {
     blockDelete: 'Verwijderen',
     blockGripHint: 'Sleep om te verplaatsen, klik voor menu',
     aiUnknownError: 'AI-verzoek mislukt, probeer opnieuw',
-    aiTimeoutError: 'AI-antwoord time-out',
+    aiTimeoutError:
+      'Het AI-verzoek overschreed de tijdslimiet en is gestopt. Probeer het opnieuw of kies een sneller model voor een lang verzoek.',
     aiOverloadedError: 'De AI-service is momenteel overbelast — probeer het zo opnieuw',
     aiNetworkError:
       'Netwerkprobleem: kan de AI-service niet bereiken. Controleer je verbinding en probeer het opnieuw',
@@ -3685,7 +3701,8 @@ export const strings = {
     blockDelete: 'Padam',
     blockGripHint: 'Seret untuk alih, klik untuk menu',
     aiUnknownError: 'Permintaan AI gagal, cuba lagi',
-    aiTimeoutError: 'Respons AI tamat masa',
+    aiTimeoutError:
+      'Permintaan AI melebihi had masa lalu dihentikan. Cuba lagi atau pilih model yang lebih pantas untuk permintaan panjang.',
     aiOverloadedError: 'Perkhidmatan AI sedang sibuk — sila cuba lagi sebentar lagi',
     aiNetworkError:
       'Masalah rangkaian: tidak dapat menghubungi perkhidmatan AI. Semak sambungan anda dan cuba lagi',
@@ -3889,7 +3906,8 @@ export const strings = {
     blockDelete: 'מחק',
     blockGripHint: 'גרירה להזזה, לחיצה לתפריט',
     aiUnknownError: 'בקשת ה-AI נכשלה, נסו שוב',
-    aiTimeoutError: 'תגובת ה-AI חרגה מהזמן',
+    aiTimeoutError:
+      'בקשת ה-AI חרגה ממגבלת הזמן והופסקה. נסו שוב או בחרו מודל מהיר יותר לבקשה ארוכה.',
     aiOverloadedError: 'שירות ה-AI עמוס כרגע — נסו שוב בעוד רגע',
     aiNetworkError: 'בעיית רשת: לא ניתן להתחבר לשירות ה-AI. בדוק את החיבור ונסה שוב',
     aiCreditsExhausted: 'נגמרו הקרדיטים — טענו ב-genspark.ai',
@@ -4095,7 +4113,8 @@ export const strings = {
     blockDelete: 'हटाएँ',
     blockGripHint: 'खींचकर स्थानांतरित करें, मेनू के लिए क्लिक करें',
     aiUnknownError: 'AI अनुरोध विफल, पुनः प्रयास करें',
-    aiTimeoutError: 'AI प्रतिक्रिया समय समाप्त',
+    aiTimeoutError:
+      'AI अनुरोध समय सीमा से अधिक हो गया और रोक दिया गया। फिर से प्रयास करें या लंबे अनुरोध के लिए तेज़ मॉडल चुनें।',
     aiOverloadedError: 'AI सेवा अभी व्यस्त है — कृपया थोड़ी देर बाद फिर से प्रयास करें',
     aiNetworkError:
       'नेटवर्क समस्या: AI सेवा से कनेक्ट नहीं हो सका। कनेक्शन जांचें और फिर से प्रयास करें',
@@ -4299,7 +4318,7 @@ export const strings = {
     blockDelete: '刪除',
     blockGripHint: '拖曳移動，點擊開啟選單',
     aiUnknownError: 'AI 請求失敗，請重試',
-    aiTimeoutError: 'AI 回應逾時',
+    aiTimeoutError: 'AI 請求已超出時間限制並停止。請重試，或為較長的請求選擇更快的模型。',
     aiOverloadedError: 'AI 服務目前繁忙，請稍後重試',
     aiNetworkError: '網路有問題，無法連接 AI 服務。請檢查網路後重試',
     aiCreditsExhausted: '點數不足，請前往 genspark.ai 儲值',

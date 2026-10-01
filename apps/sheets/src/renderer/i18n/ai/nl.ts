@@ -62,7 +62,7 @@ export const nl = {
   aiSave: 'Opslaan',
   aiUnknownError: 'Onbekende fout',
   aiTimeoutError:
-    'AI-verzoek verlopen: geen reactie van het netwerk, uitvoering gestopt. Controleer je verbinding en probeer het opnieuw',
+    'Het AI-verzoek overschreed de tijdslimiet en is gestopt. Probeer het opnieuw of kies een sneller model voor een lang verzoek.',
   aiOverloadedError: 'De AI-service is momenteel overbelast — probeer het zo opnieuw',
   aiNetworkError:
     'Netwerkprobleem: kan de AI-service niet bereiken. Controleer je verbinding en probeer het opnieuw',

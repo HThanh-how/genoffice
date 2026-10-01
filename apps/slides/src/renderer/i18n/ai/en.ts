@@ -109,7 +109,7 @@ export const en = {
   aiErrEmptyOutput: 'Empty output',
   aiErrUnknown: 'Unknown error',
   aiErrStreamTimeout:
-    'AI request timed out: no response from the network, so the run was stopped. Check your connection and try again',
+    'The AI request exceeded its time limit and was stopped. Try again, or choose a faster model for a long request.',
   aiErrOverloaded: 'The AI service is busy right now — please try again in a moment',
   aiErrNetwork:
     'Network problem: could not reach the AI service. Check your connection and try again',

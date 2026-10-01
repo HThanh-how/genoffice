@@ -46,7 +46,8 @@ export const th = {
   aiStop: 'หยุด',
   aiStopped: 'หยุดแล้ว',
   aiThinking: 'กำลังคิด',
-  aiTimeoutError: 'การตอบกลับของ AI หมดเวลา',
+  aiTimeoutError:
+    'คำขอ AI ใช้เวลาเกินกำหนดและหยุดทำงานแล้ว ลองอีกครั้งหรือเลือกโมเดลที่เร็วขึ้นสำหรับคำขอที่ยาว',
   aiToolWebSearch: 'ค้นหาเว็บ',
   aiToolWebSearchDone: 'ค้นหา "{query}" · {count} รายการ',
   aiTruncatedNote: '(คำตอบถูกตัดเนื่องจากถึงขีดจำกัดความยาว เนื้อหาอาจไม่สมบูรณ์)',

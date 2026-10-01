@@ -104,7 +104,7 @@ export const zhTW = {
   aiErrTimeout: '逾時({ms}ms)',
   aiErrEmptyOutput: '空輸出',
   aiErrUnknown: '未知錯誤',
-  aiErrStreamTimeout: 'AI 請求逾時：網路長時間無回應，已停止。請檢查網路後重試',
+  aiErrStreamTimeout: 'AI 請求已超出時間限制並停止。請重試，或為較長的請求選擇更快的模型。',
   aiErrOverloaded: 'AI 服務目前繁忙，請稍後重試',
   aiErrNetwork: '網路有問題，無法連接 AI 服務。請檢查網路後重試',
   aiCreditsExhausted: 'Genspark 點數已用完，請前往 genspark.ai/pricing 儲值後重試',

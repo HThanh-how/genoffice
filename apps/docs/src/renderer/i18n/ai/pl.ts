@@ -111,7 +111,7 @@ export const pl = {
   aiTooManyImages: 'Maksymalnie {max} obrazów na wiadomość; nadmiarowe zostały zignorowane',
   aiUnknownError: 'Nieznany błąd',
   aiTimeoutError:
-    'Przekroczono limit czasu żądania AI: brak odpowiedzi sieci, przerwano. Sprawdź połączenie i spróbuj ponownie',
+    'Żądanie AI przekroczyło limit czasu i zostało zatrzymane. Spróbuj ponownie lub wybierz szybszy model dla długiego żądania.',
   aiOverloadedError: 'Usługa AI jest obecnie przeciążona — spróbuj ponownie za chwilę',
   aiNetworkError:
     'Problem z siecią: nie można połączyć się z usługą AI. Sprawdź połączenie i spróbuj ponownie',

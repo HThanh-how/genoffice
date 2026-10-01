@@ -109,7 +109,7 @@ export const ms = {
   aiErrEmptyOutput: 'Output kosong',
   aiErrUnknown: 'Ralat tidak diketahui',
   aiErrStreamTimeout:
-    'Permintaan AI tamat masa: rangkaian tidak memberi respons, proses dihentikan. Semak sambungan anda dan cuba lagi',
+    'Permintaan AI melebihi had masa lalu dihentikan. Cuba lagi atau pilih model yang lebih pantas untuk permintaan panjang.',
   aiErrOverloaded: 'Perkhidmatan AI sedang sibuk — sila cuba lagi sebentar lagi',
   aiErrNetwork:
     'Masalah rangkaian: tidak dapat menghubungi perkhidmatan AI. Semak sambungan anda dan cuba lagi',

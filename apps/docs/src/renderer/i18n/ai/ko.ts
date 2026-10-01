@@ -108,7 +108,7 @@ export const ko = {
   aiTooManyImages: '이미지는 메시지당 최대 {max}장까지 보낼 수 있으며, 초과분은 무시되었습니다',
   aiUnknownError: '알 수 없는 오류',
   aiTimeoutError:
-    'AI 요청 시간 초과: 네트워크 응답이 없어 중단되었습니다. 연결을 확인한 후 다시 시도해 주세요',
+    'AI 요청이 제한 시간을 초과해 중지되었습니다. 다시 시도하거나 긴 요청에는 더 빠른 모델을 선택하세요.',
   aiOverloadedError: 'AI 서비스가 혼잡합니다. 잠시 후 다시 시도해 주세요',
   aiNetworkError:
     '네트워크에 문제가 있어 AI 서비스에 연결할 수 없습니다. 연결을 확인한 후 다시 시도해 주세요',

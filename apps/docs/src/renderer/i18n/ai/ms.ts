@@ -110,7 +110,7 @@ export const ms = {
   aiTooManyImages: 'Maksimum {max} imej setiap mesej; yang lebihan diabaikan',
   aiUnknownError: 'Ralat tidak diketahui',
   aiTimeoutError:
-    'Permintaan AI tamat masa: rangkaian tidak memberi respons, proses dihentikan. Semak sambungan anda dan cuba lagi',
+    'Permintaan AI melebihi had masa lalu dihentikan. Cuba lagi atau pilih model yang lebih pantas untuk permintaan panjang.',
   aiOverloadedError: 'Perkhidmatan AI sedang sibuk — sila cuba lagi sebentar lagi',
   aiNetworkError:
     'Masalah rangkaian: tidak dapat menghubungi perkhidmatan AI. Semak sambungan anda dan cuba lagi',

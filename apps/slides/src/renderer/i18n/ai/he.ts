@@ -106,7 +106,8 @@ export const he = {
   aiErrTimeout: 'תם הזמן ({ms}ms)',
   aiErrEmptyOutput: 'פלט ריק',
   aiErrUnknown: 'שגיאה לא ידועה',
-  aiErrStreamTimeout: 'תם הזמן לבקשת ה-AI: אין תגובה מהרשת וההרצה הופסקה. בדוק את החיבור ונסה שוב',
+  aiErrStreamTimeout:
+    'בקשת ה-AI חרגה ממגבלת הזמן והופסקה. נסו שוב או בחרו מודל מהיר יותר לבקשה ארוכה.',
   aiErrOverloaded: 'שירות ה-AI עמוס כרגע — נסו שוב בעוד רגע',
   aiErrNetwork: 'בעיית רשת: לא ניתן להתחבר לשירות ה-AI. בדוק את החיבור ונסה שוב',
   aiCreditsExhausted: 'קרדיטי Genspark שלך אזלו. טען מחדש ב-genspark.ai/pricing ונסה שוב',

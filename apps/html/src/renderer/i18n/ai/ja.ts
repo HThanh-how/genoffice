@@ -46,7 +46,8 @@ export const ja = {
   aiStop: '停止',
   aiStopped: '停止しました',
   aiThinking: '思考中',
-  aiTimeoutError: 'AI の応答がタイムアウトしました',
+  aiTimeoutError:
+    'AI リクエストは制限時間を超えたため停止しました。もう一度試すか、長いリクエストにはより高速なモデルを選んでください。',
   aiToolWebSearch: 'ウェブ検索',
   aiToolWebSearchDone: '「{query}」を検索 · {count} 件',
   aiTruncatedNote: '（返信は長さ制限により途中で打ち切られ、不完全な可能性があります。）',

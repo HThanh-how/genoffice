@@ -113,7 +113,7 @@ export const de = {
   aiErrEmptyOutput: 'Leere Ausgabe',
   aiErrUnknown: 'Unbekannter Fehler',
   aiErrStreamTimeout:
-    'Zeitüberschreitung der KI-Anfrage: keine Antwort vom Netzwerk, der Vorgang wurde abgebrochen. Prüfe deine Verbindung und versuche es erneut',
+    'Die KI-Anfrage hat das Zeitlimit überschritten und wurde gestoppt. Versuche es erneut oder wähle für eine lange Anfrage ein schnelleres Modell.',
   aiErrOverloaded: 'Der KI-Dienst ist derzeit überlastet — bitte gleich erneut versuchen',
   aiErrNetwork:
     'Netzwerkproblem: Der KI-Dienst ist nicht erreichbar. Prüfe deine Verbindung und versuche es erneut',

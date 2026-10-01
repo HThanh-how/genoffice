@@ -111,7 +111,7 @@ export const es = {
   aiErrEmptyOutput: 'Salida vacía',
   aiErrUnknown: 'Error desconocido',
   aiErrStreamTimeout:
-    'La solicitud de IA agotó el tiempo de espera: no hubo respuesta de la red y se detuvo. Comprueba tu conexión e inténtalo de nuevo',
+    'La solicitud de IA superó el límite de tiempo y se detuvo. Inténtalo de nuevo o elige un modelo más rápido para solicitudes largas.',
   aiErrOverloaded:
     'El servicio de IA está saturado en este momento; inténtalo de nuevo en unos instantes',
   aiErrNetwork:

@@ -47,7 +47,8 @@ export const pt = {
   aiStop: 'Parar',
   aiStopped: 'Parado',
   aiThinking: 'Pensando',
-  aiTimeoutError: 'A resposta da IA expirou',
+  aiTimeoutError:
+    'A solicitação de IA excedeu o limite de tempo e foi interrompida. Tente novamente ou escolha um modelo mais rápido para uma solicitação longa.',
   aiToolWebSearch: 'Pesquisa na Web',
   aiToolWebSearchDone: 'Pesquisa por "{query}" · {count} resultados',
   aiTruncatedNote: '(A resposta foi cortada pelo limite de comprimento e pode estar incompleta.)',

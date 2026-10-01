@@ -110,7 +110,7 @@ export const id = {
   aiErrEmptyOutput: 'Keluaran kosong',
   aiErrUnknown: 'Kesalahan tidak dikenal',
   aiErrStreamTimeout:
-    'Permintaan AI habis waktu: jaringan tidak merespons sehingga proses dihentikan. Periksa koneksi Anda lalu coba lagi',
+    'Permintaan AI melewati batas waktu dan dihentikan. Coba lagi, atau pilih model yang lebih cepat untuk permintaan panjang.',
   aiErrOverloaded: 'Layanan AI sedang sibuk — silakan coba lagi sebentar lagi',
   aiErrNetwork:
     'Masalah jaringan: tidak dapat terhubung ke layanan AI. Periksa koneksi Anda lalu coba lagi',

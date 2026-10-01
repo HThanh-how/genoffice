@@ -46,7 +46,8 @@ export const id = {
   aiStop: 'Berhenti',
   aiStopped: 'Dihentikan',
   aiThinking: 'Berpikir',
-  aiTimeoutError: 'Respons AI kehabisan waktu',
+  aiTimeoutError:
+    'Permintaan AI melewati batas waktu dan dihentikan. Coba lagi, atau pilih model yang lebih cepat untuk permintaan panjang.',
   aiToolWebSearch: 'Pencarian web',
   aiToolWebSearchDone: 'Mencari "{query}" · {count} hasil',
   aiTruncatedNote: '(Balasan terpotong karena batas panjang dan mungkin tidak lengkap.)',

@@ -351,6 +351,9 @@ export function createGeminiRouter() {
   let fallbackCount = 0
   let overloadRetries = 0
   return {
+    appliesTo(settings: AiSettings): boolean {
+      return settings.provider === 'gemini'
+    },
     continuePartialTextOnOverload: true,
     firstContentTimeoutMs: 45_000,
     maxDurationMs: 120_000,

@@ -62,6 +62,8 @@ export interface IpcTransportOptions<S> {
   getSettings(): S
   /** Optional per-turn routing and safe retry before any model output reaches the loop. */
   route?: {
+    /** Restrict this route's preparation, timeouts, retries, and hooks to matching settings. */
+    appliesTo?(settings: S): boolean
     prepare(settings: S, request?: AgentStreamRequest): S
     /** Deadline for the first useful model output; wire keepalives do not satisfy it. */
     firstContentTimeoutMs?: number
@@ -139,7 +141,11 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
       let toolCallEmitted = false
       let attemptRequest = request
       const baseSettings = options.getSettings()
-      let settings = options.route?.prepare(baseSettings, request) ?? baseSettings
+      const route =
+        options.route && (!options.route.appliesTo || options.route.appliesTo(baseSettings))
+          ? options.route
+          : undefined
+      let settings = route?.prepare(baseSettings, request) ?? baseSettings
       const settle = () => {
         settled = true
         clearTimeout(silenceTimer)
@@ -173,11 +179,11 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         errorCode?: IpcStreamChunk['errorCode'],
       ) => {
         if (cancelled || settled || finished) return
-        options.route?.onResult?.(settings, requestId, { status: 'error', error, errorCode })
-        const canAttempt = attempts < (options.route?.maxAttempts ?? Infinity)
-        if (!canAttempt) options.route?.onExhausted?.(settings, 'attempt_limit')
+        route?.onResult?.(settings, requestId, { status: 'error', error, errorCode })
+        const canAttempt = attempts < (route?.maxAttempts ?? Infinity)
+        if (!canAttempt) route?.onExhausted?.(settings, 'attempt_limit')
         const continueText =
-          options.route?.continuePartialTextOnOverload &&
+          route?.continuePartialTextOnOverload &&
           errorCode === 'overloaded' &&
           partialText.length > 0 &&
           !toolCallEmitted
@@ -197,8 +203,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
             ],
           }
         }
-        const retryDelay =
-          canAttempt && options.route?.retry?.(settings, error, routedEmitted, errorCode)
+        const retryDelay = canAttempt && route?.retry?.(settings, error, routedEmitted, errorCode)
         if (typeof retryDelay === 'number' && Number.isFinite(retryDelay) && retryDelay >= 0) {
           prepareContinuation()
           settle()
@@ -208,8 +213,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
           }, retryDelay)
           return
         }
-        const next =
-          canAttempt && options.route?.fallback(settings, error, routedEmitted, errorCode)
+        const next = canAttempt && route?.fallback(settings, error, routedEmitted, errorCode)
         if (next) {
           prepareContinuation()
           settle()
@@ -219,18 +223,18 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         }
         fail(errorText(error, errorCode))
       }
-      if (options.route?.maxDurationMs) {
+      if (route?.maxDurationMs) {
         deadlineTimer = setTimeout(() => {
-          options.route?.onExhausted?.(settings, 'deadline')
+          route?.onExhausted?.(settings, 'deadline')
           if (!settled)
-            options.route?.onResult?.(settings, requestId, {
+            route?.onResult?.(settings, requestId, {
               status: 'error',
               error: 'AI request timed out: routing deadline',
               errorCode: 'timeout',
             })
           options.cancel(requestId)
           fail(timeoutText())
-        }, options.route.maxDurationMs)
+        }, route.maxDurationMs)
       }
       const attempt = (): void => {
         if (cancelled || finished) return
@@ -246,11 +250,11 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
             handleError('AI request timed out: no stream activity', emitted, 'timeout')
           }, IPC_STREAM_SILENCE_TIMEOUT_MS)
         }
-        if (options.route?.firstContentTimeoutMs) {
+        if (route?.firstContentTimeoutMs) {
           firstContentTimer = setTimeout(() => {
             options.cancel(thisRequestId)
             handleError('AI request timed out: no model output', false, 'timeout')
-          }, options.route.firstContentTimeoutMs)
+          }, route.firstContentTimeoutMs)
         }
         unsubscribe = options.onStream((chunk) => {
           if (chunk.requestId !== requestId || settled) return
@@ -286,13 +290,13 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
                   ? routeSettings.providers?.gemini?.model
                   : undefined
               cb.onToolCall(model ? { ...chunk.toolCall, sourceModel: model } : chunk.toolCall)
-              options.route?.onToolCall?.(settings, requestId, chunk.toolCall.name)
+              route?.onToolCall?.(settings, requestId, chunk.toolCall.name)
             }
           } else if (chunk.type === 'usage') {
             armSilence()
-            if (chunk.usage) options.route?.onUsage?.(settings, requestId, chunk.usage)
+            if (chunk.usage) route?.onUsage?.(settings, requestId, chunk.usage)
           } else if (chunk.type === 'done') {
-            options.route?.onResult?.(settings, requestId, { status: 'ok' })
+            route?.onResult?.(settings, requestId, { status: 'ok' })
             finish()
             if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason)
             cb.onDone()
@@ -302,7 +306,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         })
         armSilence()
         try {
-          options.route?.onAttempt?.(settings, requestId, attemptRequest)
+          route?.onAttempt?.(settings, requestId, attemptRequest)
           Promise.resolve(
             options.start({
               requestId,
@@ -314,7 +318,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
             }),
           ).catch((err: unknown) => {
             if (requestId === thisRequestId && !settled && !finished) {
-              options.route?.onResult?.(settings, requestId, {
+              route?.onResult?.(settings, requestId, {
                 status: 'error',
                 error: err instanceof Error ? err.message : '',
               })
@@ -322,7 +326,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
             }
           })
         } catch (err) {
-          options.route?.onResult?.(settings, requestId, {
+          route?.onResult?.(settings, requestId, {
             status: 'error',
             error: err instanceof Error ? err.message : '',
           })
@@ -333,7 +337,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
       return {
         cancel: () => {
           if (!finished && !settled) {
-            options.route?.onResult?.(settings, requestId, { status: 'cancelled' })
+            route?.onResult?.(settings, requestId, { status: 'cancelled' })
           }
           cancelled = true
           options.cancel(requestId)

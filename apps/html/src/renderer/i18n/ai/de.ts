@@ -46,7 +46,8 @@ export const de = {
   aiStop: 'Stopp',
   aiStopped: 'Gestoppt',
   aiThinking: 'Denkt nach',
-  aiTimeoutError: 'Zeitüberschreitung der KI-Antwort',
+  aiTimeoutError:
+    'Die KI-Anfrage hat das Zeitlimit überschritten und wurde gestoppt. Versuche es erneut oder wähle für eine lange Anfrage ein schnelleres Modell.',
   aiToolWebSearch: 'Websuche',
   aiToolWebSearchDone: '„{query}" gesucht · {count} Treffer',
   aiTruncatedNote:

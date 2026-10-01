@@ -109,7 +109,7 @@ export const vi = {
   aiErrEmptyOutput: 'Đầu ra trống',
   aiErrUnknown: 'Lỗi không xác định',
   aiErrStreamTimeout:
-    'Yêu cầu AI đã hết thời gian chờ: không có phản hồi từ mạng, quá trình xử lý đã bị dừng. Vui lòng kiểm tra kết nối mạng và thử lại',
+    'Yêu cầu AI đã vượt quá thời gian chờ nên được dừng. Hãy thử lại hoặc chọn model nhanh hơn cho yêu cầu dài.',
   aiErrOverloaded: 'Dịch vụ AI hiện đang bận — vui lòng thử lại sau giây lát',
   aiErrNetwork:
     'Sự cố mạng: không thể kết nối tới dịch vụ AI. Vui lòng kiểm tra kết nối và thử lại',

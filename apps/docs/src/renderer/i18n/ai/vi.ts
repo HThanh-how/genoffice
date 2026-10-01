@@ -110,7 +110,7 @@ export const vi = {
   aiTooManyImages: 'Tối đa {max} hình ảnh mỗi tin nhắn; các ảnh thừa đã bị bỏ qua',
   aiUnknownError: 'Lỗi không xác định',
   aiTimeoutError:
-    'Yêu cầu AI đã hết thời gian chờ: mạng không phản hồi nên quá trình xử lý đã dừng. Kiểm tra kết nối của bạn và thử lại',
+    'Yêu cầu AI đã vượt quá thời gian chờ nên được dừng. Hãy thử lại hoặc chọn model nhanh hơn cho yêu cầu dài.',
   aiOverloadedError: 'Dịch vụ AI hiện đang bận — vui lòng thử lại sau giây lát',
   aiNetworkError:
     'Sự cố mạng: không thể kết nối tới dịch vụ AI. Kiểm tra kết nối của bạn và thử lại',

@@ -46,7 +46,8 @@ export const ko = {
   aiStop: '중지',
   aiStopped: '중지됨',
   aiThinking: '생각 중',
-  aiTimeoutError: 'AI 응답 시간 초과',
+  aiTimeoutError:
+    'AI 요청이 제한 시간을 초과해 중지되었습니다. 다시 시도하거나 긴 요청에는 더 빠른 모델을 선택하세요.',
   aiToolWebSearch: '웹 검색',
   aiToolWebSearchDone: '"{query}" 검색 · 결과 {count}개',
   aiTruncatedNote: '(응답이 길이 제한으로 잘려 내용이 불완전할 수 있습니다.)',

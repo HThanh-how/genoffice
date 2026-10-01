@@ -46,7 +46,8 @@ export const ru = {
   aiStop: 'Стоп',
   aiStopped: 'Остановлено',
   aiThinking: 'Думает',
-  aiTimeoutError: 'Тайм-аут ответа ИИ',
+  aiTimeoutError:
+    'Время ожидания запроса ИИ истекло, и он был остановлен. Попробуйте ещё раз или выберите более быструю модель для длинного запроса.',
   aiToolWebSearch: 'Веб-поиск',
   aiToolWebSearchDone: 'Поиск «{query}» · {count} результатов',
   aiTruncatedNote: '(Ответ был обрезан из-за ограничения длины и может быть неполным.)',

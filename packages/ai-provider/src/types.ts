@@ -118,7 +118,7 @@ export interface AiMediaSettings {
 }
 
 /** web/image search backends; Parallel supports both a user key and free keyless search */
-export type AiSearchProviderId = 'genspark' | 'serper' | 'serply' | 'tavily' | 'parallel'
+export type AiSearchProviderId = 'genspark' | 'serper' | 'serply' | 'tavily' | 'parallel' | 'agy'
 
 export interface AiSearchProviderMeta {
   id: AiSearchProviderId
@@ -126,11 +126,19 @@ export interface AiSearchProviderMeta {
   keyPlaceholder: string
   /** the backend also serves image search (otherwise image search falls back to free sources) */
   imageSearch: boolean
+  /** no key needed; provider uses the local Antigravity CLI login */
+  keyless?: boolean
+}
+
+export interface AiSearchProviderConfig {
+  apiKey: string
+  cliPath?: string | undefined
+  model?: string | undefined
 }
 
 export interface AiSearchSettings {
   provider: AiSearchProviderId
-  providers: Record<Exclude<AiSearchProviderId, 'genspark'>, { apiKey: string }>
+  providers: Record<Exclude<AiSearchProviderId, 'genspark'>, AiSearchProviderConfig>
 }
 
 export interface AiSettings {

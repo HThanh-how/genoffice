@@ -109,7 +109,7 @@ export const pl = {
   aiErrEmptyOutput: 'Pusty wynik',
   aiErrUnknown: 'Nieznany błąd',
   aiErrStreamTimeout:
-    'Przekroczono limit czasu żądania AI: brak odpowiedzi sieci, przerwano. Sprawdź połączenie i spróbuj ponownie',
+    'Żądanie AI przekroczyło limit czasu i zostało zatrzymane. Spróbuj ponownie lub wybierz szybszy model dla długiego żądania.',
   aiErrOverloaded: 'Usługa AI jest obecnie przeciążona — spróbuj ponownie za chwilę',
   aiErrNetwork:
     'Problem z siecią: nie można połączyć się z usługą AI. Sprawdź połączenie i spróbuj ponownie',

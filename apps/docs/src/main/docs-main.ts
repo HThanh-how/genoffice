@@ -3969,11 +3969,16 @@ export function registerAiIpc(): void {
   )
 
   ipcMain.handle('ai:search-test', (_event, input: unknown) => {
-    const { provider, apiKey } = (input ?? {}) as { provider?: AiSearchProviderId; apiKey?: string }
+    const { provider, apiKey, cliPath, model } = (input ?? {}) as {
+      provider?: AiSearchProviderId
+      apiKey?: string
+      cliPath?: string
+      model?: string
+    }
     if (!provider || provider === 'genspark') {
       return hasGskAuth() ? { ok: true } : { ok: false, error: tm('errGskNotLoggedIn') }
     }
-    return testSearchProvider(provider, String(apiKey ?? ''))
+    return testSearchProvider(provider, String(apiKey ?? ''), { cliPath, model })
   })
 
   // settings-UI connection test for the media provider (genspark = the gsk login state)

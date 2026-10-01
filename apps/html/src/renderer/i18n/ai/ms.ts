@@ -46,7 +46,8 @@ export const ms = {
   aiStop: 'Berhenti',
   aiStopped: 'Dihentikan',
   aiThinking: 'Berfikir',
-  aiTimeoutError: 'Respons AI tamat masa',
+  aiTimeoutError:
+    'Permintaan AI melebihi had masa lalu dihentikan. Cuba lagi atau pilih model yang lebih pantas untuk permintaan panjang.',
   aiToolWebSearch: 'Carian web',
   aiToolWebSearchDone: 'Cari "{query}" · {count} hasil',
   aiTruncatedNote: '(Balasan terpotong kerana had panjang dan mungkin tidak lengkap.)',

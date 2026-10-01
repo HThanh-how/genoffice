@@ -103,7 +103,7 @@ export const zh = {
   aiErrTimeout: '超时({ms}ms)',
   aiErrEmptyOutput: '空输出',
   aiErrUnknown: '未知错误',
-  aiErrStreamTimeout: 'AI 请求超时：网络长时间无响应，已停止。请检查网络后重试',
+  aiErrStreamTimeout: 'AI 请求已超出时间限制并停止。请重试，或为较长的请求选择更快的模型。',
   aiErrOverloaded: 'AI 服务当前繁忙，请稍后重试',
   aiErrNetwork: '网络有问题，无法连接 AI 服务。请检查网络后重试',
   aiCreditsExhausted: 'Genspark 积分已用完，请前往 genspark.ai/pricing 充值后重试',
