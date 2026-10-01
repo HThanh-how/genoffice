@@ -1,3 +1,4 @@
+import type { FolderScanStatus } from '../main/document-memory/folder-scan'
 import type {
   AiChatResponse,
   AiStreamChunk,
@@ -323,6 +324,9 @@ export interface HomeApi {
   setAnalyticsEnabled(enabled: boolean): Promise<boolean>
   /** Read local document memory settings, index counts and recent files. */
   getDocumentMemoryStatus(): Promise<DocumentMemoryStatus>
+  getDocumentFolderScanStatus(): Promise<FolderScanStatus | null>
+  scanDocumentFolder(): Promise<FolderScanStatus | null>
+  stopDocumentFolderScan(): Promise<FolderScanStatus | null>
   /** Search content from documents previously opened in GenOffice. */
   documentMemorySearch(query: string, limit?: number): Promise<DocumentMemorySearchResult>
   /** Read a source chunk, freshly verified against the document on disk. */
@@ -596,6 +600,9 @@ export const HOME_CHANNELS = {
   getAnalyticsEnabled: 'home:get-analytics-enabled',
   setAnalyticsEnabled: 'home:set-analytics-enabled',
   getDocumentMemoryStatus: 'home:get-document-memory-status',
+  getDocumentFolderScanStatus: 'home:get-document-folder-scan-status',
+  scanDocumentFolder: 'home:scan-document-folder',
+  stopDocumentFolderScan: 'home:stop-document-folder-scan',
   setDocumentMemoryEnabled: 'home:set-document-memory-enabled',
   excludeDocumentMemory: 'home:exclude-document-memory',
   clearDocumentMemory: 'home:clear-document-memory',

@@ -36,3 +36,20 @@ Gemini HTTP 503 and statusless high-demand messages are classified as temporary 
 Model: https://huggingface.co/intfloat/multilingual-e5-small (MIT license).
 ONNX conversion: https://huggingface.co/Xenova/multilingual-e5-small.
 Runtime: ONNX Runtime (MIT); Hugging Face Tokenizers.js (Apache-2.0).
+
+## Selected-folder scanning
+
+In Settings → General → Document memory, choose **Scan folder** to discover supported
+files recursively. On Windows, the installer adds **Scan folder with GenOffice AI** to
+Explorer's folder context menu (Windows 11 may place it under **Show more options**).
+On macOS, the packaged app installs the owned **Scan with GenOffice AI** Finder service
+and Quick Action. It receives one selected folder, also available through Finder → Services.
+
+Discovery counts are separate from the existing indexing/embedding queue. Newly discovered
+files use their modification time for priority and do not count as recently opened files.
+Unchanged files retain their existing index; exclusions remain respected. Hidden/generated
+directories, symbolic links, unsupported files and files over 128 MiB are skipped. A scan
+cannot select a drive root. The scanner stores its job in `document-memory-folders.json`
+inside the app's user-data directory. Interrupted traversal restarts within the selected
+folder on launch; unchanged documents do not get embedded again. Explicit Stop, disabling
+memory, or clearing the index persists a stop so discovery does not resume automatically.

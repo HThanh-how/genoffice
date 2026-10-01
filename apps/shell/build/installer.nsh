@@ -27,12 +27,27 @@
   ${EndIf}
 !macroend
 
+!macro GenOfficeRegisterFolderScan SCOPE ARG
+  WriteRegStr SHELL_CONTEXT "Software\Classes\${SCOPE}\shell\GenOfficeScan" "" "Scan folder with GenOffice AI"
+  WriteRegStr SHELL_CONTEXT "Software\Classes\${SCOPE}\shell\GenOfficeScan" "Icon" "$INSTDIR\GenOffice.exe"
+  WriteRegStr SHELL_CONTEXT "Software\Classes\${SCOPE}\shell\GenOfficeScan\command" "" '$\"$INSTDIR\GenOffice.exe$\" --genoffice-scan-folder $\"${ARG}$\"'
+!macroend
+
+!macro GenOfficeUnregisterFolderScan SCOPE ARG
+  ReadRegStr $0 SHELL_CONTEXT "Software\Classes\${SCOPE}\shell\GenOfficeScan\command" ""
+  ${If} $0 == '$\"$INSTDIR\GenOffice.exe$\" --genoffice-scan-folder $\"${ARG}$\"'
+    DeleteRegKey SHELL_CONTEXT "Software\Classes\${SCOPE}\shell\GenOfficeScan"
+  ${EndIf}
+!macroend
+
 !macro customInstall
   Push "$INSTDIR\resources\cli"
   Call GenOfficeAddToUserPath
   !insertmacro GenOfficeRegisterShellNew "docx" "Word Document"
   !insertmacro GenOfficeRegisterShellNew "xlsx" "Excel Workbook"
   !insertmacro GenOfficeRegisterShellNew "pptx" "PowerPoint Presentation"
+  !insertmacro GenOfficeRegisterFolderScan "Directory" "%1"
+  !insertmacro GenOfficeRegisterFolderScan "Directory\Background" "%V"
   !insertmacro UPDATEFILEASSOC
 !macroend
 
@@ -43,6 +58,8 @@
   !insertmacro GenOfficeUnregisterShellNew "docx" "Word Document"
   !insertmacro GenOfficeUnregisterShellNew "xlsx" "Excel Workbook"
   !insertmacro GenOfficeUnregisterShellNew "pptx" "PowerPoint Presentation"
+  !insertmacro GenOfficeUnregisterFolderScan "Directory" "%1"
+  !insertmacro GenOfficeUnregisterFolderScan "Directory\Background" "%V"
   Pop $0
   !insertmacro UPDATEFILEASSOC
 !macroend

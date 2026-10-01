@@ -124,6 +124,27 @@ export class DocumentMemoryManager {
       this.enqueue(p, true)
   }
 
+  /** Enroll a file discovered under a user-selected folder without changing recency. */
+  indexDiscoveredFile(path: string): boolean {
+    if (this.stopped) return false
+    const p = resolve(path)
+    const current = safeStat(p)
+    if (!current) return false
+    const needsIndex = this.store.enrollDiscovered(p, current.mtimeMs, current.sizeBytes)
+    const document = this.store.documentByPath(p)
+    if (!document || document.status === 'excluded') return false
+    if (
+      needsIndex &&
+      this.enabled &&
+      (document.status === 'pending' ||
+        document.status === 'text-only' ||
+        document.mtimeMs !== current.mtimeMs ||
+        document.sizeBytes !== current.sizeBytes)
+    )
+      this.enqueue(p)
+    return needsIndex
+  }
+
   move(oldPath: string, newPath: string): void {
     const oldResolved = resolve(oldPath)
     const newResolved = resolve(newPath)

@@ -439,6 +439,15 @@ const homeApi: HomeApi = {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.setAnalyticsEnabled, enabled)
     return result === true
   },
+  async getDocumentFolderScanStatus() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.getDocumentFolderScanStatus)) ?? null
+  },
+  async scanDocumentFolder() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.scanDocumentFolder)) ?? null
+  },
+  async stopDocumentFolderScan() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.stopDocumentFolderScan)) ?? null
+  },
   async getDocumentMemoryStatus() {
     return normalizeDocumentMemoryStatus(
       await ipcRenderer.invoke(HOME_CHANNELS.getDocumentMemoryStatus),

@@ -118,6 +118,9 @@ import {
 } from './cloud-projects'
 import { handleDroppedFiles } from './dropped-files'
 import { collectLaunchPaths } from './launch-paths'
+import { parseFolderScanArgv, withoutFolderScanArgs } from './folder-scan-argv'
+import { FolderScanManager } from './document-memory/folder-scan'
+import { installMacFolderScanService } from './mac-folder-scan-service'
 import {
   genofficeLogout,
   gskLoginInfo,
@@ -4018,10 +4021,37 @@ function statEntries(paths: string[]): RecentEntry[] {
   return statPathEntries(paths, new Set(readStarredFiles()))
 }
 
+function startFolderScan(path: string): void {
+  if (!folderScan) {
+    if (!pendingFolderScanPaths.includes(path)) pendingFolderScanPaths.push(path)
+    return
+  }
+  try {
+    folderScan?.start(path)
+    tabManager?.openHomeTab()
+  } catch (error) {
+    void dialog.showMessageBox({
+      type: 'error',
+      message: error instanceof Error ? error.message : 'Unable to scan folder',
+    })
+  }
+}
+
 function registerHomeIpc(): void {
+  ipcMain.handle(HOME_CHANNELS.getDocumentFolderScanStatus, () => folderScan?.status() ?? null)
+  ipcMain.handle(HOME_CHANNELS.stopDocumentFolderScan, () => folderScan?.stop() ?? null)
+  ipcMain.handle(HOME_CHANNELS.scanDocumentFolder, async () => {
+    const options = { properties: ['openDirectory'] as Array<'openDirectory'> }
+    const result = shellWindow
+      ? await dialog.showOpenDialog(shellWindow, options)
+      : await dialog.showOpenDialog(options)
+    if (result.canceled || !result.filePaths[0]) return null
+    return folderScan?.start(result.filePaths[0]) ?? null
+  })
   ipcMain.handle(HOME_CHANNELS.getDocumentMemoryStatus, () => documentMemory?.status())
   ipcMain.handle(HOME_CHANNELS.setDocumentMemoryEnabled, (_event, enabled: unknown) => {
     if (typeof enabled !== 'boolean') throw new Error('Invalid memory setting')
+    if (!enabled) folderScan?.stop()
     return documentMemory?.setEnabled(enabled)
   })
   ipcMain.handle(HOME_CHANNELS.excludeDocumentMemory, (_event, path: unknown) => {
@@ -4029,7 +4059,10 @@ function registerHomeIpc(): void {
       throw new Error('Unknown document')
     documentMemory.exclude(path)
   })
-  ipcMain.handle(HOME_CHANNELS.clearDocumentMemory, () => documentMemory?.clear())
+  ipcMain.handle(HOME_CHANNELS.clearDocumentMemory, () => {
+    folderScan?.stop()
+    documentMemory?.clear()
+  })
   ipcMain.handle('document-memory:search', (_event, query: unknown, limit: unknown) => {
     if (typeof query !== 'string' || !query.trim() || query.length > 2000)
       throw new Error('Invalid memory query')
@@ -5873,7 +5906,9 @@ async function installMainProcessProxy(): Promise<void> {
 
 // ---- lifecycle (the shell is the only owner) ----
 
-let pendingLaunchPaths = collectLaunchPaths(process.argv)
+let folderScan: FolderScanManager | null = null
+let pendingFolderScanPaths = parseFolderScanArgv(process.argv)
+let pendingLaunchPaths = collectLaunchPaths(withoutFolderScanArgs(process.argv))
 let controlServer: ControlServer | null = null
 
 // show() does not un-minimize, and on macOS ⌘W destroys the shell window while the
@@ -5906,9 +5941,11 @@ app.on('open-file', (event, filePath) => {
 })
 
 app.on('second-instance', (_event, argv, _cwd, additionalData) => {
-  const paths = collectLaunchPaths(argv, additionalData)
+  const paths = collectLaunchPaths(withoutFolderScanArgs(argv), additionalData)
+  const folders = parseFolderScanArgv(argv, additionalData)
   revealShellWindow()
   openLaunchPaths(paths)
+  for (const folder of folders) startFolderScan(folder)
 })
 
 installNavigationGuard(app)
@@ -5979,9 +6016,6 @@ async function runHeadlessExportEntry(
 }
 
 app.whenReady().then(async () => {
-  if (headlessArgv.kind === 'none') {
-    documentMemory = new DocumentMemoryManager(app.getPath('userData'))
-  }
   // first scan waits for the windows to come up; later ones follow folder changes
   setTimeout(() => ensureFileIndexer()?.refresh(), 4000)
   installRendererProtocol({
@@ -5996,10 +6030,12 @@ app.whenReady().then(async () => {
     await runHeadlessExportEntry(headlessArgv)
     return
   }
-  const lockData = () =>
-    pendingLaunchPaths.length > 0
+  const lockData = () => ({
+    ...(pendingLaunchPaths.length
       ? { launchPath: pendingLaunchPaths[0], launchPaths: pendingLaunchPaths }
-      : {}
+      : {}),
+    folderScanPaths: pendingFolderScanPaths,
+  })
   let hasLock = app.requestSingleInstanceLock(lockData())
   if (!hasLock && !app.isPackaged) {
     // Dev watch restart: electron-vite SIGTERMs the previous instance and spawns this
@@ -6028,6 +6064,7 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
+  documentMemory = new DocumentMemoryManager(app.getPath('userData'))
   void listLegacyRecovery(app.getPath('userData')).catch((error) =>
     console.warn('[shell] legacy recovery cleanup failed:', error),
   )
@@ -6228,7 +6265,11 @@ app.whenReady().then(async () => {
     })
   }
 
+  if (app.isPackaged && process.platform === 'darwin') installMacFolderScanService()
+  if (documentMemory) folderScan = new FolderScanManager(app.getPath('userData'), documentMemory)
   openLaunchPaths(pendingLaunchPaths)
+  for (const folder of pendingFolderScanPaths) startFolderScan(folder)
+  pendingFolderScanPaths = []
   pendingLaunchPaths = []
   for (const recoverAs of pendingUnsavedNewRecoveries()) void newSheetTab(recoverAs)
 
@@ -6272,6 +6313,7 @@ app.on('before-quit', () => {
 
 // after every window has closed, so the shell window's own 'closed' republish cannot revive the file
 app.on('will-quit', () => {
+  folderScan?.close()
   documentMemory?.close()
   fileIndexer?.stop()
   fileIndexStore?.close()

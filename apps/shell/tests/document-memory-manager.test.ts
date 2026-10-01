@@ -116,6 +116,21 @@ function manager(fake: FakeWorker) {
 }
 
 describe('DocumentMemoryManager', () => {
+  it('indexes folder-discovered files once without turning rescans into recent opens', async () => {
+    const path = join(dir, 'folder-file.txt')
+    writeFileSync(path, 'discovered content that gets embedded')
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    const instance = manager(fake)
+
+    expect(instance.indexDiscoveredFile(path)).toBe(true)
+    await until(() => instance.status().vectors > 0 && instance.status().pending === 0)
+    expect(instance.indexDiscoveredFile(path)).toBe(false)
+    await new Promise((resolve) => setTimeout(resolve, 30))
+
+    expect(fake.extractionCalls).toEqual([path])
+    expect(fake.embeddingCalls).toHaveLength(1)
+  })
+
   it('starts pending extraction with the most recently opened file', async () => {
     const oldPath = join(dir, 'old-pending.txt')
     const recentPath = join(dir, 'recent-pending.txt')

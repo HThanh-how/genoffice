@@ -147,6 +147,28 @@ export class DocumentMemoryStore {
       .run(normalizedPath, basename(normalizedPath), openedAt, openedAt)
   }
 
+  /** Enroll a file found by a folder scan without making it look recently opened. */
+  enrollDiscovered(path: string, mtimeMs: number, sizeBytes: number): boolean {
+    const normalizedPath = resolve(path)
+    this.db
+      .prepare(
+        `INSERT INTO documents(path, name, status, last_opened_at, priority_at)
+         VALUES (?, ?, 'pending', 0, ?)
+         ON CONFLICT(path) DO NOTHING`,
+      )
+      .run(normalizedPath, basename(normalizedPath), mtimeMs)
+    const document = this.documentByPath(normalizedPath)
+    if (!document || document.status === 'excluded') return false
+    // Existing rows keep their original opened time and indexed metadata. Only a new
+    // row or a file whose source metadata changed needs work from the extractor.
+    return (
+      document.mtimeMs === null ||
+      document.mtimeMs !== mtimeMs ||
+      document.sizeBytes !== sizeBytes ||
+      document.status === 'pending'
+    )
+  }
+
   private ensureDocument(path: string): void {
     this.db
       .prepare(

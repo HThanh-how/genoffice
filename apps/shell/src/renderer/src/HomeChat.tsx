@@ -34,9 +34,11 @@ export function HomeChat({ api, i18n }: Props) {
   const [settingsReady, setSettingsReady] = useState(false)
   const [settingsFailed, setSettingsFailed] = useState(false)
   const [notice, setNotice] = useState('')
+  const rootRef = useRef<HTMLDivElement>(null)
   const listRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
   const launcherRef = useRef<HTMLButtonElement>(null)
+  const openRef = useRef(false)
   const mountedRef = useRef(false)
   const loopRef = useRef<AgentLoop | null>(null)
   const runGenerationRef = useRef(0)
@@ -206,13 +208,35 @@ export function HomeChat({ api, i18n }: Props) {
   )
 
   const focusInput = useCallback(() => {
-    window.setTimeout(() => inputRef.current?.focus(), 0)
+    window.setTimeout(() => {
+      if (openRef.current) inputRef.current?.focus()
+    }, 0)
   }, [])
 
   const closePanel = useCallback(() => {
+    openRef.current = false
     setOpen(false)
     window.setTimeout(() => launcherRef.current?.focus(), 0)
   }, [])
+
+  const collapsePanel = useCallback(() => {
+    openRef.current = false
+    setOpen(false)
+  }, [])
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (event: PointerEvent) => {
+      const root = rootRef.current
+      if (root && event.target instanceof Node && !root.contains(event.target)) {
+        // Leave the pointer event alone so the clicked control still receives it.
+        // Collapsing is presentation only; an active response keeps running.
+        collapsePanel()
+      }
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [collapsePanel, open])
 
   useEffect(() => {
     if (!open) return
@@ -301,6 +325,7 @@ export function HomeChat({ api, i18n }: Props) {
 
   return (
     <div
+      ref={rootRef}
       className="home-chat-root"
       onMouseEnter={() => setInvitation(true)}
       onMouseLeave={() => setInvitation(false)}
@@ -315,7 +340,14 @@ export function HomeChat({ api, i18n }: Props) {
           <header className="home-chat-header">
             <div className="home-chat-heading">
               <span className="home-chat-mark" aria-hidden="true">
-                ✦
+                <svg viewBox="0 0 20 20" fill="none">
+                  <path
+                    d="M10 2.5 11.8 8.2 17.5 10l-5.7 1.8L10 17.5l-1.8-5.7L2.5 10l5.7-1.8L10 2.5Z"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinejoin="round"
+                  />
+                </svg>
               </span>
               <div>
                 <h2 id="home-chat-title">{t('homeChatTitle')}</h2>
@@ -330,7 +362,14 @@ export function HomeChat({ api, i18n }: Props) {
                 title={t('homeChatNew')}
                 onClick={reset}
               >
-                ＋
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path
+                    d="M10 4v12M4 10h12"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                  />
+                </svg>
               </button>
               <button
                 type="button"
@@ -339,7 +378,14 @@ export function HomeChat({ api, i18n }: Props) {
                 title={t('homeChatClose')}
                 onClick={closePanel}
               >
-                ×
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path
+                    d="m5.5 5.5 9 9m0-9-9 9"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                  />
+                </svg>
               </button>
             </div>
           </header>
@@ -352,7 +398,14 @@ export function HomeChat({ api, i18n }: Props) {
             {items.length === 0 ? (
               <div className="home-chat-welcome">
                 <span className="home-chat-welcome-mark" aria-hidden="true">
-                  ✦
+                  <svg viewBox="0 0 24 24" fill="none">
+                    <path
+                      d="M12 3.25 14.2 9.8l6.55 2.2-6.55 2.2L12 20.75 9.8 14.2l-6.55-2.2L9.8 9.8 12 3.25Z"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinejoin="round"
+                    />
+                  </svg>
                 </span>
                 <h3>{t('homeChatWelcome')}</h3>
                 <p>{t('homeChatWelcomeBody')}</p>
@@ -385,7 +438,22 @@ export function HomeChat({ api, i18n }: Props) {
                           aria-label={t('homeChatOpenSource', { name: source.name })}
                           title={`${source.name} · ${source.location}`}
                         >
-                          <span aria-hidden="true">▤</span>
+                          <span className="home-chat-file-icon" aria-hidden="true">
+                            <svg viewBox="0 0 20 20" fill="none">
+                              <path
+                                d="M5.25 2.75h6l3.5 3.5v11h-9.5v-14.5Z"
+                                stroke="currentColor"
+                                strokeWidth="1.4"
+                                strokeLinejoin="round"
+                              />
+                              <path
+                                d="M11.25 2.9v3.6h3.45M7.5 10h5M7.5 13h5"
+                                stroke="currentColor"
+                                strokeWidth="1.4"
+                                strokeLinecap="round"
+                              />
+                            </svg>
+                          </span>
                           <span>{source.name}</span>
                         </button>
                       ))}
@@ -439,7 +507,9 @@ export function HomeChat({ api, i18n }: Props) {
                 aria-label={t('homeChatStop')}
                 title={t('homeChatStop')}
               >
-                ■
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <rect x="5" y="5" width="10" height="10" rx="2" fill="currentColor" />
+                </svg>
               </button>
             ) : (
               <button
@@ -449,7 +519,15 @@ export function HomeChat({ api, i18n }: Props) {
                 aria-label={t('homeChatSend')}
                 title={t('homeChatSend')}
               >
-                ↑
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path
+                    d="M10 15.75V4.5m0 0L5.5 9m4.5-4.5L14.5 9"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
               </button>
             )}
             <span className="home-chat-hint">
@@ -474,6 +552,7 @@ export function HomeChat({ api, i18n }: Props) {
         onClick={() => {
           if (open) closePanel()
           else {
+            openRef.current = true
             setOpen(true)
             setInvitation(true)
             focusInput()
@@ -482,11 +561,22 @@ export function HomeChat({ api, i18n }: Props) {
         }}
       >
         <span className="home-chat-launch-icon" aria-hidden="true">
-          ✦
+          <svg viewBox="0 0 20 20" fill="none">
+            <path
+              d="M10 2.5 11.8 8.2 17.5 10l-5.7 1.8L10 17.5l-1.8-5.7L2.5 10l5.7-1.8L10 2.5Z"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinejoin="round"
+            />
+          </svg>
         </span>
         <span className="home-chat-launch-label">{t('homeChatLaunch')}</span>
-        <span className="home-chat-invitation">{t('homeChatInvite')}</span>
       </button>
+      {!open && invitation && (
+        <span className="home-chat-idle-hint" aria-hidden="true">
+          {t('homeChatInvite')}
+        </span>
+      )}
     </div>
   )
 }

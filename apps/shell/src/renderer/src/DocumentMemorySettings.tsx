@@ -1,8 +1,64 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createI18n, defineStrings, type Lang } from '@genoffice/i18n'
 import { useI18n } from './locale'
 
 type MemoryStatus = Awaited<ReturnType<typeof window.aiOffice.getDocumentMemoryStatus>>
+type FolderScanStatus = {
+  state?: 'running' | 'complete' | 'stopped'
+  running: boolean
+  root?: string
+  discovered: number
+  enrolled: number
+  skipped: number
+  errors: number
+  lastError?: string
+}
+
+const fallbackFolderScanStrings = {
+  title: 'Scan a folder',
+  choose: 'Choose folder and scan',
+  running: 'Scanning {folder}',
+  progress: 'Found {count} files so far',
+  complete: 'Found {count} files in this folder',
+  stopped: 'Scan stopped after finding {count} files',
+  counts: 'Added {enrolled} · skipped {skipped} · errors {errors}',
+  embedding: '{count} files are waiting for local processing',
+  stop: 'Stop scan',
+}
+const folderScanStrings: Record<Lang, typeof fallbackFolderScanStrings> = {
+  zh: fallbackFolderScanStrings,
+  en: fallbackFolderScanStrings,
+  ja: fallbackFolderScanStrings,
+  ko: fallbackFolderScanStrings,
+  fr: fallbackFolderScanStrings,
+  de: fallbackFolderScanStrings,
+  es: fallbackFolderScanStrings,
+  th: fallbackFolderScanStrings,
+  id: fallbackFolderScanStrings,
+  ru: fallbackFolderScanStrings,
+  ar: fallbackFolderScanStrings,
+  pt: fallbackFolderScanStrings,
+  it: fallbackFolderScanStrings,
+  pl: fallbackFolderScanStrings,
+  cs: fallbackFolderScanStrings,
+  nl: fallbackFolderScanStrings,
+  ms: fallbackFolderScanStrings,
+  he: fallbackFolderScanStrings,
+  hi: fallbackFolderScanStrings,
+  'zh-TW': fallbackFolderScanStrings,
+  vi: {
+    title: 'Quét thư mục',
+    choose: 'Chọn thư mục để quét',
+    running: 'Đang quét {folder}',
+    progress: 'Đã tìm thấy {count} tệp',
+    complete: 'Đã tìm thấy {count} tệp trong thư mục này',
+    stopped: 'Đã dừng quét sau khi tìm thấy {count} tệp',
+    counts: 'Đã thêm {enrolled} · bỏ qua {skipped} · lỗi {errors}',
+    embedding: 'Còn {count} tệp đang chờ xử lý nội dung',
+    stop: 'Dừng quét',
+  },
+}
+type FolderScanStringKey = keyof typeof fallbackFolderScanStrings
 
 const memoryDictionary = defineStrings({
   zh: {
@@ -532,25 +588,43 @@ export function DocumentMemorySettings() {
   const { lang } = useI18n()
   const t = (key: keyof typeof memoryDictionary.zh, params?: Record<string, string | number>) =>
     strings(lang as Lang, key, params)
+  const scanT = (key: FolderScanStringKey, params?: Record<string, string | number>) => {
+    const source = folderScanStrings[lang][key]
+    return source.replace(/\{(\w+)\}/g, (match, name: string) =>
+      params?.[name] == null ? match : String(params[name]),
+    )
+  }
   const [status, setStatus] = useState<MemoryStatus | null>(null)
+  const [folderScan, setFolderScan] = useState<FolderScanStatus | null>(null)
   const [busy, setBusy] = useState(false)
+  const [scanBusy, setScanBusy] = useState(false)
   const [confirming, setConfirming] = useState(false)
   const [actionError, setActionError] = useState('')
+  const mountedRef = useRef(false)
 
   useEffect(() => {
-    if (typeof window.aiOffice?.getDocumentMemoryStatus !== 'function') return
+    mountedRef.current = true
+    if (typeof window.aiOffice?.getDocumentMemoryStatus !== 'function')
+      return () => {
+        mountedRef.current = false
+      }
     let active = true
-    const refresh = () =>
-      void window.aiOffice
-        .getDocumentMemoryStatus()
-        .then((next) => {
-          if (active) setStatus(next)
-        })
-        .catch(() => {})
-    refresh()
-    const timer = window.setInterval(refresh, 3000)
+    const refresh = async () => {
+      const [memoryResult, scanResult] = await Promise.allSettled([
+        window.aiOffice.getDocumentMemoryStatus(),
+        typeof window.aiOffice.getDocumentFolderScanStatus === 'function'
+          ? window.aiOffice.getDocumentFolderScanStatus()
+          : Promise.resolve(null),
+      ])
+      if (!active) return
+      if (memoryResult.status === 'fulfilled') setStatus(memoryResult.value)
+      if (scanResult.status === 'fulfilled') setFolderScan(scanResult.value)
+    }
+    void refresh()
+    const timer = window.setInterval(() => void refresh(), 2000)
     return () => {
       active = false
+      mountedRef.current = false
       window.clearInterval(timer)
     }
   }, [])
@@ -567,6 +641,33 @@ export function DocumentMemorySettings() {
       setBusy(false)
     }
   }
+
+  const scanFolder = async () => {
+    setScanBusy(true)
+    setActionError('')
+    try {
+      const next = await window.aiOffice.scanDocumentFolder()
+      if (mountedRef.current && next) setFolderScan(next)
+    } catch {
+      if (mountedRef.current) setActionError(t('error'))
+    } finally {
+      if (mountedRef.current) setScanBusy(false)
+    }
+  }
+
+  const stopFolderScan = async () => {
+    setScanBusy(true)
+    setActionError('')
+    try {
+      const next = await window.aiOffice.stopDocumentFolderScan()
+      if (mountedRef.current && next) setFolderScan(next)
+    } catch {
+      if (mountedRef.current) setActionError(t('error'))
+    } finally {
+      if (mountedRef.current) setScanBusy(false)
+    }
+  }
+
   const modelLabel =
     !status || status.modelState === 'not-loaded'
       ? t('starting')
@@ -607,6 +708,65 @@ export function DocumentMemorySettings() {
           {status.vectors} · {t('pending')}: {status.pending} · {t('errors')}: {status.errors}
         </div>
       )}
+      <h4 className="set-field-label">{scanT('title')}</h4>
+      <div className="set-field" aria-live="polite">
+        <div className="set-field-text">
+          {folderScan?.running ? (
+            <>
+              <div className="set-field-label" title={folderScan.root}>
+                {scanT('running', { folder: folderScan.root || '…' })}
+              </div>
+              <div className="set-field-desc">
+                {scanT('progress', { count: folderScan.discovered })}
+              </div>
+            </>
+          ) : folderScan?.state === 'complete' ? (
+            <>
+              <div className="set-field-label">
+                {scanT('complete', { count: folderScan.discovered })}
+              </div>
+              <div className="set-field-desc" title={folderScan.root}>
+                {folderScan.root}
+              </div>
+            </>
+          ) : folderScan?.state === 'stopped' ? (
+            <>
+              <div className="set-field-label">
+                {scanT('stopped', { count: folderScan.discovered })}
+              </div>
+              {folderScan.root && (
+                <div className="set-field-desc" title={folderScan.root}>
+                  {folderScan.root}
+                </div>
+              )}
+            </>
+          ) : null}
+          {folderScan && (
+            <div className="set-field-desc">
+              {scanT('counts', {
+                enrolled: folderScan.enrolled,
+                skipped: folderScan.skipped,
+                errors: folderScan.errors,
+              })}
+            </div>
+          )}
+          {!folderScan?.running && (status?.pending ?? 0) > 0 && (
+            <div className="set-field-desc">
+              {scanT('embedding', { count: status?.pending ?? 0 })}
+            </div>
+          )}
+          {folderScan?.lastError && <div className="set-field-desc">{folderScan.lastError}</div>}
+        </div>
+        {folderScan?.running ? (
+          <button className="set-btn" disabled={scanBusy} onClick={() => void stopFolderScan()}>
+            {scanT('stop')}
+          </button>
+        ) : (
+          <button className="set-btn" disabled={scanBusy || busy} onClick={() => void scanFolder()}>
+            {scanT('choose')}
+          </button>
+        )}
+      </div>
       <div className="set-field">
         <div className="set-field-text">
           <div className="set-field-label">{t('location')}</div>
