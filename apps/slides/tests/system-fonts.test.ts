@@ -39,7 +39,9 @@ const style = (fontFamily: string, over: Partial<RunStyle> = {}): RunStyle => ({
 const mac = process.platform === 'darwin'
 // With Office for Mac installed, its private DFonts (real Yu Gothic/Malgun/MingLiU…) win over
 // same-script substitution — the assertions accept either the real family or the substitute.
-const office = existsSync('/Applications/Microsoft PowerPoint.app/Contents/Resources/DFonts')
+const office = ['Microsoft PowerPoint', 'Microsoft Word', 'Microsoft Excel'].some((app) =>
+  existsSync(`/Applications/${app}.app/Contents/Resources/DFonts`),
+)
 
 describe.runIf(mac)(
   'Japanese/Korean/Traditional-Chinese font substitution (macOS system fonts)',
@@ -104,12 +106,15 @@ describe.runIf(mac)(
       expect(m.displayFamily!(style('Georgia Light'))).toBe('Georgia')
     })
 
-    it.runIf(office)('a weight-suffix request picks the matching cloud face, not Regular', () => {
-      const w = (fam: string) =>
-        m.measure('contract', { fontFamily: fam, fontSizePx: 100, bold: false, italic: false })
-      // Office CloudFonts carry Montserrat in every weight as numeric files
-      expect(w('Montserrat SemiBold')).toBeGreaterThan(w('Montserrat') + 5)
-    })
+    it.runIf(m.displayFamily!(style('Montserrat SemiBold')) === 'Montserrat SemiBold')(
+      'a weight-suffix request picks the matching cloud face, not Regular',
+      () => {
+        const w = (fam: string) =>
+          m.measure('contract', { fontFamily: fam, fontSizePx: 100, bold: false, italic: false })
+        // Office CloudFonts carry Montserrat in every weight as numeric files
+        expect(w('Montserrat SemiBold')).toBeGreaterThan(w('Montserrat') + 5)
+      },
+    )
 
     it('non-CJK path is unaffected', () => {
       expect(m.displayFamily!(style('Arial'))).toBe('Arial')

@@ -717,7 +717,11 @@ export async function runAgy(
   try {
     if (options.signal?.aborted) throw abortError()
     stagingDir = await deps.makeStagingDir()
-    for (const file of files) await deps.writeFile(join(stagingDir, file.name), file.bytes)
+    for (const file of files)
+      await deps.writeFile(
+        (deps.platform === 'win32' ? win32.join : posix.join)(stagingDir, file.name),
+        file.bytes,
+      )
     const args = buildAgyArgs({ model: options.model, stagingDir, timeoutMs })
     return await new Promise<AgyRunResult>((resolve, reject) => {
       const child = deps.spawn(cliPath, args, { cwd: stagingDir!, env: { ...deps.env } })

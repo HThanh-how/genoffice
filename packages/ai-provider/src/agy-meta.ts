@@ -27,7 +27,7 @@ export const AGY_PROVIDER_META: AiProviderMeta = {
 }
 
 /** Capability flags of this provider (consumed by registry.ts and the chat UIs). */
-export const AGY_CAPABILITIES = { auth: 'agy-cli', vision: true, tools: false } as const
+export const AGY_CAPABILITIES = { auth: 'agy-cli', vision: true, tools: true } as const
 
 /** CLI-backed providers authenticate through their own login: no API key is stored or required. */
 export function isCliProvider(provider: string): boolean {

@@ -7,7 +7,7 @@ import { createI18n, type Lang, type LangDicts, type Params } from '@genoffice/i
  */
 const zh = {
   agyNote:
-    '通过你的 Antigravity 账号在 Google 服务器上运行。每次请求都会启动 Antigravity 智能体，因此比直接调用 API 慢；适合阅读文档和图片。不支持直接编辑文档（无工具调用）。无需 API Key。',
+    '通过你的 Antigravity 账号在 Google 服务器上运行。每次请求都会启动 Antigravity 智能体，因此比直接调用 API 慢；适合阅读文档和图片。可通过 GenOffice 工具阅读和编辑文档。无需 API Key。',
   agyPathLabel: 'Antigravity 可执行文件',
   agyPathHint: '仅自定义安装时填写；留空会自动查找（{where}）。',
   agyPathPlaceholder: '留空自动检测（推荐）',
@@ -28,7 +28,7 @@ type Dict = Record<keyof typeof zh, string>
 
 const en = {
   agyNote:
-    "Runs on Google's servers through your Antigravity account. Each request starts the Antigravity agent, so it is slower than a direct API call; best for reading documents and images. It cannot edit your documents directly (no tool calling). No API key needed.",
+    "Runs on Google's servers through your Antigravity account. Each request starts the Antigravity agent, so it is slower than a direct API call; best for reading documents and images. Can read and edit documents using GenOffice tools. No API key needed.",
   agyPathLabel: 'Antigravity executable',
   agyPathHint: 'Only set this for a custom install; leave blank to auto-detect ({where}).',
   agyPathPlaceholder: 'Auto-detect (recommended)',
@@ -47,7 +47,7 @@ const en = {
 
 const vi = {
   agyNote:
-    'Chạy trên máy chủ của Google thông qua tài khoản Antigravity của bạn. Mỗi yêu cầu khởi động tác tử Antigravity nên chậm hơn gọi API trực tiếp; phù hợp nhất để đọc tài liệu và hình ảnh. Không thể sửa trực tiếp tài liệu của bạn (không gọi công cụ). Không cần khóa API.',
+    'Chạy trên máy chủ của Google thông qua tài khoản Antigravity của bạn. Mỗi yêu cầu khởi động tác tử Antigravity nên chậm hơn gọi API trực tiếp; phù hợp nhất để đọc tài liệu và hình ảnh. Có thể đọc và sửa tài liệu bằng các công cụ của GenOffice. Không cần khóa API.',
   agyPathLabel: 'Tệp thực thi Antigravity',
   agyPathHint: 'Chỉ đặt mục này nếu cài đặt tùy chỉnh; để trống để tự động phát hiện ({where}).',
   agyPathPlaceholder: 'Tự động phát hiện (khuyến nghị)',

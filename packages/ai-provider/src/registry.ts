@@ -13,7 +13,7 @@ export interface ProviderCapabilities {
   auth: 'gsk-login' | 'api-key' | 'codex-chatgpt' | 'agy-cli'
   /** chat models accept image input (declarative; for custom endpoints it is assumed, not known) */
   vision: boolean
-  /** the provider can call GenOffice tools (absent = yes); agy cannot, so callers must retrieve context up front */
+  /** the provider can call GenOffice tools (absent = yes) */
   tools?: boolean
 }
 

@@ -1,6 +1,4 @@
-import { EventEmitter } from 'node:events'
-import { PassThrough } from 'node:stream'
-import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import { CLI, FakeChild, fsDeps, runDeps, tick } from './helpers/agy-fake'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentMessage } from '@genoffice/agent-core'
 import {
@@ -39,77 +37,6 @@ const FIXTURE_OK = [
 ]
 const FIXTURE_BAD_MODEL =
   '{"event":"result","result":{"conversation_id":"","status":"ERROR","response":"","error":"invalid model selection (--model \\"nope\\" --effort \\"\\"): model nope is not recognized as a known model or custom model in settings\\nAvailable models:\\n  Gemini 3.8 Flash (High)\\n  Gemini 3.8 Flash (Medium)"}}'
-
-// --- fake environment ---
-function fsDeps(
-  platform: NodeJS.Platform,
-  files: Record<string, { exec: boolean }>,
-  extra: Partial<AgyFsDeps> = {},
-): AgyFsDeps {
-  return {
-    platform,
-    env: {},
-    home: platform === 'win32' ? 'C:\\Users\\u' : '/home/u',
-    isFile: async (p) => p in files,
-    isExecutable: async (p) => files[p]?.exec === true,
-    loginShellLookup: async () => undefined,
-    ...extra,
-  }
-}
-
-class FakeChild extends EventEmitter {
-  stdout = new PassThrough()
-  stderr = new PassThrough()
-  stdin = new PassThrough()
-  pid = 4242
-  kill = vi.fn(() => true)
-  stdinText = ''
-  constructor() {
-    super()
-    this.stdin.on('data', (c: Buffer) => (this.stdinText += c.toString('utf8')))
-  }
-  emitLines(lines: string[]) {
-    this.stdout.write(lines.join('\n') + '\n')
-  }
-  exit(code: number) {
-    this.stdout.end()
-    setImmediate(() => this.emit('close', code))
-  }
-  asChild() {
-    return this as unknown as ChildProcessWithoutNullStreams
-  }
-}
-
-function runDeps(child: FakeChild, overrides: Partial<AgyRunDeps> = {}) {
-  const dirs: string[] = []
-  const written: Array<{ path: string; size: number }> = []
-  const removed: string[] = []
-  const spawned: Array<{ command: string; args: string[]; cwd: string }> = []
-  const deps: AgyRunDeps = {
-    ...fsDeps('win32', { 'C:\\agy\\agy.exe': { exec: true } }),
-    spawn: (command, args, options) => {
-      spawned.push({ command, args, cwd: options.cwd })
-      return child.asChild()
-    },
-    killTree: vi.fn(),
-    makeStagingDir: async () => {
-      const dir = `C:\\tmp\\stage-${dirs.length}`
-      dirs.push(dir)
-      return dir
-    },
-    removeDir: async (dir) => {
-      removed.push(dir)
-    },
-    writeFile: async (path, bytes) => {
-      written.push({ path, size: bytes.byteLength })
-    },
-    ...overrides,
-  }
-  return { deps, dirs, written, removed, spawned }
-}
-
-const CLI = 'C:\\agy\\agy.exe'
-const tick = () => new Promise((r) => setImmediate(r))
 
 describe('agy path validation and discovery', () => {
   it('accepts an absolute existing .exe on win32 and rejects relative, meta and non-exe paths', async () => {
@@ -679,21 +606,22 @@ describe('runAgy', () => {
 })
 
 describe('provider entry points', () => {
-  it('streamAgy ignores tools, forwards text and usage, and rejects an empty answer', async () => {
+  it('streamAgy sends tools and parses tool_call', async () => {
     const child = new FakeChild()
     const { deps } = runDeps(child)
     const deltas: string[] = []
     const onUsage = vi.fn()
     const onStopReason = vi.fn()
+    const onToolCall = vi.fn()
     const promise = streamAgy(
       { apiKey: '', model: 'gemini-3.7-flash-low', cliPath: CLI },
       'sys',
       [{ role: 'user', text: 'hi' }],
-      [{ name: 'edit', description: 'd', parameters: { type: 'object', properties: {} } } as never],
+      [{ name: 'edit', description: 'd', inputSchema: { type: 'object', properties: {} } }],
       1000,
       {
         onDelta: (t) => deltas.push(t),
-        onToolCall: vi.fn(),
+        onToolCall,
         onUsage,
         onStopReason,
         signal: new AbortController().signal,
@@ -702,14 +630,36 @@ describe('provider entry points', () => {
     )
     await tick()
     await tick()
-    child.emitLines(FIXTURE_OK)
+    child.emitLines([
+      JSON.stringify({
+        event: 'step_update',
+        step_update: {
+          step_type: 'agent_response',
+          text_delta: 'PONG\n<tool_call>{"name":"edit","arguments":{}}</tool_call>',
+        },
+      }),
+      JSON.stringify({
+        event: 'result',
+        result: {
+          status: 'SUCCESS',
+          response: 'PONG\n<tool_call>{"name":"edit","arguments":{}}</tool_call>',
+          usage: { input_tokens: 10, output_tokens: 5 },
+        },
+      }),
+    ])
     child.exit(0)
     await promise
-    expect(deltas.join('')).toContain('PONG')
+    expect(deltas.join('')).toBe('PONG')
+    expect(onToolCall).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ name: 'edit', input: {} }),
+    )
     expect(onUsage).toHaveBeenCalled()
-    expect(onStopReason).toHaveBeenCalledWith('end_turn')
-    expect(child.stdinText).not.toContain('"edit"')
+    expect(onStopReason).toHaveBeenCalledWith('tool_use')
+    expect(child.stdinText).toContain('edit')
+    expect(child.stdinText).toContain('<tool_call>')
+  })
 
+  it('streamAgy rejects an empty answer', async () => {
     const empty = new FakeChild()
     const second = runDeps(empty)
     const p2 = streamAgy(
@@ -791,14 +741,14 @@ describe('killProcessTree', () => {
 })
 
 describe('registry wiring', () => {
-  it('exposes agy as a keyless, vision-only CLI provider and routes models through the shared IPC', async () => {
+  it('exposes agy as a keyless CLI provider with vision and tools and routes models through the shared IPC', async () => {
     const { AI_PROVIDERS, defaultAiSettings } = await import('../src/providers')
     const { getProviderAdapter } = await import('../src/registry')
     const { listProviderModelsForIpc } = await import('../src/provider-models')
     const meta = AI_PROVIDERS.find((m) => m.id === 'agy')!
     expect(meta).toMatchObject({ label: 'Antigravity CLI', needsCliPath: true })
     const adapter = getProviderAdapter('agy')
-    expect(adapter.capabilities).toMatchObject({ vision: true, tools: false, auth: 'agy-cli' })
+    expect(adapter.capabilities).toMatchObject({ vision: true, tools: true, auth: 'agy-cli' })
     expect(adapter.resolveEndpoint({ apiKey: '', model: '' }).protocol).toBe('agy-cli')
     expect(defaultAiSettings().providers.agy).toMatchObject({ apiKey: '', cliPath: '' })
     // an invalid path is rejected before anything is spawned

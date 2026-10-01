@@ -1,3 +1,4 @@
+import { CLI, FakeChild, runDeps, tick } from './helpers/agy-fake'
 import { describe, expect, it } from 'vitest'
 import { buildAgyPrompt, streamAgy } from '../src/agy-cli'
 import { agyToolNote, parseAgyToolCalls, renderAgyToolCalls } from '../src/agy-tools'
@@ -75,21 +76,30 @@ describe('streamAgy with tools', () => {
     const deltas: string[] = []
     const calls: string[] = []
     let stop = ''
-    const { fakeAgyDeps } = await import('./helpers/agy-fake').catch(() => ({ fakeAgyDeps: null }))
-    if (!fakeAgyDeps) return
-    await streamAgy(
-      { cliPath: 'agy', model: 'm' } as never,
+    const child = new FakeChild()
+    const { deps } = runDeps(child)
+    const pending = streamAgy(
+      { apiKey: '', cliPath: CLI, model: 'm' },
       '',
       [{ role: 'user', text: 'go' }],
       tools,
       1000,
       {
+        signal: new AbortController().signal,
         onDelta: (t: string) => deltas.push(t),
         onToolCall: (c: { name: string }) => calls.push(c.name),
         onStopReason: (r: string) => (stop = r),
-      } as never,
-      fakeAgyDeps(reply),
+      },
+      deps,
     )
+    await tick()
+    await tick()
+    child.emitLines([
+      JSON.stringify({ event: 'result', result: { status: 'SUCCESS', response: reply } }),
+    ])
+    child.exit(0)
+    await pending
+    expect(child.stdinText).toContain('replace_text')
     expect(deltas.join('')).toBe('OK')
     expect(calls).toEqual(['replace_text'])
     expect(stop).toBe('tool_use')
