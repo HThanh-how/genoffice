@@ -20,6 +20,8 @@ import { isIgnoredFileName, MAX_DOCUMENT_BYTES, SUPPORTED_EXTENSIONS } from './f
 import { volumeRootOf } from './volume-root'
 import { createYielder } from './yield-budget'
 import { orderQueue, rankOf, weightOf, type QueueInfo } from './queue-order'
+import { clampPdfPages } from './chunks'
+import { readPdfPages, writePdfPages } from './pdf-pages'
 import { foldFolderProgress, type FolderIndexProgress } from './folder-progress'
 import type { FolderChunkProgress } from './store'
 import { DocumentMemoryStore, type DocumentMemoryHit, type StoredDocument } from './store'
@@ -94,7 +96,7 @@ type WorkerReply =
   | { id: number; error: string }
   | { type: 'model'; state: 'downloading' | 'ready' | 'error'; progress?: number; error?: string }
 type WorkerRequest =
-  | { type: 'extract'; path: string; interactive?: boolean; sliceMs?: number }
+  | { type: 'extract'; path: string; interactive?: boolean; sliceMs?: number; maxPdfPages?: number }
   | { type: 'embed'; texts: string[]; kind: 'query' | 'passage' }
   | { type: 'ocr-render'; path: string; ocr: OcrRenderRequest }
   | {
@@ -146,6 +148,8 @@ export class DocumentMemoryManager {
   private readonly offeredPaths = new Set<string>()
   private readonly store: DocumentMemoryStore
   private readonly settingsPath: string
+  private readonly pdfPagesPath: string
+  private pdfMaxPages: number
   private readonly embeddingSettingsPath: string
   private embeddingProfileId: EmbeddingProfileId
   private readonly cacheDir: string
@@ -211,6 +215,8 @@ export class DocumentMemoryManager {
     mkdirSync(options.dbDir ?? userData, { recursive: true })
     this.dbPath = join(options.dbDir ?? userData, 'document-memory.db')
     this.settingsPath = join(userData, 'document-memory-settings.json')
+    this.pdfPagesPath = join(userData, 'document-memory-pdf.json')
+    this.pdfMaxPages = readPdfPages(this.pdfPagesPath)
     this.cacheDir = join(userData, 'document-memory-models')
     this.embeddingSettingsPath = join(userData, 'document-memory-embedding.json')
     this.embeddingProfileId = readEmbeddingProfileId(this.embeddingSettingsPath)
@@ -676,6 +682,26 @@ export class DocumentMemoryManager {
     return { ok: true, requeued }
   }
 
+  /** How many pages of each PDF are read and indexed. */
+  getPdfMaxPages(): number {
+    return this.pdfMaxPages
+  }
+
+  /**
+   * Choose how many pages of each PDF are read (kept between 1 and 400). Raising it reads the
+   * PDFs that were cut short again; lowering it leaves what is indexed as it is.
+   */
+  setPdfMaxPages(value: number): { pages: number; requeued: number } {
+    const pages = clampPdfPages(value)
+    if (this.stopped || pages === this.pdfMaxPages) return { pages: this.pdfMaxPages, requeued: 0 }
+    const raised = pages > this.pdfMaxPages
+    this.pdfMaxPages = pages
+    writePdfPages(this.pdfPagesPath, pages)
+    const requeued = raised ? this.store.requeueTruncatedPdfs() : 0
+    if (requeued && this.enabled) void this.poll()
+    return { pages, requeued }
+  }
+
   setEnabled(enabled: boolean): DocumentMemoryStatus {
     if (this.stopped) return this.status()
     this.enabled = enabled
@@ -844,7 +870,7 @@ export class DocumentMemoryManager {
       }
     }
     const reply = await this.ask(
-      { type: 'extract', path: hit.path, interactive: true },
+      { type: 'extract', path: hit.path, interactive: true, maxPdfPages: this.pdfMaxPages },
       this.workerTimeoutMs,
     )
     if (!reply || !('result' in reply) || !isExtractResult(reply.result)) {
@@ -1389,7 +1415,12 @@ export class DocumentMemoryManager {
               : undefined
           if (sliceMs) this.slicing.add(path)
           const reply = await this.ask(
-            { type: 'extract', path, ...(sliceMs ? { sliceMs } : {}) },
+            {
+              type: 'extract',
+              path,
+              maxPdfPages: this.pdfMaxPages,
+              ...(sliceMs ? { sliceMs } : {}),
+            },
             this.workerTimeoutMs,
             true,
           )

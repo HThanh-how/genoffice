@@ -22,7 +22,9 @@ import {
   type IndexingNow,
   type IndexFileDetail,
   type IndexedFolder,
+  type PdfPagesState,
 } from '../../shared/fork/document-index-api'
+import { DEFAULT_PDF_PAGES, LARGE_PDF_PAGES } from '../document-memory/chunks'
 
 export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
@@ -258,6 +260,22 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
     const result = memory.setEmbeddingProfile(profile)
     folderCounts.invalidate()
     return result
+  })
+  const pdfPagesState = (pages: number): PdfPagesState => ({
+    pages,
+    default: DEFAULT_PDF_PAGES,
+    max: LARGE_PDF_PAGES,
+  })
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getPdfPages, (): PdfPagesState =>
+    pdfPagesState(getDocumentMemory()?.getPdfMaxPages() ?? DEFAULT_PDF_PAGES),
+  )
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setPdfPages, (_event, pages: unknown) => {
+    if (typeof pages !== 'number' || !Number.isFinite(pages)) throw new Error('Invalid page count')
+    const memory = getDocumentMemory()
+    if (!memory) return { ...pdfPagesState(DEFAULT_PDF_PAGES), requeued: 0 }
+    const result = memory.setPdfMaxPages(pages)
+    folderCounts.invalidate()
+    return { ...pdfPagesState(result.pages), requeued: result.requeued }
   })
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.deferIndexFile, (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)

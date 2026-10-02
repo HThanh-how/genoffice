@@ -24,6 +24,8 @@ export const DOCUMENT_INDEX_CHANNELS = {
   stopIndexFile: 'home:stop-index-file',
   deferIndexFile: 'home:defer-index-file',
   getEverything: 'home:get-everything',
+  getPdfPages: 'home:get-pdf-pages',
+  setPdfPages: 'home:set-pdf-pages',
   getDbLocation: 'home:get-db-location',
   chooseDbLocation: 'home:choose-db-location',
   resetDbLocation: 'home:reset-db-location',
@@ -41,6 +43,15 @@ export interface EverythingState {
   found: boolean
   /** the es.exe path the person set, if any */
   path?: string
+}
+
+/** How many pages of each PDF are read and indexed. */
+export interface PdfPagesState {
+  pages: number
+  /** what it is until the person changes it */
+  default: number
+  /** the most it can be set to */
+  max: number
 }
 
 export type EmbeddingProfileChoice = 'standard' | 'high'
@@ -181,6 +192,10 @@ export interface DocumentIndexApi {
   cancelDbMove(): Promise<void>
   /** Restart the app now so the scheduled move is carried out. */
   restartForDbMove(): Promise<void>
+  /** How many pages of each PDF are read (the first ones: a book's contents are in them). */
+  getPdfPages(): Promise<PdfPagesState>
+  /** Change it (1 to 400); raising it reads the PDFs that were cut short again. */
+  setPdfPages(pages: number): Promise<PdfPagesState & { requeued: number }>
   /** Whether the Everything search is on, and whether this computer has es.exe. */
   getEverything(): Promise<EverythingState>
   /** Turn it on or off, optionally pointing at es.exe; returns the new state. */

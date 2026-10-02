@@ -38,6 +38,12 @@ export function createDocumentIndexPreloadApi(
     async restartForDbMove() {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.restartForDbMove)
     },
+    async getPdfPages() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getPdfPages)
+    },
+    async setPdfPages(pages) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setPdfPages, pages)
+    },
     async getEverything() {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getEverything)
     },

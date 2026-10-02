@@ -20,12 +20,11 @@
  *  - optional safety caps: PDFs per day (0 = unlimited), pages per file, pages per call.
  */
 import { basename } from 'node:path'
-import { LARGE_PDF_PAGES } from './chunks'
+import { clampPdfPages, DEFAULT_PDF_PAGES } from './chunks'
 import {
   OCR_MAX_CALLS_PER_RUN,
   ocrPageLimit,
   OCR_MAX_FILE_ATTEMPTS,
-  OCR_UNLIMITED_PAGES,
   OCR_TICK_MS,
   classifyAgyOcrError,
   decideQuota,
@@ -125,6 +124,8 @@ export interface OcrRecognizeInput {
 
 export interface OcrJobDeps {
   settings(): AgyOcrSettings
+  /** how many pages of a PDF the indexer reads: nothing past it is worth a transcription */
+  pdfPageLimit?(): number
   host: OcrJobHost
   state: OcrStateStore
   /** one agy call for several page images; throws agy's own error message on failure */
@@ -214,7 +215,7 @@ export class AgyOcrJob {
   /** One cheap check; does real work only when a run is due. Never throws. */
   async tick(): Promise<void> {
     try {
-      const settings = this.workingSettings(true)
+      const settings = this.workingSettings()
       if (this.stopped || !settings.enabled || this.running) return
       if (!this.deps.host.isEnabled()) return
       const now = this.deps.now()
@@ -305,15 +306,15 @@ export class AgyOcrJob {
   }
 
   /** Settings with the "unlimited pages" marker resolved; `status()` keeps the raw value for the UI. */
-  private workingSettings(scheduled = false): AgyOcrSettings {
+  private workingSettings(): AgyOcrSettings {
     const settings = this.deps.settings()
-    // "unlimited" is not allowed to mean a whole book on the quota's account: the scheduled reader
-    // stops at the same page as the indexer; a limit the person set, and "read now", are theirs
-    const limit =
-      scheduled && settings.maxPagesPerFile === OCR_UNLIMITED_PAGES
-        ? LARGE_PDF_PAGES
-        : ocrPageLimit(settings.maxPagesPerFile)
-    return { ...settings, maxPagesPerFile: limit }
+    // text read from pages beyond the indexer's page limit is never indexed, so it is never paid
+    // for: the reader stops at that page ("unlimited" included, "read now" included)
+    const indexed = clampPdfPages(this.deps.pdfPageLimit?.() ?? DEFAULT_PDF_PAGES)
+    return {
+      ...settings,
+      maxPagesPerFile: Math.min(ocrPageLimit(settings.maxPagesPerFile), indexed),
+    }
   }
 
   /** Candidates the scheduler may still try (non-retryable files are out). */

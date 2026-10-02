@@ -144,7 +144,7 @@ interface Rig {
   onRecognize: { value: (() => void) | null }
 }
 
-function rig(overrides: Partial<AgyOcrSettings> = {}, fs = new FakeFs()): Rig {
+function rig(overrides: Partial<AgyOcrSettings> = {}, fs = new FakeFs(), pdfPageLimit = 400): Rig {
   const clock = { now: T0 }
   const settings: AgyOcrSettings = {
     ...DEFAULT_AGY_OCR_SETTINGS,
@@ -175,6 +175,7 @@ function rig(overrides: Partial<AgyOcrSettings> = {}, fs = new FakeFs()): Rig {
   const recognizeMode: Rig['recognizeMode'] = { value: 'ok' }
   const onRecognize: Rig['onRecognize'] = { value: null }
   const job = new AgyOcrJob({
+    pdfPageLimit: () => pdfPageLimit,
     settings: () => settings,
     host,
     state,
@@ -427,31 +428,39 @@ describe('reading files', () => {
     expect(status.filesWaiting).toBe(0)
   })
 
-  it('does not read a whole book on the quota: "unlimited" stops at the indexer\'s page limit', async () => {
-    const r = rig({ maxPagesPerFile: 0 })
+  it('stops at the indexer\'s page limit, "unlimited" included: later pages would never be indexed', async () => {
+    const r = rig({ maxPagesPerFile: 0 }, undefined, 30)
     r.host.add('/book.pdf', 4000)
-    r.host.pages.set('/book.pdf', new Map(Array.from({ length: 400 }, (_, i) => [i + 1, 'x'])))
+    r.host.pages.set('/book.pdf', new Map(Array.from({ length: 30 }, (_, i) => [i + 1, 'x'])))
     await r.job.tick()
     expect(r.recognizeCalls).toHaveLength(0)
     expect(r.job.status().filesWaiting).toBe(0)
+
+    const fresh = rig({ maxPagesPerFile: 0 }, undefined, 30)
+    fresh.host.add('/other.pdf', 4000)
+    await fresh.job.tick()
+    expect(fresh.host.pagesDone('/other.pdf')).toHaveLength(30)
   })
 
-  it('keeps reading past that when the person set a page limit of their own', async () => {
-    const r = rig({ maxPagesPerFile: 1000 })
-    r.host.add('/book.pdf', 4000)
-    r.host.pages.set('/book.pdf', new Map(Array.from({ length: 400 }, (_, i) => [i + 1, 'x'])))
-    await r.job.tick()
-    expect(r.recognizeCalls.length).toBeGreaterThan(0)
-    expect(r.recognizeCalls[0]!.pages).toEqual([401, 402, 403, 404, 405])
+  it("keeps its own smaller limit, and never goes past the indexer's even with a bigger one", async () => {
+    const small = rig({ maxPagesPerFile: 12 }, undefined, 30)
+    small.host.add('/a.pdf', 100)
+    await small.job.tick()
+    expect(small.host.pagesDone('/a.pdf')).toHaveLength(12)
+
+    const big = rig({ maxPagesPerFile: 1000 }, undefined, 400)
+    big.host.add('/b.pdf', 4000)
+    big.host.pages.set('/b.pdf', new Map(Array.from({ length: 400 }, (_, i) => [i + 1, 'x'])))
+    await big.job.tick()
+    expect(big.recognizeCalls).toHaveLength(0)
   })
 
-  it('"read now" is not held back by the book limit', async () => {
-    const r = rig({ maxPagesPerFile: 0 })
+  it('"read now" stops there too: pages past the limit would not be searchable', async () => {
+    const r = rig({ maxPagesPerFile: 0 }, undefined, 30)
     r.host.add('/book.pdf', 4000)
-    r.host.pages.set('/book.pdf', new Map(Array.from({ length: 400 }, (_, i) => [i + 1, 'x'])))
+    r.host.pages.set('/book.pdf', new Map(Array.from({ length: 30 }, (_, i) => [i + 1, 'x'])))
     const result = await r.job.readNow(r.host.files.get('/book.pdf')!.id)
-    expect(result.ok).toBe(true)
-    expect(r.host.pagesDone('/book.pdf').length).toBeGreaterThan(400)
+    expect(result).toEqual({ ok: false, error: 'nothing-to-read' })
   })
 
   it('works the queue in priority order and reindexes each file once', async () => {

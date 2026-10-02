@@ -92,6 +92,7 @@ export function registerAgyOcr(deps: AgyOcrDeps): void {
     jobFor = manager
     job = new AgyOcrJob({
       settings: () => settings,
+      pdfPageLimit: () => manager.getPdfMaxPages(),
       host: manager.ocrHost(),
       state: new OcrStateStore(
         join(deps.userDataPath(), 'agy-ocr-state.json'),

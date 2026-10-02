@@ -5,7 +5,13 @@ import { readFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { extname } from 'node:path'
 import { parseFileToText, pdfPageTextsSlice } from '@genoffice/file-parse'
-import { capChunks, chunkDocumentText, chunkTabularText, LARGE_PDF_PAGES } from './chunks'
+import {
+  capChunks,
+  chunkDocumentText,
+  chunkTabularText,
+  clampPdfPages,
+  DEFAULT_PDF_PAGES,
+} from './chunks'
 import { DocumentMemoryStore } from './store'
 import { embedTexts } from './embeddings'
 import { renderPdfPagesForOcr, type OcrRenderRequest } from './agy-ocr-render'
@@ -30,8 +36,8 @@ export interface PartialExtract {
   totalPages: number
 }
 
-export async function extractDocument(path: string, ocr?: OcrLookup) {
-  const result = await extractDocumentSliced(path, ocr)
+export async function extractDocument(path: string, ocr?: OcrLookup, maxPdfPages?: number) {
+  const result = await extractDocumentSliced(path, ocr, undefined, maxPdfPages)
   if ('partial' in result) throw new Error('Document extraction stopped early')
   return result
 }
@@ -45,7 +51,7 @@ export async function extractDocumentSliced(
   path: string,
   ocr?: OcrLookup,
   sliceMs?: number,
-  maxPdfPages = LARGE_PDF_PAGES,
+  maxPdfPages = DEFAULT_PDF_PAGES,
 ) {
   const before = await stat(path)
   if (before.size > 128 * 1024 * 1024) throw new Error('Document exceeds the 128 MB indexing limit')
@@ -61,13 +67,14 @@ export async function extractDocumentSliced(
     const resumed = resumable ? kept.pages : []
     const slice = await pdfPageTextsSlice(bytes, {
       from: resumed.length,
-      maxPages: maxPdfPages,
+      maxPages: clampPdfPages(maxPdfPages),
       ...(sliceMs ? { stopAt: Date.now() + sliceMs } : {}),
     }).catch(() => null)
     partialPdfs.delete(path)
     if (slice) {
-      pdfPages = [...resumed, ...slice.pages]
-      pagesLeftOut = slice.capped
+      // pages kept from an earlier turn may be more than a limit that was lowered since
+      pdfPages = [...resumed, ...slice.pages].slice(0, clampPdfPages(maxPdfPages))
+      pagesLeftOut = slice.capped || slice.total > pdfPages.length
       if (!slice.done) {
         partialPdfs.set(path, {
           mtimeMs: before.mtimeMs,
@@ -212,6 +219,7 @@ onIndexRequest(
     embeddingModel: string
     interactive?: boolean
     sliceMs?: number
+    maxPdfPages?: number
     ocr?: OcrRenderRequest
   }) => {
     const execute = async () => {
@@ -224,9 +232,9 @@ onIndexRequest(
           )
         if (request.type === 'extract')
           result = request.interactive
-            ? await extractDocument(request.path, lookup)
+            ? await extractDocument(request.path, lookup, request.maxPdfPages)
             : await withBackgroundBudget(() =>
-                extractDocumentSliced(request.path, lookup, request.sliceMs),
+                extractDocumentSliced(request.path, lookup, request.sliceMs, request.maxPdfPages),
               )
         else if (request.type === 'ocr-render')
           result = await withBackgroundBudget(() =>

@@ -731,6 +731,20 @@ export class DocumentMemoryStore {
     return Number(result.changes)
   }
 
+  /**
+   * PDFs that were read only in part are read again (a higher page limit was chosen); their old
+   * passages stay searchable until the new ones replace them.
+   */
+  requeueTruncatedPdfs(): number {
+    const result = this.db
+      .prepare(
+        `UPDATE documents SET status = 'pending', hash = NULL, embedding_model = NULL, error = NULL
+        WHERE excluded = 0 AND truncated = 1 AND lower(path) LIKE '%.pdf'`,
+      )
+      .run()
+    return Number(result.changes)
+  }
+
   /** Between slices a half-written document must not look finished. */
   private markPending(documentId: number): void {
     this.db

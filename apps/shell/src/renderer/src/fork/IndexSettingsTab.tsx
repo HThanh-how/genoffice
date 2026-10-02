@@ -6,10 +6,13 @@ import { AgyOcrSettings } from './AgyOcrSettings'
 import { EmbeddingModelSettings } from './EmbeddingModelSettings'
 import { EverythingSettings } from './EverythingSettings'
 import { DbLocationSettings } from './DbLocationSettings'
+import { PdfPagesSettings } from './PdfPagesSettings'
 
 const EN = {
   run: 'Running in the background',
   runHint: 'How hard it works, and when it rests',
+  pdf: 'PDF pages',
+  pdfHint: 'How many pages of each PDF are read',
   ocr: 'Reading scanned PDFs',
   ocrHint: 'Daily limit, pages, model, quota floors',
   model: 'Search model',
@@ -23,6 +26,8 @@ const EN = {
 const VI: typeof EN = {
   run: 'Chạy nền',
   runHint: 'Làm việc mạnh nhẹ ra sao, khi nào nghỉ',
+  pdf: 'Số trang PDF',
+  pdfHint: 'Đọc bao nhiêu trang đầu của mỗi PDF',
   ocr: 'Đọc PDF quét (OCR)',
   ocrHint: 'Số PDF mỗi ngày, số trang, mô hình, ngưỡng quota',
   model: 'Mô hình tìm kiếm',
@@ -55,6 +60,9 @@ export function IndexSettingsTab({ api }: { api: HomeApi }) {
     <div className="ixp">
       <Section title={d.run} hint={d.runHint}>
         <IndexingModeSettings />
+      </Section>
+      <Section title={d.pdf} hint={d.pdfHint}>
+        <PdfPagesSettings api={api} />
       </Section>
       <Section title={d.ocr} hint={d.ocrHint}>
         <AgyOcrSettings />
