@@ -188,7 +188,14 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   })
 
   // live steps of every Antigravity chat turn go to the windows for the thinking strip
+  let lastTurnCheck = 0
   subscribeAgyActivity((activity) => {
+    // A finished chat turn used quota: re-read it (at most once a minute) so the % stays honest.
+    if (activity.phase === 'done' && Date.now() - lastTurnCheck > 60_000) {
+      lastTurnCheck = Date.now()
+      const timer = setTimeout(() => void usage.refresh(), 2000)
+      timer.unref?.()
+    }
     for (const window of BrowserWindow.getAllWindows())
       if (!window.isDestroyed()) window.webContents.send(AGY_CHAT_CHANNELS.activity, activity)
   })

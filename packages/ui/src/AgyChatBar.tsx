@@ -590,7 +590,6 @@ export function AgyChatBar({
               setMenu((value) => !value)
             }}
           >
-            <span aria-hidden="true">✦</span>
             <span className="agy-bar-model-name">{current?.label ?? state.selected}</span>
             <span aria-hidden="true" className="agy-bar-caret">
               ▾
@@ -607,7 +606,7 @@ export function AgyChatBar({
             }}
           >
             <span
-              className="agy-bar-gauge"
+              className={`agy-bar-gauge${usage?.refreshing ? ' is-spinning' : ''}`}
               aria-hidden="true"
               style={{ ['--agy-fill' as string]: `${Math.round((worst ?? 0) * 100)}%` }}
             />

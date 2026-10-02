@@ -15,20 +15,17 @@
   align-items: center;
   gap: 6px;
   min-width: 0;
-  padding: 4px 10px;
-  border: 1px solid var(--border-subtle, #e3e6ec);
-  border-radius: 999px;
-  background: var(--surface-subtle, #f6f7f9);
-  color: var(--text-primary, #253047);
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary, #677287);
   font: inherit;
   cursor: pointer;
-  transition:
-    border-color 0.15s ease,
-    background 0.15s ease;
+  transition: color 0.15s ease;
 }
 .agy-bar-chip:hover {
-  border-color: var(--border-hover, #7e8ed4);
-  background: var(--hover, #f0f2f7);
+  color: var(--text-primary, #253047);
 }
 .agy-bar-chip:focus-visible {
   outline: 2px solid var(--accent, #596cdb);
@@ -40,7 +37,7 @@
 }
 .agy-bar-model-name {
   overflow: hidden;
-  font-weight: 600;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -369,4 +366,18 @@
 }
 .agy-bar.is-steps .agy-think {
   margin: 0;
+}
+
+.agy-bar-gauge.is-spinning {
+  animation: agy-gauge-spin 0.9s linear infinite;
+}
+@keyframes agy-gauge-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .agy-bar-gauge.is-spinning {
+    animation: none;
+  }
 }
