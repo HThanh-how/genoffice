@@ -369,7 +369,9 @@ export interface HomeApi extends ForkHomeApi {
   /** Read a source chunk, freshly verified against the document on disk. */
   documentMemoryRead(chunkId: number): Promise<DocumentMemoryReadResult>
   /** Open a remembered document by the document id returned from search. */
-  documentMemoryOpen(documentId: number): Promise<{ ok: boolean; error?: string }>
+  documentMemoryOpen(
+    documentId: number,
+  ): Promise<{ ok: boolean; error?: string; name?: string; path?: string }>
   /** Enable or pause indexing and return the updated local status. */
   setDocumentMemoryEnabled(enabled: boolean): Promise<DocumentMemoryStatus>
   /** Keep a file out of document memory and remove its indexed content. */

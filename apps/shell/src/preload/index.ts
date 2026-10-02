@@ -521,6 +521,8 @@ const homeApi: HomeApi = {
     return (await ipcRenderer.invoke('document-memory:open', documentId)) as {
       ok: boolean
       error?: string
+      name?: string
+      path?: string
     }
   },
   async setDocumentMemoryEnabled(enabled) {

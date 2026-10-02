@@ -43,6 +43,7 @@ const RENAME_HASH_MAX_BYTES = 64 * 1024 * 1024
 const FRESHNESS_STAT_TIMEOUT_MS = 1_500
 const SEARCH_EMBED_TIMEOUT_MS = 10_000
 const WORKER_TIMEOUT_MS = 5 * 60_000
+const STOPPED_BY_USER = 'Stopped by you.'
 const MAX_PENDING_EMBED_DOCUMENTS = 16
 const EMBED_RETRY_DELAY_MS = 30_000
 /** Wait after an index write before merging full-text segments (one pending run at a time). */
@@ -340,8 +341,26 @@ export class DocumentMemoryManager {
     if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
     const path = this.store.retryDocument(id)
     if (!path) return { ok: false, error: 'unavailable' }
+    // A read already under way is left alone: restarting it would throw its result away and
+    // begin again, so "retry" on a large scan would spin for minutes and end where it began.
+    if (this.activeExtractions.has(path)) return { ok: true }
     this.invalidatePath(path)
     this.enqueue(path, true)
+    return { ok: true }
+  }
+
+  /**
+   * Stop reading one waiting file (cancelling the read if it is running). It is left as a
+   * problem the user can retry, rather than silently put back in the line.
+   */
+  async stopDocument(id: number): Promise<{ ok: boolean; error?: string }> {
+    const document = this.store.documentById(id)
+    if (!document || document.status !== 'pending') return { ok: false, error: 'unavailable' }
+    const { path } = document
+    const reading = this.activeExtractions.has(path)
+    this.invalidatePath(path)
+    if (reading) this.recycleWorker(STOPPED_BY_USER)
+    await this.store.markErrorSliced(path, STOPPED_BY_USER, await statMeta(path))
     return { ok: true }
   }
 

@@ -14,6 +14,7 @@ export const DOCUMENT_INDEX_CHANNELS = {
   getIndexFileDetail: 'home:get-index-file-detail',
   searchIndexedFiles: 'home:search-indexed-files',
   getIndexingNow: 'home:get-indexing-now',
+  stopIndexFile: 'home:stop-index-file',
 } as const
 
 export type EmbeddingProfileChoice = 'standard' | 'high'
@@ -140,6 +141,8 @@ export interface DocumentIndexApi {
   searchIndexedFiles(query: string): Promise<IndexedFileHit[]>
   /** Which files the indexer is reading now and who is next. */
   getIndexingNow(): Promise<IndexingNow>
+  /** Stop reading one waiting file; it stays in the list as a problem to retry. */
+  stopIndexFile(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** How far one file got: found, read, OCR, embedded. Null when the file is not in the index. */
   getIndexFileDetail(documentId: number): Promise<IndexFileDetail | null>
   getEmbeddingModel(): Promise<EmbeddingModelState>

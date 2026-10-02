@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import type { IndexFileDetail, IndexingNow } from '../../../shared/fork/document-index-api'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
@@ -80,8 +80,13 @@ const EN = {
   reread: 'Read again',
   readNow: 'Read with Antigravity now',
   copyLog: 'Copy log',
-  copied: 'Log copied.',
+  copied: 'Copied.',
   reveal: 'Show in folder',
+  openFile: 'Open file',
+  stop: 'Stop reading',
+  stopped: 'Stopped. Use Try again to read it later.',
+  copyPath: 'Copy path',
+  couldNotOpen: 'Could not open this file.',
   loading: 'Loading…',
   retriedOne: 'Queued for another try.',
   ocrConfirm:
@@ -103,8 +108,13 @@ const VI: FileWords = {
   reread: 'Đọc lại',
   readNow: 'Đọc bằng Antigravity ngay',
   copyLog: 'Sao chép nhật ký',
-  copied: 'Đã sao chép nhật ký.',
+  copied: 'Đã sao chép.',
   reveal: 'Mở thư mục chứa tệp',
+  openFile: 'Mở tệp',
+  stop: 'Dừng đọc',
+  stopped: 'Đã dừng. Bấm Thử lại để đọc sau.',
+  copyPath: 'Sao chép đường dẫn',
+  couldNotOpen: 'Không mở được tệp này.',
   loading: 'Đang tải…',
   retriedOne: 'Đã xếp lại để thử lần nữa.',
   ocrConfirm:
@@ -151,6 +161,17 @@ const ICopy = () => (
 const IFolder = () => (
   <Svg>
     <path d="M2.2 4.6a1.4 1.4 0 0 1 1.4-1.4h2.5l1.4 1.6h4.9a1.4 1.4 0 0 1 1.4 1.4v5.2a1.4 1.4 0 0 1-1.4 1.4H3.6a1.4 1.4 0 0 1-1.4-1.4z" />
+  </Svg>
+)
+const IOpen = () => (
+  <Svg>
+    <path d="M9.2 2.6h4.2v4.2M13.4 2.6 7.2 8.8" />
+    <path d="M11.6 9.4v2.8a1.2 1.2 0 0 1-1.2 1.2H3.8a1.2 1.2 0 0 1-1.2-1.2V5.6a1.2 1.2 0 0 1 1.2-1.2h2.8" />
+  </Svg>
+)
+const IStop = () => (
+  <Svg>
+    <rect x="3.6" y="3.6" width="8.8" height="8.8" rx="1.6" />
   </Svg>
 )
 const ISpark = () => (
@@ -278,6 +299,24 @@ export function useFileActions(
       say(result.ok ? w.retriedOne : fill(w.ocrFailed, { e: result.error ?? '' }))
       await settle(item)
     })
+  const stop = (item: FileItem) =>
+    withBusy(item.id, async () => {
+      const result = await api.stopIndexFile(item.id)
+      say(result.ok ? w.stopped : fill(w.ocrFailed, { e: result.error ?? '' }))
+      await settle(item)
+    })
+  const openFile = async (item: FileItem) => {
+    const result = await api.documentMemoryOpen(item.id).catch(() => null)
+    if (!result?.ok) say(w.couldNotOpen)
+  }
+  const copyPath = async (item: FileItem) => {
+    try {
+      await navigator.clipboard.writeText(item.path)
+      say(w.copied)
+    } catch {
+      say(item.path)
+    }
+  }
   const readNow = (item: FileItem) =>
     withBusy(item.id, async () => {
       if (!window.confirm(w.ocrConfirm)) return
@@ -293,10 +332,96 @@ export function useFileActions(
       }
       await settle(item)
     })
-  return { open, toggle, details, busy, note, say, copyLog, retry, readNow }
+  return {
+    open,
+    toggle,
+    details,
+    busy,
+    note,
+    say,
+    copyLog,
+    copyPath,
+    openFile,
+    retry,
+    stop,
+    readNow,
+  }
 }
 
 export type FileActions = ReturnType<typeof useFileActions>
+
+interface MenuEntry {
+  label: string
+  icon: ReactNode
+  run: () => void
+  disabled?: boolean
+}
+
+/** The right-click menu of a file row: the same actions as the icons, plus copy path. */
+function FileMenu({
+  at,
+  entries,
+  onClose,
+}: {
+  at: { x: number; y: number }
+  entries: MenuEntry[]
+  onClose: () => void
+}) {
+  const ref = useRef<HTMLUListElement>(null)
+  const [pos, setPos] = useState(at)
+  useEffect(() => {
+    const box = ref.current?.getBoundingClientRect()
+    if (!box) return
+    // keep the menu inside the window
+    setPos({
+      x: Math.max(4, Math.min(at.x, window.innerWidth - box.width - 4)),
+      y: Math.max(4, Math.min(at.y, window.innerHeight - box.height - 4)),
+    })
+    ref.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+  }, [at])
+  useEffect(() => {
+    const away = (event: Event) => {
+      if (!ref.current?.contains(event.target as Node)) onClose()
+    }
+    const key = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose()
+    }
+    document.addEventListener('mousedown', away)
+    document.addEventListener('contextmenu', away)
+    document.addEventListener('keydown', key)
+    window.addEventListener('blur', onClose)
+    window.addEventListener('resize', onClose)
+    document.addEventListener('scroll', onClose, true)
+    return () => {
+      document.removeEventListener('mousedown', away)
+      document.removeEventListener('contextmenu', away)
+      document.removeEventListener('keydown', key)
+      window.removeEventListener('blur', onClose)
+      window.removeEventListener('resize', onClose)
+      document.removeEventListener('scroll', onClose, true)
+    }
+  }, [onClose])
+  return (
+    <ul ref={ref} className="ixp-menu" role="menu" style={{ left: pos.x, top: pos.y }}>
+      {entries.map((entry) => (
+        <li key={entry.label} role="none">
+          <button
+            type="button"
+            role="menuitem"
+            disabled={entry.disabled}
+            onClick={() => {
+              onClose()
+              entry.run()
+            }}
+          >
+            {entry.icon}
+            {entry.label}
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
 
 /** One file: icon, name, cause, progress and icon actions; the name opens its log. */
 export function FileRow({
@@ -335,13 +460,43 @@ export function FileRow({
             ? w.pausedNow
             : ''
   const working = live?.kind === 'reading' || live?.kind === 'embedding'
+  const stoppable = working || live?.kind === 'queued' || item.reason === 'waiting'
+  const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const onContextMenu = (event: MouseEvent) => {
+    event.preventDefault()
+    setMenu({ x: event.clientX, y: event.clientY })
+  }
+  const entries: MenuEntry[] = [
+    { label: w.openFile, icon: <IOpen />, run: () => void actions.openFile(item) },
+    { label: w.reveal, icon: <IFolder />, run: () => void api.revealDocumentIndexFile(item.id) },
+    ...(retryable || item.status === 'ready'
+      ? [
+          {
+            label:
+              item.reason === 'waiting'
+                ? w.readFirst
+                : item.status === 'ready'
+                  ? w.reread
+                  : w.retry,
+            icon: <IRetry />,
+            disabled: busy,
+            run: () => void actions.retry(item),
+          },
+        ]
+      : []),
+    ...(stoppable
+      ? [{ label: w.stop, icon: <IStop />, disabled: busy, run: () => void actions.stop(item) }]
+      : []),
+    { label: w.copyPath, icon: <ICopy />, run: () => void actions.copyPath(item) },
+    { label: w.copyLog, icon: <ICopy />, run: () => void actions.copyLog(item) },
+  ]
   const progress =
     live?.kind === 'embedding'
       ? { kind: 'chunks' as const, done: live.done, total: live.total }
       : item.progress
   return (
     <li className={`${isOpen ? 'is-selected' : ''}${finished ? ' is-done' : ''}`}>
-      <div className="ixp-row">
+      <div className="ixp-row" onContextMenu={onContextMenu}>
         <button
           type="button"
           className="ixp-main"
@@ -383,6 +538,14 @@ export function FileRow({
           progress && <Progress progress={progress} />
         )}
         <span className="ixp-actions">
+          <IconButton label={w.openFile} onClick={() => void actions.openFile(item)}>
+            <IOpen />
+          </IconButton>
+          {stoppable && (
+            <IconButton label={w.stop} disabled={busy} onClick={() => void actions.stop(item)}>
+              <IStop />
+            </IconButton>
+          )}
           {item.reason === 'no-text' && (
             <IconButton
               label={w.readNow}
@@ -415,6 +578,7 @@ export function FileRow({
           </IconButton>
         </span>
       </div>
+      {menu && <FileMenu at={menu} entries={entries} onClose={() => setMenu(null)} />}
       {isOpen &&
         (detail === undefined ? (
           <p className="ixp-loading">{w.loading}</p>

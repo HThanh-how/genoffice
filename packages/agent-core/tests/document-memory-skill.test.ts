@@ -106,7 +106,8 @@ describe('createDocumentMemorySkill', () => {
   })
 
   it('opens only numeric document ids returned by search', async () => {
-    const documentMemoryOpen = vi.fn().mockResolvedValue({ ok: true })
+    const opened = { ok: true, name: 'a.docx', path: '/docs/a.docx' }
+    const documentMemoryOpen = vi.fn().mockResolvedValue(opened)
     const skill = createDocumentMemorySkill({
       documentMemorySearch: vi.fn(),
       documentMemoryRead: vi.fn(),
@@ -117,7 +118,8 @@ describe('createDocumentMemorySkill', () => {
     expect(documentMemoryOpen).not.toHaveBeenCalled()
     const result = await skill.executeTool(call('open_remembered_document', { document_id: 7 }))
     expect(documentMemoryOpen).toHaveBeenCalledWith(7)
-    expect(JSON.parse(result.output)).toEqual({ ok: true })
+    // the model is told which file really opened, so it cannot claim a different name
+    expect(JSON.parse(result.output)).toEqual(opened)
   })
 
   it('checks cancellation before and after bridge calls', async () => {

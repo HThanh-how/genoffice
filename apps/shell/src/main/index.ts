@@ -4140,7 +4140,7 @@ function registerHomeIpc(): void {
       throw new Error('Invalid document id')
     const path = documentMemory?.open(id)
     return path && existsSync(path) && openDocumentPath(path)
-      ? { ok: true }
+      ? { ok: true, name: basename(path), path }
       : { ok: false, error: 'Document is unavailable' }
   })
   // signed-in means GenOffice's own device-code login; the shared gsk CLI key

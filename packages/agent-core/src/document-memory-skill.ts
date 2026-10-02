@@ -46,7 +46,9 @@ export interface DocumentMemoryReadResult {
 export interface DocumentMemoryBridge {
   documentMemorySearch?: (query: string, limit?: number) => Promise<DocumentMemorySearchResult>
   documentMemoryRead?: (chunkId: number) => Promise<DocumentMemoryReadResult>
-  documentMemoryOpen?: (documentId: number) => Promise<{ ok: boolean; error?: string }>
+  documentMemoryOpen?: (
+    documentId: number,
+  ) => Promise<{ ok: boolean; error?: string; name?: string; path?: string }>
 }
 
 const SEARCH_SNIPPET_CHARS = 450
@@ -80,7 +82,7 @@ const tools: AgentToolDef[] = [
   {
     name: 'open_remembered_document',
     description:
-      'Open a remembered source document in its editor by numeric document_id from search.',
+      'Open a remembered source document in its editor. document_id is the `documentId` field of a search hit (never its `chunkId`). The result names the file that actually opened: report that name, not the one you expected.',
     inputSchema: {
       type: 'object',
       properties: { document_id: { type: 'integer', minimum: 1 } },
