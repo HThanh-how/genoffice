@@ -1,6 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { resolve } from 'node:path'
-import type { IndexFileDetail } from '../../shared/fork/document-index-api'
+import type { IndexFileDetail, IndexedFileHit } from '../../shared/fork/document-index-api'
 import {
   groupIssueCounts,
   issueReason,
@@ -35,6 +35,17 @@ interface IssueRow {
  * scoped to enrolled, non-excluded rows with status error/empty and are only run on user
  * action, never from the progress poll.
  */
+/** Lower case with accents removed, so "benh vien" finds "BỆNH VIỆN". */
+function fold(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 export class IndexIssueReader {
   private db: DatabaseSync | null = null
 
@@ -62,6 +73,36 @@ export class IndexIssueReader {
         "excluded = 0 AND status IN ('error', 'empty') AND (path = ? OR substr(path, 1, length(?)) = ?)",
       args: [normalized, prefix, prefix],
     }
+  }
+
+  /** Files whose name or path contains every typed word, accents and case ignored. */
+  search(query: string, limit = 40): IndexedFileHit[] {
+    const words = fold(query).split(' ').filter(Boolean)
+    if (words.length === 0) return []
+    const rows = this.connection()
+      .prepare('SELECT id, path, name, status, error FROM documents WHERE excluded = 0')
+      .all() as unknown as IssueRow[]
+    const hits: IssueRow[] = []
+    for (const row of rows) {
+      const haystack = fold(`${row.name} ${row.path}`)
+      if (words.every((word) => haystack.includes(word))) hits.push(row)
+    }
+    // problem files first, then by name: the ones the person is usually hunting for
+    hits.sort((a, b) => Number(a.status === 'ready') - Number(b.status === 'ready'))
+    return hits.slice(0, limit).map((row) => {
+      const problem = row.status === 'error' || row.status === 'empty'
+      const base = this.toIssue(row)
+      const withProgress = this.withProgress(base)
+      return {
+        id: row.id,
+        path: row.path,
+        name: row.name,
+        status: row.status,
+        ...(problem ? { reason: base.reason } : {}),
+        ...(row.error ? { error: row.error } : {}),
+        ...(withProgress.progress ? { progress: withProgress.progress } : {}),
+      }
+    })
   }
 
   /** Everything the file's detail view shows, read in a few cheap queries by document id. */

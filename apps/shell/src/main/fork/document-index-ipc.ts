@@ -18,6 +18,7 @@ import {
 import {
   DOCUMENT_INDEX_CHANNELS,
   type EmbeddingModelState,
+  type IndexedFileHit,
   type IndexFileDetail,
   type IndexedFolder,
 } from '../../shared/fork/document-index-api'
@@ -75,6 +76,14 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
         throw new Error('Invalid index issue page')
       if (!getDocumentMemory()) return { total: 0, items: [] }
       return reader().page(activeRoot(root), offset, issueReason(reason))
+    },
+  )
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.searchIndexedFiles,
+    (_event, query: unknown): IndexedFileHit[] => {
+      if (typeof query !== 'string' || query.length > 200) return []
+      if (!getDocumentMemory()) return []
+      return reader().search(query)
     },
   )
   ipcMain.handle(

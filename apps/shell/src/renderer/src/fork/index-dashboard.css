@@ -216,6 +216,7 @@
   gap: 4px 12px;
   margin-bottom: 10px;
 }
+.idx-card h2,
 .idx-card h3 {
   margin: 0;
   font-size: 13.5px;
@@ -475,7 +476,6 @@
   gap: 10px;
   min-height: 42px;
   padding: 6px 10px 6px 14px;
-  cursor: pointer;
 }
 .ixp-row:hover {
   background: color-mix(in srgb, var(--text) 4%, transparent);
@@ -673,4 +673,93 @@
   .ixp-progress {
     display: none;
   }
+}
+
+.idx-search {
+  position: relative;
+  max-width: 980px;
+}
+.idx-search svg {
+  position: absolute;
+  top: 50%;
+  left: 12px;
+  transform: translateY(-50%);
+  color: var(--text-tertiary);
+  pointer-events: none;
+}
+.idx-search input {
+  width: 100%;
+  padding: 9px 12px 9px 34px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.idx-search input:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 0;
+}
+.idx-attn ul {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.idx-attn li button {
+  display: grid;
+  grid-template-columns: minmax(120px, 200px) 1fr auto;
+  align-items: baseline;
+  gap: 12px;
+  width: 100%;
+  padding: 8px 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.idx-attn li button:hover {
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.idx-attn-hint {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.idx-attn li strong {
+  font-variant-numeric: tabular-nums;
+}
+.ixp-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ixp-main:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.ixp-files-flat {
+  border-top: 0;
+  padding-top: 6px;
+}
+.idx-card > header .idx-link {
+  font-size: 12.5px;
 }

@@ -12,6 +12,7 @@ export const DOCUMENT_INDEX_CHANNELS = {
   getEmbeddingModel: 'home:get-embedding-model',
   setEmbeddingModel: 'home:set-embedding-model',
   getIndexFileDetail: 'home:get-index-file-detail',
+  searchIndexedFiles: 'home:search-indexed-files',
 } as const
 
 export type EmbeddingProfileChoice = 'standard' | 'high'
@@ -28,6 +29,18 @@ export interface EmbeddingModelState {
     EmbeddingProfileChoice,
     { name: string; dimensions: number; downloadMB: number; memoryMB: number }
   >
+}
+
+/** One file found by name in the index, whatever state it is in. */
+export interface IndexedFileHit {
+  id: number
+  path: string
+  name: string
+  status: string
+  /** why it has a problem; absent for a file that was read fine */
+  reason?: IndexIssueReason
+  error?: string
+  progress?: { kind: 'ocr' | 'chunks'; done: number; total: number }
 }
 
 /** How far one file got through the pipeline, for the file's detail view. */
@@ -109,6 +122,8 @@ export interface DocumentIndexApi {
   rescanIndexedFolder(root: string): Promise<{ ok: boolean; error?: string }>
   /** Stop watching a folder and drop it from the list (indexed files stay searchable). */
   forgetIndexedFolder(root: string): Promise<boolean>
+  /** Files in the index whose name or folder matches every word typed (accents ignored). */
+  searchIndexedFiles(query: string): Promise<IndexedFileHit[]>
   /** How far one file got: found, read, OCR, embedded. Null when the file is not in the index. */
   getIndexFileDetail(documentId: number): Promise<IndexFileDetail | null>
   getEmbeddingModel(): Promise<EmbeddingModelState>

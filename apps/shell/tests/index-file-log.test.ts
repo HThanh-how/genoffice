@@ -69,7 +69,7 @@ describe('buildFileLog', () => {
 
 describe('formatBytes', () => {
   it('uses the nearest unit', () => {
-    expect(formatBytes(512, 'en-US')).toBe('512 B')
-    expect(formatBytes(2_411_000, 'en-US')).toBe('2.3 MB')
+    expect(formatBytes(512, 'en-US')).toBe('512\u00a0B')
+    expect(formatBytes(2_411_000, 'en-US')).toBe('2.3\u00a0MB')
   })
 })

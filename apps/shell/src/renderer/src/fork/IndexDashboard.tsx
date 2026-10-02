@@ -10,6 +10,10 @@ import { EtaTracker, type EtaEstimate } from '../indexing-activity-model'
 import { etaText } from '../indexing-activity/format'
 import { IndexedFolders } from './IndexedFolders'
 import { IndexProblems } from './IndexProblems'
+import { IndexSearch } from './IndexSearch'
+import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
+import type { IndexIssueReason } from '../../../main/document-memory/issues'
+import { isInformationalReason } from '../../../main/document-memory/issues'
 import { DocumentMemorySettings } from '../DocumentMemorySettings'
 import { langFor, parseIndexCommand, runIndexCommand } from './index-assistant'
 import './index-dashboard.css'
@@ -78,8 +82,11 @@ const EN = {
   seen: '{n} files seen · {m} new',
   assistant: 'Ask or tell the index',
   assistantHint: 'Ask how far it is or give an order. It runs here, no AI quota is used.',
-  placeholder: 'e.g. "how far is indexing?", "prioritize folder Contracts", "pause"',
+  placeholder: 'e.g. "how far is indexing?", "prioritize folder Contracts", "pause"…',
   send: 'Send',
+  searchFiles: 'Find a file in the index…',
+  attentionTitle: 'Needs attention',
+  attentionAll: 'See all',
   suggestions: ['How far is indexing?', 'Rescan', 'Retry the errors', 'Help'],
   ocrConfirm:
     'Read this scanned PDF now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
@@ -149,6 +156,9 @@ const VI: Dict = {
   assistantHint: 'Hỏi tiến độ hoặc ra lệnh. Chạy ngay trên máy, không tốn quota AI.',
   placeholder: 'vd: "index tới đâu rồi?", "ưu tiên thư mục Hợp đồng", "tạm dừng"',
   send: 'Gửi',
+  searchFiles: 'Tìm tệp trong chỉ mục…',
+  attentionTitle: 'Cần chú ý',
+  attentionAll: 'Xem tất cả',
   suggestions: ['Index tới đâu rồi?', 'Quét lại', 'Thử lại các lỗi', 'Trợ giúp'],
   ocrConfirm:
     'Đọc ngay tệp PDF quét này bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
@@ -174,6 +184,9 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const d = TEXT[lang] ?? EN
   const copy = activityCopy(lang)
   const [tab, setTab] = useState<Tab>('overview')
+  const [query, setQuery] = useState('')
+  const [focus, setFocus] = useState<IndexIssueReason | null>(null)
+  const [attention, setAttention] = useState<IndexIssueSummary | null>(null)
   const [snap, setSnap] = useState<Snapshot>({ memory: null, activity: null, mode: null })
   const [eta, setEta] = useState<EtaEstimate | null>(null)
   const [rate, setRate] = useState<number | null>(null)
@@ -254,6 +267,21 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const percent = progress?.percent ?? (progress && progress.totalFiles === 0 ? 100 : null)
 
   const kick = useCallback(() => pollKick.current(), [])
+
+  // What needs a look, for the overview card: a cheap grouped count, refreshed when it changes.
+  const problemFiles = (progress?.errorFiles ?? 0) + (progress?.emptyFiles ?? 0)
+  const scanRoot = folder?.root ?? ''
+  useEffect(() => {
+    if (!scanRoot) return
+    let alive = true
+    void api
+      .getDocumentIndexIssueSummary(scanRoot)
+      .then((next) => alive && setAttention(next))
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [api, scanRoot, problemFiles])
   const togglePause = async () => {
     await api.setDocumentMemoryEnabled(!(memory?.enabled ?? true))
     kick()
@@ -340,130 +368,185 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
         </div>
       </header>
 
-      <nav className="idx-tabs" role="tablist">
-        {(Object.keys(d.tabs) as Tab[]).map((key) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={tab === key}
-            className={tab === key ? 'is-active' : ''}
-            onClick={() => setTab(key)}
-          >
-            {d.tabs[key]}
-            {key === 'problems' && errors > 0 && <span className="idx-badge">{errors}</span>}
-          </button>
-        ))}
-      </nav>
+      <div className="idx-search">
+        <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <circle cx="7" cy="7" r="4.6" stroke="currentColor" strokeWidth="1.4" />
+          <path d="m10.6 10.6 3 3" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
+        </svg>
+        <input
+          type="search"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={d.searchFiles}
+          aria-label={d.searchFiles}
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </div>
 
-      {tab === 'overview' && (
+      {query.trim() ? (
         <div className="idx-body">
-          <section className="idx-hero">
-            <div className="idx-ring">
-              <IndexProgressRing
-                percent={percent}
-                complete={state.tone === 'ok'}
-                label={d.title}
-                active={state.tone === 'busy'}
-                state={state.tone === 'warn' ? 'paused' : 'running'}
-              />
-            </div>
-            <div className="idx-hero-text">
-              <span className={`idx-pill is-${state.tone}`}>{state.text}</span>
-              {progress && (
-                <h2>
-                  {fill(d.filesDone, {
-                    ready: compact(progress.readyFiles, dateLocale),
-                    total: compact(progress.totalFiles, dateLocale),
-                  })}
-                </h2>
+          <IndexSearch api={api} query={query.trim()} onChanged={kick} />
+        </div>
+      ) : (
+        <>
+          <nav className="idx-tabs" role="tablist">
+            {(Object.keys(d.tabs) as Tab[]).map((key) => (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={tab === key}
+                className={tab === key ? 'is-active' : ''}
+                onClick={() => setTab(key)}
+              >
+                {d.tabs[key]}
+                {key === 'problems' && errors > 0 && <span className="idx-badge">{errors}</span>}
+              </button>
+            ))}
+          </nav>
+
+          {tab === 'overview' && (
+            <div className="idx-body">
+              {attention && attention.groups.some((g) => !isInformationalReason(g.reason)) && (
+                <section className="idx-card idx-attn" aria-label={d.attentionTitle}>
+                  <header>
+                    <h2>{d.attentionTitle}</h2>
+                    <button type="button" className="idx-link" onClick={() => setTab('problems')}>
+                      {d.attentionAll}
+                    </button>
+                  </header>
+                  <ul>
+                    {attention.groups
+                      .filter((g) => !isInformationalReason(g.reason))
+                      .map((g) => (
+                        <li key={g.reason}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFocus(g.reason)
+                              setTab('problems')
+                            }}
+                          >
+                            <span>{copy.reasons[g.reason].title}</span>
+                            <span className="idx-attn-hint">{copy.reasons[g.reason].hint}</span>
+                            <strong>{compact(g.count, dateLocale)}</strong>
+                          </button>
+                        </li>
+                      ))}
+                  </ul>
+                </section>
               )}
-              <p>
-                {progress &&
-                  [
-                    fill(d.waiting, { n: compact(progress.pendingFiles, dateLocale) }),
-                    errors > 0 ? fill(d.problems, { n: compact(errors, dateLocale) }) : '',
-                  ]
-                    .filter(Boolean)
-                    .join(' · ')}
-              </p>
-              {folder?.running && folder.root && (
-                <p className="idx-scan" title={folder.root}>
-                  {fill(d.scanning, { root: folder.root })} ·{' '}
-                  {fill(d.seen, {
-                    n: compact(folder.discovered, dateLocale),
-                    m: compact(folder.enrolled, dateLocale),
-                  })}
-                </p>
-              )}
+              <section className="idx-hero">
+                <div className="idx-ring">
+                  <IndexProgressRing
+                    percent={percent}
+                    complete={state.tone === 'ok'}
+                    label={d.title}
+                    active={state.tone === 'busy'}
+                    state={state.tone === 'warn' ? 'paused' : 'running'}
+                  />
+                </div>
+                <div className="idx-hero-text">
+                  <span className={`idx-pill is-${state.tone}`}>{state.text}</span>
+                  {progress && (
+                    <h2>
+                      {fill(d.filesDone, {
+                        ready: compact(progress.readyFiles, dateLocale),
+                        total: compact(progress.totalFiles, dateLocale),
+                      })}
+                    </h2>
+                  )}
+                  <p>
+                    {progress &&
+                      [
+                        fill(d.waiting, { n: compact(progress.pendingFiles, dateLocale) }),
+                        errors > 0 ? fill(d.problems, { n: compact(errors, dateLocale) }) : '',
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')}
+                  </p>
+                  {folder?.running && folder.root && (
+                    <p className="idx-scan" title={folder.root}>
+                      {fill(d.scanning, { root: folder.root })} ·{' '}
+                      {fill(d.seen, {
+                        n: compact(folder.discovered, dateLocale),
+                        m: compact(folder.enrolled, dateLocale),
+                      })}
+                    </p>
+                  )}
+                </div>
+                <dl className="idx-eta">
+                  <div>
+                    <dt>{d.eta}</dt>
+                    <dd>
+                      {state.tone === 'busy' ? (eta ? etaText(eta, copy) : d.etaUnknown) : '–'}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>{d.rate}</dt>
+                    <dd>
+                      {rate && state.tone === 'busy'
+                        ? fill(d.perMin, { n: compact(rate, dateLocale) })
+                        : '–'}
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+
+              <section className="idx-stats">
+                {stat(d.docs, compact(memory?.documents ?? 0, dateLocale))}
+                {stat(d.chunks, compact(memory?.chunks ?? 0, dateLocale))}
+                {stat(d.vectors, compact(memory?.vectors ?? 0, dateLocale))}
+                {stat(d.pending, compact(pending, dateLocale))}
+                {stat(d.errors, compact(errors, dateLocale), errors > 0 ? 'is-warn' : '')}
+                {stat(d.model, modelText, modelState === 'error' ? 'is-warn' : '')}
+              </section>
+
+              <section className="idx-card">
+                <header>
+                  <h3>{d.effort}</h3>
+                  <span className="idx-muted">{tierText}</span>
+                </header>
+                <div className="idx-seg" role="radiogroup" aria-label={d.effort}>
+                  {INDEXING_MODES.map((m) => (
+                    <button
+                      key={m}
+                      type="button"
+                      role="radio"
+                      aria-checked={mode?.mode === m}
+                      className={mode?.mode === m ? 'is-active' : ''}
+                      onClick={() => void setMode(m)}
+                    >
+                      <strong>{d.modes[m]}</strong>
+                      <span>{d.modeHint[m]}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+
+              <Assistant api={api} lang={lang} d={d} onChanged={kick} />
             </div>
-            <dl className="idx-eta">
-              <div>
-                <dt>{d.eta}</dt>
-                <dd>{state.tone === 'busy' ? (eta ? etaText(eta, copy) : d.etaUnknown) : '–'}</dd>
-              </div>
-              <div>
-                <dt>{d.rate}</dt>
-                <dd>
-                  {rate && state.tone === 'busy'
-                    ? fill(d.perMin, { n: compact(rate, dateLocale) })
-                    : '–'}
-                </dd>
-              </div>
-            </dl>
-          </section>
+          )}
 
-          <section className="idx-stats">
-            {stat(d.docs, compact(memory?.documents ?? 0, dateLocale))}
-            {stat(d.chunks, compact(memory?.chunks ?? 0, dateLocale))}
-            {stat(d.vectors, compact(memory?.vectors ?? 0, dateLocale))}
-            {stat(d.pending, compact(pending, dateLocale))}
-            {stat(d.errors, compact(errors, dateLocale), errors > 0 ? 'is-warn' : '')}
-            {stat(d.model, modelText, modelState === 'error' ? 'is-warn' : '')}
-          </section>
-
-          <section className="idx-card">
-            <header>
-              <h3>{d.effort}</h3>
-              <span className="idx-muted">{tierText}</span>
-            </header>
-            <div className="idx-seg" role="radiogroup" aria-label={d.effort}>
-              {INDEXING_MODES.map((m) => (
-                <button
-                  key={m}
-                  type="button"
-                  role="radio"
-                  aria-checked={mode?.mode === m}
-                  className={mode?.mode === m ? 'is-active' : ''}
-                  onClick={() => void setMode(m)}
-                >
-                  <strong>{d.modes[m]}</strong>
-                  <span>{d.modeHint[m]}</span>
-                </button>
-              ))}
+          {tab === 'folders' && (
+            <div className="idx-body idx-embed">
+              <IndexedFolders />
             </div>
-          </section>
+          )}
 
-          <Assistant api={api} lang={lang} d={d} onChanged={kick} />
-        </div>
-      )}
+          {tab === 'problems' && (
+            <div className="idx-body">
+              <IndexProblems api={api} root={folder?.root ?? ''} focus={focus} onChanged={kick} />
+            </div>
+          )}
 
-      {tab === 'folders' && (
-        <div className="idx-body idx-embed">
-          <IndexedFolders />
-        </div>
-      )}
-
-      {tab === 'problems' && (
-        <div className="idx-body">
-          <IndexProblems api={api} root={folder?.root ?? ''} onChanged={kick} />
-        </div>
-      )}
-
-      {tab === 'settings' && (
-        <div className="idx-body idx-embed">
-          <DocumentMemorySettings />
-        </div>
+          {tab === 'settings' && (
+            <div className="idx-body idx-embed">
+              <DocumentMemorySettings />
+            </div>
+          )}
+        </>
       )}
     </main>
   )

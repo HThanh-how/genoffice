@@ -80,7 +80,7 @@ const fill = (text: string, values: Record<string, string | number>): string =>
   text.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ''))
 
 export function formatBytes(bytes: number, locale: string): string {
-  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024) return `${bytes}\u00a0B`
   const units = ['KB', 'MB', 'GB']
   let value = bytes / 1024
   let unit = 0
@@ -88,7 +88,7 @@ export function formatBytes(bytes: number, locale: string): string {
     value /= 1024
     unit++
   }
-  return `${value.toLocaleString(locale, { maximumFractionDigits: value < 10 ? 1 : 0 })} ${units[unit]}`
+  return `${value.toLocaleString(locale, { maximumFractionDigits: value < 10 ? 1 : 0 })}\u00a0${units[unit]}`
 }
 
 const stepName = (w: LogWords, key: FileStep['key']): string => w[key]
