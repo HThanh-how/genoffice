@@ -3592,6 +3592,13 @@ button {
   transform-origin: 0 0;
 }
 
+/* a selection paints its own text colour over transparent text: without this the recognised
+   letters (often misread) show in white over the highlighted scan */
+.pdf-ocr-layer span::selection {
+  background: var(--pdf-text-selection);
+  color: transparent;
+}
+
 /* ---- Ask-AI entry on the markup bar + its anchored popover ---- */
 
 .pdf-sel-popup-sep {

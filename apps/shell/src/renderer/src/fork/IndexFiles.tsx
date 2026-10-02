@@ -98,6 +98,7 @@ const EN = {
   indexOff: 'Indexing is switched off. Turn it on in the index settings.',
   ocrConfirm:
     'Read this scanned PDF now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
+  ocrStarted: 'It is a scan: reading it with Antigravity…',
   ocrDone: 'Read {n} pages. It is searchable shortly.',
   ocrFailed: 'Could not read: {e}',
   path: 'Path',
@@ -132,6 +133,7 @@ const VI: FileWords = {
   indexOff: 'Đang tắt index. Bật lại trong cài đặt chỉ mục.',
   ocrConfirm:
     'Đọc ngay tệp PDF quét này bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
+  ocrStarted: 'Đây là bản quét: đang đọc bằng Antigravity…',
   ocrDone: 'Đã đọc {n} trang. Lát nữa là tìm được.',
   ocrFailed: 'Không đọc được: {e}',
   path: 'Đường dẫn',
@@ -315,8 +317,9 @@ export function useFileActions(
     withBusy(item.id, async () => {
       const result = await api.retryDocumentIndex(item.id)
       // a scanned PDF has no text to read: the only way to read it is Antigravity, so go on to
-      // that (after the usual confirmation, since it uses the person's Antigravity quota)
-      if (result.ok && result.empty && /\.pdf$/i.test(item.path) && window.confirm(w.ocrConfirm)) {
+      // that at once; the person pressed Read because they want this file readable now
+      if (result.ok && result.empty && /\.pdf$/i.test(item.path)) {
+        say(w.ocrStarted)
         await readWithAntigravity(item)
         await settle(item)
         return
