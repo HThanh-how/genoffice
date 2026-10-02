@@ -67,6 +67,19 @@ export interface TabMenuInput {
 
 const baseName = (path: string): string => path.split(/[\\/]/).pop() ?? path
 
+const PATH_LABEL_MAX = 80
+
+/**
+ * A path short enough for a menu line: a long one keeps its start (the drive and first folder) and
+ * its end (the folder the file is in and the file), with an ellipsis between.
+ */
+export function pathLabel(path: string): string {
+  if (path.length <= PATH_LABEL_MAX) return path
+  const keepEnd = Math.floor((PATH_LABEL_MAX - 1) * 0.65)
+  const keepStart = PATH_LABEL_MAX - 1 - keepEnd
+  return `${path.slice(0, keepStart)}…${path.slice(path.length - keepEnd)}`
+}
+
 /**
  * The right-click menu of a document tab: what to do with the tab (move, split, close the others)
  * and with its file (rename, copy, duplicate, reveal). Entries that need a file on disk are shown
@@ -82,6 +95,8 @@ export function tabMenuTemplate(input: TabMenuInput): MenuItemConstructorOptions
   const right = tabs.slice(index + 1).filter(closable)
   const everything = tabs.filter(closable)
   return [
+    // where the file is, at a glance (the menu is the place people look when they ask "which one is this?")
+    ...(file ? ([{ label: pathLabel(file), enabled: false }, { type: 'separator' }] as const) : []),
     { label: words.rename, enabled: !!file, click: () => actions.rename(tab.id) },
     { label: words.duplicate, enabled: onDisk, click: () => actions.duplicate(file!) },
     { type: 'separator' },

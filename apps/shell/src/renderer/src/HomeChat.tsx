@@ -61,6 +61,7 @@ import { translateChat, type ChatKey } from './home-chat/translate'
 import {
   WINDOW_PAGE,
   createFrameBatcher,
+  fileNamesIn,
   isNearBottom,
   toSeedMessages,
   windowMessages,
@@ -335,6 +336,31 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
     })
   }
 
+  /** Files an answer names (`report.pdf`) become source chips, so the file itself can be opened. */
+  const attachMentionedFiles = async (answer: string, run: number) => {
+    const found: HomeChatSource[] = []
+    for (const name of fileNamesIn(answer)) {
+      const wanted = name.toLowerCase()
+      const matches = await findFilesByName(api, name, 6).catch(() => [])
+      const file = matches.find((match) => match.name.toLowerCase() === wanted)
+      if (file) found.push({ documentId: 0, path: file.path, name: file.name, location: file.path })
+    }
+    if (found.length === 0 || !mountedRef.current || run !== runGenerationRef.current) return
+    updateLastAssistant((last) => {
+      const have = new Set(
+        (last.sources ?? []).flatMap((source) => [
+          source.name.toLowerCase(),
+          (source.path ?? '').toLowerCase(),
+        ]),
+      )
+      const added = found.filter(
+        (source) =>
+          !have.has(source.name.toLowerCase()) && !have.has((source.path ?? '').toLowerCase()),
+      )
+      return added.length ? { ...last, sources: [...(last.sources ?? []), ...added] } : last
+    })
+  }
+
   if (!loopRef.current) {
     const transport = createIpcTransport({
       route: createGeminiRouter(),
@@ -414,6 +440,9 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
             }
           })
           setBusy(false)
+          // files the answer names are offered as files to open, not only as words
+          const answered = text || ''
+          if (!cancelled && answered) void attachMentionedFiles(answered, runGenerationRef.current)
         },
         onError: (error) => {
           if (!live()) return

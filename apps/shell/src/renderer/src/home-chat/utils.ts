@@ -154,3 +154,24 @@ export function toSeedMessages(messages: readonly HomeChatMessage[]): AgentMessa
   if (seed.at(-1)?.role === 'user') seed.pop()
   return seed
 }
+
+const FILE_NAME_IN_TEXT =
+  /[`"“'*]([^`"”'*\n]{1,150}\.(?:docx?|xlsx?|xlsm|csv|tsv|pptx?|pdf|md|markdown|txt|html?|json|png|jpe?g))[`"”'*]/gi
+
+/**
+ * File names an answer mentions, quoted the way models quote them (`name.pdf`, "name.pdf",
+ * **name.pdf**): the first of each, at most `max`, so they can be turned into files to open.
+ */
+export function fileNamesIn(text: string, max = 8): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const match of text.matchAll(FILE_NAME_IN_TEXT)) {
+    const name = match[1]!.trim()
+    const key = name.toLowerCase()
+    if (!name || seen.has(key)) continue
+    seen.add(key)
+    out.push(name)
+    if (out.length >= max) break
+  }
+  return out
+}

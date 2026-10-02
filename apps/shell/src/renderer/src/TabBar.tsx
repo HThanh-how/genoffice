@@ -475,8 +475,8 @@ export function TabBar() {
               key={tab.id}
               className={`tab-item ${tab.kind === 'home' ? 'tab-home' : ''} ${tab.active ? 'active' : ''} ${dragVisual?.id === tab.id ? 'drag-source' : ''}`}
               // long file names ellipsize in the strip — hover reveals the
-              // full title (the close button's own tooltip still wins there)
-              title={tab.title}
+              // full title and where the file is (the close button's own tooltip still wins there)
+              title={tab.filePath ? `${tab.title}\n${tab.filePath}` : tab.title}
               style={dragStyle}
               onContextMenu={(event) => {
                 event.preventDefault()

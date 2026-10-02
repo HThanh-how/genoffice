@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { MenuItemConstructorOptions } from 'electron'
 import type { TabSummary } from '../src/shared/tabs-api'
 import {
+  pathLabel,
   tabMenuTemplate,
   tabMenuWords,
   type TabMenuActions,
@@ -160,5 +161,49 @@ describe('the tab context menu', () => {
   it('speaks Vietnamese when asked to, and English otherwise', () => {
     expect(tabMenuWords('vi').closeOthers).toBe('Đóng các thẻ khác')
     expect(tabMenuWords('fr').closeOthers).toBe('Close other tabs')
+  })
+})
+
+describe('where the file is, shown in the tab menu', () => {
+  const path = 'G:\\Mr Quốc\\Ba\\Ra viện BV Chợ Rẫy.pdf'
+  const first = (template: MenuItemConstructorOptions[]) => template[0]!
+
+  it('starts with the file path as a line that cannot be clicked', () => {
+    const template = tabMenuTemplate({
+      tab: tab('a', { filePath: path }),
+      tabs: [home, tab('a', { filePath: path })],
+      canDetach: true,
+      fileExists: true,
+      canReopen: false,
+      words: tabMenuWords('en'),
+      labels: { openInNewWindow: 'Open in New Window', close: 'Close' },
+      actions: actions(),
+    })
+    expect(first(template)).toMatchObject({ label: path, enabled: false })
+    expect(template[1]).toMatchObject({ type: 'separator' })
+  })
+
+  it('has no path line for an untitled document', () => {
+    const template = tabMenuTemplate({
+      tab: tab('a'),
+      tabs: [home, tab('a')],
+      canDetach: true,
+      fileExists: false,
+      canReopen: false,
+      words: tabMenuWords('en'),
+      labels: { openInNewWindow: 'Open in New Window', close: 'Close' },
+      actions: actions(),
+    })
+    expect(first(template).label).toBe('Rename')
+  })
+
+  it('keeps the start and the end of a very long path', () => {
+    const long = `D:\\${'folder\\'.repeat(30)}final-report.pdf`
+    const label = pathLabel(long)
+    expect(label.length).toBeLessThanOrEqual(80)
+    expect(label.startsWith('D:\\folder')).toBe(true)
+    expect(label.endsWith('final-report.pdf')).toBe(true)
+    expect(label).toContain('…')
+    expect(pathLabel(path)).toBe(path)
   })
 })
