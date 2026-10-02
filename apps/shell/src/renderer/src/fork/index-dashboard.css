@@ -924,3 +924,17 @@
   background: var(--accent);
   transition: width 0.4s ease;
 }
+
+/* files picked with Ctrl/Shift+click, to be read together */
+.ixp-files > li.is-picked {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.ixp-pickbar {
+  align-items: center;
+  gap: 10px;
+}
+
+.ixp-main {
+  user-select: none;
+}

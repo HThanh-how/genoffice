@@ -15,6 +15,7 @@ import {
   useFileActions,
   useIndexingNow,
 } from './IndexFiles'
+import { NOTHING_PICKED, pick, type PickState } from './index-selection'
 
 /** Something the person can act on: failures, and scanned files still waiting to be read. */
 export function needsAction(reason: IndexIssueReason): boolean {
@@ -45,6 +46,12 @@ const EN = {
   retried: 'Queued {n} files again.',
   loading: 'Loading…',
   indexingProgress: '{done} of {total} read',
+  picked: '{n} selected',
+  readPicked: 'Index {n} now',
+  pickHint: 'Ctrl/Shift+click to select several files',
+  readPickedConfirm:
+    'Read {n} files now? Scanned PDFs are read with Antigravity: it uses Antigravity quota and ignores today’s limit.',
+  clearPicked: 'Clear selection',
 }
 type Dict = typeof EN
 const VI: Dict = {
@@ -64,6 +71,12 @@ const VI: Dict = {
   retried: 'Đã xếp lại {n} tệp.',
   loading: 'Đang tải…',
   indexingProgress: 'Đã đọc {done}/{total}',
+  picked: 'Đã chọn {n}',
+  readPicked: 'Index {n} tệp ngay',
+  pickHint: 'Ctrl/Shift+bấm để chọn nhiều tệp',
+  readPickedConfirm:
+    'Đọc ngay {n} tệp? PDF quét sẽ được đọc bằng Antigravity: tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
+  clearPicked: 'Bỏ chọn',
 }
 
 /** Files being read go first, then the next in line, then the rest (stable order). */
@@ -180,6 +193,8 @@ export function IndexProblems({
             )
           }
         }
+        // closed while it was loading: it stays forgotten
+        if (!append && !openRef.current.has(reason) && !groupsRef.current[reason]) return
         setGroups((current) => {
           const before = current[reason]
           // nothing changed: keep the same objects so the list is not redrawn for nothing
@@ -225,6 +240,15 @@ export function IndexProblems({
     for (const path of Object.keys(now.embedding)) live.add(path)
     if (live.size > 0) wasLive.current = new Set([...wasLive.current, ...live])
   }, [now])
+  const [pickState, setPickState] = useState<PickState>(NOTHING_PICKED)
+  useEffect(() => {
+    if (pickState.picked.size === 0) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setPickState(NOTHING_PICKED)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pickState.picked.size])
   const waitingPeak = useRef(0)
   useEffect(() => {
     waitingPeak.current = 0
@@ -259,8 +283,14 @@ export function IndexProblems({
 
   const toggle = (reason: IndexIssueReason) => {
     const next = new Set(open)
-    if (next.has(reason)) next.delete(reason)
-    else {
+    if (next.has(reason)) {
+      next.delete(reason)
+      // closed: forget how far it was opened, so opening it again starts from the first page
+      setGroups((current) => {
+        const { [reason]: _closed, ...rest } = current
+        return rest
+      })
+    } else {
       next.add(reason)
       if (!groups[reason]) void loadGroup(reason)
     }
@@ -282,6 +312,48 @@ export function IndexProblems({
     actions.say(fill(d.retried, { n: queued }))
     await loadSummary()
     for (const reason of open) await loadGroup(reason)
+    onChanged()
+  }
+
+  const clearPick = () => setPickState(NOTHING_PICKED)
+  const pickFile = (
+    ordered: readonly number[],
+    item: { id: number },
+    mode: 'toggle' | 'range' | 'clear',
+  ) => {
+    if (mode === 'clear') {
+      if (pickState.picked.size > 0) clearPick()
+      return
+    }
+    setPickState((current) => pick(current, ordered, item.id, mode))
+  }
+
+  /** Every picked file, one after another: text files are read, scans go on to Antigravity. */
+  const readPicked = async () => {
+    const chosen = Object.values(groupsRef.current)
+      .flatMap((group) => group?.items ?? [])
+      .filter((item) => pickState.picked.has(item.id))
+    if (chosen.length === 0) return
+    if (!window.confirm(fill(d.readPickedConfirm, { n: chosen.length }))) return
+    let ok = 0
+    for (const [index, item] of chosen.entries()) {
+      actions.say(fill(d.readProgress, { i: index + 1, n: chosen.length }))
+      try {
+        let result =
+          item.reason === 'no-text'
+            ? await api.readScannedPdfWithAgy(item.id, true)
+            : await api.retryDocumentIndex(item.id)
+        if (result.ok && 'empty' in result && result.empty && /\.pdf$/i.test(item.path))
+          result = await api.readScannedPdfWithAgy(item.id, true)
+        if (result.ok) ok++
+      } catch {
+        /* the next file still gets its turn */
+      }
+    }
+    actions.say(fill(d.readFinished, { ok, n: chosen.length }))
+    clearPick()
+    await loadSummary()
+    for (const reason of openRef.current) await loadGroup(reason)
     onChanged()
   }
 
@@ -326,6 +398,11 @@ export function IndexProblems({
     const doneShare = peak > 0 ? Math.round(((peak - count) / peak) * 100) : 0
     const isOpen = open.has(reason)
     const state = groups[reason]
+    // the order the files are shown in: Shift+click picks between two of them
+    const sorted = [...(state?.items ?? [])].sort(
+      (x, y) => rank(liveOf(now, x.path)) - rank(liveOf(now, y.path)),
+    )
+    const orderedIds = sorted.map((issue) => issue.id)
     return (
       <section className={`ixp-group${isOpen ? ' is-open' : ''}`} key={reason}>
         <div className="ixp-head-row">
@@ -369,17 +446,20 @@ export function IndexProblems({
               .map((item) => (
                 <FileRow key={`done-${item.id}`} item={item} actions={actions} api={api} finished />
               ))}
-            {[...(state?.items ?? [])]
-              .sort((x, y) => rank(liveOf(now, x.path)) - rank(liveOf(now, y.path)))
-              .map((issue) => (
-                <FileRow
-                  key={issue.id}
-                  item={issue}
-                  actions={actions}
-                  api={api}
-                  live={liveOf(now, issue.path)}
-                />
-              ))}
+            {sorted.map((issue) => (
+              <FileRow
+                key={issue.id}
+                item={issue}
+                actions={actions}
+                api={api}
+                live={liveOf(now, issue.path)}
+                picked={pickState.picked.has(issue.id)}
+                pickedCount={pickState.picked.size}
+                onPick={(item, mode) => pickFile(orderedIds, item, mode)}
+                onReadPicked={() => void readPicked()}
+                onClearPicked={clearPick}
+              />
+            ))}
             {state?.loading && <li className="ixp-loading">{d.loading}</li>}
             {state && !state.loading && state.total > state.items.length && (
               <li>
@@ -413,6 +493,17 @@ export function IndexProblems({
           {actions.note}
         </p>
       )}
+      {pickState.picked.size > 0 && (
+        <div className="ixp-toolbar ixp-pickbar" role="toolbar">
+          <span>{fill(d.picked, { n: pickState.picked.size })}</span>
+          <button type="button" className="idx-btn primary" onClick={() => void readPicked()}>
+            {fill(d.readPicked, { n: pickState.picked.size })}
+          </button>
+          <button type="button" className="idx-btn" onClick={clearPick}>
+            {d.clearPicked}
+          </button>
+        </div>
+      )}
       {(failures || scanned > 0) && (
         <div className="ixp-toolbar">
           {failures && (
@@ -434,6 +525,7 @@ export function IndexProblems({
       {attention.length > 0 && (
         <>
           <h2 className="ixp-title">{d.attention}</h2>
+          <p className="idx-muted">{d.pickHint}</p>
           {attention.map((g) => renderGroup(g.reason, g.count))}
         </>
       )}

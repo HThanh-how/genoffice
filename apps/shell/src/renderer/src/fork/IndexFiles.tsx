@@ -85,6 +85,8 @@ const EN = {
   readFirst: 'Read this one first',
   reread: 'Read again',
   readNow: 'Read with Antigravity now',
+  readPicked: 'Index {n} selected files now',
+  clearPicked: 'Clear selection',
   copyLog: 'Copy log',
   copied: 'Copied.',
   reveal: 'Show in folder',
@@ -121,6 +123,8 @@ const VI: FileWords = {
   readFirst: 'Đọc tệp này trước',
   reread: 'Đọc lại',
   readNow: 'Đọc bằng Antigravity ngay',
+  readPicked: 'Index {n} tệp đã chọn ngay',
+  clearPicked: 'Bỏ chọn',
   copyLog: 'Sao chép nhật ký',
   copied: 'Đã sao chép.',
   reveal: 'Mở thư mục chứa tệp',
@@ -485,9 +489,21 @@ export function FileRow({
   status,
   live = null,
   finished = false,
+  picked = false,
+  pickedCount = 0,
+  onPick,
+  onReadPicked,
+  onClearPicked,
 }: {
   item: FileItem
   actions: FileActions
+  /** this file is part of the pick (Ctrl/Shift+click) */
+  picked?: boolean
+  pickedCount?: number
+  /** a click with Ctrl/Cmd or Shift; a plain click clears the pick */
+  onPick?: (item: FileItem, mode: 'toggle' | 'range' | 'clear') => void
+  onReadPicked?: () => void
+  onClearPicked?: () => void
   api: HomeApi
   /** a short tag shown instead of the cause (search results) */
   status?: string
@@ -526,45 +542,80 @@ export function FileRow({
     event.preventDefault()
     setMenu({ x: event.clientX, y: event.clientY })
   }
-  const entries: MenuEntry[] = [
-    { label: w.openFile, icon: <IOpen />, run: () => void actions.openFile(item) },
-    { label: w.reveal, icon: <IFolder />, run: () => void api.revealDocumentIndexFile(item.id) },
-    ...(retryable || item.status === 'ready'
-      ? [
-          {
-            label:
-              item.reason === 'waiting'
-                ? w.readFirst
-                : item.status === 'ready'
-                  ? w.reread
-                  : w.retry,
-            icon: <IRetry />,
-            disabled: busy,
-            run: () => void actions.retry(item),
-          },
-        ]
-      : []),
-    ...(stoppable
-      ? [
-          { label: w.later, icon: <ILater />, disabled: busy, run: () => void actions.later(item) },
-          { label: w.stop, icon: <IStop />, disabled: busy, run: () => void actions.stop(item) },
-        ]
-      : []),
-    { label: w.copyPath, icon: <ICopy />, run: () => void actions.copyPath(item) },
-    { label: w.copyLog, icon: <ICopy />, run: () => void actions.copyLog(item) },
-  ]
+  const bulk = picked && pickedCount > 1
+  const entries: MenuEntry[] = bulk
+    ? [
+        {
+          label: fill(w.readPicked, { n: pickedCount }),
+          icon: <IRetry />,
+          run: () => onReadPicked?.(),
+        },
+        { label: w.clearPicked, icon: <IStop />, run: () => onClearPicked?.() },
+      ]
+    : [
+        { label: w.openFile, icon: <IOpen />, run: () => void actions.openFile(item) },
+        {
+          label: w.reveal,
+          icon: <IFolder />,
+          run: () => void api.revealDocumentIndexFile(item.id),
+        },
+        ...(retryable || item.status === 'ready'
+          ? [
+              {
+                label:
+                  item.reason === 'waiting'
+                    ? w.readFirst
+                    : item.status === 'ready'
+                      ? w.reread
+                      : w.retry,
+                icon: <IRetry />,
+                disabled: busy,
+                run: () => void actions.retry(item),
+              },
+            ]
+          : []),
+        ...(stoppable
+          ? [
+              {
+                label: w.later,
+                icon: <ILater />,
+                disabled: busy,
+                run: () => void actions.later(item),
+              },
+              {
+                label: w.stop,
+                icon: <IStop />,
+                disabled: busy,
+                run: () => void actions.stop(item),
+              },
+            ]
+          : []),
+        { label: w.copyPath, icon: <ICopy />, run: () => void actions.copyPath(item) },
+        { label: w.copyLog, icon: <ICopy />, run: () => void actions.copyLog(item) },
+      ]
   const progress =
     live?.kind === 'embedding'
       ? { kind: 'chunks' as const, done: live.done, total: live.total }
       : item.progress
   return (
-    <li className={`${isOpen ? 'is-selected' : ''}${finished ? ' is-done' : ''}`}>
+    <li
+      className={`${isOpen ? 'is-selected' : ''}${finished ? ' is-done' : ''}${picked ? ' is-picked' : ''}`}
+      aria-selected={onPick ? picked : undefined}
+    >
       <div className="ixp-row" onContextMenu={onContextMenu}>
         <button
           type="button"
           className="ixp-main"
           aria-expanded={isOpen}
-          onClick={() => actions.toggle(item)}
+          onClick={(event) => {
+            if (onPick && (event.ctrlKey || event.metaKey || event.shiftKey)) {
+              event.preventDefault()
+              onPick(item, event.shiftKey ? 'range' : 'toggle')
+              return
+            }
+            onPick?.(item, 'clear')
+            actions.toggle(item)
+          }}
         >
           <span
             className={`ixp-icon-wrap${working ? ' is-working' : ''}${finished ? ' is-ok' : ''}`}
