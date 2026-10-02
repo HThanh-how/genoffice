@@ -288,7 +288,16 @@ function bridge(): AgyBarApi | undefined {
  * last numbers at once, the app re-reads them once at launch, and the details panel opens by
  * itself during that check and tucks away a few seconds after it finishes.
  */
-export function AgyChatBar({ lang, api }: { lang: string; api?: AgyBarApi | undefined }) {
+export function AgyChatBar({
+  lang,
+  api,
+  part = 'all',
+}: {
+  lang: string
+  api?: AgyBarApi | undefined
+  /** 'bar' = model + usage chips only, 'steps' = the live thinking strip only (placed by the host) */
+  part?: 'all' | 'bar' | 'steps'
+}) {
   const d: Dict = (TEXT as Record<string, Dict | undefined>)[lang] ?? EN
   const [state, setState] = useState<AgyBarState | null>(null)
   const [usage, setUsage] = useState<AgyBarUsage | null>(null)
@@ -371,12 +380,17 @@ export function AgyChatBar({ lang, api }: { lang: string; api?: AgyBarApi | unde
   }, [running])
 
   useEffect(() => {
-    if (!menu) return
+    if (!menu && !open) return
+    const hide = () => {
+      setMenu(false)
+      setOpen(false)
+      pinned.current = false
+    }
     const close = (event: PointerEvent) => {
-      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setMenu(false)
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) hide()
     }
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenu(false)
+      if (event.key === 'Escape') hide()
     }
     document.addEventListener('pointerdown', close, true)
     document.addEventListener('keydown', key)
@@ -384,9 +398,11 @@ export function AgyChatBar({ lang, api }: { lang: string; api?: AgyBarApi | unde
       document.removeEventListener('pointerdown', close, true)
       document.removeEventListener('keydown', key)
     }
-  }, [menu])
+  }, [menu, open])
 
   if (!source || !state?.active) return null
+  const showBar = part !== 'steps'
+  const showSteps = part !== 'bar'
 
   const current = state.models.find((model) => model.id === state.selected) ?? state.models[0]
   const group = current?.group
@@ -410,7 +426,7 @@ export function AgyChatBar({ lang, api }: { lang: string; api?: AgyBarApi | unde
   }
 
   const recheck = () => {
-    pinned.current = true
+    pinned.current = false
     void source
       .refreshAgyChatUsage()
       .then(apply)
@@ -459,17 +475,20 @@ export function AgyChatBar({ lang, api }: { lang: string; api?: AgyBarApi | unde
 
   return (
     <div
-      className="agy-bar"
+      className={`agy-bar${part === 'steps' ? ' is-steps' : ''}`}
       ref={rootRef}
       onMouseEnter={() => {
         hovering.current = true
       }}
       onMouseLeave={() => {
         hovering.current = false
-        if (open && !pinned.current && !usage?.refreshing) schedulePeekEnd()
+        if (open && !usage?.refreshing) {
+          pinned.current = false
+          schedulePeekEnd()
+        }
       }}
     >
-      {open && (
+      {showBar && open && (
         <section className="agy-bar-drawer" aria-label={d.usage} aria-live="polite">
           <header>
             <strong>{d.usage}</strong>
@@ -496,7 +515,7 @@ export function AgyChatBar({ lang, api }: { lang: string; api?: AgyBarApi | unde
           </footer>
         </section>
       )}
-      {menu && (
+      {showBar && menu && (
         <div className="agy-bar-menu" role="listbox" aria-label={d.model}>
           {state.models.map((model) => (
             <button
@@ -519,7 +538,7 @@ export function AgyChatBar({ lang, api }: { lang: string; api?: AgyBarApi | unde
           <p className="agy-bar-note">{d.more}</p>
         </div>
       )}
-      {run && (
+      {showSteps && run && (
         <section className={`agy-think is-${run.phase}`} aria-live="polite">
           <button
             type="button"
@@ -559,47 +578,49 @@ export function AgyChatBar({ lang, api }: { lang: string; api?: AgyBarApi | unde
           )}
         </section>
       )}
-      <div className="agy-bar-row-main">
-        <button
-          type="button"
-          className="agy-bar-chip agy-bar-model"
-          aria-haspopup="listbox"
-          aria-expanded={menu}
-          title={d.model}
-          onClick={() => {
-            setMenu((value) => !value)
-          }}
-        >
-          <span aria-hidden="true">✦</span>
-          <span className="agy-bar-model-name">{current?.label ?? state.selected}</span>
-          <span aria-hidden="true" className="agy-bar-caret">
-            ▾
-          </span>
-        </button>
-        <button
-          type="button"
-          className={`agy-bar-chip agy-bar-usage${worst === null ? '' : ` is-${tone(worst)}`}`}
-          aria-expanded={open}
-          title={d.usage}
-          onClick={() => {
-            pinned.current = !open
-            setOpen((value) => !value)
-          }}
-        >
-          <span
-            className="agy-bar-gauge"
-            aria-hidden="true"
-            style={{ ['--agy-fill' as string]: `${Math.round((worst ?? 0) * 100)}%` }}
-          />
-          <span>
-            {usage?.refreshing && worst === null
-              ? '…'
-              : worst === null
-                ? '–'
-                : `${Math.round(worst * 100)}%`}
-          </span>
-        </button>
-      </div>
+      {showBar && (
+        <div className="agy-bar-row-main">
+          <button
+            type="button"
+            className="agy-bar-chip agy-bar-model"
+            aria-haspopup="listbox"
+            aria-expanded={menu}
+            title={d.model}
+            onClick={() => {
+              setMenu((value) => !value)
+            }}
+          >
+            <span aria-hidden="true">✦</span>
+            <span className="agy-bar-model-name">{current?.label ?? state.selected}</span>
+            <span aria-hidden="true" className="agy-bar-caret">
+              ▾
+            </span>
+          </button>
+          <button
+            type="button"
+            className={`agy-bar-chip agy-bar-usage${worst === null ? '' : ` is-${tone(worst)}`}`}
+            aria-expanded={open}
+            title={d.usage}
+            onClick={() => {
+              pinned.current = !open
+              setOpen((value) => !value)
+            }}
+          >
+            <span
+              className="agy-bar-gauge"
+              aria-hidden="true"
+              style={{ ['--agy-fill' as string]: `${Math.round((worst ?? 0) * 100)}%` }}
+            />
+            <span>
+              {usage?.refreshing && worst === null
+                ? '…'
+                : worst === null
+                  ? '–'
+                  : `${Math.round(worst * 100)}%`}
+            </span>
+          </button>
+        </div>
+      )}
     </div>
   )
 }

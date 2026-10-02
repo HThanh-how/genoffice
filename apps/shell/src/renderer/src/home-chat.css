@@ -1267,3 +1267,17 @@
     transform: none;
   }
 }
+
+/* model + usage chips under the composer, aligned with it */
+.hc-agy {
+  flex: 0 0 auto;
+  padding: 0 22px 12px;
+}
+.hc-agy .agy-bar {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 0 2px;
+}
+.hc-composer {
+  padding-bottom: 6px;
+}

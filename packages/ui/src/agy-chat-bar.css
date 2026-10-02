@@ -363,3 +363,10 @@
     animation: none !important;
   }
 }
+
+.agy-bar.is-steps {
+  padding: 0;
+}
+.agy-bar.is-steps .agy-think {
+  margin: 0;
+}

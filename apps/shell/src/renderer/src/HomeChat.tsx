@@ -27,6 +27,7 @@ import type {
 import { CHAT_PREFILL_EVENT, announceChatPanel, type ChatPrefillDetail } from './chat-events'
 import { ChatMessage, type ChatItem, type ChatLabels } from './home-chat/ChatMessage'
 import { AgyChatBar } from '@genoffice/ui'
+import { mentionsIndex, parseIndexCommand, runIndexCommand } from './fork/index-assistant'
 import { Composer, type ComposerLabels } from './home-chat/Composer'
 import { EmptyState } from './home-chat/EmptyState'
 import { HistoryRail, type HistoryLabels } from './home-chat/HistoryRail'
@@ -829,6 +830,28 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
       const loop = loopRef.current
       if (!message || busyRef.current || !settingsReady || !loop) return
       touchedRef.current = true
+      // "index tới đâu rồi?", "tạm dừng index"… are answered and done on this computer, no model call.
+      const indexCommand = mentionsIndex(message) ? parseIndexCommand(message) : null
+      if (indexCommand) {
+        const userId = ++itemId.current
+        const assistantId = ++itemId.current
+        stickRef.current = true
+        needsSeedRef.current = true
+        setItems([
+          ...base,
+          { id: userId, role: 'user', text: message },
+          { id: assistantId, role: 'assistant', text: '', streaming: true },
+        ])
+        setInput('')
+        const answer = await runIndexCommand(api, indexCommand, langRef.current)
+        if (!mountedRef.current) return
+        setItems((current) =>
+          current.map((item) =>
+            item.id === assistantId ? { ...item, text: answer, streaming: false } : item,
+          ),
+        )
+        return
+      }
       if (needsSeedRef.current) {
         // New conversation, restored chat or a stopped run: rebuild the model context
         // from the visible text turns (no tool-call blocks are ever persisted).
@@ -1143,6 +1166,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
                         onRetry={retry}
                       />
                     ))}
+                    {busy && <AgyChatBar lang={i18n.lang} part="steps" />}
                   </div>
                 )}
               </div>
@@ -1193,7 +1217,9 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
               onSend={handleSend}
               onStop={handleStop}
             />
-            <AgyChatBar lang={i18n.lang} />
+            <div className="hc-agy">
+              <AgyChatBar lang={i18n.lang} part="bar" />
+            </div>
           </div>
         </section>
       )}

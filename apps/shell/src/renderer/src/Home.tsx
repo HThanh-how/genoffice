@@ -1,4 +1,6 @@
 import { IndexingActivity } from './IndexingActivity'
+import { IndexDashboard } from './fork/IndexDashboard'
+import { IndexNavItem } from './fork/IndexNavItem'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
@@ -1158,6 +1160,7 @@ export function Home() {
   const [view, setView] = useState<'recent' | 'starred'>('recent')
   // Genspark web projects take over the content area (like a selected folder)
   const [cloudMode, setCloudMode] = useState(false)
+  const [indexOpen, setIndexOpen] = useState(false)
   const [filter, setFilter] = useState('all')
   // ── File search (names + indexed content); active while the box has text ──
   const [searchQuery, setSearchQuery] = useState('')
@@ -1570,6 +1573,7 @@ export function Home() {
     folderFiles.length > 0 && folderSelectedPaths.length === folderFiles.length
 
   const changeView = (next: 'recent' | 'starred') => {
+    setIndexOpen(false)
     setView(next)
     setSelectedFolder(null)
     setCloudMode(false)
@@ -1584,6 +1588,7 @@ export function Home() {
   }
 
   const selectFolder = (dir: string) => {
+    setIndexOpen(false)
     setSelectedFolder(dir)
     setCloudMode(false)
     setSelected(new Set())
@@ -2980,7 +2985,7 @@ export function Home() {
         </div>
         <nav className="sidebar-nav">
           <button
-            className={`nav-item${view === 'recent' && !selectedFolder && !cloudMode ? ' active' : ''}`}
+            className={`nav-item${view === 'recent' && !selectedFolder && !cloudMode && !indexOpen ? ' active' : ''}`}
             onClick={() => changeView('recent')}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -2996,7 +3001,7 @@ export function Home() {
             <span className="nav-count">{navCounts.recent}</span>
           </button>
           <button
-            className={`nav-item${view === 'starred' && !selectedFolder && !cloudMode ? ' active' : ''}`}
+            className={`nav-item${view === 'starred' && !selectedFolder && !cloudMode && !indexOpen ? ' active' : ''}`}
             onClick={() => changeView('starred')}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -3010,11 +3015,24 @@ export function Home() {
             <span className="nav-label">{t('navStarred')}</span>
             <span className="nav-count">{navCounts.starred}</span>
           </button>
+          <IndexNavItem
+            api={window.aiOffice}
+            lang={lang}
+            active={indexOpen}
+            onOpen={() => {
+              setIndexOpen(true)
+              setCloudMode(false)
+              setSelectedFolder(null)
+              setSelected(new Set())
+              setRowMenu(null)
+            }}
+          />
           {loggedIn && (
             <button
               className={`nav-item${cloudMode && !selectedFolder ? ' active' : ''}`}
               onClick={() => {
                 setCloudMode(true)
+                setIndexOpen(false)
                 setSelectedFolder(null)
                 setSelected(new Set())
                 setRowMenu(null)
@@ -3056,7 +3074,9 @@ export function Home() {
           openRequest={settingsRequest}
         />
       </aside>
-      {selectedFolder && rootOf(selectedFolder, roots)?.readable ? (
+      {indexOpen && !selectedFolder ? (
+        <IndexDashboard api={window.aiOffice} onClose={() => setIndexOpen(false)} />
+      ) : selectedFolder && rootOf(selectedFolder, roots)?.readable ? (
         renderFolderContent()
       ) : cloudMode ? (
         <CloudProjectsView />
