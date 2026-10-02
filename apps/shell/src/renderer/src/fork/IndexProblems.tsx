@@ -75,6 +75,25 @@ function rank(live: ReturnType<typeof liveOf>): number {
   return 1_000_000
 }
 
+/**
+ * Reads pages (from the start) until `want` items are loaded or the list ends, so a refresh keeps a
+ * list as long as it is on screen instead of shrinking it back to the first page.
+ */
+export async function loadAtLeast<T>(
+  fetchPage: (offset: number) => Promise<{ items: T[]; total: number }>,
+  want: number,
+): Promise<{ items: T[]; total: number }> {
+  let items: T[] = []
+  let total = 0
+  while (items.length < want) {
+    const page = await fetchPage(items.length)
+    total = page.total
+    items = [...items, ...page.items]
+    if (page.items.length === 0 || items.length >= page.total) break
+  }
+  return { items, total }
+}
+
 interface GroupState {
   items: IndexIssue[]
   total: number
@@ -122,21 +141,36 @@ export function IndexProblems({
   nowRef.current = now
   const loadGroup = useCallback(
     async (reason: IndexIssueReason, append = false) => {
-      setGroups((current) => ({
-        ...current,
-        [reason]: {
-          items: current[reason]?.items ?? [],
-          total: current[reason]?.total ?? 0,
-          loading: true,
-        },
-      }))
+      const shown = groupsRef.current[reason]
+      // A refresh keeps what is on screen in place (no "Loading…" row, no collapsing back to the
+      // first page): only a group that has nothing to show yet, or "show more", says it is loading.
+      if (append || !shown || shown.items.length === 0) {
+        setGroups((current) => ({
+          ...current,
+          [reason]: {
+            items: current[reason]?.items ?? [],
+            total: current[reason]?.total ?? 0,
+            loading: true,
+          },
+        }))
+      }
       try {
-        const offset = append ? (groupsRef.current[reason]?.items.length ?? 0) : 0
-        const page = await api.getDocumentIndexIssues(root, offset, reason)
-        if (!append) {
-          const gone = (groupsRef.current[reason]?.items ?? []).filter(
-            (item) =>
-              wasLive.current.has(item.path) && !page.items.some((next) => next.id === item.id),
+        let items: IndexIssue[]
+        let total: number
+        if (append) {
+          const page = await api.getDocumentIndexIssues(root, shown?.items.length ?? 0, reason)
+          items = [...(shown?.items ?? []), ...page.items]
+          total = page.total
+        } else {
+          // as many files as are shown now, so a list opened with "show more" stays that long
+          const loaded = await loadAtLeast(
+            (offset) => api.getDocumentIndexIssues(root, offset, reason),
+            Math.max(shown?.items.length ?? 0, 1),
+          )
+          items = loaded.items
+          total = loaded.total
+          const gone = (shown?.items ?? []).filter(
+            (item) => wasLive.current.has(item.path) && !items.some((next) => next.id === item.id),
           )
           if (gone.length > 0) {
             setFinished((current) => [...current, ...gone])
@@ -146,14 +180,19 @@ export function IndexProblems({
             )
           }
         }
-        setGroups((current) => ({
-          ...current,
-          [reason]: {
-            items: append ? [...(current[reason]?.items ?? []), ...page.items] : page.items,
-            total: page.total,
-            loading: false,
-          },
-        }))
+        setGroups((current) => {
+          const before = current[reason]
+          // nothing changed: keep the same objects so the list is not redrawn for nothing
+          if (
+            before &&
+            !before.loading &&
+            before.total === total &&
+            before.items.length === items.length &&
+            before.items.every((item, index) => item.id === items[index]?.id)
+          )
+            return current
+          return { ...current, [reason]: { items, total, loading: false } }
+        })
       } catch {
         setGroups((current) => ({
           ...current,
