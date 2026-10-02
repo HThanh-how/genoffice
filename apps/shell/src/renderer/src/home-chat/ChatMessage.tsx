@@ -98,7 +98,7 @@ export const ChatMessage = memo(function ChatMessage({
           <span className="hc-sources-label">{labels.sources}</span>
           {item.sources.map((source) => (
             <SourceChip
-              key={source.documentId}
+              key={source.documentId || source.path}
               source={source}
               labels={labels}
               onOpen={onOpenSource}

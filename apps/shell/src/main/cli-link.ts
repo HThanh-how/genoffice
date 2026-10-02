@@ -18,8 +18,9 @@ interface CliLinkRecord {
  * without a PATH (the `genoffice` skill reads `~/.genoffice/launcher`), then
  * try to expose it on the PATH. The dmg has no installer step to do that, so
  * macOS retries on each start until a writable directory turns up; Windows
- * gets its PATH entry from the installer and only re-checks once per version
- * (the check spawns PowerShell). Silent and best effort.
+ * gets its PATH entry from the installer and does no check at all (starting
+ * PowerShell for one flashed a window on the first launch of each version).
+ * Silent and best effort.
  */
 export function installCliLinkBestEffort(settingsPath: string): void {
   if (!app.isPackaged) return
@@ -34,8 +35,17 @@ export function installCliLinkBestEffort(settingsPath: string): void {
     writeLauncherFile(launcherFilePath(process.env), dir)
     const version = app.getVersion()
     const previous = readAppSettings(settingsPath)[SETTING_KEY] as CliLinkRecord | undefined
-    if (process.platform === 'win32' && previous?.version === version) return
-    const launcher = join(dir, process.platform === 'win32' ? 'genoffice.cmd' : 'genoffice')
+    if (process.platform === 'win32') {
+      // The installer already put the launcher on the PATH. Re-checking it meant starting
+      // PowerShell, whose console window flashed on the first launch of every new version.
+      if (previous?.version !== version)
+        writeAppSetting(settingsPath, SETTING_KEY, {
+          version,
+          status: 'installer',
+        } satisfies CliLinkRecord)
+      return
+    }
+    const launcher = join(dir, 'genoffice')
     const outcome = installCliLink({ launcher })
     console.log(
       `[genoffice] cli link: ${outcome.status}${outcome.location ? ` (${outcome.location})` : ''}`,

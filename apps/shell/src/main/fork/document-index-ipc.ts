@@ -32,6 +32,7 @@ export interface DocumentIndexIpcDeps {
 }
 
 const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set([
+  'waiting',
   'unavailable',
   'permission',
   'password',

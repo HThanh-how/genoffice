@@ -27,14 +27,19 @@ const asTime = (value: unknown, fallback: number): number =>
 function cleanSources(value: unknown): HomeChatSource[] | undefined {
   if (!Array.isArray(value)) return undefined
   const out: HomeChatSource[] = []
-  const seen = new Set<number>()
+  const seen = new Set<string>()
   for (const raw of value) {
     if (!isObject(raw)) continue
     const id = raw.documentId
-    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1 || seen.has(id)) continue
-    seen.add(id)
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 0) continue
+    const path = typeof raw.path === 'string' ? raw.path.slice(0, 520) : ''
+    if (id === 0 && !path) continue
+    const key = id > 0 ? `d${id}` : `p${path}`
+    if (seen.has(key)) continue
+    seen.add(key)
     const source: HomeChatSource = {
       documentId: id,
+      ...(id === 0 ? { path } : {}),
       name: typeof raw.name === 'string' ? raw.name.slice(0, 260) : '',
       location: typeof raw.location === 'string' ? raw.location.slice(0, 260) : '',
     }

@@ -28,6 +28,7 @@ import { CHAT_PREFILL_EVENT, announceChatPanel, type ChatPrefillDetail } from '.
 import { ChatMessage, type ChatItem, type ChatLabels } from './home-chat/ChatMessage'
 import { AgyChatBar } from '@genoffice/ui'
 import { AskDock } from './home-chat/AskDock'
+import { findFilesByName } from './fork/file-name-search'
 import './ask-dock.css'
 import {
   INDEX_DIRECTIVE_PROMPT,
@@ -913,8 +914,23 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
             if (facts)
               context.block = `${context.block}\n\n<<<INDEX\n${facts}\nINDEX>>>\n${INDEX_DIRECTIVE_PROMPT}`
           }
+          // Files recently opened, or in the folder index, that match by name: their content is
+          // not part of the search above, so they are offered as candidates by name.
+          const named = (await findFilesByName(api, message, 4).catch(() => [])).filter(
+            (file) => !context.used.some((hit) => hit.path === file.path),
+          )
+          if (named.length > 0)
+            context.block = `${context.block}\n\n<<<FILES_BY_NAME\nThese files match the question by name only. Their content was not searched or read: offer them as likely candidates and say so.\n${named.map((file, i) => `[${i + 1}] file: ${file.name} | path: ${file.path}`).join('\n')}\nFILES_BY_NAME>>>`
           agyContextRef.current = context
-          const sources = hitsToSources(context.used)
+          const sources = [
+            ...hitsToSources(context.used),
+            ...named.map((file) => ({
+              documentId: 0,
+              path: file.path,
+              name: file.name,
+              location: file.path,
+            })),
+          ]
           if (sources.length > 0) updateLastAssistant((last) => ({ ...last, sources }))
         }
         await loop.run(message)
@@ -972,6 +988,10 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
     async (source: HomeChatSource) => {
       setNotice('')
       try {
+        if (!source.documentId && source.path) {
+          await api.openPath(source.path)
+          return
+        }
         const result = await api.documentMemoryOpen(source.documentId)
         if (!result.ok) setNotice(result.error || tRef.current('homeChatOpenFailed'))
       } catch {

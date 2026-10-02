@@ -2,7 +2,9 @@
 
 /** A cited document. Only display fields are kept; passages are never stored. */
 export interface HomeChatSource {
+  /** 0 for a file found by name only; then `path` is what opens it */
   documentId: number
+  path?: string
   name: string
   location: string
   /** the file changed on disk since it was indexed */

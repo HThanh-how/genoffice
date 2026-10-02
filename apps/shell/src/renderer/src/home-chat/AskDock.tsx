@@ -7,18 +7,17 @@ import { iconFor } from '../file-icons'
 import { activityCopy } from '../indexing-activity-copy'
 import { OPEN_INDEX_EVENT } from '../IndexingActivity'
 import { langFor, parseIndexCommand, runIndexCommand } from '../fork/index-assistant'
+import { findFilesByName, type NamedFile } from '../fork/file-name-search'
 
 const EN = {
   bubble: 'Ask or find here',
   placeholder: 'Find a file, ask AI, or give an order…',
   send: 'Send',
   open: 'Ask AI',
-  ask: 'Ask AI: “{q}”',
-  askHint: 'Enter',
+  enterHint: 'Enter to ask AI',
+  notIndexed: 'Not read yet',
   run: 'Run: “{q}”',
   runHint: 'Enter · runs here, no AI quota',
-  searching: 'Looking through your files…',
-  none: 'No file name matches. Press Enter to ask AI.',
   indexed: 'Indexed',
   unread: 'Content not read yet (scanned)',
   retry: 'Try again',
@@ -42,12 +41,10 @@ const WORDS: Record<string, Words> = {
     placeholder: 'Tìm tệp, hỏi AI hoặc ra lệnh…',
     send: 'Gửi',
     open: 'Hỏi AI',
-    ask: 'Hỏi AI: “{q}”',
-    askHint: 'Enter',
+    enterHint: 'Enter để hỏi AI',
+    notIndexed: 'Chưa đọc nội dung',
     run: 'Chạy: “{q}”',
     runHint: 'Enter · chạy ngay trên máy, không tốn quota AI',
-    searching: 'Đang tìm trong các tệp…',
-    none: 'Không tên tệp nào khớp. Nhấn Enter để hỏi AI.',
     indexed: 'Đã index',
     unread: 'Chưa đọc nội dung (PDF quét)',
     retry: 'Thử lại',
@@ -109,6 +106,7 @@ export function AskDock({
   const [focused, setFocused] = useState(false)
   const [text, setText] = useState('')
   const [hits, setHits] = useState<IndexedFileHit[] | null>(null)
+  const [named, setNamed] = useState<NamedFile[]>([])
   const [answer, setAnswer] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
   const [brief, setBrief] = useState<Brief | null>(null)
@@ -193,6 +191,7 @@ export function AskDock({
   useEffect(() => {
     if (query.length < 2 || !api.searchIndexedFiles) {
       setHits(null)
+      setNamed([])
       return
     }
     let alive = true
@@ -201,6 +200,9 @@ export function AskDock({
         .searchIndexedFiles(query)
         .then((found) => alive && setHits(found.slice(0, 6)))
         .catch(() => alive && setHits([]))
+      void findFilesByName(api, query, 6)
+        .then((files) => alive && setNamed(files))
+        .catch(() => alive && setNamed([]))
     }, 180)
     return () => {
       alive = false
@@ -271,7 +273,7 @@ export function AskDock({
       )}
       {showChips && (
         <div className="ask-chips">
-          {brief && (
+          {brief?.active && (
             <button
               type="button"
               className="ask-status"
@@ -289,7 +291,7 @@ export function AskDock({
                 : fill(w.statusIdle, { e: brief.errors.toLocaleString() })}
             </button>
           )}
-          {w.suggestions.map((suggestion) => (
+          {w.suggestions.slice(0, 2).map((suggestion) => (
             <button
               key={suggestion}
               type="button"
@@ -318,8 +320,6 @@ export function AskDock({
           )}
           {query.length > 0 && (
             <>
-              {hits === null && query.length >= 2 && <p className="ask-note">{w.searching}</p>}
-              {hits?.length === 0 && !command && <p className="ask-note">{w.none}</p>}
               {hits?.map((hit) => {
                 const queued = hit.reason === 'waiting'
                 const unread = hit.reason === 'no-text' || queued
@@ -372,10 +372,30 @@ export function AskDock({
                   </div>
                 )
               })}
-              <button type="button" className="ask-act" onClick={() => void submit(query)}>
-                <strong>{fill(command ? w.run : w.ask, { q: query })}</strong>
-                <span>{command ? w.runHint : w.askHint}</span>
-              </button>
+              {named
+                .filter((file) => !hits?.some((hit) => hit.path === file.path))
+                .map((file) => (
+                  <div className="ask-hit" key={file.path}>
+                    <button
+                      type="button"
+                      className="ask-hit-main"
+                      title={file.path}
+                      onClick={() => void api.openPath(file.path)}
+                    >
+                      <img src={iconFor(file.name)} alt="" width="16" height="16" />
+                      <span className="ask-hit-name">{file.name}</span>
+                      <span className="ask-tag is-warn">{w.notIndexed}</span>
+                    </button>
+                  </div>
+                ))}
+              {command ? (
+                <button type="button" className="ask-act" onClick={() => void submit(query)}>
+                  <strong>{fill(w.run, { q: query })}</strong>
+                  <span>{w.runHint}</span>
+                </button>
+              ) : (
+                <p className="ask-note">{w.enterHint}</p>
+              )}
             </>
           )}
         </div>
