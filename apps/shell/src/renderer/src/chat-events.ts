@@ -5,7 +5,12 @@
  */
 export const CHAT_PREFILL_EVENT = 'genoffice:chat-prefill'
 
-export type ChatPrefillDetail = { text: string; send?: boolean }
+export type ChatPrefillDetail = {
+  text: string
+  send?: boolean
+  /** keep the open conversation instead of starting a new one */
+  continue?: boolean
+}
 
 export function requestChatPrefill(detail: ChatPrefillDetail): void {
   window.dispatchEvent(new CustomEvent<ChatPrefillDetail>(CHAT_PREFILL_EVENT, { detail }))

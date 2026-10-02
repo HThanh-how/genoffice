@@ -1,0 +1,273 @@
+/* The ask box of the Home page: translucent glass with a slowly turning light, tucking into an
+   orb when the page scrolls. Only transform, opacity and the registered angle are animated. */
+@property --ask-angle {
+  syntax: '<angle>';
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.ask-dock {
+  --ask-w: min(600px, calc(100vw - 232px - 48px));
+  position: fixed;
+  z-index: 79;
+  bottom: 22px;
+  left: calc(50vw + 116px);
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: var(--ask-w);
+  transform: translateX(-50%);
+  transition:
+    left 0.42s cubic-bezier(0.22, 0.9, 0.24, 1),
+    width 0.42s cubic-bezier(0.22, 0.9, 0.24, 1);
+  font-family: var(--gs-font-sans, system-ui, sans-serif);
+  pointer-events: none;
+}
+.ask-dock > * {
+  pointer-events: auto;
+}
+.ask-dock.is-collapsed {
+  left: calc(100vw - 52px);
+  width: 48px;
+}
+
+.ask-tip,
+.ask-chips {
+  align-self: center;
+}
+.ask-tip {
+  position: relative;
+  padding: 5px 12px;
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  backdrop-filter: blur(18px) saturate(1.4);
+  color: var(--text-secondary, var(--text));
+  font-size: 12px;
+  animation: ask-tip-in 0.5s ease both;
+}
+.ask-tip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  bottom: -4px;
+  width: 8px;
+  height: 8px;
+  transform: translateX(-50%) rotate(45deg);
+  border-right: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  background: color-mix(in srgb, var(--surface) 70%, transparent);
+}
+@keyframes ask-tip-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.ask-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+.ask-chips button {
+  padding: 5px 11px;
+  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 62%, transparent);
+  backdrop-filter: blur(18px) saturate(1.4);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+.ask-chips button:hover {
+  border-color: var(--accent);
+}
+
+/* the glass bar */
+.ask-bar {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 48px;
+  padding: 0 6px 0 16px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 84%, transparent);
+  backdrop-filter: blur(26px) saturate(1.6);
+  box-shadow:
+    0 10px 30px color-mix(in srgb, #000 16%, transparent),
+    inset 0 0 0 1px color-mix(in srgb, var(--text) 9%, transparent);
+  transition: padding 0.3s ease;
+}
+.ask-dock.is-collapsed .ask-bar {
+  padding: 0;
+  justify-content: center;
+}
+
+/* the turning light: a soft blurred glow under the glass and a thin bright ring on it */
+.ask-glow,
+.ask-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background: conic-gradient(
+    from var(--ask-angle),
+    #5ac8fa,
+    #7d7aff,
+    #c95df0,
+    #ff5c93,
+    #ffb340,
+    #5ac8fa
+  );
+  animation: ask-turn 7s linear infinite;
+}
+.ask-glow {
+  z-index: -1;
+  inset: -3px;
+  filter: blur(16px);
+  opacity: 0.26;
+  transition: opacity 0.3s ease;
+}
+.ask-ring {
+  padding: 1.5px;
+  opacity: 0.7;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box exclude,
+    linear-gradient(#000 0 0);
+  transition: opacity 0.3s ease;
+}
+.ask-dock.is-focused .ask-glow {
+  opacity: 0.5;
+  animation-duration: 3.5s;
+}
+.ask-dock.is-focused .ask-ring {
+  opacity: 1;
+  animation-duration: 3.5s;
+}
+@keyframes ask-turn {
+  to {
+    --ask-angle: 360deg;
+  }
+}
+
+.ask-form {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  transition: opacity 0.2s ease;
+}
+.ask-dock.is-collapsed .ask-form {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.ask-form input {
+  flex: 1;
+  min-width: 0;
+  height: 40px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  outline: none;
+}
+.ask-form input::placeholder {
+  color: var(--text-tertiary);
+}
+.ask-send {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+  transition:
+    opacity 0.15s ease,
+    transform 0.15s ease;
+}
+.ask-send svg {
+  width: 18px;
+  height: 18px;
+}
+.ask-send:disabled {
+  opacity: 0;
+  transform: scale(0.8);
+  pointer-events: none;
+}
+
+/* the orb it tucks into */
+.ask-orb {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.25s ease 0.12s;
+}
+.ask-orb svg {
+  width: 20px;
+  height: 20px;
+}
+.ask-dock.is-collapsed .ask-orb {
+  opacity: 1;
+  pointer-events: auto;
+}
+.ask-dock.is-collapsed .ask-bar:hover .ask-glow {
+  opacity: 0.75;
+}
+
+.ask-extra {
+  align-self: center;
+  opacity: 0.9;
+}
+.ask-extra .agy-bar {
+  padding-top: 0;
+}
+
+:focus-visible.ask-orb,
+.ask-chips button:focus-visible,
+.ask-send:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
+  outline-offset: 2px;
+}
+
+@media (max-width: 760px) {
+  .ask-dock {
+    --ask-w: calc(100vw - 32px);
+    left: 50vw;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ask-glow,
+  .ask-ring,
+  .ask-tip {
+    animation: none;
+  }
+  .ask-dock {
+    transition: none;
+  }
+}

@@ -27,6 +27,8 @@ import type {
 import { CHAT_PREFILL_EVENT, announceChatPanel, type ChatPrefillDetail } from './chat-events'
 import { ChatMessage, type ChatItem, type ChatLabels } from './home-chat/ChatMessage'
 import { AgyChatBar } from '@genoffice/ui'
+import { AskDock } from './home-chat/AskDock'
+import './ask-dock.css'
 import {
   INDEX_DIRECTIVE_PROMPT,
   extractIndexDirectives,
@@ -990,7 +992,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
       if (!detail || typeof detail.text !== 'string' || !detail.text.trim()) return
       touchedRef.current = true
       openPanelRef.current()
-      if (itemsRef.current.length > 0) startNewRef.current()
+      if (itemsRef.current.length > 0 && detail.continue !== true) startNewRef.current()
       setInput(detail.text)
       setPendingSend(detail.send === true ? detail.text : null)
       window.setTimeout(() => inputRef.current?.focus(), 30)
@@ -1251,22 +1253,29 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           </div>
         </section>
       )}
-      <Launcher
-        state={launcherState}
-        open={open}
-        invitation={invitation}
-        starting={
-          lastItem?.role === 'assistant' && lastItem.streaming && !lastItem.text
-            ? (lastItem.status ?? '')
-            : ''
-        }
-        labels={launcherLabels}
-        buttonRef={launcherRef}
-        onToggle={() => (open ? closePanel() : openPanel())}
-        onStop={handleStop}
-        onInvitation={setInvitation}
-        onHold={launcherCtl.setHovered}
-      />
+      {!open && launcherState.phase === 'idle' && (
+        <AskDock lang={i18n.lang}>
+          <AgyChatBar lang={i18n.lang} part="bar" />
+        </AskDock>
+      )}
+      {(open || launcherState.phase !== 'idle') && (
+        <Launcher
+          state={launcherState}
+          open={open}
+          invitation={invitation}
+          starting={
+            lastItem?.role === 'assistant' && lastItem.streaming && !lastItem.text
+              ? (lastItem.status ?? '')
+              : ''
+          }
+          labels={launcherLabels}
+          buttonRef={launcherRef}
+          onToggle={() => (open ? closePanel() : openPanel())}
+          onStop={handleStop}
+          onInvitation={setInvitation}
+          onHold={launcherCtl.setHovered}
+        />
+      )}
     </div>
   )
 }
