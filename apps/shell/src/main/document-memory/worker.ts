@@ -5,7 +5,7 @@ import { readFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { extname } from 'node:path'
 import { parseFileToText, pdfPageTextsSlice } from '@genoffice/file-parse'
-import { capChunks, chunkDocumentText, chunkTabularText } from './chunks'
+import { capChunks, chunkDocumentText, chunkTabularText, LARGE_PDF_PAGES } from './chunks'
 import { DocumentMemoryStore } from './store'
 import { embedTexts } from './embeddings'
 import { renderPdfPagesForOcr, type OcrRenderRequest } from './agy-ocr-render'
@@ -41,7 +41,12 @@ export async function extractDocument(path: string, ocr?: OcrLookup) {
  * so far are kept here and a partial result is returned; the next call for the same unchanged
  * file carries on after them. Without it the whole file is read at once.
  */
-export async function extractDocumentSliced(path: string, ocr?: OcrLookup, sliceMs?: number) {
+export async function extractDocumentSliced(
+  path: string,
+  ocr?: OcrLookup,
+  sliceMs?: number,
+  maxPdfPages = LARGE_PDF_PAGES,
+) {
   const before = await stat(path)
   if (before.size > 128 * 1024 * 1024) throw new Error('Document exceeds the 128 MB indexing limit')
   const kept = partialPdfs.get(path)
@@ -51,15 +56,18 @@ export async function extractDocumentSliced(path: string, ocr?: OcrLookup, slice
   // PDFs are read page by page so pages without a text layer (scans inside an otherwise
   // digital file) can be told apart: those alone are OCR work, everything else stays local.
   let pdfPages: string[] | null = null
+  let pagesLeftOut = false
   if (isPdf) {
     const resumed = resumable ? kept.pages : []
     const slice = await pdfPageTextsSlice(bytes, {
       from: resumed.length,
+      maxPages: maxPdfPages,
       ...(sliceMs ? { stopAt: Date.now() + sliceMs } : {}),
     }).catch(() => null)
     partialPdfs.delete(path)
     if (slice) {
       pdfPages = [...resumed, ...slice.pages]
+      pagesLeftOut = slice.capped
       if (!slice.done) {
         partialPdfs.set(path, {
           mtimeMs: before.mtimeMs,
@@ -107,7 +115,7 @@ export async function extractDocumentSliced(path: string, ocr?: OcrLookup, slice
     : { ...capChunks(chunkDocumentText(text)), numeric: false }
   const numeric = base.numeric
   let chunks = base.chunks
-  let truncated = base.truncated
+  let truncated = base.truncated || pagesLeftOut
   const fileHash = createHash('sha256').update(bytes).digest('hex')
   let hash = fileHash
   let ocrRead = false

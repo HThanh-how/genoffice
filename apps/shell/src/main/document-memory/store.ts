@@ -4,7 +4,13 @@ import { DatabaseSync } from 'node:sqlite'
 import { chmodSync } from 'node:fs'
 import { basename, resolve, sep } from 'node:path'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
-import { documentIndexFields, nameWords, normalizeDocumentText, queryTokens } from './normalization'
+import {
+  documentIndexFields,
+  matchedNameWords,
+  nameWords,
+  normalizeDocumentText,
+  queryTokens,
+} from './normalization'
 import { OcrSidecar, isOcrLocation } from './ocr-sidecar'
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
@@ -1077,11 +1083,8 @@ export class DocumentMemoryStore {
     for (const row of rows) {
       const folders = row.path.split(/[\\/]/).slice(-3, -1).join(' ')
       const folded = normalizeDocumentText(`${row.name} ${folders}`)
-      const have = new Set(folded.split(' '))
       const joined = folded.replace(/ /g, '')
-      let matched = 0
-      for (const word of words)
-        if (have.has(word) || (word.length >= 4 && joined.includes(word))) matched++
+      let matched = matchedNameWords(words, `${row.name} ${folders}`)
       // a name written in one piece ("MyLe") still counts when the words come in that order
       if (words.length >= 2 && joined.includes(words.join(''))) matched = words.length
       if (words.length >= 2 && folded.includes(words.join(' '))) matched += 0.5

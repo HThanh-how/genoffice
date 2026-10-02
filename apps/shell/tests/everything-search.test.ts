@@ -99,7 +99,8 @@ describe('EverythingSearch', () => {
     const hits = await winSearch(run).search('giấy ra viện', 5)
     expect(hits.map((hit) => hit.path)).toEqual(['D:\\Hồ sơ\\giấy ra viện.pdf'])
     expect(calls[0]).toContain('-utf8-bom')
-    expect(calls[0]!.slice(-3)).toEqual(['giấy', 'ra', 'viện'])
+    // "ra viện" is also written "xuất viện": Everything is asked for either
+    expect(calls[0]!.slice(-3)).toEqual(['giấy', '<ra|xuất>', 'viện'])
   })
 
   it('gives up for a while when Everything is not running instead of asking every time', async () => {
@@ -137,10 +138,53 @@ describe('EverythingSearch', () => {
   })
 
   it('stays with whole words when they already fill the page', async () => {
-    const { run, calls } = fakeEs(['a1.docx,D:\\x', 'a2.docx,D:\\x'])
-    const hits = await winSearch(run).search('a', 2)
+    const { run, calls } = fakeEs(['baocao1.docx,D:\\x', 'baocao2.docx,D:\\x'])
+    const hits = await winSearch(run).search('baocao', 2)
     expect(calls).toHaveLength(1)
     expect(hits).toHaveLength(2)
+  })
+
+  it('drops filler words, then widens to all-but-one of the words (folders counted) and ranks by words matched', async () => {
+    const calls: string[][] = []
+    const run: EsRunner = async (_file, args) => {
+      calls.push(args)
+      const out = args[args.indexOf('-export-csv') + 1]!
+      // only the loose pass finds anything: no name has all six words
+      const rows = args.includes('-match-path')
+        ? ['pham huu cong.pdf,D:\\other', 'giay ra vien.pdf,D:\\huucong']
+        : []
+      writeFileSync(out, 'Name,Path\n' + rows.join('\n') + '\n')
+      return { code: 0 }
+    }
+    const hits = await winSearch(run).search('tôi tìm file giấy ra viện của ông phạm hữu công', 5)
+
+    const wordsOf = (args: string[]): string[] => args.slice(args.indexOf('-utf8-bom') + 1)
+    expect(wordsOf(calls[0]!)).toEqual(['giấy', '<ra|xuất>', 'viện', 'phạm', 'hữu', 'công'])
+    expect(
+      calls.map((args) => [args.includes('-whole-word'), args.includes('-match-path')]),
+    ).toEqual([
+      [true, false],
+      [false, false],
+      [false, true],
+    ])
+    // six groups of five words, each its own argument (one argument with spaces is a phrase)
+    const loose = wordsOf(calls[2]!)
+    expect(loose.filter((token) => token === '|')).toHaveLength(5)
+    expect(
+      loose.filter((token) => token.startsWith('<') && !token.startsWith('<ra|')),
+    ).toHaveLength(6)
+    expect(loose.every((token) => !/\s/.test(token))).toBe(true)
+    // the paper in the folder named after the person has more of the words than the person's own file
+    expect(hits.map((hit) => hit.path)).toEqual([
+      'D:\\huucong\\giay ra vien.pdf',
+      'D:\\other\\pham huu cong.pdf',
+    ])
+  })
+
+  it('does not widen a two-word search to either word', async () => {
+    const { run, calls } = fakeEs([])
+    await winSearch(run).search('mỹ lệ', 5)
+    expect(calls.map((args) => args.includes('-match-path'))).toEqual([false, false])
   })
 
   it('does nothing when it is switched off, off Windows, or without es.exe', async () => {

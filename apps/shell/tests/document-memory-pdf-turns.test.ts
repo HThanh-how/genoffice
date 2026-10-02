@@ -26,6 +26,19 @@ describe('reading a PDF in turns (worker)', () => {
     expect(last).toEqual(whole)
   })
 
+  it('reads only the first pages of a book-sized PDF and says the rest was left out', async () => {
+    const whole = await extractDocumentSliced(FIXTURE, undefined, undefined, 3)
+    expect('partial' in whole).toBe(false)
+    expect(whole).not.toHaveProperty('truncated')
+
+    const capped = await extractDocumentSliced(FIXTURE, undefined, undefined, 2)
+    if ('partial' in capped) throw new Error('not expected')
+    expect(capped.truncated).toBe(true)
+    expect(capped.chunks.map((c) => c.text).join(' ')).not.toContain('Third page')
+    // only the pages that were read can need OCR
+    expect(capped.scan).toEqual({ totalPages: 2, scannedPages: [2] })
+  })
+
   it('starts over when the file changed between turns', async () => {
     const path = join(mkdtempSync(join(tmpdir(), 'genoffice-turns-')), 'a.pdf')
     const bytes = readFileSync(FIXTURE)

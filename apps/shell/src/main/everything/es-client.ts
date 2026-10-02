@@ -3,6 +3,12 @@ import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join as osJoin, win32 } from 'node:path'
+import {
+  isFillerWord,
+  matchedNameWords,
+  nameWords,
+  stripFillerPhrases,
+} from '../document-memory/normalization'
 import { isJunkPath, isProgramFile } from './junk'
 
 // es.exe exists only on Windows and always answers with Windows paths
@@ -20,6 +26,8 @@ const QUERY_TIMEOUT_MS = 4_000
 /** How long a "not available" answer is trusted before es.exe is tried again. */
 const RETRY_AFTER_MS = 30_000
 const MAX_WORDS = 12
+/** Longest question the all-but-one search is built for (one group per word). */
+const MAX_LOOSE_WORDS = 7
 /** Everything returns every file, junk included: ask for more than needed, then filter. */
 const OVERSAMPLE = 8
 const MAX_FETCH = 400
@@ -37,12 +45,44 @@ function knownLocations(env: NodeJS.ProcessEnv): string[] {
  * a typed question must stay a plain name search.
  */
 export function esQueryWords(query: string): string[] {
-  return query
-    .normalize('NFC')
+  return stripFillerPhrases(query)
     .split(/\s+/)
     .map((word) => word.replace(/["<>|!]/g, '').replace(/^[-/]+/, ''))
-    .filter((word) => word.length > 0)
+    .filter((word) => word.length > 0 && !isFillerWord(word))
     .slice(0, MAX_WORDS)
+}
+
+/** Everything's own words for "either of these": a paper called "ra viện" may be "xuất viện". */
+const EITHER = new Map([
+  ['ra', '<ra|xuất>'],
+  ['xuất', '<ra|xuất>'],
+  ['xuat', '<ra|xuat>'],
+])
+
+/** The words as Everything should read them: "ra viện" also finds "xuất viện". */
+function withSynonyms(words: string[]): string[] {
+  const lower = words.map((word) => word.toLocaleLowerCase('vi'))
+  if (!lower.some((word) => word === 'viện' || word === 'vien')) return words
+  return words.map((word, index) => EITHER.get(lower[index]!) ?? word)
+}
+
+/**
+ * "Any all-but-one of these words" as one Everything search: each group leaves one word out. For a
+ * long question where one word belongs to something else (a person's name, an owner) this still
+ * finds the file whose name and folders have the rest. Needs three words or more, or it would be
+ * any single word. Every word is its own argument: es.exe reads one argument that holds spaces as
+ * an exact phrase, so a whole group cannot be passed as a single piece of text.
+ */
+function allButOne(words: string[]): string[] | null {
+  if (words.length < 3) return null
+  const limited = words.slice(0, MAX_LOOSE_WORDS)
+  const tokens: string[] = []
+  limited.forEach((_word, skip) => {
+    const group = limited.filter((_w, i) => i !== skip)
+    if (tokens.length) tokens.push('|')
+    tokens.push(`<${group[0]}`, ...group.slice(1, -1), `${group.at(-1)}>`)
+  })
+  return tokens
 }
 
 /** Minimal CSV reader for es.exe's export: quoted fields, doubled quotes, CRLF or LF. */
@@ -184,14 +224,42 @@ export class EverythingSearch {
     if (!esPath) return []
     const dir = await mkdtemp(osJoin(tmpdir(), 'genoffice-es-'))
     try {
+      const terms = withSynonyms(words)
+      const loose = allButOne(terms)
+      const passes = [
+        { terms, wholeWord: true, matchPath: false },
+        { terms, wholeWord: false, matchPath: false },
+        // the folders count too in the loose pass: the owner's name is often the folder's
+        ...(loose ? [{ terms: loose, wholeWord: false, matchPath: true }] : []),
+      ]
       const found = new Map<string, EverythingHit>()
-      for (const wholeWord of [true, false]) {
-        const hits = await this.ask(esPath, osJoin(dir, 'result.csv'), words, limit, wholeWord)
-        if (hits === null) return []
+      for (const pass of passes) {
+        const hits = await this.ask(esPath, osJoin(dir, 'result.csv'), pass.terms, limit, {
+          wholeWord: pass.wholeWord,
+          matchPath: pass.matchPath,
+        })
+        if (hits === null) {
+          if (found.size === 0) return []
+          break
+        }
         for (const hit of hits) found.set(hit.path.toLowerCase(), hit)
         if (found.size >= limit) break
       }
-      return [...found.values()].slice(0, limit)
+      // the files with the most of the typed words in their name (and folders) first; among
+      // equals, the order Everything gave (newest first)
+      const typed = nameWords(words.join(' '))
+      return [...found.values()]
+        .map((hit, index) => ({
+          hit,
+          index,
+          score: matchedNameWords(
+            typed,
+            `${hit.name} ${hit.path.split(/[\\/]/).slice(-3, -1).join(' ')}`,
+          ),
+        }))
+        .sort((a, b) => b.score - a.score || a.index - b.index)
+        .slice(0, limit)
+        .map((entry) => entry.hit)
     } catch {
       return []
     } finally {
@@ -205,7 +273,7 @@ export class EverythingSearch {
     out: string,
     words: string[],
     limit: number,
-    wholeWord: boolean,
+    mode: { wholeWord: boolean; matchPath: boolean },
   ): Promise<EverythingHit[] | null> {
     const fetch = Math.min(MAX_FETCH, Math.max(limit, 1) * OVERSAMPLE)
     // Written to a file: es.exe prints through the console code page when piped, which turns
@@ -213,7 +281,8 @@ export class EverythingSearch {
     const args = (sorted: boolean): string[] => [
       '-n',
       String(fetch),
-      ...(wholeWord ? ['-whole-word'] : []),
+      ...(mode.wholeWord ? ['-whole-word'] : []),
+      ...(mode.matchPath ? ['-match-path'] : []),
       ...(sorted ? ['-sort', 'date-modified-descending'] : []),
       '-name',
       '-path-column',

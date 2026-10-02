@@ -72,6 +72,13 @@ function splitLongUnit(text: string): string[] {
 
 /** Safety ceiling of chunks stored for one file (~25 M characters); beyond it the file is truncated and flagged. */
 export const MAX_CHUNKS_PER_FILE = 50_000
+/**
+ * A PDF of more pages than this is a book, not a document: only its first pages are read and
+ * indexed (title, contents, preface) and the scheduled scanned-PDF reader stops there too, unless
+ * the person sets their own page limit or asks for the file to be read now. Reading all of a
+ * 4,000-page textbook costs hours of work and a week of quota to make one file searchable.
+ */
+export const LARGE_PDF_PAGES = 400
 /** Tabular files keep their header plus sampled rows within this many chunks. */
 export const MAX_TABULAR_CHUNKS = 120
 const MAX_HEADER_CHARS = 160

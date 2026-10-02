@@ -427,6 +427,33 @@ describe('reading files', () => {
     expect(status.filesWaiting).toBe(0)
   })
 
+  it('does not read a whole book on the quota: "unlimited" stops at the indexer\'s page limit', async () => {
+    const r = rig({ maxPagesPerFile: 0 })
+    r.host.add('/book.pdf', 4000)
+    r.host.pages.set('/book.pdf', new Map(Array.from({ length: 400 }, (_, i) => [i + 1, 'x'])))
+    await r.job.tick()
+    expect(r.recognizeCalls).toHaveLength(0)
+    expect(r.job.status().filesWaiting).toBe(0)
+  })
+
+  it('keeps reading past that when the person set a page limit of their own', async () => {
+    const r = rig({ maxPagesPerFile: 1000 })
+    r.host.add('/book.pdf', 4000)
+    r.host.pages.set('/book.pdf', new Map(Array.from({ length: 400 }, (_, i) => [i + 1, 'x'])))
+    await r.job.tick()
+    expect(r.recognizeCalls.length).toBeGreaterThan(0)
+    expect(r.recognizeCalls[0]!.pages).toEqual([401, 402, 403, 404, 405])
+  })
+
+  it('"read now" is not held back by the book limit', async () => {
+    const r = rig({ maxPagesPerFile: 0 })
+    r.host.add('/book.pdf', 4000)
+    r.host.pages.set('/book.pdf', new Map(Array.from({ length: 400 }, (_, i) => [i + 1, 'x'])))
+    const result = await r.job.readNow(r.host.files.get('/book.pdf')!.id)
+    expect(result.ok).toBe(true)
+    expect(r.host.pagesDone('/book.pdf').length).toBeGreaterThan(400)
+  })
+
   it('works the queue in priority order and reindexes each file once', async () => {
     const r = rig()
     r.host.add('/old.pdf', 2)

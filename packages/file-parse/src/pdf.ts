@@ -150,18 +150,21 @@ export interface PdfPageSlice {
   pages: string[]
   /** pages in the whole file */
   total: number
-  /** true when the last page of the file is among `pages` */
+  /** true when the last page of the file that was asked for is among `pages` */
   done: boolean
+  /** the file has more pages than `maxPages`, and the rest were left out */
+  capped: boolean
 }
 
 /**
  * Text layer of the pages from `from` (0-based count of pages to skip) on. With `stopAt` (epoch ms)
  * it stops once that time has passed, after at least one page, so a very large file can be read in
- * short turns and picked up again where it stopped.
+ * short turns and picked up again where it stopped. With `maxPages` the pages after that many are
+ * never read (`capped` says so): a book is not read to its end.
  */
 export async function pdfPageTextsSlice(
   bytes: Uint8Array,
-  options: { from?: number; stopAt?: number } = {},
+  options: { from?: number; stopAt?: number; maxPages?: number } = {},
 ): Promise<PdfPageSlice> {
   installDomMatrixPolyfill()
   // Explicitly import the worker module (its top level registers globalThis.pdfjsWorker,
@@ -185,7 +188,8 @@ export async function pdfPageTextsSlice(
     const pages: string[] = []
     const from = Math.max(0, Math.min(options.from ?? 0, doc.numPages))
     let done = true
-    for (let i = from + 1; i <= doc.numPages; i++) {
+    const last = Math.min(doc.numPages, options.maxPages ?? doc.numPages)
+    for (let i = from + 1; i <= last; i++) {
       const page = await doc.getPage(i)
       const content = await page.getTextContent()
       let text = ''
@@ -197,12 +201,12 @@ export async function pdfPageTextsSlice(
       }
       pages.push(text.trim())
       page.cleanup()
-      if (options.stopAt !== undefined && Date.now() >= options.stopAt && i < doc.numPages) {
+      if (options.stopAt !== undefined && Date.now() >= options.stopAt && i < last) {
         done = false
         break
       }
     }
-    return { pages, total: doc.numPages, done }
+    return { pages, total: doc.numPages, done, capped: doc.numPages > last }
   } finally {
     await loadingTask.destroy()
   }

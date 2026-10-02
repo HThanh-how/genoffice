@@ -20,10 +20,12 @@
  *  - optional safety caps: PDFs per day (0 = unlimited), pages per file, pages per call.
  */
 import { basename } from 'node:path'
+import { LARGE_PDF_PAGES } from './chunks'
 import {
   OCR_MAX_CALLS_PER_RUN,
   ocrPageLimit,
   OCR_MAX_FILE_ATTEMPTS,
+  OCR_UNLIMITED_PAGES,
   OCR_TICK_MS,
   classifyAgyOcrError,
   decideQuota,
@@ -212,7 +214,7 @@ export class AgyOcrJob {
   /** One cheap check; does real work only when a run is due. Never throws. */
   async tick(): Promise<void> {
     try {
-      const settings = this.workingSettings()
+      const settings = this.workingSettings(true)
       if (this.stopped || !settings.enabled || this.running) return
       if (!this.deps.host.isEnabled()) return
       const now = this.deps.now()
@@ -303,9 +305,15 @@ export class AgyOcrJob {
   }
 
   /** Settings with the "unlimited pages" marker resolved; `status()` keeps the raw value for the UI. */
-  private workingSettings(): AgyOcrSettings {
+  private workingSettings(scheduled = false): AgyOcrSettings {
     const settings = this.deps.settings()
-    return { ...settings, maxPagesPerFile: ocrPageLimit(settings.maxPagesPerFile) }
+    // "unlimited" is not allowed to mean a whole book on the quota's account: the scheduled reader
+    // stops at the same page as the indexer; a limit the person set, and "read now", are theirs
+    const limit =
+      scheduled && settings.maxPagesPerFile === OCR_UNLIMITED_PAGES
+        ? LARGE_PDF_PAGES
+        : ocrPageLimit(settings.maxPagesPerFile)
+    return { ...settings, maxPagesPerFile: limit }
   }
 
   /** Candidates the scheduler may still try (non-retryable files are out). */
