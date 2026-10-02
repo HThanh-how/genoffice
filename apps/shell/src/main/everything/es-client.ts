@@ -146,6 +146,8 @@ export class EverythingSearch {
   private readonly configuredPath: () => string | undefined
   private readonly enabled: () => boolean
   private unavailableUntil = 0
+  /** cleared the first time an es.exe turns out not to accept the sort option */
+  private sortWorks = true
 
   constructor(options: EverythingOptions = {}) {
     this.platform = options.platform ?? process.platform
@@ -170,44 +172,68 @@ export class EverythingSearch {
     return null
   }
 
-  /** Files whose name matches every word typed, newest first, system and cache files left out. */
+  /**
+   * Files whose name matches every word typed, newest first, system and cache files left out.
+   * Whole words are tried first ("mỹ lệ" must not match "MyFile" or "Barthelemy"); only when
+   * that leaves too few files does it look for the words inside longer ones.
+   */
   async search(query: string, limit: number): Promise<EverythingHit[]> {
     if (this.now() < this.unavailableUntil) return []
     const words = esQueryWords(query)
     const esPath = words.length ? this.locate() : null
     if (!esPath) return []
-    const fetch = Math.min(MAX_FETCH, Math.max(limit, 1) * OVERSAMPLE)
     const dir = await mkdtemp(osJoin(tmpdir(), 'genoffice-es-'))
-    const out = osJoin(dir, 'result.csv')
     try {
-      // Written to a file: es.exe prints through the console code page when piped, which turns
-      // Vietnamese letters into "?"; the export is UTF-8.
-      const args = (sorted: boolean): string[] => [
-        '-n',
-        String(fetch),
-        ...(sorted ? ['-sort', 'date-modified-descending'] : []),
-        '-name',
-        '-path-column',
-        '-export-csv',
-        out,
-        '-utf8-bom',
-        ...words,
-      ]
-      let result = await this.run(esPath, args(true), QUERY_TIMEOUT_MS)
-      // an older es.exe may not know the sort option: the order is a nicety, the answer is not
-      if (!result.missing && result.code !== 0 && result.code !== ES_NOT_RUNNING)
-        result = await this.run(esPath, args(false), QUERY_TIMEOUT_MS)
-      if (result.missing || result.code === ES_NOT_RUNNING) {
-        this.unavailableUntil = this.now() + RETRY_AFTER_MS
-        return []
+      const found = new Map<string, EverythingHit>()
+      for (const wholeWord of [true, false]) {
+        const hits = await this.ask(esPath, osJoin(dir, 'result.csv'), words, limit, wholeWord)
+        if (hits === null) return []
+        for (const hit of hits) found.set(hit.path.toLowerCase(), hit)
+        if (found.size >= limit) break
       }
-      if (result.code !== 0) return []
-      const hits = parseEsCsv(await readFile(out, 'utf8'))
-      return hits.filter((hit) => !isJunkPath(hit.path) && !isProgramFile(hit.path)).slice(0, limit)
+      return [...found.values()].slice(0, limit)
     } catch {
       return []
     } finally {
       await rm(dir, { recursive: true, force: true }).catch(() => undefined)
     }
+  }
+
+  /** One es.exe run; null when Everything cannot answer at all (not running, or failed). */
+  private async ask(
+    esPath: string,
+    out: string,
+    words: string[],
+    limit: number,
+    wholeWord: boolean,
+  ): Promise<EverythingHit[] | null> {
+    const fetch = Math.min(MAX_FETCH, Math.max(limit, 1) * OVERSAMPLE)
+    // Written to a file: es.exe prints through the console code page when piped, which turns
+    // Vietnamese letters into "?"; the export is UTF-8.
+    const args = (sorted: boolean): string[] => [
+      '-n',
+      String(fetch),
+      ...(wholeWord ? ['-whole-word'] : []),
+      ...(sorted ? ['-sort', 'date-modified-descending'] : []),
+      '-name',
+      '-path-column',
+      '-export-csv',
+      out,
+      '-utf8-bom',
+      ...words,
+    ]
+    let result = await this.run(esPath, args(this.sortWorks), QUERY_TIMEOUT_MS)
+    // an older es.exe may not know the sort option: the order is a nicety, the answer is not
+    if (!result.missing && result.code !== 0 && result.code !== ES_NOT_RUNNING && this.sortWorks) {
+      result = await this.run(esPath, args(false), QUERY_TIMEOUT_MS)
+      if (result.code === 0) this.sortWorks = false
+    }
+    if (result.missing || result.code === ES_NOT_RUNNING) {
+      this.unavailableUntil = this.now() + RETRY_AFTER_MS
+      return null
+    }
+    if (result.code !== 0) return null
+    const hits = parseEsCsv(await readFile(out, 'utf8'))
+    return hits.filter((hit) => !isJunkPath(hit.path) && !isProgramFile(hit.path))
   }
 }

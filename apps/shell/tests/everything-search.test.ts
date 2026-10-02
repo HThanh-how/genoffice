@@ -124,7 +124,23 @@ describe('EverythingSearch', () => {
     }
     const hits = await winSearch(run).search('b', 3)
     expect(hits).toHaveLength(1)
-    expect(calls.map((args) => args.includes('-sort'))).toEqual([true, false])
+    // the sort option is dropped for good once it has been refused: whole-word, retry, substring
+    expect(calls.map((args) => args.includes('-sort'))).toEqual([true, false, false])
+  })
+
+  it('looks for whole words first and only widens to parts of words when that finds too few', async () => {
+    const { run, calls } = fakeEs(['Mỹ Lệ bản vẽ.docx,D:\\DNTT'])
+    const hits = await winSearch(run).search('mỹ lệ', 3)
+    expect(calls.map((args) => args.includes('-whole-word'))).toEqual([true, false])
+    // the same file in both answers is listed once
+    expect(hits).toHaveLength(1)
+  })
+
+  it('stays with whole words when they already fill the page', async () => {
+    const { run, calls } = fakeEs(['a1.docx,D:\\x', 'a2.docx,D:\\x'])
+    const hits = await winSearch(run).search('a', 2)
+    expect(calls).toHaveLength(1)
+    expect(hits).toHaveLength(2)
   })
 
   it('does nothing when it is switched off, off Windows, or without es.exe', async () => {
