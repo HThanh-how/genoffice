@@ -1,3 +1,4 @@
+import type { IndexingNow } from '../../shared/fork/document-index-api'
 import { stat } from 'node:fs/promises'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import type { Worker } from 'node:worker_threads'
@@ -150,6 +151,7 @@ export class DocumentMemoryManager {
   private readonly queue: string[] = []
   private readonly queued = new Set<string>()
   private readonly activeExtractions = new Set<string>()
+  private readonly activeSince = new Map<string, number>()
   private readonly embeds: EmbedJob[] = []
   private readonly pathGeneration = new Map<string, number>()
   private readonly waiting = new Map<number, PendingRequest>()
@@ -198,6 +200,24 @@ export class DocumentMemoryManager {
     this.stopPolicyWatch = subscribeIndexingPolicy((policy) => {
       if (!policy.paused) this.drain()
     })
+  }
+
+  /** What is being read now, how far embedding has got, and the order of the waiting line. */
+  nowStatus(): IndexingNow {
+    const embedding: IndexingNow['embedding'] = {}
+    for (const job of this.embeds)
+      embedding[job.path] = { done: job.startOffset ?? 0, total: job.chunks.length }
+    const positions: IndexingNow['positions'] = {}
+    this.queue.slice(0, 400).forEach((path, index) => {
+      positions[path] = index + 1
+    })
+    return {
+      extracting: [...this.activeSince].map(([path, since]) => ({ path, since })),
+      embedding,
+      positions,
+      queued: this.queue.length,
+      paused: !this.enabled || isIndexingPaused(),
+    }
   }
 
   /** Enroll a document because the user opened it; recent-file retention is irrelevant. */
@@ -1128,6 +1148,7 @@ export class DocumentMemoryManager {
         const path = this.queue.shift()!
         this.queued.delete(path)
         this.activeExtractions.add(path)
+        this.activeSince.set(path, Date.now())
         const generation = this.currentGeneration(path)
         const epoch = this.epoch
         this.pendingCount++
@@ -1205,6 +1226,7 @@ export class DocumentMemoryManager {
           }
         } finally {
           this.activeExtractions.delete(path)
+          this.activeSince.delete(path)
           this.pendingCount--
         }
       }

@@ -1,12 +1,62 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
-import type { IndexFileDetail } from '../../../shared/fork/document-index-api'
+import type { IndexFileDetail, IndexingNow } from '../../../shared/fork/document-index-api'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
 import { isRetryableReason } from '../../../main/document-memory/issues'
 import { useI18n } from '../locale'
 import { fill } from '../indexing-activity-copy'
 import { iconFor } from '../file-icons'
 import { buildFileLog, deriveFileSteps, formatBytes, logWords } from './index-file-log'
+
+/** What the indexer is doing with one file right now. */
+export type Live =
+  | { kind: 'reading'; since: number }
+  | { kind: 'embedding'; done: number; total: number }
+  | { kind: 'queued'; position: number }
+  | { kind: 'paused' }
+
+export function liveOf(now: IndexingNow | null, path: string): Live | null {
+  if (!now) return null
+  const reading = now.extracting.find((entry) => entry.path === path)
+  if (reading) return { kind: 'reading', since: reading.since }
+  const vectors = now.embedding[path]
+  if (vectors) return { kind: 'embedding', done: vectors.done, total: vectors.total }
+  if (now.paused) return { kind: 'paused' }
+  const position = now.positions[path]
+  return position ? { kind: 'queued', position } : null
+}
+
+/** What the indexer is doing, refreshed while a list is on screen. */
+export function useIndexingNow(api: HomeApi, active: boolean): IndexingNow | null {
+  const [now, setNow] = useState<IndexingNow | null>(null)
+  useEffect(() => {
+    if (!active || !api.getIndexingNow) return
+    let alive = true
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const tick = async () => {
+      if (document.visibilityState === 'visible') {
+        try {
+          const next = await api.getIndexingNow()
+          if (alive) setNow(next)
+        } catch {
+          /* keep the last reading */
+        }
+      }
+      if (alive) timer = setTimeout(() => void tick(), 1500)
+    }
+    void tick()
+    return () => {
+      alive = false
+      if (timer) clearTimeout(timer)
+    }
+  }, [api, active])
+  return now
+}
+
+const clock = (since: number): string => {
+  const seconds = Math.max(0, Math.round((Date.now() - since) / 1000))
+  return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
+}
 
 /** What a row needs to know about a file, whichever list it comes from. */
 export interface FileItem {
@@ -20,6 +70,11 @@ export interface FileItem {
 }
 
 const EN = {
+  reading: 'Reading · {t}',
+  embedding: 'Building search vectors {d}/{n}',
+  queued: 'Next in line: {n}',
+  pausedNow: 'Paused for now',
+  done: 'Done',
   retry: 'Try again',
   readFirst: 'Read this one first',
   reread: 'Read again',
@@ -38,6 +93,11 @@ const EN = {
 }
 export type FileWords = typeof EN
 const VI: FileWords = {
+  reading: 'Đang đọc · {t}',
+  embedding: 'Đang lập vector tìm kiếm {d}/{n}',
+  queued: 'Hàng chờ thứ {n}',
+  pausedNow: 'Đang tạm dừng',
+  done: 'Xong',
   retry: 'Thử lại',
   readFirst: 'Đọc tệp này trước',
   reread: 'Đọc lại',
@@ -244,12 +304,18 @@ export function FileRow({
   actions,
   api,
   status,
+  live = null,
+  finished = false,
 }: {
   item: FileItem
   actions: FileActions
   api: HomeApi
   /** a short tag shown instead of the cause (search results) */
   status?: string
+  /** what the indexer is doing with it now */
+  live?: Live | null
+  /** it has just been read: shown green for a moment, then removed by the list */
+  finished?: boolean
 }) {
   const { lang, dateLocale } = useI18n()
   const w = fileWords(lang)
@@ -258,8 +324,23 @@ export function FileRow({
   const busy = actions.busy.has(item.id)
   const detail = actions.details[item.id]
   const retryable = item.reason ? isRetryableReason(item.reason) : false
+  const liveText =
+    live?.kind === 'reading'
+      ? fill(w.reading, { t: clock(live.since) })
+      : live?.kind === 'embedding'
+        ? fill(w.embedding, { d: live.done, n: live.total })
+        : live?.kind === 'queued'
+          ? fill(w.queued, { n: live.position })
+          : live?.kind === 'paused'
+            ? w.pausedNow
+            : ''
+  const working = live?.kind === 'reading' || live?.kind === 'embedding'
+  const progress =
+    live?.kind === 'embedding'
+      ? { kind: 'chunks' as const, done: live.done, total: live.total }
+      : item.progress
   return (
-    <li className={isOpen ? 'is-selected' : ''}>
+    <li className={`${isOpen ? 'is-selected' : ''}${finished ? ' is-done' : ''}`}>
       <div className="ixp-row">
         <button
           type="button"
@@ -267,18 +348,39 @@ export function FileRow({
           aria-expanded={isOpen}
           onClick={() => actions.toggle(item)}
         >
-          <img className="ixp-file-icon" src={iconFor(item.name)} alt="" width="18" height="18" />
+          <span
+            className={`ixp-icon-wrap${working ? ' is-working' : ''}${finished ? ' is-ok' : ''}`}
+          >
+            <img className="ixp-file-icon" src={iconFor(item.name)} alt="" width="18" height="18" />
+            {finished && (
+              <svg className="ixp-check" viewBox="0 0 16 16" aria-hidden="true">
+                <circle cx="8" cy="8" r="8" fill="currentColor" />
+                <path
+                  d="m4.6 8.2 2.3 2.3 4.5-4.8"
+                  fill="none"
+                  stroke="#fff"
+                  strokeWidth="1.8"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            )}
+          </span>
           <span className="ixp-file-text">
             <span className="ixp-file-name" title={item.path}>
               {item.name}
             </span>
-            {(status || item.error) && <span className="ixp-file-sub">{status ?? item.error}</span>}
+            {(finished || liveText || status || item.error) && (
+              <span className={`ixp-file-sub${working ? ' is-live' : ''}`}>
+                {finished ? w.done : liveText || (status ?? item.error)}
+              </span>
+            )}
           </span>
         </button>
         {busy ? (
           <span className="ixp-spin" role="status" aria-label={w.loading} />
         ) : (
-          item.progress && <Progress progress={item.progress} />
+          progress && <Progress progress={progress} />
         )}
         <span className="ixp-actions">
           {item.reason === 'no-text' && (

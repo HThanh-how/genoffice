@@ -19,6 +19,7 @@ import {
   DOCUMENT_INDEX_CHANNELS,
   type EmbeddingModelState,
   type IndexedFileHit,
+  type IndexingNow,
   type IndexFileDetail,
   type IndexedFolder,
 } from '../../shared/fork/document-index-api'
@@ -80,6 +81,17 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
       return reader().page(activeRoot(root), offset, issueReason(reason))
     },
   )
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getIndexingNow, (): IndexingNow => {
+    return (
+      getDocumentMemory()?.nowStatus() ?? {
+        extracting: [],
+        embedding: {},
+        positions: {},
+        queued: 0,
+        paused: true,
+      }
+    )
+  })
   ipcMain.handle(
     DOCUMENT_INDEX_CHANNELS.searchIndexedFiles,
     (_event, query: unknown): IndexedFileHit[] => {

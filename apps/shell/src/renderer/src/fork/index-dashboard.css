@@ -816,3 +816,57 @@
   padding: 4px 14px 14px;
   border-top: 1px solid var(--border);
 }
+
+/* a file being read: a ring around its logo; when done it turns green and leaves */
+.ixp-icon-wrap {
+  position: relative;
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+}
+.ixp-icon-wrap.is-working::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ixp-rot 0.9s linear infinite;
+}
+.ixp-check {
+  position: absolute;
+  right: -3px;
+  bottom: -3px;
+  width: 13px;
+  height: 13px;
+  color: #2fb36d;
+}
+.ixp-icon-wrap.is-ok::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border: 2px solid #2fb36d;
+  border-radius: 50%;
+}
+.ixp-file-sub.is-live {
+  color: var(--accent);
+}
+.ixp-files > li.is-done {
+  background: color-mix(in srgb, #2fb36d 12%, transparent);
+  animation: ixp-leave 0.5s ease 1.2s forwards;
+}
+@keyframes ixp-leave {
+  to {
+    opacity: 0;
+    max-height: 0;
+    transform: translateX(14px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ixp-icon-wrap.is-working::before {
+    animation: none;
+  }
+}

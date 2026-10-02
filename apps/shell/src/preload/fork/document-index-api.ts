@@ -20,6 +20,9 @@ export function createDocumentIndexPreloadApi(
     async getDocumentIndexIssueSummary(root) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getDocumentIndexIssueSummary, root)
     },
+    async getIndexingNow() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getIndexingNow)
+    },
     async searchIndexedFiles(query) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.searchIndexedFiles, query)
     },

@@ -6,7 +6,15 @@ import { isInformationalReason, isRetryableReason } from '../../../main/document
 import type { Lang } from '@genoffice/i18n'
 import { useI18n } from '../locale'
 import { activityCopy, fill } from '../indexing-activity-copy'
-import { FileRow, IChevron, IRetry, IconButton, useFileActions } from './IndexFiles'
+import {
+  FileRow,
+  IChevron,
+  IRetry,
+  IconButton,
+  liveOf,
+  useFileActions,
+  useIndexingNow,
+} from './IndexFiles'
 
 /** Something the person can act on: failures, and scanned files still waiting to be read. */
 export function needsAction(reason: IndexIssueReason): boolean {
@@ -51,6 +59,15 @@ const VI: Dict = {
   loading: 'Đang tải…',
 }
 
+/** Files being read go first, then the next in line, then the rest (stable order). */
+function rank(live: ReturnType<typeof liveOf>): number {
+  if (!live) return 1_000_000
+  if (live.kind === 'reading') return 0
+  if (live.kind === 'embedding') return 1
+  if (live.kind === 'queued') return 2 + live.position
+  return 1_000_000
+}
+
 interface GroupState {
   items: IndexIssue[]
   total: number
@@ -90,6 +107,12 @@ export function IndexProblems({
 
   const groupsRef = useRef(groups)
   groupsRef.current = groups
+  const now = useIndexingNow(api, true)
+  // Files that were being read a moment ago and are gone from their list: shown green, then removed.
+  const [finished, setFinished] = useState<IndexIssue[]>([])
+  const wasLive = useRef(new Set<string>())
+  const nowRef = useRef(now)
+  nowRef.current = now
   const loadGroup = useCallback(
     async (reason: IndexIssueReason, append = false) => {
       setGroups((current) => ({
@@ -103,6 +126,19 @@ export function IndexProblems({
       try {
         const offset = append ? (groupsRef.current[reason]?.items.length ?? 0) : 0
         const page = await api.getDocumentIndexIssues(root, offset, reason)
+        if (!append) {
+          const gone = (groupsRef.current[reason]?.items ?? []).filter(
+            (item) =>
+              wasLive.current.has(item.path) && !page.items.some((next) => next.id === item.id),
+          )
+          if (gone.length > 0) {
+            setFinished((current) => [...current, ...gone])
+            window.setTimeout(
+              () => setFinished((current) => current.filter((item) => !gone.includes(item))),
+              1800,
+            )
+          }
+        }
         setGroups((current) => ({
           ...current,
           [reason]: {
@@ -134,6 +170,25 @@ export function IndexProblems({
       if (item.reason) await loadGroup(item.reason)
     },
   )
+
+  // While something is being read, the open lists and the counts follow along.
+  const busy = !!now && (now.extracting.length > 0 || Object.keys(now.embedding).length > 0)
+  useEffect(() => {
+    if (!now) return
+    const live = new Set<string>(now.extracting.map((entry) => entry.path))
+    for (const path of Object.keys(now.embedding)) live.add(path)
+    if (live.size > 0) wasLive.current = new Set([...wasLive.current, ...live])
+  }, [now])
+  const openRef = useRef(open)
+  openRef.current = open
+  useEffect(() => {
+    if (!busy) return
+    const timer = setInterval(() => {
+      void loadSummary()
+      for (const reason of openRef.current) void loadGroup(reason)
+    }, 3000)
+    return () => clearInterval(timer)
+  }, [busy, loadSummary, loadGroup])
 
   // The only attention group opens by itself, and a group picked on the overview opens too.
   const autoOpened = useRef(false)
@@ -243,9 +298,22 @@ export function IndexProblems({
         </div>
         {isOpen && (
           <ul className="ixp-files">
-            {state?.items.map((issue) => (
-              <FileRow key={issue.id} item={issue} actions={actions} api={api} />
-            ))}
+            {finished
+              .filter((item) => item.reason === reason)
+              .map((item) => (
+                <FileRow key={`done-${item.id}`} item={item} actions={actions} api={api} finished />
+              ))}
+            {[...(state?.items ?? [])]
+              .sort((x, y) => rank(liveOf(now, x.path)) - rank(liveOf(now, y.path)))
+              .map((issue) => (
+                <FileRow
+                  key={issue.id}
+                  item={issue}
+                  actions={actions}
+                  api={api}
+                  live={liveOf(now, issue.path)}
+                />
+              ))}
             {state?.loading && <li className="ixp-loading">{d.loading}</li>}
             {state && !state.loading && state.total > state.items.length && (
               <li>

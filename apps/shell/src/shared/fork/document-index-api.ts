@@ -13,6 +13,7 @@ export const DOCUMENT_INDEX_CHANNELS = {
   setEmbeddingModel: 'home:set-embedding-model',
   getIndexFileDetail: 'home:get-index-file-detail',
   searchIndexedFiles: 'home:search-indexed-files',
+  getIndexingNow: 'home:get-indexing-now',
 } as const
 
 export type EmbeddingProfileChoice = 'standard' | 'high'
@@ -29,6 +30,19 @@ export interface EmbeddingModelState {
     EmbeddingProfileChoice,
     { name: string; dimensions: number; downloadMB: number; memoryMB: number }
   >
+}
+
+/** What the indexer is doing this moment, so a waiting file can show whether it is being read. */
+export interface IndexingNow {
+  /** files being read right now, with when each started (epoch ms) */
+  extracting: Array<{ path: string; since: number }>
+  /** files whose passages are being turned into search vectors, with how far */
+  embedding: Record<string, { done: number; total: number }>
+  /** place in the waiting line (1 = next) for the first few hundred files */
+  positions: Record<string, number>
+  queued: number
+  /** background work is paused (battery, locked screen, low memory, or by the user) */
+  paused: boolean
 }
 
 /** One file found by name in the index, whatever state it is in. */
@@ -124,6 +138,8 @@ export interface DocumentIndexApi {
   forgetIndexedFolder(root: string): Promise<boolean>
   /** Files in the index whose name or folder matches every word typed (accents ignored). */
   searchIndexedFiles(query: string): Promise<IndexedFileHit[]>
+  /** Which files the indexer is reading now and who is next. */
+  getIndexingNow(): Promise<IndexingNow>
   /** How far one file got: found, read, OCR, embedded. Null when the file is not in the index. */
   getIndexFileDetail(documentId: number): Promise<IndexFileDetail | null>
   getEmbeddingModel(): Promise<EmbeddingModelState>
