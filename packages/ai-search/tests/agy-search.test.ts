@@ -79,6 +79,8 @@ describe('Antigravity CLI web search', () => {
         serply: { apiKey: '' },
         tavily: { apiKey: '' },
         parallel: { apiKey: '' },
+        exa: { apiKey: '' },
+        firecrawl: { apiKey: '' },
         agy: { apiKey: '', cliPath: '', model: '' },
       },
     }

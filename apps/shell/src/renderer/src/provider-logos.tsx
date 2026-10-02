@@ -9,8 +9,8 @@ import { agyLogo } from './fork/agy-logo'
 // generic icon for the "custom" endpoint.
 // Brand-colored logos keep their official colors in both themes (brand
 // assets, not chrome — see CLAUDE.md theming rules); monochrome marks
-// (OpenAI, Kimi, Grok, OpenRouter, Requesty, Opper, OpenCode, Genspark, Custom) use
-// currentColor so they stay legible in dark mode.
+// (OpenAI, Kimi, Grok, OpenRouter, Requesty, Opper, Cheaper Inference, OpenCode,
+// Genspark, Custom) use currentColor so they stay legible in dark mode.
 //
 // Gradient-filled marks (Gemini, Qwen, MiniMax) are components so useId can
 // namespace their <linearGradient> ids per mount: the dropdown renders the
@@ -239,8 +239,29 @@ const LOGOS: Record<AiProviderId, ReactNode> = {
       <path d="M159.78 315C71.53 315 0 244.49 0 157.5C0 -18.9499 159.78 0.650075 159.78 0.650075C159.78 87.2201 88.36 157.4 0.2 157.5C149.8 157.64 159.78 315 159.78 315ZM160.52 217.98C160.52 217.98 156.94 161.65 105.04 157.52C120.6 157.34 160.52 151.54 160.52 96.5601C160.52 151.54 200.44 157.34 216 157.52C164.1 161.63 160.52 217.98 160.52 217.98Z" />
     </svg>
   ),
+  // Cheaper Inference's mark (cheaperinference.com): a "C" with a bar, 24-unit frame
+  cheaperinference: (
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M9.107 2.786H15.429V8.839H9.589a3.213 3.213 0 0 0 0.321 6.375H15.214L9.434 20.994A9.107 9.107 0 1 1 9.107 2.786Z" />
+      <path d="M22.179 3.429H22.607a1.286 1.286 0 0 1 1.286 1.286V19.714a1.393 1.393 0 0 1 -1.393 1.393H17.464V8.143Z" />
+    </svg>
+  ),
   'opencode-zen': opencodeLogo,
   'opencode-go': opencodeLogo,
+  // Simplified stand-ins, not the vendors' official marks — same treatment the
+  // codex and custom entries already get. Swap in real assets when available.
+  mimo: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="#FF6900" strokeWidth="2" aria-hidden="true">
+      <path d="M3 18V6l4.5 6 4.5-6v12" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M15 6v7a3 3 0 006 0V6" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  ),
+  hunyuan: (
+    <svg viewBox="0 0 24 24" fill="none" stroke="#0052D9" strokeWidth="2" aria-hidden="true">
+      <circle cx="12" cy="12" r="8.5" />
+      <path d="M7 9.5c3 2 7 2 10 0M7 14.5c3-2 7-2 10 0" strokeLinecap="round" />
+    </svg>
+  ),
   custom: (
     <svg
       viewBox="0 0 24 24"

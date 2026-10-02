@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { defaultAiSettings, resolveAiSettings } from '../src/providers'
 import {
+  AI_SEARCH_PROVIDERS,
   activeSearchProvider,
   defaultAiSearchSettings,
   resolveAiSearchSettings,
@@ -16,6 +17,8 @@ describe('search settings', () => {
         tavily: { apiKey: '' },
         parallel: { apiKey: '' },
         agy: { apiKey: '', cliPath: '', model: '' },
+        exa: { apiKey: '' },
+        firecrawl: { apiKey: '' },
       },
     })
     expect(defaultAiSettings().search?.provider).toBe('parallel')
@@ -61,6 +64,8 @@ describe('search settings', () => {
             tavily: { apiKey: '' },
             parallel: { apiKey: '' },
             agy: { apiKey: '' },
+            exa: { apiKey: '' },
+            firecrawl: { apiKey: '' },
           },
         },
       }),
@@ -75,6 +80,8 @@ describe('search settings', () => {
             tavily: { apiKey: '' },
             parallel: { apiKey: '' },
             agy: { apiKey: '' },
+            exa: { apiKey: '' },
+            firecrawl: { apiKey: '' },
           },
         },
       }),
@@ -89,6 +96,8 @@ describe('search settings', () => {
             tavily: { apiKey: '' },
             parallel: { apiKey: '' },
             agy: { apiKey: '' },
+            exa: { apiKey: '' },
+            firecrawl: { apiKey: '' },
           },
         },
       }),
@@ -154,5 +163,51 @@ describe('Parallel search settings', () => {
       ),
     )
     expect(activeSearchProvider({ search: settings })).toBe('parallel')
+  })
+})
+
+describe('exa and firecrawl providers', () => {
+  it('are in the catalog without image search and default to empty keys', () => {
+    const exa = AI_SEARCH_PROVIDERS.find((m) => m.id === 'exa')
+    const firecrawl = AI_SEARCH_PROVIDERS.find((m) => m.id === 'firecrawl')
+    expect(exa?.imageSearch).toBe(false)
+    expect(firecrawl?.imageSearch).toBe(false)
+    const s = defaultAiSearchSettings()
+    expect(s.providers.exa.apiKey).toBe('')
+    expect(s.providers.firecrawl.apiKey).toBe('')
+  })
+
+  it('activate with a key and fall back to keyless parallel without one', () => {
+    const mk = (id: 'exa' | 'firecrawl', apiKey: string) => ({
+      search: {
+        provider: id,
+        providers: {
+          serper: { apiKey: '' },
+          serply: { apiKey: '' },
+          tavily: { apiKey: '' },
+          parallel: { apiKey: '' },
+          agy: { apiKey: '' },
+          exa: { apiKey: id === 'exa' ? apiKey : '' },
+          firecrawl: { apiKey: id === 'firecrawl' ? apiKey : '' },
+        },
+      },
+    })
+    expect(activeSearchProvider(mk('exa', ''))).toBe('parallel')
+    expect(activeSearchProvider(mk('exa', 'exa-1'))).toBe('exa')
+    expect(activeSearchProvider(mk('firecrawl', ' '))).toBe('parallel')
+    expect(activeSearchProvider(mk('firecrawl', 'fc-1'))).toBe('firecrawl')
+  })
+
+  it('resolveAiSearchSettings keeps stored exa/firecrawl keys trimmed', () => {
+    const s = resolveAiSearchSettings({
+      provider: 'exa',
+      providers: {
+        exa: { apiKey: ' k ' },
+        firecrawl: { apiKey: 'fc ' },
+      } as never,
+    })
+    expect(s.providers.exa.apiKey).toBe('k')
+    expect(s.providers.firecrawl.apiKey).toBe('fc')
+    expect(s.provider).toBe('exa')
   })
 })

@@ -118,12 +118,17 @@ describe('provider registry', () => {
       ['glm', 'glm-5.3', 'https://open.bigmodel.cn/api/paas/v4'],
       ['qwen', 'qwen3.8-max', 'https://dashscope.aliyuncs.com/compatible-mode/v1'],
       ['doubao', 'doubao-seed-2-1-pro-260628', 'https://ark.cn-beijing.volces.com/api/v3'],
+      ['mimo', 'mimo-v2.6-pro', 'https://api.xiaomimimo.com/v1'],
+      ['mimo', 'mimo-v2.6-flash', 'https://api.xiaomimimo.com/v1'],
+      ['hunyuan', 'hy3', 'https://tokenhub.tencentmaas.com/v1'],
+      ['hunyuan', 'hy4-preview', 'https://tokenhub.tencentmaas.com/v1'],
       ['minimax', 'MiniMax-M3', 'https://api.minimax.io/v1'],
       ['xai', 'grok-4.6', 'https://api.x.ai/v1'],
       ['mistral', 'mistral-large-latest', 'https://api.mistral.ai/v1'],
       ['openrouter', 'openrouter/auto', 'https://openrouter.ai/api/v1'],
       ['requesty', 'claude-sonnet-5', 'https://router.requesty.ai/v1'],
       ['opper', 'claude-sonnet-4-6', 'https://api.opper.ai/v3/compat'],
+      ['cheaperinference', 'claude-sonnet-5', 'https://api.cheaperinference.com/v1'],
     ]
     for (const [id, model, baseUrl] of cases) {
       expect(AI_PROVIDER_ADAPTERS[id].resolveEndpoint(config(model))).toEqual({
@@ -205,19 +210,36 @@ describe('provider registry', () => {
   it('routes OpenCode Go with its own table (MiniMax rides Messages there, not chat-completions)', () => {
     const resolve = (model: string) =>
       AI_PROVIDER_ADAPTERS['opencode-go'].resolveEndpoint(config(model))
-    for (const model of ['minimax-m3', 'qwen3.8-flash']) {
+    for (const model of ['minimax-m3', 'minimax-m2.7', 'qwen3.8-flash']) {
       expect(resolve(model)).toEqual({
         protocol: 'anthropic',
         baseUrl: 'https://opencode.ai/zen/go',
       })
     }
-    for (const model of ['glm-5.3', 'deepseek-v4-flash', 'qwen3.8-max', 'longcat-2.0']) {
+    for (const model of [
+      'glm-5.3',
+      'glm-5.2',
+      'deepseek-v4-flash',
+      'deepseek-v4.1-flash',
+      'qwen3.8-max',
+      'longcat-2.0',
+      'longcat-2.5-preview-free',
+      'mimo-v2.6-pro',
+      'mimo-v2.6-flash',
+      'hy4-preview',
+      'hy3',
+    ]) {
       expect(resolve(model)).toEqual({
         protocol: 'openai-compatible',
         baseUrl: 'https://opencode.ai/zen/go/v1',
       })
     }
     expect(resolve('kimi-k2.7-code')).toEqual({
+      protocol: 'openai-compatible',
+      baseUrl: 'https://opencode.ai/zen/go/v1',
+      omitTemperature: true,
+    })
+    expect(resolve('kimi-k2.6')).toEqual({
       protocol: 'openai-compatible',
       baseUrl: 'https://opencode.ai/zen/go/v1',
       omitTemperature: true,
@@ -366,6 +388,22 @@ describe('fixed-sampling models on indirect routes', () => {
       baseUrl: 'https://router.eu.requesty.ai/v1',
     })
   })
+
+  it('omits temperature for fixed-sampling models via Cheaper Inference', () => {
+    const resolve = (model: string) =>
+      AI_PROVIDER_ADAPTERS.cheaperinference.resolveEndpoint(config(model))
+    for (const model of ['gpt-5.4-mini', 'gpt-5.4', 'gemini-3.1-pro']) {
+      expect(resolve(model)).toEqual({
+        protocol: 'openai-compatible',
+        baseUrl: 'https://api.cheaperinference.com/v1',
+        omitTemperature: true,
+      })
+    }
+    expect(resolve('claude-sonnet-5')).toEqual({
+      protocol: 'openai-compatible',
+      baseUrl: 'https://api.cheaperinference.com/v1',
+    })
+  })
 })
 
 describe('modelLacksVision', () => {
@@ -398,6 +436,16 @@ describe('modelEchoesReasoning', () => {
     expect(modelEchoesReasoning('deepseek-flash')).toBe(true)
     expect(modelEchoesReasoning('gpt-5.6-luna')).toBe(false)
     expect(modelEchoesReasoning('kimi-k3')).toBe(false)
+  })
+
+  it('flags Hunyuan (hy4-preview thinks by default) without swallowing other ids', () => {
+    expect(modelEchoesReasoning('hy3')).toBe(true)
+    expect(modelEchoesReasoning('hy4-preview')).toBe(true)
+    expect(modelEchoesReasoning('HY3')).toBe(true)
+    // a model id that merely starts with the same letters must not match
+    expect(modelEchoesReasoning('hunyuan-turbo')).toBe(false)
+    expect(modelEchoesReasoning('phy3')).toBe(false)
+    expect(modelEchoesReasoning('mimo-v2.6-pro')).toBe(false)
   })
 })
 

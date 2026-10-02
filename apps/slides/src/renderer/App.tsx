@@ -33,6 +33,7 @@ import type {
   SlideComment,
   TransitionKind,
 } from '../shared/ipc'
+import { baseName } from '../shared/base-name'
 import { SlideCanvas, selectionChromeColor, type SlideCanvasHandle } from './SlideCanvas'
 import { tableCellOverlayBox } from './table-hit'
 import { ZOOM_PREVIEW_EVENT } from './zoom-preview'
@@ -855,7 +856,7 @@ export function App() {
       setStatus(
         result.path
           ? t('appStatusOpened', {
-              name: result.path.split('/').pop()!,
+              name: baseName(result.path),
               count: result.slides.length,
             })
           : t('appStatusNewBlank'),

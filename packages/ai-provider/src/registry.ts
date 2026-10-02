@@ -72,10 +72,12 @@ export function modelLacksVision(model: string): boolean {
  * Interleaved-thinking families whose vendors want the reasoning echoed back
  * on assistant messages: MiniMax documents that stripping it degrades
  * multi-turn tool use, and DeepSeek V4 rejects tool turns without it. Gated
- * per model because other vendors may reject the unknown field.
+ * per model because other vendors may reject the unknown field. Hunyuan joins
+ * them because hy4-preview ships deep thinking on by default, so its first
+ * turn already carries `reasoning_content`.
  */
 export function modelEchoesReasoning(model: string): boolean {
-  return /(^|\/)(minimax-m|deep-?seek-(v4|flash))/i.test(model)
+  return /(^|\/)(minimax-m|deep-?seek-(v4|flash)|hy-?[34]([^\w]|$))/i.test(model)
 }
 
 /**
@@ -120,7 +122,7 @@ const OPENCODE_GATEWAY_ROOTS = {
  * up in request logs and error messages, and the api key field is the
  * supported place for them.
  */
-function normalizeBaseUrl(raw: string | undefined, fallback: string): string {
+export function normalizeBaseUrl(raw: string | undefined, fallback: string): string {
   const candidate = (raw ?? fallback).trim()
   if (candidate === '' || candidate.length > 2048) {
     throw new Error('Base URL must be a non-empty http(s) URL under 2048 characters')
@@ -141,22 +143,35 @@ function normalizeBaseUrl(raw: string | undefined, fallback: string): string {
   return parsed.toString()
 }
 
+/** Strip trailing slashes and a trailing /v1 from the path (before any query) */
+function stripTrailingV1(base: string): string {
+  const q = base.indexOf('?')
+  const path = (q === -1 ? base : base.slice(0, q)).replace(/\/+$/, '').replace(/\/v1$/, '')
+  return q === -1 ? path : `${path}${base.slice(q)}`
+}
+
+/** Append a path segment before any query string so `?api-version=…` stays last */
+function appendPath(base: string, path: string): string {
+  const q = base.indexOf('?')
+  return q === -1 ? `${base}${path}` : `${base.slice(0, q)}${path}${base.slice(q)}`
+}
+
 function opencodeEndpoint(
   root: string,
   routes: { anthropic: RegExp; gemini?: RegExp },
 ): (config: AiProviderConfig) => ResolvedEndpoint {
   return (config) => {
     // a stored base URL replaces the gateway root; the documented `/v1` API base is tolerated
-    const base = normalizeBaseUrl(config.baseUrl, root).replace(/\/+$/, '').replace(/\/v1$/, '')
+    const base = stripTrailingV1(normalizeBaseUrl(config.baseUrl, root))
     const model = config.model ?? ''
     const omit =
       model !== '' && (modelHasFixedSampling(model) || model.toLowerCase().startsWith('kimi-'))
     const sampling = omit ? { omitTemperature: true as const } : {}
     if (routes.anthropic.test(model)) return { protocol: 'anthropic', baseUrl: base, ...sampling }
     if (routes.gemini?.test(model)) {
-      return { protocol: 'gemini', baseUrl: `${base}/v1`, ...sampling }
+      return { protocol: 'gemini', baseUrl: appendPath(base, '/v1'), ...sampling }
     }
-    return { protocol: 'openai-compatible', baseUrl: `${base}/v1`, ...sampling }
+    return { protocol: 'openai-compatible', baseUrl: appendPath(base, '/v1'), ...sampling }
   }
 }
 
@@ -269,6 +284,22 @@ export const AI_PROVIDER_ADAPTERS: Record<AiProviderId, ProviderAdapter> = {
     capabilities: { auth: 'api-key', vision: true },
     resolveEndpoint: fixedEndpoint('openai-compatible', 'https://ark.cn-beijing.volces.com/api/v3'),
   },
+  mimo: {
+    meta: metaOf('mimo'),
+    // the V2.6 series is omni-modal: text, image, video and audio in, text out
+    capabilities: { auth: 'api-key', vision: true },
+    resolveEndpoint: fixedEndpoint('openai-compatible', 'https://api.xiaomimimo.com/v1'),
+  },
+  hunyuan: {
+    meta: metaOf('hunyuan'),
+    // conservative: the chat models are documented for text first, so we do not
+    // hand them screenshots until a model card says otherwise
+    capabilities: { auth: 'api-key', vision: false },
+    // the mainland TokenHub host; the international one differs only by the
+    // `intl` label (tokenhub-intl.tencentcloudmaas.com), reachable by storing
+    // a base URL on this provider
+    resolveEndpoint: fixedEndpoint('openai-compatible', 'https://tokenhub.tencentmaas.com/v1'),
+  },
   minimax: {
     meta: metaOf('minimax'),
     capabilities: { auth: 'api-key', vision: false },
@@ -300,6 +331,12 @@ export const AI_PROVIDER_ADAPTERS: Record<AiProviderId, ProviderAdapter> = {
     capabilities: { auth: 'api-key', vision: true },
     // one chat-completions endpoint for every pool and vendor route; the model id picks it
     resolveEndpoint: fixedEndpoint('openai-compatible', 'https://api.opper.ai/v3/compat'),
+  },
+  cheaperinference: {
+    meta: metaOf('cheaperinference'),
+    capabilities: { auth: 'api-key', vision: true },
+    // one chat-completions endpoint for every model; the model id picks the lab
+    resolveEndpoint: fixedEndpoint('openai-compatible', 'https://api.cheaperinference.com/v1'),
   },
   'opencode-zen': {
     meta: metaOf('opencode-zen'),

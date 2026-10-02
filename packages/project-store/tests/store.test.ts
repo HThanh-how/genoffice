@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -297,6 +297,22 @@ describe('rebindChat', () => {
     expect(store.loadChat('default', newId).map((m) => m.seq)).toEqual([0, 1, 2, 3])
   })
 
+  it('flushes the target pending buffer before merge to avoid duplicate seq', () => {
+    const targetId = 'target-pending'
+    const sourceId = 'source-rebind'
+    store.appendChatMessage('default', targetId, { role: 'user', text: 'target-q0' })
+    store.appendChatMessage('default', targetId, { role: 'user', text: 'target-q1' })
+    store.appendChatMessage('default', sourceId, { role: 'user', text: 'source-q0' })
+    store.appendChatMessage('default', sourceId, { role: 'assistant', text: 'source-a0' })
+
+    store.rebindChat('default', sourceId, targetId)
+    store.appendChatMessage('default', targetId, { role: 'assistant', text: 'after' })
+
+    const msgs = store.loadChat('default', targetId)
+    const seqs = msgs.map((m) => m.seq)
+    expect(new Set(seqs).size).toBe(seqs.length)
+  })
+
   it('keeps target and source records separate when the target has no final newline', () => {
     const sourceId = 'unsaved-unterminated'
     const targetId = 'existing-unterminated'
@@ -329,6 +345,22 @@ describe('rebindChat', () => {
     expect(merged.map((message) => message.text)).toEqual(['target', 'source'])
     expect(merged.map((message) => message.seq)).toEqual([2, 3])
     expect(existsSync(sourcePath)).toBe(false)
+  })
+
+  it('flushes the target pending buffer before merge so seqs stay unique', () => {
+    const targetId = 'target-pending'
+    const sourceId = 'source-file'
+    store.appendChatMessage('default', targetId, { role: 'user', text: 'target-q0' })
+    store.appendChatMessage('default', targetId, { role: 'user', text: 'target-q1' })
+    store.appendChatMessage('default', sourceId, { role: 'user', text: 'source-q0' })
+    store.appendChatMessage('default', sourceId, { role: 'assistant', text: 'source-a0' })
+
+    store.rebindChat('default', sourceId, targetId)
+
+    const msgs = store.loadChat('default', targetId)
+    const seqs = msgs.map((m) => m.seq)
+    expect(new Set(seqs).size).toBe(seqs.length)
+    expect(msgs).toHaveLength(4)
   })
 
   it('preserves every source record when merging a chat longer than the display cap', () => {
@@ -611,6 +643,16 @@ describe('appendChatMessage opening buffer', () => {
     expect(msgs[1].scope).toBeUndefined()
   })
 
+  it('scope label is capped at 200 chars on disk', () => {
+    store.appendChatMessage('default', 'scope-label-cap', {
+      role: 'user',
+      text: 'q',
+      scope: { label: 'L'.repeat(1_000) },
+    })
+    const msgs = store.loadChat('default', 'scope-label-cap')
+    expect(msgs[0].scope?.label).toHaveLength(200)
+  })
+
   it('user messages appended to a chat with an existing file are written directly, not buffered', () => {
     store.appendChatMessage('default', 'has-file', { role: 'user', text: 'q1' })
     store.appendChatMessage('default', 'has-file', { role: 'assistant', text: 'a1' })
@@ -726,6 +768,18 @@ describe('createProject', () => {
     const a = store.createProject('Project A')
     const b = store.createProject('Project B')
     expect(a.id).not.toBe(b.id)
+  })
+
+  it('produces unique ids when two creates share a millisecond', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-01-01T00:00:00.000Z'))
+    try {
+      const a = store.createProject('Same Name')
+      const b = store.createProject('Same Name')
+      expect(a.id).not.toBe(b.id)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 
