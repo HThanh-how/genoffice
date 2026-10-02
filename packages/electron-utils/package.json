@@ -7,11 +7,14 @@
   "description": "Shared helpers for the Electron main processes (no Electron dependency, pure TS)",
   "exports": {
     ".": "./src/index.ts",
+    "./agy-chat-preload": "./src/agy-chat-preload.ts",
     "./atomic-write": "./src/atomic-write.ts",
     "./clipboard-history-labels": "./src/clipboard-history-labels.ts",
     "./drop-open": "./src/drop-open.ts",
     "./generated-images": "./src/generated-images.ts",
+    "./message-box": "./src/message-box.ts",
     "./headless-export": "./src/headless-export.ts",
+    "./renderer-dialogs": "./src/renderer-dialogs.ts",
     "./remote-image": "./src/remote-image.ts",
     "./renderer-protocol": "./src/renderer-protocol.ts",
     "./renderer-scheme": "./src/renderer-scheme.ts",
@@ -28,6 +31,7 @@
     "vitest": "^4.1.11"
   },
   "dependencies": {
+    "@genoffice/ai-provider": "*",
     "parse5": "^8.0.1"
   }
 }

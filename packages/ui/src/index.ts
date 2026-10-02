@@ -1,6 +1,7 @@
 export { AiPanelSideButton } from './AiPanelSideButton'
 export { AiComposer } from './AiComposer'
 export { GeminiModelPicker } from './GeminiModelPicker'
+export { AgyChatBar } from './AgyChatBar'
 export { AiScopeQuote, type AiScopeQuoteData } from './AiScopeQuote'
 export {
   AI_CUSTOM_FONT_MAX_PX,

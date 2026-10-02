@@ -7,7 +7,19 @@ import { foldFolderProgress } from '../document-memory/folder-progress'
 import type { FolderChunkProgress } from '../document-memory/store'
 import { createSwrCache } from './activity-cache'
 import { HOME_CHANNELS, type HomeIndexingActivity } from '../../shared/home-api'
-import { DOCUMENT_INDEX_CHANNELS } from '../../shared/fork/document-index-api'
+import { stat } from 'node:fs/promises'
+import { availableParallelism, totalmem } from 'node:os'
+import {
+  EMBEDDING_PROFILES,
+  isEmbeddingProfileId,
+  recommendEmbeddingProfile,
+  type EmbeddingProfileId,
+} from '../document-memory/embedding-profiles'
+import {
+  DOCUMENT_INDEX_CHANNELS,
+  type EmbeddingModelState,
+  type IndexedFolder,
+} from '../../shared/fork/document-index-api'
 
 export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
@@ -98,6 +110,96 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
       return { ok: true, retried }
     },
   )
+  // ---- folder list: when each folder was last read, its history, and which goes first ----
+  const knownRoot = (root: unknown): string => {
+    if (
+      typeof root !== 'string' ||
+      !getFolderScan()
+        ?.folders()
+        .some((f) => f.root === root)
+    )
+      throw new Error('Unknown folder')
+    return root
+  }
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.listIndexedFolders, async (): Promise<IndexedFolder[]> => {
+    const scan = getFolderScan()
+    const memory = getDocumentMemory()
+    if (!scan) return []
+    return Promise.all(
+      scan.folders().map(async (folder) => {
+        const counts = memory?.getFolderIndexCounts(folder.root)
+        const unavailable = await stat(folder.root).then(
+          (s) => !s.isDirectory(),
+          () => true,
+        )
+        return {
+          ...folder,
+          unavailable,
+          totalFiles: counts?.totalFiles ?? 0,
+          readyFiles: counts?.readyFiles ?? 0,
+          pendingFiles: counts?.pendingFiles ?? 0,
+          errorFiles: counts?.errorFiles ?? 0,
+        }
+      }),
+    )
+  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.setIndexedFolderPriority,
+    (_event, root: unknown, priority: unknown): boolean => {
+      if (typeof priority !== 'boolean') return false
+      const result = getFolderScan()?.setPriority(knownRoot(root), priority) ?? false
+      folderCounts.invalidate()
+      return result
+    },
+  )
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.rescanIndexedFolder, (_event, root: unknown) => {
+    try {
+      getFolderScan()?.start(knownRoot(root))
+      folderCounts.invalidate()
+      return { ok: true }
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'failed' }
+    }
+  })
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.forgetIndexedFolder, (_event, root: unknown): boolean => {
+    return getFolderScan()?.forget(knownRoot(root)) ?? false
+  })
+  // ---- search model: standard (fast) or high (Vietnamese retrieval model) ----
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getEmbeddingModel, (): EmbeddingModelState => {
+    const machine = {
+      totalMemGiB: Math.round((totalmem() / 1024 ** 3) * 10) / 10,
+      logicalCores: availableParallelism(),
+    }
+    const advice = recommendEmbeddingProfile({
+      ...machine,
+      arch: process.arch,
+      platform: process.platform,
+    })
+    const info = (id: EmbeddingProfileId, name: string) => ({
+      name,
+      dimensions: EMBEDDING_PROFILES[id].dimensions,
+      downloadMB: EMBEDDING_PROFILES[id].downloadMB,
+      memoryMB: EMBEDDING_PROFILES[id].memoryMB,
+    })
+    return {
+      profile: getDocumentMemory()?.embeddingSettings().profile ?? 'standard',
+      recommended: advice.profile,
+      ...(advice.limit ? { limit: advice.limit } : {}),
+      machine,
+      profiles: {
+        standard: info('standard', 'multilingual-e5-small'),
+        high: info('high', 'Vietnamese_Embedding'),
+      },
+    }
+  })
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setEmbeddingModel, (_event, profile: unknown) => {
+    if (!isEmbeddingProfileId(profile)) throw new Error('Invalid search model')
+    const memory = getDocumentMemory()
+    if (!memory) return { ok: false, requeued: 0 }
+    const result = memory.setEmbeddingProfile(profile)
+    folderCounts.invalidate()
+    return result
+  })
   ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid document id')

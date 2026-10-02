@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react'
 import { IconEnter, IconSend, IconStop } from './icons'
 import { useAiPanelPrefs } from './ai-panel-prefs-store'
+import { AgyChatBar } from './AgyChatBar'
 
 // Keep in sync with the CSS `max-height` on `.ai-input-box textarea` (7 lines à 24px)
 const MAX_TEXTAREA_HEIGHT = 168
@@ -33,6 +34,7 @@ export function AiComposer({
   onStop,
   onPasteFiles,
   onPasteText,
+  lang,
 }: {
   readonly value: string
   readonly busy: boolean
@@ -63,6 +65,8 @@ export function AiComposer({
   readonly onPasteFiles?: ((files: File[]) => void) | undefined
   /** first look at pasted text; return true to consume it (e.g. a base64 image turned into an attachment) */
   readonly onPasteText?: ((text: string) => boolean) | undefined
+  /** UI language for the Antigravity model/usage strip under the box (defaults to the page language) */
+  readonly lang?: string | undefined
 }): React.JSX.Element {
   const innerRef = useRef<HTMLTextAreaElement | null>(null)
   const ref = textareaRef ?? innerRef
@@ -83,74 +87,83 @@ export function AiComposer({
   }, [value, ref])
 
   return (
-    <div className="ai-input-box">
-      {header}
-      <textarea
-        ref={ref}
-        value={value}
-        placeholder={placeholder}
-        aria-label={ariaLabel}
-        rows={1}
-        dir="auto"
-        spellCheck={spellcheck}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-            e.preventDefault()
-            if (canSend) onSend()
-          } else if (e.key === 'Escape' && busy) {
-            e.preventDefault()
-            onStop()
-          }
-        }}
-        onPaste={(e) => {
-          const files = Array.from(e.clipboardData.files)
-          if (files.length > 0) {
-            if (!onPasteFiles) return
-            e.preventDefault()
-            onPasteFiles(files)
-            return
-          }
-          const text = e.clipboardData.getData('text/plain')
-          if (text && onPasteText?.(text)) e.preventDefault()
-        }}
-      />
-      <div className="ai-input-footer">
-        {footerStart}
-        {!iconOnly && (
-          <span className="ai-input-hint" title={busy ? undefined : hintIdleTitle}>
-            {busy ? hintBusy : hintIdle}
-          </span>
-        )}
-        {busy ? (
-          <button
-            className="ai-send-btn ai-stop-btn"
-            onClick={onStop}
-            title={stopLabel}
-            aria-label={stopLabel}
-          >
-            {iconOnly ? (stopIcon ?? <IconStop size={16} />) : <IconStop size={16} />}
-            {!iconOnly && stopLabel}
-          </button>
-        ) : (
-          <button
-            className="ai-send-btn"
-            onClick={onSend}
-            disabled={!canSend}
-            title={sendLabel}
-            aria-label={sendLabel}
-          >
-            {iconOnly ? (
-              ((canSend ? sendIconEnabled : (sendIconDisabled ?? sendIconEnabled)) ?? (
-                <IconEnter size={16} />
-              ))
-            ) : (
-              <IconSend size={16} />
-            )}
-            {!iconOnly && sendLabel}
-          </button>
-        )}
+    <>
+      <div className="ai-input-box">
+        {header}
+        <textarea
+          ref={ref}
+          value={value}
+          placeholder={placeholder}
+          aria-label={ariaLabel}
+          rows={1}
+          dir="auto"
+          spellCheck={spellcheck}
+          onChange={(e) => onChange(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault()
+              if (canSend) onSend()
+            } else if (e.key === 'Escape' && busy) {
+              e.preventDefault()
+              onStop()
+            }
+          }}
+          onPaste={(e) => {
+            const files = Array.from(e.clipboardData.files)
+            if (files.length > 0) {
+              if (!onPasteFiles) return
+              e.preventDefault()
+              onPasteFiles(files)
+              return
+            }
+            const text = e.clipboardData.getData('text/plain')
+            if (text && onPasteText?.(text)) e.preventDefault()
+          }}
+        />
+        <div className="ai-input-footer">
+          {footerStart}
+          {!iconOnly && (
+            <span className="ai-input-hint" title={busy ? undefined : hintIdleTitle}>
+              {busy ? hintBusy : hintIdle}
+            </span>
+          )}
+          {busy ? (
+            <button
+              className="ai-send-btn ai-stop-btn"
+              onClick={onStop}
+              title={stopLabel}
+              aria-label={stopLabel}
+            >
+              {iconOnly ? (stopIcon ?? <IconStop size={16} />) : <IconStop size={16} />}
+              {!iconOnly && stopLabel}
+            </button>
+          ) : (
+            <button
+              className="ai-send-btn"
+              onClick={onSend}
+              disabled={!canSend}
+              title={sendLabel}
+              aria-label={sendLabel}
+            >
+              {iconOnly ? (
+                ((canSend ? sendIconEnabled : (sendIconDisabled ?? sendIconEnabled)) ?? (
+                  <IconEnter size={16} />
+                ))
+              ) : (
+                <IconSend size={16} />
+              )}
+              {!iconOnly && sendLabel}
+            </button>
+          )}
+        </div>
       </div>
-    </div>
+      <AgyChatBar lang={lang ?? pageLang()} />
+    </>
   )
+}
+
+function pageLang(): string {
+  if (typeof document === 'undefined') return 'en'
+  const html = document.documentElement.lang || 'en'
+  return /^zh/i.test(html) ? 'zh' : html.slice(0, 2).toLowerCase()
 }

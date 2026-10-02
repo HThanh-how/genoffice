@@ -31,6 +31,8 @@ export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
   const [activity, setActivity] = useState<HomeIndexingActivity | null>(null)
   const [expanded, setExpanded] = useState(false)
   const [dismissed, setDismissed] = useState(false)
+  // after a few quiet seconds the chip shrinks to the ring; hover or focus brings the text back
+  const [compact, setCompact] = useState(false)
   const [eta, setEta] = useState<EtaEstimate | null>(null)
   const [summary, setSummary] = useState<IndexIssueSummary | null>(null)
   const [note, setNote] = useState('')
@@ -175,16 +177,40 @@ export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
     }
   }
 
-  if (!view || !folder?.root || dismissed) return null
-
-  const folderName = folder.root.split(/[\\/]/).filter(Boolean).at(-1) || folder.root
-  const label = headline(view, words, copy)
   const groups = summary?.groups ?? []
   const attentionGroups = groups.filter((group) => !isInformationalReason(group.reason))
   const skippedGroups = groups.filter((group) => isInformationalReason(group.reason))
   const attentionCount =
-    attentionGroups.reduce((sum, group) => sum + group.count, 0) + view.scanErrors
+    attentionGroups.reduce((sum, group) => sum + group.count, 0) + (view?.scanErrors ?? 0)
   const skippedCount = skippedGroups.reduce((sum, group) => sum + group.count, 0)
+
+  // A finished job with nothing needing attention leaves on its own; a new job brings it back.
+  const settledQuietly = view?.kind === 'done' && attentionCount === 0
+  useEffect(() => {
+    if (!settledQuietly || expanded) return
+    const timer = setTimeout(() => setDismissed(true), 10_000)
+    return () => clearTimeout(timer)
+  }, [settledQuietly, expanded])
+
+  // New work after the chip left (a file was opened, a rescan began) shows it again.
+  const active = !!view?.active
+  useEffect(() => {
+    if (active) setDismissed(false)
+  }, [active])
+
+  // Shrink the chip to its ring a few seconds after it appears or changes state.
+  const compactKey = `${view?.kind ?? ''}:${attentionCount}`
+  useEffect(() => {
+    setCompact(false)
+    if (expanded) return
+    const timer = setTimeout(() => setCompact(true), 6_000)
+    return () => clearTimeout(timer)
+  }, [compactKey, expanded])
+
+  if (!view || !folder?.root || dismissed) return null
+
+  const folderName = folder.root.split(/[\\/]/).filter(Boolean).at(-1) || folder.root
+  const label = headline(view, words, copy)
   const ringState =
     view.kind === 'model-error' ? 'error' : view.kind === 'paused' ? 'paused' : 'running'
   const complete = view.kind === 'done'
@@ -202,7 +228,7 @@ export function IndexingActivity({ api, lang }: { api: HomeApi; lang: Lang }) {
 
   return (
     <div
-      className={`indexing-activity is-${view.kind}`}
+      className={`indexing-activity is-${view.kind}${compact && !expanded ? ' is-compact' : ''}`}
       ref={rootRef}
       onKeyDown={(event) => {
         if (event.key === 'Escape' && expanded) {

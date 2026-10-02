@@ -26,6 +26,7 @@ import type {
 } from '../../shared/fork/home-chat-types'
 import { CHAT_PREFILL_EVENT, announceChatPanel, type ChatPrefillDetail } from './chat-events'
 import { ChatMessage, type ChatItem, type ChatLabels } from './home-chat/ChatMessage'
+import { AgyChatBar } from '@genoffice/ui'
 import { Composer, type ComposerLabels } from './home-chat/Composer'
 import { EmptyState } from './home-chat/EmptyState'
 import { HistoryRail, type HistoryLabels } from './home-chat/HistoryRail'
@@ -1192,6 +1193,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
               onSend={handleSend}
               onStop={handleStop}
             />
+            <AgyChatBar lang={i18n.lang} />
           </div>
         </section>
       )}

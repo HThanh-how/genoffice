@@ -134,4 +134,40 @@ describe('FolderScanManager', () => {
     expect(instance.status()).toMatchObject({ discovered: 2, enrolled: 1, errors: 1 })
     expect(instance.status().lastError).toBe('test enrollment failure')
   })
+
+  it('keeps a history of scans, can prioritise a folder and can forget it', async () => {
+    const root = join(dir, 'chosen')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'a.md'), 'a')
+    writeFileSync(join(root, 'b.md'), 'b')
+    const prioritized: string[] = []
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: () => true,
+      prioritizeFolder: (folder) => {
+        prioritized.push(folder)
+        return 0
+      },
+    })
+    scanners.push(instance)
+    instance.start(root)
+    await until(() => !instance.status().running)
+
+    const [folder] = instance.folders()
+    expect(folder).toMatchObject({ root, state: 'complete', priority: false })
+    expect(folder!.completedAt).toBeGreaterThan(0)
+    expect(folder!.history).toHaveLength(1)
+    expect(folder!.history[0]).toMatchObject({ kind: 'scan', state: 'complete', discovered: 2 })
+
+    expect(instance.setPriority(root, true)).toBe(true)
+    expect(prioritized).toEqual([root])
+    expect(instance.folders()[0]!.priority).toBe(true)
+    // the flag survives a restart
+    const again = new FolderScanManager(join(dir, 'state'), { indexDiscoveredFile: () => true })
+    scanners.push(again)
+    expect(again.folders()[0]!.priority).toBe(true)
+
+    expect(instance.setPriority(join(dir, 'unknown'), true)).toBe(false)
+    expect(instance.forget(root)).toBe(true)
+    expect(instance.folders()).toEqual([])
+  })
 })

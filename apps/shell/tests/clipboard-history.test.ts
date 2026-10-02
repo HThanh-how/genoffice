@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -6,6 +6,7 @@ import {
   CLIPBOARD_HISTORY_MAX_ENTRIES,
   CLIPBOARD_HISTORY_MAX_TOTAL_BYTES,
   ClipboardHistory,
+  looksSensitive,
   normalizeClipboardHistory,
 } from '../src/main/fork/clipboard-history'
 
@@ -52,7 +53,7 @@ describe('ClipboardHistory', () => {
     history.dispose()
   })
 
-  it('skips protected clipboard owners and secret-like values, and erases data when disabled', () => {
+  it('skips protected clipboard owners, masks secret-like values and erases data when disabled', () => {
     let excluded = true
     let text = 'normal clipboard text'
     let enabled = true
@@ -67,10 +68,14 @@ describe('ClipboardHistory', () => {
     excluded = false
     text = 'sk-proj-123456789012345678901234567890'
     history.check()
-    expect(history.list()).toEqual([])
+    // kept (it still pastes) but flagged so the UI masks it
+    expect(history.list().map((e) => [e.text, e.sensitive])).toEqual([[text, true]])
     text = 'ordinary copied text that is safe'
     history.check()
-    expect(history.list()).toHaveLength(1)
+    expect(history.list()).toHaveLength(2)
+    expect(history.list()[0]!.sensitive).toBeUndefined()
+    // sensitive text is never written to disk
+    expect(readFileSync(path, 'utf8')).not.toContain('sk-proj')
     enabled = false
     history.settingsChanged()
     expect(history.list()).toEqual([])
@@ -101,9 +106,52 @@ describe('ClipboardHistory', () => {
         { id: 'secret', text: 'password=hunter2-long-secret', copiedAt: 1 },
         { id: 'valid', text: 'a safe stored clipboard value', copiedAt: 2 },
       ]),
-    ).toEqual([{ id: 'valid', text: 'a safe stored clipboard value', copiedAt: 2 }])
+    ).toEqual([
+      {
+        id: 'secret',
+        kind: 'text',
+        text: 'password=hunter2-long-secret',
+        copiedAt: 1,
+        sensitive: true,
+      },
+      { id: 'valid', kind: 'text', text: 'a safe stored clipboard value', copiedAt: 2 },
+    ])
     enabled = false
     history.settingsChanged()
     history.dispose()
+  })
+
+  it('records images when there is no text, never lists their bytes, and can restore them', () => {
+    let image: { png: Buffer; preview: string; width: number; height: number } | null = null
+    let text = ''
+    const history = new ClipboardHistory(
+      { isExcluded: () => false, readText: () => text, readImage: () => image },
+      () => true,
+      historyPath,
+    )
+    history.setFocused(true)
+    const png = Buffer.from('fake-png-bytes')
+    image = { png, preview: 'data:image/png;base64,AAAA', width: 10, height: 5 }
+    history.check()
+    const [entry] = history.list()
+    expect(entry).toMatchObject({ kind: 'image', width: 10, height: 5 })
+    expect(JSON.stringify(entry)).not.toContain(png.toString('base64'))
+    expect(history.imagePng(entry!.id)).toEqual(png)
+    // text wins when both are present (spreadsheet cells carry a picture too)
+    text = 'cells copied from a sheet'
+    history.check()
+    expect(history.list()[0]!.kind).toBe('text')
+    history.dispose()
+  })
+
+  it('treats unusually long unbroken strings as sensitive but leaves urls, paths and prose alone', () => {
+    expect(looksSensitive('aB3dE6gH9jK2mN5pQ8sT1vW4yZ7bC0dF3hJ6')).toBe(true)
+    expect(looksSensitive('https://example.com/some/really/long/path/with/numbers/12345678')).toBe(
+      false,
+    )
+    expect(looksSensitive('/Users/me/Documents/some very long folder name 2024/report.pdf')).toBe(
+      false,
+    )
+    expect(looksSensitive('a perfectly normal sentence with 3 numbers in it')).toBe(false)
   })
 })

@@ -265,6 +265,45 @@ describe('listAgyModels', () => {
 })
 
 describe('stream-json parsing (recorded fixtures)', () => {
+  it('reports tool steps (what the agent opens) and thinking tokens for the thinking strip', () => {
+    const tool = parseAgyStreamLine(
+      JSON.stringify({
+        event: 'step_update',
+        step_update: {
+          step_index: 2,
+          state: 'ACTIVE',
+          step_type: 'tool',
+          tool_name: 'view_file',
+          tool_info: { name: 'view_file', parameters: { AbsolutePath: '/tmp/a/image-1.jpg' } },
+        },
+      }),
+    )
+    expect(tool).toMatchObject({
+      kind: 'step',
+      stepType: 'tool',
+      toolName: 'view_file',
+      toolTarget: '/tmp/a/image-1.jpg',
+    })
+    const thought = parseAgyStreamLine(
+      JSON.stringify({
+        event: 'step_update',
+        step_update: {
+          step_index: 1,
+          state: 'DONE',
+          step_type: 'agent_response',
+          duration_seconds: 3.3,
+          usage: { input_tokens: 13685, output_tokens: 645, thinking_tokens: 541 },
+        },
+      }),
+    )
+    expect(thought).toMatchObject({
+      kind: 'step',
+      stepType: 'agent_response',
+      thinkingTokens: 541,
+      durationSeconds: 3.3,
+    })
+  })
+
   it('parses init, step updates and the result with usage', () => {
     const events = FIXTURE_OK.map(parseAgyStreamLine)
     expect(events[0]).toEqual({
@@ -272,7 +311,7 @@ describe('stream-json parsing (recorded fixtures)', () => {
       model: 'gemini-3.7-flash-low',
       conversationId: 'c1',
     })
-    expect(events[1]).toEqual({ kind: 'step', stepType: 'user_input' })
+    expect(events[1]).toEqual({ kind: 'step', stepType: 'user_input', state: 'DONE' })
     expect(events[2]).toEqual({
       kind: 'text',
       text: 'PONG\n1\n2\n3\n4\n5',

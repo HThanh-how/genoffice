@@ -131,7 +131,7 @@ export const IssueGroup = memo(function IssueGroup({
       agyOcrString(lang, key, params)
     const maxPages =
       (await api.getAgyOcrStatus?.().catch(() => null))?.settings.maxPagesPerFile ?? 5
-    if (!window.confirm(t('readNowConfirm', { n: maxPages }))) return
+    if (!window.confirm(t('readNowConfirm', { n: maxPages === 0 ? '∞' : maxPages }))) return
     setBusy((current) => ({ ...current, [issue.id]: 'ocr' }))
     setErrors((current) => ({ ...current, [issue.id]: '' }))
     setNotes((current) => ({ ...current, [issue.id]: '' }))

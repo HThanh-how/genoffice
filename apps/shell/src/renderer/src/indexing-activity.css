@@ -40,7 +40,38 @@
   flex-direction: column;
   align-items: flex-start;
   min-width: 0;
+  max-width: 260px;
   gap: 2px;
+  overflow: hidden;
+  transition:
+    max-width 0.2s ease,
+    opacity 0.2s ease;
+}
+/* idle chip: just the ring (and the attention badge); text returns on hover or keyboard focus */
+.indexing-activity.is-compact .indexing-activity-launcher {
+  gap: 0;
+  padding-right: 10px;
+  opacity: 0.85;
+}
+.indexing-activity.is-compact .indexing-activity-launcher-copy {
+  max-width: 0;
+  opacity: 0;
+}
+.indexing-activity.is-compact .indexing-activity-launcher:hover,
+.indexing-activity.is-compact .indexing-activity-launcher:focus-visible {
+  gap: 10px;
+  padding-right: 14px;
+  opacity: 1;
+}
+.indexing-activity.is-compact .indexing-activity-launcher:hover .indexing-activity-launcher-copy,
+.indexing-activity.is-compact
+  .indexing-activity-launcher:focus-visible
+  .indexing-activity-launcher-copy {
+  max-width: 260px;
+  opacity: 1;
+}
+.indexing-activity.is-compact .indexing-activity-badge {
+  margin-left: 6px;
 }
 .indexing-activity-launcher strong {
   font-size: 13px;
@@ -395,6 +426,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  .indexing-activity-launcher-copy,
   .indexing-activity-chevron {
     transition: none;
   }

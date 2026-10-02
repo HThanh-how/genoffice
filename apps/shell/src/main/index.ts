@@ -77,6 +77,7 @@ import {
   setUpdateCheckInvoker,
   installRendererProtocol,
 } from '@genoffice/electron-utils'
+import { installThemedDialogs } from '@genoffice/electron-utils/message-box'
 import {
   readAppSettings,
   writeAppSetting,
@@ -300,6 +301,7 @@ import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard
 import { initClipboardHistory, registerClipboardHistory } from './fork/clipboard-history-ipc'
 import { registerIndexingMode } from './fork/indexing-mode-ipc'
 import { registerAgyOcr } from './fork/agy-ocr-ipc'
+import { registerAgyChat } from './fork/agy-chat-ipc'
 import { startLoopMonitor } from './fork/loop-monitor'
 import {
   normalizeAiPanelPrefs,
@@ -620,7 +622,7 @@ function currentAutoSaveDefault(): AutoSaveDefault {
   const saved = readAppSettings(APP_SETTINGS_PATH())
   const updatedAt = saved.autoSaveDefaultUpdatedAt
   cachedAutoSaveDefault = {
-    on: saved.autoSaveDefault === true,
+    on: saved.autoSaveDefault !== false,
     updatedAt: typeof updatedAt === 'number' && updatedAt > 0 ? updatedAt : 0,
   }
   return cachedAutoSaveDefault
@@ -4052,6 +4054,12 @@ function registerHomeIpc(): void {
     historyPath: () => join(app.getPath('userData'), 'clipboard-history.json'),
   })
   registerIndexingMode({ ipcMain, settingsPath: APP_SETTINGS_PATH })
+  registerAgyChat({
+    ipcMain,
+    settingsPath: APP_SETTINGS_PATH,
+    aiSettingsPath: () => join(app.getPath('userData'), 'ai-settings.json'),
+    cachePath: () => join(app.getPath('userData'), 'agy-usage-cache.json'),
+  })
   registerAgyOcr({
     ipcMain,
     settingsPath: APP_SETTINGS_PATH,
@@ -6065,6 +6073,8 @@ async function runHeadlessExportEntry(
   // every teardown this run owns has already happened.
   app.exit(headlessExitCode(outcome))
 }
+
+installThemedDialogs()
 
 app.whenReady().then(async () => {
   // first scan waits for the windows to come up; later ones follow folder changes

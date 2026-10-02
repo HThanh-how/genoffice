@@ -31,14 +31,14 @@ describe('extractDocument cost control', () => {
     expect(result.chunks[0]!.text).toContain('Hanoi')
   })
 
-  it('caps a very long text document at the per-file chunk limit', async () => {
+  it('indexes a very long text document in full', async () => {
     const path = join(dir, 'long.txt')
     writeFileSync(
       path,
       Array.from({ length: 4000 }, (_, i) => `Paragraph ${i} ${'word '.repeat(90)}`).join('\n\n'),
     )
     const result = await extractDocument(path)
-    expect(result.chunks).toHaveLength(400)
-    expect(result.truncated).toBe(true)
+    expect(result.chunks.length).toBeGreaterThan(400)
+    expect(result.truncated).toBeFalsy()
   })
 })

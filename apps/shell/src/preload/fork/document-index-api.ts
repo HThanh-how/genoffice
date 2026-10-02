@@ -23,5 +23,23 @@ export function createDocumentIndexPreloadApi(
     async retryDocumentIndexGroup(root, reason) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, root, reason)
     },
+    async listIndexedFolders() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.listIndexedFolders)
+    },
+    async setIndexedFolderPriority(root, priority) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setIndexedFolderPriority, root, priority)
+    },
+    async rescanIndexedFolder(root) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.rescanIndexedFolder, root)
+    },
+    async getEmbeddingModel() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getEmbeddingModel)
+    },
+    async setEmbeddingModel(profile) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setEmbeddingModel, profile)
+    },
+    async forgetIndexedFolder(root) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.forgetIndexedFolder, root)
+    },
   }
 }

@@ -70,8 +70,8 @@ function splitLongUnit(text: string): string[] {
   return parts.filter(Boolean)
 }
 
-/** Upper bound of chunks stored for one file; a bigger file is truncated and flagged. */
-export const MAX_CHUNKS_PER_FILE = 400
+/** Safety ceiling of chunks stored for one file (~25 M characters); beyond it the file is truncated and flagged. */
+export const MAX_CHUNKS_PER_FILE = 50_000
 /** Tabular files keep their header plus sampled rows within this many chunks. */
 export const MAX_TABULAR_CHUNKS = 120
 const MAX_HEADER_CHARS = 160

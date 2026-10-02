@@ -79,6 +79,8 @@ export interface DiscoveredDocumentIndexer {
     root: string,
     files: Map<string, { mtimeMs: number; sizeBytes: number }>,
   ): Promise<unknown>
+  /** Put the waiting files below `root` first in the indexing order. */
+  prioritizeFolder?(root: string): number
   /** Subscribe to the index being cleared; returns an unsubscribe function. */
   onCleared?(listener: () => void): () => void
   /** Live watching is started when the indexer also provides these three hooks. */
@@ -106,7 +108,42 @@ interface ScanJob {
   lastError?: string
   /** Epoch ms of the last completed metadata-only reconcile pass. */
   reconciledAt?: number
+  /** Epoch ms the last full scan finished. */
+  completedAt?: number
+  /** Index this folder's waiting files before other folders'. */
+  priority?: boolean
+  /** The most recent scans and refreshes, newest first. */
+  history?: ScanRun[]
 }
+
+export interface ScanRun {
+  kind: 'scan' | 'refresh'
+  state: 'complete' | 'stopped' | 'unavailable'
+  startedAt: number
+  endedAt: number
+  discovered: number
+  enrolled: number
+  skipped: number
+  errors: number
+}
+
+/** One folder as the settings list shows it. */
+export interface FolderSummary {
+  root: string
+  state: 'running' | 'complete' | 'stopped'
+  priority: boolean
+  startedAt?: number
+  completedAt?: number
+  reconciledAt?: number
+  discovered: number
+  enrolled: number
+  skipped: number
+  errors: number
+  lastError?: string
+  history: ScanRun[]
+}
+
+const MAX_RUN_HISTORY = 12
 
 interface Manifest {
   version: 1
@@ -211,6 +248,8 @@ export class FolderScanManager {
       if (!completed) return { ok: false, reason: 'interrupted' }
       await this.memory.reconcileFolder(job.root, files)
       job.reconciledAt = Date.now()
+      this.recordRun(job, 'refresh', 'complete', { discovered: files.size })
+      if (job.priority) this.memory.prioritizeFolder?.(job.root)
       this.save()
       return { ok: true, files: files.size }
     } catch (error) {
@@ -346,6 +385,9 @@ export class FolderScanManager {
       .finally(() => {
         this.activeRoot = null
         this.runner = null
+        if (job.state === 'complete') job.completedAt = Date.now()
+        if (job.state !== 'running') this.recordRun(job, 'scan', job.state)
+        if (job.state === 'complete' && job.priority) this.memory.prioritizeFolder?.(job.root)
         this.save()
       })
   }
@@ -448,6 +490,68 @@ export class FolderScanManager {
       handlers.afterDirectory?.()
     }
     return !shouldStop() && pending.length === 0
+  }
+
+  private recordRun(
+    job: ScanJob,
+    kind: ScanRun['kind'],
+    state: ScanRun['state'],
+    counts?: { discovered: number },
+  ): void {
+    const now = Date.now()
+    const run: ScanRun = {
+      kind,
+      state,
+      startedAt: kind === 'scan' ? (job.startedAt ?? now) : now,
+      endedAt: now,
+      discovered: counts?.discovered ?? job.discovered,
+      enrolled: kind === 'scan' ? job.enrolled : 0,
+      skipped: kind === 'scan' ? job.skipped : 0,
+      errors: kind === 'scan' ? job.errors : 0,
+    }
+    job.history = [run, ...(job.history ?? [])].slice(0, MAX_RUN_HISTORY)
+  }
+
+  /** Every remembered folder with its scan history, newest scan first. */
+  folders(): FolderSummary[] {
+    return this.manifest.jobs
+      .map((job) => ({
+        root: job.root,
+        state: job.state,
+        priority: job.priority === true,
+        ...(job.startedAt === undefined ? {} : { startedAt: job.startedAt }),
+        ...(job.completedAt === undefined ? {} : { completedAt: job.completedAt }),
+        ...(job.reconciledAt === undefined ? {} : { reconciledAt: job.reconciledAt }),
+        discovered: job.discovered,
+        enrolled: job.enrolled,
+        skipped: job.skipped,
+        errors: job.errors,
+        ...(job.lastError ? { lastError: job.lastError } : {}),
+        history: job.history ?? [],
+      }))
+      .sort((a, b) => (b.completedAt ?? b.startedAt ?? 0) - (a.completedAt ?? a.startedAt ?? 0))
+  }
+
+  /** Toggle "index this folder first"; takes effect on the files already waiting. */
+  setPriority(root: string, priority: boolean): boolean {
+    const job = this.jobFor(resolve(root))
+    if (!job) return false
+    job.priority = priority
+    this.save()
+    if (priority) this.memory.prioritizeFolder?.(job.root)
+    return true
+  }
+
+  /** Stop watching and forget a folder. Files already indexed stay searchable. */
+  forget(root: string): boolean {
+    const normalized = resolve(root)
+    if (this.activeRoot === normalized) return false
+    const before = this.manifest.jobs.length
+    this.manifest.jobs = this.manifest.jobs.filter((job) => job.root !== normalized)
+    if (this.manifest.jobs.length === before) return false
+    this.save()
+    this.emitRootsChanged()
+    return true
   }
 
   private recordError(job: ScanJob, error: unknown): void {

@@ -1,3 +1,5 @@
+import { installRendererDialogs } from '@genoffice/electron-utils/renderer-dialogs'
+import { createAgyChatPreloadApi } from '@genoffice/electron-utils/agy-chat-preload'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import { VIEW_IMAGE_CHANNEL } from '../shared/ipc'
@@ -161,6 +163,8 @@ const api: DesktopApi = {
         )
       : []
   },
+  restoreClipboardHistoryImage: async (id: string) =>
+    (await ipcRenderer.invoke('clipboardHistory:restore-image', id)) === true,
   claimContextMenu: (seq: number) => {
     ipcRenderer.sendSync('docs:context-menu-claim', seq)
   },
@@ -300,3 +304,7 @@ contextBridge.exposeInMainWorld('projectApi', projectApi)
 
 // open documents dragged from the OS onto this tab as a new shell tab
 installDropOpenBridge()
+
+installRendererDialogs()
+// Antigravity chat model chooser + quota readout (see packages/ui AgyChatBar)
+contextBridge.exposeInMainWorld('agyChat', createAgyChatPreloadApi(ipcRenderer))

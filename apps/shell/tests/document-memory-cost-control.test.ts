@@ -7,7 +7,6 @@ import {
   capChunks,
   chunkDocumentText,
   chunkTabularText,
-  MAX_CHUNKS_PER_FILE,
   MAX_TABULAR_CHUNKS,
 } from '../src/main/document-memory/chunks'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
@@ -24,9 +23,10 @@ describe('chunk caps', () => {
       '\n\n',
     )
     const chunks = chunkDocumentText(text)
-    expect(chunks.length).toBeGreaterThan(MAX_CHUNKS_PER_FILE)
-    const capped = capChunks(chunks)
-    expect(capped.chunks).toHaveLength(MAX_CHUNKS_PER_FILE)
+    const max = 400
+    expect(chunks.length).toBeGreaterThan(max)
+    const capped = capChunks(chunks, max)
+    expect(capped.chunks).toHaveLength(max)
     expect(capped.truncated).toBe(true)
     expect(capChunks(chunks.slice(0, 5))).toEqual({ chunks: chunks.slice(0, 5), truncated: false })
   })

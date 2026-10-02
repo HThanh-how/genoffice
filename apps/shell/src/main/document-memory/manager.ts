@@ -5,8 +5,16 @@ import { createIndexProcess } from './process-worker'
 import { isIndexingPaused, subscribeIndexingPolicy } from '../fork/indexing-policy-bus'
 import { createReadStream, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { extname, join, resolve } from 'node:path'
+import { extname, join, resolve, sep } from 'node:path'
 import workerPath from './worker?modulePath'
+import type { PdfScanInfo } from './ocr-sidecar'
+import {
+  DEFAULT_EMBEDDING_PROFILE,
+  embeddingProfile,
+  isEmbeddingProfileId,
+  type EmbeddingProfile,
+  type EmbeddingProfileId,
+} from './embedding-profiles'
 import { isIgnoredFileName, MAX_DOCUMENT_BYTES, SUPPORTED_EXTENSIONS } from './folder-scan'
 import { volumeRootOf } from './volume-root'
 import { createYielder } from './yield-budget'
@@ -20,9 +28,9 @@ import { createOcrHost } from './ocr-host'
 import type { OcrJobHost } from './agy-ocr-job'
 import type { OcrRenderRequest, OcrRenderResult } from './agy-ocr-render'
 
-const EMBEDDING_MODEL_ID =
-  'Xenova/multilingual-e5-small@761b726dd34fb83930e26aab4e9ac3899aa1fa78:q8'
 /** Cheap safety poll: resumes interrupted work (SQL only); never stats the whole index. */
+/** A boosted folder sorts ahead of every file the user could have opened or edited. */
+const PRIORITY_BOOST_MS = 10 * 365 * 24 * 3600 * 1000
 const POLL_INTERVAL_MS = 60_000
 /** How often user-opened documents are stat()ed by the safety poll, and how many. */
 const OPENED_CHECK_INTERVAL_MS = 5 * 60_000
@@ -52,6 +60,8 @@ interface ExtractResult {
   truncated?: boolean
   /** Lexical-only: embedding adds nothing (numeric tables). */
   skipEmbeddings?: boolean
+  /** PDF pages with no text layer of their own (the OCR reader's work list). */
+  scan?: PdfScanInfo
 }
 /** A search hit annotated with a cheap query-time freshness check (no hashing). */
 export interface FreshDocumentMemoryHit extends DocumentMemoryHit {
@@ -102,7 +112,10 @@ interface EmbedJob {
 }
 interface ManagerOptions {
   workerPath?: string
-  workerFactory?: (path: string, workerData: { cacheDir: string; dbPath: string }) => Worker
+  workerFactory?: (
+    path: string,
+    workerData: { cacheDir: string; dbPath: string; embeddingProfile?: string },
+  ) => Worker
   pollIntervalMs?: number
   searchTimeoutMs?: number
   /** How long a background extract/embed step may stay silent before the worker is restarted. */
@@ -115,11 +128,13 @@ export class DocumentMemoryManager {
   readonly dbPath: string
   private readonly store: DocumentMemoryStore
   private readonly settingsPath: string
+  private readonly embeddingSettingsPath: string
+  private embeddingProfileId: EmbeddingProfileId
   private readonly cacheDir: string
   private readonly pathToWorker: string
   private readonly workerFactory: (
     path: string,
-    workerData: { cacheDir: string; dbPath: string },
+    workerData: { cacheDir: string; dbPath: string; embeddingProfile?: string },
   ) => Worker
   private readonly pollIntervalMs: number
   private readonly searchTimeoutMs: number
@@ -162,6 +177,8 @@ export class DocumentMemoryManager {
     this.dbPath = join(userData, 'document-memory.db')
     this.settingsPath = join(userData, 'document-memory-settings.json')
     this.cacheDir = join(userData, 'document-memory-models')
+    this.embeddingSettingsPath = join(userData, 'document-memory-embedding.json')
+    this.embeddingProfileId = readEmbeddingProfileId(this.embeddingSettingsPath)
     this.pathToWorker = options.workerPath ?? workerPath
     this.workerFactory = options.workerFactory ?? createIndexProcess
     this.pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
@@ -417,6 +434,19 @@ export class DocumentMemoryManager {
     return this.store.folderChunkProgress(root)
   }
 
+  /** Index the waiting files below `root` before everything else; returns how many were waiting. */
+  prioritizeFolder(root: string): number {
+    const prefix = root.endsWith(sep) ? root : root + sep
+    this.store.boostFolder(root, Date.now() + PRIORITY_BOOST_MS)
+    const mine = this.queue.filter((path) => path.startsWith(prefix))
+    if (mine.length) {
+      const rest = this.queue.filter((path) => !path.startsWith(prefix))
+      this.queue.length = 0
+      this.queue.push(...mine, ...rest)
+    }
+    return mine.length
+  }
+
   /** Last error reported by the model or worker (in-memory; no database access). */
   lastIndexError(): string | undefined {
     return this.lastError
@@ -457,6 +487,52 @@ export class DocumentMemoryManager {
       pending: this.pendingCount + this.queue.length + this.embeds.length,
       errors: this.store.errorCount(),
     }
+  }
+
+  /** Keep the "pages without text" list of a PDF in step with what was just indexed. */
+  private recordScanInfo(path: string, extracted: ExtractResult): void {
+    try {
+      this.store.ocr.saveScanInfo(
+        path,
+        { mtimeMs: extracted.mtimeMs, sizeBytes: extracted.sizeBytes },
+        extracted.scan ?? null,
+      )
+    } catch {
+      // OCR planning is best effort; indexing must not fail because of it
+    }
+  }
+
+  private get embeddingProfile(): EmbeddingProfile {
+    return embeddingProfile(this.embeddingProfileId)
+  }
+
+  /** The model in use and what the files of the other one would cost. */
+  embeddingSettings(): { profile: EmbeddingProfileId; modelState: string } {
+    return { profile: this.embeddingProfileId, modelState: this.modelState }
+  }
+
+  /**
+   * Switch the embedding model. Existing vectors belong to the old model, so every document that
+   * has them is queued to be read again; search keeps working on text (FTS) and on whatever
+   * vectors of the new model exist while that happens.
+   */
+  setEmbeddingProfile(id: EmbeddingProfileId): { ok: boolean; requeued: number } {
+    if (this.stopped || id === this.embeddingProfileId) return { ok: !this.stopped, requeued: 0 }
+    this.embeddingProfileId = id
+    writeFileSync(this.embeddingSettingsPath, JSON.stringify({ profile: id }), { mode: 0o600 })
+    // the running worker has the old model loaded: a fresh one starts with the new profile
+    this.epoch++
+    this.queue.length = 0
+    this.queued.clear()
+    this.embeds.length = 0
+    this.modelState = 'not-loaded'
+    this.modelProgress = undefined
+    this.recycleWorker('Embedding model changed.')
+    this.lastError = undefined
+    const requeued = this.store.requeueForEmbeddingModel(this.embeddingProfile.embeddingId)
+    if (this.enabled) void this.poll()
+    this.notify(this.enabledListeners)
+    return { ok: true, requeued }
   }
 
   setEnabled(enabled: boolean): DocumentMemoryStatus {
@@ -531,7 +607,7 @@ export class DocumentMemoryManager {
       }
     }
     const reply = await this.ask(
-      { type: 'search', query, vector, limit, embeddingModel: EMBEDDING_MODEL_ID },
+      { type: 'search', query, vector, limit, embeddingModel: this.embeddingProfile.embeddingId },
       30_000,
     )
     const result =
@@ -674,6 +750,7 @@ export class DocumentMemoryManager {
         },
         { shouldContinue: () => !this.stopped && epoch === this.epoch },
       )
+      if (replaced) this.recordScanInfo(hit.path, fresh)
       if (replaced && fresh.chunks.length && !fresh.skipEmbeddings && this.enabled)
         this.enqueueEmbed({
           path: hit.path,
@@ -1067,7 +1144,11 @@ export class DocumentMemoryManager {
             !lexicalOnly &&
             previous?.mtimeMs === extracted.mtimeMs &&
             previous.sizeBytes === extracted.sizeBytes
-              ? this.store.resumeVectorOffset(path, extracted.hash, EMBEDDING_MODEL_ID)
+              ? this.store.resumeVectorOffset(
+                  path,
+                  extracted.hash,
+                  this.embeddingProfile.embeddingId,
+                )
               : null
           if (resumeOffset === null) {
             // Written in short transactions: a 400-chunk document used to hold the main thread
@@ -1087,6 +1168,7 @@ export class DocumentMemoryManager {
               { shouldContinue: () => this.isCurrent(path, generation, epoch) },
             )
             if (!written) continue
+            this.recordScanInfo(path, extracted)
             this.scheduleFtsMaintenance()
           }
           this.lastError = undefined
@@ -1169,7 +1251,7 @@ export class DocumentMemoryManager {
             job.hash,
             start,
             vectors,
-            EMBEDDING_MODEL_ID,
+            this.embeddingProfile.embeddingId,
             complete,
           )
           this.lastError = undefined
@@ -1283,6 +1365,7 @@ export class DocumentMemoryManager {
     const worker = this.workerFactory(this.pathToWorker, {
       cacheDir: this.cacheDir,
       dbPath: this.dbPath,
+      embeddingProfile: this.embeddingProfileId,
     })
     worker.on('message', (message: WorkerReply) => {
       if ('type' in message && message.type === 'model') {
@@ -1326,6 +1409,16 @@ function progressPercent(progress: {
 }): number | null {
   if (!progress.totalChunks) return null
   return Math.min(99, Math.floor((progress.completedChunks / progress.totalChunks) * 100))
+}
+
+function readEmbeddingProfileId(path: string): EmbeddingProfileId {
+  try {
+    const value: unknown = JSON.parse(readFileSync(path, 'utf8'))
+    const id = (value as { profile?: unknown } | null)?.profile
+    return isEmbeddingProfileId(id) ? id : DEFAULT_EMBEDDING_PROFILE
+  } catch {
+    return DEFAULT_EMBEDDING_PROFILE
+  }
 }
 
 function readEnabled(path: string): boolean {

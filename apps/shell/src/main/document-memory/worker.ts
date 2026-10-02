@@ -4,20 +4,34 @@ import { interruptBackgroundSleep, withBackgroundBudget } from './cpu-budget'
 import { readFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { extname } from 'node:path'
-import { parseFileToText } from '@genoffice/file-parse'
+import { parseFileToText, pdfPageTexts } from '@genoffice/file-parse'
 import { capChunks, chunkDocumentText, chunkTabularText } from './chunks'
 import { DocumentMemoryStore } from './store'
 import { embedTexts } from './embeddings'
 import { renderPdfPagesForOcr, type OcrRenderRequest } from './agy-ocr-render'
 import { ocrChunksFromPages, ocrDocumentHash, type OcrLookup } from './ocr-sidecar'
 /** `ocr` finds text the scanned-PDF reader stored for a PDF that has no text layer of its own. */
+/** A page with fewer characters than this has no usable text layer. */
+const MIN_PAGE_TEXT_CHARS = 20
+
 export async function extractDocument(path: string, ocr?: OcrLookup) {
   const before = await stat(path)
   if (before.size > 128 * 1024 * 1024) throw new Error('Document exceeds the 128 MB indexing limit')
   const bytes = await readFile(path)
-  const parsed = await parseFileToText(path)
+  const isPdf = /\.pdf$/i.test(path)
+  // PDFs are read page by page so pages without a text layer (scans inside an otherwise
+  // digital file) can be told apart: those alone are OCR work, everything else stays local.
+  const pdfPages = isPdf ? await pdfPageTexts(bytes).catch(() => null) : null
+  const parsed = pdfPages
+    ? ({ ok: true, kind: 'text', text: pdfPages.join('\n\n') } as const)
+    : await parseFileToText(path)
   if (!parsed.ok || parsed.kind !== 'text')
     throw new Error(parsed.error || 'Cannot extract text from this document')
+  const scannedPages = pdfPages
+    ? pdfPages.flatMap((text, index) =>
+        text.trim().length < MIN_PAGE_TEXT_CHARS ? [index + 1] : [],
+      )
+    : []
   const after = await stat(path)
   if (before.mtimeMs !== after.mtimeMs || before.size !== after.size)
     throw new Error('Document changed during indexing; retry after saving')
@@ -42,13 +56,17 @@ export async function extractDocument(path: string, ocr?: OcrLookup) {
   const fileHash = createHash('sha256').update(bytes).digest('hex')
   let hash = fileHash
   let ocrRead = false
-  if (!chunks.length && ocr && /\.pdf$/i.test(path)) {
-    // a scanned PDF the user let Antigravity read: its transcribed pages become the chunks
+  if (scannedPages.length && ocr && isPdf) {
+    // pages the user let Antigravity read: their transcription is added to whatever text the
+    // PDF has itself (all of it for a pure scan, the missing pages for a mixed file)
     const stored = ocr(path, fileHash)
-    if (stored?.pages.length) {
+    const pages = stored?.pages.filter((page) => scannedPages.includes(page.page)) ?? []
+    if (stored && pages.length) {
       ocrRead = true
-      ;({ chunks, truncated } = ocrChunksFromPages(stored))
-      hash = ocrDocumentHash(fileHash, stored.pages)
+      const fromOcr = ocrChunksFromPages({ totalPages: scannedPages.length, pages })
+      chunks = capChunks([...chunks, ...fromOcr.chunks]).chunks
+      truncated = truncated || fromOcr.truncated
+      hash = ocrDocumentHash(fileHash, pages)
     }
   }
   return {
@@ -58,6 +76,10 @@ export async function extractDocument(path: string, ocr?: OcrLookup) {
     chunks,
     status: chunks.length ? 'text-only' : 'empty',
     ...(truncated ? { truncated: true } : {}),
+    // Pages with no text layer, so the OCR reader knows which pages (and only those) to read.
+    ...(pdfPages && scannedPages.length
+      ? { scan: { totalPages: pdfPages.length, scannedPages } }
+      : {}),
     // Numeric tables stay searchable through FTS; vectors for digits are wasted work.
     ...(numeric && chunks.length ? { skipEmbeddings: true } : {}),
     ...(chunks.length

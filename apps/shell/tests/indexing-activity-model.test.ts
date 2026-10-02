@@ -86,11 +86,16 @@ describe('deriveIndexView', () => {
 describe('shouldAutoExpand', () => {
   const active = deriveIndexView(activity({ pending: 5 }))
   const done = deriveIndexView(activity({}))
-  it('opens for a new scan with work, not for finished or repeated ones', () => {
-    expect(shouldAutoExpand('', 'r:1', active)).toBe(true)
-    expect(shouldAutoExpand('r:1', 'r:2', active)).toBe(true)
+  const failed = deriveIndexView(
+    activity({ modelState: 'error', pending: 50, errors: 3, lastError: 'fetch failed' }),
+  )
+  it('stays closed for ordinary indexing, finished scans and repeats; opens for a model failure', () => {
+    expect(shouldAutoExpand('', 'r:1', active)).toBe(false)
+    expect(shouldAutoExpand('r:1', 'r:2', active)).toBe(false)
     expect(shouldAutoExpand('', 'r:1', done)).toBe(false)
-    expect(shouldAutoExpand('r:1', 'r:1', active)).toBe(false)
+    expect(failed?.kind).toBe('model-error')
+    expect(shouldAutoExpand('', 'r:1', failed)).toBe(true)
+    expect(shouldAutoExpand('r:1', 'r:1', failed)).toBe(false)
   })
 })
 

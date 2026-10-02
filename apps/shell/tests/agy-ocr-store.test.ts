@@ -340,7 +340,8 @@ describe('chunk helpers', () => {
       totalPages: 50,
       pages: Array.from({ length: 50 }, (_, i) => ({ page: i + 1, text: long })),
     })
-    expect(huge.chunks.length).toBe(400)
-    expect(huge.truncated).toBe(true)
+    // 50 long pages are no longer cut at the old 400-chunk cap
+    expect(huge.chunks.length).toBe(50 * chunks.length)
+    expect(huge.truncated).toBe(false)
   })
 })

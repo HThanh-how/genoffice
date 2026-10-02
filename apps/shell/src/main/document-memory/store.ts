@@ -2,7 +2,7 @@ import { issueReason, type IndexIssue } from './issues'
 import { topVectors } from './top-vectors'
 import { DatabaseSync } from 'node:sqlite'
 import { chmodSync } from 'node:fs'
-import { basename, resolve } from 'node:path'
+import { basename, resolve, sep } from 'node:path'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { documentIndexFields, queryTokens } from './normalization'
 import { OcrSidecar, isOcrLocation } from './ocr-sidecar'
@@ -456,6 +456,16 @@ export class DocumentMemoryStore {
    * over the documents table, no chunk or vector access. Documents whose counters are not
    * backfilled yet are counted from the covering indexes instead, so the figures are always exact.
    */
+  /** Move the waiting files below `root` to the front of the indexing order. */
+  boostFolder(root: string, at: number): void {
+    const prefix = root.endsWith(sep) ? root : root + sep
+    this.db
+      .prepare(
+        "UPDATE documents SET priority_at = ? WHERE excluded = 0 AND status = 'pending' AND substr(path, 1, ?) = ?",
+      )
+      .run(at, prefix.length, prefix)
+  }
+
   folderChunkProgress(root: string): FolderChunkProgress {
     const normalized = resolve(root)
     const prefix =
@@ -683,6 +693,20 @@ export class DocumentMemoryStore {
       )
       addFts.run(result.lastInsertRowid, fields.searchText)
     }
+  }
+
+  /**
+   * Queue every document whose vectors came from a different model to be read again. Their old
+   * chunks stay searchable (full text) until the new extraction replaces them.
+   */
+  requeueForEmbeddingModel(current: string): number {
+    const result = this.db
+      .prepare(
+        `UPDATE documents SET status = 'pending', hash = NULL, embedding_model = NULL, error = NULL
+        WHERE excluded = 0 AND embedding_model IS NOT NULL AND embedding_model <> ?`,
+      )
+      .run(current)
+    return Number(result.changes)
   }
 
   /** Between slices a half-written document must not look finished. */

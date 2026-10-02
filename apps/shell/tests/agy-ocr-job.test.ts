@@ -148,6 +148,13 @@ function rig(overrides: Partial<AgyOcrSettings> = {}, fs = new FakeFs()): Rig {
   const clock = { now: T0 }
   const settings: AgyOcrSettings = {
     ...DEFAULT_AGY_OCR_SETTINGS,
+    // pinned: these scenarios were written against a strict reserve and no daily/page limits
+    maxPdfsPerDay: 0,
+    maxPagesPerFile: 10,
+    weeklyFirstDayFloor: 90,
+    weeklyMinFloor: 20,
+    fiveHourFloorStart: 85,
+    fiveHourFloorEnd: 70,
     enabled: true,
     onlyOnAC: false,
     onlyWhenIdle: false,
@@ -312,8 +319,8 @@ describe('gating', () => {
 describe('quota pacing', () => {
   it('maps the settings to per-bucket rules', () => {
     expect(quotaRulesOf(DEFAULT_AGY_OCR_SETTINGS)).toEqual({
-      weekly: { firstDayFloor: 90, dropPerDay: 10, minFloor: 20, ignore: false },
-      fiveHour: { floorStart: 85, floorEnd: 70, ignore: false },
+      weekly: { firstDayFloor: 50, dropPerDay: 10, minFloor: 10, ignore: false },
+      fiveHour: { floorStart: 50, floorEnd: 30, ignore: false },
     })
     expect(quotaRulesOf({ ...DEFAULT_AGY_OCR_SETTINGS, ignoreWeekly: true }).weekly.ignore).toBe(
       true,

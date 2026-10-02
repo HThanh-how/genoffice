@@ -33,6 +33,14 @@ CREATE TABLE IF NOT EXISTS ocr_pages (
   created_at INTEGER NOT NULL DEFAULT (unixepoch()),
   PRIMARY KEY (path, page)
 ) WITHOUT ROWID;
+-- which pages of a PDF have no text layer of their own (written by the index worker's result)
+CREATE TABLE IF NOT EXISTS pdf_scan_info (
+  path TEXT PRIMARY KEY,
+  mtime_ms REAL NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  total_pages INTEGER NOT NULL,
+  scanned TEXT NOT NULL
+) WITHOUT ROWID;
 `
 
 export interface OcrPageText {
@@ -64,6 +72,14 @@ export interface OcrDocRow {
   pagesDone: number
   /** known after the first render */
   totalPages?: number
+  /** pages that already have a text layer: never sent to OCR (mixed PDFs) */
+  skipPages?: number[]
+}
+
+/** Result of the local text pass over a PDF: which pages have no text and need OCR. */
+export interface PdfScanInfo {
+  totalPages: number
+  scannedPages: number[]
 }
 
 /** Look up stored OCR pages of the file with this content hash (worker side). */
@@ -98,6 +114,18 @@ export function ocrChunksFromPages(stored: OcrStoredPages): {
   return {
     chunks: capped.chunks,
     truncated: capped.truncated || stored.pages.length < stored.totalPages,
+  }
+}
+
+function parseScanned(value: string | null): number[] | null {
+  if (!value) return null
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return Array.isArray(parsed) && parsed.every((p) => Number.isInteger(p))
+      ? (parsed as number[])
+      : null
+  } catch {
+    return null
   }
 }
 
@@ -164,17 +192,40 @@ export class OcrSidecar {
     ).map((row) => row.page)
   }
 
+  /** Remember (or forget, when `info` is null) which pages of the file lack a text layer. */
+  saveScanInfo(
+    path: string,
+    meta: { mtimeMs: number; sizeBytes: number },
+    info: PdfScanInfo | null,
+  ): void {
+    if (!info || info.scannedPages.length === 0) {
+      this.db.prepare('DELETE FROM pdf_scan_info WHERE path = ?').run(path)
+      return
+    }
+    this.db
+      .prepare(
+        `INSERT INTO pdf_scan_info(path, mtime_ms, size_bytes, total_pages, scanned) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET mtime_ms = excluded.mtime_ms, size_bytes = excluded.size_bytes,
+          total_pages = excluded.total_pages, scanned = excluded.scanned`,
+      )
+      .run(path, meta.mtimeMs, meta.sizeBytes, info.totalPages, JSON.stringify(info.scannedPages))
+  }
+
   remove(path: string): void {
     this.db.prepare('DELETE FROM ocr_pages WHERE path = ?').run(path)
+    this.db.prepare('DELETE FROM pdf_scan_info WHERE path = ?').run(path)
   }
 
   rename(oldPath: string, newPath: string): void {
     this.db.prepare('DELETE FROM ocr_pages WHERE path = ?').run(newPath)
     this.db.prepare('UPDATE ocr_pages SET path = ? WHERE path = ?').run(newPath, oldPath)
+    this.db.prepare('DELETE FROM pdf_scan_info WHERE path = ?').run(newPath)
+    this.db.prepare('UPDATE pdf_scan_info SET path = ? WHERE path = ?').run(newPath, oldPath)
   }
 
   clearAll(): void {
     this.db.exec('DELETE FROM ocr_pages')
+    this.db.exec('DELETE FROM pdf_scan_info')
   }
 
   /**
@@ -184,17 +235,22 @@ export class OcrSidecar {
    */
   candidates(maxPagesPerFile: number): OcrDocRow[] {
     const same = 'o.path = d.path AND o.mtime_ms = d.mtime_ms AND o.size_bytes = d.size_bytes'
+    const scanSame = 's.path = d.path AND s.mtime_ms = d.mtime_ms AND s.size_bytes = d.size_bytes'
     const rows = this.db
       .prepare(
         `SELECT d.id, d.path, coalesce(d.size_bytes, 0) AS size_bytes, coalesce(d.mtime_ms, 0) AS mtime_ms,
           d.last_opened_at,
           (SELECT count(*) FROM ocr_pages o WHERE ${same}) AS done,
-          (SELECT max(o.total_pages) FROM ocr_pages o WHERE ${same}) AS total
+          (SELECT max(o.total_pages) FROM ocr_pages o WHERE ${same}) AS total,
+          (SELECT s.total_pages FROM pdf_scan_info s WHERE ${scanSame}) AS scan_total,
+          (SELECT s.scanned FROM pdf_scan_info s WHERE ${scanSame}) AS scan_pages
         FROM documents d
         WHERE d.excluded = 0 AND lower(d.path) LIKE '%.pdf' AND (
           (d.status = 'empty' AND d.error LIKE 'No readable text%')
           OR (d.status IN ('pending', 'text-only', 'ready') AND d.truncated = 1
-              AND EXISTS (SELECT 1 FROM ocr_pages o WHERE o.path = d.path)))
+              AND EXISTS (SELECT 1 FROM ocr_pages o WHERE o.path = d.path))
+          OR (d.status IN ('text-only', 'ready')
+              AND EXISTS (SELECT 1 FROM pdf_scan_info s WHERE ${scanSame})))
         ORDER BY d.priority_at DESC, d.id DESC`,
       )
       .all() as unknown as Array<{
@@ -205,16 +261,39 @@ export class OcrSidecar {
       last_opened_at: number
       done: number
       total: number | null
+      scan_total: number | null
+      scan_pages: string | null
     }>
     const out: OcrDocRow[] = []
     for (const row of rows) {
-      if (row.total !== null && Math.min(row.total, maxPagesPerFile) - row.done <= 0) continue
-      out.push({
+      const base = {
         id: row.id,
         path: row.path,
         sizeBytes: row.size_bytes,
         mtimeMs: row.mtime_ms,
         lastOpenedAt: row.last_opened_at,
+      }
+      const scanned = parseScanned(row.scan_pages)
+      if (scanned && row.scan_total !== null) {
+        // A PDF with a text layer on some pages: only the pages without text are OCR work.
+        const done = new Set(this.pagesDone(row.path, row.mtime_ms, row.size_bytes))
+        const wanted = scanned.filter((page) => page <= maxPagesPerFile)
+        if (wanted.every((page) => done.has(page))) continue
+        const isScanned = new Set(scanned)
+        const skipPages: number[] = []
+        for (let page = 1; page <= row.scan_total; page++)
+          if (!isScanned.has(page)) skipPages.push(page)
+        out.push({
+          ...base,
+          pagesDone: wanted.filter((page) => done.has(page)).length,
+          totalPages: row.scan_total,
+          ...(skipPages.length ? { skipPages } : {}),
+        })
+        continue
+      }
+      if (row.total !== null && Math.min(row.total, maxPagesPerFile) - row.done <= 0) continue
+      out.push({
+        ...base,
         pagesDone: row.done,
         ...(row.total !== null ? { totalPages: row.total } : {}),
       })

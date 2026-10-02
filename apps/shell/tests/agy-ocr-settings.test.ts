@@ -16,32 +16,32 @@ import {
 import type { AgyOcrActivity, AgyOcrStatus } from '../src/shared/fork/agy-ocr'
 
 describe('settings defaults', () => {
-  it('is OFF by default, with the weekly reserve 90/10/20 and the 5-hour glide 85 -> 70, both on', () => {
+  it('is ON by default, with the weekly reserve 50/10/10 and the 5-hour glide 50 -> 30, both on', () => {
     expect(DEFAULT_AGY_OCR_SETTINGS).toEqual({
-      enabled: false,
+      enabled: true,
       model: 'gemini-3.8-flash-low',
-      maxPdfsPerDay: 0,
-      maxPagesPerFile: 10,
+      maxPdfsPerDay: 5,
+      maxPagesPerFile: 0,
       pagesPerCall: 5,
-      weeklyFirstDayFloor: 90,
+      weeklyFirstDayFloor: 50,
       weeklyDropPerDay: 10,
-      weeklyMinFloor: 20,
+      weeklyMinFloor: 10,
       ignoreWeekly: false,
-      fiveHourFloorStart: 85,
-      fiveHourFloorEnd: 70,
+      fiveHourFloorStart: 50,
+      fiveHourFloorEnd: 30,
       ignoreFiveHour: false,
       onlyOnAC: true,
       onlyWhenIdle: true,
     })
   })
 
-  it('a missing, empty or corrupt stored value reads as the defaults (OFF)', () => {
-    expect(agyOcrSettingsFrom({}).enabled).toBe(false)
+  it('a missing, empty or corrupt stored value reads as the defaults (ON)', () => {
+    expect(agyOcrSettingsFrom({}).enabled).toBe(true)
     expect(agyOcrSettingsFrom({ [AGY_OCR_SETTINGS_KEY]: 'garbage' })).toEqual(
       DEFAULT_AGY_OCR_SETTINGS,
     )
     expect(agyOcrSettingsFrom({ [AGY_OCR_SETTINGS_KEY]: null })).toEqual(DEFAULT_AGY_OCR_SETTINGS)
-    expect(agyOcrSettingsFrom({ [AGY_OCR_SETTINGS_KEY]: { enabled: 'yes' } }).enabled).toBe(false)
+    expect(agyOcrSettingsFrom({ [AGY_OCR_SETTINGS_KEY]: { enabled: 'yes' } }).enabled).toBe(true)
   })
 })
 
@@ -56,7 +56,7 @@ describe('settings validation', () => {
       onlyOnAC: false,
       onlyWhenIdle: true,
     })
-    expect(next.weeklyFirstDayFloor).toBe(90)
+    expect(next.weeklyFirstDayFloor).toBe(50)
   })
 
   it('weekly numbers are valid only together (0 <= min <= first <= 100, drop 0..100)', () => {
@@ -69,7 +69,7 @@ describe('settings validation', () => {
     // minimum above the first-day floor: the whole triple is refused
     const bad = mergeAgyOcrSettings(base, { weeklyFirstDayFloor: 40, weeklyMinFloor: 60 })
     expect([bad.weeklyFirstDayFloor, bad.weeklyDropPerDay, bad.weeklyMinFloor]).toEqual([
-      90, 10, 20,
+      50, 10, 10,
     ])
   })
 
@@ -81,7 +81,7 @@ describe('settings validation', () => {
       fiveHourFloorEnd: 40,
     })
     expect(mergeAgyOcrSettings(base, { fiveHourFloorStart: 500 }).fiveHourFloorStart).toBe(100)
-    expect(mergeAgyOcrSettings(base, { fiveHourFloorStart: 'x' }).fiveHourFloorStart).toBe(85)
+    expect(mergeAgyOcrSettings(base, { fiveHourFloorStart: 'x' }).fiveHourFloorStart).toBe(50)
   })
 
   it('has a toggle to ignore each bucket', () => {
@@ -94,7 +94,8 @@ describe('settings validation', () => {
     expect(mergeAgyOcrSettings(base, { pagesPerCall: 99 }).pagesPerCall).toBe(5)
     expect(mergeAgyOcrSettings(base, { pagesPerCall: 0 }).pagesPerCall).toBe(1)
     expect(mergeAgyOcrSettings(base, { maxPdfsPerDay: -4 }).maxPdfsPerDay).toBe(0)
-    expect(mergeAgyOcrSettings(base, { maxPagesPerFile: 9999 }).maxPagesPerFile).toBe(50)
+    expect(mergeAgyOcrSettings(base, { maxPagesPerFile: 999999 }).maxPagesPerFile).toBe(100000)
+    expect(mergeAgyOcrSettings(base, { maxPagesPerFile: 0 }).maxPagesPerFile).toBe(0)
     expect(mergeAgyOcrSettings(base, { model: 'claude-sonnet-4-6' }).model).toBe(
       'claude-sonnet-4-6',
     )
@@ -110,15 +111,15 @@ describe('settings validation', () => {
 })
 
 describe('consent wording and strings', () => {
-  it('states in en, vi and zh that page images go to Google through the Antigravity account and that it is off by default', () => {
+  it('states in en, vi and zh that page images go to Google through the Antigravity account and that it is on by default', () => {
     expect(agyOcrString('en', 'consent')).toBe(
-      'Page images of scanned PDFs are sent to Google through your Antigravity account and use its quota. Off by default.',
+      'Page images of scanned PDFs are sent to Google through your Antigravity account and use its quota. On by default.',
     )
     expect(agyOcrString('vi', 'consent')).toMatch(/Google/)
     expect(agyOcrString('vi', 'consent')).toMatch(/Antigravity/)
-    expect(agyOcrString('vi', 'consent')).toMatch(/Mặc định tắt/)
+    expect(agyOcrString('vi', 'consent')).toMatch(/Mặc định bật/)
     expect(agyOcrString('zh', 'consent')).toMatch(/Google/)
-    expect(agyOcrString('zh', 'consent')).toMatch(/默认关闭/)
+    expect(agyOcrString('zh', 'consent')).toMatch(/默认开启/)
   })
 
   it('other languages fall back to English', () => {

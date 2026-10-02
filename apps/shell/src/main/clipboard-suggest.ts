@@ -12,10 +12,10 @@ import type {
 } from '../shared/clipboard-suggest-api'
 
 /**
- * Opt-in clipboard suggestions.
+ * Clipboard suggestions (on by default, can be switched off).
  *
  * Privacy contract (see the Settings description):
- *  - OFF unless app-settings.json says `clipboardSuggestEnabled: true`.
+ *  - ON unless app-settings.json says `clipboardSuggestEnabled: false`.
  *  - The clipboard is read here, in the main process, only while a GenOffice
  *    window is focused (and once on focus gain), and only re-processed when it
  *    changed (SHA-256 compare).
@@ -32,7 +32,7 @@ export const CLIPBOARD_SUGGEST_ENABLED_KEY = 'clipboardSuggestEnabled'
 
 /** strictly opt-in: anything but a literal `true` means off */
 export function clipboardSuggestEnabledFrom(settings: Record<string, unknown>): boolean {
-  return settings[CLIPBOARD_SUGGEST_ENABLED_KEY] === true
+  return settings[CLIPBOARD_SUGGEST_ENABLED_KEY] !== false
 }
 
 /** at most one suggestion per this window */
@@ -289,6 +289,16 @@ export interface ClipboardSource {
    */
   isExcluded(): boolean
   readText(): string
+  /** Image on the clipboard (PNG bytes + a small thumbnail), or null. Optional: text-only sources omit it. */
+  readImage?(): ClipboardImage | null
+}
+
+export interface ClipboardImage {
+  png: Buffer
+  /** data-URL thumbnail for lists */
+  preview: string
+  width: number
+  height: number
 }
 
 /** Formats whose mere presence means "do not process" (Windows / macOS / KDE). */
@@ -305,6 +315,16 @@ interface ElectronClipboardLike {
   has(format: string): boolean
   readBuffer(format: string): Buffer
   readText(): string
+  availableFormats?(): string[]
+  readImage?(): {
+    isEmpty(): boolean
+    toPNG(): Buffer
+    toDataURL(): string
+    getSize(): { width: number; height: number }
+    resize(options: { width: number; quality?: 'good' | 'better' | 'best' }): {
+      toDataURL(): string
+    }
+  }
 }
 
 /**
@@ -334,8 +354,20 @@ export function electronClipboardSource(clipboard: ElectronClipboardLike): Clipb
       return false
     },
     readText: () => clipboard.readText(),
+    readImage() {
+      if (!clipboard.readImage || !clipboard.availableFormats) return null
+      if (!clipboard.availableFormats().some((f) => f.startsWith('image/'))) return null
+      const image = clipboard.readImage()
+      if (image.isEmpty()) return null
+      const { width, height } = image.getSize()
+      const thumb =
+        width > THUMB_WIDTH ? image.resize({ width: THUMB_WIDTH, quality: 'good' }) : image
+      return { png: image.toPNG(), preview: thumb.toDataURL(), width, height }
+    },
   }
 }
+
+const THUMB_WIDTH = 160
 
 export interface ClipboardWatcherDeps {
   source: ClipboardSource

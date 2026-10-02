@@ -1,3 +1,5 @@
+import { installRendererDialogs } from '@genoffice/electron-utils/renderer-dialogs'
+import { createAgyChatPreloadApi } from '@genoffice/electron-utils/agy-chat-preload'
 import type { AiPanelPrefs } from '@genoffice/ui'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
@@ -3548,3 +3550,7 @@ function isOptionalEnum<T extends string>(
 ): input is T | undefined {
   return input === undefined || (values as readonly unknown[]).includes(input)
 }
+
+installRendererDialogs()
+// Antigravity chat model chooser + quota readout (see packages/ui AgyChatBar)
+contextBridge.exposeInMainWorld('agyChat', createAgyChatPreloadApi(ipcRenderer))

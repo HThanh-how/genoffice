@@ -22,6 +22,7 @@
 import { basename } from 'node:path'
 import {
   OCR_MAX_CALLS_PER_RUN,
+  ocrPageLimit,
   OCR_MAX_FILE_ATTEMPTS,
   OCR_TICK_MS,
   classifyAgyOcrError,
@@ -211,7 +212,7 @@ export class AgyOcrJob {
   /** One cheap check; does real work only when a run is due. Never throws. */
   async tick(): Promise<void> {
     try {
-      const settings = this.deps.settings()
+      const settings = this.workingSettings()
       if (this.stopped || !settings.enabled || this.running) return
       if (!this.deps.host.isEnabled()) return
       const now = this.deps.now()
@@ -301,6 +302,12 @@ export class AgyOcrJob {
     }
   }
 
+  /** Settings with the "unlimited pages" marker resolved; `status()` keeps the raw value for the UI. */
+  private workingSettings(): AgyOcrSettings {
+    const settings = this.deps.settings()
+    return { ...settings, maxPagesPerFile: ocrPageLimit(settings.maxPagesPerFile) }
+  }
+
   /** Candidates the scheduler may still try (non-retryable files are out). */
   private eligible(maxPagesPerFile: number): OcrCandidate[] {
     const files = this.deps.state.get().files
@@ -314,6 +321,7 @@ export class AgyOcrJob {
         mtimeMs: row.mtimeMs,
         pagesDone: row.pagesDone,
         ...(row.totalPages !== undefined ? { totalPages: row.totalPages } : {}),
+        ...(row.skipPages ? { skipPages: row.skipPages } : {}),
       })
     }
     return out
@@ -344,8 +352,10 @@ export class AgyOcrJob {
         if (signal?.aborted) break
       }
       const done = host.pagesDone(path, candidate.mtimeMs, candidate.sizeBytes)
+      // pages that have their own text layer count as read: they are never rendered or sent
+      const skip = candidate.skipPages ?? []
       const rendered = await host.render(path, {
-        done,
+        done: [...done, ...skip],
         maxPages: settings.maxPagesPerFile,
         count: settings.pagesPerCall,
       })
@@ -367,7 +377,7 @@ export class AgyOcrJob {
         file.updatedAt = this.deps.now()
       })
       const doneNow = new Set(
-        host.pagesDone(path, rendered.mtimeMs, rendered.sizeBytes).concat(done),
+        host.pagesDone(path, rendered.mtimeMs, rendered.sizeBytes).concat(done, skip),
       )
       const wanted = planOcrBatch({
         totalPages: rendered.totalPages,
@@ -559,7 +569,7 @@ export class AgyOcrJob {
     if (this.running) return { ok: false, error: 'busy' }
     const document = this.deps.host.documentById(documentId)
     if (!document || !/\.pdf$/i.test(document.path)) return { ok: false, error: 'not-pdf' }
-    const settings = this.deps.settings()
+    const settings = this.workingSettings()
     const row = this.deps.host
       .candidates(settings.maxPagesPerFile)
       .find((candidate) => candidate.path === document.path)

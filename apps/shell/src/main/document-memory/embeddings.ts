@@ -2,43 +2,90 @@ import { indexingWorkerData, postIndexMessage } from './runtime'
 import { withBackgroundBudget } from './cpu-budget'
 import { createEmbeddingSessionKeeper } from '../fork/embedding-ort'
 import type { SessionKeeper } from '../fork/embedding-session'
-import { mkdir, readFile, rename, rm } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import { Tokenizer } from '@huggingface/tokenizers'
 import { InferenceSession, Tensor } from 'onnxruntime-node'
+import {
+  EMBEDDING_PROFILES,
+  embeddingProfile,
+  type EmbeddingProfile,
+  type EmbeddingProfileFile,
+} from './embedding-profiles'
 
-export const EMBEDDING_MODEL = 'Xenova/multilingual-e5-small'
-export const EMBEDDING_REVISION = '761b726dd34fb83930e26aab4e9ac3899aa1fa78'
-export const EMBEDDING_ID = `${EMBEDDING_MODEL}@${EMBEDDING_REVISION}:q8`
-const MODEL_SHA256 = 'f80102d3f2a1229f387d3c81909990d8945513e347b0eab049f7de3c6f98c193'
-let loading:
-  | Promise<{
-      tokenizer: Tokenizer
-      session: InferenceSession
-      keeper: SessionKeeper<InferenceSession>
-    }>
-  | undefined
+// The standard profile, under the names this module always exported.
+export const EMBEDDING_MODEL = EMBEDDING_PROFILES.standard.repo
+export const EMBEDDING_REVISION = EMBEDDING_PROFILES.standard.revision
+export const EMBEDDING_ID = EMBEDDING_PROFILES.standard.embeddingId
 
-async function cachedFile(cache: string, file: string): Promise<string> {
-  const path = join(cache, EMBEDDING_MODEL, EMBEDDING_REVISION, file)
+type Loaded = {
+  tokenizer: Tokenizer
+  session: InferenceSession
+  keeper: SessionKeeper<InferenceSession>
+}
+const loading = new Map<string, Promise<Loaded>>()
+
+function filePath(cache: string, profile: EmbeddingProfile, file: EmbeddingProfileFile): string {
+  return join(cache, profile.repo, profile.revision, file.path)
+}
+
+function sha256OfFile(path: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const hash = createHash('sha256')
+    createReadStream(path)
+      .on('data', (chunk) => hash.update(chunk))
+      .on('error', reject)
+      .on('end', () => resolve(hash.digest('hex')))
+  })
+}
+
+/**
+ * A cached file counts as verified once its SHA-256 matched; the result is remembered next to it
+ * (with the size) so a 2 GB model is hashed once, not on every start.
+ */
+async function verified(path: string, file: EmbeddingProfileFile): Promise<boolean> {
+  if (!file.sha256) return true
+  const marker = `${path}.verified`
   try {
-    await readFile(path)
-    return path
+    const [recorded, size] = await Promise.all([readFile(marker, 'utf8'), stat(path)])
+    if (recorded === `${file.sha256}:${size.size}`) return true
   } catch {
-    /* download missing files */
+    /* not verified yet */
+  }
+  if ((await sha256OfFile(path)) !== file.sha256) return false
+  await writeFile(marker, `${file.sha256}:${(await stat(path)).size}`)
+  return true
+}
+
+async function cachedFile(
+  cache: string,
+  profile: EmbeddingProfile,
+  file: EmbeddingProfileFile,
+): Promise<string> {
+  const path = filePath(cache, profile, file)
+  try {
+    await stat(path)
+    if (await verified(path, file)) return path
+    await rm(path, { force: true })
+    throw new Error('Model checksum mismatch; retry download')
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('checksum')) throw error
+    /* download the missing file */
   }
   const response = await fetch(
-    `https://huggingface.co/${EMBEDDING_MODEL}/resolve/${EMBEDDING_REVISION}/${file}`,
-    { signal: AbortSignal.timeout(180_000) },
+    `https://huggingface.co/${profile.repo}/resolve/${profile.revision}/${file.path}`,
+    // a 2 GB file on a slow line needs far longer than the small model did
+    { signal: AbortSignal.timeout(file.bytes ? 3 * 3600_000 : 180_000) },
   )
   if (!response.ok || !response.body) throw new Error('Model download failed')
   await mkdir(dirname(path), { recursive: true })
   const temporary = `${path}.partial`
-  const handle = await import('node:fs/promises').then((fs) => fs.open(temporary, 'w', 0o600))
+  const handle = await open(temporary, 'w', 0o600)
   try {
     let received = 0
-    const total = Number(response.headers.get('content-length'))
+    const total = Number(response.headers.get('content-length')) || file.bytes || 0
     const reader = response.body.getReader()
     while (true) {
       const { done, value: chunk } = await reader.read()
@@ -58,24 +105,25 @@ async function cachedFile(cache: string, file: string): Promise<string> {
     await rm(temporary, { force: true })
     throw error
   }
+  if (!(await verified(path, file))) {
+    await rm(path, { force: true })
+    throw new Error('Model checksum mismatch; retry download')
+  }
   return path
 }
 
-export async function loadEmbeddingModel(cacheDir: string) {
-  const configPath = await cachedFile(cacheDir, 'tokenizer_config.json')
-  const tokenizerPath = await cachedFile(cacheDir, 'tokenizer.json')
-  const modelPath = await cachedFile(cacheDir, 'onnx/model_quantized.onnx')
-  const bytes = await readFile(modelPath)
-  if (createHash('sha256').update(bytes).digest('hex') !== MODEL_SHA256) {
-    await rm(modelPath, { force: true })
-    throw new Error('Model checksum mismatch; retry download')
-  }
+export async function loadEmbeddingModel(
+  cacheDir: string,
+  profile: EmbeddingProfile = embeddingProfile(indexingWorkerData.embeddingProfile),
+): Promise<Loaded> {
+  const paths = new Map<string, string>()
+  for (const file of profile.files) paths.set(file.path, await cachedFile(cacheDir, profile, file))
   const tokenizer = new Tokenizer(
-    JSON.parse(await readFile(tokenizerPath, 'utf8')),
-    JSON.parse(await readFile(configPath, 'utf8')),
+    JSON.parse(await readFile(paths.get(profile.tokenizerFile)!, 'utf8')),
+    JSON.parse(await readFile(paths.get(profile.tokenizerConfigFile)!, 'utf8')),
   )
   // Sized to the indexing policy; the keeper re-creates it between batches when that changes.
-  const keeper = await createEmbeddingSessionKeeper(modelPath)
+  const keeper = await createEmbeddingSessionKeeper(paths.get(profile.modelFile)!)
   return { tokenizer, session: keeper.current(), keeper }
 }
 
@@ -83,17 +131,19 @@ export async function embedTexts(
   texts: string[],
   kind: 'query' | 'passage',
   cacheDir = indexingWorkerData.cacheDir,
+  profile: EmbeddingProfile = embeddingProfile(indexingWorkerData.embeddingProfile),
 ): Promise<number[][]> {
   if (!cacheDir) throw new Error('Embedding cache unavailable')
-  if (!loading) {
+  let pending = loading.get(profile.id)
+  if (!pending) {
     postIndexMessage({ type: 'model', state: 'downloading' })
-    loading = loadEmbeddingModel(cacheDir)
+    pending = loadEmbeddingModel(cacheDir, profile)
       .then((model) => {
         postIndexMessage({ type: 'model', state: 'ready' })
         return model
       })
       .catch(() => {
-        loading = undefined
+        loading.delete(profile.id)
         postIndexMessage({
           type: 'model',
           state: 'error',
@@ -101,12 +151,14 @@ export async function embedTexts(
         })
         throw new Error('Local embedding model unavailable')
       })
+    loading.set(profile.id, pending)
   }
-  const { tokenizer, keeper } = await loading
+  const { tokenizer, keeper } = await pending
   if (kind === 'passage') await keeper.align()
   const session = keeper.current()
+  const prefix = kind === 'query' ? profile.queryPrefix : profile.passagePrefix
   async function encode(text: string): Promise<number[]> {
-    const { ids, attention_mask } = tokenizer.encode(`${kind}: ${text}`)
+    const { ids, attention_mask } = tokenizer.encode(`${prefix}${text}`)
     // Never silently truncate a chunk: split unusually token-dense text and pool both vectors.
     if (ids.length > 512) {
       const middle = Math.floor(text.length / 2)
@@ -124,7 +176,10 @@ export async function embedTexts(
     if (session.inputNames.includes('token_type_ids'))
       feeds.token_type_ids = new Tensor('int64', new BigInt64Array(ids.length), [1, ids.length])
     const output = await session.run(feeds)
-    const hidden = output.last_hidden_state ?? output[session.outputNames[0]!]!
+    if (profile.pooling === 'sentence' && output.sentence_embedding)
+      return normalize(Array.from(output.sentence_embedding.data as Float32Array, Number))
+    const hidden =
+      output.last_hidden_state ?? output.token_embeddings ?? output[session.outputNames[0]!]!
     const dimensions = hidden.dims[2]!
     const vector = Array<number>(dimensions).fill(0)
     for (let token = 0; token < ids.length; token++) {

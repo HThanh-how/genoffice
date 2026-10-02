@@ -212,7 +212,10 @@
   color: var(--text-secondary);
   text-align: right;
   user-select: text;
-  word-break: break-all;
+  /* long paths wrap inside their own column instead of running under the label */
+  flex: 1 1 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* stacked label + secondary description (analytics toggle row) */
@@ -921,4 +924,306 @@
 
 .set-intg-path {
   text-align: left;
+}
+
+/* ---- grouped General pane: each topic is one card under a small heading ---- */
+.set-group {
+  margin: 0 0 22px;
+}
+
+.set-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin: 0 0 8px;
+  padding: 0 2px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+.set-group-hint {
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;
+  opacity: 0.8;
+}
+
+.set-group-body,
+.set-memory {
+  padding: 0 16px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.set-group-fold > summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.set-group-fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.set-group-fold > summary::before {
+  content: '▸';
+  display: inline-block;
+  width: 10px;
+  transition: transform 0.12s;
+}
+
+.set-group-fold[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+/* the document-memory block brings its own headings: make it a card like the others */
+.set-memory {
+  margin: 0 0 22px;
+  padding-top: 14px;
+  padding-bottom: 6px;
+}
+
+.set-memory > h4.set-field-label {
+  margin: 0 0 4px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.set-memory > h4.set-field-label:not(:first-child) {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.set-memory > p.set-field-desc {
+  margin: 0 0 6px;
+}
+
+/* ---- indexed folders list (Settings -> Document memory) ---- */
+.set-folders {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 16px 0 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.set-folders > h4.set-field-label {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.set-folders > p.set-field-desc {
+  margin: 0;
+}
+
+.set-folder {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--surface-subtle, transparent);
+}
+
+.set-folder.is-offline {
+  opacity: 0.75;
+}
+
+.set-folder-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.set-folder-title {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.set-folder-title strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.set-folder-title span {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.set-folder-chip {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--hover);
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.set-folder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.set-folder-runs {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 8px 0 0;
+  padding: 8px 0 0;
+  border-top: 1px solid var(--border-subtle);
+  list-style: none;
+}
+
+.set-folder-run {
+  display: grid;
+  grid-template-columns: 110px 100px 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 12px;
+}
+
+.set-folder-run-kind {
+  color: var(--text);
+}
+
+/* ---- search model chooser (Settings -> Document memory) ---- */
+.set-model {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 16px 0 6px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.set-model > h4.set-field-label {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.set-model > p.set-field-desc {
+  margin: 0;
+}
+
+.set-model-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+  margin-top: 4px;
+}
+
+.set-model-option {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 12px 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.set-model-option:hover:not(:disabled) {
+  border-color: var(--border-hover, var(--border));
+}
+
+.set-model-option.is-selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+
+.set-model-option:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.set-model-option-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.set-model-option-head strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.set-model-option-name {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.set-model-badge {
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--color-ai-action-text, #fff);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.set-model-badge.is-hint {
+  background: var(--hover);
+  color: var(--text-secondary);
+}
+
+/* ---- chat-box model list (Settings -> AI model, Antigravity) ---- */
+.set-chatmodels {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 14px 0 6px;
+}
+
+.set-chatmodels > h4.set-field-label {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.set-chatmodels > p.set-field-desc {
+  margin: 0;
+}
+
+.set-chatmodel-badge {
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--color-ai-action-text, #fff);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.set-chatmodels-other > summary {
+  cursor: pointer;
+  padding: 6px 2px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.set-chatmodels-other > p.set-field-desc {
+  margin: 0 0 8px;
 }

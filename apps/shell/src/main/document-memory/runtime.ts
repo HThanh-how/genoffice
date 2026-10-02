@@ -1,8 +1,12 @@
 import { parentPort, workerData } from 'node:worker_threads'
 import { applyPolicyMessage, isPolicyMessage } from '../fork/indexing-worker-policy'
 
-export const indexingWorkerData: { cacheDir?: string; dbPath?: string } =
-  workerData ?? JSON.parse(process.env.GENOFFICE_INDEX_WORKER_DATA ?? '{}')
+export const indexingWorkerData: {
+  cacheDir?: string
+  dbPath?: string
+  /** `standard` or `high` (see embedding-profiles.ts) */
+  embeddingProfile?: string
+} = workerData ?? JSON.parse(process.env.GENOFFICE_INDEX_WORKER_DATA ?? '{}')
 
 export function postIndexMessage(message: unknown): void {
   if (parentPort) parentPort.postMessage(message)

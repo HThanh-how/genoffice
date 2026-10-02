@@ -473,7 +473,7 @@ export function AgyOcrSettings() {
           </div>
         </div>
         <NumberField
-          value={settings?.maxPdfsPerDay ?? 0}
+          value={settings?.maxPdfsPerDay ?? 5}
           min={0}
           max={2000}
           label={t('maxPdfsPerDay')}
@@ -490,9 +490,9 @@ export function AgyOcrSettings() {
           </div>
         </div>
         <NumberField
-          value={settings?.maxPagesPerFile ?? 10}
-          min={1}
-          max={50}
+          value={settings?.maxPagesPerFile ?? 0}
+          min={0}
+          max={100000}
           label={t('maxPagesPerFile')}
           disabled={disabled}
           onCommit={(maxPagesPerFile) => save({ maxPagesPerFile })}

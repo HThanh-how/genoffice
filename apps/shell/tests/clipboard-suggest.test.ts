@@ -25,11 +25,11 @@ import type { ClipboardSuggestion } from '../src/shared/clipboard-suggest-api'
 import { isClipboardSuggestion } from '../src/shared/clipboard-suggest-guard'
 
 describe('setting', () => {
-  it('is OFF unless explicitly true', () => {
-    expect(clipboardSuggestEnabledFrom({})).toBe(false)
-    expect(clipboardSuggestEnabledFrom({ [CLIPBOARD_SUGGEST_ENABLED_KEY]: 'true' })).toBe(false)
-    expect(clipboardSuggestEnabledFrom({ [CLIPBOARD_SUGGEST_ENABLED_KEY]: 1 })).toBe(false)
+  it('is ON unless explicitly switched off', () => {
+    expect(clipboardSuggestEnabledFrom({})).toBe(true)
+    expect(clipboardSuggestEnabledFrom({ [CLIPBOARD_SUGGEST_ENABLED_KEY]: 'false' })).toBe(true)
     expect(clipboardSuggestEnabledFrom({ [CLIPBOARD_SUGGEST_ENABLED_KEY]: true })).toBe(true)
+    expect(clipboardSuggestEnabledFrom({ [CLIPBOARD_SUGGEST_ENABLED_KEY]: false })).toBe(false)
   })
 })
 

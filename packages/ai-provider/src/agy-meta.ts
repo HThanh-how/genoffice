@@ -14,7 +14,7 @@ export const AGY_PROVIDER_ID = 'agy' satisfies AiProviderId
  * markedly faster than the Pro or `-high` variants. The picker shows the live
  * `agy models` list, so this only matters until the first selection.
  */
-export const AGY_DEFAULT_MODEL = 'gemini-3.8-flash-medium'
+export const AGY_DEFAULT_MODEL = 'gemini-3.8-flash-low'
 
 export const AGY_PROVIDER_META: AiProviderMeta = {
   id: AGY_PROVIDER_ID,

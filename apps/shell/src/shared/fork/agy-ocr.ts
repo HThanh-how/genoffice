@@ -1,7 +1,8 @@
 /**
  * Scanned-PDF reader (Antigravity) settings, status and IPC channels (fork-only).
- * Persisted in app-settings.json under `agyOcr`; OFF by default because it sends page images
- * of the user's documents to Google through their Antigravity account.
+ * Persisted in app-settings.json under `agyOcr`; ON by default (it only runs while the
+ * Antigravity CLI is signed in, on AC power and when idle). It sends page images of the user's
+ * scanned documents to Google through their Antigravity account.
  *
  * The reader is quota-paced instead of page-limited. Each Antigravity quota bucket keeps a
  * reserve that shrinks over its window (a "glide floor"): the weekly bucket day by day (90% on
@@ -51,7 +52,7 @@ export interface AgyOcrSettings {
 }
 
 export const DEFAULT_AGY_OCR_SETTINGS: AgyOcrSettings = {
-  enabled: false,
+  enabled: true,
   model: AGY_OCR_DEFAULT_MODEL,
   maxPdfsPerDay: OCR_DEFAULT_MAX_PDFS_PER_DAY,
   maxPagesPerFile: OCR_DEFAULT_MAX_PAGES_PER_FILE,
@@ -91,7 +92,7 @@ export function mergeAgyOcrSettings(base: AgyOcrSettings, patch: unknown): AgyOc
     model:
       typeof p.model === 'string' && MODEL_ID.test(p.model.trim()) ? p.model.trim() : base.model,
     maxPdfsPerDay: int(p.maxPdfsPerDay, 0, OCR_MAX_PDFS_PER_DAY, base.maxPdfsPerDay),
-    maxPagesPerFile: int(p.maxPagesPerFile, 1, OCR_MAX_PAGES_PER_FILE, base.maxPagesPerFile),
+    maxPagesPerFile: int(p.maxPagesPerFile, 0, OCR_MAX_PAGES_PER_FILE, base.maxPagesPerFile),
     pagesPerCall: int(p.pagesPerCall, 1, OCR_MAX_PAGES_PER_CALL, base.pagesPerCall),
     weeklyFirstDayFloor: weeklyOk ? first : base.weeklyFirstDayFloor,
     weeklyDropPerDay: weeklyOk ? drop : base.weeklyDropPerDay,

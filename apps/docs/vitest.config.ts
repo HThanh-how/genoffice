@@ -16,6 +16,9 @@ export default defineConfig({
       '@genoffice/electron-utils/headless-export': local(
         '../../packages/electron-utils/src/headless-export.ts',
       ),
+      '@genoffice/electron-utils/clipboard-history-labels': local(
+        '../../packages/electron-utils/src/clipboard-history-labels.ts',
+      ),
       '@genoffice/electron-utils/atomic-write': local(
         '../../packages/electron-utils/src/atomic-write.ts',
       ),

@@ -7,7 +7,7 @@ import { attachChildToPolicy } from '../fork/indexing-child-policy'
 /** A separate, lower-priority process keeps model CPU and memory away from the UI. */
 export function createIndexProcess(
   path: string,
-  data: { cacheDir: string; dbPath: string },
+  data: { cacheDir: string; dbPath: string; embeddingProfile?: string },
   spawnProcess: typeof spawn = spawn,
 ): Worker {
   const channel = new EventEmitter()

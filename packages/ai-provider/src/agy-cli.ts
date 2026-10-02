@@ -17,6 +17,7 @@ import type { AgentImage, AgentMessage, AgentToolDef } from '@genoffice/agent-co
 import type { StreamCallbacks } from './protocols/shared'
 import type { AiChatResponse, AiProviderConfig, AiTokenUsage, CodexModelCatalog } from './types'
 import { AiTimeoutError } from './watchdog'
+import { publishAgyActivity, type AgyActivity } from './agy-activity'
 
 /**
  * "Antigravity CLI" provider (`agy`). Unlike the HTTP providers this drives the
@@ -295,7 +296,16 @@ export interface AgyDeniedAction {
 export type AgyEvent =
   | { kind: 'init'; model?: string; conversationId?: string }
   | { kind: 'text'; text: string; stepIndex: number; done: boolean }
-  | { kind: 'step'; stepType: string }
+  | {
+      kind: 'step'
+      stepType: string
+      state?: string
+      toolName?: string
+      /** the main argument of a tool call (file, command, query), as agy reports it */
+      toolTarget?: string
+      durationSeconds?: number
+      thinkingTokens?: number
+    }
   | {
       kind: 'result'
       ok: boolean
@@ -358,7 +368,25 @@ export function parseAgyStreamLine(line: string): AgyEvent | null {
         done: step.state === 'DONE',
       }
     }
-    return { kind: 'step', stepType }
+    const info = record(step.tool_info)
+    const parameters = record(info?.parameters)
+    const target = parameters
+      ? Object.values(parameters).find((value): value is string => typeof value === 'string')
+      : undefined
+    const usage = record(step.usage)
+    return {
+      kind: 'step',
+      stepType,
+      ...(typeof step.state === 'string' ? { state: step.state } : {}),
+      ...(typeof step.tool_name === 'string' ? { toolName: step.tool_name } : {}),
+      ...(target ? { toolTarget: target } : {}),
+      ...(typeof step.duration_seconds === 'number'
+        ? { durationSeconds: step.duration_seconds }
+        : {}),
+      ...(typeof usage?.thinking_tokens === 'number'
+        ? { thinkingTokens: usage.thinking_tokens }
+        : {}),
+    }
   }
   if (obj.event === 'result') {
     const result = record(obj.result)
@@ -714,6 +742,10 @@ export interface AgyRunOptions {
   onUsage?: (usage: AiTokenUsage) => void
   /** fires on every stdout chunk and on a 5 s heartbeat while the process lives */
   onActivity?: () => void
+  /** every non-text step the agent reports (thinking finished, tool started/finished) */
+  onStep?: (step: Extract<AgyEvent, { kind: 'step' }>) => void
+  /** the first piece of answer text arrived */
+  onFirstText?: () => void
   limiter?: Limiter
 }
 
@@ -796,7 +828,9 @@ export async function runAgy(
         const event = parseAgyStreamLine(line)
         if (!event) return
         if (event.kind === 'init' && event.conversationId) conversationId = event.conversationId
+        if (event.kind === 'step') options.onStep?.(event)
         if (event.kind === 'text') {
+          if (!text) options.onFirstText?.()
           // a new agent_response step (after tool use) starts a new paragraph
           const prefix = text && lastStep !== -1 && event.stepIndex !== lastStep ? '\n\n' : ''
           lastStep = event.stepIndex
@@ -880,15 +914,73 @@ export async function streamAgy(
   system: string,
   messages: AgentMessage[],
   tools: AgentToolDef[],
-  _maxTokens: number,
+  maxTokens: number,
   cb: StreamCallbacks,
   deps?: AgyRunDeps,
+): Promise<void> {
+  const runId = randomUUID()
+  const model = config.model?.trim() || AGY_DEFAULT_MODEL
+  const say: AgySay = (activity) =>
+    publishAgyActivity({ runId, at: Date.now(), model, ...activity })
+  say({ phase: 'start' })
+  try {
+    await streamAgyTurn(config, system, messages, tools, maxTokens, cb, deps, say)
+    say({ phase: 'done' })
+  } catch (error) {
+    say({
+      phase: 'error',
+      message: error instanceof Error ? error.message.slice(0, 160) : 'failed',
+    })
+    throw error
+  }
+}
+
+type AgySay = (activity: Omit<AgyActivity, 'runId' | 'at' | 'model'>) => void
+
+/** A path or long command reduced to something that fits on one line. */
+function shortTarget(target: string): string {
+  const trimmed = target.trim().replace(/\s+/g, ' ')
+  const name =
+    /[\\/]/.test(trimmed) && !/\s/.test(trimmed)
+      ? (trimmed.split(/[\\/]/).pop() ?? trimmed)
+      : trimmed
+  return name.length > 60 ? `${name.slice(0, 57)}…` : name
+}
+
+async function streamAgyTurn(
+  config: AiProviderConfig,
+  system: string,
+  messages: AgentMessage[],
+  tools: AgentToolDef[],
+  _maxTokens: number,
+  cb: StreamCallbacks,
+  deps: AgyRunDeps | undefined,
+  say: AgySay,
 ): Promise<void> {
   const plan = buildAgyPrompt(system, messages, tools)
   const deadline = Date.now() + AGY_REQUEST_TIMEOUT_MS
   const run = async (prompt: AgyPromptPlan, timeoutMs: number) =>
     runAgy(
       {
+        onStep: (step) => {
+          if (step.stepType === 'tool' && step.toolName) {
+            say({
+              phase: 'tool',
+              tool: step.toolName,
+              ...(step.toolTarget ? { target: shortTarget(step.toolTarget) } : {}),
+              ...(step.state === 'DONE' && step.durationSeconds !== undefined
+                ? { stepSeconds: step.durationSeconds }
+                : {}),
+            })
+          } else if (step.stepType === 'agent_response' && step.thinkingTokens) {
+            say({
+              phase: 'thinking',
+              thinkingTokens: step.thinkingTokens,
+              ...(step.durationSeconds !== undefined ? { stepSeconds: step.durationSeconds } : {}),
+            })
+          }
+        },
+        onFirstText: () => say({ phase: 'writing' }),
         cliPath: config.cliPath,
         model: config.model?.trim() || AGY_DEFAULT_MODEL,
         prompt: prompt.prompt,

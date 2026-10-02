@@ -10864,6 +10864,27 @@ ruby.doc-ruby rt {
   overflow-y: auto;
 }
 
+.ctx-history-image {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ctx-history-image img {
+  max-width: 120px;
+  max-height: 64px;
+  border-radius: 4px;
+  border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.3));
+  object-fit: contain;
+  background: repeating-conic-gradient(rgba(128, 128, 128, 0.15) 0% 25%, transparent 0% 50%) 50% /
+    12px 12px;
+}
+
+.ctx-history-size {
+  opacity: 0.6;
+  font-size: 11px;
+}
+
 /* ---- Font / Paragraph dialogs ---- */
 
 .font-dialog-row {

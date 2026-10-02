@@ -3,6 +3,8 @@ import { createI18n, defineStrings, type Lang } from '@genoffice/i18n'
 import { useI18n } from './locale'
 import { IndexingModeSettings } from './fork/IndexingModeSettings'
 import { AgyOcrSettings } from './fork/AgyOcrSettings'
+import { IndexedFolders } from './fork/IndexedFolders'
+import { EmbeddingModelSettings } from './fork/EmbeddingModelSettings'
 
 type MemoryStatus = Awaited<ReturnType<typeof window.aiOffice.getDocumentMemoryStatus>>
 type FolderScanStatus = {
@@ -712,6 +714,7 @@ export function DocumentMemorySettings() {
       )}
       <IndexingModeSettings />
       <AgyOcrSettings />
+      <EmbeddingModelSettings />
       <h4 className="set-field-label">{scanT('title')}</h4>
       <div className="set-field" aria-live="polite">
         <div className="set-field-text">
@@ -771,6 +774,7 @@ export function DocumentMemorySettings() {
           </button>
         )}
       </div>
+      <IndexedFolders />
       <div className="set-field">
         <div className="set-field-text">
           <div className="set-field-label">{t('location')}</div>

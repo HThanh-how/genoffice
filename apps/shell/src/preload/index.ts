@@ -1,3 +1,5 @@
+import { installRendererDialogs } from '@genoffice/electron-utils/renderer-dialogs'
+import { createAgyChatPreloadApi } from '@genoffice/electron-utils/agy-chat-preload'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import {
@@ -813,3 +815,7 @@ contextBridge.exposeInMainWorld('aiOfficeTabs', tabsApi)
 
 // open documents dragged from the OS anywhere over Home or the tab strip
 installDropOpenBridge()
+
+installRendererDialogs()
+// Antigravity chat model chooser + quota readout (see packages/ui AgyChatBar)
+contextBridge.exposeInMainWorld('agyChat', createAgyChatPreloadApi(ipcRenderer))

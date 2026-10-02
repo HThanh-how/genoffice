@@ -11,7 +11,7 @@ const zh = {
   title: '读取扫描版 PDF（Antigravity）',
   desc: '有些 PDF 是没有文字层的扫描件，搜索看不到其中的内容。只要 Antigravity 额度充足，此功能就用你的账号读取这些页面，并把文字加入索引。',
   consent:
-    '扫描版 PDF 的页面图片会通过你的 Antigravity 账号发送给 Google，并消耗该账号的额度。默认关闭。',
+    '扫描版 PDF 的页面图片会通过你的 Antigravity 账号发送给 Google，并消耗该账号的额度。默认开启。',
   enable: '读取扫描版 PDF',
   model: '模型',
   modelDesc: '用于读取页面的模型。标有“最省”的版本思考最少，用量最低。',
@@ -44,7 +44,7 @@ const zh = {
   maxPdfsPerDay: '每天最多 PDF 数',
   maxPdfsPerDayDesc: '可选的上限。0 表示不限制，上面的额度保留线仍然有效。',
   maxPagesPerFile: '每个文件最多页数',
-  maxPagesPerFileDesc: '只读取每个 PDF 的前几页，更长的文件会标记为仅部分索引。',
+  maxPagesPerFileDesc: '只读取每个 PDF 的前几页，更长的文件会标记为仅部分索引。0 表示不限制页数。',
   onlyAC: '仅在接通电源时',
   onlyACDesc: '使用电池时不读取。',
   onlyIdle: '仅在电脑空闲时',
@@ -109,7 +109,7 @@ const en = {
   title: 'Read scanned PDFs (Antigravity)',
   desc: 'Some PDFs are scans without a text layer, so search cannot see inside them. While your Antigravity quota is plentiful, this reads their pages with your account and adds the text to the index.',
   consent:
-    'Page images of scanned PDFs are sent to Google through your Antigravity account and use its quota. Off by default.',
+    'Page images of scanned PDFs are sent to Google through your Antigravity account and use its quota. On by default.',
   enable: 'Read scanned PDFs',
   model: 'Model',
   modelDesc:
@@ -145,7 +145,7 @@ const en = {
   maxPdfsPerDayDesc: 'Optional cap. 0 means no limit; the quota reserves above still apply.',
   maxPagesPerFile: 'Pages per file',
   maxPagesPerFileDesc:
-    'Only the first pages of each PDF are read; longer files are marked as partly indexed.',
+    'Only the first pages of each PDF are read; longer files are marked as partly indexed. 0 means no limit.',
   onlyAC: 'Only on AC power',
   onlyACDesc: 'Nothing is read while the computer runs on battery.',
   onlyIdle: 'Only when idle',
@@ -208,7 +208,7 @@ const vi = {
   title: 'Đọc PDF quét (Antigravity)',
   desc: 'Một số PDF là bản quét không có lớp chữ nên tìm kiếm không thấy nội dung bên trong. Khi hạn mức Antigravity còn dồi dào, tính năng này đọc các trang đó bằng tài khoản của bạn và thêm chữ vào chỉ mục.',
   consent:
-    'Ảnh các trang của PDF quét sẽ được gửi tới Google qua tài khoản Antigravity của bạn và tốn hạn mức của tài khoản đó. Mặc định tắt.',
+    'Ảnh các trang của PDF quét sẽ được gửi tới Google qua tài khoản Antigravity của bạn và tốn hạn mức của tài khoản đó. Mặc định bật.',
   enable: 'Đọc PDF quét',
   model: 'Mô hình',
   modelDesc:
@@ -246,7 +246,7 @@ const vi = {
     'Giới hạn tùy chọn. 0 là không giới hạn; các mức dự trữ hạn mức ở trên vẫn áp dụng.',
   maxPagesPerFile: 'Số trang tối đa mỗi tệp',
   maxPagesPerFileDesc:
-    'Chỉ đọc những trang đầu của mỗi PDF; tệp dài hơn sẽ được đánh dấu là chỉ lập chỉ mục một phần.',
+    'Chỉ đọc những trang đầu của mỗi PDF; tệp dài hơn sẽ được đánh dấu là chỉ lập chỉ mục một phần. 0 là không giới hạn số trang.',
   onlyAC: 'Chỉ khi cắm điện',
   onlyACDesc: 'Không đọc khi máy đang chạy bằng pin.',
   onlyIdle: 'Chỉ khi máy rảnh',

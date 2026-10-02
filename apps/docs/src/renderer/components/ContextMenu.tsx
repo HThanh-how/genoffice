@@ -453,41 +453,66 @@ export function EditorContextMenu({
         disabled: !canEdit,
         onClick: run(() => void pasteFromClipboard(editor, 'text')),
       })}
-      {clipboardHistoryEnabled && (
-        <div className="ctx-item-wrap" onMouseLeave={() => setSubmenu(null)}>
-          {item(clipboardHistoryLabels(lang).pasteMore, {
-            submenuKey: 'clipboardHistory',
-            disabled: !canEdit,
-          })}
-          {submenu === 'clipboardHistory' && canEdit && (
-            <div className="ctx-submenu ctx-submenu-scroll">
-              {clipboardHistory.length === 0 ? (
-                <button className="ctx-item" disabled>
-                  <span className="ctx-label">{clipboardHistoryLabels(lang).pasteMoreEmpty}</span>
-                </button>
-              ) : (
-                clipboardHistory.map((entry) => {
-                  const preview = entry.text.replace(/\s+/g, ' ').trim()
-                  const label = preview.length > 64 ? `${preview.slice(0, 64)}…` : preview
+      <div className="ctx-item-wrap" onMouseLeave={() => setSubmenu(null)}>
+        {item(clipboardHistoryLabels(lang).pasteMore, {
+          submenuKey: 'clipboardHistory',
+          disabled: !canEdit,
+        })}
+        {submenu === 'clipboardHistory' && canEdit && (
+          <div className="ctx-submenu ctx-submenu-scroll">
+            {!clipboardHistoryEnabled || clipboardHistory.length === 0 ? (
+              <button className="ctx-item" disabled>
+                <span className="ctx-label">
+                  {clipboardHistoryEnabled
+                    ? clipboardHistoryLabels(lang).pasteMoreEmpty
+                    : clipboardHistoryLabels(lang).pasteMoreDisabled}
+                </span>
+              </button>
+            ) : (
+              clipboardHistory.map((entry) => {
+                if (entry.kind === 'image') {
+                  const size = entry.width && entry.height ? `${entry.width}×${entry.height}` : ''
                   return (
                     <button
                       key={entry.id}
-                      className="ctx-item"
-                      title={preview}
+                      className="ctx-item ctx-history-image"
+                      title={size}
                       onClick={run(() => {
                         editor.view.focus()
-                        editor.view.pasteText(entry.text)
+                        void window.desktop.restoreClipboardHistoryImage?.(entry.id).then((ok) => {
+                          if (ok) void pasteFromClipboard(editor)
+                        })
                       })}
                     >
-                      <span className="ctx-label">{label || '(empty)'}</span>
+                      <img src={entry.preview} alt={size} />
+                      {size && <span className="ctx-label ctx-history-size">{size}</span>}
                     </button>
                   )
-                })
-              )}
-            </div>
-          )}
-        </div>
-      )}
+                }
+                const preview = entry.text.replace(/\s+/g, ' ').trim()
+                const label = entry.sensitive
+                  ? '••••••••••'
+                  : preview.length > 64
+                    ? `${preview.slice(0, 64)}…`
+                    : preview
+                return (
+                  <button
+                    key={entry.id}
+                    className="ctx-item"
+                    title={entry.sensitive ? clipboardHistoryLabels(lang).sensitiveHint : preview}
+                    onClick={run(() => {
+                      editor.view.focus()
+                      editor.view.pasteText(entry.text)
+                    })}
+                  >
+                    <span className="ctx-label">{label || '(empty)'}</span>
+                  </button>
+                )
+              })
+            )}
+          </div>
+        )}
+      </div>
       <div className="ctx-sep" />
       {item(t('appFontMenu'), { key: '⌘D', onClick: run(onFontDialog) })}
       {item(t('appParagraphMenu'), { key: '⌥⌘M', onClick: run(onParagraphDialog) })}

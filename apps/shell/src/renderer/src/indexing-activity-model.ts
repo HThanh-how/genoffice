@@ -75,16 +75,16 @@ export function jobKey(activity: HomeIndexingActivity | null): string {
 }
 
 /**
- * The popup opens by itself only when a different scan starts while there is work to
- * show. Seeing a finished (or idle) scan at startup, or work resuming because the user
- * opened a file, must not pop it open again.
+ * The panel never opens over the user's work just because indexing started or finished: the
+ * small chip is enough for progress. It opens by itself only when a different job begins in
+ * the one state that needs the user (the search model failed to load).
  */
 export function shouldAutoExpand(
   previousJob: string,
   job: string,
   view: IndexView | null,
 ): boolean {
-  return !!job && job !== previousJob && !!view && view.active
+  return !!job && job !== previousJob && !!view && view.kind === 'model-error'
 }
 
 /** Cheap structural equality for the small activity payload, so ticks that change nothing do not re-render. */

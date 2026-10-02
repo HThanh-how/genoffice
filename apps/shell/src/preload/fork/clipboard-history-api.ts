@@ -19,8 +19,13 @@ export function createClipboardHistoryPreloadApi(ipcRenderer: IpcRenderer): Clip
           !!entry &&
           typeof entry.id === 'string' &&
           typeof entry.text === 'string' &&
-          typeof entry.copiedAt === 'number',
+          typeof entry.copiedAt === 'number' &&
+          (entry.kind === undefined || entry.kind === 'text' || entry.kind === 'image'),
       )
+    },
+    async restoreClipboardHistoryImage(id) {
+      if (typeof id !== 'string') return false
+      return (await ipcRenderer.invoke(CLIPBOARD_HISTORY_CHANNELS.restoreImage, id)) === true
     },
     async clearClipboardHistory() {
       return (await ipcRenderer.invoke(CLIPBOARD_HISTORY_CHANNELS.clear)) === true

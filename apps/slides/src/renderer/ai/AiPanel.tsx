@@ -1,4 +1,9 @@
-import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@genoffice/ui'
+import {
+  aiPanelWidthAtPointer,
+  AgyChatBar,
+  AiPanelSideButton,
+  GeminiModelPicker,
+} from '@genoffice/ui'
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import {
   AgentLoop,
@@ -2430,6 +2435,7 @@ export function AiPanel({
               )}
             </div>
           </div>
+          <AgyChatBar lang={lang} />
         </div>
       )}
     </aside>

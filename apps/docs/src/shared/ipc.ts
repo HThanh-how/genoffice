@@ -287,8 +287,13 @@ export interface ContextMenuRequest {
 
 export interface ClipboardHistoryEntry {
   id: string
+  kind?: 'text' | 'image'
   text: string
   copiedAt: number
+  sensitive?: boolean
+  preview?: string
+  width?: number
+  height?: number
 }
 
 export interface SpellLanguages {
@@ -423,6 +428,7 @@ export interface DesktopApi {
   /** local text history, when enabled in GenOffice Settings */
   getClipboardHistory?: () => Promise<ClipboardHistoryEntry[]>
   getClipboardHistoryEnabled?: () => Promise<boolean>
+  restoreClipboardHistoryImage?: (id: string) => Promise<boolean>
   /** synchronous, from the DOM contextmenu handler: the React menu answers this
    *  right-click, so Blink's request for it must not pop the native menu */
   claimContextMenu(seq: number): void

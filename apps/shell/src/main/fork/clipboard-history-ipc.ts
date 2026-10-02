@@ -1,4 +1,4 @@
-import { BrowserWindow, app, clipboard } from 'electron'
+import { BrowserWindow, app, clipboard, nativeImage } from 'electron'
 import type { IpcMain } from 'electron'
 import { readAppSettings, writeAppSettingThen } from '../app-settings'
 import { electronClipboardSource } from '../clipboard-suggest'
@@ -35,6 +35,13 @@ export function registerClipboardHistory(deps: ClipboardHistoryDeps): void {
     return true
   })
   deps.ipcMain.handle(CLIPBOARD_HISTORY_CHANNELS.getEntries, () => store.list())
+  deps.ipcMain.handle(CLIPBOARD_HISTORY_CHANNELS.restoreImage, (_event, id: unknown): boolean => {
+    if (typeof id !== 'string') return false
+    const png = store.imagePng(id)
+    if (!png) return false
+    clipboard.writeImage(nativeImage.createFromBuffer(png))
+    return true
+  })
   deps.ipcMain.handle(CLIPBOARD_HISTORY_CHANNELS.clear, () => {
     if (!enabled()) return false
     store.clear()

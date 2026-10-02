@@ -30,27 +30,33 @@
  */
 export const AGY_OCR_DEFAULT_MODEL = 'gemini-3.8-flash-low'
 
-export const OCR_DEFAULT_MAX_PAGES_PER_FILE = 10
+export const OCR_DEFAULT_MAX_PAGES_PER_FILE = 0
 export const OCR_MAX_PAGES_PER_CALL = 5
 export const OCR_DEFAULT_PAGES_PER_CALL = 5
 /** Hard ceilings for the numeric settings (a typo must not burn the quota). */
-export const OCR_MAX_PAGES_PER_FILE = 50
-/** optional cap on distinct PDFs per local day; 0 = unlimited (the quota thresholds are the limit) */
-export const OCR_DEFAULT_MAX_PDFS_PER_DAY = 0
+export const OCR_MAX_PAGES_PER_FILE = 100_000
+/** `maxPagesPerFile` value meaning "read every page"; the quota reserves remain the real limit. */
+export const OCR_UNLIMITED_PAGES = 0
+/** Page limit the OCR pipeline works with: the unlimited marker becomes the hard ceiling. */
+export function ocrPageLimit(maxPagesPerFile: number): number {
+  return maxPagesPerFile === OCR_UNLIMITED_PAGES ? OCR_MAX_PAGES_PER_FILE : maxPagesPerFile
+}
+/** cap on distinct PDFs per local day; 0 = unlimited (then only the quota thresholds limit it) */
+export const OCR_DEFAULT_MAX_PDFS_PER_DAY = 5
 export const OCR_MAX_PDFS_PER_DAY = 2000
 /**
  * Quota pacing ("glide floor"): the reader may spend a bucket only while the share still left is
  * at or above that bucket's reserve, and the reserve shrinks as the window runs out.
- *  - weekly: stepwise by day of the window: 90% on day 1, 80% on day 2 ... never below 20%
- *  - 5-hour: linear over the window, 85% at its start down to 70% at its end
+ *  - weekly: stepwise by day of the window: 50% on day 1, 40% on day 2 ... never below 10%
+ *  - 5-hour: linear over the window, 50% at its start down to 30% at its end
  * so the weekly budget is spread evenly, the user keeps a reserve for their own Antigravity use,
  * and quota that would expire unused near a reset can still be spent.
  */
-export const OCR_DEFAULT_WEEKLY_FIRST_DAY_FLOOR = 90
+export const OCR_DEFAULT_WEEKLY_FIRST_DAY_FLOOR = 50
 export const OCR_DEFAULT_WEEKLY_DROP_PER_DAY = 10
-export const OCR_DEFAULT_WEEKLY_MIN_FLOOR = 20
-export const OCR_DEFAULT_FIVE_HOUR_FLOOR_START = 85
-export const OCR_DEFAULT_FIVE_HOUR_FLOOR_END = 70
+export const OCR_DEFAULT_WEEKLY_MIN_FLOOR = 10
+export const OCR_DEFAULT_FIVE_HOUR_FLOOR_START = 50
+export const OCR_DEFAULT_FIVE_HOUR_FLOOR_END = 30
 /** points above the floor a batch needs to START (avoids flapping around the floor) */
 export const QUOTA_MARGIN_POINTS = 2
 /** a single run yields after this many agy calls (the next scheduler tick starts another) */
@@ -79,12 +85,27 @@ export function ocrImageName(index: number): string {
   return `image-${index + 1}.jpg`
 }
 
-/** The strict transcription prompt. `pages` are 1-based PDF page numbers, in image order. */
+/**
+ * The strict transcription prompt. `pages` are 1-based PDF page numbers, in image order.
+ *
+ * Two measured lessons are baked in (same six scanned pages, `agy`, Gemini 3.8 Flash):
+ * - Without instructions the agent also ran `ls`/file-writing commands and sometimes tried to
+ *   split or convert the files; telling it to open each image once and answer in one go removes
+ *   those steps.
+ * - Gemini's safety filter ("resembles existing copyrighted works") cut off pages of ordinary
+ *   contracts mid-answer, even one page at a time (0 of 4 runs passed). Asking for a running
+ *   line number in front of every line (`001| text`) made 4 of 4 runs pass, while a "this is the
+ *   owner's own document" explanation alone changed nothing. The numbers are stripped again in
+ *   {@link parseAgyOcrOutput}.
+ */
 export function buildAgyOcrPrompt(pages: readonly number[]): string {
   const mapping = pages.map((page, i) => `${ocrImageName(i)} = page ${page}`).join('; ')
+  const markerExample = `${OCR_PAGE_MARKER_PREFIX}${pages[0] ?? 1} ===`
   return [
     'Transcribe all text on each page image exactly, Vietnamese diacritics preserved, keep table rows on separate lines.',
-    `Output the pages in order, each introduced by a line \`${OCR_PAGE_MARKER_PREFIX}n ===\` (n = the page number below), then its text.`,
+    'How to work: do NOT run any shell command or script, and do not list, copy, crop, split, convert or write any file. Open each page image exactly once with the file viewer, in the order below, and read it in full. Never skip or truncate a page and never stop early. After the last image write ONE final answer with the complete transcription of ALL pages.',
+    `Output the pages in order, each introduced by a line \`${OCR_PAGE_MARKER_PREFIX}n ===\` (n = the page number below, for example \`${markerExample}\`), then its text.`,
+    'Put a running line number and a vertical bar in front of every text line, starting at 001 again on each page, like `001| first line`, `002| second line`.',
     'No commentary, no markdown fences, no translation, no summary.',
     'If a page has handwriting, transcribe it as best you can and mark uncertain words with [?].',
     'If a page contains no text, output only its marker line.',
@@ -111,6 +132,19 @@ export interface ParsedOcrOutput {
 // Models decorate the marker now and then: `**=== PAGE 3 ===**`, `### === PAGE 3 ===`, `=== Page 3 ===`.
 const MARKER_LINE = /^[ \t>*#`_-]*={2,}[ \t]*page[ \t]+(\d{1,4})[ \t]*={2,}[ \t>*#`_-]*$/gim
 
+// exactly what the prompt asks for (`001| `); a table row such as `1 | Giấy | 20` is not a number
+const LINE_NUMBER = /^[ \t]*\d{3,4}\|[ \t]?/
+
+/** Remove the `001| ` line numbers the prompt asks for, when most lines carry one. */
+function stripLineNumbers(body: string): string {
+  const lines = body.split('\n')
+  const filled = lines.filter((line) => line.trim() !== '')
+  if (filled.length === 0) return body
+  const numbered = filled.filter((line) => LINE_NUMBER.test(line)).length
+  if (numbered / filled.length < 0.6) return body
+  return lines.map((line) => line.replace(LINE_NUMBER, '')).join('\n')
+}
+
 function stripOuterFence(text: string): string {
   const trimmed = text.trim()
   const match = /^```[a-z]*\r?\n([\s\S]*?)\r?\n```$/i.exec(trimmed)
@@ -131,7 +165,7 @@ export function parseAgyOcrOutput(output: string, expected: readonly number[]): 
   const pages = new Map<number, string>()
   const unexpected: number[] = []
   if (markers.length === 0) {
-    const plain = text.trim()
+    const plain = stripLineNumbers(text).trim()
     // a malformed marker ("=== PAGE x ===") is a broken answer, not a transcription
     if (expected.length === 1 && plain && !/={2,}\s*page\b/i.test(plain)) {
       pages.set(expected[0]!, plain)
@@ -142,7 +176,7 @@ export function parseAgyOcrOutput(output: string, expected: readonly number[]): 
   markers.forEach((marker, i) => {
     const body = text.slice(marker.end, markers[i + 1]?.start ?? text.length)
     // a trailing fence or a closing remark line must not leak into the page text
-    const cleaned = body.replace(/\n```\s*$/, '').trim()
+    const cleaned = stripLineNumbers(body.replace(/\n```\s*$/, '')).trim()
     if (!want.has(marker.page)) {
       unexpected.push(marker.page)
       return
@@ -637,6 +671,8 @@ export interface OcrCandidate {
   totalPages?: number
   /** pages already transcribed */
   pagesDone: number
+  /** pages with a text layer of their own (mixed PDFs): treated as read, never sent */
+  skipPages?: number[]
 }
 
 const RECENT_OPEN_MS = 30 * DAY_MS

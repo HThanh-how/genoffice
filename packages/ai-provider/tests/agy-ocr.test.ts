@@ -49,6 +49,25 @@ describe('prompt', () => {
 })
 
 describe('output parsing', () => {
+  it('strips the 001| line numbers the prompt asks for, only when most lines have them', () => {
+    const numbered = '=== PAGE 3 ===\n001| ĐIỀU 5\n002| 1. Bên A có các nghĩa vụ\n003| - Nộp thuế'
+    expect(parseAgyOcrOutput(numbered, [3]).pages.get(3)).toBe(
+      'ĐIỀU 5\n1. Bên A có các nghĩa vụ\n- Nộp thuế',
+    )
+    const mixed = '=== PAGE 3 ===\n001| một\nhai\nba\nbốn'
+    expect(parseAgyOcrOutput(mixed, [3]).pages.get(3)).toBe('001| một\nhai\nba\nbốn')
+    // single page answered without a marker
+    expect(parseAgyOcrOutput('001| a\n002| b', [7]).pages.get(7)).toBe('a\nb')
+  })
+
+  it('asks for single-pass reading and numbered lines', () => {
+    const prompt = buildAgyOcrPrompt([4, 5])
+    expect(prompt).toMatch(/do NOT run any shell command/)
+    expect(prompt).toMatch(/exactly once/)
+    expect(prompt).toMatch(/001\| first line/)
+    expect(prompt).toContain('image-1.jpg = page 4; image-2.jpg = page 5')
+  })
+
   it('splits pages in order', () => {
     const out = '=== PAGE 3 ===\nHÓA ĐƠN\nSố 1\n\n=== PAGE 4 ===\nTrang hai'
     const parsed = parseAgyOcrOutput(out, [3, 4])

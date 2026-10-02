@@ -41,6 +41,7 @@ import { ClipboardSettingsToggle } from './fork/ClipboardSettingsToggle'
 import { ClipboardHistorySettings } from './fork/ClipboardHistorySettings'
 import { AgyProviderFields, ProviderNote, testAiSettingsFor } from './fork/AgyProviderFields'
 import { AgyMediaFields } from './fork/AgyMediaFields'
+import { AgyChatModelsSettings } from './fork/AgyChatModelsSettings'
 import { agyMediaTestConfig } from './fork/agy-media-state'
 import { agyString } from './fork/agy-strings'
 import './settings.css'
@@ -74,6 +75,76 @@ const LANG_OPTIONS = [
   { value: 'zh', label: '简体中文' },
   { value: 'zh-TW', label: '繁體中文' },
 ] as const
+
+type GroupKey = 'appearance' | 'ai' | 'files' | 'legacy' | 'legacyHint' | 'privacy'
+const GROUP_TEXT: Record<string, Record<GroupKey, string>> = {
+  en: {
+    appearance: 'Appearance',
+    ai: 'AI panel',
+    files: 'Files & saving',
+    legacy: 'Legacy Office files',
+    legacyHint: '.doc and .ppt conversion',
+    privacy: 'Privacy & clipboard',
+  },
+  vi: {
+    appearance: 'Giao diện',
+    ai: 'Bảng AI',
+    files: 'Tệp & lưu',
+    legacy: 'Tệp Office cũ',
+    legacyHint: 'Chuyển đổi .doc và .ppt',
+    privacy: 'Riêng tư & clipboard',
+  },
+  zh: {
+    appearance: '外观',
+    ai: 'AI 面板',
+    files: '文件与保存',
+    legacy: '旧版 Office 文件',
+    legacyHint: '.doc 和 .ppt 转换',
+    privacy: '隐私与剪贴板',
+  },
+  'zh-TW': {
+    appearance: '外觀',
+    ai: 'AI 面板',
+    files: '檔案與儲存',
+    legacy: '舊版 Office 檔案',
+    legacyHint: '.doc 與 .ppt 轉換',
+    privacy: '隱私與剪貼簿',
+  },
+}
+function groupText(lang: string, key: GroupKey): string {
+  return (GROUP_TEXT[lang] ?? GROUP_TEXT.en!)[key]
+}
+
+/** A titled card of related setting rows; `fold` makes it collapsible and closed by default. */
+function SetGroup({
+  title,
+  hint,
+  fold,
+  children,
+}: {
+  title: string
+  hint?: string
+  fold?: boolean
+  children: React.ReactNode
+}) {
+  if (fold) {
+    return (
+      <details className="set-group set-group-fold">
+        <summary className="set-group-title">
+          <span>{title}</span>
+          {hint && <span className="set-group-hint">{hint}</span>}
+        </summary>
+        <div className="set-group-body">{children}</div>
+      </details>
+    )
+  }
+  return (
+    <section className="set-group" aria-label={title}>
+      <h4 className="set-group-title">{title}</h4>
+      <div className="set-group-body">{children}</div>
+    </section>
+  )
+}
 
 // GenMail's option order: follow-system first, then the manual picks
 const THEME_OPTIONS = [
@@ -632,7 +703,10 @@ function AiModelPane({ t }: { t: TFunc }) {
           />
         </div>
       ) : isAgy ? (
-        <AgyProviderFields config={config} update={updateConfig} setCatalog={setCatalog} />
+        <>
+          <AgyProviderFields config={config} update={updateConfig} setCatalog={setCatalog} />
+          <AgyChatModelsSettings />
+        </>
       ) : !isGenspark ? (
         <>
           <div className="set-field">
@@ -1524,286 +1598,303 @@ export function SettingsModal({
             {section === 'general' && (
               <>
                 <h3 className="set-pane-title">{t('setSecGeneral')}</h3>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <div className="set-field-stack">
-                      <div className="set-field-label">Legacy Office files (.doc, .ppt)</div>
-                      <div className="set-field-desc">
-                        {legacyDoc.mode === 'text'
-                          ? 'Keep files on this device. .doc opens locally (text-only on Windows and Linux). .ppt needs the conversion service and will not open in this mode.'
-                          : legacyDoc.mode === 'online'
-                            ? 'Convert automatically. macOS tries its built-in converter for .doc; .ppt and other .doc files are sent to the service below.'
-                            : 'Ask before sending .doc or .ppt. macOS tries its built-in converter for .doc first.'}
-                      </div>
+                <SetGroup title={groupText(lang, 'appearance')}>
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <label className="set-field-label">{t('language')}</label>
                     </div>
-                  </div>
-                  <Dropdown
-                    className="set-dd"
-                    value={legacyDoc.mode}
-                    ariaLabel="Legacy Office conversion and upload preference"
-                    options={[
-                      { value: 'ask', label: 'Ask before upload' },
-                      { value: 'online', label: 'Convert automatically' },
-                      { value: 'text', label: 'On-device only' },
-                    ]}
-                    onPick={(mode) => updateLegacyDoc({ mode: mode as LegacyDocSettings['mode'] })}
-                  />
-                </div>
-                <div className="set-field set-legacy-recovery">
-                  <div className="set-field-stack">
-                    <div className="set-field-label">
-                      {lang === 'vi' ? 'Khôi phục tệp .doc gốc' : 'Recover original .doc files'}
-                    </div>
-                    <div className="set-field-desc">
-                      {lang === 'vi'
-                        ? 'Sau khi chuyển giữ nguyên định dạng, tệp .doc gốc được cất trong thư mục .genoffice ẩn cạnh tài liệu trong 30 ngày. Bản chuyển chỉ lấy được chữ sẽ giữ nguyên tệp gốc.'
-                        : 'After a formatted conversion, the original .doc is kept for 30 days in a hidden .genoffice folder beside the document. Text-only imports leave the original in place.'}
-                    </div>
-                    {legacyRecovery.length === 0 ? (
-                      <div className="set-field-desc">
-                        {lang === 'vi'
-                          ? 'Chưa có tệp gốc nào cần khôi phục.'
-                          : 'No originals are waiting for recovery.'}
-                      </div>
-                    ) : (
-                      <div className="set-legacy-recovery-list">
-                        {legacyRecovery.map((entry) => (
-                          <div className="set-legacy-recovery-item" key={entry.id}>
-                            <div className="set-legacy-recovery-info">
-                              <strong>{entry.sourcePath.split(/[\\/]/).pop()}</strong>
-                              <span title={entry.sourcePath}>{entry.sourcePath}</span>
-                              <small>
-                                {lang === 'vi' ? 'Tự xóa: ' : 'Expires: '}
-                                {new Date(entry.expiresAt).toLocaleDateString()}
-                              </small>
-                            </div>
-                            <button
-                              className="set-btn"
-                              disabled={legacyRecoveryBusy !== null}
-                              onClick={() => restoreOriginal(entry.id)}
-                            >
-                              {legacyRecoveryBusy === entry.id
-                                ? lang === 'vi'
-                                  ? 'Đang khôi phục…'
-                                  : 'Restoring…'
-                                : lang === 'vi'
-                                  ? 'Khôi phục'
-                                  : 'Restore'}
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {legacyRecoveryError && (
-                      <div className="set-field-desc set-legacy-recovery-error" role="alert">
-                        {legacyRecoveryError}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <div className="set-field-stack">
-                      <label className="set-field-label" htmlFor="set-legacy-doc-endpoint">
-                        Conversion service
-                      </label>
-                      <div className="set-field-desc">
-                        Online conversion sends the entire file over HTTPS. The default public
-                        service deletes temporary files after conversion; it does not verify that
-                        requests come from GenOffice. You can use your own HTTPS service.
-                      </div>
-                    </div>
-                  </div>
-                  <input
-                    id="set-legacy-doc-endpoint"
-                    className="set-input"
-                    type="url"
-                    value={legacyDoc.endpoint}
-                    disabled={legacyDoc.mode === 'text'}
-                    onChange={(event) =>
-                      setLegacyDoc({ ...legacyDoc, endpoint: event.target.value })
-                    }
-                    onBlur={() => updateLegacyDoc({ endpoint: legacyDoc.endpoint.trim() })}
-                  />
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <label className="set-field-label">{t('language')}</label>
-                  </div>
-                  <Dropdown
-                    className="set-dd"
-                    value={lang}
-                    ariaLabel={t('language')}
-                    options={LANG_OPTIONS.map((opt) => ({ value: opt.value, label: opt.label }))}
-                    onPick={(v) => setLang(v as typeof lang)}
-                  />
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <label className="set-field-label">{t('theme')}</label>
-                  </div>
-                  <Dropdown
-                    className="set-dd"
-                    value={theme}
-                    ariaLabel={t('theme')}
-                    options={THEME_OPTIONS.map((opt) => ({
-                      value: opt.value,
-                      label: t(opt.labelKey),
-                    }))}
-                    onPick={(v) => applyTheme(v as UiTheme)}
-                  />
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <label className="set-field-label">{t('setAiPanelSide')}</label>
-                  </div>
-                  <Dropdown
-                    className="set-dd"
-                    value={aiPrefs.side}
-                    ariaLabel={t('setAiPanelSide')}
-                    options={[
-                      { value: 'left', label: t('aiPanelSideLeft') },
-                      { value: 'right', label: t('aiPanelSideRight') },
-                    ]}
-                    onPick={(side) => updateAiPrefs({ side: side as AiPanelSide })}
-                  />
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <label className="set-field-label">{t('setAiFontSize')}</label>
-                  </div>
-                  {aiPrefs.fontSize === 'custom' && (
-                    <CustomFontSizeInput
-                      value={aiPrefs.customFontSize}
-                      label={t('aiFontSizeCustom')}
-                      onCommit={(px) => updateAiPrefs({ customFontSize: px })}
+                    <Dropdown
+                      className="set-dd"
+                      value={lang}
+                      ariaLabel={t('language')}
+                      options={LANG_OPTIONS.map((opt) => ({ value: opt.value, label: opt.label }))}
+                      onPick={(v) => setLang(v as typeof lang)}
                     />
-                  )}
-                  <Dropdown
-                    className="set-dd"
-                    value={aiPrefs.fontSize}
-                    ariaLabel={t('setAiFontSize')}
-                    options={AI_FONT_SIZE_OPTIONS.map((opt) => ({
-                      value: opt.value,
-                      label: t(opt.labelKey),
-                    }))}
-                    onPick={(v) => {
-                      const fontSize = v as AiFontSize
-                      // start the custom size from the preset being left so nothing jumps
-                      updateAiPrefs(
-                        fontSize === 'custom' && aiPrefs.fontSize !== 'custom'
-                          ? { fontSize, customFontSize: aiPanelFontPx(aiPrefs) }
-                          : { fontSize },
-                      )
-                    }}
-                  />
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <div className="set-field-stack">
-                      <div className="set-field-label">{t('setAiSpellcheck')}</div>
-                      <div className="set-field-desc">{t('setAiSpellcheckDesc')}</div>
-                    </div>
                   </div>
-                  <button
-                    className="set-switch"
-                    role="switch"
-                    aria-checked={aiPrefs.spellcheck}
-                    aria-label={t('setAiSpellcheck')}
-                    onClick={() => updateAiPrefs({ spellcheck: !aiPrefs.spellcheck })}
-                  />
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <div className="set-field-stack">
-                      <div className="set-field-label">{t('setAiOpenInNewDocs')}</div>
-                      <div className="set-field-desc">{t('setAiOpenInNewDocsDesc')}</div>
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <label className="set-field-label">{t('theme')}</label>
                     </div>
+                    <Dropdown
+                      className="set-dd"
+                      value={theme}
+                      ariaLabel={t('theme')}
+                      options={THEME_OPTIONS.map((opt) => ({
+                        value: opt.value,
+                        label: t(opt.labelKey),
+                      }))}
+                      onPick={(v) => applyTheme(v as UiTheme)}
+                    />
                   </div>
-                  <button
-                    className="set-switch"
-                    role="switch"
-                    aria-checked={aiPrefs.openInNewDocs}
-                    aria-label={t('setAiOpenInNewDocs')}
-                    onClick={() => updateAiPrefs({ openInNewDocs: !aiPrefs.openInNewDocs })}
-                  />
-                </div>
-                {defaultApp && defaultApp.state !== 'unsupported' && (
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <label className="set-field-label">{t('setAiPanelSide')}</label>
+                    </div>
+                    <Dropdown
+                      className="set-dd"
+                      value={aiPrefs.side}
+                      ariaLabel={t('setAiPanelSide')}
+                      options={[
+                        { value: 'left', label: t('aiPanelSideLeft') },
+                        { value: 'right', label: t('aiPanelSideRight') },
+                      ]}
+                      onPick={(side) => updateAiPrefs({ side: side as AiPanelSide })}
+                    />
+                  </div>
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <label className="set-field-label">{t('setAiFontSize')}</label>
+                    </div>
+                    {aiPrefs.fontSize === 'custom' && (
+                      <CustomFontSizeInput
+                        value={aiPrefs.customFontSize}
+                        label={t('aiFontSizeCustom')}
+                        onCommit={(px) => updateAiPrefs({ customFontSize: px })}
+                      />
+                    )}
+                    <Dropdown
+                      className="set-dd"
+                      value={aiPrefs.fontSize}
+                      ariaLabel={t('setAiFontSize')}
+                      options={AI_FONT_SIZE_OPTIONS.map((opt) => ({
+                        value: opt.value,
+                        label: t(opt.labelKey),
+                      }))}
+                      onPick={(v) => {
+                        const fontSize = v as AiFontSize
+                        // start the custom size from the preset being left so nothing jumps
+                        updateAiPrefs(
+                          fontSize === 'custom' && aiPrefs.fontSize !== 'custom'
+                            ? { fontSize, customFontSize: aiPanelFontPx(aiPrefs) }
+                            : { fontSize },
+                        )
+                      }}
+                    />
+                  </div>
+                </SetGroup>
+                <SetGroup title={groupText(lang, 'ai')}>
                   <div className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
-                        <div className="set-field-label">{t('setDefaultApp')}</div>
-                        <div className="set-field-desc">{defaultAppDesc}</div>
+                        <div className="set-field-label">{t('setAiSpellcheck')}</div>
+                        <div className="set-field-desc">{t('setAiSpellcheckDesc')}</div>
                       </div>
                     </div>
                     <button
-                      className="set-btn"
-                      disabled={defaultAppBusy || defaultApp.state === 'default'}
-                      onClick={claimDefaultApp}
-                    >
-                      {defaultApp.manualOnly
-                        ? t('setDefaultAppOpenSettings')
-                        : t('setDefaultAppSet')}
-                    </button>
+                      className="set-switch"
+                      role="switch"
+                      aria-checked={aiPrefs.spellcheck}
+                      aria-label={t('setAiSpellcheck')}
+                      onClick={() => updateAiPrefs({ spellcheck: !aiPrefs.spellcheck })}
+                    />
                   </div>
-                )}
-                <Field
-                  label={t('saveLocation')}
-                  value={saveDir || '—'}
-                  valueTitle={saveDir}
-                  action={
-                    <button className="set-btn" onClick={changeSaveDir}>
-                      {t('setChange')}
-                    </button>
-                  }
-                />
-                <div className="set-field">
-                  <div className="set-field-text">
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">{t('setAiOpenInNewDocs')}</div>
+                        <div className="set-field-desc">{t('setAiOpenInNewDocsDesc')}</div>
+                      </div>
+                    </div>
+                    <button
+                      className="set-switch"
+                      role="switch"
+                      aria-checked={aiPrefs.openInNewDocs}
+                      aria-label={t('setAiOpenInNewDocs')}
+                      onClick={() => updateAiPrefs({ openInNewDocs: !aiPrefs.openInNewDocs })}
+                    />
+                  </div>
+                </SetGroup>
+                <SetGroup title={groupText(lang, 'files')}>
+                  {defaultApp && defaultApp.state !== 'unsupported' && (
+                    <div className="set-field">
+                      <div className="set-field-text">
+                        <div className="set-field-stack">
+                          <div className="set-field-label">{t('setDefaultApp')}</div>
+                          <div className="set-field-desc">{defaultAppDesc}</div>
+                        </div>
+                      </div>
+                      <button
+                        className="set-btn"
+                        disabled={defaultAppBusy || defaultApp.state === 'default'}
+                        onClick={claimDefaultApp}
+                      >
+                        {defaultApp.manualOnly
+                          ? t('setDefaultAppOpenSettings')
+                          : t('setDefaultAppSet')}
+                      </button>
+                    </div>
+                  )}
+                  <Field
+                    label={t('saveLocation')}
+                    value={saveDir || '—'}
+                    valueTitle={saveDir}
+                    action={
+                      <button className="set-btn" onClick={changeSaveDir}>
+                        {t('setChange')}
+                      </button>
+                    }
+                  />
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">{t('setAutoSave')}</div>
+                        <div className="set-field-desc">{t('setAutoSaveDesc')}</div>
+                      </div>
+                    </div>
+                    <button
+                      className="set-switch"
+                      role="switch"
+                      aria-checked={autoSaveOn}
+                      aria-label={t('setAutoSave')}
+                      onClick={() => {
+                        const next = !autoSaveOn
+                        setAutoSaveOn(next)
+                        void window.aiOffice.setAutoSaveDefault?.(next).catch(() => {})
+                      }}
+                    />
+                  </div>
+                </SetGroup>
+                <SetGroup
+                  title={groupText(lang, 'legacy')}
+                  hint={groupText(lang, 'legacyHint')}
+                  fold
+                >
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">Legacy Office files (.doc, .ppt)</div>
+                        <div className="set-field-desc">
+                          {legacyDoc.mode === 'text'
+                            ? 'Keep files on this device. .doc opens locally (text-only on Windows and Linux). .ppt needs the conversion service and will not open in this mode.'
+                            : legacyDoc.mode === 'online'
+                              ? 'Convert automatically. macOS tries its built-in converter for .doc; .ppt and other .doc files are sent to the service below.'
+                              : 'Ask before sending .doc or .ppt. macOS tries its built-in converter for .doc first.'}
+                        </div>
+                      </div>
+                    </div>
+                    <Dropdown
+                      className="set-dd"
+                      value={legacyDoc.mode}
+                      ariaLabel="Legacy Office conversion and upload preference"
+                      options={[
+                        { value: 'ask', label: 'Ask before upload' },
+                        { value: 'online', label: 'Convert automatically' },
+                        { value: 'text', label: 'On-device only' },
+                      ]}
+                      onPick={(mode) =>
+                        updateLegacyDoc({ mode: mode as LegacyDocSettings['mode'] })
+                      }
+                    />
+                  </div>
+                  {legacyDoc.mode !== 'text' && (
+                    <div className="set-field">
+                      <div className="set-field-text">
+                        <div className="set-field-stack">
+                          <label className="set-field-label" htmlFor="set-legacy-doc-endpoint">
+                            Conversion service
+                          </label>
+                          <div className="set-field-desc">
+                            Online conversion sends the entire file over HTTPS. The default public
+                            service deletes temporary files after conversion; it does not verify
+                            that requests come from GenOffice. You can use your own HTTPS service.
+                          </div>
+                        </div>
+                      </div>
+                      <input
+                        id="set-legacy-doc-endpoint"
+                        className="set-input"
+                        type="url"
+                        value={legacyDoc.endpoint}
+                        onChange={(event) =>
+                          setLegacyDoc({ ...legacyDoc, endpoint: event.target.value })
+                        }
+                        onBlur={() => updateLegacyDoc({ endpoint: legacyDoc.endpoint.trim() })}
+                      />
+                    </div>
+                  )}
+                  <div className="set-field set-legacy-recovery">
                     <div className="set-field-stack">
-                      <div className="set-field-label">{t('setAutoSave')}</div>
-                      <div className="set-field-desc">{t('setAutoSaveDesc')}</div>
+                      <div className="set-field-label">
+                        {lang === 'vi' ? 'Khôi phục tệp .doc gốc' : 'Recover original .doc files'}
+                      </div>
+                      <div className="set-field-desc">
+                        {lang === 'vi'
+                          ? 'Sau khi chuyển giữ nguyên định dạng, tệp .doc gốc được cất trong thư mục .genoffice ẩn cạnh tài liệu trong 30 ngày. Bản chuyển chỉ lấy được chữ sẽ giữ nguyên tệp gốc.'
+                          : 'After a formatted conversion, the original .doc is kept for 30 days in a hidden .genoffice folder beside the document. Text-only imports leave the original in place.'}
+                      </div>
+                      {legacyRecovery.length === 0 ? (
+                        <div className="set-field-desc">
+                          {lang === 'vi'
+                            ? 'Chưa có tệp gốc nào cần khôi phục.'
+                            : 'No originals are waiting for recovery.'}
+                        </div>
+                      ) : (
+                        <div className="set-legacy-recovery-list">
+                          {legacyRecovery.map((entry) => (
+                            <div className="set-legacy-recovery-item" key={entry.id}>
+                              <div className="set-legacy-recovery-info">
+                                <strong>{entry.sourcePath.split(/[\\/]/).pop()}</strong>
+                                <span title={entry.sourcePath}>{entry.sourcePath}</span>
+                                <small>
+                                  {lang === 'vi' ? 'Tự xóa: ' : 'Expires: '}
+                                  {new Date(entry.expiresAt).toLocaleDateString()}
+                                </small>
+                              </div>
+                              <button
+                                className="set-btn"
+                                disabled={legacyRecoveryBusy !== null}
+                                onClick={() => restoreOriginal(entry.id)}
+                              >
+                                {legacyRecoveryBusy === entry.id
+                                  ? lang === 'vi'
+                                    ? 'Đang khôi phục…'
+                                    : 'Restoring…'
+                                  : lang === 'vi'
+                                    ? 'Khôi phục'
+                                    : 'Restore'}
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      {legacyRecoveryError && (
+                        <div className="set-field-desc set-legacy-recovery-error" role="alert">
+                          {legacyRecoveryError}
+                        </div>
+                      )}
                     </div>
                   </div>
-                  <button
-                    className="set-switch"
-                    role="switch"
-                    aria-checked={autoSaveOn}
-                    aria-label={t('setAutoSave')}
-                    onClick={() => {
-                      const next = !autoSaveOn
-                      setAutoSaveOn(next)
-                      void window.aiOffice.setAutoSaveDefault?.(next).catch(() => {})
-                    }}
-                  />
-                </div>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <div className="set-field-stack">
-                      <div className="set-field-label">{t('setAnalytics')}</div>
-                      <div className="set-field-desc">{t('setAnalyticsDesc')}</div>
+                </SetGroup>
+                <SetGroup title={groupText(lang, 'privacy')}>
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">{t('setAnalytics')}</div>
+                        <div className="set-field-desc">{t('setAnalyticsDesc')}</div>
+                      </div>
                     </div>
+                    <button
+                      className="set-switch"
+                      role="switch"
+                      aria-checked={analyticsOn}
+                      aria-label={t('setAnalytics')}
+                      disabled={analyticsSaving}
+                      onClick={() => {
+                        const next = !analyticsOn
+                        setAnalyticsSaving(true)
+                        void window.aiOffice
+                          .setAnalyticsEnabled(next)
+                          .then((persisted) => {
+                            if (persisted) setAnalyticsOn(next)
+                          })
+                          .catch(() => {})
+                          .finally(() => setAnalyticsSaving(false))
+                      }}
+                    />
                   </div>
-                  <button
-                    className="set-switch"
-                    role="switch"
-                    aria-checked={analyticsOn}
-                    aria-label={t('setAnalytics')}
-                    disabled={analyticsSaving}
-                    onClick={() => {
-                      const next = !analyticsOn
-                      setAnalyticsSaving(true)
-                      void window.aiOffice
-                        .setAnalyticsEnabled(next)
-                        .then((persisted) => {
-                          if (persisted) setAnalyticsOn(next)
-                        })
-                        .catch(() => {})
-                        .finally(() => setAnalyticsSaving(false))
-                    }}
-                  />
-                </div>
-                <ClipboardSettingsToggle />
-                <ClipboardHistorySettings />
+                  <ClipboardSettingsToggle />
+                  <ClipboardHistorySettings />
+                </SetGroup>
                 <DocumentMemorySettings />
               </>
             )}
