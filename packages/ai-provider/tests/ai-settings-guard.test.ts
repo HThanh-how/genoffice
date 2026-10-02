@@ -144,16 +144,20 @@ describe('sanitizeAiSettings', () => {
     expect(validCliPath(cliPath)).toBe(true)
   })
 
-  it('keeps Windows-style paths with spaces and non-ASCII (reviewer case: C:\\Users\\Ana María\\codex.exe)', () => {
-    // on POSIX the reviewer's string cannot name a real file, so exercise the
-    // same shape (backslashes, dot, space, í) as a literal file name; on
-    // Windows the exact reviewer string is stat'd directly and behaves the same
-    const dir = mkdtempSync(join(tmpdir(), 'genoffice-ai-guard-'))
-    tempDirs.push(dir)
-    const cliPath = join(dir, 'C:\\Users\\Ana María\\codex.exe')
-    writeFileSync(cliPath, 'bin\n')
-    expect(validCliPath(cliPath)).toBe(true)
-  })
+  // The literal name only exists as a file name on POSIX (backslashes and a colon are not allowed
+  // in a Windows file name, and `join` would turn it into a real path that does not exist there).
+  it.skipIf(process.platform === 'win32')(
+    'keeps Windows-style paths with spaces and non-ASCII (reviewer case: C:\\Users\\Ana María\\codex.exe)',
+    () => {
+      // the reviewer's string cannot name a real file on POSIX, so exercise the
+      // same shape (backslashes, dot, space, í) as a literal file name
+      const dir = mkdtempSync(join(tmpdir(), 'genoffice-ai-guard-'))
+      tempDirs.push(dir)
+      const cliPath = join(dir, 'C:\\Users\\Ana María\\codex.exe')
+      writeFileSync(cliPath, 'bin\n')
+      expect(validCliPath(cliPath)).toBe(true)
+    },
+  )
 
   it('expands ~/bin/codex for the existence check and stores it expanded', () => {
     const home = mkdtempSync(join(tmpdir(), 'genoffice-ai-guard-home-'))
