@@ -252,31 +252,6 @@
   border-color: var(--accent);
   background: var(--accent-soft);
 }
-.idx-thread {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  max-height: 260px;
-  margin-bottom: 10px;
-  overflow-y: auto;
-}
-.idx-turn {
-  max-width: 86%;
-  margin: 0;
-  padding: 8px 12px;
-  border-radius: 12px;
-  font-size: 13px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-}
-.idx-turn.is-user {
-  align-self: flex-end;
-  background: var(--accent-soft);
-}
-.idx-turn.is-index {
-  align-self: flex-start;
-  background: var(--hover, color-mix(in srgb, var(--text) 6%, transparent));
-}
 .idx-suggest {
   display: flex;
   flex-wrap: wrap;
@@ -295,25 +270,6 @@
 }
 .idx-suggest button:hover:not(:disabled) {
   border-color: var(--accent);
-}
-.idx-compose {
-  display: flex;
-  gap: 8px;
-}
-.idx-compose input {
-  flex: 1;
-  min-width: 0;
-  padding: 8px 12px;
-  border: 1px solid var(--border-strong, var(--border));
-  border-radius: 10px;
-  background: var(--surface);
-  color: var(--text);
-  font: inherit;
-  font-size: 13px;
-}
-.idx-compose input:focus {
-  outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
-  outline-offset: 0;
 }
 .idx-empty,
 .idx-note {
@@ -762,4 +718,58 @@
 }
 .idx-card > header .idx-link {
   font-size: 12.5px;
+}
+
+.idx-answer {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  max-width: 980px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 12px;
+  background: var(--accent-soft);
+}
+.idx-answer p {
+  flex: 1;
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.idx-answer button {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary, var(--text));
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+}
+.idx-answer button:hover {
+  background: color-mix(in srgb, var(--text) 10%, transparent);
+}
+.idx-cmd {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  padding: 10px 14px;
+  border: 1px dashed color-mix(in srgb, var(--accent) 55%, var(--border));
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.idx-cmd:hover {
+  background: var(--accent-soft);
+}
+.idx-cmd span {
+  color: var(--text-tertiary);
+  font-size: 12px;
 }

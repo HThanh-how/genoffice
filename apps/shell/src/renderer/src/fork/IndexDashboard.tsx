@@ -80,11 +80,11 @@ const EN = {
   },
   scanning: 'Reading folder {root}',
   seen: '{n} files seen · {m} new',
-  assistant: 'Ask or tell the index',
-  assistantHint: 'Ask how far it is or give an order. It runs here, no AI quota is used.',
-  placeholder: 'e.g. "how far is indexing?", "prioritize folder Contracts", "pause"…',
+  runCommand: 'Run: “{q}”',
+  runHint: 'Enter · runs here, no AI quota',
+  dismiss: 'Close',
   send: 'Send',
-  searchFiles: 'Find a file in the index…',
+  searchFiles: 'Find a file, or give an order: “how far is indexing?”, “pause”…',
   attentionTitle: 'Needs attention',
   attentionAll: 'See all',
   suggestions: ['How far is indexing?', 'Rescan', 'Retry the errors', 'Help'],
@@ -152,11 +152,11 @@ const VI: Dict = {
   },
   scanning: 'Đang đọc thư mục {root}',
   seen: 'thấy {n} tệp · {m} mới',
-  assistant: 'Hỏi hoặc ra lệnh cho chỉ mục',
-  assistantHint: 'Hỏi tiến độ hoặc ra lệnh. Chạy ngay trên máy, không tốn quota AI.',
-  placeholder: 'vd: "index tới đâu rồi?", "ưu tiên thư mục Hợp đồng", "tạm dừng"',
+  runCommand: 'Chạy: “{q}”',
+  runHint: 'Enter · chạy ngay trên máy, không tốn quota AI',
+  dismiss: 'Đóng',
   send: 'Gửi',
-  searchFiles: 'Tìm tệp trong chỉ mục…',
+  searchFiles: 'Tìm tệp, hoặc ra lệnh: “index tới đâu rồi?”, “tạm dừng”…',
   attentionTitle: 'Cần chú ý',
   attentionAll: 'Xem tất cả',
   suggestions: ['Index tới đâu rồi?', 'Quét lại', 'Thử lại các lỗi', 'Trợ giúp'],
@@ -174,17 +174,14 @@ interface Snapshot {
   mode: IndexingModeState | null
 }
 
-interface Turn {
-  role: 'user' | 'index'
-  text: string
-}
-
 export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => void }) {
   const { lang, dateLocale } = useI18n()
   const d = TEXT[lang] ?? EN
   const copy = activityCopy(lang)
   const [tab, setTab] = useState<Tab>('overview')
   const [query, setQuery] = useState('')
+  const [answer, setAnswer] = useState<string | null>(null)
+  const [running, setRunning] = useState(false)
   const [focus, setFocus] = useState<IndexIssueReason | null>(null)
   const [attention, setAttention] = useState<IndexIssueSummary | null>(null)
   const [snap, setSnap] = useState<Snapshot>({ memory: null, activity: null, mode: null })
@@ -267,6 +264,21 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const percent = progress?.percent ?? (progress && progress.totalFiles === 0 ? 100 : null)
 
   const kick = useCallback(() => pollKick.current(), [])
+
+  /** The one box does both jobs: Enter (or the suggestion) runs a command, typing also searches files. */
+  const command = query.trim() ? parseIndexCommand(query) : null
+  const run = async (text: string) => {
+    const message = text.trim()
+    const parsed = parseIndexCommand(message)
+    if (!parsed || running) return
+    setRunning(true)
+    setQuery('')
+    try {
+      setAnswer(await runIndexCommand(api, parsed, langFor(message, lang), kick))
+    } finally {
+      setRunning(false)
+    }
+  }
 
   // What needs a look, for the overview card: a cheap grouped count, refreshed when it changes.
   const problemFiles = (progress?.errorFiles ?? 0) + (progress?.emptyFiles ?? 0)
@@ -377,6 +389,12 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' && command) {
+              event.preventDefault()
+              void run(query)
+            } else if (event.key === 'Escape') setQuery('')
+          }}
           placeholder={d.searchFiles}
           aria-label={d.searchFiles}
           autoComplete="off"
@@ -384,9 +402,39 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
         />
       </div>
 
+      {!query.trim() && !answer && (
+        <div className="idx-suggest" aria-label={d.searchFiles}>
+          {d.suggestions.map((text) => (
+            <button key={text} type="button" disabled={running} onClick={() => void run(text)}>
+              {text}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {answer && (
+        <section className="idx-answer" role="status" aria-live="polite">
+          <p>{answer}</p>
+          <button
+            type="button"
+            aria-label={d.dismiss}
+            title={d.dismiss}
+            onClick={() => setAnswer(null)}
+          >
+            ×
+          </button>
+        </section>
+      )}
+
       {query.trim() ? (
         <div className="idx-body">
-          <IndexSearch api={api} query={query.trim()} onChanged={kick} />
+          {command && (
+            <button type="button" className="idx-cmd" onClick={() => void run(query)}>
+              <strong>{fill(d.runCommand, { q: query.trim() })}</strong>
+              <span>{d.runHint}</span>
+            </button>
+          )}
+          <IndexSearch api={api} query={query.trim()} quiet={!!command} onChanged={kick} />
         </div>
       ) : (
         <>
@@ -524,8 +572,6 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
                   ))}
                 </div>
               </section>
-
-              <Assistant api={api} lang={lang} d={d} onChanged={kick} />
             </div>
           )}
 
@@ -549,82 +595,5 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
         </>
       )}
     </main>
-  )
-}
-
-function Assistant({
-  api,
-  lang,
-  d,
-  onChanged,
-}: {
-  api: HomeApi
-  lang: string
-  d: Dict
-  onChanged: () => void
-}) {
-  const [turns, setTurns] = useState<Turn[]>([])
-  const [text, setText] = useState('')
-  const [busy, setBusy] = useState(false)
-  const endRef = useRef<HTMLDivElement>(null)
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ block: 'nearest' })
-  }, [turns])
-
-  const send = async (raw: string) => {
-    const message = raw.trim()
-    if (!message || busy) return
-    setText('')
-    setBusy(true)
-    setTurns((t) => [...t, { role: 'user', text: message }])
-    const command = parseIndexCommand(message) ?? { kind: 'help' as const }
-    const answer = await runIndexCommand(api, command, langFor(message, lang), onChanged)
-    setTurns((t) => [...t, { role: 'index', text: answer }])
-    setBusy(false)
-  }
-
-  return (
-    <section className="idx-card idx-chat">
-      <header>
-        <h3>{d.assistant}</h3>
-        <span className="idx-muted">{d.assistantHint}</span>
-      </header>
-      {turns.length > 0 && (
-        <div className="idx-thread" role="log" aria-live="polite">
-          {turns.map((turn, index) => (
-            <p key={index} className={`idx-turn is-${turn.role}`}>
-              {turn.text}
-            </p>
-          ))}
-          <div ref={endRef} />
-        </div>
-      )}
-      <div className="idx-suggest">
-        {d.suggestions.map((s) => (
-          <button key={s} type="button" onClick={() => void send(s)} disabled={busy}>
-            {s}
-          </button>
-        ))}
-      </div>
-      <form
-        className="idx-compose"
-        onSubmit={(event) => {
-          event.preventDefault()
-          void send(text)
-        }}
-      >
-        <input
-          value={text}
-          onChange={(event) => setText(event.target.value)}
-          placeholder={d.placeholder}
-          aria-label={d.assistant}
-          spellCheck={false}
-        />
-        <button type="submit" className="idx-btn primary" disabled={busy || !text.trim()}>
-          {d.send}
-        </button>
-      </form>
-    </section>
   )
 }

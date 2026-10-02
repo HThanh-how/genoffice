@@ -21,10 +21,13 @@ const VI = {
 export function IndexSearch({
   api,
   query,
+  quiet = false,
   onChanged,
 }: {
   api: HomeApi
   query: string
+  /** say nothing when no file matches (a command is offered instead) */
+  quiet?: boolean
   onChanged: () => void
 }) {
   const { lang } = useI18n()
@@ -62,7 +65,7 @@ export function IndexSearch({
 
   if (hits === null) return <p className="ixp-loading">{d.searching}</p>
   if (hits.length === 0)
-    return (
+    return quiet ? null : (
       <div className="idx-empty">
         <p>{d.none.replace('{q}', query)}</p>
         <p className="idx-muted">{d.hint}</p>
