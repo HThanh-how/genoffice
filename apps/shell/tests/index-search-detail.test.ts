@@ -63,3 +63,32 @@ describe('IndexIssueReader search and detail', () => {
     }
   })
 })
+
+describe('DocumentMemoryStore.searchNames', () => {
+  it('finds a scanned PDF by its name although it has no passages', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'index-names-'))
+    const store = new DocumentMemoryStore(join(dir, 'memory.db'))
+    try {
+      const empty = (path: string) =>
+        store.replaceDocument(path, {
+          hash: path,
+          mtimeMs: 1,
+          sizeBytes: 1,
+          chunks: [],
+          embeddingModel: null,
+          status: 'empty',
+          error: 'No readable text; scanned documents need OCR',
+        })
+      empty(join(dir, 'Ba', 'Ra viện BV Chợ Rẫy.pdf'))
+      empty(join(dir, 'Ba', 'Biên nhận.pdf'))
+      const hits = store.searchNames('có cái nào là giấy ra viện không?')
+      expect(hits.map((h) => h.name)).toEqual(['Ra viện BV Chợ Rẫy.pdf'])
+      expect(hits[0]).toMatchObject({ contentUnread: true, location: 'file name', chunkId: 0 })
+      expect(store.searchNames('ra vien')).toHaveLength(1)
+      expect(store.searchNames('tìm file')).toEqual([])
+    } finally {
+      store.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})

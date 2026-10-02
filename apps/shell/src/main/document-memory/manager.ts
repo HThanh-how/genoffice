@@ -614,8 +614,17 @@ export class DocumentMemoryManager {
       reply && 'result' in reply && Array.isArray(reply.result)
         ? (reply.result as DocumentMemoryHit[])
         : this.store.search(query, null, limit)
+    // A file with no readable text (a scanned PDF) has no passages to match; its name can still
+    // answer, so name matches join the content hits (one entry per document).
+    const seen = new Set(result.map((hit) => hit.documentId))
+    const named = this.store.searchNames(query, 5).filter((hit) => !seen.has(hit.documentId))
+    const merged = [
+      ...named.filter((hit) => hit.score >= 1),
+      ...result,
+      ...named.filter((hit) => hit.score < 1),
+    ]
     return {
-      hits: await this.annotateFreshness(result),
+      hits: await this.annotateFreshness(merged.slice(0, limit + named.length)),
       pending: this.queue.length + this.embeds.length + this.pendingCount,
       errors: this.store.errorCount(),
       modelState: this.modelState,

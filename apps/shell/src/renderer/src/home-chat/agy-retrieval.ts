@@ -99,6 +99,7 @@ export function buildRetrievalContext(
     const tags = [
       hit.missing ? 'MISSING' : hit.stale ? 'STALE' : 'OK',
       ...(hit.truncated ? ['PARTIAL'] : []),
+      ...(hit.contentUnread ? ['UNREAD'] : []),
     ]
     const entry =
       `[${used.length + 1}] file: ${clean(hit.name)} | location: ${clean(hit.location)} | status: ${tags.join(', ')}\n` +
@@ -140,6 +141,7 @@ export function agySystemSuffix(languageName: string, context: RetrievalContext 
     'Cite the file name for every fact taken from them. ' +
     'A hit tagged STALE or MISSING is unreliable (the file changed or is gone since indexing): do not quote it as current and tell the user. ' +
     'A hit tagged PARTIAL means only part of that document is indexed, so a value that is absent is not proof it is not in the file. ' +
+    'A hit tagged UNREAD matched by file name only: its content has not been read yet (for example a scanned PDF waiting for OCR). Offer it as a likely candidate by name, say that its content is not read yet, and never claim what it contains. ' +
     'If the results do not answer the question, say so instead of guessing.\n\n' +
     context.block
   )

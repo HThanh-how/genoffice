@@ -65,6 +65,92 @@ const GENERIC_WORDS = new Set([
   'with',
 ])
 
+/** Filler words of a Vietnamese or English question that say nothing about a file's name. */
+const NAME_FILLER = new Set([
+  'co',
+  'cai',
+  'nao',
+  'la',
+  'khong',
+  'cho',
+  'cua',
+  'nhung',
+  'mot',
+  'cac',
+  'toi',
+  'minh',
+  'giup',
+  'hay',
+  'tim',
+  'kiem',
+  'nay',
+  'kia',
+  'duoc',
+  'dau',
+  'gi',
+  'va',
+  'voi',
+  'trong',
+  'tren',
+  've',
+  'noi',
+  'dung',
+  'file',
+  'files',
+  'tai',
+  'lieu',
+  'the',
+  'a',
+  'an',
+  'of',
+  'in',
+  'is',
+  'are',
+  'any',
+  'there',
+  'do',
+  'i',
+  'you',
+  'me',
+  'my',
+  'find',
+  'show',
+  'search',
+  'please',
+  'which',
+  'what',
+  'where',
+  'xem',
+  'tu',
+  'den',
+  'o',
+  'thi',
+  'ma',
+  'de',
+  'khi',
+  'thoi',
+  'roi',
+  'chua',
+  'va',
+  'hoac',
+  'or',
+  'and',
+  'to',
+  'for',
+  'with',
+])
+
+/** The words of a question that could appear in a file name, accents and case ignored. */
+export function nameWords(input: string): string[] {
+  return [
+    ...new Set(
+      normalizeDocumentText(input)
+        .split(' ')
+        .filter((word) => word.length > 0 && !NAME_FILLER.has(word)),
+    ),
+  ]
+}
+
 export function queryTokens(input: string): string[] {
   return [...new Set(documentSearchTokens(input).filter((token) => !GENERIC_WORDS.has(token)))]
 }

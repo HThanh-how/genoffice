@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { chmodSync } from 'node:fs'
 import { basename, resolve, sep } from 'node:path'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
-import { documentIndexFields, queryTokens } from './normalization'
+import { documentIndexFields, nameWords, normalizeDocumentText, queryTokens } from './normalization'
 import { OcrSidecar, isOcrLocation } from './ocr-sidecar'
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
@@ -47,6 +47,8 @@ export interface DocumentMemoryHit {
   truncated: boolean
   /** The text was transcribed from page images (OCR) and may contain recognition errors. */
   ocr?: boolean
+  /** Matched by file name only: the file's content has not been read (scanned PDF, unreadable). */
+  contentUnread?: boolean
 }
 /** Options for the time-sliced write paths (large documents are written in short turns). */
 export interface SliceOptions {
@@ -1028,6 +1030,66 @@ export class DocumentMemoryStore {
         'UPDATE documents SET chunk_total = 0, chunk_done = 0 WHERE chunk_total <> 0 OR chunk_done <> 0',
       )
       this.db.exec(COUNTER_TRIGGERS)
+    })
+  }
+
+  /**
+   * Files whose NAME (or its folders) fits the question, whether or not their content was ever
+   * read. A scanned PDF has no passages, so passage search can never find it; its name can.
+   */
+  searchNames(query: string, limit = 5): DocumentMemoryHit[] {
+    const words = nameWords(query)
+    if (words.length === 0) return []
+    const need = words.length <= 2 ? words.length : Math.max(2, Math.ceil(words.length * 0.5))
+    const rows = this.db
+      .prepare(
+        `SELECT id, path, name, status, hash, mtime_ms, size_bytes, updated_at, truncated
+        FROM documents WHERE excluded = 0 AND status IN ('ready', 'empty', 'error')`,
+      )
+      .all() as unknown as Array<{
+      id: number
+      path: string
+      name: string
+      status: string
+      hash: string | null
+      mtime_ms: number | null
+      size_bytes: number | null
+      updated_at: number
+      truncated: number
+    }>
+    const scored: Array<{ row: (typeof rows)[number]; matched: number }> = []
+    for (const row of rows) {
+      const folders = row.path.split(/[\\/]/).slice(-3, -1).join(' ')
+      const have = new Set(normalizeDocumentText(`${row.name} ${folders}`).split(' '))
+      let matched = 0
+      for (const word of words) if (have.has(word)) matched++
+      if (matched >= need) scored.push({ row, matched })
+    }
+    scored.sort(
+      (a, b) =>
+        b.matched - a.matched ||
+        Number(a.row.status === 'ready') - Number(b.row.status === 'ready') ||
+        b.row.updated_at - a.row.updated_at,
+    )
+    return scored.slice(0, limit).map(({ row, matched }) => {
+      const unread = row.status !== 'ready'
+      return {
+        documentId: row.id,
+        path: row.path,
+        name: row.name,
+        chunkId: 0,
+        text: unread
+          ? 'The file name matches. Its content has not been read yet (a scanned PDF waiting for OCR, or unreadable), so what it says is unknown.'
+          : 'The file name matches.',
+        location: 'file name',
+        score: matched / words.length,
+        hash: row.hash,
+        mtimeMs: row.mtime_ms,
+        sizeBytes: row.size_bytes,
+        indexedAt: row.updated_at * 1000,
+        truncated: row.truncated === 1,
+        ...(unread ? { contentUnread: true } : {}),
+      }
     })
   }
 
