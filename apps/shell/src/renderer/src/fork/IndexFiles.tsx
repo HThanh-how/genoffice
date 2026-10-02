@@ -314,6 +314,13 @@ export function useFileActions(
   const retry = (item: FileItem) =>
     withBusy(item.id, async () => {
       const result = await api.retryDocumentIndex(item.id)
+      // a scanned PDF has no text to read: the only way to read it is Antigravity, so go on to
+      // that (after the usual confirmation, since it uses the person's Antigravity quota)
+      if (result.ok && result.empty && /\.pdf$/i.test(item.path) && window.confirm(w.ocrConfirm)) {
+        await readWithAntigravity(item)
+        await settle(item)
+        return
+      }
       say(
         result.ok
           ? result.empty
@@ -349,19 +356,23 @@ export function useFileActions(
       say(item.path)
     }
   }
+  // Antigravity reads the pages of a scan; the person has already agreed to it being used
+  const readWithAntigravity = async (item: FileItem) => {
+    try {
+      const result = await api.readScannedPdfWithAgy(item.id, true)
+      say(
+        result.ok
+          ? fill(w.ocrDone, { n: result.pages ?? 0 })
+          : fill(w.ocrFailed, { e: result.error ?? '' }),
+      )
+    } catch (error) {
+      say(fill(w.ocrFailed, { e: error instanceof Error ? error.message : '' }))
+    }
+  }
   const readNow = (item: FileItem) =>
     withBusy(item.id, async () => {
       if (!window.confirm(w.ocrConfirm)) return
-      try {
-        const result = await api.readScannedPdfWithAgy(item.id, true)
-        say(
-          result.ok
-            ? fill(w.ocrDone, { n: result.pages ?? 0 })
-            : fill(w.ocrFailed, { e: result.error ?? '' }),
-        )
-      } catch (error) {
-        say(fill(w.ocrFailed, { e: error instanceof Error ? error.message : '' }))
-      }
+      await readWithAntigravity(item)
       await settle(item)
     })
   return {
