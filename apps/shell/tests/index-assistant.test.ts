@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  extractIndexDirectives,
+  langFor,
   mentionsIndex,
   parseIndexCommand,
   runIndexCommand,
@@ -22,6 +24,9 @@ describe('parseIndexCommand', () => {
     ['chế độ nhanh', { kind: 'mode', mode: 'fast' }],
     ['dùng mô hình tìm kiếm chất lượng cao', { kind: 'model', profile: 'high' }],
     ['dừng quét', { kind: 'stop-scan' }],
+    ['liệt kê 175 tệp gặp sự cố', { kind: 'problems' }],
+    ['danh sách tệp lỗi', { kind: 'problems' }],
+    ['list the files with errors', { kind: 'problems' }],
     ['help', { kind: 'help' }],
   ])('%s', (text, expected) => {
     const got = parseIndexCommand(text)
@@ -90,5 +95,31 @@ describe('runIndexCommand', () => {
       'en',
     )
     expect(text).toMatch(/boom/)
+  })
+})
+
+describe('langFor', () => {
+  it('answers Vietnamese sentences in Vietnamese whatever the UI language', () => {
+    expect(langFor('index tới đâu rồi?', 'en')).toBe('vi')
+    expect(langFor('how far is it', 'en')).toBe('en')
+  })
+})
+
+describe('extractIndexDirectives', () => {
+  it('lifts safe commands out of a model reply and drops the lines', () => {
+    const out = extractIndexDirectives(
+      'Đã tạm dừng.\n[[index:pause]]\n[[index:priority:Luat]]\n[[index:mode:fast]]\n[[index:model:high]]',
+    )
+    expect(out.text).toBe('Đã tạm dừng.')
+    expect(out.commands).toEqual([
+      { kind: 'pause' },
+      { kind: 'priority', folder: 'Luat', on: true },
+      { kind: 'mode', mode: 'fast' },
+    ])
+  })
+
+  it('never lets a reply switch the search model or clear data', () => {
+    const out = extractIndexDirectives('[[index:model:high]] [[index:clear]]')
+    expect(out.commands).toEqual([])
   })
 })

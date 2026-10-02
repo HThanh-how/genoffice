@@ -1,4 +1,4 @@
-import { IndexingActivity } from './IndexingActivity'
+import { IndexingActivity, OPEN_INDEX_EVENT } from './IndexingActivity'
 import { IndexDashboard } from './fork/IndexDashboard'
 import { IndexNavItem } from './fork/IndexNavItem'
 import { useCallback, useEffect, useRef, useState } from 'react'
@@ -1161,6 +1161,15 @@ export function Home() {
   // Genspark web projects take over the content area (like a selected folder)
   const [cloudMode, setCloudMode] = useState(false)
   const [indexOpen, setIndexOpen] = useState(false)
+  useEffect(() => {
+    const open = () => {
+      setIndexOpen(true)
+      setCloudMode(false)
+      setSelectedFolder(null)
+    }
+    window.addEventListener(OPEN_INDEX_EVENT, open)
+    return () => window.removeEventListener(OPEN_INDEX_EVENT, open)
+  }, [])
   const [filter, setFilter] = useState('all')
   // ── File search (names + indexed content); active while the box has text ──
   const [searchQuery, setSearchQuery] = useState('')

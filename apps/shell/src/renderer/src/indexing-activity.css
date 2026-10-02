@@ -440,3 +440,31 @@
     max-height: calc(100vh - 160px);
   }
 }
+
+/* the small corner ring (replaces the big chip) */
+.indexing-dot {
+  position: fixed;
+  z-index: 81;
+  left: 24px;
+  bottom: 20px;
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: var(--shadow-menu);
+  cursor: pointer;
+  opacity: 0.8;
+  transition: opacity 0.15s ease;
+}
+.indexing-dot:hover,
+.indexing-dot:focus-visible {
+  opacity: 1;
+}
+.indexing-dot > * {
+  width: 22px;
+  height: 22px;
+}

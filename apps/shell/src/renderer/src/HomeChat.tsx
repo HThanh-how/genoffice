@@ -27,7 +27,15 @@ import type {
 import { CHAT_PREFILL_EVENT, announceChatPanel, type ChatPrefillDetail } from './chat-events'
 import { ChatMessage, type ChatItem, type ChatLabels } from './home-chat/ChatMessage'
 import { AgyChatBar } from '@genoffice/ui'
-import { mentionsIndex, parseIndexCommand, runIndexCommand } from './fork/index-assistant'
+import {
+  INDEX_DIRECTIVE_PROMPT,
+  extractIndexDirectives,
+  indexFacts,
+  langFor,
+  mentionsIndex,
+  parseIndexCommand,
+  runIndexCommand,
+} from './fork/index-assistant'
 import { Composer, type ComposerLabels } from './home-chat/Composer'
 import { EmptyState } from './home-chat/EmptyState'
 import { HistoryRail, type HistoryLabels } from './home-chat/HistoryRail'
@@ -843,7 +851,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           { id: assistantId, role: 'assistant', text: '', streaming: true },
         ])
         setInput('')
-        const answer = await runIndexCommand(api, indexCommand, langRef.current)
+        const answer = await runIndexCommand(api, indexCommand, langFor(message, langRef.current))
         if (!mountedRef.current) return
         setItems((current) =>
           current.map((item) =>
@@ -902,11 +910,36 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           }
           if (generation !== runGenerationRef.current || !mountedRef.current) return
           const context = buildRetrievalContext(hits)
+          if (mentionsIndex(message)) {
+            // Live index facts and the means to act on the index (the model cannot call tools here).
+            const facts = await indexFacts(api, langFor(message, langRef.current)).catch(() => '')
+            if (facts)
+              context.block = `${context.block}\n\n<<<INDEX\n${facts}\nINDEX>>>\n${INDEX_DIRECTIVE_PROMPT}`
+          }
           agyContextRef.current = context
           const sources = hitsToSources(context.used)
           if (sources.length > 0) updateLastAssistant((last) => ({ ...last, sources }))
         }
         await loop.run(message)
+        if (mentionsIndex(message) && settingsRef.current?.provider === 'agy') {
+          batcherRef.current?.flush()
+          const reply = itemsRef.current.at(-1)
+          if (reply?.role === 'assistant') {
+            const { text, commands } = extractIndexDirectives(reply.text)
+            if (commands.length > 0) {
+              const outcomes: string[] = []
+              for (const command of commands)
+                outcomes.push(
+                  await runIndexCommand(api, command, langFor(message, langRef.current)),
+                )
+              if (mountedRef.current)
+                updateLastAssistant((last) => ({
+                  ...last,
+                  text: [text, ...outcomes].filter(Boolean).join('\n\n'),
+                }))
+            }
+          }
+        }
       } catch (error) {
         if (generation !== runGenerationRef.current) return
         const detail = error instanceof Error ? error.message : tRef.current('homeChatError')

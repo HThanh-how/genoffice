@@ -13,7 +13,7 @@ import { EtaTracker, type EtaEstimate } from '../indexing-activity-model'
 import { etaText } from '../indexing-activity/format'
 import { IndexedFolders } from './IndexedFolders'
 import { DocumentMemorySettings } from '../DocumentMemorySettings'
-import { parseIndexCommand, runIndexCommand } from './index-assistant'
+import { langFor, parseIndexCommand, runIndexCommand } from './index-assistant'
 import './index-dashboard.css'
 
 type Tab = 'overview' | 'folders' | 'problems' | 'settings'
@@ -516,7 +516,7 @@ function Assistant({
     setBusy(true)
     setTurns((t) => [...t, { role: 'user', text: message }])
     const command = parseIndexCommand(message) ?? { kind: 'help' as const }
-    const answer = await runIndexCommand(api, command, lang, onChanged)
+    const answer = await runIndexCommand(api, command, langFor(message, lang), onChanged)
     setTurns((t) => [...t, { role: 'index', text: answer }])
     setBusy(false)
   }
