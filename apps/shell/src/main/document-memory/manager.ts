@@ -1424,76 +1424,7 @@ export class DocumentMemoryManager {
             this.workerTimeoutMs,
             true,
           )
-          if (!this.isCurrent(path, generation, epoch)) continue
-          if (reply && 'result' in reply && isPartialExtract(reply.result)) {
-            // one turn of a large PDF: the pages read are kept in the worker, and the file goes
-            // back into the line, where lighter files (or anything asked for) go first
-            this.readProgress.set(path, {
-              done: reply.result.pagesDone,
-              total: reply.result.totalPages,
-            })
-            this.enqueue(path, false, this.activeBytes.get(path))
-            continue
-          }
-          if (!reply || !('result' in reply) || !isExtractResult(reply.result)) {
-            const error =
-              reply && 'error' in reply && typeof reply.error === 'string'
-                ? reply.error
-                : 'Document extraction timed out.'
-            await this.store.markErrorSliced(path, error, await statMeta(path), {
-              shouldContinue: () => this.isCurrent(path, generation, epoch),
-            })
-            this.lastError = error
-            continue
-          }
-          const extracted = reply.result
-          const previous = this.store.documentByPath(path)
-          const lexicalOnly = !!extracted.skipEmbeddings && extracted.chunks.length > 0
-          const resumeOffset =
-            !lexicalOnly &&
-            previous?.mtimeMs === extracted.mtimeMs &&
-            previous.sizeBytes === extracted.sizeBytes
-              ? this.store.resumeVectorOffset(
-                  path,
-                  extracted.hash,
-                  this.embeddingProfile.embeddingId,
-                )
-              : null
-          if (resumeOffset === null) {
-            // Written in short transactions: a 400-chunk document used to hold the main thread
-            // for ~100 ms. Abandoned (and re-extracted later) if the document changes meanwhile.
-            const written = await this.store.replaceDocumentSliced(
-              path,
-              {
-                hash: extracted.hash,
-                mtimeMs: extracted.mtimeMs,
-                sizeBytes: extracted.sizeBytes,
-                chunks: extracted.chunks,
-                embeddingModel: null,
-                status: extractedStatus(extracted),
-                error: extracted.error,
-                truncated: extracted.truncated,
-              },
-              { shouldContinue: () => this.isCurrent(path, generation, epoch) },
-            )
-            if (!written) continue
-            this.recordScanInfo(path, extracted)
-            this.scheduleFtsMaintenance()
-          }
-          this.lastError = undefined
-          if (extracted.chunks.length && !lexicalOnly) {
-            this.enqueueEmbed({
-              path,
-              generation,
-              epoch,
-              hash: extracted.hash,
-              mtimeMs: extracted.mtimeMs,
-              sizeBytes: extracted.sizeBytes,
-              chunks: extracted.chunks,
-              startOffset: resumeOffset ?? 0,
-            })
-            this.drain()
-          }
+          await this.applyExtractReply(path, reply, generation, epoch)
         } catch (error) {
           if (this.isCurrent(path, generation, epoch)) {
             const message = safeError(error)
@@ -1523,6 +1454,163 @@ export class DocumentMemoryManager {
       this.extracting = false
       if (!this.stopped && this.enabled) this.drain()
     }
+  }
+
+  /**
+   * What a finished read of one file does to the index: a turn of a large PDF goes back into the
+   * line, an error is recorded on the file, a result replaces its passages and queues its vectors.
+   * Shared by the background line and by "read this one now".
+   */
+  private async applyExtractReply(
+    path: string,
+    reply: WorkerReply | null,
+    generation: number,
+    epoch: number,
+  ): Promise<void> {
+    if (!this.isCurrent(path, generation, epoch)) return
+    if (reply && 'result' in reply && isPartialExtract(reply.result)) {
+      // one turn of a large PDF: the pages read are kept in the worker, and the file goes
+      // back into the line, where lighter files (or anything asked for) go first
+      this.readProgress.set(path, {
+        done: reply.result.pagesDone,
+        total: reply.result.totalPages,
+      })
+      this.enqueue(path, false, this.activeBytes.get(path))
+      return
+    }
+    if (!reply || !('result' in reply) || !isExtractResult(reply.result)) {
+      const error =
+        reply && 'error' in reply && typeof reply.error === 'string'
+          ? reply.error
+          : 'Document extraction timed out.'
+      await this.store.markErrorSliced(path, error, await statMeta(path), {
+        shouldContinue: () => this.isCurrent(path, generation, epoch),
+      })
+      this.lastError = error
+      return
+    }
+    const extracted = reply.result
+    const previous = this.store.documentByPath(path)
+    const lexicalOnly = !!extracted.skipEmbeddings && extracted.chunks.length > 0
+    const resumeOffset =
+      !lexicalOnly &&
+      previous?.mtimeMs === extracted.mtimeMs &&
+      previous.sizeBytes === extracted.sizeBytes
+        ? this.store.resumeVectorOffset(path, extracted.hash, this.embeddingProfile.embeddingId)
+        : null
+    if (resumeOffset === null) {
+      // Written in short transactions: a 400-chunk document used to hold the main thread
+      // for ~100 ms. Abandoned (and re-extracted later) if the document changes meanwhile.
+      const written = await this.store.replaceDocumentSliced(
+        path,
+        {
+          hash: extracted.hash,
+          mtimeMs: extracted.mtimeMs,
+          sizeBytes: extracted.sizeBytes,
+          chunks: extracted.chunks,
+          embeddingModel: null,
+          status: extractedStatus(extracted),
+          error: extracted.error,
+          truncated: extracted.truncated,
+        },
+        { shouldContinue: () => this.isCurrent(path, generation, epoch) },
+      )
+      if (!written) return
+      this.recordScanInfo(path, extracted)
+      this.scheduleFtsMaintenance()
+    }
+    this.lastError = undefined
+    if (extracted.chunks.length && !lexicalOnly) {
+      this.enqueueEmbed({
+        path,
+        generation,
+        epoch,
+        hash: extracted.hash,
+        mtimeMs: extracted.mtimeMs,
+        sizeBytes: extracted.sizeBytes,
+        chunks: extracted.chunks,
+        startOffset: resumeOffset ?? 0,
+      })
+      this.drain()
+    }
+  }
+
+  /**
+   * A person pressed "read this one": it is read at once, ahead of the line and whatever the
+   * indexing policy (memory, battery, lock) or the vector backlog say, since they asked for this
+   * file. Only indexing switched off by the person stops it. The result, or why it failed, is on
+   * the file when this returns, so a file that cannot be read says so instead of waiting.
+   */
+  async readNowDocument(id: number): Promise<{ ok: boolean; error?: string }> {
+    if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
+    const path = this.store.retryDocument(id)
+    if (!path) return { ok: false, error: 'unavailable' }
+    if (this.activeExtractions.has(path)) {
+      // already being read: it must not be put behind anything now, and the answer is the
+      // result of that read, not "started"
+      this.deferred.delete(path)
+      this.urgent.add(path)
+      await this.waitUntilRead(path)
+      return this.readOutcome(path)
+    }
+    // a large file that cannot be read in turns would hold the worker for minutes: step it aside
+    const blocking = [...this.activeExtractions].filter(
+      (other) => !this.slicing.has(other) && weightOf(this.activeBytes.get(other) ?? 0) >= 3,
+    )
+    for (const other of blocking) {
+      this.invalidatePath(other)
+      this.enqueue(other)
+    }
+    this.invalidatePath(path)
+    this.urgent.delete(path)
+    this.deferred.delete(path)
+    if (blocking.length) this.recycleWorker(INTERRUPTED_FOR_USER)
+    const generation = this.currentGeneration(path)
+    const epoch = this.epoch
+    this.activeExtractions.add(path)
+    this.activeSince.set(path, Date.now())
+    this.pendingCount++
+    try {
+      const reply = await this.ask(
+        { type: 'extract', path, interactive: true, maxPdfPages: this.pdfMaxPages },
+        this.workerTimeoutMs,
+        true,
+      )
+      await this.applyExtractReply(path, reply, generation, epoch)
+    } catch (error) {
+      if (this.isCurrent(path, generation, epoch)) {
+        const message = safeError(error)
+        await this.store
+          .markErrorSliced(path, message, await statMeta(path), {
+            shouldContinue: () => this.isCurrent(path, generation, epoch),
+          })
+          .catch(() => undefined)
+        this.lastError = message
+      }
+    } finally {
+      this.activeExtractions.delete(path)
+      this.activeSince.delete(path)
+      this.pendingCount--
+    }
+    return this.readOutcome(path)
+  }
+
+  /** Wait while a file is being read or is waiting its turn (a large PDF is read in turns). */
+  private async waitUntilRead(path: string): Promise<void> {
+    const deadline = Date.now() + this.workerTimeoutMs * 2
+    while (
+      !this.stopped &&
+      Date.now() < deadline &&
+      (this.activeExtractions.has(path) || this.queued.has(path))
+    )
+      await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+
+  /** What a file looks like after it was read: searchable, failed (with why), or still waiting. */
+  private readOutcome(path: string): { ok: boolean; error?: string } {
+    const after = this.store.documentByPath(path)
+    if (after?.status === 'error') return { ok: false, error: after.error ?? 'Could not be read' }
+    return after?.status === 'pending' ? { ok: false, error: 'not finished' } : { ok: true }
   }
 
   private async drainEmbeddings(): Promise<void> {

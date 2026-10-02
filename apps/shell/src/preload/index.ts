@@ -794,6 +794,13 @@ const tabsApi: TabsApi = {
   reportDockIndex(index) {
     ipcRenderer.send(TABS_CHANNELS.dockIndex, index)
   },
+  onStartRename(handler) {
+    const listener = (_event: IpcRendererEvent, id: unknown) => {
+      if (typeof id === 'string') handler(id)
+    }
+    ipcRenderer.on(TABS_CHANNELS.startRename, listener)
+    return () => ipcRenderer.removeListener(TABS_CHANNELS.startRename, listener)
+  },
   async showAppMenu(x, y) {
     await ipcRenderer.invoke(TABS_CHANNELS.showAppMenu, x, y)
   },

@@ -154,6 +154,26 @@ export function TabBar() {
   renamingRef.current = renaming
   const tabsRef = useRef(tabs)
   tabsRef.current = tabs
+  /** open the inline rename box on a file tab (double-click, or "Rename" in the tab menu) */
+  const beginRename = (tab: TabSummary) => {
+    if (tab.id === 'home' || !tab.filePath) return
+    const ext = fileExtension(tab.filePath)
+    const base =
+      ext && tab.title.toLowerCase().endsWith(`.${ext.toLowerCase()}`)
+        ? tab.title.slice(0, -(ext.length + 1))
+        : tab.title
+    setRenaming({ id: tab.id, value: base })
+  }
+  const beginRenameRef = useRef(beginRename)
+  beginRenameRef.current = beginRename
+  useEffect(
+    () =>
+      window.aiOfficeTabs.onStartRename?.((id) => {
+        const tab = tabsRef.current.find((candidate) => candidate.id === id)
+        if (tab) beginRenameRef.current(tab)
+      }),
+    [],
+  )
   const commitRename = () => {
     const r = renamingRef.current
     renamingRef.current = null
@@ -478,12 +498,7 @@ export function TabBar() {
                 // the input mounts and autofocuses inside this dispatch; the
                 // default mousedown focus step would blur it straight away
                 event.preventDefault()
-                const ext = fileExtension(tab.filePath)
-                const base =
-                  ext && tab.title.toLowerCase().endsWith(`.${ext.toLowerCase()}`)
-                    ? tab.title.slice(0, -(ext.length + 1))
-                    : tab.title
-                setRenaming({ id: tab.id, value: base })
+                beginRename(tab)
               }}
               onPointerDown={(event) => {
                 if (event.button !== 0) return

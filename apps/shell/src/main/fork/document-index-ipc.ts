@@ -288,13 +288,17 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
     folderCounts.invalidate()
     return (await getDocumentMemory()?.stopDocument(id)) ?? { ok: false, error: 'unavailable' }
   })
-  ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, (_event, id: unknown) => {
+  // one file's "read this" button: read it now, and answer once it has been read (or has failed)
+  ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, async (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid document id')
     folderCounts.invalidate()
-    return (
-      getDocumentMemory()?.retryDocument(id, { now: true }) ?? { ok: false, error: 'unavailable' }
-    )
+    const result = (await getDocumentMemory()?.readNowDocument(id)) ?? {
+      ok: false,
+      error: 'unavailable',
+    }
+    folderCounts.invalidate()
+    return result
   })
   ipcMain.handle(HOME_CHANNELS.getIndexingActivity, (): HomeIndexingActivity => {
     // Runs on the main thread for every renderer poll, so it does no database work of its own:

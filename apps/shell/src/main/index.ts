@@ -18,10 +18,12 @@ import {
   BrowserWindow,
   Menu,
   app,
+  clipboard,
   dialog,
   ipcMain,
   nativeImage,
   nativeTheme,
+  screen,
   session,
   shell,
   webContents,
@@ -302,6 +304,7 @@ import {
   registerEverythingIpc,
   type EverythingController,
 } from './fork/everything-ipc'
+import { tabMenuTemplate, tabMenuWords, type TabMenuActions } from './fork/tab-menu'
 import { isProgramFile } from './everything/junk'
 import { applyPendingDbMove, resolveDbDir } from './document-memory/db-location'
 import { registerDbLocationIpc } from './fork/db-location-ipc'
@@ -3199,6 +3202,7 @@ function createShellWindow(): void {
               : tm('untitledSheet'),
   )
   tabManager = manager
+  manager.setClosedListener((closed) => rememberClosedTab(closed))
 
   // Docking: a detached window dragged over this window's tab strip hands its
   // document back. The strip reports the insertion slot for each preview
@@ -4968,6 +4972,80 @@ function ensureTabManager(): TabManager {
 
 /** "Open in New Window": reparent the tab's live view into a detached editor
  *  window — the document moves as-is, unsaved edits included. */
+/** files of tabs that were closed, newest last, so "Reopen closed tab" can bring them back */
+const recentlyClosedTabs: Array<{ kind: TabKind; filePath: string }> = []
+const MAX_RECENTLY_CLOSED = 20
+
+function rememberClosedTab(closed: { kind: TabKind; filePath: string }): void {
+  const at = recentlyClosedTabs.findIndex((entry) => entry.filePath === closed.filePath)
+  if (at >= 0) recentlyClosedTabs.splice(at, 1)
+  recentlyClosedTabs.push(closed)
+  if (recentlyClosedTabs.length > MAX_RECENTLY_CLOSED) recentlyClosedTabs.shift()
+}
+
+/** "Name - Copy.ext", then "Name - Copy (2).ext": a name that is free next to the original */
+function copyNameFor(path: string): string {
+  const ext = extname(path)
+  const stem = basename(path, ext)
+  return uniqueNameIn(dirname(path), `${stem} - Copy${ext}`)
+}
+
+/** Close tabs one after another: a save prompt that is cancelled leaves that tab, and stops. */
+async function closeTabsInOrder(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    if (!tabManager) return
+    if (!tabManager.list().some((tab) => tab.id === id)) continue
+    await tabManager.closeTab(id)
+    if (tabManager.list().some((tab) => tab.id === id)) return
+  }
+}
+
+/** The shell's side of every entry of the tab menu (see fork/tab-menu.ts for what is offered). */
+function tabMenuActions(): TabMenuActions {
+  return {
+    openInNewWindow: (id) => detachTabToWindow(id),
+    // two windows side by side, each on its own half of the screen the tab is on
+    splitBeside: (id) => {
+      if (!tabManager || !shellWindow) return
+      const record = tabManager.detachTab(id)
+      if (!record) return
+      const win = createDetachedEditorWindow({ ...record, applyMenuFor })
+      const area = screen.getDisplayMatching(shellWindow.getBounds()).workArea
+      const half = Math.floor(area.width / 2)
+      if (shellWindow.isMaximized()) shellWindow.unmaximize()
+      if (shellWindow.isFullScreen()) shellWindow.setFullScreen(false)
+      shellWindow.setBounds({ x: area.x, y: area.y, width: half, height: area.height })
+      win.setBounds({ x: area.x + half, y: area.y, width: area.width - half, height: area.height })
+      win.focus()
+    },
+    rename: (id) => {
+      if (shellWindow && !shellWindow.isDestroyed())
+        shellWindow.webContents.send(TABS_CHANNELS.startRename, id)
+    },
+    duplicate: (path) => {
+      const target = join(dirname(path), copyNameFor(path))
+      void atomicCopyFile(path, target).then(
+        () => openDocumentPath(target),
+        (error) => console.warn('[tabs] duplicate failed:', error),
+      )
+    },
+    copyText: (text) => clipboard.writeText(text),
+    reveal: (path) => shell.showItemInFolder(path),
+    openDefault: (path) => {
+      // a document tab is a document, never a program; keep it that way for a renamed one
+      if (!isProgramFile(path)) void shell.openPath(path)
+    },
+    move: (id, toIndex) => tabManager?.reorderTab(id, toIndex),
+    closeTabs: (ids) => void closeTabsInOrder(ids),
+    reopenClosed: () => {
+      while (recentlyClosedTabs.length) {
+        const closed = recentlyClosedTabs.pop()!
+        if (existsSync(closed.filePath) && openDocumentPath(closed.filePath)) return
+      }
+    },
+  }
+}
+
 function detachTabToWindow(id: string): void {
   if (!tabManager) return
   const record = tabManager.detachTab(id)
@@ -5097,20 +5175,15 @@ function registerTabsIpc(): void {
     if (!tabManager || !shellWindow || typeof id !== 'string') return
     const tab = tabManager.list().find((t) => t.id === id)
     if (!tab || tab.kind === 'home') return
-    const template: MenuItemConstructorOptions[] = []
-    // every document tab except a chrome-free Present tab (a live preview of
-    // another tab's document — it has nothing of its own to move)
-    if (tabManager.canDetachTab(id)) {
-      template.push({
-        label: tm('menuOpenInNewWindow'),
-        click: () => detachTabToWindow(id),
-      })
-      template.push({ type: 'separator' })
-    }
-    template.push({
-      label: tm('menuClose'),
-      enabled: tab.closable,
-      click: () => void tabManager?.closeTab(id),
+    const template = tabMenuTemplate({
+      tab,
+      tabs: tabManager.list(),
+      canDetach: tabManager.canDetachTab(id),
+      fileExists: !!tab.filePath && existsSync(tab.filePath),
+      canReopen: recentlyClosedTabs.length > 0,
+      words: tabMenuWords(currentLang()),
+      labels: { openInNewWindow: tm('menuOpenInNewWindow'), close: tm('menuClose') },
+      actions: tabMenuActions(),
     })
     Menu.buildFromTemplate(template).popup({
       window: shellWindow,

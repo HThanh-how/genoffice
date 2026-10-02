@@ -93,7 +93,8 @@ const EN = {
   copyPath: 'Copy path',
   couldNotOpen: 'Could not open this file.',
   loading: 'Loading…',
-  retriedOne: 'Queued for another try.',
+  readDone: 'Read. It can be searched now.',
+  indexOff: 'Indexing is switched off. Turn it on in the index settings.',
   ocrConfirm:
     'Read this scanned PDF now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
   ocrDone: 'Read {n} pages. It is searchable shortly.',
@@ -125,7 +126,8 @@ const VI: FileWords = {
   copyPath: 'Sao chép đường dẫn',
   couldNotOpen: 'Không mở được tệp này.',
   loading: 'Đang tải…',
-  retriedOne: 'Đã xếp lại để thử lần nữa.',
+  readDone: 'Đã đọc xong, tìm được rồi.',
+  indexOff: 'Đang tắt index. Bật lại trong cài đặt chỉ mục.',
   ocrConfirm:
     'Đọc ngay tệp PDF quét này bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
   ocrDone: 'Đã đọc {n} trang. Lát nữa là tìm được.',
@@ -310,7 +312,13 @@ export function useFileActions(
   const retry = (item: FileItem) =>
     withBusy(item.id, async () => {
       const result = await api.retryDocumentIndex(item.id)
-      say(result.ok ? w.retriedOne : fill(w.ocrFailed, { e: result.error ?? '' }))
+      say(
+        result.ok
+          ? w.readDone
+          : result.error === 'paused'
+            ? w.indexOff
+            : fill(w.ocrFailed, { e: result.error ?? '' }),
+      )
       await settle(item)
     })
   const stop = (item: FileItem) =>

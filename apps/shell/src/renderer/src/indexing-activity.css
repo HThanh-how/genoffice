@@ -445,7 +445,8 @@
 .indexing-dot {
   position: fixed;
   z-index: 81;
-  left: 24px;
+  /* at the right end of the sidebar's bottom row: the corner under the Settings button is its gear */
+  left: 192px;
   bottom: 20px;
   display: grid;
   place-items: center;

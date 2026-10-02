@@ -90,6 +90,7 @@ export class TabManager {
   private readonly bleedWcIds = new Set<number>()
   /** tabs mid unsaved-changes prompt, so a second close click doesn't stack dialogs */
   private readonly closingIds = new Set<string>()
+  private closedListener: ((tab: { kind: TabKind; filePath: string }) => void) | null = null
   /** views whose HTML-fullscreen listeners are installed: a view that leaves
    *  for a detached window and docks back must not get a second pair */
   private readonly fullScreenTracked = new WeakSet<WebContentsView>()
@@ -639,6 +640,8 @@ export class TabManager {
     if (idx < 0) return
     if (this.htmlFullScreenId === id) this.htmlFullScreenId = null
     const [removed] = this.tabs.splice(idx, 1)
+    if (removed.filePath && !removed.present)
+      this.closedListener?.({ kind: removed.kind, filePath: removed.filePath })
     if (this.activeId === id) {
       const fallback = this.tabs[idx - 1] ?? this.tabs[0]
       this.activateTab(fallback.id)
@@ -666,6 +669,11 @@ export class TabManager {
    *  hand it to the caller ("Open in New Window" — the live document, unsaved
    *  edits included, moves into a detached editor window). Null while a close
    *  prompt is pending on the tab. */
+  /** told when a tab with a file is closed (not detached), so it can be reopened */
+  setClosedListener(listener: ((tab: { kind: TabKind; filePath: string }) => void) | null): void {
+    this.closedListener = listener
+  }
+
   detachTab(id: string): DetachedTab | null {
     if (id === HOME_ID) return null
     const idx = this.tabs.findIndex((t) => t.id === id)

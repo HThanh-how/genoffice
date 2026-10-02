@@ -32,7 +32,8 @@ export const CLIPBOARD_SUGGEST_ENABLED_KEY = 'clipboardSuggestEnabled'
 
 /** strictly opt-in: anything but a literal `true` means off */
 export function clipboardSuggestEnabledFrom(settings: Record<string, unknown>): boolean {
-  return settings[CLIPBOARD_SUGGEST_ENABLED_KEY] !== false
+  // opt-in: nothing is read or suggested until the person switches it on in Settings
+  return settings[CLIPBOARD_SUGGEST_ENABLED_KEY] === true
 }
 
 /** at most one suggestion per this window */
