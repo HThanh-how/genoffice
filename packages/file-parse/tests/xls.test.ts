@@ -25,7 +25,7 @@ const f64 = (n: number) => {
   return b
 }
 const xlString = (text: string): Buffer => {
-  const wide = /[^\u0000-ÿ]/.test(text)
+  const wide = [...text].some((ch) => ch.charCodeAt(0) > 0xff)
   return Buffer.concat([
     u16(text.length),
     Buffer.from([wide ? 1 : 0]),
