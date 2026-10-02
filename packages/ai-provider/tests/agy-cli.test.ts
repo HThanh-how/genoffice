@@ -225,11 +225,11 @@ describe('listAgyModels', () => {
   it('caches for a few minutes, can be forced, and reports failures as an error', async () => {
     clearAgyModelsCache()
     let now = 1_000
-    const run = vi.fn(async () => 'gemini-3.8-flash-medium\tG\nclaude-sonnet-4-6\tC\n')
+    const run = vi.fn(async () => 'gemini-3.8-flash-low\tG\nclaude-sonnet-4-6\tC\n')
     const deps = { ...fsDeps('win32', files), run, now: () => now }
     const first = await listAgyModels(CLI, deps)
     expect(first).toEqual({
-      models: ['gemini-3.8-flash-medium', 'claude-sonnet-4-6'],
+      models: ['gemini-3.8-flash-low', 'claude-sonnet-4-6'],
       defaultModel: AGY_DEFAULT_MODEL,
     })
     await listAgyModels(CLI, deps)
