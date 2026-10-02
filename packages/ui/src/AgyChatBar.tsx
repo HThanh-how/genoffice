@@ -35,7 +35,16 @@ export interface AgyBarActivity {
   stepSeconds?: number
   message?: string
 }
+export interface AgyBarLogin {
+  phase: 'idle' | 'starting' | 'waiting' | 'checking' | 'done' | 'failed'
+  url?: string
+  error?: 'cli-missing' | 'rejected' | 'timeout' | 'failed'
+}
 export interface AgyBarApi {
+  startAgyLogin?(): Promise<AgyBarLogin>
+  submitAgyLoginCode?(code: string): Promise<boolean>
+  cancelAgyLogin?(): Promise<void>
+  onAgyLogin?(handler: (state: AgyBarLogin) => void): () => void
   getAgyChatState(): Promise<AgyBarState>
   selectAgyChatModel(id: string): Promise<boolean>
   getAgyChatUsage(): Promise<AgyBarUsage>
@@ -169,6 +178,22 @@ const EN = {
   hideSteps: 'Hide steps',
   noText: 'The model does not share its reasoning text, only how long it thought.',
   runFailed: 'Stopped: {m}',
+  loginTitle: 'Sign in to Antigravity',
+  loginIntro:
+    'This computer is not signed in yet. Sign in with your Google account to use Antigravity here.',
+  loginStart: 'Sign in with Google',
+  loginStarting: 'Opening the browser…',
+  loginWaiting:
+    'Sign in in the browser. If the page shows a code, paste it here; otherwise just wait a moment.',
+  loginPlaceholder: 'Paste the code',
+  loginSend: 'Continue',
+  loginChecking: 'Checking the code…',
+  loginDone: 'Signed in.',
+  loginRejected: 'That code was not accepted. Try again.',
+  loginTimeout: 'The sign-in timed out. Try again.',
+  loginMissing: 'Antigravity is not installed on this computer.',
+  loginReopen: 'Open the page again',
+  loginCancel: 'Cancel',
 }
 type Dict = Record<keyof typeof EN, string>
 
@@ -211,6 +236,22 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     hideSteps: 'Ẩn các bước',
     noText: 'Model không chia sẻ nội dung suy nghĩ, chỉ cho biết nó đã nghĩ bao lâu.',
     runFailed: 'Đã dừng: {m}',
+    loginTitle: 'Đăng nhập Antigravity',
+    loginIntro:
+      'Máy này chưa đăng nhập. Hãy đăng nhập bằng tài khoản Google để dùng Antigravity ở đây.',
+    loginStart: 'Đăng nhập bằng Google',
+    loginStarting: 'Đang mở trình duyệt…',
+    loginWaiting:
+      'Đăng nhập trong trình duyệt. Nếu trang hiện mã thì dán vào đây, không thì chỉ cần đợi một lúc.',
+    loginPlaceholder: 'Dán mã vào đây',
+    loginSend: 'Tiếp tục',
+    loginChecking: 'Đang kiểm tra mã…',
+    loginDone: 'Đã đăng nhập.',
+    loginRejected: 'Mã không được chấp nhận. Hãy thử lại.',
+    loginTimeout: 'Hết thời gian đăng nhập. Hãy thử lại.',
+    loginMissing: 'Máy này chưa cài Antigravity.',
+    loginReopen: 'Mở lại trang đăng nhập',
+    loginCancel: 'Huỷ',
   },
   zh: {
     model: '聊天模型',
@@ -248,6 +289,20 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     hideSteps: '隐藏步骤',
     noText: '模型不会公开思考内容，只显示思考了多久。',
     runFailed: '已停止：{m}',
+    loginTitle: '登录 Antigravity',
+    loginIntro: '此电脑尚未登录。请使用 Google 账号登录以在此使用 Antigravity。',
+    loginStart: '使用 Google 登录',
+    loginStarting: '正在打开浏览器…',
+    loginWaiting: '在浏览器中登录。如果页面显示代码，请粘贴到这里；否则稍等片刻即可。',
+    loginPlaceholder: '粘贴代码',
+    loginSend: '继续',
+    loginChecking: '正在验证代码…',
+    loginDone: '已登录。',
+    loginRejected: '代码未被接受，请重试。',
+    loginTimeout: '登录超时，请重试。',
+    loginMissing: '此电脑未安装 Antigravity。',
+    loginReopen: '重新打开登录页面',
+    loginCancel: '取消',
   },
 }
 
@@ -317,6 +372,10 @@ export function AgyChatBar({
   const [, tick] = useState(0)
   const [run, setRun] = useState<Run | null>(null)
   const [steps, setSteps] = useState(false)
+  const [login, setLogin] = useState<AgyBarLogin>({ phase: 'idle' })
+  const [code, setCode] = useState('')
+  const loginActive = useRef(false)
+  loginActive.current = login.phase !== 'idle' || !!usage?.needsLogin
 
   const source = api ?? bridge()
 
@@ -344,7 +403,10 @@ export function AgyChatBar({
         if (!pinned.current) setOpen(true)
       } else if (wasRefreshing.current) {
         wasRefreshing.current = false
-        if (!pinned.current) {
+        if (next.needsLogin) {
+          pinned.current = true
+          setOpen(true)
+        } else if (!pinned.current) {
           setOpen(true)
           schedulePeekEnd()
         }
@@ -361,6 +423,13 @@ export function AgyChatBar({
       .then(apply)
       .catch(() => {})
     const off = source.onAgyChatUsage(apply)
+    const offLogin = source.onAgyLogin?.((next) => {
+      setLogin(next)
+      if (next.phase === 'done') {
+        setCode('')
+        setTimeout(() => setLogin({ phase: 'idle' }), 3000)
+      }
+    })
     const offRun = source.onAgyChatActivity?.((event) =>
       setRun((current) => reduceRun(current, event)),
     )
@@ -370,6 +439,7 @@ export function AgyChatBar({
     const clock = setInterval(() => tick((n) => n + 1), 30_000)
     return () => {
       off()
+      offLogin?.()
       offRun?.()
       window.removeEventListener('focus', onFocus)
       window.removeEventListener(MODEL_CHANGED, onFocus)
@@ -393,10 +463,11 @@ export function AgyChatBar({
       pinned.current = false
     }
     const close = (event: PointerEvent) => {
+      if (loginActive.current) return
       if (event.target instanceof Node && !rootRef.current?.contains(event.target)) hide()
     }
     const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') hide()
+      if (event.key === 'Escape' && !loginActive.current) hide()
     }
     document.addEventListener('pointerdown', close, true)
     document.addEventListener('keydown', key)
@@ -513,7 +584,64 @@ export function AgyChatBar({
               {bucketRow(d.weekly, week)}
             </>
           )}
-          {usage?.failed && (
+          {showBar && (usage?.needsLogin || login.phase !== 'idle') && source.startAgyLogin && (
+            <div className="agy-login">
+              <strong>{d.loginTitle}</strong>
+              {login.phase === 'idle' && <p>{d.loginIntro}</p>}
+              {login.phase === 'starting' && <p>{d.loginStarting}</p>}
+              {login.phase === 'waiting' && <p>{d.loginWaiting}</p>}
+              {login.phase === 'checking' && <p>{d.loginChecking}</p>}
+              {login.phase === 'done' && <p>{d.loginDone}</p>}
+              {login.phase === 'failed' && (
+                <p>
+                  {login.error === 'rejected'
+                    ? d.loginRejected
+                    : login.error === 'cli-missing'
+                      ? d.loginMissing
+                      : d.loginTimeout}
+                </p>
+              )}
+              {(login.phase === 'waiting' || login.phase === 'checking') && (
+                <form
+                  onSubmit={(event) => {
+                    event.preventDefault()
+                    void source.submitAgyLoginCode?.(code)
+                  }}
+                >
+                  <input
+                    value={code}
+                    onChange={(event) => setCode(event.target.value)}
+                    placeholder={d.loginPlaceholder}
+                    aria-label={d.loginPlaceholder}
+                    spellCheck={false}
+                    autoComplete="off"
+                    disabled={login.phase === 'checking'}
+                  />
+                  <button type="submit" disabled={!code.trim() || login.phase === 'checking'}>
+                    {d.loginSend}
+                  </button>
+                </form>
+              )}
+              <div className="agy-login-actions">
+                {(login.phase === 'idle' || login.phase === 'failed') && (
+                  <button type="button" onClick={() => void source.startAgyLogin?.()}>
+                    {d.loginStart}
+                  </button>
+                )}
+                {login.phase === 'waiting' && login.url && (
+                  <button type="button" onClick={() => void source.startAgyLogin?.()}>
+                    {d.loginReopen}
+                  </button>
+                )}
+                {(login.phase === 'waiting' || login.phase === 'checking') && (
+                  <button type="button" onClick={() => void source.cancelAgyLogin?.()}>
+                    {d.loginCancel}
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+          {usage?.failed && (!usage.needsLogin || !source.startAgyLogin) && (
             <p className="agy-bar-note">{usage.needsLogin ? d.needsLogin : d.failed}</p>
           )}
           <footer>

@@ -381,3 +381,48 @@
     animation: none;
   }
 }
+
+.agy-login {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle, #e3e6ec);
+  border-radius: 10px;
+}
+.agy-login p {
+  margin: 0;
+  color: var(--text-secondary, #677287);
+  line-height: 1.45;
+}
+.agy-login form,
+.agy-login-actions {
+  display: flex;
+  gap: 8px;
+}
+.agy-login input {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border-subtle, #e3e6ec);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary, #253047);
+  font: inherit;
+}
+.agy-login button {
+  padding: 5px 12px;
+  border: 1px solid var(--border-subtle, #e3e6ec);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary, #253047);
+  font: inherit;
+  cursor: pointer;
+}
+.agy-login button:hover:not(:disabled) {
+  border-color: var(--accent, #596cdb);
+}
+.agy-login button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}

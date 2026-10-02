@@ -6,6 +6,7 @@ import {
   type AgyChatCatalog,
   type AgyChatState,
   type AgyChatUsageState,
+  type AgyLoginState,
 } from '@genoffice/ai-provider/agy-chat'
 
 const EMPTY_USAGE: AgyChatUsageState = { groups: null, readAt: 0, refreshing: false, failed: false }
@@ -51,6 +52,22 @@ export function createAgyChatPreloadApi(ipcRenderer: IpcRenderer): AgyChatApi {
       }
       ipcRenderer.on(AGY_CHAT_CHANNELS.activity, listener)
       return () => ipcRenderer.removeListener(AGY_CHAT_CHANNELS.activity, listener)
+    },
+    async startAgyLogin() {
+      return (await ipcRenderer.invoke(AGY_CHAT_CHANNELS.loginStart)) as AgyLoginState
+    },
+    async submitAgyLoginCode(code) {
+      return (await ipcRenderer.invoke(AGY_CHAT_CHANNELS.loginCode, code)) === true
+    },
+    async cancelAgyLogin() {
+      await ipcRenderer.invoke(AGY_CHAT_CHANNELS.loginCancel)
+    },
+    onAgyLogin(handler) {
+      const listener = (_event: IpcRendererEvent, value: unknown) => {
+        if (value && typeof value === 'object') handler(value as AgyLoginState)
+      }
+      ipcRenderer.on(AGY_CHAT_CHANNELS.loginState, listener)
+      return () => ipcRenderer.removeListener(AGY_CHAT_CHANNELS.loginState, listener)
     },
     onAgyChatUsage(handler) {
       const listener = (_event: IpcRendererEvent, value: unknown) => handler(usageFrom(value))

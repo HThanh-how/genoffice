@@ -1,9 +1,10 @@
-import { BrowserWindow, app } from 'electron'
+import { BrowserWindow, app, shell } from 'electron'
 import type { IpcMain } from 'electron'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { subscribeAgyActivity } from '@genoffice/ai-provider/agy-activity'
 import { listAgyModels } from '@genoffice/ai-provider/agy-cli'
+import { AgyLogin } from '@genoffice/ai-provider/agy-login'
 import { agyUsageNeedsLogin, readAgyUsage } from '@genoffice/ai-provider/agy-usage'
 import {
   AGY_CHAT_CHANNELS,
@@ -203,6 +204,21 @@ export function registerAgyChat(deps: AgyChatDeps): void {
 
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.usage, () => usage.get())
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.refreshUsage, () => usage.refresh())
+
+  // Sign-in from the app: the CLI's Google page opens in the browser, the person pastes the code.
+  const login = new AgyLogin(
+    (state) => {
+      for (const window of BrowserWindow.getAllWindows())
+        if (!window.isDestroyed()) window.webContents.send(AGY_CHAT_CHANNELS.loginState, state)
+      if (state.phase === 'done') void usage.refresh()
+    },
+    (url) => void shell.openExternal(url),
+  )
+  deps.ipcMain.handle(AGY_CHAT_CHANNELS.loginStart, () => login.start())
+  deps.ipcMain.handle(AGY_CHAT_CHANNELS.loginCode, (_event, code: unknown) =>
+    typeof code === 'string' && code.length < 2000 ? login.submitCode(code) : false,
+  )
+  deps.ipcMain.handle(AGY_CHAT_CHANNELS.loginCancel, () => login.cancel())
 
   // One check each time the app starts; the chat box then shows it (and tucks it away again).
   void app.whenReady().then(() => {

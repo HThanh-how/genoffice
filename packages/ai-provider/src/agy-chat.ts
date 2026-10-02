@@ -140,6 +140,16 @@ export function usageForModel(
   return state.groups.find((g) => g.name === group)?.buckets ?? null
 }
 
+/** Progress of signing the Antigravity CLI in from the app (see agy-login.ts). */
+export type AgyLoginPhase = 'idle' | 'starting' | 'waiting' | 'checking' | 'done' | 'failed'
+
+export interface AgyLoginState {
+  phase: AgyLoginPhase
+  /** the sign-in page, so the person can open it again */
+  url?: string
+  error?: 'cli-missing' | 'rejected' | 'timeout' | 'failed'
+}
+
 export const AGY_CHAT_CHANNELS = {
   state: 'agyChat:state',
   catalog: 'agyChat:catalog',
@@ -149,6 +159,10 @@ export const AGY_CHAT_CHANNELS = {
   refreshUsage: 'agyChat:refresh-usage',
   usageUpdated: 'agyChat:usage-updated',
   activity: 'agyChat:activity',
+  loginStart: 'agyChat:login-start',
+  loginCode: 'agyChat:login-code',
+  loginCancel: 'agyChat:login-cancel',
+  loginState: 'agyChat:login-state',
 } as const
 
 export interface AgyChatState {
@@ -178,4 +192,10 @@ export interface AgyChatApi {
   onAgyChatUsage(handler: (state: AgyChatUsageState) => void): () => void
   /** live steps of a chat turn (thinking, tool use, writing) for the thinking strip */
   onAgyChatActivity(handler: (activity: AgyActivity) => void): () => void
+  /** open the Google sign-in page; resolves once the CLI is waiting for the code */
+  startAgyLogin(): Promise<AgyLoginState>
+  /** the code the sign-in page shows */
+  submitAgyLoginCode(code: string): Promise<boolean>
+  cancelAgyLogin(): Promise<void>
+  onAgyLogin(handler: (state: AgyLoginState) => void): () => void
 }
