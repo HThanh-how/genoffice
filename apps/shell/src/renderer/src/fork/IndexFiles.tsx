@@ -54,6 +54,9 @@ export function useIndexingNow(api: HomeApi, active: boolean): IndexingNow | nul
   return now
 }
 
+/** The folder a file is in, whichever separator the path uses. */
+export const folderOf = (path: string): string => path.replace(/[\\/][^\\/]*$/, '')
+
 const clock = (since: number): string => {
   const seconds = Math.max(0, Math.round((Date.now() - since) / 1000))
   return `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`
@@ -98,6 +101,7 @@ const EN = {
   indexOff: 'Indexing is switched off. Turn it on in the index settings.',
   ocrConfirm:
     'Read this scanned PDF now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
+  ocrIndexed: 'Its pages were already read; the text is in the index now.',
   ocrStarted: 'It is a scan: reading it with Antigravity…',
   ocrDone: 'Read {n} pages. It is searchable shortly.',
   ocrFailed: 'Could not read: {e}',
@@ -133,6 +137,7 @@ const VI: FileWords = {
   indexOff: 'Đang tắt index. Bật lại trong cài đặt chỉ mục.',
   ocrConfirm:
     'Đọc ngay tệp PDF quét này bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
+  ocrIndexed: 'Các trang đã được đọc từ trước; chữ đã vào chỉ mục.',
   ocrStarted: 'Đây là bản quét: đang đọc bằng Antigravity…',
   ocrDone: 'Đã đọc {n} trang. Lát nữa là tìm được.',
   ocrFailed: 'Không đọc được: {e}',
@@ -365,7 +370,9 @@ export function useFileActions(
       const result = await api.readScannedPdfWithAgy(item.id, true)
       say(
         result.ok
-          ? fill(w.ocrDone, { n: result.pages ?? 0 })
+          ? result.pages
+            ? fill(w.ocrDone, { n: result.pages })
+            : w.ocrIndexed
           : fill(w.ocrFailed, { e: result.error ?? '' }),
       )
     } catch (error) {
@@ -511,6 +518,8 @@ export function FileRow({
             ? w.pausedNow
             : ''
   const working = live?.kind === 'reading' || live?.kind === 'embedding'
+  // the group already says why a scan is listed, so the line under it says where the file is
+  const sub = item.reason === 'no-text' ? folderOf(item.path) : item.error
   const stoppable = working || live?.kind === 'queued' || item.reason === 'waiting'
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const onContextMenu = (event: MouseEvent) => {
@@ -579,9 +588,9 @@ export function FileRow({
             <span className="ixp-file-name" title={item.path}>
               {item.name}
             </span>
-            {(finished || liveText || status || item.error) && (
-              <span className={`ixp-file-sub${working ? ' is-live' : ''}`}>
-                {finished ? w.done : liveText || (status ?? item.error)}
+            {(finished || liveText || status || sub) && (
+              <span className={`ixp-file-sub${working ? ' is-live' : ''}`} title={sub}>
+                {finished ? w.done : liveText || (status ?? sub)}
               </span>
             )}
           </span>

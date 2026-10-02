@@ -680,6 +680,20 @@ describe('manual "read with Antigravity now"', () => {
     expect(r.host.reindexed).toEqual([]) // not queued behind the other files as well
   })
 
+  it('puts the text of a file whose pages were all read into the index instead of saying nothing to read', async () => {
+    const r = rig({ maxPagesPerFile: 3 })
+    r.host.add('/a.pdf', 2)
+    const id = r.host.files.get('/a.pdf')!.id
+    expect((await r.job.readNow(id)).ok).toBe(true) // reads both pages
+    const indexed: string[] = []
+    r.host.reindexNow = async (path) => {
+      indexed.push(path) // the earlier request to index it was lost
+    }
+
+    expect(await r.job.readNow(id)).toEqual({ ok: true, pages: 0 })
+    expect(indexed).toEqual(['/a.pdf'])
+  })
+
   it('queues the file the ordinary way when reading it at once fails', async () => {
     const r = rig({ maxPagesPerFile: 3 })
     r.host.add('/a.pdf', 3)

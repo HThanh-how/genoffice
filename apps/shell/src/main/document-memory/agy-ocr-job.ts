@@ -602,7 +602,18 @@ export class AgyOcrJob {
     const row = this.deps.host
       .candidates(settings.maxPagesPerFile)
       .find((candidate) => candidate.path === document.path)
-    if (!row) return { ok: false, error: 'nothing-to-read' }
+    if (!row) {
+      // Every page has been read already, but the file may never have taken the text in (the
+      // earlier request to index it was queued and lost): read it into the index now.
+      const reindexNow = this.deps.host.reindexNow
+      if (!reindexNow) return { ok: false, error: 'nothing-to-read' }
+      try {
+        await reindexNow.call(this.deps.host, document.path)
+        return { ok: true, pages: 0 }
+      } catch (error) {
+        return { ok: false, error: errorText(error) }
+      }
+    }
     this.running = true
     this.abort = new AbortController()
     this.callsThisRun = 0
