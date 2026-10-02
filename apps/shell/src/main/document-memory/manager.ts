@@ -44,6 +44,7 @@ const FRESHNESS_STAT_TIMEOUT_MS = 1_500
 const SEARCH_EMBED_TIMEOUT_MS = 10_000
 const WORKER_TIMEOUT_MS = 5 * 60_000
 const STOPPED_BY_USER = 'Stopped by you.'
+const INTERRUPTED_FOR_USER = 'Paused so a file you chose could be read first.'
 const MAX_PENDING_EMBED_DOCUMENTS = 16
 const EMBED_RETRY_DELAY_MS = 30_000
 /** Wait after an index write before merging full-text segments (one pending run at a time). */
@@ -337,15 +338,28 @@ export class DocumentMemoryManager {
     return this.store.indexIssues(root, offset)
   }
 
-  retryDocument(id: number): { ok: boolean; error?: string } {
+  /**
+   * Queue one file again. With `now` (a person pressed the button for this one file) it also
+   * takes the reader over: a read of another file is stopped and put back right behind it,
+   * because the line is read one file at a time and "read this first" would otherwise wait
+   * for however long that other file takes.
+   */
+  retryDocument(id: number, options: { now?: boolean } = {}): { ok: boolean; error?: string } {
     if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
     const path = this.store.retryDocument(id)
     if (!path) return { ok: false, error: 'unavailable' }
     // A read already under way is left alone: restarting it would throw its result away and
     // begin again, so "retry" on a large scan would spin for minutes and end where it began.
     if (this.activeExtractions.has(path)) return { ok: true }
+    const interrupted = options.now ? [...this.activeExtractions] : []
+    // put the interrupted files first, then the chosen one in front of them
+    for (const other of interrupted) {
+      this.invalidatePath(other)
+      this.enqueue(other, true)
+    }
     this.invalidatePath(path)
     this.enqueue(path, true)
+    if (interrupted.length) this.recycleWorker(INTERRUPTED_FOR_USER)
     return { ok: true }
   }
 

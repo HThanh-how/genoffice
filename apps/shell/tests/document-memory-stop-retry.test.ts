@@ -23,9 +23,11 @@ afterEach(() => {
 class SlowWorker extends EventEmitter {
   terminated = false
   requests = 0
+  paths: string[] = []
   private last: { id: number; path: string } | undefined
   postMessage(message: { id: number; path: string }): void {
     this.requests++
+    this.paths.push(message.path)
     this.last = message
   }
   /** the long read finally finishes */
@@ -112,5 +114,40 @@ describe('retry and stop on a file that is being read', () => {
     await manager!.stopDocument(id())
     // an errored file is not waiting any more, so a second stop has nothing to do
     expect(await manager!.stopDocument(id())).toEqual({ ok: false, error: 'unavailable' })
+  })
+
+  it('pressing read on one file takes the reader over from the file it was busy with', async () => {
+    const workers: SlowWorker[] = []
+    manager = new DocumentMemoryManager(join(dir, 'user'), {
+      workerFactory: () => {
+        const worker = new SlowWorker()
+        workers.push(worker)
+        return worker as unknown as Worker
+      },
+      pollIntervalMs: 3_600_000,
+      workerTimeoutMs: 60_000,
+    })
+    const busy = join(dir, 'busy.txt')
+    const chosen = join(dir, 'chosen.txt')
+    writeFileSync(busy, 'Hợp đồng thi công. '.repeat(30))
+    writeFileSync(chosen, 'Giấy ra viện. '.repeat(30))
+    manager.indexDiscoveredFile(busy)
+    await until(() => manager!.nowStatus().extracting.length > 0)
+    manager.indexDiscoveredFile(chosen)
+    const store = (
+      manager as unknown as { store: { documentByPath(p: string): { id: number } | undefined } }
+    ).store
+    await until(() => store.documentByPath(chosen) !== undefined)
+
+    expect(manager.retryDocument(store.documentByPath(chosen)!.id, { now: true })).toEqual({
+      ok: true,
+    })
+
+    // the busy file's worker is replaced and the chosen file is the next one read
+    await until(() => workers.length === 2 && workers[1]!.paths.length > 0)
+    expect(workers[0]!.terminated).toBe(true)
+    expect(workers[1]!.paths[0]).toMatch(/chosen\.txt$/)
+    // the interrupted file is not lost: it is back in the line right behind
+    expect(manager.nowStatus().positions[busy]).toBe(1)
   })
 })

@@ -251,7 +251,9 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid document id')
     folderCounts.invalidate()
-    return getDocumentMemory()?.retryDocument(id) ?? { ok: false, error: 'unavailable' }
+    return (
+      getDocumentMemory()?.retryDocument(id, { now: true }) ?? { ok: false, error: 'unavailable' }
+    )
   })
   ipcMain.handle(HOME_CHANNELS.getIndexingActivity, (): HomeIndexingActivity => {
     // Runs on the main thread for every renderer poll, so it does no database work of its own:
