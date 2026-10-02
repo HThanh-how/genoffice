@@ -1,6 +1,7 @@
 import { IndexingActivity, OPEN_INDEX_EVENT } from './IndexingActivity'
 import { IndexDashboard } from './fork/IndexDashboard'
 import { IndexNavItem } from './fork/IndexNavItem'
+import { FOLDER_ROOTS_CHANGED_EVENT } from './fork/DefaultFolderToggle'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
@@ -1363,6 +1364,12 @@ export function Home() {
   }
   const refreshRef = useRef(refresh)
   refreshRef.current = refresh
+  // the settings switch for the app's own folder: the tree redraws without waiting for a focus
+  useEffect(() => {
+    const onChanged = () => refreshRef.current()
+    window.addEventListener(FOLDER_ROOTS_CHANGED_EVENT, onChanged)
+    return () => window.removeEventListener(FOLDER_ROOTS_CHANGED_EVENT, onChanged)
+  }, [])
 
   useEffect(() => {
     reloadRef.current(false)
@@ -2218,7 +2225,7 @@ export function Home() {
           </div>
         </div>
         <ul className="tree" role="tree">
-          {root && !root.usable ? (
+          {root?.hidden ? null : root && !root.usable ? (
             <li className="folder-unusable">
               <p>{t('rootUnusable')}</p>
               <button

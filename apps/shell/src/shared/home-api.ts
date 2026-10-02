@@ -358,7 +358,7 @@ export interface HomeApi extends ForkHomeApi {
     offset?: number,
     reason?: IndexIssueReason,
   ): Promise<{ total: number; items: IndexIssue[] }>
-  retryDocumentIndex(documentId: number): Promise<{ ok: boolean; error?: string }>
+  retryDocumentIndex(documentId: number): Promise<{ ok: boolean; error?: string; empty?: boolean }>
   revealDocumentIndexFile(documentId: number): Promise<{ ok: boolean; error?: string }>
   getDocumentIndexProgress(path: string): Promise<DocumentIndexProgress>
   getDocumentFolderScanStatus(): Promise<FolderScanStatus | null>
@@ -533,6 +533,8 @@ export interface FolderRoot {
   readable: boolean
   /** an added folder: can be taken off the list; the default save folder cannot */
   removable: boolean
+  /** the default save folder while it is not shown in the tree (still the place new files land) */
+  hidden?: boolean
 }
 
 export interface FolderEntry {

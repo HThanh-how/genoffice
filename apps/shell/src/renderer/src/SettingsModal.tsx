@@ -38,6 +38,7 @@ import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import { DocumentMemorySettings } from './DocumentMemorySettings'
 import { ClipboardSettingsToggle } from './fork/ClipboardSettingsToggle'
+import { DefaultFolderToggle } from './fork/DefaultFolderToggle'
 import { ClipboardHistorySettings } from './fork/ClipboardHistorySettings'
 import { AgyProviderFields, ProviderNote, testAiSettingsFor } from './fork/AgyProviderFields'
 import { AgyMediaFields } from './fork/AgyMediaFields'
@@ -1734,6 +1735,7 @@ export function SettingsModal({
                       </button>
                     }
                   />
+                  <DefaultFolderToggle />
                   <div className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">

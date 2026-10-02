@@ -94,6 +94,7 @@ const EN = {
   couldNotOpen: 'Could not open this file.',
   loading: 'Loading…',
   readDone: 'Read. It can be searched now.',
+  readEmpty: 'Read, but there is no text in it: it is a scan. Use “Read with Antigravity”.',
   indexOff: 'Indexing is switched off. Turn it on in the index settings.',
   ocrConfirm:
     'Read this scanned PDF now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
@@ -127,6 +128,7 @@ const VI: FileWords = {
   couldNotOpen: 'Không mở được tệp này.',
   loading: 'Đang tải…',
   readDone: 'Đã đọc xong, tìm được rồi.',
+  readEmpty: 'Đã đọc nhưng không có chữ: đây là bản quét. Dùng “Đọc bằng Antigravity”.',
   indexOff: 'Đang tắt index. Bật lại trong cài đặt chỉ mục.',
   ocrConfirm:
     'Đọc ngay tệp PDF quét này bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
@@ -314,7 +316,9 @@ export function useFileActions(
       const result = await api.retryDocumentIndex(item.id)
       say(
         result.ok
-          ? w.readDone
+          ? result.empty
+            ? w.readEmpty
+            : w.readDone
           : result.error === 'paused'
             ? w.indexOff
             : fill(w.ocrFailed, { e: result.error ?? '' }),

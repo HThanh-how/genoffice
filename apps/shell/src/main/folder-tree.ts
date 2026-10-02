@@ -43,7 +43,21 @@ export const TREE_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
   'htm',
 ])
 
-const HIDDEN_DIR_NAMES = new Set(['node_modules', '__macosx'])
+/**
+ * Folders that belong to the system or to the drive, never to the person: the recycle bin, the
+ * drive's restore points, recovery and similar. Hidden from the tree and left out of indexing.
+ */
+export const SYSTEM_DIRECTORY_NAMES: ReadonlySet<string> = new Set([
+  'system volume information',
+  'recovery',
+  'config.msi',
+  'msocache',
+  'recycler',
+  'recycled',
+  'lost+found',
+  'found.000',
+])
+const HIDDEN_DIR_NAMES = new Set(['node_modules', '__macosx', ...SYSTEM_DIRECTORY_NAMES])
 const HIDDEN_FILE_NAMES = new Set(['thumbs.db', 'desktop.ini'])
 /** the Markdown / HTML apps' image folder is app-owned when it holds this manifest */
 const MD_ASSET_MANIFEST = '.genoffice-assets.json'
@@ -57,7 +71,8 @@ export function isHiddenEntry(dir: string, name: string, isDir: boolean): boolea
   if (name.startsWith('.') || name.startsWith('~$')) return true
   const lower = name.toLowerCase()
   if (isDir) {
-    if (HIDDEN_DIR_NAMES.has(lower)) return true
+    // $RECYCLE.BIN, $WinREAgent...: Windows keeps its own folders behind a dollar sign
+    if (name.startsWith('$') || HIDDEN_DIR_NAMES.has(lower)) return true
     if (lower === 'assets' && existsSync(join(dir, name, MD_ASSET_MANIFEST))) return true
     return false
   }

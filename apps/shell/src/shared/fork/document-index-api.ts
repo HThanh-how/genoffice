@@ -24,6 +24,8 @@ export const DOCUMENT_INDEX_CHANNELS = {
   stopIndexFile: 'home:stop-index-file',
   deferIndexFile: 'home:defer-index-file',
   getEverything: 'home:get-everything',
+  getShowDefaultFolder: 'home:get-show-default-folder',
+  setShowDefaultFolder: 'home:set-show-default-folder',
   getPdfPages: 'home:get-pdf-pages',
   setPdfPages: 'home:set-pdf-pages',
   getDbLocation: 'home:get-db-location',
@@ -196,6 +198,9 @@ export interface DocumentIndexApi {
   getPdfPages(): Promise<PdfPagesState>
   /** Change it (1 to 400); raising it reads the PDFs that were cut short again. */
   setPdfPages(pages: number): Promise<PdfPagesState & { requeued: number }>
+  /** Whether the app's own save folder ("GenOffice") is listed in the Folders tree (off by default). */
+  getShowDefaultFolder(): Promise<boolean>
+  setShowDefaultFolder(show: boolean): Promise<boolean>
   /** Whether the Everything search is on, and whether this computer has es.exe. */
   getEverything(): Promise<EverythingState>
   /** Turn it on or off, optionally pointing at es.exe; returns the new state. */

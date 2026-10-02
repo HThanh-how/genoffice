@@ -297,6 +297,7 @@ import type {
   LegacyDocSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
+import { DOCUMENT_INDEX_CHANNELS } from '../shared/fork/document-index-api'
 import { registerHomeChatIpc } from './fork/home-chat-ipc'
 import { registerDocumentIndexIpc } from './fork/document-index-ipc'
 import {
@@ -304,6 +305,7 @@ import {
   registerEverythingIpc,
   type EverythingController,
 } from './fork/everything-ipc'
+import { hiddenNamesIn } from './windows-hidden'
 import { tabMenuTemplate, tabMenuWords, type TabMenuActions } from './fork/tab-menu'
 import { isProgramFile } from './everything/junk'
 import { applyPendingDbMove, resolveDbDir } from './document-memory/db-location'
@@ -345,8 +347,10 @@ import {
 } from './folder-tree'
 import {
   FOLDER_ROOTS_KEY,
+  SHOW_DEFAULT_FOLDER_KEY,
   describeExtraRoot,
   readExtraRoots,
+  showDefaultFolderFrom,
   withExtraRoot,
   withoutExtraRoot,
 } from './folder-roots'
@@ -4043,6 +4047,24 @@ function statEntries(paths: string[]): RecentEntry[] {
   return statPathEntries(paths, new Set(readStarredFiles()))
 }
 
+/**
+ * Folders and drives in the Folders list are meant to be searchable: any that has never been
+ * scanned (added before folders were indexed on adding, or while the app was closed) is scanned
+ * now. A drive that is not plugged in is skipped quietly and picked up on a later start.
+ */
+function indexAddedFoldersNotYetScanned(): void {
+  if (!folderScan) return
+  const scanned = new Set(folderScan.folders().map((entry) => resolve(entry.root)))
+  for (const root of extraFolderRoots()) {
+    if (scanned.has(resolve(root)) || !describeExtraRoot(root).readable) continue
+    try {
+      folderScan.start(root)
+    } catch (error) {
+      console.warn('[folder-scan] could not start for', root, error)
+    }
+  }
+}
+
 function startFolderScan(path: string): void {
   if (!folderScan) {
     if (!pendingFolderScanPaths.includes(path)) pendingFolderScanPaths.push(path)
@@ -4658,10 +4680,24 @@ function registerHomeIpc(): void {
   const isRoot = (path: string) => isAnyRoot(path)
 
   ipcMain.handle(HOME_CHANNELS.folderRoots, (): FolderRoot[] => {
-    // describeRoot creates a missing save folder, so its watcher has something to attach to
-    const roots = [describeRoot(defaultSaveDir()), ...extraFolderRoots().map(describeExtraRoot)]
+    // describeRoot creates a missing save folder, so its watcher has something to attach to. The
+    // folder stays the first root (it is where new files land); the tree only draws it when asked
+    const own = describeRoot(defaultSaveDir())
+    const show = showDefaultFolderFrom(readAppSettings(APP_SETTINGS_PATH()))
+    const roots = [
+      show ? own : { ...own, hidden: true },
+      ...extraFolderRoots().map(describeExtraRoot),
+    ]
     ensureFolderWatchers()
     return roots
+  })
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getShowDefaultFolder, () =>
+    showDefaultFolderFrom(readAppSettings(APP_SETTINGS_PATH())),
+  )
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setShowDefaultFolder, (_event, show: unknown) => {
+    if (typeof show !== 'boolean') throw new Error('Invalid setting')
+    writeAppSetting(APP_SETTINGS_PATH(), SHOW_DEFAULT_FOLDER_KEY, show)
+    return show
   })
 
   // an added folder joins the tree where it is: nothing on disk is created, copied or moved
@@ -4671,6 +4707,9 @@ function registerHomeIpc(): void {
     writeAppSetting(APP_SETTINGS_PATH(), FOLDER_ROOTS_KEY, extras)
     ensureFolderWatchers()
     fileIndexer?.refresh()
+    // a folder or drive added here is meant to be searchable: it is indexed without being asked
+    // (the scan skips what the system hides, and is picked up again at every start)
+    startFolderScan(path)
     return describeExtraRoot(path)
   }
 
@@ -4711,9 +4750,18 @@ function registerHomeIpc(): void {
     fileIndexer?.refresh()
   })
 
-  ipcMain.handle(HOME_CHANNELS.listFolder, (_event, dir: unknown): FolderListing => {
+  ipcMain.handle(HOME_CHANNELS.listFolder, async (_event, dir: unknown): Promise<FolderListing> => {
     if (!insideRoot(dir)) return { dir: String(dir), folders: [], files: [] }
-    return listFolder(dir, new Set(readStarredFiles()))
+    const listing = listFolder(dir, new Set(readStarredFiles()))
+    // what Windows hides (Hidden / System attribute) stays out of the tree, as in Explorer
+    const hidden = await hiddenNamesIn(dir)
+    if (hidden.size === 0) return listing
+    const shown = (path: string): boolean => !hidden.has(basename(path).toLocaleLowerCase())
+    return {
+      ...listing,
+      folders: listing.folders.filter((folder) => shown(folder.path)),
+      files: listing.files.filter((file) => shown(file.path)),
+    }
   })
 
   ipcMain.handle(
@@ -6454,6 +6502,7 @@ app.whenReady().then(async () => {
   openLaunchPaths(pendingLaunchPaths)
   for (const folder of pendingFolderScanPaths) startFolderScan(folder)
   pendingFolderScanPaths = []
+  indexAddedFoldersNotYetScanned()
   pendingLaunchPaths = []
   for (const recoverAs of pendingUnsavedNewRecoveries()) void newSheetTab(recoverAs)
 

@@ -47,6 +47,8 @@ const FRESHNESS_STAT_TIMEOUT_MS = 1_500
 const SEARCH_EMBED_TIMEOUT_MS = 10_000
 const WORKER_TIMEOUT_MS = 5 * 60_000
 const STOPPED_BY_USER = 'Stopped by you.'
+/** How many times "read this one" reads a file again when a read was overtaken. */
+const READ_NOW_ATTEMPTS = 3
 const DEFERRED_MESSAGE = 'Put back so lighter files are read first.'
 /** A large PDF is read in turns of about this long, so others can go between them. */
 const PDF_SLICE_MS = 10_000
@@ -179,6 +181,12 @@ export class DocumentMemoryManager {
   private readonly queueBytes = new Map<string, number>()
   private readonly autoDeferAfterMs: number
   private readonly sizeLookups = new Set<string>()
+  /**
+   * The generation each file being read right now was started under. A folder refresh that finds
+   * the same unread file again must not queue it a second time and thereby make the read in
+   * progress look out of date, which threw away the result of every read it overlapped.
+   */
+  private readonly activeGeneration = new Map<string, number>()
   /** Files being read in turns right now: they give way between turns, nothing is cut short. */
   private readonly slicing = new Set<string>()
   /** Pages read so far of a large PDF that is being read in turns (reading or waiting). */
@@ -1290,6 +1298,9 @@ export class DocumentMemoryManager {
 
   private enqueue(path: string, prioritize = false, sizeBytes?: number): void {
     if (this.stopped || !this.enabled) return
+    // being read right now and still valid: its result will be stored; a file that changes after
+    // is noticed by the next scan, which compares with what was stored
+    if (this.activeGeneration.get(path) === this.currentGeneration(path)) return
     if (this.queued.has(path)) {
       if (prioritize) {
         const index = this.queue.indexOf(path)
@@ -1403,6 +1414,7 @@ export class DocumentMemoryManager {
         this.activeSince.set(path, Date.now())
         const generation = this.currentGeneration(path)
         const epoch = this.epoch
+        this.activeGeneration.set(path, generation)
         this.pendingCount++
         const heavyWatch = setTimeout(
           () => this.makeWayForLightFiles(path, generation),
@@ -1437,6 +1449,7 @@ export class DocumentMemoryManager {
           }
         } finally {
           clearTimeout(heavyWatch)
+          if (this.activeGeneration.get(path) === generation) this.activeGeneration.delete(path)
           this.slicing.delete(path)
           this.activeExtractions.delete(path)
           this.activeSince.delete(path)
@@ -1475,6 +1488,7 @@ export class DocumentMemoryManager {
         done: reply.result.pagesDone,
         total: reply.result.totalPages,
       })
+      this.activeGeneration.delete(path)
       this.enqueue(path, false, this.activeBytes.get(path))
       return
     }
@@ -1541,7 +1555,7 @@ export class DocumentMemoryManager {
    * file. Only indexing switched off by the person stops it. The result, or why it failed, is on
    * the file when this returns, so a file that cannot be read says so instead of waiting.
    */
-  async readNowDocument(id: number): Promise<{ ok: boolean; error?: string }> {
+  async readNowDocument(id: number): Promise<{ ok: boolean; error?: string; empty?: boolean }> {
     if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
     const path = this.store.retryDocument(id)
     if (!path) return { ok: false, error: 'unavailable' }
@@ -1551,7 +1565,9 @@ export class DocumentMemoryManager {
       this.deferred.delete(path)
       this.urgent.add(path)
       await this.waitUntilRead(path)
-      return this.readOutcome(path)
+      // that read stored it (or failed with a reason): that is the answer. If it was overtaken
+      // and the file is still waiting, it is read below, right now
+      if (this.store.documentByPath(path)?.status !== 'pending') return this.readOutcome(path)
     }
     // a large file that cannot be read in turns would hold the worker for minutes: step it aside
     const blocking = [...this.activeExtractions].filter(
@@ -1561,12 +1577,25 @@ export class DocumentMemoryManager {
       this.invalidatePath(other)
       this.enqueue(other)
     }
-    this.invalidatePath(path)
-    this.urgent.delete(path)
-    this.deferred.delete(path)
     if (blocking.length) this.recycleWorker(INTERRUPTED_FOR_USER)
+    // A read can still be overtaken (the file was replaced, or the person asked for something
+    // else in between) and its result then is not stored: read it again, a few times, rather than
+    // answer "not finished" for a file that is plainly there.
+    for (let attempt = 0; attempt < READ_NOW_ATTEMPTS; attempt++) {
+      this.invalidatePath(path)
+      this.urgent.delete(path)
+      this.deferred.delete(path)
+      await this.readOnce(path)
+      if (this.store.documentByPath(path)?.status !== 'pending') break
+    }
+    return this.readOutcome(path)
+  }
+
+  /** One interactive read of one file, stored (or its failure recorded) when it comes back. */
+  private async readOnce(path: string): Promise<void> {
     const generation = this.currentGeneration(path)
     const epoch = this.epoch
+    this.activeGeneration.set(path, generation)
     this.activeExtractions.add(path)
     this.activeSince.set(path, Date.now())
     this.pendingCount++
@@ -1588,11 +1617,11 @@ export class DocumentMemoryManager {
         this.lastError = message
       }
     } finally {
+      if (this.activeGeneration.get(path) === generation) this.activeGeneration.delete(path)
       this.activeExtractions.delete(path)
       this.activeSince.delete(path)
       this.pendingCount--
     }
-    return this.readOutcome(path)
   }
 
   /** Wait while a file is being read or is waiting its turn (a large PDF is read in turns). */
@@ -1607,9 +1636,11 @@ export class DocumentMemoryManager {
   }
 
   /** What a file looks like after it was read: searchable, failed (with why), or still waiting. */
-  private readOutcome(path: string): { ok: boolean; error?: string } {
+  private readOutcome(path: string): { ok: boolean; error?: string; empty?: boolean } {
     const after = this.store.documentByPath(path)
     if (after?.status === 'error') return { ok: false, error: after.error ?? 'Could not be read' }
+    // read fine, but there was no text in it: a scan, which only OCR can make searchable
+    if (after?.status === 'empty') return { ok: true, empty: true }
     return after?.status === 'pending' ? { ok: false, error: 'not finished' } : { ok: true }
   }
 

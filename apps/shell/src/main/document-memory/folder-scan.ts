@@ -3,6 +3,7 @@ import { opendir, stat } from 'node:fs/promises'
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, extname, isAbsolute, parse, resolve } from 'node:path'
 import { FolderWatchManager } from './folder-watch'
+import { SYSTEM_DIRECTORY_NAMES } from '../folder-tree'
 
 export const MAX_DOCUMENT_BYTES = 128 * 1024 * 1024
 const MAX_ROOT_LENGTH = 32_768
@@ -614,7 +615,13 @@ function validateRoot(root: string): string {
 }
 
 export function shouldSkipDirectory(name: string): boolean {
-  return name.startsWith('.') || IGNORED_DIRECTORIES.has(name.toLowerCase())
+  const lower = name.toLowerCase()
+  return (
+    name.startsWith('.') ||
+    name.startsWith('$') ||
+    IGNORED_DIRECTORIES.has(lower) ||
+    SYSTEM_DIRECTORY_NAMES.has(lower)
+  )
 }
 
 function readManifest(path: string): Manifest {

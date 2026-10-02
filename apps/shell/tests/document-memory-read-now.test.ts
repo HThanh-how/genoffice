@@ -155,6 +155,50 @@ describe('"read this one" reads at once', () => {
     expect(await pressed).toEqual({ ok: true })
   })
 
+  it('a folder refresh that touches a file being read does not throw the read away', async () => {
+    const path = make('touched.pdf')
+    enrol(path)
+    await until(() => asked().length === 1)
+
+    // the scanner finds the same (still unread) file again while it is being read
+    enrol(path)
+    enrol(path)
+
+    workers.at(-1)!.finish()
+    await until(() => statusOf(path) === 'ready')
+    // read once: the file was neither read twice nor left waiting
+    expect(asked()).toHaveLength(1)
+    expect(manager.nowStatus().positions[path]).toBeUndefined()
+  })
+
+  it('"read this one" survives the same, and reads the file again if it still was dropped', async () => {
+    const path = make('pressed.pdf')
+    publishIndexingPolicy(PAUSED)
+    enrol(path)
+    const reading = manager.readNowDocument(idOf(path))
+    await until(() => asked().length === 1)
+    enrol(path) // a refresh in the middle of the read
+    workers.at(-1)!.finish()
+    expect(await reading).toEqual({ ok: true })
+    expect(statusOf(path)).toBe('ready')
+    expect(asked()).toHaveLength(1)
+  })
+
+  it('a background read that was overtaken is not the answer: the file is read again at once', async () => {
+    const path = make('overtaken.pdf')
+    enrol(path)
+    await until(() => asked().length === 1)
+    const pressed = manager.readNowDocument(idOf(path))
+    // the background read comes back as an error-free, but outdated, answer: the file changed
+    ;(manager as unknown as { invalidatePath(p: string): void }).invalidatePath(path)
+    workers.at(-1)!.finish()
+    await until(() => asked().length === 2)
+    expect(asked()[1]).toMatchObject({ path, interactive: true })
+    workers.at(-1)!.finish()
+    expect(await pressed).toEqual({ ok: true })
+    expect(statusOf(path)).toBe('ready')
+  })
+
   it('refuses only when indexing has been switched off by the person', async () => {
     const path = make('a.pdf')
     enrol(path)

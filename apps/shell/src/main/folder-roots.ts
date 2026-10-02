@@ -5,6 +5,14 @@ import type { FolderRoot } from '../shared/home-api'
 /** app-settings.json key: folders the user added to the home tree beside the default save folder */
 export const FOLDER_ROOTS_KEY = 'folderRoots'
 
+/** app-settings.json key: list the default save folder ("GenOffice") in the Folders tree */
+export const SHOW_DEFAULT_FOLDER_KEY = 'showDefaultFolder'
+
+/** off until the person turns it on: the tree shows the folders they added, not the app's own */
+export function showDefaultFolderFrom(settings: Record<string, unknown>): boolean {
+  return settings[SHOW_DEFAULT_FOLDER_KEY] === true
+}
+
 export function readExtraRoots(settings: Record<string, unknown>, defaultDir: string): string[] {
   const raw = settings[FOLDER_ROOTS_KEY]
   if (!Array.isArray(raw)) return []
