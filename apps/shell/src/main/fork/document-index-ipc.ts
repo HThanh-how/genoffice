@@ -91,6 +91,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
         extracting: [],
         embedding: {},
         positions: {},
+        pages: {},
         queued: 0,
         paused: true,
       }

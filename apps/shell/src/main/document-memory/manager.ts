@@ -19,7 +19,7 @@ import {
 import { isIgnoredFileName, MAX_DOCUMENT_BYTES, SUPPORTED_EXTENSIONS } from './folder-scan'
 import { volumeRootOf } from './volume-root'
 import { createYielder } from './yield-budget'
-import { orderQueue, rankOf, type QueueInfo } from './queue-order'
+import { orderQueue, rankOf, weightOf, type QueueInfo } from './queue-order'
 import { foldFolderProgress, type FolderIndexProgress } from './folder-progress'
 import type { FolderChunkProgress } from './store'
 import { DocumentMemoryStore, type DocumentMemoryHit, type StoredDocument } from './store'
@@ -46,6 +46,8 @@ const SEARCH_EMBED_TIMEOUT_MS = 10_000
 const WORKER_TIMEOUT_MS = 5 * 60_000
 const STOPPED_BY_USER = 'Stopped by you.'
 const DEFERRED_MESSAGE = 'Put back so lighter files are read first.'
+/** A large PDF is read in turns of about this long, so others can go between them. */
+const PDF_SLICE_MS = 10_000
 /** A heavy read that has run this long makes way for light files that are waiting. */
 const AUTO_DEFER_AFTER_MS = 30_000
 const INTERRUPTED_FOR_USER = 'Paused so a file you chose could be read first.'
@@ -92,7 +94,7 @@ type WorkerReply =
   | { id: number; error: string }
   | { type: 'model'; state: 'downloading' | 'ready' | 'error'; progress?: number; error?: string }
 type WorkerRequest =
-  | { type: 'extract'; path: string; interactive?: boolean }
+  | { type: 'extract'; path: string; interactive?: boolean; sliceMs?: number }
   | { type: 'embed'; texts: string[]; kind: 'query' | 'passage' }
   | { type: 'ocr-render'; path: string; ocr: OcrRenderRequest }
   | {
@@ -173,6 +175,10 @@ export class DocumentMemoryManager {
   private readonly queueBytes = new Map<string, number>()
   private readonly autoDeferAfterMs: number
   private readonly sizeLookups = new Set<string>()
+  /** Files being read in turns right now: they give way between turns, nothing is cut short. */
+  private readonly slicing = new Set<string>()
+  /** Pages read so far of a large PDF that is being read in turns (reading or waiting). */
+  private readonly readProgress = new Map<string, { done: number; total: number }>()
   /** Size of each file being read now (its weight decides whether it makes way). */
   private readonly activeBytes = new Map<string, number>()
   private sizing = false
@@ -242,10 +248,13 @@ export class DocumentMemoryManager {
       .forEach((path, index) => {
         positions[path] = index + 1
       })
+    const pages: IndexingNow['pages'] = {}
+    for (const [path, progress] of this.readProgress) pages[path] = progress
     return {
       extracting: [...this.activeSince].map(([path, since]) => ({ path, since })),
       embedding,
       positions,
+      pages,
       queued: this.queue.length,
       paused: !this.enabled || isIndexingPaused(),
     }
@@ -384,7 +393,11 @@ export class DocumentMemoryManager {
       this.deferred.delete(path)
       this.urgent.add(path)
     }
-    const interrupted = options.now ? [...this.activeExtractions] : []
+    // a large PDF read in turns needs no interrupting: it gives way at the end of its turn,
+    // keeping every page it has read, and the file asked for is next
+    const interrupted = options.now
+      ? [...this.activeExtractions].filter((other) => !this.slicing.has(other))
+      : []
     // put the interrupted files first, then the chosen one in front of them
     for (const other of interrupted) {
       this.invalidatePath(other)
@@ -409,6 +422,12 @@ export class DocumentMemoryManager {
 
   private putBehind(path: string): void {
     const reading = this.activeExtractions.has(path)
+    if (reading && this.slicing.has(path)) {
+      // read in turns: it steps back when its turn ends, with the pages it has already read
+      this.urgent.delete(path)
+      this.deferred.add(path)
+      return
+    }
     this.invalidatePath(path)
     this.urgent.delete(path)
     this.deferred.add(path)
@@ -422,7 +441,7 @@ export class DocumentMemoryManager {
    */
   private makeWayForLightFiles(path: string, generation: number): void {
     if (generation !== this.currentGeneration(path) || !this.activeExtractions.has(path)) return
-    if (this.urgent.has(path) || this.deferred.has(path)) return
+    if (this.urgent.has(path) || this.deferred.has(path) || this.slicing.has(path)) return
     const info = this.queueInfo()
     const bytes = this.activeBytes.get(path) ?? this.store.documentByPath(path)?.sizeBytes ?? 0
     const mine = rankOf(path, { ...info, bytes: new Map([[path, bytes]]) })
@@ -1364,8 +1383,27 @@ export class DocumentMemoryManager {
           this.autoDeferAfterMs,
         )
         try {
-          const reply = await this.ask({ type: 'extract', path }, this.workerTimeoutMs, true)
+          const sliceMs =
+            /\.pdf$/i.test(path) && weightOf(this.activeBytes.get(path) ?? 0) >= 2
+              ? PDF_SLICE_MS
+              : undefined
+          if (sliceMs) this.slicing.add(path)
+          const reply = await this.ask(
+            { type: 'extract', path, ...(sliceMs ? { sliceMs } : {}) },
+            this.workerTimeoutMs,
+            true,
+          )
           if (!this.isCurrent(path, generation, epoch)) continue
+          if (reply && 'result' in reply && isPartialExtract(reply.result)) {
+            // one turn of a large PDF: the pages read are kept in the worker, and the file goes
+            // back into the line, where lighter files (or anything asked for) go first
+            this.readProgress.set(path, {
+              done: reply.result.pagesDone,
+              total: reply.result.totalPages,
+            })
+            this.enqueue(path, false, this.activeBytes.get(path))
+            continue
+          }
           if (!reply || !('result' in reply) || !isExtractResult(reply.result)) {
             const error =
               reply && 'error' in reply && typeof reply.error === 'string'
@@ -1437,6 +1475,7 @@ export class DocumentMemoryManager {
           }
         } finally {
           clearTimeout(heavyWatch)
+          this.slicing.delete(path)
           this.activeExtractions.delete(path)
           this.activeSince.delete(path)
           this.activeBytes.delete(path)
@@ -1445,6 +1484,7 @@ export class DocumentMemoryManager {
           if (generation === this.currentGeneration(path)) {
             this.urgent.delete(path)
             this.deferred.delete(path)
+            this.readProgress.delete(path)
           }
         }
       }
@@ -1728,6 +1768,19 @@ function hashFile(path: string): Promise<string> {
 function safeError(error: unknown): string {
   return error instanceof Error ? error.message : 'Document memory operation failed.'
 }
+/** One turn of a large PDF that is not finished: the worker kept the pages it read. */
+function isPartialExtract(
+  value: unknown,
+): value is { partial: true; pagesDone: number; totalPages: number } {
+  const result = value as { partial?: unknown; pagesDone?: unknown; totalPages?: unknown } | null
+  return (
+    !!result &&
+    result.partial === true &&
+    typeof result.pagesDone === 'number' &&
+    typeof result.totalPages === 'number'
+  )
+}
+
 function isExtractResult(value: unknown): value is ExtractResult {
   if (!value || typeof value !== 'object') return false
   const result = value as Partial<ExtractResult>

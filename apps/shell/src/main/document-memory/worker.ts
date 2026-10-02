@@ -4,7 +4,7 @@ import { interruptBackgroundSleep, withBackgroundBudget } from './cpu-budget'
 import { readFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { extname } from 'node:path'
-import { parseFileToText, pdfPageTexts } from '@genoffice/file-parse'
+import { parseFileToText, pdfPageTextsSlice } from '@genoffice/file-parse'
 import { capChunks, chunkDocumentText, chunkTabularText } from './chunks'
 import { DocumentMemoryStore } from './store'
 import { embedTexts } from './embeddings'
@@ -14,14 +14,59 @@ import { ocrChunksFromPages, ocrDocumentHash, type OcrLookup } from './ocr-sidec
 /** A page with fewer characters than this has no usable text layer. */
 const MIN_PAGE_TEXT_CHARS = 20
 
+/** A PDF that is being read in turns: the pages read so far, kept until the file is finished. */
+const partialPdfs = new Map<string, { mtimeMs: number; sizeBytes: number; pages: string[] }>()
+const MAX_PARTIAL_PDFS = 4
+
+/** What one turn of reading a large PDF reports when the file is not finished yet. */
+export interface PartialExtract {
+  partial: true
+  pagesDone: number
+  totalPages: number
+}
+
 export async function extractDocument(path: string, ocr?: OcrLookup) {
+  const result = await extractDocumentSliced(path, ocr)
+  if ('partial' in result) throw new Error('Document extraction stopped early')
+  return result
+}
+
+/**
+ * With `sliceMs`, a PDF is read for about that long and, if it is not finished, the pages read
+ * so far are kept here and a partial result is returned; the next call for the same unchanged
+ * file carries on after them. Without it the whole file is read at once.
+ */
+export async function extractDocumentSliced(path: string, ocr?: OcrLookup, sliceMs?: number) {
   const before = await stat(path)
   if (before.size > 128 * 1024 * 1024) throw new Error('Document exceeds the 128 MB indexing limit')
   const bytes = await readFile(path)
   const isPdf = /\.pdf$/i.test(path)
   // PDFs are read page by page so pages without a text layer (scans inside an otherwise
   // digital file) can be told apart: those alone are OCR work, everything else stays local.
-  const pdfPages = isPdf ? await pdfPageTexts(bytes).catch(() => null) : null
+  let pdfPages: string[] | null = null
+  if (isPdf) {
+    const kept = partialPdfs.get(path)
+    const resumed =
+      kept && kept.mtimeMs === before.mtimeMs && kept.sizeBytes === before.size ? kept.pages : []
+    const slice = await pdfPageTextsSlice(bytes, {
+      from: resumed.length,
+      ...(sliceMs ? { stopAt: Date.now() + sliceMs } : {}),
+    }).catch(() => null)
+    partialPdfs.delete(path)
+    if (slice) {
+      pdfPages = [...resumed, ...slice.pages]
+      if (!slice.done) {
+        partialPdfs.set(path, { mtimeMs: before.mtimeMs, sizeBytes: before.size, pages: pdfPages })
+        while (partialPdfs.size > MAX_PARTIAL_PDFS)
+          partialPdfs.delete(partialPdfs.keys().next().value!)
+        return {
+          partial: true,
+          pagesDone: pdfPages.length,
+          totalPages: slice.total,
+        } satisfies PartialExtract
+      }
+    }
+  }
   const parsed = pdfPages
     ? ({ ok: true, kind: 'text', text: pdfPages.join('\n\n') } as const)
     : await parseFileToText(path)
@@ -148,6 +193,7 @@ onIndexRequest(
     limit: number
     embeddingModel: string
     interactive?: boolean
+    sliceMs?: number
     ocr?: OcrRenderRequest
   }) => {
     const execute = async () => {
@@ -161,7 +207,9 @@ onIndexRequest(
         if (request.type === 'extract')
           result = request.interactive
             ? await extractDocument(request.path, lookup)
-            : await withBackgroundBudget(() => extractDocument(request.path, lookup))
+            : await withBackgroundBudget(() =>
+                extractDocumentSliced(request.path, lookup, request.sliceMs),
+              )
         else if (request.type === 'ocr-render')
           result = await withBackgroundBudget(() =>
             renderPdfPagesForOcr(request.path, request.ocr!),

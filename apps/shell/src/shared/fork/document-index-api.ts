@@ -67,6 +67,8 @@ export interface IndexingNow {
   embedding: Record<string, { done: number; total: number }>
   /** place in the waiting line (1 = next) for the first few hundred files */
   positions: Record<string, number>
+  /** pages read so far of a large PDF that is being read in turns (reading now or waiting) */
+  pages: Record<string, { done: number; total: number }>
   queued: number
   /** background work is paused (battery, locked screen, low memory, or by the user) */
   paused: boolean

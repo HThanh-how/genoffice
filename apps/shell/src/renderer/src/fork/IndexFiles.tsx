@@ -10,20 +10,21 @@ import { buildFileLog, deriveFileSteps, formatBytes, logWords } from './index-fi
 
 /** What the indexer is doing with one file right now. */
 export type Live =
-  | { kind: 'reading'; since: number }
+  | { kind: 'reading'; since: number; pages?: { done: number; total: number } }
   | { kind: 'embedding'; done: number; total: number }
-  | { kind: 'queued'; position: number }
+  | { kind: 'queued'; position: number; pages?: { done: number; total: number } }
   | { kind: 'paused' }
 
 export function liveOf(now: IndexingNow | null, path: string): Live | null {
   if (!now) return null
+  const pages = now.pages?.[path]
   const reading = now.extracting.find((entry) => entry.path === path)
-  if (reading) return { kind: 'reading', since: reading.since }
+  if (reading) return { kind: 'reading', since: reading.since, ...(pages ? { pages } : {}) }
   const vectors = now.embedding[path]
   if (vectors) return { kind: 'embedding', done: vectors.done, total: vectors.total }
   if (now.paused) return { kind: 'paused' }
   const position = now.positions[path]
-  return position ? { kind: 'queued', position } : null
+  return position ? { kind: 'queued', position, ...(pages ? { pages } : {}) } : null
 }
 
 /** What the indexer is doing, refreshed while a list is on screen. */
@@ -71,6 +72,8 @@ export interface FileItem {
 
 const EN = {
   reading: 'Reading · {t}',
+  readingPages: 'Reading · {t} · page {d}/{p}',
+  queuedPages: 'Next in line: {n} · {d}/{p} pages read',
   embedding: 'Building search vectors {d}/{n}',
   queued: 'Next in line: {n}',
   pausedNow: 'Paused for now',
@@ -101,6 +104,8 @@ const EN = {
 export type FileWords = typeof EN
 const VI: FileWords = {
   reading: 'Đang đọc · {t}',
+  readingPages: 'Đang đọc · {t} · trang {d}/{p}',
+  queuedPages: 'Hàng chờ thứ {n} · đã đọc {d}/{p} trang',
   embedding: 'Đang lập vector tìm kiếm {d}/{n}',
   queued: 'Hàng chờ thứ {n}',
   pausedNow: 'Đang tạm dừng',
@@ -467,11 +472,15 @@ export function FileRow({
   const retryable = item.reason ? isRetryableReason(item.reason) : false
   const liveText =
     live?.kind === 'reading'
-      ? fill(w.reading, { t: clock(live.since) })
+      ? live.pages
+        ? fill(w.readingPages, { t: clock(live.since), d: live.pages.done, p: live.pages.total })
+        : fill(w.reading, { t: clock(live.since) })
       : live?.kind === 'embedding'
         ? fill(w.embedding, { d: live.done, n: live.total })
         : live?.kind === 'queued'
-          ? fill(w.queued, { n: live.position })
+          ? live.pages
+            ? fill(w.queuedPages, { n: live.position, d: live.pages.done, p: live.pages.total })
+            : fill(w.queued, { n: live.position })
           : live?.kind === 'paused'
             ? w.pausedNow
             : ''
