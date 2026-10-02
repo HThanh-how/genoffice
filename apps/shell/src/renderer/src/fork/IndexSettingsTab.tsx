@@ -1,10 +1,11 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import { useI18n } from '../locale'
 import { IndexingModeSettings } from './IndexingModeSettings'
 import { AgyOcrSettings } from './AgyOcrSettings'
 import { EmbeddingModelSettings } from './EmbeddingModelSettings'
 import { EverythingSettings } from './EverythingSettings'
+import { DbLocationSettings } from './DbLocationSettings'
 
 const EN = {
   run: 'Running in the background',
@@ -15,7 +16,6 @@ const EN = {
   modelHint: 'Standard or high quality',
   data: 'Data',
   dataHint: 'Where the index is kept, and clearing it',
-  where: 'Index location',
   clear: 'Delete the whole index…',
   confirm: 'Delete the whole index? The index data on this computer will be removed.',
   cleared: 'The index was deleted.',
@@ -29,7 +29,6 @@ const VI: typeof EN = {
   modelHint: 'Chuẩn hay chất lượng cao',
   data: 'Dữ liệu',
   dataHint: 'Chỉ mục nằm ở đâu, và xoá nó',
-  where: 'Vị trí chỉ mục',
   clear: 'Xoá toàn bộ chỉ mục…',
   confirm: 'Xóa toàn bộ chỉ mục? Dữ liệu chỉ mục trên máy sẽ bị xóa.',
   cleared: 'Đã xoá chỉ mục.',
@@ -51,14 +50,7 @@ function Section({ title, hint, children }: { title: string; hint: string; child
 export function IndexSettingsTab({ api }: { api: HomeApi }) {
   const { lang } = useI18n()
   const d = lang === 'vi' ? VI : EN
-  const [dbPath, setDbPath] = useState('')
   const [note, setNote] = useState('')
-  useEffect(() => {
-    void api
-      .getDocumentMemoryStatus()
-      .then((status) => setDbPath(status.dbPath))
-      .catch(() => undefined)
-  }, [api])
   return (
     <div className="ixp">
       <Section title={d.run} hint={d.runHint}>
@@ -72,9 +64,7 @@ export function IndexSettingsTab({ api }: { api: HomeApi }) {
       </Section>
       <EverythingSettings api={api} />
       <Section title={d.data} hint={d.dataHint}>
-        <p className="idx-muted">
-          {d.where}: <code>{dbPath || '—'}</code>
-        </p>
+        <DbLocationSettings api={api} />
         <button
           type="button"
           className="idx-btn"

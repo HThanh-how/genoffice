@@ -124,6 +124,8 @@ interface ManagerOptions {
   /** How long a background extract/embed step may stay silent before the worker is restarted. */
   workerTimeoutMs?: number
   tombstoneGraceMs?: number
+  /** Where the database file lives (default: the user data folder; the other files stay there). */
+  dbDir?: string
   /** Another source of file names (Everything): files on disk that were never opened or indexed. */
   externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>
 }
@@ -183,7 +185,8 @@ export class DocumentMemoryManager {
 
   constructor(userData: string, options: ManagerOptions = {}) {
     mkdirSync(userData, { recursive: true })
-    this.dbPath = join(userData, 'document-memory.db')
+    mkdirSync(options.dbDir ?? userData, { recursive: true })
+    this.dbPath = join(options.dbDir ?? userData, 'document-memory.db')
     this.settingsPath = join(userData, 'document-memory-settings.json')
     this.cacheDir = join(userData, 'document-memory-models')
     this.embeddingSettingsPath = join(userData, 'document-memory-embedding.json')

@@ -303,6 +303,8 @@ import {
   type EverythingController,
 } from './fork/everything-ipc'
 import { isProgramFile } from './everything/junk'
+import { applyPendingDbMove, resolveDbDir } from './document-memory/db-location'
+import { registerDbLocationIpc } from './fork/db-location-ipc'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
 import { initClipboardHistory, registerClipboardHistory } from './fork/clipboard-history-ipc'
 import { registerIndexingMode } from './fork/indexing-mode-ipc'
@@ -4077,9 +4079,29 @@ function registerHomeIpc(): void {
     ipcMain,
     getDocumentMemory: () => documentMemory,
     getFolderScan: () => folderScan,
-    dbPath: () => join(app.getPath('userData'), 'document-memory.db'),
+    dbPath: () =>
+      documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db'),
   })
   if (everything) registerEverythingIpc(ipcMain, everything)
+  registerDbLocationIpc({
+    ipcMain,
+    userData: app.getPath('userData'),
+    pickFolder: async () => {
+      const options = {
+        properties: ['openDirectory', 'createDirectory'] as Array<
+          'openDirectory' | 'createDirectory'
+        >,
+      }
+      const result = shellWindow
+        ? await dialog.showOpenDialog(shellWindow, options)
+        : await dialog.showOpenDialog(options)
+      return result.canceled ? null : (result.filePaths[0] ?? null)
+    },
+    restart: () => {
+      app.relaunch()
+      app.quit()
+    },
+  })
   registerHomeChatIpc(ipcMain, join(app.getPath('userData'), 'home-chat-sessions'))
   ipcMain.handle(HOME_CHANNELS.getDocumentFolderScanStatus, () => folderScan?.status() ?? null)
   ipcMain.handle(HOME_CHANNELS.stopDocumentFolderScan, () => folderScan?.stop() ?? null)
@@ -6142,8 +6164,14 @@ app.whenReady().then(async () => {
     return
   }
   startLoopMonitor() // dev diagnostic; no-op unless GENOFFICE_DEBUG_LOOP=1
-  everything = createEverything(app.getPath('userData'))
-  documentMemory = new DocumentMemoryManager(app.getPath('userData'), {
+  const userDataDir = app.getPath('userData')
+  // a move of the index to another folder, chosen in the settings, happens here: nothing has the
+  // database open yet
+  const dbMove = await applyPendingDbMove(userDataDir)
+  if (dbMove.error) console.warn('[document-memory] index move failed:', dbMove.error)
+  everything = createEverything(userDataDir)
+  documentMemory = new DocumentMemoryManager(userDataDir, {
+    dbDir: resolveDbDir(userDataDir),
     externalNames: (query, limit) => everything!.search.search(query, limit),
   })
   void listLegacyRecovery(app.getPath('userData')).catch((error) =>

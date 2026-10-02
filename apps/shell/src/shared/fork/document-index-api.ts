@@ -1,5 +1,12 @@
 import type { IndexIssueReason } from '../../main/document-memory/issues'
 import type { IndexIssueSummary } from '../../main/document-memory/issue-reader'
+import type { DbLocationState, DbMoveError } from '../../main/document-memory/db-location'
+
+export type { DbLocationState, DbMoveError }
+
+/** The answer to "move the index here": nothing moves until the app restarts. */
+export type DbMoveResult =
+  { ok: true; sizeBytes: number } | { ok: false; canceled?: boolean; error?: DbMoveError }
 
 /** IPC channels added by the document-index popup rework (fork-only). */
 export const DOCUMENT_INDEX_CHANNELS = {
@@ -16,6 +23,11 @@ export const DOCUMENT_INDEX_CHANNELS = {
   getIndexingNow: 'home:get-indexing-now',
   stopIndexFile: 'home:stop-index-file',
   getEverything: 'home:get-everything',
+  getDbLocation: 'home:get-db-location',
+  chooseDbLocation: 'home:choose-db-location',
+  resetDbLocation: 'home:reset-db-location',
+  cancelDbMove: 'home:cancel-db-move',
+  restartForDbMove: 'home:restart-for-db-move',
   setEverything: 'home:set-everything',
 } as const
 
@@ -156,6 +168,16 @@ export interface DocumentIndexApi {
   searchIndexedFiles(query: string): Promise<IndexedFileHit[]>
   /** Which files the indexer is reading now and who is next. */
   getIndexingNow(): Promise<IndexingNow>
+  /** Where the index file is kept, how big it is, and any move waiting for a restart. */
+  getDbLocation(): Promise<DbLocationState>
+  /** Pick a folder for the index; the move is scheduled and done at the next start. */
+  chooseDbLocation(): Promise<DbMoveResult>
+  /** Schedule moving the index back to the app's own data folder. */
+  resetDbLocation(): Promise<DbMoveResult>
+  /** Drop a scheduled move. */
+  cancelDbMove(): Promise<void>
+  /** Restart the app now so the scheduled move is carried out. */
+  restartForDbMove(): Promise<void>
   /** Whether the Everything search is on, and whether this computer has es.exe. */
   getEverything(): Promise<EverythingState>
   /** Turn it on or off, optionally pointing at es.exe; returns the new state. */

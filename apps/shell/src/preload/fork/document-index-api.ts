@@ -23,6 +23,21 @@ export function createDocumentIndexPreloadApi(
     async getIndexingNow() {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getIndexingNow)
     },
+    async getDbLocation() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getDbLocation)
+    },
+    async chooseDbLocation() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.chooseDbLocation)
+    },
+    async resetDbLocation() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.resetDbLocation)
+    },
+    async cancelDbMove() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.cancelDbMove)
+    },
+    async restartForDbMove() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.restartForDbMove)
+    },
     async getEverything() {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getEverything)
     },
