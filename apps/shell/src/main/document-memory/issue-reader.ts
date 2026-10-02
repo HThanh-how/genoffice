@@ -71,12 +71,12 @@ export class IndexIssueReader {
   private scope(root: string): { where: string; args: string[] } {
     // '*' = every indexed folder, so the list never depends on which folder was scanned last
     if (root === ALL_FOLDERS)
-      return { where: "excluded = 0 AND status IN ('error', 'empty')", args: [] }
+      return { where: "excluded = 0 AND status IN ('error', 'empty', 'pending')", args: [] }
     const normalized = resolve(root)
     const prefix = normalized + (normalized.includes('\\') ? '\\' : '/')
     return {
       where:
-        "excluded = 0 AND status IN ('error', 'empty') AND (path = ? OR substr(path, 1, length(?)) = ?)",
+        "excluded = 0 AND status IN ('error', 'empty', 'pending') AND (path = ? OR substr(path, 1, length(?)) = ?)",
       args: [normalized, prefix, prefix],
     }
   }
@@ -96,7 +96,7 @@ export class IndexIssueReader {
     // problem files first, then by name: the ones the person is usually hunting for
     hits.sort((a, b) => Number(a.status === 'ready') - Number(b.status === 'ready'))
     return hits.slice(0, limit).map((row) => {
-      const problem = row.status === 'error' || row.status === 'empty'
+      const problem = row.status === 'error' || row.status === 'empty' || row.status === 'pending'
       const base = this.toIssue(row)
       const withProgress = this.withProgress(base)
       return {

@@ -21,6 +21,7 @@ export interface FileItem {
 
 const EN = {
   retry: 'Try again',
+  readFirst: 'Read this one first',
   reread: 'Read again',
   readNow: 'Read with Antigravity now',
   copyLog: 'Copy log',
@@ -38,6 +39,7 @@ const EN = {
 export type FileWords = typeof EN
 const VI: FileWords = {
   retry: 'Thử lại',
+  readFirst: 'Đọc tệp này trước',
   reread: 'Đọc lại',
   readNow: 'Đọc bằng Antigravity ngay',
   copyLog: 'Sao chép nhật ký',
@@ -290,7 +292,13 @@ export function FileRow({
           )}
           {(retryable || item.status === 'ready') && (
             <IconButton
-              label={item.status === 'ready' ? w.reread : w.retry}
+              label={
+                item.reason === 'waiting'
+                  ? w.readFirst
+                  : item.status === 'ready'
+                    ? w.reread
+                    : w.retry
+              }
               disabled={busy}
               onClick={() => void actions.retry(item)}
             >

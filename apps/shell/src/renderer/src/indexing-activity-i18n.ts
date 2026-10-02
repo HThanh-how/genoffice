@@ -1,7 +1,7 @@
 import type { Lang } from '@genoffice/i18n'
 import type { IndexIssueReason } from '../../main/document-memory/issues'
 
-type LegacyReason = Exclude<IndexIssueReason, 'permission' | 'corrupt' | 'model'>
+type LegacyReason = Exclude<IndexIssueReason, 'permission' | 'corrupt' | 'model' | 'waiting'>
 
 export const en = {
   title: 'Document index',

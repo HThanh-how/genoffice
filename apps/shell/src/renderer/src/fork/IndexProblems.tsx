@@ -165,7 +165,12 @@ export function IndexProblems({
   const retryEverything = async () => {
     let queued = 0
     for (const group of summary?.groups ?? []) {
-      if (!needsAction(group.reason) || !isRetryableReason(group.reason)) continue
+      if (
+        !needsAction(group.reason) ||
+        !isRetryableReason(group.reason) ||
+        group.reason === 'waiting'
+      )
+        continue
       const result = await api.retryDocumentIndexGroup(root, group.reason)
       if (result.ok) queued += result.retried
     }

@@ -124,7 +124,9 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
         return { ok: true, retried: 0 }
       }
       let retried = 0
-      for (const id of reader().ids(scope, only)) {
+      // The waiting queue can be thousands long: put the first hundred (highest priority) first.
+      const ids = reader().ids(scope, only)
+      for (const id of only === 'waiting' ? ids.slice(0, 100) : ids) {
         const result = documentMemory.retryDocument(id)
         if (!result.ok) {
           if (result.error === 'paused') return { ok: false, retried, error: 'paused' }

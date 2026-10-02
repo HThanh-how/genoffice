@@ -21,6 +21,8 @@ export type IndexIssueReason =
   | 'changed'
   /** the local embedding model could not load or run */
   | 'model'
+  /** read in the queue, not read yet */
+  | 'waiting'
   | 'other'
 
 export interface IndexIssue {
@@ -40,6 +42,7 @@ export interface IndexIssue {
 /** Every reason, in the order the UI lists groups (needs-action first, informational last). */
 export const ISSUE_REASON_ORDER: readonly IndexIssueReason[] = [
   'model',
+  'waiting',
   'timeout',
   'permission',
   'unavailable',
@@ -71,6 +74,7 @@ export function isRetryableReason(reason: IndexIssueReason): boolean {
 }
 
 export function issueReason(error: string | null, status: string): IndexIssueReason {
+  if (status === 'pending') return 'waiting'
   const value = (error ?? '').toLowerCase()
   // Order matters: the most specific signals first. "Local embedding model unavailable"
   // must not fall into the file-unavailable bucket.

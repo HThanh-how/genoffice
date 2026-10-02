@@ -46,7 +46,7 @@ export async function extractDocument(path: string, ocr?: OcrLookup) {
       .replace(/&gt;/g, '>')
   }
   // Cost control: tabular exports index header + sampled rows; everything else is capped.
-  const tabular = /^\.(csv|tsv)$/.test(extname(path).toLowerCase())
+  const tabular = /^\.(csv|tsv|xls)$/.test(extname(path).toLowerCase())
   const base = tabular
     ? chunkTabularText(text)
     : { ...capChunks(chunkDocumentText(text)), numeric: false }

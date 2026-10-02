@@ -1058,7 +1058,7 @@ export class DocumentMemoryStore {
     const rows = this.db
       .prepare(
         `SELECT id, path, name, status, hash, mtime_ms, size_bytes, updated_at, truncated
-        FROM documents WHERE excluded = 0 AND status IN ('ready', 'empty', 'error')`,
+        FROM documents WHERE excluded = 0`,
       )
       .all() as unknown as Array<{
       id: number
@@ -1086,7 +1086,7 @@ export class DocumentMemoryStore {
         b.row.updated_at - a.row.updated_at,
     )
     return scored.slice(0, limit).map(({ row, matched }) => {
-      const unread = row.status !== 'ready'
+      const unread = row.status !== 'ready' && row.status !== 'text-only'
       return {
         documentId: row.id,
         path: row.path,

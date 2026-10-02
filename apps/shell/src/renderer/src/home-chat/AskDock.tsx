@@ -321,12 +321,15 @@ export function AskDock({
               {hits === null && query.length >= 2 && <p className="ask-note">{w.searching}</p>}
               {hits?.length === 0 && !command && <p className="ask-note">{w.none}</p>}
               {hits?.map((hit) => {
-                const unread = hit.reason === 'no-text'
+                const queued = hit.reason === 'waiting'
+                const unread = hit.reason === 'no-text' || queued
                 const problem = !!hit.reason && !unread
                 const tag = problem
                   ? (copy.reasons[hit.reason!]?.title ?? hit.error ?? '')
                   : unread
-                    ? w.unread
+                    ? queued
+                      ? copy.reasons.waiting.title
+                      : w.unread
                     : w.indexed
                 return (
                   <div className="ask-hit" key={hit.id}>
@@ -342,7 +345,7 @@ export function AskDock({
                         {tag}
                       </span>
                     </button>
-                    {unread && (
+                    {hit.reason === 'no-text' && (
                       <button
                         type="button"
                         className="ask-mini"
@@ -354,7 +357,7 @@ export function AskDock({
                         ✦
                       </button>
                     )}
-                    {problem && (
+                    {(problem || queued) && (
                       <button
                         type="button"
                         className="ask-mini"

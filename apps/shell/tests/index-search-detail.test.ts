@@ -99,4 +99,23 @@ describe('DocumentMemoryStore.searchNames', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+  it('also finds a file that is still waiting in the queue, and lists the queue as a group', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'index-wait-'))
+    const dbPath = join(dir, 'memory.db')
+    const store = new DocumentMemoryStore(dbPath)
+    const reader = new IndexIssueReader(dbPath)
+    try {
+      store.remember(join(dir, 'Ra viện BV Chợ Rẫy.pdf'))
+      expect(store.searchNames('giấy ra viện').map((h) => h.name)).toEqual([
+        'Ra viện BV Chợ Rẫy.pdf',
+      ])
+      expect(reader.summary('*').groups).toEqual([{ reason: 'waiting', count: 1 }])
+      expect(reader.search('ra vien')[0]).toMatchObject({ status: 'pending', reason: 'waiting' })
+    } finally {
+      reader.close()
+      store.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

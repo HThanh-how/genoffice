@@ -73,6 +73,7 @@ const en: ActivityCopy = {
   etaHours: 'About {n} hr left',
   filesCount: '{n}',
   reasons: {
+    waiting: { title: 'Waiting to be read', hint: 'Queued. Press the arrow to read a file first.' },
     model: {
       title: 'Search model didn’t load',
       hint: 'Check your internet connection, then try again.',
@@ -148,6 +149,7 @@ const vi: ActivityCopy = {
   etaHours: 'Còn khoảng {n} giờ',
   filesCount: '{n}',
   reasons: {
+    waiting: { title: 'Đang chờ được đọc', hint: 'Đã xếp hàng. Bấm mũi tên để đọc tệp đó trước.' },
     model: {
       title: 'Mô hình tìm kiếm không tải được',
       hint: 'Kiểm tra kết nối mạng rồi thử lại.',
@@ -222,6 +224,7 @@ const zh: ActivityCopy = {
   etaHours: '约剩 {n} 小时',
   filesCount: '{n}',
   reasons: {
+    waiting: { title: '等待读取', hint: '已在队列中。点击箭头可优先读取该文件。' },
     model: { title: '搜索模型未能加载', hint: '请检查网络连接，然后重试。' },
     timeout: { title: '读取超时', hint: '文件读取太慢。请在电脑不太忙时重试。' },
     permission: {
@@ -272,6 +275,7 @@ const zhTW: ActivityCopy = {
   etaHours: '約剩 {n} 小時',
   filesCount: '{n}',
   reasons: {
+    waiting: { title: '等待讀取', hint: '已在佇列中。點擊箭頭可優先讀取該檔案。' },
     model: { title: '搜尋模型無法載入', hint: '請檢查網路連線，然後重試。' },
     timeout: { title: '讀取逾時', hint: '檔案讀取太慢。請在電腦較不忙時重試。' },
     permission: {
