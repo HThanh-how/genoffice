@@ -67,6 +67,11 @@ const GENERIC_WORDS = new Set([
 
 /** Filler words of a Vietnamese or English question that say nothing about a file's name. */
 const NAME_FILLER = new Set([
+  'sao',
+  'nhi',
+  'nhe',
+  'vay',
+  'ne',
   'co',
   'cai',
   'nao',
@@ -142,13 +147,19 @@ const NAME_FILLER = new Set([
 
 /** The words of a question that could appear in a file name, accents and case ignored. */
 export function nameWords(input: string): string[] {
-  return [
+  const words = [
     ...new Set(
       normalizeDocumentText(input)
         .split(' ')
         .filter((word) => word.length > 0 && !NAME_FILLER.has(word)),
     ),
   ]
+  // "xuất viện" and "ra viện" name the same paper
+  if (words.includes('vien')) {
+    if (words.includes('xuat') && !words.includes('ra')) words.push('ra')
+    else if (words.includes('ra') && !words.includes('xuat')) words.push('xuat')
+  }
+  return words
 }
 
 export function queryTokens(input: string): string[] {

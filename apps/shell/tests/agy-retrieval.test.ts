@@ -54,6 +54,24 @@ describe('buildRetrievalQuery', () => {
   })
 })
 
+describe('name-only hits', () => {
+  it('keeps one hit per document even though they all have chunk 0, and tags them UNREAD', () => {
+    const named = [1, 2].map((n) =>
+      hit(n, {
+        chunkId: 0,
+        location: 'file name',
+        contentUnread: true,
+        text: 'The file name matches.',
+      }),
+    )
+    const selected = selectHits([...named, hit(3), hit(3)])
+    expect(selected.map((h) => h.documentId)).toEqual([1, 2, 3])
+    const context = buildRetrievalContext(named)
+    expect(context.block).toContain('UNREAD')
+    expect(context.used).toHaveLength(2)
+  })
+})
+
 describe('selectHits', () => {
   it('drops invalid ids and duplicate chunks and caps at 8', () => {
     const hits = [

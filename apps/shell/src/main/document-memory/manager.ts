@@ -618,13 +618,11 @@ export class DocumentMemoryManager {
     // answer, so name matches join the content hits (one entry per document).
     const seen = new Set(result.map((hit) => hit.documentId))
     const named = this.store.searchNames(query, 5).filter((hit) => !seen.has(hit.documentId))
-    const merged = [
-      ...named.filter((hit) => hit.score >= 1),
-      ...result,
-      ...named.filter((hit) => hit.score < 1),
-    ]
+    // A name that fits the question comes first: with a full page of passage hits it would
+    // otherwise be cut off by the caller's limit.
+    const merged = [...named.slice(0, 3), ...result]
     return {
-      hits: await this.annotateFreshness(merged.slice(0, limit + named.length)),
+      hits: await this.annotateFreshness(merged),
       pending: this.queue.length + this.embeds.length + this.pendingCount,
       errors: this.store.errorCount(),
       modelState: this.modelState,

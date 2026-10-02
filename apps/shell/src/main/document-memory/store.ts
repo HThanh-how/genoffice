@@ -1040,7 +1040,7 @@ export class DocumentMemoryStore {
   searchNames(query: string, limit = 5): DocumentMemoryHit[] {
     const words = nameWords(query)
     if (words.length === 0) return []
-    const need = words.length <= 2 ? words.length : Math.max(2, Math.ceil(words.length * 0.5))
+    const need = words.length <= 2 ? words.length : Math.max(2, Math.ceil(words.length * 0.4))
     const rows = this.db
       .prepare(
         `SELECT id, path, name, status, hash, mtime_ms, size_bytes, updated_at, truncated

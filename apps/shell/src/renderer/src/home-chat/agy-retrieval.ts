@@ -56,12 +56,14 @@ export function selectHits(
   max = AGY_MAX_HITS,
 ): DocumentMemoryHit[] {
   const out: DocumentMemoryHit[] = []
-  const seen = new Set<number>()
+  const seen = new Set<string>()
   for (const hit of hits ?? []) {
     if (out.length >= max) break
     if (!Number.isSafeInteger(hit.documentId) || hit.documentId <= 0) continue
-    if (seen.has(hit.chunkId)) continue
-    seen.add(hit.chunkId)
+    // a name-only hit has no passage (chunk 0): it is told apart by its document
+    const key = hit.chunkId > 0 ? `c${hit.chunkId}` : `d${hit.documentId}`
+    if (seen.has(key)) continue
+    seen.add(key)
     out.push(hit)
   }
   return out

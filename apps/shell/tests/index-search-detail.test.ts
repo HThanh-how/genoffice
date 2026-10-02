@@ -85,6 +85,9 @@ describe('DocumentMemoryStore.searchNames', () => {
       expect(hits.map((h) => h.name)).toEqual(['Ra viện BV Chợ Rẫy.pdf'])
       expect(hits[0]).toMatchObject({ contentUnread: true, location: 'file name', chunkId: 0 })
       expect(store.searchNames('ra vien')).toHaveLength(1)
+      expect(store.searchNames('tìm file xuất viện').map((h) => h.name)).toEqual([
+        'Ra viện BV Chợ Rẫy.pdf',
+      ])
       expect(store.searchNames('tìm file')).toEqual([])
     } finally {
       store.close()
