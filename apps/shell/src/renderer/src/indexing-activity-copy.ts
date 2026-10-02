@@ -73,7 +73,10 @@ const en: ActivityCopy = {
   etaHours: 'About {n} hr left',
   filesCount: '{n}',
   reasons: {
-    waiting: { title: 'Waiting to be read', hint: 'Queued. Press the arrow to read a file first.' },
+    waiting: {
+      title: 'Indexing',
+      hint: 'Read in order, lightest files first. Press the arrow to read a file first.',
+    },
     model: {
       title: 'Search model didn’t load',
       hint: 'Check your internet connection, then try again.',
@@ -107,8 +110,8 @@ const en: ActivityCopy = {
       hint: 'Remove the password to include this file, then retry.',
     },
     'no-text': {
-      title: 'No text to read',
-      hint: 'Scanned PDFs and photos hold no readable text, so they can’t be searched by content.',
+      title: 'Waiting for OCR',
+      hint: 'Scanned PDFs and photos have no text yet. Press the star to read one now with Antigravity.',
     },
     'too-large': {
       title: 'Too large',
@@ -149,7 +152,10 @@ const vi: ActivityCopy = {
   etaHours: 'Còn khoảng {n} giờ',
   filesCount: '{n}',
   reasons: {
-    waiting: { title: 'Đang chờ được đọc', hint: 'Đã xếp hàng. Bấm mũi tên để đọc tệp đó trước.' },
+    waiting: {
+      title: 'Đang index',
+      hint: 'Đọc lần lượt, tệp nhẹ trước. Bấm mũi tên để đọc tệp đó trước.',
+    },
     model: {
       title: 'Mô hình tìm kiếm không tải được',
       hint: 'Kiểm tra kết nối mạng rồi thử lại.',
@@ -183,8 +189,8 @@ const vi: ActivityCopy = {
       hint: 'Gỡ mật khẩu để đưa tệp vào chỉ mục, rồi thử lại.',
     },
     'no-text': {
-      title: 'Không có chữ để đọc',
-      hint: 'PDF dạng ảnh hoặc ảnh chụp không chứa văn bản nên không tìm theo nội dung được.',
+      title: 'Chờ OCR',
+      hint: 'PDF dạng ảnh hoặc ảnh chụp chưa có chữ. Bấm hình tia sáng để đọc ngay bằng Antigravity.',
     },
     'too-large': {
       title: 'Quá lớn',
@@ -224,7 +230,7 @@ const zh: ActivityCopy = {
   etaHours: '约剩 {n} 小时',
   filesCount: '{n}',
   reasons: {
-    waiting: { title: '等待读取', hint: '已在队列中。点击箭头可优先读取该文件。' },
+    waiting: { title: '正在索引', hint: '按顺序读取，较小的文件优先。点击箭头可优先读取该文件。' },
     model: { title: '搜索模型未能加载', hint: '请检查网络连接，然后重试。' },
     timeout: { title: '读取超时', hint: '文件读取太慢。请在电脑不太忙时重试。' },
     permission: {
@@ -242,7 +248,10 @@ const zh: ActivityCopy = {
     changed: { title: '读取期间被修改', hint: '文件在读取过程中被编辑。重试即可读取最新版本。' },
     other: { title: '无法读取', hint: '发生了意外错误。请重试；若仍失败，请查看技术详情。' },
     password: { title: '受密码保护', hint: '移除密码后才能收录此文件，然后重试。' },
-    'no-text': { title: '没有可读文字', hint: '扫描版 PDF 和照片不含可读文字，无法按内容搜索。' },
+    'no-text': {
+      title: '等待 OCR',
+      hint: '扫描版 PDF 和照片还没有文字。点击星形按钮可用 Antigravity 立即读取。',
+    },
     'too-large': { title: '文件过大', hint: '超过 128 MB 的文件不会被索引。' },
     unsupported: { title: '格式不支持', hint: '暂时无法读取这类文件用于搜索。' },
   },
@@ -275,7 +284,7 @@ const zhTW: ActivityCopy = {
   etaHours: '約剩 {n} 小時',
   filesCount: '{n}',
   reasons: {
-    waiting: { title: '等待讀取', hint: '已在佇列中。點擊箭頭可優先讀取該檔案。' },
+    waiting: { title: '正在索引', hint: '依序讀取，較小的檔案優先。點擊箭頭可優先讀取該檔案。' },
     model: { title: '搜尋模型無法載入', hint: '請檢查網路連線，然後重試。' },
     timeout: { title: '讀取逾時', hint: '檔案讀取太慢。請在電腦較不忙時重試。' },
     permission: {
@@ -293,7 +302,10 @@ const zhTW: ActivityCopy = {
     changed: { title: '讀取期間被修改', hint: '檔案在讀取過程中被編輯。重試即可讀取最新版本。' },
     other: { title: '無法讀取', hint: '發生了意外錯誤。請重試；若仍失敗，請查看技術詳細資料。' },
     password: { title: '受密碼保護', hint: '移除密碼後才能收錄此檔案，然後重試。' },
-    'no-text': { title: '沒有可讀文字', hint: '掃描版 PDF 和照片不含可讀文字，無法依內容搜尋。' },
+    'no-text': {
+      title: '等待 OCR',
+      hint: '掃描版 PDF 和照片還沒有文字。點擊星形按鈕可用 Antigravity 立即讀取。',
+    },
     'too-large': { title: '檔案過大', hint: '超過 128 MB 的檔案不會被索引。' },
     unsupported: { title: '格式不支援', hint: '暫時無法讀取這類檔案用於搜尋。' },
   },

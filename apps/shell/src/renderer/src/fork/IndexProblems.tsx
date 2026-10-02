@@ -23,6 +23,11 @@ export function needsAction(reason: IndexIssueReason): boolean {
 
 const BATCH = 10
 
+/** Where a group sits in the "to do" list: scans first, what is being indexed last. */
+export function attentionRank(reason: IndexIssueReason): number {
+  return reason === 'no-text' ? 0 : reason === 'waiting' ? 2 : 1
+}
+
 const EN = {
   retryEverything: 'Try all errors again',
   readBatch: 'Read {n} scanned files now',
@@ -39,6 +44,7 @@ const EN = {
   more: 'Show more ({n} left)',
   retried: 'Queued {n} files again.',
   loading: 'Loading…',
+  indexingProgress: '{done} of {total} read',
 }
 type Dict = typeof EN
 const VI: Dict = {
@@ -57,6 +63,7 @@ const VI: Dict = {
   more: 'Xem thêm ({n} tệp nữa)',
   retried: 'Đã xếp lại {n} tệp.',
   loading: 'Đang tải…',
+  indexingProgress: 'Đã đọc {done}/{total}',
 }
 
 /** Files being read go first, then the next in line, then the rest (stable order). */
@@ -179,6 +186,10 @@ export function IndexProblems({
     for (const path of Object.keys(now.embedding)) live.add(path)
     if (live.size > 0) wasLive.current = new Set([...wasLive.current, ...live])
   }, [now])
+  const waitingPeak = useRef(0)
+  useEffect(() => {
+    waitingPeak.current = 0
+  }, [root])
   const openRef = useRef(open)
   openRef.current = open
   useEffect(() => {
@@ -270,6 +281,10 @@ export function IndexProblems({
 
   const renderGroup = (reason: IndexIssueReason, count: number) => {
     const words = copy.reasons[reason]
+    // the line "N left" and a bar: how far the files seen waiting at the start have come
+    const peak = reason === 'waiting' ? Math.max(waitingPeak.current, count) : 0
+    if (reason === 'waiting') waitingPeak.current = peak
+    const doneShare = peak > 0 ? Math.round(((peak - count) / peak) * 100) : 0
     const isOpen = open.has(reason)
     const state = groups[reason]
     return (
@@ -287,6 +302,18 @@ export function IndexProblems({
             <span className="ixp-head-text">
               <strong>{words.title}</strong>
               <span>{words.hint}</span>
+              {reason === 'waiting' && peak > 0 && (
+                <span
+                  className="ixp-bar"
+                  role="progressbar"
+                  aria-valuenow={doneShare}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  title={fill(d.indexingProgress, { done: peak - count, total: peak })}
+                >
+                  <span style={{ width: `${doneShare}%` }} />
+                </span>
+              )}
             </span>
             <span className="ixp-count">{count.toLocaleString(dateLocale)}</span>
           </button>
@@ -332,7 +359,11 @@ export function IndexProblems({
     )
   }
 
-  const attention = list.filter((g) => needsAction(g.reason))
+  // scans first and in a fixed place: the indexing group below changes all the time, and the
+  // list above it used to jump with it
+  const attention = list
+    .filter((g) => needsAction(g.reason))
+    .sort((a, b) => attentionRank(a.reason) - attentionRank(b.reason))
   const skipped = list.filter((g) => !needsAction(g.reason))
   const scanned = list.find((g) => g.reason === 'no-text')?.count ?? 0
   const failures = attention.some((g) => isRetryableReason(g.reason))

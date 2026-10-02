@@ -907,3 +907,20 @@
   opacity: 0.4;
   cursor: default;
 }
+
+/* progress of the group being indexed: how many of the files seen waiting have been read */
+.ixp-bar {
+  display: block;
+  height: 4px;
+  margin-top: 6px;
+  border-radius: 2px;
+  background: var(--hover);
+  overflow: hidden;
+}
+
+.ixp-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+  transition: width 0.4s ease;
+}
