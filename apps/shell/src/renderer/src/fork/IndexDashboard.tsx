@@ -94,6 +94,13 @@ const EN = {
   skippedTitle: 'Skipped on purpose',
   attentionTitle: 'Needs attention',
   more: 'Showing the first {n} of {total}.',
+  loadMore: 'Show more',
+  ocrNow: 'Read with Antigravity now',
+  ocrBusy: 'Reading…',
+  ocrDone: 'Read {n} pages. It is searchable shortly.',
+  ocrFailed: 'Could not read: {e}',
+  ocrConfirm:
+    'Read this scanned PDF now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
 }
 type Dict = typeof EN
 
@@ -172,6 +179,13 @@ const VI: Dict = {
   skippedTitle: 'Bỏ qua có chủ đích',
   attentionTitle: 'Cần xử lý',
   more: 'Đang hiện {n} tệp đầu trong {total}.',
+  loadMore: 'Xem thêm',
+  ocrNow: 'Đọc bằng Antigravity ngay',
+  ocrBusy: 'Đang đọc…',
+  ocrDone: 'Đã đọc {n} trang. Lát nữa là tìm được.',
+  ocrFailed: 'Không đọc được: {e}',
+  ocrConfirm:
+    'Đọc ngay tệp PDF quét này bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
 }
 
 const TEXT: Record<string, Dict> = { en: EN, vi: VI }
@@ -587,6 +601,35 @@ function Problems({
     total: 0,
   })
   const [note, setNote] = useState('')
+  const [reading, setReading] = useState<number | null>(null)
+
+  const more = async (reason: IndexIssueReason) => {
+    try {
+      const next = await api.getDocumentIndexIssues(root, files.items.length, reason)
+      setFiles((current) => ({ total: next.total, items: [...current.items, ...next.items] }))
+    } catch {
+      /* keep the list */
+    }
+  }
+
+  const read = async (id: number) => {
+    if (!window.confirm(d.ocrConfirm)) return
+    setReading(id)
+    try {
+      const result = await api.readScannedPdfWithAgy(id, true)
+      setNote(
+        result.ok
+          ? fill(d.ocrDone, { n: result.pages ?? 0 })
+          : fill(d.ocrFailed, { e: result.error ?? '' }),
+      )
+      await load()
+      onChanged()
+    } catch (error) {
+      setNote(fill(d.ocrFailed, { e: error instanceof Error ? error.message : '' }))
+    } finally {
+      setReading(null)
+    }
+  }
 
   const load = useCallback(async () => {
     if (!root) return
@@ -665,6 +708,15 @@ function Problems({
                         >
                           {d.reveal}
                         </button>
+                        {group.reason === 'no-text' && (
+                          <button
+                            type="button"
+                            disabled={reading !== null}
+                            onClick={() => void read(file.id)}
+                          >
+                            {reading === file.id ? d.ocrBusy : d.ocrNow}
+                          </button>
+                        )}
                         {isRetryableReason(group.reason) && (
                           <button
                             type="button"
@@ -678,7 +730,14 @@ function Problems({
                   ))}
                   {files.total > files.items.length && (
                     <li className="idx-muted">
-                      {fill(d.more, { n: files.items.length, total: files.total })}
+                      {fill(d.more, { n: files.items.length, total: files.total })}{' '}
+                      <button
+                        type="button"
+                        className="idx-link"
+                        onClick={() => void more(group.reason)}
+                      >
+                        {d.loadMore}
+                      </button>
                     </li>
                   )}
                 </ul>

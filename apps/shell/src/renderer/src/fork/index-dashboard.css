@@ -395,3 +395,11 @@
     grid-template-columns: 1fr;
   }
 }
+
+.idx-link {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
+}

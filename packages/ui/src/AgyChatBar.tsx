@@ -167,6 +167,7 @@ const EN = {
   h: 'h',
   m: 'min',
   thinkingNow: 'Thinking',
+  starting: 'Starting Antigravity',
   usingTool: 'Using {tool}',
   stepTool: 'Used {tool}',
   writing: 'Writing the answer',
@@ -225,6 +226,7 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     h: 'giờ',
     m: 'phút',
     thinkingNow: 'Đang suy nghĩ',
+    starting: 'Đang khởi động Antigravity',
     usingTool: 'Đang dùng {tool}',
     stepTool: 'Dùng {tool}',
     writing: 'Đang viết câu trả lời',
@@ -278,6 +280,7 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     h: '小时',
     m: '分钟',
     thinkingNow: '思考中',
+    starting: '正在启动 Antigravity',
     usingTool: '正在使用 {tool}',
     stepTool: '使用 {tool}',
     writing: '正在撰写回答',
@@ -329,7 +332,9 @@ function thinkTitle(run: Run, d: Dict): string {
         ? fill(d.usingTool, {
             tool: `${run.tool ?? ''}${run.target ? ` ${run.target}` : ''}`.trim(),
           })
-        : d.thinkingNow
+        : run.steps.length === 0
+          ? d.starting
+          : d.thinkingNow
   return `${label}… ${time}`
 }
 
@@ -395,25 +400,18 @@ export function AgyChatBar({
     }, PEEK_MS)
   }, [])
 
-  const apply = useCallback(
-    (next: AgyBarUsage) => {
-      setUsage(next)
-      if (next.refreshing) {
-        wasRefreshing.current = true
-        if (!pinned.current) setOpen(true)
-      } else if (wasRefreshing.current) {
-        wasRefreshing.current = false
-        if (next.needsLogin) {
-          pinned.current = true
-          setOpen(true)
-        } else if (!pinned.current) {
-          setOpen(true)
-          schedulePeekEnd()
-        }
+  const apply = useCallback((next: AgyBarUsage) => {
+    setUsage(next)
+    if (next.refreshing) {
+      wasRefreshing.current = true
+    } else if (wasRefreshing.current) {
+      wasRefreshing.current = false
+      if (next.needsLogin) {
+        pinned.current = true
+        setOpen(true)
       }
-    },
-    [schedulePeekEnd],
-  )
+    }
+  }, [])
 
   useEffect(() => {
     if (!source) return

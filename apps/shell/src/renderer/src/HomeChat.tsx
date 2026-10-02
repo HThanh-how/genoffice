@@ -54,7 +54,6 @@ import {
   hitsToSources,
   type RetrievalContext,
 } from './home-chat/agy-retrieval'
-import { agyString } from './fork/agy-strings'
 import { translateChat, type ChatKey } from './home-chat/translate'
 import {
   WINDOW_PAGE,
@@ -897,10 +896,6 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
       try {
         if (settingsRef.current?.provider === 'agy') {
           // agy cannot call GenOffice tools: search remembered documents first and inject the hits.
-          updateLastAssistant((last) => ({
-            ...last,
-            status: agyString(langRef.current, 'agyStarting'),
-          }))
           let hits: Awaited<ReturnType<HomeApi['documentMemorySearch']>>['hits'] = []
           try {
             const query = buildRetrievalQuery(message, toMessages(base))

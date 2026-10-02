@@ -1,4 +1,10 @@
 import { Markdown } from '@genoffice/ui'
+import iconDocx from '../assets/file-docx.svg'
+import iconHtml from '../assets/file-html.svg'
+import iconMd from '../assets/file-md.svg'
+import iconPdf from '../assets/file-pdf.svg'
+import iconPptx from '../assets/file-pptx.svg'
+import iconXlsx from '../assets/file-xlsx.svg'
 import { memo, useEffect, useRef, useState } from 'react'
 import type { HomeChatSource } from '../../../shared/fork/home-chat-types'
 
@@ -94,6 +100,7 @@ export const ChatMessage = memo(function ChatMessage({
       )}
       {item.sources && item.sources.length > 0 && (
         <div className="hc-sources" role="group" aria-label={labels.sources}>
+          <span className="hc-sources-label">{labels.sources}</span>
           {item.sources.map((source) => (
             <SourceChip
               key={source.documentId}
@@ -108,6 +115,30 @@ export const ChatMessage = memo(function ChatMessage({
     </article>
   )
 })
+
+const FILE_ICONS: Record<string, string> = {
+  doc: iconDocx,
+  docx: iconDocx,
+  rtf: iconDocx,
+  odt: iconDocx,
+  xls: iconXlsx,
+  xlsx: iconXlsx,
+  csv: iconXlsx,
+  ppt: iconPptx,
+  pptx: iconPptx,
+  pdf: iconPdf,
+  md: iconMd,
+  markdown: iconMd,
+  txt: iconMd,
+  html: iconHtml,
+  htm: iconHtml,
+}
+
+/** Icon for a file's type; unknown types share the plain-text one. */
+function iconFor(name: string): string {
+  const ext = /\.([A-Za-z0-9]+)$/.exec(name)?.[1]?.toLowerCase() ?? ''
+  return FILE_ICONS[ext] ?? iconMd
+}
 
 function SourceChip({
   source,
@@ -133,6 +164,7 @@ function SourceChip({
       aria-label={labels.openSource(source.name)}
       title={[source.name, source.location, hint].filter(Boolean).join(' · ')}
     >
+      <img className="hc-source-icon" src={iconFor(source.name)} alt="" aria-hidden="true" />
       <span className="hc-source-name">{source.name}</span>
       {state && (
         <span className="hc-source-flag">
