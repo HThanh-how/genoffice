@@ -15,8 +15,10 @@ export type IndexIssueReason =
   | 'corrupt'
   | 'unsupported'
   | 'timeout'
-  /** nothing readable inside: typically a scanned PDF or an image-only document */
+  /** nothing readable inside a scanned PDF: only OCR can read it */
   | 'no-text'
+  /** an Office, text or Markdown file with nothing in it (a blank document): nothing to search */
+  | 'empty'
   | 'too-large'
   | 'changed'
   /** the local embedding model could not load or run */
@@ -51,6 +53,7 @@ export const ISSUE_REASON_ORDER: readonly IndexIssueReason[] = [
   'other',
   'password',
   'no-text',
+  'empty',
   'too-large',
   'unsupported',
 ]
@@ -62,6 +65,7 @@ export const ISSUE_REASON_ORDER: readonly IndexIssueReason[] = [
 export function isInformationalReason(reason: IndexIssueReason): boolean {
   return (
     reason === 'no-text' ||
+    reason === 'empty' ||
     reason === 'too-large' ||
     reason === 'unsupported' ||
     reason === 'password'
@@ -70,7 +74,9 @@ export function isInformationalReason(reason: IndexIssueReason): boolean {
 
 /** Whether running the index again could plausibly succeed. */
 export function isRetryableReason(reason: IndexIssueReason): boolean {
-  return reason !== 'no-text' && reason !== 'too-large' && reason !== 'unsupported'
+  return (
+    reason !== 'no-text' && reason !== 'empty' && reason !== 'too-large' && reason !== 'unsupported'
+  )
 }
 
 export function issueReason(error: string | null, status: string): IndexIssueReason {
@@ -106,6 +112,8 @@ export function issueReason(error: string | null, status: string): IndexIssueRea
     )
   )
     return 'corrupt'
+  // a file that is not a PDF cannot be OCR'd: blank means blank
+  if (/no readable text in this file/.test(value)) return 'empty'
   if (status === 'empty' || /no readable|no text|ocr/.test(value)) return 'no-text'
   if (/unsupported|cannot extract|not supported|invalid/.test(value)) return 'unsupported'
   return 'other'

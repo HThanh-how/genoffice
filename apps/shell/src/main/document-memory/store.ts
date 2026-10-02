@@ -229,6 +229,12 @@ export class DocumentMemoryStore {
       'CREATE INDEX IF NOT EXISTS documents_priority ON documents(excluded, priority_at DESC)',
     )
     this.migrateChunkCounters()
+    // a blank Word/Excel/Markdown file used to be filed as "scanned, needs OCR": only a PDF can be
+    this.db.exec(
+      `UPDATE documents SET error = 'No readable text in this file; there is nothing to search'
+       WHERE status = 'empty' AND error = 'No readable text; scanned documents need OCR'
+         AND lower(path) NOT LIKE '%.pdf'`,
+    )
     try {
       chmodSync(resolve(dbPath), 0o600)
     } catch {

@@ -83,6 +83,7 @@ describe('issueReason classification', () => {
     ['Invalid PDF header', 'error', 'corrupt'],
     ['No readable text; scanned documents need OCR', 'empty', 'no-text'],
     [null, 'empty', 'no-text'],
+    ['No readable text in this file; there is nothing to search', 'empty', 'empty'],
     ['Unsupported document type', 'error', 'unsupported'],
     ['Local embedding model unavailable; text search remains available', 'error', 'model'],
     ['TypeError: fetch failed', 'error', 'model'],

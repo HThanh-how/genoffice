@@ -52,6 +52,9 @@ const EN = {
   readPickedConfirm:
     'Read {n} files now? Scanned PDFs are read with Antigravity: it uses Antigravity quota and ignores today’s limit.',
   clearPicked: 'Clear selection',
+  ocrPicked: 'Read {n} scans with Antigravity',
+  noPdfPicked: 'None of the selected files is a PDF.',
+  selectedAll: 'Selected {n} files.',
 }
 type Dict = typeof EN
 const VI: Dict = {
@@ -77,6 +80,9 @@ const VI: Dict = {
   readPickedConfirm:
     'Đọc ngay {n} tệp? PDF quét sẽ được đọc bằng Antigravity: tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
   clearPicked: 'Bỏ chọn',
+  ocrPicked: 'Đọc {n} tệp quét bằng Antigravity',
+  noPdfPicked: 'Không có tệp PDF nào trong số đã chọn.',
+  selectedAll: 'Đã chọn {n} tệp.',
 }
 
 /** Files being read go first, then the next in line, then the rest (stable order). */
@@ -242,13 +248,21 @@ export function IndexProblems({
   }, [now])
   const [pickState, setPickState] = useState<PickState>(NOTHING_PICKED)
   useEffect(() => {
-    if (pickState.picked.size === 0) return
     const onKey = (event: KeyboardEvent) => {
+      const editing =
+        event.target instanceof HTMLElement &&
+        (event.target.isContentEditable || /^(input|textarea|select)$/i.test(event.target.tagName))
       if (event.key === 'Escape') setPickState(NOTHING_PICKED)
+      // Ctrl/Cmd+A picks every file of the open lists
+      else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && !editing) {
+        if (openRef.current.size === 0) return
+        event.preventDefault()
+        for (const reason of openRef.current) void selectGroupRef.current(reason)
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [pickState.picked.size])
+  }, [])
   const waitingPeak = useRef(0)
   useEffect(() => {
     waitingPeak.current = 0
@@ -328,19 +342,27 @@ export function IndexProblems({
     setPickState((current) => pick(current, ordered, item.id, mode))
   }
 
-  /** Every picked file, one after another: text files are read, scans go on to Antigravity. */
-  const readPicked = async () => {
-    const chosen = Object.values(groupsRef.current)
+  /**
+   * The picked files, one after another. "index": text files are read and scans go on to
+   * Antigravity. "ocr": only the PDFs among them, all with Antigravity.
+   */
+  const readPicked = async (mode: 'index' | 'ocr' = 'index') => {
+    const all = Object.values(groupsRef.current)
       .flatMap((group) => group?.items ?? [])
       .filter((item) => pickState.picked.has(item.id))
-    if (chosen.length === 0) return
-    if (!window.confirm(fill(d.readPickedConfirm, { n: chosen.length }))) return
+    const chosen = mode === 'ocr' ? all.filter((item) => /\.pdf$/i.test(item.path)) : all
+    if (chosen.length === 0) {
+      if (all.length > 0) actions.say(d.noPdfPicked)
+      return
+    }
+    const question = mode === 'ocr' ? d.readBatchConfirm : d.readPickedConfirm
+    if (!window.confirm(fill(question, { n: chosen.length }))) return
     let ok = 0
     for (const [index, item] of chosen.entries()) {
       actions.say(fill(d.readProgress, { i: index + 1, n: chosen.length }))
       try {
         let result =
-          item.reason === 'no-text'
+          mode === 'ocr' || item.reason === 'no-text'
             ? await api.readScannedPdfWithAgy(item.id, true)
             : await api.retryDocumentIndex(item.id)
         if (result.ok && 'empty' in result && result.empty && /\.pdf$/i.test(item.path))
@@ -356,6 +378,26 @@ export function IndexProblems({
     for (const reason of openRef.current) await loadGroup(reason)
     onChanged()
   }
+
+  /** Pick every file of a list, including the ones not shown yet (they are loaded for it). */
+  const selectGroup = async (reason: IndexIssueReason) => {
+    const total = groupsRef.current[reason]?.total ?? 0
+    const loaded = await loadAtLeast(
+      (offset) => api.getDocumentIndexIssues(root, offset, reason),
+      Math.min(Math.max(total, 1), 2000),
+    )
+    setGroups((current) => ({
+      ...current,
+      [reason]: { items: loaded.items, total: loaded.total, loading: false },
+    }))
+    setPickState((current) => ({
+      picked: new Set([...current.picked, ...loaded.items.map((item) => item.id)]),
+      anchor: loaded.items[0]?.id ?? current.anchor,
+    }))
+    actions.say(fill(d.selectedAll, { n: loaded.items.length }))
+  }
+  const selectGroupRef = useRef(selectGroup)
+  selectGroupRef.current = selectGroup
 
   const readBatch = async () => {
     const page = await api.getDocumentIndexIssues(root, 0, 'no-text')
@@ -457,6 +499,7 @@ export function IndexProblems({
                 pickedCount={pickState.picked.size}
                 onPick={(item, mode) => pickFile(orderedIds, item, mode)}
                 onReadPicked={() => void readPicked()}
+                onSelectGroup={() => void selectGroup(reason)}
                 onClearPicked={clearPick}
               />
             ))}
@@ -480,6 +523,9 @@ export function IndexProblems({
 
   // scans first and in a fixed place: the indexing group below changes all the time, and the
   // list above it used to jump with it
+  const pickedPdfCount = Object.values(groups)
+    .flatMap((group) => group?.items ?? [])
+    .filter((item) => pickState.picked.has(item.id) && /\.pdf$/i.test(item.path)).length
   const attention = list
     .filter((g) => needsAction(g.reason))
     .sort((a, b) => attentionRank(a.reason) - attentionRank(b.reason))
@@ -498,6 +544,9 @@ export function IndexProblems({
           <span>{fill(d.picked, { n: pickState.picked.size })}</span>
           <button type="button" className="idx-btn primary" onClick={() => void readPicked()}>
             {fill(d.readPicked, { n: pickState.picked.size })}
+          </button>
+          <button type="button" className="idx-btn" onClick={() => void readPicked('ocr')}>
+            {fill(d.ocrPicked, { n: pickedPdfCount })}
           </button>
           <button type="button" className="idx-btn" onClick={clearPick}>
             {d.clearPicked}

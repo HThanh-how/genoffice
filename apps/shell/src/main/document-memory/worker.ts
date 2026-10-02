@@ -157,7 +157,9 @@ export async function extractDocumentSliced(
       : {
           error: ocrRead
             ? 'No readable text; the scanned pages were read but contained no text'
-            : 'No readable text; scanned documents need OCR',
+            : isPdf
+              ? 'No readable text; scanned documents need OCR'
+              : 'No readable text in this file; there is nothing to search',
         }),
   }
 }

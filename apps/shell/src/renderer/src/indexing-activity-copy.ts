@@ -113,6 +113,10 @@ const en: ActivityCopy = {
       title: 'Waiting for OCR',
       hint: 'Scanned PDFs and photos have no text yet. Press the star to read one now with Antigravity.',
     },
+    empty: {
+      title: 'Blank',
+      hint: 'These files have no text in them, so there is nothing to search.',
+    },
     'too-large': {
       title: 'Too large',
       hint: 'Files over 128 MB aren’t indexed.',
@@ -192,6 +196,10 @@ const vi: ActivityCopy = {
       title: 'Chờ OCR',
       hint: 'PDF dạng ảnh hoặc ảnh chụp chưa có chữ. Bấm hình tia sáng để đọc ngay bằng Antigravity.',
     },
+    empty: {
+      title: 'Trống',
+      hint: 'Các tệp này không có chữ nào bên trong nên không có gì để tìm.',
+    },
     'too-large': {
       title: 'Quá lớn',
       hint: 'Tệp trên 128 MB không được lập chỉ mục.',
@@ -252,6 +260,7 @@ const zh: ActivityCopy = {
       title: '等待 OCR',
       hint: '扫描版 PDF 和照片还没有文字。点击星形按钮可用 Antigravity 立即读取。',
     },
+    empty: { title: '空白', hint: '这些文件里没有文字，所以没有可搜索的内容。' },
     'too-large': { title: '文件过大', hint: '超过 128 MB 的文件不会被索引。' },
     unsupported: { title: '格式不支持', hint: '暂时无法读取这类文件用于搜索。' },
   },
@@ -306,6 +315,7 @@ const zhTW: ActivityCopy = {
       title: '等待 OCR',
       hint: '掃描版 PDF 和照片還沒有文字。點擊星形按鈕可用 Antigravity 立即讀取。',
     },
+    empty: { title: '空白', hint: '這些檔案裡沒有文字，所以沒有可搜尋的內容。' },
     'too-large': { title: '檔案過大', hint: '超過 128 MB 的檔案不會被索引。' },
     unsupported: { title: '格式不支援', hint: '暫時無法讀取這類檔案用於搜尋。' },
   },

@@ -96,6 +96,11 @@ const EN = {
   deferred: 'Moved to the end of the line.',
   stopped: 'Stopped. Use Try again to read it later.',
   copyPath: 'Copy path',
+  copyName: 'Copy file name',
+  excludeFile: 'Do not index this file',
+  excluded: 'It will not be indexed. You can bring it back in Settings → Index.',
+  selectFile: 'Select (to read several together)',
+  selectGroup: 'Select all in this list',
   couldNotOpen: 'Could not open this file.',
   loading: 'Loading…',
   readDone: 'Read. It can be searched now.',
@@ -134,6 +139,11 @@ const VI: FileWords = {
   deferred: 'Đã đẩy xuống cuối hàng chờ.',
   stopped: 'Đã dừng. Bấm Thử lại để đọc sau.',
   copyPath: 'Sao chép đường dẫn',
+  copyName: 'Sao chép tên tệp',
+  excludeFile: 'Không index tệp này',
+  excluded: 'Tệp sẽ không được index. Muốn lấy lại: Cài đặt → Chỉ mục.',
+  selectFile: 'Chọn (để đọc nhiều tệp cùng lúc)',
+  selectGroup: 'Chọn tất cả trong danh sách này',
   couldNotOpen: 'Không mở được tệp này.',
   loading: 'Đang tải…',
   readDone: 'Đã đọc xong, tìm được rồi.',
@@ -368,6 +378,24 @@ export function useFileActions(
       say(item.path)
     }
   }
+  const copyName = async (item: FileItem) => {
+    try {
+      await navigator.clipboard.writeText(item.name)
+      say(w.copied)
+    } catch {
+      say(item.name)
+    }
+  }
+  const exclude = (item: FileItem) =>
+    withBusy(item.id, async () => {
+      try {
+        await api.excludeDocumentMemory(item.path)
+        say(w.excluded)
+      } catch (error) {
+        say(fill(w.ocrFailed, { e: error instanceof Error ? error.message : '' }))
+      }
+      await settle(item)
+    })
   // Antigravity reads the pages of a scan; the person has already agreed to it being used
   const readWithAntigravity = async (item: FileItem) => {
     try {
@@ -398,6 +426,8 @@ export function useFileActions(
     say,
     copyLog,
     copyPath,
+    copyName,
+    exclude,
     openFile,
     retry,
     stop,
@@ -494,6 +524,7 @@ export function FileRow({
   onPick,
   onReadPicked,
   onClearPicked,
+  onSelectGroup,
 }: {
   item: FileItem
   actions: FileActions
@@ -504,6 +535,8 @@ export function FileRow({
   onPick?: (item: FileItem, mode: 'toggle' | 'range' | 'clear') => void
   onReadPicked?: () => void
   onClearPicked?: () => void
+  /** pick every file of the list this row is in */
+  onSelectGroup?: () => void
   api: HomeApi
   /** a short tag shown instead of the cause (search results) */
   status?: string
@@ -591,7 +624,22 @@ export function FileRow({
             ]
           : []),
         { label: w.copyPath, icon: <ICopy />, run: () => void actions.copyPath(item) },
+        { label: w.copyName, icon: <ICopy />, run: () => void actions.copyName(item) },
         { label: w.copyLog, icon: <ICopy />, run: () => void actions.copyLog(item) },
+        ...(onPick
+          ? [
+              { label: w.selectFile, icon: <IRetry />, run: () => onPick(item, 'toggle') },
+              ...(onSelectGroup
+                ? [{ label: w.selectGroup, icon: <IRetry />, run: () => onSelectGroup() }]
+                : []),
+            ]
+          : []),
+        {
+          label: w.excludeFile,
+          icon: <IStop />,
+          disabled: busy,
+          run: () => void actions.exclude(item),
+        },
       ]
   const progress =
     live?.kind === 'embedding'
