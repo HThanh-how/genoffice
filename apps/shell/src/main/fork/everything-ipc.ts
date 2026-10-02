@@ -40,13 +40,30 @@ export function createEverything(userData: string): EverythingController {
   }
 }
 
-export function registerEverythingIpc(ipcMain: IpcMain, everything: EverythingController): void {
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getEverything, () => everything.state())
+/**
+ * The handlers exist from the moment the app loads, but the controller is only built later in
+ * start-up, so it is looked up at each call. Until it exists the answer is "not found yet".
+ */
+export function registerEverythingIpc(
+  ipcMain: IpcMain,
+  controller: () => EverythingController | null,
+): void {
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.getEverything,
+    (): EverythingState =>
+      controller()?.state() ?? {
+        supported: process.platform === 'win32',
+        enabled: true,
+        found: false,
+      },
+  )
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setEverything, (_event, change: unknown) => {
     const { enabled, path } = (change ?? {}) as { enabled?: unknown; path?: unknown }
     if (typeof enabled !== 'boolean') throw new Error('Invalid Everything setting')
     if (path !== undefined && typeof path !== 'string') throw new Error('Invalid Everything path')
-    everything.set({ enabled, ...(path === undefined ? {} : { path }) })
-    return everything.state()
+    const current = controller()
+    if (!current) throw new Error('Everything is not ready yet')
+    current.set({ enabled, ...(path === undefined ? {} : { path }) })
+    return current.state()
   })
 }

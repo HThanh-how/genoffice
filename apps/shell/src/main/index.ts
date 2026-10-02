@@ -4082,7 +4082,7 @@ function registerHomeIpc(): void {
     dbPath: () =>
       documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db'),
   })
-  if (everything) registerEverythingIpc(ipcMain, everything)
+  registerEverythingIpc(ipcMain, () => everything)
   registerDbLocationIpc({
     ipcMain,
     userData: app.getPath('userData'),
