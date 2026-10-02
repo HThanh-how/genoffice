@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, parse } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   createFolder,
@@ -343,5 +343,19 @@ describe('helpers', () => {
   it('describeRoot reports a path blocked by a file as unusable', () => {
     const blocked = touch('blocked')
     expect(describeRoot(blocked).usable).toBe(false)
+  })
+})
+
+describe('a drive or filesystem root (it already ends with a separator)', () => {
+  const root = parse(tmpdir()).root // `/` here, `C:\` or `D:\` on Windows
+
+  it('contains the folders below it', () => {
+    expect(isInsideRoot(root, tmpdir())).toBe(true)
+    expect(isInsideRoot(root, root)).toBe(true)
+  })
+
+  it('has paths under it and folders that move into it', () => {
+    expect(pathsUnder(root, [tmpdir()])).toEqual([tmpdir()])
+    expect(isSelfOrDescendant(root, tmpdir())).toBe(true)
   })
 })

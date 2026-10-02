@@ -92,6 +92,9 @@ function realOrResolved(path: string): string {
  * real path (so a symlink pointing outside is rejected); a not-yet-existing
  * target compares by its nearest existing ancestor.
  */
+/** `dir` with exactly one trailing separator (a drive root such as `D:\\` already has it). */
+const withTrailingSep = (dir: string): string => (dir.endsWith(sep) ? dir : dir + sep)
+
 export function isInsideRoot(root: string, path: string): boolean {
   const realRoot = realOrResolved(root)
   let probe = resolve(path)
@@ -103,7 +106,7 @@ export function isInsideRoot(root: string, path: string): boolean {
     probe = parent
   }
   const real = join(realOrResolved(probe), ...missing)
-  return real === realRoot || real.startsWith(realRoot + sep)
+  return real === realRoot || real.startsWith(withTrailingSep(realRoot))
 }
 
 export function describeRoot(root: string): FolderRoot {
@@ -161,7 +164,7 @@ export function listFolder(dir: string, starredPaths: ReadonlySet<string>): Fold
 
 /** the candidates below `dir` at any depth; bookkeeping filters tracked paths instead of walking the disk */
 export function pathsUnder(dir: string, candidates: Iterable<string>): string[] {
-  const prefix = resolve(dir) + sep
+  const prefix = withTrailingSep(resolve(dir))
   const out = new Set<string>()
   for (const path of candidates) if (resolve(path).startsWith(prefix)) out.add(path)
   return [...out]
@@ -230,7 +233,7 @@ export interface MoveOptions {
 export function isSelfOrDescendant(path: string, dir: string): boolean {
   const a = resolve(path)
   const b = resolve(dir)
-  return a === b || b.startsWith(a + sep)
+  return a === b || b.startsWith(withTrailingSep(a))
 }
 
 /**
@@ -335,7 +338,7 @@ export function rebasePath(path: string, oldDir: string, newDir: string): string
   // a plain slice also matches a sibling that merely shares the prefix
   // (`/w/src2/f` under `/w/src`), so require the separator boundary and leave
   // anything that did not live under the moved folder where it was
-  if (abs !== base && !abs.startsWith(base + sep)) return path
+  if (abs !== base && !abs.startsWith(withTrailingSep(base))) return path
   return join(newDir, abs.slice(base.length))
 }
 
