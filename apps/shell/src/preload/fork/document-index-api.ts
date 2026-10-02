@@ -44,6 +44,15 @@ export function createDocumentIndexPreloadApi(
     async setPdfPages(pages) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setPdfPages, pages)
     },
+    async openFolderInFileManager(dir) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.openFolderInFileManager, dir)
+    },
+    async copyFilesToClipboard(paths) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.copyFilesToClipboard, paths)
+    },
+    async pasteFilesFromClipboard(dir) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.pasteFilesFromClipboard, dir)
+    },
     async getShowDefaultFolder() {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getShowDefaultFolder)
     },

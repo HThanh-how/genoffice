@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
@@ -41,18 +42,64 @@ const INSTALL_LABEL: Record<string, string> = {
   he: 'פתיחת תוכנית ההתקנה',
   hi: 'अपडेट इंस्टॉलर खोलें',
 }
+const RESTART_LABEL: Record<string, string> = {
+  vi: 'Khởi động lại để cập nhật',
+  en: 'Restart to update',
+}
 let checking = false
 let downloading = false
 let installer: string | null = null
 let activeSource = ''
+/** the version the "update ready" card was last shown for: the background check shows it once */
+let promptedVersion = ''
 
+export interface RestartInstallDeps {
+  platform?: NodeJS.Platform
+  spawnInstaller?: typeof spawn
+  quit?: () => void
+}
+
+/**
+ * Windows: run the downloaded, checksum-verified installer silently and let it start the new
+ * version when it is done, so an update is just a restart (no wizard, no folder to choose: the
+ * installer keeps the place and mode of the current install). The app quits once the installer
+ * is running. False when that could not be done; the caller then falls back to opening it.
+ */
+export function installAndRestart(
+  installerPath: string,
+  deps: RestartInstallDeps = {},
+): Promise<boolean> {
+  if ((deps.platform ?? process.platform) !== 'win32') return Promise.resolve(false)
+  const run = deps.spawnInstaller ?? spawn
+  const quit = deps.quit ?? ((): void => app.quit())
+  return new Promise((resolve) => {
+    try {
+      const child = run(installerPath, ['/S', '--updated', '--force-run'], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      })
+      child.once('error', () => resolve(false))
+      child.once('spawn', () => {
+        child.unref()
+        resolve(true)
+        // the installer replaces files the running app holds open: let go of them
+        quit()
+      })
+    } catch {
+      resolve(false)
+    }
+  })
+}
 /** An explicit, checksum-verified installer flow for unsigned fork builds. It uses
  * the OS installer so macOS retains its normal trust checks and save prompts. */
 export async function checkForkUpdates(
   source: UpdateSource,
   channel: UpdateChannel,
   getWindow: () => BrowserWindow | null,
+  options: { background?: boolean } = {},
 ): Promise<void> {
+  const background = options.background === true
   if (checking || downloading) return
   checking = true
   const vietnamese = getUiLang() === 'vi'
@@ -86,6 +133,7 @@ export async function checkForkUpdates(
       channel,
     )
     if (!release) {
+      if (background) return
       await dialog.showMessageBox({
         type: 'info',
         title,
@@ -96,6 +144,7 @@ export async function checkForkUpdates(
       return
     }
     if (compareVersions(release.version, app.getVersion()) <= 0) {
+      if (background) return
       await dialog.showMessageBox({
         type: 'info',
         title,
@@ -111,10 +160,17 @@ export async function checkForkUpdates(
     const state = initialState(release.version)
     state.phase = installer ? 'downloaded' : 'available'
     state.strings.install = INSTALL_LABEL[getUiLang()] ?? INSTALL_LABEL.en
-    // Downloading an unsigned build does not promise a silent restart/install.
+    // Downloading an unsigned build does not promise a silent restart/install, except on Windows,
+    // where the verified installer is run silently by a restart.
     state.strings.desc = vietnamese
       ? 'Tải bản mới từ nguồn bạn đã chọn. Khi tải xong, mở bộ cài để cập nhật ứng dụng.'
       : 'Download from your selected source, then open the installer to update the app.'
+    if (process.platform === 'win32') {
+      state.strings.install = RESTART_LABEL[getUiLang()] ?? RESTART_LABEL.en
+      state.strings.desc = vietnamese
+        ? 'Bản mới đã được tải về nền. Khởi động lại GenOffice là cập nhật xong, không cần cài lại.'
+        : 'The update is downloaded in the background. Restart GenOffice to finish; nothing to reinstall.'
+    }
     const download = async (): Promise<void> => {
       if (downloading) return
       downloading = true
@@ -159,26 +215,41 @@ export async function checkForkUpdates(
         downloading = false
       }
     }
-    showUpdateWindow(getWindow(), state, {
+    const actions = {
       onDownload: () => {
         void download()
       },
       onLater: () => closeUpdateWindow(),
       onInstall: () => {
-        if (!installer) return
-        void shell
-          .openPath(installer)
-          .then((error) => {
-            if (error) pushUpdateState({ phase: 'error' })
-            else closeUpdateWindow()
-          })
-          .catch(() => pushUpdateState({ phase: 'error' }))
+        const ready = installer
+        if (!ready) return
+        void installAndRestart(ready).then((restarting) => {
+          if (restarting) return
+          void shell
+            .openPath(ready)
+            .then((error) => {
+              if (error) pushUpdateState({ phase: 'error' })
+              else closeUpdateWindow()
+            })
+            .catch(() => pushUpdateState({ phase: 'error' }))
+        })
       },
       onOpenDownload: () => {
         void shell.openExternal(release.url)
       },
-    })
+    }
+    if (background) {
+      // quiet: nothing is shown until the update is downloaded and verified, and then once per
+      // version. Only Windows can apply it by a restart; elsewhere the person asks for it.
+      if (process.platform !== 'win32' || promptedVersion === release.version) return
+      if (!installer) await download()
+      if (!installer) return
+      promptedVersion = release.version
+      state.phase = 'downloaded'
+    }
+    showUpdateWindow(getWindow(), state, actions)
   } catch {
+    if (background) return
     await dialog.showMessageBox({
       type: 'warning',
       title,

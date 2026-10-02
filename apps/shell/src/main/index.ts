@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { basename, dirname, extname, join, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import {
   BrowserWindow,
   Menu,
@@ -297,7 +297,7 @@ import type {
   LegacyDocSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
-import { DOCUMENT_INDEX_CHANNELS } from '../shared/fork/document-index-api'
+import { DOCUMENT_INDEX_CHANNELS, type PasteFilesResult } from '../shared/fork/document-index-api'
 import { registerHomeChatIpc } from './fork/home-chat-ipc'
 import { registerDocumentIndexIpc } from './fork/document-index-ipc'
 import {
@@ -306,6 +306,8 @@ import {
   type EverythingController,
 } from './fork/everything-ipc'
 import { hiddenNamesIn } from './windows-hidden'
+import { readClipboardFiles, writeClipboardFiles } from './fork/clipboard-files'
+import { pasteFiles } from './fork/folder-paste'
 import { isInsidePath, outermostPaths } from '../shared/path-nesting'
 import { tabMenuTemplate, tabMenuWords, type TabMenuActions } from './fork/tab-menu'
 import { isProgramFile } from './everything/junk'
@@ -4695,6 +4697,23 @@ function registerHomeIpc(): void {
     ensureFolderWatchers()
     return roots
   })
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.openFolderInFileManager, async (_event, dir: unknown) => {
+    if (!insideRoot(dir) || !existsSync(dir)) return false
+    return (await shell.openPath(dir)) === ''
+  })
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.copyFilesToClipboard, (_event, paths: unknown) => {
+    const list = stringPaths(paths)
+      .filter((path) => isAbsolute(path) && existsSync(path))
+      .slice(0, 200)
+    return writeClipboardFiles(list)
+  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.pasteFilesFromClipboard,
+    async (_event, dir: unknown): Promise<PasteFilesResult> => {
+      if (!insideRoot(dir)) return { pasted: 0, failed: 0, error: tm('errBadArgs') }
+      return pasteFiles(dir, await readClipboardFiles())
+    },
+  )
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getShowDefaultFolder, () =>
     showDefaultFolderFrom(readAppSettings(APP_SETTINGS_PATH())),
   )
@@ -6490,6 +6509,16 @@ app.whenReady().then(async () => {
     setManualUpdateCheck(() =>
       checkForkUpdates(currentUpdateSource(), currentUpdateChannel(), () => shellWindow),
     )
+    // Windows: look for a newer version in the background and download it quietly, so updating is
+    // only a restart; the person is asked once, when it is ready
+    if (app.isPackaged && process.platform === 'win32') {
+      const backgroundCheck = (): void =>
+        void checkForkUpdates(currentUpdateSource(), currentUpdateChannel(), () => shellWindow, {
+          background: true,
+        })
+      setTimeout(backgroundCheck, 60_000).unref()
+      setInterval(backgroundCheck, 6 * 60 * 60_000).unref()
+    }
   }
   // resource watchdog: a renderer that stays hot for minutes gets diagnostics
   // recorded and the user an offer to close the document (headless exports

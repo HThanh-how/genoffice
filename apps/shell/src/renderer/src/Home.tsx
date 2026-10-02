@@ -2,7 +2,7 @@ import { IndexingActivity, OPEN_INDEX_EVENT } from './IndexingActivity'
 import { IndexDashboard } from './fork/IndexDashboard'
 import { IndexNavItem } from './fork/IndexNavItem'
 import { FOLDER_ROOTS_CHANGED_EVENT } from './fork/DefaultFolderToggle'
-import { isInsidePath } from '../../shared/path-nesting'
+import { folderMenuWords } from './fork/folder-menu-words'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
@@ -1671,6 +1671,33 @@ export function Home() {
     void window.aiOffice.deleteFiles(paths).then(refresh)
   }
 
+  const folderWords = folderMenuWords(lang)
+  /** the files go on the system clipboard, so Explorer / Finder can paste them too */
+  const copyToClipboard = (paths: string[]) => {
+    setFolderMenu(null)
+    setRowMenu(null)
+    void window.aiOffice.copyFilesToClipboard(paths).then((ok) => {
+      if (!ok) window.alert(folderWords.copyFailed)
+    })
+  }
+  /** paste what is on the system clipboard (copied here or in Explorer) into a folder */
+  const pasteInto = (dir: string) => {
+    setFolderMenu(null)
+    void window.aiOffice.pasteFilesFromClipboard(dir).then((result) => {
+      if (result.none) window.alert(folderWords.nothingToPaste)
+      else if (result.failed > 0 && result.pasted === 0)
+        window.alert(folderWords.pasteFailed.replace('{e}', result.error ?? ''))
+      else if (result.failed > 0)
+        window.alert(
+          folderWords.pastedWithFailures
+            .replace('{n}', String(result.pasted))
+            .replace('{f}', String(result.failed))
+            .replace('{e}', result.error ?? ''),
+        )
+      refreshRef.current()
+    })
+  }
+
   const duplicateFile = (path: string) => {
     setRowMenu(null)
     void window.aiOffice.duplicateFile(path).then(refresh)
@@ -2016,15 +2043,46 @@ export function Home() {
             </button>
           )}
           {(rootEntry?.readable ?? true) && (
-            <button
-              role="menuitem"
-              onClick={() => {
-                setFolderMenu(null)
-                void window.aiOffice.revealPath(entry.path)
-              }}
-            >
-              {t('revealInFolder')}
-            </button>
+            <>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setFolderMenu(null)
+                  void window.aiOffice.openFolderInFileManager(entry.path)
+                }}
+              >
+                {navigator.platform.toLowerCase().includes('mac')
+                  ? folderWords.openInFinder
+                  : folderWords.openInExplorer}
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setFolderMenu(null)
+                  void window.aiOffice.revealPath(entry.path)
+                }}
+              >
+                {t('revealInFolder')}
+              </button>
+              <button
+                role="menuitem"
+                onClick={() => {
+                  setFolderMenu(null)
+                  void navigator.clipboard.writeText(entry.path)
+                }}
+              >
+                {t('copyPath')}
+              </button>
+              <div className="row-menu-divider" />
+              <button role="menuitem" onClick={() => copyToClipboard([entry.path])}>
+                {folderWords.copy}
+              </button>
+              {editableAt(entry.path) && (
+                <button role="menuitem" onClick={() => pasteInto(entry.path)}>
+                  {folderWords.paste}
+                </button>
+              )}
+            </>
           )}
           {!rootEntry && editableAt(entry.path) && (
             <>
@@ -2241,13 +2299,6 @@ export function Home() {
           )}
           {roots
             .slice(1)
-            // a folder added inside another listed folder is shown in it, not a second time
-            .filter(
-              (r) =>
-                !roots.some(
-                  (outer) => outer !== r && !outer.hidden && isInsidePath(outer.path, r.path),
-                ),
-            )
             .map((r) =>
               renderTreeNode({ path: r.path, name: r.name, hasSubfolders: r.readable }, 0),
             )}
@@ -2385,6 +2436,11 @@ export function Home() {
                 >
                   {t('copyPath')}
                 </button>
+                {!entry.missing && (
+                  <button role="menuitem" onClick={() => copyToClipboard([entry.path])}>
+                    {folderWords.copy}
+                  </button>
+                )}
                 {canMove && editable && !entry.missing && (
                   <>
                     <div className="row-menu-divider" />

@@ -25,6 +25,9 @@ export const DOCUMENT_INDEX_CHANNELS = {
   deferIndexFile: 'home:defer-index-file',
   getEverything: 'home:get-everything',
   getShowDefaultFolder: 'home:get-show-default-folder',
+  openFolderInFileManager: 'home:open-folder-in-file-manager',
+  copyFilesToClipboard: 'home:copy-files-to-clipboard',
+  pasteFilesFromClipboard: 'home:paste-files-from-clipboard',
   setShowDefaultFolder: 'home:set-show-default-folder',
   getPdfPages: 'home:get-pdf-pages',
   setPdfPages: 'home:set-pdf-pages',
@@ -54,6 +57,15 @@ export interface PdfPagesState {
   default: number
   /** the most it can be set to */
   max: number
+}
+
+/** What pasting the clipboard's files into a folder did. */
+export interface PasteFilesResult {
+  pasted: number
+  failed: number
+  /** the clipboard holds no files */
+  none?: boolean
+  error?: string
 }
 
 export type EmbeddingProfileChoice = 'standard' | 'high'
@@ -198,6 +210,12 @@ export interface DocumentIndexApi {
   getPdfPages(): Promise<PdfPagesState>
   /** Change it (1 to 400); raising it reads the PDFs that were cut short again. */
   setPdfPages(pages: number): Promise<PdfPagesState & { requeued: number }>
+  /** Open a folder in Explorer / Finder (the folder itself, not its parent). */
+  openFolderInFileManager(dir: string): Promise<boolean>
+  /** Put files on the system clipboard so Explorer / Finder can paste them. */
+  copyFilesToClipboard(paths: string[]): Promise<boolean>
+  /** Paste the files that are on the system clipboard (copied in Explorer too) into a folder. */
+  pasteFilesFromClipboard(dir: string): Promise<PasteFilesResult>
   /** Whether the app's own save folder ("GenOffice") is listed in the Folders tree (off by default). */
   getShowDefaultFolder(): Promise<boolean>
   setShowDefaultFolder(show: boolean): Promise<boolean>
