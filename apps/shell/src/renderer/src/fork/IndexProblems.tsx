@@ -8,10 +8,24 @@ import { useI18n } from '../locale'
 import { activityCopy, fill } from '../indexing-activity-copy'
 import { FileRow, IChevron, IRetry, IconButton, useFileActions } from './IndexFiles'
 
+/** Something the person can act on: failures, and scanned files still waiting to be read. */
+export function needsAction(reason: IndexIssueReason): boolean {
+  return reason === 'no-text' || !isInformationalReason(reason)
+}
+
+const BATCH = 10
+
 const EN = {
+  retryEverything: 'Try all errors again',
+  readBatch: 'Read {n} scanned files now',
+  readBatchConfirm:
+    'Read {n} scanned PDFs now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
+  readProgress: 'Reading {i} of {n}…',
+  readFinished: 'Read {ok} of {n} files.',
+
   empty: 'No problems. Every readable file is indexed.',
   noFolder: 'Scan a folder first.',
-  attention: 'Needs attention',
+  attention: 'To do',
   skipped: 'Skipped on purpose',
   retryAll: 'Try all again',
   more: 'Show more ({n} left)',
@@ -20,6 +34,13 @@ const EN = {
 }
 type Dict = typeof EN
 const VI: Dict = {
+  retryEverything: 'Thử lại tất cả lỗi',
+  readBatch: 'Đọc ngay {n} tệp quét',
+  readBatchConfirm:
+    'Đọc ngay {n} tệp PDF quét bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
+  readProgress: 'Đang đọc {i}/{n}…',
+  readFinished: 'Đã đọc {ok}/{n} tệp.',
+
   empty: 'Không có lỗi. Mọi tệp đọc được đều đã index.',
   noFolder: 'Hãy quét một thư mục trước.',
   attention: 'Cần xử lý',
@@ -121,9 +142,8 @@ export function IndexProblems({
     const wanted =
       focus && summary.groups.some((g) => g.reason === focus)
         ? focus
-        : !autoOpened.current &&
-            summary.groups.filter((g) => !isInformationalReason(g.reason)).length === 1
-          ? summary.groups.find((g) => !isInformationalReason(g.reason))!.reason
+        : !autoOpened.current && summary.groups.filter((g) => needsAction(g.reason)).length === 1
+          ? summary.groups.find((g) => needsAction(g.reason))!.reason
           : null
     autoOpened.current = true
     if (wanted) {
@@ -140,6 +160,41 @@ export function IndexProblems({
       if (!groups[reason]) void loadGroup(reason)
     }
     setOpen(next)
+  }
+
+  const retryEverything = async () => {
+    let queued = 0
+    for (const group of summary?.groups ?? []) {
+      if (!needsAction(group.reason) || !isRetryableReason(group.reason)) continue
+      const result = await api.retryDocumentIndexGroup(root, group.reason)
+      if (result.ok) queued += result.retried
+    }
+    actions.say(fill(d.retried, { n: queued }))
+    await loadSummary()
+    for (const reason of open) await loadGroup(reason)
+    onChanged()
+  }
+
+  const readBatch = async () => {
+    const page = await api.getDocumentIndexIssues(root, 0, 'no-text')
+    const batch = page.items.slice(0, BATCH)
+    if (batch.length === 0) return
+    if (!window.confirm(fill(d.readBatchConfirm, { n: batch.length }))) return
+    let ok = 0
+    for (const [index, item] of batch.entries()) {
+      actions.say(fill(d.readProgress, { i: index + 1, n: batch.length }))
+      try {
+        const result = await api.readScannedPdfWithAgy(item.id, true)
+        if (!result.ok) break
+        ok++
+      } catch {
+        break
+      }
+    }
+    actions.say(fill(d.readFinished, { ok, n: batch.length }))
+    await loadSummary()
+    if (open.has('no-text')) await loadGroup('no-text')
+    onChanged()
   }
 
   const retryGroup = async (reason: IndexIssueReason) => {
@@ -204,14 +259,34 @@ export function IndexProblems({
     )
   }
 
-  const attention = list.filter((g) => !isInformationalReason(g.reason))
-  const skipped = list.filter((g) => isInformationalReason(g.reason))
+  const attention = list.filter((g) => needsAction(g.reason))
+  const skipped = list.filter((g) => !needsAction(g.reason))
+  const scanned = list.find((g) => g.reason === 'no-text')?.count ?? 0
+  const failures = attention.some((g) => isRetryableReason(g.reason))
   return (
     <div className="ixp">
       {actions.note && (
         <p className="ixp-note" role="status">
           {actions.note}
         </p>
+      )}
+      {(failures || scanned > 0) && (
+        <div className="ixp-toolbar">
+          {failures && (
+            <button
+              type="button"
+              className="idx-btn primary"
+              onClick={() => void retryEverything()}
+            >
+              {d.retryEverything}
+            </button>
+          )}
+          {scanned > 0 && (
+            <button type="button" className="idx-btn" onClick={() => void readBatch()}>
+              {fill(d.readBatch, { n: Math.min(BATCH, scanned) })}
+            </button>
+          )}
+        </div>
       )}
       {attention.length > 0 && (
         <>

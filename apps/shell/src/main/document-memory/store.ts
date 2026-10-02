@@ -552,6 +552,20 @@ export class DocumentMemoryStore {
     }
   }
 
+  /**
+   * Files that failed only because their type could not be read at the time (legacy .xls) go
+   * back to the queue once the reader exists. A file that fails again for another reason keeps
+   * that reason, so this is safe to run at every start.
+   */
+  requeueNowReadable(): number {
+    const result = this.db
+      .prepare(
+        "UPDATE documents SET status = 'pending', error = NULL WHERE status = 'error' AND excluded = 0 AND error = 'Unsupported file type: .xls'",
+      )
+      .run()
+    return Number(result.changes)
+  }
+
   retryDocument(id: number): string | null {
     const document = this.documentById(id)
     if (!document || document.status === 'excluded') return null

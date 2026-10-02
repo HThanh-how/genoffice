@@ -1254,7 +1254,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
         </section>
       )}
       {!open && launcherState.phase === 'idle' && (
-        <AskDock lang={i18n.lang}>
+        <AskDock lang={i18n.lang} api={api}>
           <AgyChatBar lang={i18n.lang} part="bar" />
         </AskDock>
       )}

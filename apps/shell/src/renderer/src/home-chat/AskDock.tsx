@@ -1,53 +1,121 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import type { Lang } from '@genoffice/i18n'
+import type { HomeApi } from '../../../shared/home-api'
+import type { IndexedFileHit } from '../../../shared/fork/document-index-api'
 import { requestChatPrefill } from '../chat-events'
+import { iconFor } from '../file-icons'
+import { activityCopy } from '../indexing-activity-copy'
+import { OPEN_INDEX_EVENT } from '../IndexingActivity'
+import { langFor, parseIndexCommand, runIndexCommand } from '../fork/index-assistant'
 
 const EN = {
-  bubble: 'Ask AI here',
-  placeholder: 'Ask about your files…',
+  bubble: 'Ask or find here',
+  placeholder: 'Find a file, ask AI, or give an order…',
   send: 'Send',
   open: 'Ask AI',
-  suggestions: ['Find my recent files', 'Summarize my latest document', 'How far is indexing?'],
+  ask: 'Ask AI: “{q}”',
+  askHint: 'Enter',
+  run: 'Run: “{q}”',
+  runHint: 'Enter · runs here, no AI quota',
+  searching: 'Looking through your files…',
+  none: 'No file name matches. Press Enter to ask AI.',
+  indexed: 'Indexed',
+  unread: 'Content not read yet (scanned)',
+  retry: 'Try again',
+  readNow: 'Read with Antigravity now',
+  readConfirm:
+    'Read this scanned PDF now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
+  readDone: 'Read {n} pages. It is searchable shortly.',
+  failed: 'Could not do it: {e}',
+  queued: 'Queued for another try.',
+  status: 'Index {p}% · {w} waiting · {e} problems',
+  statusIdle: 'Index up to date · {e} problems',
+  statusOpen: 'Open the index page',
+  close: 'Close',
+  suggestions: ['Find my recent files', 'How far is indexing?', 'Retry the errors'],
 }
 type Words = typeof EN
 const WORDS: Record<string, Words> = {
   en: EN,
   vi: {
-    bubble: 'Hỏi AI tại đây',
-    placeholder: 'Hỏi về tài liệu của bạn…',
+    bubble: 'Hỏi hoặc tìm tệp tại đây',
+    placeholder: 'Tìm tệp, hỏi AI hoặc ra lệnh…',
     send: 'Gửi',
     open: 'Hỏi AI',
-    suggestions: ['Tìm tệp gần đây của tôi', 'Tóm tắt tài liệu mới nhất', 'Index tới đâu rồi?'],
+    ask: 'Hỏi AI: “{q}”',
+    askHint: 'Enter',
+    run: 'Chạy: “{q}”',
+    runHint: 'Enter · chạy ngay trên máy, không tốn quota AI',
+    searching: 'Đang tìm trong các tệp…',
+    none: 'Không tên tệp nào khớp. Nhấn Enter để hỏi AI.',
+    indexed: 'Đã index',
+    unread: 'Chưa đọc nội dung (PDF quét)',
+    retry: 'Thử lại',
+    readNow: 'Đọc bằng Antigravity ngay',
+    readConfirm:
+      'Đọc ngay tệp PDF quét này bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
+    readDone: 'Đã đọc {n} trang. Lát nữa là tìm được.',
+    failed: 'Không làm được: {e}',
+    queued: 'Đã xếp lại để thử lần nữa.',
+    status: 'Index {p}% · {w} đang chờ · {e} lỗi',
+    statusIdle: 'Index đã cập nhật · {e} lỗi',
+    statusOpen: 'Mở trang Chỉ mục',
+    close: 'Đóng',
+    suggestions: ['Tìm tệp gần đây của tôi', 'Index tới đâu rồi?', 'Thử lại các lỗi'],
   },
   zh: {
-    bubble: '在这里问 AI',
-    placeholder: '询问你的文件…',
-    send: '发送',
+    ...EN,
+    bubble: '在这里提问或查找',
+    placeholder: '查找文件、问 AI 或下达指令…',
     open: '问 AI',
-    suggestions: ['查找我最近的文件', '总结我最新的文档', '索引进度如何？'],
+    send: '发送',
   },
 }
+const fill = (text: string, values: Record<string, string | number>): string =>
+  text.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ''))
 
 /** Scrolling this far down tucks the dock away; back near the top it returns. */
 const COLLAPSE_AT = 56
 const EXPAND_AT = 8
 
+interface Brief {
+  percent: number | null
+  waiting: number
+  errors: number
+  active: boolean
+}
+
 /**
- * The always-there ask box of the Home page. Idle, it floats at the bottom as a translucent bar
- * with a slowly turning light around it; scrolling the page tucks it into a small glowing orb in
- * the corner, and a click (or "/") brings it back. Sending hands the text to the assistant panel.
- * `children` is the model and usage strip, shown under the bar while it is focused.
+ * The one box of the Home page. Typing finds files by name at once and says what state each is
+ * in (read, scanned and unread, failed) with a one-click fix; Enter asks the AI, or carries out
+ * an index order ("pause", "rescan"). Idle it is a translucent bar with a slowly turning light;
+ * scrolling the page tucks it into an orb. `children` is the model and usage strip.
  */
-export function AskDock({ lang, children }: { lang: string; children?: ReactNode }) {
+export function AskDock({
+  lang,
+  api,
+  children,
+}: {
+  lang: string
+  api: HomeApi
+  children?: ReactNode
+}) {
   const w = WORDS[lang] ?? EN
+  const copy = activityCopy(lang as Lang)
   const [collapsed, setCollapsed] = useState(false)
   const [focused, setFocused] = useState(false)
   const [text, setText] = useState('')
+  const [hits, setHits] = useState<IndexedFileHit[] | null>(null)
+  const [answer, setAnswer] = useState<string | null>(null)
+  const [busyId, setBusyId] = useState<number | null>(null)
+  const [brief, setBrief] = useState<Brief | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const rootRef = useRef<HTMLDivElement>(null)
   const lastTop = useRef(0)
+  const query = text.trim()
+  const command = query ? parseIndexCommand(query) : null
 
-  // Page scroll tucks the dock away (capture: scroll does not bubble). Scrolling inside the
-  // dock, the assistant panel or a text field does not count.
+  // Page scroll tucks the dock away (capture: scroll does not bubble).
   useEffect(() => {
     const onScroll = (event: Event) => {
       const target = event.target
@@ -68,7 +136,6 @@ export function AskDock({ lang, children }: { lang: string; children?: ReactNode
     window.setTimeout(() => inputRef.current?.focus(), 60)
   }, [])
 
-  // "/" jumps to the box from anywhere on the page that is not already a text field.
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return
@@ -85,16 +152,109 @@ export function AskDock({ lang, children }: { lang: string; children?: ReactNode
     return () => document.removeEventListener('keydown', onKey)
   }, [expand])
 
-  const send = (value: string) => {
+  // Close the popover on a click elsewhere.
+  useEffect(() => {
+    const onDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
+        setAnswer(null)
+        setHits(null)
+      }
+    }
+    document.addEventListener('pointerdown', onDown, true)
+    return () => document.removeEventListener('pointerdown', onDown, true)
+  }, [])
+
+  // The index in one line, read when the box is focused.
+  useEffect(() => {
+    if (!focused || query || !api.getIndexingActivity) return
+    let alive = true
+    void api
+      .getIndexingActivity()
+      .then((a) => {
+        if (!alive) return
+        setBrief({
+          percent: a.folderProgress?.percent ?? null,
+          waiting: a.folderProgress?.pendingFiles ?? a.memory.pending,
+          errors:
+            (a.folderProgress?.errorFiles ?? a.memory.errors) + (a.folderProgress?.emptyFiles ?? 0),
+          active: !!a.folder?.running || a.memory.pending > 0,
+        })
+      })
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [api, focused, query])
+
+  // Typing finds files by name right away (a command is offered too, never run by itself).
+  useEffect(() => {
+    if (query.length < 2 || !api.searchIndexedFiles) {
+      setHits(null)
+      return
+    }
+    let alive = true
+    const timer = setTimeout(() => {
+      void api
+        .searchIndexedFiles(query)
+        .then((found) => alive && setHits(found.slice(0, 6)))
+        .catch(() => alive && setHits([]))
+    }, 180)
+    return () => {
+      alive = false
+      clearTimeout(timer)
+    }
+  }, [api, query])
+
+  const submit = async (value: string) => {
     const message = value.trim()
     if (!message) return
+    const parsed = parseIndexCommand(message)
+    if (parsed) {
+      setText('')
+      setHits(null)
+      setAnswer(await runIndexCommand(api, parsed, langFor(message, lang)))
+      return
+    }
     setText('')
+    setHits(null)
     inputRef.current?.blur()
     requestChatPrefill({ text: message, send: true, continue: true })
   }
 
-  const showTip = !collapsed && !focused && !text
-  const showChips = !collapsed && focused && !text
+  const refreshHits = async () => {
+    if (query.length >= 2) setHits((await api.searchIndexedFiles(query)).slice(0, 6))
+  }
+  const retry = async (hit: IndexedFileHit) => {
+    setBusyId(hit.id)
+    try {
+      const result = await api.retryDocumentIndex(hit.id)
+      setAnswer(result.ok ? w.queued : fill(w.failed, { e: result.error ?? '' }))
+      await refreshHits()
+    } finally {
+      setBusyId(null)
+    }
+  }
+  const readNow = async (hit: IndexedFileHit) => {
+    if (!window.confirm(w.readConfirm)) return
+    setBusyId(hit.id)
+    try {
+      const result = await api.readScannedPdfWithAgy(hit.id, true)
+      setAnswer(
+        result.ok
+          ? fill(w.readDone, { n: result.pages ?? 0 })
+          : fill(w.failed, { e: result.error ?? '' }),
+      )
+      await refreshHits()
+    } catch (error) {
+      setAnswer(fill(w.failed, { e: error instanceof Error ? error.message : '' }))
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  const showTip = !collapsed && !focused && !text && !answer
+  const showChips = !collapsed && focused && !text && !answer
+  const showPop = !collapsed && (answer !== null || query.length > 0)
   return (
     <div
       ref={rootRef}
@@ -107,16 +267,110 @@ export function AskDock({ lang, children }: { lang: string; children?: ReactNode
       )}
       {showChips && (
         <div className="ask-chips">
+          {brief && (
+            <button
+              type="button"
+              className="ask-status"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => window.dispatchEvent(new Event(OPEN_INDEX_EVENT))}
+              title={w.statusOpen}
+            >
+              <i className={brief.active ? 'is-busy' : ''} aria-hidden="true" />
+              {brief.active
+                ? fill(w.status, {
+                    p: brief.percent ?? 0,
+                    w: brief.waiting.toLocaleString(),
+                    e: brief.errors.toLocaleString(),
+                  })
+                : fill(w.statusIdle, { e: brief.errors.toLocaleString() })}
+            </button>
+          )}
           {w.suggestions.map((suggestion) => (
             <button
               key={suggestion}
               type="button"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => send(suggestion)}
+              onClick={() => void submit(suggestion)}
             >
               {suggestion}
             </button>
           ))}
+        </div>
+      )}
+      {showPop && (
+        <div className="ask-pop" role="listbox" aria-label={w.placeholder} aria-live="polite">
+          {answer !== null && (
+            <div className="ask-answer">
+              <p>{answer}</p>
+              <button
+                type="button"
+                aria-label={w.close}
+                title={w.close}
+                onClick={() => setAnswer(null)}
+              >
+                ×
+              </button>
+            </div>
+          )}
+          {query.length > 0 && (
+            <>
+              {hits === null && query.length >= 2 && <p className="ask-note">{w.searching}</p>}
+              {hits?.length === 0 && !command && <p className="ask-note">{w.none}</p>}
+              {hits?.map((hit) => {
+                const unread = hit.reason === 'no-text'
+                const problem = !!hit.reason && !unread
+                const tag = problem
+                  ? (copy.reasons[hit.reason!]?.title ?? hit.error ?? '')
+                  : unread
+                    ? w.unread
+                    : w.indexed
+                return (
+                  <div className="ask-hit" key={hit.id}>
+                    <button
+                      type="button"
+                      className="ask-hit-main"
+                      title={hit.path}
+                      onClick={() => void api.openPath(hit.path)}
+                    >
+                      <img src={iconFor(hit.name)} alt="" width="16" height="16" />
+                      <span className="ask-hit-name">{hit.name}</span>
+                      <span className={`ask-tag${problem ? ' is-bad' : unread ? ' is-warn' : ''}`}>
+                        {tag}
+                      </span>
+                    </button>
+                    {unread && (
+                      <button
+                        type="button"
+                        className="ask-mini"
+                        title={w.readNow}
+                        aria-label={w.readNow}
+                        disabled={busyId === hit.id}
+                        onClick={() => void readNow(hit)}
+                      >
+                        ✦
+                      </button>
+                    )}
+                    {problem && (
+                      <button
+                        type="button"
+                        className="ask-mini"
+                        title={w.retry}
+                        aria-label={w.retry}
+                        disabled={busyId === hit.id}
+                        onClick={() => void retry(hit)}
+                      >
+                        ↻
+                      </button>
+                    )}
+                  </div>
+                )
+              })}
+              <button type="button" className="ask-act" onClick={() => void submit(query)}>
+                <strong>{fill(command ? w.run : w.ask, { q: query })}</strong>
+                <span>{command ? w.runHint : w.askHint}</span>
+              </button>
+            </>
+          )}
         </div>
       )}
       <div className="ask-bar">
@@ -141,7 +395,7 @@ export function AskDock({ lang, children }: { lang: string; children?: ReactNode
           className="ask-form"
           onSubmit={(event) => {
             event.preventDefault()
-            send(text)
+            void submit(text)
           }}
         >
           <input
@@ -151,7 +405,11 @@ export function AskDock({ lang, children }: { lang: string; children?: ReactNode
             onFocus={() => setFocused(true)}
             onBlur={() => setFocused(false)}
             onKeyDown={(event) => {
-              if (event.key === 'Escape') inputRef.current?.blur()
+              if (event.key === 'Escape') {
+                setText('')
+                setAnswer(null)
+                inputRef.current?.blur()
+              }
             }}
             placeholder={w.placeholder}
             aria-label={w.placeholder}

@@ -6,6 +6,7 @@ import { pdfToText } from './pdf'
 import { pptToText } from './ppt'
 import { pptxToText } from './pptx'
 import { xlsxToText } from './xlsx'
+import { legacyXlsToText } from './xls'
 
 export type ParsedFileKind = 'text' | 'image' | 'unsupported'
 
@@ -58,6 +59,8 @@ export async function parseFileToText(filePath: string): Promise<ParsedFile> {
         return { ok: true, kind: 'text', text: await pptToText(await readFile(filePath)) }
       case 'pptx':
         return { ok: true, kind: 'text', text: await pptxToText(await readFile(filePath)) }
+      case 'xls':
+        return { ok: true, kind: 'text', text: await legacyXlsToText(await readFile(filePath)) }
       case 'xlsx':
       case 'xlsm':
         return { ok: true, kind: 'text', text: await xlsxToText(await readFile(filePath)) }

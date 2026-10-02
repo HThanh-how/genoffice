@@ -188,6 +188,7 @@ export class DocumentMemoryManager {
     this.store = new DocumentMemoryStore(this.dbPath)
     this.enabled = readEnabled(this.settingsPath)
     this.store.purgeDiscoveredByName(isIgnoredFileName)
+    this.store.requeueNowReadable()
     this.counterBackfill = this.runCounterBackfill()
     this.scheduleFtsMaintenance()
 
