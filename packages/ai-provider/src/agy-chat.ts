@@ -126,6 +126,8 @@ export interface AgyChatUsageState {
   refreshing: boolean
   /** the last attempt failed (the previous numbers, if any, are still shown) */
   failed: boolean
+  /** the CLI is not signed in, so usage (and chat) cannot work until the user logs in */
+  needsLogin?: boolean
 }
 
 /** The usage buckets that apply to a model (its quota pool), or null when unknown. */

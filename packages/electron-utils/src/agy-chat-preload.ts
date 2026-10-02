@@ -18,6 +18,7 @@ function usageFrom(value: unknown): AgyChatUsageState {
     readAt: typeof v.readAt === 'number' ? v.readAt : 0,
     refreshing: v.refreshing === true,
     failed: v.failed === true,
+    ...(v.needsLogin === true ? { needsLogin: true } : {}),
   }
 }
 

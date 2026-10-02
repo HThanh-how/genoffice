@@ -23,6 +23,7 @@ export interface AgyBarUsage {
   readAt: number
   refreshing: boolean
   failed: boolean
+  needsLogin?: boolean
 }
 export interface AgyBarActivity {
   runId: string
@@ -150,6 +151,8 @@ const EN = {
   ago: '{t} ago',
   recheck: 'Check again',
   failed: 'Could not read the usage. Showing the last numbers.',
+  needsLogin:
+    'Antigravity is not signed in on this computer. Run `agy` once in a terminal and log in.',
   none: 'No reading yet',
   d: 'd',
   h: 'h',
@@ -190,6 +193,8 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     ago: '{t} trước',
     recheck: 'Kiểm tra lại',
     failed: 'Không đọc được mức dùng. Đang hiện số liệu lần trước.',
+    needsLogin:
+      'Antigravity chưa đăng nhập trên máy này. Hãy chạy `agy` một lần trong terminal và đăng nhập.',
     none: 'Chưa có số liệu',
     d: 'ngày',
     h: 'giờ',
@@ -226,6 +231,7 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     ago: '{t}前',
     recheck: '重新检查',
     failed: '无法读取用量，显示上次的数据。',
+    needsLogin: '此电脑上的 Antigravity 尚未登录。请在终端运行一次 `agy` 并登录。',
     none: '暂无数据',
     d: '天',
     h: '小时',
@@ -507,7 +513,9 @@ export function AgyChatBar({
               {bucketRow(d.weekly, week)}
             </>
           )}
-          {usage?.failed && <p className="agy-bar-note">{d.failed}</p>}
+          {usage?.failed && (
+            <p className="agy-bar-note">{usage.needsLogin ? d.needsLogin : d.failed}</p>
+          )}
           <footer>
             <button type="button" onClick={recheck} disabled={usage?.refreshing}>
               {d.recheck}

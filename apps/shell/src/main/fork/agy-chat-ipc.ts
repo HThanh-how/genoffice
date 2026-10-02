@@ -4,7 +4,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { subscribeAgyActivity } from '@genoffice/ai-provider/agy-activity'
 import { listAgyModels } from '@genoffice/ai-provider/agy-cli'
-import { readAgyUsage } from '@genoffice/ai-provider/agy-usage'
+import { agyUsageNeedsLogin, readAgyUsage } from '@genoffice/ai-provider/agy-usage'
 import {
   AGY_CHAT_CHANNELS,
   AGY_CHAT_DEFAULT_MODEL,
@@ -100,6 +100,7 @@ export class AgyUsageCache {
           readAt: reading.readAt,
           refreshing: false,
           failed: false,
+          needsLogin: false,
         }
         try {
           writeJsonAtomic(this.cachePath, this.state)
@@ -107,7 +108,7 @@ export class AgyUsageCache {
           // the cache only makes the next start faster
         }
       } else {
-        this.state = { ...this.state, failed: true }
+        this.state = { ...this.state, failed: true, needsLogin: agyUsageNeedsLogin() }
       }
       this.inflight = null
       this.busy = false

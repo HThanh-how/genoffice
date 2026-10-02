@@ -42,7 +42,7 @@ const realDeps: AgyUsageDeps = {
         cwd: tmpdir(),
         shell: false,
         windowsHide: true,
-        stdio: ['ignore', 'pipe', 'ignore'],
+        stdio: ['ignore', 'pipe', 'pipe'],
         detached: process.platform !== 'win32',
       })
       let out = ''
@@ -61,9 +61,21 @@ const realDeps: AgyUsageDeps = {
           }),
         timeoutMs,
       )
+      // Not signed in: the CLI prints this and then waits for a browser login, which never
+      // comes from here. Stop at once instead of spinning until the timeout.
+      const watchLogin = (chunk: Buffer) => {
+        if (!/Authentication required/i.test(chunk.toString('utf8'))) return
+        needsLogin = true
+        finish(() => {
+          killProcessTree(child)
+          reject(new Error('Antigravity is not signed in'))
+        })
+      }
       child.stdout.on('data', (chunk: Buffer) => {
+        watchLogin(chunk)
         if (out.length < MAX_OUTPUT_CHARS) out += chunk.toString('utf8')
       })
+      child.stderr.on('data', watchLogin)
       child.on('error', (error) => finish(() => reject(error)))
       child.on('close', (code) =>
         finish(() =>
@@ -74,6 +86,12 @@ const realDeps: AgyUsageDeps = {
 }
 
 let unsupported = false
+let needsLogin = false
+
+/** True when the last usage read stopped because the CLI is not signed in. */
+export function agyUsageNeedsLogin(): boolean {
+  return needsLogin
+}
 
 /** Test seam: forget that `/usage` was found unsupported. */
 export function resetAgyUsageSupport(): void {
@@ -98,6 +116,7 @@ export async function readAgyUsage(
   deps: AgyUsageDeps = realDeps,
 ): Promise<AgyUsageReading | null> {
   if (unsupported) return null
+  needsLogin = false
   try {
     const cli = await deps.resolveCli(cliPath)
     const output = await deps.run(cli, AGY_USAGE_ARGS, AGY_USAGE_TIMEOUT_MS)
