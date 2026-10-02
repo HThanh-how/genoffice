@@ -886,14 +886,24 @@ export class DocumentMemoryStore {
   /** Find a committed embedding checkpoint, retaining chunk IDs and completed vectors. */
   resumeVectorOffset(path: string, hash: string, model: string): number | null {
     const doc = this.db
-      .prepare('SELECT id, hash, embedding_model, excluded FROM documents WHERE path = ?')
+      .prepare('SELECT id, hash, embedding_model, excluded, status FROM documents WHERE path = ?')
       .get(resolve(path)) as
-      | { id: number; hash: string | null; embedding_model: string | null; excluded: number }
+      | {
+          id: number
+          hash: string | null
+          embedding_model: string | null
+          excluded: number
+          status: string
+        }
       | undefined
     if (
       !doc ||
       doc.excluded ||
       doc.hash !== hash ||
+      // A file still waiting to be read has no complete text stored, whatever hash it carries
+      // (the folder scan records one, and an interrupted write leaves part of the text):
+      // resuming would skip storing the text and leave the file waiting for good.
+      doc.status === 'pending' ||
       (doc.embedding_model && doc.embedding_model !== model)
     )
       return null

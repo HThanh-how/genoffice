@@ -17,7 +17,7 @@ class HandWorker extends EventEmitter {
     this.requests.push({ path: message.path, interactive: message.interactive })
     this.pending = message
   }
-  finish(): void {
+  finish(skipEmbeddings = true): void {
     const { id, path } = this.pending!
     const bytes = readFileSync(path)
     this.emit('message', {
@@ -28,7 +28,7 @@ class HandWorker extends EventEmitter {
         sizeBytes: statSync(path).size,
         chunks: chunkDocumentText('Giấy ra viện. '.repeat(20)),
         status: 'text-only',
-        skipEmbeddings: true,
+        ...(skipEmbeddings ? { skipEmbeddings: true } : {}),
       },
     })
   }
@@ -122,6 +122,30 @@ describe('"read this one" reads at once', () => {
     // the reader says not to build vectors for this one: it is searchable by its words at once
     expect(statusOf(path)).toBe('ready')
     expect(manager.nowStatus().extracting).toEqual([])
+  })
+
+  it('reads a file whose row already carries the same hash (text stored again, not skipped)', async () => {
+    const path = make('3032-cv_0001_signed_signed.pdf')
+    enrol(path)
+    const first = manager.readNowDocument(idOf(path))
+    await until(() => asked().length === 1)
+    const worker = workers.at(-1)!
+    worker.finish(false) // a normal result: its vectors are still to be made
+    await first
+    // a row can wait again while still carrying the hash of the bytes (a rescan, a retry)
+    const store = (
+      manager as unknown as {
+        store: { db: { prepare(sql: string): { run(...args: unknown[]): unknown } } }
+      }
+    ).store
+    store.db.prepare(`UPDATE documents SET status = 'pending' WHERE id = ?`).run(idOf(path))
+    expect(statusOf(path)).toBe('pending')
+
+    const again = manager.readNowDocument(idOf(path))
+    await until(() => asked().filter((request) => request.path === path).length === 2)
+    workers.at(-1)!.finish(false)
+    expect(await again).toEqual({ ok: true })
+    expect(statusOf(path)).toBe('text-only')
   })
 
   it('says why a file cannot be read instead of leaving it waiting', async () => {
