@@ -123,6 +123,8 @@ import {
 import { RibbonColorPalette } from './ribbon-color-palette'
 import { HeaderFooterTab, type HfAction, type HfEditingInfo } from './ribbon-hf-tab'
 import { PasteSpecialDialog } from './PasteSpecialDialog'
+import { ClipboardHistoryItems } from './ClipboardHistoryItems'
+import { clipboardHistoryLabels } from '@genoffice/electron-utils/clipboard-history-labels'
 import { fontFamiliesFor, isEastAsianFontName } from '../font-list'
 import {
   fontSizeLabel,
@@ -3126,6 +3128,22 @@ function RibbonInner({
                           {t('ribbonSetDefaultPaste')}
                         </button>
                       )}
+                      <div className="spacing-menu-sep" />
+                      <div className="paste-history-title">
+                        {clipboardHistoryLabels(lang).pasteMore}
+                      </div>
+                      <div className="paste-history-list">
+                        <ClipboardHistoryItems
+                          editor={ed}
+                          lang={lang}
+                          variant="ribbon"
+                          limit={8}
+                          wrap={(action) => () => {
+                            setDropdown(null)
+                            action()
+                          }}
+                        />
+                      </div>
                     </div>
                   )}
                   {pasteSpecial &&

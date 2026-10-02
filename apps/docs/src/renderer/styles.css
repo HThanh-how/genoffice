@@ -825,6 +825,28 @@ html.genoffice-popover-open .ribbon-tabs {
   flex-shrink: 0;
 }
 
+/* "Paste more": what was copied lately, inline under the paste options */
+.paste-history-title {
+  padding: 6px 12px 2px;
+  font-size: 11px;
+  opacity: 0.65;
+}
+.paste-history-list {
+  max-height: 240px;
+  overflow-y: auto;
+}
+.spacing-menu.paste-menu .paste-history-list button {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.spacing-menu.paste-menu .paste-history-list .paste-history-image img {
+  max-width: 120px;
+  max-height: 48px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
 /* Active state paints only the gray icon plate — ink stays the standard #232425 */
 .rb-big.active .rb-big-icon {
   background: var(--active-bg);

@@ -15,6 +15,7 @@ import {
 } from '@tiptap/pm/tables'
 import { platformShortcuts } from '@genoffice/i18n'
 import { clipboardHistoryLabels } from '@genoffice/electron-utils/clipboard-history-labels'
+import { ClipboardHistoryItems } from './ClipboardHistoryItems'
 
 import { useI18n, type StringKey } from '../i18n/locale'
 import { wordRangeAtCaret } from '../editor/comments'
@@ -40,7 +41,6 @@ import { applySpellingSuggestion } from '../editor/spell-replace'
 import { linkRangeAt, linkTarget, removeLink } from '../editor/link-actions'
 import { fieldRangeAt, toggleFieldCodes, type FieldRange } from '../editor/field-codes'
 import type { SpellLanguages } from '../../shared/ipc'
-import type { ClipboardHistoryEntry } from '../../shared/ipc'
 
 export { FontDialog } from './FontDialog'
 
@@ -152,25 +152,6 @@ export function EditorContextMenu({
   const { t, lang } = useI18n()
   const ref = useRef<HTMLDivElement>(null)
   const [submenu, setSubmenu] = useState<string | null>(null)
-  const [clipboardHistory, setClipboardHistory] = useState<ClipboardHistoryEntry[]>([])
-  const [clipboardHistoryEnabled, setClipboardHistoryEnabled] = useState(false)
-  useEffect(() => {
-    let alive = true
-    void Promise.all([
-      window.desktop.getClipboardHistoryEnabled?.() ?? Promise.resolve(false),
-      window.desktop.getClipboardHistory?.() ?? Promise.resolve([]),
-    ])
-      .then(([enabled, items]) => {
-        if (alive) {
-          setClipboardHistoryEnabled(enabled)
-          setClipboardHistory(items)
-        }
-      })
-      .catch(() => {})
-    return () => {
-      alive = false
-    }
-  }, [menu])
 
   // ---- spelling section (Word: suggestions · Add to Dictionary · Language) ----
   const spell = spellcheckEnabled() && editor.isEditable ? menu.spell : null
@@ -460,56 +441,7 @@ export function EditorContextMenu({
         })}
         {submenu === 'clipboardHistory' && canEdit && (
           <div className="ctx-submenu ctx-submenu-scroll">
-            {!clipboardHistoryEnabled || clipboardHistory.length === 0 ? (
-              <button className="ctx-item" disabled>
-                <span className="ctx-label">
-                  {clipboardHistoryEnabled
-                    ? clipboardHistoryLabels(lang).pasteMoreEmpty
-                    : clipboardHistoryLabels(lang).pasteMoreDisabled}
-                </span>
-              </button>
-            ) : (
-              clipboardHistory.map((entry) => {
-                if (entry.kind === 'image') {
-                  const size = entry.width && entry.height ? `${entry.width}×${entry.height}` : ''
-                  return (
-                    <button
-                      key={entry.id}
-                      className="ctx-item ctx-history-image"
-                      title={size}
-                      onClick={run(() => {
-                        editor.view.focus()
-                        void window.desktop.restoreClipboardHistoryImage?.(entry.id).then((ok) => {
-                          if (ok) void pasteFromClipboard(editor)
-                        })
-                      })}
-                    >
-                      <img src={entry.preview} alt={size} />
-                      {size && <span className="ctx-label ctx-history-size">{size}</span>}
-                    </button>
-                  )
-                }
-                const preview = entry.text.replace(/\s+/g, ' ').trim()
-                const label = entry.sensitive
-                  ? '••••••••••'
-                  : preview.length > 64
-                    ? `${preview.slice(0, 64)}…`
-                    : preview
-                return (
-                  <button
-                    key={entry.id}
-                    className="ctx-item"
-                    title={entry.sensitive ? clipboardHistoryLabels(lang).sensitiveHint : preview}
-                    onClick={run(() => {
-                      editor.view.focus()
-                      editor.view.pasteText(entry.text)
-                    })}
-                  >
-                    <span className="ctx-label">{label || '(empty)'}</span>
-                  </button>
-                )
-              })
-            )}
+            <ClipboardHistoryItems editor={editor} lang={lang} variant="ctx" wrap={run} />
           </div>
         )}
       </div>
