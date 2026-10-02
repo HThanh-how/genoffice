@@ -1,5 +1,6 @@
 import { DatabaseSync } from 'node:sqlite'
 import { resolve } from 'node:path'
+import type { IndexFileDetail } from '../../shared/fork/document-index-api'
 import {
   groupIssueCounts,
   issueReason,
@@ -61,6 +62,79 @@ export class IndexIssueReader {
         "excluded = 0 AND status IN ('error', 'empty') AND (path = ? OR substr(path, 1, length(?)) = ?)",
       args: [normalized, prefix, prefix],
     }
+  }
+
+  /** Everything the file's detail view shows, read in a few cheap queries by document id. */
+  detail(id: number): Omit<IndexFileDetail, 'exists'> | null {
+    const db = this.connection()
+    const row = db
+      .prepare(
+        `SELECT id, path, name, status, error, size_bytes, mtime_ms, updated_at, embedding_model,
+          truncated, chunk_total, chunk_done FROM documents WHERE id = ?`,
+      )
+      .get(id) as
+      | {
+          id: number
+          path: string
+          name: string
+          status: string
+          error: string | null
+          size_bytes: number | null
+          mtime_ms: number | null
+          updated_at: number
+          embedding_model: string | null
+          truncated: number
+          chunk_total: number
+          chunk_done: number
+        }
+      | undefined
+    if (!row) return null
+    const detail: Omit<IndexFileDetail, 'exists'> = {
+      id: row.id,
+      path: row.path,
+      name: row.name,
+      status: row.status,
+      ...(row.error ? { error: row.error } : {}),
+      ...(row.size_bytes === null ? {} : { sizeBytes: row.size_bytes }),
+      ...(row.mtime_ms === null ? {} : { mtimeMs: row.mtime_ms }),
+      updatedAt: row.updated_at * 1000,
+      ...(row.embedding_model ? { embeddingModel: row.embedding_model } : {}),
+      truncated: row.truncated === 1,
+      chunkTotal: row.chunk_total,
+      chunkDone: row.chunk_done,
+    }
+    if (/\.pdf$/i.test(row.path)) {
+      const scan = db
+        .prepare('SELECT total_pages, scanned FROM pdf_scan_info WHERE path = ?')
+        .get(row.path) as { total_pages: number; scanned: string } | undefined
+      const ocr = db
+        .prepare(
+          'SELECT count(*) AS pages, coalesce(sum(length(text)), 0) AS chars, max(model) AS model, max(total_pages) AS total FROM ocr_pages WHERE path = ?',
+        )
+        .get(row.path) as {
+        pages: number
+        chars: number
+        model: string | null
+        total: number | null
+      }
+      let scanned = 0
+      try {
+        const list: unknown = scan ? JSON.parse(scan.scanned) : []
+        if (Array.isArray(list)) scanned = list.length
+      } catch {
+        // an unreadable list counts as no scanned pages
+      }
+      const totalPages = scan?.total_pages ?? ocr.total ?? 0
+      if (totalPages > 0 || ocr.pages > 0)
+        detail.pdf = {
+          totalPages,
+          scannedPages: scanned,
+          ocrPages: ocr.pages,
+          ocrChars: ocr.chars,
+          ...(ocr.model ? { ocrModel: ocr.model } : {}),
+        }
+    }
+    return detail
   }
 
   summary(root: string): IndexIssueSummary {
@@ -130,7 +204,32 @@ export class IndexIssueReader {
         ORDER BY status ASC, priority_at DESC, id DESC LIMIT ? OFFSET ?`,
       )
       .all(...args, ...filterArgs, pageSize, offset) as unknown as IssueRow[]
-    return { total, items: rows.map((row) => this.toIssue(row)) }
+    return { total, items: rows.map((row) => this.withProgress(this.toIssue(row))) }
+  }
+
+  /** Adds the file's own progress (OCR pages or embedded passages) when there is any. */
+  private withProgress(issue: IndexIssue): IndexIssue {
+    try {
+      const detail = this.detail(issue.id)
+      if (!detail) return issue
+      if (detail.pdf && detail.pdf.totalPages > 0 && issue.reason === 'no-text')
+        return {
+          ...issue,
+          progress: {
+            kind: 'ocr',
+            done: detail.pdf.ocrPages,
+            total: detail.pdf.scannedPages || detail.pdf.totalPages,
+          },
+        }
+      if (detail.chunkTotal > 0)
+        return {
+          ...issue,
+          progress: { kind: 'chunks', done: detail.chunkDone, total: detail.chunkTotal },
+        }
+    } catch {
+      // a row without progress still renders
+    }
+    return issue
   }
 
   private pageInMemory(

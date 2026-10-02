@@ -33,6 +33,8 @@ export interface IndexIssue {
   truncated?: boolean
   /** Optional: set when the file is known to have been deleted from disk. */
   deleted?: boolean
+  /** Optional: how far the file got (scanned-PDF pages read, or passages embedded). */
+  progress?: { kind: 'ocr' | 'chunks'; done: number; total: number }
 }
 
 /** Every reason, in the order the UI lists groups (needs-action first, informational last). */

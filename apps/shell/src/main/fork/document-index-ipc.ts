@@ -18,6 +18,7 @@ import {
 import {
   DOCUMENT_INDEX_CHANNELS,
   type EmbeddingModelState,
+  type IndexFileDetail,
   type IndexedFolder,
 } from '../../shared/fork/document-index-api'
 
@@ -74,6 +75,21 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
         throw new Error('Invalid index issue page')
       if (!getDocumentMemory()) return { total: 0, items: [] }
       return reader().page(activeRoot(root), offset, issueReason(reason))
+    },
+  )
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.getIndexFileDetail,
+    async (_event, id: unknown): Promise<IndexFileDetail | null> => {
+      if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
+        throw new Error('Invalid document id')
+      if (!getDocumentMemory()) return null
+      const detail = reader().detail(id)
+      if (!detail) return null
+      const exists = await stat(detail.path).then(
+        (s) => s.isFile(),
+        () => false,
+      )
+      return { ...detail, exists }
     },
   )
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexIssueSummary, (_event, root: unknown) => {

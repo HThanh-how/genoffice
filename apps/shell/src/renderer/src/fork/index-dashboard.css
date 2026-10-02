@@ -314,65 +314,6 @@
   outline: 2px solid color-mix(in srgb, var(--accent) 50%, transparent);
   outline-offset: 0;
 }
-.idx-issue + .idx-issue {
-  margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border);
-}
-.idx-issue-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 12px;
-}
-.idx-issue-head p {
-  margin: 3px 0 0;
-  color: var(--text-tertiary);
-  font-size: 12px;
-}
-.idx-count {
-  margin-left: 8px;
-  color: var(--text-tertiary);
-  font-size: 12px;
-}
-.idx-issue-actions {
-  display: flex;
-  flex: none;
-  gap: 6px;
-  align-items: flex-start;
-}
-.idx-files {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 10px 0 0;
-  padding: 0;
-  list-style: none;
-  font-size: 12.5px;
-}
-.idx-files li {
-  display: grid;
-  grid-template-columns: minmax(0, 1.3fr) minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-}
-.idx-files li > span:first-child,
-.idx-files li > .idx-muted {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.idx-file-actions {
-  display: flex;
-  gap: 8px;
-}
-.idx-file-actions button {
-  border: 0;
-  background: transparent;
-  color: var(--accent);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
 .idx-empty,
 .idx-note {
   margin: 0;
@@ -402,4 +343,334 @@
   color: var(--accent);
   font: inherit;
   cursor: pointer;
+}
+
+/* ---- problems: accordion groups, compact file rows, per-file log ---- */
+.ixp {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ixp-title {
+  margin: 8px 2px 0;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.ixp-note {
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: var(--accent-soft);
+  color: var(--text);
+  font-size: 12.5px;
+}
+.ixp-group {
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.ixp-head-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding-right: 10px;
+}
+.ixp-head {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 8px 12px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ixp-head:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.ixp-head:focus-visible,
+.ixp-row:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent);
+  outline-offset: -2px;
+}
+.ixp-chevron {
+  display: grid;
+  flex: none;
+  color: var(--text-tertiary);
+  transition: transform 0.15s ease;
+}
+.is-open > .ixp-head-row .ixp-chevron {
+  transform: rotate(90deg);
+}
+.ixp-head-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ixp-head-text strong {
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.ixp-head-text span {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ixp-count {
+  flex: none;
+  padding: 1px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.ixp-icon {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary, var(--text-tertiary));
+  cursor: pointer;
+}
+.ixp-icon:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--text) 9%, transparent);
+  color: var(--text);
+}
+.ixp-icon:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.ixp-files {
+  margin: 0;
+  padding: 0 0 6px;
+  list-style: none;
+  border-top: 1px solid var(--border);
+}
+.ixp-files > li {
+  min-width: 0;
+}
+.ixp-files > li.is-selected {
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+.ixp-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 6px 10px 6px 14px;
+  cursor: pointer;
+}
+.ixp-row:hover {
+  background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.ixp-file-icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+}
+.ixp-file-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.ixp-file-name {
+  overflow: hidden;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ixp-file-sub {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ixp-progress {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 6px;
+}
+.ixp-bar {
+  width: 52px;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+  overflow: hidden;
+}
+.ixp-bar i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}
+.ixp-progress-n {
+  min-width: 34px;
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+}
+.ixp-actions {
+  display: flex;
+  flex: none;
+  gap: 0;
+  opacity: 0.5;
+  transition: opacity 0.12s ease;
+}
+.ixp-row:hover .ixp-actions,
+.ixp-row:focus-within .ixp-actions,
+.is-selected .ixp-actions {
+  opacity: 1;
+}
+.ixp-spin {
+  flex: none;
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: ixp-rot 0.8s linear infinite;
+}
+@keyframes ixp-rot {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.ixp-loading {
+  padding: 8px 14px;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+.ixp-files > li > .idx-link {
+  margin: 4px 14px;
+  font-size: 12.5px;
+}
+.ixp-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 14px 12px 42px;
+  padding-top: 4px;
+}
+.ixp-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ixp-steps li {
+  position: relative;
+  display: grid;
+  grid-template-columns: 14px minmax(110px, 170px) 1fr;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 12.5px;
+}
+.ixp-steps li + li::before {
+  content: '';
+  position: absolute;
+  top: -9px;
+  left: 6px;
+  width: 1px;
+  height: 16px;
+  background: var(--border-strong, var(--border));
+}
+.ixp-steps i {
+  align-self: center;
+  width: 9px;
+  height: 9px;
+  margin-left: 2px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+.ixp-steps .is-ok i {
+  background: #2fb36d;
+}
+.ixp-steps .is-warn i {
+  background: #e0a020;
+}
+.ixp-steps .is-fail i {
+  background: var(--danger, #d93025);
+}
+.ixp-steps .is-run i {
+  background: var(--accent);
+  animation: ixp-pulse 1.1s ease-in-out infinite;
+}
+.ixp-steps .is-wait i {
+  background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--text-tertiary);
+}
+@keyframes ixp-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+.ixp-step-name {
+  font-weight: 600;
+}
+.ixp-step-text {
+  color: var(--text-secondary, var(--text));
+}
+.ixp-facts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  font-size: 12px;
+}
+.ixp-facts > div {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 10px;
+}
+.ixp-facts dt {
+  color: var(--text-tertiary);
+}
+.ixp-facts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.ixp-raw {
+  display: block;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--text) 6%, transparent);
+  font-family: var(--gs-font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 760px) {
+  .ixp-steps li {
+    grid-template-columns: 14px 1fr;
+  }
+  .ixp-step-text {
+    grid-column: 2;
+  }
+  .ixp-progress {
+    display: none;
+  }
 }

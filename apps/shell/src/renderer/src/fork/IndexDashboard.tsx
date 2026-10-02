@@ -4,14 +4,12 @@ import '@genoffice/ui/index-progress.css'
 import type { HomeApi, HomeIndexingActivity, DocumentMemoryStatus } from '../../../shared/home-api'
 import type { IndexingMode, IndexingModeState } from '../../../shared/fork/indexing-mode'
 import { INDEXING_MODES } from '../../../shared/fork/indexing-mode'
-import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
-import type { IndexIssue, IndexIssueReason } from '../../../main/document-memory/issues'
-import { isInformationalReason, isRetryableReason } from '../../../main/document-memory/issues'
 import { useI18n } from '../locale'
 import { activityCopy, fill } from '../indexing-activity-copy'
 import { EtaTracker, type EtaEstimate } from '../indexing-activity-model'
 import { etaText } from '../indexing-activity/format'
 import { IndexedFolders } from './IndexedFolders'
+import { IndexProblems } from './IndexProblems'
 import { DocumentMemorySettings } from '../DocumentMemorySettings'
 import { langFor, parseIndexCommand, runIndexCommand } from './index-assistant'
 import './index-dashboard.css'
@@ -83,22 +81,6 @@ const EN = {
   placeholder: 'e.g. "how far is indexing?", "prioritize folder Contracts", "pause"',
   send: 'Send',
   suggestions: ['How far is indexing?', 'Rescan', 'Retry the errors', 'Help'],
-  noProblems: 'No problems. Every readable file is indexed.',
-  noFolder: 'Scan a folder first.',
-  retryGroup: 'Try again',
-  showFiles: 'Show files',
-  hideFiles: 'Hide files',
-  reveal: 'Show in folder',
-  retryOne: 'Retry',
-  retried: 'Queued {n} files again.',
-  skippedTitle: 'Skipped on purpose',
-  attentionTitle: 'Needs attention',
-  more: 'Showing the first {n} of {total}.',
-  loadMore: 'Show more',
-  ocrNow: 'Read with Antigravity now',
-  ocrBusy: 'Reading…',
-  ocrDone: 'Read {n} pages. It is searchable shortly.',
-  ocrFailed: 'Could not read: {e}',
   ocrConfirm:
     'Read this scanned PDF now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
 }
@@ -168,22 +150,6 @@ const VI: Dict = {
   placeholder: 'vd: "index tới đâu rồi?", "ưu tiên thư mục Hợp đồng", "tạm dừng"',
   send: 'Gửi',
   suggestions: ['Index tới đâu rồi?', 'Quét lại', 'Thử lại các lỗi', 'Trợ giúp'],
-  noProblems: 'Không có lỗi. Mọi tệp đọc được đều đã index.',
-  noFolder: 'Hãy quét một thư mục trước.',
-  retryGroup: 'Thử lại',
-  showFiles: 'Xem tệp',
-  hideFiles: 'Ẩn tệp',
-  reveal: 'Mở thư mục chứa',
-  retryOne: 'Thử lại',
-  retried: 'Đã xếp lại {n} tệp.',
-  skippedTitle: 'Bỏ qua có chủ đích',
-  attentionTitle: 'Cần xử lý',
-  more: 'Đang hiện {n} tệp đầu trong {total}.',
-  loadMore: 'Xem thêm',
-  ocrNow: 'Đọc bằng Antigravity ngay',
-  ocrBusy: 'Đang đọc…',
-  ocrDone: 'Đã đọc {n} trang. Lát nữa là tìm được.',
-  ocrFailed: 'Không đọc được: {e}',
   ocrConfirm:
     'Đọc ngay tệp PDF quét này bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
 }
@@ -490,7 +456,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
 
       {tab === 'problems' && (
         <div className="idx-body">
-          <Problems api={api} root={folder?.root ?? ''} lang={lang} d={d} onChanged={kick} />
+          <IndexProblems api={api} root={folder?.root ?? ''} onChanged={kick} />
         </div>
       )}
 
@@ -577,188 +543,5 @@ function Assistant({
         </button>
       </form>
     </section>
-  )
-}
-
-function Problems({
-  api,
-  root,
-  lang,
-  d,
-  onChanged,
-}: {
-  api: HomeApi
-  root: string
-  lang: string
-  d: Dict
-  onChanged: () => void
-}) {
-  const copy = activityCopy(lang as never)
-  const [summary, setSummary] = useState<IndexIssueSummary | null>(null)
-  const [open, setOpen] = useState<IndexIssueReason | null>(null)
-  const [files, setFiles] = useState<{ items: IndexIssue[]; total: number }>({
-    items: [],
-    total: 0,
-  })
-  const [note, setNote] = useState('')
-  const [reading, setReading] = useState<number | null>(null)
-
-  const more = async (reason: IndexIssueReason) => {
-    try {
-      const next = await api.getDocumentIndexIssues(root, files.items.length, reason)
-      setFiles((current) => ({ total: next.total, items: [...current.items, ...next.items] }))
-    } catch {
-      /* keep the list */
-    }
-  }
-
-  const read = async (id: number) => {
-    if (!window.confirm(d.ocrConfirm)) return
-    setReading(id)
-    try {
-      const result = await api.readScannedPdfWithAgy(id, true)
-      setNote(
-        result.ok
-          ? fill(d.ocrDone, { n: result.pages ?? 0 })
-          : fill(d.ocrFailed, { e: result.error ?? '' }),
-      )
-      await load()
-      onChanged()
-    } catch (error) {
-      setNote(fill(d.ocrFailed, { e: error instanceof Error ? error.message : '' }))
-    } finally {
-      setReading(null)
-    }
-  }
-
-  const load = useCallback(async () => {
-    if (!root) return
-    try {
-      setSummary(await api.getDocumentIndexIssueSummary(root))
-    } catch {
-      /* keep what is shown */
-    }
-  }, [api, root])
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  const show = async (reason: IndexIssueReason) => {
-    if (open === reason) return setOpen(null)
-    setOpen(reason)
-    setFiles({ items: [], total: 0 })
-    try {
-      setFiles(await api.getDocumentIndexIssues(root, 0, reason))
-    } catch {
-      /* empty list */
-    }
-  }
-  const retry = async (reason: IndexIssueReason) => {
-    const result = await api.retryDocumentIndexGroup(root, reason)
-    setNote(result.ok ? fill(d.retried, { n: result.retried }) : (result.error ?? ''))
-    await load()
-    onChanged()
-  }
-
-  if (!root) return <p className="idx-muted">{d.noFolder}</p>
-  const groups = summary?.groups ?? []
-  if (summary && groups.length === 0) return <p className="idx-empty">{d.noProblems}</p>
-
-  const section = (title: string, list: typeof groups) =>
-    list.length > 0 && (
-      <section className="idx-card">
-        <header>
-          <h3>{title}</h3>
-        </header>
-        {list.map((group) => {
-          const words = copy.reasons[group.reason]
-          return (
-            <div className="idx-issue" key={group.reason}>
-              <div className="idx-issue-head">
-                <div>
-                  <strong>{words.title}</strong>
-                  <span className="idx-count">{group.count}</span>
-                  <p>{words.hint}</p>
-                </div>
-                <div className="idx-issue-actions">
-                  <button type="button" className="idx-btn" onClick={() => void show(group.reason)}>
-                    {open === group.reason ? d.hideFiles : d.showFiles}
-                  </button>
-                  {isRetryableReason(group.reason) && (
-                    <button
-                      type="button"
-                      className="idx-btn"
-                      onClick={() => void retry(group.reason)}
-                    >
-                      {d.retryGroup}
-                    </button>
-                  )}
-                </div>
-              </div>
-              {open === group.reason && (
-                <ul className="idx-files">
-                  {files.items.map((file) => (
-                    <li key={file.id} title={file.path}>
-                      <span>{file.name}</span>
-                      <span className="idx-muted">{file.error ?? ''}</span>
-                      <span className="idx-file-actions">
-                        <button
-                          type="button"
-                          onClick={() => void api.revealDocumentIndexFile(file.id)}
-                        >
-                          {d.reveal}
-                        </button>
-                        {group.reason === 'no-text' && (
-                          <button
-                            type="button"
-                            disabled={reading !== null}
-                            onClick={() => void read(file.id)}
-                          >
-                            {reading === file.id ? d.ocrBusy : d.ocrNow}
-                          </button>
-                        )}
-                        {isRetryableReason(group.reason) && (
-                          <button
-                            type="button"
-                            onClick={() => void api.retryDocumentIndex(file.id).then(load)}
-                          >
-                            {d.retryOne}
-                          </button>
-                        )}
-                      </span>
-                    </li>
-                  ))}
-                  {files.total > files.items.length && (
-                    <li className="idx-muted">
-                      {fill(d.more, { n: files.items.length, total: files.total })}{' '}
-                      <button
-                        type="button"
-                        className="idx-link"
-                        onClick={() => void more(group.reason)}
-                      >
-                        {d.loadMore}
-                      </button>
-                    </li>
-                  )}
-                </ul>
-              )}
-            </div>
-          )
-        })}
-      </section>
-    )
-
-  return (
-    <>
-      {note && <p className="idx-note">{note}</p>}
-      {section(
-        d.attentionTitle,
-        groups.filter((g) => !isInformationalReason(g.reason)),
-      )}
-      {section(
-        d.skippedTitle,
-        groups.filter((g) => isInformationalReason(g.reason)),
-      )}
-    </>
   )
 }

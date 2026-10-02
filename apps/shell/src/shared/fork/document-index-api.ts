@@ -11,6 +11,7 @@ export const DOCUMENT_INDEX_CHANNELS = {
   forgetIndexedFolder: 'home:forget-indexed-folder',
   getEmbeddingModel: 'home:get-embedding-model',
   setEmbeddingModel: 'home:set-embedding-model',
+  getIndexFileDetail: 'home:get-index-file-detail',
 } as const
 
 export type EmbeddingProfileChoice = 'standard' | 'high'
@@ -27,6 +28,37 @@ export interface EmbeddingModelState {
     EmbeddingProfileChoice,
     { name: string; dimensions: number; downloadMB: number; memoryMB: number }
   >
+}
+
+/** How far one file got through the pipeline, for the file's detail view. */
+export interface IndexFileDetail {
+  id: number
+  path: string
+  name: string
+  status: string
+  /** the raw error stored with the file, if any */
+  error?: string
+  sizeBytes?: number
+  /** when the file was last modified on disk (epoch ms) */
+  mtimeMs?: number
+  /** when the index last touched this file (epoch ms) */
+  updatedAt: number
+  /** the file is still on disk */
+  exists: boolean
+  /** the search model that embedded it */
+  embeddingModel?: string
+  /** only the first part of a long file was read */
+  truncated: boolean
+  chunkTotal: number
+  chunkDone: number
+  /** scanned-PDF reading: pages of the file, pages with their own text, pages read by OCR */
+  pdf?: {
+    totalPages: number
+    scannedPages: number
+    ocrPages: number
+    ocrChars: number
+    ocrModel?: string
+  }
 }
 
 /** One finished scan or refresh of a folder. */
@@ -77,6 +109,8 @@ export interface DocumentIndexApi {
   rescanIndexedFolder(root: string): Promise<{ ok: boolean; error?: string }>
   /** Stop watching a folder and drop it from the list (indexed files stay searchable). */
   forgetIndexedFolder(root: string): Promise<boolean>
+  /** How far one file got: found, read, OCR, embedded. Null when the file is not in the index. */
+  getIndexFileDetail(documentId: number): Promise<IndexFileDetail | null>
   getEmbeddingModel(): Promise<EmbeddingModelState>
   /** Switch the search model; documents are read again with it in the background. */
   setEmbeddingModel(profile: EmbeddingProfileChoice): Promise<{ ok: boolean; requeued: number }>
