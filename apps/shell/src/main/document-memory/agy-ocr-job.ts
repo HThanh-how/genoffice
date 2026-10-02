@@ -112,6 +112,11 @@ export interface OcrJobHost {
   savePages(path: string, meta: OcrFileMeta, pages: readonly OcrPageText[]): void
   /** queue the document for re-extraction so the new OCR text becomes chunks and vectors */
   reindex(path: string): void
+  /**
+   * Put the new OCR text into the index right now and resolve once the file is searchable: for a
+   * read the person asked for, which must not wait in the line behind every other file.
+   */
+  reindexNow?(path: string): Promise<void>
 }
 
 export interface OcrRecognizeInput {
@@ -566,6 +571,21 @@ export class AgyOcrJob {
     this.waiting = null
   }
 
+  /** A manual read: the pages just read become searchable text now, not when the line gets to it. */
+  private async indexNow(touched: Set<string>): Promise<void> {
+    const reindexNow = this.deps.host.reindexNow
+    if (!reindexNow) return
+    for (const path of [...touched]) {
+      try {
+        await reindexNow.call(this.deps.host, path)
+        touched.delete(path)
+      } catch (error) {
+        // left in `touched`: it is queued the ordinary way when this read ends
+        this.recordError(errorText(error))
+      }
+    }
+  }
+
   // ---- manual read of one file ----
 
   /**
@@ -619,6 +639,7 @@ export class AgyOcrJob {
           ? state.lastError.message
           : undefined
       const pages = this.deps.state.today().pages - before
+      await this.indexNow(touched)
       if (touched.size === 0 && failure && (outcome.stop || file?.nonRetryable))
         return { ok: false, error: failure }
       return { ok: true, pages: Math.max(pages, outcome.pages) }

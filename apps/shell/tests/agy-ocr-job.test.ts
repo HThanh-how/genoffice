@@ -127,6 +127,7 @@ class FakeHost implements OcrJobHost {
   reindex(path: string) {
     this.reindexed.push(path)
   }
+  reindexNow?: (path: string) => Promise<void>
 }
 
 interface Rig {
@@ -662,6 +663,33 @@ describe('manual "read with Antigravity now"', () => {
     expect(r.host.reindexed).toEqual(['/a.pdf'])
     expect(r.state.get().files['/a.pdf']!.nonRetryable).toBeUndefined()
     expect(r.state.today().pages).toBe(8) // still counted in today's totals
+  })
+
+  it('makes what it read searchable before it answers, not through the line', async () => {
+    const r = rig({ maxPagesPerFile: 3 })
+    r.host.add('/a.pdf', 3)
+    const order: string[] = []
+    r.host.reindexNow = async (path) => {
+      order.push(`now:${path}`)
+    }
+    const result = await r.job.readNow(r.host.files.get('/a.pdf')!.id)
+    order.push('answered')
+
+    expect(result.ok).toBe(true)
+    expect(order).toEqual(['now:/a.pdf', 'answered'])
+    expect(r.host.reindexed).toEqual([]) // not queued behind the other files as well
+  })
+
+  it('queues the file the ordinary way when reading it at once fails', async () => {
+    const r = rig({ maxPagesPerFile: 3 })
+    r.host.add('/a.pdf', 3)
+    r.host.reindexNow = async () => {
+      throw new Error('worker busy')
+    }
+    const result = await r.job.readNow(r.host.files.get('/a.pdf')!.id)
+
+    expect(result.ok).toBe(true)
+    expect(r.host.reindexed).toEqual(['/a.pdf'])
   })
 
   it('refuses non-PDFs, unknown ids, finished files and overlapping reads', async () => {

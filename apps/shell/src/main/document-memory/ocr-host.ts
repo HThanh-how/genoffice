@@ -8,6 +8,8 @@ export interface OcrHostInput {
   renderInWorker(path: string, request: OcrRenderRequest): Promise<OcrRenderResult | null>
   /** queue a document for (prioritised) re-extraction */
   reindex(path: string): void
+  /** read a document now and resolve once its new text is searchable (rejects with why not) */
+  reindexNow?(path: string): Promise<void>
   isEnabled(): boolean
 }
 
@@ -27,5 +29,6 @@ export function createOcrHost(input: OcrHostInput): OcrJobHost {
     render: (path, request) => input.renderInWorker(path, request),
     savePages: (path, meta, pages) => store.ocr.savePages(path, meta, pages),
     reindex: (path) => input.reindex(path),
+    ...(input.reindexNow ? { reindexNow: (path: string) => input.reindexNow!(path) } : {}),
   }
 }

@@ -499,6 +499,12 @@ export class DocumentMemoryManager {
         this.invalidatePath(path)
         this.enqueue(path, true)
       },
+      reindexNow: async (path) => {
+        const id = this.store.documentByPath(path)?.id
+        if (id === undefined) return
+        const outcome = await this.readNowDocument(id)
+        if (!outcome.ok && outcome.error) throw new Error(outcome.error)
+      },
     })
   }
 
