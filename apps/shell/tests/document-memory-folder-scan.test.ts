@@ -113,9 +113,35 @@ describe('FolderScanManager', () => {
     expect(resumed.status()).toMatchObject({ running: false, root, discovered: 0 })
   })
 
-  it('rejects drive roots so a scan is always scoped to a selected folder', () => {
+  it('rejects the filesystem root so a scan never walks the operating system', () => {
     const instance = scanner(join(dir, 'state'), () => true)
-    expect(() => instance.start('/')).toThrow(/below the drive root/)
+    expect(() => instance.start('/')).toThrow(/below the system drive root/)
+  })
+
+  it('scans a folder added while another is being scanned, once that one is done', async () => {
+    const first = join(dir, 'first')
+    const second = join(dir, 'second')
+    mkdirSync(first, { recursive: true })
+    mkdirSync(second, { recursive: true })
+    writeFileSync(join(first, 'a.txt'), 'a')
+    writeFileSync(join(second, 'b.txt'), 'b')
+    const enrolled: string[] = []
+    const instance = scanner(join(dir, 'state'), (path) => {
+      enrolled.push(path)
+      return true
+    })
+
+    instance.start(first)
+    expect(() => instance.start(second)).not.toThrow()
+    await until(() => enrolled.length === 2 && !instance.status().running)
+
+    expect(enrolled.sort()).toEqual([join(first, 'a.txt'), join(second, 'b.txt')].sort())
+    expect(
+      instance
+        .folders()
+        .map((entry) => entry.root)
+        .sort(),
+    ).toEqual([first, second].sort())
   })
 
   it('continues after a file enrollment error and reports it', async () => {

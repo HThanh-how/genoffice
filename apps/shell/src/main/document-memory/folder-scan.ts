@@ -157,6 +157,8 @@ export class FolderScanManager {
   private readonly memory: DiscoveredDocumentIndexer
   private manifest: Manifest
   private activeRoot: string | null = null
+  /** roots asked for while another scan runs: they start, one after another, as each finishes */
+  private readonly waiting: string[] = []
   private stopRequested = false
   private closed = false
   private runner: Promise<void> | null = null
@@ -265,8 +267,9 @@ export class FolderScanManager {
     const normalizedRoot = validateRoot(root)
     if (this.closed) throw new Error('Folder scanner is closed')
     if (this.activeRoot) {
-      if (this.activeRoot === normalizedRoot) return this.status()
-      throw new Error('A folder scan is already running')
+      if (this.activeRoot !== normalizedRoot && !this.waiting.includes(normalizedRoot))
+        this.waiting.push(normalizedRoot)
+      return this.status()
     }
 
     let job = this.manifest.jobs.find((entry) => entry.root === normalizedRoot)
@@ -390,7 +393,20 @@ export class FolderScanManager {
         if (job.state !== 'running') this.recordRun(job, 'scan', job.state)
         if (job.state === 'complete' && job.priority) this.memory.prioritizeFolder?.(job.root)
         this.save()
+        this.startNextWaiting()
       })
+  }
+
+  private startNextWaiting(): void {
+    while (!this.closed && !this.activeRoot) {
+      const next = this.waiting.shift()
+      if (!next) return
+      try {
+        this.start(next)
+      } catch {
+        // gone or unplugged meanwhile: the next start of the app picks it up again
+      }
+    }
   }
 
   private async walk(job: ScanJob): Promise<void> {
@@ -597,11 +613,15 @@ function validateRoot(root: string): string {
   )
     throw new Error('Choose a valid folder to scan')
   const normalized = resolve(root)
+  // A data drive may be scanned whole (it is what "add this drive" means); the system drive, or
+  // the filesystem root, would walk the operating system.
+  const driveRoot = parse(normalized).root
   if (
-    normalized === parse(normalized).root ||
-    normalized === parse(normalized).root.replace(/\\$/, '')
+    normalized === driveRoot &&
+    (process.platform !== 'win32' ||
+      driveRoot.toLowerCase().startsWith((process.env.SystemDrive ?? 'C:').toLowerCase()))
   )
-    throw new Error('Choose a folder below the drive root')
+    throw new Error('Choose a folder below the system drive root')
   if (!isAbsolute(normalized)) throw new Error('Choose an absolute folder path')
   try {
     const result = lstatSync(normalized)
