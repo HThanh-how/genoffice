@@ -2,6 +2,7 @@ import { IndexingActivity, OPEN_INDEX_EVENT } from './IndexingActivity'
 import { IndexDashboard } from './fork/IndexDashboard'
 import { IndexNavItem } from './fork/IndexNavItem'
 import { FOLDER_ROOTS_CHANGED_EVENT } from './fork/DefaultFolderToggle'
+import { isInsidePath } from '../../shared/path-nesting'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
@@ -2240,6 +2241,13 @@ export function Home() {
           )}
           {roots
             .slice(1)
+            // a folder added inside another listed folder is shown in it, not a second time
+            .filter(
+              (r) =>
+                !roots.some(
+                  (outer) => outer !== r && !outer.hidden && isInsidePath(outer.path, r.path),
+                ),
+            )
             .map((r) =>
               renderTreeNode({ path: r.path, name: r.name, hasSubfolders: r.readable }, 0),
             )}

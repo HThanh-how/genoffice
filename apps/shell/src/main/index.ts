@@ -306,6 +306,7 @@ import {
   type EverythingController,
 } from './fork/everything-ipc'
 import { hiddenNamesIn } from './windows-hidden'
+import { isInsidePath, outermostPaths } from '../shared/path-nesting'
 import { tabMenuTemplate, tabMenuWords, type TabMenuActions } from './fork/tab-menu'
 import { isProgramFile } from './everything/junk'
 import { applyPendingDbMove, resolveDbDir } from './document-memory/db-location'
@@ -4054,9 +4055,12 @@ function statEntries(paths: string[]): RecentEntry[] {
  */
 function indexAddedFoldersNotYetScanned(): void {
   if (!folderScan) return
-  const scanned = new Set(folderScan.folders().map((entry) => resolve(entry.root)))
-  for (const root of extraFolderRoots()) {
-    if (scanned.has(resolve(root)) || !describeExtraRoot(root).readable) continue
+  const scanned = folderScan.folders().map((entry) => resolve(entry.root))
+  // a folder inside another that is listed (or already scanned) is covered by that one's scan:
+  // scanning it too would walk, watch and refresh the same files twice
+  for (const root of outermostPaths(extraFolderRoots())) {
+    const covered = scanned.some((done) => done === resolve(root) || isInsidePath(done, root))
+    if (covered || !describeExtraRoot(root).readable) continue
     try {
       folderScan.start(root)
     } catch (error) {
@@ -4708,8 +4712,14 @@ function registerHomeIpc(): void {
     ensureFolderWatchers()
     fileIndexer?.refresh()
     // a folder or drive added here is meant to be searchable: it is indexed without being asked
-    // (the scan skips what the system hides, and is picked up again at every start)
-    startFolderScan(path)
+    // (the scan skips what the system hides, and is picked up again at every start). Never twice:
+    // inside a folder that is already scanned it adds nothing, and a folder that holds scanned
+    // ones takes their place (their files stay searchable, they just are not walked again)
+    const scannedRoots = (folderScan?.folders() ?? []).map((entry) => entry.root)
+    if (!scannedRoots.some((done) => isInsidePath(done, path) || resolve(done) === resolve(path))) {
+      for (const inner of scannedRoots) if (isInsidePath(path, inner)) folderScan?.forget(inner)
+      startFolderScan(path)
+    }
     return describeExtraRoot(path)
   }
 
