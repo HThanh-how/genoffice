@@ -56,6 +56,11 @@ describe('IndexIssueReader search and detail', () => {
         truncated: false,
       })
       expect(reader.detail(999_999)).toBeNull()
+      // the whole index, whichever folder was scanned last
+      expect(reader.summary('*').total).toBe(1)
+      expect(reader.page('*', 0, 'no-text').items.map((i) => i.name)).toEqual([
+        'BỆNH VIỆN 30-4.pdf',
+      ])
     } finally {
       reader.close()
       store.close()

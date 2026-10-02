@@ -94,10 +94,13 @@ interface Brief {
 export function AskDock({
   lang,
   api,
+  away = false,
   children,
 }: {
   lang: string
   api: HomeApi
+  /** the assistant panel is showing: the dock fades out instead of vanishing */
+  away?: boolean
   children?: ReactNode
 }) {
   const w = WORDS[lang] ?? EN
@@ -258,7 +261,8 @@ export function AskDock({
   return (
     <div
       ref={rootRef}
-      className={`ask-dock${collapsed ? ' is-collapsed' : ''}${focused ? ' is-focused' : ''}`}
+      className={`ask-dock${collapsed ? ' is-collapsed' : ''}${focused ? ' is-focused' : ''}${away ? ' is-away' : ''}`}
+      inert={away}
     >
       {showTip && (
         <div className="ask-tip" aria-hidden="true">

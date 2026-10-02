@@ -262,7 +262,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
 
   // What needs a look, for the overview card: a cheap grouped count, refreshed when it changes.
   const problemFiles = (progress?.errorFiles ?? 0) + (progress?.emptyFiles ?? 0)
-  const scanRoot = folder?.root ?? ''
+  const scanRoot = '*'
   useEffect(() => {
     if (!scanRoot) return
     let alive = true
@@ -509,7 +509,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
 
         {tab === 'problems' && (
           <div className="idx-body">
-            <IndexProblems api={api} root={folder?.root ?? ''} focus={focus} onChanged={kick} />
+            <IndexProblems api={api} root="*" focus={focus} onChanged={kick} />
           </div>
         )}
 

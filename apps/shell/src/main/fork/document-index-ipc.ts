@@ -1,6 +1,6 @@
 import type { IpcMain } from 'electron'
 import type { FolderScanManager } from '../document-memory/folder-scan'
-import { IndexIssueReader } from '../document-memory/issue-reader'
+import { ALL_FOLDERS, IndexIssueReader } from '../document-memory/issue-reader'
 import { shortCause, type IndexIssueReason } from '../document-memory/issues'
 import type { DocumentMemoryManager } from '../document-memory/manager'
 import { foldFolderProgress } from '../document-memory/folder-progress'
@@ -58,6 +58,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
   let issueReader: IndexIssueReader | null = null
   const reader = (): IndexIssueReader => (issueReader ??= new IndexIssueReader(deps.dbPath()))
   const activeRoot = (root: unknown): string => {
+    if (root === ALL_FOLDERS) return ALL_FOLDERS
     if (typeof root !== 'string' || root !== getFolderScan()?.status().root)
       throw new Error('Invalid index issue request')
     return root

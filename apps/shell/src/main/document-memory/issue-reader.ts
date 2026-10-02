@@ -35,6 +35,9 @@ interface IssueRow {
  * scoped to enrolled, non-excluded rows with status error/empty and are only run on user
  * action, never from the progress poll.
  */
+/** Scope value meaning every folder in the index. */
+export const ALL_FOLDERS = '*'
+
 /** Lower case with accents removed, so "benh vien" finds "BỆNH VIỆN". */
 function fold(text: string): string {
   return text
@@ -65,7 +68,10 @@ export class IndexIssueReader {
     this.db = null
   }
 
-  private scope(root: string): { where: string; args: [string, string, string] } {
+  private scope(root: string): { where: string; args: string[] } {
+    // '*' = every indexed folder, so the list never depends on which folder was scanned last
+    if (root === ALL_FOLDERS)
+      return { where: "excluded = 0 AND status IN ('error', 'empty')", args: [] }
     const normalized = resolve(root)
     const prefix = normalized + (normalized.includes('\\') ? '\\' : '/')
     return {
