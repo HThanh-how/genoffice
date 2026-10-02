@@ -297,6 +297,12 @@ import type {
 import { HOME_CHANNELS } from '../shared/home-api'
 import { registerHomeChatIpc } from './fork/home-chat-ipc'
 import { registerDocumentIndexIpc } from './fork/document-index-ipc'
+import {
+  createEverything,
+  registerEverythingIpc,
+  type EverythingController,
+} from './fork/everything-ipc'
+import { isProgramFile } from './everything/junk'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
 import { initClipboardHistory, registerClipboardHistory } from './fork/clipboard-history-ipc'
 import { registerIndexingMode } from './fork/indexing-mode-ipc'
@@ -3497,6 +3503,7 @@ function registerDroppedFilesIpc(): void {
 }
 
 let documentMemory: DocumentMemoryManager | null = null
+let everything: EverythingController | null = null
 function recordRecentFile(path: string): void {
   recordDocsRecentFile(path)
   documentMemory?.remember(path)
@@ -4072,6 +4079,7 @@ function registerHomeIpc(): void {
     getFolderScan: () => folderScan,
     dbPath: () => join(app.getPath('userData'), 'document-memory.db'),
   })
+  if (everything) registerEverythingIpc(ipcMain, everything)
   registerHomeChatIpc(ipcMain, join(app.getPath('userData'), 'home-chat-sessions'))
   ipcMain.handle(HOME_CHANNELS.getDocumentFolderScanStatus, () => folderScan?.status() ?? null)
   ipcMain.handle(HOME_CHANNELS.stopDocumentFolderScan, () => folderScan?.stop() ?? null)
@@ -4135,7 +4143,15 @@ function registerHomeIpc(): void {
       throw new Error('Invalid chunk id')
     return documentMemory?.read(id)
   })
-  ipcMain.handle('document-memory:open', (_event, id: unknown) => {
+  ipcMain.handle('document-memory:open', async (_event, id: unknown, offered?: unknown) => {
+    // a file that was only found by name (id 0) opens by the path the search handed out
+    if (id === 0 && typeof offered === 'string') {
+      const path = documentMemory?.openOffered(offered)
+      if (!path || isProgramFile(path)) return { ok: false, error: 'Document is unavailable' }
+      if (!openDocumentPath(path) && (await shell.openPath(path)) !== '')
+        return { ok: false, error: 'Document is unavailable' }
+      return { ok: true, name: basename(path), path }
+    }
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid document id')
     const path = documentMemory?.open(id)
@@ -6126,7 +6142,10 @@ app.whenReady().then(async () => {
     return
   }
   startLoopMonitor() // dev diagnostic; no-op unless GENOFFICE_DEBUG_LOOP=1
-  documentMemory = new DocumentMemoryManager(app.getPath('userData'))
+  everything = createEverything(app.getPath('userData'))
+  documentMemory = new DocumentMemoryManager(app.getPath('userData'), {
+    externalNames: (query, limit) => everything!.search.search(query, limit),
+  })
   void listLegacyRecovery(app.getPath('userData')).catch((error) =>
     console.warn('[shell] legacy recovery cleanup failed:', error),
   )

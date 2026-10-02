@@ -371,6 +371,7 @@ export interface HomeApi extends ForkHomeApi {
   /** Open a remembered document by the document id returned from search. */
   documentMemoryOpen(
     documentId: number,
+    path?: string,
   ): Promise<{ ok: boolean; error?: string; name?: string; path?: string }>
   /** Enable or pause indexing and return the updated local status. */
   setDocumentMemoryEnabled(enabled: boolean): Promise<DocumentMemoryStatus>

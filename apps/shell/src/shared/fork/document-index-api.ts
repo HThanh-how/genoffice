@@ -15,7 +15,20 @@ export const DOCUMENT_INDEX_CHANNELS = {
   searchIndexedFiles: 'home:search-indexed-files',
   getIndexingNow: 'home:get-indexing-now',
   stopIndexFile: 'home:stop-index-file',
+  getEverything: 'home:get-everything',
+  setEverything: 'home:set-everything',
 } as const
+
+/** Everything (voidtools) as an optional, instant file-name search next to the document index. */
+export interface EverythingState {
+  /** only Windows has it */
+  supported: boolean
+  enabled: boolean
+  /** es.exe was found, so the feature can work (Everything itself must also be running) */
+  found: boolean
+  /** the es.exe path the person set, if any */
+  path?: string
+}
 
 export type EmbeddingProfileChoice = 'standard' | 'high'
 
@@ -56,6 +69,8 @@ export interface IndexedFileHit {
   reason?: IndexIssueReason
   error?: string
   progress?: { kind: 'ocr' | 'chunks'; done: number; total: number }
+  /** found on disk by name only (Everything); not in the index, so `id` is 0 */
+  external?: boolean
 }
 
 /** How far one file got through the pipeline, for the file's detail view. */
@@ -141,6 +156,10 @@ export interface DocumentIndexApi {
   searchIndexedFiles(query: string): Promise<IndexedFileHit[]>
   /** Which files the indexer is reading now and who is next. */
   getIndexingNow(): Promise<IndexingNow>
+  /** Whether the Everything search is on, and whether this computer has es.exe. */
+  getEverything(): Promise<EverythingState>
+  /** Turn it on or off, optionally pointing at es.exe; returns the new state. */
+  setEverything(change: { enabled: boolean; path?: string }): Promise<EverythingState>
   /** Stop reading one waiting file; it stays in the list as a problem to retry. */
   stopIndexFile(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** How far one file got: found, read, OCR, embedded. Null when the file is not in the index. */

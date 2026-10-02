@@ -515,10 +515,12 @@ const homeApi: HomeApi = {
       chunkId,
     )) as import('@genoffice/agent-core').DocumentMemoryReadResult
   },
-  async documentMemoryOpen(documentId) {
-    if (!Number.isSafeInteger(documentId) || documentId < 1)
+  async documentMemoryOpen(documentId, path) {
+    // id 0 is a file found by name only: it opens by the path the search returned
+    const byPath = documentId === 0 && typeof path === 'string' && path.length > 0
+    if (!byPath && (!Number.isSafeInteger(documentId) || documentId < 1))
       return { ok: false, error: 'Invalid document id' }
-    return (await ipcRenderer.invoke('document-memory:open', documentId)) as {
+    return (await ipcRenderer.invoke('document-memory:open', documentId, path)) as {
       ok: boolean
       error?: string
       name?: string

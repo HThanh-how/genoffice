@@ -4,6 +4,7 @@ import { useI18n } from '../locale'
 import { IndexingModeSettings } from './IndexingModeSettings'
 import { AgyOcrSettings } from './AgyOcrSettings'
 import { EmbeddingModelSettings } from './EmbeddingModelSettings'
+import { EverythingSettings } from './EverythingSettings'
 
 const EN = {
   run: 'Running in the background',
@@ -69,6 +70,7 @@ export function IndexSettingsTab({ api }: { api: HomeApi }) {
       <Section title={d.model} hint={d.modelHint}>
         <EmbeddingModelSettings />
       </Section>
+      <EverythingSettings api={api} />
       <Section title={d.data} hint={d.dataHint}>
         <p className="idx-muted">
           {d.where}: <code>{dbPath || '—'}</code>

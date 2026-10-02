@@ -20,6 +20,7 @@ const EN = {
   runHint: 'Enter · runs here, no AI quota',
   indexed: 'Indexed',
   unread: 'Content not read yet (scanned)',
+  onDisk: 'Name only, not indexed',
   retry: 'Try again',
   readNow: 'Read with Antigravity now',
   readConfirm:
@@ -47,6 +48,7 @@ const WORDS: Record<string, Words> = {
     runHint: 'Enter · chạy ngay trên máy, không tốn quota AI',
     indexed: 'Đã index',
     unread: 'Chưa đọc nội dung (PDF quét)',
+    onDisk: 'Chỉ có tên, chưa index',
     retry: 'Thử lại',
     readNow: 'Đọc bằng Antigravity ngay',
     readConfirm:
@@ -324,20 +326,26 @@ export function AskDock({
                 const queued = hit.reason === 'waiting'
                 const unread = hit.reason === 'no-text' || queued
                 const problem = !!hit.reason && !unread
-                const tag = problem
-                  ? (copy.reasons[hit.reason!]?.title ?? hit.error ?? '')
-                  : unread
-                    ? queued
-                      ? copy.reasons.waiting.title
-                      : w.unread
-                    : w.indexed
+                const tag = hit.external
+                  ? w.onDisk
+                  : problem
+                    ? (copy.reasons[hit.reason!]?.title ?? hit.error ?? '')
+                    : unread
+                      ? queued
+                        ? copy.reasons.waiting.title
+                        : w.unread
+                      : w.indexed
                 return (
-                  <div className="ask-hit" key={hit.id}>
+                  <div className="ask-hit" key={hit.external ? hit.path : hit.id}>
                     <button
                       type="button"
                       className="ask-hit-main"
                       title={hit.path}
-                      onClick={() => void api.openPath(hit.path)}
+                      onClick={() =>
+                        void (hit.external
+                          ? api.documentMemoryOpen(0, hit.path)
+                          : api.openPath(hit.path))
+                      }
                     >
                       <img src={iconFor(hit.name)} alt="" width="16" height="16" />
                       <span className="ask-hit-name">{hit.name}</span>

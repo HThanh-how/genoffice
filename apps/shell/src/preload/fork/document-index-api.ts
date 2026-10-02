@@ -23,6 +23,12 @@ export function createDocumentIndexPreloadApi(
     async getIndexingNow() {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getIndexingNow)
     },
+    async getEverything() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getEverything)
+    },
+    async setEverything(change) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setEverything, change)
+    },
     async stopIndexFile(documentId) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.stopIndexFile, documentId)
     },

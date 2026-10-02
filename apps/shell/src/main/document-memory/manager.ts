@@ -124,11 +124,16 @@ interface ManagerOptions {
   /** How long a background extract/embed step may stay silent before the worker is restarted. */
   workerTimeoutMs?: number
   tombstoneGraceMs?: number
+  /** Another source of file names (Everything): files on disk that were never opened or indexed. */
+  externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>
 }
 
 /** Coordinates opened-document enrollment, local extraction, embedding and fresh reads. */
 export class DocumentMemoryManager {
   readonly dbPath: string
+  private readonly externalNames: ManagerOptions['externalNames']
+  /** Files an outside name search offered, the only ones the assistant may open by path. */
+  private readonly offeredPaths = new Set<string>()
   private readonly store: DocumentMemoryStore
   private readonly settingsPath: string
   private readonly embeddingSettingsPath: string
@@ -189,6 +194,7 @@ export class DocumentMemoryManager {
     this.searchTimeoutMs = options.searchTimeoutMs ?? SEARCH_EMBED_TIMEOUT_MS
     this.workerTimeoutMs = options.workerTimeoutMs ?? WORKER_TIMEOUT_MS
     this.tombstoneGraceMs = options.tombstoneGraceMs ?? TOMBSTONE_GRACE_MS
+    this.externalNames = options.externalNames
     this.store = new DocumentMemoryStore(this.dbPath)
     this.enabled = readEnabled(this.settingsPath)
     this.store.purgeDiscoveredByName(isIgnoredFileName)
@@ -640,6 +646,8 @@ export class DocumentMemoryManager {
     modelState: string
   }> {
     let vector: number[] | null = null
+    // started now so the outside lookup runs while the passages are searched
+    const outside = this.searchExternal(query, 5)
     // Do not place a query behind a long passage batch; lexical FTS answers now.
     if (
       (this.enabled || this.modelState === 'ready') &&
@@ -674,7 +682,12 @@ export class DocumentMemoryManager {
     const named = this.store.searchNames(query, 5).filter((hit) => !seen.has(hit.documentId))
     // A name that fits the question comes first: with a full page of passage hits it would
     // otherwise be cut off by the caller's limit.
-    const merged = [...named.slice(0, 3), ...result]
+    const seenPaths = new Set([...result, ...named].map((hit) => pathKey(hit.path)))
+    const elsewhere = (await outside)
+      .filter((file) => !seenPaths.has(pathKey(file.path)))
+      .slice(0, 3)
+      .map((file) => this.externalHit(file))
+    const merged = [...named.slice(0, 3), ...elsewhere, ...result]
     return {
       hits: await this.annotateFreshness(merged),
       pending: this.queue.length + this.embeds.length + this.pendingCount,
@@ -838,6 +851,48 @@ export class DocumentMemoryManager {
       text: hit.text,
       verified: true,
     }
+  }
+
+  /**
+   * Files found by name outside the index (Everything). Each one is remembered as offered: only
+   * those can be opened by path afterwards, so a path the assistant makes up opens nothing.
+   */
+  async searchExternal(
+    query: string,
+    limit: number,
+  ): Promise<Array<{ path: string; name: string }>> {
+    const files = (await this.externalNames?.(query, limit).catch(() => undefined)) ?? []
+    for (const file of files) {
+      this.offeredPaths.add(file.path)
+      // one conversation's worth of offers is plenty
+      if (this.offeredPaths.size > 500)
+        this.offeredPaths.delete(this.offeredPaths.values().next().value!)
+    }
+    return files
+  }
+
+  /** A file found by an outside name search: nothing of it is indexed, only that it exists. */
+  private externalHit(file: { path: string; name: string }): DocumentMemoryHit {
+    return {
+      documentId: 0,
+      path: file.path,
+      name: file.name,
+      chunkId: 0,
+      text: 'The file name matches (found on disk, not in the index). Its content has not been read, so what it says is unknown. Open it by `path`.',
+      location: 'file name',
+      score: 0.5,
+      hash: null,
+      mtimeMs: null,
+      sizeBytes: null,
+      indexedAt: null,
+      truncated: false,
+      contentUnread: true,
+    }
+  }
+
+  /** The path of a file an outside search offered earlier (and that still exists), else null. */
+  openOffered(path: string): string | null {
+    return this.offeredPaths.has(path) && safeStat(path) ? path : null
   }
 
   /** Safe document id lookup for the open-source action. */

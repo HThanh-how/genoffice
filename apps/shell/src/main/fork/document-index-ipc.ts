@@ -32,6 +32,10 @@ export interface DocumentIndexIpcDeps {
   dbPath: () => string
 }
 
+/** Windows paths compare without regard to case. */
+const samePath = (path: string): string =>
+  process.platform === 'win32' ? path.toLowerCase() : path
+
 const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set([
   'waiting',
   'unavailable',
@@ -94,10 +98,23 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
   })
   ipcMain.handle(
     DOCUMENT_INDEX_CHANNELS.searchIndexedFiles,
-    (_event, query: unknown): IndexedFileHit[] => {
+    async (_event, query: unknown): Promise<IndexedFileHit[]> => {
       if (typeof query !== 'string' || query.length > 200) return []
-      if (!getDocumentMemory()) return []
-      return reader().search(query)
+      const memory = getDocumentMemory()
+      if (!memory) return []
+      const indexed = reader().search(query)
+      // files that exist on disk but were never opened or indexed, from Everything when it is on
+      const known = new Set(indexed.map((hit) => samePath(hit.path)))
+      const elsewhere = (await memory.searchExternal(query, 8))
+        .filter((file) => !known.has(samePath(file.path)))
+        .map((file) => ({
+          id: 0,
+          path: file.path,
+          name: file.name,
+          status: 'on-disk',
+          external: true,
+        }))
+      return [...indexed, ...elsewhere]
     },
   )
   ipcMain.handle(

@@ -48,6 +48,7 @@ export interface DocumentMemoryBridge {
   documentMemoryRead?: (chunkId: number) => Promise<DocumentMemoryReadResult>
   documentMemoryOpen?: (
     documentId: number,
+    path?: string,
   ) => Promise<{ ok: boolean; error?: string; name?: string; path?: string }>
 }
 
@@ -82,11 +83,13 @@ const tools: AgentToolDef[] = [
   {
     name: 'open_remembered_document',
     description:
-      'Open a remembered source document in its editor. document_id is the `documentId` field of a search hit (never its `chunkId`). The result names the file that actually opened: report that name, not the one you expected.',
+      "Open a file from a search hit. Pass the hit's `documentId` as document_id (never its `chunkId`). A hit with documentId 0 is a file found on disk by name only: pass its `path` instead. The result names the file that actually opened: report that name, not the one you expected.",
     inputSchema: {
       type: 'object',
-      properties: { document_id: { type: 'integer', minimum: 1 } },
-      required: ['document_id'],
+      properties: {
+        document_id: { type: 'integer', minimum: 1 },
+        path: { type: 'string', minLength: 1 },
+      },
     },
   },
 ]
@@ -215,13 +218,17 @@ export function createDocumentMemorySkill(
 
       if (call.name === 'open_remembered_document') {
         const documentId = call.input.document_id
-        if (!validId(documentId))
+        const filePath = call.input.path
+        const byPath = documentId === undefined && typeof filePath === 'string' && filePath !== ''
+        if (!byPath && !validId(documentId))
           return failure(
-            'document_id must be a numeric integer returned by search.',
+            'document_id must be a numeric integer returned by search (or pass the path of a hit whose documentId is 0).',
             'Invalid document id',
           )
         try {
-          const result = await api.documentMemoryOpen!(documentId)
+          const result = byPath
+            ? await api.documentMemoryOpen!(0, filePath as string)
+            : await api.documentMemoryOpen!(documentId as number)
           if (cancelled(signal)) return stopped()
           return {
             output: JSON.stringify(result),

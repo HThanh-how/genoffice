@@ -105,6 +105,23 @@ describe('createDocumentMemorySkill', () => {
     })
   })
 
+  it('opens a file found by name only through its path, never through an id of 0', async () => {
+    const documentMemoryOpen = vi
+      .fn()
+      .mockResolvedValue({ ok: true, name: 'a.dwg', path: 'D:\\a.dwg' })
+    const skill = createDocumentMemorySkill({
+      documentMemorySearch: vi.fn(),
+      documentMemoryRead: vi.fn(),
+      documentMemoryOpen,
+    })
+    const result = await skill.executeTool(call('open_remembered_document', { path: 'D:\\a.dwg' }))
+    expect(documentMemoryOpen).toHaveBeenCalledWith(0, 'D:\\a.dwg')
+    expect(result.isError).toBe(false)
+    const zero = await skill.executeTool(call('open_remembered_document', { document_id: 0 }))
+    expect(zero.isError).toBe(true)
+    expect(documentMemoryOpen).toHaveBeenCalledTimes(1)
+  })
+
   it('opens only numeric document ids returned by search', async () => {
     const opened = { ok: true, name: 'a.docx', path: '/docs/a.docx' }
     const documentMemoryOpen = vi.fn().mockResolvedValue(opened)
