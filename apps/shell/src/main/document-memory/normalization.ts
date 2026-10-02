@@ -65,101 +65,50 @@ const GENERIC_WORDS = new Set([
   'with',
 ])
 
-/** Filler words of a Vietnamese or English question that say nothing about a file's name. */
-const NAME_FILLER = new Set([
-  'sao',
-  'nhi',
-  'nhe',
-  'vay',
-  'ne',
-  'co',
-  'cai',
-  'nao',
-  'la',
-  'khong',
-  'cho',
-  'cua',
-  'nhung',
-  'mot',
-  'cac',
-  'toi',
-  'minh',
-  'giup',
-  'hay',
-  'tim',
-  'kiem',
-  'nay',
-  'kia',
-  'duoc',
-  'dau',
-  'gi',
-  'va',
-  'voi',
-  'trong',
-  'tren',
-  've',
-  'noi',
-  'dung',
-  'file',
-  'files',
-  'tai',
-  'lieu',
-  'the',
-  'a',
-  'an',
-  'of',
-  'in',
-  'is',
-  'are',
-  'any',
-  'there',
-  'do',
-  'i',
-  'you',
-  'me',
-  'my',
-  'find',
-  'show',
-  'search',
-  'please',
-  'which',
-  'what',
-  'where',
-  'xem',
-  'tu',
-  'den',
-  'o',
-  'thi',
-  'ma',
-  'de',
-  'khi',
-  'thoi',
-  'roi',
-  'chua',
-  'va',
-  'hoac',
-  'or',
-  'and',
-  'to',
-  'for',
-  'with',
-])
+/**
+ * Filler words of a question that say nothing about a file's name. They are judged on the word
+ * AS TYPED: folding accents first made "mỹ" (a name) look like the English "my" and "mẹ" like
+ * "me", which dropped real name words. Accented forms are matched only with their accents; a few
+ * unambiguous ones are also matched when typed without accents.
+ */
+const FILLER_ACCENTED = new Set(
+  (
+    'có cái nào là không cho của những một các tôi mình giúp hãy tìm kiếm này kia được đâu gì và ' +
+    'với trong trên về thì sao nhỉ nhé vậy nè rồi chưa hoặc từ đến ở mà để khi xem'
+  ).split(' '),
+)
+const FILLER_PLAIN = new Set(
+  (
+    'co cai nao la khong cho cua nhung mot cac nay kia duoc gi va voi trong tren thi sao nhi nhe ' +
+    'vay ne roi chua hoac xem tim kiem giup hay file files the of in is are any there find show ' +
+    'search please which what where a an to for with or and'
+  ).split(' '),
+)
+const FILLER_PHRASES = /\b(tài liệu|tai lieu|văn bản|van ban|nội dung|noi dung)\b/giu
 
 /** The words of a question that could appear in a file name, accents and case ignored. */
 export function nameWords(input: string): string[] {
-  const words = [
-    ...new Set(
-      normalizeDocumentText(input)
-        .split(' ')
-        .filter((word) => word.length > 0 && !NAME_FILLER.has(word)),
-    ),
-  ]
-  // "xuất viện" and "ra viện" name the same paper
-  if (words.includes('vien')) {
-    if (words.includes('xuat') && !words.includes('ra')) words.push('ra')
-    else if (words.includes('ra') && !words.includes('xuat')) words.push('xuat')
+  const typed = input
+    .normalize('NFC')
+    .toLocaleLowerCase('vi')
+    .replace(FILLER_PHRASES, ' ')
+    .split(/[^\p{L}\p{N}]+/u)
+    .filter(Boolean)
+  const words = new Set<string>()
+  for (const token of typed) {
+    const folded = normalizeDocumentText(token)
+    if (!folded) continue
+    const plain = folded === token
+    if (FILLER_ACCENTED.has(token) || (plain && FILLER_PLAIN.has(token))) continue
+    for (const part of folded.split(' ')) if (part) words.add(part)
   }
-  return words
+  const list = [...words]
+  // "xuất viện" and "ra viện" name the same paper
+  if (list.includes('vien')) {
+    if (list.includes('xuat') && !list.includes('ra')) list.push('ra')
+    else if (list.includes('ra') && !list.includes('xuat')) list.push('xuat')
+  }
+  return list
 }
 
 export function queryTokens(input: string): string[] {

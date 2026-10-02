@@ -55,3 +55,14 @@ describe('chat sources found by name', () => {
     ])
   })
 })
+
+describe('nameWords', () => {
+  it('keeps name words that look like English filler once the accents are gone', async () => {
+    const { nameWords } = await import('../src/main/document-memory/normalization')
+    expect(nameWords('mỹ lệ')).toEqual(['my', 'le'])
+    expect(nameWords('mẹ tôi')).toEqual(['me'])
+    expect(nameWords('có cái nào là giấy ra viện không?')).toEqual(['giay', 'ra', 'vien', 'xuat'])
+    expect(nameWords('tìm tài liệu về Lê Hữu Tài')).toEqual(['le', 'huu', 'tai'])
+    expect(nameWords('co cai nao khong')).toEqual([])
+  })
+})

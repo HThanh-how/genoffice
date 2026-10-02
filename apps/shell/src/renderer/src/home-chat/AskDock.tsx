@@ -86,7 +86,7 @@ interface Brief {
  * The one box of the Home page. Typing finds files by name at once and says what state each is
  * in (read, scanned and unread, failed) with a one-click fix; Enter asks the AI, or carries out
  * an index order ("pause", "rescan"). Idle it is a translucent bar with a slowly turning light;
- * scrolling the page tucks it into an orb. `children` is the model and usage strip.
+ * scrolling the page tucks it away (the AI button in the corner stays). `children` is the model and usage strip.
  */
 export function AskDock({
   lang,
@@ -263,8 +263,8 @@ export function AskDock({
   return (
     <div
       ref={rootRef}
-      className={`ask-dock${collapsed ? ' is-collapsed' : ''}${focused ? ' is-focused' : ''}${away ? ' is-away' : ''}`}
-      inert={away}
+      className={`ask-dock${focused ? ' is-focused' : ''}${away || collapsed ? ' is-away' : ''}`}
+      inert={away || collapsed}
     >
       {showTip && (
         <div className="ask-tip" aria-hidden="true">
@@ -403,21 +403,6 @@ export function AskDock({
       <div className="ask-bar">
         <span className="ask-glow" aria-hidden="true" />
         <span className="ask-ring" aria-hidden="true" />
-        <button
-          type="button"
-          className="ask-orb"
-          aria-label={w.open}
-          title={w.open}
-          tabIndex={collapsed ? 0 : -1}
-          onClick={expand}
-        >
-          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-            <path
-              d="M10 2.5 11.8 8.2 17.5 10l-5.7 1.8L10 17.5l-1.8-5.7L2.5 10l5.7-1.8L10 2.5Z"
-              fill="currentColor"
-            />
-          </svg>
-        </button>
         <form
           className="ask-form"
           onSubmit={(event) => {

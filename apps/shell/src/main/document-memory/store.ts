@@ -1054,6 +1054,8 @@ export class DocumentMemoryStore {
   searchNames(query: string, limit = 5): DocumentMemoryHit[] {
     const words = nameWords(query)
     if (words.length === 0) return []
+    // one very short word ("le") fits far too many names to be worth showing
+    if (words.length === 1 && words[0]!.length < 3) return []
     const need = words.length <= 2 ? words.length : Math.max(2, Math.ceil(words.length * 0.4))
     const rows = this.db
       .prepare(
@@ -1074,9 +1076,15 @@ export class DocumentMemoryStore {
     const scored: Array<{ row: (typeof rows)[number]; matched: number }> = []
     for (const row of rows) {
       const folders = row.path.split(/[\\/]/).slice(-3, -1).join(' ')
-      const have = new Set(normalizeDocumentText(`${row.name} ${folders}`).split(' '))
+      const folded = normalizeDocumentText(`${row.name} ${folders}`)
+      const have = new Set(folded.split(' '))
+      const joined = folded.replace(/ /g, '')
       let matched = 0
-      for (const word of words) if (have.has(word)) matched++
+      for (const word of words)
+        if (have.has(word) || (word.length >= 4 && joined.includes(word))) matched++
+      // a name written in one piece ("MyLe") still counts when the words come in that order
+      if (words.length >= 2 && joined.includes(words.join(''))) matched = words.length
+      if (words.length >= 2 && folded.includes(words.join(' '))) matched += 0.5
       if (matched >= need) scored.push({ row, matched })
     }
     scored.sort(

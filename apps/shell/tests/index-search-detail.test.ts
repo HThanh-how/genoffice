@@ -94,6 +94,9 @@ describe('DocumentMemoryStore.searchNames', () => {
         'Ra viện BV Chợ Rẫy.pdf',
       ])
       expect(store.searchNames('tìm file')).toEqual([])
+      // "mỹ" is a name here, not the English "my"; one short word alone is not a search
+      expect(store.searchNames('mỹ lệ')).toEqual([])
+      expect(store.searchNames('lệ')).toEqual([])
     } finally {
       store.close()
       rmSync(dir, { recursive: true, force: true })

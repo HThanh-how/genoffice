@@ -1273,27 +1273,25 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           </div>
         </section>
       )}
-      <AskDock lang={i18n.lang} api={api} away={open || launcherState.phase !== 'idle'}>
+      <AskDock lang={i18n.lang} api={api} away={open}>
         <AgyChatBar lang={i18n.lang} part="bar" />
       </AskDock>
-      {(open || launcherState.phase !== 'idle') && (
-        <Launcher
-          state={launcherState}
-          open={open}
-          invitation={invitation}
-          starting={
-            lastItem?.role === 'assistant' && lastItem.streaming && !lastItem.text
-              ? (lastItem.status ?? '')
-              : ''
-          }
-          labels={launcherLabels}
-          buttonRef={launcherRef}
-          onToggle={() => (open ? closePanel() : openPanel())}
-          onStop={handleStop}
-          onInvitation={setInvitation}
-          onHold={launcherCtl.setHovered}
-        />
-      )}
+      <Launcher
+        state={launcherState}
+        open={open}
+        invitation={invitation}
+        starting={
+          lastItem?.role === 'assistant' && lastItem.streaming && !lastItem.text
+            ? (lastItem.status ?? '')
+            : ''
+        }
+        labels={launcherLabels}
+        buttonRef={launcherRef}
+        onToggle={() => (open ? closePanel() : openPanel())}
+        onStop={handleStop}
+        onInvitation={setInvitation}
+        onHold={launcherCtl.setHovered}
+      />
     </div>
   )
 }
