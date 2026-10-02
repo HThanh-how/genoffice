@@ -19,6 +19,7 @@ import {
 import { isIgnoredFileName, MAX_DOCUMENT_BYTES, SUPPORTED_EXTENSIONS } from './folder-scan'
 import { volumeRootOf } from './volume-root'
 import { createYielder } from './yield-budget'
+import { orderQueue, rankOf, type QueueInfo } from './queue-order'
 import { foldFolderProgress, type FolderIndexProgress } from './folder-progress'
 import type { FolderChunkProgress } from './store'
 import { DocumentMemoryStore, type DocumentMemoryHit, type StoredDocument } from './store'
@@ -44,6 +45,9 @@ const FRESHNESS_STAT_TIMEOUT_MS = 1_500
 const SEARCH_EMBED_TIMEOUT_MS = 10_000
 const WORKER_TIMEOUT_MS = 5 * 60_000
 const STOPPED_BY_USER = 'Stopped by you.'
+const DEFERRED_MESSAGE = 'Put back so lighter files are read first.'
+/** A heavy read that has run this long makes way for light files that are waiting. */
+const AUTO_DEFER_AFTER_MS = 30_000
 const INTERRUPTED_FOR_USER = 'Paused so a file you chose could be read first.'
 const MAX_PENDING_EMBED_DOCUMENTS = 16
 const EMBED_RETRY_DELAY_MS = 30_000
@@ -126,6 +130,8 @@ interface ManagerOptions {
   tombstoneGraceMs?: number
   /** Where the database file lives (default: the user data folder; the other files stay there). */
   dbDir?: string
+  /** How long a heavy file may hold the reader while light ones wait (default 30 s). */
+  autoDeferAfterMs?: number
   /** Another source of file names (Everything): files on disk that were never opened or indexed. */
   externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>
 }
@@ -159,6 +165,17 @@ export class DocumentMemoryManager {
   private lastOpenedCheck = 0
   private readonly queue: string[] = []
   private readonly queued = new Set<string>()
+  /** Files a person asked to read now: ahead of the whole line. */
+  private readonly urgent = new Set<string>()
+  /** Files pushed to the back of the line: behind every other file, however heavy. */
+  private readonly deferred = new Set<string>()
+  /** Size of each waiting file, for reading light ones first. */
+  private readonly queueBytes = new Map<string, number>()
+  private readonly autoDeferAfterMs: number
+  private readonly sizeLookups = new Set<string>()
+  /** Size of each file being read now (its weight decides whether it makes way). */
+  private readonly activeBytes = new Map<string, number>()
+  private sizing = false
   private readonly activeExtractions = new Set<string>()
   private readonly activeSince = new Map<string, number>()
   private readonly embeds: EmbedJob[] = []
@@ -198,6 +215,7 @@ export class DocumentMemoryManager {
     this.workerTimeoutMs = options.workerTimeoutMs ?? WORKER_TIMEOUT_MS
     this.tombstoneGraceMs = options.tombstoneGraceMs ?? TOMBSTONE_GRACE_MS
     this.externalNames = options.externalNames
+    this.autoDeferAfterMs = options.autoDeferAfterMs ?? AUTO_DEFER_AFTER_MS
     this.store = new DocumentMemoryStore(this.dbPath)
     this.enabled = readEnabled(this.settingsPath)
     this.store.purgeDiscoveredByName(isIgnoredFileName)
@@ -219,9 +237,11 @@ export class DocumentMemoryManager {
     for (const job of this.embeds)
       embedding[job.path] = { done: job.startOffset ?? 0, total: job.chunks.length }
     const positions: IndexingNow['positions'] = {}
-    this.queue.slice(0, 400).forEach((path, index) => {
-      positions[path] = index + 1
-    })
+    this.readingOrder()
+      .slice(0, 400)
+      .forEach((path, index) => {
+        positions[path] = index + 1
+      })
     return {
       extracting: [...this.activeSince].map(([path, since]) => ({ path, since })),
       embedding,
@@ -323,7 +343,7 @@ export class DocumentMemoryManager {
         document.mtimeMs !== current.mtimeMs ||
         document.sizeBytes !== current.sizeBytes)
     )
-      this.enqueue(p)
+      this.enqueue(p, false, current.sizeBytes)
     return needsIndex
   }
 
@@ -360,6 +380,10 @@ export class DocumentMemoryManager {
     // A read already under way is left alone: restarting it would throw its result away and
     // begin again, so "retry" on a large scan would spin for minutes and end where it began.
     if (this.activeExtractions.has(path)) return { ok: true }
+    if (options.now) {
+      this.deferred.delete(path)
+      this.urgent.add(path)
+    }
     const interrupted = options.now ? [...this.activeExtractions] : []
     // put the interrupted files first, then the chosen one in front of them
     for (const other of interrupted) {
@@ -370,6 +394,41 @@ export class DocumentMemoryManager {
     this.enqueue(path, true)
     if (interrupted.length) this.recycleWorker(INTERRUPTED_FOR_USER)
     return { ok: true }
+  }
+
+  /**
+   * Push one file to the back of the line: it is read after every other waiting file. If it is
+   * being read now, that read is cut short so the next file starts at once.
+   */
+  deferDocument(id: number): { ok: boolean; error?: string } {
+    const document = this.store.documentById(id)
+    if (!document || document.status !== 'pending') return { ok: false, error: 'unavailable' }
+    this.putBehind(document.path)
+    return { ok: true }
+  }
+
+  private putBehind(path: string): void {
+    const reading = this.activeExtractions.has(path)
+    this.invalidatePath(path)
+    this.urgent.delete(path)
+    this.deferred.add(path)
+    if (reading) this.recycleWorker(DEFERRED_MESSAGE)
+    this.enqueue(path)
+  }
+
+  /**
+   * A heavy file that has held the reader for a while steps back when lighter ones are waiting:
+   * once, so a file that is alone at the end is still read through.
+   */
+  private makeWayForLightFiles(path: string, generation: number): void {
+    if (generation !== this.currentGeneration(path) || !this.activeExtractions.has(path)) return
+    if (this.urgent.has(path) || this.deferred.has(path)) return
+    const info = this.queueInfo()
+    const bytes = this.activeBytes.get(path) ?? this.store.documentByPath(path)?.sizeBytes ?? 0
+    const mine = rankOf(path, { ...info, bytes: new Map([[path, bytes]]) })
+    if (mine < 3) return
+    if (!this.queue.some((other) => rankOf(other, info) < mine)) return
+    this.putBehind(path)
   }
 
   /**
@@ -1184,7 +1243,7 @@ export class DocumentMemoryManager {
     }
   }
 
-  private enqueue(path: string, prioritize = false): void {
+  private enqueue(path: string, prioritize = false, sizeBytes?: number): void {
     if (this.stopped || !this.enabled) return
     if (this.queued.has(path)) {
       if (prioritize) {
@@ -1200,9 +1259,66 @@ export class DocumentMemoryManager {
     for (let i = this.embeds.length - 1; i >= 0; i--)
       if (this.embeds[i]?.path === path) this.embeds.splice(i, 1)
     this.queued.add(path)
+    const known = sizeBytes ?? doc.sizeBytes
+    this.queueBytes.set(path, known ?? 0)
+    if (known === null || known === undefined) this.learnSize(path)
     if (prioritize) this.queue.unshift(path)
     else this.queue.push(path)
+    // a small file arriving behind a heavy read that has run for a while should not wait for it
+    this.reviewHeavyReads()
     void this.drain()
+  }
+
+  private reviewHeavyReads(): void {
+    const now = Date.now()
+    for (const [path, since] of this.activeSince) {
+      if (now - since >= this.autoDeferAfterMs) {
+        this.makeWayForLightFiles(path, this.currentGeneration(path))
+      }
+    }
+  }
+
+  /**
+   * A file enrolled without a size (the index only learns it by reading the file) is measured in
+   * the background, one at a time, so a restart does not make every waiting scan look light.
+   */
+  private learnSize(path: string): void {
+    this.sizeLookups.add(path)
+    if (this.sizing) return
+    this.sizing = true
+    void (async () => {
+      try {
+        for (const next of this.sizeLookups) {
+          this.sizeLookups.delete(next)
+          if (this.stopped) return
+          if (!this.queued.has(next)) continue
+          const outcome = await this.statOutcome(next)
+          if (outcome.kind === 'file' && this.queued.has(next)) {
+            this.queueBytes.set(next, outcome.sizeBytes)
+          }
+          await yieldToEventLoop()
+        }
+      } finally {
+        this.sizing = false
+      }
+    })()
+  }
+
+  private queueInfo(): QueueInfo {
+    return { urgent: this.urgent, deferred: this.deferred, bytes: this.queueBytes }
+  }
+
+  /** The waiting line in the order it will be read: asked-for first, light before heavy. */
+  private readingOrder(): string[] {
+    return orderQueue(this.queue, this.queueInfo())
+  }
+
+  private takeNext(): string {
+    const path = this.readingOrder()[0]!
+    this.queue.splice(this.queue.indexOf(path), 1)
+    this.activeBytes.set(path, this.queueBytes.get(path) ?? 0)
+    this.queueBytes.delete(path)
+    return path
   }
 
   private drain(): void {
@@ -1236,13 +1352,17 @@ export class DocumentMemoryManager {
         this.queue.length &&
         this.embeds.length < MAX_PENDING_EMBED_DOCUMENTS
       ) {
-        const path = this.queue.shift()!
+        const path = this.takeNext()
         this.queued.delete(path)
         this.activeExtractions.add(path)
         this.activeSince.set(path, Date.now())
         const generation = this.currentGeneration(path)
         const epoch = this.epoch
         this.pendingCount++
+        const heavyWatch = setTimeout(
+          () => this.makeWayForLightFiles(path, generation),
+          this.autoDeferAfterMs,
+        )
         try {
           const reply = await this.ask({ type: 'extract', path }, this.workerTimeoutMs, true)
           if (!this.isCurrent(path, generation, epoch)) continue
@@ -1316,9 +1436,16 @@ export class DocumentMemoryManager {
             this.lastError = message
           }
         } finally {
+          clearTimeout(heavyWatch)
           this.activeExtractions.delete(path)
           this.activeSince.delete(path)
+          this.activeBytes.delete(path)
           this.pendingCount--
+          // a read that was cut short and put back keeps the flags it was put back with
+          if (generation === this.currentGeneration(path)) {
+            this.urgent.delete(path)
+            this.deferred.delete(path)
+          }
         }
       }
     } finally {
@@ -1417,6 +1544,7 @@ export class DocumentMemoryManager {
   private invalidatePath(path: string): void {
     this.pathGeneration.set(path, this.currentGeneration(path) + 1)
     this.queued.delete(path)
+    this.queueBytes.delete(path)
     for (let i = this.queue.length - 1; i >= 0; i--)
       if (this.queue[i] === path) this.queue.splice(i, 1)
     for (let i = this.embeds.length - 1; i >= 0; i--)

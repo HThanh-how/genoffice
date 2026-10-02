@@ -84,6 +84,8 @@ const EN = {
   reveal: 'Show in folder',
   openFile: 'Open file',
   stop: 'Stop reading',
+  later: 'Read later',
+  deferred: 'Moved to the end of the line.',
   stopped: 'Stopped. Use Try again to read it later.',
   copyPath: 'Copy path',
   couldNotOpen: 'Could not open this file.',
@@ -112,6 +114,8 @@ const VI: FileWords = {
   reveal: 'Mở thư mục chứa tệp',
   openFile: 'Mở tệp',
   stop: 'Dừng đọc',
+  later: 'Đọc sau',
+  deferred: 'Đã đẩy xuống cuối hàng chờ.',
   stopped: 'Đã dừng. Bấm Thử lại để đọc sau.',
   copyPath: 'Sao chép đường dẫn',
   couldNotOpen: 'Không mở được tệp này.',
@@ -167,6 +171,11 @@ const IOpen = () => (
   <Svg>
     <path d="M9.2 2.6h4.2v4.2M13.4 2.6 7.2 8.8" />
     <path d="M11.6 9.4v2.8a1.2 1.2 0 0 1-1.2 1.2H3.8a1.2 1.2 0 0 1-1.2-1.2V5.6a1.2 1.2 0 0 1 1.2-1.2h2.8" />
+  </Svg>
+)
+const ILater = () => (
+  <Svg>
+    <path d="M8 3v7.2M4.8 7.4 8 10.6l3.2-3.2M3.4 13h9.2" />
   </Svg>
 )
 const IStop = () => (
@@ -305,6 +314,12 @@ export function useFileActions(
       say(result.ok ? w.stopped : fill(w.ocrFailed, { e: result.error ?? '' }))
       await settle(item)
     })
+  const later = (item: FileItem) =>
+    withBusy(item.id, async () => {
+      const result = await api.deferIndexFile(item.id)
+      say(result.ok ? w.deferred : fill(w.ocrFailed, { e: result.error ?? '' }))
+      await settle(item)
+    })
   const openFile = async (item: FileItem) => {
     const result = await api.documentMemoryOpen(item.id).catch(() => null)
     if (!result?.ok) say(w.couldNotOpen)
@@ -344,6 +359,7 @@ export function useFileActions(
     openFile,
     retry,
     stop,
+    later,
     readNow,
   }
 }
@@ -485,7 +501,10 @@ export function FileRow({
         ]
       : []),
     ...(stoppable
-      ? [{ label: w.stop, icon: <IStop />, disabled: busy, run: () => void actions.stop(item) }]
+      ? [
+          { label: w.later, icon: <ILater />, disabled: busy, run: () => void actions.later(item) },
+          { label: w.stop, icon: <IStop />, disabled: busy, run: () => void actions.stop(item) },
+        ]
       : []),
     { label: w.copyPath, icon: <ICopy />, run: () => void actions.copyPath(item) },
     { label: w.copyLog, icon: <ICopy />, run: () => void actions.copyLog(item) },
@@ -541,6 +560,11 @@ export function FileRow({
           <IconButton label={w.openFile} onClick={() => void actions.openFile(item)}>
             <IOpen />
           </IconButton>
+          {stoppable && (
+            <IconButton label={w.later} disabled={busy} onClick={() => void actions.later(item)}>
+              <ILater />
+            </IconButton>
+          )}
           {stoppable && (
             <IconButton label={w.stop} disabled={busy} onClick={() => void actions.stop(item)}>
               <IStop />

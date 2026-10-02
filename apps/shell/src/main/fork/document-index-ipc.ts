@@ -258,6 +258,11 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
     folderCounts.invalidate()
     return result
   })
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.deferIndexFile, (_event, id: unknown) => {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
+      throw new Error('Invalid document id')
+    return getDocumentMemory()?.deferDocument(id) ?? { ok: false, error: 'unavailable' }
+  })
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.stopIndexFile, async (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid document id')

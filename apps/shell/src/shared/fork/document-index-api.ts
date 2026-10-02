@@ -22,6 +22,7 @@ export const DOCUMENT_INDEX_CHANNELS = {
   searchIndexedFiles: 'home:search-indexed-files',
   getIndexingNow: 'home:get-indexing-now',
   stopIndexFile: 'home:stop-index-file',
+  deferIndexFile: 'home:defer-index-file',
   getEverything: 'home:get-everything',
   getDbLocation: 'home:get-db-location',
   chooseDbLocation: 'home:choose-db-location',
@@ -182,6 +183,8 @@ export interface DocumentIndexApi {
   getEverything(): Promise<EverythingState>
   /** Turn it on or off, optionally pointing at es.exe; returns the new state. */
   setEverything(change: { enabled: boolean; path?: string }): Promise<EverythingState>
+  /** Push one file to the back of the line (cutting its read short if it is being read). */
+  deferIndexFile(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** Stop reading one waiting file; it stays in the list as a problem to retry. */
   stopIndexFile(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** How far one file got: found, read, OCR, embedded. Null when the file is not in the index. */

@@ -44,6 +44,9 @@ export function createDocumentIndexPreloadApi(
     async setEverything(change) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setEverything, change)
     },
+    async deferIndexFile(documentId) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.deferIndexFile, documentId)
+    },
     async stopIndexFile(documentId) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.stopIndexFile, documentId)
     },
