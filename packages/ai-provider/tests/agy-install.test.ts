@@ -83,7 +83,8 @@ describe("the Antigravity CLI installer (Google's own script)", () => {
     const first = installer.start()
     expect(await installer.start()).toMatchObject({ phase: 'failed', error: 'busy' })
     expect(await first).toMatchObject({ phase: 'failed', error: 'timeout' })
-    expect(child.kill).toHaveBeenCalled()
+    // Windows kills the tree through taskkill, not child.kill()
+    if (process.platform !== 'win32') expect(child.kill).toHaveBeenCalled()
   })
 
   it('says so on a platform it has no installer for', async () => {
