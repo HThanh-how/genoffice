@@ -516,13 +516,11 @@ function FileMenu({
       if (!ref.current?.contains(event.target as Node)) onClose()
     }
     document.addEventListener('mousedown', away)
-    document.addEventListener('contextmenu', away)
     window.addEventListener('blur', onClose)
     window.addEventListener('resize', onClose)
     document.addEventListener('scroll', scrollAway, true)
     return () => {
       document.removeEventListener('mousedown', away)
-      document.removeEventListener('contextmenu', away)
       window.removeEventListener('blur', onClose)
       window.removeEventListener('resize', onClose)
       document.removeEventListener('scroll', scrollAway, true)
@@ -651,7 +649,11 @@ export function FileRow({
   const showMenu = (trigger: HTMLElement, at?: { x: number; y: number }) => {
     menuTrigger.current = trigger
     const box = trigger.getBoundingClientRect()
-    setMenu(at ?? { x: box.left, y: box.bottom + 4 })
+    setMenu(
+      at && Number.isFinite(at.x) && Number.isFinite(at.y)
+        ? at
+        : { x: box.left, y: box.bottom + 4 },
+    )
   }
   const onContextMenu = (event: MouseEvent) => {
     event.preventDefault()
