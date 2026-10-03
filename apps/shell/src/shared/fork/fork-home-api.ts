@@ -4,6 +4,7 @@ import type { AgyOcrApi } from './agy-ocr'
 import type { DocumentIndexApi } from './document-index-api'
 import type { HomeChatApi } from './home-chat-types'
 import type { IndexingModeApi } from './indexing-mode'
+import type { AiInstructionsApi } from './ai-instructions-meta'
 
 /** Every fork-only method on window.aiOffice; HomeApi extends this so upstream stays untouched. */
 export interface ForkHomeApi
@@ -13,4 +14,5 @@ export interface ForkHomeApi
     HomeChatApi,
     DocumentIndexApi,
     IndexingModeApi,
-    AgyOcrApi {}
+    AgyOcrApi,
+    AiInstructionsApi {}

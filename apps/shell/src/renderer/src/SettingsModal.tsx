@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { UpdateSource } from '../../shared/update-source'
 import { OpeningEffectsSettings } from './fork/OpeningEffectsSettings'
+import { AiInstructionsSettings, aiInstructionsTitle } from './fork/AiInstructionsSettings'
 import {
   AI_CUSTOM_FONT_MAX_PX,
   AI_CUSTOM_FONT_MIN_PX,
@@ -1684,6 +1685,12 @@ export function SettingsModal({
                       }}
                     />
                   </div>
+                </SetGroup>
+                <SetGroup
+                  title={aiInstructionsTitle(lang).title}
+                  hint={aiInstructionsTitle(lang).hint}
+                >
+                  <AiInstructionsSettings lang={lang} />
                 </SetGroup>
                 <SetGroup title={groupText(lang, 'ai')}>
                   <div className="set-field">

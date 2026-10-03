@@ -101,3 +101,4 @@ export type { StreamWatchdog } from './watchdog'
 
 export { setAiErrorLogger } from './stream'
 export type { AiErrorDiagnostic } from './stream'
+export { setSystemAddendum, withSystemAddendum } from './system-addendum'

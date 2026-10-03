@@ -7,6 +7,7 @@ import { streamOpenAiCompatible } from './protocols/openai-compatible'
 import { streamCodexAppServer } from './codex-app-server'
 import { isCliProvider, streamAgy } from './agy-cli'
 import type { StreamCallbacks } from './protocols/shared'
+import { withSystemAddendum } from './system-addendum'
 import { getProviderAdapter, type AiProtocol } from './registry'
 import type { AiProviderConfig, AiProviderId } from './types'
 
@@ -78,7 +79,9 @@ export async function streamForProvider(
   ...args: Parameters<typeof streamForProviderInner>
 ): Promise<void> {
   try {
-    await streamForProviderInner(...args)
+    // appended, never prepended: some callers recognise their own prompt by its first words
+    const [provider, config, system, ...rest] = args
+    await streamForProviderInner(provider, config, withSystemAddendum(system), ...rest)
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error)
     if (!(error instanceof Error && error.name === 'AbortError')) {

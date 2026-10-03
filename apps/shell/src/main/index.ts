@@ -337,6 +337,7 @@ import { registerDbLocationIpc } from './fork/db-location-ipc'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
 import { initClipboardHistory, registerClipboardHistory } from './fork/clipboard-history-ipc'
 import { registerIndexingMode } from './fork/indexing-mode-ipc'
+import { registerAiInstructions } from './fork/ai-instructions-ipc'
 import { registerAgyOcr } from './fork/agy-ocr-ipc'
 import { registerAgyChat } from './fork/agy-chat-ipc'
 import { startLoopMonitor } from './fork/loop-monitor'
@@ -4493,6 +4494,7 @@ function registerHomeIpc(): void {
     historyPath: () => join(app.getPath('userData'), 'clipboard-history.json'),
   })
   registerIndexingMode({ ipcMain, settingsPath: APP_SETTINGS_PATH })
+  registerAiInstructions({ ipcMain, settingsPath: APP_SETTINGS_PATH })
   registerAgyChat({
     ipcMain,
     settingsPath: APP_SETTINGS_PATH,

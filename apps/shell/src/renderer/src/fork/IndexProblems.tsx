@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
 import type { IndexIssue, IndexIssueReason } from '../../../main/document-memory/issues'
@@ -16,6 +16,14 @@ import {
   useIndexingNow,
 } from './IndexFiles'
 import { NOTHING_PICKED, pick, type PickState } from './index-selection'
+import { matchesQuery } from './todo-model'
+
+/** What the cards above the lists can ask the lists to do. */
+export interface ProblemCommands {
+  openReason(reason: IndexIssueReason): void
+  retryAll(): Promise<void>
+  readAllScans(): Promise<void>
+}
 
 /** Something the person can act on: failures, and scanned files still waiting to be read. */
 export function needsAction(reason: IndexIssueReason): boolean {
@@ -36,6 +44,9 @@ const EN = {
     'Read {n} scanned PDFs now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
   readProgress: 'Reading {i} of {n}…',
   readFinished: 'Read {ok} of {n} files.',
+  readAllConfirm:
+    'Read all {n} scanned PDFs with Antigravity, one after another? It uses Antigravity quota and ignores today’s limit.',
+  noMatch: 'No file matches “{q}”.',
 
   empty: 'No problems. Every readable file is indexed.',
   noFolder: 'Scan a folder first.',
@@ -64,6 +75,9 @@ const VI: Dict = {
     'Đọc ngay {n} tệp PDF quét bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
   readProgress: 'Đang đọc {i}/{n}…',
   readFinished: 'Đã đọc {ok}/{n} tệp.',
+  readAllConfirm:
+    'Đọc lần lượt cả {n} tệp PDF quét bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
+  noMatch: 'Không có tệp nào khớp “{q}”.',
 
   empty: 'Không có lỗi. Mọi tệp đọc được đều đã index.',
   noFolder: 'Hãy quét một thư mục trước.',
@@ -124,12 +138,23 @@ export function IndexProblems({
   root,
   focus,
   onChanged,
+  query = '',
+  hideEmpty = false,
+  hideToolbar = false,
+  commandRef,
 }: {
   api: HomeApi
   root: string
   /** a group to open at once (picked from the overview) */
   focus?: IndexIssueReason | null
   onChanged: () => void
+  /** only files whose name or folder match these words are listed */
+  query?: string
+  /** draw nothing when there are no problems (the page shows its own healthy state) */
+  hideEmpty?: boolean
+  /** the page has its own buttons for "try again" and "read the scans" */
+  hideToolbar?: boolean
+  commandRef?: MutableRefObject<ProblemCommands | null>
 }) {
   const { lang, dateLocale } = useI18n()
   const d = lang === 'vi' ? VI : EN
@@ -423,6 +448,69 @@ export function IndexProblems({
     onChanged()
   }
 
+  const readAllScans = async () => {
+    const total = summary?.groups.find((g) => g.reason === 'no-text')?.count ?? 0
+    const loaded = await loadAtLeast(
+      (offset) => api.getDocumentIndexIssues(root, offset, 'no-text'),
+      Math.min(Math.max(total, 1), 2000),
+    )
+    if (loaded.items.length === 0) return
+    if (!window.confirm(fill(d.readAllConfirm, { n: loaded.items.length }))) return
+    let ok = 0
+    for (const [index, item] of loaded.items.entries()) {
+      actions.say(fill(d.readProgress, { i: index + 1, n: loaded.items.length }))
+      try {
+        const result = await api.readScannedPdfWithAgy(item.id, true)
+        if (result.ok) ok++
+        else if (result.error === 'unavailable' || result.error === 'paused') break
+      } catch {
+        /* the next file still gets its turn */
+      }
+    }
+    actions.say(fill(d.readFinished, { ok, n: loaded.items.length }))
+    await loadSummary()
+    if (openRef.current.has('no-text')) await loadGroup('no-text')
+    onChanged()
+  }
+
+  const openReason = (reason: IndexIssueReason) => {
+    setOpen((current) => new Set(current).add(reason))
+    if (!groupsRef.current[reason]) void loadGroup(reason)
+  }
+  const commands: ProblemCommands = { openReason, retryAll: retryEverything, readAllScans }
+  const commandsRef = useRef(commands)
+  commandsRef.current = commands
+  useEffect(() => {
+    if (!commandRef) return
+    commandRef.current = {
+      openReason: (reason) => commandsRef.current.openReason(reason),
+      retryAll: () => commandsRef.current.retryAll(),
+      readAllScans: () => commandsRef.current.readAllScans(),
+    }
+    return () => {
+      commandRef.current = null
+    }
+  }, [commandRef])
+
+  // Searching: every list opens and is read in full (up to 500), then filtered below.
+  const searching = query.trim().length > 0
+  useEffect(() => {
+    if (!searching || !summary) return
+    for (const group of summary.groups) {
+      setOpen((current) => new Set(current).add(group.reason))
+      void (async () => {
+        const loaded = await loadAtLeast(
+          (offset) => api.getDocumentIndexIssues(root, offset, group.reason),
+          Math.min(group.count, 500),
+        )
+        setGroups((current) => ({
+          ...current,
+          [group.reason]: { items: loaded.items, total: loaded.total, loading: false },
+        }))
+      })()
+    }
+  }, [searching, summary, api, root])
+
   const retryGroup = async (reason: IndexIssueReason) => {
     const result = await api.retryDocumentIndexGroup(root, reason)
     actions.say(result.ok ? fill(d.retried, { n: result.retried }) : (result.error ?? ''))
@@ -432,7 +520,7 @@ export function IndexProblems({
 
   if (!root) return <p className="idx-muted">{d.noFolder}</p>
   const list = summary?.groups ?? []
-  if (summary && list.length === 0) return <p className="idx-empty">{d.empty}</p>
+  if (summary && list.length === 0) return hideEmpty ? null : <p className="idx-empty">{d.empty}</p>
 
   const renderGroup = (reason: IndexIssueReason, count: number) => {
     const words = copy.reasons[reason]
@@ -443,9 +531,9 @@ export function IndexProblems({
     const isOpen = open.has(reason)
     const state = groups[reason]
     // the order the files are shown in: Shift+click picks between two of them
-    const sorted = [...(state?.items ?? [])].sort(
-      (x, y) => rank(liveOf(now, x.path)) - rank(liveOf(now, y.path)),
-    )
+    const sorted = [...(state?.items ?? [])]
+      .filter((item) => !searching || matchesQuery(item, query))
+      .sort((x, y) => rank(liveOf(now, x.path)) - rank(liveOf(now, y.path)))
     const orderedIds = sorted.map((issue) => issue.id)
     return (
       <section className={`ixp-group${isOpen ? ' is-open' : ''}`} key={reason}>
@@ -506,6 +594,9 @@ export function IndexProblems({
               />
             ))}
             {state?.loading && <li className="ixp-loading">{d.loading}</li>}
+            {searching && !state?.loading && sorted.length === 0 && (
+              <li className="ixp-loading">{fill(d.noMatch, { q: query.trim() })}</li>
+            )}
             {state && !state.loading && state.total > state.items.length && (
               <li>
                 <button
@@ -555,7 +646,7 @@ export function IndexProblems({
           </button>
         </div>
       )}
-      {(failures || scanned > 0) && (
+      {!hideToolbar && (failures || scanned > 0) && (
         <div className="ixp-toolbar">
           {failures && (
             <button

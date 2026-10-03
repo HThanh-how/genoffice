@@ -5,12 +5,11 @@ import type { HomeApi, HomeIndexingActivity, DocumentMemoryStatus } from '../../
 import type { IndexingMode, IndexingModeState } from '../../../shared/fork/indexing-mode'
 import { INDEXING_MODES } from '../../../shared/fork/indexing-mode'
 import { useI18n } from '../locale'
-import { LegacyConvertCard } from './LegacyConvertCard'
+import { TodoTab } from './TodoTab'
 import { activityCopy, fill } from '../indexing-activity-copy'
 import { EtaTracker, type EtaEstimate } from '../indexing-activity-model'
 import { etaText } from '../indexing-activity/format'
 import { IndexedFolders } from './IndexedFolders'
-import { IndexProblems } from './IndexProblems'
 import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
 import { needsAction } from './IndexProblems'
@@ -510,8 +509,20 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
 
         {tab === 'problems' && (
           <div className="idx-body">
-            <LegacyConvertCard api={api} />
-            <IndexProblems api={api} root="*" focus={focus} onChanged={kick} />
+            <TodoTab
+              api={api}
+              ready={progress?.readyFiles ?? memory?.documents ?? 0}
+              pending={pending}
+              switchedOff={memory?.enabled === false}
+              held={paused && memory?.enabled !== false}
+              heldWhy={tierText}
+              scanning={!!folder?.running}
+              focus={focus}
+              onAddFolder={() => void addFolder()}
+              onRescan={() => void rescanAll()}
+              onResume={() => void togglePause()}
+              onChanged={kick}
+            />
           </div>
         )}
 

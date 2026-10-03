@@ -7,12 +7,15 @@ import type { AgyOcrApi } from '../../shared/fork/agy-ocr'
 import type { IndexingModeApi } from '../../shared/fork/indexing-mode'
 import { createAgyOcrPreloadApi } from './agy-ocr-api'
 import { createIndexingModePreloadApi } from './indexing-mode-api'
+import type { AiInstructionsApi } from '../../shared/fork/ai-instructions-meta'
+import { createAiInstructionsPreloadApi } from './ai-instructions-api'
 
 /** Preload half of the document-index popup additions (spread into the home API object). */
 export function createDocumentIndexPreloadApi(
   ipcRenderer: IpcRenderer,
-): DocumentIndexApi & IndexingModeApi & AgyOcrApi {
+): DocumentIndexApi & IndexingModeApi & AgyOcrApi & AiInstructionsApi {
   return {
+    ...createAiInstructionsPreloadApi(ipcRenderer),
     // Indexing effort setting (Light / Balanced / Fast), shown in the same Settings section.
     ...createIndexingModePreloadApi(ipcRenderer),
     // Scanned-PDF reader (Antigravity): settings, live status, manual "read now".
