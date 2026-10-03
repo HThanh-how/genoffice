@@ -572,9 +572,9 @@ function legacyDocSettings(): LegacyDocSettings {
         : DEFAULT_LEGACY_DOC_SERVICE,
     convertOnOpen: saved.legacyConvertOnOpen !== false,
     convertInIndex:
-      saved.legacyConvertInIndex === 'off' || saved.legacyConvertInIndex === 'all'
+      saved.legacyConvertInIndex === 'off' || saved.legacyConvertInIndex === 'xls'
         ? saved.legacyConvertInIndex
-        : 'xls',
+        : 'all',
   }
 }
 
@@ -4769,6 +4769,14 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.getTheme, (): UiTheme => currentTheme())
   ipcMain.handle(HOME_CHANNELS.getLegacyDocSettings, (): LegacyDocSettings => legacyDocSettings())
+  ipcMain.handle(
+    HOME_CHANNELS.getLegacyConvertState,
+    () => legacyConverter?.state() ?? { running: false, pending: 0, converted: 0, failed: 0 },
+  )
+  ipcMain.handle(HOME_CHANNELS.startLegacyConvert, () => {
+    legacyConverter?.kick()
+    return legacyConverter?.state() ?? { running: false, pending: 0, converted: 0, failed: 0 }
+  })
   ipcMain.handle(HOME_CHANNELS.listLegacyRecovery, () =>
     listLegacyRecovery(app.getPath('userData')),
   )

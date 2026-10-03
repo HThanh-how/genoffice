@@ -938,3 +938,41 @@
 .ixp-main {
   user-select: none;
 }
+
+.ixp-convert {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.ixp-convert-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+.ixp-convert-text strong {
+  color: var(--text);
+  font-size: 13px;
+}
+.ixp-convert-text small {
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+}
+.ixp-convert .ixp-bar {
+  width: 100%;
+  margin-top: 4px;
+}
+.ixp-convert .ixp-bar > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+}

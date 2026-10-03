@@ -29,6 +29,7 @@ import type {
   FileSearchPage,
   FileSearchRerank,
   FileSearchSettings,
+  LegacyConvertState,
   LegacyDocSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
@@ -347,6 +348,12 @@ const homeApi: HomeApi = {
   },
   async getLegacyDocSettings() {
     return (await ipcRenderer.invoke(HOME_CHANNELS.getLegacyDocSettings)) as LegacyDocSettings
+  },
+  async getLegacyConvertState() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.getLegacyConvertState)) as LegacyConvertState
+  },
+  async startLegacyConvert() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.startLegacyConvert)) as LegacyConvertState
   },
   async setLegacyDocSettings(settings) {
     return (await ipcRenderer.invoke(

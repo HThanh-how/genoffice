@@ -1407,7 +1407,7 @@ export function SettingsModal({
     mode: 'online',
     endpoint: 'https://d2x.clouds.io.vn',
     convertOnOpen: true,
-    convertInIndex: 'xls',
+    convertInIndex: 'all',
   })
   const [legacyRecovery, setLegacyRecovery] = useState<LegacyRecoveryEntry[]>([])
   const [legacyRecoveryBusy, setLegacyRecoveryBusy] = useState<string | null>(null)

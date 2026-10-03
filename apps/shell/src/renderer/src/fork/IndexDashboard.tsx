@@ -5,6 +5,7 @@ import type { HomeApi, HomeIndexingActivity, DocumentMemoryStatus } from '../../
 import type { IndexingMode, IndexingModeState } from '../../../shared/fork/indexing-mode'
 import { INDEXING_MODES } from '../../../shared/fork/indexing-mode'
 import { useI18n } from '../locale'
+import { LegacyConvertCard } from './LegacyConvertCard'
 import { activityCopy, fill } from '../indexing-activity-copy'
 import { EtaTracker, type EtaEstimate } from '../indexing-activity-model'
 import { etaText } from '../indexing-activity/format'
@@ -509,6 +510,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
 
         {tab === 'problems' && (
           <div className="idx-body">
+            <LegacyConvertCard api={api} />
             <IndexProblems api={api} root="*" focus={focus} onChanged={kick} />
           </div>
         )}

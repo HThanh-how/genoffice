@@ -59,6 +59,14 @@ export interface LegacyDocSettings {
   convertInIndex: 'off' | 'xls' | 'all'
 }
 
+/** Background conversion of old-format files (.xls .doc .ppt) in the index. */
+export interface LegacyConvertState {
+  running: boolean
+  pending: number
+  converted: number
+  failed: number
+}
+
 export interface LegacyRecoveryEntry {
   id: string
   sourcePath: string
@@ -326,6 +334,9 @@ export interface HomeApi extends ForkHomeApi {
   setTheme(theme: UiTheme): Promise<void>
   /** Legacy Office conversion privacy preference and optional self-hosted endpoint. */
   getLegacyDocSettings(): Promise<LegacyDocSettings>
+  getLegacyConvertState(): Promise<LegacyConvertState>
+  /** start (or continue) the background conversion now */
+  startLegacyConvert(): Promise<LegacyConvertState>
   setLegacyDocSettings(settings: LegacyDocSettings): Promise<LegacyDocSettings>
   /** .doc originals retained for 30 days beside their converted documents. */
   listLegacyRecovery(): Promise<LegacyRecoveryEntry[]>
@@ -635,6 +646,8 @@ export const HOME_CHANNELS = {
   getTheme: 'home:get-theme',
   setTheme: 'home:set-theme',
   getLegacyDocSettings: 'home:get-legacy-doc-settings',
+  getLegacyConvertState: 'home:get-legacy-convert-state',
+  startLegacyConvert: 'home:start-legacy-convert',
   setLegacyDocSettings: 'home:set-legacy-doc-settings',
   listLegacyRecovery: 'home:list-legacy-recovery',
   restoreLegacyDoc: 'home:restore-legacy-doc',
