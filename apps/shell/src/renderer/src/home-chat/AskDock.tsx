@@ -8,6 +8,7 @@ import { activityCopy } from '../indexing-activity-copy'
 import { OPEN_INDEX_EVENT } from '../IndexingActivity'
 import { langFor, parseIndexCommand, runIndexCommand } from '../fork/index-assistant'
 import { findFilesByName, type NamedFile } from '../fork/file-name-search'
+import { chatString } from './strings'
 
 const EN = {
   bubble: 'Ask or find here',
@@ -87,19 +88,21 @@ interface Brief {
 /**
  * The one box of the Home page. Typing finds files by name at once and says what state each is
  * in (read, scanned and unread, failed) with a one-click fix; Enter asks the AI, or carries out
- * an index order ("pause", "rescan"). Idle it is a translucent bar with a slowly turning light;
+ * an index order ("pause", "rescan"). Idle it is a quiet assistant entry;
  * scrolling the page tucks it away (the AI button in the corner stays). `children` is the model and usage strip.
  */
 export function AskDock({
   lang,
   api,
   away = false,
+  inline = false,
   children,
 }: {
   lang: string
   api: HomeApi
   /** the assistant panel is showing: the dock fades out instead of vanishing */
   away?: boolean
+  inline?: boolean
   children?: ReactNode
 }) {
   const w = WORDS[lang] ?? EN
@@ -111,15 +114,39 @@ export function AskDock({
   const [named, setNamed] = useState<NamedFile[]>([])
   const [answer, setAnswer] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
+  const [commandBusy, setCommandBusy] = useState(false)
   const [brief, setBrief] = useState<Brief | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const composingRef = useRef(false)
+  const commandBusyRef = useRef(false)
+  const commandGenerationRef = useRef(0)
+  const mountedRef = useRef(false)
+  const awayRef = useRef(away)
+  awayRef.current = away
   const rootRef = useRef<HTMLDivElement>(null)
   const lastTop = useRef(0)
   const query = text.trim()
   const command = query ? parseIndexCommand(query) : null
+  const working = chatString(lang as Lang, 'homeChatWorking')
+
+  useEffect(() => {
+    const generationCounter = commandGenerationRef
+    mountedRef.current = true
+    return () => {
+      mountedRef.current = false
+      generationCounter.current++
+    }
+  }, [])
+  useEffect(() => {
+    if (away) commandGenerationRef.current++
+  }, [away])
 
   // Page scroll tucks the dock away (capture: scroll does not bubble).
   useEffect(() => {
+    if (inline) {
+      setCollapsed(false)
+      return
+    }
     const onScroll = (event: Event) => {
       const target = event.target
       if (!(target instanceof HTMLElement)) return
@@ -132,7 +159,7 @@ export function AskDock({
     }
     document.addEventListener('scroll', onScroll, true)
     return () => document.removeEventListener('scroll', onScroll, true)
-  }, [])
+  }, [inline])
 
   const expand = useCallback(() => {
     setCollapsed(false)
@@ -141,6 +168,7 @@ export function AskDock({
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
+      if (away) return
       if (event.key !== '/' || event.metaKey || event.ctrlKey || event.altKey) return
       const el = document.activeElement
       if (
@@ -153,7 +181,7 @@ export function AskDock({
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
-  }, [expand])
+  }, [away, expand])
 
   // Close the popover on a click elsewhere.
   useEffect(() => {
@@ -161,6 +189,7 @@ export function AskDock({
       if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
         setAnswer(null)
         setHits(null)
+        setFocused(false)
       }
     }
     document.addEventListener('pointerdown', onDown, true)
@@ -214,12 +243,28 @@ export function AskDock({
 
   const submit = async (value: string) => {
     const message = value.trim()
-    if (!message) return
+    if (!message || commandBusyRef.current || awayRef.current || !mountedRef.current) return
     const parsed = parseIndexCommand(message)
     if (parsed) {
+      commandBusyRef.current = true
+      setCommandBusy(true)
+      const generation = ++commandGenerationRef.current
       setText('')
       setHits(null)
-      setAnswer(await runIndexCommand(api, parsed, langFor(message, lang)))
+      setAnswer(null)
+      try {
+        const result = await runIndexCommand(api, parsed, langFor(message, lang))
+        if (mountedRef.current && !awayRef.current && generation === commandGenerationRef.current) {
+          setAnswer(result)
+        }
+      } catch (error) {
+        if (mountedRef.current && !awayRef.current && generation === commandGenerationRef.current) {
+          setAnswer(fill(w.failed, { e: error instanceof Error ? error.message : '' }))
+        }
+      } finally {
+        commandBusyRef.current = false
+        if (mountedRef.current) setCommandBusy(false)
+      }
       return
     }
     setText('')
@@ -237,6 +282,8 @@ export function AskDock({
       const result = await api.retryDocumentIndex(hit.id)
       setAnswer(result.ok ? w.queued : fill(w.failed, { e: result.error ?? '' }))
       await refreshHits()
+    } catch (error) {
+      setAnswer(fill(w.failed, { e: error instanceof Error ? error.message : '' }))
     } finally {
       setBusyId(null)
     }
@@ -259,20 +306,27 @@ export function AskDock({
     }
   }
 
-  const showTip = !collapsed && !focused && !text && !answer
-  const showChips = !collapsed && focused && !text && !answer
-  const showPop = !collapsed && (answer !== null || query.length > 0)
+  const showChips = !collapsed && focused && !text && !answer && !commandBusy
+  const showPop = !collapsed && (answer !== null || (focused && query.length > 0))
   return (
     <div
       ref={rootRef}
-      className={`ask-dock${focused ? ' is-focused' : ''}${away || collapsed ? ' is-away' : ''}`}
+      className={`ask-dock${inline ? ' is-inline' : ''}${focused ? ' is-focused' : ''}${away || collapsed ? ' is-away' : ''}`}
       inert={away || collapsed}
+      onFocus={() => setFocused(true)}
+      onBlur={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget)) setFocused(false)
+      }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' && !event.nativeEvent.isComposing) {
+          event.preventDefault()
+          event.stopPropagation()
+          setText('')
+          setAnswer(null)
+          inputRef.current?.blur()
+        }
+      }}
     >
-      {showTip && (
-        <div className="ask-tip" aria-hidden="true">
-          {w.bubble}
-        </div>
-      )}
       {showChips && (
         <div className="ask-chips">
           {brief?.active && (
@@ -306,9 +360,9 @@ export function AskDock({
         </div>
       )}
       {showPop && (
-        <div className="ask-pop" role="listbox" aria-label={w.placeholder} aria-live="polite">
+        <div className="ask-pop" role="group" aria-label={w.placeholder}>
           {answer !== null && (
-            <div className="ask-answer">
+            <div className="ask-answer" role="status">
               <p>{answer}</p>
               <button
                 type="button"
@@ -413,31 +467,52 @@ export function AskDock({
         <span className="ask-ring" aria-hidden="true" />
         <form
           className="ask-form"
+          aria-busy={commandBusy}
           onSubmit={(event) => {
             event.preventDefault()
-            void submit(text)
+            event.stopPropagation()
+            if (!composingRef.current) void submit(text)
           }}
         >
           <input
             ref={inputRef}
             value={text}
             onChange={(event) => setText(event.target.value)}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
+            onCompositionStart={() => {
+              composingRef.current = true
+            }}
+            onCompositionEnd={() => {
+              composingRef.current = false
+            }}
             onKeyDown={(event) => {
-              if (event.key === 'Escape') {
-                setText('')
-                setAnswer(null)
-                inputRef.current?.blur()
+              if (
+                event.key === 'Enter' &&
+                (event.nativeEvent.isComposing ||
+                  composingRef.current ||
+                  event.nativeEvent.keyCode === 229)
+              ) {
+                event.preventDefault()
+              } else if (event.key === 'ArrowDown') {
+                const first = rootRef.current?.querySelector<HTMLButtonElement>('.ask-pop button')
+                if (first) {
+                  event.preventDefault()
+                  first.focus()
+                }
               }
             }}
-            placeholder={w.placeholder}
+            placeholder={commandBusy ? working : w.placeholder}
+            disabled={commandBusy}
             aria-label={w.placeholder}
             tabIndex={collapsed ? -1 : 0}
             autoComplete="off"
             spellCheck={false}
           />
-          <button type="submit" className="ask-send" disabled={!text.trim()} aria-label={w.send}>
+          <button
+            type="submit"
+            className="ask-send"
+            disabled={commandBusy || !text.trim()}
+            aria-label={commandBusy ? working : w.send}
+          >
             <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <path
                 d="M10 15.5v-11m0 0-4.5 4.5M10 4.5l4.5 4.5"
@@ -450,7 +525,12 @@ export function AskDock({
           </button>
         </form>
       </div>
-      {!collapsed && focused && children && <div className="ask-extra">{children}</div>}
+      {commandBusy && (
+        <p className="ask-working" role="status">
+          {working}
+        </p>
+      )}
+      {!collapsed && (inline || focused) && children && <div className="ask-extra">{children}</div>}
     </div>
   )
 }

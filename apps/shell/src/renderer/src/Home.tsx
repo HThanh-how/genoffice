@@ -38,6 +38,7 @@ import { skillUpdateDue } from './IntegrationsPane'
 import { onFilesChanged } from './file-events'
 import { HomeChat } from './HomeChat'
 import { ClipboardSuggest } from './ClipboardSuggest'
+import './home-workspace.css'
 
 declare global {
   interface Window {
@@ -1923,8 +1924,16 @@ export function Home() {
     return (
       <div className="quick-cards">
         {NEW_ITEMS.map((item) => (
-          <button key={item.ext} className="quick-card" onClick={() => void item.action()}>
-            <FileBadge ext={item.ext} size={30} />
+          <button
+            type="button"
+            key={item.ext}
+            className="quick-card"
+            data-kind={item.ext}
+            onClick={() => void item.action()}
+          >
+            <span className="quick-card-icon">
+              <FileBadge ext={item.ext} size={28} />
+            </span>
             <span className="quick-text">
               <span className="quick-title-row">
                 <span className="quick-title">{item.title}</span>
@@ -1936,6 +1945,8 @@ export function Home() {
         ))}
         <button
           className="quick-card"
+          type="button"
+          data-kind="open"
           onClick={() => void window.aiOffice.browse()}
           data-tip={OPEN_LOCAL_EXTENSIONS}
         >
@@ -2944,6 +2955,7 @@ export function Home() {
               <span className="hero-ask">{t(greetAskKey)}</span>
             </h1>
           </div>
+          <div id="home-assistant-slot" className="home-assistant-slot" />
           {renderQuickCards()}
         </section>
 
@@ -3287,7 +3299,11 @@ export function Home() {
       )}
 
       <DropToOpenOverlay />
-      <HomeChat api={window.aiOffice} i18n={i18n} />
+      <HomeChat
+        api={window.aiOffice}
+        i18n={i18n}
+        dockLocation={!selectedFolder && !cloudMode && !indexOpen ? 'home' : 'floating'}
+      />
       <ClipboardSuggest api={window.aiOffice} i18n={i18n} />
       <IndexingActivity api={window.aiOffice} lang={lang} />
     </div>

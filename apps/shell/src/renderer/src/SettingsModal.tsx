@@ -127,32 +127,72 @@ function groupText(lang: string, key: GroupKey): string {
   return (GROUP_TEXT[lang] ?? GROUP_TEXT.en!)[key]
 }
 
-/** A titled card of related setting rows; `fold` makes it collapsible and closed by default. */
+type GroupIconId = 'appearance' | 'ai' | 'files' | 'privacy' | 'legacy' | 'opening'
+const GROUP_ICONS: Record<GroupIconId, string> = {
+  appearance: 'M12 3a9 9 0 1 0 9 9h-9zM12 3v9h9',
+  ai: 'M4 4h16v13H9l-5 4zM8 9h8m-8 4h5',
+  files: 'M3 6h7l2 3h9v11H3z',
+  privacy: 'M12 3 4 6v6c0 4 8 9 8 9s8-5 8-9V6zM9 12l2 2 4-4',
+  legacy: 'M7 3h7l4 4v14H7zM14 3v5h4M10 13h5m-5 4h5',
+  opening: 'm12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5z',
+}
+function groupHint(lang: string, key: 'appearance' | 'ai' | 'files' | 'privacy'): string {
+  const hints = {
+    appearance: ['Language, theme and reading comfort', 'Ngôn ngữ, màu giao diện và cách hiển thị'],
+    ai: ['Make the assistant fit your workflow', 'Điều chỉnh trợ lý theo cách bạn làm việc'],
+    files: ['Default folders and automatic saving', 'Thư mục mặc định và lưu tự động'],
+    privacy: [
+      'Choose what the app remembers and shares',
+      'Chọn dữ liệu ứng dụng ghi nhớ và chia sẻ',
+    ],
+  }
+  return hints[key][lang === 'vi' ? 1 : 0]!
+}
+
+/** Related settings share one card; advanced cards are collapsed by default. */
 function SetGroup({
   title,
   hint,
   fold,
+  icon = 'ai',
   children,
 }: {
   title: string
   hint?: string
   fold?: boolean
-  children: React.ReactNode
+  icon?: GroupIconId
+  children: ReactNode
 }) {
-  if (fold) {
+  const heading = (
+    <>
+      <span className="set-group-icon" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24">
+          <path
+            d={GROUP_ICONS[icon]}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        </svg>
+      </span>
+      <span className="set-group-text">
+        <span>{title}</span>
+        {hint && <span className="set-group-hint">{hint}</span>}
+      </span>
+    </>
+  )
+  if (fold)
     return (
       <details className="set-group set-group-fold">
-        <summary className="set-group-title">
-          <span>{title}</span>
-          {hint && <span className="set-group-hint">{hint}</span>}
-        </summary>
+        <summary className="set-group-title">{heading}</summary>
         <div className="set-group-body">{children}</div>
       </details>
     )
-  }
   return (
     <section className="set-group" aria-label={title}>
-      <h4 className="set-group-title">{title}</h4>
+      <h4 className="set-group-title">{heading}</h4>
       <div className="set-group-body">{children}</div>
     </section>
   )
@@ -1589,7 +1629,7 @@ export function SettingsModal({
               <button
                 key={s.id}
                 className={`set-nav-item${section === s.id ? ' active' : ''}`}
-                aria-current={section === s.id}
+                aria-current={section === s.id ? 'page' : undefined}
                 onClick={() => setSection(s.id)}
               >
                 <SectionIcon id={s.id} />
@@ -1600,7 +1640,7 @@ export function SettingsModal({
               </button>
             ))}
           </nav>
-          <div className="set-pane">
+          <div className="set-pane" key={section}>
             {section === 'aiModel' && <AiModelPane t={t} />}
             {section === 'aiMedia' && (
               <AiMediaPane
@@ -1612,7 +1652,11 @@ export function SettingsModal({
             {section === 'general' && (
               <>
                 <h3 className="set-pane-title">{t('setSecGeneral')}</h3>
-                <SetGroup title={groupText(lang, 'appearance')}>
+                <SetGroup
+                  title={groupText(lang, 'appearance')}
+                  hint={groupHint(lang, 'appearance')}
+                  icon="appearance"
+                >
                   <div className="set-field">
                     <div className="set-field-text">
                       <label className="set-field-label">{t('language')}</label>
@@ -1692,7 +1736,7 @@ export function SettingsModal({
                 >
                   <AiInstructionsSettings lang={lang} />
                 </SetGroup>
-                <SetGroup title={groupText(lang, 'ai')}>
+                <SetGroup title={groupText(lang, 'ai')} hint={groupHint(lang, 'ai')} icon="ai">
                   <div className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
@@ -1724,7 +1768,11 @@ export function SettingsModal({
                     />
                   </div>
                 </SetGroup>
-                <SetGroup title={groupText(lang, 'files')}>
+                <SetGroup
+                  title={groupText(lang, 'files')}
+                  hint={groupHint(lang, 'files')}
+                  icon="files"
+                >
                   {defaultApp && defaultApp.state !== 'unsupported' && (
                     <div className="set-field">
                       <div className="set-field-text">
@@ -1777,6 +1825,7 @@ export function SettingsModal({
                 </SetGroup>
                 <SetGroup
                   title={groupText(lang, 'legacy')}
+                  icon="legacy"
                   hint={groupText(lang, 'legacyHint')}
                   fold
                 >
@@ -1950,12 +1999,17 @@ export function SettingsModal({
                 </SetGroup>
                 <SetGroup
                   title={groupText(lang, 'opening')}
+                  icon="opening"
                   hint={groupText(lang, 'openingHint')}
                   fold
                 >
                   <OpeningEffectsSettings lang={lang} />
                 </SetGroup>
-                <SetGroup title={groupText(lang, 'privacy')}>
+                <SetGroup
+                  title={groupText(lang, 'privacy')}
+                  hint={groupHint(lang, 'privacy')}
+                  icon="privacy"
+                >
                   <div className="set-field">
                     <div className="set-field-text">
                       <div className="set-field-stack">
@@ -1994,123 +2048,128 @@ export function SettingsModal({
             {section === 'about' && (
               <>
                 <h3 className="set-pane-title">{t('setSecAbout')}</h3>
-                <Field
-                  label={t('versionLabel')}
-                  value={appVersion || '—'}
-                  action={
+                <SetGroup
+                  title={lang === 'vi' ? 'Ứng dụng & cập nhật' : 'Application & updates'}
+                  icon="files"
+                >
+                  <Field
+                    label={t('versionLabel')}
+                    value={appVersion || '—'}
+                    action={
+                      <button
+                        className="set-btn"
+                        disabled={
+                          updateBusy ||
+                          updateSaving ||
+                          `${updateSource.kind}:${updateSource.value}` !== savedUpdateSource
+                        }
+                        onClick={() => {
+                          setUpdateBusy(true)
+                          setUpdateNotice('')
+                          void window.aiOffice
+                            .checkForUpdates()
+                            .catch(() => setUpdateNotice(t('updateSourceError')))
+                            .finally(() => setUpdateBusy(false))
+                        }}
+                      >
+                        {t(updateBusy ? 'updateChecking' : 'updateNow')}
+                      </button>
+                    }
+                  />
+                  <div className="set-field">
+                    <label className="set-field-label">{t('updateSourceLabel')}</label>
+                    <Dropdown
+                      className="set-dd"
+                      value={updateSource.kind}
+                      ariaLabel={t('updateSourceLabel')}
+                      options={[
+                        { value: 'github', label: 'GitHub' },
+                        { value: 'manifest', label: 'HTTPS JSON' },
+                      ]}
+                      onPick={(kind) => {
+                        setUpdateNotice('')
+                        setUpdateSource({
+                          kind: kind === 'manifest' ? 'manifest' : 'github',
+                          value: kind === 'manifest' ? '' : 'HThanh-how/genoffice',
+                        })
+                      }}
+                    />
+                  </div>
+                  <div className="set-field">
+                    <input
+                      className="set-input"
+                      aria-label={t('updateSourceLabel')}
+                      value={updateSource.value}
+                      placeholder={
+                        updateSource.kind === 'github'
+                          ? 'HThanh-how/genoffice'
+                          : 'https://example.com/updates.json'
+                      }
+                      disabled={updateBusy || updateSaving}
+                      onChange={(event) => {
+                        setUpdateNotice('')
+                        setUpdateSource({ ...updateSource, value: event.target.value })
+                      }}
+                    />
                     <button
                       className="set-btn"
-                      disabled={
-                        updateBusy ||
-                        updateSaving ||
-                        `${updateSource.kind}:${updateSource.value}` !== savedUpdateSource
-                      }
+                      disabled={updateSaving || updateBusy || !updateSource.value.trim()}
                       onClick={() => {
-                        setUpdateBusy(true)
+                        setUpdateSaving(true)
                         setUpdateNotice('')
                         void window.aiOffice
-                          .checkForUpdates()
+                          .setUpdateSource(updateSource)
+                          .then((source) => {
+                            setUpdateSource(source)
+                            setSavedUpdateSource(`${source.kind}:${source.value}`)
+                            setUpdateNotice(t('setAiSaved'))
+                          })
                           .catch(() => setUpdateNotice(t('updateSourceError')))
-                          .finally(() => setUpdateBusy(false))
+                          .finally(() => setUpdateSaving(false))
                       }}
                     >
-                      {t(updateBusy ? 'updateChecking' : 'updateNow')}
+                      {t('setAiSave')}
                     </button>
-                  }
-                />
-                <div className="set-field">
-                  <label className="set-field-label">{t('updateSourceLabel')}</label>
-                  <Dropdown
-                    className="set-dd"
-                    value={updateSource.kind}
-                    ariaLabel={t('updateSourceLabel')}
-                    options={[
-                      { value: 'github', label: 'GitHub' },
-                      { value: 'manifest', label: 'HTTPS JSON' },
-                    ]}
-                    onPick={(kind) => {
-                      setUpdateNotice('')
-                      setUpdateSource({
-                        kind: kind === 'manifest' ? 'manifest' : 'github',
-                        value: kind === 'manifest' ? '' : 'HThanh-how/genoffice',
-                      })
-                    }}
-                  />
-                </div>
-                <div className="set-field">
-                  <input
-                    className="set-input"
-                    aria-label={t('updateSourceLabel')}
-                    value={updateSource.value}
-                    placeholder={
-                      updateSource.kind === 'github'
-                        ? 'HThanh-how/genoffice'
-                        : 'https://example.com/updates.json'
-                    }
-                    disabled={updateBusy || updateSaving}
-                    onChange={(event) => {
-                      setUpdateNotice('')
-                      setUpdateSource({ ...updateSource, value: event.target.value })
-                    }}
-                  />
-                  <button
-                    className="set-btn"
-                    disabled={updateSaving || updateBusy || !updateSource.value.trim()}
-                    onClick={() => {
-                      setUpdateSaving(true)
-                      setUpdateNotice('')
-                      void window.aiOffice
-                        .setUpdateSource(updateSource)
-                        .then((source) => {
-                          setUpdateSource(source)
-                          setSavedUpdateSource(`${source.kind}:${source.value}`)
-                          setUpdateNotice(t('setAiSaved'))
-                        })
-                        .catch(() => setUpdateNotice(t('updateSourceError')))
-                        .finally(() => setUpdateSaving(false))
-                    }}
-                  >
-                    {t('setAiSave')}
-                  </button>
-                </div>
-                <p className="set-field-desc" role="status">
-                  {updateNotice || t('updateSourceHint')}
-                </p>
-                <div className="set-field">
-                  <div className="set-field-text">
-                    <label className="set-field-label">{t('updateChannel')}</label>
                   </div>
-                  <Dropdown
-                    className="set-dd"
-                    value={channel}
-                    ariaLabel={t('updateChannel')}
-                    options={CHANNEL_OPTIONS.map((opt) => ({
-                      value: opt.value,
-                      label: t(opt.labelKey),
-                    }))}
-                    onPick={(v) => {
-                      const next = v === 'beta' ? 'beta' : 'stable'
-                      setChannel(next)
-                      void window.aiOffice.setUpdateChannel(next)
-                    }}
+                  <p className="set-field-desc" role="status">
+                    {updateNotice || t('updateSourceHint')}
+                  </p>
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <label className="set-field-label">{t('updateChannel')}</label>
+                    </div>
+                    <Dropdown
+                      className="set-dd"
+                      value={channel}
+                      ariaLabel={t('updateChannel')}
+                      options={CHANNEL_OPTIONS.map((opt) => ({
+                        value: opt.value,
+                        label: t(opt.labelKey),
+                      }))}
+                      onPick={(v) => {
+                        const next = v === 'beta' ? 'beta' : 'stable'
+                        setChannel(next)
+                        void window.aiOffice.setUpdateChannel(next)
+                      }}
+                    />
+                  </div>
+                  <Field
+                    label={t('setGithub')}
+                    value={
+                      githubStars === null
+                        ? 'github.com/HThanh-how/genoffice'
+                        : `github.com/HThanh-how/genoffice · ★ ${formatStars(githubStars)}`
+                    }
+                    action={
+                      <button
+                        className="set-btn"
+                        onClick={() => void window.aiOffice.openGitHubRepo?.()}
+                      >
+                        {t('starOnGitHub')}
+                      </button>
+                    }
                   />
-                </div>
-                <Field
-                  label={t('setGithub')}
-                  value={
-                    githubStars === null
-                      ? 'github.com/HThanh-how/genoffice'
-                      : `github.com/HThanh-how/genoffice · ★ ${formatStars(githubStars)}`
-                  }
-                  action={
-                    <button
-                      className="set-btn"
-                      onClick={() => void window.aiOffice.openGitHubRepo?.()}
-                    >
-                      {t('starOnGitHub')}
-                    </button>
-                  }
-                />
+                </SetGroup>
               </>
             )}
           </div>

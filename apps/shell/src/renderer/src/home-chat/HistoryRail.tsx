@@ -77,7 +77,15 @@ export function HistoryRail({
     const id = renamingId
     setRenamingId(null)
     if (cancelRenameRef.current) return
+    cancelRenameRef.current = true
     if (id && draft.trim()) onRename(id, draft.trim())
+  }
+  const removeSession = (id: string, from: HTMLElement) => {
+    const all = rows()
+    const main = from.closest('li')?.querySelector<HTMLButtonElement>('button.hc-row-main')
+    const at = main ? all.indexOf(main) : -1
+    ;(all[at + 1] ?? all[at - 1])?.focus()
+    onDelete(id)
   }
 
   return (
@@ -128,6 +136,11 @@ export function HistoryRail({
         ref={listRef}
         onKeyDown={(event) => {
           if (event.target instanceof HTMLInputElement) return
+          if (event.key === 'Home' || event.key === 'End') {
+            event.preventDefault()
+            const all = rows()
+            ;(event.key === 'Home' ? all[0] : all.at(-1))?.focus()
+          }
           if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
             event.preventDefault()
             moveFocus(
@@ -160,7 +173,11 @@ export function HistoryRail({
                       onChange={(event) => setDraft(event.target.value)}
                       onBlur={commitRename}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                        if (
+                          event.key === 'Enter' &&
+                          !event.nativeEvent.isComposing &&
+                          event.nativeEvent.keyCode !== 229
+                        ) {
                           event.preventDefault()
                           commitRename()
                         } else if (event.key === 'Escape') {
@@ -184,8 +201,7 @@ export function HistoryRail({
                             startRename(session)
                           } else if (event.key === 'Delete') {
                             event.preventDefault()
-                            moveFocus(event.currentTarget, 1)
-                            onDelete(session.id)
+                            removeSession(session.id, event.currentTarget)
                           }
                         }}
                         title={session.title}
@@ -218,7 +234,7 @@ export function HistoryRail({
                           type="button"
                           aria-label={`${labels.remove}: ${session.title}`}
                           title={labels.remove}
-                          onClick={() => onDelete(session.id)}
+                          onClick={(event) => removeSession(session.id, event.currentTarget)}
                         >
                           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
                             <path

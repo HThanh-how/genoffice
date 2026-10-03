@@ -77,7 +77,6 @@ function useElapsed(startedAt: number, active: boolean): number {
 export function Launcher({
   state,
   open,
-  invitation,
   starting,
   labels,
   buttonRef,
@@ -92,7 +91,7 @@ export function Launcher({
   const unread = !open && state.unread
 
   const working = starting || labels.working
-  const doneText = state.preview || labels.done
+  const doneText = labels.done
   const text =
     phase === 'working'
       ? working
@@ -107,14 +106,14 @@ export function Launcher({
     : phase === 'working'
       ? working
       : phase === 'done'
-        ? `${labels.done}: ${doneText}`
+        ? labels.done
         : phase === 'error'
           ? labels.error
           : ''
 
   return (
     <div
-      className={`hc-dock is-${phase}${open ? ' panel-open' : ''}${invitation ? ' invitation-visible' : ''}`}
+      className={`hc-dock is-${phase}${open ? ' panel-open' : ''}`}
       onMouseEnter={() => {
         onInvitation(true)
         onHold(true)
@@ -127,7 +126,8 @@ export function Launcher({
         onInvitation(true)
         onHold(true)
       }}
-      onBlur={() => {
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget)) return
         onInvitation(false)
         onHold(false)
       }}
@@ -176,11 +176,6 @@ export function Launcher({
       <span className="home-chat-sr-only" role="status" aria-live="polite">
         {announce}
       </span>
-      {!open && phase === 'idle' && invitation && !unread && (
-        <span className="home-chat-idle-hint" aria-hidden="true">
-          {labels.invite}
-        </span>
-      )}
     </div>
   )
 }

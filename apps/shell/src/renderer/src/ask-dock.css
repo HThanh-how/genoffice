@@ -1,178 +1,94 @@
-/* The ask box of the Home page: translucent glass with a slowly turning light, tucking into an
-   orb when the page scrolls. Only transform, opacity and the registered angle are animated. */
-@property --ask-angle {
-  syntax: '<angle>';
-  inherits: false;
-  initial-value: 0deg;
-}
-
+/* The assistant entry stays calm while search results and model controls remain close. */
 .ask-dock {
-  --ask-w: min(600px, calc(100vw - 232px - 48px));
+  --ask-w: min(600px, calc(100vw - 280px));
   position: fixed;
   z-index: 79;
   bottom: 22px;
   left: calc(50vw + 116px);
   display: flex;
   flex-direction: column;
-  align-items: stretch;
   gap: 8px;
   width: var(--ask-w);
   transform: translateX(-50%);
   transition:
-    left 0.42s cubic-bezier(0.22, 0.9, 0.24, 1),
-    width 0.42s cubic-bezier(0.22, 0.9, 0.24, 1),
-    opacity 0.28s ease,
-    transform 0.28s ease;
+    opacity 180ms ease,
+    transform 180ms ease;
   font-family: var(--gs-font-sans, system-ui, sans-serif);
   pointer-events: none;
+}
+.ask-dock *,
+.ask-dock *::before,
+.ask-dock *::after {
+  box-sizing: border-box;
 }
 .ask-dock > * {
   pointer-events: auto;
 }
 .ask-dock.is-away {
   opacity: 0;
-  transform: translateX(-50%) translateY(14px);
+  transform: translateX(-50%) translateY(10px);
   pointer-events: none;
 }
 .ask-dock.is-away > * {
   pointer-events: none;
 }
-
-.ask-tip,
-.ask-chips {
-  align-self: center;
-}
-.ask-tip {
-  position: relative;
-  padding: 5px 12px;
-  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 62%, transparent);
-  backdrop-filter: blur(18px) saturate(1.4);
-  color: var(--text-secondary, var(--text));
-  font-size: 12px;
-  animation: ask-tip-in 0.5s ease both;
-}
-.ask-tip::after {
-  content: '';
-  position: absolute;
-  left: 50%;
-  bottom: -4px;
-  width: 8px;
-  height: 8px;
-  transform: translateX(-50%) rotate(45deg);
-  border-right: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
-  border-bottom: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
-  background: color-mix(in srgb, var(--surface) 70%, transparent);
-}
-@keyframes ask-tip-in {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-}
 .ask-chips {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
   gap: 6px;
+  padding: 0 4px;
 }
 .ask-chips button {
-  padding: 5px 11px;
-  border: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 62%, transparent);
-  backdrop-filter: blur(18px) saturate(1.4);
-  color: var(--text);
+  padding: 7px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text-secondary);
   font: inherit;
   font-size: 12px;
   cursor: pointer;
-  transition: border-color 0.15s ease;
 }
 .ask-chips button:hover {
-  border-color: var(--accent);
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--hover);
 }
-
-/* the glass bar */
 .ask-bar {
   position: relative;
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 48px;
-  padding: 0 6px 0 16px;
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--surface) 84%, transparent);
-  backdrop-filter: blur(26px) saturate(1.6);
-  box-shadow:
-    0 10px 30px color-mix(in srgb, #000 16%, transparent),
-    inset 0 0 0 1px color-mix(in srgb, var(--text) 9%, transparent);
-  transition: padding 0.3s ease;
+  min-height: 54px;
+  padding: 8px 9px 8px 18px;
+  border: 1px solid var(--border);
+  border-radius: 17px;
+  background: var(--surface);
+  box-shadow: 0 8px 30px color-mix(in srgb, var(--text) 12%, transparent);
+  transition:
+    border-color 160ms ease,
+    box-shadow 160ms ease;
 }
-
-/* the turning light: a soft blurred glow under the glass and a thin bright ring on it */
+.ask-dock.is-focused .ask-bar {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent),
+    0 8px 30px color-mix(in srgb, var(--text) 8%, transparent);
+}
 .ask-glow,
 .ask-ring {
-  position: absolute;
-  inset: 0;
-  border-radius: inherit;
-  pointer-events: none;
-  background: conic-gradient(
-    from var(--ask-angle),
-    #5ac8fa,
-    #7d7aff,
-    #c95df0,
-    #ff5c93,
-    #ffb340,
-    #5ac8fa
-  );
-  animation: ask-turn 7s linear infinite;
+  display: none;
 }
-.ask-glow {
-  z-index: -1;
-  inset: -3px;
-  filter: blur(16px);
-  opacity: 0.26;
-  transition: opacity 0.3s ease;
-}
-.ask-ring {
-  padding: 1.5px;
-  opacity: 0.7;
-  -webkit-mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask:
-    linear-gradient(#000 0 0) content-box exclude,
-    linear-gradient(#000 0 0);
-  transition: opacity 0.3s ease;
-}
-.ask-dock.is-focused .ask-glow {
-  opacity: 0.5;
-  animation-duration: 3.5s;
-}
-.ask-dock.is-focused .ask-ring {
-  opacity: 1;
-  animation-duration: 3.5s;
-}
-@keyframes ask-turn {
-  to {
-    --ask-angle: 360deg;
-  }
-}
-
 .ask-form {
   display: flex;
   flex: 1;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   min-width: 0;
-  transition: opacity 0.2s ease;
 }
 .ask-form input {
   flex: 1;
   min-width: 0;
-  height: 40px;
+  height: 38px;
+  padding: 0;
   border: 0;
   background: transparent;
   color: var(--text);
@@ -191,70 +107,48 @@
   height: 36px;
   padding: 0;
   border: 0;
-  border-radius: 50%;
+  border-radius: 11px;
   background: var(--accent);
-  color: #fff;
+  color: var(--color-btn-primary-text);
   cursor: pointer;
-  transition:
-    opacity 0.15s ease,
-    transform 0.15s ease;
 }
 .ask-send svg {
   width: 18px;
   height: 18px;
 }
-.ask-send:disabled {
-  opacity: 0;
-  transform: scale(0.8);
-  pointer-events: none;
+.ask-send:hover:not(:disabled) {
+  background: var(--accent-hover);
 }
-
+.ask-send:disabled {
+  color: var(--text-tertiary);
+  background: var(--hover);
+  cursor: default;
+}
 .ask-extra {
-  align-self: center;
-  opacity: 0.9;
+  padding: 0 6px;
+}
+.ask-working {
+  margin: 0;
+  padding: 0 6px;
+  color: var(--text-secondary);
+  font-size: 12px;
 }
 .ask-extra .agy-bar {
   padding-top: 0;
 }
-
-.ask-chips button:focus-visible,
-.ask-send:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
-  outline-offset: 2px;
-}
-
-@media (max-width: 760px) {
-  .ask-dock {
-    --ask-w: calc(100vw - 32px);
-    left: 50vw;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ask-glow,
-  .ask-ring,
-  .ask-tip {
-    animation: none;
-  }
-  .ask-dock {
-    transition: none;
-  }
-}
-
-/* live results above the bar */
 .ask-pop {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  max-height: min(52vh, 380px);
+  gap: 4px;
+  max-height: min(48vh, 360px);
   padding: 8px;
   overflow-y: auto;
-  border-radius: 18px;
-  background: color-mix(in srgb, var(--surface) 86%, transparent);
-  backdrop-filter: blur(26px) saturate(1.6);
-  box-shadow:
-    0 12px 34px color-mix(in srgb, #000 20%, transparent),
-    inset 0 0 0 1px color-mix(in srgb, var(--text) 9%, transparent);
-  animation: ask-tip-in 0.25s ease both;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 10px 32px color-mix(in srgb, var(--text) 12%, transparent);
 }
 .ask-act,
 .ask-hit-main {
@@ -262,7 +156,8 @@
   align-items: center;
   gap: 10px;
   min-width: 0;
-  padding: 8px 10px;
+  min-height: 42px;
+  padding: 10px;
   border: 0;
   border-radius: 10px;
   background: transparent;
@@ -275,24 +170,27 @@
 .ask-act {
   flex-direction: column;
   align-items: flex-start;
-  gap: 1px;
-  background: color-mix(in srgb, var(--accent) 10%, transparent);
+  gap: 4px;
+  background: color-mix(in srgb, var(--accent) 7%, var(--surface));
 }
 .ask-act span {
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
   font-size: 11.5px;
 }
 .ask-act:hover,
 .ask-hit-main:hover {
-  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  background: var(--hover);
 }
 .ask-hit {
   display: flex;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
 }
 .ask-hit-main {
   flex: 1;
+}
+.ask-hit-main img {
+  flex: none;
 }
 .ask-hit-name {
   flex: 1;
@@ -303,44 +201,46 @@
 }
 .ask-tag {
   flex: none;
-  max-width: 45%;
+  max-width: 42%;
   overflow: hidden;
-  padding: 1px 8px;
-  border-radius: 999px;
-  background: color-mix(in srgb, #2fb36d 16%, transparent);
-  color: #2fb36d;
-  font-size: 11px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--success) 10%, var(--surface));
+  color: var(--success);
+  font-size: 10.5px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 .ask-tag.is-warn {
-  background: color-mix(in srgb, #e0a020 18%, transparent);
-  color: #c58a10;
+  background: color-mix(in srgb, var(--text-secondary) 10%, var(--surface));
+  color: var(--text-secondary);
 }
 .ask-tag.is-bad {
-  background: color-mix(in srgb, var(--danger, #d93025) 16%, transparent);
-  color: var(--danger, #d93025);
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 .ask-mini {
   flex: none;
-  width: 28px;
-  height: 28px;
+  width: 32px;
+  height: 32px;
   border: 0;
   border-radius: 8px;
   background: transparent;
-  color: var(--text-secondary, var(--text));
-  font-size: 15px;
+  color: var(--text-secondary);
+  font-size: 16px;
   cursor: pointer;
 }
 .ask-mini:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--text) 10%, transparent);
+  background: var(--hover);
+  color: var(--text);
 }
 .ask-mini:disabled {
   opacity: 0.4;
+  cursor: default;
 }
 .ask-note {
   margin: 0;
-  padding: 6px 10px;
+  padding: 8px 10px 4px;
   color: var(--text-tertiary);
   font-size: 12px;
 }
@@ -348,27 +248,31 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 10px;
+  padding: 12px;
   border-radius: 10px;
-  background: var(--accent-soft);
+  background: var(--hover);
 }
 .ask-answer p {
   flex: 1;
   margin: 0;
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 1.6;
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .ask-answer button {
-  width: 22px;
-  height: 22px;
+  width: 26px;
+  height: 26px;
+  flex: none;
   border: 0;
-  border-radius: 6px;
+  border-radius: 7px;
   background: transparent;
-  color: var(--text-secondary, var(--text));
-  font-size: 17px;
-  line-height: 1;
+  color: var(--text-secondary);
+  font-size: 20px;
   cursor: pointer;
+}
+.ask-answer button:hover {
+  background: var(--pressed);
 }
 .ask-status {
   display: inline-flex;
@@ -376,17 +280,91 @@
   gap: 7px;
 }
 .ask-status i {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: #2fb36d;
+  background: var(--success);
 }
 .ask-status i.is-busy {
   background: var(--accent);
-  animation: ask-blink 1.2s ease-in-out infinite;
 }
-@keyframes ask-blink {
-  50% {
-    opacity: 0.35;
+.ask-dock button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* On Home this is a stable card in the content flow. */
+.ask-dock.is-inline {
+  position: relative;
+  inset: auto;
+  z-index: 2;
+  width: 100%;
+  transform: none;
+  pointer-events: auto;
+  padding: 16px;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  background: var(--surface);
+  box-shadow: 0 6px 24px color-mix(in srgb, var(--text) 4%, transparent);
+}
+.ask-dock.is-inline.is-away {
+  opacity: 0.5;
+  transform: none;
+  pointer-events: none;
+}
+.ask-dock.is-inline .ask-bar {
+  min-height: 60px;
+  border-radius: 13px;
+  background: var(--surface-subtle);
+  box-shadow: none;
+}
+.ask-dock.is-inline.is-focused .ask-bar {
+  background: var(--surface);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.ask-dock.is-inline .ask-form input {
+  font-size: 15px;
+}
+.ask-dock.is-inline .ask-extra {
+  padding: 0 4px;
+}
+.ask-dock.is-inline .ask-chips {
+  order: 2;
+}
+.ask-dock.is-inline .ask-pop {
+  order: 3;
+  box-shadow: none;
+  max-height: 280px;
+  border-radius: 12px;
+}
+.ask-dock.is-inline .ask-extra {
+  order: 1;
+}
+.ask-dock.is-inline .ask-working {
+  order: 2;
+}
+@media (max-width: 760px) {
+  .ask-dock {
+    --ask-w: calc(100vw - 32px);
+    left: 50vw;
+  }
+}
+@media (max-width: 520px) {
+  .ask-dock.is-inline {
+    padding: 12px;
+    border-radius: 18px;
+  }
+  .ask-dock.is-inline .ask-form input {
+    font-size: 14px;
+  }
+  .ask-tag {
+    max-width: 32%;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ask-dock,
+  .ask-bar {
+    transition: none;
   }
 }

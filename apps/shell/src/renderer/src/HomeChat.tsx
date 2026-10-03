@@ -7,6 +7,7 @@ import {
   type IpcStreamChunk,
 } from '@genoffice/agent-core'
 import { createGeminiRouter } from '@genoffice/ai-provider/browser'
+import { createPortal } from 'react-dom'
 import type { Params } from '@genoffice/i18n'
 import {
   useCallback,
@@ -68,8 +69,9 @@ import {
 } from './home-chat/utils'
 import type { I18n } from './locale'
 import './home-chat.css'
+import { fitChatPanel } from './home-chat/panel-size'
 
-type Props = { api: HomeApi; i18n: I18n }
+type Props = { api: HomeApi; i18n: I18n; dockLocation?: 'home' | 'floating' }
 
 type Conversation = { id: string | null; dead: boolean; requested: boolean }
 type Toast = { kind: 'deleted'; session: HomeChatSession } | { kind: 'cleared' }
@@ -77,8 +79,6 @@ type Toast = { kind: 'deleted'; session: HomeChatSession } | { kind: 'cleared' }
 const LS_LAST = 'genoffice.homeChat.last'
 const LS_SIZE = 'genoffice.homeChat.size'
 const LS_RAIL = 'genoffice.homeChat.rail'
-const MIN_W = 460
-const MIN_H = 380
 const NARROW = 640
 const SAVE_INTERVAL_MS = 1500
 
@@ -98,10 +98,8 @@ const writeStore = (key: string, value: string | null) => {
   }
 }
 
-const clampSize = (w: number, h: number) => ({
-  w: Math.round(Math.max(MIN_W, Math.min(w, window.innerWidth - 32))),
-  h: Math.round(Math.max(MIN_H, Math.min(h, window.innerHeight - 96))),
-})
+const clampSize = (w: number, h: number) =>
+  fitChatPanel(w, h, window.innerWidth, window.innerHeight)
 const readSize = () => {
   try {
     const raw = JSON.parse(readStore(LS_SIZE) ?? 'null') as { w?: unknown; h?: unknown } | null
@@ -153,9 +151,14 @@ const rafSchedule = (run: () => void) => {
 }
 
 /** Floating Home assistant with a persistent history rail. It has no layout footprint. */
-export function HomeChat({ api: homeApi, i18n }: Props) {
+export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   const api = homeApi
   const [open, setOpen] = useState(false)
+  const [dockTarget, setDockTarget] = useState<HTMLElement | null>(null)
+  useLayoutEffect(() => {
+    const target = dockLocation === 'home' ? document.getElementById('home-assistant-slot') : null
+    setDockTarget((previous) => (previous === target ? previous : target))
+  }, [dockLocation])
   useEffect(() => {
     announceChatPanel(open)
     return () => announceChatPanel(false)
@@ -273,6 +276,9 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
         settingsRef.current = settings
         setSettingsReady(true)
         setSettingsFailed(false)
+        setNotice((previous) =>
+          previous === tRef.current('homeChatSettingsFailed') ? '' : previous,
+        )
       }
       return true
     } catch {
@@ -789,6 +795,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
       await api.homeChatDelete(id)
     } catch {
       void refreshList()
+      setNotice(tRef.current('homeChatError'))
       return
     }
     if (full) showToast({ kind: 'deleted', session: full })
@@ -810,6 +817,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
       }
     } catch {
       void refreshList()
+      setNotice(tRef.current('homeChatError'))
     }
   }
 
@@ -821,6 +829,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
       if (id === convRef.current.id) setTitle(summary.title)
     } catch {
       void refreshList()
+      setNotice(tRef.current('homeChatError'))
     }
   }
 
@@ -832,6 +841,8 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
       await api.homeChatClear()
     } catch {
       void refreshList()
+      setNotice(tRef.current('homeChatError'))
+      return
     }
     showToast({ kind: 'cleared' })
   }
@@ -867,11 +878,15 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
     async (raw: string, base: ChatItem[] = itemsRef.current) => {
       const message = raw.trim()
       const loop = loopRef.current
-      if (!message || busyRef.current || !settingsReady || !loop) return
+      if (!message || busyRef.current) return
       touchedRef.current = true
       // "index tới đâu rồi?", "tạm dừng index"… are answered and done on this computer, no model call.
       const indexCommand = mentionsIndex(message) ? parseIndexCommand(message) : null
       if (indexCommand) {
+        const generation = ++runGenerationRef.current
+        busyRef.current = true
+        setBusy(true)
+        setNotice('')
         const userId = ++itemId.current
         const assistantId = ++itemId.current
         stickRef.current = true
@@ -882,15 +897,32 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           { id: assistantId, role: 'assistant', text: '', streaming: true },
         ])
         setInput('')
-        const answer = await runIndexCommand(api, indexCommand, langFor(message, langRef.current))
-        if (!mountedRef.current) return
-        setItems((current) =>
-          current.map((item) =>
-            item.id === assistantId ? { ...item, text: answer, streaming: false } : item,
-          ),
-        )
+        try {
+          const answer = await runIndexCommand(api, indexCommand, langFor(message, langRef.current))
+          if (!mountedRef.current || generation !== runGenerationRef.current) return
+          setItems((current) =>
+            current.map((item) =>
+              item.id === assistantId ? { ...item, text: answer, streaming: false } : item,
+            ),
+          )
+        } catch {
+          if (!mountedRef.current || generation !== runGenerationRef.current) return
+          setItems((current) =>
+            current.map((item) =>
+              item.id === assistantId
+                ? { ...item, error: tRef.current('homeChatError'), streaming: false }
+                : item,
+            ),
+          )
+        } finally {
+          if (mountedRef.current && generation === runGenerationRef.current) {
+            busyRef.current = false
+            setBusy(false)
+          }
+        }
         return
       }
+      if (!settingsReady || !loop) return
       if (needsSeedRef.current) {
         // New conversation, restored chat or a stopped run: rebuild the model context
         // from the visible text turns (no tool-call blocks are ever persisted).
@@ -940,6 +972,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           if (mentionsIndex(message)) {
             // Live index facts and the means to act on the index (the model cannot call tools here).
             const facts = await indexFacts(api, langFor(message, langRef.current)).catch(() => '')
+            if (generation !== runGenerationRef.current || !mountedRef.current) return
             if (facts)
               context.block = `${context.block}\n\n<<<INDEX\n${facts}\nINDEX>>>\n${INDEX_DIRECTIVE_PROMPT}`
           }
@@ -948,6 +981,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           const named = (await findFilesByName(api, message, 4).catch(() => [])).filter(
             (file) => !context.used.some((hit) => hit.path === file.path),
           )
+          if (generation !== runGenerationRef.current || !mountedRef.current) return
           if (named.length > 0)
             context.block = `${context.block}\n\n<<<FILES_BY_NAME\nThese files match the question by name only. Their content was not searched or read: offer them as likely candidates and say so.\n${named.map((file, i) => `[${i + 1}] file: ${file.name} | path: ${file.path}`).join('\n')}\nFILES_BY_NAME>>>`
           agyContextRef.current = context
@@ -963,6 +997,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           if (sources.length > 0) updateLastAssistant((last) => ({ ...last, sources }))
         }
         await loop.run(message)
+        if (generation !== runGenerationRef.current || !mountedRef.current) return
         if (mentionsIndex(message) && settingsRef.current?.provider === 'agy') {
           batcherRef.current?.flush()
           const reply = itemsRef.current.at(-1)
@@ -970,11 +1005,13 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
             const { text, commands } = extractIndexDirectives(reply.text)
             if (commands.length > 0) {
               const outcomes: string[] = []
-              for (const command of commands)
+              for (const command of commands) {
+                if (generation !== runGenerationRef.current || !mountedRef.current) return
                 outcomes.push(
                   await runIndexCommand(api, command, langFor(message, langRef.current)),
                 )
-              if (mountedRef.current)
+              }
+              if (mountedRef.current && generation === runGenerationRef.current)
                 updateLastAssistant((last) => ({
                   ...last,
                   text: [text, ...outcomes].filter(Boolean).join('\n\n'),
@@ -1002,6 +1039,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
     needsSeedRef.current = true
     setItems(stopStreamingItems)
     setBusy(false)
+    busyRef.current = false
   }
 
   const retry = useCallback(() => {
@@ -1022,7 +1060,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           return
         }
         const result = await api.documentMemoryOpen(source.documentId)
-        if (!result.ok) setNotice(result.error || tRef.current('homeChatOpenFailed'))
+        if (!result.ok) setNotice(tRef.current('homeChatOpenFailed'))
       } catch {
         setNotice(tRef.current('homeChatOpenFailed'))
       }
@@ -1104,9 +1142,23 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
     prependHeightRef.current = scrollRef.current?.scrollHeight ?? null
     setVisibleCount((count) => count + WINDOW_PAGE)
   }
+  const dock = (
+    <AskDock lang={i18n.lang} api={api} away={open} inline={!!dockTarget}>
+      <AgyChatBar lang={i18n.lang} part="bar" />
+    </AskDock>
+  )
 
   return (
     <div ref={rootRef} className="home-chat-root">
+      <span className="home-chat-sr-only" role="status" aria-live="polite">
+        {!busy && lastItem?.role === 'assistant'
+          ? lastItem.error
+            ? t('homeChatErrorChip')
+            : lastItem.text
+              ? t('homeChatDone')
+              : ''
+          : ''}
+      </span>
       {open && (
         <section
           ref={panelRef}
@@ -1121,6 +1173,11 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
             role="separator"
             tabIndex={0}
             aria-label={t('homeChatResize')}
+            aria-orientation="vertical"
+            aria-valuenow={size.w}
+            aria-valuemin={1}
+            aria-valuemax={Math.max(1, window.innerWidth - 32)}
+            aria-valuetext={`${size.w} × ${size.h}`}
             onPointerDown={onResizeStart}
             onKeyDown={onResizeKey}
           />
@@ -1282,7 +1339,26 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
                     )}
                   </p>
                 ) : (
-                  <p className="hc-notice">{notice}</p>
+                  <div className="hc-notice">
+                    <span>{notice}</span>
+                    {settingsFailed && (
+                      <button
+                        type="button"
+                        className="hc-text-button strong"
+                        onClick={() => void loadSettings()}
+                      >
+                        {t('homeChatRetry')}
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="hc-icon-button"
+                      aria-label={t('homeChatClose')}
+                      onClick={() => setNotice('')}
+                    >
+                      ×
+                    </button>
+                  </div>
                 )}
               </div>
             )}
@@ -1302,9 +1378,7 @@ export function HomeChat({ api: homeApi, i18n }: Props) {
           </div>
         </section>
       )}
-      <AskDock lang={i18n.lang} api={api} away={open}>
-        <AgyChatBar lang={i18n.lang} part="bar" />
-      </AskDock>
+      {dockTarget ? createPortal(dock, dockTarget) : dock}
       <Launcher
         state={launcherState}
         open={open}

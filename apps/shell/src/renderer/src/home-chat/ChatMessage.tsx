@@ -65,7 +65,7 @@ export const ChatMessage = memo(function ChatMessage({
           <i />
           <i />
           <i />
-          {item.status && <span className="hc-status">{item.status}</span>}
+          {item.status && <span className="hc-typing-status">{item.status}</span>}
         </span>
       ) : (
         item.text && (
@@ -136,7 +136,19 @@ function SourceChip({
       title={[source.name, source.location, hint].filter(Boolean).join(' · ')}
     >
       <img className="hc-source-icon" src={iconFor(source.name)} alt="" aria-hidden="true" />
-      <span className="hc-source-name">{source.name}</span>
+      <span className="hc-source-details">
+        <span className="hc-source-name">{source.name}</span>
+        {source.location && <span className="hc-source-location">{source.location}</span>}
+      </span>
+      <svg className="hc-source-arrow" viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        <path
+          d="M6 14 14 6M6 6h8v8"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
       {state && (
         <span className="hc-source-flag">
           {state === 'missing' ? labels.sourceMissing : labels.sourceStale}

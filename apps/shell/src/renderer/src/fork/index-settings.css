@@ -1,0 +1,141 @@
+/* Index settings use the same quiet card hierarchy as the To do workspace. */
+.ixs {
+  gap: 14px;
+}
+.ixs-head h2 {
+  margin: 0 0 5px;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.ixs-head p,
+.ixs-heading p,
+.ixs-danger p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.ixs-head {
+  margin-bottom: 4px;
+}
+.ixs-heading {
+  margin-top: 8px;
+}
+.ixs-heading h3,
+.ixs-danger h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+.ixs .idx-details {
+  border-radius: 12px;
+}
+.ixs .idx-details > summary {
+  padding: 16px 18px;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.ixs .idx-details > summary::before {
+  order: 3;
+  margin-left: auto;
+  flex: none;
+}
+.ixs .idx-details > summary span {
+  white-space: normal;
+  overflow: visible;
+}
+.ixs .idx-details > summary strong {
+  color: var(--text);
+  font-size: 13.5px;
+  font-weight: 600;
+}
+.ixs .idx-details > summary > strong {
+  flex: 1;
+}
+.ixs .idx-details > summary > span:not(.ixs-section-text) {
+  order: 4;
+  flex-basis: 100%;
+  line-height: 1.5;
+}
+.ixs .idx-details > summary .ixs-section-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+.ixs .idx-details > summary .ixs-section-text > span {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+.ixs-icon {
+  flex: none;
+  padding: 7px;
+  box-sizing: content-box;
+  border-radius: 9px;
+  background: var(--accent-soft, var(--hover));
+  color: var(--accent);
+}
+.ixs .idx-details > div {
+  padding: 14px 18px 18px;
+  border-top-color: var(--border-subtle, var(--border));
+}
+.ixs .set-indexmode {
+  margin-top: 0;
+}
+.ixs .set-field {
+  gap: 14px;
+  flex-wrap: wrap;
+}
+.ixs .set-field-text {
+  flex: 1 1 240px;
+}
+.ixs .idx-input {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.ixs-danger {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  margin-top: 8px;
+  padding: 18px;
+  border: 1px solid color-mix(in srgb, var(--danger) 30%, var(--border));
+  border-radius: 12px;
+  background: var(--surface);
+}
+.ixs-danger > div {
+  flex: 1 1 300px;
+}
+.ixs-danger > p {
+  flex-basis: 100%;
+}
+.ixs-clear {
+  flex: none;
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+.ixs .ixs-clear:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+.ixs-error {
+  color: var(--danger) !important;
+}
+.ixs summary:focus-visible,
+.ixs button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+@media (max-width: 600px) {
+  .ixs .idx-details > summary,
+  .ixs .idx-details > div,
+  .ixs-danger {
+    padding: 14px;
+  }
+  .ixs .set-indexmode-cards {
+    grid-template-columns: 1fr;
+  }
+}
