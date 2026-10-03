@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type MouseEvent,
+  type ReactNode,
+} from 'react'
+import { createPortal } from 'react-dom'
 import type { HomeApi } from '../../../shared/home-api'
 import type { IndexFileDetail, IndexingNow } from '../../../shared/fork/document-index-api'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
@@ -85,7 +94,7 @@ const EN = {
   readFirst: 'Read this one first',
   reread: 'Read again',
   readNow: 'Read with Antigravity now',
-  readPicked: 'Index {n} selected files now',
+  readPicked: 'Read {n} selected files now',
   clearPicked: 'Clear selection',
   copyLog: 'Copy log',
   copied: 'Copied.',
@@ -102,6 +111,8 @@ const EN = {
   selectFile: 'Select (to read several together)',
   selectGroup: 'Select all in this list',
   couldNotOpen: 'Could not open this file.',
+  moreActions: 'More actions',
+  actionFailed: 'Could not complete this action. Try again.',
   loading: 'Loading…',
   readDone: 'Read. It can be searched now.',
   readEmpty: 'Read, but there is no text in it: it is a scan. Use “Read with Antigravity”.',
@@ -128,7 +139,7 @@ const VI: FileWords = {
   readFirst: 'Đọc tệp này trước',
   reread: 'Đọc lại',
   readNow: 'Đọc bằng Antigravity ngay',
-  readPicked: 'Index {n} tệp đã chọn ngay',
+  readPicked: 'Đọc ngay {n} tệp đã chọn',
   clearPicked: 'Bỏ chọn',
   copyLog: 'Sao chép nhật ký',
   copied: 'Đã sao chép.',
@@ -145,6 +156,8 @@ const VI: FileWords = {
   selectFile: 'Chọn (để đọc nhiều tệp cùng lúc)',
   selectGroup: 'Chọn tất cả trong danh sách này',
   couldNotOpen: 'Không mở được tệp này.',
+  moreActions: 'Thao tác khác',
+  actionFailed: 'Không thực hiện được thao tác này. Hãy thử lại.',
   loading: 'Đang tải…',
   readDone: 'Đã đọc xong, tìm được rồi.',
   readEmpty: 'Đã đọc nhưng không có chữ: đây là bản quét. Dùng “Đọc bằng Antigravity”.',
@@ -278,6 +291,7 @@ export function useFileActions(
   const [open, setOpen] = useState<number | null>(null)
   const [details, setDetails] = useState<Record<number, IndexFileDetail | null>>({})
   const [busy, setBusy] = useState<Set<number>>(new Set())
+  const busyIds = useRef(new Set<number>())
   const [note, setNote] = useState('')
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), [])
@@ -295,6 +309,7 @@ export function useFileActions(
       setDetails((current) => ({ ...current, [id]: got }))
       return got
     } catch {
+      setDetails((current) => ({ ...current, [id]: null }))
       return null
     }
   }
@@ -304,10 +319,15 @@ export function useFileActions(
     if (next !== null) void detailOf(next)
   }
   const withBusy = async (id: number, work: () => Promise<void>) => {
+    if (busyIds.current.has(id)) return
+    busyIds.current.add(id)
     setBusy((current) => new Set(current).add(id))
     try {
       await work()
+    } catch {
+      say(w.actionFailed)
     } finally {
+      busyIds.current.delete(id)
       setBusy((current) => {
         const next = new Set(current)
         next.delete(id)
@@ -370,6 +390,13 @@ export function useFileActions(
     const result = await api.documentMemoryOpen(item.id).catch(() => null)
     if (!result?.ok) say(w.couldNotOpen)
   }
+  const reveal = async (item: FileItem) => {
+    try {
+      await api.revealDocumentIndexFile(item.id)
+    } catch {
+      say(w.actionFailed)
+    }
+  }
   const copyPath = async (item: FileItem) => {
     try {
       await navigator.clipboard.writeText(item.path)
@@ -429,6 +456,7 @@ export function useFileActions(
     copyName,
     exclude,
     openFile,
+    reveal,
     retry,
     stop,
     later,
@@ -443,6 +471,7 @@ interface MenuEntry {
   icon: ReactNode
   run: () => void
   disabled?: boolean
+  separatorBefore?: boolean
 }
 
 /** The right-click menu of a file row: the same actions as the icons, plus copy path. */
@@ -450,10 +479,16 @@ function FileMenu({
   at,
   entries,
   onClose,
+  id,
+  label,
+  trigger,
 }: {
   at: { x: number; y: number }
   entries: MenuEntry[]
   onClose: () => void
+  id: string
+  label: string
+  trigger: HTMLElement | null
 }) {
   const ref = useRef<HTMLUListElement>(null)
   const [pos, setPos] = useState(at)
@@ -465,37 +500,72 @@ function FileMenu({
       x: Math.max(4, Math.min(at.x, window.innerWidth - box.width - 4)),
       y: Math.max(4, Math.min(at.y, window.innerHeight - box.height - 4)),
     })
-    ref.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus()
+    ref.current
+      ?.querySelector<HTMLButtonElement>('button:not(:disabled)')
+      ?.focus({ preventScroll: true })
   }, [at])
   useEffect(() => {
     const away = (event: Event) => {
-      if (!ref.current?.contains(event.target as Node)) onClose()
+      if (
+        !ref.current?.contains(event.target as Node) &&
+        !(trigger?.classList.contains('ixp-more') && trigger.contains(event.target as Node))
+      )
+        onClose()
     }
-    const key = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+    const scrollAway = (event: Event) => {
+      if (!ref.current?.contains(event.target as Node)) onClose()
     }
     document.addEventListener('mousedown', away)
     document.addEventListener('contextmenu', away)
-    document.addEventListener('keydown', key)
     window.addEventListener('blur', onClose)
     window.addEventListener('resize', onClose)
-    document.addEventListener('scroll', onClose, true)
+    document.addEventListener('scroll', scrollAway, true)
     return () => {
       document.removeEventListener('mousedown', away)
       document.removeEventListener('contextmenu', away)
-      document.removeEventListener('keydown', key)
       window.removeEventListener('blur', onClose)
       window.removeEventListener('resize', onClose)
-      document.removeEventListener('scroll', onClose, true)
+      document.removeEventListener('scroll', scrollAway, true)
     }
-  }, [onClose])
-  return (
-    <ul ref={ref} className="ixp-menu" role="menu" style={{ left: pos.x, top: pos.y }}>
+  }, [onClose, trigger])
+  return createPortal(
+    <ul
+      ref={ref}
+      id={id}
+      className="ixp-menu"
+      role="menu"
+      aria-label={label}
+      style={{ left: pos.x, top: pos.y }}
+      onKeyDown={(event) => {
+        if (event.key === 'Escape' || event.key === 'Tab') {
+          event.preventDefault()
+          event.stopPropagation()
+          onClose()
+          return
+        }
+        if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+        event.preventDefault()
+        const buttons = Array.from(
+          ref.current?.querySelectorAll<HTMLButtonElement>('button:not(:disabled)') ?? [],
+        )
+        const current = buttons.indexOf(document.activeElement as HTMLButtonElement)
+        const next =
+          event.key === 'Home'
+            ? 0
+            : event.key === 'End'
+              ? buttons.length - 1
+              : (current + (event.key === 'ArrowDown' ? 1 : -1) + buttons.length) % buttons.length
+        buttons[next]?.focus({ preventScroll: true })
+        buttons[next]?.scrollIntoView({ block: 'nearest' })
+      }}
+    >
       {entries.map((entry) => (
         <li key={entry.label} role="none">
+          {entry.separatorBefore && <div className="ixp-menu-separator" role="separator" />}
           <button
             type="button"
             role="menuitem"
+            tabIndex={-1}
             disabled={entry.disabled}
             onClick={() => {
               onClose()
@@ -507,7 +577,8 @@ function FileMenu({
           </button>
         </li>
       ))}
-    </ul>
+    </ul>,
+    document.body,
   )
 }
 
@@ -515,7 +586,6 @@ function FileMenu({
 export function FileRow({
   item,
   actions,
-  api,
   status,
   live = null,
   finished = false,
@@ -528,7 +598,7 @@ export function FileRow({
 }: {
   item: FileItem
   actions: FileActions
-  /** this file is part of the pick (Ctrl/Shift+click) */
+  /** this file is part of the selection */
   picked?: boolean
   pickedCount?: number
   /** a click with Ctrl/Cmd or Shift; a plain click clears the pick */
@@ -567,13 +637,29 @@ export function FileRow({
             ? w.pausedNow
             : ''
   const working = live?.kind === 'reading' || live?.kind === 'embedding'
-  // the group already says why a scan is listed, so the line under it says where the file is
-  const sub = item.reason === 'no-text' ? folderOf(item.path) : item.error
+  // Issue groups explain the cause; rows identify where each file is stored.
+  const sub = item.reason ? folderOf(item.path) : item.error
   const stoppable = working || live?.kind === 'queued' || item.reason === 'waiting'
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
+  const menuId = useId()
+  const mainRef = useRef<HTMLButtonElement>(null)
+  const menuTrigger = useRef<HTMLElement | null>(null)
+  const closeMenu = useCallback(() => {
+    setMenu(null)
+    if (menuTrigger.current?.isConnected) menuTrigger.current.focus({ preventScroll: true })
+  }, [])
+  const showMenu = (trigger: HTMLElement, at?: { x: number; y: number }) => {
+    menuTrigger.current = trigger
+    const box = trigger.getBoundingClientRect()
+    setMenu(at ?? { x: box.left, y: box.bottom + 4 })
+  }
   const onContextMenu = (event: MouseEvent) => {
     event.preventDefault()
-    setMenu({ x: event.clientX, y: event.clientY })
+    const trigger = (event.target as Element).closest<HTMLElement>('button, input')
+    showMenu(trigger ?? mainRef.current ?? (event.currentTarget as HTMLElement), {
+      x: event.clientX,
+      y: event.clientY,
+    })
   }
   const bulk = picked && pickedCount > 1
   const entries: MenuEntry[] = bulk
@@ -581,17 +667,34 @@ export function FileRow({
         {
           label: fill(w.readPicked, { n: pickedCount }),
           icon: <IRetry />,
+          disabled: busy || !onReadPicked,
           run: () => onReadPicked?.(),
         },
-        { label: w.clearPicked, icon: <IStop />, run: () => onClearPicked?.() },
+        {
+          label: w.clearPicked,
+          icon: <IStop />,
+          disabled: !onClearPicked,
+          run: () => onClearPicked?.(),
+        },
       ]
     : [
         { label: w.openFile, icon: <IOpen />, run: () => void actions.openFile(item) },
         {
           label: w.reveal,
           icon: <IFolder />,
-          run: () => void api.revealDocumentIndexFile(item.id),
+          run: () => void actions.reveal(item),
         },
+        ...(item.reason === 'no-text'
+          ? [
+              {
+                label: w.readNow,
+                icon: <ISpark />,
+                disabled: busy,
+                separatorBefore: true,
+                run: () => void actions.readNow(item),
+              },
+            ]
+          : []),
         ...(retryable || item.status === 'ready'
           ? [
               {
@@ -602,6 +705,7 @@ export function FileRow({
                       ? w.reread
                       : w.retry,
                 icon: <IRetry />,
+                separatorBefore: item.reason !== 'no-text',
                 disabled: busy,
                 run: () => void actions.retry(item),
               },
@@ -611,6 +715,7 @@ export function FileRow({
           ? [
               {
                 label: w.later,
+                separatorBefore: !retryable && item.status !== 'ready' && item.reason !== 'no-text',
                 icon: <ILater />,
                 disabled: busy,
                 run: () => void actions.later(item),
@@ -623,12 +728,22 @@ export function FileRow({
               },
             ]
           : []),
-        { label: w.copyPath, icon: <ICopy />, run: () => void actions.copyPath(item) },
+        {
+          label: w.copyPath,
+          icon: <ICopy />,
+          separatorBefore: true,
+          run: () => void actions.copyPath(item),
+        },
         { label: w.copyName, icon: <ICopy />, run: () => void actions.copyName(item) },
         { label: w.copyLog, icon: <ICopy />, run: () => void actions.copyLog(item) },
         ...(onPick
           ? [
-              { label: w.selectFile, icon: <IRetry />, run: () => onPick(item, 'toggle') },
+              {
+                label: w.selectFile,
+                icon: <IRetry />,
+                separatorBefore: true,
+                run: () => onPick(item, 'toggle'),
+              },
               ...(onSelectGroup
                 ? [{ label: w.selectGroup, icon: <IRetry />, run: () => onSelectGroup() }]
                 : []),
@@ -636,6 +751,7 @@ export function FileRow({
           : []),
         {
           label: w.excludeFile,
+          separatorBefore: true,
           icon: <IStop />,
           disabled: busy,
           run: () => void actions.exclude(item),
@@ -648,10 +764,29 @@ export function FileRow({
   return (
     <li
       className={`${isOpen ? 'is-selected' : ''}${finished ? ' is-done' : ''}${picked ? ' is-picked' : ''}`}
-      aria-selected={onPick ? picked : undefined}
     >
-      <div className="ixp-row" onContextMenu={onContextMenu}>
+      <div
+        className="ixp-row"
+        onContextMenu={onContextMenu}
+        onKeyDown={(event) => {
+          if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+            event.preventDefault()
+            event.stopPropagation()
+            showMenu(event.target as HTMLElement)
+          }
+        }}
+      >
+        {onPick && (
+          <input
+            className="ixp-pick"
+            type="checkbox"
+            checked={picked}
+            aria-label={`${w.selectFile}: ${item.name}`}
+            onChange={() => onPick(item, 'toggle')}
+          />
+        )}
         <button
+          ref={mainRef}
           type="button"
           className="ixp-main"
           aria-expanded={isOpen}
@@ -703,17 +838,11 @@ export function FileRow({
           <IconButton label={w.openFile} onClick={() => void actions.openFile(item)}>
             <IOpen />
           </IconButton>
-          {stoppable && (
-            <IconButton label={w.later} disabled={busy} onClick={() => void actions.later(item)}>
-              <ILater />
-            </IconButton>
-          )}
-          {stoppable && (
+          {working ? (
             <IconButton label={w.stop} disabled={busy} onClick={() => void actions.stop(item)}>
               <IStop />
             </IconButton>
-          )}
-          {item.reason === 'no-text' && (
+          ) : item.reason === 'no-text' ? (
             <IconButton
               label={w.readNow}
               disabled={busy}
@@ -721,8 +850,7 @@ export function FileRow({
             >
               <ISpark />
             </IconButton>
-          )}
-          {(retryable || item.status === 'ready') && (
+          ) : retryable || item.status === 'ready' ? (
             <IconButton
               label={
                 item.reason === 'waiting'
@@ -736,16 +864,38 @@ export function FileRow({
             >
               <IRetry />
             </IconButton>
-          )}
-          <IconButton label={w.copyLog} onClick={() => void actions.copyLog(item)}>
-            <ICopy />
-          </IconButton>
-          <IconButton label={w.reveal} onClick={() => void api.revealDocumentIndexFile(item.id)}>
+          ) : null}
+          <IconButton label={w.reveal} onClick={() => void actions.reveal(item)}>
             <IFolder />
           </IconButton>
+          <button
+            type="button"
+            className="ixp-icon ixp-more"
+            title={w.moreActions}
+            aria-label={`${w.moreActions}: ${item.name}`}
+            aria-haspopup="menu"
+            aria-expanded={menu !== null}
+            aria-controls={menu ? menuId : undefined}
+            onClick={(event) => (menu ? closeMenu() : showMenu(event.currentTarget))}
+          >
+            <Svg>
+              <circle cx="3" cy="8" r="1" />
+              <circle cx="8" cy="8" r="1" />
+              <circle cx="13" cy="8" r="1" />
+            </Svg>
+          </button>
         </span>
       </div>
-      {menu && <FileMenu at={menu} entries={entries} onClose={() => setMenu(null)} />}
+      {menu && (
+        <FileMenu
+          at={menu}
+          entries={entries}
+          onClose={closeMenu}
+          id={menuId}
+          label={item.name}
+          trigger={menuTrigger.current}
+        />
+      )}
       {isOpen &&
         (detail === undefined ? (
           <p className="ixp-loading">{w.loading}</p>

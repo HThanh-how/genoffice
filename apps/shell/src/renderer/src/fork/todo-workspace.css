@@ -1,0 +1,398 @@
+/* To do: a single workspace, with background operations separate from file actions. */
+.idx-page {
+  font-family: var(--gs-font-sans, 'Segoe UI', sans-serif);
+}
+.todo {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.todo-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.todo-head h2 {
+  margin: 0 0 5px;
+  font-size: 19px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.todo-head p {
+  margin: 0;
+  max-width: 560px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+.todo-ready {
+  flex: none;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--hover);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+.todo-operations {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.todo-operation {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+.todo-operation-mark {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 18px;
+}
+.todo-card-text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+}
+.todo-card-text strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.todo-card-text > span {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+.todo-card-text .ixp-bar {
+  width: min(320px, 100%);
+  margin-top: 4px;
+}
+.todo-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 10px 14px;
+  background: var(--hover);
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.todo-workspace {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  min-width: 0;
+}
+.todo-controls {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+.todo-filters {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.todo-filters button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.todo-filters button:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.todo-filters button.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  font-weight: 600;
+}
+.todo-filter-count {
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--text) 7%, transparent);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.todo-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg, var(--surface));
+}
+.todo-search:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+.todo-search > svg {
+  flex: none;
+  color: var(--text-tertiary);
+}
+.todo-search input {
+  flex: 1;
+  width: 0;
+  min-width: 40px;
+  padding: 10px 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.todo-search input::placeholder {
+  color: var(--text-tertiary);
+}
+.todo-search select {
+  max-width: 160px;
+  padding: 6px 8px;
+  border: 0;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.todo-workspace > .ixp {
+  padding: 14px 16px;
+  gap: 8px;
+}
+.todo-workspace .ixp-title {
+  margin: 12px 0 3px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+}
+.todo-workspace .ixp-group {
+  border-radius: 8px;
+}
+.todo-workspace .ixp-head {
+  padding: 12px;
+}
+.todo-workspace .ixp-head-text strong {
+  font-size: 13px;
+}
+.todo-workspace .ixp-head-text span {
+  white-space: normal;
+  line-height: 1.5;
+}
+.todo-workspace .ixp-row {
+  min-height: 56px;
+  padding: 8px 12px;
+}
+.todo-selection-hint {
+  margin: 0;
+  padding: 10px 16px;
+  border-top: 1px solid var(--border);
+  color: var(--text-tertiary);
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.todo-empty {
+  display: flex;
+  align-items: center;
+  flex-direction: column;
+  padding: 42px 20px;
+  text-align: center;
+  gap: 8px;
+}
+.todo-empty-mark {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  margin-bottom: 4px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 20px;
+}
+.todo-empty strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.todo-empty p {
+  max-width: 440px;
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.ixp-viewbar {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  font-size: 12px;
+}
+.ixp-bulk,
+.ixp-view-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ixp-view-actions {
+  margin-left: auto;
+}
+.ixp-select {
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ixp-select:hover {
+  background: var(--hover);
+  border-radius: 5px;
+  color: var(--text);
+}
+.ixp-matches {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.ixp-search-coverage {
+  margin: 0;
+  padding: 8px 12px;
+  background: var(--hover);
+  color: var(--text-secondary);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.ixp-pickbar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 2px 8px color-mix(in srgb, var(--text) 5%, transparent);
+}
+.ixp-pick {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  margin: 0 2px 0 0;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.ixp-actions {
+  opacity: 1;
+  gap: 2px;
+}
+.ixp-menu {
+  max-height: calc(100vh - 16px);
+  overflow-y: auto;
+}
+.ixp-menu-separator {
+  height: 1px;
+  margin: 5px 6px;
+  background: var(--border);
+}
+.idx-page :is(button, select, input[type='checkbox']):focus-visible,
+.ixp-menu button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.idx-tabs {
+  overflow-x: auto;
+  flex: none;
+}
+.idx-tabs button {
+  min-height: 40px;
+  white-space: nowrap;
+}
+.idx-badge {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+@media (max-width: 600px) {
+  .idx-page {
+    padding: 16px 14px 70px;
+  }
+  .idx-actions {
+    width: 100%;
+  }
+  .idx-body {
+    min-width: 0;
+  }
+  .todo {
+    gap: 14px;
+  }
+  .todo-controls {
+    padding: 12px;
+  }
+  .todo-workspace > .ixp {
+    padding: 12px;
+  }
+  .todo-operation {
+    flex-wrap: wrap;
+    padding: 12px;
+  }
+  .todo-operation .idx-btn {
+    margin-left: 42px;
+  }
+  .todo-filters {
+    gap: 2px;
+  }
+  .todo-filters button {
+    padding: 7px;
+    font-size: 12px;
+  }
+  .todo-search select {
+    max-width: 112px;
+  }
+  .ixp-row {
+    gap: 6px;
+  }
+  .ixp-actions .ixp-icon {
+    width: 26px;
+  }
+  .ixp-detail {
+    margin-left: 14px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .idx-page *,
+  .ixp-menu * {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

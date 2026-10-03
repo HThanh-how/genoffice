@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 
 import type { HomeApi } from '../../../shared/home-api'
 import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
 import type { IndexIssue, IndexIssueReason } from '../../../main/document-memory/issues'
-import { isInformationalReason, isRetryableReason } from '../../../main/document-memory/issues'
+import { isRetryableReason } from '../../../main/document-memory/issues'
 import type { Lang } from '@genoffice/i18n'
 import { useI18n } from '../locale'
 import { activityCopy, fill } from '../indexing-activity-copy'
@@ -17,6 +17,7 @@ import {
 } from './IndexFiles'
 import { NOTHING_PICKED, pick, type PickState } from './index-selection'
 import { matchesQuery } from './todo-model'
+import { issueBucket, type IssueBucket } from './index-issue-view'
 
 /** What the cards above the lists can ask the lists to do. */
 export interface ProblemCommands {
@@ -27,7 +28,7 @@ export interface ProblemCommands {
 
 /** Something the person can act on: failures, and scanned files still waiting to be read. */
 export function needsAction(reason: IndexIssueReason): boolean {
-  return reason === 'no-text' || !isInformationalReason(reason)
+  return issueBucket(reason) === 'attention'
 }
 
 const BATCH = 10
@@ -50,15 +51,26 @@ const EN = {
 
   empty: 'No problems. Every readable file is indexed.',
   noFolder: 'Scan a folder first.',
-  attention: 'To do',
+  attention: 'Needs attention',
+  background: 'Running in the background',
+  expandAll: 'Expand all',
+  collapseAll: 'Collapse all',
+  selectVisible: 'Select shown files',
+  deselectVisible: 'Deselect shown files',
+  working: 'Working…',
+  actionFailed: 'Could not complete this action. Try again.',
+  searchSubset: 'Searched {n} of {total} files. Load more to search the rest.',
+  noLoadedMatch: 'No matches in the files loaded so far.',
+  matches: '{n} matches',
   skipped: 'Skipped on purpose',
   retryAll: 'Try all again',
   more: 'Show more ({n} left)',
   retried: 'Queued {n} files again.',
   loading: 'Loading…',
+  summaryFailed: 'Could not load the file groups. Refresh to try again.',
   indexingProgress: '{done} of {total} read',
   picked: '{n} selected',
-  readPicked: 'Index {n} now',
+  readPicked: 'Read {n} files now',
   pickHint: 'Ctrl/Shift+click to select several files',
   readPickedConfirm:
     'Read {n} files now? Scanned PDFs are read with Antigravity: it uses Antigravity quota and ignores today’s limit.',
@@ -82,14 +94,25 @@ const VI: Dict = {
   empty: 'Không có lỗi. Mọi tệp đọc được đều đã index.',
   noFolder: 'Hãy quét một thư mục trước.',
   attention: 'Cần xử lý',
+  background: 'Đang chạy nền',
+  expandAll: 'Mở tất cả',
+  collapseAll: 'Thu gọn tất cả',
+  selectVisible: 'Chọn tệp đang hiển thị',
+  deselectVisible: 'Bỏ chọn tệp đang hiển thị',
+  working: 'Đang xử lý…',
+  actionFailed: 'Không thể hoàn thành. Hãy thử lại.',
+  searchSubset: 'Đã tìm trong {n}/{total} tệp. Tải thêm để tìm phần còn lại.',
+  noLoadedMatch: 'Chưa có kết quả trong các tệp đã tải.',
+  matches: '{n} kết quả',
   skipped: 'Bỏ qua có chủ đích',
   retryAll: 'Thử lại cả nhóm',
   more: 'Xem thêm ({n} tệp nữa)',
   retried: 'Đã xếp lại {n} tệp.',
   loading: 'Đang tải…',
+  summaryFailed: 'Không thể tải nhóm tệp. Làm mới để thử lại.',
   indexingProgress: 'Đã đọc {done}/{total}',
   picked: 'Đã chọn {n}',
-  readPicked: 'Index {n} tệp ngay',
+  readPicked: 'Đọc {n} tệp ngay',
   pickHint: 'Ctrl/Shift+bấm để chọn nhiều tệp',
   readPickedConfirm:
     'Đọc ngay {n} tệp? PDF quét sẽ được đọc bằng Antigravity: tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
@@ -131,6 +154,7 @@ interface GroupState {
   items: IndexIssue[]
   total: number
   loading: boolean
+  failed?: boolean
 }
 
 export function IndexProblems({
@@ -142,6 +166,9 @@ export function IndexProblems({
   hideEmpty = false,
   hideToolbar = false,
   commandRef,
+  bucket = 'all',
+  sort = 'queue',
+  summary: externalSummary,
 }: {
   api: HomeApi
   root: string
@@ -155,25 +182,40 @@ export function IndexProblems({
   /** the page has its own buttons for "try again" and "read the scans" */
   hideToolbar?: boolean
   commandRef?: MutableRefObject<ProblemCommands | null>
+  bucket?: 'all' | IssueBucket
+  sort?: 'queue' | 'name'
+  summary?: IndexIssueSummary | null
 }) {
   const { lang, dateLocale } = useI18n()
   const d = lang === 'vi' ? VI : EN
   const copy = activityCopy(lang as Lang)
-  const [summary, setSummary] = useState<IndexIssueSummary | null>(null)
+  const [localSummary, setSummary] = useState<IndexIssueSummary | null>(null)
+  const summary = externalSummary === undefined ? localSummary : externalSummary
+  const [summaryFailed, setSummaryFailed] = useState(false)
+  const [batchBusy, setBatchBusy] = useState(false)
+  const batchInFlight = useRef(false)
+  const generation = useRef(0)
+  const mounted = useRef(true)
+  const groupRequests = useRef(new Map<IndexIssueReason, number>())
+  const selectionEpoch = useRef(0)
+  const bucketRef = useRef(bucket)
+  bucketRef.current = bucket
   const [open, setOpen] = useState<Set<IndexIssueReason>>(new Set())
   const [groups, setGroups] = useState<Partial<Record<IndexIssueReason, GroupState>>>({})
 
   const loadSummary = useCallback(async () => {
-    if (!root) return
+    if (!root || externalSummary !== undefined) return
+    const currentGeneration = generation.current
     try {
-      setSummary(await api.getDocumentIndexIssueSummary(root))
+      const next = await api.getDocumentIndexIssueSummary(root)
+      if (mounted.current && generation.current === currentGeneration) {
+        setSummary(next)
+        setSummaryFailed(false)
+      }
     } catch {
-      /* keep what is shown */
+      if (mounted.current && generation.current === currentGeneration) setSummaryFailed(true)
     }
-  }, [api, root])
-  useEffect(() => {
-    void loadSummary()
-  }, [loadSummary])
+  }, [api, root, externalSummary])
 
   const groupsRef = useRef(groups)
   groupsRef.current = groups
@@ -181,10 +223,16 @@ export function IndexProblems({
   // Files that were being read a moment ago and are gone from their list: shown green, then removed.
   const [finished, setFinished] = useState<IndexIssue[]>([])
   const wasLive = useRef(new Set<string>())
-  const nowRef = useRef(now)
-  nowRef.current = now
   const loadGroup = useCallback(
     async (reason: IndexIssueReason, append = false) => {
+      if (!root) return
+      const currentGeneration = generation.current
+      const request = (groupRequests.current.get(reason) ?? 0) + 1
+      groupRequests.current.set(reason, request)
+      const isCurrent = () =>
+        mounted.current &&
+        generation.current === currentGeneration &&
+        groupRequests.current.get(reason) === request
       const shown = groupsRef.current[reason]
       // A refresh keeps what is on screen in place (no "Loading…" row, no collapsing back to the
       // first page): only a group that has nothing to show yet, or "show more", says it is loading.
@@ -213,17 +261,29 @@ export function IndexProblems({
           )
           items = loaded.items
           total = loaded.total
+          if (!isCurrent()) return
           const gone = (shown?.items ?? []).filter(
             (item) => wasLive.current.has(item.path) && !items.some((next) => next.id === item.id),
           )
           if (gone.length > 0) {
             setFinished((current) => [...current, ...gone])
-            window.setTimeout(
-              () => setFinished((current) => current.filter((item) => !gone.includes(item))),
-              1800,
-            )
+            window.setTimeout(() => {
+              if (mounted.current && generation.current === currentGeneration)
+                setFinished((current) => current.filter((item) => !gone.includes(item)))
+            }, 1800)
           }
         }
+        if (!isCurrent()) return
+        const removed = new Set(
+          (shown?.items ?? [])
+            .filter((item) => !items.some((next) => next.id === item.id))
+            .map((item) => item.id),
+        )
+        if (removed.size > 0)
+          setPickState((current) => ({
+            picked: new Set([...current.picked].filter((id) => !removed.has(id))),
+            anchor: current.anchor !== null && removed.has(current.anchor) ? null : current.anchor,
+          }))
         // closed while it was loading: it stays forgotten
         if (!append && !openRef.current.has(reason) && !groupsRef.current[reason]) return
         setGroups((current) => {
@@ -232,20 +292,25 @@ export function IndexProblems({
           if (
             before &&
             !before.loading &&
+            !before.failed &&
             before.total === total &&
             before.items.length === items.length &&
-            before.items.every((item, index) => item.id === items[index]?.id)
+            before.items.every(
+              (item, index) => JSON.stringify(item) === JSON.stringify(items[index]),
+            )
           )
             return current
           return { ...current, [reason]: { items, total, loading: false } }
         })
       } catch {
+        if (!isCurrent()) return
         setGroups((current) => ({
           ...current,
           [reason]: {
             items: current[reason]?.items ?? [],
             total: current[reason]?.total ?? 0,
             loading: false,
+            failed: true,
           },
         }))
       }
@@ -264,7 +329,6 @@ export function IndexProblems({
   )
 
   // While something is being read, the open lists and the counts follow along.
-  const busy = !!now && (now.extracting.length > 0 || Object.keys(now.embedding).length > 0)
   useEffect(() => {
     if (!now) return
     const live = new Set<string>(now.extracting.map((entry) => entry.path))
@@ -277,17 +341,37 @@ export function IndexProblems({
       const editing =
         event.target instanceof HTMLElement &&
         (event.target.isContentEditable || /^(input|textarea|select)$/i.test(event.target.tagName))
-      if (event.key === 'Escape') setPickState(NOTHING_PICKED)
+      if (event.key === 'Escape') {
+        selectionEpoch.current++
+        setPickState(NOTHING_PICKED)
+      }
       // Ctrl/Cmd+A picks every file of the open lists
       else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'a' && !editing) {
         if (openRef.current.size === 0) return
         event.preventDefault()
-        for (const reason of openRef.current) void selectGroupRef.current(reason)
+        for (const reason of openRef.current) {
+          if (bucketRef.current === 'all' || issueBucket(reason) === bucketRef.current)
+            void selectGroupRef.current(reason)
+        }
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+  useEffect(() => {
+    selectionEpoch.current++
+    setPickState(NOTHING_PICKED)
+    setOpen(
+      (current) =>
+        new Set(
+          [...current].filter((reason) => bucket === 'all' || issueBucket(reason) === bucket),
+        ),
+    )
+  }, [bucket])
+  useEffect(() => {
+    selectionEpoch.current++
+    setPickState(NOTHING_PICKED)
+  }, [query])
   const waitingPeak = useRef(0)
   useEffect(() => {
     waitingPeak.current = 0
@@ -295,35 +379,81 @@ export function IndexProblems({
   const openRef = useRef(open)
   openRef.current = open
   useEffect(() => {
-    if (!busy) return
-    const timer = setInterval(() => {
-      void loadSummary()
-      for (const reason of openRef.current) void loadGroup(reason)
-    }, 3000)
-    return () => clearInterval(timer)
-  }, [busy, loadSummary, loadGroup])
+    mounted.current = true
+    const lifetime = generation.current + 1
+    generation.current = lifetime
+    groupRequests.current.clear()
+    setSummary(null)
+    setSummaryFailed(false)
+    setGroups({})
+    groupsRef.current = {}
+    setOpen(new Set())
+    openRef.current = new Set()
+    setFinished([])
+    setPickState(NOTHING_PICKED)
+    wasLive.current.clear()
+    autoOpened.current = false
+    return () => {
+      mounted.current = false
+      generation.current = lifetime + 1
+    }
+  }, [root])
+  useEffect(() => {
+    void loadSummary()
+  }, [loadSummary])
+  useEffect(() => {
+    if (externalSummary !== undefined) return
+    let stopped = false
+    let timer: ReturnType<typeof setTimeout>
+    const refresh = async () => {
+      if (document.visibilityState !== 'hidden') {
+        await loadSummary()
+        await Promise.all([...openRef.current].map((reason) => loadGroup(reason)))
+      }
+      if (!stopped) timer = setTimeout(() => void refresh(), 3000)
+    }
+    timer = setTimeout(() => void refresh(), 3000)
+    return () => {
+      stopped = true
+      clearTimeout(timer)
+    }
+  }, [loadSummary, loadGroup, externalSummary])
+  useEffect(() => {
+    if (externalSummary === undefined || document.visibilityState === 'hidden') return
+    for (const reason of openRef.current) void loadGroup(reason)
+  }, [externalSummary, loadGroup])
 
   // The only attention group opens by itself, and a group picked on the overview opens too.
   const autoOpened = useRef(false)
   useEffect(() => {
     if (!summary) return
+    const visible = summary.groups.filter(
+      (g) => bucket === 'all' || issueBucket(g.reason) === bucket,
+    )
     const wanted =
-      focus && summary.groups.some((g) => g.reason === focus)
+      focus && visible.some((g) => g.reason === focus)
         ? focus
-        : !autoOpened.current && summary.groups.filter((g) => needsAction(g.reason)).length === 1
-          ? summary.groups.find((g) => needsAction(g.reason))!.reason
+        : !autoOpened.current && visible.filter((g) => needsAction(g.reason)).length === 1
+          ? visible.find((g) => needsAction(g.reason))!.reason
           : null
     autoOpened.current = true
     if (wanted) {
       setOpen((current) => new Set(current).add(wanted))
       if (!groupsRef.current[wanted]) void loadGroup(wanted)
     }
-  }, [summary, focus, loadGroup])
+  }, [summary, focus, loadGroup, bucket])
 
   const toggle = (reason: IndexIssueReason) => {
     const next = new Set(open)
     if (next.has(reason)) {
       next.delete(reason)
+      selectionEpoch.current++
+      const removed = new Set(groupsRef.current[reason]?.items.map((item) => item.id) ?? [])
+      setPickState((current) => ({
+        picked: new Set([...current.picked].filter((id) => !removed.has(id))),
+        anchor: current.anchor !== null && removed.has(current.anchor) ? null : current.anchor,
+      }))
+      groupRequests.current.set(reason, (groupRequests.current.get(reason) ?? 0) + 1)
       // closed: forget how far it was opened, so opening it again starts from the first page
       setGroups((current) => {
         const { [reason]: _closed, ...rest } = current
@@ -336,25 +466,57 @@ export function IndexProblems({
     setOpen(next)
   }
 
-  const retryEverything = async () => {
-    let queued = 0
-    for (const group of summary?.groups ?? []) {
-      if (
-        !needsAction(group.reason) ||
-        !isRetryableReason(group.reason) ||
-        group.reason === 'waiting'
-      )
-        continue
-      const result = await api.retryDocumentIndexGroup(root, group.reason)
-      if (result.ok) queued += result.retried
+  const runBatch = async (work: (isCurrent: () => boolean) => Promise<void>) => {
+    if (batchInFlight.current) return
+    const currentGeneration = generation.current
+    const isCurrent = () => mounted.current && generation.current === currentGeneration
+    batchInFlight.current = true
+    setBatchBusy(true)
+    try {
+      await work(isCurrent)
+    } catch {
+      if (isCurrent()) actions.say(d.actionFailed)
+    } finally {
+      batchInFlight.current = false
+      if (mounted.current) setBatchBusy(false)
     }
-    actions.say(fill(d.retried, { n: queued }))
-    await loadSummary()
-    for (const reason of open) await loadGroup(reason)
-    onChanged()
   }
 
-  const clearPick = () => setPickState(NOTHING_PICKED)
+  const retryEverything = async () =>
+    runBatch(async (isCurrent) => {
+      let queued = 0
+      let failed = false
+      for (const group of summary?.groups ?? []) {
+        if (!isCurrent()) return
+        if (
+          !needsAction(group.reason) ||
+          !isRetryableReason(group.reason) ||
+          group.reason === 'waiting'
+        )
+          continue
+        try {
+          const result = await api.retryDocumentIndexGroup(root, group.reason)
+          if (result.ok) queued += result.retried
+          else failed = true
+        } catch {
+          failed = true
+        }
+      }
+      if (!isCurrent()) return
+      actions.say(
+        failed
+          ? `${fill(d.retried, { n: queued })} ${d.actionFailed}`
+          : fill(d.retried, { n: queued }),
+      )
+      await loadSummary()
+      for (const reason of open) await loadGroup(reason)
+      onChanged()
+    })
+
+  const clearPick = () => {
+    selectionEpoch.current++
+    setPickState(NOTHING_PICKED)
+  }
   const pickFile = (
     ordered: readonly number[],
     item: { id: number },
@@ -371,107 +533,131 @@ export function IndexProblems({
    * The picked files, one after another. "index": text files are read and scans go on to
    * Antigravity. "ocr": only the PDFs among them, all with Antigravity.
    */
-  const readPicked = async (mode: 'index' | 'ocr' = 'index') => {
-    const all = Object.values(groupsRef.current)
-      .flatMap((group) => group?.items ?? [])
-      .filter((item) => pickState.picked.has(item.id))
-    const chosen = mode === 'ocr' ? all.filter((item) => /\.pdf$/i.test(item.path)) : all
-    if (chosen.length === 0) {
-      if (all.length > 0) actions.say(d.noPdfPicked)
-      return
-    }
-    const question = mode === 'ocr' ? d.readBatchConfirm : d.readPickedConfirm
-    if (!window.confirm(fill(question, { n: chosen.length }))) return
-    let ok = 0
-    for (const [index, item] of chosen.entries()) {
-      actions.say(fill(d.readProgress, { i: index + 1, n: chosen.length }))
-      try {
-        let result =
-          mode === 'ocr' || item.reason === 'no-text'
-            ? await api.readScannedPdfWithAgy(item.id, true)
-            : await api.retryDocumentIndex(item.id)
-        if (result.ok && 'empty' in result && result.empty && /\.pdf$/i.test(item.path))
-          result = await api.readScannedPdfWithAgy(item.id, true)
-        if (result.ok) ok++
-      } catch {
-        /* the next file still gets its turn */
+  const readPicked = async (mode: 'index' | 'ocr' = 'index') =>
+    runBatch(async (isCurrent) => {
+      const all = Object.values(groupsRef.current)
+        .flatMap((group) => group?.items ?? [])
+        .filter((item) => pickState.picked.has(item.id))
+      const chosen = mode === 'ocr' ? all.filter((item) => /\.pdf$/i.test(item.path)) : all
+      if (chosen.length === 0) {
+        if (all.length > 0) actions.say(d.noPdfPicked)
+        return
       }
-    }
-    actions.say(fill(d.readFinished, { ok, n: chosen.length }))
-    clearPick()
-    await loadSummary()
-    for (const reason of openRef.current) await loadGroup(reason)
-    onChanged()
-  }
+      const question = mode === 'ocr' ? d.readBatchConfirm : d.readPickedConfirm
+      if (!window.confirm(fill(question, { n: chosen.length }))) return
+      let ok = 0
+      for (const [index, item] of chosen.entries()) {
+        if (!isCurrent()) return
+        actions.say(fill(d.readProgress, { i: index + 1, n: chosen.length }))
+        try {
+          let result =
+            mode === 'ocr' || item.reason === 'no-text'
+              ? await api.readScannedPdfWithAgy(item.id, true)
+              : await api.retryDocumentIndex(item.id)
+          if (result.ok && 'empty' in result && result.empty && /\.pdf$/i.test(item.path))
+            result = await api.readScannedPdfWithAgy(item.id, true)
+          if (result.ok) ok++
+        } catch {
+          /* the next file still gets its turn */
+        }
+      }
+      if (!isCurrent()) return
+      actions.say(fill(d.readFinished, { ok, n: chosen.length }))
+      clearPick()
+      await loadSummary()
+      for (const reason of openRef.current) await loadGroup(reason)
+      onChanged()
+    })
 
-  /** Pick every file of a list, including the ones not shown yet (they are loaded for it). */
+  /** Load up to 2,000 files and select the files matching the current query. */
   const selectGroup = async (reason: IndexIssueReason) => {
-    const total = groupsRef.current[reason]?.total ?? 0
-    const loaded = await loadAtLeast(
-      (offset) => api.getDocumentIndexIssues(root, offset, reason),
-      Math.min(Math.max(total, 1), 2000),
-    )
-    setGroups((current) => ({
-      ...current,
-      [reason]: { items: loaded.items, total: loaded.total, loading: false },
-    }))
-    setPickState((current) => ({
-      picked: new Set([...current.picked, ...loaded.items.map((item) => item.id)]),
-      anchor: loaded.items[0]?.id ?? current.anchor,
-    }))
-    actions.say(fill(d.selectedAll, { n: loaded.items.length }))
+    if (batchInFlight.current) return
+    const currentGeneration = generation.current
+    const currentSelection = selectionEpoch.current
+    try {
+      const total = groupsRef.current[reason]?.total ?? 0
+      const loaded = await loadAtLeast(
+        (offset) => api.getDocumentIndexIssues(root, offset, reason),
+        Math.min(Math.max(total, 1), 2000),
+      )
+      if (
+        !mounted.current ||
+        generation.current !== currentGeneration ||
+        selectionEpoch.current !== currentSelection
+      )
+        return
+      setGroups((current) => ({
+        ...current,
+        [reason]: { items: loaded.items, total: loaded.total, loading: false },
+      }))
+      const matching = loaded.items.filter((item) => !query.trim() || matchesQuery(item, query))
+      setPickState((current) => ({
+        picked: new Set([...current.picked, ...matching.map((item) => item.id)]),
+        anchor: matching[0]?.id ?? current.anchor,
+      }))
+      actions.say(fill(d.selectedAll, { n: matching.length }))
+    } catch {
+      actions.say(d.actionFailed)
+    }
   }
   const selectGroupRef = useRef(selectGroup)
   selectGroupRef.current = selectGroup
 
-  const readBatch = async () => {
-    const page = await api.getDocumentIndexIssues(root, 0, 'no-text')
-    const batch = page.items.slice(0, BATCH)
-    if (batch.length === 0) return
-    if (!window.confirm(fill(d.readBatchConfirm, { n: batch.length }))) return
-    let ok = 0
-    for (const [index, item] of batch.entries()) {
-      actions.say(fill(d.readProgress, { i: index + 1, n: batch.length }))
-      try {
-        const result = await api.readScannedPdfWithAgy(item.id, true)
-        if (result.ok) ok++
-        // one file that cannot be read must not stop the rest; only Antigravity being switched
-        // off does
-        else if (result.error === 'unavailable' || result.error === 'paused') break
-      } catch {
-        /* the next file still gets its turn */
+  const readBatch = async () =>
+    runBatch(async (isCurrent) => {
+      const page = await api.getDocumentIndexIssues(root, 0, 'no-text')
+      if (!isCurrent()) return
+      const batch = page.items.slice(0, BATCH)
+      if (batch.length === 0) return
+      if (!window.confirm(fill(d.readBatchConfirm, { n: batch.length }))) return
+      let ok = 0
+      for (const [index, item] of batch.entries()) {
+        if (!isCurrent()) return
+        actions.say(fill(d.readProgress, { i: index + 1, n: batch.length }))
+        try {
+          const result = await api.readScannedPdfWithAgy(item.id, true)
+          if (result.ok) ok++
+          // one file that cannot be read must not stop the rest; only Antigravity being switched
+          // off does
+          else if (result.error === 'unavailable' || result.error === 'paused') break
+        } catch {
+          /* the next file still gets its turn */
+        }
       }
-    }
-    actions.say(fill(d.readFinished, { ok, n: batch.length }))
-    await loadSummary()
-    if (open.has('no-text')) await loadGroup('no-text')
-    onChanged()
-  }
+      if (!isCurrent()) return
+      actions.say(fill(d.readFinished, { ok, n: batch.length }))
+      await loadSummary()
+      if (open.has('no-text')) await loadGroup('no-text')
+      onChanged()
+    })
 
-  const readAllScans = async () => {
-    const total = summary?.groups.find((g) => g.reason === 'no-text')?.count ?? 0
-    const loaded = await loadAtLeast(
-      (offset) => api.getDocumentIndexIssues(root, offset, 'no-text'),
-      Math.min(Math.max(total, 1), 2000),
-    )
-    if (loaded.items.length === 0) return
-    if (!window.confirm(fill(d.readAllConfirm, { n: loaded.items.length }))) return
-    let ok = 0
-    for (const [index, item] of loaded.items.entries()) {
-      actions.say(fill(d.readProgress, { i: index + 1, n: loaded.items.length }))
-      try {
-        const result = await api.readScannedPdfWithAgy(item.id, true)
-        if (result.ok) ok++
-        else if (result.error === 'unavailable' || result.error === 'paused') break
-      } catch {
-        /* the next file still gets its turn */
+  const readAllScans = async () =>
+    runBatch(async (isCurrent) => {
+      const total = summary?.groups.find((g) => g.reason === 'no-text')?.count ?? 0
+      const loaded = await loadAtLeast(
+        (offset) => api.getDocumentIndexIssues(root, offset, 'no-text'),
+        Math.max(total, 1),
+      )
+      if (!isCurrent() || loaded.items.length === 0) return
+      if (!window.confirm(fill(d.readAllConfirm, { n: loaded.items.length }))) return
+      let ok = 0
+      for (const [index, item] of loaded.items.entries()) {
+        if (!isCurrent()) return
+        actions.say(fill(d.readProgress, { i: index + 1, n: loaded.items.length }))
+        try {
+          const result = await api.readScannedPdfWithAgy(item.id, true)
+          if (result.ok) ok++
+          else if (result.error === 'unavailable' || result.error === 'paused') break
+        } catch {
+          /* the next file still gets its turn */
+        }
       }
-    }
-    actions.say(fill(d.readFinished, { ok, n: loaded.items.length }))
-    await loadSummary()
-    if (openRef.current.has('no-text')) await loadGroup('no-text')
-    onChanged()
-  }
+      if (!isCurrent()) return
+      actions.say(fill(d.readFinished, { ok, n: loaded.items.length }))
+      await loadSummary()
+      if (openRef.current.has('no-text')) await loadGroup('no-text')
+      onChanged()
+    })
 
   const openReason = (reason: IndexIssueReason) => {
     setOpen((current) => new Set(current).add(reason))
@@ -492,36 +678,115 @@ export function IndexProblems({
     }
   }, [commandRef])
 
-  // Searching: every list opens and is read in full (up to 500), then filtered below.
+  // Search only promises coverage of the pages loaded. Large groups stay explicitly partial.
   const searching = query.trim().length > 0
+  const searchGroups = JSON.stringify(
+    (summary?.groups ?? []).filter((g) => bucket === 'all' || issueBucket(g.reason) === bucket),
+  )
   useEffect(() => {
-    if (!searching || !summary) return
-    for (const group of summary.groups) {
+    if (!searching) return
+    const currentGeneration = generation.current
+    let cancelled = false
+    const visible = JSON.parse(searchGroups) as Array<{ reason: IndexIssueReason; count: number }>
+    for (const group of visible) {
       setOpen((current) => new Set(current).add(group.reason))
+      const request = (groupRequests.current.get(group.reason) ?? 0) + 1
+      groupRequests.current.set(group.reason, request)
+      setGroups((current) => ({
+        ...current,
+        [group.reason]: {
+          items: current[group.reason]?.items ?? [],
+          total: group.count,
+          loading: true,
+        },
+      }))
       void (async () => {
-        const loaded = await loadAtLeast(
-          (offset) => api.getDocumentIndexIssues(root, offset, group.reason),
-          Math.min(group.count, 500),
-        )
-        setGroups((current) => ({
-          ...current,
-          [group.reason]: { items: loaded.items, total: loaded.total, loading: false },
-        }))
+        try {
+          const loaded = await loadAtLeast(
+            (offset) => api.getDocumentIndexIssues(root, offset, group.reason),
+            Math.max(
+              groupsRef.current[group.reason]?.items.length ?? 0,
+              Math.min(group.count, 2000),
+            ),
+          )
+          if (
+            cancelled ||
+            !mounted.current ||
+            generation.current !== currentGeneration ||
+            groupRequests.current.get(group.reason) !== request
+          )
+            return
+          const removed = new Set(
+            (groupsRef.current[group.reason]?.items ?? [])
+              .filter((item) => !loaded.items.some((next) => next.id === item.id))
+              .map((item) => item.id),
+          )
+          if (removed.size > 0)
+            setPickState((current) => ({
+              picked: new Set([...current.picked].filter((id) => !removed.has(id))),
+              anchor:
+                current.anchor !== null && removed.has(current.anchor) ? null : current.anchor,
+            }))
+          setGroups((current) => ({
+            ...current,
+            [group.reason]: { items: loaded.items, total: loaded.total, loading: false },
+          }))
+        } catch {
+          if (
+            cancelled ||
+            !mounted.current ||
+            generation.current !== currentGeneration ||
+            groupRequests.current.get(group.reason) !== request
+          )
+            return
+          setGroups((current) => ({
+            ...current,
+            [group.reason]: {
+              items: current[group.reason]?.items ?? [],
+              total: group.count,
+              loading: false,
+              failed: true,
+            },
+          }))
+        }
       })()
     }
-  }, [searching, summary, api, root])
+    return () => {
+      cancelled = true
+    }
+  }, [searching, searchGroups, api, root])
 
-  const retryGroup = async (reason: IndexIssueReason) => {
-    const result = await api.retryDocumentIndexGroup(root, reason)
-    actions.say(result.ok ? fill(d.retried, { n: result.retried }) : (result.error ?? ''))
-    await Promise.all([loadSummary(), loadGroup(reason)])
-    onChanged()
-  }
+  const retryGroup = async (reason: IndexIssueReason) =>
+    runBatch(async (isCurrent) => {
+      if (!needsAction(reason) || !isRetryableReason(reason)) return
+      const result = await api.retryDocumentIndexGroup(root, reason)
+      if (!isCurrent()) return
+      actions.say(result.ok ? fill(d.retried, { n: result.retried }) : d.actionFailed)
+      await Promise.all([loadSummary(), loadGroup(reason)])
+      onChanged()
+    })
 
   if (!root) return <p className="idx-muted">{d.noFolder}</p>
-  const list = summary?.groups ?? []
+  if (!summary)
+    return (
+      <p className="idx-muted" role="status">
+        {summaryFailed ? d.summaryFailed : d.loading}
+      </p>
+    )
+  const list = (summary?.groups ?? []).filter(
+    (g) => bucket === 'all' || issueBucket(g.reason) === bucket,
+  )
   if (summary && list.length === 0) return hideEmpty ? null : <p className="idx-empty">{d.empty}</p>
 
+  const rowActions = batchBusy
+    ? {
+        ...actions,
+        busy: new Set([
+          ...actions.busy,
+          ...Object.values(groups).flatMap((group) => group?.items.map((item) => item.id) ?? []),
+        ]),
+      }
+    : actions
   const renderGroup = (reason: IndexIssueReason, count: number) => {
     const words = copy.reasons[reason]
     // the line "N left" and a bar: how far the files seen waiting at the start have come
@@ -533,8 +798,14 @@ export function IndexProblems({
     // the order the files are shown in: Shift+click picks between two of them
     const sorted = [...(state?.items ?? [])]
       .filter((item) => !searching || matchesQuery(item, query))
-      .sort((x, y) => rank(liveOf(now, x.path)) - rank(liveOf(now, y.path)))
+      .sort((x, y) =>
+        sort === 'name'
+          ? x.name.localeCompare(y.name, dateLocale)
+          : rank(liveOf(now, x.path)) - rank(liveOf(now, y.path)),
+      )
     const orderedIds = sorted.map((issue) => issue.id)
+    const allShownSelected =
+      sorted.length > 0 && sorted.every((issue) => pickState.picked.has(issue.id))
     return (
       <section className={`ixp-group${isOpen ? ' is-open' : ''}`} key={reason}>
         <div className="ixp-head-row">
@@ -564,9 +835,35 @@ export function IndexProblems({
               )}
             </span>
             <span className="ixp-count">{count.toLocaleString(dateLocale)}</span>
+            {searching && state && !state.loading && (
+              <span className="ixp-matches">{fill(d.matches, { n: sorted.length })}</span>
+            )}
           </button>
-          {isRetryableReason(reason) && (
-            <IconButton label={d.retryAll} onClick={() => void retryGroup(reason)}>
+          {isOpen && sorted.length > 0 && (
+            <button
+              type="button"
+              className="idx-btn ixp-select"
+              disabled={batchBusy}
+              onClick={() =>
+                setPickState((current) => {
+                  const picked = new Set(current.picked)
+                  for (const item of sorted) {
+                    if (allShownSelected) picked.delete(item.id)
+                    else picked.add(item.id)
+                  }
+                  return { picked, anchor: sorted[0]?.id ?? current.anchor }
+                })
+              }
+            >
+              {allShownSelected ? d.deselectVisible : d.selectVisible}
+            </button>
+          )}
+          {needsAction(reason) && isRetryableReason(reason) && (
+            <IconButton
+              label={d.retryAll}
+              disabled={batchBusy}
+              onClick={() => void retryGroup(reason)}
+            >
               <IRetry />
             </IconButton>
           )}
@@ -582,20 +879,38 @@ export function IndexProblems({
               <FileRow
                 key={issue.id}
                 item={issue}
-                actions={actions}
+                actions={rowActions}
                 api={api}
                 live={liveOf(now, issue.path)}
                 picked={pickState.picked.has(issue.id)}
                 pickedCount={pickState.picked.size}
                 onPick={(item, mode) => pickFile(orderedIds, item, mode)}
-                onReadPicked={() => void readPicked()}
-                onSelectGroup={() => void selectGroup(reason)}
+                onReadPicked={() => {
+                  if (!batchBusy) void readPicked()
+                }}
+                onSelectGroup={() => {
+                  if (!batchBusy) void selectGroup(reason)
+                }}
                 onClearPicked={clearPick}
               />
             ))}
             {state?.loading && <li className="ixp-loading">{d.loading}</li>}
-            {searching && !state?.loading && sorted.length === 0 && (
-              <li className="ixp-loading">{fill(d.noMatch, { q: query.trim() })}</li>
+            {state?.failed && (
+              <li className="ixp-loading" role="status">
+                {d.summaryFailed}
+              </li>
+            )}
+            {searching && state && !state.loading && !state.failed && sorted.length === 0 && (
+              <li className="ixp-loading">
+                {state.items.length < state.total
+                  ? d.noLoadedMatch
+                  : fill(d.noMatch, { q: query.trim() })}
+              </li>
+            )}
+            {searching && state && !state.loading && state.items.length < state.total && (
+              <li className="ixp-search-coverage">
+                {fill(d.searchSubset, { n: state.items.length, total: state.total })}
+              </li>
             )}
             {state && !state.loading && state.total > state.items.length && (
               <li>
@@ -622,11 +937,69 @@ export function IndexProblems({
   const attention = list
     .filter((g) => needsAction(g.reason))
     .sort((a, b) => attentionRank(a.reason) - attentionRank(b.reason))
-  const skipped = list.filter((g) => !needsAction(g.reason))
+  const background = list.filter((g) => issueBucket(g.reason) === 'background')
+  const skipped = list.filter((g) => issueBucket(g.reason) === 'skipped')
   const scanned = list.find((g) => g.reason === 'no-text')?.count ?? 0
   const failures = attention.some((g) => isRetryableReason(g.reason))
   return (
-    <div className="ixp">
+    <div className="ixp" aria-busy={batchBusy}>
+      <div className="ixp-toolbar ixp-viewbar">
+        {!hideToolbar && (failures || scanned > 0) && (
+          <div className="ixp-bulk">
+            {failures && (
+              <button
+                type="button"
+                className="idx-btn primary"
+                disabled={batchBusy}
+                onClick={() => void retryEverything()}
+              >
+                {d.retryEverything}
+              </button>
+            )}
+            {scanned > 0 && (
+              <button
+                type="button"
+                className="idx-btn"
+                disabled={batchBusy}
+                onClick={() => void readBatch()}
+              >
+                {fill(d.readBatch, { n: Math.min(BATCH, scanned) })}
+              </button>
+            )}
+          </div>
+        )}
+        <div className="ixp-view-actions">
+          <button
+            type="button"
+            className="idx-btn"
+            onClick={() => {
+              setOpen(new Set(list.map((g) => g.reason)))
+              for (const group of list)
+                if (!groupsRef.current[group.reason]) void loadGroup(group.reason)
+            }}
+          >
+            {d.expandAll}
+          </button>
+          <button
+            type="button"
+            className="idx-btn"
+            onClick={() => {
+              for (const group of list)
+                groupRequests.current.set(
+                  group.reason,
+                  (groupRequests.current.get(group.reason) ?? 0) + 1,
+                )
+              selectionEpoch.current++
+              setPickState(NOTHING_PICKED)
+              setOpen(new Set())
+              setGroups({})
+            }}
+          >
+            {d.collapseAll}
+          </button>
+          {batchBusy && <span role="status">{d.working}</span>}
+        </div>
+      </div>
       {actions.note && (
         <p className="ixp-note" role="status">
           {actions.note}
@@ -635,45 +1008,42 @@ export function IndexProblems({
       {pickState.picked.size > 0 && (
         <div className="ixp-toolbar ixp-pickbar" role="toolbar">
           <span>{fill(d.picked, { n: pickState.picked.size })}</span>
-          <button type="button" className="idx-btn primary" onClick={() => void readPicked()}>
+          <button
+            type="button"
+            className="idx-btn primary"
+            disabled={batchBusy}
+            onClick={() => void readPicked()}
+          >
             {fill(d.readPicked, { n: pickState.picked.size })}
           </button>
-          <button type="button" className="idx-btn" onClick={() => void readPicked('ocr')}>
+          <button
+            type="button"
+            className="idx-btn"
+            disabled={batchBusy || pickedPdfCount === 0}
+            onClick={() => void readPicked('ocr')}
+          >
             {fill(d.ocrPicked, { n: pickedPdfCount })}
           </button>
-          <button type="button" className="idx-btn" onClick={clearPick}>
+          <button type="button" className="idx-btn" disabled={batchBusy} onClick={clearPick}>
             {d.clearPicked}
           </button>
         </div>
       )}
-      {!hideToolbar && (failures || scanned > 0) && (
-        <div className="ixp-toolbar">
-          {failures && (
-            <button
-              type="button"
-              className="idx-btn primary"
-              onClick={() => void retryEverything()}
-            >
-              {d.retryEverything}
-            </button>
-          )}
-          {scanned > 0 && (
-            <button type="button" className="idx-btn" onClick={() => void readBatch()}>
-              {fill(d.readBatch, { n: Math.min(BATCH, scanned) })}
-            </button>
-          )}
-        </div>
-      )}
       {attention.length > 0 && (
         <>
-          <h2 className="ixp-title">{d.attention}</h2>
-          <p className="idx-muted">{d.pickHint}</p>
+          {bucket === 'all' && <h2 className="ixp-title">{d.attention}</h2>}
           {attention.map((g) => renderGroup(g.reason, g.count))}
+        </>
+      )}
+      {background.length > 0 && (
+        <>
+          {bucket === 'all' && <h2 className="ixp-title">{d.background}</h2>}
+          {background.map((g) => renderGroup(g.reason, g.count))}
         </>
       )}
       {skipped.length > 0 && (
         <>
-          <h2 className="ixp-title">{d.skipped}</h2>
+          {bucket === 'all' && <h2 className="ixp-title">{d.skipped}</h2>}
           {skipped.map((g) => renderGroup(g.reason, g.count))}
         </>
       )}
