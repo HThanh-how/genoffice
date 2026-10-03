@@ -1,4 +1,5 @@
 import { DocumentMemoryManager } from './document-memory/manager'
+import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { startOpeningNotice } from './fork/opening-window'
 import { execSync, spawn } from 'node:child_process'
 import {
@@ -3249,8 +3250,15 @@ function createShellWindow(): void {
             : kind === 'html'
               ? tm('untitledHtml')
               : tm('untitledSheet'),
+    electronOverlayDeps(
+      () => (win.isDestroyed() ? null : win),
+      () => currentLang(),
+    ),
   )
   tabManager = manager
+  // the editors say when a file is loaded and on screen: that is when the opening scene lifts
+  ipcMain.on('docs:mcp-ready', (event) => tabManager?.tabReady(event.sender.id))
+  ipcMain.on('sheets:mcp-ready', (event) => tabManager?.tabReady(event.sender.id))
   manager.setClosedListener((closed) => rememberClosedTab(closed))
 
   // Docking: a detached window dragged over this window's tab strip hands its

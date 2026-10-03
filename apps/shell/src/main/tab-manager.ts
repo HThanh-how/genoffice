@@ -47,6 +47,18 @@ import {
 } from '../../../slides/src/main/slides-main'
 import type { DocumentTabKind, OpenDocumentTab, TabKind, TabSummary } from '../shared/tabs-api'
 import { TAB_STRIP_HEIGHT } from '../shared/tab-drag-geometry'
+import { OpeningOverlays, type OverlayDeps } from './fork/opening-overlay'
+import type { SplashApp } from './fork/opening-window'
+
+/** the scene a tab's kind plays while its document opens */
+const OVERLAY_APP: Partial<Record<TabKind, SplashApp>> = {
+  docs: 'docs',
+  sheets: 'sheets',
+  slides: 'slides',
+  pdf: 'pdf',
+  markdown: 'markdown',
+  html: 'html',
+}
 
 /** a tab lifted out of the strip with its live view: what "Open in New Window",
  *  tear-off and dock hand back and forth between the shell and a detached window */
@@ -99,6 +111,8 @@ export class TabManager {
    *  the path over after mount anyway. */
   private spareSheetsView: WebContentsView | null = null
   private spareSheetsTimer: ReturnType<typeof setTimeout> | null = null
+  /** the opening scene laid over a tab until its document is ready */
+  private readonly overlays: OpeningOverlays | null
 
   constructor(
     private readonly shellWindow: BrowserWindow,
@@ -106,7 +120,10 @@ export class TabManager {
     private readonly applyMenuFor: (kind: TabKind) => void,
     /** localized placeholder title for a tab that has no file yet */
     private readonly untitledTitleFor?: (kind: TabKind) => string,
+    /** how the opening scene is drawn over a new tab; none = no scene */
+    overlayDeps?: OverlayDeps,
   ) {
+    this.overlays = overlayDeps ? new OpeningOverlays(overlayDeps) : null
     // Layout once synchronously for macOS/Windows (bounds are already correct),
     // then once more on the next tick. On Linux/X11, `resize` fires before the
     // window manager applies the new size, so getContentBounds() is still the
@@ -209,6 +226,38 @@ export class TabManager {
     if (this.shellWindow.isDestroyed()) return
     const active = this.tabs.find((t) => t.id === this.activeId)
     if (active?.view) active.view.setBounds(this.contentBounds())
+    this.overlays?.layout(this.activeId, this.contentBounds())
+  }
+
+  /**
+   * Lay the app's opening scene over a tab that is opening a file, until the document says it is
+   * ready (`tabReady`) or, for editors that do not say, shortly after the page has loaded. The tab
+   * strip and the other tabs stay visible: it is not a window of its own.
+   */
+  private beginOpening(
+    id: string,
+    kind: TabKind,
+    openPath: string | undefined,
+    view: WebContentsView,
+    readiness: 'signal' | 'load',
+  ): void {
+    const app = OVERLAY_APP[kind]
+    if (!this.overlays || !openPath || !app) return
+    this.overlays.begin(id, { fileName: basename(openPath), app })
+    const wc = view.webContents
+    wc.once('destroyed', () => this.overlays?.drop(id))
+    wc.once('render-process-gone', () => this.overlays?.drop(id))
+    if (readiness === 'load') {
+      wc.once('did-finish-load', () => {
+        setTimeout(() => this.overlays?.ready(id), 700)
+      })
+    }
+  }
+
+  /** A document renderer said its file is loaded and on screen. */
+  tabReady(webContentsId: number): void {
+    const tab = this.tabs.find((t) => t.view?.webContents.id === webContentsId)
+    if (tab) this.overlays?.ready(tab.id)
   }
 
   /** files open in any tab, for the open-documents registry */
@@ -294,6 +343,7 @@ export class TabManager {
       title: openPath ? basename(openPath) : this.untitled('docs', 'GenOffice Docs'),
       filePath: openPath,
     })
+    this.beginOpening(id, 'docs', openPath, view, 'signal')
     this.activateTab(id)
     return id
   }
@@ -323,6 +373,7 @@ export class TabManager {
       title: openPath ? basename(openPath) : this.untitled('sheets', 'AI Sheets'),
       filePath: openPath,
     })
+    this.beginOpening(id, 'sheets', openPath, view, 'signal')
     this.activateTab(id)
     return id
   }
@@ -340,6 +391,7 @@ export class TabManager {
       title: openPath ? basename(openPath) : this.untitled('slides', 'AI Slides'),
       filePath: openPath,
     })
+    this.beginOpening(id, 'slides', openPath, view, 'load')
     this.activateTab(id)
     return id
   }
@@ -351,6 +403,7 @@ export class TabManager {
     view.setVisible(false)
     this.trackHtmlFullScreen(view)
     this.tabs.push({ id, kind: 'pdf', view, title: basename(openPath), filePath: openPath })
+    this.beginOpening(id, 'pdf', openPath, view, 'load')
     this.activateTab(id)
     return id
   }
@@ -377,6 +430,7 @@ export class TabManager {
       title: openPath ? basename(openPath) : this.untitled('markdown', 'AI Markdown'),
       filePath: openPath,
     })
+    this.beginOpening(id, 'markdown', openPath, view, 'load')
     this.activateTab(id)
     return id
   }
@@ -394,6 +448,7 @@ export class TabManager {
       title: openPath ? basename(openPath) : this.untitled('html', 'AI HTML'),
       filePath: openPath,
     })
+    this.beginOpening(id, 'html', openPath, view, 'load')
     this.activateTab(id)
     return id
   }
@@ -422,6 +477,8 @@ export class TabManager {
     for (const t of this.tabs) t.view?.setVisible(t.id === id)
     if (target.view) target.view.setBounds(this.contentBounds())
     this.activeId = id
+    this.overlays?.activate(id)
+    this.overlays?.layout(id, this.contentBounds())
     if (target.kind === 'sheets') this.scheduleSpareSheetsView(3000)
     else this.discardSpareSheetsView()
     this.refreshActiveTargets()
@@ -639,6 +696,7 @@ export class TabManager {
     const idx = this.tabs.findIndex((t) => t.id === id)
     if (idx < 0) return
     if (this.htmlFullScreenId === id) this.htmlFullScreenId = null
+    this.overlays?.drop(id)
     const [removed] = this.tabs.splice(idx, 1)
     if (removed.filePath && !removed.present)
       this.closedListener?.({ kind: removed.kind, filePath: removed.filePath })
@@ -680,6 +738,7 @@ export class TabManager {
     const tab = idx >= 0 ? this.tabs[idx] : undefined
     if (!tab?.view || tab.present || this.closingIds.has(id)) return null
     this.tabs.splice(idx, 1)
+    this.overlays?.drop(id)
     if (this.htmlFullScreenId === id) this.htmlFullScreenId = null
     const view = tab.view
     view.setVisible(false)

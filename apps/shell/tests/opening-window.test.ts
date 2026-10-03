@@ -75,3 +75,39 @@ describe('how rich the animation is for this machine', () => {
     expect(chooseSplashTier({ ...strong, reducedMotion: true })).toBe('minimal')
   })
 })
+
+describe('one scene for each app', () => {
+  it('has a drawn scene and a background for every scene on offer, and plays one per app', async () => {
+    const { SCENES, SCENE_FOR_APP, SCENE_LIB, sceneMeta } =
+      await import('../src/main/fork/opening-scenes')
+    for (const scene of SCENES) {
+      expect(SCENE_LIB).toContain(`scenes.${scene.id}={`)
+      expect(scene.bg).toHaveLength(2)
+    }
+    for (const app of Object.keys(SPLASH_THEMES) as Array<keyof typeof SPLASH_THEMES>) {
+      expect(SCENES.some((s) => s.id === SCENE_FOR_APP[app])).toBe(true)
+      const html = openingPageHtml(openingWords('en', 'open'), 'f', app, 'full')
+      expect(html).toContain(`data-app="${app}"`)
+      expect(html).toContain(`data-scene="${SCENE_FOR_APP[app]}"`)
+      expect(html).toContain(sceneMeta(SCENE_FOR_APP[app]).bg[0])
+    }
+  })
+
+  it('can play any scene on any app when asked to', () => {
+    const html = openingPageHtml(openingWords('en', 'open'), 'f', 'docs', 'lite', 'lotus')
+    expect(html).toContain('data-scene="lotus"')
+  })
+
+  it('keeps the script free of template-literal syntax, which would break the page', async () => {
+    const { SCENE_LIB, SCENE_BOOT } = await import('../src/main/fork/opening-scenes')
+    for (const script of [SCENE_LIB, SCENE_BOOT]) {
+      expect(script).not.toContain('${')
+      expect(script).not.toContain('`')
+    }
+  })
+
+  it('says "opening" for a plain open too', () => {
+    expect(openingWords('vi', 'open').title).toBe('Đang mở…')
+    expect(openingWords('en', 'open').title).toBe('Opening…')
+  })
+})
