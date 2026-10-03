@@ -53,6 +53,10 @@ export type UiTheme = 'light' | 'dark' | 'system'
 export interface LegacyDocSettings {
   mode: 'ask' | 'online' | 'text'
   endpoint: string
+  /** opening an old .xls makes an .xlsx beside it and opens that */
+  convertOnOpen: boolean
+  /** turn the old files of the index into new ones in the background: .xls only (on this device), or .doc and .ppt too (needs the online converter) */
+  convertInIndex: 'off' | 'xls' | 'all'
 }
 
 export interface LegacyRecoveryEntry {

@@ -3,7 +3,8 @@
  * exports an HTML table, a tab/comma text file or an .xlsx under that name; the workbook reader
  * only understands the real format, so those would fail with "Invalid OLE".
  */
-import { open } from 'node:fs/promises'
+import { copyFile, open, readFile, stat, writeFile } from 'node:fs/promises'
+import { csvToXlsxBufferForOpen, decodeCsvBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
 
 export type XlsKind = 'ole' | 'xlsx' | 'html' | 'text'
 
@@ -66,4 +67,33 @@ export async function readFileHead(path: string, length: number): Promise<Uint8A
   } finally {
     await handle.close()
   }
+}
+
+/**
+ * Convert a file saved as .xls into an .xlsx at `targetPath`, whatever it really is: a real
+ * Excel 97-2003 workbook goes through the workbook reader, the rest are read here.
+ */
+export async function convertLegacyXlsFile(
+  path: string,
+  targetPath: string,
+  options: {
+    convertOle(path: string, targetPath: string): Promise<unknown>
+    charset?: string | undefined
+    maxTextBytes: number
+    tooLarge: () => Error
+  },
+): Promise<void> {
+  const kind = sniffXlsKind(await readFileHead(path, 4096))
+  if (kind === 'xlsx') return copyFile(path, targetPath)
+  if (kind === 'ole') {
+    await options.convertOle(path, targetPath)
+    return
+  }
+  if ((await stat(path)).size > options.maxTextBytes) throw options.tooLarge()
+  const text = decodeCsvBuffer(await readFile(path), options.charset)
+  const converted =
+    kind === 'html'
+      ? await csvToXlsxBufferForOpen(htmlTableToTsv(text), 'Sheet1', '\t')
+      : await csvToXlsxBufferForOpen(text, 'Sheet1')
+  await writeFile(targetPath, converted.buffer)
 }

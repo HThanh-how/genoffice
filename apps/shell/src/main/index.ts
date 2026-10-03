@@ -14,6 +14,8 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import {
   BrowserWindow,
@@ -41,6 +43,13 @@ import {
   restoreLegacyDoc,
 } from './legacy-recovery'
 import { convertLegacyPpt } from './legacy-ppt'
+import { convertBeside, type ConvertBesideDeps } from './legacy-convert'
+import {
+  LegacyConverter,
+  type LegacyConvertMode,
+  type LegacyConvertOutcome,
+} from './legacy-converter'
+import { isIndexingPaused } from './fork/indexing-policy-bus'
 import { tabStripOverlay } from './title-bar-overlay'
 import menuDocxIcon1x from './assets/menu-docx.png?asset'
 import menuDocxIcon2x from './assets/menu-docx@2x.png?asset'
@@ -188,6 +197,7 @@ import { createSheetsControl, installSheetsBridge } from './mcp/sheets-bridge'
 import { createOpenDocumentsControl, createOpenTargetResolver } from './mcp/open-documents-bridge'
 import {
   configureSheetsRuntime,
+  convertLegacySpreadsheetToXlsx,
   exportSheetsPdfHeadless,
   hasActiveQueuedWorkbook,
   installSheetsMenu,
@@ -560,6 +570,11 @@ function legacyDocSettings(): LegacyDocSettings {
       typeof saved.legacyDocEndpoint === 'string' && saved.legacyDocEndpoint.trim()
         ? saved.legacyDocEndpoint.trim()
         : DEFAULT_LEGACY_DOC_SERVICE,
+    convertOnOpen: saved.legacyConvertOnOpen !== false,
+    convertInIndex:
+      saved.legacyConvertInIndex === 'off' || saved.legacyConvertInIndex === 'all'
+        ? saved.legacyConvertInIndex
+        : 'xls',
   }
 }
 
@@ -3481,6 +3496,7 @@ const DOCX_RE = /\.docx$/i
 const DOC_RE = /\.doc$/i
 const PPT_RE = /\.ppt$/i
 const XLSX_RE = /\.(xlsx|xlsm|xls|csv|tsv)$/i
+const XLS_RE = /\.xls$/i
 const PPTX_RE = /\.pptx$/i
 const PDF_RE = /\.pdf$/i
 const MD_RE = /\.(md|markdown)$/i
@@ -3620,6 +3636,153 @@ async function openLegacyPpt(filePath: string): Promise<void> {
   } finally {
     pendingLegacyPptImports.delete(filePath)
   }
+}
+
+function openSheetsFile(filePath: string): void {
+  if (!tabManager) return
+  recordRecentFile(filePath)
+  const existing = tabManager.findSheetsTabByPath(filePath)
+  if (existing) {
+    tabManager.activateTab(existing)
+  } else {
+    tabManager.openSheetsTab(filePath)
+    startQueuedWorkbookNudge()
+  }
+}
+
+/** Where a converted copy goes, and how the old file is kept for recovery. */
+function convertBesideDeps(fallbackToSaveDir: boolean): ConvertBesideDeps {
+  const userData = app.getPath('userData')
+  return {
+    uniquePathIn,
+    fallbackDir: fallbackToSaveDir ? defaultSaveDir : null,
+    write: atomicWriteFile,
+    linkedCopy: (source) => linkedLegacyDocCopy(source, userData),
+    remember: (source, converted, hash) => rememberLegacyDocCopy(source, converted, hash, userData),
+    archive: (source, converted, hash) => archiveLegacyDoc(source, converted, userData, hash),
+  }
+}
+
+async function spreadsheetBytes(filePath: string): Promise<{ bytes: Uint8Array }> {
+  const directory = await mkdtemp(join(tmpdir(), 'genoffice-xls-'))
+  const target = join(directory, 'converted.xlsx')
+  try {
+    await convertLegacySpreadsheetToXlsx(filePath, target)
+    return { bytes: await readFile(target) }
+  } finally {
+    await rm(directory, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
+const pendingLegacyXlsImports = new Set<string>()
+
+/** Opening an old .xls makes a real .xlsx beside it and opens that, so it is a normal file from now on. */
+async function openLegacyXls(filePath: string): Promise<void> {
+  if (pendingLegacyXlsImports.has(filePath)) return
+  pendingLegacyXlsImports.add(filePath)
+  try {
+    const opening = startOpeningNotice({
+      fileName: basename(filePath),
+      lang: currentLang(),
+      kind: 'xls',
+      app: 'sheets',
+    })
+    let result: Awaited<ReturnType<typeof convertBeside>>
+    try {
+      result = await convertBeside(
+        filePath,
+        '.xlsx',
+        () => spreadsheetBytes(filePath),
+        convertBesideDeps(true),
+      )
+    } finally {
+      opening.close()
+    }
+    if (result.archived) replaceRecentFile(filePath, result.convertedPath)
+    openSheetsFile(result.convertedPath)
+    if (result.archived && !result.reused) void noteLegacyOriginalKept(result.convertedPath, '.xls')
+  } catch (error) {
+    // never leave the person without their file: the sheets editor can still open the .xls itself
+    console.warn('[shell] .xls conversion failed, opening the original:', error)
+    openSheetsFile(filePath)
+  } finally {
+    pendingLegacyXlsImports.delete(filePath)
+  }
+}
+
+async function noteLegacyOriginalKept(convertedPath: string, oldExtension: string): Promise<void> {
+  if (readAppSettings(APP_SETTINGS_PATH()).legacyRecoveryNoticeSeen === true) return
+  try {
+    writeAppSetting(APP_SETTINGS_PATH(), 'legacyRecoveryNoticeSeen', true)
+  } catch {
+    return
+  }
+  await showLegacyDocInfoToast(
+    convertedPath,
+    currentLang() === 'vi'
+      ? `Đã chuyển sang định dạng mới. Bản gốc ${oldExtension} được giữ trong thư mục khôi phục ẩn trong 30 ngày.`
+      : `Converted to the new format. The original ${oldExtension} is kept in a hidden recovery folder for 30 days.`,
+  )
+}
+
+/** One file of the index, old format to new, for the background converter. */
+async function convertLegacyForIndex(path: string): Promise<LegacyConvertOutcome> {
+  const info = await stat(path).catch(() => null)
+  if (!info) return 'skipped'
+  // a file still being written or downloaded is left alone for now
+  if (Date.now() - info.mtimeMs < 60_000) return 'skipped'
+  const extension = extname(path).toLowerCase()
+  const settings = legacyDocSettings()
+  const online = settings.mode === 'online'
+  let result: Awaited<ReturnType<typeof convertBeside>>
+  if (extension === '.xls') {
+    result = await convertBeside(
+      path,
+      '.xlsx',
+      () => spreadsheetBytes(path),
+      convertBesideDeps(false),
+    )
+  } else if (extension === '.doc' && online) {
+    result = await convertBeside(
+      path,
+      '.docx',
+      async () => {
+        const converted = await convertLegacyDoc(path, settings.endpoint)
+        // a text-only copy would lose tables and pictures: leave such a file as it is
+        if (converted.fidelity !== 'formatted') throw new Error('Only a text copy was possible')
+        return { bytes: converted.bytes, sourceHash: converted.sourceHash }
+      },
+      convertBesideDeps(false),
+    )
+  } else if (extension === '.ppt' && online) {
+    result = await convertBeside(
+      path,
+      '.pptx',
+      async () => ({ bytes: await convertLegacyPpt(path, settings.endpoint) }),
+      convertBesideDeps(false),
+    )
+  } else {
+    return 'failed'
+  }
+  if (result.archived) replaceRecentFile(path, result.convertedPath)
+  return result.archived ? 'converted' : 'failed'
+}
+
+let legacyConverter: LegacyConverter | null = null
+
+function startLegacyConverter(): void {
+  const memory = documentMemory
+  if (!memory) return
+  legacyConverter = new LegacyConverter({
+    mode: (): LegacyConvertMode => legacyDocSettings().convertInIndex,
+    list: (extensions, limit) => memory.legacyPaths(extensions, limit),
+    convert: convertLegacyForIndex,
+    paused: isIndexingPaused,
+    wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  })
+  // a minute after start the machine is no longer busy opening, then once in a while for new files
+  setTimeout(() => legacyConverter?.kick(), 60_000).unref()
+  setInterval(() => legacyConverter?.kick(), 10 * 60_000).unref()
 }
 
 async function openLegacyDoc(filePath: string): Promise<void> {
@@ -3797,15 +3960,14 @@ function routeDocumentPath(filePath: string): boolean {
     else tabManager.openDocsTab(filePath)
     return true
   }
-  if (XLSX_RE.test(filePath)) {
-    recordRecentFile(filePath)
-    const existing = tabManager.findSheetsTabByPath(filePath)
-    if (existing) {
-      tabManager.activateTab(existing)
-    } else {
-      tabManager.openSheetsTab(filePath)
-      startQueuedWorkbookNudge()
+  if (XLS_RE.test(filePath) && legacyDocSettings().convertOnOpen) {
+    if (!tabManager.findSheetsTabByPath(filePath)) {
+      void openLegacyXls(filePath)
+      return true
     }
+  }
+  if (XLSX_RE.test(filePath)) {
+    openSheetsFile(filePath)
     return true
   }
   if (PPTX_RE.test(filePath)) {
@@ -4624,7 +4786,16 @@ function registerHomeIpc(): void {
     writeAppSettings(APP_SETTINGS_PATH(), {
       legacyDocMode: request.mode,
       legacyDocEndpoint: request.endpoint,
+      ...(typeof request.convertOnOpen === 'boolean'
+        ? { legacyConvertOnOpen: request.convertOnOpen }
+        : {}),
+      ...(request.convertInIndex === 'off' ||
+      request.convertInIndex === 'xls' ||
+      request.convertInIndex === 'all'
+        ? { legacyConvertInIndex: request.convertInIndex }
+        : {}),
     })
+    legacyConverter?.kick()
     return legacyDocSettings()
   })
   // editor tabs ask via the app-wide channel (symmetric with app:get-language)
@@ -6394,6 +6565,7 @@ app.whenReady().then(async () => {
     dbDir: resolveDbDir(userDataDir),
     externalNames: (query, limit) => everything!.search.search(query, limit),
   })
+  startLegacyConverter()
   void listLegacyRecovery(app.getPath('userData')).catch((error) =>
     console.warn('[shell] legacy recovery cleanup failed:', error),
   )

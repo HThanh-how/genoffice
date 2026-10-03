@@ -597,6 +597,20 @@ export class DocumentMemoryStore {
     return row?.priority_at ?? 0
   }
 
+  /** Indexed files with one of these legacy extensions (lower-case, with the dot), newest first. */
+  legacyPaths(extensions: readonly string[], limit: number): string[] {
+    if (extensions.length === 0) return []
+    const clauses = extensions.map(() => 'lower(path) LIKE ?').join(' OR ')
+    return (
+      this.db
+        .prepare(
+          `SELECT path FROM documents WHERE excluded = 0 AND (${clauses})
+          ORDER BY priority_at DESC, id DESC LIMIT ?`,
+        )
+        .all(...extensions.map((e) => `%${e}`), limit) as Array<{ path: string }>
+    ).map((r) => r.path)
+  }
+
   listPaths(): string[] {
     return (
       this.db

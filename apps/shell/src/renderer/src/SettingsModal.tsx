@@ -1406,6 +1406,8 @@ export function SettingsModal({
   const [legacyDoc, setLegacyDoc] = useState<LegacyDocSettings>({
     mode: 'online',
     endpoint: 'https://d2x.clouds.io.vn',
+    convertOnOpen: true,
+    convertInIndex: 'xls',
   })
   const [legacyRecovery, setLegacyRecovery] = useState<LegacyRecoveryEntry[]>([])
   const [legacyRecoveryBusy, setLegacyRecoveryBusy] = useState<string | null>(null)
@@ -1785,6 +1787,72 @@ export function SettingsModal({
                       ]}
                       onPick={(mode) =>
                         updateLegacyDoc({ mode: mode as LegacyDocSettings['mode'] })
+                      }
+                    />
+                  </div>
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">
+                          {lang === 'vi'
+                            ? 'Mở tệp cũ thì chuyển sang định dạng mới'
+                            : 'Convert old files to the new format when opened'}
+                        </div>
+                        <div className="set-field-desc">
+                          {lang === 'vi'
+                            ? 'Mở .xls sẽ tạo tệp .xlsx cạnh bản gốc rồi mở tệp mới; bản gốc được cất vào thư mục khôi phục ẩn 30 ngày. Tắt đi thì .xls mở như bản sao tạm và hỏi nơi lưu khi lưu.'
+                            : 'Opening an .xls makes an .xlsx beside it and opens that; the original is kept in a hidden recovery folder for 30 days. Off: the .xls opens as a temporary copy and Save asks where to put it.'}
+                        </div>
+                      </div>
+                    </div>
+                    <Dropdown
+                      className="set-dd"
+                      value={legacyDoc.convertOnOpen ? 'on' : 'off'}
+                      ariaLabel="Convert old files when opened"
+                      options={[
+                        { value: 'on', label: lang === 'vi' ? 'Bật' : 'On' },
+                        { value: 'off', label: lang === 'vi' ? 'Tắt' : 'Off' },
+                      ]}
+                      onPick={(value) => updateLegacyDoc({ convertOnOpen: value === 'on' })}
+                    />
+                  </div>
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">
+                          {lang === 'vi'
+                            ? 'Chuyển tệp cũ trong chỉ mục sang định dạng mới'
+                            : 'Convert old files in the index to the new format'}
+                        </div>
+                        <div className="set-field-desc">
+                          {lang === 'vi'
+                            ? 'Chạy nền, từng tệp một, tạm dừng khi máy dùng pin yếu. Chỉ .xls: chuyển ngay trên máy, không gửi đi đâu. Cả .doc và .ppt: gửi từng tệp tới dịch vụ chuyển đổi bên dưới (cần chế độ chuyển tự động). Bản gốc luôn được giữ 30 ngày.'
+                            : 'Runs in the background, one file at a time, and pauses on a low battery. .xls only: converted on this device, nothing is sent. .doc and .ppt too: each file is sent to the conversion service below (needs automatic conversion). Originals are always kept for 30 days.'}
+                        </div>
+                      </div>
+                    </div>
+                    <Dropdown
+                      className="set-dd"
+                      value={legacyDoc.convertInIndex}
+                      ariaLabel="Convert old files in the index"
+                      options={[
+                        { value: 'off', label: lang === 'vi' ? 'Tắt' : 'Off' },
+                        {
+                          value: 'xls',
+                          label: lang === 'vi' ? 'Chỉ .xls (trên máy)' : '.xls only (on device)',
+                        },
+                        {
+                          value: 'all',
+                          label:
+                            lang === 'vi'
+                              ? 'Cả .doc và .ppt (gửi dịch vụ)'
+                              : '.doc and .ppt too (uses service)',
+                        },
+                      ]}
+                      onPick={(value) =>
+                        updateLegacyDoc({
+                          convertInIndex: value as LegacyDocSettings['convertInIndex'],
+                        })
                       }
                     />
                   </div>

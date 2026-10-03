@@ -35,20 +35,30 @@ export interface OpeningWords {
   hint: string
 }
 
-const EN: Record<'doc' | 'ppt', OpeningWords> = {
+export type OpeningKind = 'doc' | 'ppt' | 'xls'
+
+const EN: Record<OpeningKind, OpeningWords> = {
   doc: {
     title: 'Opening document…',
     hint: 'Converting the old .doc format. This can take a few seconds.',
+  },
+  xls: {
+    title: 'Opening spreadsheet…',
+    hint: 'Converting the old .xls format. This can take a few seconds.',
   },
   ppt: {
     title: 'Opening presentation…',
     hint: 'Converting the old .ppt format. This can take a few seconds.',
   },
 }
-const VI: Record<'doc' | 'ppt', OpeningWords> = {
+const VI: Record<OpeningKind, OpeningWords> = {
   doc: {
     title: 'Đang mở tài liệu…',
     hint: 'Đang chuyển định dạng .doc cũ, có thể mất vài giây.',
+  },
+  xls: {
+    title: 'Đang mở bảng tính…',
+    hint: 'Đang chuyển định dạng .xls cũ, có thể mất vài giây.',
   },
   ppt: {
     title: 'Đang mở bản trình chiếu…',
@@ -56,7 +66,7 @@ const VI: Record<'doc' | 'ppt', OpeningWords> = {
   },
 }
 
-export const openingWords = (lang: string, kind: 'doc' | 'ppt'): OpeningWords =>
+export const openingWords = (lang: string, kind: OpeningKind): OpeningWords =>
   (lang === 'vi' ? VI : EN)[kind]
 
 /** What the machine can afford, and what the person has asked for, decide how rich the animation is. */
@@ -243,7 +253,7 @@ function machineTier(): SplashTier {
 export function startOpeningNotice(options: {
   fileName: string
   lang: string
-  kind: 'doc' | 'ppt'
+  kind: OpeningKind
   /** the app that will open the file; a .doc opens in Docs, a .ppt in Slides */
   app?: SplashApp
   delayMs?: number
@@ -277,7 +287,8 @@ export function startOpeningNotice(options: {
     const html = openingPageHtml(
       openingWords(options.lang, options.kind),
       options.fileName,
-      options.app ?? (options.kind === 'ppt' ? 'slides' : 'docs'),
+      options.app ??
+        (options.kind === 'ppt' ? 'slides' : options.kind === 'xls' ? 'sheets' : 'docs'),
       machineTier(),
     )
     void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)

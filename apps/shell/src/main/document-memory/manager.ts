@@ -529,6 +529,10 @@ export class DocumentMemoryManager {
       this.enqueue(newResolved)
   }
 
+  legacyPaths(extensions: readonly string[], limit: number): string[] {
+    return this.store.legacyPaths(extensions, limit)
+  }
+
   listPaths(): string[] {
     return this.store.listPaths()
   }

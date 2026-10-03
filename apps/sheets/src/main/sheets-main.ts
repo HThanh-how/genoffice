@@ -80,7 +80,7 @@ import {
 } from '@genoffice/ai-provider'
 import { shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
 import { isCliProvider } from '@genoffice/ai-provider/agy-cli'
-import { htmlTableToTsv, readFileHead, sniffXlsKind } from './disguised-xls'
+import { convertLegacyXlsFile } from './disguised-xls'
 import {
   csvToXlsxBufferForOpen,
   decodeCsvBuffer,
@@ -4393,22 +4393,12 @@ async function prepareWorkbookForOpen(
       emptyCsv = converted.empty
       await writeFile(openPath, converted.buffer)
     } else {
-      // many ".xls" files are an HTML table, a text export or an .xlsx under the wrong name
-      const kind = sniffXlsKind(await readFileHead(path, 4096))
-      if (kind === 'xlsx') {
-        await copyFile(path, openPath)
-      } else if (kind === 'html' || kind === 'text') {
-        const xlsStat = await stat(path)
-        if (xlsStat.size > MAX_DELIMITED_IMPORT_BYTES) throw new Error(tm('errFileTooLarge'))
-        const text = decodeCsvBuffer(await readFile(path), legacyCsvCharset())
-        const converted =
-          kind === 'html'
-            ? await csvToXlsxBufferForOpen(htmlTableToTsv(text), 'Sheet1', '\t')
-            : await csvToXlsxBufferForOpen(text, 'Sheet1')
-        await writeFile(openPath, converted.buffer)
-      } else {
-        await client.convertWorkbook({ path, targetPath: openPath })
-      }
+      await convertLegacyXlsFile(path, openPath, {
+        convertOle: (from, to) => client.convertWorkbook({ path: from, targetPath: to }),
+        charset: legacyCsvCharset(),
+        maxTextBytes: MAX_DELIMITED_IMPORT_BYTES,
+        tooLarge: () => new Error(tm('errFileTooLarge')),
+      })
     }
   } catch (error) {
     await cleanupImportTempDirectory(app.getPath('temp'), directory)
@@ -4656,4 +4646,23 @@ async function closeAllSessions(entry: {
       })
     }),
   )
+}
+
+/**
+ * Write an .xlsx copy of a legacy .xls (or a file posing as one) without opening it anywhere.
+ * Used by the shell to convert in the background and when a legacy workbook is opened.
+ */
+export async function convertLegacySpreadsheetToXlsx(
+  path: string,
+  targetPath: string,
+): Promise<void> {
+  const client = sidecar ?? new XlsxSidecarClient(resolveSidecarPath())
+  sidecar = client
+  client.start()
+  await convertLegacyXlsFile(path, targetPath, {
+    convertOle: (from, to) => client.convertWorkbook({ path: from, targetPath: to }),
+    charset: legacyCsvCharset(),
+    maxTextBytes: MAX_DELIMITED_IMPORT_BYTES,
+    tooLarge: () => new Error(tm('errFileTooLarge')),
+  })
 }
