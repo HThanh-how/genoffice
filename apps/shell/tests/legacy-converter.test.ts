@@ -26,10 +26,10 @@ function rig(options: {
   const converter = new LegacyConverter({
     mode: () => mode,
     concurrency: options.concurrency ?? 1,
-    list: (extensions) => {
+    list: (extensions, limit) => {
       asked.push([...extensions])
       // the index keeps listing a file until it notices the move: never drop one from here
-      return options.files.filter((p) => extensions.some((e) => p.endsWith(e)))
+      return options.files.filter((p) => extensions.some((e) => p.endsWith(e))).slice(0, limit)
     },
     convert: async (path) => {
       running++
@@ -194,5 +194,15 @@ describe('converting several files at the same time', () => {
     // the paused file is asked for twice (busy, then converted); the others once
     expect([...converted].sort()).toEqual(['/a/1.doc', '/a/1.doc', '/a/2.doc', '/a/3.doc'])
     expect(converter.state()).toMatchObject({ converted: 3, failed: 0 })
+  })
+
+  it('gets past files that were converted but are still listed first, instead of stopping', async () => {
+    // far more than one batch, and the index never drops the converted ones from the front
+    const files = Array.from({ length: 700 }, (_, i) => `/a/${String(i).padStart(3, '0')}.doc`)
+    const { converter, converted } = rig({ files, concurrency: 4 })
+    converter.kick()
+    await settle(converter)
+    expect(new Set(converted).size).toBe(700)
+    expect(converter.state()).toMatchObject({ converted: 700, failed: 0, running: false })
   })
 })

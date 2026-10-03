@@ -104,7 +104,11 @@ export class LegacyConverter {
       }
       if (this.queue.length === 0) {
         // no await between looking at the queue and filling it, so two workers never both refill
-        const todo = this.deps.list(EXTENSIONS[mode], BATCH).filter((path) => !this.isDone(path))
+        // The index keeps listing a file for a while after it was converted and moved, so the
+        // newest rows can all be files already done: ask for enough rows to get past them.
+        const limit =
+          BATCH + this.handled.size + this.failed.size + this.skipped.size + this.inFlight.size
+        const todo = this.deps.list(EXTENSIONS[mode], limit).filter((path) => !this.isDone(path))
         this.pending = todo.length + this.inFlight.size
         this.publish()
         if (todo.length === 0) return null
