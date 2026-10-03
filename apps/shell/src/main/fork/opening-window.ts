@@ -128,6 +128,8 @@ export function openingPageHtml(
   appName: SplashApp = 'docs',
   tier: SplashTier = 'lite',
   scene?: string,
+  /** `window`: the scene fills its own small window; `card`: a small card on a plain backdrop (over a tab) */
+  layout: 'window' | 'card' = 'window',
 ): string {
   const theme = SPLASH_THEMES[appName]
   const rgb = rgbOf(theme.color)
@@ -137,10 +139,16 @@ export function openingPageHtml(
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(words.title)}</title>
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <style>
-:root{color-scheme:dark;--accent:${theme.color};--rgb:${rgb};--bg1:${bg1};--bg2:${bg2};--fg:#f3f5fa;--muted:#aab3c8}
+:root{color-scheme:dark;--accent:${theme.color};--rgb:${rgb};--bg1:${bg1};--bg2:${bg2};--fg:#f3f5fa;--muted:#aab3c8;--backdrop:#eef0f4}
+@media (prefers-color-scheme:dark){:root{--backdrop:#15171c}}
 html,body{margin:0;height:100%;overflow:hidden}
-body{position:relative;font:14px/1.35 "Segoe UI",system-ui,-apple-system,sans-serif;color:var(--fg);user-select:none;cursor:default;
+body{font:14px/1.35 "Segoe UI",system-ui,-apple-system,sans-serif;color:var(--fg);user-select:none;cursor:default}
+.stage{position:absolute;inset:0;overflow:hidden;
 background:linear-gradient(160deg,var(--bg1) 0%,var(--bg2) 60%,rgba(var(--rgb),.35) 140%);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
+body.card{display:flex;align-items:center;justify-content:center;
+background:radial-gradient(circle at 50% 42%,rgba(var(--rgb),.14),transparent 62%),var(--backdrop)}
+body.card .stage{position:relative;inset:auto;width:min(480px,86vw);height:min(240px,70vh);border-radius:18px;
+box-shadow:0 24px 70px rgba(0,0,0,.38),0 0 0 1px rgba(255,255,255,.1)}
 #sea{position:absolute;inset:0;width:100%;height:100%}
 .glow{position:absolute;left:50%;bottom:-70px;width:420px;height:200px;margin-left:-210px;border-radius:50%;
 background:radial-gradient(closest-side,rgba(var(--rgb),.45),rgba(var(--rgb),0));animation:breathe 3.2s ease-in-out infinite}
@@ -166,7 +174,8 @@ box-shadow:0 0 0 1px rgba(255,255,255,.18),0 8px 26px rgba(var(--rgb),.55);anima
 body{transition:opacity .3s ease}body.leaving{opacity:0}
 @media (prefers-reduced-motion:reduce){.badge,.glow,.bubble,.bar i{animation:none}}
 </style></head>
-<body data-app="${appName}" data-scene="${sceneId}" data-tier="${tier}" data-rgb="${rgb}" data-lt="${lighterRgbOf(theme.color)}">
+<body${layout === 'card' ? ' class="card"' : ''} data-app="${appName}" data-scene="${sceneId}" data-tier="${tier}" data-rgb="${rgb}" data-lt="${lighterRgbOf(theme.color)}">
+<div class="stage">
 <canvas id="sea" aria-hidden="true"></canvas><div class="glow"></div>
 <span class="bubble b1"></span><span class="bubble b2"></span><span class="bubble b3"></span>
 <div class="badge" aria-hidden="true">${escapeHtml(theme.letter)}</div>
@@ -174,6 +183,7 @@ body{transition:opacity .3s ease}body.leaving{opacity:0}
 <div class="name">${escapeHtml(fileName)}</div>
 <div class="hint">${escapeHtml(words.hint)}</div></div>
 <div class="bar" role="progressbar" aria-label="${escapeHtml(words.title)}"><i></i></div>
+</div>
 ${script}
 </body></html>`
 }
@@ -229,6 +239,8 @@ export function buildOpeningPage(options: {
   app: SplashApp
   /** play this scene instead of the one chosen (for a preview) */
   scene?: string
+  /** `card`: a small card on a plain backdrop, for laying over a tab */
+  layout?: 'window' | 'card'
   /** the machine's own tier, unless the person fixed one */
   forceTier?: SplashTier
 }): string {
@@ -254,6 +266,7 @@ export function buildOpeningPage(options: {
     options.app,
     tier,
     chosen === CUSTOM_SCENE ? undefined : chosen,
+    options.layout,
   )
 }
 

@@ -34,6 +34,8 @@ export function electronOverlayDeps(
         lang: lang(),
         kind: 'open',
         app: spec.app,
+        // a small card over the tab, not a scene that fills it
+        layout: 'card',
       })
       void view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
       let gone = false

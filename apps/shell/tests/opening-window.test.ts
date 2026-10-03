@@ -115,3 +115,38 @@ describe('one scene for each app', () => {
     expect(openingWords('en', 'open').title).toBe('Opening…')
   })
 })
+
+describe('the opening page over a tab is a small card, not a full-size scene', () => {
+  it('puts the scene in a card on a plain backdrop, and keeps the small window as it was', () => {
+    const card = openingPageHtml(
+      openingWords('en', 'open'),
+      'a.docx',
+      'docs',
+      'full',
+      'ocean',
+      'card',
+    )
+    expect(card).toContain('<body class="card"')
+    expect(card).toContain('body.card .stage')
+    expect(card).toContain('width:min(480px,86vw)')
+    expect(card).toContain('--backdrop')
+    const window = openingPageHtml(openingWords('en', 'open'), 'a.docx', 'docs', 'full', 'ocean')
+    expect(window).not.toContain('class="card"')
+    expect(window).toContain('<div class="stage">')
+  })
+
+  it('shows the scene, the badge and the file name inside the card', () => {
+    const card = openingPageHtml(
+      openingWords('vi', 'open'),
+      'Báo cáo.docx',
+      'docs',
+      'lite',
+      'snow',
+      'card',
+    )
+    const stage = card.slice(card.indexOf('<div class="stage">'), card.indexOf('</div>\n<script>'))
+    expect(stage).toContain('id="sea"')
+    expect(stage).toContain('class="badge"')
+    expect(stage).toContain('Báo cáo.docx')
+  })
+})
