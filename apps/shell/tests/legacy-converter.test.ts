@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  BETWEEN_FILES_MS,
+  BUSY_PAUSE_MS,
   LegacyConverter,
   type LegacyConvertMode,
   type LegacyConvertOutcome,
@@ -14,7 +16,7 @@ function rig(options: {
   const left = [...options.files]
   const converted: string[] = []
   const waits: number[] = []
-  let mode: LegacyConvertMode = options.mode ?? 'xls'
+  let mode: LegacyConvertMode = options.mode ?? 'all'
   const asked: string[][] = []
   const converter = new LegacyConverter({
     mode: () => mode,
@@ -58,11 +60,7 @@ describe('the background converter', () => {
     expect(converted).toEqual([])
   })
 
-  it('asks for .doc and .ppt only in the "all" mode', async () => {
-    const xls = rig({ files: [], mode: 'xls' })
-    xls.converter.kick()
-    await settle(xls.converter)
-    expect(xls.asked[0]).toEqual(['.xls'])
+  it('asks for every old format when it is on', async () => {
     const all = rig({ files: [], mode: 'all' })
     all.converter.kick()
     await settle(all.converter)
@@ -110,5 +108,37 @@ describe('the background converter', () => {
     await settle(converter)
     expect(waits[0]).toBe(30_000)
     expect(converted).toEqual(['/a/1.xls'])
+  })
+
+  it('waits for the service between files, but not for a file that was not ready', async () => {
+    const { converter, waits } = rig({
+      files: ['/a/1.xls', '/a/2.xls'],
+      outcome: (p) => (p.includes('1') ? 'converted' : 'skipped'),
+    })
+    converter.kick()
+    await settle(converter)
+    expect(waits).toEqual([BETWEEN_FILES_MS])
+  })
+
+  it('stays within the service hourly limit: about one file every few minutes', () => {
+    const perHour = (60 * 60_000) / BETWEEN_FILES_MS
+    expect(perHour).toBeLessThanOrEqual(20)
+  })
+
+  it('waits out the hourly limit and then tries the same file again, not marking it failed', async () => {
+    let busy = true
+    const { converter, converted, waits } = rig({
+      files: ['/a/1.doc'],
+      outcome: () => {
+        const was = busy
+        busy = false
+        return was ? 'busy' : 'converted'
+      },
+    })
+    converter.kick()
+    await settle(converter)
+    expect(waits[0]).toBe(BUSY_PAUSE_MS)
+    expect(converted).toEqual(['/a/1.doc', '/a/1.doc'])
+    expect(converter.state()).toMatchObject({ converted: 1, failed: 0 })
   })
 })

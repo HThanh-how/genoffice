@@ -57,8 +57,8 @@ export interface LegacyDocSettings {
   endpoint: string
   /** opening an old .xls makes an .xlsx beside it and opens that */
   convertOnOpen: boolean
-  /** turn the old files of the index into new ones in the background: .xls only (on this device), or .doc and .ppt too (needs the online converter) */
-  convertInIndex: 'off' | 'xls' | 'all'
+  /** the old files of the index (.doc .xls .ppt) are converted in the background by the conversion service */
+  convertInIndex: 'off' | 'all'
 }
 
 /** Background conversion of old-format files (.xls .doc .ppt) in the index. */

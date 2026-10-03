@@ -6,10 +6,15 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { buildBlankDocx, parseDocx, saveDocx } from '@genoffice/docx-engine'
 import { docToText } from '@genoffice/file-parse'
+import {
+  DEFAULT_CONVERSION_SERVICE,
+  DOCX_ROUTE,
+  ServiceRateLimitedError,
+  convertThroughService,
+} from './legacy-service'
 
 const execFileAsync = promisify(execFile)
 const MAX_DOC_BYTES = 50 * 1024 * 1024
-const MAX_CONVERTED_BYTES = 50 * 1024 * 1024
 
 export type LegacyDocConversion = {
   bytes: Uint8Array
@@ -17,71 +22,32 @@ export type LegacyDocConversion = {
   sourceHash: string
 }
 
-export const DEFAULT_LEGACY_DOC_SERVICE = 'https://d2x.clouds.io.vn'
-
-/** Answers worth asking again: the service was busy, restarting or slow, not "this file is bad". */
-const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504])
-const SERVICE_ATTEMPTS = 4
-const ATTEMPT_TIMEOUT_MS = 45_000
-const RETRY_PAUSE_MS = 500
+export const DEFAULT_LEGACY_DOC_SERVICE = DEFAULT_CONVERSION_SERVICE
 
 /**
- * A document is sent online only when the caller supplies an endpoint. A failed try (a dropped
- * connection, a timeout, a busy service) is repeated a few times with growing pauses, so one bad
- * moment does not turn a formatted document into a text-only copy.
+ * A document is sent online only when the caller supplies an endpoint. A failed try is repeated
+ * (see `convertThroughService`), so one bad moment does not turn a formatted document into a
+ * text-only copy. `strict` lets the service's hourly limit reach the caller instead of being
+ * treated as "could not convert".
  */
 export async function convertWithService(
   source: Uint8Array,
   endpoint: string,
-  pause: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  pause?: (ms: number) => Promise<void>,
+  options: { strict?: boolean } = {},
 ): Promise<Uint8Array | null> {
-  let url: URL
   try {
-    url = new URL('/v1/convert/docx', endpoint)
-    if (url.protocol !== 'https:' && !(url.protocol === 'http:' && url.hostname === '127.0.0.1')) {
-      return null
-    }
-  } catch {
-    return null
+    return await convertThroughService(
+      source,
+      endpoint,
+      DOCX_ROUTE,
+      async (bytes) => void (await parseDocx(bytes)),
+      pause,
+    )
+  } catch (error) {
+    if (error instanceof ServiceRateLimitedError && !options.strict) return null
+    throw error
   }
-  for (let attempt = 0; attempt < SERVICE_ATTEMPTS; attempt++) {
-    if (attempt > 0) await pause(RETRY_PAUSE_MS * attempt * attempt)
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/msword' },
-        body: Buffer.from(source),
-        // each try has its own time: a slow first one must not use up the others'
-        signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
-      })
-      if (!response.ok) {
-        if (RETRYABLE_STATUSES.has(response.status)) continue
-        return null
-      }
-      const length = Number(response.headers.get('content-length'))
-      if (Number.isFinite(length) && length > MAX_CONVERTED_BYTES) return null
-      if (!response.body) continue
-      const reader = response.body.getReader()
-      const chunks: Uint8Array[] = []
-      let received = 0
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        received += value.byteLength
-        if (received > MAX_CONVERTED_BYTES) {
-          await reader.cancel()
-          return null
-        }
-        chunks.push(value)
-      }
-      const bytes = Buffer.concat(chunks, received)
-      await parseDocx(bytes)
-      return bytes
-    } catch {
-      // a dropped connection, a timeout or a reply that is not a document: try again
-    }
-  }
-  return null
 }
 
 /** macOS ships textutil, which can read .doc and write .docx without another app. */
@@ -109,6 +75,7 @@ async function convertWithMacTextutil(filePath: string): Promise<Uint8Array | nu
 export async function convertLegacyDoc(
   filePath: string,
   serviceEndpoint?: string,
+  options: { strict?: boolean } = {},
 ): Promise<LegacyDocConversion> {
   if (!/\.doc$/i.test(filePath)) throw new Error('Expected a .doc file')
   const source = await readFile(filePath)
@@ -117,7 +84,7 @@ export async function convertLegacyDoc(
   }
   const sourceHash = createHash('sha256').update(source).digest('hex')
   if (serviceEndpoint) {
-    const remote = await convertWithService(source, serviceEndpoint)
+    const remote = await convertWithService(source, serviceEndpoint, undefined, options)
     if (remote) return { bytes: remote, fidelity: 'formatted', sourceHash }
   }
   const formatted = await convertWithMacTextutil(filePath)

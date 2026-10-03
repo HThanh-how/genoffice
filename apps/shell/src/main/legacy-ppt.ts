@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { openPptx } from '@genoffice/pptx-engine'
+import { ServiceRateLimitedError } from './legacy-service'
 
 const MAX_INPUT_BYTES = 20 * 1024 * 1024
 const MAX_OUTPUT_BYTES = 50 * 1024 * 1024
@@ -26,6 +27,7 @@ export async function convertLegacyPpt(filePath: string, endpoint: string): Prom
         body: source,
         signal: AbortSignal.timeout(55_000),
       })
+      if (response.status === 429) throw new ServiceRateLimitedError()
       if (!response.ok) {
         lastError = new Error(`Conversion service returned ${response.status}`)
         if (![502, 503, 504].includes(response.status)) break
@@ -52,6 +54,7 @@ export async function convertLegacyPpt(filePath: string, endpoint: string): Prom
         return converted
       }
     } catch (error) {
+      if (error instanceof ServiceRateLimitedError) throw error
       lastError = error instanceof Error ? error : new Error(String(error))
     }
     if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)))

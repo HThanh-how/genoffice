@@ -564,13 +564,18 @@ html.genoffice-popover-open .ribbon-tabs {
   white-space: nowrap;
 }
 
+/* The status bar below the grid already shows this message. The copy in the tab row stays as the
+   page's one live region for screen readers, but is not drawn a second time. */
 .workbook-status {
-  max-width: min(360px, 30vw);
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
   overflow: hidden;
-  color: var(--text-muted);
-  font-size: 11px;
-  text-overflow: ellipsis;
+  clip-path: inset(50%);
   white-space: nowrap;
+  border: 0;
 }
 
 /* Hovering a tab tints the label, it doesn't paint a box */

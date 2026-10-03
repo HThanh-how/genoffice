@@ -1,5 +1,5 @@
-export type LegacyConvertMode = 'off' | 'xls' | 'all'
-export type LegacyConvertOutcome = 'converted' | 'skipped' | 'failed'
+export type LegacyConvertMode = 'off' | 'all'
+export type LegacyConvertOutcome = 'converted' | 'skipped' | 'failed' | 'busy'
 
 export interface LegacyConverterState {
   running: boolean
@@ -9,7 +9,6 @@ export interface LegacyConverterState {
 }
 
 const EXTENSIONS: Record<Exclude<LegacyConvertMode, 'off'>, readonly string[]> = {
-  xls: ['.xls'],
   all: ['.xls', '.doc', '.ppt'],
 }
 
@@ -25,7 +24,13 @@ interface Deps {
 }
 
 const PAUSE_MS = 30_000
-const BETWEEN_FILES_MS = 400
+/**
+ * The conversion service allows 30 conversions an hour for everyone behind one address. One file
+ * every three minutes leaves room for the documents a person opens by hand.
+ */
+export const BETWEEN_FILES_MS = 3 * 60_000
+/** The service said "hourly limit": the same file is tried again after this long. */
+export const BUSY_PAUSE_MS = 15 * 60_000
 const BATCH = 200
 
 /**
@@ -92,12 +97,17 @@ export class LegacyConverter {
       } catch {
         outcome = 'failed'
       }
+      if (outcome === 'busy') {
+        await this.deps.wait(BUSY_PAUSE_MS)
+        continue
+      }
       if (outcome === 'converted') {
         this.converted++
         this.handled.add(next)
       } else if (outcome === 'skipped') this.skipped.add(next)
       else this.failed.add(next)
-      await this.deps.wait(BETWEEN_FILES_MS)
+      // a file that was not ready needs no request, so no pause
+      if (outcome !== 'skipped') await this.deps.wait(BETWEEN_FILES_MS)
     }
   }
 }

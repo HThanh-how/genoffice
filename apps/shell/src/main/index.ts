@@ -23,8 +23,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import {
   BrowserWindow,
@@ -53,6 +52,8 @@ import {
 } from './legacy-recovery'
 import { convertLegacyPpt } from './legacy-ppt'
 import { convertBeside, type ConvertBesideDeps } from './legacy-convert'
+import { convertLegacySheet } from './legacy-sheet'
+import { ServiceRateLimitedError } from './legacy-service'
 import {
   LegacyConverter,
   type LegacyConvertMode,
@@ -206,7 +207,6 @@ import { createSheetsControl, installSheetsBridge } from './mcp/sheets-bridge'
 import { createOpenDocumentsControl, createOpenTargetResolver } from './mcp/open-documents-bridge'
 import {
   configureSheetsRuntime,
-  convertLegacySpreadsheetToXlsx,
   exportSheetsPdfHeadless,
   hasActiveQueuedWorkbook,
   installSheetsMenu,
@@ -581,10 +581,7 @@ function legacyDocSettings(): LegacyDocSettings {
         ? saved.legacyDocEndpoint.trim()
         : DEFAULT_LEGACY_DOC_SERVICE,
     convertOnOpen: saved.legacyConvertOnOpen !== false,
-    convertInIndex:
-      saved.legacyConvertInIndex === 'off' || saved.legacyConvertInIndex === 'xls'
-        ? saved.legacyConvertInIndex
-        : 'all',
+    convertInIndex: saved.legacyConvertInIndex === 'off' ? 'off' : 'all',
   }
 }
 
@@ -3785,27 +3782,42 @@ function convertBesideDeps(fallbackToSaveDir: boolean): ConvertBesideDeps {
   }
 }
 
-async function spreadsheetBytes(
-  filePath: string,
-  background = false,
-): Promise<{ bytes: Uint8Array }> {
-  const directory = await mkdtemp(join(tmpdir(), 'genoffice-xls-'))
-  const target = join(directory, 'converted.xlsx')
-  try {
-    await convertLegacySpreadsheetToXlsx(filePath, target, { background })
-    return { bytes: await readFile(target) }
-  } finally {
-    await rm(directory, { recursive: true, force: true }).catch(() => undefined)
-  }
-}
-
 const pendingLegacyXlsImports = new Set<string>()
 
-/** Opening an old .xls makes a real .xlsx beside it and opens that, so it is a normal file from now on. */
+/**
+ * Opening an old .xls: the conversion service makes a real .xlsx (formatting intact) beside it and
+ * that is opened, so it is a normal file from now on. Nothing is converted on this computer. A file
+ * the service cannot take (an HTML table or a text export named .xls, a refused upload) is opened
+ * by the editor itself, so the person is never left without their file.
+ */
 async function openLegacyXls(filePath: string): Promise<void> {
   if (pendingLegacyXlsImports.has(filePath)) return
   pendingLegacyXlsImports.add(filePath)
   try {
+    const settings = legacyDocSettings()
+    if (settings.mode === 'text') {
+      // on-device only: nothing is uploaded
+      openSheetsFile(filePath)
+      return
+    }
+    if (settings.mode === 'ask') {
+      const options = {
+        type: 'question' as const,
+        title: 'Open legacy Excel workbook',
+        message: 'Convert this .xls file to .xlsx online?',
+        detail: `Conversion sends the file to ${settings.endpoint}. The original file is kept for 30 days.`,
+        buttons: ['Convert online', 'Open as it is'],
+        defaultId: 0,
+        cancelId: 1,
+      }
+      const choice = shellWindow
+        ? await dialog.showMessageBox(shellWindow, options)
+        : await dialog.showMessageBox(options)
+      if (choice.response !== 0) {
+        openSheetsFile(filePath)
+        return
+      }
+    }
     const opening = openingNoticeUnlessCold({
       fileName: basename(filePath),
       lang: currentLang(),
@@ -3817,7 +3829,7 @@ async function openLegacyXls(filePath: string): Promise<void> {
       result = await convertBeside(
         filePath,
         '.xlsx',
-        () => spreadsheetBytes(filePath),
+        async () => ({ bytes: await convertLegacySheet(filePath, settings.endpoint) }),
         convertBesideDeps(true),
       )
     } finally {
@@ -3827,7 +3839,6 @@ async function openLegacyXls(filePath: string): Promise<void> {
     openSheetsFile(result.convertedPath)
     if (result.archived && !result.reused) void noteLegacyOriginalKept(result.convertedPath, '.xls')
   } catch (error) {
-    // never leave the person without their file: the sheets editor can still open the .xls itself
     console.warn('[shell] .xls conversion failed, opening the original:', error)
     openSheetsFile(filePath)
   } finally {
@@ -3857,41 +3868,48 @@ async function convertLegacyForIndex(path: string): Promise<LegacyConvertOutcome
   if (!info) return 'skipped'
   // a file still being written or downloaded is left alone for now
   if (Date.now() - info.mtimeMs < 60_000) return 'skipped'
-  const extension = extname(path).toLowerCase()
   const settings = legacyDocSettings()
-  const online = settings.mode === 'online'
-  let result: Awaited<ReturnType<typeof convertBeside>>
-  if (extension === '.xls') {
-    result = await convertBeside(
-      path,
-      '.xlsx',
-      () => spreadsheetBytes(path, true),
-      convertBesideDeps(false),
-    )
-  } else if (extension === '.doc' && online) {
-    result = await convertBeside(
-      path,
-      '.docx',
-      async () => {
-        const converted = await convertLegacyDoc(path, settings.endpoint)
-        // a text-only copy would lose tables and pictures: leave such a file as it is
-        if (converted.fidelity !== 'formatted') throw new Error('Only a text copy was possible')
-        return { bytes: converted.bytes, sourceHash: converted.sourceHash }
-      },
-      convertBesideDeps(false),
-    )
-  } else if (extension === '.ppt' && online) {
-    result = await convertBeside(
-      path,
-      '.pptx',
-      async () => ({ bytes: await convertLegacyPpt(path, settings.endpoint) }),
-      convertBesideDeps(false),
-    )
-  } else {
-    return 'failed'
+  // every old format is converted by the service, so nothing happens when uploads are not allowed
+  if (settings.mode !== 'online') return 'failed'
+  const extension = extname(path).toLowerCase()
+  try {
+    let result: Awaited<ReturnType<typeof convertBeside>>
+    if (extension === '.xls') {
+      result = await convertBeside(
+        path,
+        '.xlsx',
+        async () => ({ bytes: await convertLegacySheet(path, settings.endpoint) }),
+        convertBesideDeps(false),
+      )
+    } else if (extension === '.doc') {
+      result = await convertBeside(
+        path,
+        '.docx',
+        async () => {
+          const converted = await convertLegacyDoc(path, settings.endpoint, { strict: true })
+          // a text-only copy would lose tables and pictures: leave such a file as it is
+          if (converted.fidelity !== 'formatted') throw new Error('Only a text copy was possible')
+          return { bytes: converted.bytes, sourceHash: converted.sourceHash }
+        },
+        convertBesideDeps(false),
+      )
+    } else if (extension === '.ppt') {
+      result = await convertBeside(
+        path,
+        '.pptx',
+        async () => ({ bytes: await convertLegacyPpt(path, settings.endpoint) }),
+        convertBesideDeps(false),
+      )
+    } else {
+      return 'failed'
+    }
+    if (result.archived) replaceRecentFile(path, result.convertedPath)
+    return result.archived ? 'converted' : 'failed'
+  } catch (error) {
+    // the service's hourly limit is not this file's fault: wait and try the same file again
+    if (error instanceof ServiceRateLimitedError) return 'busy'
+    throw error
   }
-  if (result.archived) replaceRecentFile(path, result.convertedPath)
-  return result.archived ? 'converted' : 'failed'
 }
 
 let legacyConverter: LegacyConverter | null = null
@@ -5015,9 +5033,7 @@ function registerHomeIpc(): void {
       ...(typeof request.convertOnOpen === 'boolean'
         ? { legacyConvertOnOpen: request.convertOnOpen }
         : {}),
-      ...(request.convertInIndex === 'off' ||
-      request.convertInIndex === 'xls' ||
-      request.convertInIndex === 'all'
+      ...(request.convertInIndex === 'off' || request.convertInIndex === 'all'
         ? { legacyConvertInIndex: request.convertInIndex }
         : {}),
     })
