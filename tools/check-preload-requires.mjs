@@ -7,7 +7,8 @@
  * externalized instead of bundled (add it to that app's preload `externalizeDepsPlugin` exclude list).
  */
 import { readdirSync, readFileSync, existsSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { join, relative, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const ALLOWED = new Set([
   'electron',
@@ -18,7 +19,7 @@ const ALLOWED = new Set([
   'node:timers',
   'node:url',
 ])
-const root = resolve(new URL('..', import.meta.url).pathname)
+const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const appsDir = join(root, 'apps')
 
 const files = []
@@ -38,7 +39,7 @@ for (const file of files) {
   }
   if (bad.size > 0) {
     failed++
-    console.error(`${file.replace(root + '/', '')}: requires ${[...bad].join(', ')}`)
+    console.error(`${relative(root, file)}: requires ${[...bad].join(', ')}`)
   }
 }
 
