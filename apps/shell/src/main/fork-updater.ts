@@ -17,6 +17,7 @@ import {
 import type { UpdateChannel } from '../shared/update-api'
 import { initialState } from './updater'
 import { closeUpdateWindow, pushUpdateState, showUpdateWindow } from './update-window'
+import { startUpdateProgress } from './fork/update-progress'
 
 const MAX_INSTALLER = 2 * 1024 * 1024 * 1024
 const INSTALL_LABEL: Record<string, string> = {
@@ -57,6 +58,8 @@ export interface RestartInstallDeps {
   platform?: NodeJS.Platform
   spawnInstaller?: typeof spawn
   quit?: () => void
+  /** shows the "Updating…" card from a separate process; false when it could not */
+  showProgress?: (installerPid: number) => boolean
 }
 
 /**
@@ -82,6 +85,22 @@ export function installAndRestart(
       child.once('error', () => resolve(false))
       child.once('spawn', () => {
         child.unref()
+        // the installer runs with no window: say that the update is under way
+        if (typeof child.pid === 'number') {
+          try {
+            ;(
+              deps.showProgress ??
+              ((pid: number) =>
+                startUpdateProgress({
+                  installerPid: pid,
+                  exePath: process.execPath,
+                  lang: getUiLang(),
+                }))
+            )(child.pid)
+          } catch {
+            // the update itself must not depend on its progress card
+          }
+        }
         resolve(true)
         // the installer replaces files the running app holds open: let go of them
         quit()

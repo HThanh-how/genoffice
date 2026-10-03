@@ -89,6 +89,12 @@ export interface AgyFsDeps {
    * inherit the shell PATH). Resolves with the printed path, or undefined.
    */
   loginShellLookup(shell: string): Promise<string | undefined>
+  /**
+   * Windows: the PATH as the registry holds it (the person's, then the machine's), which can be
+   * newer than the one this app was started with: a program installed after the app was opened is
+   * on the registry PATH but not on the app's. Undefined elsewhere or when it could not be read.
+   */
+  registryPath?(): Promise<string | undefined>
   platform: NodeJS.Platform
   env: NodeJS.ProcessEnv
   home: string
@@ -96,6 +102,54 @@ export interface AgyFsDeps {
 
 /** The one fixed command line of the login-shell lookup; no user text is ever interpolated. */
 export const AGY_LOGIN_SHELL_COMMAND = 'command -v agy'
+
+/** The value of `Path` in the output of `reg query <key> /v Path`, still with its %VARIABLES%. */
+export function parseRegistryPathOutput(stdout: string): string | undefined {
+  const match = /^\s*Path\s+REG_(?:EXPAND_)?SZ\s+(.*)$/im.exec(stdout)
+  const value = match?.[1]?.trim()
+  return value || undefined
+}
+
+/** `%LOCALAPPDATA%\x` with the variables replaced from `env` (a variable that is not set stays as written). */
+export function expandWindowsVariables(value: string, env: NodeJS.ProcessEnv): string {
+  const lookup = new Map(Object.entries(env).map(([key, text]) => [key.toLowerCase(), text ?? '']))
+  return value.replace(
+    /%([^%]+)%/g,
+    (whole, name: string) => lookup.get(name.toLowerCase()) ?? whole,
+  )
+}
+
+const REGISTRY_PATH_KEYS = [
+  'HKCU\\Environment',
+  'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment',
+]
+
+function readRegistryPath(): Promise<string | undefined> {
+  if (process.platform !== 'win32') return Promise.resolve(undefined)
+  const query = (key: string): Promise<string | undefined> =>
+    new Promise((resolve) => {
+      try {
+        const child = spawn('reg.exe', ['query', key, '/v', 'Path'], {
+          shell: false,
+          windowsHide: true,
+          stdio: ['ignore', 'pipe', 'ignore'],
+          timeout: 3000,
+        })
+        let out = ''
+        child.stdout.on('data', (chunk: Buffer) => {
+          if (out.length < 65_536) out += chunk.toString('utf8')
+        })
+        child.on('error', () => resolve(undefined))
+        child.on('close', () => resolve(parseRegistryPathOutput(out)))
+      } catch {
+        resolve(undefined)
+      }
+    })
+  return Promise.all(REGISTRY_PATH_KEYS.map(query)).then((values) => {
+    const found = values.filter((value): value is string => !!value)
+    return found.length ? found.join(';') : undefined
+  })
+}
 
 const realFsDeps: AgyFsDeps = {
   isFile: async (path) => {
@@ -132,6 +186,7 @@ const realFsDeps: AgyFsDeps = {
         resolve(undefined)
       }
     }),
+  registryPath: readRegistryPath,
   platform: process.platform,
   env: process.env,
   home: homedir(),
@@ -161,7 +216,18 @@ export async function validateAgyCliPath(
 export function agyDefaultLocations(deps: Pick<AgyFsDeps, 'platform' | 'env' | 'home'>): string[] {
   if (deps.platform === 'win32') {
     const base = deps.env.LOCALAPPDATA
-    return base ? [win32.join(base, 'agy', 'bin', 'agy.exe')] : []
+    const list: string[] = []
+    if (base) {
+      list.push(
+        win32.join(base, 'agy', 'bin', 'agy.exe'),
+        win32.join(base, 'Programs', 'agy', 'bin', 'agy.exe'),
+        win32.join(base, 'Programs', 'Antigravity', 'bin', 'agy.exe'),
+        win32.join(base, 'Programs', 'Antigravity IDE', 'bin', 'agy.exe'),
+      )
+    }
+    const home = deps.env.USERPROFILE || deps.home
+    if (home) list.push(win32.join(home, '.agy', 'bin', 'agy.exe'))
+    return list
   }
   const list = ['/usr/local/bin/agy', '/opt/homebrew/bin/agy']
   if (deps.home) {
@@ -176,7 +242,7 @@ export function agyDefaultLocations(deps: Pick<AgyFsDeps, 'platform' | 'env' | '
 /** Short, OS-appropriate description of where auto-detection looks (for the settings hint). */
 export function agyAutoDetectHint(platform: NodeJS.Platform): string {
   return platform === 'win32'
-    ? 'PATH, then %LOCALAPPDATA%\\agy\\bin\\agy.exe'
+    ? 'PATH (including one set after GenOffice was opened), then %LOCALAPPDATA%\\agy\\bin\\agy.exe'
     : 'PATH, ~/.local/bin, ~/.agy/bin, /usr/local/bin, /opt/homebrew/bin, then your login shell'
 }
 
@@ -201,6 +267,15 @@ export async function resolveAgyCliPath(
   for (const dir of pathVar.split(win ? ';' : ':')) {
     const trimmed = dir.trim().replace(/^"|"$/g, '')
     if (trimmed) candidates.push(pathJoin(trimmed, win ? 'agy.exe' : 'agy'))
+  }
+  // The PATH the registry holds now: a person who installed agy after opening GenOffice has it
+  // there, though this process still has the old one.
+  if (win && deps.registryPath) {
+    const registry = await deps.registryPath().catch(() => undefined)
+    for (const dir of (registry ? expandWindowsVariables(registry, deps.env) : '').split(';')) {
+      const trimmed = dir.trim().replace(/^"|"$/g, '')
+      if (trimmed && !trimmed.includes('%')) candidates.push(pathJoin(trimmed, 'agy.exe'))
+    }
   }
   candidates.push(...agyDefaultLocations(deps))
   const tryCandidate = async (candidate: string): Promise<boolean> => {

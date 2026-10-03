@@ -78,6 +78,40 @@ describe('applying an update by a restart', () => {
     expect(quit).toHaveBeenCalledOnce()
   })
 
+  it('shows the "Updating…" card for the installer it started, and does not depend on it', async () => {
+    const { installAndRestart } = await import('../src/main/fork-updater')
+    const quit = vi.fn()
+    const spawned = fakeSpawn('spawn')
+    Object.assign(spawned.child, { pid: 4321 })
+    const showProgress = vi.fn(() => true)
+    expect(
+      await installAndRestart('C:\\u\\GenOffice-0.11.2.exe', {
+        platform: 'win32',
+        spawnInstaller: spawned.run,
+        quit,
+        showProgress,
+      }),
+    ).toBe(true)
+    expect(showProgress).toHaveBeenCalledWith(4321)
+    expect(quit).toHaveBeenCalledOnce()
+
+    // a card that cannot be shown changes nothing about the update
+    const quitAgain = vi.fn()
+    const second = fakeSpawn('spawn')
+    Object.assign(second.child, { pid: 99 })
+    expect(
+      await installAndRestart('C:\\u\\x.exe', {
+        platform: 'win32',
+        spawnInstaller: second.run,
+        quit: quitAgain,
+        showProgress: () => {
+          throw new Error('no powershell')
+        },
+      }),
+    ).toBe(true)
+    expect(quitAgain).toHaveBeenCalledOnce()
+  })
+
   it('keeps the app running and says so when the installer could not be started', async () => {
     const { installAndRestart } = await import('../src/main/fork-updater')
     const quit = vi.fn()

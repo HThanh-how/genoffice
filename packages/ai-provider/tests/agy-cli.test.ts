@@ -18,7 +18,9 @@ import {
   killProcessTree,
   listAgyModels,
   parseAgyModels,
+  expandWindowsVariables,
   parseAgyStreamLine,
+  parseRegistryPathOutput,
   resolveAgyCliPath,
   runAgy,
   streamAgy,
@@ -77,6 +79,58 @@ describe('agy path validation and discovery', () => {
     ).toBe('C:\\Local\\agy\\bin\\agy.exe')
     await expect(resolveAgyCliPath(undefined, { ...base, env: {} })).rejects.toThrow(/not found/)
     await expect(resolveAgyCliPath('C:\\nope\\agy.exe', base)).rejects.toThrow(/not found/)
+  })
+
+  it('finds agy on the PATH the registry holds now, which a running app has not seen', async () => {
+    const installed = 'C:\\Users\\u\\tools\\agy.exe'
+    const base = fsDeps('win32', { [installed]: { exec: false } })
+    const env = { PATH: 'C:\\Windows', LOCALAPPDATA: 'C:\\Local', USERPROFILE: 'C:\\Users\\u' }
+    // not on this process's PATH and not in a default place: only the registry knows
+    await expect(resolveAgyCliPath(undefined, { ...base, env })).rejects.toThrow(/not found/)
+    expect(
+      await resolveAgyCliPath(undefined, {
+        ...base,
+        env,
+        registryPath: async () => '%USERPROFILE%\\tools;C:\\Windows',
+      }),
+    ).toBe(installed)
+    // a registry that cannot be read changes nothing
+    await expect(
+      resolveAgyCliPath(undefined, {
+        ...base,
+        env,
+        registryPath: async () => {
+          throw new Error('denied')
+        },
+      }),
+    ).rejects.toThrow(/not found/)
+  })
+
+  it('also looks where Antigravity installs itself on Windows', async () => {
+    const files = {
+      'C:\\Local\\Programs\\Antigravity\\bin\\agy.exe': { exec: false },
+      'C:\\Users\\u\\.agy\\bin\\agy.exe': { exec: false },
+    }
+    const env = { LOCALAPPDATA: 'C:\\Local', USERPROFILE: 'C:\\Users\\u' }
+    expect(await resolveAgyCliPath(undefined, { ...fsDeps('win32', files), env })).toBe(
+      'C:\\Local\\Programs\\Antigravity\\bin\\agy.exe',
+    )
+    const onlyHome = { 'C:\\Users\\u\\.agy\\bin\\agy.exe': { exec: false } }
+    expect(await resolveAgyCliPath(undefined, { ...fsDeps('win32', onlyHome), env })).toBe(
+      'C:\\Users\\u\\.agy\\bin\\agy.exe',
+    )
+  })
+
+  it('reads the Path value out of `reg query` and fills in its %VARIABLES%', () => {
+    const output =
+      '\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    %USERPROFILE%\\agy\\bin;C:\\tools\r\n\r\n'
+    expect(parseRegistryPathOutput(output)).toBe('%USERPROFILE%\\agy\\bin;C:\\tools')
+    expect(
+      parseRegistryPathOutput('ERROR: The system was unable to find the specified registry key'),
+    ).toBeUndefined()
+    expect(
+      expandWindowsVariables('%userprofile%\\agy;%NOPE%\\x', { USERPROFILE: 'C:\\Users\\u' }),
+    ).toBe('C:\\Users\\u\\agy;%NOPE%\\x')
   })
 
   it.each(['darwin', 'linux'] as const)(
