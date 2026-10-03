@@ -3924,8 +3924,8 @@ function startLegacyConverter(): void {
     paused: isIndexingPaused,
     wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   })
-  // a minute after start the machine is no longer busy opening, then once in a while for new files
-  setTimeout(() => legacyConverter?.kick(), 60_000).unref()
+  // People open GenOffice rarely: start soon after it is up, then once in a while for new files
+  setTimeout(() => legacyConverter?.kick(), 10_000).unref()
   setInterval(() => legacyConverter?.kick(), 10 * 60_000).unref()
 }
 
