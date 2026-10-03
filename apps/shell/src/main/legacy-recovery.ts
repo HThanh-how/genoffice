@@ -11,7 +11,7 @@ import {
   unlink,
   writeFile,
 } from 'node:fs/promises'
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import { atomicWriteFile } from './atomic-write'
 
@@ -41,6 +41,20 @@ export interface LegacyRecoveryEntry {
 
 interface StoredEntry extends LegacyRecoveryEntry {
   backupName: string
+}
+
+/** Old format and the new format that replaces it. */
+const LEGACY_PAIRS: ReadonlyArray<readonly [string, string]> = [
+  ['.doc', '.docx'],
+  ['.xls', '.xlsx'],
+  ['.ppt', '.pptx'],
+]
+
+/** The old extension (lower-case) when `converted` is the new-format twin of `source`, else null. */
+function legacyExtensionOf(source: string, converted: string): string | null {
+  const from = extname(source).toLowerCase()
+  const to = extname(converted).toLowerCase()
+  return LEGACY_PAIRS.some(([a, b]) => a === from && b === to) ? from : null
 }
 
 function vaultFor(sourcePath: string): string {
@@ -155,8 +169,7 @@ async function readEntries(vault: string, allowMoved = false): Promise<StoredEnt
         !item.backupName ||
         basename(item.backupName) !== item.backupName ||
         (!allowMoved && dirname(item.sourcePath) !== dirname(vault)) ||
-        !/\.doc$/i.test(item.sourcePath) ||
-        !/\.docx$/i.test(item.convertedPath) ||
+        !legacyExtensionOf(item.sourcePath, item.convertedPath) ||
         !Number.isFinite(item.archivedAt)
       )
         continue
@@ -240,8 +253,8 @@ async function archiveLegacyDocInternal(
   expectedSourceHash: string,
   now = Date.now(),
 ): Promise<LegacyRecoveryEntry> {
-  if (!/\.doc$/i.test(sourcePath) || !/\.docx$/i.test(convertedPath))
-    throw new Error('Expected .doc and .docx paths')
+  const oldExtension = legacyExtensionOf(sourcePath, convertedPath)
+  if (!oldExtension) throw new Error('Expected an old-format file and its new-format copy')
   if (resolve(sourcePath) === resolve(convertedPath))
     throw new Error('Source and target must differ')
   await stat(convertedPath)
@@ -252,7 +265,7 @@ async function archiveLegacyDocInternal(
     id,
     sourcePath,
     convertedPath,
-    backupName: `${id}.doc`,
+    backupName: `${id}${oldExtension}`,
     archivedAt: now,
     expiresAt: now + RETENTION_MS,
   }
@@ -270,7 +283,7 @@ async function archiveLegacyDocInternal(
       .update(await readFile(backup))
       .digest('hex')
     if (backupHash !== expectedSourceHash)
-      throw new Error('The original .doc changed during conversion')
+      throw new Error('The original file changed during conversion')
     await writeFile(metadataPath(vault, id), JSON.stringify(entry), { flag: 'wx' })
     recorded = true
     await saveFolders(userData, [...(await folders(userData)), vault])
@@ -283,7 +296,7 @@ async function archiveLegacyDocInternal(
         .update(await readFile(sourcePath))
         .digest('hex') !== expectedSourceHash
     )
-      throw new Error('The original .doc changed during conversion')
+      throw new Error('The original file changed during conversion')
     await unlink(sourcePath)
     return entry
   } catch (error) {

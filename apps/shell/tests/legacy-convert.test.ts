@@ -46,12 +46,30 @@ describe('converting an old file beside itself', () => {
     expect(d.archive).toHaveBeenCalledWith(source, join(dir, 'Bang diem.xlsx'), expect.any(String))
   })
 
-  it('reuses an earlier conversion instead of making a second copy', async () => {
+  it('reuses an earlier conversion instead of making a second copy, and finishes archiving the old file', async () => {
+    const source = join(dir, 'a.xls')
+    const linked = join(dir, 'a.xlsx')
+    await writeFile(source, 'old')
+    await writeFile(linked, 'new')
     const produce = vi.fn(async () => ({ bytes: zip }))
-    const d = deps({ linkedCopy: async () => '/x/a.xlsx' })
-    const result = await convertBeside('/x/a.xls', '.xlsx', produce, d)
-    expect(result).toEqual({ convertedPath: '/x/a.xlsx', archived: true, reused: true })
+    const d = deps({ linkedCopy: async () => linked })
+    const result = await convertBeside(source, '.xlsx', produce, d)
+    expect(result).toEqual({ convertedPath: linked, archived: true, reused: true })
     expect(produce).not.toHaveBeenCalled()
+    expect(d.archive).toHaveBeenCalledWith(source, linked, expect.any(String))
+  })
+
+  it('reports a reused copy as not archived when the old file cannot be moved', async () => {
+    const source = join(dir, 'a.xls')
+    await writeFile(source, 'old')
+    const d = deps({
+      linkedCopy: async () => join(dir, 'a.xlsx'),
+      archive: vi.fn(async () => {
+        throw new Error('locked')
+      }),
+    })
+    const result = await convertBeside(source, '.xlsx', async () => ({ bytes: zip }), d)
+    expect(result).toMatchObject({ archived: false, reused: true })
   })
 
   it('refuses a converter answer that is not an office file, and writes nothing', async () => {

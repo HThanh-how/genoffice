@@ -3663,11 +3663,14 @@ function convertBesideDeps(fallbackToSaveDir: boolean): ConvertBesideDeps {
   }
 }
 
-async function spreadsheetBytes(filePath: string): Promise<{ bytes: Uint8Array }> {
+async function spreadsheetBytes(
+  filePath: string,
+  background = false,
+): Promise<{ bytes: Uint8Array }> {
   const directory = await mkdtemp(join(tmpdir(), 'genoffice-xls-'))
   const target = join(directory, 'converted.xlsx')
   try {
-    await convertLegacySpreadsheetToXlsx(filePath, target)
+    await convertLegacySpreadsheetToXlsx(filePath, target, { background })
     return { bytes: await readFile(target) }
   } finally {
     await rm(directory, { recursive: true, force: true }).catch(() => undefined)
@@ -3739,7 +3742,7 @@ async function convertLegacyForIndex(path: string): Promise<LegacyConvertOutcome
     result = await convertBeside(
       path,
       '.xlsx',
-      () => spreadsheetBytes(path),
+      () => spreadsheetBytes(path, true),
       convertBesideDeps(false),
     )
   } else if (extension === '.doc' && online) {

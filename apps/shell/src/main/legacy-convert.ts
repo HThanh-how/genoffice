@@ -49,7 +49,18 @@ export async function convertBeside(
   deps: ConvertBesideDeps,
 ): Promise<ConvertedBeside> {
   const linked = await deps.linkedCopy(source)
-  if (linked) return { convertedPath: linked, archived: true, reused: true }
+  if (linked) {
+    // an earlier run converted this file but could not move the old one away: finish that now
+    const hash = await sha256OfFile(source).catch(() => null)
+    const archived =
+      hash !== null && dirname(linked) === dirname(source)
+        ? await deps.archive(source, linked, hash).then(
+            () => true,
+            () => false,
+          )
+        : false
+    return { convertedPath: linked, archived, reused: true }
+  }
   const made = await produce()
   if (!looksLikeOoxml(made.bytes)) throw new Error('The converter returned an invalid file')
   const sourceHash = made.sourceHash ?? (await sha256OfFile(source))

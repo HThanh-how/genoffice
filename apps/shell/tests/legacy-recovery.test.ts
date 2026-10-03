@@ -114,3 +114,44 @@ describe('legacy document recovery', () => {
     expect(await restoreLegacyDoc(userData, entry.id)).toBe(join(newDir, 'moved.doc'))
   })
 })
+
+describe('archiving spreadsheets and presentations', () => {
+  it('moves an old .xls and .ppt to the recovery folder like a .doc', async () => {
+    const { mkdtemp, writeFile, readdir, stat, rm } = await import('node:fs/promises')
+    const { createHash } = await import('node:crypto')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const dir = await mkdtemp(join(tmpdir(), 'legacy-archive-'))
+    const userData = await mkdtemp(join(tmpdir(), 'legacy-userdata-'))
+    try {
+      for (const [old, next] of [
+        ['sheet.xls', 'sheet.xlsx'],
+        ['slides.ppt', 'slides.pptx'],
+      ] as const) {
+        const source = join(dir, old)
+        const converted = join(dir, next)
+        await writeFile(source, `old ${old}`)
+        await writeFile(converted, 'new')
+        const hash = createHash('sha256').update(`old ${old}`).digest('hex')
+        const entry = await archiveLegacyDoc(source, converted, userData, hash)
+        await expect(stat(source)).rejects.toThrow()
+        const stored = await readdir(join(dir, '.genoffice', 'originals'))
+        expect(
+          stored.some((name) => name.startsWith(entry.id) && name.endsWith(old.slice(-4))),
+        ).toBe(true)
+        expect((await listLegacyRecovery(userData)).some((e) => e.id === entry.id)).toBe(true)
+        await restoreLegacyDoc(userData, entry.id)
+        await expect(stat(source)).resolves.toBeTruthy()
+      }
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+      await rm(userData, { recursive: true, force: true })
+    }
+  })
+
+  it('still refuses a pair that is not old and new of the same kind', async () => {
+    await expect(archiveLegacyDoc('/x/a.xls', '/x/a.docx', '/tmp', 'h')).rejects.toThrow(
+      /new-format copy/,
+    )
+  })
+})
