@@ -409,10 +409,12 @@ export function IndexProblems({
       actions.say(fill(d.readProgress, { i: index + 1, n: batch.length }))
       try {
         const result = await api.readScannedPdfWithAgy(item.id, true)
-        if (!result.ok) break
-        ok++
+        if (result.ok) ok++
+        // one file that cannot be read must not stop the rest; only Antigravity being switched
+        // off does
+        else if (result.error === 'unavailable' || result.error === 'paused') break
       } catch {
-        break
+        /* the next file still gets its turn */
       }
     }
     actions.say(fill(d.readFinished, { ok, n: batch.length }))

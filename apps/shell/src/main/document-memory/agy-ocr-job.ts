@@ -188,6 +188,9 @@ export class AgyOcrJob {
   private nextCheckAt = 0
   private waiting: { at: number; count: number } | null = null
   private callsThisRun = 0
+  /** manual reads wait for each other here, so a batch of "read now" never meets "busy" */
+  private manualChain: Promise<unknown> = Promise.resolve()
+  private idleWaiters: Array<() => void> = []
 
   constructor(private readonly deps: OcrJobDeps) {}
 
@@ -311,8 +314,7 @@ export class AgyOcrJob {
       this.deps.state.update((data) => void (data.lastRunAt = this.deps.now()))
     } finally {
       this.flushReindex(touched)
-      this.running = false
-      this.abort = null
+      this.markIdle()
       this.waiting = null
     }
   }
@@ -602,7 +604,31 @@ export class AgyOcrJob {
    */
   async readNow(documentId: number): Promise<AgyOcrReadNowResult> {
     if (this.stopped) return { ok: false, error: 'unavailable' }
-    if (this.running) return { ok: false, error: 'busy' }
+    // one manual read at a time, in the order they were asked for
+    const turn = this.manualChain.then(
+      () => this.readNowOnce(documentId),
+      () => this.readNowOnce(documentId),
+    )
+    this.manualChain = turn.catch(() => undefined)
+    return turn
+  }
+
+  /** The scheduled run steps aside after its current call: a person's request goes first. */
+  private async yieldToManual(): Promise<void> {
+    if (!this.running) return
+    this.abort?.abort()
+    await new Promise<void>((resolve) => this.idleWaiters.push(resolve))
+  }
+
+  private markIdle(): void {
+    this.running = false
+    this.abort = null
+    for (const wake of this.idleWaiters.splice(0)) wake()
+  }
+
+  private async readNowOnce(documentId: number): Promise<AgyOcrReadNowResult> {
+    if (this.stopped) return { ok: false, error: 'unavailable' }
+    await this.yieldToManual()
     const document = this.deps.host.documentById(documentId)
     if (!document || !/\.pdf$/i.test(document.path)) return { ok: false, error: 'not-pdf' }
     const settings = this.workingSettings()
@@ -665,8 +691,7 @@ export class AgyOcrJob {
       return { ok: false, error: errorText(error) }
     } finally {
       this.flushReindex(touched)
-      this.running = false
-      this.abort = null
+      this.markIdle()
     }
   }
 

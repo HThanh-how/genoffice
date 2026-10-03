@@ -29,6 +29,8 @@ export interface MonitorDeps {
   power: PowerMonitorLike
   cores: number
   freeMemMB: () => number
+  /** all the memory the computer has, so the low-memory pause scales with it */
+  totalMemMB?: () => number
   readBattery: () => Promise<BatteryInfo>
   settings: () => { mode: IndexingMode; pauseOnBattery: boolean }
   now?: () => number
@@ -152,6 +154,7 @@ export class IndexingMonitor {
       userIdleSeconds: Number.isFinite(idle) && idle > 0 ? idle : 0,
       cores: this.deps.cores,
       freeMemMB: this.deps.freeMemMB(),
+      ...(this.deps.totalMemMB ? { totalMemMB: this.deps.totalMemMB() } : {}),
       locked: this.locked || this.suspended,
       suspended: this.suspended,
       thermalCritical: this.thermal === 'critical',

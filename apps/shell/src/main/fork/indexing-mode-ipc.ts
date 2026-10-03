@@ -1,6 +1,6 @@
 import { app, powerMonitor } from 'electron'
 import type { IpcMain } from 'electron'
-import { availableParallelism, freemem } from 'node:os'
+import { availableParallelism, freemem, totalmem } from 'node:os'
 import { readBattery, realBatteryDeps } from './indexing-battery'
 import { registerIndexingModeIpc } from './indexing-mode-controller'
 import { IndexingMonitor, electronFreeMemMB } from './indexing-monitor'
@@ -29,6 +29,7 @@ export function registerIndexingMode(deps: IndexingModeDeps): void {
       cores: availableParallelism(),
       // Electron's figure counts reclaimable memory as available (os.freemem() does not on macOS).
       freeMemMB: () => electronFreeMemMB(() => process.getSystemMemoryInfo(), freemem),
+      totalMemMB: () => totalmem() / (1024 * 1024),
       readBattery: () => readBattery(batteryDeps),
       settings: controller.settings,
     })

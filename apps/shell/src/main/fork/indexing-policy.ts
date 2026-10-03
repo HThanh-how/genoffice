@@ -19,6 +19,8 @@ export interface PolicyInput {
   userIdleSeconds: number
   cores: number
   freeMemMB: number
+  /** all the memory the computer has; unknown = the fixed thresholds */
+  totalMemMB?: number
   locked: boolean
   /** the machine is going to sleep: nothing runs, whatever the charge */
   suspended?: boolean
@@ -49,6 +51,22 @@ export const LOW_BATTERY_PERCENT = 30
 export const LOW_BATTERY_RESUME_PERCENT = 35
 export const LOW_MEMORY_MB = 1500
 export const LOW_MEMORY_RESUME_MB = 2000
+/** Never pause for memory above this, however small the computer: below it nothing else could run either. */
+export const MIN_LOW_MEMORY_MB = 512
+
+/**
+ * Free memory at which indexing pauses, and at which it carries on again. A fixed 1.5 GB is right on
+ * a 32 GB computer but on an 8 GB laptop that routinely has about 1.7 GB free it paused the index
+ * for good (it needed 2 GB to resume, which that laptop never has). So it scales with the memory the
+ * computer has: 8% of it, between 512 MB and 1.5 GB, and resumes 35% higher.
+ */
+export function memoryThresholds(totalMemMB?: number): { low: number; resume: number } {
+  if (typeof totalMemMB !== 'number' || !Number.isFinite(totalMemMB) || totalMemMB <= 0) {
+    return { low: LOW_MEMORY_MB, resume: LOW_MEMORY_RESUME_MB }
+  }
+  const low = Math.min(LOW_MEMORY_MB, Math.max(MIN_LOW_MEMORY_MB, Math.round(totalMemMB * 0.08)))
+  return { low, resume: Math.min(LOW_MEMORY_RESUME_MB, Math.round(low * 1.35)) }
+}
 
 const LIGHT_SHARE = 0.3
 /**
@@ -94,7 +112,9 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
 
   if (input.userPaused) return paused('user', 'paused by the user')
   if (input.thermalCritical) return paused('thermal', 'thermal state is critical')
-  if (input.freeMemMB < LOW_MEMORY_MB) return paused('low-memory', 'free memory is low')
+  if (input.freeMemMB < memoryThresholds(input.totalMemMB).low) {
+    return paused('low-memory', 'free memory is low')
+  }
   if (input.onBattery && input.pauseOnBattery) {
     if (
       input.batterySaver &&
@@ -198,8 +218,9 @@ export function createPolicyGovernor(): {
           (lowBattery && batteryPercent < LOW_BATTERY_RESUME_PERCENT)
         if (lowBattery) batteryPercent = Math.min(batteryPercent, LOW_BATTERY_PERCENT - 1)
       } else lowBattery = false
-      lowMemory = freeMemMB < LOW_MEMORY_MB || (lowMemory && freeMemMB < LOW_MEMORY_RESUME_MB)
-      if (lowMemory) freeMemMB = Math.min(freeMemMB, LOW_MEMORY_MB - 1)
+      const memory = memoryThresholds(input.totalMemMB)
+      lowMemory = freeMemMB < memory.low || (lowMemory && freeMemMB < memory.resume)
+      if (lowMemory) freeMemMB = Math.min(freeMemMB, memory.low - 1)
       if (userIdleSeconds >= IDLE_AFTER_SECONDS) {
         idleSince ??= nowMs
         if (nowMs - idleSince < IDLE_STABLE_MS) userIdleSeconds = 0

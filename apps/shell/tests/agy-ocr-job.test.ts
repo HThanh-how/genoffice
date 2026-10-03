@@ -715,7 +715,7 @@ describe('manual "read with Antigravity now"', () => {
     expect(r.host.reindexed).toEqual(['/a.pdf'])
   })
 
-  it('refuses non-PDFs, unknown ids, finished files and overlapping reads', async () => {
+  it('refuses non-PDFs, unknown ids and finished files, and lets overlapping reads wait their turn', async () => {
     const r = rig()
     r.host.add('/a.pdf', 2)
     r.host.add('/b.docx', 2)
@@ -730,11 +730,43 @@ describe('manual "read with Antigravity now"', () => {
     }
     const first = await r.job.readNow(r.host.files.get('/a.pdf')!.id)
     expect(first.ok).toBe(true)
-    expect(await inner).toEqual({ ok: false, error: 'busy' })
+    // the overlapping read waits its turn instead of being turned away; the file is done by then
+    expect(await inner).toEqual({ ok: false, error: 'nothing-to-read' })
     expect(await r.job.readNow(r.host.files.get('/a.pdf')!.id)).toEqual({
       ok: false,
       error: 'nothing-to-read',
     })
+  })
+
+  it('does not say "busy" to a batch of reads: each waits for the one before it', async () => {
+    const r = rig({ maxPagesPerFile: 3 })
+    for (const name of ['/c1.pdf', '/c2.pdf', '/c3.pdf', '/c4.pdf']) r.host.add(name, 3)
+    const results = await Promise.all(
+      ['/c1.pdf', '/c2.pdf', '/c3.pdf', '/c4.pdf'].map((n) =>
+        r.job.readNow(r.host.files.get(n)!.id),
+      ),
+    )
+    expect(results.map((x) => x.ok)).toEqual([true, true, true, true])
+    for (const n of ['/c1.pdf', '/c2.pdf', '/c3.pdf', '/c4.pdf']) {
+      expect(r.host.pagesDone(n)).toEqual([1, 2, 3])
+    }
+  })
+
+  it('goes ahead of the scheduled reader instead of being refused: the scheduled run steps aside', async () => {
+    const r = rig({ maxPagesPerFile: 3, pagesPerCall: 1 })
+    r.host.add('/auto.pdf', 3)
+    r.host.add('/mine.pdf', 3)
+    let manual: ReturnType<typeof r.job.readNow> | undefined
+    r.onRecognize.value = () => {
+      if (!manual) manual = r.job.readNow(r.host.files.get('/mine.pdf')!.id)
+    }
+    await r.job.tick()
+    expect(manual).toBeDefined()
+    const result = await manual!
+    expect(result.ok).toBe(true)
+    expect(r.host.pagesDone('/mine.pdf')).toEqual([1, 2, 3])
+    // the scheduled run was cut short after its current call, not run to the end of its file
+    expect(r.host.pagesDone('/auto.pdf').length).toBeLessThan(3)
   })
 
   it('reports why a manual read failed', async () => {

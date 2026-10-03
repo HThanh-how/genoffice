@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  memoryThresholds,
   IDLE_STABLE_MS,
   createPolicyGovernor,
   resolvePolicy,
@@ -304,5 +305,31 @@ describe('createPolicyGovernor', () => {
     expect(mem(1400, 1).paused).toBe(true)
     expect(mem(1800, 2).paused).toBe(true)
     expect(mem(2000, 3).paused).toBe(false)
+  })
+
+  it('scales the memory pause to the computer, so an 8 GB laptop is not stopped for good', () => {
+    // 7104 MB in all (an 8 GB laptop): pauses below 568 MB, resumes from 767 MB
+    const total = 7104
+    expect(memoryThresholds(total)).toEqual({ low: 568, resume: 767 })
+    const governor = createPolicyGovernor()
+    const mem = (freeMemMB: number, at: number) =>
+      governor.update({ ...base, freeMemMB, totalMemMB: total }, at)
+    // the 1.7 GB such a laptop usually has free is plenty: it was paused here before
+    expect(mem(1732, 0).paused).toBe(false)
+    expect(mem(500, 1).paused).toBe(true)
+    expect(mem(700, 2).paused).toBe(true)
+    expect(mem(800, 3).paused).toBe(false)
+  })
+
+  it('keeps the fixed thresholds on a big computer and when the total is not known', () => {
+    expect(memoryThresholds(32768)).toEqual({ low: 1500, resume: 2000 })
+    expect(memoryThresholds(undefined)).toEqual({ low: 1500, resume: 2000 })
+    expect(memoryThresholds(Number.NaN)).toEqual({ low: 1500, resume: 2000 })
+    // a very small computer still pauses somewhere sensible
+    expect(memoryThresholds(2048).low).toBe(512)
+    expect(resolvePolicy({ ...base, freeMemMB: 1499 })).toMatchObject({
+      paused: true,
+      pauseReason: 'low-memory',
+    })
   })
 })
