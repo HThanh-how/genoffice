@@ -1,4 +1,5 @@
 import { DocumentMemoryManager } from './document-memory/manager'
+import { startOpeningNotice } from './fork/opening-window'
 import { execSync, spawn } from 'node:child_process'
 import {
   appendFileSync,
@@ -3588,7 +3589,17 @@ async function openLegacyPpt(filePath: string): Promise<void> {
         : await dialog.showMessageBox(options)
       if (choice.response !== 0) return
     }
-    const bytes = await convertLegacyPpt(filePath, settings.endpoint)
+    const opening = startOpeningNotice({
+      fileName: basename(filePath),
+      lang: currentLang(),
+      kind: 'ppt',
+    })
+    let bytes: Awaited<ReturnType<typeof convertLegacyPpt>>
+    try {
+      bytes = await convertLegacyPpt(filePath, settings.endpoint)
+    } finally {
+      opening.close()
+    }
     const suggestedName = `${basename(filePath, extname(filePath))}.pptx`
     let convertedPath = uniquePathIn(dirname(filePath), suggestedName)
     try {
@@ -3644,10 +3655,21 @@ async function openLegacyDoc(filePath: string): Promise<void> {
         writeAppSetting(APP_SETTINGS_PATH(), 'legacyDocMode', online ? 'online' : 'text')
       }
     }
-    const result =
-      localResult && (localResult.fidelity === 'formatted' || !online)
-        ? localResult
-        : await convertLegacyDoc(filePath, online ? settings.endpoint : undefined)
+    let result: Awaited<ReturnType<typeof convertLegacyDoc>>
+    // the online conversion takes seconds: say that the file is opening
+    const opening = startOpeningNotice({
+      fileName: basename(filePath),
+      lang: currentLang(),
+      kind: 'doc',
+    })
+    try {
+      result =
+        localResult && (localResult.fidelity === 'formatted' || !online)
+          ? localResult
+          : await convertLegacyDoc(filePath, online ? settings.endpoint : undefined)
+    } finally {
+      opening.close()
+    }
     if (result.fidelity === 'text') {
       const options = {
         type: 'warning' as const,
