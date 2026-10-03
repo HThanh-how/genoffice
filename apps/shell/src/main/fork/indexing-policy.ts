@@ -57,6 +57,11 @@ const LIGHT_SHARE = 0.3
  * LOW_BATTERY_PERCENT pauses it.
  */
 const BATTERY_SHARES: Record<BatteryBand, number> = { 3: 0.4, 2: 0.3, 1: 0.15 }
+/**
+ * With battery saver on (some people leave it on all the time) the work is a trickle, and only
+ * while the charge is half or more: a request to save power is honoured, not turned into "never".
+ */
+const SAVER_SHARE = 0.1
 /** "light" mode takes a fifth less than the others at every level */
 const LIGHT_FACTOR = 0.8
 export const OCR_MIN_BATTERY_BAND: BatteryBand = 2
@@ -91,7 +96,11 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
   if (input.thermalCritical) return paused('thermal', 'thermal state is critical')
   if (input.freeMemMB < LOW_MEMORY_MB) return paused('low-memory', 'free memory is low')
   if (input.onBattery && input.pauseOnBattery) {
-    if (input.batterySaver) return paused('battery-saver', 'battery saver is on')
+    if (
+      input.batterySaver &&
+      !(typeof percent === 'number' && batteryBand(percent) >= OCR_MIN_BATTERY_BAND)
+    )
+      return paused('battery-saver', 'battery saver is on and the charge is below half')
     if (typeof percent === 'number' && percent < LOW_BATTERY_PERCENT)
       return paused('low-battery', 'battery is low')
     // a locked screen on a charge that is still good is no reason to stop; on a low or unreadable one it is
@@ -106,14 +115,15 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
   if (input.onBattery) {
     const light = input.mode === 'light'
     const band = batteryBand(percent)
-    const share = BATTERY_SHARES[band] * (light ? LIGHT_FACTOR : 1)
+    const share =
+      (input.batterySaver ? SAVER_SHARE : BATTERY_SHARES[band]) * (light ? LIGHT_FACTOR : 1)
     return {
       paused: false,
       threads: 1,
       cpuShare: Math.round(share * 100) / 100,
       priority: light ? 'idle' : 'below-normal',
       tier: 'battery',
-      reason: `on battery (${typeof percent === 'number' ? `${percent}%` : 'level unknown'}): one thread, ${Math.round(share * 100)}% duty cycle`,
+      reason: `on battery${input.batterySaver ? ' with battery saver' : ''} (${typeof percent === 'number' ? `${percent}%` : 'level unknown'}): one thread, ${Math.round(share * 100)}% duty cycle`,
       batteryBand: band,
     }
   }

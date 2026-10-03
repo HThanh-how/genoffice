@@ -143,11 +143,16 @@ describe('IndexingMonitor', () => {
   })
 
   it('pauses for battery saver and for a locked screen on battery, resumes on unlock', async () => {
-    const t = setup({ battery: { percent: 90, saver: true } })
+    const t = setup({ battery: { percent: 40, saver: true } })
     t.power.battery = true
     t.monitor.start()
     await flush()
     expect(t.last()).toMatchObject({ paused: true, pauseReason: 'battery-saver' })
+    // battery saver on a good charge is a trickle, not a stop
+    t.setBattery({ percent: 90, saver: true })
+    t.timers.fire(60_000)
+    await flush()
+    expect(t.last()).toMatchObject({ paused: false, cpuShare: 0.1 })
     t.setBattery({ percent: 90, saver: false })
     t.timers.fire(60_000)
     await flush()

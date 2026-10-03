@@ -182,6 +182,19 @@ describe('resolvePolicy on battery', () => {
     expect(policy({ mode: 'light', onBattery: true, batteryPercent: 40 }).cpuShare).toBe(0.12)
   })
 
+  it('keeps a trickle going with battery saver on while the charge is half or more', () => {
+    const result = policy({
+      mode: 'balanced',
+      onBattery: true,
+      batterySaver: true,
+      batteryPercent: 90,
+    })
+    expect(result.paused).toBe(false)
+    expect(result.cpuShare).toBe(0.1)
+    expect(result.threads).toBe(1)
+    expect(policy({ onBattery: true, batterySaver: true, batteryPercent: 49 }).paused).toBe(true)
+  })
+
   it('keeps going with the screen locked while the charge is still good', () => {
     const result = policy({ onBattery: true, batteryPercent: 80, locked: true })
     expect(result.paused).toBe(false)
@@ -192,8 +205,13 @@ describe('resolvePolicy on battery', () => {
     { name: 'under 30%', input: { batteryPercent: 29 }, reason: 'low-battery' },
     { name: 'at 1%', input: { batteryPercent: 1 }, reason: 'low-battery' },
     {
-      name: 'battery saver',
-      input: { batterySaver: true, batteryPercent: 80 },
+      name: 'battery saver below half a charge',
+      input: { batterySaver: true, batteryPercent: 40 },
+      reason: 'battery-saver',
+    },
+    {
+      name: 'battery saver and the charge unknown',
+      input: { batterySaver: true },
       reason: 'battery-saver',
     },
     { name: 'locked screen on 40%', input: { locked: true, batteryPercent: 40 }, reason: 'locked' },
