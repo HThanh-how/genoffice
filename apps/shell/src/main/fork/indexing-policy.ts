@@ -20,6 +20,8 @@ export interface PolicyInput {
   cores: number
   freeMemMB: number
   locked: boolean
+  /** the machine is going to sleep: nothing runs, whatever the charge */
+  suspended?: boolean
   thermalCritical?: boolean
   pauseOnBattery: boolean
   /** the user switched indexing off */
@@ -35,7 +37,11 @@ export interface ResolvedPolicy {
   priority: 'idle' | 'below-normal'
   tier: IndexingTier
   reason: string
+  /** on battery: 3 = 80% or more, 2 = 50-79% (or unknown), 1 = below 50%; the work shrinks with it */
+  batteryBand?: BatteryBand
 }
+
+export type BatteryBand = 1 | 2 | 3
 
 export const IDLE_AFTER_SECONDS = 120
 export const IDLE_STABLE_MS = 10_000
@@ -45,7 +51,20 @@ export const LOW_MEMORY_MB = 1500
 export const LOW_MEMORY_RESUME_MB = 2000
 
 const LIGHT_SHARE = 0.3
-const BATTERY_SHARE = 0.25
+/**
+ * On battery the work shrinks with the charge instead of being all or nothing: more than 80% is
+ * still a modest share of one core, half a charge about a third, and below 50% a trickle, until
+ * LOW_BATTERY_PERCENT pauses it.
+ */
+const BATTERY_SHARES: Record<BatteryBand, number> = { 3: 0.4, 2: 0.3, 1: 0.15 }
+/** "light" mode takes a fifth less than the others at every level */
+const LIGHT_FACTOR = 0.8
+export const OCR_MIN_BATTERY_BAND: BatteryBand = 2
+
+export function batteryBand(percent: number | undefined): BatteryBand {
+  if (typeof percent !== 'number') return 2
+  return percent >= 80 ? 3 : percent >= 50 ? 2 : 1
+}
 const BALANCED_ACTIVE_SHARE = 0.5
 const FAST_ACTIVE_SHARE = 0.6
 
@@ -75,18 +94,27 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
     if (input.batterySaver) return paused('battery-saver', 'battery saver is on')
     if (typeof percent === 'number' && percent < LOW_BATTERY_PERCENT)
       return paused('low-battery', 'battery is low')
-    if (input.locked) return paused('locked', 'screen is locked on battery')
+    // a locked screen on a charge that is still good is no reason to stop; on a low or unreadable one it is
+    if (input.suspended) return paused('locked', 'the machine is asleep')
+    if (
+      input.locked &&
+      (typeof percent !== 'number' || batteryBand(percent) < OCR_MIN_BATTERY_BAND)
+    )
+      return paused('locked', 'screen is locked on a low battery')
   }
 
   if (input.onBattery) {
     const light = input.mode === 'light'
+    const band = batteryBand(percent)
+    const share = BATTERY_SHARES[band] * (light ? LIGHT_FACTOR : 1)
     return {
       paused: false,
       threads: 1,
-      cpuShare: light ? BATTERY_SHARE : LIGHT_SHARE,
+      cpuShare: Math.round(share * 100) / 100,
       priority: light ? 'idle' : 'below-normal',
       tier: 'battery',
-      reason: 'on battery: one thread, low duty cycle',
+      reason: `on battery (${typeof percent === 'number' ? `${percent}%` : 'level unknown'}): one thread, ${Math.round(share * 100)}% duty cycle`,
+      batteryBand: band,
     }
   }
 

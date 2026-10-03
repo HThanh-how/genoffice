@@ -152,7 +152,12 @@ describe('IndexingMonitor', () => {
     t.timers.fire(60_000)
     await flush()
     expect(t.last().paused).toBe(false)
+    // a locked screen on a good charge keeps working (slowly); on a low one it stops
     t.power.emit('lock-screen')
+    expect(t.last().paused).toBe(false)
+    t.setBattery({ percent: 40, saver: false })
+    t.timers.fire(60_000)
+    await flush()
     expect(t.last()).toMatchObject({ paused: true, pauseReason: 'locked' })
     t.power.emit('unlock-screen')
     expect(t.last().paused).toBe(false)

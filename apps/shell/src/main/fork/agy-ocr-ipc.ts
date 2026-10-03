@@ -103,7 +103,13 @@ export function registerAgyOcr(deps: AgyOcrDeps): void {
       readUsage: () => readAgyUsage(),
       policy: () => {
         const policy = currentIndexingPolicy()
-        return policy ? { paused: policy.paused, onBattery: policy.onBattery } : null
+        return policy
+          ? {
+              paused: policy.paused,
+              onBattery: policy.onBattery,
+              ...(policy.batteryBand ? { batteryBand: policy.batteryBand } : {}),
+            }
+          : null
       },
       idleSeconds: () => {
         try {

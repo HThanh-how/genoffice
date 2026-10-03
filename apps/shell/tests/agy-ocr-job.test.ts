@@ -234,6 +234,15 @@ function rig(overrides: Partial<AgyOcrSettings> = {}, fs = new FakeFs(), pdfPage
 
 describe('gating', () => {
   const settings = { onlyOnAC: true, onlyWhenIdle: true }
+  it('lets a battery with half a charge or more read, and makes one below half wait', () => {
+    const battery = { paused: false, onBattery: true }
+    const gate = (batteryBand: number) =>
+      evaluateOcrGate({ settings, policy: { ...battery, batteryBand }, idleSeconds: 999 })
+    expect(gate(3)).toEqual({ ok: true })
+    expect(gate(2)).toEqual({ ok: true })
+    expect(gate(1)).toEqual({ ok: false, reason: 'on-battery' })
+  })
+
   it('requires a policy reading, a running indexer, AC power and idleness as configured', () => {
     const ok = { paused: false, onBattery: false }
     expect(evaluateOcrGate({ settings, policy: null, idleSeconds: 999 })).toEqual({

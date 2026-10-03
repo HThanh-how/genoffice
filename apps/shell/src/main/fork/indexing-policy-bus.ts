@@ -34,7 +34,8 @@ export function samePolicy(a: PublishedPolicy | null, b: PublishedPolicy | null)
     a.cpuShare === b.cpuShare &&
     a.priority === b.priority &&
     a.tier === b.tier &&
-    a.onBattery === b.onBattery
+    a.onBattery === b.onBattery &&
+    a.batteryBand === b.batteryBand
   )
 }
 

@@ -61,7 +61,12 @@ export const OCR_IDLE_SECONDS = 120
 export interface OcrPolicyView {
   paused: boolean
   onBattery: boolean
+  /** on battery: 3 = 80% or more, 2 = 50-79% or unknown, 1 = below 50% (see the indexing policy) */
+  batteryBand?: number
 }
+
+/** On battery, reading is allowed from this band up (half a charge or more). */
+const OCR_MIN_BATTERY_BAND = 2
 
 export type OcrGateReason = 'indexing-paused' | 'on-battery' | 'not-idle' | 'no-power-info'
 
@@ -76,7 +81,9 @@ export function evaluateOcrGate(input: {
   const { settings, policy, idleSeconds } = input
   if (!policy) return { ok: false, reason: 'no-power-info' }
   if (policy.paused) return { ok: false, reason: 'indexing-paused' }
-  if (settings.onlyOnAC && policy.onBattery) return { ok: false, reason: 'on-battery' }
+  // "only on AC" still lets a battery with a good charge work; below half it waits for the charger
+  if (settings.onlyOnAC && policy.onBattery && !((policy.batteryBand ?? 0) >= OCR_MIN_BATTERY_BAND))
+    return { ok: false, reason: 'on-battery' }
   if (settings.onlyWhenIdle && !(idleSeconds !== null && idleSeconds >= OCR_IDLE_SECONDS))
     return { ok: false, reason: 'not-idle' }
   return { ok: true }

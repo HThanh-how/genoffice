@@ -165,6 +165,29 @@ describe('resolvePolicy on battery', () => {
     expect(policy({ onBattery: true }).paused).toBe(false)
   })
 
+  it('shrinks the work as the charge falls instead of all or nothing', () => {
+    const share = (batteryPercent: number) =>
+      policy({ mode: 'balanced', onBattery: true, batteryPercent }).cpuShare
+    expect(share(100)).toBe(0.4)
+    expect(share(80)).toBe(0.4)
+    expect(share(79)).toBe(0.3)
+    expect(share(50)).toBe(0.3)
+    expect(share(49)).toBe(0.15)
+    expect(share(30)).toBe(0.15)
+    expect(policy({ onBattery: true, batteryPercent: 29 }).paused).toBe(true)
+  })
+
+  it('takes a fifth less in light mode at every level', () => {
+    expect(policy({ mode: 'light', onBattery: true, batteryPercent: 90 }).cpuShare).toBe(0.32)
+    expect(policy({ mode: 'light', onBattery: true, batteryPercent: 40 }).cpuShare).toBe(0.12)
+  })
+
+  it('keeps going with the screen locked while the charge is still good', () => {
+    const result = policy({ onBattery: true, batteryPercent: 80, locked: true })
+    expect(result.paused).toBe(false)
+    expect(result.batteryBand).toBe(3)
+  })
+
   const pauses: { name: string; input: Partial<PolicyInput>; reason: string }[] = [
     { name: 'under 30%', input: { batteryPercent: 29 }, reason: 'low-battery' },
     { name: 'at 1%', input: { batteryPercent: 1 }, reason: 'low-battery' },
@@ -173,7 +196,8 @@ describe('resolvePolicy on battery', () => {
       input: { batterySaver: true, batteryPercent: 80 },
       reason: 'battery-saver',
     },
-    { name: 'locked screen', input: { locked: true, batteryPercent: 80 }, reason: 'locked' },
+    { name: 'locked screen on 40%', input: { locked: true, batteryPercent: 40 }, reason: 'locked' },
+    { name: 'locked screen, charge unknown', input: { locked: true }, reason: 'locked' },
   ]
   it.each(pauses)('pauses on battery: $name', ({ input, reason }) => {
     const result = policy({ onBattery: true, ...input })

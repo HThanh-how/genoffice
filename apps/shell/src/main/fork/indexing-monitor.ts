@@ -153,6 +153,7 @@ export class IndexingMonitor {
       cores: this.deps.cores,
       freeMemMB: this.deps.freeMemMB(),
       locked: this.locked || this.suspended,
+      suspended: this.suspended,
       thermalCritical: this.thermal === 'critical',
       ...(onBattery && this.battery.percent !== undefined
         ? { batteryPercent: this.battery.percent }
