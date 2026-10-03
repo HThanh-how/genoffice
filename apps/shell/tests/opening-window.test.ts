@@ -1,7 +1,14 @@
 import { describe, expect, it } from 'vitest'
-import { openingPageHtml, openingWords } from '../src/main/fork/opening-window'
+import {
+  SPLASH_THEMES,
+  chooseSplashTier,
+  lighterRgbOf,
+  openingPageHtml,
+  openingWords,
+  rgbOf,
+} from '../src/main/fork/opening-window'
 
-describe('the "Opening…" panel for a legacy file', () => {
+describe('the "Opening…" splash for a legacy file', () => {
   it('says what is happening, in Vietnamese or English', () => {
     expect(openingWords('vi', 'doc').title).toBe('Đang mở tài liệu…')
     expect(openingWords('en', 'ppt').title).toBe('Opening presentation…')
@@ -10,16 +17,61 @@ describe('the "Opening…" panel for a legacy file', () => {
   })
 
   it('shows the file name and cannot be turned into markup by it', () => {
-    const html = openingPageHtml(openingWords('en', 'doc'), '<img src=x onerror=alert(1)>.doc')
+    const html = openingPageHtml(
+      openingWords('en', 'doc'),
+      '<img src=x onerror=alert(1)>.doc',
+      'docs',
+      'full',
+    )
     expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;.doc')
     expect(html).not.toContain('<img')
-    // no script can run in it, and nothing can be loaded
+    // nothing can be loaded from outside the page
     expect(html).toContain("default-src 'none'")
-    expect(html).not.toMatch(/<script/i)
+    expect(html).not.toMatch(/https?:\/\//)
   })
 
-  it('follows the system light or dark setting', () => {
-    const html = openingPageHtml(openingWords('vi', 'doc'), 'a.doc')
-    expect(html).toContain('prefers-color-scheme:dark')
+  it('wears the colour and letter of the app that opens the file', () => {
+    const docs = openingPageHtml(openingWords('vi', 'doc'), 'a.doc', 'docs', 'lite')
+    const sheets = openingPageHtml(openingWords('vi', 'doc'), 'a.xls', 'sheets', 'lite')
+    const slides = openingPageHtml(openingWords('vi', 'ppt'), 'a.ppt', 'slides', 'lite')
+    expect(docs).toContain(`--accent:${SPLASH_THEMES.docs.color}`)
+    expect(sheets).toContain(`--accent:${SPLASH_THEMES.sheets.color}`)
+    expect(slides).toContain(`--accent:${SPLASH_THEMES.slides.color}`)
+    expect(new Set(Object.values(SPLASH_THEMES).map((theme) => theme.color)).size).toBe(6)
+    expect(docs).toContain('>W</div>')
+    expect(slides).toContain('>P</div>')
+  })
+
+  it('runs the animated sea only on the richer tiers', () => {
+    const page = (tier: 'full' | 'lite' | 'minimal') =>
+      openingPageHtml(openingWords('en', 'doc'), 'a.doc', 'docs', tier)
+    expect(page('full')).toContain('<script>')
+    expect(page('lite')).toContain('<script>')
+    expect(page('minimal')).not.toContain('<script>')
+    expect(page('minimal')).toContain('data-tier="minimal"')
+  })
+
+  it('turns hex colours into canvas colours, and lighter ones for the glow', () => {
+    expect(rgbOf('#2b7cd3')).toBe('43,124,211')
+    expect(rgbOf('not a colour')).toBe('43,124,211')
+    const lighter = lighterRgbOf('#000000').split(',').map(Number)
+    expect(lighter.every((part) => part > 100 && part < 130)).toBe(true)
+  })
+})
+
+describe('how rich the animation is for this machine', () => {
+  const strong = { cores: 12, memoryGB: 32, onBattery: false }
+  it('gives a strong plugged-in machine the full version', () => {
+    expect(chooseSplashTier(strong)).toBe('full')
+  })
+  it('gives a lighter one on battery or with modest hardware', () => {
+    expect(chooseSplashTier({ ...strong, onBattery: true })).toBe('lite')
+    expect(chooseSplashTier({ ...strong, cores: 4 })).toBe('lite')
+    expect(chooseSplashTier({ ...strong, memoryGB: 8 })).toBe('lite')
+  })
+  it('keeps a weak machine, or a person who asked for less motion, to the calm one', () => {
+    expect(chooseSplashTier({ ...strong, cores: 2 })).toBe('minimal')
+    expect(chooseSplashTier({ ...strong, memoryGB: 4 })).toBe('minimal')
+    expect(chooseSplashTier({ ...strong, reducedMotion: true })).toBe('minimal')
   })
 })

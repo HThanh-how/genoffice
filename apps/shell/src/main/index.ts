@@ -3657,20 +3657,24 @@ async function openLegacyDoc(filePath: string): Promise<void> {
     }
     let result: Awaited<ReturnType<typeof convertLegacyDoc>>
     // the online conversion takes seconds: say that the file is opening
-    const opening = startOpeningNotice({
-      fileName: basename(filePath),
-      lang: currentLang(),
-      kind: 'doc',
-    })
-    try {
-      result =
-        localResult && (localResult.fidelity === 'formatted' || !online)
+    const convert = async (): Promise<Awaited<ReturnType<typeof convertLegacyDoc>>> => {
+      const opening = startOpeningNotice({
+        fileName: basename(filePath),
+        lang: currentLang(),
+        kind: 'doc',
+      })
+      try {
+        return localResult && (localResult.fidelity === 'formatted' || !online)
           ? localResult
           : await convertLegacyDoc(filePath, online ? settings.endpoint : undefined)
-    } finally {
-      opening.close()
+      } finally {
+        opening.close()
+      }
     }
-    if (result.fidelity === 'text') {
+    result = await convert()
+    // A text-only copy loses the tables, pictures and formatting: when the online conversion
+    // failed, offer to try it again (the failure is usually a busy moment) before settling for it.
+    for (let tries = 0; result.fidelity === 'text'; tries++) {
       const options = {
         type: 'warning' as const,
         title: 'Limited legacy Word import',
@@ -3679,14 +3683,23 @@ async function openLegacyDoc(filePath: string): Promise<void> {
           : 'A full .doc converter is not available on this device.',
         detail:
           'GenOffice can open an editable .docx copy containing the readable text. Tables, images and formatting may be missing. The original .doc will remain unchanged.',
-        buttons: ['Open text-only copy', 'Cancel'],
-        defaultId: 1,
-        cancelId: 1,
+        buttons: online
+          ? ['Try again', 'Open text-only copy', 'Cancel']
+          : ['Open text-only copy', 'Cancel'],
+        defaultId: 0,
+        cancelId: online ? 2 : 1,
       }
       const choice = shellWindow
         ? await dialog.showMessageBox(shellWindow, options)
         : await dialog.showMessageBox(options)
-      if (choice.response !== 0) return
+      const wantsTryAgain = online && choice.response === 0
+      const wantsTextOnly = online ? choice.response === 1 : choice.response === 0
+      if (wantsTryAgain && tries < 5) {
+        result = await convert()
+        continue
+      }
+      if (!wantsTextOnly) return
+      break
     }
     const suggestedName = `${basename(filePath, extname(filePath))}.docx`
     let convertedPath = uniquePathIn(dirname(filePath), suggestedName)

@@ -19,34 +19,48 @@ export type LegacyDocConversion = {
 
 export const DEFAULT_LEGACY_DOC_SERVICE = 'https://d2x.clouds.io.vn'
 
-/** A document is sent online only when the caller supplies an endpoint. */
-async function convertWithService(
+/** Answers worth asking again: the service was busy, restarting or slow, not "this file is bad". */
+const RETRYABLE_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504])
+const SERVICE_ATTEMPTS = 4
+const ATTEMPT_TIMEOUT_MS = 45_000
+const RETRY_PAUSE_MS = 500
+
+/**
+ * A document is sent online only when the caller supplies an endpoint. A failed try (a dropped
+ * connection, a timeout, a busy service) is repeated a few times with growing pauses, so one bad
+ * moment does not turn a formatted document into a text-only copy.
+ */
+export async function convertWithService(
   source: Uint8Array,
   endpoint: string,
+  pause: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 ): Promise<Uint8Array | null> {
+  let url: URL
   try {
-    const url = new URL('/v1/convert/docx', endpoint)
+    url = new URL('/v1/convert/docx', endpoint)
     if (url.protocol !== 'https:' && !(url.protocol === 'http:' && url.hostname === '127.0.0.1')) {
-      throw new Error('The conversion service must use HTTPS')
+      return null
     }
-    const signal = AbortSignal.timeout(55_000)
-    for (let attempt = 0; attempt < 3; attempt++) {
+  } catch {
+    return null
+  }
+  for (let attempt = 0; attempt < SERVICE_ATTEMPTS; attempt++) {
+    if (attempt > 0) await pause(RETRY_PAUSE_MS * attempt * attempt)
+    try {
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/msword' },
         body: Buffer.from(source),
-        signal,
+        // each try has its own time: a slow first one must not use up the others'
+        signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS),
       })
       if (!response.ok) {
-        if (attempt < 2 && [502, 503, 504].includes(response.status)) {
-          await new Promise((resolve) => setTimeout(resolve, 350 * (attempt + 1)))
-          continue
-        }
+        if (RETRYABLE_STATUSES.has(response.status)) continue
         return null
       }
       const length = Number(response.headers.get('content-length'))
       if (Number.isFinite(length) && length > MAX_CONVERTED_BYTES) return null
-      if (!response.body) return null
+      if (!response.body) continue
       const reader = response.body.getReader()
       const chunks: Uint8Array[] = []
       let received = 0
@@ -63,11 +77,11 @@ async function convertWithService(
       const bytes = Buffer.concat(chunks, received)
       await parseDocx(bytes)
       return bytes
+    } catch {
+      // a dropped connection, a timeout or a reply that is not a document: try again
     }
-    return null
-  } catch {
-    return null
   }
+  return null
 }
 
 /** macOS ships textutil, which can read .doc and write .docx without another app. */
