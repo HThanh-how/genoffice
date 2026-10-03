@@ -30,6 +30,7 @@ import type {
   FileSearchRerank,
   FileSearchSettings,
   LegacyConvertState,
+  OpeningEffectsState,
   LegacyDocSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
@@ -351,6 +352,25 @@ const homeApi: HomeApi = {
   },
   async getLegacyConvertState() {
     return (await ipcRenderer.invoke(HOME_CHANNELS.getLegacyConvertState)) as LegacyConvertState
+  },
+  async getOpeningEffects() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.getOpeningEffects)) as OpeningEffectsState
+  },
+  async setOpeningPrefs(prefs) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.setOpeningPrefs, prefs)) as OpeningEffectsState
+  },
+  async importOpeningHtml(app) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.importOpeningHtml, app)) as {
+      ok: boolean
+      error?: string
+      state: OpeningEffectsState
+    }
+  },
+  async removeOpeningHtml(app) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.removeOpeningHtml, app)) as OpeningEffectsState
+  },
+  async previewOpening(app, scene) {
+    await ipcRenderer.invoke(HOME_CHANNELS.previewOpening, app, scene)
   },
   async startLegacyConvert() {
     return (await ipcRenderer.invoke(HOME_CHANNELS.startLegacyConvert)) as LegacyConvertState

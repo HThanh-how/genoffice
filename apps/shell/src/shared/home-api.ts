@@ -48,6 +48,8 @@ export type UiLanguage =
   | 'vi'
 
 /** UI theme preference */
+import type { OpeningApp, OpeningPrefs } from './opening-scenes-meta'
+
 export type UiTheme = 'light' | 'dark' | 'system'
 
 export interface LegacyDocSettings {
@@ -65,6 +67,12 @@ export interface LegacyConvertState {
   pending: number
   converted: number
   failed: number
+}
+
+/** What the person chose for the opening scenes, and which apps have an imported page. */
+export interface OpeningEffectsState {
+  prefs: OpeningPrefs
+  custom: Record<OpeningApp, boolean>
 }
 
 export interface LegacyRecoveryEntry {
@@ -335,6 +343,15 @@ export interface HomeApi extends ForkHomeApi {
   /** Legacy Office conversion privacy preference and optional self-hosted endpoint. */
   getLegacyDocSettings(): Promise<LegacyDocSettings>
   getLegacyConvertState(): Promise<LegacyConvertState>
+  getOpeningEffects(): Promise<OpeningEffectsState>
+  setOpeningPrefs(prefs: OpeningPrefs): Promise<OpeningEffectsState>
+  /** pick an .html file to play as an app's opening scene; ok=false with the reason when it is refused */
+  importOpeningHtml(
+    app: OpeningApp,
+  ): Promise<{ ok: boolean; error?: string; state: OpeningEffectsState }>
+  removeOpeningHtml(app: OpeningApp): Promise<OpeningEffectsState>
+  /** play a scene in a small window for a few seconds */
+  previewOpening(app: OpeningApp, scene: string): Promise<void>
   /** start (or continue) the background conversion now */
   startLegacyConvert(): Promise<LegacyConvertState>
   setLegacyDocSettings(settings: LegacyDocSettings): Promise<LegacyDocSettings>
@@ -647,6 +664,11 @@ export const HOME_CHANNELS = {
   setTheme: 'home:set-theme',
   getLegacyDocSettings: 'home:get-legacy-doc-settings',
   getLegacyConvertState: 'home:get-legacy-convert-state',
+  getOpeningEffects: 'home:get-opening-effects',
+  setOpeningPrefs: 'home:set-opening-prefs',
+  importOpeningHtml: 'home:import-opening-html',
+  removeOpeningHtml: 'home:remove-opening-html',
+  previewOpening: 'home:preview-opening',
   startLegacyConvert: 'home:start-legacy-convert',
   setLegacyDocSettings: 'home:set-legacy-doc-settings',
   listLegacyRecovery: 'home:list-legacy-recovery',

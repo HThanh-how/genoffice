@@ -1,6 +1,8 @@
 import { DocumentMemoryManager } from './document-memory/manager'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
-import { startOpeningNotice } from './fork/opening-window'
+import { previewOpeningScene, setOpeningConfig, startOpeningNotice } from './fork/opening-window'
+import { OPENING_APPS, normalizeOpeningPrefs } from '../shared/opening-scenes-meta'
+import type { OpeningApp, OpeningPrefs } from '../shared/opening-scenes-meta'
 import { execSync, spawn } from 'node:child_process'
 import {
   appendFileSync,
@@ -309,6 +311,7 @@ import type {
   LegacyDocSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
+import type { OpeningEffectsState } from '../shared/home-api'
 import { DOCUMENT_INDEX_CHANNELS, type PasteFilesResult } from '../shared/fork/document-index-api'
 import { registerHomeChatIpc } from './fork/home-chat-ipc'
 import { registerDocumentIndexIpc } from './fork/document-index-ipc'
@@ -3796,6 +3799,36 @@ function startLegacyConverter(): void {
   setInterval(() => legacyConverter?.kick(), 10 * 60_000).unref()
 }
 
+const MAX_OPENING_HTML_BYTES = 512 * 1024
+
+function openingPrefs(): OpeningPrefs {
+  return normalizeOpeningPrefs(readAppSettings(APP_SETTINGS_PATH()).openingEffects)
+}
+
+function openingHtmlPath(target: OpeningApp): string {
+  return join(app.getPath('userData'), 'opening-custom', `${target}.html`)
+}
+
+function customOpeningHtml(target: OpeningApp): string | null {
+  try {
+    return readFileSync(openingHtmlPath(target), 'utf8')
+  } catch {
+    return null
+  }
+}
+
+function openingEffectsState(): OpeningEffectsState {
+  return {
+    prefs: openingPrefs(),
+    custom: Object.fromEntries(
+      OPENING_APPS.map((a) => [a, existsSync(openingHtmlPath(a))]),
+    ) as Record<OpeningApp, boolean>,
+  }
+}
+
+const isOpeningApp = (value: unknown): value is OpeningApp =>
+  typeof value === 'string' && (OPENING_APPS as readonly string[]).includes(value)
+
 async function openLegacyDoc(filePath: string): Promise<void> {
   if (pendingLegacyDocImports.has(filePath)) return
   pendingLegacyDocImports.add(filePath)
@@ -4787,6 +4820,67 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.startLegacyConvert, () => {
     legacyConverter?.kick()
     return legacyConverter?.state() ?? { running: false, pending: 0, converted: 0, failed: 0 }
+  })
+  ipcMain.handle(HOME_CHANNELS.getOpeningEffects, (): OpeningEffectsState => openingEffectsState())
+  ipcMain.handle(HOME_CHANNELS.setOpeningPrefs, (_event, input: unknown): OpeningEffectsState => {
+    writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', normalizeOpeningPrefs(input))
+    return openingEffectsState()
+  })
+  ipcMain.handle(HOME_CHANNELS.importOpeningHtml, async (_event, target: unknown) => {
+    if (!isOpeningApp(target))
+      return { ok: false, error: 'Unknown app', state: openingEffectsState() }
+    const options = {
+      title: 'HTML',
+      properties: ['openFile' as const],
+      filters: [{ name: 'HTML', extensions: ['html', 'htm'] }],
+    }
+    const picked = shellWindow
+      ? await dialog.showOpenDialog(shellWindow, options)
+      : await dialog.showOpenDialog(options)
+    const file = picked.filePaths[0]
+    if (picked.canceled || !file) return { ok: false, state: openingEffectsState() }
+    try {
+      const size = statSync(file).size
+      if (size > MAX_OPENING_HTML_BYTES) {
+        return { ok: false, error: 'The page is larger than 512 KB.', state: openingEffectsState() }
+      }
+      const text = readFileSync(file, 'utf8')
+      mkdirSync(join(app.getPath('userData'), 'opening-custom'), { recursive: true })
+      await atomicWriteFile(openingHtmlPath(target), Buffer.from(text, 'utf8'))
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        state: openingEffectsState(),
+      }
+    }
+    // an imported page is played as soon as it is imported
+    const prefs = openingPrefs()
+    writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+      ...prefs,
+      scenes: { ...prefs.scenes, [target]: 'custom' },
+    })
+    return { ok: true, state: openingEffectsState() }
+  })
+  ipcMain.handle(
+    HOME_CHANNELS.removeOpeningHtml,
+    (_event, target: unknown): OpeningEffectsState => {
+      if (isOpeningApp(target)) {
+        rmSync(openingHtmlPath(target), { force: true })
+        const prefs = openingPrefs()
+        if (prefs.scenes[target] === 'custom') {
+          writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+            ...prefs,
+            scenes: { ...prefs.scenes, [target]: normalizeOpeningPrefs({}).scenes[target] },
+          })
+        }
+      }
+      return openingEffectsState()
+    },
+  )
+  ipcMain.handle(HOME_CHANNELS.previewOpening, (_event, target: unknown, scene: unknown) => {
+    if (!isOpeningApp(target) || typeof scene !== 'string') return
+    previewOpeningScene({ app: target, scene, lang: currentLang() })
   })
   ipcMain.handle(HOME_CHANNELS.listLegacyRecovery, () =>
     listLegacyRecovery(app.getPath('userData')),
@@ -6580,6 +6674,7 @@ app.whenReady().then(async () => {
   const dbMove = await applyPendingDbMove(userDataDir)
   if (dbMove.error) console.warn('[document-memory] index move failed:', dbMove.error)
   everything = createEverything(userDataDir)
+  setOpeningConfig({ prefs: openingPrefs, customHtml: customOpeningHtml })
   documentMemory = new DocumentMemoryManager(userDataDir, {
     dbDir: resolveDbDir(userDataDir),
     externalNames: (query, limit) => everything!.search.search(query, limit),

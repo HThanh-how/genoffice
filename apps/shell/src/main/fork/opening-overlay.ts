@@ -15,6 +15,8 @@ export interface OverlayHandle {
 }
 
 export interface OverlayDeps {
+  /** the person can switch the scene off */
+  enabled?(): boolean
   create(spec: OverlaySpec): OverlayHandle
   now(): number
   /** runs `fn` after `ms`; the returned function cancels it */
@@ -56,6 +58,7 @@ export class OpeningOverlays {
 
   begin(tabId: string, spec: OverlaySpec): void {
     this.drop(tabId)
+    if (this.deps.enabled?.() === false) return
     const entry: Entry = {
       handle: this.deps.create(spec),
       shownAt: this.deps.now(),

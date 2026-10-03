@@ -1227,3 +1227,25 @@
 .set-chatmodels-other > p.set-field-desc {
   margin: 0 0 8px;
 }
+
+.set-opening-row {
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+.set-opening-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.set-dd-wide {
+  min-width: 230px;
+}
+.set-opening-guide,
+.set-opening-error {
+  margin-top: 6px;
+  line-height: 1.5;
+}
+.set-opening-error {
+  color: var(--danger, var(--text));
+}

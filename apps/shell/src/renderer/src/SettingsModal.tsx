@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { UpdateSource } from '../../shared/update-source'
+import { OpeningEffectsSettings } from './fork/OpeningEffectsSettings'
 import {
   AI_CUSTOM_FONT_MAX_PX,
   AI_CUSTOM_FONT_MIN_PX,
@@ -77,7 +78,8 @@ const LANG_OPTIONS = [
   { value: 'zh-TW', label: '繁體中文' },
 ] as const
 
-type GroupKey = 'appearance' | 'ai' | 'files' | 'legacy' | 'legacyHint' | 'privacy'
+type GroupKey =
+  'appearance' | 'ai' | 'files' | 'legacy' | 'legacyHint' | 'privacy' | 'opening' | 'openingHint'
 const GROUP_TEXT: Record<string, Record<GroupKey, string>> = {
   en: {
     appearance: 'Appearance',
@@ -86,6 +88,8 @@ const GROUP_TEXT: Record<string, Record<GroupKey, string>> = {
     legacy: 'Legacy Office files',
     legacyHint: '.doc and .ppt conversion',
     privacy: 'Privacy & clipboard',
+    opening: 'Opening effects',
+    openingHint: 'A scene while a file opens',
   },
   vi: {
     appearance: 'Giao diện',
@@ -94,6 +98,8 @@ const GROUP_TEXT: Record<string, Record<GroupKey, string>> = {
     legacy: 'Tệp Office cũ',
     legacyHint: 'Chuyển đổi .doc và .ppt',
     privacy: 'Riêng tư & clipboard',
+    opening: 'Hiệu ứng mở tệp',
+    openingHint: 'Cảnh chạy khi mở một tệp',
   },
   zh: {
     appearance: '外观',
@@ -102,6 +108,8 @@ const GROUP_TEXT: Record<string, Record<GroupKey, string>> = {
     legacy: '旧版 Office 文件',
     legacyHint: '.doc 和 .ppt 转换',
     privacy: '隐私与剪贴板',
+    opening: '打开动画',
+    openingHint: '打开文件时播放的场景',
   },
   'zh-TW': {
     appearance: '外觀',
@@ -110,6 +118,8 @@ const GROUP_TEXT: Record<string, Record<GroupKey, string>> = {
     legacy: '舊版 Office 檔案',
     legacyHint: '.doc 與 .ppt 轉換',
     privacy: '隱私與剪貼簿',
+    opening: '開啟動畫',
+    openingHint: '開啟檔案時播放的場景',
   },
 }
 function groupText(lang: string, key: GroupKey): string {
@@ -1934,6 +1944,13 @@ export function SettingsModal({
                       )}
                     </div>
                   </div>
+                </SetGroup>
+                <SetGroup
+                  title={groupText(lang, 'opening')}
+                  hint={groupText(lang, 'openingHint')}
+                  fold
+                >
+                  <OpeningEffectsSettings lang={lang} />
                 </SetGroup>
                 <SetGroup title={groupText(lang, 'privacy')}>
                   <div className="set-field">

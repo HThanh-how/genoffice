@@ -1,6 +1,13 @@
 import { cpus, totalmem } from 'node:os'
 import { BrowserWindow, app, powerMonitor } from 'electron'
-import { SCENE_BOOT, SCENE_FOR_APP, SCENE_LIB, sceneMeta } from './opening-scenes'
+import {
+  CUSTOM_SCENE,
+  DEFAULT_OPENING_PREFS,
+  DEFAULT_SCENE_FOR_APP,
+  sceneMeta,
+} from '../../shared/opening-scenes-meta'
+import type { OpeningApp, OpeningPrefs } from '../../shared/opening-scenes-meta'
+import { SCENE_BOOT, SCENE_LIB } from './opening-scenes'
 
 /**
  * A small "Opening…" splash for the seconds a legacy .doc / .ppt takes to be converted. Without it a
@@ -12,7 +19,7 @@ import { SCENE_BOOT, SCENE_FOR_APP, SCENE_LIB, sceneMeta } from './opening-scene
  * reduced motion.
  */
 
-export type SplashApp = 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html'
+export type SplashApp = OpeningApp
 export type SplashTier = 'full' | 'lite' | 'minimal'
 
 export interface SplashTheme {
@@ -124,7 +131,7 @@ export function openingPageHtml(
 ): string {
   const theme = SPLASH_THEMES[appName]
   const rgb = rgbOf(theme.color)
-  const sceneId = scene ?? SCENE_FOR_APP[appName]
+  const sceneId = scene ?? DEFAULT_SCENE_FOR_APP[appName]
   const script = tier === 'minimal' ? '' : `<script>${SCENE_LIB}${SCENE_BOOT}</script>`
   const [bg1, bg2] = sceneMeta(sceneId).bg
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(words.title)}</title>
@@ -169,6 +176,85 @@ body{transition:opacity .3s ease}body.leaving{opacity:0}
 <div class="bar" role="progressbar" aria-label="${escapeHtml(words.title)}"><i></i></div>
 ${script}
 </body></html>`
+}
+
+/** Where the person's choices and the pages they imported come from (set once at startup). */
+export interface OpeningConfig {
+  prefs(): OpeningPrefs
+  /** the imported HTML page of an app, or null */
+  customHtml(app: SplashApp): string | null
+}
+
+let config: OpeningConfig = { prefs: () => DEFAULT_OPENING_PREFS, customHtml: () => null }
+
+export function setOpeningConfig(next: OpeningConfig): void {
+  config = next
+}
+
+export const openingEnabled = (): boolean => config.prefs().enabled
+
+const MAX_CUSTOM_HTML_BYTES = 512 * 1024
+
+/**
+ * The person's own HTML page as the opening scene. It runs with no network at all (not even to
+ * load an image or a font from the web) and gets the file name and colours in `window.GENOFFICE_OPEN`
+ * and as {{fileName}} {{title}} {{hint}} {{color}} in its text. `body.leaving` is set when it should fade.
+ */
+export function customPageHtml(
+  userHtml: string,
+  info: { fileName: string; title: string; hint: string; app: SplashApp; color: string },
+): string {
+  const csp =
+    "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:; media-src data: blob:\">"
+  // the data goes in as JSON; a "<" in it must not be able to close the script
+  const data = JSON.stringify(info).replace(/</g, '\\u003c')
+  const boot = `<script>window.GENOFFICE_OPEN=${data}</script><style>body{transition:opacity .3s ease}body.leaving{opacity:0}</style>`
+  const filled = userHtml
+    .slice(0, MAX_CUSTOM_HTML_BYTES)
+    .replace(/\{\{\s*fileName\s*\}\}/g, () => escapeHtml(info.fileName))
+    .replace(/\{\{\s*title\s*\}\}/g, () => escapeHtml(info.title))
+    .replace(/\{\{\s*hint\s*\}\}/g, () => escapeHtml(info.hint))
+    .replace(/\{\{\s*color\s*\}\}/g, () => escapeHtml(info.color))
+  const doctype = /^\s*<!doctype[^>]*>/i.exec(filled)
+  return doctype
+    ? `${doctype[0]}${csp}${boot}${filled.slice(doctype[0].length)}`
+    : `${csp}${boot}${filled}`
+}
+
+/** The page to show while a file opens, with the person's choices applied. */
+export function buildOpeningPage(options: {
+  fileName: string
+  lang: string
+  kind: OpeningKind
+  app: SplashApp
+  /** play this scene instead of the one chosen (for a preview) */
+  scene?: string
+  /** the machine's own tier, unless the person fixed one */
+  forceTier?: SplashTier
+}): string {
+  const prefs = config.prefs()
+  const words = openingWords(options.lang, options.kind)
+  const tier = options.forceTier ?? (prefs.tier === 'auto' ? machineTier() : prefs.tier)
+  const chosen = options.scene ?? prefs.scenes[options.app]
+  if (chosen === CUSTOM_SCENE) {
+    const user = config.customHtml(options.app)
+    if (user !== null) {
+      return customPageHtml(user, {
+        fileName: options.fileName,
+        title: words.title,
+        hint: words.hint,
+        app: options.app,
+        color: SPLASH_THEMES[options.app].color,
+      })
+    }
+  }
+  return openingPageHtml(
+    words,
+    options.fileName,
+    options.app,
+    tier,
+    chosen === CUSTOM_SCENE ? undefined : chosen,
+  )
 }
 
 /** Waits this long before showing, so a quick open does not flash a window. */
@@ -226,13 +312,14 @@ export function startOpeningNotice(options: {
     })
     window.webContents.on('will-navigate', (event) => event.preventDefault())
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
-    const html = openingPageHtml(
-      openingWords(options.lang, options.kind),
-      options.fileName,
-      options.app ??
+    const html = buildOpeningPage({
+      fileName: options.fileName,
+      lang: options.lang,
+      kind: options.kind,
+      app:
+        options.app ??
         (options.kind === 'ppt' ? 'slides' : options.kind === 'xls' ? 'sheets' : 'docs'),
-      machineTier(),
-    )
+    })
     void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
     window.once('ready-to-show', () => {
       if (!closed) window?.showInactive()
@@ -246,4 +333,51 @@ export function startOpeningNotice(options: {
       window = null
     },
   }
+}
+
+/** Plays a scene in a small window for a few seconds, for the settings page's "Preview". It closes by itself, or when you click elsewhere. */
+export function previewOpeningScene(options: {
+  app: SplashApp
+  scene: string
+  lang: string
+}): void {
+  if (!app.isReady()) return
+  const window = new BrowserWindow({
+    width: 480,
+    height: 240,
+    frame: false,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    skipTaskbar: true,
+    alwaysOnTop: true,
+    show: false,
+    center: true,
+    backgroundColor: '#0b1226',
+    webPreferences: {
+      sandbox: true,
+      contextIsolation: true,
+      nodeIntegration: false,
+      devTools: false,
+    },
+  })
+  window.webContents.on('will-navigate', (event) => event.preventDefault())
+  window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  const html = buildOpeningPage({
+    fileName: options.lang === 'vi' ? 'Bảng tính của tôi.xlsx' : 'My document.xlsx',
+    lang: options.lang,
+    kind: 'open',
+    app: options.app,
+    scene: options.scene,
+  })
+  void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+  const timer = setTimeout(() => {
+    if (!window.isDestroyed()) window.close()
+  }, 9000)
+  window.once('ready-to-show', () => window.show())
+  window.on('blur', () => {
+    if (!window.isDestroyed()) window.close()
+  })
+  window.once('closed', () => clearTimeout(timer))
 }

@@ -1,7 +1,7 @@
 import { WebContentsView } from 'electron'
 import type { BrowserWindow } from 'electron'
 import type { OverlayDeps, OverlayHandle } from './opening-overlay'
-import { machineTier, openingPageHtml, openingWords } from './opening-window'
+import { buildOpeningPage, openingEnabled } from './opening-window'
 
 /** The real thing: a view over the tab content that plays the app's opening scene. */
 export function electronOverlayDeps(
@@ -9,6 +9,7 @@ export function electronOverlayDeps(
   lang: () => string,
 ): OverlayDeps {
   return {
+    enabled: openingEnabled,
     now: () => Date.now(),
     schedule: (fn, ms) => {
       const timer = setTimeout(fn, ms)
@@ -28,12 +29,12 @@ export function electronOverlayDeps(
       const window = parent()
       window?.contentView.addChildView(view)
       view.setVisible(false)
-      const html = openingPageHtml(
-        openingWords(lang(), 'open'),
-        spec.fileName,
-        spec.app,
-        machineTier(),
-      )
+      const html = buildOpeningPage({
+        fileName: spec.fileName,
+        lang: lang(),
+        kind: 'open',
+        app: spec.app,
+      })
       void view.webContents.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
       let gone = false
       return {

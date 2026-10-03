@@ -78,8 +78,12 @@ describe('how rich the animation is for this machine', () => {
 
 describe('one scene for each app', () => {
   it('has a drawn scene and a background for every scene on offer, and plays one per app', async () => {
-    const { SCENES, SCENE_FOR_APP, SCENE_LIB, sceneMeta } =
-      await import('../src/main/fork/opening-scenes')
+    const {
+      SCENES,
+      DEFAULT_SCENE_FOR_APP: SCENE_FOR_APP,
+      SCENE_LIB,
+      sceneMeta,
+    } = await import('../src/main/fork/opening-scenes')
     for (const scene of SCENES) {
       expect(SCENE_LIB).toContain(`scenes.${scene.id}={`)
       expect(scene.bg).toHaveLength(2)
