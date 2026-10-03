@@ -1,6 +1,12 @@
 import { DocumentMemoryManager } from './document-memory/manager'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
-import { previewOpeningScene, setOpeningConfig, startOpeningNotice } from './fork/opening-window'
+import { rotatingFileWriter } from './fork/renderer-diagnostics'
+import {
+  openingEnabled,
+  previewOpeningScene,
+  setOpeningConfig,
+  startOpeningNotice,
+} from './fork/opening-window'
 import { OPENING_APPS, normalizeOpeningPrefs } from '../shared/opening-scenes-meta'
 import type { OpeningApp, OpeningPrefs } from '../shared/opening-scenes-meta'
 import { execSync, spawn } from 'node:child_process'
@@ -3193,10 +3199,96 @@ function refreshTitleBarOverlay(): void {
   shellWindow.setTitleBarOverlay(tabStripOverlay(nativeTheme.shouldUseDarkColors))
 }
 
+/**
+ * Opening a file when GenOffice is not running: a small splash window appears at once, the big
+ * window loads out of sight (fully transparent and click-through, so it renders normally), and it
+ * fades in only when the document is on screen. Opening a file in an app that is already running
+ * uses the scene laid over the tab instead, so nothing of the open window disappears.
+ */
+interface ColdOpening {
+  splash: { close(): void }
+  shownAt: number
+  timer: ReturnType<typeof setTimeout>
+}
+let coldOpening: ColdOpening | null = null
+const COLD_OPENING_MIN_MS = 900
+const COLD_OPENING_MAX_MS = 25_000
+const COLD_OPEN_FILE = /\.(docx?|xlsx?|xlsm|pptx?|pdf|md|markdown|html?|csv|tsv)$/i
+
+function splashAppForPath(
+  filePath: string,
+): 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown' | 'html' {
+  if (/\.(xlsx?|xlsm|csv|tsv)$/i.test(filePath)) return 'sheets'
+  if (/\.pptx?$/i.test(filePath)) return 'slides'
+  if (PDF_RE.test(filePath)) return 'pdf'
+  if (MD_RE.test(filePath)) return 'markdown'
+  if (HTML_RE.test(filePath)) return 'html'
+  return 'docs'
+}
+
+function beginColdOpening(paths: readonly string[]): void {
+  const first = paths.find((p) => COLD_OPEN_FILE.test(p) && existsSync(p))
+  if (!first || !openingEnabled()) return
+  coldOpening = {
+    splash: startOpeningNotice({
+      fileName: basename(first),
+      lang: currentLang(),
+      kind: 'open',
+      app: splashAppForPath(first),
+      delayMs: 0,
+    }),
+    shownAt: Date.now(),
+    timer: setTimeout(revealColdOpening, COLD_OPENING_MAX_MS),
+  }
+}
+
+/** Fade the big window in and close the small splash; safe to call more than once. */
+function revealColdOpening(): void {
+  const current = coldOpening
+  if (!current) return
+  coldOpening = null
+  clearTimeout(current.timer)
+  const win = shellWindow
+  const wait = Math.max(0, current.shownAt + COLD_OPENING_MIN_MS - Date.now())
+  setTimeout(() => {
+    tabManager?.setOverlaySuppressed(false)
+    current.splash.close()
+    if (!win || win.isDestroyed()) return
+    win.setIgnoreMouseEvents(false)
+    let opacity = 0
+    const step = setInterval(() => {
+      opacity = Math.min(1, opacity + 0.12)
+      if (win.isDestroyed()) {
+        clearInterval(step)
+        return
+      }
+      win.setOpacity(opacity)
+      if (opacity >= 1) clearInterval(step)
+    }, 16)
+    win.focus()
+  }, wait)
+}
+
+/** A start-up open that produced no document (a refused file, a failed conversion) must not leave the window hidden. */
+function revealColdOpeningIfNoDocuments(): void {
+  if (!coldOpening) return
+  const hasDocument = tabManager?.list().some((t) => t.kind !== 'home') ?? false
+  if (!hasDocument) revealColdOpening()
+}
+
+/** The small "Opening…" window for a conversion wait, unless the start-up splash is already showing. */
+function openingNoticeUnlessCold(options: Parameters<typeof startOpeningNotice>[0]): {
+  close(): void
+} {
+  return coldOpening ? { close() {} } : startOpeningNotice(options)
+}
+
 function createShellWindow(): void {
   const win = new BrowserWindow({
     width: 1360,
     height: 900,
+    // a cold start with a file shows its own small splash first; the window fades in when ready
+    show: coldOpening === null,
     minWidth: 720,
     minHeight: 550,
     title: 'GenOffice',
@@ -3220,6 +3312,12 @@ function createShellWindow(): void {
     },
   })
   shellWindow = win
+  if (coldOpening) {
+    // out of sight but really shown, so it renders at full speed (a hidden window is throttled)
+    win.setOpacity(0)
+    win.setIgnoreMouseEvents(true)
+    win.showInactive()
+  }
   nativeTheme.on('updated', refreshTitleBarOverlay)
   win.once('closed', () => nativeTheme.off('updated', refreshTitleBarOverlay))
   // dragging the window by the tab strip's blank (draggable) area produces no
@@ -3259,6 +3357,18 @@ function createShellWindow(): void {
     ),
   )
   tabManager = manager
+  manager.setOverlaySuppressed(coldOpening !== null)
+  manager.setDiagnostics(
+    rotatingFileWriter(join(app.getPath('userData'), 'logs', 'tabs.log'), {
+      append: (path, text) => {
+        mkdirSync(dirname(path), { recursive: true })
+        appendFileSync(path, text)
+      },
+      size: (path) => (existsSync(path) ? statSync(path).size : 0),
+      rename: (from, to) => renameSync(from, to),
+    }),
+  )
+  manager.setDocumentReadyListener(() => revealColdOpening())
   // the editors say when a file is loaded and on screen: that is when the opening scene lifts
   ipcMain.on('docs:mcp-ready', (event) => tabManager?.tabReady(event.sender.id))
   ipcMain.on('sheets:mcp-ready', (event) => tabManager?.tabReady(event.sender.id))
@@ -3616,7 +3726,7 @@ async function openLegacyPpt(filePath: string): Promise<void> {
         : await dialog.showMessageBox(options)
       if (choice.response !== 0) return
     }
-    const opening = startOpeningNotice({
+    const opening = openingNoticeUnlessCold({
       fileName: basename(filePath),
       lang: currentLang(),
       kind: 'ppt',
@@ -3646,6 +3756,7 @@ async function openLegacyPpt(filePath: string): Promise<void> {
     )
   } finally {
     pendingLegacyPptImports.delete(filePath)
+    revealColdOpeningIfNoDocuments()
   }
 }
 
@@ -3695,7 +3806,7 @@ async function openLegacyXls(filePath: string): Promise<void> {
   if (pendingLegacyXlsImports.has(filePath)) return
   pendingLegacyXlsImports.add(filePath)
   try {
-    const opening = startOpeningNotice({
+    const opening = openingNoticeUnlessCold({
       fileName: basename(filePath),
       lang: currentLang(),
       kind: 'xls',
@@ -3721,6 +3832,7 @@ async function openLegacyXls(filePath: string): Promise<void> {
     openSheetsFile(filePath)
   } finally {
     pendingLegacyXlsImports.delete(filePath)
+    revealColdOpeningIfNoDocuments()
   }
 }
 
@@ -3865,7 +3977,7 @@ async function openLegacyDoc(filePath: string): Promise<void> {
     let result: Awaited<ReturnType<typeof convertLegacyDoc>>
     // the online conversion takes seconds: say that the file is opening
     const convert = async (): Promise<Awaited<ReturnType<typeof convertLegacyDoc>>> => {
-      const opening = startOpeningNotice({
+      const opening = openingNoticeUnlessCold({
         fileName: basename(filePath),
         lang: currentLang(),
         kind: 'doc',
@@ -3962,6 +4074,7 @@ async function openLegacyDoc(filePath: string): Promise<void> {
     showAppWarning('Could not read this .doc file. It may be damaged or password-protected.')
   } finally {
     pendingLegacyDocImports.delete(filePath)
+    revealColdOpeningIfNoDocuments()
   }
 }
 
@@ -6852,6 +6965,7 @@ app.whenReady().then(async () => {
       /* Logging must not interrupt a document's AI request. */
     }
   })
+  beginColdOpening(pendingLaunchPaths)
   createShellWindow()
   initClipboardSuggest()
   initClipboardHistory()
@@ -6895,6 +7009,8 @@ app.whenReady().then(async () => {
   if (app.isPackaged && process.platform === 'darwin') installMacFolderScanService()
   if (documentMemory) folderScan = new FolderScanManager(app.getPath('userData'), documentMemory)
   openLaunchPaths(pendingLaunchPaths)
+  // a start-up file that turned into no document must not keep the window hidden
+  revealColdOpeningIfNoDocuments()
   for (const folder of pendingFolderScanPaths) startFolderScan(folder)
   pendingFolderScanPaths = []
   indexAddedFoldersNotYetScanned()

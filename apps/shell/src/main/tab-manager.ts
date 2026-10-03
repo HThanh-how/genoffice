@@ -48,6 +48,7 @@ import {
 import type { DocumentTabKind, OpenDocumentTab, TabKind, TabSummary } from '../shared/tabs-api'
 import { TAB_STRIP_HEIGHT } from '../shared/tab-drag-geometry'
 import { OpeningOverlays, type OverlayDeps } from './fork/opening-overlay'
+import { attachRendererDiagnostics, type DiagnosticsWrite } from './fork/renderer-diagnostics'
 import type { SplashApp } from './fork/opening-window'
 
 /** the scene a tab's kind plays while its document opens */
@@ -113,6 +114,9 @@ export class TabManager {
   private spareSheetsTimer: ReturnType<typeof setTimeout> | null = null
   /** the opening scene laid over a tab until its document is ready */
   private readonly overlays: OpeningOverlays | null
+  private overlaySuppressed = false
+  private diagnosticsWrite: DiagnosticsWrite | null = null
+  private documentReadyListener: ((tabId: string) => void) | null = null
 
   constructor(
     private readonly shellWindow: BrowserWindow,
@@ -242,22 +246,54 @@ export class TabManager {
     readiness: 'signal' | 'load',
   ): void {
     const app = OVERLAY_APP[kind]
-    if (!this.overlays || !openPath || !app) return
-    this.overlays.begin(id, { fileName: basename(openPath), app })
+    this.instrument(view, kind, openPath)
+    if (!openPath || !app) return
+    if (this.overlays && !this.overlaySuppressed) {
+      this.overlays.begin(id, { fileName: basename(openPath), app })
+    }
     const wc = view.webContents
     wc.once('destroyed', () => this.overlays?.drop(id))
     wc.once('render-process-gone', () => this.overlays?.drop(id))
     if (readiness === 'load') {
       wc.once('did-finish-load', () => {
-        setTimeout(() => this.overlays?.ready(id), 700)
+        setTimeout(() => this.markReady(id), 700)
       })
     }
+  }
+
+  /** Record what each new tab's page does while it loads (for tracking down a tab that comes up white). */
+  setDiagnostics(write: DiagnosticsWrite | null): void {
+    this.diagnosticsWrite = write
+  }
+
+  private instrument(view: WebContentsView, kind: TabKind, openPath: string | undefined): void {
+    if (!this.diagnosticsWrite) return
+    attachRendererDiagnostics(
+      view.webContents,
+      `${kind}${openPath ? ' ' + basename(openPath) : ''}`,
+      this.diagnosticsWrite,
+    )
+  }
+
+  private markReady(id: string): void {
+    this.overlays?.ready(id)
+    this.documentReadyListener?.(id)
+  }
+
+  /** Called when any document tab says its file is loaded and on screen (the shell uses it to lift its start-up splash). */
+  setDocumentReadyListener(listener: ((tabId: string) => void) | null): void {
+    this.documentReadyListener = listener
+  }
+
+  /** While the shell window is still hidden behind its own splash, tabs play no scene of their own. */
+  setOverlaySuppressed(suppressed: boolean): void {
+    this.overlaySuppressed = suppressed
   }
 
   /** A document renderer said its file is loaded and on screen. */
   tabReady(webContentsId: number): void {
     const tab = this.tabs.find((t) => t.view?.webContents.id === webContentsId)
-    if (tab) this.overlays?.ready(tab.id)
+    if (tab) this.markReady(tab.id)
   }
 
   /** files open in any tab, for the open-documents registry */
