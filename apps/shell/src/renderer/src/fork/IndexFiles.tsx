@@ -125,6 +125,9 @@ const EN = {
   ocrFailed: 'Could not read: {e}',
   path: 'Path',
   okTag: 'Indexed',
+  fileInfo: 'File information & technical details',
+  readingAgy: 'Antigravity is reading this file…',
+  runningHint: 'The result updates here when processing finishes. You can keep working.',
 }
 export type FileWords = typeof EN
 const VI: FileWords = {
@@ -170,6 +173,9 @@ const VI: FileWords = {
   ocrFailed: 'Không đọc được: {e}',
   path: 'Đường dẫn',
   okTag: 'Đã index',
+  fileInfo: 'Thông tin tệp & chi tiết kỹ thuật',
+  readingAgy: 'Antigravity đang đọc tệp này…',
+  runningHint: 'Kết quả sẽ cập nhật ở đây khi xử lý xong. Bạn có thể tiếp tục làm việc.',
 }
 export const fileWords = (lang: string): FileWords => (lang === 'vi' ? VI : EN)
 
@@ -292,6 +298,7 @@ export function useFileActions(
   const [details, setDetails] = useState<Record<number, IndexFileDetail | null>>({})
   const [busy, setBusy] = useState<Set<number>>(new Set())
   const busyIds = useRef(new Set<number>())
+  const [readingAgy, setReadingAgy] = useState<Set<number>>(new Set())
   const [note, setNote] = useState('')
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), [])
@@ -338,6 +345,10 @@ export function useFileActions(
   const settle = async (item: FileItem) => {
     setDetails({})
     await afterChange(item)
+    if (open === item.id) {
+      const next = await api.getIndexFileDetail(item.id).catch(() => null)
+      setDetails((current) => ({ ...current, [item.id]: next }))
+    }
     onChanged()
   }
   const copyLog = async (item: FileItem) => {
@@ -425,6 +436,7 @@ export function useFileActions(
     })
   // Antigravity reads the pages of a scan; the person has already agreed to it being used
   const readWithAntigravity = async (item: FileItem) => {
+    setReadingAgy((current) => new Set(current).add(item.id))
     try {
       const result = await api.readScannedPdfWithAgy(item.id, true)
       say(
@@ -436,6 +448,12 @@ export function useFileActions(
       )
     } catch (error) {
       say(fill(w.ocrFailed, { e: error instanceof Error ? error.message : '' }))
+    } finally {
+      setReadingAgy((current) => {
+        const next = new Set(current)
+        next.delete(item.id)
+        return next
+      })
     }
   }
   const readNow = (item: FileItem) =>
@@ -449,6 +467,7 @@ export function useFileActions(
     toggle,
     details,
     busy,
+    readingAgy,
     note,
     say,
     copyLog,
@@ -618,6 +637,7 @@ export function FileRow({
   const lw = logWords(lang)
   const isOpen = actions.open === item.id
   const busy = actions.busy.has(item.id)
+  const readingAgy = actions.readingAgy.has(item.id)
   const detail = actions.details[item.id]
   const retryable = item.reason ? isRetryableReason(item.reason) : false
   const liveText =
@@ -637,9 +657,13 @@ export function FileRow({
   const working = live?.kind === 'reading' || live?.kind === 'embedding'
   // Issue groups explain the cause; rows identify where each file is stored.
   const sub = item.reason ? folderOf(item.path) : item.error
+  const description = finished
+    ? w.done
+    : liveText || (readingAgy ? w.readingAgy : (status ?? (isOpen ? '' : sub)))
   const stoppable = working || live?.kind === 'queued' || item.reason === 'waiting'
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const menuId = useId()
+  const detailId = useId()
   const mainRef = useRef<HTMLButtonElement>(null)
   const menuTrigger = useRef<HTMLElement | null>(null)
   const closeMenu = useCallback(() => {
@@ -765,7 +789,7 @@ export function FileRow({
       : item.progress
   return (
     <li
-      className={`${isOpen ? 'is-selected' : ''}${finished ? ' is-done' : ''}${picked ? ' is-picked' : ''}`}
+      className={`${isOpen ? 'is-selected' : ''}${finished ? ' is-done' : ''}${picked ? ' is-picked' : ''}${readingAgy || working ? ' is-processing' : ''}`}
     >
       <div
         className="ixp-row"
@@ -792,6 +816,7 @@ export function FileRow({
           type="button"
           className="ixp-main"
           aria-expanded={isOpen}
+          aria-controls={isOpen ? detailId : undefined}
           onClick={(event) => {
             if (onPick && (event.ctrlKey || event.metaKey || event.shiftKey)) {
               event.preventDefault()
@@ -824,11 +849,14 @@ export function FileRow({
             <span className="ixp-file-name" title={item.path}>
               {item.name}
             </span>
-            {(finished || liveText || status || sub) && (
+            {description && (
               <span className={`ixp-file-sub${working ? ' is-live' : ''}`} title={sub}>
-                {finished ? w.done : liveText || (status ?? sub)}
+                {description}
               </span>
             )}
+          </span>
+          <span className={`ixp-detail-chevron${isOpen ? ' is-open' : ''}`} aria-hidden="true">
+            <IChevron />
           </span>
         </button>
         {busy ? (
@@ -888,6 +916,15 @@ export function FileRow({
           </button>
         </span>
       </div>
+      {(readingAgy || working) && (
+        <div
+          className="ixp-processing-track"
+          role="progressbar"
+          aria-label={readingAgy ? w.readingAgy : liveText}
+        >
+          <span />
+        </div>
+      )}
       {menu && (
         <FileMenu
           at={menu}
@@ -902,43 +939,59 @@ export function FileRow({
         (detail === undefined ? (
           <p className="ixp-loading">{w.loading}</p>
         ) : detail === null ? (
-          <div className="ixp-detail">
+          <div className="ixp-detail" id={detailId}>
             <code className="ixp-raw">{item.error ?? item.path}</code>
           </div>
         ) : (
-          <div className="ixp-detail">
-            <ol className="ixp-steps">
-              {deriveFileSteps(detail, lang).map((step) => (
-                <li key={step.key} className={`is-${step.state}`}>
-                  <i aria-hidden="true" />
-                  <span className="ixp-step-name">{lw[step.key]}</span>
-                  <span className="ixp-step-text">{step.text}</span>
-                </li>
-              ))}
-            </ol>
-            <dl className="ixp-facts">
-              <div>
-                <dt>{w.path}</dt>
-                <dd title={detail.path}>{detail.path}</dd>
-              </div>
-              {detail.sizeBytes !== undefined && (
+          <div className="ixp-detail" id={detailId}>
+            {readingAgy || working ? (
+              <p className="idx-muted">{w.runningHint}</p>
+            ) : (
+              <ol className="ixp-steps">
+                {deriveFileSteps(detail, lang)
+                  .filter(
+                    (step) =>
+                      (step.key !== 'found' || step.state === 'fail') &&
+                      step.key !== 'search' &&
+                      !(step.key === 'read' && detail.status === 'empty' && detail.pdf),
+                  )
+                  .map((step) => (
+                    <li key={step.key} className={`is-${step.state}`}>
+                      <i aria-hidden="true" />
+                      <span className="ixp-step-name">{lw[step.key]}</span>
+                      <span className="ixp-step-text">
+                        {step.key === 'read' && step.state === 'fail' ? w.actionFailed : step.text}
+                      </span>
+                    </li>
+                  ))}
+              </ol>
+            )}
+            <details className="ixp-file-info">
+              <summary>{w.fileInfo}</summary>
+              <dl className="ixp-facts">
                 <div>
-                  <dt>{lw.size}</dt>
-                  <dd>{formatBytes(detail.sizeBytes, dateLocale)}</dd>
+                  <dt>{w.path}</dt>
+                  <dd title={detail.path}>{detail.path}</dd>
                 </div>
-              )}
-              {detail.mtimeMs !== undefined && (
+                {detail.sizeBytes !== undefined && (
+                  <div>
+                    <dt>{lw.size}</dt>
+                    <dd>{formatBytes(detail.sizeBytes, dateLocale)}</dd>
+                  </div>
+                )}
+                {detail.mtimeMs !== undefined && (
+                  <div>
+                    <dt>{lw.modified}</dt>
+                    <dd>{new Date(detail.mtimeMs).toLocaleString(dateLocale)}</dd>
+                  </div>
+                )}
                 <div>
-                  <dt>{lw.modified}</dt>
-                  <dd>{new Date(detail.mtimeMs).toLocaleString(dateLocale)}</dd>
+                  <dt>{lw.updated}</dt>
+                  <dd>{new Date(detail.updatedAt).toLocaleString(dateLocale)}</dd>
                 </div>
-              )}
-              <div>
-                <dt>{lw.updated}</dt>
-                <dd>{new Date(detail.updatedAt).toLocaleString(dateLocale)}</dd>
-              </div>
-            </dl>
-            {detail.error && <code className="ixp-raw">{detail.error}</code>}
+              </dl>
+              {detail.error && <code className="ixp-raw">{detail.error}</code>}
+            </details>
           </div>
         ))}
     </li>

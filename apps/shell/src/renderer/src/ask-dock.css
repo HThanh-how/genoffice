@@ -303,10 +303,84 @@
   pointer-events: auto;
   padding: 16px;
   gap: 12px;
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: 22px;
+  background:
+    linear-gradient(135deg, var(--surface), color-mix(in srgb, var(--accent) 3%, var(--surface)))
+      padding-box,
+    linear-gradient(
+        115deg,
+        color-mix(in srgb, var(--accent) 55%, var(--border)),
+        color-mix(in srgb, var(--accent) 20%, var(--border)),
+        color-mix(in srgb, var(--accent) 40%, var(--border))
+      )
+      border-box;
+  box-shadow:
+    0 8px 30px color-mix(in srgb, var(--accent) 9%, transparent),
+    0 2px 8px color-mix(in srgb, var(--text) 3%, transparent);
+  transition:
+    opacity 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease;
+  animation: ask-card-enter 650ms ease-out both;
+}
+.ask-dock.is-inline:hover,
+.ask-dock.is-inline.is-focused {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow:
+    0 10px 34px color-mix(in srgb, var(--accent) 13%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--accent) 5%, transparent);
+}
+.ask-intro {
+  order: -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+}
+.ask-intro-mark {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border-subtle));
+  border-radius: 10px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
+}
+.ask-intro-mark svg {
+  width: 21px;
+  height: 21px;
+  animation: ask-mark-enter 900ms ease-out both;
+}
+.ask-intro kbd {
+  margin-left: auto;
+  padding: 3px 7px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-tertiary);
   background: var(--surface);
-  box-shadow: 0 6px 24px color-mix(in srgb, var(--text) 4%, transparent);
+  font: inherit;
+  font-size: 11px;
+}
+@keyframes ask-card-enter {
+  from {
+    opacity: 0.6;
+    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
+  }
+}
+@keyframes ask-mark-enter {
+  from {
+    opacity: 0.5;
+    transform: rotate(-12deg) scale(0.82);
+  }
+  to {
+    opacity: 1;
+    transform: rotate(0) scale(1);
+  }
 }
 .ask-dock.is-inline.is-away {
   opacity: 0.5;
@@ -365,6 +439,11 @@
 @media (prefers-reduced-motion: reduce) {
   .ask-dock,
   .ask-bar {
+    transition: none;
+  }
+  .ask-dock.is-inline,
+  .ask-intro-mark svg {
+    animation: none;
     transition: none;
   }
 }

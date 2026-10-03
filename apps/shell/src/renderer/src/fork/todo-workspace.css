@@ -342,6 +342,69 @@
   background: var(--accent-soft);
   color: var(--accent);
 }
+.ixp-files > li.is-processing {
+  background: color-mix(in srgb, var(--accent) 5%, var(--surface));
+}
+.ixp-detail-chevron {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-tertiary);
+  transition: transform 0.15s ease;
+}
+.ixp-detail-chevron.is-open {
+  transform: rotate(90deg);
+}
+.ixp-processing-track {
+  height: 3px;
+  margin: 0 14px 8px 42px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: var(--accent-soft);
+}
+.ixp-processing-track > span {
+  display: block;
+  width: 35%;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--accent);
+  animation: ixp-processing-slide 1.8s ease-in-out infinite alternate;
+}
+@keyframes ixp-processing-slide {
+  to {
+    transform: translateX(185%);
+  }
+}
+.ixp-detail {
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--surface-subtle);
+}
+.ixp-file-info > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-secondary);
+  padding: 4px 0;
+}
+.ixp-file-info[open] > summary {
+  margin-bottom: 10px;
+}
+.ixp-file-info .ixp-raw {
+  margin-top: 10px;
+}
+.ixp-file-info summary:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+.ixp-steps .is-ok i {
+  background: var(--success);
+}
+.ixp-steps .is-warn i {
+  background: var(--text-secondary);
+}
+.ixp-steps .is-fail i {
+  background: var(--danger);
+}
 @media (max-width: 600px) {
   .idx-page {
     padding: 16px 14px 70px;

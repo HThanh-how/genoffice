@@ -11,7 +11,7 @@ import { findFilesByName, type NamedFile } from '../fork/file-name-search'
 import { chatString } from './strings'
 
 const EN = {
-  bubble: 'Ask or find here',
+  bubble: 'Ask AI or find your files',
   placeholder: 'Find a file, ask AI, or give an order…',
   send: 'Send',
   open: 'Ask AI',
@@ -39,7 +39,7 @@ type Words = typeof EN
 const WORDS: Record<string, Words> = {
   en: EN,
   vi: {
-    bubble: 'Hỏi hoặc tìm tệp tại đây',
+    bubble: 'Hỏi AI hoặc tìm tệp của bạn',
     placeholder: 'Tìm tệp, hỏi AI hoặc ra lệnh…',
     send: 'Gửi',
     open: 'Hỏi AI',
@@ -65,7 +65,7 @@ const WORDS: Record<string, Words> = {
   },
   zh: {
     ...EN,
-    bubble: '在这里提问或查找',
+    bubble: '问 AI，或查找你的文件',
     placeholder: '查找文件、问 AI 或下达指令…',
     open: '问 AI',
     send: '发送',
@@ -327,6 +327,22 @@ export function AskDock({
         }
       }}
     >
+      {inline && (
+        <div className="ask-intro">
+          <span className="ask-intro-mark" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <path
+                d="m12 3 2.3 6.7L21 12l-6.7 2.3L12 21l-2.3-6.7L3 12l6.7-2.3L12 3Z"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinejoin="round"
+              />
+            </svg>
+          </span>
+          <span>{w.bubble}</span>
+          <kbd aria-hidden="true">/</kbd>
+        </div>
+      )}
       {showChips && (
         <div className="ask-chips">
           {brief?.active && (
