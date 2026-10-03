@@ -121,6 +121,83 @@ export function lighterRgbOf(hex: string): string {
     .join(',')
 }
 
+/**
+ * The grey outline of the editor that is opening (tab row, ribbon, and the work area of that kind of
+ * file) with a slow shimmer, drawn behind the opening card so the tab never shows a blank page.
+ * Plain markup and CSS: it costs nothing and works on every tier.
+ */
+const bar = (width: number, height = 10): string =>
+  `<i class="sk" style="width:${width}px;height:${height}px"></i>`
+const bars = (widths: readonly number[], height = 10): string =>
+  widths.map((w) => bar(w, height)).join('')
+const TEXT_LINES = [92, 88, 95, 70, 90, 86, 40, 94, 91, 78, 89, 60, 93, 87, 45, 90, 82, 66]
+
+export function skeletonHtml(appName: SplashApp): string {
+  const chrome = `<div class="sk-tabs">${bars([44, 52, 72, 60, 50, 58, 46], 12)}</div>
+<div class="sk-ribbon">
+<div class="sk-group">${bars([38, 38, 38], 38)}</div>
+<div class="sk-group sk-col">${bars([130, 130], 14)}</div>
+<div class="sk-group">${bars([28, 28, 28, 28], 28)}</div>
+<div class="sk-group sk-col">${bars([110, 90], 14)}</div>
+<div class="sk-group">${bars([70, 70], 38)}</div>
+</div>`
+  const percent = (w: number): string => `<i class="sk" style="width:${w}%;height:10px"></i>`
+  const lines = TEXT_LINES.map(percent).join('')
+  let work: string
+  switch (appName) {
+    case 'sheets':
+      work = `<div class="sk-formula">${bar(80, 22)}<i class="sk sk-grow" style="height:22px"></i></div>
+<div class="sk-grid" aria-hidden="true"></div>`
+      break
+    case 'slides':
+      work = `<div class="sk-slides"><div class="sk-thumbs">${[0, 1, 2, 3, 4].map(() => '<i class="sk sk-thumb"></i>').join('')}</div>
+<div class="sk-stage"><i class="sk sk-slide"></i></div></div>`
+      break
+    case 'pdf':
+      work = `<div class="sk-slides"><div class="sk-thumbs">${[0, 1, 2, 3].map(() => '<i class="sk sk-thumb sk-tall"></i>').join('')}</div>
+<div class="sk-stage"><div class="sk-page sk-narrow">${lines}</div></div></div>`
+      break
+    case 'markdown':
+    case 'html':
+      work = `<div class="sk-split"><div class="sk-code">${lines}</div><div class="sk-code">${lines}</div></div>`
+      break
+    default:
+      work = `<div class="sk-ruler"><i class="sk sk-grow" style="height:12px"></i></div>
+<div class="sk-stage"><div class="sk-page">${lines}</div></div>`
+  }
+  return `<div class="skel" aria-hidden="true">${chrome}<div class="sk-work">${work}</div></div>`
+}
+
+const SKELETON_CSS = `:root{--sk1:#e3e6eb;--sk2:#f3f5f8;--skbg:#f7f8fa;--skpage:#fff}
+@media (prefers-color-scheme:dark){:root{--sk1:#262a31;--sk2:#323741;--skbg:#1a1d22;--skpage:#20242a}}
+.skel{position:absolute;inset:0;display:flex;flex-direction:column;gap:12px;padding:12px 16px;background:var(--skbg);overflow:hidden}
+.sk{display:block;flex:none;border-radius:6px;background:linear-gradient(90deg,var(--sk1) 25%,var(--sk2) 50%,var(--sk1) 75%);background-size:200% 100%;animation:shim 1.7s linear infinite}
+@keyframes shim{from{background-position:200% 0}to{background-position:-200% 0}}
+.sk-grow{flex:1}
+.sk-tabs{display:flex;gap:18px;align-items:center;height:22px}
+.sk-ribbon{display:flex;gap:26px;align-items:center;height:76px;padding:8px 6px;border-bottom:1px solid var(--sk1)}
+.sk-group{display:flex;gap:8px;align-items:center}.sk-col{flex-direction:column;align-items:flex-start;gap:12px}
+.sk-work{flex:1;min-height:0;display:flex;flex-direction:column;gap:10px}
+.sk-ruler{display:flex;padding:0 80px}
+.sk-stage{flex:1;min-height:0;display:flex;justify-content:center;overflow:hidden}
+.sk-page{width:min(640px,92%);padding:44px 52px;display:flex;flex-direction:column;gap:14px;background:var(--skpage);border-radius:4px;box-shadow:0 1px 8px rgba(0,0,0,.12)}
+.sk-page.sk-narrow{width:min(520px,90%)}
+.sk-page .sk{height:10px}
+.sk-formula{display:flex;gap:10px;align-items:center}
+.sk-grid{flex:1;border-radius:4px;background:
+linear-gradient(90deg,var(--sk1) 0 44px,transparent 44px),
+linear-gradient(var(--sk1) 0 22px,transparent 22px),
+repeating-linear-gradient(90deg,transparent 0 119px,var(--sk1) 119px 120px),
+repeating-linear-gradient(transparent 0 25px,var(--sk1) 25px 26px);background-color:var(--skpage)}
+.sk-slides{flex:1;min-height:0;display:flex;gap:16px}
+.sk-thumbs{width:150px;flex:none;display:flex;flex-direction:column;gap:12px;overflow:hidden}
+.sk-thumb{width:100%;height:84px;border-radius:5px}.sk-thumb.sk-tall{height:170px}
+.sk-slide{width:min(760px,94%);aspect-ratio:16/9;height:auto;align-self:center;border-radius:6px}
+.sk-split{flex:1;display:flex;gap:16px;min-height:0}
+.sk-code{flex:1;padding:22px 26px;display:flex;flex-direction:column;gap:14px;background:var(--skpage);border-radius:6px;overflow:hidden}
+.sk-code .sk{height:10px}
+@media (prefers-reduced-motion:reduce){.sk{animation:none}}`
+
 /** The splash page: the app's colour and badge, the file name, one line of why, an animated sea. */
 export function openingPageHtml(
   words: OpeningWords,
@@ -145,8 +222,9 @@ html,body{margin:0;height:100%;overflow:hidden}
 body{font:14px/1.35 "Segoe UI",system-ui,-apple-system,sans-serif;color:var(--fg);user-select:none;cursor:default}
 .stage{position:absolute;inset:0;overflow:hidden;
 background:linear-gradient(160deg,var(--bg1) 0%,var(--bg2) 60%,rgba(var(--rgb),.35) 140%);box-shadow:inset 0 0 0 1px rgba(255,255,255,.08)}
-body.card{display:flex;align-items:center;justify-content:center;
-background:radial-gradient(circle at 50% 42%,rgba(var(--rgb),.14),transparent 62%),var(--backdrop)}
+body.card{display:flex;align-items:center;justify-content:center;background:var(--backdrop)}
+body.card .stage{z-index:2}
+body.card .skel{z-index:1}
 body.card .stage{position:relative;inset:auto;width:min(480px,86vw);height:min(240px,70vh);border-radius:18px;
 box-shadow:0 24px 70px rgba(0,0,0,.38),0 0 0 1px rgba(255,255,255,.1)}
 #sea{position:absolute;inset:0;width:100%;height:100%}
@@ -172,9 +250,11 @@ box-shadow:0 0 0 1px rgba(255,255,255,.18),0 8px 26px rgba(var(--rgb),.55);anima
 .bar i{display:block;width:34%;height:100%;background:linear-gradient(90deg,transparent,var(--accent),transparent);animation:sweep 1.6s ease-in-out infinite}
 @keyframes sweep{from{transform:translateX(-110%)}to{transform:translateX(320%)}}
 body{transition:opacity .3s ease}body.leaving{opacity:0}
+${layout === 'card' ? SKELETON_CSS : ''}
 @media (prefers-reduced-motion:reduce){.badge,.glow,.bubble,.bar i{animation:none}}
 </style></head>
 <body${layout === 'card' ? ' class="card"' : ''} data-app="${appName}" data-scene="${sceneId}" data-tier="${tier}" data-rgb="${rgb}" data-lt="${lighterRgbOf(theme.color)}">
+${layout === 'card' ? skeletonHtml(appName) : ''}
 <div class="stage">
 <canvas id="sea" aria-hidden="true"></canvas><div class="glow"></div>
 <span class="bubble b1"></span><span class="bubble b2"></span><span class="bubble b3"></span>

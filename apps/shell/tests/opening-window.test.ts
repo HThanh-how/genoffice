@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   SPLASH_THEMES,
   chooseSplashTier,
+  skeletonHtml,
   lighterRgbOf,
   openingPageHtml,
   openingWords,
@@ -148,5 +149,42 @@ describe('the opening page over a tab is a small card, not a full-size scene', (
     expect(stage).toContain('id="sea"')
     expect(stage).toContain('class="badge"')
     expect(stage).toContain('Báo cáo.docx')
+  })
+})
+
+describe('the outline of the editor behind the card', () => {
+  it('is drawn for every kind of file, hidden from screen readers, and different for each', () => {
+    const apps = Object.keys(SPLASH_THEMES) as Array<keyof typeof SPLASH_THEMES>
+    const outlines = apps.map((app) => skeletonHtml(app))
+    for (const html of outlines) {
+      expect(html).toContain('class="skel" aria-hidden="true"')
+      expect(html).toContain('class="sk-tabs"')
+      expect(html).toContain('class="sk-ribbon"')
+    }
+    expect(skeletonHtml('docs')).toContain('sk-page')
+    expect(skeletonHtml('sheets')).toContain('sk-grid')
+    expect(skeletonHtml('slides')).toContain('sk-slide')
+    expect(skeletonHtml('pdf')).toContain('sk-thumb sk-tall')
+    expect(skeletonHtml('markdown')).toContain('sk-split')
+    expect(
+      new Set([skeletonHtml('docs'), skeletonHtml('sheets'), skeletonHtml('slides')]).size,
+    ).toBe(3)
+  })
+
+  it('is behind the card over a tab, with a shimmer that stops for reduced motion, and not in the small window', () => {
+    const card = openingPageHtml(
+      openingWords('en', 'open'),
+      'a.xlsx',
+      'sheets',
+      'minimal',
+      undefined,
+      'card',
+    )
+    expect(card).toContain('class="skel"')
+    expect(card).toContain('@keyframes shim')
+    expect(card).toContain('prefers-reduced-motion:reduce){.sk{animation:none}')
+    expect(card.indexOf('class="skel"')).toBeLessThan(card.indexOf('class="stage"'))
+    const small = openingPageHtml(openingWords('en', 'open'), 'a.xlsx', 'sheets', 'minimal')
+    expect(small).not.toContain('class="skel"')
   })
 })
