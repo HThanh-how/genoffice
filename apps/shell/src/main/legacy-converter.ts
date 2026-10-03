@@ -25,10 +25,10 @@ interface Deps {
 
 const PAUSE_MS = 30_000
 /**
- * The conversion service allows 30 conversions an hour for everyone behind one address. One file
- * every three minutes leaves room for the documents a person opens by hand.
+ * The service converts one file at a time. A few seconds between files keeps a computer (and the
+ * other computers sharing the service) from queueing behind each other.
  */
-export const BETWEEN_FILES_MS = 3 * 60_000
+export const BETWEEN_FILES_MS = 5_000
 /** The service said "hourly limit": the same file is tried again after this long. */
 export const BUSY_PAUSE_MS = 15 * 60_000
 const BATCH = 200

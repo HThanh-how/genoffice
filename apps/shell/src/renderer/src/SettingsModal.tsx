@@ -1836,8 +1836,8 @@ export function SettingsModal({
                         </div>
                         <div className="set-field-desc">
                           {lang === 'vi'
-                            ? 'Chạy nền, từng tệp một (khoảng ba phút một tệp để không vượt giới hạn mỗi giờ của dịch vụ), tạm dừng khi máy dùng pin yếu. Cả .doc, .xls và .ppt đều do dịch vụ chuyển đổi làm, máy này không tự chuyển. Cần chế độ chuyển tự động. Bản gốc luôn được giữ 30 ngày.'
-                            : "Runs in the background, one file at a time (about one every three minutes, to stay within the service's hourly limit), and pauses on a low battery. .doc, .xls and .ppt are all converted by the conversion service; this computer converts nothing. Needs automatic conversion. Originals are always kept for 30 days."}
+                            ? 'Chạy nền, từng tệp một, tạm dừng khi máy dùng pin yếu. Cả .doc, .xls và .ppt đều do dịch vụ chuyển đổi làm, máy này không tự chuyển. Cần chế độ chuyển tự động. Bản gốc luôn được giữ 30 ngày.'
+                            : 'Runs in the background, one file at a time, and pauses on a low battery. .doc, .xls and .ppt are all converted by the conversion service; this computer converts nothing. Needs automatic conversion. Originals are always kept for 30 days.'}
                         </div>
                       </div>
                     </div>

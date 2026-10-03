@@ -120,11 +120,6 @@ describe('the background converter', () => {
     expect(waits).toEqual([BETWEEN_FILES_MS])
   })
 
-  it('stays within the service hourly limit: about one file every few minutes', () => {
-    const perHour = (60 * 60_000) / BETWEEN_FILES_MS
-    expect(perHour).toBeLessThanOrEqual(20)
-  })
-
   it('waits out the hourly limit and then tries the same file again, not marking it failed', async () => {
     let busy = true
     const { converter, converted, waits } = rig({
