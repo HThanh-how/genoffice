@@ -24,6 +24,7 @@ export interface AgyBarUsage {
   refreshing: boolean
   failed: boolean
   needsLogin?: boolean
+  cliMissing?: boolean
 }
 export interface AgyBarActivity {
   runId: string
@@ -40,7 +41,14 @@ export interface AgyBarLogin {
   url?: string
   error?: 'cli-missing' | 'rejected' | 'timeout' | 'failed'
 }
+export interface AgyBarInstall {
+  phase: 'idle' | 'installing' | 'done' | 'failed'
+  output?: string
+  error?: 'script-failed' | 'not-found-after' | 'timeout' | 'unsupported' | 'busy'
+}
 export interface AgyBarApi {
+  startAgyInstall?(): Promise<AgyBarInstall>
+  onAgyInstall?(handler: (state: AgyBarInstall) => void): () => void
   startAgyLogin?(): Promise<AgyBarLogin>
   submitAgyLoginCode?(code: string): Promise<boolean>
   cancelAgyLogin?(): Promise<void>
@@ -193,6 +201,14 @@ const EN = {
   loginRejected: 'That code was not accepted. Try again.',
   loginTimeout: 'The sign-in timed out. Try again.',
   loginMissing: 'Antigravity is not installed on this computer.',
+  installTitle: 'Install Antigravity',
+  installIntro:
+    'Antigravity is not installed on this computer. GenOffice can download and run Google’s own installer (antigravity.google) for your account only. No administrator rights are needed.',
+  installStart: 'Install Antigravity',
+  installing: 'Installing… this takes about a minute.',
+  installDone: 'Installed. Next, sign in with Google.',
+  installFailed: 'The installation did not finish. Check the internet connection and try again.',
+  installRetry: 'Try again',
   loginReopen: 'Open the page again',
   loginCancel: 'Cancel',
 }
@@ -252,6 +268,14 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     loginRejected: 'Mã không được chấp nhận. Hãy thử lại.',
     loginTimeout: 'Hết thời gian đăng nhập. Hãy thử lại.',
     loginMissing: 'Máy này chưa cài Antigravity.',
+    installTitle: 'Cài Antigravity',
+    installIntro:
+      'Máy này chưa cài Antigravity. GenOffice có thể tải và chạy bộ cài chính thức của Google (antigravity.google) chỉ cho tài khoản của bạn, không cần quyền quản trị.',
+    installStart: 'Cài Antigravity',
+    installing: 'Đang cài… khoảng một phút.',
+    installDone: 'Đã cài xong. Tiếp theo hãy đăng nhập bằng Google.',
+    installFailed: 'Cài chưa xong. Kiểm tra mạng rồi thử lại.',
+    installRetry: 'Thử lại',
     loginReopen: 'Mở lại trang đăng nhập',
     loginCancel: 'Huỷ',
   },
@@ -304,6 +328,14 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     loginRejected: '代码未被接受，请重试。',
     loginTimeout: '登录超时，请重试。',
     loginMissing: '此电脑未安装 Antigravity。',
+    installTitle: '安装 Antigravity',
+    installIntro:
+      '此电脑尚未安装 Antigravity。GenOffice 可以仅为您的账户下载并运行 Google 官方安装程序（antigravity.google），无需管理员权限。',
+    installStart: '安装 Antigravity',
+    installing: '正在安装……大约需要一分钟。',
+    installDone: '已安装。接下来请使用 Google 登录。',
+    installFailed: '安装未完成。请检查网络后重试。',
+    installRetry: '重试',
     loginReopen: '重新打开登录页面',
     loginCancel: '取消',
   },
@@ -378,6 +410,7 @@ export function AgyChatBar({
   const [run, setRun] = useState<Run | null>(null)
   const [steps, setSteps] = useState(false)
   const [login, setLogin] = useState<AgyBarLogin>({ phase: 'idle' })
+  const [install, setInstall] = useState<AgyBarInstall>({ phase: 'idle' })
   const [code, setCode] = useState('')
   const loginActive = useRef(false)
   loginActive.current = login.phase !== 'idle' || !!usage?.needsLogin
@@ -406,7 +439,7 @@ export function AgyChatBar({
       wasRefreshing.current = true
     } else if (wasRefreshing.current) {
       wasRefreshing.current = false
-      if (next.needsLogin) {
+      if (next.needsLogin || next.cliMissing) {
         pinned.current = true
         setOpen(true)
       }
@@ -428,6 +461,10 @@ export function AgyChatBar({
         setTimeout(() => setLogin({ phase: 'idle' }), 3000)
       }
     })
+    const offInstall = source.onAgyInstall?.((next) => {
+      setInstall(next)
+      if (next.phase === 'done') setTimeout(() => setInstall({ phase: 'idle' }), 3000)
+    })
     const offRun = source.onAgyChatActivity?.((event) =>
       setRun((current) => reduceRun(current, event)),
     )
@@ -438,6 +475,7 @@ export function AgyChatBar({
     return () => {
       off()
       offLogin?.()
+      offInstall?.()
       offRun?.()
       window.removeEventListener('focus', onFocus)
       window.removeEventListener(MODEL_CHANGED, onFocus)
@@ -582,63 +620,87 @@ export function AgyChatBar({
               {bucketRow(d.weekly, week)}
             </>
           )}
-          {showBar && (usage?.needsLogin || login.phase !== 'idle') && source.startAgyLogin && (
-            <div className="agy-login">
-              <strong>{d.loginTitle}</strong>
-              {login.phase === 'idle' && <p>{d.loginIntro}</p>}
-              {login.phase === 'starting' && <p>{d.loginStarting}</p>}
-              {login.phase === 'waiting' && <p>{d.loginWaiting}</p>}
-              {login.phase === 'checking' && <p>{d.loginChecking}</p>}
-              {login.phase === 'done' && <p>{d.loginDone}</p>}
-              {login.phase === 'failed' && (
-                <p>
-                  {login.error === 'rejected'
-                    ? d.loginRejected
-                    : login.error === 'cli-missing'
-                      ? d.loginMissing
-                      : d.loginTimeout}
-                </p>
-              )}
-              {(login.phase === 'waiting' || login.phase === 'checking') && (
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault()
-                    void source.submitAgyLoginCode?.(code)
-                  }}
-                >
-                  <input
-                    value={code}
-                    onChange={(event) => setCode(event.target.value)}
-                    placeholder={d.loginPlaceholder}
-                    aria-label={d.loginPlaceholder}
-                    spellCheck={false}
-                    autoComplete="off"
-                    disabled={login.phase === 'checking'}
-                  />
-                  <button type="submit" disabled={!code.trim() || login.phase === 'checking'}>
-                    {d.loginSend}
-                  </button>
-                </form>
+          {showBar && (usage?.cliMissing || install.phase !== 'idle') && source.startAgyInstall && (
+            <div className="agy-login agy-install">
+              <strong>{d.installTitle}</strong>
+              {(install.phase === 'idle' || install.phase === 'failed') && <p>{d.installIntro}</p>}
+              {install.phase === 'installing' && <p>{d.installing}</p>}
+              {install.phase === 'done' && <p>{d.installDone}</p>}
+              {install.phase === 'failed' && (
+                <>
+                  <p>{d.installFailed}</p>
+                  {install.output && <pre className="agy-install-output">{install.output}</pre>}
+                </>
               )}
               <div className="agy-login-actions">
-                {(login.phase === 'idle' || login.phase === 'failed') && (
-                  <button type="button" onClick={() => void source.startAgyLogin?.()}>
-                    {d.loginStart}
-                  </button>
-                )}
-                {login.phase === 'waiting' && login.url && (
-                  <button type="button" onClick={() => void source.startAgyLogin?.()}>
-                    {d.loginReopen}
-                  </button>
-                )}
-                {(login.phase === 'waiting' || login.phase === 'checking') && (
-                  <button type="button" onClick={() => void source.cancelAgyLogin?.()}>
-                    {d.loginCancel}
+                {(install.phase === 'idle' || install.phase === 'failed') && (
+                  <button type="button" onClick={() => void source.startAgyInstall?.()}>
+                    {install.phase === 'failed' ? d.installRetry : d.installStart}
                   </button>
                 )}
               </div>
             </div>
           )}
+          {showBar &&
+            !usage?.cliMissing &&
+            (usage?.needsLogin || login.phase !== 'idle') &&
+            source.startAgyLogin && (
+              <div className="agy-login">
+                <strong>{d.loginTitle}</strong>
+                {login.phase === 'idle' && <p>{d.loginIntro}</p>}
+                {login.phase === 'starting' && <p>{d.loginStarting}</p>}
+                {login.phase === 'waiting' && <p>{d.loginWaiting}</p>}
+                {login.phase === 'checking' && <p>{d.loginChecking}</p>}
+                {login.phase === 'done' && <p>{d.loginDone}</p>}
+                {login.phase === 'failed' && (
+                  <p>
+                    {login.error === 'rejected'
+                      ? d.loginRejected
+                      : login.error === 'cli-missing'
+                        ? d.loginMissing
+                        : d.loginTimeout}
+                  </p>
+                )}
+                {(login.phase === 'waiting' || login.phase === 'checking') && (
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault()
+                      void source.submitAgyLoginCode?.(code)
+                    }}
+                  >
+                    <input
+                      value={code}
+                      onChange={(event) => setCode(event.target.value)}
+                      placeholder={d.loginPlaceholder}
+                      aria-label={d.loginPlaceholder}
+                      spellCheck={false}
+                      autoComplete="off"
+                      disabled={login.phase === 'checking'}
+                    />
+                    <button type="submit" disabled={!code.trim() || login.phase === 'checking'}>
+                      {d.loginSend}
+                    </button>
+                  </form>
+                )}
+                <div className="agy-login-actions">
+                  {(login.phase === 'idle' || login.phase === 'failed') && (
+                    <button type="button" onClick={() => void source.startAgyLogin?.()}>
+                      {d.loginStart}
+                    </button>
+                  )}
+                  {login.phase === 'waiting' && login.url && (
+                    <button type="button" onClick={() => void source.startAgyLogin?.()}>
+                      {d.loginReopen}
+                    </button>
+                  )}
+                  {(login.phase === 'waiting' || login.phase === 'checking') && (
+                    <button type="button" onClick={() => void source.cancelAgyLogin?.()}>
+                      {d.loginCancel}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           {usage?.failed && (!usage.needsLogin || !source.startAgyLogin) && (
             <p className="agy-bar-note">{usage.needsLogin ? d.needsLogin : d.failed}</p>
           )}

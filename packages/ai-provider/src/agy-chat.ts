@@ -128,6 +128,8 @@ export interface AgyChatUsageState {
   failed: boolean
   /** the CLI is not signed in, so usage (and chat) cannot work until the user logs in */
   needsLogin?: boolean
+  /** there is no `agy` on this computer: it has to be installed before anything else */
+  cliMissing?: boolean
 }
 
 /** The usage buckets that apply to a model (its quota pool), or null when unknown. */
@@ -150,6 +152,16 @@ export interface AgyLoginState {
   error?: 'cli-missing' | 'rejected' | 'timeout' | 'failed'
 }
 
+/** Progress of installing the Antigravity CLI from the app (see agy-install.ts). */
+export type AgyInstallPhase = 'idle' | 'installing' | 'done' | 'failed'
+
+export interface AgyInstallState {
+  phase: AgyInstallPhase
+  /** the last lines the installer printed, for the person to read if it fails */
+  output?: string
+  error?: 'script-failed' | 'not-found-after' | 'timeout' | 'unsupported' | 'busy'
+}
+
 export const AGY_CHAT_CHANNELS = {
   state: 'agyChat:state',
   catalog: 'agyChat:catalog',
@@ -163,6 +175,8 @@ export const AGY_CHAT_CHANNELS = {
   loginCode: 'agyChat:login-code',
   loginCancel: 'agyChat:login-cancel',
   loginState: 'agyChat:login-state',
+  installStart: 'agyChat:install-start',
+  installState: 'agyChat:install-state',
 } as const
 
 export interface AgyChatState {
@@ -198,4 +212,7 @@ export interface AgyChatApi {
   submitAgyLoginCode(code: string): Promise<boolean>
   cancelAgyLogin(): Promise<void>
   onAgyLogin(handler: (state: AgyLoginState) => void): () => void
+  /** download and run Google's own installer for the Antigravity CLI (once the person agreed) */
+  startAgyInstall(): Promise<AgyInstallState>
+  onAgyInstall(handler: (state: AgyInstallState) => void): () => void
 }

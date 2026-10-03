@@ -87,10 +87,16 @@ const realDeps: AgyUsageDeps = {
 
 let unsupported = false
 let needsLogin = false
+let cliMissing = false
 
 /** True when the last usage read stopped because the CLI is not signed in. */
 export function agyUsageNeedsLogin(): boolean {
   return needsLogin
+}
+
+/** True when the last usage read stopped because there is no `agy` on this computer. */
+export function agyUsageCliMissing(): boolean {
+  return cliMissing
 }
 
 /** Test seam: forget that `/usage` was found unsupported. */
@@ -117,8 +123,17 @@ export async function readAgyUsage(
 ): Promise<AgyUsageReading | null> {
   if (unsupported) return null
   needsLogin = false
+  cliMissing = false
   try {
-    const cli = await deps.resolveCli(cliPath)
+    let cli: string
+    try {
+      cli = await deps.resolveCli(cliPath)
+    } catch (error) {
+      cliMissing = /Antigravity CLI \(agy\) was not found|Antigravity CLI not found/i.test(
+        error instanceof Error ? error.message : '',
+      )
+      return null
+    }
     const output = await deps.run(cli, AGY_USAGE_ARGS, AGY_USAGE_TIMEOUT_MS)
     const json = extractJson(output)
     const reading = parseAgyUsageJson(json, deps.now())

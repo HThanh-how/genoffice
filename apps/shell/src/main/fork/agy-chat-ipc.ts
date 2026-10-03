@@ -4,8 +4,13 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { subscribeAgyActivity } from '@genoffice/ai-provider/agy-activity'
 import { listAgyModels } from '@genoffice/ai-provider/agy-cli'
+import { AgyInstaller } from '@genoffice/ai-provider/agy-install'
 import { AgyLogin } from '@genoffice/ai-provider/agy-login'
-import { agyUsageNeedsLogin, readAgyUsage } from '@genoffice/ai-provider/agy-usage'
+import {
+  agyUsageCliMissing,
+  agyUsageNeedsLogin,
+  readAgyUsage,
+} from '@genoffice/ai-provider/agy-usage'
 import {
   AGY_CHAT_CHANNELS,
   AGY_CHAT_DEFAULT_MODEL,
@@ -102,6 +107,7 @@ export class AgyUsageCache {
           refreshing: false,
           failed: false,
           needsLogin: false,
+          cliMissing: false,
         }
         try {
           writeJsonAtomic(this.cachePath, this.state)
@@ -109,7 +115,12 @@ export class AgyUsageCache {
           // the cache only makes the next start faster
         }
       } else {
-        this.state = { ...this.state, failed: true, needsLogin: agyUsageNeedsLogin() }
+        this.state = {
+          ...this.state,
+          failed: true,
+          needsLogin: agyUsageNeedsLogin(),
+          cliMissing: agyUsageCliMissing(),
+        }
       }
       this.inflight = null
       this.busy = false
@@ -219,6 +230,15 @@ export function registerAgyChat(deps: AgyChatDeps): void {
     typeof code === 'string' && code.length < 2000 ? login.submitCode(code) : false,
   )
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.loginCancel, () => login.cancel())
+
+  // No agy on this computer: Google's own installer is run for this user once the person asks, and
+  // when it is done the usage is read again (which then asks to sign in).
+  const installer = new AgyInstaller((state) => {
+    for (const window of BrowserWindow.getAllWindows())
+      if (!window.isDestroyed()) window.webContents.send(AGY_CHAT_CHANNELS.installState, state)
+    if (state.phase === 'done') void usage.refresh()
+  })
+  deps.ipcMain.handle(AGY_CHAT_CHANNELS.installStart, () => installer.start())
 
   // One check each time the app starts; the chat box then shows it (and tucks it away again).
   void app.whenReady().then(() => {

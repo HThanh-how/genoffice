@@ -426,3 +426,20 @@
   opacity: 0.5;
   cursor: default;
 }
+
+.agy-install-output {
+  margin: 0;
+  padding: 8px 10px;
+  max-height: 96px;
+  overflow: auto;
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--text-secondary);
+  font:
+    11px/1.4 ui-monospace,
+    SFMono-Regular,
+    Consolas,
+    monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

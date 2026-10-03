@@ -13,6 +13,7 @@
     "./agy-ocr": "./src/agy-ocr.ts",
     "./agy-usage": "./src/agy-usage.ts",
     "./agy-login": "./src/agy-login.ts",
+    "./agy-install": "./src/agy-install.ts",
     "./browser": "./src/browser.ts",
     "./codex-app-server": "./src/codex-app-server.ts",
     "./custom-models": "./src/custom-models.ts",

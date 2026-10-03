@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 import {
   AGY_USAGE_ARGS,
+  agyUsageCliMissing,
   readAgyUsage,
   resetAgyUsageSupport,
   type AgyUsageDeps,
@@ -112,5 +113,39 @@ describe('readAgyUsage', () => {
     expect(await readAgyUsage(undefined, deps)).toBeNull()
     expect(await readAgyUsage(undefined, deps)).toBeNull()
     expect(calls).toHaveLength(1) // the second call never spawned the CLI
+  })
+})
+
+describe('a computer with no agy', () => {
+  it('says the CLI is missing, and stops saying so once it is there', async () => {
+    const missing: AgyUsageDeps = {
+      resolveCli: async () => {
+        throw new Error(
+          'Antigravity CLI (agy) was not found. Install it, or set its full path in Settings → AI Model.',
+        )
+      },
+      run: async () => OK,
+      now: () => 42,
+    }
+    expect(await readAgyUsage(undefined, missing)).toBeNull()
+    expect(agyUsageCliMissing()).toBe(true)
+
+    expect(
+      await readAgyUsage(
+        undefined,
+        fakeDeps(async () => OK),
+      ),
+    ).not.toBeNull()
+    expect(agyUsageCliMissing()).toBe(false)
+  })
+
+  it('does not call a failed read "missing" when agy is there but broke', async () => {
+    await readAgyUsage(
+      undefined,
+      fakeDeps(async () => {
+        throw new Error('agy exited with code 1')
+      }),
+    )
+    expect(agyUsageCliMissing()).toBe(false)
   })
 })
