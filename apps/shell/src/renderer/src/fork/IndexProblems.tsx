@@ -1,3 +1,4 @@
+import { appConfirm } from '../ui-feedback'
 import { useCallback, useEffect, useRef, useState, type MutableRefObject } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
@@ -18,6 +19,13 @@ import {
 import { NOTHING_PICKED, pick, type PickState } from './index-selection'
 import { matchesQuery } from './todo-model'
 import { issueBucket, type IssueBucket } from './index-issue-view'
+import {
+  INDEX_ISSUE_PAGE_SIZE,
+  INDEX_ISSUE_READ_TIMEOUT_MS,
+  isIndexIssuePage,
+  isIndexIssueSummary,
+  readIndexRequest,
+} from './index-request'
 
 /** What the cards above the lists can ask the lists to do. */
 export interface ProblemCommands {
@@ -32,6 +40,11 @@ export function needsAction(reason: IndexIssueReason): boolean {
 }
 
 const BATCH = 10
+const MAX_ISSUE_PAGE_REQUESTS = 200
+
+function loadIssuePage(api: HomeApi, root: string, offset: number, reason?: IndexIssueReason) {
+  return readIndexRequest(() => api.getDocumentIndexIssues(root, offset, reason), isIndexIssuePage)
+}
 
 /** Where a group sits in the "to do" list: scans first, what is being indexed last. */
 export function attentionRank(reason: IndexIssueReason): number {
@@ -141,8 +154,32 @@ export async function loadAtLeast<T>(
 ): Promise<{ items: T[]; total: number }> {
   let items: T[] = []
   let total = 0
+  let requests = 0
+  const deadline = Date.now() + INDEX_ISSUE_READ_TIMEOUT_MS
+  const pageSignatures = new Set<string>()
   while (items.length < want) {
-    const page = await fetchPage(items.length)
+    if (++requests > MAX_ISSUE_PAGE_REQUESTS)
+      throw new Error('Index issue list exceeded the page limit')
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) throw new Error('Index issue list timed out')
+    const page = await readIndexRequest(
+      () => fetchPage(items.length),
+      (value): value is { items: T[]; total: number } => {
+        if (typeof value !== 'object' || value === null) return false
+        const candidate = value as { items?: unknown; total?: unknown }
+        return (
+          Number.isSafeInteger(candidate.total) &&
+          (candidate.total as number) >= 0 &&
+          Array.isArray(candidate.items) &&
+          candidate.items.length <= INDEX_ISSUE_PAGE_SIZE
+        )
+      },
+      remainingMs,
+    )
+    const signature = JSON.stringify(page.items)
+    if (page.items.length > 0 && pageSignatures.has(signature))
+      throw new Error('Index issue list did not advance')
+    pageSignatures.add(signature)
     total = page.total
     items = [...items, ...page.items]
     if (page.items.length === 0 || items.length >= page.total) break
@@ -207,7 +244,10 @@ export function IndexProblems({
     if (!root || externalSummary !== undefined) return
     const currentGeneration = generation.current
     try {
-      const next = await api.getDocumentIndexIssueSummary(root)
+      const next = await readIndexRequest(
+        () => api.getDocumentIndexIssueSummary(root),
+        isIndexIssueSummary,
+      )
       if (mounted.current && generation.current === currentGeneration) {
         setSummary(next)
         setSummaryFailed(false)
@@ -250,13 +290,13 @@ export function IndexProblems({
         let items: IndexIssue[]
         let total: number
         if (append) {
-          const page = await api.getDocumentIndexIssues(root, shown?.items.length ?? 0, reason)
+          const page = await loadIssuePage(api, root, shown?.items.length ?? 0, reason)
           items = [...(shown?.items ?? []), ...page.items]
           total = page.total
         } else {
           // as many files as are shown now, so a list opened with "show more" stays that long
           const loaded = await loadAtLeast(
-            (offset) => api.getDocumentIndexIssues(root, offset, reason),
+            (offset) => loadIssuePage(api, root, offset, reason),
             Math.max(shown?.items.length ?? 0, 1),
           )
           items = loaded.items
@@ -544,7 +584,7 @@ export function IndexProblems({
         return
       }
       const question = mode === 'ocr' ? d.readBatchConfirm : d.readPickedConfirm
-      if (!window.confirm(fill(question, { n: chosen.length }))) return
+      if (!(await appConfirm(fill(question, { n: chosen.length })))) return
       let ok = 0
       for (const [index, item] of chosen.entries()) {
         if (!isCurrent()) return
@@ -577,7 +617,7 @@ export function IndexProblems({
     try {
       const total = groupsRef.current[reason]?.total ?? 0
       const loaded = await loadAtLeast(
-        (offset) => api.getDocumentIndexIssues(root, offset, reason),
+        (offset) => loadIssuePage(api, root, offset, reason),
         Math.min(Math.max(total, 1), 2000),
       )
       if (
@@ -605,11 +645,11 @@ export function IndexProblems({
 
   const readBatch = async () =>
     runBatch(async (isCurrent) => {
-      const page = await api.getDocumentIndexIssues(root, 0, 'no-text')
+      const page = await loadIssuePage(api, root, 0, 'no-text')
       if (!isCurrent()) return
       const batch = page.items.slice(0, BATCH)
       if (batch.length === 0) return
-      if (!window.confirm(fill(d.readBatchConfirm, { n: batch.length }))) return
+      if (!(await appConfirm(fill(d.readBatchConfirm, { n: batch.length })))) return
       let ok = 0
       for (const [index, item] of batch.entries()) {
         if (!isCurrent()) return
@@ -635,11 +675,11 @@ export function IndexProblems({
     runBatch(async (isCurrent) => {
       const total = summary?.groups.find((g) => g.reason === 'no-text')?.count ?? 0
       const loaded = await loadAtLeast(
-        (offset) => api.getDocumentIndexIssues(root, offset, 'no-text'),
+        (offset) => loadIssuePage(api, root, offset, 'no-text'),
         Math.max(total, 1),
       )
       if (!isCurrent() || loaded.items.length === 0) return
-      if (!window.confirm(fill(d.readAllConfirm, { n: loaded.items.length }))) return
+      if (!(await appConfirm(fill(d.readAllConfirm, { n: loaded.items.length })))) return
       let ok = 0
       for (const [index, item] of loaded.items.entries()) {
         if (!isCurrent()) return
@@ -703,10 +743,10 @@ export function IndexProblems({
       void (async () => {
         try {
           const loaded = await loadAtLeast(
-            (offset) => api.getDocumentIndexIssues(root, offset, group.reason),
+            (offset) => loadIssuePage(api, root, offset, group.reason),
             Math.max(
               groupsRef.current[group.reason]?.items.length ?? 0,
-              Math.min(group.count, 2000),
+              Math.min(group.count, 100),
             ),
           )
           if (

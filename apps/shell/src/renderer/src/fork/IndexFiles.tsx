@@ -1,3 +1,4 @@
+import { appConfirm } from '../ui-feedback'
 import {
   useCallback,
   useEffect,
@@ -16,6 +17,7 @@ import { useI18n } from '../locale'
 import { fill } from '../indexing-activity-copy'
 import { iconFor } from '../file-icons'
 import { buildFileLog, deriveFileSteps, formatBytes, logWords } from './index-file-log'
+import { isIndexFileDetail, isIndexingNow, readIndexRequest } from './index-request'
 
 /** What the indexer is doing with one file right now. */
 export type Live =
@@ -40,16 +42,20 @@ export function liveOf(now: IndexingNow | null, path: string): Live | null {
 export function useIndexingNow(api: HomeApi, active: boolean): IndexingNow | null {
   const [now, setNow] = useState<IndexingNow | null>(null)
   useEffect(() => {
-    if (!active || !api.getIndexingNow) return
+    if (!active || !api.getIndexingNow) {
+      setNow(null)
+      return
+    }
     let alive = true
     let timer: ReturnType<typeof setTimeout> | null = null
     const tick = async () => {
       if (document.visibilityState === 'visible') {
         try {
-          const next = await api.getIndexingNow()
+          const next = await readIndexRequest(() => api.getIndexingNow(), isIndexingNow)
           if (alive) setNow(next)
         } catch {
-          /* keep the last reading */
+          // Do not keep claiming a file is live after the connection stops answering.
+          if (alive) setNow(null)
         }
       }
       if (alive) timer = setTimeout(() => void tick(), 1500)
@@ -114,6 +120,7 @@ const EN = {
   moreActions: 'More actions',
   actionFailed: 'Could not complete this action. Try again.',
   loading: 'Loading…',
+  detailFailed: 'Could not load file details. Close and reopen to try again.',
   readDone: 'Read. It can be searched now.',
   readEmpty: 'Read, but there is no text in it: it is a scan. Use “Read with Antigravity”.',
   indexOff: 'Indexing is switched off. Turn it on in the index settings.',
@@ -162,6 +169,7 @@ const VI: FileWords = {
   moreActions: 'Thao tác khác',
   actionFailed: 'Không thực hiện được thao tác này. Hãy thử lại.',
   loading: 'Đang tải…',
+  detailFailed: 'Chưa tải được chi tiết tệp. Đóng rồi mở lại để thử lần nữa.',
   readDone: 'Đã đọc xong, tìm được rồi.',
   readEmpty: 'Đã đọc nhưng không có chữ: đây là bản quét. Dùng “Đọc bằng Antigravity”.',
   indexOff: 'Đang tắt index. Bật lại trong cài đặt chỉ mục.',
@@ -296,6 +304,7 @@ export function useFileActions(
   const w = fileWords(lang)
   const [open, setOpen] = useState<number | null>(null)
   const [details, setDetails] = useState<Record<number, IndexFileDetail | null>>({})
+  const [detailFailures, setDetailFailures] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState<Set<number>>(new Set())
   const busyIds = useRef(new Set<number>())
   const [readingAgy, setReadingAgy] = useState<Set<number>>(new Set())
@@ -310,19 +319,36 @@ export function useFileActions(
   }, [])
 
   const detailOf = async (id: number): Promise<IndexFileDetail | null> => {
-    if (id in details) return details[id] ?? null
+    if (id in details && !detailFailures.has(id)) return details[id] ?? null
     try {
-      const got = await api.getIndexFileDetail(id)
+      const got = await readIndexRequest(() => api.getIndexFileDetail(id), isIndexFileDetail)
       setDetails((current) => ({ ...current, [id]: got }))
+      setDetailFailures((current) => {
+        const next = new Set(current)
+        next.delete(id)
+        return next
+      })
       return got
     } catch {
       setDetails((current) => ({ ...current, [id]: null }))
+      setDetailFailures((current) => new Set(current).add(id))
       return null
     }
   }
   const toggle = (item: FileItem) => {
     const next = open === item.id ? null : item.id
     setOpen(next)
+    if (open !== null && open !== next) {
+      setDetails((current) => {
+        const { [open]: _closed, ...rest } = current
+        return rest
+      })
+      setDetailFailures((current) => {
+        const nextFailures = new Set(current)
+        nextFailures.delete(open)
+        return nextFailures
+      })
+    }
     if (next !== null) void detailOf(next)
   }
   const withBusy = async (id: number, work: () => Promise<void>) => {
@@ -346,8 +372,17 @@ export function useFileActions(
     setDetails({})
     await afterChange(item)
     if (open === item.id) {
-      const next = await api.getIndexFileDetail(item.id).catch(() => null)
+      const next = await readIndexRequest(
+        () => api.getIndexFileDetail(item.id),
+        isIndexFileDetail,
+      ).catch(() => null)
       setDetails((current) => ({ ...current, [item.id]: next }))
+      setDetailFailures((current) => {
+        const updated = new Set(current)
+        if (next === null) updated.add(item.id)
+        else updated.delete(item.id)
+        return updated
+      })
     }
     onChanged()
   }
@@ -458,7 +493,7 @@ export function useFileActions(
   }
   const readNow = (item: FileItem) =>
     withBusy(item.id, async () => {
-      if (!window.confirm(w.ocrConfirm)) return
+      if (!(await appConfirm(w.ocrConfirm))) return
       await readWithAntigravity(item)
       await settle(item)
     })
@@ -466,6 +501,7 @@ export function useFileActions(
     open,
     toggle,
     details,
+    detailFailures,
     busy,
     readingAgy,
     note,
@@ -940,7 +976,14 @@ export function FileRow({
           <p className="ixp-loading">{w.loading}</p>
         ) : detail === null ? (
           <div className="ixp-detail" id={detailId}>
-            <code className="ixp-raw">{item.error ?? item.path}</code>
+            {actions.detailFailures.has(item.id) ? (
+              <>
+                <p>{w.detailFailed}</p>
+                <code className="ixp-raw">{item.error ?? item.path}</code>
+              </>
+            ) : (
+              <code className="ixp-raw">{item.error ?? item.path}</code>
+            )}
           </div>
         ) : (
           <div className="ixp-detail" id={detailId}>

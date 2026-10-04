@@ -25,6 +25,15 @@ const base: IndexFileDetail = {
 }
 
 describe('deriveFileSteps', () => {
+  it('reports a blank Office file as information, without promising an OCR or retry step', () => {
+    const steps = deriveFileSteps({ ...base, pdf: undefined, error: undefined }, 'en')
+    expect(steps.map((step) => [step.key, step.state])).toEqual([
+      ['found', 'ok'],
+      ['read', 'info'],
+      ['search', 'info'],
+    ])
+    expect(steps.at(-1)?.text).toBe('The file has no content to search')
+  })
   it('shows a scanned PDF as waiting on OCR, partly done', () => {
     const steps = deriveFileSteps(base, 'en')
     expect(steps.map((s) => [s.key, s.state])).toEqual([

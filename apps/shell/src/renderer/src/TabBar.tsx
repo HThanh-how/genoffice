@@ -1,3 +1,4 @@
+import { appNotify } from './ui-feedback'
 import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import type { TabsApi, TabSummary } from '../../shared/tabs-api'
@@ -186,7 +187,7 @@ export function TabBar() {
     const newName = ext ? `${value}.${ext}` : value
     if (newName === tab.title) return
     void window.aiOffice.renameFile(tab.filePath, newName).then((result) => {
-      if (!result.ok) window.alert(result.error ?? t('renameFailed'))
+      if (!result.ok) appNotify(result.error ?? t('renameFailed'), 'error')
       // Home shares this renderer and only re-pulls on window focus, which the
       // rename input already holds: tell it the recents / folder rows moved.
       else notifyFilesChanged()

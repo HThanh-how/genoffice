@@ -1,3 +1,4 @@
+import { appConfirm } from '../ui-feedback'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Lang } from '@genoffice/i18n'
 import type { HomeApi } from '../../../shared/home-api'
@@ -114,6 +115,7 @@ export function AskDock({
   const [named, setNamed] = useState<NamedFile[]>([])
   const [answer, setAnswer] = useState<string | null>(null)
   const [busyId, setBusyId] = useState<number | null>(null)
+  const readPending = useRef(false)
   const [commandBusy, setCommandBusy] = useState(false)
   const [brief, setBrief] = useState<Brief | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -289,9 +291,11 @@ export function AskDock({
     }
   }
   const readNow = async (hit: IndexedFileHit) => {
-    if (!window.confirm(w.readConfirm)) return
+    if (readPending.current || busyId !== null) return
+    readPending.current = true
     setBusyId(hit.id)
     try {
+      if (!(await appConfirm(w.readConfirm))) return
       const result = await api.readScannedPdfWithAgy(hit.id, true)
       setAnswer(
         result.ok
@@ -302,6 +306,7 @@ export function AskDock({
     } catch (error) {
       setAnswer(fill(w.failed, { e: error instanceof Error ? error.message : '' }))
     } finally {
+      readPending.current = false
       setBusyId(null)
     }
   }

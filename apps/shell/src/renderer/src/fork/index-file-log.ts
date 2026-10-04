@@ -4,7 +4,7 @@ import type { IndexFileDetail } from '../../../shared/fork/document-index-api'
  * The processing story of one indexed file, worked out from what the index knows about it, and
  * the plain-text log made from it. Pure, so it is unit tested; the page only lays it out.
  */
-export type StepState = 'ok' | 'warn' | 'fail' | 'run' | 'wait'
+export type StepState = 'ok' | 'warn' | 'fail' | 'run' | 'wait' | 'info'
 
 export interface FileStep {
   key: 'found' | 'read' | 'ocr' | 'embed' | 'search'
@@ -33,6 +33,7 @@ const STR = {
     embedModel: 'mô hình {m}',
     searchYes: 'Có, đã tìm được trong chỉ mục',
     searchNo: 'Chưa, cần xử lý bước trên',
+    searchEmpty: 'Tệp không có nội dung để tìm kiếm',
     size: 'Dung lượng',
     modified: 'Sửa lần cuối',
     updated: 'Chỉ mục cập nhật',
@@ -61,6 +62,7 @@ const STR = {
     embedModel: 'model {m}',
     searchYes: 'Yes, it is in the search index',
     searchNo: 'Not yet; the step above needs to finish',
+    searchEmpty: 'The file has no content to search',
     size: 'Size',
     modified: 'Modified',
     updated: 'Index updated',
@@ -119,7 +121,7 @@ export function deriveFileSteps(detail: IndexFileDetail, lang: string): FileStep
   else if (detail.status === 'empty')
     steps.push({
       key: 'read',
-      state: 'warn',
+      state: detail.pdf ? 'warn' : 'info',
       text: detail.pdf ? w.readNoText : w.readEmpty,
     })
   else steps.push({ key: 'read', state: 'wait', text: w.readWait })
@@ -151,15 +153,17 @@ export function deriveFileSteps(detail: IndexFileDetail, lang: string): FileStep
         .join(' · '),
     })
   const searchable = ready && detail.chunkDone > 0
+  const blank = detail.status === 'empty' && !detail.pdf
   steps.push({
     key: 'search',
-    state: searchable ? 'ok' : 'wait',
-    text: searchable ? w.searchYes : w.searchNo,
+    state: searchable ? 'ok' : blank ? 'info' : 'wait',
+    text: searchable ? w.searchYes : blank ? w.searchEmpty : w.searchNo,
   })
   return steps
 }
 
 const MARK: Record<StepState, string> = {
+  info: '[info]',
   ok: '[ok]  ',
   warn: '[!]   ',
   fail: '[fail]',

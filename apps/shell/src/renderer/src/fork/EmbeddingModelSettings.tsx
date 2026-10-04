@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react'
+import { appConfirm } from '../ui-feedback'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type {
   EmbeddingModelState,
   EmbeddingProfileChoice,
@@ -84,6 +85,7 @@ export function EmbeddingModelSettings() {
   const d = DICTS[lang] ?? EN
   const [state, setState] = useState<EmbeddingModelState | null>(null)
   const [busy, setBusy] = useState(false)
+  const choicePending = useRef(false)
   const [note, setNote] = useState('')
 
   const load = useCallback(async () => {
@@ -101,7 +103,7 @@ export function EmbeddingModelSettings() {
   if (!state) return null
 
   const choose = async (choice: EmbeddingProfileChoice) => {
-    if (busy || choice === state.profile) return
+    if (choicePending.current || busy || choice === state.profile) return
     const info = state.profiles.high
     const values = { download: info.downloadMB, reason: '' }
     let message = d.confirmStandard
@@ -117,15 +119,17 @@ export function EmbeddingModelSettings() {
                   : `${state.machine.logicalCores} threads`,
             })
     }
-    if (!window.confirm(message)) return
+    choicePending.current = true
     setBusy(true)
-    setNote(d.switching)
     try {
+      if (!(await appConfirm(message))) return
+      setNote(d.switching)
       const result = await window.aiOffice.setEmbeddingModel(choice)
       setNote(result.ok ? fill(d.switched, { n: result.requeued }) : '')
     } catch {
       setNote('')
     } finally {
+      choicePending.current = false
       setBusy(false)
       void load()
     }

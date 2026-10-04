@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { buildTodo, fold, matchesQuery, type TodoInput } from '../src/renderer/src/fork/todo-model'
+import { isIndexIssueSummary, readIndexRequest } from '../src/renderer/src/fork/index-request'
 
 const base: TodoInput = {
   groups: [],
@@ -114,5 +115,29 @@ describe('finding a file in the lists', () => {
     expect(matchesQuery(file, 'bao cao 2026')).toBe(false)
     expect(matchesQuery(file, '   ')).toBe(true)
     expect(matchesQuery(file, '')).toBe(true)
+  })
+})
+
+describe('index summary connection', () => {
+  it('rejects an empty or malformed IPC result instead of treating it as loaded', () => {
+    expect(isIndexIssueSummary(null)).toBe(false)
+    expect(isIndexIssueSummary(undefined)).toBe(false)
+    expect(isIndexIssueSummary({ total: 0, groups: null })).toBe(false)
+  })
+
+  it('accepts a valid empty index summary', () => {
+    expect(isIndexIssueSummary({ total: 0, groups: [] })).toBe(true)
+  })
+
+  it('rejects a null IPC response so the caller can show the retry state', async () => {
+    await expect(
+      readIndexRequest(() => Promise.resolve(null), isIndexIssueSummary),
+    ).rejects.toThrow('Invalid index response')
+  })
+
+  it('turns a preload call that never responds into a retryable failure', async () => {
+    await expect(
+      readIndexRequest(() => new Promise(() => undefined), isIndexIssueSummary, 5),
+    ).rejects.toThrow('timed out')
   })
 })

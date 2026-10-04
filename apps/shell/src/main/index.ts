@@ -1,3 +1,4 @@
+import { showAppMessageBox, setFeedbackThemeGetter } from './app-message-box'
 import { DocumentMemoryManager } from './document-memory/manager'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { rotatingFileWriter } from './fork/renderer-diagnostics'
@@ -658,6 +659,7 @@ function currentTheme(): UiTheme {
   cachedTheme = saved === 'light' || saved === 'dark' ? saved : 'system'
   return cachedTheme
 }
+setFeedbackThemeGetter(currentTheme)
 
 let cachedAutoSaveDefault: AutoSaveDefault | null = null
 
@@ -3653,9 +3655,9 @@ function showAppWarning(message: string): void {
   if (shellWindow) {
     shellWindow.show()
     shellWindow.focus()
-    void dialog.showMessageBox(shellWindow, options)
+    void showAppMessageBox(shellWindow, options)
   } else {
-    void dialog.showMessageBox(options)
+    void showAppMessageBox(options)
   }
 }
 
@@ -3720,8 +3722,8 @@ async function openLegacyPpt(filePath: string): Promise<void> {
         cancelId: 1,
       }
       const choice = shellWindow
-        ? await dialog.showMessageBox(shellWindow, options)
-        : await dialog.showMessageBox(options)
+        ? await showAppMessageBox(shellWindow, options)
+        : await showAppMessageBox(options)
       if (choice.response !== 0) return
     }
     const opening = openingNoticeUnlessCold({
@@ -3812,8 +3814,8 @@ async function openLegacyXls(filePath: string): Promise<void> {
         cancelId: 1,
       }
       const choice = shellWindow
-        ? await dialog.showMessageBox(shellWindow, options)
-        : await dialog.showMessageBox(options)
+        ? await showAppMessageBox(shellWindow, options)
+        : await showAppMessageBox(options)
       if (choice.response !== 0) {
         openSheetsFile(filePath)
         return
@@ -3985,8 +3987,8 @@ async function openLegacyDoc(filePath: string): Promise<void> {
         checkboxLabel: 'Remember my choice',
       }
       const choice = shellWindow
-        ? await dialog.showMessageBox(shellWindow, options)
-        : await dialog.showMessageBox(options)
+        ? await showAppMessageBox(shellWindow, options)
+        : await showAppMessageBox(options)
       if (choice.response === 2) return
       online = choice.response === 0
       if (choice.checkboxChecked) {
@@ -4028,8 +4030,8 @@ async function openLegacyDoc(filePath: string): Promise<void> {
         cancelId: online ? 2 : 1,
       }
       const choice = shellWindow
-        ? await dialog.showMessageBox(shellWindow, options)
-        : await dialog.showMessageBox(options)
+        ? await showAppMessageBox(shellWindow, options)
+        : await showAppMessageBox(options)
       const wantsTryAgain = online && choice.response === 0
       const wantsTextOnly = online ? choice.response === 1 : choice.response === 0
       if (wantsTryAgain && tries < 5) {
@@ -4479,7 +4481,7 @@ function startFolderScan(path: string): void {
     folderScan?.start(path)
     tabManager?.openHomeTab()
   } catch (error) {
-    void dialog.showMessageBox({
+    void showAppMessageBox({
       type: 'error',
       message: error instanceof Error ? error.message : 'Unable to scan folder',
     })
@@ -6195,7 +6197,7 @@ async function exportPdfAsDocxLocal(): Promise<void> {
   const host = pdfHostWindow(tab)
   if (!tab?.filePath || !host) return
   if (exportingPdfDocx) {
-    void dialog.showMessageBox(host, {
+    void showAppMessageBox(host, {
       type: 'info',
       message: tm('pdfDocxBusyMsg'),
     })
@@ -6261,7 +6263,7 @@ async function exportPdfAsDocxLocal(): Promise<void> {
       .filter((r) => r.status !== 'ok' && r.status !== 'ocr')
       .map((r) => r.page)
     if (result.scannedDocument) {
-      await dialog.showMessageBox(host, {
+      await showAppMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalScannedMsg'),
         detail: tm('pdfDocxLocalScannedDetail'),
@@ -6269,7 +6271,7 @@ async function exportPdfAsDocxLocal(): Promise<void> {
     } else if (imagePages.length > 0 && ocrPages.length > 0) {
       // mixed documents surface BOTH facts in one dialog: which pages shipped
       // as images and which carry machine-read text the user should proofread
-      await dialog.showMessageBox(host, {
+      await showAppMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalDegradedMsg'),
         detail:
@@ -6278,13 +6280,13 @@ async function exportPdfAsDocxLocal(): Promise<void> {
           tm('pdfDocxLocalOcrDetail', { pages: ocrPages.join(', ') }),
       })
     } else if (imagePages.length > 0) {
-      await dialog.showMessageBox(host, {
+      await showAppMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalDegradedMsg'),
         detail: tm('pdfDocxLocalDegradedDetail', { pages: imagePages.join(', ') }),
       })
     } else if (ocrPages.length > 0) {
-      await dialog.showMessageBox(host, {
+      await showAppMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalOcrMsg'),
         detail: tm('pdfDocxLocalOcrDetail', { pages: ocrPages.join(', ') }),
@@ -6308,7 +6310,7 @@ async function exportPdfAsDocxLocal(): Promise<void> {
           : err instanceof Error
             ? err.message
             : String(err)
-      void dialog.showMessageBox(host, {
+      void showAppMessageBox(host, {
         type: 'error',
         message: tm('pdfDocxFailedMsg'),
         detail,
@@ -6335,7 +6337,7 @@ async function exportPdfAsPptxLocal(): Promise<void> {
   const host = pdfHostWindow(tab)
   if (!tab?.filePath || !host) return
   if (exportingPdfDocx) {
-    void dialog.showMessageBox(host, {
+    void showAppMessageBox(host, {
       type: 'info',
       message: tm('pdfPptxBusyMsg'),
     })
@@ -6395,13 +6397,13 @@ async function exportPdfAsPptxLocal(): Promise<void> {
     // individual image-fallback pages
     const imagePages = result.pageResults.filter((r) => r.status !== 'ok').map((r) => r.page)
     if (result.scannedDocument) {
-      await dialog.showMessageBox(host, {
+      await showAppMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalScannedMsg'),
         detail: tm('pdfPptxLocalScannedDetail'),
       })
     } else if (imagePages.length > 0) {
-      await dialog.showMessageBox(host, {
+      await showAppMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalDegradedMsg'),
         detail: tm('pdfDocxLocalDegradedDetail', { pages: imagePages.join(', ') }),
@@ -6421,7 +6423,7 @@ async function exportPdfAsPptxLocal(): Promise<void> {
           : err instanceof Error
             ? err.message
             : String(err)
-      void dialog.showMessageBox(host, {
+      void showAppMessageBox(host, {
         type: 'error',
         message: tm('pdfPptxFailedMsg'),
         detail,
@@ -6446,7 +6448,7 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
   const host = pdfHostWindow(tab)
   if (!tab?.filePath || !host) return
   if (exportingPdfDocx) {
-    void dialog.showMessageBox(host, {
+    void showAppMessageBox(host, {
       type: 'info',
       message: tm('pdfXlsxBusyMsg'),
     })
@@ -6506,13 +6508,13 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
     // row on their worksheet instead of an image (a spreadsheet has none)
     const noticePages = result.pageResults.filter((r) => r.status !== 'ok').map((r) => r.page)
     if (result.scannedDocument) {
-      await dialog.showMessageBox(host, {
+      await showAppMessageBox(host, {
         type: 'info',
         message: tm('pdfDocxLocalScannedMsg'),
         detail: tm('pdfXlsxLocalScannedDetail'),
       })
     } else if (noticePages.length > 0) {
-      await dialog.showMessageBox(host, {
+      await showAppMessageBox(host, {
         type: 'info',
         message: tm('pdfXlsxLocalSkippedMsg'),
         detail: tm('pdfXlsxLocalSkippedDetail', { pages: noticePages.join(', ') }),
@@ -6532,7 +6534,7 @@ async function exportPdfAsXlsxLocal(): Promise<void> {
           : err instanceof Error
             ? err.message
             : String(err)
-      void dialog.showMessageBox(host, {
+      void showAppMessageBox(host, {
         type: 'error',
         message: tm('pdfXlsxFailedMsg'),
         detail,
@@ -6747,7 +6749,7 @@ async function runHeadlessExportEntry(
   app.exit(headlessExitCode(outcome))
 }
 
-installThemedDialogs()
+installThemedDialogs(showAppMessageBox)
 
 app.whenReady().then(async () => {
   // first scan waits for the windows to come up; later ones follow folder changes

@@ -19,6 +19,7 @@ export default defineConfig({
           index: resolve(__dirname, 'src/preload/index.ts'),
           // dedicated preload for the auto-update window
           update: resolve(__dirname, 'src/preload/update.ts'),
+          feedback: resolve(__dirname, 'src/preload/feedback.ts'),
           // dedicated preload for the PDF password prompt window
           'pdf-password': resolve(__dirname, 'src/preload/pdf-password.ts'),
         },
@@ -33,6 +34,7 @@ export default defineConfig({
           index: resolve(__dirname, 'src/renderer/index.html'),
           // strong-guidance update window (see src/main/update-window.ts)
           update: resolve(__dirname, 'src/renderer/update.html'),
+          feedback: resolve(__dirname, 'src/renderer/feedback.html'),
           // PDF password prompt window (see src/main/pdf-password-dialog.ts)
           'pdf-password': resolve(__dirname, 'src/renderer/pdf-password.html'),
         },

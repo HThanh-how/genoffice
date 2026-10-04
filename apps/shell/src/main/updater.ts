@@ -1,6 +1,7 @@
+import { showAppMessageBox } from './app-message-box'
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
-import { app, dialog, shell } from 'electron'
+import { app, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import type { UpdateInfo } from 'electron-updater'
@@ -545,7 +546,7 @@ export async function checkForUpdatesNow(): Promise<void> {
       return
     }
     if (!updaterActive) {
-      const { response } = await dialog.showMessageBox({
+      const { response } = await showAppMessageBox({
         type: 'info',
         title: tUpd(lang, 'updTitle'),
         message: tUpd(lang, 'updManual'),
@@ -563,7 +564,7 @@ export async function checkForUpdatesNow(): Promise<void> {
       if (result === null) throw new Error('Update check was skipped')
     } catch (err) {
       log('manual check failed:', (err as Error)?.message ?? err)
-      await dialog.showMessageBox({
+      await showAppMessageBox({
         type: 'warning',
         title: tUpd(lang, 'updTitle'),
         message: tUpd(lang, 'updCheckFailed'),
@@ -576,7 +577,7 @@ export async function checkForUpdatesNow(): Promise<void> {
     // an available update already opened the update window via the
     // 'update-available' handler; only "nothing new" needs a dialog here
     if (result.isUpdateAvailable) return
-    await dialog.showMessageBox({
+    await showAppMessageBox({
       type: 'info',
       title: tUpd(lang, 'updTitle'),
       message: tUpd(lang, 'updUpToDate', { version: app.getVersion() }),

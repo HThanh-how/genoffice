@@ -43,6 +43,8 @@ export interface UpdateUiState {
 }
 
 export interface UpdateWindowApi {
+  getTheme(): Promise<'light' | 'dark' | 'system'>
+  onThemeChanged(handler: (theme: 'light' | 'dark' | 'system') => void): () => void
   getState(): Promise<UpdateUiState | null>
   download(): void
   install(): void

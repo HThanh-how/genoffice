@@ -1,3 +1,4 @@
+import { showAppMessageBox } from './app-message-box'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
@@ -5,7 +6,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { app, dialog, net, shell } from 'electron'
+import { app, net, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { getUiLang } from '@genoffice/i18n'
 import {
@@ -153,7 +154,7 @@ export async function checkForkUpdates(
     )
     if (!release) {
       if (background) return
-      await dialog.showMessageBox({
+      await showAppMessageBox({
         type: 'info',
         title,
         message: vietnamese
@@ -164,7 +165,7 @@ export async function checkForkUpdates(
     }
     if (compareVersions(release.version, app.getVersion()) <= 0) {
       if (background) return
-      await dialog.showMessageBox({
+      await showAppMessageBox({
         type: 'info',
         title,
         message: vietnamese
@@ -269,7 +270,7 @@ export async function checkForkUpdates(
     showUpdateWindow(getWindow(), state, actions)
   } catch {
     if (background) return
-    await dialog.showMessageBox({
+    await showAppMessageBox({
       type: 'warning',
       title,
       message: vietnamese

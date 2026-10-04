@@ -1,3 +1,4 @@
+import { appNotify } from './ui-feedback'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import type { UpdateSource } from '../../shared/update-source'
@@ -606,7 +607,7 @@ function AiModelPane({ t }: { t: TFunc }) {
         setSaved(true)
       })
       .catch((error) => {
-        window.alert(error instanceof Error ? error.message : String(error))
+        appNotify(error instanceof Error ? error.message : String(error), 'error')
       })
   }
   const test = () => {
@@ -946,7 +947,7 @@ function AiMediaPane({
         onFileSearchChange?.()
       })
       .catch((error) => {
-        window.alert(error instanceof Error ? error.message : String(error))
+        appNotify(error instanceof Error ? error.message : String(error), 'error')
       })
   }
   // every block reports its own verdict; blocks sharing a vendor share that vendor's one check

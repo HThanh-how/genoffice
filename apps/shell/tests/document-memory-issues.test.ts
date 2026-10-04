@@ -4,6 +4,9 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { IndexIssueReader } from '../src/main/document-memory/issue-reader'
+import { registerDocumentIndexIpc } from '../src/main/fork/document-index-ipc'
+import { HOME_CHANNELS } from '../src/shared/home-api'
+import { DOCUMENT_INDEX_CHANNELS } from '../src/shared/fork/document-index-api'
 import {
   groupIssueCounts,
   isInformationalReason,
@@ -159,6 +162,61 @@ it('IndexIssueReader summarizes, pages by reason and lists ids without touching 
     expect(reader.summary(root).total).toBe(14)
   } finally {
     reader.close()
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+it('allows the blank-file issue reason through the document-index IPC contract', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'index-issue-ipc-'))
+  const dbPath = join(dir, 'memory.db')
+  const store = new DocumentMemoryStore(dbPath)
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  const retried: number[] = []
+  let closeReader = () => {}
+  try {
+    store.replaceDocument(join(dir, 'blank.docx'), {
+      hash: 'blank',
+      mtimeMs: 1,
+      sizeBytes: 1,
+      chunks: [],
+      embeddingModel: null,
+      status: 'empty',
+      error: 'No readable text in this file; there is nothing to search',
+    })
+    const ipcMain = {
+      handle: (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) =>
+        handlers.set(channel, handler),
+    }
+    closeReader = registerDocumentIndexIpc({
+      ipcMain: ipcMain as never,
+      getDocumentMemory: () =>
+        ({
+          retryDocument: (id: number) => {
+            retried.push(id)
+            return { ok: true }
+          },
+        }) as never,
+      getFolderScan: () => null,
+      dbPath: () => dbPath,
+    })
+    const call = (channel: string, ...args: unknown[]) => {
+      const handler = handlers.get(channel)
+      if (!handler) throw new Error(`Missing handler ${channel}`)
+      return handler({}, ...args)
+    }
+
+    expect(call(HOME_CHANNELS.getDocumentIndexIssues, '*', 0, 'empty')).toMatchObject({
+      total: 1,
+      items: [{ reason: 'empty' }],
+    })
+    expect(call(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, '*', 'empty')).toEqual({
+      ok: true,
+      retried: 1,
+    })
+    expect(retried).toHaveLength(1)
+  } finally {
+    closeReader()
     store.close()
     rmSync(dir, { recursive: true, force: true })
   }

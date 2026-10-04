@@ -1,5 +1,20 @@
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
 import { isInformationalReason, isRetryableReason } from '../../../main/document-memory/issues'
+import type { LegacyConvertState } from '../../../shared/home-api'
+
+export function isLegacyConvertState(value: unknown): value is LegacyConvertState {
+  if (typeof value !== 'object' || value === null) return false
+  const state = value as Partial<LegacyConvertState>
+  return (
+    typeof state.running === 'boolean' &&
+    Number.isSafeInteger(state.pending) &&
+    (state.pending as number) >= 0 &&
+    Number.isSafeInteger(state.converted) &&
+    (state.converted as number) >= 0 &&
+    Number.isSafeInteger(state.failed) &&
+    (state.failed as number) >= 0
+  )
+}
 
 /** What the "To do" tab knows, gathered from the index, the scan, the converter and the indexing policy. */
 export interface TodoInput {

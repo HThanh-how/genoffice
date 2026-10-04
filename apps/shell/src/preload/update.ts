@@ -4,6 +4,17 @@ import type { UpdateUiState, UpdateWindowApi } from '../shared/update-api'
 import { UPDATE_CHANNELS } from '../shared/update-api'
 
 const api: UpdateWindowApi = {
+  async getTheme() {
+    const theme: unknown = await ipcRenderer.invoke('app:get-theme')
+    return theme === 'light' || theme === 'dark' ? theme : 'system'
+  },
+  onThemeChanged(handler) {
+    const listener = (_event: IpcRendererEvent, theme: unknown) => {
+      handler(theme === 'light' || theme === 'dark' ? theme : 'system')
+    }
+    ipcRenderer.on('app:theme-changed', listener)
+    return () => ipcRenderer.removeListener('app:theme-changed', listener)
+  },
   async getState() {
     const result: unknown = await ipcRenderer.invoke(UPDATE_CHANNELS.getState)
     return (result ?? null) as UpdateUiState | null

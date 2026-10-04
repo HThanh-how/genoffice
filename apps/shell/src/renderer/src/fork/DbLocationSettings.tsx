@@ -1,3 +1,4 @@
+import { appConfirm } from '../ui-feedback'
 import { useCallback, useEffect, useState } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import type { DbLocationState, DbMoveError } from '../../../shared/fork/document-index-api'
@@ -69,7 +70,7 @@ export function DbLocationSettings({ api }: { api: HomeApi }) {
         size: formatBytes(result.sizeBytes, dateLocale),
         path: next.pending ?? '',
       })
-      if (window.confirm(message)) await api.restartForDbMove()
+      if (await appConfirm(message, { confirmLabel: w.restart })) await api.restartForDbMove()
       return
     }
     if (result.canceled) return

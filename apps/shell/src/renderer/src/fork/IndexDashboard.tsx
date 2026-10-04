@@ -6,6 +6,7 @@ import type { IndexingMode, IndexingModeState } from '../../../shared/fork/index
 import { INDEXING_MODES } from '../../../shared/fork/indexing-mode'
 import { useI18n } from '../locale'
 import { TodoTab } from './TodoTab'
+import { isIndexIssueSummary, readIndexRequest } from './index-request'
 import { activityCopy, fill } from '../indexing-activity-copy'
 import { EtaTracker, type EtaEstimate } from '../indexing-activity-model'
 import { etaText } from '../indexing-activity/format'
@@ -87,6 +88,8 @@ const EN = {
   attentionTitle: 'Needs attention',
   attentionAll: 'See all',
   actionFailed: 'Could not complete this action. Please try again.',
+  statusFailed: 'Could not refresh the index. Check the connection and try again.',
+  refresh: 'Refresh',
   dismissNote: 'Dismiss message',
   suggestions: ['How far is indexing?', 'Rescan', 'Retry the errors', 'Help'],
   ocrConfirm:
@@ -161,6 +164,8 @@ const VI: Dict = {
   attentionTitle: 'Cần chú ý',
   attentionAll: 'Xem tất cả',
   actionFailed: 'Chưa thực hiện được thao tác. Bạn thử lại nhé.',
+  statusFailed: 'Chưa cập nhật được chỉ mục. Kiểm tra kết nối và thử lại.',
+  refresh: 'Tải lại',
   dismissNote: 'Đóng thông báo',
   suggestions: ['Index tới đâu rồi?', 'Quét lại', 'Thử lại các lỗi', 'Trợ giúp'],
   ocrConfirm:
@@ -189,6 +194,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const [rate, setRate] = useState<number | null>(null)
   const [actionBusy, setActionBusy] = useState(false)
   const [actionNote, setActionNote] = useState('')
+  const [statusFailed, setStatusFailed] = useState(false)
   const actionInFlight = useRef(false)
   const tracker = useRef(new EtaTracker())
   const lastRate = useRef<{ at: number; done: number } | null>(null)
@@ -208,12 +214,34 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
       loading = true
       if (document.visibilityState === 'visible') {
         const [memory, activity, mode, issues] = await Promise.allSettled([
-          api.getDocumentMemoryStatus(),
-          api.getIndexingActivity(),
-          api.getIndexingModeState?.() ?? Promise.resolve(null),
-          api.getDocumentIndexIssueSummary('*'),
+          readIndexRequest(
+            () => api.getDocumentMemoryStatus(),
+            (value): value is DocumentMemoryStatus =>
+              !!value &&
+              typeof value === 'object' &&
+              typeof (value as DocumentMemoryStatus).enabled === 'boolean',
+          ),
+          readIndexRequest(
+            () => api.getIndexingActivity(),
+            (value): value is HomeIndexingActivity =>
+              !!value && typeof value === 'object' && !!(value as HomeIndexingActivity).memory,
+          ),
+          readIndexRequest(
+            () => api.getIndexingModeState?.() ?? Promise.resolve(null),
+            (value): value is IndexingModeState | null =>
+              value === null ||
+              (!!value &&
+                typeof value === 'object' &&
+                INDEXING_MODES.includes((value as IndexingModeState).mode)),
+          ),
+          readIndexRequest(() => api.getDocumentIndexIssueSummary('*'), isIndexIssueSummary),
         ])
         if (!alive) return
+        setStatusFailed(
+          memory.status === 'rejected' ||
+            activity.status === 'rejected' ||
+            issues.status === 'rejected',
+        )
         if (issues.status === 'fulfilled') setAttention(issues.value)
         const next: Snapshot = {
           memory: memory.status === 'fulfilled' ? memory.value : null,
@@ -405,6 +433,14 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
           </button>
         </div>
       </header>
+      {statusFailed && tab !== 'problems' && (
+        <div className="todo-status" role="status">
+          <span>{d.statusFailed}</span>
+          <button type="button" className="idx-btn" onClick={kick}>
+            {d.refresh}
+          </button>
+        </div>
+      )}
       {actionNote && (
         <div className="todo-status" role="status">
           <span>{actionNote}</span>

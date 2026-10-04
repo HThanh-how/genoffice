@@ -1,3 +1,4 @@
+import { appConfirm } from '../ui-feedback'
 import { useRef, useState, type ReactNode } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import { useI18n } from '../locale'
@@ -116,12 +117,20 @@ export function IndexSettingsTab({ api }: { api: HomeApi }) {
   const [clearing, setClearing] = useState(false)
   const clearPending = useRef(false)
   const clear = async () => {
-    if (clearPending.current || !window.confirm(d.confirm)) return
+    if (clearPending.current) return
     clearPending.current = true
     setClearing(true)
-    setNote('')
-    setFailed(false)
     try {
+      if (
+        !(await appConfirm(d.confirm, {
+          title: d.clearTitle,
+          confirmLabel: d.clear,
+          tone: 'danger',
+        }))
+      )
+        return
+      setNote('')
+      setFailed(false)
       await api.clearDocumentMemory()
       setNote(d.cleared)
     } catch {

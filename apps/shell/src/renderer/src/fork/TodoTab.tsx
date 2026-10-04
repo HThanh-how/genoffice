@@ -5,7 +5,8 @@ import type { IndexIssueReason } from '../../../main/document-memory/issues'
 import { useI18n } from '../locale'
 import { IndexProblems } from './IndexProblems'
 import { issueBucket, type IssueBucket } from './index-issue-view'
-import { buildTodo, type TodoCard } from './todo-model'
+import { isIndexIssueSummary, readIndexRequest } from './index-request'
+import { buildTodo, isLegacyConvertState, type TodoCard } from './todo-model'
 
 const EN = {
   heading: 'To do',
@@ -140,8 +141,12 @@ export function TodoTab(props: TodoTabProps) {
     const read = async () => {
       if (document.visibilityState === 'visible') {
         const [issues, conversion] = await Promise.allSettled([
-          api.getDocumentIndexIssueSummary('*'),
-          api.getLegacyConvertState?.() ?? Promise.resolve(null),
+          readIndexRequest(() => api.getDocumentIndexIssueSummary('*'), isIndexIssueSummary),
+          readIndexRequest(
+            () => api.getLegacyConvertState?.() ?? Promise.resolve(null),
+            (value): value is LegacyConvertState | null =>
+              value === null || isLegacyConvertState(value),
+          ),
         ])
         if (!alive) return
         if (issues.status === 'fulfilled') {
@@ -181,7 +186,9 @@ export function TodoTab(props: TodoTabProps) {
     setWorking(true)
     setActionFailed(false)
     try {
-      await api.startLegacyConvert?.()
+      if (!api.startLegacyConvert) throw new Error('Legacy conversion is unavailable')
+      const state = await api.startLegacyConvert()
+      if (!isLegacyConvertState(state)) throw new Error('Invalid legacy conversion response')
       onChanged()
       setRefresh((n) => n + 1)
     } catch {

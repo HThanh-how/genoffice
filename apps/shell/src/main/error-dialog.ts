@@ -1,4 +1,4 @@
-import { dialog } from 'electron'
+import { showAppMessageBox } from './app-message-box'
 import type { BrowserWindow } from 'electron'
 
 let showing = false
@@ -17,7 +17,7 @@ export function showErrorDialog(win: BrowserWindow | null, message: string, err:
     detail: err instanceof Error ? err.message : String(err),
   }
   const shown =
-    win && !win.isDestroyed() ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options)
+    win && !win.isDestroyed() ? showAppMessageBox(win, options) : showAppMessageBox(options)
   void shown.finally(() => {
     showing = false
   })

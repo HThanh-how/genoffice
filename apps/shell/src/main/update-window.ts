@@ -51,8 +51,8 @@ export function showUpdateWindow(
   }
 
   const win = new BrowserWindow({
-    width: 400,
-    height: 430,
+    width: 460,
+    height: 440,
     ...(parent && !parent.isDestroyed() ? { parent, modal: true } : {}),
     frame: false,
     transparent: true,

@@ -1,7 +1,7 @@
 import type { IpcMain } from 'electron'
 import type { FolderScanManager } from '../document-memory/folder-scan'
 import { ALL_FOLDERS, IndexIssueReader } from '../document-memory/issue-reader'
-import { shortCause, type IndexIssueReason } from '../document-memory/issues'
+import { ISSUE_REASON_ORDER, shortCause, type IndexIssueReason } from '../document-memory/issues'
 import type { DocumentMemoryManager } from '../document-memory/manager'
 import { foldFolderProgress } from '../document-memory/folder-progress'
 import type { FolderChunkProgress } from '../document-memory/store'
@@ -38,27 +38,14 @@ export interface DocumentIndexIpcDeps {
 const samePath = (path: string): string =>
   process.platform === 'win32' ? path.toLowerCase() : path
 
-const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set([
-  'waiting',
-  'unavailable',
-  'permission',
-  'password',
-  'corrupt',
-  'unsupported',
-  'timeout',
-  'no-text',
-  'too-large',
-  'changed',
-  'model',
-  'other',
-])
+const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set(ISSUE_REASON_ORDER)
 
 /**
  * Document-index popup IPC: grouped problem files, per-group retry and the cached
  * indexing-activity payload. Replaces the upstream getDocumentIndexIssues,
  * retryDocumentIndex and getIndexingActivity handlers (do not register those twice).
  */
-export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
+export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void {
   const { ipcMain, getDocumentMemory, getFolderScan } = deps
   // Folder chunk counts are the only database aggregate in the popup poll. They are served
   // stale-while-revalidate (see activity-cache.ts); everything else is live and in-memory.
@@ -331,4 +318,5 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): void {
         : null,
     }
   })
+  return () => issueReader?.close()
 }

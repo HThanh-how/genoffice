@@ -1,3 +1,4 @@
+import { appConfirm } from '../ui-feedback'
 import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import type { Lang } from '@genoffice/i18n'
 import type { HomeApi } from '../../../shared/home-api'
@@ -42,6 +43,7 @@ export const IssueGroup = memo(function IssueGroup({
   const [notes, setNotes] = useState<Record<number, string>>({})
   const [retryingAll, setRetryingAll] = useState(false)
   const request = useRef(0)
+  const ocrPending = useRef(new Set<number>())
   const iw = issueWordsFor(lang)
   const text = copy.reasons[reason]
   const retryable = isRetryableReason(reason)
@@ -127,15 +129,17 @@ export const IssueGroup = memo(function IssueGroup({
 
   /** Scanned PDFs: read this one now with Antigravity (explicit confirmation, ignores today's budget). */
   const readWithAgy = async (issue: IndexIssue) => {
+    if (ocrPending.current.has(issue.id) || busy[issue.id]) return
+    ocrPending.current.add(issue.id)
+    setBusy((current) => ({ ...current, [issue.id]: 'ocr' }))
     const t = (key: Parameters<typeof agyOcrString>[1], params?: Record<string, string | number>) =>
       agyOcrString(lang, key, params)
-    const maxPages =
-      (await api.getAgyOcrStatus?.().catch(() => null))?.settings.maxPagesPerFile ?? 5
-    if (!window.confirm(t('readNowConfirm', { n: maxPages === 0 ? '∞' : maxPages }))) return
-    setBusy((current) => ({ ...current, [issue.id]: 'ocr' }))
-    setErrors((current) => ({ ...current, [issue.id]: '' }))
-    setNotes((current) => ({ ...current, [issue.id]: '' }))
     try {
+      const maxPages =
+        (await api.getAgyOcrStatus?.().catch(() => null))?.settings.maxPagesPerFile ?? 5
+      if (!(await appConfirm(t('readNowConfirm', { n: maxPages === 0 ? '∞' : maxPages })))) return
+      setErrors((current) => ({ ...current, [issue.id]: '' }))
+      setNotes((current) => ({ ...current, [issue.id]: '' }))
       const result = await api.readScannedPdfWithAgy(issue.id, true)
       if (!result.ok) {
         const text =
@@ -158,6 +162,7 @@ export const IssueGroup = memo(function IssueGroup({
         [issue.id]: error instanceof Error ? error.message : iw.actionFailed,
       }))
     } finally {
+      ocrPending.current.delete(issue.id)
       setBusy((current) => {
         const next = { ...current }
         delete next[issue.id]

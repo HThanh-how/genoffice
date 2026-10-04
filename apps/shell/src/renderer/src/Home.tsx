@@ -1,3 +1,4 @@
+import { appNotify } from './ui-feedback'
 import { IndexingActivity, OPEN_INDEX_EVENT } from './IndexingActivity'
 import { IndexDashboard } from './fork/IndexDashboard'
 import { IndexNavItem } from './fork/IndexNavItem'
@@ -454,7 +455,7 @@ function FolderPicker({
     if (!parent || !name) return
     const result = await window.aiOffice.createFolder(parent, name)
     if (!result.ok) {
-      window.alert(result.error ?? t('renameFailed'))
+      appNotify(result.error ?? t('renameFailed'), 'error')
       return
     }
     load(parent, true)
@@ -1678,22 +1679,23 @@ export function Home() {
     setFolderMenu(null)
     setRowMenu(null)
     void window.aiOffice.copyFilesToClipboard(paths).then((ok) => {
-      if (!ok) window.alert(folderWords.copyFailed)
+      if (!ok) appNotify(folderWords.copyFailed, 'error')
     })
   }
   /** paste what is on the system clipboard (copied here or in Explorer) into a folder */
   const pasteInto = (dir: string) => {
     setFolderMenu(null)
     void window.aiOffice.pasteFilesFromClipboard(dir).then((result) => {
-      if (result.none) window.alert(folderWords.nothingToPaste)
+      if (result.none) appNotify(folderWords.nothingToPaste, 'info')
       else if (result.failed > 0 && result.pasted === 0)
-        window.alert(folderWords.pasteFailed.replace('{e}', result.error ?? ''))
+        appNotify(folderWords.pasteFailed.replace('{e}', result.error ?? ''), 'error')
       else if (result.failed > 0)
-        window.alert(
+        appNotify(
           folderWords.pastedWithFailures
             .replace('{n}', String(result.pasted))
             .replace('{f}', String(result.failed))
             .replace('{e}', result.error ?? ''),
+          'error',
         )
       refreshRef.current()
     })
@@ -1715,7 +1717,7 @@ export function Home() {
     if (!value || value === baseName(entry)) return
     const newName = entry.ext ? `${value}.${entry.ext}` : value
     void window.aiOffice.renameFile(entry.path, newName).then((result) => {
-      if (!result.ok) window.alert(result.error ?? t('renameFailed'))
+      if (!result.ok) appNotify(result.error ?? t('renameFailed'), 'error')
       refresh()
     })
   }
@@ -1746,7 +1748,7 @@ export function Home() {
     if (!pending || !name) return
     const result = await window.aiOffice.createFolder(pending.parent, name)
     if (!result.ok) {
-      window.alert(result.error ?? t('renameFailed'))
+      appNotify(result.error ?? t('renameFailed'), 'error')
       return
     }
     invalidateFolders([pending.parent])
@@ -1767,7 +1769,7 @@ export function Home() {
     if (!value || value === fileName(pending.path)) return
     const result = await window.aiOffice.renameFolder(pending.path, value)
     if (!result.ok) {
-      window.alert(result.error ?? t('renameFailed'))
+      appNotify(result.error ?? t('renameFailed'), 'error')
       return
     }
     if (result.path) {
@@ -1812,7 +1814,7 @@ export function Home() {
       }
     }
     refresh()
-    if (result.failed.length > 0) window.alert(result.failed[0].error)
+    if (result.failed.length > 0) appNotify(result.failed[0].error, 'error')
     if (result.conflicts.length > 0) setConflict({ paths: result.conflicts, targetDir })
   }
 

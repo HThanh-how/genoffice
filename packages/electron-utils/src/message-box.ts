@@ -149,10 +149,12 @@ let installed = false
  * Replaces `dialog.showMessageBox` for the whole main process, and answers the synchronous
  * `window.confirm` / `window.alert` bridge installed by `installRendererDialogs`.
  */
-export function installThemedDialogs(): void {
+export function installThemedDialogs(
+  provider: typeof showThemedMessageBox = showThemedMessageBox,
+): void {
   if (installed) return
   installed = true
-  ;(dialog as { showMessageBox: unknown }).showMessageBox = showThemedMessageBox
+  ;(dialog as { showMessageBox: unknown }).showMessageBox = provider
   ipcMain.on(SYNC_CHANNEL, (event, kind: unknown, message: unknown) => {
     const text = typeof message === 'string' ? message : String(message ?? '')
     const win = BrowserWindow.fromWebContents(event.sender)
@@ -160,9 +162,14 @@ export function installThemedDialogs(): void {
       kind === 'confirm'
         ? { type: 'question', message: text, buttons: ['OK', 'Cancel'], defaultId: 0, cancelId: 1 }
         : { type: 'info', message: text, buttons: ['OK'] }
-    void showThemedMessageBox(win, options).then((r) => {
-      event.returnValue = kind === 'confirm' ? r.response === 0 : undefined
-    })
+    void Promise.resolve()
+      .then(() => provider(win, options))
+      .then((r) => {
+        event.returnValue = kind === 'confirm' ? r.response === 0 : undefined
+      })
+      .catch(() => {
+        event.returnValue = kind === 'confirm' ? false : undefined
+      })
   })
 }
 

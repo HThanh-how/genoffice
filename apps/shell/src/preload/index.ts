@@ -1,6 +1,11 @@
 import { installRendererDialogs } from '@genoffice/electron-utils/renderer-dialogs'
 import { createAgyChatPreloadApi } from '@genoffice/electron-utils/agy-chat-preload'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+
+contextBridge.exposeInMainWorld('appFeedbackShell', {
+  notify: (message: string, tone: string): Promise<void> =>
+    ipcRenderer.invoke('ui-feedback:notify', message, tone),
+})
 import type { IpcRendererEvent } from 'electron'
 import {
   AI_MEDIA_PROVIDERS,

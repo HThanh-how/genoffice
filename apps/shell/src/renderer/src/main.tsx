@@ -2,6 +2,7 @@ import React from 'react'
 import { createRoot } from 'react-dom/client'
 import { htmlLang } from '@genoffice/i18n'
 import { AppFrame } from './AppFrame'
+import { UiFeedbackHost } from './ui-feedback'
 import { LocaleProvider } from './locale'
 import '@genoffice/ui/tokens.css'
 import '@genoffice/ui/screentip.css'
@@ -40,6 +41,7 @@ void Promise.all([
     <React.StrictMode>
       <LocaleProvider initial={lang}>
         <AppFrame initialOnboardingSeen={onboardingSeen} />
+        <UiFeedbackHost />
       </LocaleProvider>
     </React.StrictMode>,
   )
