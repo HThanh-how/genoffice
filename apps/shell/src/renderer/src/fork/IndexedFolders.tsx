@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { IndexedFolder, IndexedFolderRun } from '../../../shared/fork/document-index-api'
 import { useI18n } from '../locale'
+import { readIndexRequest } from './index-request'
 
 const EN = {
   title: 'Indexed folders',
@@ -163,41 +164,80 @@ export function IndexedFolders() {
   const [folders, setFolders] = useState<IndexedFolder[] | null>(null)
   const [open, setOpen] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  const mounted = useRef(false)
+  const loading = useRef(false)
 
   const refresh = useCallback(async () => {
+    if (loading.current || document.visibilityState !== 'visible') return
+    loading.current = true
     try {
-      const next = await window.aiOffice.listIndexedFolders?.()
-      if (next) setFolders(next)
+      const next = await readIndexRequest(
+        () => window.aiOffice.listIndexedFolders(),
+        (value): value is IndexedFolder[] =>
+          Array.isArray(value) &&
+          value.every(
+            (folder) =>
+              typeof folder.root === 'string' &&
+              Number.isFinite(folder.totalFiles) &&
+              Array.isArray(folder.history),
+          ),
+      )
+      if (mounted.current) {
+        setFolders(next)
+        setFailed(false)
+      }
     } catch {
-      // keep what is on screen
+      if (mounted.current) setFailed(true)
+    } finally {
+      loading.current = false
     }
   }, [])
 
   useEffect(() => {
+    mounted.current = true
     void refresh()
     const timer = setInterval(() => void refresh(), 5_000)
-    return () => clearInterval(timer)
+    return () => {
+      mounted.current = false
+      clearInterval(timer)
+    }
   }, [refresh])
 
   const act = async (root: string, run: () => Promise<unknown>) => {
     setBusy(root)
     try {
-      await run()
+      await readIndexRequest(run, (_value): _value is unknown => true)
     } catch {
-      // the next refresh shows the real state
+      setFailed(true)
     } finally {
       setBusy(null)
       void refresh()
     }
   }
 
-  if (folders === null) return null
+  if (folders === null && !failed)
+    return (
+      <p role="status">
+        {lang === 'vi' ? 'Đang lấy tiến độ thư mục…' : 'Loading folder progress…'}
+      </p>
+    )
   return (
     <div className="set-folders">
       <h4 className="set-field-label">{dict.title}</h4>
       <p className="set-field-desc">{dict.desc}</p>
-      {folders.length === 0 && <p className="set-field-desc">{dict.empty}</p>}
-      {folders.map((folder) => {
+      {failed && (
+        <p role="status" className="set-field-desc">
+          {lang === 'vi'
+            ? 'Chưa xác nhận được tiến độ hoặc thao tác. Kiểm tra lại trước khi thử tiếp.'
+            : 'Progress or the action could not be confirmed. Refresh before trying again.'}{' '}
+          <button type="button" className="set-btn" onClick={() => void refresh()}>
+            {lang === 'vi' ? 'Tải lại' : 'Refresh'}
+          </button>
+        </p>
+      )}
+      {folders?.length === 0 && <p className="set-field-desc">{dict.empty}</p>}
+      {folders?.map((folder) => {
         const isOpen = open === folder.root
         const status = folder.unavailable
           ? dict.offline
@@ -226,11 +266,36 @@ export function IndexedFolders() {
             </div>
             <div className="set-field-desc">
               {fill(dict.files, { n: folder.totalFiles })}
+              {` · ${folder.readyFiles.toLocaleString(lang)} ${lang === 'vi' ? 'đã xử lý' : 'processed'}`}
+              {!!folder.emptyFiles &&
+                ` (${folder.emptyFiles.toLocaleString(lang)} ${lang === 'vi' ? 'chưa có chữ' : 'without text'})`}
               {folder.pendingFiles > 0
                 ? ` · ${fill(dict.waiting, { n: folder.pendingFiles })}`
                 : ''}
               {folder.errorFiles > 0 ? ` · ${fill(dict.errors, { n: folder.errorFiles })}` : ''}
             </div>
+            {folder.totalFiles > 0 && (
+              <progress
+                style={{ width: '100%', height: 6, margin: '10px 0' }}
+                max={folder.totalFiles}
+                value={folder.readyFiles + folder.errorFiles}
+                aria-label={lang === 'vi' ? 'Tiến độ tệp' : 'File progress'}
+              />
+            )}
+            {!!folder.totalChunks && (
+              <p className="set-field-desc">
+                {(folder.completedChunks ?? 0).toLocaleString(lang)} /{' '}
+                {folder.totalChunks.toLocaleString(lang)}{' '}
+                {lang === 'vi'
+                  ? 'đoạn đã sẵn sàng tìm theo nội dung'
+                  : 'passages ready for content search'}
+              </p>
+            )}
+            {folder.lastError && (
+              <p className="set-field-desc" role="status">
+                {folder.lastError}
+              </p>
+            )}
             <div className="set-folder-actions">
               <button
                 type="button"

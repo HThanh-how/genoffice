@@ -7,6 +7,7 @@ const EN = {
   pasteFailed: 'Could not paste: {e}',
   pastedWithFailures: 'Pasted {n}; {f} could not be pasted: {e}',
   copyFailed: 'Could not copy to the clipboard.',
+  deleteFailed: 'Moved {n} file(s) to trash; {f} could not be deleted.',
 }
 const VI: typeof EN = {
   openInExplorer: 'Mở trong File Explorer',
@@ -17,6 +18,7 @@ const VI: typeof EN = {
   pasteFailed: 'Không dán được: {e}',
   pastedWithFailures: 'Đã dán {n}; {f} file không dán được: {e}',
   copyFailed: 'Không sao chép được vào clipboard.',
+  deleteFailed: 'Đã chuyển {n} tệp vào thùng rác; không xóa được {f} tệp.',
 }
 
 export const folderMenuWords = (lang: string): typeof EN => (lang === 'vi' ? VI : EN)

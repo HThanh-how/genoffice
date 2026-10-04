@@ -303,6 +303,38 @@
   border-radius: 8px;
   background: var(--surface);
   box-shadow: 0 2px 8px color-mix(in srgb, var(--text) 5%, transparent);
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ixp-pickbar > span {
+  font-weight: 600;
+  margin-right: auto;
+  font-variant-numeric: tabular-nums;
+}
+.ixp-selection-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex-basis: 100%;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.ixp-selection-secondary .idx-btn {
+  font-size: 12px;
+}
+.ixp-trash-action {
+  margin-left: auto;
+}
+.ixp-pickbar:focus-within {
+  border-color: var(--accent);
+}
+@media (max-width: 620px) {
+  .ixp-pickbar {
+    position: static;
+  }
+  .ixp-trash-action {
+    margin-left: 0;
+  }
 }
 .ixp-pick {
   flex: none;

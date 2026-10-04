@@ -2,6 +2,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { basename, dirname, extname } from 'node:path'
 import { MAX_BODY_CHARS } from './extract'
 import { buildSnippet, containsAny, excerpt, type SnippetPart } from './snippet'
+import { normalizeDocumentText } from '../document-memory/normalization'
 import {
   parseQuery,
   termChars,
@@ -16,7 +17,7 @@ import {
 /** bump when tokenize() changes shape; the index is rebuilt from scratch */
 const TOKENIZER_VERSION = 2
 
-export type IndexStatus = 'ok' | 'name-only' | 'error'
+export type IndexStatus = 'ok' | 'name-only' | 'error' | 'pending'
 
 export interface IndexedFile {
   path: string
@@ -56,6 +57,28 @@ export interface SearchResult {
 /** a term with no phrase hit still matches a file covering more than this share of its characters */
 const RELAXED_MIN_COVERAGE = 0.5
 const RELAXED_MIN_TOKENS = 3
+
+function namePathMatch(queryWords: readonly string[], name: string, path: string) {
+  const basename = normalizeDocumentText(name.replace(/\.[^.]+$/, ''))
+  const nameTokens = basename.split(' ').filter(Boolean)
+  const pathTokens = normalizeDocumentText(dirname(path)).split(' ').filter(Boolean)
+  const tokens = [...nameTokens, ...pathTokens]
+  let exact = 0
+  let prefix = 0
+  for (const word of queryWords) {
+    if (tokens.some((token) => token === word)) exact++
+    else if (tokens.some((token) => token.startsWith(word))) prefix++
+  }
+  const query = queryWords.join(' ')
+  const basenameRank = basename === query ? 0 : basename.startsWith(query) ? 1 : 2
+  const basenameExact = queryWords.reduce(
+    (count, word) => count + Number(nameTokens.includes(word)),
+    0,
+  )
+  const coverageRank =
+    exact === queryWords.length ? 0 : exact + prefix === queryWords.length ? 1 : 2
+  return { coverageRank, basenameRank, basenameExact, exact, prefix }
+}
 
 interface Row {
   id: number
@@ -264,14 +287,24 @@ export class FileIndexStore {
       return c.exact + c.relaxed === wanted
     })
     const rows = fullRows.length ? fullRows : allRows
-    const first = parsed.include[0]!.text
-    const rank = new Map<number, [number, number, number, number, number, number, number]>()
+    const queryWords = [
+      ...new Set(parsed.include.flatMap((term) => normalizeDocumentText(term.text).split(' '))),
+    ].filter(Boolean)
+    const rank = new Map<
+      number,
+      [number, number, number, number, number, number, number, number, number, number, number]
+    >()
     for (const r of rows) {
       const c = candidates.get(r.id)!
       const needles = [...c.needles]
       const meta = containsAny(r.name, needles) || containsAny(dirname(r.path), needles)
+      const namePath = namePathMatch(queryWords, r.name, r.path)
       rank.set(r.id, [
-        r.name.toLowerCase().startsWith(first) ? 0 : 1,
+        namePath.coverageRank,
+        -namePath.exact,
+        -namePath.prefix,
+        namePath.basenameRank,
+        -namePath.basenameExact,
         -(c.exact + c.relaxed),
         meta ? 0 : 1,
         -c.exact,

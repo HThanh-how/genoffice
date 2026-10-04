@@ -15,6 +15,9 @@ export function createDocumentIndexPreloadApi(
   ipcRenderer: IpcRenderer,
 ): DocumentIndexApi & IndexingModeApi & AgyOcrApi & AiInstructionsApi {
   return {
+    async enqueueDocumentIndex(ids) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, ids)
+    },
     ...createAiInstructionsPreloadApi(ipcRenderer),
     // Indexing effort setting (Light / Balanced / Fast), shown in the same Settings section.
     ...createIndexingModePreloadApi(ipcRenderer),

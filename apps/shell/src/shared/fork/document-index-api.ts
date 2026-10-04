@@ -22,6 +22,7 @@ export const DOCUMENT_INDEX_CHANNELS = {
   searchIndexedFiles: 'home:search-indexed-files',
   getIndexingNow: 'home:get-indexing-now',
   stopIndexFile: 'home:stop-index-file',
+  enqueueDocumentIndex: 'home:enqueue-document-index',
   deferIndexFile: 'home:defer-index-file',
   getEverything: 'home:get-everything',
   getShowDefaultFolder: 'home:get-show-default-folder',
@@ -172,11 +173,18 @@ export interface IndexedFolder {
   readyFiles: number
   pendingFiles: number
   errorFiles: number
+  emptyFiles?: number
+  completedChunks?: number
+  totalChunks?: number
   history: IndexedFolderRun[]
 }
 
 /** Renderer-facing document-index methods, merged into HomeApi via ForkHomeApi. */
 export interface DocumentIndexApi {
+  /** Prioritise a bounded batch without waiting for parsing/embedding to complete. */
+  enqueueDocumentIndex?(
+    documentIds: number[],
+  ): Promise<{ queued: number; skipped: number; error?: string }>
   /** Problem files below `root` grouped by plain-language reason, with counts. */
   getDocumentIndexIssueSummary(root: string): Promise<IndexIssueSummary>
   /** Re-queue every problem file (or one reason's files); reason 'model' restarts the model. */

@@ -115,7 +115,8 @@ describe('FolderScanManager', () => {
 
   it('rejects the filesystem root so a scan never walks the operating system', () => {
     const instance = scanner(join(dir, 'state'), () => true)
-    expect(() => instance.start('/')).toThrow(/below the system drive root/)
+    const systemRoot = process.platform === 'win32' ? `${process.env.SystemDrive ?? 'C:'}\\` : '/'
+    expect(() => instance.start(systemRoot)).toThrow(/below the system drive root/)
   })
 
   it('scans a folder added while another is being scanned, once that one is done', async () => {

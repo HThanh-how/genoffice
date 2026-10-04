@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
   OCR_MAX_CALLS_PER_RUN,
   planOcrBatch,
@@ -11,6 +11,7 @@ import {
   type OcrJobHost,
   type OcrPolicyView,
   type OcrRecognizeInput,
+  type OcrJobDeps,
 } from '../src/main/document-memory/agy-ocr-job'
 import { OcrStateStore, type OcrStateFs } from '../src/main/document-memory/agy-ocr-state'
 import type { OcrRenderRequest, OcrRenderResult } from '../src/main/document-memory/agy-ocr-render'
@@ -21,6 +22,183 @@ const DAY = 86_400_000
 const HOUR = 3_600_000
 const T0 = Date.UTC(2026, 9, 1, 3, 0, 0) // 10:00 in Vietnam
 const VIETNAM = () => -420
+
+describe('OCR queue resilience', () => {
+  it('automatic unlimited retains provider authentication halts and transient backoff', async () => {
+    const auth = rig({ autoUnlimited: true, autoWeeklyDailyBudgetPercent: 12 })
+    auth.host.add('/auth.pdf', 1)
+    auth.recognizeMode.value = { throws: 'Not signed in. Please sign in again' }
+    await auth.job.tick()
+    await auth.job.tick()
+    expect(auth.recognizeCalls).toHaveLength(1)
+    expect(auth.job.status().activity.kind).toBe('halted')
+    const transient = rig({ autoUnlimited: true, autoWeeklyDailyBudgetPercent: 12 })
+    transient.host.add('/busy.pdf', 1)
+    transient.recognizeMode.value = { throws: 'timed out' }
+    await transient.job.tick()
+    await transient.job.tick()
+    expect(transient.recognizeCalls).toHaveLength(1)
+    expect(transient.job.status().activity.kind).toBe('backoff')
+  })
+
+  it('a forced refresh during an automatic call cannot erase its later measured charge', async () => {
+    const r = rig({ autoWeeklyDailyBudgetPercent: 12 })
+    r.host.add('/active.pdf', 8)
+    let refresh: Promise<unknown> | undefined
+    r.onRecognize.value = () => {
+      refresh = r.job.refreshQuota()
+      r.usage.weekly -= 0.13
+      r.usage.five -= 0.03
+    }
+    await r.job.tick()
+    await refresh
+    expect(r.recognizeCalls).toHaveLength(1)
+    expect(r.job.status().autoBudget?.weeklyDaily.spent).toBeCloseTo(13)
+    expect(r.job.status().autoBudget?.pending).toBe(false)
+  })
+
+  it('explicit automatic unlimited mode bypasses app quota policy and daily PDF cap', async () => {
+    const r = rig({ autoUnlimited: true, autoWeeklyDailyBudgetPercent: 12, maxPdfsPerDay: 1 })
+    r.host.add('/one.pdf', 1)
+    r.host.add('/two.pdf', 1)
+    r.usage.unreadable = true
+    await r.job.tick()
+    expect(r.recognizeCalls).toHaveLength(2)
+    expect(r.usage.reads).toBe(0)
+  })
+
+  it('automatic reserves consider other usage and require the two-point startup margin', async () => {
+    const r = rig({ autoWeeklyDailyBudgetPercent: 12 })
+    r.host.add('/one.pdf', 1)
+    r.usage.weekly = 0.89
+    await r.job.tick()
+    expect(r.recognizeCalls).toHaveLength(0)
+    expect(r.job.status().quota?.weekly).toMatchObject({ floor: 88, startAt: 90 })
+    expect(r.job.status().activity.kind).toBe('quota-blocked')
+  })
+
+  it('automatic OCR stops after a measured weekly daily budget drop and survives restart', async () => {
+    const r = rig({ autoWeeklyDailyBudgetPercent: 12 })
+    r.host.add('/budget.pdf', 8)
+    r.onRecognize.value = () => {
+      r.usage.weekly -= 0.13
+      r.usage.five -= 0.03
+    }
+    await r.job.tick()
+    expect(r.recognizeCalls).toHaveLength(1)
+    expect(r.job.status().autoBudget?.weeklyDaily.spent).toBeCloseTo(13)
+    const restarted = rig({ autoWeeklyDailyBudgetPercent: 12 }, r.fs)
+    restarted.host.add('/budget.pdf', 8)
+    await restarted.job.tick()
+    expect(restarted.recognizeCalls).toHaveLength(0)
+  })
+
+  it('automatic OCR never runs with unreadable quota; manual OCR still does', async () => {
+    const r = rig({ autoWeeklyDailyBudgetPercent: 10 })
+    r.host.add('/budget.pdf', 1)
+    r.usage.unreadable = true
+    await r.job.tick()
+    expect(r.recognizeCalls).toHaveLength(0)
+    expect(r.job.status().activity.kind).toBe('quota-unreadable')
+    expect((await r.job.readNow(r.host.files.get('/budget.pdf')!.id)).ok).toBe(true)
+    expect(r.recognizeCalls).toHaveLength(1)
+    expect(r.job.status().autoBudget?.weeklyDaily.spent).toBe(0)
+  })
+
+  it('coalesces manual quota refreshes and never starts OCR or changes its active stage', async () => {
+    const r = rig({ ignoreFiveHour: true, ignoreWeekly: true })
+    r.host.add('/active.pdf', 1)
+    const deps = (r.job as unknown as { deps: OcrJobDeps }).deps
+    const realUsage = deps.readUsage
+    let releaseUsage!: () => void
+    const waitingUsage = new Promise<void>((resolve) => {
+      releaseUsage = resolve
+    })
+    const usage = vi.spyOn(deps, 'readUsage').mockImplementation(async () => {
+      await waitingUsage
+      return realUsage()
+    })
+    vi.spyOn(deps, 'recognize').mockImplementation(() => new Promise(() => {}))
+    const request = r.job.readNow(r.host.files.get('/active.pdf')!.id)
+    await vi.waitFor(() => expect(r.job.status().stage).toBe('recognizing'))
+    const first = r.job.refreshQuota()
+    const second = r.job.refreshQuota()
+    expect(usage).toHaveBeenCalledTimes(1)
+    expect(r.job.status().stage).toBe('recognizing')
+    releaseUsage()
+    await Promise.all([first, second])
+    expect(r.job.status().quota).toBeDefined()
+    expect(r.job.status().stage).toBe('recognizing')
+    r.job.cancel()
+    await request
+  })
+
+  it('cancels only selected waiting OCR documents', async () => {
+    const r = rig()
+    r.host.add('/one.pdf', 1)
+    r.host.add('/two.pdf', 1)
+    r.usage.five = 0.1
+    vi.spyOn(r.host, 'render').mockImplementation(() => new Promise(() => {}))
+    const one = r.host.files.get('/one.pdf')!.id
+    const two = r.host.files.get('/two.pdf')!.id
+    r.job.enqueue([one, two])
+    await vi.waitFor(() => expect(r.job.status().stage).toBe('rendering'))
+    expect(r.job.cancelDocuments([one])).toBe(1)
+    expect(r.job.status().queuedDocuments).toBe(1)
+    expect(r.job.cancelDocuments([999])).toBe(0)
+  })
+
+  it('manual admission returns immediately, deduplicates and bypasses automatic quota reserves', async () => {
+    const r = rig()
+    r.host.add('/queue.pdf', 2)
+    r.usage.five = 0.1
+    const id = r.host.files.get('/queue.pdf')!.id
+    expect(r.job.enqueue([id, id, 999])).toEqual({ queued: 1, skipped: 2 })
+    await vi.waitFor(() => {
+      expect(r.recognizeCalls).toHaveLength(1)
+      expect(r.job.status().queuedDocuments).toBe(0)
+    })
+    expect(r.recognizeCalls).toHaveLength(1)
+    expect(r.job.status().queuedDocuments).toBe(0)
+  })
+
+  it('cancels a renderer that never answers and releases the queue', async () => {
+    const r = rig()
+    r.host.add('/hang.pdf', 1)
+    vi.spyOn(r.host, 'render').mockImplementation(() => new Promise(() => {}))
+    const request = r.job.readNow(r.host.files.get('/hang.pdf')!.id)
+    await vi.waitFor(() => expect(r.job.status().stage).toBe('rendering'))
+    expect(r.job.cancel()).toBe(true)
+    expect((await request).ok).toBe(false)
+    expect(r.job.status().running).toBe(false)
+  })
+
+  it('times out a renderer that never answers instead of holding all later reads', async () => {
+    vi.useFakeTimers()
+    try {
+      const r = rig()
+      r.host.add('/hang.pdf', 1)
+      vi.spyOn(r.host, 'render').mockImplementation(() => new Promise(() => {}))
+      const request = r.job.readNow(r.host.files.get('/hang.pdf')!.id)
+      await vi.advanceTimersByTimeAsync(120_001)
+      expect(await request).toEqual({ ok: false, error: 'OCR step timed out; retry later' })
+      expect(r.job.status().running).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('does not send text-layer pages again during a manual OCR request', async () => {
+    const r = rig()
+    r.host.add('/mixed.pdf', 2)
+    const candidates = r.host.candidates.bind(r.host)
+    vi.spyOn(r.host, 'candidates').mockImplementation((max) =>
+      candidates(max).map((row) => ({ ...row, skipPages: [1] })),
+    )
+    await r.job.readNow(r.host.files.get('/mixed.pdf')!.id)
+    expect(r.recognizeCalls[0]?.pages).toEqual([2])
+  })
+})
 
 // ---- fakes -------------------------------------------------------------------------------------
 
@@ -149,6 +327,8 @@ function rig(overrides: Partial<AgyOcrSettings> = {}, fs = new FakeFs(), pdfPage
   const clock = { now: T0 }
   const settings: AgyOcrSettings = {
     ...DEFAULT_AGY_OCR_SETTINGS,
+    // Legacy reserve scenarios remain coverage for old/injected settings without budgets.
+    autoWeeklyDailyBudgetPercent: undefined,
     // pinned: these scenarios were written against a strict reserve and no daily/page limits
     maxPdfsPerDay: 0,
     maxPagesPerFile: 10,

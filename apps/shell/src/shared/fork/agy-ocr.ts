@@ -4,19 +4,19 @@
  * Antigravity CLI is signed in, on AC power and when idle). It sends page images of the user's
  * scanned documents to Google through their Antigravity account.
  *
- * The reader is quota-paced instead of page-limited. Each Antigravity quota bucket keeps a
- * reserve that shrinks over its window (a "glide floor"): the weekly bucket day by day (90% on
- * day 1, 80% on day 2 ... never below 20%), the 5-hour bucket linearly (85% at the start of its
- * window down to 70% at the end). Both are on by default, editable, and each can be ignored. The
- * same settings apply to whichever quota group the chosen model belongs to (Gemini, or Claude
- * and GPT), because only that group's buckets are read.
+ * Automatic OCR keeps 80/60/40/20/20 percent of the five-hour bucket by elapsed hour. The weekly
+ * reserve follows the provider's seven-day cycle: a 12-point daily allowance leaves
+ * 88/76/64/52/40/28/16 percent by cycle day, with a 16-percent minimum. Actual automatic usage
+ * is measured around calls and persisted per quota group and provider-cycle day. Unknown or
+ * delayed usage pauses additional automatic calls until it can be accounted for.
+ * Manual OCR explicitly bypasses app reserves and daily caps. Automatic Unlimited is a separate
+ * opt-in that bypasses these limits too; provider limits, cancellation and power policy remain.
  */
 import {
   AGY_OCR_DEFAULT_MODEL,
   OCR_DEFAULT_FIVE_HOUR_FLOOR_END,
   OCR_DEFAULT_FIVE_HOUR_FLOOR_START,
   OCR_DEFAULT_MAX_PAGES_PER_FILE,
-  OCR_DEFAULT_MAX_PDFS_PER_DAY,
   OCR_DEFAULT_PAGES_PER_CALL,
   OCR_DEFAULT_WEEKLY_DROP_PER_DAY,
   OCR_DEFAULT_WEEKLY_FIRST_DAY_FLOOR,
@@ -32,18 +32,21 @@ import {
 export const AGY_OCR_SETTINGS_KEY = 'agyOcr'
 
 export interface AgyOcrSettings {
+  /** Automatic OCR allowance in percentage points; manual OCR does not use this budget. */
+  autoWeeklyDailyBudgetPercent?: number
+  autoUnlimited?: boolean
   enabled: boolean
   model: string
   /** optional cap on distinct PDFs per local day; 0 = unlimited */
   maxPdfsPerDay: number
   maxPagesPerFile: number
   pagesPerCall: number
-  /** weekly reserve (percent of the weekly quota left untouched): day 1 floor, drop per day, minimum */
+  /** Legacy reserve fields retained for compatibility; the current policy uses the cycle budget. */
   weeklyFirstDayFloor: number
   weeklyDropPerDay: number
   weeklyMinFloor: number
   ignoreWeekly: boolean
-  /** 5-hour reserve: linear from the first value at the start of its window to the second at its end */
+  /** Legacy linear floors; current automatic OCR uses the fixed hourly staircase. */
   fiveHourFloorStart: number
   fiveHourFloorEnd: number
   ignoreFiveHour: boolean
@@ -52,9 +55,11 @@ export interface AgyOcrSettings {
 }
 
 export const DEFAULT_AGY_OCR_SETTINGS: AgyOcrSettings = {
+  autoWeeklyDailyBudgetPercent: 12,
+  autoUnlimited: false,
   enabled: true,
   model: AGY_OCR_DEFAULT_MODEL,
-  maxPdfsPerDay: OCR_DEFAULT_MAX_PDFS_PER_DAY,
+  maxPdfsPerDay: 0,
   maxPagesPerFile: OCR_DEFAULT_MAX_PAGES_PER_FILE,
   pagesPerCall: OCR_DEFAULT_PAGES_PER_CALL,
   weeklyFirstDayFloor: OCR_DEFAULT_WEEKLY_FIRST_DAY_FLOOR,
@@ -88,6 +93,14 @@ export function mergeAgyOcrSettings(base: AgyOcrSettings, patch: unknown): AgyOc
   const end = int(p.fiveHourFloorEnd, 0, 100, base.fiveHourFloorEnd)
   const fiveOk = validFiveHourFloors(start, end)
   return {
+    autoWeeklyDailyBudgetPercent: int(
+      p.autoWeeklyDailyBudgetPercent,
+      0,
+      100,
+      base.autoWeeklyDailyBudgetPercent ?? 12,
+    ),
+    autoUnlimited:
+      typeof p.autoUnlimited === 'boolean' ? p.autoUnlimited : (base.autoUnlimited ?? false),
     enabled: typeof p.enabled === 'boolean' ? p.enabled : base.enabled,
     model:
       typeof p.model === 'string' && MODEL_ID.test(p.model.trim()) ? p.model.trim() : base.model,
@@ -128,6 +141,8 @@ export interface AgyOcrBucketLive {
 
 /** What the reader is doing / waiting for, in terms the UI can phrase. */
 export type AgyOcrActivity =
+  | { kind: 'budget-pending' }
+  | { kind: 'budget-blocked'; window: '5h' | 'weekly'; until: number }
   | { kind: 'off' }
   /** reading now, or allowed and due at the next check */
   | { kind: 'working' }
@@ -157,6 +172,11 @@ export type AgyOcrActivity =
   | { kind: 'quota-unknown-group'; group?: string }
 
 export interface AgyOcrStatus {
+  autoBudget?: {
+    fiveHour: { spent: number; limit: number; resetAt?: number }
+    weeklyDaily: { spent: number; limit: number; resetAt: number }
+    pending: boolean
+  }
   settings: AgyOcrSettings
   /** local calendar day the counters belong to */
   day: string
@@ -167,6 +187,10 @@ export interface AgyOcrStatus {
   /** scanned PDFs that still have pages to read */
   filesWaiting: number
   running: boolean
+  queuedDocuments?: number
+  currentFile?: string
+  currentPath?: string
+  stage?: 'quota' | 'rendering' | 'recognizing' | 'indexing'
   /** latest quota reading for the model's group (undefined = never read) */
   quota?: {
     group?: string
@@ -184,6 +208,10 @@ export const AGY_OCR_CHANNELS = {
   setSettings: 'agy-ocr:set-settings',
   listModels: 'agy-ocr:list-models',
   readNow: 'agy-ocr:read-now',
+  enqueue: 'agy-ocr:enqueue',
+  cancel: 'agy-ocr:cancel',
+  refreshQuota: 'agy-ocr:refresh-quota',
+  cancelDocuments: 'agy-ocr:cancel-documents',
 } as const
 
 export interface AgyOcrModelList {
@@ -205,4 +233,12 @@ export interface AgyOcrApi {
   listAgyOcrModels(): Promise<AgyOcrModelList>
   /** Read one scanned PDF now, ignoring the quota floors; `confirmed` must be true (explicit consent). */
   readScannedPdfWithAgy(documentId: number, confirmed: boolean): Promise<AgyOcrReadNowResult>
+  /** Admit up to 200 PDFs without waiting for OCR; respects the configured quota reserves. */
+  enqueueScannedPdfsWithAgy?(
+    documentIds: number[],
+    confirmed: boolean,
+  ): Promise<{ queued: number; skipped: number; error?: string }>
+  cancelAgyOcr?(): Promise<boolean>
+  refreshAgyOcrQuota?(): Promise<AgyOcrStatus | null>
+  cancelScannedPdfsWithAgy?(documentIds: number[]): Promise<number>
 }

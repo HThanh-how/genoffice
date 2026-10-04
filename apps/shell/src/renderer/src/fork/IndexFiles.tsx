@@ -18,6 +18,7 @@ import { fill } from '../indexing-activity-copy'
 import { iconFor } from '../file-icons'
 import { buildFileLog, deriveFileSteps, formatBytes, logWords } from './index-file-log'
 import { isIndexFileDetail, isIndexingNow, readIndexRequest } from './index-request'
+import { IndexMutationTimeout, runIndexMutation } from './index-mutation'
 
 /** What the indexer is doing with one file right now. */
 export type Live =
@@ -135,6 +136,18 @@ const EN = {
   fileInfo: 'File information & technical details',
   readingAgy: 'Antigravity is reading this file…',
   runningHint: 'The result updates here when processing finishes. You can keep working.',
+  ocrPicked: 'OCR {n} selected scans',
+  excludePicked: 'Remove selected files from index',
+  trashPicked: 'Move selected files to Recycle Bin',
+  laterPicked: 'Read selected files later',
+  stopPicked: 'Stop selected files',
+  copyPicked: 'Copy selected paths',
+  ocrQueued: 'Queued for manual OCR. Processing continues in the background.',
+  readQueued: 'Queued for priority reading. Processing continues in the background.',
+  ocrNotQueued:
+    'Already queued, already read, or not available for OCR. Check Index settings for its current status.',
+  unknownOutcome:
+    'The app did not confirm this action in time. It may still finish. Check the file status before trying again.',
 }
 export type FileWords = typeof EN
 const VI: FileWords = {
@@ -184,6 +197,18 @@ const VI: FileWords = {
   fileInfo: 'Thông tin tệp & chi tiết kỹ thuật',
   readingAgy: 'Antigravity đang đọc tệp này…',
   runningHint: 'Kết quả sẽ cập nhật ở đây khi xử lý xong. Bạn có thể tiếp tục làm việc.',
+  ocrPicked: 'OCR {n} bản quét đã chọn',
+  excludePicked: 'Gỡ tệp đã chọn khỏi chỉ mục',
+  trashPicked: 'Chuyển tệp đã chọn vào thùng rác',
+  laterPicked: 'Đọc tệp đã chọn sau',
+  stopPicked: 'Dừng các tệp đã chọn',
+  copyPicked: 'Chép đường dẫn đã chọn',
+  ocrQueued: 'Đã xếp OCR thủ công. Tiếp tục xử lý nền.',
+  readQueued: 'Đã ưu tiên vào hàng chờ. Tiếp tục xử lý nền.',
+  ocrNotQueued:
+    'Tệp đã trong hàng chờ, đã đọc hoặc chưa thể OCR. Xem trạng thái trong cài đặt chỉ mục.',
+  unknownOutcome:
+    'Ứng dụng chưa xác nhận kịp thao tác này; có thể vẫn đang hoàn tất. Kiểm tra trạng thái tệp trước khi thử lại.',
 }
 export const fileWords = (lang: string): FileWords => (lang === 'vi' ? VI : EN)
 
@@ -307,7 +332,7 @@ export function useFileActions(
   const [detailFailures, setDetailFailures] = useState<Set<number>>(new Set())
   const [busy, setBusy] = useState<Set<number>>(new Set())
   const busyIds = useRef(new Set<number>())
-  const [readingAgy, setReadingAgy] = useState<Set<number>>(new Set())
+  const [readingAgy] = useState<Set<number>>(new Set())
   const [note, setNote] = useState('')
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), [])
@@ -357,8 +382,8 @@ export function useFileActions(
     setBusy((current) => new Set(current).add(id))
     try {
       await work()
-    } catch {
-      say(w.actionFailed)
+    } catch (error) {
+      say(error instanceof IndexMutationTimeout ? w.unknownOutcome : w.actionFailed)
     } finally {
       busyIds.current.delete(id)
       setBusy((current) => {
@@ -400,35 +425,31 @@ export function useFileActions(
   }
   const retry = (item: FileItem) =>
     withBusy(item.id, async () => {
-      const result = await api.retryDocumentIndex(item.id)
-      // a scanned PDF has no text to read: the only way to read it is Antigravity, so go on to
-      // that at once; the person pressed Read because they want this file readable now
-      if (result.ok && result.empty && /\.pdf$/i.test(item.path)) {
-        say(w.ocrStarted)
-        await readWithAntigravity(item)
-        await settle(item)
+      if (!api.enqueueDocumentIndex) {
+        say(w.actionFailed)
         return
       }
+      const result = await runIndexMutation(() => api.enqueueDocumentIndex!([item.id]))
       say(
-        result.ok
-          ? result.empty
-            ? w.readEmpty
-            : w.readDone
-          : result.error === 'paused'
-            ? w.indexOff
-            : fill(w.ocrFailed, { e: result.error ?? '' }),
+        result.error
+          ? fill(w.ocrFailed, { e: result.error })
+          : result.queued > 0
+            ? w.readQueued
+            : w.actionFailed,
       )
       await settle(item)
     })
   const stop = (item: FileItem) =>
     withBusy(item.id, async () => {
-      const result = await api.stopIndexFile(item.id)
+      if (api.cancelScannedPdfsWithAgy)
+        await runIndexMutation(() => api.cancelScannedPdfsWithAgy!([item.id]))
+      const result = await runIndexMutation(() => api.stopIndexFile(item.id))
       say(result.ok ? w.stopped : fill(w.ocrFailed, { e: result.error ?? '' }))
       await settle(item)
     })
   const later = (item: FileItem) =>
     withBusy(item.id, async () => {
-      const result = await api.deferIndexFile(item.id)
+      const result = await runIndexMutation(() => api.deferIndexFile(item.id))
       say(result.ok ? w.deferred : fill(w.ocrFailed, { e: result.error ?? '' }))
       await settle(item)
     })
@@ -462,39 +483,38 @@ export function useFileActions(
   const exclude = (item: FileItem) =>
     withBusy(item.id, async () => {
       try {
-        await api.excludeDocumentMemory(item.path)
+        if (api.cancelScannedPdfsWithAgy)
+          await runIndexMutation(() => api.cancelScannedPdfsWithAgy!([item.id]))
+        await runIndexMutation(() => api.excludeDocumentMemory(item.path))
         say(w.excluded)
       } catch (error) {
-        say(fill(w.ocrFailed, { e: error instanceof Error ? error.message : '' }))
+        say(
+          error instanceof IndexMutationTimeout
+            ? w.unknownOutcome
+            : fill(w.ocrFailed, { e: error instanceof Error ? error.message : '' }),
+        )
       }
       await settle(item)
     })
-  // Antigravity reads the pages of a scan; the person has already agreed to it being used
-  const readWithAntigravity = async (item: FileItem) => {
-    setReadingAgy((current) => new Set(current).add(item.id))
-    try {
-      const result = await api.readScannedPdfWithAgy(item.id, true)
-      say(
-        result.ok
-          ? result.pages
-            ? fill(w.ocrDone, { n: result.pages })
-            : w.ocrIndexed
-          : fill(w.ocrFailed, { e: result.error ?? '' }),
-      )
-    } catch (error) {
-      say(fill(w.ocrFailed, { e: error instanceof Error ? error.message : '' }))
-    } finally {
-      setReadingAgy((current) => {
-        const next = new Set(current)
-        next.delete(item.id)
-        return next
-      })
-    }
-  }
   const readNow = (item: FileItem) =>
     withBusy(item.id, async () => {
-      if (!(await appConfirm(w.ocrConfirm))) return
-      await readWithAntigravity(item)
+      const consent =
+        lang === 'vi'
+          ? 'Đọc PDF quét này bằng Antigravity ngay? Các trang được gửi tới Antigravity. OCR thủ công bỏ qua ngân sách tự động, giới hạn tệp mỗi ngày và phần hạn mức dự phòng của GenOffice; vẫn chịu giới hạn của Antigravity.'
+          : 'Read this scanned PDF with Antigravity now? Its pages are sent to Antigravity. Manual OCR ignores GenOffice’s automatic budgets, daily cap and quota reserves; Antigravity’s own limits still apply.'
+      if (!(await appConfirm(consent))) return
+      if (api.enqueueScannedPdfsWithAgy) {
+        const result = await runIndexMutation(() => api.enqueueScannedPdfsWithAgy!([item.id], true))
+        say(
+          result.error
+            ? fill(w.ocrFailed, { e: result.error })
+            : result.queued > 0
+              ? w.ocrQueued
+              : w.ocrNotQueued,
+        )
+      } else {
+        say(w.actionFailed)
+      }
       await settle(item)
     })
   return {
@@ -646,6 +666,14 @@ export function FileRow({
   pickedCount = 0,
   onPick,
   onReadPicked,
+  onOcrPicked,
+  onExcludePicked,
+  onTrashPicked,
+  onLaterPicked,
+  onStopPicked,
+  onCopyPicked,
+  ocrPickedCount = 0,
+  ocrStage,
   onClearPicked,
   onSelectGroup,
 }: {
@@ -657,6 +685,14 @@ export function FileRow({
   /** a click with Ctrl/Cmd or Shift; a plain click clears the pick */
   onPick?: (item: FileItem, mode: 'toggle' | 'range' | 'clear') => void
   onReadPicked?: () => void
+  onOcrPicked?: () => void
+  onExcludePicked?: () => void
+  onTrashPicked?: () => void
+  onLaterPicked?: () => void
+  onStopPicked?: () => void
+  onCopyPicked?: () => void
+  ocrPickedCount?: number
+  ocrStage?: 'quota' | 'rendering' | 'recognizing' | 'indexing'
   onClearPicked?: () => void
   /** pick every file of the list this row is in */
   onSelectGroup?: () => void
@@ -673,7 +709,22 @@ export function FileRow({
   const lw = logWords(lang)
   const isOpen = actions.open === item.id
   const busy = actions.busy.has(item.id)
-  const readingAgy = actions.readingAgy.has(item.id)
+  const readingAgy = !!ocrStage || actions.readingAgy.has(item.id)
+  const ocrText = ocrStage
+    ? (lang === 'vi'
+        ? {
+            quota: 'OCR · đang kiểm tra hạn mức',
+            rendering: 'OCR · chuẩn bị ảnh trang',
+            recognizing: 'OCR · Antigravity đang đọc',
+            indexing: 'OCR · đang lưu văn bản',
+          }
+        : {
+            quota: 'OCR · checking quota',
+            rendering: 'OCR · preparing page images',
+            recognizing: 'OCR · Antigravity is reading',
+            indexing: 'OCR · saving text',
+          })[ocrStage]
+    : w.readingAgy
   const detail = actions.details[item.id]
   const retryable = item.reason ? isRetryableReason(item.reason) : false
   const liveText =
@@ -695,8 +746,8 @@ export function FileRow({
   const sub = item.reason ? folderOf(item.path) : item.error
   const description = finished
     ? w.done
-    : liveText || (readingAgy ? w.readingAgy : (status ?? (isOpen ? '' : sub)))
-  const stoppable = working || live?.kind === 'queued' || item.reason === 'waiting'
+    : (readingAgy ? ocrText : liveText) || (status ?? (isOpen ? '' : sub))
+  const stoppable = readingAgy || working || live?.kind === 'queued' || item.reason === 'waiting'
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const menuId = useId()
   const detailId = useId()
@@ -733,6 +784,43 @@ export function FileRow({
           run: () => onReadPicked?.(),
         },
         {
+          label: fill(w.ocrPicked, { n: ocrPickedCount }),
+          icon: <ISpark />,
+          disabled: busy || !onOcrPicked || ocrPickedCount === 0,
+          run: () => onOcrPicked?.(),
+        },
+        {
+          label: w.laterPicked,
+          icon: <ILater />,
+          disabled: busy || !onLaterPicked,
+          run: () => onLaterPicked?.(),
+        },
+        {
+          label: w.stopPicked,
+          icon: <IStop />,
+          disabled: busy || !onStopPicked,
+          run: () => onStopPicked?.(),
+        },
+        {
+          label: w.copyPicked,
+          icon: <ICopy />,
+          disabled: !onCopyPicked,
+          run: () => onCopyPicked?.(),
+        },
+        {
+          label: w.excludePicked,
+          icon: <IStop />,
+          separatorBefore: true,
+          disabled: busy || !onExcludePicked,
+          run: () => onExcludePicked?.(),
+        },
+        {
+          label: w.trashPicked,
+          icon: <IStop />,
+          disabled: busy || !onTrashPicked,
+          run: () => onTrashPicked?.(),
+        },
+        {
           label: w.clearPicked,
           icon: <IStop />,
           disabled: !onClearPicked,
@@ -751,7 +839,7 @@ export function FileRow({
               {
                 label: w.readNow,
                 icon: <ISpark />,
-                disabled: busy,
+                disabled: busy || readingAgy,
                 separatorBefore: true,
                 run: () => void actions.readNow(item),
               },
@@ -864,7 +952,7 @@ export function FileRow({
           }}
         >
           <span
-            className={`ixp-icon-wrap${working ? ' is-working' : ''}${finished ? ' is-ok' : ''}`}
+            className={`ixp-icon-wrap${working || readingAgy ? ' is-working' : ''}${finished ? ' is-ok' : ''}`}
           >
             <img className="ixp-file-icon" src={iconFor(item.name)} alt="" width="18" height="18" />
             {finished && (
@@ -886,7 +974,10 @@ export function FileRow({
               {item.name}
             </span>
             {description && (
-              <span className={`ixp-file-sub${working ? ' is-live' : ''}`} title={sub}>
+              <span
+                className={`ixp-file-sub${working || readingAgy ? ' is-live' : ''}`}
+                title={sub}
+              >
                 {description}
               </span>
             )}
@@ -904,14 +995,14 @@ export function FileRow({
           <IconButton label={w.openFile} onClick={() => void actions.openFile(item)}>
             <IOpen />
           </IconButton>
-          {working ? (
+          {working || readingAgy ? (
             <IconButton label={w.stop} disabled={busy} onClick={() => void actions.stop(item)}>
               <IStop />
             </IconButton>
           ) : item.reason === 'no-text' ? (
             <IconButton
               label={w.readNow}
-              disabled={busy}
+              disabled={busy || readingAgy}
               onClick={() => void actions.readNow(item)}
             >
               <ISpark />
@@ -956,7 +1047,7 @@ export function FileRow({
         <div
           className="ixp-processing-track"
           role="progressbar"
-          aria-label={readingAgy ? w.readingAgy : liveText}
+          aria-label={readingAgy ? ocrText : liveText}
         >
           <span />
         </div>

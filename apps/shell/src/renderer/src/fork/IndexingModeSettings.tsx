@@ -6,6 +6,7 @@ import {
   type IndexingModeState,
 } from '../../../shared/fork/indexing-mode'
 import { indexingModeKeys, indexingString, indexingStateLine } from './indexing-mode-strings'
+import { readIndexRequest } from './index-request'
 import './indexing-mode.css'
 
 const POLL_MS = 3000
@@ -15,24 +16,37 @@ export function IndexingModeSettings() {
   const { lang } = useI18n()
   const [state, setState] = useState<IndexingModeState | null>(null)
   const [saving, setSaving] = useState(false)
+  const [failed, setFailed] = useState(false)
 
   useEffect(() => {
     if (typeof window.aiOffice?.getIndexingModeState !== 'function') return
     let alive = true
-    const refresh = () => {
-      if (document.visibilityState !== 'visible') return
-      void window.aiOffice
-        .getIndexingModeState()
-        .then((next) => {
-          if (alive) setState(next)
-        })
-        .catch(() => {})
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const refresh = async () => {
+      try {
+        if (document.visibilityState === 'visible') {
+          const next = await readIndexRequest(
+            () => window.aiOffice.getIndexingModeState(),
+            (value): value is IndexingModeState =>
+              !!value &&
+              typeof value === 'object' &&
+              INDEXING_MODES.includes((value as IndexingModeState).mode),
+          )
+          if (alive) {
+            setState(next)
+            setFailed(false)
+          }
+        }
+      } catch {
+        if (alive) setFailed(true)
+      } finally {
+        if (alive) timer = setTimeout(() => void refresh(), POLL_MS)
+      }
     }
-    refresh()
-    const timer = window.setInterval(refresh, POLL_MS)
+    void refresh()
     return () => {
       alive = false
-      window.clearInterval(timer)
+      if (timer) clearTimeout(timer)
     }
   }, [])
 
@@ -42,11 +56,14 @@ export function IndexingModeSettings() {
     const previous = state
     setSaving(true)
     setState((current) => (current ? { ...current, ...optimistic } : current))
-    void apply()
+    void readIndexRequest(apply, (value): value is boolean => typeof value === 'boolean')
       .then((ok) => {
         if (!ok) setState(previous)
       })
-      .catch(() => setState(previous))
+      .catch(() => {
+        setState(previous)
+        setFailed(true)
+      })
       .finally(() => setSaving(false))
   }
 
@@ -83,7 +100,13 @@ export function IndexingModeSettings() {
       <div className="set-indexmode-status" data-tone={tone} role="status" aria-live="polite">
         <span className="set-indexmode-dot" aria-hidden="true" />
         <span>
-          {effective ? indexingStateLine(lang, effective) : indexingString(lang, 'statusChecking')}
+          {failed
+            ? lang === 'vi'
+              ? 'Chưa xác nhận được trạng thái. Sẽ kiểm tra lại tự động.'
+              : 'Status could not be confirmed. Retrying automatically.'
+            : effective
+              ? indexingStateLine(lang, effective)
+              : indexingString(lang, 'statusChecking')}
         </span>
       </div>
       <div className="set-field set-field-top">

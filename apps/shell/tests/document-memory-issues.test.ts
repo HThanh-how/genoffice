@@ -215,6 +215,20 @@ it('allows the blank-file issue reason through the document-index IPC contract',
       retried: 1,
     })
     expect(retried).toHaveLength(1)
+    expect(call(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, [1, 1, 2])).toEqual({
+      queued: 2,
+      skipped: 1,
+    })
+    expect(retried).toEqual([1, 1, 2])
+    expect(call(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, [0])).toEqual({
+      queued: 0,
+      skipped: 1,
+      error: 'invalid-request',
+    })
+    expect(call(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, Array(201).fill(1))).toMatchObject({
+      queued: 0,
+      error: 'invalid-request',
+    })
   } finally {
     closeReader()
     store.close()

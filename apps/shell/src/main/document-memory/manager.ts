@@ -95,7 +95,7 @@ type StatOutcome =
   | { kind: 'unknown' }
 type WorkerReply =
   | { id: number; result: ExtractResult | number[][] | DocumentMemoryHit[] }
-  | { id: number; error: string }
+  | { id: number; error: string; restartRequired?: boolean }
   | { type: 'model'; state: 'downloading' | 'ready' | 'error'; progress?: number; error?: string }
 type WorkerRequest =
   | { type: 'extract'; path: string; interactive?: boolean; sliceMs?: number; maxPdfPages?: number }
@@ -485,7 +485,13 @@ export class DocumentMemoryManager {
       store: this.store,
       isEnabled: () => this.isEnabled(),
       renderInWorker: async (path, ocr): Promise<OcrRenderResult | null> => {
-        const reply = await this.ask({ type: 'ocr-render', path, ocr }, this.workerTimeoutMs, true)
+        // OCR batches render only a few pages. Recycle a stuck PDF engine before the OCR
+        // orchestration deadline so a broken scan cannot leave its CPU worker running forever.
+        const reply = await this.ask(
+          { type: 'ocr-render', path, ocr },
+          Math.min(this.workerTimeoutMs, 90_000),
+          true,
+        )
         if (!reply) return null
         if ('result' in reply) return reply.result as unknown as OcrRenderResult
         return {
@@ -1817,6 +1823,9 @@ export class DocumentMemoryManager {
       embeddingProfile: this.embeddingProfileId,
     })
     worker.on('message', (message: WorkerReply) => {
+      // Old native calls can finish after their worker has been replaced. Their replies and
+      // model state must never affect the replacement's pending requests or UI state.
+      if (this.worker !== worker) return
       if ('type' in message && message.type === 'model') {
         this.modelState = message.state
         this.modelProgress = message.progress
@@ -1830,6 +1839,7 @@ export class DocumentMemoryManager {
       clearTimeout(pending.timer)
       this.waiting.delete(message.id)
       pending.resolve(message)
+      if ('error' in message && message.restartRequired === true) this.recycleWorker(message.error)
     })
     const fail = (error: string) => {
       if (this.worker !== worker) return

@@ -124,7 +124,7 @@ export function TodoTab(props: TodoTabProps) {
   const [summary, setSummary] = useState<IndexIssueSummary | null>(null)
   const [legacy, setLegacy] = useState<LegacyConvertState | null>(null)
   const [query, setQuery] = useState('')
-  const [bucket, setBucket] = useState<IssueBucket | 'all'>('attention')
+  const [bucket, setBucket] = useState<IssueBucket | 'all'>('all')
   const [sort, setSort] = useState<'queue' | 'name'>('queue')
   const [loadFailed, setLoadFailed] = useState(false)
   const [refresh, setRefresh] = useState(0)

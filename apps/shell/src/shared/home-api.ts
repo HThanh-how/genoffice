@@ -283,8 +283,8 @@ export interface HomeApi extends ForkHomeApi {
   renameFile(path: string, newName: string): Promise<RenameResult>
   /** copy the file next to itself (localized "copy" suffix before .ext) and record it as recent */
   duplicateFile(path: string): Promise<void>
-  /** move files to the trash and drop them from the recent list */
-  deleteFiles(paths: string[]): Promise<void>
+  /** move files to the trash and return the successful and failed file counts */
+  deleteFiles(paths: string[]): Promise<DeleteFilesResult>
   /** open the OS trash, where deleted files can be restored */
   openTrash(): Promise<void>
   /** the tree roots: the default save folder first, then the folders the user added */
@@ -546,6 +546,11 @@ export interface RenameResult {
   /** the new absolute path when ok */
   path?: string
   error?: string
+}
+
+export interface DeleteFilesResult {
+  trashed: number
+  failed: number
 }
 
 export interface NewFileOpts {

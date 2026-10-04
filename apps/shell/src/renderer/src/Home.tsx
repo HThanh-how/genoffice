@@ -1670,7 +1670,16 @@ export function Home() {
     const paths = confirmDelete ?? []
     setConfirmDelete(null)
     setSelected(new Set())
-    void window.aiOffice.deleteFiles(paths).then(refresh)
+    void window.aiOffice.deleteFiles(paths).then((result) => {
+      refresh()
+      if (result?.failed)
+        appNotify(
+          folderMenuWords(lang)
+            .deleteFailed.replace('{n}', String(result.trashed))
+            .replace('{f}', String(result.failed)),
+          'error',
+        )
+    })
   }
 
   const folderWords = folderMenuWords(lang)

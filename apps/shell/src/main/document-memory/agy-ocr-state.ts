@@ -6,6 +6,7 @@
  * worst re-spend a day's budget, never lose or duplicate text.
  */
 import { randomUUID } from 'node:crypto'
+import type { OcrAutoBudgetAccount } from './ocr-auto-budget'
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import {
   emptyDayCounters,
@@ -43,6 +44,7 @@ export interface OcrStateData {
   lastError?: { at: number; message: string }
   lastRunAt?: number
   files: Record<string, OcrFileState>
+  autoBudgets?: Record<string, OcrAutoBudgetAccount>
 }
 
 export interface OcrStateFs {
@@ -144,6 +146,37 @@ export function parseOcrState(text: string | undefined, fallbackDay: string): Oc
     state.lastError = { at: num(error.at), message: error.message }
   if (typeof r.lastRunAt === 'number') state.lastRunAt = r.lastRunAt
   const files = r.files as Record<string, unknown> | undefined
+  const budgets = r.autoBudgets as Record<string, unknown> | undefined
+  if (budgets && typeof budgets === 'object') {
+    state.autoBudgets = {}
+    for (const [group, value] of Object.entries(budgets)) {
+      if (!value || typeof value !== 'object') continue
+      const b = value as Record<string, unknown>
+      if (
+        typeof b.day !== 'string' ||
+        !/^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}:\d{2}\.\d{3}Z)?$/.test(b.day)
+      )
+        continue
+      const account: OcrAutoBudgetAccount = {
+        day: b.day,
+        weeklySpent: num(b.weeklySpent),
+        fiveHourSpent: num(b.fiveHourSpent),
+        fiveHourResetAt: num(b.fiveHourResetAt),
+        ...(num(b.weeklyResetAt) ? { weeklyResetAt: num(b.weeklyResetAt) } : {}),
+      }
+      const pending = b.pending as Record<string, unknown> | undefined
+      if (pending && typeof pending.day === 'string')
+        account.pending = {
+          day: pending.day,
+          fiveHourResetAt: num(pending.fiveHourResetAt),
+          fiveHour: num(pending.fiveHour),
+          weekly: num(pending.weekly),
+          ...(pending.fiveHourObserved === true ? { fiveHourObserved: true } : {}),
+          ...(pending.weeklyObserved === true ? { weeklyObserved: true } : {}),
+        }
+      state.autoBudgets[group] = account
+    }
+  }
   if (files && typeof files === 'object')
     for (const [path, value] of Object.entries(files)) {
       if (!value || typeof value !== 'object') continue
@@ -162,6 +195,11 @@ export function parseOcrState(text: string | undefined, fallbackDay: string): Oc
 /** Small write-through store around the JSON file. */
 export class OcrStateStore {
   private data: OcrStateData
+  private writeFailed = false
+
+  hasPersistenceFailure(): boolean {
+    return this.writeFailed
+  }
 
   constructor(
     private readonly path: string,
@@ -182,7 +220,9 @@ export class OcrStateStore {
     this.prune()
     try {
       this.fs.write(this.path, JSON.stringify(this.data))
+      this.writeFailed = false
     } catch {
+      this.writeFailed = true
       // an unwritable userData folder must not break the job; the next update retries
     }
     return this.data

@@ -74,6 +74,45 @@ async function until(check: () => boolean, timeout = 8000) {
 }
 
 describe('scanned PDF through the real manager (in-process index worker)', () => {
+  it('replaces a worker after a stalled native step and ignores its late model messages', async () => {
+    class StalledWorker extends EventEmitter {
+      terminated = false
+      postMessage(message: { id: number }) {
+        setTimeout(
+          () =>
+            this.emit('message', {
+              id: message.id,
+              error: 'Native step stalled',
+              restartRequired: true,
+            }),
+          0,
+        )
+      }
+      async terminate() {
+        this.terminated = true
+        return 0
+      }
+    }
+    const workers: StalledWorker[] = []
+    manager = new DocumentMemoryManager(dir, {
+      pollIntervalMs: 60_000,
+      workerFactory: () => {
+        const worker = new StalledWorker()
+        workers.push(worker)
+        return worker as unknown as Worker
+      },
+    })
+    const result = await manager
+      .ocrHost()
+      .render(join(dir, 'scan.pdf'), { done: [], maxPages: 1, count: 1 })
+    expect(result).toMatchObject({ ok: false, message: 'Native step stalled' })
+    expect(workers[0]!.terminated).toBe(true)
+    workers[0]!.emit('message', { type: 'model', state: 'downloading' })
+    expect(manager.indexingActivityStatus().modelState).not.toBe('downloading')
+    await manager.ocrHost().render(join(dir, 'scan.pdf'), { done: [], maxPages: 1, count: 1 })
+    expect(workers).toHaveLength(2)
+  })
+
   it('OCR text re-enters the index as OCR chunks, gets embedded, and keeps the counters exact', async () => {
     const jpegs = Array.from({ length: 3 }, (_, i) =>
       encodeGrayJpeg(testPattern(600, 800, i), 600, 800, 70),

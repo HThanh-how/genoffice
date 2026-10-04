@@ -178,8 +178,9 @@ const TASK_TIMEOUT_MS = 150_000
 const urgent: QueuedTask[] = []
 const background: QueuedTask[] = []
 let pumping = false
+let stalled = false
 async function pump(): Promise<void> {
-  if (pumping) return
+  if (pumping || stalled) return
   pumping = true
   try {
     for (;;) {
@@ -190,8 +191,15 @@ async function pump(): Promise<void> {
         timer = setTimeout(() => resolve('timeout'), TASK_TIMEOUT_MS)
       })
       try {
-        if ((await Promise.race([task.run().then(() => 'done' as const), timedOut])) === 'timeout')
+        if (
+          (await Promise.race([task.run().then(() => 'done' as const), timedOut])) === 'timeout'
+        ) {
+          // A timed-out native operation still owns this process. Starting another one can
+          // overlap model sessions and exhaust memory; the manager replaces the stuck worker.
+          stalled = true
           task.onTimeout()
+          break
+        }
       } finally {
         clearTimeout(timer)
       }
@@ -265,7 +273,11 @@ onIndexRequest(
         {
           run: execute,
           onTimeout: () =>
-            postIndexMessage({ id: request.id, error: 'Indexing step timed out and was skipped' }),
+            postIndexMessage({
+              id: request.id,
+              error: 'Indexing step timed out and was restarted',
+              restartRequired: true,
+            }),
         },
         request.interactive === true || request.kind === 'query',
       )

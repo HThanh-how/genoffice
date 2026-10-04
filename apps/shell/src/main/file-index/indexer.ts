@@ -1,8 +1,15 @@
 import { Worker } from 'node:worker_threads'
+import { stat } from 'node:fs/promises'
+import { createYielder } from '../document-memory/yield-budget'
+import {
+  isIndexingPaused,
+  subscribeIndexingPolicy,
+  currentIndexingPolicy,
+} from '../fork/indexing-policy-bus'
 import type { Extracted } from './extract'
 import type { WorkerRequest, WorkerResponse } from './extract-worker'
 import { isSupportedTreeFile } from '../folder-tree'
-import { statOrNull, type ScannedFile } from './scan'
+import type { ScannedFile } from './scan'
 import type { FileIndexStore } from './store'
 
 export interface IndexProgress {
@@ -28,6 +35,16 @@ const RESCAN_DEBOUNCE_MS = 1500
  */
 const WORKER_REQUEST_TIMEOUT_MS = 120_000
 
+/** Slow disks and network paths must never hold Electron's UI thread in statSync. */
+async function asyncStatOrNull(path: string): Promise<ScannedFile | null> {
+  try {
+    const file = await stat(path)
+    return file.isFile() ? { path, mtimeMs: file.mtimeMs, sizeBytes: file.size } : null
+  } catch {
+    return null
+  }
+}
+
 /**
  * Keeps the store in step with the disk: a scan diffs mtime/size against the
  * index, changed files queue for extraction on the worker one at a time, and
@@ -46,13 +63,20 @@ export class FileIndexer {
   private rescanTimer: NodeJS.Timeout | null = null
   private lastScanAt = 0
   private stopped = false
+  private readonly stopPolicyWatch: () => void
 
   constructor(
     private readonly store: FileIndexStore,
     private readonly workerPath: string,
     private readonly sources: IndexerSources,
     private readonly requestTimeoutMs = WORKER_REQUEST_TIMEOUT_MS,
-  ) {}
+  ) {
+    this.stopPolicyWatch = subscribeIndexingPolicy((policy) => {
+      if (!policy.paused) void this.drain()
+      if (this.worker)
+        this.worker.postMessage({ type: 'policy', threads: 1, cpuShare: policy.cpuShare })
+    })
+  }
 
   progress(): IndexProgress {
     return { indexed: this.store.count(), pending: this.queue.length, scanning: this.scanning }
@@ -89,9 +113,10 @@ export class FileIndexer {
         if (res.type === 'scan') for (const f of res.files) seen.set(f.path, f)
         else walked = false
       }
-      if (walked) this.diff(seen)
+      if (walked) await this.diff(seen)
     } finally {
       this.scanning = false
+      void this.drain()
     }
     // a refresh that arrived mid-scan runs now, whether or not the walk succeeded
     if (this.scanRequested) {
@@ -101,22 +126,39 @@ export class FileIndexer {
   }
 
   /** bring the store in step with what the walk saw; extra paths are stat-ed here */
-  private diff(seen: Map<string, ScannedFile>): void {
+  private async diff(seen: Map<string, ScannedFile>): Promise<void> {
+    const yieldIfNeeded = createYielder()
     for (const p of this.sources.extraPaths()) {
+      if (this.stopped) return
       if (seen.has(p) || !isSupportedTreeFile(p)) continue
-      const st = statOrNull(p)
+      const st = await asyncStatOrNull(p)
       if (st) seen.set(p, st)
     }
     const known = this.store.listAll()
     const gone: string[] = []
     for (const path of known.keys()) if (!seen.has(path)) gone.push(path)
-    this.store.remove(gone)
+    for (let offset = 0; offset < gone.length; offset += 100) {
+      if (this.stopped) return
+      this.store.remove(gone.slice(offset, offset + 100))
+      await yieldIfNeeded()
+    }
     for (const f of seen.values()) {
+      if (this.stopped) return
       const k = known.get(f.path)
-      if (k && k.status !== 'error' && k.mtimeMs === f.mtimeMs && k.sizeBytes === f.sizeBytes) {
+      if (
+        k &&
+        k.status !== 'error' &&
+        k.status !== 'pending' &&
+        k.mtimeMs === f.mtimeMs &&
+        k.sizeBytes === f.sizeBytes
+      ) {
         continue
       }
+      // Names and paths become searchable before any parser/model is started. Pending is
+      // persisted so an interrupted first pass resumes its content work on the next scan.
+      this.store.upsert(f, null, 'pending')
       this.enqueue(f)
+      await yieldIfNeeded()
     }
     this.lastScanAt = Date.now()
   }
@@ -129,14 +171,14 @@ export class FileIndexer {
   }
 
   private async drain(): Promise<void> {
-    if (this.draining) return
+    if (this.draining || this.scanning || this.stopped || isIndexingPaused()) return
     this.draining = true
     try {
-      while (this.queue.length && !this.stopped) {
+      while (this.queue.length && !this.stopped && !isIndexingPaused()) {
         const f = this.queue.shift()!
         this.queued.delete(f.path)
         // the file may have changed again while queued; index what is on disk now
-        const st = statOrNull(f.path)
+        const st = await asyncStatOrNull(f.path)
         if (!st) {
           this.store.remove([f.path])
           continue
@@ -195,18 +237,27 @@ export class FileIndexer {
     })
   }
 
-  /** retire the current worker; 'exit' fails any other in-flight request via drop */
+  /** Retire the worker and settle its requests before a replacement can accept new ones. */
   private recycleWorker(): void {
     const w = this.worker
     if (!w) return
     this.worker = null
+    this.failPending('worker restarted')
     void w.terminate()
+  }
+
+  private failPending(error: string): void {
+    const waiting = [...this.waiting]
+    this.waiting.clear()
+    for (const [id, callback] of waiting)
+      callback({ id, type: 'extract', result: { kind: 'error', error } })
   }
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker
     const w = new Worker(this.workerPath)
     w.on('message', (msg: WorkerResponse) => {
+      if (this.worker !== w) return
       const cb = this.waiting.get(msg.id)
       if (!cb) return
       this.waiting.delete(msg.id)
@@ -214,23 +265,25 @@ export class FileIndexer {
     })
     const drop = () => {
       // a crashed worker fails its in-flight request as an extraction error so the queue moves on
-      if (this.worker === w) this.worker = null
-      for (const [id, cb] of this.waiting) {
-        cb({ id, type: 'extract', result: { kind: 'error', error: 'worker exited' } })
-      }
-      this.waiting.clear()
+      if (this.worker !== w) return
+      this.worker = null
+      this.failPending('worker exited')
     }
     w.on('error', drop)
     w.on('exit', drop)
     this.worker = w
+    const policy = currentIndexingPolicy()
+    if (policy) w.postMessage({ type: 'policy', threads: 1, cpuShare: policy.cpuShare })
     return w
   }
 
   stop(): void {
     this.stopped = true
+    this.stopPolicyWatch()
     if (this.rescanTimer) clearTimeout(this.rescanTimer)
     this.queue.length = 0
     this.queued.clear()
+    this.failPending('indexer stopped')
     void this.worker?.terminate()
     this.worker = null
   }

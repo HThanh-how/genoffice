@@ -132,6 +132,27 @@ export function registerAgyOcr(deps: AgyOcrDeps): void {
   }
 
   const { ipcMain } = deps
+  ipcMain.handle(AGY_OCR_CHANNELS.enqueue, (_event, ids: unknown, confirmed: unknown) => {
+    if (
+      !Array.isArray(ids) ||
+      ids.length > 200 ||
+      ids.some((id) => !Number.isSafeInteger(id) || id < 1)
+    )
+      return { queued: 0, skipped: Array.isArray(ids) ? ids.length : 0, error: 'invalid-request' }
+    if (confirmed !== true) return { queued: 0, skipped: ids.length, error: 'not-confirmed' }
+    return ensureJob()?.enqueue(ids) ?? { queued: 0, skipped: ids.length, error: 'unavailable' }
+  })
+  ipcMain.handle(AGY_OCR_CHANNELS.cancel, () => ensureJob()?.cancel() ?? false)
+  ipcMain.handle(AGY_OCR_CHANNELS.refreshQuota, () => ensureJob()?.refreshQuota() ?? null)
+  ipcMain.handle(AGY_OCR_CHANNELS.cancelDocuments, (_event, ids: unknown) => {
+    if (
+      !Array.isArray(ids) ||
+      ids.length > 200 ||
+      ids.some((id) => !Number.isSafeInteger(id) || id < 1)
+    )
+      return 0
+    return ensureJob()?.cancelDocuments(ids) ?? 0
+  })
   ipcMain.handle(
     AGY_OCR_CHANNELS.getState,
     (): AgyOcrStatus | null => ensureJob()?.status() ?? null,

@@ -7,11 +7,11 @@
  * real clock.
  *
  * Rules that keep it safe to leave on:
- *  - quota-paced: `/usage` (free) is read before every call. The weekly bucket keeps a reserve
- *    that shrinks day by day (90% on day 1, 80% on day 2 ... never below 20%) and the 5-hour
- *    bucket one that glides from 85% to 70% over its window; each can be ignored. A batch starts
- *    only while every checked bucket is above its floor (plus a small margin). It never runs
- *    when the usage cannot be read;
+ *  - quota-paced: `/usage` is read before and after automatic calls. Provider-cycle reserves
+ *    are 80/60/40/20/20 by five-hour window hour and 88/76/64/52/40/28/16 by weekly cycle day
+ *    at the default 12-point allowance. A two-point start margin avoids oscillation. Measured
+ *    daily spending and unfinished usage baselines survive restart; delayed usage blocks new
+ *    automatic calls. Explicit Unlimited and manual OCR bypass app quota policy;
  *  - nothing runs on battery / while the user is active / while indexing is paused (settings);
  *  - quota, rate-limit, sign-in and missing-CLI errors end the day's run (no retries today);
  *  - any other failure backs off exponentially (10 min, 20 min, 40 min ...) and stops the run;
@@ -27,6 +27,7 @@ import {
   OCR_MAX_FILE_ATTEMPTS,
   OCR_TICK_MS,
   classifyAgyOcrError,
+  agyUsageGroupName,
   decideQuota,
   haltsTheDay,
   localDateKey,
@@ -52,6 +53,13 @@ import type {
 import type { OcrRenderRequest, OcrRenderResult } from './agy-ocr-render'
 import type { OcrStateStore } from './agy-ocr-state'
 import type { OcrDocRow, OcrFileMeta, OcrPageText } from './ocr-sidecar'
+import {
+  reconcileOcrBudget,
+  reserveOcrBudget,
+  ocrWindowReserves,
+  stabilizeOcrQuotaSnapshot,
+  type OcrQuotaSnapshot,
+} from './ocr-auto-budget'
 
 /** user idle time (seconds) that counts as "idle"; the indexing policy uses the same figure */
 export const OCR_IDLE_SECONDS = 120
@@ -166,6 +174,41 @@ const WAITING_CACHE_MS = 60_000
 const NO_WORK_RECHECK_MS = 60 * 60_000
 /** a blocked quota is not asked again before its window refreshes (capped), see nextCheckAt */
 const MAX_QUOTA_WAIT_MS = 6 * 60 * 60_000
+const OCR_STAGE_TIMEOUT_MS = 120_000
+const OCR_CALL_TIMEOUT_MS = 180_000
+const OCR_MAX_MANUAL_QUEUE = 2000
+
+/** A broken worker/provider must not hold the OCR queue indefinitely. */
+async function boundedOcr<T>(
+  work: Promise<T>,
+  ms: number,
+  signal?: AbortSignal,
+  onTimeout?: () => void,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const finish = (callback: () => void) => {
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', aborted)
+      callback()
+    }
+    const aborted = () =>
+      finish(() => reject(Object.assign(new Error('OCR cancelled'), { name: 'AbortError' })))
+    const timer = setTimeout(
+      () =>
+        finish(() => {
+          reject(new Error('OCR step timed out; retry later'))
+          onTimeout?.()
+        }),
+      ms,
+    )
+    signal?.addEventListener('abort', aborted, { once: true })
+    if (signal?.aborted) aborted()
+    work.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error)),
+    )
+  })
+}
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
@@ -191,8 +234,29 @@ export class AgyOcrJob {
   /** manual reads wait for each other here, so a batch of "read now" never meets "busy" */
   private manualChain: Promise<unknown> = Promise.resolve()
   private idleWaiters: Array<() => void> = []
+  private queuedIds = new Set<number>()
+  private drainingQueue = false
+  private currentFile?: string
+  private currentPath?: string
+  private stage?: 'quota' | 'rendering' | 'recognizing' | 'indexing'
+  private pendingManual = 0
+  private cancelEpoch = 0
+  private usageReading: Promise<AgyUsageReading | null> | null = null
+  private quotaSnapshot: OcrQuotaSnapshot | null = null
+  private automaticCallActive = false
+
+  private usesAutoBudget(settings: AgyOcrSettings): boolean {
+    return (
+      settings.autoUnlimited !== true && typeof settings.autoWeeklyDailyBudgetPercent === 'number'
+    )
+  }
 
   constructor(private readonly deps: OcrJobDeps) {}
+
+  async refreshQuota(): Promise<AgyOcrStatus> {
+    await this.quotaAllows(this.workingSettings(), true)
+    return this.status()
+  }
 
   // ---- lifecycle ----
 
@@ -206,6 +270,7 @@ export class AgyOcrJob {
     this.cancelTick?.()
     this.cancelTick = null
     this.abort?.abort()
+    this.queuedIds.clear()
   }
 
   /** Settings changed: re-evaluate soon; a re-enabled reader gets a fresh chance (clears a halt). */
@@ -233,6 +298,10 @@ export class AgyOcrJob {
       const settings = this.workingSettings()
       if (this.stopped || !settings.enabled || this.running) return
       if (!this.deps.host.isEnabled()) return
+      if (this.queuedIds.size) {
+        await this.drainQueue()
+        return
+      }
       const now = this.deps.now()
       if (now < this.nextCheckAt) return
       const state = this.deps.state.get()
@@ -240,7 +309,7 @@ export class AgyOcrJob {
       const day = localDateKey(now, this.deps.timezoneOffset)
       if (state.halted && state.halted.day === day) return
       if (state.backoff.until > now) return
-      if (pdfCapReached(settings.maxPdfsPerDay, today)) return
+      if (!settings.autoUnlimited && pdfCapReached(settings.maxPdfsPerDay, today)) return
       if (!this.gateOpen(settings)) return
       await this.runScheduled(settings)
     } catch (error) {
@@ -260,19 +329,137 @@ export class AgyOcrJob {
    * Read `/usage` (free) and apply the quota floors. True only when a call may start now; an
    * unreadable usage never runs.
    */
-  private async quotaAllows(settings: AgyOcrSettings): Promise<boolean> {
-    const rules = quotaRulesOf(settings)
+  private async quotaAllows(settings: AgyOcrSettings, forceRead = false): Promise<boolean> {
+    if (settings.autoUnlimited === true && !forceRead) return true
+    const budgetMode = this.usesAutoBudget(settings)
+    const rules = budgetMode
+      ? {
+          weekly: { firstDayFloor: 0, dropPerDay: 0, minFloor: 0, ignore: false },
+          fiveHour: { floorStart: 0, floorEnd: 0, ignore: false },
+          marginPoints: 0,
+        }
+      : quotaRulesOf(settings)
     // both limits switched off: the quota is not consulted at all (the usage is not even read)
-    if (rules.fiveHour.ignore && rules.weekly.ignore) return true
-    const reading = await this.deps.readUsage()
+    if (!forceRead && rules.fiveHour.ignore && rules.weekly.ignore) return true
+    if (!forceRead) this.stage = 'quota'
+    // Settings refresh and the OCR scheduler share one free usage call. A refresh must not
+    // overwrite the active file's stage or start another provider command behind its back.
+    if (!this.usageReading) {
+      this.usageReading = boundedOcr(this.deps.readUsage(), 15_000)
+        .catch(() => null)
+        .finally(() => {
+          this.usageReading = null
+        })
+    }
+    const reading = await boundedOcr(
+      this.usageReading,
+      16_000,
+      forceRead ? undefined : this.abort?.signal,
+    ).catch(() => null)
+    if (settings.model !== this.deps.settings().model) return false
     const now = this.deps.now()
-    const decision = decideQuota({
+    let decision = decideQuota({
       reading,
       model: settings.model,
       armed: this.deps.state.get().armed,
       rules,
       now,
     })
+    if (forceRead && rules.fiveHour.ignore && rules.weekly.ignore) {
+      // Both disabled reserves permit work without consulting usage. A person requesting a
+      // refresh still needs the actual bucket values, without enabling either reserve.
+      const observed = decideQuota({
+        reading,
+        model: settings.model,
+        armed: this.deps.state.get().armed,
+        rules: {
+          fiveHour: { ...rules.fiveHour, ignore: false },
+          weekly: { ...rules.weekly, ignore: false },
+        },
+        now,
+      })
+      if (observed.group) decision.group = observed.group
+      if (observed.fiveHour) decision.fiveHour = { ...observed.fiveHour, ignored: true }
+      if (observed.weekly) decision.weekly = { ...observed.weekly, ignored: true }
+    }
+    if (budgetMode) {
+      const five = decision.fiveHour
+      const week = decision.weekly
+      this.quotaSnapshot =
+        decision.group && five && week && five.resetAt && five.resetAt > now
+          ? {
+              group: agyUsageGroupName(settings.model) ?? decision.group,
+              fiveHour: five.remaining * 100,
+              fiveHourResetAt: five.resetAt,
+              weekly: week.remaining * 100,
+              ...(week.resetAt ? { weeklyResetAt: week.resetAt } : {}),
+            }
+          : null
+      if (this.quotaSnapshot)
+        this.quotaSnapshot = stabilizeOcrQuotaSnapshot(
+          this.deps.state.get().autoBudgets?.[this.quotaSnapshot.group],
+          this.quotaSnapshot,
+          now,
+        )
+      const reserves = this.quotaSnapshot
+        ? ocrWindowReserves(this.quotaSnapshot, now, settings.autoWeeklyDailyBudgetPercent)
+        : null
+      if (!this.quotaSnapshot || !reserves) {
+        decision.kind = 'unreadable'
+        decision.run = false
+        this.deps.state.update((data) => {
+          data.quota = { at: now, decision }
+        })
+        return false
+      }
+      const snapshot = this.quotaSnapshot
+      decision = decideQuota({
+        reading,
+        model: settings.model,
+        armed: this.deps.state.get().armed,
+        now,
+        rules: {
+          fiveHour: {
+            floorStart: reserves.fiveHourReserve,
+            floorEnd: reserves.fiveHourReserve,
+            ignore: false,
+          },
+          weekly: {
+            firstDayFloor: reserves.weeklyReserve,
+            dropPerDay: 0,
+            minFloor: reserves.weeklyReserve,
+            ignore: false,
+          },
+          marginPoints: 2,
+        },
+      })
+      if (decision.blocking)
+        decision.blocking.clearsAt =
+          decision.blocking.window === '5h' ? reserves.fiveHourClearsAt : reserves.weeklyClearsAt
+      this.deps.state.update((data) => {
+        data.armed = decision.armed
+        data.quota = { at: now, decision }
+        const budgets = (data.autoBudgets ??= {})
+        if (!this.automaticCallActive)
+          budgets[snapshot.group] = reconcileOcrBudget(
+            budgets[snapshot.group],
+            snapshot,
+            reserves.dayKey,
+            now,
+          )
+      })
+      const account = this.deps.state.get().autoBudgets![snapshot.group]!
+      const allowed =
+        !account.pending && account.weeklySpent + 1e-6 < settings.autoWeeklyDailyBudgetPercent!
+      if (account.pending) {
+        this.nextCheckAt = now + OCR_TICK_MS
+        return false
+      }
+      if (!allowed) this.nextCheckAt = reserves.dayResetAt + 1000
+      else if (!decision.run)
+        this.nextCheckAt = Math.min(reserves.nextFiveHourStepAt, reserves.dayResetAt) + 1000
+      return decision.run && allowed && !this.deps.state.hasPersistenceFailure()
+    }
     this.deps.state.update((data) => {
       data.armed = decision.armed
       data.quota = { at: now, decision }
@@ -301,7 +488,11 @@ export class AgyOcrJob {
       const ordered = orderOcrCandidates(queue, now, settings.maxPagesPerFile)
       for (const candidate of ordered) {
         if (this.abort.signal.aborted || this.callsThisRun >= OCR_MAX_CALLS_PER_RUN) break
-        if (pdfCapReached(settings.maxPdfsPerDay, this.deps.state.today())) break
+        if (
+          !settings.autoUnlimited &&
+          pdfCapReached(settings.maxPdfsPerDay, this.deps.state.today())
+        )
+          break
         const outcome = await this.processFile(candidate, settings, { manual: false, touched })
         if (outcome.stop) {
           quotaBlocked = this.deps.state.get().quota?.decision.run === false
@@ -360,10 +551,12 @@ export class AgyOcrJob {
   private async processFile(
     candidate: OcrCandidate,
     settings: AgyOcrSettings,
-    options: { manual: boolean; touched: Set<string> },
+    options: { manual: boolean; touched: Set<string>; respectQuota?: boolean },
   ): Promise<FileOutcome> {
     const { host, state } = this.deps
     const path = candidate.path
+    this.currentFile = basename(path)
+    this.currentPath = path
     let charged = 0
     let counted = false
     const signal = this.abort?.signal
@@ -371,17 +564,25 @@ export class AgyOcrJob {
       if (this.callsThisRun >= OCR_MAX_CALLS_PER_RUN) return { pages: charged, stop: true }
       if (!options.manual) {
         if (!this.gateOpen(settings)) return { pages: charged, stop: true }
+      }
+      if (!options.manual || options.respectQuota) {
         if (!(await this.quotaAllows(settings))) return { pages: charged, stop: true }
         if (signal?.aborted) break
       }
       const done = host.pagesDone(path, candidate.mtimeMs, candidate.sizeBytes)
       // pages that have their own text layer count as read: they are never rendered or sent
       const skip = candidate.skipPages ?? []
-      const rendered = await host.render(path, {
-        done: [...done, ...skip],
-        maxPages: settings.maxPagesPerFile,
-        count: settings.pagesPerCall,
-      })
+      this.stage = 'rendering'
+      const rendered = await boundedOcr(
+        host.render(path, {
+          done: [...done, ...skip],
+          maxPages: settings.maxPagesPerFile,
+          count: settings.pagesPerCall,
+        }),
+        OCR_STAGE_TIMEOUT_MS,
+        signal,
+      )
+      if (signal?.aborted) break
       if (!rendered) {
         this.failFile(path, 'The index process did not answer in time')
         return { pages: charged, stop: true }
@@ -412,6 +613,19 @@ export class AgyOcrJob {
       const pages = rendered.pages.filter((p) => wanted.includes(p.page))
       if (pages.length === 0) break // nothing left to read in this file
       const numbers = pages.map((p) => p.page)
+      if (!options.manual && this.usesAutoBudget(settings)) {
+        const snapshot = this.quotaSnapshot
+        if (!snapshot) return { pages: charged, stop: true }
+        state.update((data) => {
+          const budgets = (data.autoBudgets ??= {})
+          budgets[snapshot.group] = reserveOcrBudget(budgets[snapshot.group]!, snapshot)
+        })
+        if (state.hasPersistenceFailure()) {
+          this.recordError('Automatic OCR paused: its usage budget could not be saved')
+          return { pages: charged, stop: true }
+        }
+        this.automaticCallActive = true
+      }
 
       if (!counted) {
         counted = true
@@ -421,13 +635,21 @@ export class AgyOcrJob {
       this.charge(pages.length, 1)
       charged += pages.length
       let response: Awaited<ReturnType<OcrJobDeps['recognize']>>
+      let automaticAllowed = true
       try {
-        response = await this.deps.recognize({
-          model: settings.model,
-          pages: numbers,
-          images: pages.map((p) => p.jpeg),
-          signal: signal ?? new AbortController().signal,
-        })
+        this.stage = 'recognizing'
+        response = await boundedOcr(
+          this.deps.recognize({
+            model: settings.model,
+            pages: numbers,
+            images: pages.map((p) => p.jpeg),
+            signal: signal ?? new AbortController().signal,
+          }),
+          OCR_CALL_TIMEOUT_MS,
+          signal,
+          () => this.abort?.abort(),
+        )
+        if (signal?.aborted) return { pages: charged, stop: true }
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
           this.refund(pages.length, 1)
@@ -436,12 +658,27 @@ export class AgyOcrJob {
         const message = errorText(error)
         const kind = classifyAgyOcrError(message)
         if (haltsTheDay(kind)) {
+          if (!options.manual && this.usesAutoBudget(settings) && this.quotaSnapshot) {
+            const group = this.quotaSnapshot.group
+            state.update((data) => {
+              const account = data.autoBudgets?.[group]
+              if (account) delete account.pending
+            })
+          }
           this.refund(pages.length, 1) // the service refused: nothing was read or billed
           this.haltDay(kind, message)
           return { pages: charged - pages.length, stop: true }
         }
         this.failFile(path, message)
         return { pages: charged, stop: true }
+      } finally {
+        if (!options.manual && this.usesAutoBudget(settings)) {
+          this.automaticCallActive = false
+          // A UI refresh begun before this call completed cannot account for its final cost.
+          // Let that free command settle, then take a fresh post-call snapshot.
+          if (this.usageReading) await this.usageReading
+          automaticAllowed = await this.quotaAllows(settings)
+        }
       }
 
       if (response.usage)
@@ -483,6 +720,7 @@ export class AgyOcrJob {
         return { pages: charged, stop: true }
       }
       this.succeed(path, got.length)
+      if (!automaticAllowed) return { pages: charged, stop: true }
       candidate = { ...candidate, pagesDone: candidate.pagesDone + got.length }
       // every page up to the file's limit is read: no further call (or usage read) for this file
       if (doneNow.size + got.length >= Math.min(rendered.totalPages, settings.maxPagesPerFile))
@@ -586,7 +824,12 @@ export class AgyOcrJob {
     if (!reindexNow) return
     for (const path of [...touched]) {
       try {
-        await reindexNow.call(this.deps.host, path)
+        this.stage = 'indexing'
+        await boundedOcr(
+          reindexNow.call(this.deps.host, path),
+          OCR_STAGE_TIMEOUT_MS,
+          this.abort?.signal,
+        )
         touched.delete(path)
       } catch (error) {
         // left in `touched`: it is queued the ordinary way when this read ends
@@ -604,13 +847,78 @@ export class AgyOcrJob {
    */
   async readNow(documentId: number): Promise<AgyOcrReadNowResult> {
     if (this.stopped) return { ok: false, error: 'unavailable' }
+    if (this.pendingManual >= OCR_MAX_MANUAL_QUEUE) return { ok: false, error: 'queue-full' }
+    this.pendingManual++
+    const epoch = this.cancelEpoch
+    const run = () =>
+      epoch === this.cancelEpoch
+        ? this.readNowOnce(documentId)
+        : Promise.resolve({ ok: false, error: 'cancelled' })
     // one manual read at a time, in the order they were asked for
-    const turn = this.manualChain.then(
-      () => this.readNowOnce(documentId),
-      () => this.readNowOnce(documentId),
-    )
+    const turn = this.manualChain.then(run, run)
     this.manualChain = turn.catch(() => undefined)
-    return turn
+    return turn.finally(() => {
+      this.pendingManual--
+    })
+  }
+
+  /** Admit confirmed manual work immediately; manual requests bypass automatic sharing limits. */
+  enqueue(documentIds: readonly number[]): { queued: number; skipped: number; error?: string } {
+    if (this.stopped || !this.deps.host.isEnabled())
+      return { queued: 0, skipped: documentIds.length, error: 'unavailable' }
+    let queued = 0
+    for (const id of new Set(documentIds)) {
+      const document = this.deps.host.documentById(id)
+      if (!document || !/\.pdf$/i.test(document.path) || this.queuedIds.has(id)) continue
+      if (this.queuedIds.size >= OCR_MAX_MANUAL_QUEUE) break
+      this.queuedIds.add(id)
+      queued++
+    }
+    if (queued) {
+      this.nextCheckAt = 0
+      void this.drainQueue()
+    }
+    return { queued, skipped: documentIds.length - queued }
+  }
+
+  cancel(): boolean {
+    const hadWork = this.running || this.queuedIds.size > 0 || this.pendingManual > 0
+    this.cancelEpoch++
+    this.queuedIds.clear()
+    this.abort?.abort()
+    return hadWork
+  }
+
+  cancelDocuments(ids: readonly number[]): number {
+    let cancelled = 0
+    for (const id of new Set(ids)) {
+      const removed = this.queuedIds.delete(id)
+      if (removed) cancelled++
+      if (this.currentPath && this.deps.host.documentById(id)?.path === this.currentPath) {
+        this.abort?.abort()
+        if (!removed) cancelled++
+      }
+    }
+    return cancelled
+  }
+
+  private async drainQueue(): Promise<void> {
+    if (this.drainingQueue) return
+    this.drainingQueue = true
+    try {
+      await this.yieldToManual()
+      while (this.queuedIds.size && !this.stopped) {
+        const id = this.queuedIds.values().next().value!
+        const turn = this.manualChain.then(() => this.readNowOnce(id, true))
+        this.manualChain = turn.catch(() => undefined)
+        const result = await turn
+        if (['quota-reserve', 'halted', 'backoff', 'paused'].includes(result.error ?? '')) break
+        this.queuedIds.delete(id)
+        if (!result.ok) break
+      }
+    } finally {
+      this.drainingQueue = false
+    }
   }
 
   /** The scheduled run steps aside after its current call: a person's request goes first. */
@@ -623,12 +931,22 @@ export class AgyOcrJob {
   private markIdle(): void {
     this.running = false
     this.abort = null
+    this.currentFile = undefined
+    this.currentPath = undefined
+    this.stage = undefined
     for (const wake of this.idleWaiters.splice(0)) wake()
   }
 
-  private async readNowOnce(documentId: number): Promise<AgyOcrReadNowResult> {
+  private async readNowOnce(documentId: number, override = true): Promise<AgyOcrReadNowResult> {
     if (this.stopped) return { ok: false, error: 'unavailable' }
     await this.yieldToManual()
+    if (!this.deps.host.isEnabled()) return { ok: false, error: 'paused' }
+    if (!override) {
+      const state = this.deps.state.get()
+      if (state.halted?.day === localDateKey(this.deps.now(), this.deps.timezoneOffset))
+        return { ok: false, error: 'halted' }
+      if (state.backoff.until > this.deps.now()) return { ok: false, error: 'backoff' }
+    }
     const document = this.deps.host.documentById(documentId)
     if (!document || !/\.pdf$/i.test(document.path)) return { ok: false, error: 'not-pdf' }
     const settings = this.workingSettings()
@@ -641,7 +959,7 @@ export class AgyOcrJob {
       const reindexNow = this.deps.host.reindexNow
       if (!reindexNow) return { ok: false, error: 'nothing-to-read' }
       try {
-        await reindexNow.call(this.deps.host, document.path)
+        await boundedOcr(reindexNow.call(this.deps.host, document.path), OCR_STAGE_TIMEOUT_MS)
         return { ok: true, pages: 0 }
       } catch (error) {
         return { ok: false, error: errorText(error) }
@@ -654,6 +972,8 @@ export class AgyOcrJob {
     const before = this.deps.state.today().pages
     const startedAt = this.deps.now()
     try {
+      if (!override && !(await this.quotaAllows(settings)))
+        return { ok: false, error: 'quota-reserve' }
       // a deliberate request outranks the earlier verdicts about this file
       this.deps.state.update((data) => {
         const file = data.files[document.path]
@@ -671,9 +991,10 @@ export class AgyOcrJob {
           mtimeMs: row.mtimeMs,
           pagesDone: row.pagesDone,
           ...(row.totalPages !== undefined ? { totalPages: row.totalPages } : {}),
+          ...(row.skipPages ? { skipPages: row.skipPages } : {}),
         },
         settings,
-        { manual: true, touched },
+        { manual: true, respectQuota: !override, touched },
       )
       const state = this.deps.state.get()
       const file = state.files[document.path]
@@ -683,6 +1004,7 @@ export class AgyOcrJob {
           ? state.lastError.message
           : undefined
       const pages = this.deps.state.today().pages - before
+      if (this.abort?.signal.aborted) return { ok: false, error: 'cancelled' }
       await this.indexNow(touched)
       if (touched.size === 0 && failure && (outcome.stop || file?.nonRetryable))
         return { ok: false, error: failure }
@@ -729,6 +1051,13 @@ export class AgyOcrJob {
       callsToday: today.calls,
       filesWaiting: this.filesWaiting(settings, now),
       running: this.running,
+      ...(this.usesAutoBudget(settings)
+        ? { autoBudget: this.autoBudgetStatus(settings, now) }
+        : {}),
+      queuedDocuments: this.queuedIds.size,
+      ...(this.currentFile ? { currentFile: this.currentFile } : {}),
+      ...(this.currentPath ? { currentPath: this.currentPath } : {}),
+      ...(this.stage ? { stage: this.stage } : {}),
       ...(state.quota && decision && (fiveHour || weekly)
         ? {
             quota: {
@@ -758,25 +1087,33 @@ export class AgyOcrJob {
   }
 
   private activity(settings: AgyOcrSettings, now: number): AgyOcrActivity {
-    if (!settings.enabled) return { kind: 'off' }
     if (this.running) return { kind: 'working' }
+    if (!settings.enabled) return { kind: 'off' }
     const state = this.deps.state.get()
     const day = localDateKey(now, this.deps.timezoneOffset)
     if (state.halted?.day === day) return { kind: 'halted', message: state.halted.message }
     if (state.backoff.until > now) return { kind: 'backoff', until: state.backoff.until }
+    if (this.usesAutoBudget(settings)) {
+      const budget = this.autoBudgetStatus(settings, now)
+      if (budget.pending) return { kind: 'budget-pending' }
+      if (budget.weeklyDaily.spent >= budget.weeklyDaily.limit)
+        return { kind: 'budget-blocked', window: 'weekly', until: budget.weeklyDaily.resetAt }
+    }
     if (this.filesWaiting(settings, now) === 0) return { kind: 'nothing' }
-    if (pdfCapReached(settings.maxPdfsPerDay, this.deps.state.today())) return { kind: 'cap' }
+    if (!settings.autoUnlimited && pdfCapReached(settings.maxPdfsPerDay, this.deps.state.today()))
+      return { kind: 'cap' }
     const gate = evaluateOcrGate({
       settings,
       policy: this.deps.policy(),
       idleSeconds: this.deps.idleSeconds(),
     })
     if (!gate.ok) return { kind: 'gate', why: gate.reason }
+    if (settings.autoUnlimited) return { kind: 'checking' }
     const decision = state.quota?.decision
     if (!decision) return { kind: 'checking' }
     switch (decision.kind) {
       case 'run':
-        return { kind: 'working' }
+        return { kind: 'checking' }
       case 'unreadable':
         return { kind: 'quota-unreadable' }
       case 'unknown-group':
@@ -797,6 +1134,34 @@ export class AgyOcrJob {
           ...(block.resetAt !== undefined ? { resetAt: block.resetAt } : {}),
         }
       }
+    }
+  }
+
+  private autoBudgetStatus(
+    settings: AgyOcrSettings,
+    now: number,
+  ): NonNullable<AgyOcrStatus['autoBudget']> {
+    const group = agyUsageGroupName(settings.model)
+    const account = group ? this.deps.state.get().autoBudgets?.[group] : undefined
+    const reserves = this.quotaSnapshot
+      ? ocrWindowReserves(this.quotaSnapshot, now, settings.autoWeeklyDailyBudgetPercent)
+      : null
+    const recordedDayStart = account?.day ? Date.parse(account.day) : NaN
+    const recordedDayResetAt = recordedDayStart + 86_400_000
+    const sameRecordedDay = now >= recordedDayStart && now < recordedDayResetAt
+    return {
+      fiveHour: {
+        spent: account?.fiveHourSpent ?? 0,
+        limit: 80,
+        ...(account ? { resetAt: account.fiveHourResetAt } : {}),
+      },
+      weeklyDaily: {
+        spent:
+          account?.day === reserves?.dayKey || sameRecordedDay ? (account?.weeklySpent ?? 0) : 0,
+        limit: settings.autoWeeklyDailyBudgetPercent ?? 12,
+        resetAt: reserves?.dayResetAt ?? (sameRecordedDay ? recordedDayResetAt : 0),
+      },
+      pending: !!account?.pending,
     }
   }
 }

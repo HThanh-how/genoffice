@@ -359,6 +359,7 @@ import {
   statPathEntries,
 } from './recent-files'
 import { isMoveSource, isUserVisibleFile, type FileTargetSources } from './file-targets'
+import { trashUserFiles } from './delete-files'
 import { isSameFile, pdfSaveAsTarget, isValidRawRenameName } from './rename-validation'
 import {
   FolderWatcher,
@@ -4878,19 +4879,19 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.deleteFiles, async (_event, paths: unknown) => {
     const targets = fileTargetSources()
-    const list = stringPaths(paths).filter(
-      (p) => isUserVisibleFile(p, targets) && statMaybeFile(p)?.isFile() === true,
-    )
-    for (const p of list) {
-      try {
-        await shell.trashItem(p)
-      } catch {
-        // file already gone or trash unavailable; still drop it from the list
-      }
-    }
-    removeRecentFiles(list)
-    // the files were deliberately destroyed — stars must not survive as ghosts
-    removeStarredFiles(list)
+    const indexed = new Set(documentMemory?.listPaths() ?? [])
+    return trashUserFiles(stringPaths(paths), {
+      // Indexed files can be legitimate targets even after their recent entry disappeared.
+      // The existing visibility gate still limits all other paths to user-visible locations.
+      isAllowed: (path) => isUserVisibleFile(path, targets) || indexed.has(path),
+      isFile: (path) => statMaybeFile(path)?.isFile() === true,
+      trash: (path) => shell.trashItem(path),
+      afterTrashed: (removed) => {
+        removeRecentFiles([...removed])
+        // the files were deliberately destroyed — stars must not survive as ghosts
+        removeStarredFiles([...removed])
+      },
+    })
   })
 
   ipcMain.handle(HOME_CHANNELS.openTrash, () => {

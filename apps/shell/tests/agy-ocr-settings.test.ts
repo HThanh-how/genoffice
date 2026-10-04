@@ -16,11 +16,13 @@ import {
 import type { AgyOcrActivity, AgyOcrStatus } from '../src/shared/fork/agy-ocr'
 
 describe('settings defaults', () => {
-  it('is ON by default, with the weekly reserve 50/10/10 and the 5-hour glide 50 -> 30, both on', () => {
+  it('defaults to automatic cycle budgets, preserves legacy fields and has no PDF-count cap', () => {
     expect(DEFAULT_AGY_OCR_SETTINGS).toEqual({
+      autoWeeklyDailyBudgetPercent: 12,
+      autoUnlimited: false,
       enabled: true,
       model: 'gemini-3.8-flash-low',
-      maxPdfsPerDay: 5,
+      maxPdfsPerDay: 0,
       maxPagesPerFile: 0,
       pagesPerCall: 5,
       weeklyFirstDayFloor: 50,
@@ -162,7 +164,7 @@ describe('live lines', () => {
 
   it('shows remaining, floor and what happens next', () => {
     expect(bucketLiveLine('en', 'weekly', live(95, 90), { kind: 'working' }, NOW)).toBe(
-      'weekly quota: 95% left, floor 90% now → running',
+      'weekly quota: 95% left, floor 90% now → enough quota to read',
     )
     const blocked: AgyOcrActivity = {
       kind: 'quota-blocked',
@@ -174,7 +176,7 @@ describe('live lines', () => {
       clearsAt: NOW + 3 * 3_600_000,
     }
     expect(bucketLiveLine('en', 'weekly', live(74, 80), blocked, NOW)).toMatch(
-      /^weekly quota: 74% left, floor 80% now → runs again /,
+      /^weekly quota: 74% left, floor 80% now → quota becomes available /,
     )
     const refill: AgyOcrActivity = { ...blocked, clearsAt: undefined } as AgyOcrActivity
     expect(bucketLiveLine('en', 'weekly', live(15, 20), refill, NOW)).toMatch(

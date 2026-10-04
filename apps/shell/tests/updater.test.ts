@@ -16,6 +16,10 @@ const showMessageBox = vi.hoisted(() =>
 const readFileSyncMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => string>())
 const existsSyncMock = vi.hoisted(() => vi.fn<(...args: unknown[]) => boolean>())
 
+vi.mock('../src/main/app-message-box', () => ({
+  showAppMessageBox: (opts: unknown) => showMessageBox(opts),
+}))
+
 vi.mock('electron', () => ({
   app: {
     get isPackaged() {

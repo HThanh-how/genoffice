@@ -11,6 +11,18 @@ import {
 /** Preload half of the scanned-PDF reader (Antigravity) settings (spread into the home API object). */
 export function createAgyOcrPreloadApi(ipcRenderer: IpcRenderer): AgyOcrApi {
   return {
+    async enqueueScannedPdfsWithAgy(ids, confirmed) {
+      return ipcRenderer.invoke(AGY_OCR_CHANNELS.enqueue, ids, confirmed)
+    },
+    async cancelAgyOcr() {
+      return (await ipcRenderer.invoke(AGY_OCR_CHANNELS.cancel)) === true
+    },
+    async refreshAgyOcrQuota() {
+      return ipcRenderer.invoke(AGY_OCR_CHANNELS.refreshQuota)
+    },
+    async cancelScannedPdfsWithAgy(ids) {
+      return ipcRenderer.invoke(AGY_OCR_CHANNELS.cancelDocuments, ids)
+    },
     async getAgyOcrStatus(): Promise<AgyOcrStatus | null> {
       return ((await ipcRenderer.invoke(AGY_OCR_CHANNELS.getState)) as AgyOcrStatus | null) ?? null
     },

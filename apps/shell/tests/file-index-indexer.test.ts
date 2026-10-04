@@ -1,9 +1,11 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FileIndexer } from '../src/main/file-index/indexer'
 import { FileIndexStore } from '../src/main/file-index/store'
+import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
+import { resolvePolicy } from '../src/main/fork/indexing-policy'
 
 // the worker double never answers the extraction for poison.pdf, so these tests
 // only pass once a wedged request fails on timeout and the queue moves on to
@@ -27,6 +29,7 @@ beforeEach(() => {
 afterEach(() => {
   indexer?.stop()
   indexer = null
+  resetIndexingPolicyBus()
   store.close()
   rmSync(dir, { recursive: true, force: true })
   rmSync(storeDir, { recursive: true, force: true })
@@ -39,6 +42,43 @@ const notesPath = () => join(dir, 'good', 'notes.md')
 const poisonPath = () => join(dir, 'hang', 'poison.pdf')
 
 describe('FileIndexer wedged-worker recovery', () => {
+  it('publishes file names while power policy pauses content work, then resumes parsing', async () => {
+    const input = {
+      mode: 'balanced' as const,
+      cores: 8,
+      freeMemMB: 8000,
+      onBattery: false,
+      locked: false,
+      userIdleSeconds: 0,
+      pauseOnBattery: true,
+    }
+    publishIndexingPolicy({ ...resolvePolicy({ ...input, userPaused: true }), onBattery: false })
+    indexer = indexerWithShortTimeout()
+    await indexer.scan()
+    expect(store.search('notes').hits.map((hit) => hit.path)).toContain(notesPath())
+    expect(store.listAll().get(notesPath())?.status).toBe('pending')
+    publishIndexingPolicy({ ...resolvePolicy(input), onBattery: false })
+    await vi.waitFor(() => expect(store.listAll().get(notesPath())?.status).toBe('ok'))
+  })
+
+  it('makes names searchable before a stalled content extractor answers', async () => {
+    indexer = indexerWithShortTimeout()
+    await indexer.scan()
+    expect(store.search('poison').hits.map((hit) => hit.path)).toContain(poisonPath())
+    expect(store.search('notes').hits.map((hit) => hit.path)).toContain(notesPath())
+    expect(store.listAll().get(poisonPath())?.status).toBe('pending')
+  })
+
+  it('resumes persisted metadata-only pending entries rather than skipping their content', async () => {
+    const path = notesPath()
+    const metadata = statSync(path)
+    store.upsert({ path, mtimeMs: metadata.mtimeMs, sizeBytes: metadata.size }, null, 'pending')
+    indexer = indexerWithShortTimeout()
+    await indexer.scan()
+    await vi.waitFor(() => expect(store.listAll().get(path)?.status).toBe('ok'))
+    expect(store.search('body').hits.map((hit) => hit.path)).toContain(path)
+  })
+
   it('fails a hung extraction on timeout and keeps indexing the rest of the queue', async () => {
     indexer = indexerWithShortTimeout()
     const started = Date.now()

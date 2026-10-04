@@ -112,7 +112,7 @@ describe('isInsideRoot', () => {
   it('rejects a symlink inside the root that points outside it', () => {
     const outside = mkdtempSync(join(tmpdir(), 'genoffice-outside-'))
     try {
-      symlinkSync(outside, join(root, 'escape'))
+      symlinkSync(outside, join(root, 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
       expect(isInsideRoot(root, join(root, 'escape'))).toBe(false)
       expect(isInsideRoot(root, join(root, 'escape', 'child.docx'))).toBe(false)
     } finally {

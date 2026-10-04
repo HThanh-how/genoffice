@@ -4,6 +4,7 @@ import type { AgyOcrStatus } from '../../../shared/fork/agy-ocr'
 import type { IndexingEffectiveState } from '../../../shared/fork/indexing-mode'
 import { indexingStateLine } from './indexing-mode-strings'
 import { AgyOcrNote } from './AgyOcrNote'
+import { readIndexRequest } from './index-request'
 import './indexing-mode.css'
 
 const POLL_MS = 4000
@@ -21,24 +22,31 @@ interface StateApi {
 export function IndexingStateNote({ api, lang }: { api: StateApi; lang: Lang }) {
   const [state, setState] = useState<IndexingEffectiveState | null>(null)
   useEffect(() => {
-    if (typeof api.getIndexingModeState !== 'function') return
     let alive = true
-    const refresh = () => {
-      if (document.visibilityState !== 'visible') return
-      void api
-        .getIndexingModeState?.()
-        .then((next) => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const load = async () => {
+      try {
+        if (api.getIndexingModeState && document.visibilityState === 'visible') {
+          const next = await readIndexRequest(
+            () => api.getIndexingModeState!(),
+            (value): value is { effective: IndexingEffectiveState | null } =>
+              !!value && typeof value === 'object' && 'effective' in value,
+          )
           if (alive) setState(next.effective)
-        })
-        .catch(() => {})
+        }
+      } catch {
+        if (alive) setState(null)
+      } finally {
+        if (alive) timer = setTimeout(() => void load(), POLL_MS)
+      }
     }
-    refresh()
-    const timer = window.setInterval(refresh, POLL_MS)
+    void load()
     return () => {
       alive = false
-      window.clearInterval(timer)
+      if (timer) clearTimeout(timer)
     }
   }, [api])
+
   return (
     <>
       {state && (

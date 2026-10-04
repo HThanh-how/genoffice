@@ -137,9 +137,10 @@ const en = {
   ignoreWeekly: 'Ignore the weekly limit',
   ignoreFiveHour: 'Ignore the 5-hour limit',
   liveUnknown: '{bucket}: not read yet',
-  liveRunning: '{bucket}: {percent}% left, floor {floor}% now → running',
-  liveSchedule: '{bucket}: {percent}% left, floor {floor}% now → runs again {when}',
-  liveRefill: '{bucket}: {percent}% left, floor {floor}% now → runs again when the quota refills',
+  liveRunning: '{bucket}: {percent}% left, floor {floor}% now → enough quota to read',
+  liveSchedule: '{bucket}: {percent}% left, floor {floor}% now → quota becomes available {when}',
+  liveRefill:
+    '{bucket}: {percent}% left, floor {floor}% now → quota becomes available when the quota refills',
   liveIgnored: '{bucket}: ignored',
   maxPdfsPerDay: 'PDFs per day',
   maxPdfsPerDayDesc: 'Optional cap. 0 means no limit; the quota reserves above still apply.',
@@ -236,7 +237,7 @@ const vi = {
   ignoreWeekly: 'Bỏ qua giới hạn tuần',
   ignoreFiveHour: 'Bỏ qua giới hạn 5 giờ',
   liveUnknown: '{bucket}: chưa đọc được',
-  liveRunning: '{bucket}: còn {percent}%, mức dự trữ hiện tại {floor}% → đang chạy',
+  liveRunning: '{bucket}: còn {percent}%, mức dự trữ hiện tại {floor}% → đủ hạn mức để đọc',
   liveSchedule: '{bucket}: còn {percent}%, mức dự trữ hiện tại {floor}% → chạy lại {when}',
   liveRefill:
     '{bucket}: còn {percent}%, mức dự trữ hiện tại {floor}% → chạy lại khi hạn mức làm mới',
@@ -389,7 +390,7 @@ export function quotaDescription(lang: Lang): string {
   return agyOcrString(lang, 'quotaDesc', { margin: QUOTA_MARGIN_POINTS })
 }
 
-/** One live line per bucket: "weekly quota: 74% left, floor 80% now → runs again tomorrow 00:00". */
+/** One live line per bucket: "weekly quota: 74% left, floor 80% now → quota becomes available tomorrow 00:00". */
 export function bucketLiveLine(
   lang: Lang,
   window: '5h' | 'weekly',
@@ -440,6 +441,12 @@ export function activityLine(
       return t('actUnreadable')
     case 'quota-unknown-group':
       return t('actUnknownGroup')
+    case 'budget-pending':
+      return lang === 'vi'
+        ? 'Đang chờ Antigravity cập nhật mức dùng trước khi đọc tự động tiếp. Bạn vẫn có thể đọc thủ công.'
+        : 'Waiting for Antigravity usage to update before more automatic reading. Manual reading remains available.'
+    case 'budget-blocked':
+      return `${lang === 'vi' ? 'Đã dùng đủ ngân sách OCR tự động' : 'Automatic OCR budget spent'} (${activity.window === '5h' ? '5h' : lang === 'vi' ? 'tuần/ngày' : 'weekly/day'}). ${lang === 'vi' ? 'Tiếp tục' : 'Resumes'} ${formatWhen(lang, activity.until, now)}. ${lang === 'vi' ? 'Bạn vẫn có thể bấm đọc thủ công.' : 'Manual reading is still available.'}`
     case 'quota-blocked': {
       const reason = activity.belowFloor
         ? t('actBelow', { floor: Math.round(activity.floor) })
@@ -522,6 +529,12 @@ export function popupLine(
       break
     case 'quota-unknown-group':
       state = t('popupUnknownGroup')
+      break
+    case 'budget-pending':
+      state = activityLine(lang, activity, now)
+      break
+    case 'budget-blocked':
+      state = activityLine(lang, activity, now)
       break
     case 'quota-blocked':
       state = popupBlocked(lang, activity, now)

@@ -19,6 +19,9 @@ import {
 import { NOTHING_PICKED, pick, type PickState } from './index-selection'
 import { matchesQuery } from './todo-model'
 import { issueBucket, type IssueBucket } from './index-issue-view'
+import { isOcrCandidate, selectedIndexFiles } from './index-bulk-actions'
+import { useAgyOcrStatus } from './AgyOcrSettings'
+import { IndexMutationTimeout, runIndexMutation } from './index-mutation'
 import {
   INDEX_ISSUE_PAGE_SIZE,
   INDEX_ISSUE_READ_TIMEOUT_MS,
@@ -83,14 +86,32 @@ const EN = {
   summaryFailed: 'Could not load the file groups. Refresh to try again.',
   indexingProgress: '{done} of {total} read',
   picked: '{n} selected',
-  readPicked: 'Read {n} files now',
+  readPicked: 'Prioritize / retry {n} files',
   pickHint: 'Ctrl/Shift+click to select several files',
   readPickedConfirm:
     'Read {n} files now? Scanned PDFs are read with Antigravity: it uses Antigravity quota and ignores today’s limit.',
   clearPicked: 'Clear selection',
   ocrPicked: 'Read {n} scans with Antigravity',
-  noPdfPicked: 'None of the selected files is a PDF.',
+  noPdfPicked: 'No scanned PDFs needing OCR are selected.',
   selectedAll: 'Selected {n} files.',
+  excludePicked: 'Remove from index',
+  excludeConfirm:
+    'Remove {n} files from search? The files stay on disk. Restore them in Settings → Index.',
+  trashPicked: 'Move to Recycle Bin',
+  trashConfirm:
+    'Move {n} original files to the system Recycle Bin? They will disappear from their folders and search. You can restore them from the Recycle Bin.',
+  laterPicked: 'Read later',
+  stopPicked: 'Stop processing',
+  copyPicked: 'Copy paths',
+  changedPicked: 'Updated {ok} of {n} selected files.',
+  queuedScans: 'Queued {n} scans for manual OCR. Processing continues in the background.',
+  enqueueScansConfirm:
+    'Read {n} scanned PDFs with Antigravity now? Their pages are sent to Antigravity. Manual OCR ignores GenOffice’s automatic budgets, daily cap and quota reserves; Antigravity’s own limits still apply. You can keep working while they are read.',
+  ocrUnavailable: 'Update GenOffice to queue OCR, and enable Antigravity in Index settings.',
+  selectLimit: 'Selected {n} loaded files; larger groups are limited to 2,000 files per selection.',
+  queuedPicked: 'Queued {n} files for priority reading. {skipped} unchanged or unavailable.',
+  unknownOutcome:
+    'No confirmation arrived in time. This action may still finish. Check the file status before trying again.',
 }
 type Dict = typeof EN
 const VI: Dict = {
@@ -125,14 +146,32 @@ const VI: Dict = {
   summaryFailed: 'Không thể tải nhóm tệp. Làm mới để thử lại.',
   indexingProgress: 'Đã đọc {done}/{total}',
   picked: 'Đã chọn {n}',
-  readPicked: 'Đọc {n} tệp ngay',
+  readPicked: 'Ưu tiên / thử lại {n} tệp',
   pickHint: 'Ctrl/Shift+bấm để chọn nhiều tệp',
   readPickedConfirm:
     'Đọc ngay {n} tệp? PDF quét sẽ được đọc bằng Antigravity: tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
   clearPicked: 'Bỏ chọn',
   ocrPicked: 'Đọc {n} tệp quét bằng Antigravity',
-  noPdfPicked: 'Không có tệp PDF nào trong số đã chọn.',
+  noPdfPicked: 'Chưa chọn PDF quét cần OCR.',
   selectedAll: 'Đã chọn {n} tệp.',
+  excludePicked: 'Gỡ khỏi chỉ mục',
+  excludeConfirm:
+    'Gỡ {n} tệp khỏi tìm kiếm? Tệp vẫn nằm trên máy. Có thể thêm lại trong Cài đặt → Chỉ mục.',
+  trashPicked: 'Chuyển vào thùng rác',
+  trashConfirm:
+    'Chuyển {n} tệp gốc vào thùng rác của hệ thống? Tệp sẽ biến mất khỏi thư mục và tìm kiếm. Bạn có thể khôi phục từ thùng rác.',
+  laterPicked: 'Đọc sau',
+  stopPicked: 'Dừng xử lý',
+  copyPicked: 'Chép đường dẫn',
+  changedPicked: 'Đã xử lý {ok}/{n} tệp đã chọn.',
+  queuedScans: 'Đã xếp {n} bản quét để OCR thủ công. Tiếp tục xử lý nền.',
+  enqueueScansConfirm:
+    'Đọc ngay {n} PDF quét bằng Antigravity? Các trang được gửi tới Antigravity. OCR thủ công bỏ qua ngân sách tự động, giới hạn tệp mỗi ngày và phần hạn mức dự phòng của GenOffice; vẫn chịu giới hạn của Antigravity. Bạn có thể tiếp tục làm việc trong lúc đọc.',
+  ocrUnavailable: 'Cập nhật GenOffice để xếp OCR và bật Antigravity trong cài đặt chỉ mục.',
+  selectLimit: 'Đã chọn {n} tệp đã tải; mỗi lần chọn tối đa 2.000 tệp với nhóm lớn.',
+  queuedPicked: 'Đã ưu tiên {n} tệp vào hàng chờ. {skipped} tệp không đổi hoặc chưa sẵn sàng.',
+  unknownOutcome:
+    'Chưa nhận xác nhận kịp thời; thao tác có thể vẫn hoàn tất. Kiểm tra trạng thái tệp trước khi thử lại.',
 }
 
 /** Files being read go first, then the next in line, then the rest (stable order). */
@@ -260,6 +299,7 @@ export function IndexProblems({
   const groupsRef = useRef(groups)
   groupsRef.current = groups
   const now = useIndexingNow(api, true)
+  const [ocrStatus] = useAgyOcrStatus(api, 3000)
   // Files that were being read a moment ago and are gone from their list: shown green, then removed.
   const [finished, setFinished] = useState<IndexIssue[]>([])
   const wasLive = useRef(new Set<string>())
@@ -473,9 +513,11 @@ export function IndexProblems({
     const wanted =
       focus && visible.some((g) => g.reason === focus)
         ? focus
-        : !autoOpened.current && visible.filter((g) => needsAction(g.reason)).length === 1
-          ? visible.find((g) => needsAction(g.reason))!.reason
-          : null
+        : !autoOpened.current && visible.length === 1
+          ? visible[0]!.reason
+          : !autoOpened.current && visible.some((group) => group.reason === 'waiting')
+            ? 'waiting'
+            : null
     autoOpened.current = true
     if (wanted) {
       setOpen((current) => new Set(current).add(wanted))
@@ -514,8 +556,9 @@ export function IndexProblems({
     setBatchBusy(true)
     try {
       await work(isCurrent)
-    } catch {
-      if (isCurrent()) actions.say(d.actionFailed)
+    } catch (error) {
+      if (isCurrent())
+        actions.say(error instanceof IndexMutationTimeout ? d.unknownOutcome : d.actionFailed)
     } finally {
       batchInFlight.current = false
       if (mounted.current) setBatchBusy(false)
@@ -535,10 +578,13 @@ export function IndexProblems({
         )
           continue
         try {
-          const result = await api.retryDocumentIndexGroup(root, group.reason)
+          const result = await runIndexMutation(() =>
+            api.retryDocumentIndexGroup(root, group.reason),
+          )
           if (result.ok) queued += result.retried
           else failed = true
-        } catch {
+        } catch (error) {
+          if (error instanceof IndexMutationTimeout) throw error
           failed = true
         }
       }
@@ -569,44 +615,161 @@ export function IndexProblems({
     setPickState((current) => pick(current, ordered, item.id, mode))
   }
 
-  /**
-   * The picked files, one after another. "index": text files are read and scans go on to
-   * Antigravity. "ocr": only the PDFs among them, all with Antigravity.
-   */
+  const selectedFiles = () => selectedIndexFiles(Object.values(groupsRef.current), pickState.picked)
+
+  const refreshAfterBatch = async () => {
+    await loadSummary()
+    await Promise.all([...openRef.current].map((reason) => loadGroup(reason)))
+    onChanged()
+  }
+
+  const queueScans = async (items: IndexIssue[], isCurrent: () => boolean) => {
+    const chosen = items.filter(isOcrCandidate)
+    if (chosen.length === 0) {
+      actions.say(d.noPdfPicked)
+      return
+    }
+    if (!api.enqueueScannedPdfsWithAgy) {
+      actions.say(d.ocrUnavailable)
+      return
+    }
+    if (!(await appConfirm(fill(d.enqueueScansConfirm, { n: chosen.length })))) return
+    if (!isCurrent()) return
+    let queued = 0
+    let failed: string | null = null
+    for (let start = 0; start < chosen.length; start += 200) {
+      if (!isCurrent()) return
+      try {
+        const result = await runIndexMutation(() =>
+          api.enqueueScannedPdfsWithAgy!(
+            chosen.slice(start, start + 200).map((item) => item.id),
+            true,
+          ),
+        )
+        if (result.error) {
+          failed = d.actionFailed
+          break
+        }
+        queued += result.queued
+      } catch (error) {
+        failed = error instanceof IndexMutationTimeout ? d.unknownOutcome : d.actionFailed
+        break
+      }
+    }
+    if (!isCurrent()) return
+    actions.say(`${fill(d.queuedScans, { n: queued })}${failed ? ` ${failed}` : ''}`)
+    if (!failed) clearPick()
+    await refreshAfterBatch()
+  }
+
+  /** OCR queues work instead of holding the toolbar busy until every scan finishes. */
   const readPicked = async (mode: 'index' | 'ocr' = 'index') =>
     runBatch(async (isCurrent) => {
-      const all = Object.values(groupsRef.current)
-        .flatMap((group) => group?.items ?? [])
-        .filter((item) => pickState.picked.has(item.id))
-      const chosen = mode === 'ocr' ? all.filter((item) => /\.pdf$/i.test(item.path)) : all
-      if (chosen.length === 0) {
-        if (all.length > 0) actions.say(d.noPdfPicked)
+      const chosen = selectedFiles()
+      if (mode === 'ocr') return queueScans(chosen, isCurrent)
+      if (chosen.length === 0) return
+      if (!api.enqueueDocumentIndex) {
+        actions.say(d.actionFailed)
         return
       }
-      const question = mode === 'ocr' ? d.readBatchConfirm : d.readPickedConfirm
-      if (!(await appConfirm(fill(question, { n: chosen.length })))) return
-      let ok = 0
-      for (const [index, item] of chosen.entries()) {
+      let queued = 0
+      let skipped = 0
+      for (let start = 0; start < chosen.length; start += 200) {
         if (!isCurrent()) return
-        actions.say(fill(d.readProgress, { i: index + 1, n: chosen.length }))
         try {
-          let result =
-            mode === 'ocr' || item.reason === 'no-text'
-              ? await api.readScannedPdfWithAgy(item.id, true)
-              : await api.retryDocumentIndex(item.id)
-          if (result.ok && 'empty' in result && result.empty && /\.pdf$/i.test(item.path))
-            result = await api.readScannedPdfWithAgy(item.id, true)
-          if (result.ok) ok++
-        } catch {
-          /* the next file still gets its turn */
+          const result = await runIndexMutation(() =>
+            api.enqueueDocumentIndex!(chosen.slice(start, start + 200).map((item) => item.id)),
+          )
+          queued += result.queued
+          skipped += result.skipped
+          if (result.error) {
+            actions.say(`${fill(d.queuedPicked, { n: queued, skipped })} ${d.actionFailed}`)
+            await refreshAfterBatch()
+            return
+          }
+        } catch (error) {
+          actions.say(
+            `${fill(d.queuedPicked, { n: queued, skipped })} ${error instanceof IndexMutationTimeout ? d.unknownOutcome : d.actionFailed}`,
+          )
+          await refreshAfterBatch()
+          return
         }
       }
       if (!isCurrent()) return
-      actions.say(fill(d.readFinished, { ok, n: chosen.length }))
+      actions.say(fill(d.queuedPicked, { n: queued, skipped }))
       clearPick()
-      await loadSummary()
-      for (const reason of openRef.current) await loadGroup(reason)
-      onChanged()
+      await refreshAfterBatch()
+    })
+
+  const changePicked = async (mode: 'exclude' | 'trash' | 'later' | 'stop' | 'copy') =>
+    runBatch(async (isCurrent) => {
+      const chosen = selectedFiles()
+      if (chosen.length === 0) return
+      if (mode === 'copy') {
+        await navigator.clipboard.writeText(chosen.map((item) => item.path).join('\n'))
+        actions.say(fill(d.changedPicked, { ok: chosen.length, n: chosen.length }))
+        return
+      }
+      if (
+        (mode === 'exclude' || mode === 'trash') &&
+        !(await appConfirm(
+          fill(mode === 'trash' ? d.trashConfirm : d.excludeConfirm, { n: chosen.length }),
+          {
+            confirmLabel: mode === 'trash' ? d.trashPicked : d.excludePicked,
+            tone: mode === 'trash' ? 'danger' : 'info',
+          },
+        ))
+      )
+        return
+      if (!isCurrent()) return
+      let ok = 0
+      let unknown = false
+      const succeeded = new Set<number>()
+      for (const item of chosen) {
+        if (!isCurrent()) return
+        try {
+          if (
+            (mode === 'trash' || mode === 'exclude' || mode === 'stop') &&
+            api.cancelScannedPdfsWithAgy
+          )
+            await runIndexMutation(() => api.cancelScannedPdfsWithAgy!([item.id]))
+          if (mode === 'trash') {
+            const result = await runIndexMutation(() => api.deleteFiles([item.path]))
+            if (result.trashed === 1) {
+              ok++
+              succeeded.add(item.id)
+            }
+          } else if (mode === 'exclude') {
+            await runIndexMutation(() => api.excludeDocumentMemory(item.path))
+            ok++
+            succeeded.add(item.id)
+          } else {
+            const result =
+              mode === 'later'
+                ? await runIndexMutation(() => api.deferIndexFile(item.id))
+                : await runIndexMutation(() => api.stopIndexFile(item.id))
+            if (result.ok) {
+              ok++
+              succeeded.add(item.id)
+            }
+          }
+        } catch (error) {
+          if (error instanceof IndexMutationTimeout) {
+            unknown = true
+            break
+          }
+          /* A locked or missing file does not stop the rest of the selection. */
+        }
+      }
+      if (!isCurrent()) return
+      actions.say(
+        `${fill(d.changedPicked, { ok, n: chosen.length })}${unknown ? ` ${d.unknownOutcome}` : ''}`,
+      )
+      setPickState((current) => ({
+        picked: new Set([...current.picked].filter((id) => !succeeded.has(id))),
+        anchor: current.anchor !== null && succeeded.has(current.anchor) ? null : current.anchor,
+      }))
+      await refreshAfterBatch()
     })
 
   /** Load up to 2,000 files and select the files matching the current query. */
@@ -635,7 +798,7 @@ export function IndexProblems({
         picked: new Set([...current.picked, ...matching.map((item) => item.id)]),
         anchor: matching[0]?.id ?? current.anchor,
       }))
-      actions.say(fill(d.selectedAll, { n: matching.length }))
+      actions.say(fill(loaded.total > 2000 ? d.selectLimit : d.selectedAll, { n: matching.length }))
     } catch {
       actions.say(d.actionFailed)
     }
@@ -649,26 +812,7 @@ export function IndexProblems({
       if (!isCurrent()) return
       const batch = page.items.slice(0, BATCH)
       if (batch.length === 0) return
-      if (!(await appConfirm(fill(d.readBatchConfirm, { n: batch.length })))) return
-      let ok = 0
-      for (const [index, item] of batch.entries()) {
-        if (!isCurrent()) return
-        actions.say(fill(d.readProgress, { i: index + 1, n: batch.length }))
-        try {
-          const result = await api.readScannedPdfWithAgy(item.id, true)
-          if (result.ok) ok++
-          // one file that cannot be read must not stop the rest; only Antigravity being switched
-          // off does
-          else if (result.error === 'unavailable' || result.error === 'paused') break
-        } catch {
-          /* the next file still gets its turn */
-        }
-      }
-      if (!isCurrent()) return
-      actions.say(fill(d.readFinished, { ok, n: batch.length }))
-      await loadSummary()
-      if (open.has('no-text')) await loadGroup('no-text')
-      onChanged()
+      await queueScans(batch, isCurrent)
     })
 
   const readAllScans = async () =>
@@ -679,24 +823,7 @@ export function IndexProblems({
         Math.max(total, 1),
       )
       if (!isCurrent() || loaded.items.length === 0) return
-      if (!(await appConfirm(fill(d.readAllConfirm, { n: loaded.items.length })))) return
-      let ok = 0
-      for (const [index, item] of loaded.items.entries()) {
-        if (!isCurrent()) return
-        actions.say(fill(d.readProgress, { i: index + 1, n: loaded.items.length }))
-        try {
-          const result = await api.readScannedPdfWithAgy(item.id, true)
-          if (result.ok) ok++
-          else if (result.error === 'unavailable' || result.error === 'paused') break
-        } catch {
-          /* the next file still gets its turn */
-        }
-      }
-      if (!isCurrent()) return
-      actions.say(fill(d.readFinished, { ok, n: loaded.items.length }))
-      await loadSummary()
-      if (openRef.current.has('no-text')) await loadGroup('no-text')
-      onChanged()
+      await queueScans(loaded.items, isCurrent)
     })
 
   const openReason = (reason: IndexIssueReason) => {
@@ -799,7 +926,7 @@ export function IndexProblems({
   const retryGroup = async (reason: IndexIssueReason) =>
     runBatch(async (isCurrent) => {
       if (!needsAction(reason) || !isRetryableReason(reason)) return
-      const result = await api.retryDocumentIndexGroup(root, reason)
+      const result = await runIndexMutation(() => api.retryDocumentIndexGroup(root, reason))
       if (!isCurrent()) return
       actions.say(result.ok ? fill(d.retried, { n: result.retried }) : d.actionFailed)
       await Promise.all([loadSummary(), loadGroup(reason)])
@@ -922,12 +1049,36 @@ export function IndexProblems({
                 actions={rowActions}
                 api={api}
                 live={liveOf(now, issue.path)}
+                ocrStage={
+                  ocrStatus?.running && ocrStatus.currentPath === issue.path
+                    ? ocrStatus.stage
+                    : undefined
+                }
                 picked={pickState.picked.has(issue.id)}
                 pickedCount={pickState.picked.size}
                 onPick={(item, mode) => pickFile(orderedIds, item, mode)}
                 onReadPicked={() => {
                   if (!batchBusy) void readPicked()
                 }}
+                onOcrPicked={() => {
+                  if (!batchBusy) void readPicked('ocr')
+                }}
+                onExcludePicked={() => {
+                  if (!batchBusy) void changePicked('exclude')
+                }}
+                onTrashPicked={() => {
+                  if (!batchBusy) void changePicked('trash')
+                }}
+                onLaterPicked={() => {
+                  if (!batchBusy) void changePicked('later')
+                }}
+                onStopPicked={() => {
+                  if (!batchBusy) void changePicked('stop')
+                }}
+                onCopyPicked={() => {
+                  if (!batchBusy) void changePicked('copy')
+                }}
+                ocrPickedCount={pickedPdfCount}
                 onSelectGroup={() => {
                   if (!batchBusy) void selectGroup(reason)
                 }}
@@ -938,6 +1089,9 @@ export function IndexProblems({
             {state?.failed && (
               <li className="ixp-loading" role="status">
                 {d.summaryFailed}
+                <button type="button" className="idx-link" onClick={() => void loadGroup(reason)}>
+                  {lang === 'vi' ? 'Tải lại nhóm' : 'Refresh group'}
+                </button>
               </li>
             )}
             {searching && state && !state.loading && !state.failed && sorted.length === 0 && (
@@ -971,9 +1125,7 @@ export function IndexProblems({
 
   // scans first and in a fixed place: the indexing group below changes all the time, and the
   // list above it used to jump with it
-  const pickedPdfCount = Object.values(groups)
-    .flatMap((group) => group?.items ?? [])
-    .filter((item) => pickState.picked.has(item.id) && /\.pdf$/i.test(item.path)).length
+  const pickedPdfCount = selectedFiles().filter(isOcrCandidate).length
   const attention = list
     .filter((g) => needsAction(g.reason))
     .sort((a, b) => attentionRank(a.reason) - attentionRank(b.reason))
@@ -1046,7 +1198,11 @@ export function IndexProblems({
         </p>
       )}
       {pickState.picked.size > 0 && (
-        <div className="ixp-toolbar ixp-pickbar" role="toolbar">
+        <div
+          className="ixp-toolbar ixp-pickbar"
+          role="toolbar"
+          aria-label={fill(d.picked, { n: pickState.picked.size })}
+        >
           <span>{fill(d.picked, { n: pickState.picked.size })}</span>
           <button
             type="button"
@@ -1067,6 +1223,48 @@ export function IndexProblems({
           <button type="button" className="idx-btn" disabled={batchBusy} onClick={clearPick}>
             {d.clearPicked}
           </button>
+          <div className="ixp-selection-secondary">
+            <button
+              type="button"
+              className="idx-btn"
+              disabled={batchBusy}
+              onClick={() => void changePicked('later')}
+            >
+              {d.laterPicked}
+            </button>
+            <button
+              type="button"
+              className="idx-btn"
+              disabled={batchBusy}
+              onClick={() => void changePicked('stop')}
+            >
+              {d.stopPicked}
+            </button>
+            <button
+              type="button"
+              className="idx-btn"
+              disabled={batchBusy}
+              onClick={() => void changePicked('copy')}
+            >
+              {d.copyPicked}
+            </button>
+            <button
+              type="button"
+              className="idx-btn"
+              disabled={batchBusy}
+              onClick={() => void changePicked('exclude')}
+            >
+              {d.excludePicked}
+            </button>
+            <button
+              type="button"
+              className="idx-btn ixp-trash-action"
+              disabled={batchBusy}
+              onClick={() => void changePicked('trash')}
+            >
+              {d.trashPicked}
+            </button>
+          </div>
         </div>
       )}
       {attention.length > 0 && (

@@ -230,7 +230,10 @@ const homeApi: HomeApi = {
     await ipcRenderer.invoke(HOME_CHANNELS.duplicateFile, path)
   },
   async deleteFiles(paths) {
-    await ipcRenderer.invoke(HOME_CHANNELS.deleteFiles, paths)
+    return (await ipcRenderer.invoke(HOME_CHANNELS.deleteFiles, paths)) as {
+      trashed: number
+      failed: number
+    }
   },
   async folderRoots() {
     return (await ipcRenderer.invoke(HOME_CHANNELS.folderRoots)) as FolderRoot[]

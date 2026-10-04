@@ -54,6 +54,36 @@ describe('FileIndexStore', () => {
     expect(store.search('report fiscal').total).toBe(1)
   })
 
+  it('matches all accent-folded name and parent-folder words and ranks the typo after exact hits', () => {
+    store.upsert(meta('D:\\giay ra vien Pham Huu Cong.pdf'), null, 'name-only')
+    store.upsert(meta('D:\\pham huu cong\\giay ra vien.pdf'), null, 'name-only')
+    store.upsert(meta('D:\\giay ra vien\\pham huux công.pdf'), null, 'name-only')
+
+    const result = store.search('giấy ra viện Phạm Hữu Công')
+    const reordered = store.search('Cong Huu Pham vien ra giay')
+
+    const expected = [
+      'D:\\giay ra vien Pham Huu Cong.pdf',
+      'D:\\pham huu cong\\giay ra vien.pdf',
+      'D:\\giay ra vien\\pham huux công.pdf',
+    ]
+    expect(result.hits.map((hit) => hit.path)).toEqual(expected)
+    expect(reordered.hits.map((hit) => hit.path)).toEqual(expected)
+  })
+
+  it('ranks complete name and folder coverage above a partial basename with a full body match', () => {
+    // The first file has one exact basename word plus both other words in its body.
+    // The second has all query words across its parent folder and basename. Direct
+    // name/path coverage should win so filename search is useful before OCR finishes.
+    store.upsert(meta('D:\\misc\\alpha.pdf'), 'beta gamma', 'ok')
+    store.upsert(meta('D:\\alpha beta gamma\\record.pdf'), null, 'name-only')
+
+    expect(store.search('alpha beta gamma').hits.map((hit) => hit.path)).toEqual([
+      'D:\\alpha beta gamma\\record.pdf',
+      'D:\\misc\\alpha.pdf',
+    ])
+  })
+
   it('falls back to any-term when no file has every term', () => {
     store.upsert(meta('/x.md'), 'alpha only', 'ok')
     store.upsert(meta('/y.md'), 'beta only', 'ok')

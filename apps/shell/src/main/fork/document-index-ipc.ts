@@ -47,6 +47,24 @@ const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set(ISSUE_REASON_ORDER)
  */
 export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void {
   const { ipcMain, getDocumentMemory, getFolderScan } = deps
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, (_event, ids: unknown) => {
+    if (
+      !Array.isArray(ids) ||
+      ids.length > 200 ||
+      ids.some((id) => !Number.isSafeInteger(id) || id < 1)
+    )
+      return { queued: 0, skipped: Array.isArray(ids) ? ids.length : 0, error: 'invalid-request' }
+    const memory = getDocumentMemory()
+    if (!memory) return { queued: 0, skipped: ids.length, error: 'unavailable' }
+    let queued = 0
+    let error: string | undefined
+    for (const id of new Set(ids)) {
+      const result = memory.retryDocument(id)
+      if (result.ok) queued++
+      else error = result.error
+    }
+    return { queued, skipped: ids.length - queued, ...(error ? { error } : {}) }
+  })
   // Folder chunk counts are the only database aggregate in the popup poll. They are served
   // stale-while-revalidate (see activity-cache.ts); everything else is live and in-memory.
   const folderCounts = createSwrCache<FolderChunkProgress>()
@@ -187,6 +205,9 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
           readyFiles: counts?.readyFiles ?? 0,
           pendingFiles: counts?.pendingFiles ?? 0,
           errorFiles: counts?.errorFiles ?? 0,
+          emptyFiles: counts?.emptyFiles ?? 0,
+          completedChunks: counts?.completedChunks ?? 0,
+          totalChunks: counts?.totalChunks ?? 0,
         }
       }),
     )

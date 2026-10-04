@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { IndexProgressRing } from '@genoffice/ui'
 import '@genoffice/ui/index-progress.css'
 import type { HomeApi, HomeIndexingActivity, DocumentMemoryStatus } from '../../../shared/home-api'
+import type { IndexingNow } from '../../../shared/fork/document-index-api'
 import type { IndexingMode, IndexingModeState } from '../../../shared/fork/indexing-mode'
 import { INDEXING_MODES } from '../../../shared/fork/indexing-mode'
 import { useI18n } from '../locale'
 import { TodoTab } from './TodoTab'
-import { isIndexIssueSummary, readIndexRequest } from './index-request'
+import { isIndexIssueSummary, isIndexingNow, readIndexRequest } from './index-request'
 import { activityCopy, fill } from '../indexing-activity-copy'
-import { EtaTracker, type EtaEstimate } from '../indexing-activity-model'
+import { IndexProgressTracker, type IndexProgressReading } from './index-progress-model'
 import { etaText } from '../indexing-activity/format'
 import { IndexedFolders } from './IndexedFolders'
 import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
@@ -42,7 +43,9 @@ const EN = {
   waiting: '{n} waiting',
   problems: '{n} problems',
   eta: 'Time left',
-  etaUnknown: 'Estimating…',
+  etaUnknown: 'Not enough progress to estimate',
+  quiet: 'No recent progress · check To do or refresh',
+  passageRate: '{n} passages/min',
   rate: 'Speed',
   perMin: '{n} files/min',
   docs: 'Documents',
@@ -66,8 +69,8 @@ const EN = {
     paused: 'Paused ({why})',
     battery: 'Slowed to save battery',
     light: 'Working gently',
-    active: 'Working at full speed',
-    idle: 'Nothing to do',
+    active: 'Adjusting while you use the computer',
+    idle: 'Computer is idle · extra capacity available',
   },
   why: {
     battery: 'on battery',
@@ -118,7 +121,9 @@ const VI: Dict = {
   waiting: '{n} đang chờ',
   problems: '{n} lỗi',
   eta: 'Còn lại',
-  etaUnknown: 'Đang ước tính…',
+  etaUnknown: 'Chưa đủ tiến độ để dự đoán',
+  quiet: 'Chưa thấy tiến độ mới · xem Cần xử lý hoặc tải lại',
+  passageRate: '{n} đoạn/phút',
   rate: 'Tốc độ',
   perMin: '{n} tệp/phút',
   docs: 'Tài liệu',
@@ -142,8 +147,8 @@ const VI: Dict = {
     paused: 'Đang tạm dừng ({why})',
     battery: 'Chạy chậm để tiết kiệm pin',
     light: 'Đang làm nhẹ nhàng',
-    active: 'Đang chạy hết tốc độ',
-    idle: 'Không còn việc',
+    active: 'Điều chỉnh khi bạn đang dùng máy',
+    idle: 'Máy đang rảnh · có thể xử lý nhiều hơn',
   },
   why: {
     battery: 'đang dùng pin',
@@ -180,6 +185,7 @@ interface Snapshot {
   memory: DocumentMemoryStatus | null
   activity: HomeIndexingActivity | null
   mode: IndexingModeState | null
+  now: IndexingNow | null
 }
 
 export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => void }) {
@@ -189,15 +195,23 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const [tab, setTab] = useState<Tab>('overview')
   const [focus, setFocus] = useState<IndexIssueReason | null>(null)
   const [attention, setAttention] = useState<IndexIssueSummary | null>(null)
-  const [snap, setSnap] = useState<Snapshot>({ memory: null, activity: null, mode: null })
-  const [eta, setEta] = useState<EtaEstimate | null>(null)
-  const [rate, setRate] = useState<number | null>(null)
+  const [snap, setSnap] = useState<Snapshot>({
+    memory: null,
+    activity: null,
+    mode: null,
+    now: null,
+  })
+  const [progressReading, setProgressReading] = useState<IndexProgressReading>({
+    eta: null,
+    filesPerMinute: null,
+    passagesPerMinute: null,
+    quiet: false,
+  })
   const [actionBusy, setActionBusy] = useState(false)
   const [actionNote, setActionNote] = useState('')
   const [statusFailed, setStatusFailed] = useState(false)
   const actionInFlight = useRef(false)
-  const tracker = useRef(new EtaTracker())
-  const lastRate = useRef<{ at: number; done: number } | null>(null)
+  const tracker = useRef(new IndexProgressTracker())
   const pollKick = useRef<() => void>(() => undefined)
 
   useEffect(() => {
@@ -213,7 +227,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
       }
       loading = true
       if (document.visibilityState === 'visible') {
-        const [memory, activity, mode, issues] = await Promise.allSettled([
+        const [memory, activity, mode, issues, now] = await Promise.allSettled([
           readIndexRequest(
             () => api.getDocumentMemoryStatus(),
             (value): value is DocumentMemoryStatus =>
@@ -235,6 +249,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
                 INDEXING_MODES.includes((value as IndexingModeState).mode)),
           ),
           readIndexRequest(() => api.getDocumentIndexIssueSummary('*'), isIndexIssueSummary),
+          readIndexRequest(() => api.getIndexingNow(), isIndexingNow),
         ])
         if (!alive) return
         setStatusFailed(
@@ -247,25 +262,21 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
           memory: memory.status === 'fulfilled' ? memory.value : null,
           activity: activity.status === 'fulfilled' ? activity.value : null,
           mode: mode.status === 'fulfilled' ? mode.value : null,
+          now: now.status === 'fulfilled' ? now.value : null,
         }
         setSnap((previous) => ({
           memory: next.memory ?? previous.memory,
           activity: next.activity ?? previous.activity,
           mode: next.mode ?? previous.mode,
+          now: next.now,
         }))
-        const progress = next.activity?.folderProgress
-        if (progress && progress.totalFiles > 0) {
-          const done = progress.readyFiles + progress.errorFiles + (progress.emptyFiles ?? 0)
-          const now = Date.now()
-          tracker.current.record(now, done, progress.totalFiles)
-          setEta(tracker.current.estimate())
-          const last = lastRate.current
-          if (last && now - last.at >= 10_000) {
-            const perMin = ((done - last.done) / (now - last.at)) * 60_000
-            setRate(perMin > 0 ? Math.round(perMin) : 0)
-            lastRate.current = { at: now, done }
-          } else if (!last) lastRate.current = { at: now, done }
-        }
+        setProgressReading(
+          tracker.current.record(
+            Date.now(),
+            next.activity,
+            !!next.mode?.effective?.paused || next.memory?.enabled === false,
+          ),
+        )
       }
       loading = false
       if (alive) timer = setTimeout(() => void load(), refreshQueued ? 0 : POLL_MS)
@@ -282,7 +293,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
     }
   }, [api])
 
-  const { memory, activity, mode } = snap
+  const { memory, activity, mode, now } = snap
   const progress = activity?.folderProgress ?? null
   const folder = activity?.folder ?? null
   const paused = !!mode?.effective?.paused || memory?.enabled === false
@@ -565,19 +576,50 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
                       })}
                     </p>
                   )}
+                  {now &&
+                    !paused &&
+                    (now.extracting.length > 0 || Object.keys(now.embedding).length > 0) && (
+                      <p className="idx-live-work" role="status">
+                        {now.extracting.length > 0
+                          ? (lang === 'vi' ? 'Đang đọc: ' : 'Reading: ') +
+                            now.extracting.map((item) => item.path.split(/[\\/]/).pop()).join(', ')
+                          : lang === 'vi'
+                            ? 'Đang chuẩn bị nội dung cho tìm kiếm'
+                            : 'Preparing content for search'}
+                        {Object.keys(now.embedding).length > 0 &&
+                          ` · ${Object.values(now.embedding)
+                            .reduce((n, item) => n + item.done, 0)
+                            .toLocaleString(lang)} / ${Object.values(now.embedding)
+                            .reduce((n, item) => n + item.total, 0)
+                            .toLocaleString(lang)} ${lang === 'vi' ? 'đoạn' : 'passages'}`}
+                      </p>
+                    )}
                 </div>
                 <dl className="idx-eta">
                   <div>
                     <dt>{d.eta}</dt>
                     <dd>
-                      {state.tone === 'busy' ? (eta ? etaText(eta, copy) : d.etaUnknown) : '–'}
+                      {pending > 0 && !paused && !folder?.running && modelState === 'ready'
+                        ? progressReading.eta
+                          ? etaText(progressReading.eta, copy)
+                          : progressReading.quiet
+                            ? d.quiet
+                            : d.etaUnknown
+                        : '–'}
                     </dd>
                   </div>
                   <div>
                     <dt>{d.rate}</dt>
                     <dd>
-                      {rate && state.tone === 'busy'
-                        ? fill(d.perMin, { n: compact(rate, dateLocale) })
+                      {state.tone === 'busy' && progressReading.passagesPerMinute !== null
+                        ? fill(progressReading.passagesPerMinute > 0 ? d.passageRate : d.perMin, {
+                            n: compact(
+                              progressReading.passagesPerMinute ||
+                                progressReading.filesPerMinute ||
+                                0,
+                              dateLocale,
+                            ),
+                          })
                         : '–'}
                     </dd>
                   </div>

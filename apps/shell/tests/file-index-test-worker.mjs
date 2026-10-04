@@ -6,6 +6,7 @@ import { readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
 parentPort?.on('message', (req) => {
+  if (req.type === 'policy') return
   if (req.type === 'scan') {
     const files = []
     const walk = (dir) => {

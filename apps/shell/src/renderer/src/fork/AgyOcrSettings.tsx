@@ -1,24 +1,14 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Lang } from '@genoffice/i18n'
-import {
-  validFiveHourFloors,
-  validWeeklyFloors,
-  weeklySchedule,
-} from '@genoffice/ai-provider/agy-ocr'
 import { useI18n } from '../locale'
+import { appConfirm } from '../ui-feedback'
 import type {
   AgyOcrModelList,
   AgyOcrSettings as AgyOcrSettingsValue,
   AgyOcrStatus,
 } from '../../../shared/fork/agy-ocr'
-import {
-  activityLine,
-  agyOcrString,
-  bucketLiveLine,
-  formatCount,
-  quotaDescription,
-  type AgyOcrStringKey,
-} from './agy-ocr-strings'
+import { activityLine, agyOcrString, formatCount, type AgyOcrStringKey } from './agy-ocr-strings'
+import { readIndexRequest } from './index-request'
 import './agy-ocr.css'
 
 const POLL_MS = 3000
@@ -31,28 +21,69 @@ interface StatusApi {
 export function useAgyOcrStatus(
   api: StatusApi,
   intervalMs = POLL_MS,
-): [AgyOcrStatus | null, () => void] {
+): [AgyOcrStatus | null, () => void, boolean] {
   const [status, setStatus] = useState<AgyOcrStatus | null>(null)
-  const alive = useRef(true)
-  const refresh = useCallback(() => {
-    if (typeof api.getAgyOcrStatus !== 'function' || document.visibilityState !== 'visible') return
-    void api
-      .getAgyOcrStatus()
-      .then((next) => {
-        if (alive.current) setStatus(next)
-      })
-      .catch(() => {})
-  }, [api])
+  const [failed, setFailed] = useState(false)
+  const kick = useRef<() => void>(() => undefined)
+  const getStatus = api.getAgyOcrStatus
   useEffect(() => {
-    alive.current = true
-    refresh()
-    const timer = window.setInterval(refresh, intervalMs)
-    return () => {
-      alive.current = false
-      window.clearInterval(timer)
+    let alive = true
+    let inFlight = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const load = async () => {
+      if (!alive || inFlight || !getStatus) return
+      if (timer) clearTimeout(timer)
+      inFlight = true
+      try {
+        if (document.visibilityState === 'visible') {
+          const next = await readIndexRequest(() => getStatus(), isAgyOcrStatus)
+          if (alive) {
+            setStatus(next)
+            setFailed(false)
+          }
+        }
+      } catch {
+        if (alive) setFailed(true)
+      } finally {
+        inFlight = false
+        if (alive) timer = setTimeout(() => void load(), intervalMs)
+      }
     }
-  }, [refresh, intervalMs])
-  return [status, refresh]
+    kick.current = () => void load()
+    const visible = () => {
+      if (document.visibilityState === 'visible') void load()
+    }
+    document.addEventListener('visibilitychange', visible)
+    void load()
+    return () => {
+      alive = false
+      if (timer) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', visible)
+    }
+  }, [getStatus, intervalMs])
+  const refresh = useCallback(() => kick.current(), [])
+  return [status, refresh, failed]
+}
+
+function isAgyOcrStatus(value: unknown): value is AgyOcrStatus {
+  if (!value || typeof value !== 'object') return false
+  const status = value as Partial<AgyOcrStatus>
+  return (
+    !!status.settings &&
+    typeof status.settings.enabled === 'boolean' &&
+    !!status.activity &&
+    typeof status.activity.kind === 'string' &&
+    typeof status.running === 'boolean' &&
+    !!status.tokensToday &&
+    [
+      status.tokensToday.input,
+      status.tokensToday.output,
+      status.tokensToday.thinking,
+      status.pdfsToday,
+      status.pagesToday,
+      status.filesWaiting,
+    ].every((value) => typeof value === 'number' && Number.isFinite(value) && value >= 0)
+  )
 }
 
 function NumberField({
@@ -124,141 +155,6 @@ function Switch({
   )
 }
 
-interface FloorField {
-  id: string
-  label: string
-  value: number
-}
-
-/**
- * One quota bucket: a few percentage fields validated together (inline error text, saved only
- * when the whole set is valid), an "Ignore this limit" switch, and a live line with the share
- * left, today's floor and when work resumes.
- */
-function QuotaBucket({
-  title,
-  ignoreLabel,
-  ignored,
-  fields,
-  isValid,
-  errorText,
-  liveText,
-  hint,
-  disabled,
-  onSave,
-  onIgnore,
-  children,
-}: {
-  title: string
-  ignoreLabel: string
-  ignored: boolean
-  fields: FloorField[]
-  isValid: (values: number[]) => boolean
-  errorText: string
-  liveText: string
-  hint?: string
-  disabled: boolean
-  onSave: (values: number[]) => void
-  onIgnore: (ignored: boolean) => void
-  children?: ReactNode
-}) {
-  const [drafts, setDrafts] = useState<string[] | null>(null)
-  const shown = drafts ?? fields.map((f) => String(f.value))
-  const parsed = shown.map((text) => (text.trim() === '' ? Number.NaN : Number(text)))
-  const invalid = drafts !== null && !(parsed.every(Number.isInteger) && isValid(parsed))
-  const commit = () => {
-    if (!drafts || invalid) return // an invalid draft stays visible next to the error text
-    setDrafts(null)
-    if (parsed.some((value, i) => value !== fields[i]!.value)) onSave(parsed)
-  }
-  const edit = (index: number, text: string) =>
-    setDrafts(shown.map((current, i) => (i === index ? text : current)))
-  return (
-    <div className="set-agyocr-bucket" data-ignored={ignored}>
-      <div className="set-field set-field-top">
-        <div className="set-field-text">
-          <div className="set-field-stack">
-            <div className="set-field-label">{title}</div>
-            <div className="set-field-desc" aria-live="polite">
-              {liveText}
-            </div>
-            {hint && <div className="set-field-desc">{hint}</div>}
-          </div>
-        </div>
-        <label className="set-agyocr-ignore">
-          <span>{ignoreLabel}</span>
-          <Switch
-            checked={ignored}
-            label={ignoreLabel}
-            disabled={disabled}
-            onToggle={() => onIgnore(!ignored)}
-          />
-        </label>
-      </div>
-      {fields.map((field, index) => (
-        <div className="set-field" key={field.id}>
-          <div className="set-field-text">
-            <div className="set-field-label">{field.label}</div>
-          </div>
-          <input
-            type="number"
-            className="set-input set-num-input"
-            aria-label={`${title}: ${field.label}`}
-            aria-invalid={invalid}
-            min={0}
-            max={100}
-            step={1}
-            disabled={disabled || ignored}
-            value={shown[index]}
-            onFocus={() => {
-              if (!drafts) setDrafts(fields.map((f) => String(f.value)))
-            }}
-            onChange={(event) => edit(index, event.target.value)}
-            onBlur={commit}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter') event.currentTarget.blur()
-              if (event.key === 'Escape') setDrafts(null)
-            }}
-          />
-        </div>
-      ))}
-      {invalid && (
-        <p className="set-agyocr-error" role="alert">
-          {errorText}
-        </p>
-      )}
-      {children}
-    </div>
-  )
-}
-
-/** Day 1..7 floors of the weekly schedule, recomputed from the values being edited. */
-function WeeklyPreview({ lang, floors }: { lang: Lang; floors: number[] }) {
-  return (
-    <div className="set-agyocr-plan">
-      <div className="set-field-desc">{agyOcrString(lang, 'scheduleHint')}</div>
-      <table aria-label={agyOcrString(lang, 'scheduleTitle')}>
-        <thead>
-          <tr>
-            {floors.map((_, day) => (
-              <th key={day} scope="col">
-                {agyOcrString(lang, 'scheduleDay', { n: day + 1 })}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          <tr>
-            {floors.map((floor, day) => (
-              <td key={day}>{floor}%</td>
-            ))}
-          </tr>
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
 function statusLines(
   lang: Lang,
   status: AgyOcrStatus,
@@ -308,7 +204,9 @@ export function AgyOcrSettings() {
   const { lang } = useI18n()
   const api = window.aiOffice
   const available = typeof api?.getAgyOcrStatus === 'function'
-  const [status, refresh] = useAgyOcrStatus(api ?? {})
+  const [status, refresh, statusFailed] = useAgyOcrStatus(api ?? {})
+  const [message, setMessage] = useState('')
+  const [checkingQuota, setCheckingQuota] = useState(false)
   const [saving, setSaving] = useState(false)
   const [models, setModels] = useState<AgyOcrModelList | null>(null)
   const [loadingModels, setLoadingModels] = useState(false)
@@ -318,8 +216,12 @@ export function AgyOcrSettings() {
     if (loadedModels.current || typeof api?.listAgyOcrModels !== 'function') return
     loadedModels.current = true
     setLoadingModels(true)
-    void api
-      .listAgyOcrModels()
+    void readIndexRequest(
+      () => api.listAgyOcrModels(),
+      (value): value is AgyOcrModelList =>
+        !!value && typeof value === 'object' && Array.isArray((value as AgyOcrModelList).models),
+      20_000,
+    )
       .then((list) => {
         setModels(list)
         // a failed listing may be retried the next time the picker is opened
@@ -327,6 +229,7 @@ export function AgyOcrSettings() {
       })
       .catch(() => {
         loadedModels.current = false
+        setModels({ models: [], error: 'Model list unavailable. Open the picker to retry.' })
       })
       .finally(() => setLoadingModels(false))
   }, [api])
@@ -341,11 +244,42 @@ export function AgyOcrSettings() {
   const settings = status?.settings
   const save = (patch: Partial<AgyOcrSettingsValue>) => {
     setSaving(true)
-    void api
-      .setAgyOcrSettings(patch)
+    setMessage('')
+    void readIndexRequest(
+      () => api.setAgyOcrSettings(patch),
+      (value): value is AgyOcrSettingsValue =>
+        !!value &&
+        typeof value === 'object' &&
+        typeof (value as AgyOcrSettingsValue).enabled === 'boolean',
+    )
       .then(() => refresh())
-      .catch(() => {})
+      .catch(() => {
+        setMessage(
+          lang === 'vi'
+            ? 'Chưa xác nhận được cài đặt. Kiểm tra lại trước khi thử tiếp.'
+            : 'Could not confirm the settings. Refresh before trying again.',
+        )
+        refresh()
+      })
       .finally(() => setSaving(false))
+  }
+  const checkQuota = async () => {
+    if (checkingQuota) return
+    setCheckingQuota(true)
+    setMessage('')
+    try {
+      if (api.refreshAgyOcrQuota)
+        await readIndexRequest(() => api.refreshAgyOcrQuota!(), isAgyOcrStatus, 25_000)
+      refresh()
+    } catch {
+      setMessage(
+        lang === 'vi'
+          ? 'Không đọc được hạn mức. Kiểm tra đăng nhập Antigravity rồi thử lại.'
+          : 'Quota could not be read. Check your Antigravity sign-in and try again.',
+      )
+    } finally {
+      setCheckingQuota(false)
+    }
   }
   const disabled = !settings || saving
   const t = (key: AgyOcrStringKey, params?: Record<string, string | number>) =>
@@ -360,14 +294,6 @@ export function AgyOcrSettings() {
   const shownModel = options.find((o) => o.id === settings?.model)?.label ?? settings?.model ?? ''
 
   const lines = status ? statusLines(lang, status) : []
-  const weeklyFloors = settings
-    ? weeklySchedule({
-        firstDayFloor: settings.weeklyFirstDayFloor,
-        dropPerDay: settings.weeklyDropPerDay,
-        minFloor: settings.weeklyMinFloor,
-        ignore: settings.ignoreWeekly,
-      })
-    : []
   return (
     <div className="set-agyocr">
       <h4 className="set-field-label">{t('title')}</h4>
@@ -420,115 +346,351 @@ export function AgyOcrSettings() {
         </label>
       </div>
 
-      <h5 className="set-agyocr-subtitle">{t('quotaTitle')}</h5>
-      <p className="set-field-desc">{quotaDescription(lang)}</p>
-      {settings && (
-        <>
-          <QuotaBucket
-            key={`weekly-${settings.weeklyFirstDayFloor}-${settings.weeklyDropPerDay}-${settings.weeklyMinFloor}`}
-            title={t('weeklyTitle')}
-            ignoreLabel={t('ignoreWeekly')}
-            ignored={settings.ignoreWeekly}
-            fields={[
-              { id: 'first', label: t('firstDayFloor'), value: settings.weeklyFirstDayFloor },
-              { id: 'drop', label: t('dropPerDay'), value: settings.weeklyDropPerDay },
-              { id: 'min', label: t('minFloor'), value: settings.weeklyMinFloor },
-            ]}
-            isValid={([first, drop, min]) => validWeeklyFloors(first!, drop!, min!)}
-            errorText={t('weeklyError')}
-            liveText={bucketLiveLine(lang, 'weekly', status?.quota?.weekly, status!.activity)}
-            disabled={disabled}
-            onSave={([first, drop, min]) =>
-              save({ weeklyFirstDayFloor: first!, weeklyDropPerDay: drop!, weeklyMinFloor: min! })
-            }
-            onIgnore={(ignoreWeekly) => save({ ignoreWeekly })}
+      <section
+        className="set-agyocr-overview"
+        aria-label={lang === 'vi' ? 'Hạn mức và ngân sách OCR' : 'Quota and OCR budget'}
+      >
+        <div className="set-agyocr-overview-head">
+          <div>
+            <h5 className="set-agyocr-subtitle">
+              {lang === 'vi' ? 'Chia sẻ hạn mức Antigravity' : 'Share Antigravity quota'}
+            </h5>
+            <p className="set-field-desc">
+              {lang === 'vi'
+                ? 'Hạn mức được chia theo tuổi của chu kỳ. OCR tự động chỉ dùng phần dư sau mức chừa cho bạn; đọc thủ công bỏ qua các giới hạn này.'
+                : 'Quota is shared across the provider cycle. Automatic OCR uses only the share above your reserve; manual reading bypasses these limits.'}
+            </p>
+          </div>
+          <button
+            type="button"
+            className="idx-btn"
+            disabled={checkingQuota}
+            onClick={() => void checkQuota()}
           >
-            <WeeklyPreview lang={lang} floors={weeklyFloors} />
-          </QuotaBucket>
-          <QuotaBucket
-            key={`5h-${settings.fiveHourFloorStart}-${settings.fiveHourFloorEnd}`}
-            title={t('fiveHourTitle')}
-            ignoreLabel={t('ignoreFiveHour')}
-            ignored={settings.ignoreFiveHour}
-            fields={[
-              { id: 'start', label: t('fiveStart'), value: settings.fiveHourFloorStart },
-              { id: 'end', label: t('fiveEnd'), value: settings.fiveHourFloorEnd },
-            ]}
-            isValid={([start, end]) => validFiveHourFloors(start!, end!)}
-            errorText={t('fiveError')}
-            liveText={bucketLiveLine(lang, '5h', status?.quota?.fiveHour, status!.activity)}
-            hint={t('fiveHint')}
-            disabled={disabled}
-            onSave={([start, end]) => save({ fiveHourFloorStart: start!, fiveHourFloorEnd: end! })}
-            onIgnore={(ignoreFiveHour) => save({ ignoreFiveHour })}
-          />
-        </>
+            {checkingQuota
+              ? lang === 'vi'
+                ? 'Đang kiểm tra…'
+                : 'Checking…'
+              : lang === 'vi'
+                ? 'Kiểm tra hạn mức'
+                : 'Check quota'}
+          </button>
+        </div>
+        <div className="set-agyocr-quota-grid">
+          {(['weekly', 'fiveHour'] as const).map((key) => {
+            const bucket = status?.quota?.[key]
+            return (
+              <div className="set-agyocr-quota" key={key}>
+                <span>{t(key === 'weekly' ? 'weeklyTitle' : 'fiveHourTitle')}</span>
+                <strong>{bucket ? `${Math.round(bucket.percent)}%` : '—'}</strong>
+                <span>{lang === 'vi' ? 'còn lại' : 'remaining'}</span>
+                {bucket && (
+                  <progress
+                    max={100}
+                    value={bucket.percent}
+                    aria-label={t(key === 'weekly' ? 'weeklyTitle' : 'fiveHourTitle')}
+                  />
+                )}
+                <small>
+                  {settings?.autoUnlimited
+                    ? lang === 'vi'
+                      ? 'Không giới hạn OCR tự động'
+                      : 'Automatic OCR is unlimited'
+                    : bucket
+                      ? `${lang === 'vi' ? 'Chừa lại hiện tại' : 'Current reserve'} ${Math.round(bucket.floor)}%`
+                      : lang === 'vi'
+                        ? 'Chưa đọc được mức dự trữ hiện tại'
+                        : 'Current reserve is not available'}
+                  {status?.autoBudget && (
+                    <>
+                      <br />
+                      {key === 'weekly'
+                        ? `${lang === 'vi' ? 'OCR đã dùng trong ngày chu kỳ' : 'OCR used this cycle day'} ${Number(status.autoBudget.weeklyDaily.spent.toFixed(1))}% / ${status.autoBudget.weeklyDaily.limit}%`
+                        : `${lang === 'vi' ? 'OCR đã dùng chu kỳ này' : 'OCR used this window'} ${Number(status.autoBudget.fiveHour.spent.toFixed(1))}%`}
+                    </>
+                  )}
+                </small>
+              </div>
+            )
+          })}
+        </div>
+        {status?.quota && (
+          <p className="set-field-desc">
+            {lang === 'vi' ? 'Kiểm tra gần nhất' : 'Last checked'}:{' '}
+            {new Date(status.quota.readAt).toLocaleString(lang)}
+            {Date.now() - status.quota.readAt > 300_000
+              ? lang === 'vi'
+                ? ' · Dữ liệu cũ, kiểm tra lại'
+                : ' · Outdated, check again'
+              : ''}
+          </p>
+        )}
+        {status?.running && (
+          <p className="set-field-desc" role="status">
+            {lang === 'vi' ? 'Đang xử lý' : 'Processing'}:{' '}
+            {status.stage
+              ? {
+                  quota: lang === 'vi' ? 'kiểm tra hạn mức' : 'checking quota',
+                  rendering: lang === 'vi' ? 'chuẩn bị ảnh trang' : 'preparing page images',
+                  recognizing: lang === 'vi' ? 'nhận dạng chữ' : 'recognizing text',
+                  indexing: lang === 'vi' ? 'lưu vào chỉ mục' : 'adding to index',
+                }[status.stage]
+              : 'OCR'}
+            {status.currentFile ? ` · ${status.currentFile.split(/[\\/]/).pop()}` : ''}
+          </p>
+        )}
+        {!!status?.queuedDocuments && (
+          <p className="set-field-desc">
+            {status.queuedDocuments} {lang === 'vi' ? 'tệp đã xếp hàng' : 'files queued'}
+          </p>
+        )}
+        {status?.running && api.cancelAgyOcr && (
+          <button
+            type="button"
+            className="idx-btn"
+            onClick={() => {
+              void api.cancelAgyOcr!()
+                .then(refresh)
+                .catch(() =>
+                  setMessage(lang === 'vi' ? 'Chưa dừng được tác vụ.' : 'Could not stop the task.'),
+                )
+            }}
+          >
+            {lang === 'vi' ? 'Dừng OCR' : 'Stop OCR'}
+          </button>
+        )}
+      </section>
+      {(statusFailed || message) && (
+        <p className="set-agyocr-error" role="status">
+          {message ||
+            (lang === 'vi'
+              ? 'Chưa cập nhật được trạng thái. Dữ liệu đang hiển thị có thể đã cũ.'
+              : 'Status could not be refreshed. Shown data may be outdated.')}{' '}
+          <button type="button" className="idx-btn" onClick={refresh}>
+            {lang === 'vi' ? 'Thử lại' : 'Retry'}
+          </button>
+        </p>
       )}
-
-      <div className="set-field set-field-top">
-        <div className="set-field-text">
-          <div className="set-field-stack">
-            <div className="set-field-label">{t('maxPdfsPerDay')}</div>
-            <div className="set-field-desc">{t('maxPdfsPerDayDesc')}</div>
-          </div>
+      {!status && !statusFailed && (
+        <p role="status">{lang === 'vi' ? 'Đang lấy trạng thái…' : 'Loading status…'}</p>
+      )}
+      <div className="set-agyocr-policy">
+        <div className="set-agyocr-overview-head">
+          <p className="set-field-desc">
+            {settings?.autoUnlimited
+              ? lang === 'vi'
+                ? 'Đang không giới hạn: OCR tự động có thể dùng hết hạn mức chung.'
+                : 'Unlimited mode: automatic OCR may use all shared quota.'
+              : lang === 'vi'
+                ? `Tự động dùng tối đa ${settings?.autoWeeklyDailyBudgetPercent ?? 12}% hạn mức tuần mỗi ngày chu kỳ; chừa tối thiểu 16% hạn mức tuần và 20% hạn mức 5 giờ.`
+                : `Automatic OCR uses at most ${settings?.autoWeeklyDailyBudgetPercent ?? 12}% of weekly quota per cycle day; reserves at least 16% weekly and 20% of the 5-hour quota.`}
+          </p>
+          <button
+            type="button"
+            className="idx-btn"
+            aria-pressed={!!settings?.autoUnlimited}
+            disabled={disabled}
+            onClick={async () => {
+              if (settings?.autoUnlimited) {
+                save({ autoUnlimited: false })
+                return
+              }
+              if (
+                await appConfirm(
+                  lang === 'vi'
+                    ? 'Không giới hạn OCR tự động? Sẽ bỏ ngân sách, mức dự trữ và giới hạn số PDF mỗi ngày của GenOffice. OCR có thể dùng hết hạn mức chung; giới hạn của Antigravity vẫn áp dụng.'
+                    : 'Remove automatic OCR limits? GenOffice budgets, reserves and daily PDF limits will be bypassed. OCR may use all shared quota; Antigravity limits still apply.',
+                  {
+                    confirmLabel: lang === 'vi' ? 'Bật không giới hạn' : 'Enable unlimited',
+                    tone: 'info',
+                  },
+                )
+              )
+                save({ autoUnlimited: true })
+            }}
+          >
+            {settings?.autoUnlimited
+              ? lang === 'vi'
+                ? 'Bật lại chia sẻ hạn mức'
+                : 'Restore quota sharing'
+              : lang === 'vi'
+                ? 'Không giới hạn'
+                : 'Unlimited'}
+          </button>
         </div>
-        <NumberField
-          value={settings?.maxPdfsPerDay ?? 5}
-          min={0}
-          max={2000}
-          label={t('maxPdfsPerDay')}
-          disabled={disabled}
-          onCommit={(maxPdfsPerDay) => save({ maxPdfsPerDay })}
-        />
-      </div>
-
-      <div className="set-field set-field-top">
-        <div className="set-field-text">
-          <div className="set-field-stack">
-            <div className="set-field-label">{t('maxPagesPerFile')}</div>
-            <div className="set-field-desc">{t('maxPagesPerFileDesc')}</div>
+        {!settings?.autoUnlimited && (
+          <div className="set-agyocr-cycle">
+            <span className="set-field-label">
+              {lang === 'vi'
+                ? 'Mức chừa theo giờ trong chu kỳ 5 giờ'
+                : 'Reserve by hour in the 5-hour window'}
+            </span>
+            <div className="set-agyocr-cycle-steps">
+              {[80, 60, 40, 20, 20].map((floor, i) => (
+                <div key={i}>
+                  <span>
+                    {lang === 'vi' ? 'Giờ' : 'Hour'} {i + 1}
+                  </span>
+                  <strong>{floor}%</strong>
+                </div>
+              ))}
+            </div>
+            <p className="set-field-desc">
+              {lang === 'vi'
+                ? 'Đây là mức còn lại của cả tài khoản, gồm cả chat và các bên dùng chung. Chu kỳ tính theo thời điểm làm mới của Antigravity.'
+                : 'These are remaining shares for the whole account, including chat and other users. Windows follow Antigravity reset times.'}
+            </p>
           </div>
-        </div>
-        <NumberField
-          value={settings?.maxPagesPerFile ?? 0}
-          min={0}
-          max={100000}
-          label={t('maxPagesPerFile')}
-          disabled={disabled}
-          onCommit={(maxPagesPerFile) => save({ maxPagesPerFile })}
-        />
+        )}
       </div>
-
-      <div className="set-field set-field-top">
-        <div className="set-field-text">
-          <div className="set-field-stack">
-            <div className="set-field-label">{t('onlyAC')}</div>
-            <div className="set-field-desc">{t('onlyACDesc')}</div>
+      {!settings?.autoUnlimited && (
+        <div className="set-agyocr-cycle">
+          <span className="set-field-label">
+            {lang === 'vi'
+              ? 'Mức chừa theo ngày trong chu kỳ tuần'
+              : 'Reserve by day in the weekly cycle'}
+          </span>
+          <div className="set-agyocr-cycle-steps set-agyocr-week-steps">
+            {Array.from({ length: 7 }, (_, i) => (
+              <div key={i}>
+                <span>
+                  {lang === 'vi' ? 'Ngày' : 'Day'} {i + 1}
+                </span>
+                <strong>
+                  {Math.max(16, 100 - (settings?.autoWeeklyDailyBudgetPercent ?? 12) * (i + 1))}%
+                </strong>
+              </div>
+            ))}
           </div>
+          {status?.autoBudget && status.autoBudget.weeklyDaily.resetAt > 0 && (
+            <p className="set-field-desc">
+              {lang === 'vi' ? 'Ngân sách ngày tiếp theo mở lúc' : 'Next daily budget opens at'}{' '}
+              {new Date(status.autoBudget.weeklyDaily.resetAt).toLocaleString(lang)}
+              {status.autoBudget.pending
+                ? lang === 'vi'
+                  ? ' · Đang chờ Antigravity cập nhật mức dùng.'
+                  : ' · Waiting for Antigravity usage to update.'
+                : ''}
+            </p>
+          )}
         </div>
-        <Switch
-          checked={settings?.onlyOnAC ?? true}
-          label={t('onlyAC')}
-          disabled={disabled}
-          onToggle={() => settings && save({ onlyOnAC: !settings.onlyOnAC })}
-        />
-      </div>
-
-      <div className="set-field set-field-top">
-        <div className="set-field-text">
-          <div className="set-field-stack">
-            <div className="set-field-label">{t('onlyIdle')}</div>
-            <div className="set-field-desc">{t('onlyIdleDesc')}</div>
+      )}
+      {!!settings?.maxPdfsPerDay && !settings.autoUnlimited && (
+        <p className="set-field-desc">
+          {lang === 'vi'
+            ? `Đang bật thêm giới hạn ${settings.maxPdfsPerDay} PDF/ngày. Bạn có thể đổi trong phần điều chỉnh bên dưới.`
+            : `An additional ${settings.maxPdfsPerDay} PDFs/day cap is enabled. You can change it below.`}
+        </p>
+      )}
+      <details className="set-agyocr-advanced">
+        <summary>
+          {lang === 'vi'
+            ? 'Điều chỉnh ngân sách và lịch đọc'
+            : 'Adjust budget and reading schedule'}
+        </summary>
+        <p className="set-field-desc">
+          {lang === 'vi'
+            ? 'Mức dùng được đo từ thay đổi hạn mức do Antigravity trả về; có thể cập nhật trễ hoặc gồm việc dùng tài khoản cùng lúc. Không biết trước chính xác chi phí của một lượt đọc, nên lượt cuối có thể vượt ngưỡng; khi đủ ngân sách sẽ không bắt đầu lượt tự động tiếp theo.'
+            : 'Usage is measured from Antigravity quota changes, which may be delayed or include simultaneous account use. A call has no known upfront cost, so the last call may cross the threshold; no further automatic call starts once the budget is spent.'}
+        </p>
+        <div className="set-field">
+          <div className="set-field-text">
+            <div className="set-field-stack">
+              <div className="set-field-label">
+                {lang === 'vi'
+                  ? 'Hạn mức tuần dùng mỗi ngày chu kỳ (%)'
+                  : 'Weekly quota per cycle day (%)'}
+              </div>
+              <div className="set-field-desc">
+                {lang === 'vi'
+                  ? 'Mặc định 12%. 0 sẽ dừng OCR tự động; phần chưa dùng không cộng dồn.'
+                  : 'Default 12%. Zero pauses automatic OCR; unused budget does not roll over.'}
+              </div>
+            </div>
           </div>
+          <NumberField
+            value={settings?.autoWeeklyDailyBudgetPercent ?? 12}
+            min={0}
+            max={100}
+            label={lang === 'vi' ? 'Ngân sách tuần mỗi ngày' : 'Weekly daily budget'}
+            disabled={disabled || !!settings?.autoUnlimited}
+            onCommit={(autoWeeklyDailyBudgetPercent) => save({ autoWeeklyDailyBudgetPercent })}
+          />
         </div>
-        <Switch
-          checked={settings?.onlyWhenIdle ?? true}
-          label={t('onlyIdle')}
+        <button
+          type="button"
+          className="idx-btn"
           disabled={disabled}
-          onToggle={() => settings && save({ onlyWhenIdle: !settings.onlyWhenIdle })}
-        />
-      </div>
+          onClick={() =>
+            save({ autoWeeklyDailyBudgetPercent: 12, autoUnlimited: false, maxPdfsPerDay: 0 })
+          }
+        >
+          {lang === 'vi' ? 'Đặt lại mức chia sẻ mặc định' : 'Restore default sharing'}
+        </button>
+        <div className="set-field set-field-top">
+          <div className="set-field-text">
+            <div className="set-field-stack">
+              <div className="set-field-label">{t('maxPdfsPerDay')}</div>
+              <div className="set-field-desc">{t('maxPdfsPerDayDesc')}</div>
+            </div>
+          </div>
+          <NumberField
+            value={settings?.maxPdfsPerDay ?? 0}
+            min={0}
+            max={2000}
+            label={t('maxPdfsPerDay')}
+            disabled={disabled}
+            onCommit={(maxPdfsPerDay) => save({ maxPdfsPerDay })}
+          />
+        </div>
 
+        <div className="set-field set-field-top">
+          <div className="set-field-text">
+            <div className="set-field-stack">
+              <div className="set-field-label">{t('maxPagesPerFile')}</div>
+              <div className="set-field-desc">{t('maxPagesPerFileDesc')}</div>
+            </div>
+          </div>
+          <NumberField
+            value={settings?.maxPagesPerFile ?? 0}
+            min={0}
+            max={100000}
+            label={t('maxPagesPerFile')}
+            disabled={disabled}
+            onCommit={(maxPagesPerFile) => save({ maxPagesPerFile })}
+          />
+        </div>
+
+        <div className="set-field set-field-top">
+          <div className="set-field-text">
+            <div className="set-field-stack">
+              <div className="set-field-label">{t('onlyAC')}</div>
+              <div className="set-field-desc">{t('onlyACDesc')}</div>
+            </div>
+          </div>
+          <Switch
+            checked={settings?.onlyOnAC ?? true}
+            label={t('onlyAC')}
+            disabled={disabled}
+            onToggle={() => settings && save({ onlyOnAC: !settings.onlyOnAC })}
+          />
+        </div>
+
+        <div className="set-field set-field-top">
+          <div className="set-field-text">
+            <div className="set-field-stack">
+              <div className="set-field-label">{t('onlyIdle')}</div>
+              <div className="set-field-desc">{t('onlyIdleDesc')}</div>
+            </div>
+          </div>
+          <Switch
+            checked={settings?.onlyWhenIdle ?? true}
+            label={t('onlyIdle')}
+            disabled={disabled}
+            onToggle={() => settings && save({ onlyWhenIdle: !settings.onlyWhenIdle })}
+          />
+        </div>
+      </details>
       <ul className="set-agyocr-status" role="status" aria-live="polite">
         {lines.map((line) => (
           <li key={line.key} data-tone={line.tone}>
