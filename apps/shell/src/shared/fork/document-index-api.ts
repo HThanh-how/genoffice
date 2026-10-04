@@ -87,6 +87,8 @@ export interface EmbeddingModelState {
 
 /** What the indexer is doing this moment, so a waiting file can show whether it is being read. */
 export interface IndexingNow {
+  /** Queued embedding checkpoints remain in embedding; only this path is running a batch. */
+  activeEmbeddingPath?: string | null
   /** files being read right now, with when each started (epoch ms) */
   extracting: Array<{ path: string; since: number }>
   /** files whose passages are being turned into search vectors, with how far */

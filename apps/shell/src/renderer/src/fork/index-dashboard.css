@@ -6,6 +6,91 @@
   overflow-y: auto;
   color: var(--text);
 }
+.idx-scope {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+}
+.idx-pipeline {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+.idx-lane {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  padding: 16px;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+.idx-lane-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+}
+.idx-lane-head strong {
+  font-size: 13px;
+}
+.idx-lane-state {
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+.idx-lane-state.is-working {
+  color: var(--accent);
+}
+.idx-lane > p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.idx-lane-files {
+  list-style: none;
+  display: grid;
+  gap: 8px;
+  padding: 0;
+  margin: 0;
+  width: 100%;
+}
+.idx-lane-files li,
+.idx-lane-current {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  width: 100%;
+  font-size: 12px;
+}
+.idx-lane-files span,
+.idx-lane-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.idx-lane-files small,
+.idx-lane-count {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.idx-lane-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: auto;
+}
+.idx-lane > .idx-link {
+  margin-top: auto;
+}
+@media (max-width: 650px) {
+  .idx-pipeline {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .idx-head {
   display: flex;
   align-items: center;

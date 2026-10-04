@@ -244,6 +244,7 @@ export class AgyOcrJob {
   private usageReading: Promise<AgyUsageReading | null> | null = null
   private quotaSnapshot: OcrQuotaSnapshot | null = null
   private automaticCallActive = false
+  private currentProgress?: { done: number; total: number }
 
   private usesAutoBudget(settings: AgyOcrSettings): boolean {
     return (
@@ -251,7 +252,31 @@ export class AgyOcrJob {
     )
   }
 
-  constructor(private readonly deps: OcrJobDeps) {}
+  constructor(private readonly deps: OcrJobDeps) {
+    for (const item of deps.state.get().manualQueue ?? []) {
+      if (deps.host.documentById(item.id)?.path === item.path) this.queuedIds.add(item.id)
+    }
+  }
+
+  private persistQueue(): boolean {
+    this.deps.state.update((data) => {
+      data.manualQueue = [...this.queuedIds].flatMap((id) => {
+        const document = this.deps.host.documentById(id)
+        return document ? [{ id, path: document.path }] : []
+      })
+    })
+    return !this.deps.state.hasPersistenceFailure()
+  }
+
+  private recoverReindex(): void {
+    this.flushReindex(new Set(this.deps.state.get().pendingReindexPaths ?? []))
+  }
+
+  private clearReindexJournal(path: string): void {
+    this.deps.state.update((data) => {
+      data.pendingReindexPaths = (data.pendingReindexPaths ?? []).filter((item) => item !== path)
+    })
+  }
 
   async refreshQuota(): Promise<AgyOcrStatus> {
     await this.quotaAllows(this.workingSettings(), true)
@@ -261,8 +286,13 @@ export class AgyOcrJob {
   // ---- lifecycle ----
 
   start(): void {
+    for (const item of this.deps.state.get().manualQueue ?? []) {
+      if (this.deps.host.documentById(item.id)?.path === item.path) this.queuedIds.add(item.id)
+    }
     if (this.cancelTick || this.stopped) return
     this.cancelTick = this.deps.every(() => void this.tick(), OCR_TICK_MS)
+    this.recoverReindex()
+    if (this.queuedIds.size) void this.drainQueue()
   }
 
   stop(): void {
@@ -270,7 +300,7 @@ export class AgyOcrJob {
     this.cancelTick?.()
     this.cancelTick = null
     this.abort?.abort()
-    this.queuedIds.clear()
+    // Shutdown preserves confirmed manual work for restart; user cancellation clears it.
   }
 
   /** Settings changed: re-evaluate soon; a re-enabled reader gets a fresh chance (clears a halt). */
@@ -296,12 +326,14 @@ export class AgyOcrJob {
   async tick(): Promise<void> {
     try {
       const settings = this.workingSettings()
-      if (this.stopped || !settings.enabled || this.running) return
+      if (this.stopped || this.running) return
       if (!this.deps.host.isEnabled()) return
+      this.recoverReindex()
       if (this.queuedIds.size) {
         await this.drainQueue()
         return
       }
+      if (!settings.enabled) return
       const now = this.deps.now()
       if (now < this.nextCheckAt) return
       const state = this.deps.state.get()
@@ -603,6 +635,8 @@ export class AgyOcrJob {
       const doneNow = new Set(
         host.pagesDone(path, rendered.mtimeMs, rendered.sizeBytes).concat(done, skip),
       )
+      const total = Math.min(rendered.totalPages, settings.maxPagesPerFile)
+      this.currentProgress = { done: [...doneNow].filter((page) => page <= total).length, total }
       const wanted = planOcrBatch({
         totalPages: rendered.totalPages,
         done: doneNow,
@@ -635,6 +669,8 @@ export class AgyOcrJob {
       this.charge(pages.length, 1)
       charged += pages.length
       let response: Awaited<ReturnType<OcrJobDeps['recognize']>>
+      let parsed: ReturnType<typeof parseAgyOcrOutput>
+      let got: OcrPageText[]
       let automaticAllowed = true
       try {
         this.stage = 'recognizing'
@@ -649,6 +685,39 @@ export class AgyOcrJob {
           signal,
           () => this.abort?.abort(),
         )
+        // Save paid-for output before awaiting the free quota command. A crash while usage
+        // is slow must not lose recognised pages or require sending those images again.
+        if (response.usage)
+          state.update((data) => {
+            data.day.inputTokens += response.usage?.inputTokens ?? 0
+            data.day.outputTokens += response.usage?.outputTokens ?? 0
+            data.day.thinkingTokens += response.usage?.thinkingTokens ?? 0
+          })
+        parsed = parseAgyOcrOutput(response.text, numbers)
+        got = numbers
+          .filter((n) => parsed.pages.has(n))
+          .map((n) => ({ page: n, text: parsed.pages.get(n) ?? '' }))
+        if (got.length) {
+          state.update((data) => {
+            data.pendingReindexPaths = [...new Set([...(data.pendingReindexPaths ?? []), path])]
+          })
+          host.savePages(
+            path,
+            {
+              hash: rendered.hash,
+              mtimeMs: rendered.mtimeMs,
+              sizeBytes: rendered.sizeBytes,
+              totalPages: rendered.totalPages,
+              model: settings.model,
+            },
+            got,
+          )
+          options.touched.add(path)
+          this.currentProgress = {
+            done: Math.min(total, this.currentProgress.done + got.length),
+            total,
+          }
+        }
         if (signal?.aborted) return { pages: charged, stop: true }
       } catch (error) {
         if (error instanceof Error && error.name === 'AbortError') {
@@ -681,35 +750,6 @@ export class AgyOcrJob {
         }
       }
 
-      if (response.usage)
-        state.update((data) => {
-          data.day.inputTokens += response.usage?.inputTokens ?? 0
-          data.day.outputTokens += response.usage?.outputTokens ?? 0
-          data.day.thinkingTokens += response.usage?.thinkingTokens ?? 0
-        })
-      const parsed = parseAgyOcrOutput(response.text, numbers)
-      const got: OcrPageText[] = numbers
-        .filter((n) => parsed.pages.has(n))
-        .map((n) => ({ page: n, text: parsed.pages.get(n) ?? '' }))
-      if (got.length > 0) {
-        try {
-          host.savePages(
-            path,
-            {
-              hash: rendered.hash,
-              mtimeMs: rendered.mtimeMs,
-              sizeBytes: rendered.sizeBytes,
-              totalPages: rendered.totalPages,
-              model: settings.model,
-            },
-            got,
-          )
-          options.touched.add(path)
-        } catch (error) {
-          this.failFile(path, errorText(error))
-          return { pages: charged, stop: true }
-        }
-      }
       if (parsed.missing.length > 0) {
         // the answer did not cover every page: keep what we got, count an attempt, stop here
         this.failFile(
@@ -769,7 +809,7 @@ export class AgyOcrJob {
       }
       data.backoff.failures += 1
       data.backoff.until = this.deps.now() + ocrBackoffMs(data.backoff.failures)
-      data.lastError = { at: this.deps.now(), message: message.slice(0, 300) }
+      data.lastError = { at: this.deps.now(), message: message.slice(0, 300), path }
     })
   }
 
@@ -810,6 +850,7 @@ export class AgyOcrJob {
     for (const path of touched) {
       try {
         this.deps.host.reindex(path)
+        this.clearReindexJournal(path)
       } catch (error) {
         this.recordError(errorText(error))
       }
@@ -831,6 +872,7 @@ export class AgyOcrJob {
           this.abort?.signal,
         )
         touched.delete(path)
+        this.clearReindexJournal(path)
       } catch (error) {
         // left in `touched`: it is queued the ordinary way when this read ends
         this.recordError(errorText(error))
@@ -867,6 +909,7 @@ export class AgyOcrJob {
     if (this.stopped || !this.deps.host.isEnabled())
       return { queued: 0, skipped: documentIds.length, error: 'unavailable' }
     let queued = 0
+    const beforeQueue = new Set(this.queuedIds)
     for (const id of new Set(documentIds)) {
       const document = this.deps.host.documentById(id)
       if (!document || !/\.pdf$/i.test(document.path) || this.queuedIds.has(id)) continue
@@ -875,6 +918,29 @@ export class AgyOcrJob {
       queued++
     }
     if (queued) {
+      this.deps.state.update((data) => {
+        // A confirmed new request may retry after the person fixed login/CLI availability.
+        // Provider quota/rate limits still hold; automatic work never clears these guards.
+        if (data.halted?.kind === 'auth' || data.halted?.kind === 'cli') {
+          delete data.halted
+          data.backoff = { failures: 0, until: 0 }
+        }
+        for (const id of this.queuedIds) {
+          if (beforeQueue.has(id)) continue
+          const path = this.deps.host.documentById(id)?.path
+          const file = path ? data.files[path] : undefined
+          if (file) {
+            file.attempts = 0
+            delete file.nonRetryable
+            delete file.reason
+          }
+        }
+      })
+      if (!this.persistQueue()) {
+        this.queuedIds = beforeQueue
+        this.persistQueue()
+        return { queued: 0, skipped: documentIds.length, error: 'queue-not-saved' }
+      }
       this.nextCheckAt = 0
       void this.drainQueue()
     }
@@ -885,6 +951,7 @@ export class AgyOcrJob {
     const hadWork = this.running || this.queuedIds.size > 0 || this.pendingManual > 0
     this.cancelEpoch++
     this.queuedIds.clear()
+    this.persistQueue()
     this.abort?.abort()
     return hadWork
   }
@@ -899,6 +966,7 @@ export class AgyOcrJob {
         if (!removed) cancelled++
       }
     }
+    this.persistQueue()
     return cancelled
   }
 
@@ -908,12 +976,38 @@ export class AgyOcrJob {
     try {
       await this.yieldToManual()
       while (this.queuedIds.size && !this.stopped) {
+        const state = this.deps.state.get()
+        if (
+          state.backoff.until > this.deps.now() ||
+          state.halted?.day === localDateKey(this.deps.now(), this.deps.timezoneOffset)
+        )
+          break
         const id = this.queuedIds.values().next().value!
-        const turn = this.manualChain.then(() => this.readNowOnce(id, true))
+        const path = this.deps.host.documentById(id)?.path
+        if (path && state.files[path]?.nonRetryable) {
+          this.queuedIds.delete(id)
+          this.persistQueue()
+          continue
+        }
+        const turn = this.manualChain.then(() => this.readNowOnce(id, true, false))
         this.manualChain = turn.catch(() => undefined)
         const result = await turn
+        if (this.stopped) break
+        const latest = this.deps.state.get()
+        // Exhausted/permanent file failures require a fresh explicit request, not
+        // another paid attempt every time the persisted backoff expires.
+        if (path && latest.files[path]?.nonRetryable) {
+          this.queuedIds.delete(id)
+          this.persistQueue()
+        }
+        if (
+          latest.backoff.until > this.deps.now() ||
+          latest.halted?.day === localDateKey(this.deps.now(), this.deps.timezoneOffset)
+        )
+          break
         if (['quota-reserve', 'halted', 'backoff', 'paused'].includes(result.error ?? '')) break
         this.queuedIds.delete(id)
+        this.persistQueue()
         if (!result.ok) break
       }
     } finally {
@@ -932,12 +1026,17 @@ export class AgyOcrJob {
     this.running = false
     this.abort = null
     this.currentFile = undefined
+    this.currentProgress = undefined
     this.currentPath = undefined
     this.stage = undefined
     for (const wake of this.idleWaiters.splice(0)) wake()
   }
 
-  private async readNowOnce(documentId: number, override = true): Promise<AgyOcrReadNowResult> {
+  private async readNowOnce(
+    documentId: number,
+    override = true,
+    resetAttempts = true,
+  ): Promise<AgyOcrReadNowResult> {
     if (this.stopped) return { ok: false, error: 'unavailable' }
     await this.yieldToManual()
     if (!this.deps.host.isEnabled()) return { ok: false, error: 'paused' }
@@ -975,14 +1074,15 @@ export class AgyOcrJob {
       if (!override && !(await this.quotaAllows(settings)))
         return { ok: false, error: 'quota-reserve' }
       // a deliberate request outranks the earlier verdicts about this file
-      this.deps.state.update((data) => {
-        const file = data.files[document.path]
-        if (file) {
-          file.attempts = 0
-          delete file.nonRetryable
-          delete file.reason
-        }
-      })
+      if (resetAttempts)
+        this.deps.state.update((data) => {
+          const file = data.files[document.path]
+          if (file) {
+            file.attempts = 0
+            delete file.nonRetryable
+            delete file.reason
+          }
+        })
       const outcome = await this.processFile(
         {
           path: row.path,
@@ -1055,6 +1155,8 @@ export class AgyOcrJob {
         ? { autoBudget: this.autoBudgetStatus(settings, now) }
         : {}),
       queuedDocuments: this.queuedIds.size,
+      queuedDocumentIds: [...this.queuedIds],
+      ...(this.currentProgress ? { progress: this.currentProgress } : {}),
       ...(this.currentFile ? { currentFile: this.currentFile } : {}),
       ...(this.currentPath ? { currentPath: this.currentPath } : {}),
       ...(this.stage ? { stage: this.stage } : {}),

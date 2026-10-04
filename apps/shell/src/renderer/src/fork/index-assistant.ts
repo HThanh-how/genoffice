@@ -3,6 +3,8 @@ import type { IndexingMode } from '../../../shared/fork/indexing-mode'
 import type { IndexedFolder } from '../../../shared/fork/document-index-api'
 import { activityCopy } from '../indexing-activity-copy'
 import type { Lang } from '@genoffice/i18n'
+import { runIndexMutation } from './index-mutation'
+import { readIndexRequest } from './index-request'
 
 /**
  * A small command layer for the indexing dashboard and the Home chat: "index tới đâu rồi?",
@@ -206,9 +208,23 @@ function findFolder(folders: IndexedFolder[], query: string): IndexedFolder | nu
 export async function describeIndexStatus(api: HomeApi, lang: string): Promise<string> {
   const w = indexWords(lang)
   const [mem, act, mode] = await Promise.allSettled([
-    api.getDocumentMemoryStatus(),
-    api.getIndexingActivity(),
-    api.getIndexingModeState?.(),
+    readIndexRequest(
+      () => api.getDocumentMemoryStatus(),
+      (value): value is Awaited<ReturnType<HomeApi['getDocumentMemoryStatus']>> =>
+        !!value &&
+        typeof value === 'object' &&
+        typeof (value as { enabled?: unknown }).enabled === 'boolean',
+    ),
+    readIndexRequest(
+      () => api.getIndexingActivity(),
+      (value): value is Awaited<ReturnType<HomeApi['getIndexingActivity']>> =>
+        !!value && typeof value === 'object' && 'memory' in value,
+    ),
+    readIndexRequest(
+      () => api.getIndexingModeState?.(),
+      (value): value is Awaited<ReturnType<HomeApi['getIndexingModeState']>> =>
+        !!value && typeof value === 'object' && 'mode' in value,
+    ),
   ])
   if (mem.status !== 'fulfilled' || act.status !== 'fulfilled') return w.unavailable
   const m = mem.value
@@ -290,22 +306,19 @@ export async function runIndexCommand(
       case 'problems':
         return await describeProblems(api, lang)
       case 'pause':
-        await api.setDocumentMemoryEnabled(false)
+        await runIndexMutation(() => api.setDocumentMemoryEnabled(false))
         onChanged?.()
         return w.paused2
       case 'resume':
-        await api.setDocumentMemoryEnabled(true)
+        await runIndexMutation(() => api.setDocumentMemoryEnabled(true))
         onChanged?.()
         return w.resumed
       case 'stop-scan':
-        await api.stopDocumentFolderScan()
+        await runIndexMutation(() => api.stopDocumentFolderScan())
         onChanged?.()
         return w.stopped
       case 'retry': {
-        const status = await api.getIndexingActivity()
-        const root = status.folder?.root
-        if (!root) return w.retryNone
-        const result = await api.retryDocumentIndexGroup(root)
+        const result = await runIndexMutation(() => api.retryDocumentIndexGroup('*'))
         onChanged?.()
         return result.ok && result.retried > 0
           ? fill(w.retried, { n: result.retried })
@@ -321,7 +334,7 @@ export async function runIndexCommand(
               q: command.folder,
               list: folders.map((f) => folderName(f.root)).join(', '),
             })
-          const result = await api.rescanIndexedFolder(hit.root)
+          const result = await runIndexMutation(() => api.rescanIndexedFolder(hit.root))
           onChanged?.()
           return result.ok
             ? fill(w.scanStarted, { root: folderName(hit.root) })
@@ -330,7 +343,7 @@ export async function runIndexCommand(
         let started = 0
         for (const folder of folders) {
           if (folder.unavailable) continue
-          if ((await api.rescanIndexedFolder(folder.root)).ok) started++
+          if ((await runIndexMutation(() => api.rescanIndexedFolder(folder.root))).ok) started++
         }
         onChanged?.()
         return fill(w.scanAll, { n: started })
@@ -344,16 +357,16 @@ export async function runIndexCommand(
             q: command.folder,
             list: folders.map((f) => folderName(f.root)).join(', '),
           })
-        await api.setIndexedFolderPriority(hit.root, command.on)
+        await runIndexMutation(() => api.setIndexedFolderPriority(hit.root, command.on))
         onChanged?.()
         return fill(command.on ? w.prioOn : w.prioOff, { root: folderName(hit.root) })
       }
       case 'mode':
-        await api.setIndexingMode(command.mode)
+        await runIndexMutation(() => api.setIndexingMode(command.mode))
         onChanged?.()
         return fill(w.modeSet, { mode: w.modes[command.mode] })
       case 'model': {
-        const result = await api.setEmbeddingModel(command.profile)
+        const result = await runIndexMutation(() => api.setEmbeddingModel(command.profile))
         onChanged?.()
         return result.ok
           ? fill(w.modelSet, {
@@ -372,8 +385,7 @@ export async function runIndexCommand(
 export async function describeProblems(api: HomeApi, lang: string, perGroup = 15): Promise<string> {
   const w = indexWords(lang)
   const copy = activityCopy(lang as Lang)
-  const root = (await api.getIndexingActivity()).folder?.root
-  if (!root) return w.problemsNone
+  const root = '*'
   const summary = await api.getDocumentIndexIssueSummary(root)
   if (!summary.groups.length) return w.problemsNone
   const lines = [fill(w.problemsHead, { n: num(summary.total, lang) })]

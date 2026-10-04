@@ -16,6 +16,7 @@ import type { IndexIssueSummary } from '../../../main/document-memory/issue-read
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
 import { needsAction } from './IndexProblems'
 import { IndexSettingsTab } from './IndexSettingsTab'
+import { IndexPipeline } from './IndexPipeline'
 import './index-dashboard.css'
 import './todo-workspace.css'
 
@@ -39,7 +40,8 @@ const EN = {
   stateOff: 'Turned off',
   stateModelError: 'Search model problem',
   stateDownloading: 'Downloading search model',
-  filesDone: '{ready} of {total} files',
+  filesDone: '{ready} of {total} files processed',
+  libraryScope: 'All indexed folders on this computer',
   waiting: '{n} waiting',
   problems: '{n} problems',
   eta: 'Time left',
@@ -63,7 +65,7 @@ const EN = {
   modeHint: {
     light: 'Barely noticeable. Slowest.',
     balanced: 'Good for everyday use.',
-    fast: 'Uses most of the computer. Fastest.',
+    fast: 'Prioritizes indexing within the CPU limit.',
   },
   tier: {
     paused: 'Paused ({why})',
@@ -117,7 +119,8 @@ const VI: Dict = {
   stateOff: 'Đang tắt',
   stateModelError: 'Mô hình tìm kiếm gặp lỗi',
   stateDownloading: 'Đang tải mô hình tìm kiếm',
-  filesDone: '{ready} / {total} tệp',
+  filesDone: 'Đã xử lý {ready} / {total} tệp',
+  libraryScope: 'Tất cả thư mục đã thêm trên máy này',
   waiting: '{n} đang chờ',
   problems: '{n} lỗi',
   eta: 'Còn lại',
@@ -141,7 +144,7 @@ const VI: Dict = {
   modeHint: {
     light: 'Gần như không cảm nhận được. Chậm nhất.',
     balanced: 'Hợp cho dùng hằng ngày.',
-    fast: 'Dùng gần hết máy. Nhanh nhất.',
+    fast: 'Ưu tiên index trong giới hạn CPU.',
   },
   tier: {
     paused: 'Đang tạm dừng ({why})',
@@ -193,6 +196,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const d = TEXT[lang] ?? EN
   const copy = activityCopy(lang)
   const [tab, setTab] = useState<Tab>('overview')
+  const [settingsFocus, setSettingsFocus] = useState<'ocr' | undefined>()
   const [focus, setFocus] = useState<IndexIssueReason | null>(null)
   const [attention, setAttention] = useState<IndexIssueSummary | null>(null)
   const [snap, setSnap] = useState<Snapshot>({
@@ -549,6 +553,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
                   />
                 </div>
                 <div className="idx-hero-text">
+                  <p className="idx-scope">{d.libraryScope}</p>
                   <span className={`idx-pill is-${state.tone}`}>{state.text}</span>
                   {progress && (
                     <h2>
@@ -576,24 +581,6 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
                       })}
                     </p>
                   )}
-                  {now &&
-                    !paused &&
-                    (now.extracting.length > 0 || Object.keys(now.embedding).length > 0) && (
-                      <p className="idx-live-work" role="status">
-                        {now.extracting.length > 0
-                          ? (lang === 'vi' ? 'Đang đọc: ' : 'Reading: ') +
-                            now.extracting.map((item) => item.path.split(/[\\/]/).pop()).join(', ')
-                          : lang === 'vi'
-                            ? 'Đang chuẩn bị nội dung cho tìm kiếm'
-                            : 'Preparing content for search'}
-                        {Object.keys(now.embedding).length > 0 &&
-                          ` · ${Object.values(now.embedding)
-                            .reduce((n, item) => n + item.done, 0)
-                            .toLocaleString(lang)} / ${Object.values(now.embedding)
-                            .reduce((n, item) => n + item.total, 0)
-                            .toLocaleString(lang)} ${lang === 'vi' ? 'đoạn' : 'passages'}`}
-                      </p>
-                    )}
                 </div>
                 <dl className="idx-eta">
                   <div>
@@ -632,6 +619,21 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
                 {stat(d.errors, compact(errors, dateLocale), errors > 0 ? 'is-warn' : '')}
                 {stat(d.model, modelText, modelState === 'error' ? 'is-warn' : '')}
               </section>
+
+              <IndexPipeline
+                api={api}
+                activity={activity}
+                now={now}
+                paused={paused}
+                onTodo={() => {
+                  setFocus(null)
+                  setTab('problems')
+                }}
+                onSettings={() => {
+                  setSettingsFocus('ocr')
+                  setTab('settings')
+                }}
+              />
 
               <section className="idx-card">
                 <header>
@@ -685,7 +687,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
 
           {tab === 'settings' && (
             <div className="idx-body idx-embed">
-              <IndexSettingsTab api={api} />
+              <IndexSettingsTab api={api} focus={settingsFocus} />
             </div>
           )}
         </div>

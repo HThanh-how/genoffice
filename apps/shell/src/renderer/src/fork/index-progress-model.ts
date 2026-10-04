@@ -24,7 +24,8 @@ export class IndexProgressTracker {
       activity.memory.modelState === 'ready' &&
       activity.memory.pending > 0 &&
       !!progress
-    const identity = active ? `${activity?.folder?.root ?? ''}:${progress!.totalFiles}` : ''
+    const scope = activity?.progressScope === 'library' ? 'library' : (activity?.folder?.root ?? '')
+    const identity = active ? `${scope}:${progress!.totalFiles}` : ''
     if (!active || identity !== this.identity) {
       this.eta.reset()
       this.samples = []

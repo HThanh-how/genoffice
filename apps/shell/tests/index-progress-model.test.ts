@@ -19,6 +19,24 @@ function activity(files = 10, passages = 100): HomeIndexingActivity {
   }
 }
 describe('IndexProgressTracker', () => {
+  it('keeps library throughput when the last discovery folder changes', () => {
+    const tracker = new IndexProgressTracker()
+    const first = {
+      ...activity(),
+      progressScope: 'library' as const,
+      folder: { root: 'D:', running: false } as HomeIndexingActivity['folder'],
+    }
+    tracker.record(0, first, false)
+    const next = {
+      ...activity(11, 200),
+      progressScope: 'library' as const,
+      folder: { root: 'Downloads', running: false } as HomeIndexingActivity['folder'],
+    }
+    expect(tracker.record(10_000, next, false)).toMatchObject({
+      filesPerMinute: 6,
+      passagesPerMinute: 600,
+    })
+  })
   it('shows progress inside a large file without pretending it finished', () => {
     const tracker = new IndexProgressTracker()
     tracker.record(0, activity(), false)

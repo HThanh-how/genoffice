@@ -480,12 +480,15 @@ export class DocumentMemoryStore {
       .run(at, prefix.length, prefix)
   }
 
-  folderChunkProgress(root: string): FolderChunkProgress {
-    const normalized = resolve(root)
+  /** Count a folder, or the complete library when no folder is selected. */
+  folderChunkProgress(root?: string): FolderChunkProgress {
+    const normalized = root === undefined ? null : resolve(root)
     const prefix =
-      normalized.endsWith('/') || normalized.endsWith('\\')
-        ? normalized
-        : `${normalized}${normalized.includes('\\') ? '\\' : '/'}`
+      normalized === null
+        ? null
+        : normalized.endsWith('/') || normalized.endsWith('\\')
+          ? normalized
+          : `${normalized}${normalized.includes('\\') ? '\\' : '/'}`
     const counts = this.countSource()
     const row = this.db
       .prepare(
@@ -504,9 +507,9 @@ export class DocumentMemoryStore {
             ELSE 0.0 END), 0.0) AS partial_file_progress
         FROM (SELECT d.status, d.truncated, ${counts.total} AS total_chunks, ${counts.done} AS done_chunks
           FROM documents d
-          WHERE d.excluded = 0 AND (d.path = ? OR substr(d.path, 1, length(?)) = ?))`,
+          WHERE d.excluded = 0 ${normalized === null ? '' : 'AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)'})`,
       )
-      .get(normalized, prefix, prefix) as
+      .get(...(normalized === null ? [] : [normalized, prefix!, prefix!])) as
       | {
           total_files: number
           ready_files: number
@@ -588,6 +591,16 @@ export class DocumentMemoryStore {
         )
         .run(id)
     return document.path
+  }
+
+  /** OCR changes searchable text without changing the source file; persist the need to re-read. */
+  markOcrPending(path: string): boolean {
+    const result = this.db
+      .prepare(
+        "UPDATE documents SET status = 'pending', error = NULL, updated_at = unixepoch() WHERE path = ? AND excluded = 0",
+      )
+      .run(resolve(path))
+    return Number(result.changes) > 0
   }
 
   documentPriority(path: string): number {

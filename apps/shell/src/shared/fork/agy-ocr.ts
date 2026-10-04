@@ -188,6 +188,8 @@ export interface AgyOcrStatus {
   filesWaiting: number
   running: boolean
   queuedDocuments?: number
+  queuedDocumentIds?: number[]
+  progress?: { done: number; total: number }
   currentFile?: string
   currentPath?: string
   stage?: 'quota' | 'rendering' | 'recognizing' | 'indexing'
@@ -199,7 +201,7 @@ export interface AgyOcrStatus {
     fiveHour?: AgyOcrBucketLive
   }
   lastResult?: { at: number; pages: number; file: string }
-  lastError?: { at: number; message: string }
+  lastError?: { at: number; message: string; path?: string }
   activity: AgyOcrActivity
 }
 

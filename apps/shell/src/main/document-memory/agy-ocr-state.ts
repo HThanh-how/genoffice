@@ -41,10 +41,12 @@ export interface OcrStateData {
   /** last /usage reading's verdict (what the UI shows while paused) */
   quota?: { at: number; decision: QuotaDecision }
   lastResult?: { at: number; pages: number; file: string }
-  lastError?: { at: number; message: string }
+  lastError?: { at: number; message: string; path?: string }
   lastRunAt?: number
   files: Record<string, OcrFileState>
   autoBudgets?: Record<string, OcrAutoBudgetAccount>
+  manualQueue?: Array<{ id: number; path: string }>
+  pendingReindexPaths?: string[]
 }
 
 export interface OcrStateFs {
@@ -143,7 +145,34 @@ export function parseOcrState(text: string | undefined, fallbackDay: string): Oc
     state.lastResult = { at: num(last.at), pages: num(last.pages), file: last.file }
   const error = r.lastError as Record<string, unknown> | undefined
   if (error && typeof error.message === 'string')
-    state.lastError = { at: num(error.at), message: error.message }
+    state.lastError = {
+      at: num(error.at),
+      message: error.message,
+      ...(typeof error.path === 'string' ? { path: error.path } : {}),
+    }
+  if (Array.isArray(r.manualQueue))
+    state.manualQueue = r.manualQueue
+      .filter((value): value is { id: number; path: string } => {
+        if (!value || typeof value !== 'object') return false
+        const item = value as Record<string, unknown>
+        return (
+          Number.isSafeInteger(item.id) &&
+          Number(item.id) > 0 &&
+          typeof item.path === 'string' &&
+          item.path.length > 0 &&
+          item.path.length <= 32_768
+        )
+      })
+      .slice(0, 2000)
+  if (Array.isArray(r.pendingReindexPaths))
+    state.pendingReindexPaths = [
+      ...new Set(
+        r.pendingReindexPaths.filter(
+          (path): path is string =>
+            typeof path === 'string' && path.length > 0 && path.length <= 32_768,
+        ),
+      ),
+    ].slice(0, 4000)
   if (typeof r.lastRunAt === 'number') state.lastRunAt = r.lastRunAt
   const files = r.files as Record<string, unknown> | undefined
   const budgets = r.autoBudgets as Record<string, unknown> | undefined

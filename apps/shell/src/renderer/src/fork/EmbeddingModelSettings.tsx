@@ -5,6 +5,8 @@ import type {
   EmbeddingProfileChoice,
 } from '../../../shared/fork/document-index-api'
 import { useI18n } from '../locale'
+import { readIndexRequest } from './index-request'
+import { IndexMutationTimeout, runIndexMutation } from './index-mutation'
 
 const EN = {
   title: 'Search model',
@@ -29,6 +31,12 @@ const EN = {
   switching: 'Switching…',
   switched: 'Switched. {n} files are being re-read.',
   active: 'In use',
+  loading: 'Loading search model settings…',
+  loadFailed: 'Could not load search model settings.',
+  retry: 'Try again',
+  saveFailed: 'Could not switch search models. Try again.',
+  unknownOutcome:
+    'No confirmation arrived in time. The model may have switched; reload before trying again.',
 }
 const VI: typeof EN = {
   title: 'Mô hình tìm kiếm',
@@ -52,6 +60,12 @@ const VI: typeof EN = {
   switching: 'Đang chuyển…',
   switched: 'Đã chuyển. {n} tệp đang được đọc lại.',
   active: 'Đang dùng',
+  loading: 'Đang tải cài đặt mô hình tìm kiếm…',
+  loadFailed: 'Không tải được cài đặt mô hình tìm kiếm.',
+  retry: 'Thử lại',
+  saveFailed: 'Không chuyển được mô hình tìm kiếm. Hãy thử lại.',
+  unknownOutcome:
+    'Chưa nhận xác nhận kịp thời. Mô hình có thể đã được chuyển; hãy tải lại trước khi thử tiếp.',
 }
 const ZH: typeof EN = {
   title: '搜索模型',
@@ -73,8 +87,36 @@ const ZH: typeof EN = {
   switching: '正在切换…',
   switched: '已切换。正在重新读取 {n} 个文件。',
   active: '使用中',
+  loading: '正在加载搜索模型设置…',
+  loadFailed: '无法加载搜索模型设置。',
+  retry: '重试',
+  saveFailed: '无法切换搜索模型，请重试。',
+  unknownOutcome: '未能及时收到确认。模型可能已切换；请先重新加载再试。',
 }
 const DICTS: Record<string, typeof EN> = { en: EN, vi: VI, zh: ZH }
+
+function isEmbeddingModelState(value: unknown): value is EmbeddingModelState {
+  if (!value || typeof value !== 'object') return false
+  const v = value as Partial<EmbeddingModelState>
+  return (
+    (v.profile === 'standard' || v.profile === 'high') &&
+    (v.recommended === 'standard' || v.recommended === 'high') &&
+    !!v.machine &&
+    Number.isFinite(v.machine.totalMemGiB) &&
+    Number.isFinite(v.machine.logicalCores) &&
+    !!v.profiles &&
+    ['standard', 'high'].every((id) => {
+      const profile = v.profiles?.[id as EmbeddingProfileChoice]
+      return (
+        !!profile &&
+        typeof profile.name === 'string' &&
+        Number.isFinite(profile.dimensions) &&
+        Number.isFinite(profile.downloadMB) &&
+        Number.isFinite(profile.memoryMB)
+      )
+    })
+  )
+}
 
 function fill(text: string, values: Record<string, string | number>): string {
   return text.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ''))
@@ -84,23 +126,42 @@ export function EmbeddingModelSettings() {
   const { lang } = useI18n()
   const d = DICTS[lang] ?? EN
   const [state, setState] = useState<EmbeddingModelState | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [loadFailed, setLoadFailed] = useState(false)
   const [busy, setBusy] = useState(false)
   const choicePending = useRef(false)
   const [note, setNote] = useState('')
 
   const load = useCallback(async () => {
+    setLoading(true)
+    setLoadFailed(false)
     try {
-      const next = await window.aiOffice.getEmbeddingModel?.()
-      if (next) setState(next)
+      const next = await readIndexRequest(
+        () => window.aiOffice.getEmbeddingModel?.(),
+        isEmbeddingModelState,
+      )
+      setState(next)
     } catch {
-      // keep what is shown
+      setLoadFailed(true)
+    } finally {
+      setLoading(false)
     }
   }, [])
   useEffect(() => {
     void load()
   }, [load])
 
-  if (!state) return null
+  if (!state)
+    return (
+      <div className="set-model" role="status">
+        <p className="set-field-desc">{loading ? d.loading : d.loadFailed}</p>
+        {!loading && (
+          <button type="button" className="idx-link" onClick={() => void load()}>
+            {d.retry}
+          </button>
+        )}
+      </div>
+    )
 
   const choose = async (choice: EmbeddingProfileChoice) => {
     if (choicePending.current || busy || choice === state.profile) return
@@ -124,10 +185,10 @@ export function EmbeddingModelSettings() {
     try {
       if (!(await appConfirm(message))) return
       setNote(d.switching)
-      const result = await window.aiOffice.setEmbeddingModel(choice)
-      setNote(result.ok ? fill(d.switched, { n: result.requeued }) : '')
-    } catch {
-      setNote('')
+      const result = await runIndexMutation(() => window.aiOffice.setEmbeddingModel(choice))
+      setNote(result.ok ? fill(d.switched, { n: result.requeued }) : d.saveFailed)
+    } catch (error) {
+      setNote(error instanceof IndexMutationTimeout ? d.unknownOutcome : d.saveFailed)
     } finally {
       choicePending.current = false
       setBusy(false)
@@ -168,6 +229,14 @@ export function EmbeddingModelSettings() {
     <div className="set-model">
       <h4 className="set-field-label">{d.title}</h4>
       <p className="set-field-desc">{d.desc}</p>
+      {loadFailed && (
+        <p className="set-field-desc" role="status">
+          {d.loadFailed}{' '}
+          <button type="button" className="idx-link" onClick={() => void load()}>
+            {d.retry}
+          </button>
+        </p>
+      )}
       <p className="set-field-desc">
         {fill(d.machine, { mem: state.machine.totalMemGiB, cores: state.machine.logicalCores })}
         {state.limit === 'memory'

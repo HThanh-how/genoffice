@@ -318,13 +318,12 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     const memory = documentMemory?.indexingActivityStatus()
     const modelError =
       memory?.modelState === 'error' ? shortCause(documentMemory?.lastIndexError()) : ''
-    const root = folder?.root
-    const counts =
-      root && documentMemory
-        ? folderCounts.get(root, () => documentMemory.getFolderIndexCounts(root))
-        : null
+    const counts = documentMemory
+      ? folderCounts.get(ALL_FOLDERS, () => documentMemory.getLibraryIndexCounts())
+      : null
     return {
       folder,
+      progressScope: 'library',
       memory: {
         enabled: memory?.enabled ?? false,
         cpuMode: 'gentle' as const,
@@ -335,7 +334,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
         ...(modelError ? { lastError: modelError } : {}),
       },
       folderProgress: counts
-        ? foldFolderProgress(counts, folder?.state === 'complete', folder?.errors ?? 0)
+        ? foldFolderProgress(counts, !folder?.running, folder?.running ? (folder.errors ?? 0) : 0)
         : null,
     }
   })

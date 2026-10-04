@@ -118,6 +118,47 @@ function manager(fake: FakeWorker) {
 }
 
 describe('DocumentMemoryManager', () => {
+  it('retains searchable chunks when the source drive disappears during verification', async () => {
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    const instance = manager(fake)
+    const path = join(dir, 'company.txt')
+    writeFileSync(path, 'cached company document')
+    instance.remember(path)
+    await until(() => instance.status().vectors > 0)
+    const store = new DocumentMemoryStore(join(dir, 'document-memory.db'))
+    const hit = store.search('cached', null, 5)[0]!
+    const source = instance as unknown as { statOutcome(path: string): Promise<{ kind: 'gone' }> }
+    vi.spyOn(source, 'statOutcome').mockResolvedValue({ kind: 'gone' })
+    const result = await instance.read(hit.chunkId)
+    expect(result.verified).toBe(false)
+    expect(result.error).toContain('temporarily unavailable')
+    await (instance as unknown as { finalizeMissing(path: string): Promise<void> }).finalizeMissing(
+      path,
+    )
+    expect(store.search('cached', null, 5)).toHaveLength(1)
+    expect(store.documentByPath(path)?.status).toBe('ready')
+    store.close()
+  })
+
+  it('keeps a failed embedding in the live queue and retries it without reading the file again', async () => {
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    fake.failEmbedding = true
+    const instance = manager(fake)
+    const path = join(dir, 'retry-model.txt')
+    writeFileSync(path, 'A document with searchable content before vectors are ready.')
+    instance.remember(path)
+    await until(
+      () => fake.embeddingCalls.length === 1 && instance.nowStatus().embedding[path] !== undefined,
+    )
+    const store = new DocumentMemoryStore(join(dir, 'document-memory.db'))
+    const id = store.documentByPath(path)!.id
+    store.close()
+    fake.failEmbedding = false
+    expect(instance.retryDocument(id)).toEqual({ ok: true })
+    await until(() => instance.status().vectors > 0)
+    expect(fake.extractionCalls.filter((item) => item === path)).toHaveLength(1)
+    expect(fake.embeddingCalls).toHaveLength(2)
+  })
   it('does not show old completed counters while a changed snapshot is paused, then completes', async () => {
     const fake = new FakeWorker(join(dir, 'document-memory.db'))
     const instance = manager(fake)
@@ -376,6 +417,41 @@ describe('DocumentMemoryManager', () => {
     expect(instance.status().errors).toBe(0)
   })
 
+  it('exposes active embedding progress and promotes it without re-extracting or losing completed chunks', async () => {
+    const path = join(dir, 'active-embedding.txt')
+    writeFileSync(path, `${'OCR READABLE '.repeat(5000)}\n\n`)
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    fake.delay = 50
+    const instance = manager(fake)
+    instance.remember(path)
+    await until(() => !!instance.nowStatus().embedding[path])
+    const view = new DocumentMemoryStore(join(dir, 'document-memory.db'))
+    const id = view.documentByPath(path)!.id
+    view.close()
+    expect(instance.retryDocument(id)).toEqual({ ok: true })
+    await until(
+      () => instance.status().vectors === instance.status().chunks && instance.status().chunks > 0,
+    )
+    expect(fake.extractionCalls.filter((item) => item === path)).toHaveLength(1)
+  })
+
+  it('stops a stalled text-only embedding and keeps the document explicitly retryable', async () => {
+    const path = join(dir, 'stalled-embedding.txt')
+    writeFileSync(path, 'Readable text waiting for semantic indexing')
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    fake.stopAfterBatches = 0
+    const instance = manager(fake)
+    instance.remember(path)
+    await until(() => fake.embeddingCalls.length === 1)
+    const view = new DocumentMemoryStore(join(dir, 'document-memory.db'))
+    const id = view.documentByPath(path)!.id
+    expect(view.documentByPath(path)?.status).toBe('text-only')
+    expect(await instance.stopDocument(id)).toEqual({ ok: true })
+    await until(() => !instance.nowStatus().embedding[path])
+    expect(view.documentByPath(path)).toMatchObject({ status: 'error', error: 'Stopped by you.' })
+    view.close()
+  })
+
   it('rotates large embedding jobs so a newly opened file gets a prompt batch', async () => {
     const largePath = join(dir, 'large-old.txt')
     const newerPath = join(dir, 'new-small.txt')
@@ -420,7 +496,8 @@ describe('DocumentMemoryManager', () => {
     fake.failEmbedding = true
     const instance = manager(fake)
     instance.remember(path)
-    await until(() => instance.status().chunks > 0 && instance.status().pending === 0)
+    await until(() => instance.status().chunks > 0 && instance.status().modelState === 'error')
+    expect(instance.status().pending).toBeGreaterThan(0)
     expect(instance.status().modelState).toBe('error')
     expect((await instance.search('rare lexical')).hits[0]?.path).toBe(path)
   })

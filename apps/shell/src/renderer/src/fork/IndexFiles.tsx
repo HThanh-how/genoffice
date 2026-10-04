@@ -12,18 +12,18 @@ import { createPortal } from 'react-dom'
 import type { HomeApi } from '../../../shared/home-api'
 import type { IndexFileDetail, IndexingNow } from '../../../shared/fork/document-index-api'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
-import { isRetryableReason } from '../../../main/document-memory/issues'
 import { useI18n } from '../locale'
-import { fill } from '../indexing-activity-copy'
+import { activityCopy, fill } from '../indexing-activity-copy'
 import { iconFor } from '../file-icons'
 import { buildFileLog, deriveFileSteps, formatBytes, logWords } from './index-file-log'
 import { isIndexFileDetail, isIndexingNow, readIndexRequest } from './index-request'
 import { IndexMutationTimeout, runIndexMutation } from './index-mutation'
+import { fileProgress, indexRowActions } from './index-row-state'
 
 /** What the indexer is doing with one file right now. */
 export type Live =
   | { kind: 'reading'; since: number; pages?: { done: number; total: number } }
-  | { kind: 'embedding'; done: number; total: number }
+  | { kind: 'embedding'; done: number; total: number; active?: boolean; paused?: boolean }
   | { kind: 'queued'; position: number; pages?: { done: number; total: number } }
   | { kind: 'paused' }
 
@@ -33,9 +33,18 @@ export function liveOf(now: IndexingNow | null, path: string): Live | null {
   const reading = now.extracting.find((entry) => entry.path === path)
   if (reading) return { kind: 'reading', since: reading.since, ...(pages ? { pages } : {}) }
   const vectors = now.embedding[path]
-  if (vectors) return { kind: 'embedding', done: vectors.done, total: vectors.total }
-  if (now.paused) return { kind: 'paused' }
+  if (vectors)
+    return {
+      kind: 'embedding',
+      done: vectors.done,
+      total: vectors.total,
+      ...(now.activeEmbeddingPath !== undefined
+        ? { active: now.activeEmbeddingPath === path && !now.paused }
+        : {}),
+      ...(now.paused ? { paused: true, active: false } : {}),
+    }
   const position = now.positions[path]
+  if (now.paused && position) return { kind: 'paused' }
   return position ? { kind: 'queued', position, ...(pages ? { pages } : {}) } : null
 }
 
@@ -87,6 +96,7 @@ export interface FileItem {
   reason?: IndexIssueReason
   error?: string
   progress?: { kind: 'ocr' | 'chunks'; done: number; total: number }
+  deleted?: boolean
 }
 
 const EN = {
@@ -148,6 +158,14 @@ const EN = {
     'Already queued, already read, or not available for OCR. Check Index settings for its current status.',
   unknownOutcome:
     'The app did not confirm this action in time. It may still finish. Check the file status before trying again.',
+  requesting: 'Sending request…',
+  ocrWaiting: 'OCR queued · waiting for its turn',
+  ocrBlocked: 'OCR queued · {reason}',
+  ocrError: 'OCR could not finish · {reason}',
+  refreshDetail: 'Refresh details',
+  copyFailed: 'Could not copy. Allow clipboard access and try again.',
+  waitingLocal: 'Queued · waiting to be read',
+  waitingVectors: 'Waiting for search vectors · {d}/{n}',
 }
 export type FileWords = typeof EN
 const VI: FileWords = {
@@ -209,6 +227,14 @@ const VI: FileWords = {
     'Tệp đã trong hàng chờ, đã đọc hoặc chưa thể OCR. Xem trạng thái trong cài đặt chỉ mục.',
   unknownOutcome:
     'Ứng dụng chưa xác nhận kịp thao tác này; có thể vẫn đang hoàn tất. Kiểm tra trạng thái tệp trước khi thử lại.',
+  requesting: 'Đang gửi yêu cầu…',
+  ocrWaiting: 'Đã xếp OCR · đang chờ lượt',
+  ocrBlocked: 'Đã xếp OCR · {reason}',
+  ocrError: 'OCR chưa hoàn tất · {reason}',
+  refreshDetail: 'Cập nhật chi tiết',
+  copyFailed: 'Chưa sao chép được. Cho phép truy cập bộ nhớ tạm rồi thử lại.',
+  waitingLocal: 'Trong hàng chờ · chờ đọc nội dung',
+  waitingVectors: 'Chờ lập vector tìm kiếm · {d}/{n}',
 }
 export const fileWords = (lang: string): FileWords => (lang === 'vi' ? VI : EN)
 
@@ -297,23 +323,33 @@ export function IconButton({
 }
 
 function Progress({ progress }: { progress: NonNullable<FileItem['progress']> }) {
-  if (progress.total <= 0) return null
-  const percent = Math.min(100, Math.round((progress.done / progress.total) * 100))
+  const { lang } = useI18n()
+  const count = fileProgress(progress.done, progress.total)
+  if (!count) return null
+  const unit =
+    progress.kind === 'ocr'
+      ? lang === 'vi'
+        ? 'trang'
+        : 'pages'
+      : lang === 'vi'
+        ? 'đoạn'
+        : 'blocks'
+  const label = `${count.done}/${count.total} ${unit}`
+  const percent = Math.round((count.done / count.total) * 100)
   return (
     <span
       className="ixp-progress"
-      title={`${progress.done}/${progress.total}`}
+      title={label}
+      aria-label={label}
       role="progressbar"
       aria-valuemin={0}
-      aria-valuemax={progress.total}
-      aria-valuenow={progress.done}
+      aria-valuemax={count.total}
+      aria-valuenow={count.done}
     >
       <span className="ixp-bar">
         <i style={{ width: `${Math.max(percent, 3)}%` }} />
       </span>
-      <span className="ixp-progress-n">
-        {progress.done}/{progress.total}
-      </span>
+      <span className="ixp-progress-n">{label}</span>
     </span>
   )
 }
@@ -334,6 +370,9 @@ export function useFileActions(
   const busyIds = useRef(new Set<number>())
   const [readingAgy] = useState<Set<number>>(new Set())
   const [note, setNote] = useState('')
+  const [feedback, setFeedback] = useState<Record<number, { text: string; at: number }>>({})
+  const feedbackTimers = useRef(new Map<number, ReturnType<typeof setTimeout>>())
+  const detailRequests = useRef(new Map<number, number>())
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
   useEffect(() => () => void (timer.current && clearTimeout(timer.current)), [])
 
@@ -342,11 +381,43 @@ export function useFileActions(
     if (timer.current) clearTimeout(timer.current)
     timer.current = setTimeout(() => setNote(''), 4000)
   }, [])
+  const acknowledge = (ids: number[], text: string) => {
+    const at = Date.now()
+    setFeedback((current) => {
+      const next = { ...current }
+      for (const id of ids) next[id] = { text, at }
+      return next
+    })
+    for (const id of ids) {
+      const previous = feedbackTimers.current.get(id)
+      if (previous) clearTimeout(previous)
+      feedbackTimers.current.set(
+        id,
+        setTimeout(() => {
+          feedbackTimers.current.delete(id)
+          setFeedback((current) => {
+            const next = { ...current }
+            if (next[id]?.at === at) delete next[id]
+            return next
+          })
+        }, 6000),
+      )
+    }
+  }
+  useEffect(
+    () => () => {
+      for (const timeout of feedbackTimers.current.values()) clearTimeout(timeout)
+    },
+    [],
+  )
 
-  const detailOf = async (id: number): Promise<IndexFileDetail | null> => {
-    if (id in details && !detailFailures.has(id)) return details[id] ?? null
+  const detailOf = async (id: number, force = false): Promise<IndexFileDetail | null> => {
+    if (!force && id in details && !detailFailures.has(id)) return details[id] ?? null
+    const request = (detailRequests.current.get(id) ?? 0) + 1
+    detailRequests.current.set(id, request)
     try {
       const got = await readIndexRequest(() => api.getIndexFileDetail(id), isIndexFileDetail)
+      if (detailRequests.current.get(id) !== request) return got
       setDetails((current) => ({ ...current, [id]: got }))
       setDetailFailures((current) => {
         const next = new Set(current)
@@ -355,11 +426,45 @@ export function useFileActions(
       })
       return got
     } catch {
-      setDetails((current) => ({ ...current, [id]: null }))
+      if (detailRequests.current.get(id) !== request) return null
+      setDetails((current) => ({ ...current, [id]: current[id] ?? null }))
       setDetailFailures((current) => new Set(current).add(id))
       return null
     }
   }
+  useEffect(() => {
+    if (open === null) return
+    let alive = true
+    let timer: ReturnType<typeof setTimeout>
+    const refresh = async () => {
+      if (document.visibilityState !== 'hidden') {
+        const request = (detailRequests.current.get(open) ?? 0) + 1
+        detailRequests.current.set(open, request)
+        try {
+          const next = await readIndexRequest(() => api.getIndexFileDetail(open), isIndexFileDetail)
+          if (!alive || detailRequests.current.get(open) !== request) return
+          setDetails((current) =>
+            JSON.stringify(current[open]) === JSON.stringify(next)
+              ? current
+              : { ...current, [open]: next },
+          )
+          setDetailFailures((current) => {
+            const next = new Set(current)
+            next.delete(open)
+            return next
+          })
+        } catch {
+          if (alive) setDetailFailures((current) => new Set(current).add(open))
+        }
+      }
+      if (alive) timer = setTimeout(() => void refresh(), 3000)
+    }
+    timer = setTimeout(() => void refresh(), 3000)
+    return () => {
+      alive = false
+      clearTimeout(timer)
+    }
+  }, [api, open])
   const toggle = (item: FileItem) => {
     const next = open === item.id ? null : item.id
     setOpen(next)
@@ -394,35 +499,27 @@ export function useFileActions(
     }
   }
   const settle = async (item: FileItem) => {
-    setDetails({})
-    await afterChange(item)
-    if (open === item.id) {
-      const next = await readIndexRequest(
-        () => api.getIndexFileDetail(item.id),
-        isIndexFileDetail,
-      ).catch(() => null)
-      setDetails((current) => ({ ...current, [item.id]: next }))
-      setDetailFailures((current) => {
-        const updated = new Set(current)
-        if (next === null) updated.add(item.id)
-        else updated.delete(item.id)
-        return updated
-      })
-    }
+    void Promise.resolve()
+      .then(() => afterChange(item))
+      .catch(() => {})
     onChanged()
-  }
-  const copyLog = async (item: FileItem) => {
-    const detail = await detailOf(item.id)
-    const text = detail
-      ? buildFileLog(detail, lang, dateLocale, item.reason ? reasonTitle(item.reason) : undefined)
-      : `${item.path}\n${item.error ?? ''}`
-    try {
-      await navigator.clipboard.writeText(text)
-      say(w.copied)
-    } catch {
-      say(text)
+    if (open === item.id) {
+      void detailOf(item.id, true)
     }
   }
+  const copyLog = (item: FileItem) =>
+    withBusy(item.id, async () => {
+      const detail = await detailOf(item.id)
+      const text = detail
+        ? buildFileLog(detail, lang, dateLocale, item.reason ? reasonTitle(item.reason) : undefined)
+        : `${item.path}\n${item.error ?? ''}`
+      try {
+        await runIndexMutation(() => navigator.clipboard.writeText(text))
+        say(w.copied)
+      } catch (error) {
+        say(error instanceof IndexMutationTimeout ? w.unknownOutcome : w.copyFailed)
+      }
+    })
   const retry = (item: FileItem) =>
     withBusy(item.id, async () => {
       if (!api.enqueueDocumentIndex) {
@@ -430,6 +527,7 @@ export function useFileActions(
         return
       }
       const result = await runIndexMutation(() => api.enqueueDocumentIndex!([item.id]))
+      if (!result.error && result.queued > 0) acknowledge([item.id], w.readQueued)
       say(
         result.error
           ? fill(w.ocrFailed, { e: result.error })
@@ -444,42 +542,44 @@ export function useFileActions(
       if (api.cancelScannedPdfsWithAgy)
         await runIndexMutation(() => api.cancelScannedPdfsWithAgy!([item.id]))
       const result = await runIndexMutation(() => api.stopIndexFile(item.id))
+      if (result.ok) acknowledge([item.id], w.stopped)
       say(result.ok ? w.stopped : fill(w.ocrFailed, { e: result.error ?? '' }))
       await settle(item)
     })
   const later = (item: FileItem) =>
     withBusy(item.id, async () => {
       const result = await runIndexMutation(() => api.deferIndexFile(item.id))
+      if (result.ok) acknowledge([item.id], w.deferred)
       say(result.ok ? w.deferred : fill(w.ocrFailed, { e: result.error ?? '' }))
       await settle(item)
     })
-  const openFile = async (item: FileItem) => {
-    const result = await api.documentMemoryOpen(item.id).catch(() => null)
-    if (!result?.ok) say(w.couldNotOpen)
-  }
-  const reveal = async (item: FileItem) => {
-    try {
-      await api.revealDocumentIndexFile(item.id)
-    } catch {
-      say(w.actionFailed)
-    }
-  }
-  const copyPath = async (item: FileItem) => {
-    try {
-      await navigator.clipboard.writeText(item.path)
-      say(w.copied)
-    } catch {
-      say(item.path)
-    }
-  }
-  const copyName = async (item: FileItem) => {
-    try {
-      await navigator.clipboard.writeText(item.name)
-      say(w.copied)
-    } catch {
-      say(item.name)
-    }
-  }
+  const openFile = (item: FileItem) =>
+    withBusy(item.id, async () => {
+      const result = await runIndexMutation(() => api.documentMemoryOpen(item.id))
+      if (!result?.ok) say(w.couldNotOpen)
+    })
+  const reveal = (item: FileItem) =>
+    withBusy(item.id, async () => {
+      await runIndexMutation(() => api.revealDocumentIndexFile(item.id))
+    })
+  const copyPath = (item: FileItem) =>
+    withBusy(item.id, async () => {
+      try {
+        await runIndexMutation(() => navigator.clipboard.writeText(item.path))
+        say(w.copied)
+      } catch (error) {
+        say(error instanceof IndexMutationTimeout ? w.unknownOutcome : w.copyFailed)
+      }
+    })
+  const copyName = (item: FileItem) =>
+    withBusy(item.id, async () => {
+      try {
+        await runIndexMutation(() => navigator.clipboard.writeText(item.name))
+        say(w.copied)
+      } catch (error) {
+        say(error instanceof IndexMutationTimeout ? w.unknownOutcome : w.copyFailed)
+      }
+    })
   const exclude = (item: FileItem) =>
     withBusy(item.id, async () => {
       try {
@@ -505,6 +605,7 @@ export function useFileActions(
       if (!(await appConfirm(consent))) return
       if (api.enqueueScannedPdfsWithAgy) {
         const result = await runIndexMutation(() => api.enqueueScannedPdfsWithAgy!([item.id], true))
+        if (!result.error && result.queued > 0) acknowledge([item.id], w.ocrWaiting)
         say(
           result.error
             ? fill(w.ocrFailed, { e: result.error })
@@ -526,6 +627,9 @@ export function useFileActions(
     readingAgy,
     note,
     say,
+    feedback,
+    acknowledge,
+    refreshDetail: (id: number) => detailOf(id, true),
     copyLog,
     copyPath,
     copyName,
@@ -673,7 +777,12 @@ export function FileRow({
   onStopPicked,
   onCopyPicked,
   ocrPickedCount = 0,
+  readPickedCount = pickedCount,
   ocrStage,
+  ocrQueued = false,
+  ocrWaitReason,
+  ocrProgress,
+  ocrError,
   onClearPicked,
   onSelectGroup,
 }: {
@@ -692,7 +801,12 @@ export function FileRow({
   onStopPicked?: () => void
   onCopyPicked?: () => void
   ocrPickedCount?: number
+  readPickedCount?: number
   ocrStage?: 'quota' | 'rendering' | 'recognizing' | 'indexing'
+  ocrQueued?: boolean
+  ocrWaitReason?: string
+  ocrProgress?: { done: number; total: number }
+  ocrError?: string
   onClearPicked?: () => void
   /** pick every file of the list this row is in */
   onSelectGroup?: () => void
@@ -726,14 +840,25 @@ export function FileRow({
           })[ocrStage]
     : w.readingAgy
   const detail = actions.details[item.id]
-  const retryable = item.reason ? isRetryableReason(item.reason) : false
+  const available = indexRowActions(
+    item,
+    live?.kind === 'embedding' && live.active === false ? 'queued' : live?.kind,
+    ocrQueued,
+    readingAgy,
+  )
+  const retryable = available.retry
   const liveText =
     live?.kind === 'reading'
       ? live.pages
         ? fill(w.readingPages, { t: clock(live.since), d: live.pages.done, p: live.pages.total })
         : fill(w.reading, { t: clock(live.since) })
       : live?.kind === 'embedding'
-        ? fill(w.embedding, { d: live.done, n: live.total })
+        ? live.paused
+          ? `${w.pausedNow} · ${live.done}/${live.total}`
+          : fill(live.active === false ? w.waitingVectors : w.embedding, {
+              d: live.done,
+              n: live.total,
+            })
         : live?.kind === 'queued'
           ? live.pages
             ? fill(w.queuedPages, { n: live.position, d: live.pages.done, p: live.pages.total })
@@ -741,13 +866,37 @@ export function FileRow({
           : live?.kind === 'paused'
             ? w.pausedNow
             : ''
-  const working = live?.kind === 'reading' || live?.kind === 'embedding'
+  const working = live?.kind === 'reading' || (live?.kind === 'embedding' && live.active !== false)
   // Issue groups explain the cause; rows identify where each file is stored.
   const sub = item.reason ? folderOf(item.path) : item.error
+  const issueHint =
+    item.reason && !['waiting', 'no-text', 'empty'].includes(item.reason)
+      ? activityCopy(lang).reasons[item.reason].hint
+      : undefined
   const description = finished
     ? w.done
-    : (readingAgy ? ocrText : liveText) || (status ?? (isOpen ? '' : sub))
-  const stoppable = readingAgy || working || live?.kind === 'queued' || item.reason === 'waiting'
+    : busy
+      ? w.requesting
+      : (readingAgy || working ? (readingAgy ? ocrText : liveText) : '') ||
+        actions.feedback[item.id]?.text ||
+        (readingAgy
+          ? ocrText
+          : ocrQueued
+            ? ocrWaitReason
+              ? fill(w.ocrBlocked, { reason: ocrWaitReason })
+              : w.ocrWaiting
+            : liveText) ||
+        (ocrError
+          ? fill(w.ocrError, { reason: ocrError })
+          : (status ??
+            (item.reason === 'waiting'
+              ? item.progress?.kind === 'chunks'
+                ? fill(w.waitingVectors, { d: item.progress.done, n: item.progress.total })
+                : w.waitingLocal
+              : isOpen
+                ? ''
+                : (issueHint ?? sub))))
+  const stoppable = available.stop
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const menuId = useId()
   const detailId = useId()
@@ -768,6 +917,10 @@ export function FileRow({
   }
   const onContextMenu = (event: MouseEvent) => {
     event.preventDefault()
+    if (onPick && !picked) {
+      onPick(item, 'clear')
+      onPick(item, 'toggle')
+    }
     const trigger = (event.target as Element).closest<HTMLElement>('button, input')
     showMenu(trigger ?? mainRef.current ?? (event.currentTarget as HTMLElement), {
       x: event.clientX,
@@ -778,7 +931,7 @@ export function FileRow({
   const entries: MenuEntry[] = bulk
     ? [
         {
-          label: fill(w.readPicked, { n: pickedCount }),
+          label: fill(w.readPicked, { n: readPickedCount }),
           icon: <IRetry />,
           disabled: busy || !onReadPicked,
           run: () => onReadPicked?.(),
@@ -828,13 +981,19 @@ export function FileRow({
         },
       ]
     : [
-        { label: w.openFile, icon: <IOpen />, run: () => void actions.openFile(item) },
+        {
+          label: w.openFile,
+          icon: <IOpen />,
+          disabled: busy || !available.open,
+          run: () => void actions.openFile(item),
+        },
         {
           label: w.reveal,
           icon: <IFolder />,
+          disabled: busy,
           run: () => void actions.reveal(item),
         },
-        ...(item.reason === 'no-text'
+        ...(available.ocr
           ? [
               {
                 label: w.readNow,
@@ -845,7 +1004,7 @@ export function FileRow({
               },
             ]
           : []),
-        ...(retryable || item.status === 'ready'
+        ...(retryable
           ? [
               {
                 label:
@@ -863,13 +1022,18 @@ export function FileRow({
           : []),
         ...(stoppable
           ? [
-              {
-                label: w.later,
-                separatorBefore: !retryable && item.status !== 'ready' && item.reason !== 'no-text',
-                icon: <ILater />,
-                disabled: busy,
-                run: () => void actions.later(item),
-              },
+              ...(available.defer
+                ? [
+                    {
+                      label: w.later,
+                      separatorBefore:
+                        !retryable && item.status !== 'ready' && item.reason !== 'no-text',
+                      icon: <ILater />,
+                      disabled: busy,
+                      run: () => void actions.later(item),
+                    },
+                  ]
+                : []),
               {
                 label: w.stop,
                 icon: <IStop />,
@@ -882,10 +1046,21 @@ export function FileRow({
           label: w.copyPath,
           icon: <ICopy />,
           separatorBefore: true,
+          disabled: busy,
           run: () => void actions.copyPath(item),
         },
-        { label: w.copyName, icon: <ICopy />, run: () => void actions.copyName(item) },
-        { label: w.copyLog, icon: <ICopy />, run: () => void actions.copyLog(item) },
+        {
+          label: w.copyName,
+          icon: <ICopy />,
+          disabled: busy,
+          run: () => void actions.copyName(item),
+        },
+        {
+          label: w.copyLog,
+          icon: <ICopy />,
+          disabled: busy,
+          run: () => void actions.copyLog(item),
+        },
         ...(onPick
           ? [
               {
@@ -908,9 +1083,16 @@ export function FileRow({
         },
       ]
   const progress =
-    live?.kind === 'embedding'
-      ? { kind: 'chunks' as const, done: live.done, total: live.total }
-      : item.progress
+    readingAgy && ocrProgress && fileProgress(ocrProgress.done, ocrProgress.total)
+      ? { kind: 'ocr' as const, ...fileProgress(ocrProgress.done, ocrProgress.total)! }
+      : live?.kind === 'reading' && live.pages
+        ? { kind: 'ocr' as const, ...live.pages }
+        : live?.kind === 'embedding'
+          ? { kind: 'chunks' as const, done: live.done, total: live.total }
+          : (item.progress ??
+            (detail && detail.chunkTotal > 0
+              ? { kind: 'chunks' as const, done: detail.chunkDone, total: detail.chunkTotal }
+              : undefined))
   return (
     <li
       className={`${isOpen ? 'is-selected' : ''}${finished ? ' is-done' : ''}${picked ? ' is-picked' : ''}${readingAgy || working ? ' is-processing' : ''}`}
@@ -976,7 +1158,7 @@ export function FileRow({
             {description && (
               <span
                 className={`ixp-file-sub${working || readingAgy ? ' is-live' : ''}`}
-                title={sub}
+                title={item.error ? `${item.error}\n${item.path}` : sub}
               >
                 {description}
               </span>
@@ -992,14 +1174,18 @@ export function FileRow({
           progress && <Progress progress={progress} />
         )}
         <span className="ixp-actions">
-          <IconButton label={w.openFile} onClick={() => void actions.openFile(item)}>
+          <IconButton
+            label={w.openFile}
+            disabled={busy || !available.open}
+            onClick={() => void actions.openFile(item)}
+          >
             <IOpen />
           </IconButton>
-          {working || readingAgy ? (
+          {working || readingAgy || ocrQueued ? (
             <IconButton label={w.stop} disabled={busy} onClick={() => void actions.stop(item)}>
               <IStop />
             </IconButton>
-          ) : item.reason === 'no-text' ? (
+          ) : available.ocr ? (
             <IconButton
               label={w.readNow}
               disabled={busy || readingAgy}
@@ -1007,7 +1193,7 @@ export function FileRow({
             >
               <ISpark />
             </IconButton>
-          ) : retryable || item.status === 'ready' ? (
+          ) : retryable ? (
             <IconButton
               label={
                 item.reason === 'waiting'
@@ -1022,7 +1208,7 @@ export function FileRow({
               <IRetry />
             </IconButton>
           ) : null}
-          <IconButton label={w.reveal} onClick={() => void actions.reveal(item)}>
+          <IconButton label={w.reveal} disabled={busy} onClick={() => void actions.reveal(item)}>
             <IFolder />
           </IconButton>
           <button
@@ -1064,12 +1250,21 @@ export function FileRow({
       )}
       {isOpen &&
         (detail === undefined ? (
-          <p className="ixp-loading">{w.loading}</p>
+          <p className="ixp-loading" id={detailId} role="status">
+            {w.loading}
+          </p>
         ) : detail === null ? (
           <div className="ixp-detail" id={detailId}>
             {actions.detailFailures.has(item.id) ? (
               <>
                 <p>{w.detailFailed}</p>
+                <button
+                  type="button"
+                  className="idx-link"
+                  onClick={() => void actions.refreshDetail(item.id)}
+                >
+                  {w.refreshDetail}
+                </button>
                 <code className="ixp-raw">{item.error ?? item.path}</code>
               </>
             ) : (
@@ -1078,6 +1273,7 @@ export function FileRow({
           </div>
         ) : (
           <div className="ixp-detail" id={detailId}>
+            {actions.detailFailures.has(item.id) && <p className="idx-muted">{w.detailFailed}</p>}
             {readingAgy || working ? (
               <p className="idx-muted">{w.runningHint}</p>
             ) : (
@@ -1094,7 +1290,9 @@ export function FileRow({
                       <i aria-hidden="true" />
                       <span className="ixp-step-name">{lw[step.key]}</span>
                       <span className="ixp-step-text">
-                        {step.key === 'read' && step.state === 'fail' ? w.actionFailed : step.text}
+                        {step.key === 'read' && step.state === 'fail'
+                          ? (issueHint ?? step.text)
+                          : step.text}
                       </span>
                     </li>
                   ))}

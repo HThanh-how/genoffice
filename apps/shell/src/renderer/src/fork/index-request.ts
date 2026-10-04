@@ -98,7 +98,10 @@ export function isIndexingNow(value: unknown): value is IndexingNow {
     ) &&
     Number.isSafeInteger(now.queued) &&
     (now.queued as number) >= 0 &&
-    typeof now.paused === 'boolean'
+    typeof now.paused === 'boolean' &&
+    (now.activeEmbeddingPath === undefined ||
+      now.activeEmbeddingPath === null ||
+      typeof now.activeEmbeddingPath === 'string')
   )
 }
 

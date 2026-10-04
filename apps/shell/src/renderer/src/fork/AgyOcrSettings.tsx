@@ -31,7 +31,11 @@ export function useAgyOcrStatus(
     let inFlight = false
     let timer: ReturnType<typeof setTimeout> | undefined
     const load = async () => {
-      if (!alive || inFlight || !getStatus) return
+      if (!alive || inFlight) return
+      if (!getStatus) {
+        setFailed(true)
+        return
+      }
       if (timer) clearTimeout(timer)
       inFlight = true
       try {
@@ -74,6 +78,15 @@ function isAgyOcrStatus(value: unknown): value is AgyOcrStatus {
     !!status.activity &&
     typeof status.activity.kind === 'string' &&
     typeof status.running === 'boolean' &&
+    (status.queuedDocumentIds === undefined ||
+      (Array.isArray(status.queuedDocumentIds) &&
+        status.queuedDocumentIds.every((id) => Number.isSafeInteger(id) && id > 0))) &&
+    (status.progress === undefined ||
+      (Number.isSafeInteger(status.progress.done) &&
+        status.progress.done >= 0 &&
+        Number.isSafeInteger(status.progress.total) &&
+        status.progress.total > 0 &&
+        status.progress.done <= status.progress.total)) &&
     !!status.tokensToday &&
     [
       status.tokensToday.input,

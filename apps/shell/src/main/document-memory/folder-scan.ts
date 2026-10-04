@@ -3,43 +3,14 @@ import { opendir, stat } from 'node:fs/promises'
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, extname, isAbsolute, parse, resolve } from 'node:path'
 import { FolderWatchManager } from './folder-watch'
-import { SYSTEM_DIRECTORY_NAMES } from '../folder-tree'
+import { SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
+export { IGNORED_DIRECTORIES, SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
 
 export const MAX_DOCUMENT_BYTES = 128 * 1024 * 1024
 const MAX_ROOT_LENGTH = 32_768
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 /** Progress counters are persisted at most this often while a scan runs (state changes save at once). */
 const MANIFEST_SAVE_INTERVAL_MS = 2_000
-export const IGNORED_DIRECTORIES = new Set([
-  '.git',
-  '.cache',
-  '.next',
-  '.turbo',
-  '.venv',
-  'node_modules',
-  'build',
-  'coverage',
-  'dist',
-  'venv',
-])
-export const SUPPORTED_EXTENSIONS = new Set([
-  '.doc',
-  '.docx',
-  '.xls',
-  '.xlsx',
-  '.xlsm',
-  '.csv',
-  '.tsv',
-  '.ppt',
-  '.pptx',
-  '.pdf',
-  '.md',
-  '.markdown',
-  '.html',
-  '.htm',
-  '.txt',
-])
-
 /** Office/editor lock files and partial downloads never hold indexable content. */
 const TEMPORARY_FILE = /\.(tmp|temp|crdownload|partial|part|lock|lck|swp|bak)$/i
 
@@ -230,18 +201,22 @@ export class FolderScanManager {
         return { ok: false, reason: 'unavailable' }
       }
       const files = new Map<string, { mtimeMs: number; sizeBytes: number }>()
+      let unavailable = false
       const completed = await this.traverse(
         job.root,
         {
           onSkipped: () => undefined,
-          onError: () => undefined,
+          onError: () => {
+            unavailable = true
+          },
           onFile: async (path) => {
             try {
               const fileStat = await stat(path)
               if (fileStat.isFile() && fileStat.size <= MAX_DOCUMENT_BYTES)
                 files.set(path, { mtimeMs: fileStat.mtimeMs, sizeBytes: fileStat.size })
             } catch {
-              // Vanished mid-walk; the next pass sees it.
+              // A disconnect midway through traversal is not a complete deletion inventory.
+              unavailable = true
             }
             return true
           },
@@ -249,6 +224,7 @@ export class FolderScanManager {
         () => this.closed,
       )
       if (!completed) return { ok: false, reason: 'interrupted' }
+      if (unavailable) return { ok: false, reason: 'unavailable' }
       await this.memory.reconcileFolder(job.root, files)
       job.reconciledAt = Date.now()
       this.recordRun(job, 'refresh', 'complete', { discovered: files.size })
@@ -632,16 +608,6 @@ function validateRoot(root: string): string {
     throw new Error('The selected folder is unavailable', { cause: error })
   }
   return normalized
-}
-
-export function shouldSkipDirectory(name: string): boolean {
-  const lower = name.toLowerCase()
-  return (
-    name.startsWith('.') ||
-    name.startsWith('$') ||
-    IGNORED_DIRECTORIES.has(lower) ||
-    SYSTEM_DIRECTORY_NAMES.has(lower)
-  )
 }
 
 function readManifest(path: string): Manifest {

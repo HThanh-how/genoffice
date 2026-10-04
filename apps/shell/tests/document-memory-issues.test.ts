@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { IndexIssueReader } from '../src/main/document-memory/issue-reader'
 import { registerDocumentIndexIpc } from '../src/main/fork/document-index-ipc'
@@ -164,6 +164,55 @@ it('IndexIssueReader summarizes, pages by reason and lists ids without touching 
     reader.close()
     store.close()
     rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+it('reports the entire library even when the last scanned folder contains only fifty files', () => {
+  const handlers = new Map<string, (event: unknown, ...args: unknown[]) => unknown>()
+  const getLibraryIndexCounts = vi.fn(() => ({
+    totalFiles: 18_000,
+    readyFiles: 160,
+    pendingFiles: 17_840,
+    errorFiles: 0,
+    emptyFiles: 0,
+    completedChunks: 9_000,
+    totalChunks: 17_000,
+    partialFileProgress: 170,
+  }))
+  const close = registerDocumentIndexIpc({
+    ipcMain: { handle: (channel, handler) => handlers.set(channel, handler as never) } as never,
+    getDocumentMemory: () =>
+      ({
+        getLibraryIndexCounts,
+        indexingActivityStatus: () => ({
+          enabled: true,
+          modelState: 'ready',
+          pending: 17_840,
+          errors: 0,
+        }),
+      }) as never,
+    getFolderScan: () =>
+      ({
+        status: () => ({
+          root: 'Downloads',
+          discovered: 50,
+          enrolled: 50,
+          errors: 0,
+          running: false,
+          state: 'complete',
+        }),
+      }) as never,
+    dbPath: () => 'unused.db',
+  })
+  try {
+    expect(handlers.get(HOME_CHANNELS.getIndexingActivity)!({})).toMatchObject({
+      progressScope: 'library',
+      folder: { root: 'Downloads', discovered: 50 },
+      folderProgress: { totalFiles: 18_000, readyFiles: 160, pendingFiles: 17_840 },
+    })
+    expect(getLibraryIndexCounts).toHaveBeenCalledTimes(1)
+  } finally {
+    close()
   }
 })
 

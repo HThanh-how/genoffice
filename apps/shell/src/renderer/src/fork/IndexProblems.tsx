@@ -22,6 +22,8 @@ import { issueBucket, type IssueBucket } from './index-issue-view'
 import { isOcrCandidate, selectedIndexFiles } from './index-bulk-actions'
 import { useAgyOcrStatus } from './AgyOcrSettings'
 import { IndexMutationTimeout, runIndexMutation } from './index-mutation'
+import { indexRowActions } from './index-row-state'
+import { activityLine } from './agy-ocr-strings'
 import {
   INDEX_ISSUE_PAGE_SIZE,
   INDEX_ISSUE_READ_TIMEOUT_MS,
@@ -103,6 +105,7 @@ const EN = {
   laterPicked: 'Read later',
   stopPicked: 'Stop processing',
   copyPicked: 'Copy paths',
+  copiedPaths: 'Copied {n} file paths.',
   changedPicked: 'Updated {ok} of {n} selected files.',
   queuedScans: 'Queued {n} scans for manual OCR. Processing continues in the background.',
   enqueueScansConfirm:
@@ -163,6 +166,7 @@ const VI: Dict = {
   laterPicked: 'Đọc sau',
   stopPicked: 'Dừng xử lý',
   copyPicked: 'Chép đường dẫn',
+  copiedPaths: 'Đã sao chép {n} đường dẫn tệp.',
   changedPicked: 'Đã xử lý {ok}/{n} tệp đã chọn.',
   queuedScans: 'Đã xếp {n} bản quét để OCR thủ công. Tiếp tục xử lý nền.',
   enqueueScansConfirm:
@@ -178,7 +182,7 @@ const VI: Dict = {
 function rank(live: ReturnType<typeof liveOf>): number {
   if (!live) return 1_000_000
   if (live.kind === 'reading') return 0
-  if (live.kind === 'embedding') return 1
+  if (live.kind === 'embedding') return live.active === false ? 2 : 1
   if (live.kind === 'queued') return 2 + live.position
   return 1_000_000
 }
@@ -616,15 +620,25 @@ export function IndexProblems({
   }
 
   const selectedFiles = () => selectedIndexFiles(Object.values(groupsRef.current), pickState.picked)
+  const rowAvailability = (item: IndexIssue) => {
+    const live = liveOf(now, item.path)
+    return indexRowActions(
+      item,
+      live?.kind === 'embedding' && live.active === false ? 'queued' : live?.kind,
+      ocrStatus?.queuedDocumentIds?.includes(item.id) ?? false,
+      !!ocrStatus?.running && ocrStatus.currentPath === item.path,
+    )
+  }
 
   const refreshAfterBatch = async () => {
-    await loadSummary()
-    await Promise.all([...openRef.current].map((reason) => loadGroup(reason)))
     onChanged()
+    // The mutation has already been acknowledged. Refresh separately so a slow read cannot
+    // keep selection actions disabled after a successful queue/stop/delete request.
+    void Promise.all([loadSummary(), ...[...openRef.current].map((reason) => loadGroup(reason))])
   }
 
   const queueScans = async (items: IndexIssue[], isCurrent: () => boolean) => {
-    const chosen = items.filter(isOcrCandidate)
+    const chosen = items.filter((item) => isOcrCandidate(item) && rowAvailability(item).ocr)
     if (chosen.length === 0) {
       actions.say(d.noPdfPicked)
       return
@@ -646,11 +660,16 @@ export function IndexProblems({
             true,
           ),
         )
+        queued += result.queued
         if (result.error) {
           failed = d.actionFailed
           break
         }
-        queued += result.queued
+        if (result.queued === Math.min(200, chosen.length - start))
+          actions.acknowledge(
+            chosen.slice(start, start + 200).map((item) => item.id),
+            lang === 'vi' ? 'Đã xếp OCR · đang chờ lượt' : 'OCR queued · waiting for its turn',
+          )
       } catch (error) {
         failed = error instanceof IndexMutationTimeout ? d.unknownOutcome : d.actionFailed
         break
@@ -665,7 +684,8 @@ export function IndexProblems({
   /** OCR queues work instead of holding the toolbar busy until every scan finishes. */
   const readPicked = async (mode: 'index' | 'ocr' = 'index') =>
     runBatch(async (isCurrent) => {
-      const chosen = selectedFiles()
+      const all = selectedFiles()
+      const chosen = mode === 'ocr' ? all : all.filter((item) => rowAvailability(item).retry)
       if (mode === 'ocr') return queueScans(chosen, isCurrent)
       if (chosen.length === 0) return
       if (!api.enqueueDocumentIndex) {
@@ -681,6 +701,11 @@ export function IndexProblems({
             api.enqueueDocumentIndex!(chosen.slice(start, start + 200).map((item) => item.id)),
           )
           queued += result.queued
+          if (result.queued === Math.min(200, chosen.length - start))
+            actions.acknowledge(
+              chosen.slice(start, start + 200).map((item) => item.id),
+              lang === 'vi' ? 'Đã ưu tiên vào hàng chờ' : 'Queued for priority reading',
+            )
           skipped += result.skipped
           if (result.error) {
             actions.say(`${fill(d.queuedPicked, { n: queued, skipped })} ${d.actionFailed}`)
@@ -703,11 +728,19 @@ export function IndexProblems({
 
   const changePicked = async (mode: 'exclude' | 'trash' | 'later' | 'stop' | 'copy') =>
     runBatch(async (isCurrent) => {
-      const chosen = selectedFiles()
+      const chosen = selectedFiles().filter((item) =>
+        mode === 'later'
+          ? rowAvailability(item).defer
+          : mode === 'stop'
+            ? rowAvailability(item).stop
+            : true,
+      )
       if (chosen.length === 0) return
       if (mode === 'copy') {
-        await navigator.clipboard.writeText(chosen.map((item) => item.path).join('\n'))
-        actions.say(fill(d.changedPicked, { ok: chosen.length, n: chosen.length }))
+        await runIndexMutation(() =>
+          navigator.clipboard.writeText(chosen.map((item) => item.path).join('\n')),
+        )
+        actions.say(fill(d.copiedPaths, { n: chosen.length }))
         return
       }
       if (
@@ -777,6 +810,7 @@ export function IndexProblems({
     if (batchInFlight.current) return
     const currentGeneration = generation.current
     const currentSelection = selectionEpoch.current
+    actions.say(d.loading)
     try {
       const total = groupsRef.current[reason]?.total ?? 0
       const loaded = await loadAtLeast(
@@ -948,10 +982,7 @@ export function IndexProblems({
   const rowActions = batchBusy
     ? {
         ...actions,
-        busy: new Set([
-          ...actions.busy,
-          ...Object.values(groups).flatMap((group) => group?.items.map((item) => item.id) ?? []),
-        ]),
+        busy: new Set([...actions.busy, ...pickState.picked]),
       }
     : actions
   const renderGroup = (reason: IndexIssueReason, count: number) => {
@@ -1048,37 +1079,69 @@ export function IndexProblems({
                 item={issue}
                 actions={rowActions}
                 api={api}
-                live={liveOf(now, issue.path)}
+                live={
+                  liveOf(now, issue.path) ??
+                  (now?.paused && issue.reason === 'waiting' ? { kind: 'paused' } : null)
+                }
                 ocrStage={
                   ocrStatus?.running && ocrStatus.currentPath === issue.path
                     ? ocrStatus.stage
                     : undefined
                 }
+                ocrQueued={ocrStatus?.queuedDocumentIds?.includes(issue.id)}
+                ocrWaitReason={
+                  ocrStatus?.activity && !['working', 'nothing'].includes(ocrStatus.activity.kind)
+                    ? activityLine(lang, ocrStatus.activity)
+                    : undefined
+                }
+                ocrProgress={ocrStatus?.currentPath === issue.path ? ocrStatus.progress : undefined}
+                ocrError={
+                  ocrStatus?.lastError?.path === issue.path
+                    ? ocrStatus.lastError.message
+                    : undefined
+                }
                 picked={pickState.picked.has(issue.id)}
                 pickedCount={pickState.picked.size}
                 onPick={(item, mode) => pickFile(orderedIds, item, mode)}
-                onReadPicked={() => {
-                  if (!batchBusy) void readPicked()
-                }}
-                onOcrPicked={() => {
-                  if (!batchBusy) void readPicked('ocr')
-                }}
+                onReadPicked={
+                  pickedRetryCount > 0
+                    ? () => {
+                        if (!batchBusy) void readPicked()
+                      }
+                    : undefined
+                }
+                onOcrPicked={
+                  pickedPdfCount > 0
+                    ? () => {
+                        if (!batchBusy) void readPicked('ocr')
+                      }
+                    : undefined
+                }
                 onExcludePicked={() => {
                   if (!batchBusy) void changePicked('exclude')
                 }}
                 onTrashPicked={() => {
                   if (!batchBusy) void changePicked('trash')
                 }}
-                onLaterPicked={() => {
-                  if (!batchBusy) void changePicked('later')
-                }}
-                onStopPicked={() => {
-                  if (!batchBusy) void changePicked('stop')
-                }}
+                onLaterPicked={
+                  pickedDeferCount > 0
+                    ? () => {
+                        if (!batchBusy) void changePicked('later')
+                      }
+                    : undefined
+                }
+                onStopPicked={
+                  pickedStopCount > 0
+                    ? () => {
+                        if (!batchBusy) void changePicked('stop')
+                      }
+                    : undefined
+                }
                 onCopyPicked={() => {
                   if (!batchBusy) void changePicked('copy')
                 }}
                 ocrPickedCount={pickedPdfCount}
+                readPickedCount={pickedRetryCount}
                 onSelectGroup={() => {
                   if (!batchBusy) void selectGroup(reason)
                 }}
@@ -1125,7 +1188,11 @@ export function IndexProblems({
 
   // scans first and in a fixed place: the indexing group below changes all the time, and the
   // list above it used to jump with it
-  const pickedPdfCount = selectedFiles().filter(isOcrCandidate).length
+  const chosenFiles = selectedFiles()
+  const pickedPdfCount = chosenFiles.filter((item) => rowAvailability(item).ocr).length
+  const pickedRetryCount = chosenFiles.filter((item) => rowAvailability(item).retry).length
+  const pickedStopCount = chosenFiles.filter((item) => rowAvailability(item).stop).length
+  const pickedDeferCount = chosenFiles.filter((item) => rowAvailability(item).defer).length
   const attention = list
     .filter((g) => needsAction(g.reason))
     .sort((a, b) => attentionRank(a.reason) - attentionRank(b.reason))
@@ -1207,10 +1274,10 @@ export function IndexProblems({
           <button
             type="button"
             className="idx-btn primary"
-            disabled={batchBusy}
+            disabled={batchBusy || pickedRetryCount === 0}
             onClick={() => void readPicked()}
           >
-            {fill(d.readPicked, { n: pickState.picked.size })}
+            {fill(d.readPicked, { n: pickedRetryCount })}
           </button>
           <button
             type="button"
@@ -1227,7 +1294,7 @@ export function IndexProblems({
             <button
               type="button"
               className="idx-btn"
-              disabled={batchBusy}
+              disabled={batchBusy || pickedDeferCount === 0}
               onClick={() => void changePicked('later')}
             >
               {d.laterPicked}
@@ -1235,7 +1302,7 @@ export function IndexProblems({
             <button
               type="button"
               className="idx-btn"
-              disabled={batchBusy}
+              disabled={batchBusy || pickedStopCount === 0}
               onClick={() => void changePicked('stop')}
             >
               {d.stopPicked}

@@ -23,5 +23,27 @@ describe('liveOf', () => {
   it('says paused for a file that is not being read while background work is paused', () => {
     expect(liveOf(now({ paused: true }), 'c.pdf')).toEqual({ kind: 'paused' })
     expect(liveOf(now({ paused: true }), 'a.pdf')).toEqual({ kind: 'reading', since: 1000 })
+    expect(liveOf(now({ paused: true }), 'finished.docx')).toBeNull()
+  })
+  it('distinguishes a waiting vector job from the active embedding job', () => {
+    expect(liveOf(now({ activeEmbeddingPath: null }), 'b.docx')).toEqual({
+      kind: 'embedding',
+      done: 3,
+      total: 10,
+      active: false,
+    })
+    expect(liveOf(now({ activeEmbeddingPath: 'b.docx' }), 'b.docx')).toEqual({
+      kind: 'embedding',
+      done: 3,
+      total: 10,
+      active: true,
+    })
+    expect(liveOf(now({ activeEmbeddingPath: 'b.docx', paused: true }), 'b.docx')).toEqual({
+      kind: 'embedding',
+      done: 3,
+      total: 10,
+      active: false,
+      paused: true,
+    })
   })
 })

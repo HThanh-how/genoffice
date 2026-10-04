@@ -197,6 +197,7 @@ export class DocumentMemoryManager {
   private readonly activeExtractions = new Set<string>()
   private readonly activeSince = new Map<string, number>()
   private readonly embeds: EmbedJob[] = []
+  private activeEmbedJob?: EmbedJob
   private readonly pathGeneration = new Map<string, number>()
   private readonly waiting = new Map<number, PendingRequest>()
   private worker: Worker | null = null
@@ -256,6 +257,17 @@ export class DocumentMemoryManager {
     const embedding: IndexingNow['embedding'] = {}
     for (const job of this.embeds)
       embedding[job.path] = { done: job.startOffset ?? 0, total: job.chunks.length }
+    if (
+      this.activeEmbedJob &&
+      this.isCurrent(
+        this.activeEmbedJob.path,
+        this.activeEmbedJob.generation,
+        this.activeEmbedJob.epoch,
+      )
+    ) {
+      const job = this.activeEmbedJob
+      embedding[job.path] = { done: job.startOffset ?? 0, total: job.chunks.length }
+    }
     const positions: IndexingNow['positions'] = {}
     this.readingOrder()
       .slice(0, 400)
@@ -267,6 +279,15 @@ export class DocumentMemoryManager {
     return {
       extracting: [...this.activeSince].map(([path, since]) => ({ path, since })),
       embedding,
+      activeEmbeddingPath:
+        this.activeEmbedJob &&
+        this.isCurrent(
+          this.activeEmbedJob.path,
+          this.activeEmbedJob.generation,
+          this.activeEmbedJob.epoch,
+        )
+          ? this.activeEmbedJob.path
+          : null,
       positions,
       pages,
       queued: this.queue.length,
@@ -396,16 +417,31 @@ export class DocumentMemoryManager {
    * because the line is read one file at a time and "read this first" would otherwise wait
    * for however long that other file takes.
    */
-  retryDocument(id: number, options: { now?: boolean } = {}): { ok: boolean; error?: string } {
+  retryDocument(
+    id: number,
+    options: { now?: boolean; prioritize?: boolean } = {},
+  ): { ok: boolean; error?: string } {
     if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
     const path = this.store.retryDocument(id)
     if (!path) return { ok: false, error: 'unavailable' }
     // A read already under way is left alone: restarting it would throw its result away and
     // begin again, so "retry" on a large scan would spin for minutes and end where it began.
-    if (this.activeExtractions.has(path)) return { ok: true }
-    if (options.now) {
+    if (options.prioritize !== false || options.now) {
       this.deferred.delete(path)
       this.urgent.add(path)
+    }
+    if (this.activeExtractions.has(path)) return { ok: true }
+    // Promoting an unfinished embedding must retain its already extracted text and vectors.
+    if (this.activeEmbedJob?.path === path || this.embeds.some((job) => job.path === path)) {
+      const position = this.embeds.findIndex((job) => job.path === path)
+      if (position > 0) this.embeds.unshift(this.embeds.splice(position, 1)[0]!)
+      if (position >= 0) {
+        this.embeddingRetryAt = 0
+        if (this.retryTimer) clearTimeout(this.retryTimer)
+        this.retryTimer = null
+        this.drain()
+      }
+      return { ok: true }
     }
     // a large PDF read in turns needs no interrupting: it gives way at the end of its turn,
     // keeping every page it has read, and the file asked for is next
@@ -429,12 +465,20 @@ export class DocumentMemoryManager {
    */
   deferDocument(id: number): { ok: boolean; error?: string } {
     const document = this.store.documentById(id)
-    if (!document || document.status !== 'pending') return { ok: false, error: 'unavailable' }
+    if (!document || !['pending', 'text-only'].includes(document.status))
+      return { ok: false, error: 'unavailable' }
     this.putBehind(document.path)
     return { ok: true }
   }
 
   private putBehind(path: string): void {
+    if (this.activeEmbedJob?.path === path || this.embeds.some((job) => job.path === path)) {
+      this.urgent.delete(path)
+      this.deferred.add(path)
+      const position = this.embeds.findIndex((job) => job.path === path)
+      if (position >= 0) this.embeds.push(this.embeds.splice(position, 1)[0]!)
+      return
+    }
     const reading = this.activeExtractions.has(path)
     if (reading && this.slicing.has(path)) {
       // read in turns: it steps back when its turn ends, with the pages it has already read
@@ -470,9 +514,10 @@ export class DocumentMemoryManager {
    */
   async stopDocument(id: number): Promise<{ ok: boolean; error?: string }> {
     const document = this.store.documentById(id)
-    if (!document || document.status !== 'pending') return { ok: false, error: 'unavailable' }
+    if (!document || !['pending', 'text-only'].includes(document.status))
+      return { ok: false, error: 'unavailable' }
     const { path } = document
-    const reading = this.activeExtractions.has(path)
+    const reading = this.activeExtractions.has(path) || this.activeEmbedJob?.path === path
     this.invalidatePath(path)
     if (reading) this.recycleWorker(STOPPED_BY_USER)
     await this.store.markErrorSliced(path, STOPPED_BY_USER, await statMeta(path))
@@ -502,6 +547,11 @@ export class DocumentMemoryManager {
         }
       },
       reindex: (path) => {
+        const document = this.store.documentByPath(path)
+        if (!document || document.status === 'excluded') return
+        // Persist pending status before admission so OCR text is re-extracted after restart.
+        if (!this.store.markOcrPending(path)) return
+        if (!this.enabled || this.stopped) throw new Error('Re-index paused')
         this.invalidatePath(path)
         this.enqueue(path, true)
       },
@@ -603,6 +653,9 @@ export class DocumentMemoryManager {
    */
   getFolderIndexCounts(root: string): FolderChunkProgress {
     return this.store.folderChunkProgress(root)
+  }
+  getLibraryIndexCounts(): FolderChunkProgress {
+    return this.store.folderChunkProgress()
   }
 
   /** Index the waiting files below `root` before everything else; returns how many were waiting. */
@@ -890,7 +943,9 @@ export class DocumentMemoryManager {
         location: hit.location,
         text: '',
         verified: false,
-        error: 'The source file no longer exists at its indexed path.',
+        error: (await this.sourceUnavailable(hit.path))
+          ? 'The source drive or network share is temporarily unavailable. Reconnect it to open the file; the cached index is retained.'
+          : 'The source file no longer exists at its indexed path.',
       }
     }
     const reply = await this.ask(
@@ -902,7 +957,7 @@ export class DocumentMemoryManager {
         reply && 'error' in reply && typeof reply.error === 'string'
           ? reply.error
           : 'Document verification timed out.'
-      if (this.isCurrent(hit.path, generation, epoch))
+      if (this.isCurrent(hit.path, generation, epoch) && !(await this.sourceUnavailable(hit.path)))
         await this.store.markErrorSliced(hit.path, error, await statMeta(hit.path), {
           shouldContinue: () => this.isCurrent(hit.path, generation, epoch),
         })
@@ -1283,9 +1338,15 @@ export class DocumentMemoryManager {
 
   /** True only when the file is certainly gone, not when its drive or share is unreachable. */
   private async isGone(path: string): Promise<boolean> {
-    if ((await this.statOutcome(path)).kind !== 'gone') return false
-    const root = await this.statOutcome(volumeRootOf(path))
+    if ((await this.statOutcome(path, FRESHNESS_STAT_TIMEOUT_MS)).kind !== 'gone') return false
+    const root = await this.statOutcome(volumeRootOf(path), FRESHNESS_STAT_TIMEOUT_MS)
     return root.kind === 'other' || root.kind === 'file'
+  }
+
+  /** Keep the last useful index when a mapped drive/share disappears during extraction. */
+  private async sourceUnavailable(path: string): Promise<boolean> {
+    const root = await this.statOutcome(volumeRootOf(path), FRESHNESS_STAT_TIMEOUT_MS)
+    return root.kind === 'gone' || root.kind === 'unknown'
   }
 
   private async statOutcome(path: string, timeoutMs?: number): Promise<StatOutcome> {
@@ -1454,7 +1515,7 @@ export class DocumentMemoryManager {
           )
           await this.applyExtractReply(path, reply, generation, epoch)
         } catch (error) {
-          if (this.isCurrent(path, generation, epoch)) {
+          if (this.isCurrent(path, generation, epoch) && !(await this.sourceUnavailable(path))) {
             const message = safeError(error)
             await this.store
               .markErrorSliced(path, message, await statMeta(path), {
@@ -1509,6 +1570,7 @@ export class DocumentMemoryManager {
       return
     }
     if (!reply || !('result' in reply) || !isExtractResult(reply.result)) {
+      if (await this.sourceUnavailable(path)) return
       const error =
         reply && 'error' in reply && typeof reply.error === 'string'
           ? reply.error
@@ -1623,7 +1685,7 @@ export class DocumentMemoryManager {
       )
       await this.applyExtractReply(path, reply, generation, epoch)
     } catch (error) {
-      if (this.isCurrent(path, generation, epoch)) {
+      if (this.isCurrent(path, generation, epoch) && !(await this.sourceUnavailable(path))) {
         const message = safeError(error)
         await this.store
           .markErrorSliced(path, message, await statMeta(path), {
@@ -1667,6 +1729,7 @@ export class DocumentMemoryManager {
       while (!this.stopped && this.enabled && !isIndexingPaused() && this.embeds.length) {
         const job = this.embeds.shift()!
         if (!this.isCurrent(job.path, job.generation, job.epoch)) continue
+        this.activeEmbedJob = job
         this.pendingCount++
         try {
           // Commit one small batch per turn, then rotate incomplete files for fair queue progress.
@@ -1687,6 +1750,7 @@ export class DocumentMemoryManager {
           ) {
             const error = reply && 'error' in reply ? reply.error : 'Embedding timed out.'
             this.lastError = error
+            if (this.isCurrent(job.path, job.generation, job.epoch)) this.embeds.push(job)
             this.deferEmbeddingRetry()
             break
           }
@@ -1716,9 +1780,11 @@ export class DocumentMemoryManager {
         } catch (error) {
           if (this.isCurrent(job.path, job.generation, job.epoch)) {
             this.lastError = safeError(error)
+            this.embeds.push(job)
             this.deferEmbeddingRetry()
           }
         } finally {
+          this.activeEmbedJob = undefined
           this.pendingCount--
         }
       }

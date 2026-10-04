@@ -24,6 +24,95 @@ const T0 = Date.UTC(2026, 9, 1, 3, 0, 0) // 10:00 in Vietnam
 const VIETNAM = () => -420
 
 describe('OCR queue resilience', () => {
+  it('removes exhausted manual work instead of retrying paid calls forever', async () => {
+    const r = rig({ enabled: false })
+    r.host.add('/busy.pdf', 1)
+    r.recognizeMode.value = { throws: 'timed out' }
+    const id = r.host.files.get('/busy.pdf')!.id
+    r.job.enqueue([id])
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await vi.waitFor(() => expect(r.recognizeCalls).toHaveLength(attempt))
+      await vi.waitFor(() => expect(r.job.status().running).toBe(false))
+      r.clock.now += DAY
+      await r.job.tick()
+    }
+    expect(r.state.get().files['/busy.pdf']?.nonRetryable).toBe(true)
+    expect(r.job.status().queuedDocuments).toBe(0)
+    expect(r.recognizeCalls).toHaveLength(3)
+    r.job.stop()
+  })
+
+  it('a new confirmed request can resume after login is fixed without clearing provider quota limits', async () => {
+    const r = rig({ enabled: false })
+    r.host.add('/fixed.pdf', 1)
+    r.state.update((data) => {
+      data.halted = { day: '2026-10-01', kind: 'auth', message: 'sign in', at: T0 }
+      data.backoff = { failures: 1, until: T0 + DAY }
+    })
+    r.job.enqueue([r.host.files.get('/fixed.pdf')!.id])
+    await vi.waitFor(() => expect(r.host.saved).toHaveLength(1))
+    r.job.stop()
+    const blocked = rig({ enabled: false })
+    blocked.host.add('/quota.pdf', 1)
+    blocked.state.update((data) => {
+      data.halted = { day: '2026-10-01', kind: 'quota', message: 'quota', at: T0 }
+    })
+    blocked.job.enqueue([blocked.host.files.get('/quota.pdf')!.id])
+    await blocked.job.tick()
+    expect(blocked.recognizeCalls).toHaveLength(0)
+    blocked.job.stop()
+  })
+
+  it('persists confirmed manual work through shutdown and resumes it with automatic OCR disabled', async () => {
+    const r = rig({ enabled: false })
+    r.host.add('/resume.pdf', 2)
+    vi.spyOn(r.host, 'render').mockImplementation(() => new Promise(() => {}))
+    const id = r.host.files.get('/resume.pdf')!.id
+    expect(r.job.enqueue([id]).queued).toBe(1)
+    await vi.waitFor(() => expect(r.job.status().stage).toBe('rendering'))
+    expect(r.job.status().queuedDocumentIds).toEqual([id])
+    r.job.stop()
+    await vi.waitFor(() => expect(r.job.status().running).toBe(false))
+    expect(r.state.get().manualQueue).toEqual([{ id, path: '/resume.pdf' }])
+    const resumed = rig({ enabled: false }, r.fs)
+    resumed.host.add('/resume.pdf', 2)
+    resumed.job.start()
+    await vi.waitFor(() => expect(resumed.host.saved).toHaveLength(1))
+    await vi.waitFor(() => expect(resumed.state.get().manualQueue).toEqual([]))
+    resumed.job.stop()
+  })
+
+  it('saves returned OCR text before waiting for delayed quota and retries interrupted reindex on restart', async () => {
+    const r = rig({ autoWeeklyDailyBudgetPercent: 12 })
+    r.host.add('/saved.pdf', 1)
+    const deps = (r.job as unknown as { deps: OcrJobDeps }).deps
+    const readUsage = deps.readUsage
+    let release!: () => void
+    const wait = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    vi.spyOn(deps, 'readUsage').mockImplementation(async () => {
+      if (r.recognizeCalls.length) await wait
+      return readUsage()
+    })
+    vi.spyOn(r.host, 'reindex').mockImplementation(() => {
+      throw new Error('temporarily paused')
+    })
+    const running = r.job.tick()
+    await vi.waitFor(() => expect(r.host.saved).toHaveLength(1))
+    expect(r.state.get().pendingReindexPaths).toEqual(['/saved.pdf'])
+    expect(r.job.status().progress).toEqual({ done: 1, total: 1 })
+    release()
+    await running
+    const resumed = rig({}, r.fs)
+    resumed.host.add('/saved.pdf', 1)
+    resumed.job.start()
+    expect(resumed.host.reindexed).toEqual(['/saved.pdf'])
+    expect(resumed.state.get().pendingReindexPaths).toEqual([])
+    expect(resumed.recognizeCalls).toHaveLength(0)
+    resumed.job.stop()
+  })
+
   it('automatic unlimited retains provider authentication halts and transient backoff', async () => {
     const auth = rig({ autoUnlimited: true, autoWeeklyDailyBudgetPercent: 12 })
     auth.host.add('/auth.pdf', 1)

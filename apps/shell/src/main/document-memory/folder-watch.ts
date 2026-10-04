@@ -131,10 +131,16 @@ export class FolderWatchManager {
       for (const [root, state] of [...this.roots]) {
         if (this.closed || !this.safeEnabled()) break
         try {
-          await this.folders.reconcile(root)
+          const result = (await this.folders.reconcile(root)) as { ok?: boolean; reason?: string }
+          if (result?.ok === false) {
+            if (result.reason === 'busy') this.markDirty(root)
+            else this.retryAfterReconcileFailure(root, state)
+            continue
+          }
           state.lastReconcile = Date.now()
+          state.attempt = 0
         } catch {
-          // A failed pass is retried on the next cycle.
+          this.retryAfterReconcileFailure(root, state)
         }
       }
     } finally {
@@ -170,7 +176,6 @@ export class FolderWatchManager {
       )
       watcher.on('error', () => this.fail(root, watcher))
       state.watcher = watcher
-      state.attempt = 0
       if (state.needsCatchUp) {
         state.needsCatchUp = false
         this.markDirty(root)
@@ -208,6 +213,16 @@ export class FolderWatchManager {
       this.open(root)
     }, delay)
     state.retryTimer.unref?.()
+  }
+
+  /** A watcher can remain open but stop delivering events during a mount outage. Reopen it
+   * with the same capped backoff as watcher errors, then reconcile as soon as it returns. */
+  private retryAfterReconcileFailure(root: string, state: RootState): void {
+    if (state.dirTimer) clearTimeout(state.dirTimer)
+    state.dirTimer = null
+    state.needsCatchUp = true
+    if (state.watcher) this.fail(root, state.watcher)
+    else this.retry(root)
   }
 
   private release(root: string): void {
@@ -301,9 +316,14 @@ export class FolderWatchManager {
         this.markDirty(root)
         return
       }
+      if (result?.ok === false) {
+        this.retryAfterReconcileFailure(root, state)
+        return
+      }
       state.lastReconcile = Date.now()
+      state.attempt = 0
     } catch {
-      // The periodic pass retries.
+      this.retryAfterReconcileFailure(root, state)
     }
   }
 

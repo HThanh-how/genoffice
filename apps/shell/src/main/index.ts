@@ -3136,7 +3136,7 @@ function ensureFileIndexer(): FileIndexer | null {
     return null
   }
   fileIndexer = new FileIndexer(fileIndexStore, extractWorkerPath, {
-    roots: () => folderRootPaths().filter((root) => existsSync(root)),
+    roots: () => folderRootPaths(),
     extraPaths: () => [...readRecentFiles(), ...readStarredFiles()],
   })
   return fileIndexer

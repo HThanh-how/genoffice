@@ -4,7 +4,7 @@
  */
 import { parentPort } from 'node:worker_threads'
 import { extractText } from './extract'
-import { scanFiles } from './scan'
+import { scanFileSnapshot, type ScannedFile } from './scan'
 import { applyPolicyMessage, isPolicyMessage } from '../fork/indexing-worker-policy'
 import { withBackgroundBudget } from '../document-memory/cpu-budget'
 
@@ -13,7 +13,7 @@ export type WorkerRequest =
 
 export type WorkerResponse =
   | { id: number; type: 'extract'; result: Awaited<ReturnType<typeof extractText>> }
-  | { id: number; type: 'scan'; files: ReturnType<typeof scanFiles> }
+  | { id: number; type: 'scan'; files: ScannedFile[]; complete?: boolean }
 
 parentPort?.on('message', async (req: WorkerRequest) => {
   if (isPolicyMessage(req)) {
@@ -24,10 +24,12 @@ parentPort?.on('message', async (req: WorkerRequest) => {
     const result = await withBackgroundBudget(() => extractText(req.path))
     parentPort?.postMessage({ id: req.id, type: 'extract', result } satisfies WorkerResponse)
   } else {
+    const snapshot = scanFileSnapshot(req.root)
     parentPort?.postMessage({
       id: req.id,
       type: 'scan',
-      files: scanFiles(req.root),
+      files: snapshot.files,
+      complete: snapshot.complete,
     } satisfies WorkerResponse)
   }
 })

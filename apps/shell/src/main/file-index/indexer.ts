@@ -1,5 +1,6 @@
 import { Worker } from 'node:worker_threads'
-import { stat } from 'node:fs/promises'
+import { readdir, stat } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, relative } from 'node:path'
 import { createYielder } from '../document-memory/yield-budget'
 import {
   isIndexingPaused,
@@ -8,7 +9,7 @@ import {
 } from '../fork/indexing-policy-bus'
 import type { Extracted } from './extract'
 import type { WorkerRequest, WorkerResponse } from './extract-worker'
-import { isSupportedTreeFile } from '../folder-tree'
+import { isSupportedIndexFile } from './scan'
 import type { ScannedFile } from './scan'
 import type { FileIndexStore } from './store'
 
@@ -36,12 +37,42 @@ const RESCAN_DEBOUNCE_MS = 1500
 const WORKER_REQUEST_TIMEOUT_MS = 120_000
 
 /** Slow disks and network paths must never hold Electron's UI thread in statSync. */
-async function asyncStatOrNull(path: string): Promise<ScannedFile | null> {
+type FileStatResult = { kind: 'file'; file: ScannedFile } | { kind: 'missing' | 'unavailable' }
+
+async function asyncFileStat(path: string): Promise<FileStatResult> {
   try {
     const file = await stat(path)
-    return file.isFile() ? { path, mtimeMs: file.mtimeMs, sizeBytes: file.size } : null
+    return file.isFile()
+      ? { kind: 'file', file: { path, mtimeMs: file.mtimeMs, sizeBytes: file.size } }
+      : { kind: 'missing' }
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code
+    return { kind: code === 'ENOENT' || code === 'ENOTDIR' ? 'missing' : 'unavailable' }
+  }
+}
+
+function isInside(root: string, path: string): boolean {
+  const suffix = relative(root, path)
+  return (
+    suffix === '' ||
+    (!isAbsolute(suffix) &&
+      suffix !== '..' &&
+      !suffix.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`))
+  )
+}
+
+async function parentConfirmsMissing(path: string): Promise<boolean> {
+  try {
+    const names = await readdir(dirname(path), { withFileTypes: true })
+    const name = basename(path)
+    const entry = names.find((entry) =>
+      process.platform === 'win32'
+        ? entry.name.toLowerCase() === name.toLowerCase()
+        : entry.name === name,
+    )
+    return !entry || !entry.isFile()
   } catch {
-    return null
+    return false
   }
 }
 
@@ -57,6 +88,7 @@ export class FileIndexer {
   private readonly waiting = new Map<number, (r: WorkerResponse) => void>()
   private readonly queue: ScannedFile[] = []
   private readonly queued = new Set<string>()
+  private readonly preserveCachedBody = new Set<string>()
   private draining = false
   private scanning = false
   private scanRequested = false
@@ -106,14 +138,17 @@ export class FileIndexer {
     this.scanning = true
     try {
       const seen = new Map<string, ScannedFile>()
-      let walked = true
-      for (const root of this.sources.roots()) {
+      const roots = [...this.sources.roots()]
+      const completeRoots: string[] = []
+      for (const root of roots) {
         const res = await this.ask({ id: 0, type: 'scan', root })
         // a crashed worker answers with an extract error; dropping the index on that would empty search
-        if (res.type === 'scan') for (const f of res.files) seen.set(f.path, f)
-        else walked = false
+        if (res.type === 'scan') {
+          for (const f of res.files) seen.set(f.path, f)
+          if (res.complete === true) completeRoots.push(root)
+        }
       }
-      if (walked) await this.diff(seen)
+      await this.diff(seen, roots, completeRoots)
     } finally {
       this.scanning = false
       void this.drain()
@@ -126,20 +161,52 @@ export class FileIndexer {
   }
 
   /** bring the store in step with what the walk saw; extra paths are stat-ed here */
-  private async diff(seen: Map<string, ScannedFile>): Promise<void> {
+  private async diff(
+    seen: Map<string, ScannedFile>,
+    roots: string[],
+    completeRoots: string[],
+  ): Promise<void> {
     const yieldIfNeeded = createYielder()
-    for (const p of this.sources.extraPaths()) {
+    const extras = new Set(this.sources.extraPaths())
+    for (const p of extras) {
       if (this.stopped) return
-      if (seen.has(p) || !isSupportedTreeFile(p)) continue
-      const st = await asyncStatOrNull(p)
-      if (st) seen.set(p, st)
+      if (seen.has(p) || !isSupportedIndexFile(p)) continue
+      const st = await asyncFileStat(p)
+      if (st.kind === 'file') seen.set(p, st.file)
     }
     const known = this.store.listAll()
     const gone: string[] = []
-    for (const path of known.keys()) if (!seen.has(path)) gone.push(path)
+    const reachableRoots = new Map<string, boolean>()
+    for (const path of known.keys()) {
+      if (seen.has(path)) continue
+      // An offline root or a partial walk says nothing about the files omitted from it.
+      if (
+        roots.some((root) => isInside(root, path)) &&
+        !completeRoots.some((root) => isInside(root, path))
+      )
+        continue
+      const state = await asyncFileStat(path)
+      if (state.kind !== 'missing') continue
+      if (await parentConfirmsMissing(path)) gone.push(path)
+      else if (completeRoots.some((root) => isInside(root, path))) {
+        // Whole subfolders can really be deleted, but the mount root must still be reachable.
+        const root = completeRoots.find((root) => isInside(root, path))!
+        if (!reachableRoots.has(root)) {
+          try {
+            await readdir(root)
+            reachableRoots.set(root, true)
+          } catch {
+            reachableRoots.set(root, false)
+          }
+        }
+        if (reachableRoots.get(root)) gone.push(path)
+      }
+      await yieldIfNeeded()
+    }
     for (let offset = 0; offset < gone.length; offset += 100) {
       if (this.stopped) return
       this.store.remove(gone.slice(offset, offset + 100))
+      for (const path of gone.slice(offset, offset + 100)) this.preserveCachedBody.delete(path)
       await yieldIfNeeded()
     }
     for (const f of seen.values()) {
@@ -156,7 +223,10 @@ export class FileIndexer {
       }
       // Names and paths become searchable before any parser/model is started. Pending is
       // persisted so an interrupted first pass resumes its content work on the next scan.
-      this.store.upsert(f, null, 'pending')
+      // A refresh must not erase the last searchable body before parsing succeeds. Keeping
+      // the old metadata also ensures an interrupted refresh is retried after reconnecting.
+      if (!k) this.store.upsert(f, null, 'pending')
+      if (k?.status === 'ok') this.preserveCachedBody.add(f.path)
       this.enqueue(f)
       await yieldIfNeeded()
     }
@@ -178,11 +248,15 @@ export class FileIndexer {
         const f = this.queue.shift()!
         this.queued.delete(f.path)
         // the file may have changed again while queued; index what is on disk now
-        const st = await asyncStatOrNull(f.path)
-        if (!st) {
-          this.store.remove([f.path])
+        const state = await asyncFileStat(f.path)
+        if (state.kind !== 'file') {
+          if (state.kind === 'missing' && (await parentConfirmsMissing(f.path))) {
+            this.store.remove([f.path])
+            this.preserveCachedBody.delete(f.path)
+          }
           continue
         }
+        const st = state.file
         const res = await this.ask({ id: 0, type: 'extract', path: st.path })
         if (res.type !== 'extract') continue
         this.apply(st, res.result)
@@ -194,9 +268,13 @@ export class FileIndexer {
 
   private apply(f: ScannedFile, r: Extracted): void {
     try {
-      if (r.kind === 'text') this.store.upsert(f, r.text, 'ok')
-      else if (r.kind === 'name-only') this.store.upsert(f, null, 'name-only')
-      else this.store.upsert(f, null, 'error')
+      if (r.kind === 'text') {
+        this.store.upsert(f, r.text, 'ok')
+        this.preserveCachedBody.delete(f.path)
+      } else if (r.kind === 'name-only') {
+        this.store.upsert(f, null, 'name-only')
+        this.preserveCachedBody.delete(f.path)
+      } else if (!this.preserveCachedBody.has(f.path)) this.store.upsert(f, null, 'error')
     } catch {
       // a corrupt row must not stall the queue; the next scan retries it
     }

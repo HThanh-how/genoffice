@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync, statSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  statSync,
+  renameSync,
+  unlinkSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -6,6 +14,18 @@ import { FileIndexer } from '../src/main/file-index/indexer'
 import { FileIndexStore } from '../src/main/file-index/store'
 import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
 import { resolvePolicy } from '../src/main/fork/indexing-policy'
+
+const statFault = vi.hoisted(() => ({ path: '' }))
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    stat: (...args: Parameters<typeof actual.stat>) =>
+      String(args[0]) === statFault.path
+        ? Promise.reject(Object.assign(new Error('drive unavailable'), { code: 'EIO' }))
+        : actual.stat(...args),
+  }
+})
 
 // the worker double never answers the extraction for poison.pdf, so these tests
 // only pass once a wedged request fails on timeout and the queue moves on to
@@ -27,6 +47,8 @@ beforeEach(() => {
   store = new FileIndexStore(join(storeDir, 'index.db'))
 })
 afterEach(() => {
+  vi.restoreAllMocks()
+  statFault.path = ''
   indexer?.stop()
   indexer = null
   resetIndexingPolicyBus()
@@ -117,5 +139,82 @@ describe('FileIndexer wedged-worker recovery', () => {
       { timeout: 5_000, interval: 25 },
     )
     expect(store.listAll().get(notesPath())?.status).toBe('ok')
+  })
+})
+
+describe('FileIndexer disconnected drive safety', () => {
+  it('keeps company file names and cached content offline, then refreshes after reconnecting', async () => {
+    const root = join(dir, 'company')
+    const parked = `${root}-offline`
+    mkdirSync(root)
+    const file = join(root, 'contract.txt')
+    writeFileSync(file, 'cached contract alpha')
+    const metadata = statSync(file)
+    store.upsert(
+      { path: file, mtimeMs: metadata.mtimeMs, sizeBytes: metadata.size },
+      'cached contract alpha',
+      'ok',
+    )
+    indexer = new FileIndexer(
+      store,
+      WORKER,
+      { roots: () => [root, join(dir, 'good')], extraPaths: () => [] },
+      400,
+    )
+    renameSync(root, parked)
+    await indexer.scan()
+    expect(store.search('contract').hits.map((hit) => hit.path)).toContain(file)
+    expect(store.search('alpha').hits.map((hit) => hit.path)).toContain(file)
+    await vi.waitFor(() => expect(store.listAll().get(notesPath())?.status).toBe('ok'))
+    renameSync(parked, root)
+    writeFileSync(file, 'updated contract beta version')
+    await indexer.scan()
+    await vi.waitFor(() => expect(store.search('beta').hits.map((hit) => hit.path)).toContain(file))
+    expect(store.search('alpha').hits.map((hit) => hit.path)).not.toContain(file)
+  })
+
+  it('does not remove or wipe cached text on a generic async stat error', async () => {
+    const file = notesPath()
+    const metadata = statSync(file)
+    store.upsert(
+      { path: file, mtimeMs: metadata.mtimeMs, sizeBytes: metadata.size },
+      'previous searchable company text',
+      'ok',
+    )
+    writeFileSync(file, 'new company text after reconnect')
+    statFault.path = file
+    indexer = new FileIndexer(
+      store,
+      WORKER,
+      { roots: () => [join(dir, 'good')], extraPaths: () => [] },
+      400,
+    )
+    await indexer.scan()
+    await vi.waitFor(() => expect(indexer!.progress().pending).toBe(0))
+    expect(store.search('previous').hits.map((hit) => hit.path)).toContain(file)
+    statFault.path = ''
+    await indexer.scan()
+    await vi.waitFor(() =>
+      expect(store.search('reconnect').hits.map((hit) => hit.path)).toContain(file),
+    )
+  })
+
+  it('still removes a file actually deleted from an accessible local folder', async () => {
+    const file = notesPath()
+    const metadata = statSync(file)
+    store.upsert(
+      { path: file, mtimeMs: metadata.mtimeMs, sizeBytes: metadata.size },
+      'local deleted note',
+      'ok',
+    )
+    unlinkSync(file)
+    indexer = new FileIndexer(
+      store,
+      WORKER,
+      { roots: () => [join(dir, 'good')], extraPaths: () => [] },
+      400,
+    )
+    await indexer.scan()
+    expect(store.listAll().has(file)).toBe(false)
   })
 })

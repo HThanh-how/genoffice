@@ -216,6 +216,8 @@ export interface DocumentMemoryStatus {
 }
 
 export interface HomeIndexingActivity {
+  /** Progress covers the complete library; folder is only the current discovery job. */
+  progressScope?: 'library'
   folder: FolderScanStatus | null
   memory: {
     enabled: boolean

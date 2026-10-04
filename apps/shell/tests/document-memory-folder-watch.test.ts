@@ -32,6 +32,7 @@ function harness(roots: string[]) {
   >()
   const batches: string[][] = []
   const reconciles: string[] = []
+  let reconcileResult: { ok: boolean; reason?: string } = { ok: true }
   let enabled = true
   let failOpen = false
   const enabledListeners = new Set<() => void>()
@@ -44,7 +45,7 @@ function harness(roots: string[]) {
     },
     reconcile: async (root) => {
       reconciles.push(root)
-      return { ok: true }
+      return reconcileResult
     },
   }
   const sink: FolderEventSink = {
@@ -89,6 +90,9 @@ function harness(roots: string[]) {
     },
     setFailOpen(value: boolean) {
       failOpen = value
+    },
+    setReconcileResult(value: { ok: boolean; reason?: string }) {
+      reconcileResult = value
     },
     changeRoots(next: string[]) {
       roots = next
@@ -159,6 +163,25 @@ describe('FolderWatchManager', () => {
     // Coming back after an outage re-checks the root for missed changes.
     await wait(80)
     expect(h.reconciles).toContain(root)
+    h.manager.close()
+  })
+
+  it('reopens a silent watcher after unavailable reconcile and catches up when the mount returns', async () => {
+    const root = join(dir, 'silent-outage')
+    const h = harness([root])
+    const [first] = h.watchers.get(root)!
+
+    // Simulate a mounted drive going offline without fs.watch emitting an error.
+    h.setReconcileResult({ ok: false, reason: 'unavailable' })
+    await h.manager.reconcileAll()
+    expect(first!.watcher.closed).toBe(true)
+    expect(h.reconciles).toEqual([root])
+
+    // It comes back before the bounded watcher retry. Opening the watcher must trigger a catch-up.
+    h.setReconcileResult({ ok: true })
+    await wait(100)
+    expect(h.watchers.get(root)).toHaveLength(2)
+    expect(h.reconciles).toEqual([root, root])
     h.manager.close()
   })
 

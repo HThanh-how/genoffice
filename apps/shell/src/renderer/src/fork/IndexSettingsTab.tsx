@@ -1,5 +1,5 @@
 import { appConfirm } from '../ui-feedback'
-import { useRef, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import { useI18n } from '../locale'
 import { IndexingModeSettings } from './IndexingModeSettings'
@@ -9,6 +9,7 @@ import { EverythingSettings } from './EverythingSettings'
 import { DbLocationSettings } from './DbLocationSettings'
 import { PdfPagesSettings } from './PdfPagesSettings'
 import './index-settings.css'
+import { IndexMutationTimeout, runIndexMutation } from './index-mutation'
 
 const EN = {
   title: 'Index settings',
@@ -22,6 +23,8 @@ const EN = {
     'Removes extracted text and search data. Your original files stay in place; excluded files remain excluded.',
   clearing: 'Clearing…',
   failed: 'The index could not be cleared. Please try again.',
+  unknown:
+    'The clear request has not acknowledged completion. Check the index before trying again.',
   run: 'Running in the background',
   runHint: 'How hard it works, and when it rests',
   pdf: 'PDF pages',
@@ -49,6 +52,7 @@ const VI: typeof EN = {
     'Xoá văn bản đã trích xuất và dữ liệu tìm kiếm. Tệp gốc được giữ nguyên; tệp đã loại trừ vẫn được loại trừ.',
   clearing: 'Đang xoá…',
   failed: 'Không thể xoá chỉ mục. Vui lòng thử lại.',
+  unknown: 'Chưa nhận được xác nhận xoá xong. Hãy kiểm tra chỉ mục trước khi thực hiện lại.',
   run: 'Chạy nền',
   runHint: 'Làm việc mạnh nhẹ ra sao, khi nào nghỉ',
   pdf: 'Số trang PDF',
@@ -79,15 +83,17 @@ function Section({
   icon,
   open = false,
   children,
+  id,
 }: {
   title: string
   hint: string
   icon: SectionIcon
   open?: boolean
   children: ReactNode
+  id?: string
 }) {
   return (
-    <details className="idx-details" open={open}>
+    <details id={id} className="idx-details" open={open}>
       <summary>
         <svg className="ixs-icon" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
           <path
@@ -109,13 +115,17 @@ function Section({
   )
 }
 
-export function IndexSettingsTab({ api }: { api: HomeApi }) {
+export function IndexSettingsTab({ api, focus }: { api: HomeApi; focus?: 'ocr' }) {
   const { lang } = useI18n()
   const d = lang === 'vi' ? VI : EN
   const [note, setNote] = useState('')
   const [failed, setFailed] = useState(false)
   const [clearing, setClearing] = useState(false)
   const clearPending = useRef(false)
+  useEffect(() => {
+    if (focus === 'ocr')
+      document.getElementById('index-settings-ocr')?.scrollIntoView({ block: 'nearest' })
+  }, [focus])
   const clear = async () => {
     if (clearPending.current) return
     clearPending.current = true
@@ -131,11 +141,11 @@ export function IndexSettingsTab({ api }: { api: HomeApi }) {
         return
       setNote('')
       setFailed(false)
-      await api.clearDocumentMemory()
+      await runIndexMutation(() => api.clearDocumentMemory())
       setNote(d.cleared)
-    } catch {
+    } catch (error) {
       setFailed(true)
-      setNote(d.failed)
+      setNote(error instanceof IndexMutationTimeout ? d.unknown : d.failed)
     } finally {
       clearPending.current = false
       setClearing(false)
@@ -157,7 +167,13 @@ export function IndexSettingsTab({ api }: { api: HomeApi }) {
         <h3>{d.advanced}</h3>
         <p>{d.advancedHint}</p>
       </div>
-      <Section title={d.ocr} hint={d.ocrHint} icon="ocr">
+      <Section
+        id="index-settings-ocr"
+        title={d.ocr}
+        hint={d.ocrHint}
+        icon="ocr"
+        open={focus === 'ocr'}
+      >
         <AgyOcrSettings />
       </Section>
       <Section title={d.model} hint={d.modelHint} icon="model">

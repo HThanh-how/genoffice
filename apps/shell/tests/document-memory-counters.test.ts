@@ -211,6 +211,35 @@ function seed(): void {
 }
 
 describe('per-document chunk counters', () => {
+  it('persists a fresh OCR re-read even when a mixed PDF was ready, without discarding saved text', () => {
+    const path = join(root(), 'mixed.pdf')
+    replace(path, 2, 'ready', { vectored: true })
+    expect(store.markOcrPending(path)).toBe(true)
+    expect(store.documentByPath(path)?.status).toBe('pending')
+    expect(store.resumeVectorOffset(path, `hash-${path}`, MODEL)).toBeNull()
+    expect(store.folderChunkProgress().totalChunks).toBe(2)
+    store.close()
+    store = open()
+    expect(store.documentByPath(path)?.status).toBe('pending')
+    store.exclude(path)
+    expect(store.markOcrPending(path)).toBe(false)
+    expect(store.documentByPath(path)?.status).toBe('excluded')
+  })
+  it('counts the complete library once, including files outside the most recently scanned folder', () => {
+    seed()
+    const complete = store.folderChunkProgress()
+    const first = store.folderChunkProgress(root())
+    const second = store.folderChunkProgress(join(dir, 'elsewhere'))
+    expect(complete.totalFiles).toBe(first.totalFiles + second.totalFiles)
+    expect(complete.readyFiles).toBe(first.readyFiles + second.readyFiles)
+    expect(complete.completedChunks).toBe(first.completedChunks + second.completedChunks)
+    expect(complete.totalChunks).toBe(first.totalChunks + second.totalChunks)
+    expect(complete.partialFileProgress).toBeCloseTo(
+      first.partialFileProgress + second.partialFileProgress,
+    )
+    expect(complete.totalFiles).toBe(store.stats().docs)
+    expect(complete.completedChunks).toBe(store.stats().vectors)
+  })
   it('match the old full-scan queries across every kind of write', () => {
     seed()
     expectSameAsScan()

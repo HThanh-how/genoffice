@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FolderScanManager } from '../src/main/document-memory/folder-scan'
 
 let dir: string
@@ -30,6 +30,37 @@ function scanner(userData: string, indexer: (path: string) => boolean) {
 }
 
 describe('FolderScanManager', () => {
+  it('never reconciles deletions from a partial unavailable inventory', async () => {
+    const root = join(dir, 'company')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'report.txt'), 'report')
+    const reconcileFolder = vi.fn(async () => {})
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: () => true,
+      reconcileFolder,
+    })
+    scanners.push(instance)
+    instance.start(root)
+    await until(() => !instance.status().running)
+    const walker = instance as unknown as {
+      traverse(
+        root: string,
+        handlers: { onError(error: unknown): void },
+        stop: () => boolean,
+      ): Promise<boolean>
+    }
+    const original = walker.traverse.bind(instance)
+    vi.spyOn(walker, 'traverse').mockImplementation(async (_root, handlers) => {
+      handlers.onError(new Error('share disconnected midway'))
+      return true
+    })
+    expect(await instance.reconcile(root)).toEqual({ ok: false, reason: 'unavailable' })
+    expect(reconcileFolder).not.toHaveBeenCalled()
+    vi.mocked(walker.traverse).mockImplementation(original)
+    expect(await instance.reconcile(root)).toEqual({ ok: true, files: 1 })
+    expect(reconcileFolder).toHaveBeenCalledOnce()
+  })
+
   it('recursively enrolls supported files and skips generated folders and symlinks', async () => {
     const root = join(dir, 'chosen')
     mkdirSync(join(root, 'nested'), { recursive: true })
