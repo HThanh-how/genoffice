@@ -24,6 +24,7 @@ vi.mock('electron', () => ({
 vi.mock('../src/main/updater', () => ({
   initialState: (version: string) => ({ version, strings: {} }),
 }))
+vi.mock('../src/main/app-message-box', () => ({ showAppMessageBox: mocks.dialog }))
 vi.mock('../src/main/update-window', () => ({
   showUpdateWindow: mocks.show,
   pushUpdateState: mocks.push,

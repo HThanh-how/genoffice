@@ -20,6 +20,9 @@ vi.mock('electron', () => ({
     showErrorBox: (...args: unknown[]) => showErrorBox(...args),
   },
 }))
+vi.mock('../src/main/app-message-box', () => ({
+  showAppMessageBox: (...args: unknown[]) => showMessageBox(...args),
+}))
 
 function fakeWindow(destroyed = false): BrowserWindow {
   return { isDestroyed: () => destroyed } as unknown as BrowserWindow
