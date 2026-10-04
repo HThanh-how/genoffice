@@ -143,6 +143,28 @@ describe('FileIndexer wedged-worker recovery', () => {
 })
 
 describe('FileIndexer disconnected drive safety', () => {
+  it('preserves an offline nested share even when its configured parent scans successfully', async () => {
+    const root = join(dir, 'company')
+    mkdirSync(root)
+    const file = join(root, 'contract.txt')
+    writeFileSync(file, 'cached nested share contract')
+    const metadata = statSync(file)
+    store.upsert(
+      { path: file, mtimeMs: metadata.mtimeMs, sizeBytes: metadata.size },
+      'cached nested share contract',
+      'ok',
+    )
+    renameSync(root, join(storeDir, 'offline-share'))
+    indexer = new FileIndexer(
+      store,
+      WORKER,
+      { roots: () => [dir, root], extraPaths: () => [] },
+      400,
+    )
+    await indexer.scan()
+    expect(store.search('nested').hits.map((hit) => hit.path)).toContain(file)
+  })
+
   it('keeps company file names and cached content offline, then refreshes after reconnecting', async () => {
     const root = join(dir, 'company')
     const parked = `${root}-offline`

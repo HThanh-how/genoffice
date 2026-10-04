@@ -25,6 +25,7 @@ import {
   type PdfPagesState,
 } from '../../shared/fork/document-index-api'
 import { DEFAULT_PDF_PAGES, LARGE_PDF_PAGES } from '../document-memory/chunks'
+import { createSourceAvailabilityProbe } from '../document-memory/source-availability'
 
 export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
@@ -47,6 +48,7 @@ const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set(ISSUE_REASON_ORDER)
  */
 export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void {
   const { ipcMain, getDocumentMemory, getFolderScan } = deps
+  const sourceUnavailable = createSourceAvailabilityProbe()
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, (_event, ids: unknown) => {
     if (
       !Array.isArray(ids) ||
@@ -194,10 +196,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     return Promise.all(
       scan.folders().map(async (folder) => {
         const counts = memory?.getFolderIndexCounts(folder.root)
-        const unavailable = await stat(folder.root).then(
-          (s) => !s.isDirectory(),
-          () => true,
-        )
+        const unavailable = await sourceUnavailable(folder.root)
         return {
           ...folder,
           unavailable,

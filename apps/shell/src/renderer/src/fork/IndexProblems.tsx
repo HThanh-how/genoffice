@@ -16,6 +16,14 @@ import {
   useFileActions,
   useIndexingNow,
 } from './IndexFiles'
+import {
+  groupViewFiles,
+  sortViewFiles,
+  sourceOffline,
+  type IndexViewSort,
+  type IndexViewGroup,
+} from './index-list-view'
+import { useIndexSources } from './use-index-sources'
 import { NOTHING_PICKED, pick, type PickState } from './index-selection'
 import { matchesQuery } from './todo-model'
 import { issueBucket, type IssueBucket } from './index-issue-view'
@@ -178,15 +186,6 @@ const VI: Dict = {
     'Chưa nhận xác nhận kịp thời; thao tác có thể vẫn hoàn tất. Kiểm tra trạng thái tệp trước khi thử lại.',
 }
 
-/** Files being read go first, then the next in line, then the rest (stable order). */
-function rank(live: ReturnType<typeof liveOf>): number {
-  if (!live) return 1_000_000
-  if (live.kind === 'reading') return 0
-  if (live.kind === 'embedding') return live.active === false ? 2 : 1
-  if (live.kind === 'queued') return 2 + live.position
-  return 1_000_000
-}
-
 /**
  * Reads pages (from the start) until `want` items are loaded or the list ends, so a refresh keeps a
  * list as long as it is on screen instead of shrinking it back to the first page.
@@ -248,6 +247,8 @@ export function IndexProblems({
   commandRef,
   bucket = 'all',
   sort = 'queue',
+  grouping = 'reason',
+  descending = false,
   summary: externalSummary,
 }: {
   api: HomeApi
@@ -263,7 +264,9 @@ export function IndexProblems({
   hideToolbar?: boolean
   commandRef?: MutableRefObject<ProblemCommands | null>
   bucket?: 'all' | IssueBucket
-  sort?: 'queue' | 'name'
+  sort?: IndexViewSort
+  grouping?: IndexViewGroup
+  descending?: boolean
   summary?: IndexIssueSummary | null
 }) {
   const { lang, dateLocale } = useI18n()
@@ -303,6 +306,9 @@ export function IndexProblems({
   const groupsRef = useRef(groups)
   groupsRef.current = groups
   const now = useIndexingNow(api, true)
+  const sources = useIndexSources(api)
+  const withSource = (item: IndexIssue) => ({ ...item, offline: sourceOffline(item.path, sources) })
+  const [collapsedViews, setCollapsedViews] = useState<Set<string>>(new Set())
   const [ocrStatus] = useAgyOcrStatus(api, 3000)
   // Files that were being read a moment ago and are gone from their list: shown green, then removed.
   const [finished, setFinished] = useState<IndexIssue[]>([])
@@ -623,7 +629,7 @@ export function IndexProblems({
   const rowAvailability = (item: IndexIssue) => {
     const live = liveOf(now, item.path)
     return indexRowActions(
-      item,
+      withSource(item),
       live?.kind === 'embedding' && live.active === false ? 'queued' : live?.kind,
       ocrStatus?.queuedDocumentIds?.includes(item.id) ?? false,
       !!ocrStatus?.running && ocrStatus.currentPath === item.path,
@@ -885,7 +891,7 @@ export function IndexProblems({
     (summary?.groups ?? []).filter((g) => bucket === 'all' || issueBucket(g.reason) === bucket),
   )
   useEffect(() => {
-    if (!searching) return
+    if (!searching && grouping === 'reason') return
     const currentGeneration = generation.current
     let cancelled = false
     const visible = JSON.parse(searchGroups) as Array<{ reason: IndexIssueReason; count: number }>
@@ -955,7 +961,7 @@ export function IndexProblems({
     return () => {
       cancelled = true
     }
-  }, [searching, searchGroups, api, root])
+  }, [searching, grouping, searchGroups, api, root])
 
   const retryGroup = async (reason: IndexIssueReason) =>
     runBatch(async (isCurrent) => {
@@ -985,6 +991,89 @@ export function IndexProblems({
         busy: new Set([...actions.busy, ...pickState.picked]),
       }
     : actions
+  const selectVisibleIds = (ids: number[]) => {
+    setPickState((current) => ({
+      picked: new Set([...current.picked, ...ids].slice(0, 2000)),
+      anchor: ids[0] ?? null,
+    }))
+    if (ids.length + pickState.picked.size > 2000) actions.say(fill(d.selectLimit, { n: 2000 }))
+  }
+  const renderFile = (
+    issue: IndexIssue & { offline?: boolean },
+    orderedIds: number[],
+    groupIds = orderedIds,
+  ) => (
+    <FileRow
+      key={issue.id}
+      item={issue}
+      actions={rowActions}
+      api={api}
+      status={grouping === 'reason' ? undefined : copy.reasons[issue.reason].title}
+      live={
+        liveOf(now, issue.path) ??
+        (now?.paused && issue.reason === 'waiting' ? { kind: 'paused' } : null)
+      }
+      ocrStage={
+        ocrStatus?.running && ocrStatus.currentPath === issue.path ? ocrStatus.stage : undefined
+      }
+      ocrQueued={ocrStatus?.queuedDocumentIds?.includes(issue.id)}
+      ocrWaitReason={
+        ocrStatus?.activity && !['working', 'nothing'].includes(ocrStatus.activity.kind)
+          ? activityLine(lang, ocrStatus.activity)
+          : undefined
+      }
+      ocrProgress={ocrStatus?.currentPath === issue.path ? ocrStatus.progress : undefined}
+      ocrError={ocrStatus?.lastError?.path === issue.path ? ocrStatus.lastError.message : undefined}
+      picked={pickState.picked.has(issue.id)}
+      pickedCount={pickState.picked.size}
+      onPick={(item, mode) => pickFile(orderedIds, item, mode)}
+      onReadPicked={
+        pickedRetryCount > 0
+          ? () => {
+              if (!batchBusy) void readPicked()
+            }
+          : undefined
+      }
+      onOcrPicked={
+        pickedPdfCount > 0
+          ? () => {
+              if (!batchBusy) void readPicked('ocr')
+            }
+          : undefined
+      }
+      onExcludePicked={() => {
+        if (!batchBusy) void changePicked('exclude')
+      }}
+      onTrashPicked={() => {
+        if (!batchBusy) void changePicked('trash')
+      }}
+      onLaterPicked={
+        pickedDeferCount > 0
+          ? () => {
+              if (!batchBusy) void changePicked('later')
+            }
+          : undefined
+      }
+      onStopPicked={
+        pickedStopCount > 0
+          ? () => {
+              if (!batchBusy) void changePicked('stop')
+            }
+          : undefined
+      }
+      onCopyPicked={() => {
+        if (!batchBusy) void changePicked('copy')
+      }}
+      ocrPickedCount={pickedPdfCount}
+      readPickedCount={pickedRetryCount}
+      onSelectGroup={() => {
+        if (batchBusy) return
+        if (grouping === 'reason') void selectGroup(issue.reason)
+        else selectVisibleIds(groupIds)
+      }}
+      onClearPicked={clearPick}
+    />
+  )
   const renderGroup = (reason: IndexIssueReason, count: number) => {
     const words = copy.reasons[reason]
     // the line "N left" and a bar: how far the files seen waiting at the start have come
@@ -994,13 +1083,15 @@ export function IndexProblems({
     const isOpen = open.has(reason)
     const state = groups[reason]
     // the order the files are shown in: Shift+click picks between two of them
-    const sorted = [...(state?.items ?? [])]
-      .filter((item) => !searching || matchesQuery(item, query))
-      .sort((x, y) =>
-        sort === 'name'
-          ? x.name.localeCompare(y.name, dateLocale)
-          : rank(liveOf(now, x.path)) - rank(liveOf(now, y.path)),
-      )
+    const sorted = sortViewFiles(
+      (state?.items ?? [])
+        .map(withSource)
+        .filter((item) => !searching || matchesQuery(item, query)),
+      sort,
+      descending,
+      dateLocale,
+      now,
+    )
     const orderedIds = sorted.map((issue) => issue.id)
     const allShownSelected =
       sorted.length > 0 && sorted.every((issue) => pickState.picked.has(issue.id))
@@ -1073,81 +1164,7 @@ export function IndexProblems({
               .map((item) => (
                 <FileRow key={`done-${item.id}`} item={item} actions={actions} api={api} finished />
               ))}
-            {sorted.map((issue) => (
-              <FileRow
-                key={issue.id}
-                item={issue}
-                actions={rowActions}
-                api={api}
-                live={
-                  liveOf(now, issue.path) ??
-                  (now?.paused && issue.reason === 'waiting' ? { kind: 'paused' } : null)
-                }
-                ocrStage={
-                  ocrStatus?.running && ocrStatus.currentPath === issue.path
-                    ? ocrStatus.stage
-                    : undefined
-                }
-                ocrQueued={ocrStatus?.queuedDocumentIds?.includes(issue.id)}
-                ocrWaitReason={
-                  ocrStatus?.activity && !['working', 'nothing'].includes(ocrStatus.activity.kind)
-                    ? activityLine(lang, ocrStatus.activity)
-                    : undefined
-                }
-                ocrProgress={ocrStatus?.currentPath === issue.path ? ocrStatus.progress : undefined}
-                ocrError={
-                  ocrStatus?.lastError?.path === issue.path
-                    ? ocrStatus.lastError.message
-                    : undefined
-                }
-                picked={pickState.picked.has(issue.id)}
-                pickedCount={pickState.picked.size}
-                onPick={(item, mode) => pickFile(orderedIds, item, mode)}
-                onReadPicked={
-                  pickedRetryCount > 0
-                    ? () => {
-                        if (!batchBusy) void readPicked()
-                      }
-                    : undefined
-                }
-                onOcrPicked={
-                  pickedPdfCount > 0
-                    ? () => {
-                        if (!batchBusy) void readPicked('ocr')
-                      }
-                    : undefined
-                }
-                onExcludePicked={() => {
-                  if (!batchBusy) void changePicked('exclude')
-                }}
-                onTrashPicked={() => {
-                  if (!batchBusy) void changePicked('trash')
-                }}
-                onLaterPicked={
-                  pickedDeferCount > 0
-                    ? () => {
-                        if (!batchBusy) void changePicked('later')
-                      }
-                    : undefined
-                }
-                onStopPicked={
-                  pickedStopCount > 0
-                    ? () => {
-                        if (!batchBusy) void changePicked('stop')
-                      }
-                    : undefined
-                }
-                onCopyPicked={() => {
-                  if (!batchBusy) void changePicked('copy')
-                }}
-                ocrPickedCount={pickedPdfCount}
-                readPickedCount={pickedRetryCount}
-                onSelectGroup={() => {
-                  if (!batchBusy) void selectGroup(reason)
-                }}
-                onClearPicked={clearPick}
-              />
-            ))}
+            {sorted.map((issue) => renderFile(issue, orderedIds))}
             {state?.loading && <li className="ixp-loading">{d.loading}</li>}
             {state?.failed && (
               <li className="ixp-loading" role="status">
@@ -1200,6 +1217,30 @@ export function IndexProblems({
   const skipped = list.filter((g) => issueBucket(g.reason) === 'skipped')
   const scanned = list.find((g) => g.reason === 'no-text')?.count ?? 0
   const failures = attention.some((g) => isRetryableReason(g.reason))
+  const viewItems = sortViewFiles(
+    list
+      .flatMap((group) => groups[group.reason]?.items ?? [])
+      .map(withSource)
+      .filter((item) => !searching || matchesQuery(item, query)),
+    sort,
+    descending,
+    dateLocale,
+    now,
+  )
+  const viewGroups = grouping === 'reason' ? [] : groupViewFiles(viewItems, grouping)
+  if (grouping === 'folder' || grouping === 'type')
+    viewGroups.sort((a, b) => {
+      const offlineA = a.items.every((item) => item.offline)
+      const offlineB = b.items.every((item) => item.offline)
+      if (offlineA !== offlineB) return offlineA ? 1 : -1
+      const order = a.key.localeCompare(b.key, dateLocale, { numeric: true, sensitivity: 'base' })
+      return descending && sort === grouping ? -order : order
+    })
+  const displayedViewIds = viewGroups
+    .filter((group) => !collapsedViews.has(`${grouping}:${group.key}`))
+    .flatMap((group) => group.items.map((item) => item.id))
+  const viewTotal = list.reduce((total, group) => total + group.count, 0)
+  const viewLoading = list.some((group) => !groups[group.reason] || groups[group.reason]?.loading)
   return (
     <div className="ixp" aria-busy={batchBusy}>
       <div className="ixp-toolbar ixp-viewbar">
@@ -1232,6 +1273,7 @@ export function IndexProblems({
             type="button"
             className="idx-btn"
             onClick={() => {
+              setCollapsedViews(new Set())
               setOpen(new Set(list.map((g) => g.reason)))
               for (const group of list)
                 if (!groupsRef.current[group.reason]) void loadGroup(group.reason)
@@ -1243,6 +1285,10 @@ export function IndexProblems({
             type="button"
             className="idx-btn"
             onClick={() => {
+              if (grouping !== 'reason') {
+                setCollapsedViews(new Set(viewGroups.map((group) => `${grouping}:${group.key}`)))
+                return
+              }
               for (const group of list)
                 groupRequests.current.set(
                   group.reason,
@@ -1334,19 +1380,127 @@ export function IndexProblems({
           </div>
         </div>
       )}
-      {attention.length > 0 && (
+      {grouping !== 'reason' && (
+        <div className="ixp-alternate-view">
+          <p className="ixp-view-coverage" role="status">
+            {lang === 'vi'
+              ? `Đang hiển thị ${viewItems.length}/${viewTotal} tệp đã tải · cách xem không đổi thứ tự xử lý`
+              : `Showing ${viewItems.length}/${viewTotal} loaded files · view order does not change processing order`}
+            {viewLoading && <span> · {d.loading}</span>}
+          </p>
+          {viewGroups.map((group) => {
+            const key = `${grouping}:${group.key}`
+            const collapsed = collapsedViews.has(key)
+            const ids = group.items.map((item) => item.id)
+            const offline = group.items.filter((item) => item.offline).length
+            return (
+              <section className={`ixp-group${collapsed ? '' : ' is-open'}`} key={key}>
+                <div className="ixp-head-row">
+                  <button
+                    type="button"
+                    className="ixp-head"
+                    aria-expanded={!collapsed}
+                    onClick={() =>
+                      setCollapsedViews((current) => {
+                        const next = new Set(current)
+                        if (collapsed) next.delete(key)
+                        else next.add(key)
+                        return next
+                      })
+                    }
+                  >
+                    <span className="ixp-chevron">
+                      <IChevron />
+                    </span>
+                    <span className="ixp-head-text">
+                      <strong title={group.key}>
+                        {group.key || (lang === 'vi' ? 'Danh sách tệp' : 'File list')}
+                      </strong>
+                      {offline > 0 && (
+                        <span>
+                          {lang === 'vi'
+                            ? `${offline} tệp ngoại tuyến`
+                            : `${offline} offline files`}
+                        </span>
+                      )}
+                    </span>
+                    <span className="ixp-count">
+                      {group.items.length.toLocaleString(dateLocale)}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    className="idx-btn ixp-select"
+                    disabled={batchBusy}
+                    onClick={() =>
+                      setPickState((current) => {
+                        const picked = new Set(current.picked)
+                        const all = ids.every((id) => picked.has(id))
+                        for (const id of ids) {
+                          if (all) picked.delete(id)
+                          else if (picked.size < 2000) picked.add(id)
+                        }
+                        return { picked, anchor: ids[0] ?? null }
+                      })
+                    }
+                  >
+                    {ids.every((id) => pickState.picked.has(id))
+                      ? d.deselectVisible
+                      : d.selectVisible}
+                  </button>
+                </div>
+                {!collapsed && (
+                  <ul className="ixp-files">
+                    {group.items.map((item) => renderFile(item, displayedViewIds, ids))}
+                  </ul>
+                )}
+              </section>
+            )
+          })}
+          {list.map((group) => {
+            const state = groups[group.reason]
+            return state?.failed ? (
+              <p key={group.reason} className="ixp-view-coverage" role="status">
+                {d.summaryFailed}
+                <button
+                  type="button"
+                  className="idx-link"
+                  onClick={() => void loadGroup(group.reason)}
+                >
+                  {copy.reasons[group.reason].title} · {d.retryAll}
+                </button>
+              </p>
+            ) : state && state.items.length < state.total ? (
+              <button
+                key={group.reason}
+                type="button"
+                className="idx-link"
+                disabled={state.loading}
+                onClick={() => void loadGroup(group.reason, true)}
+              >
+                {copy.reasons[group.reason].title} ·{' '}
+                {fill(d.more, { n: state.total - state.items.length })}
+              </button>
+            ) : null
+          })}
+          {!viewLoading && viewItems.length === 0 && (
+            <p className="idx-empty">{searching ? d.noLoadedMatch : d.empty}</p>
+          )}
+        </div>
+      )}
+      {grouping === 'reason' && attention.length > 0 && (
         <>
           {bucket === 'all' && <h2 className="ixp-title">{d.attention}</h2>}
           {attention.map((g) => renderGroup(g.reason, g.count))}
         </>
       )}
-      {background.length > 0 && (
+      {grouping === 'reason' && background.length > 0 && (
         <>
           {bucket === 'all' && <h2 className="ixp-title">{d.background}</h2>}
           {background.map((g) => renderGroup(g.reason, g.count))}
         </>
       )}
-      {skipped.length > 0 && (
+      {grouping === 'reason' && skipped.length > 0 && (
         <>
           {bucket === 'all' && <h2 className="ixp-title">{d.skipped}</h2>}
           {skipped.map((g) => renderGroup(g.reason, g.count))}

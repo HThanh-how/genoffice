@@ -7,6 +7,27 @@ import { IndexProblems } from './IndexProblems'
 import { issueBucket, type IssueBucket } from './index-issue-view'
 import { isIndexIssueSummary, readIndexRequest } from './index-request'
 import { buildTodo, isLegacyConvertState, type TodoCard } from './todo-model'
+import type { IndexViewGroup, IndexViewSort } from './index-list-view'
+
+const VIEW_KEY = 'genoffice.index.todo.view'
+function savedView(): { sort: IndexViewSort; grouping: IndexViewGroup; descending: boolean } {
+  const fallback = { sort: 'queue' as const, grouping: 'reason' as const, descending: false }
+  try {
+    const value = JSON.parse(localStorage.getItem(VIEW_KEY) ?? 'null')
+    if (
+      !value ||
+      !['queue', 'name', 'folder', 'type', 'progress', 'status', 'connection'].includes(
+        value.sort,
+      ) ||
+      !['reason', 'folder', 'type', 'none'].includes(value.grouping) ||
+      typeof value.descending !== 'boolean'
+    )
+      return fallback
+    return value
+  } catch {
+    return fallback
+  }
+}
 
 const EN = {
   heading: 'To do',
@@ -125,7 +146,16 @@ export function TodoTab(props: TodoTabProps) {
   const [legacy, setLegacy] = useState<LegacyConvertState | null>(null)
   const [query, setQuery] = useState('')
   const [bucket, setBucket] = useState<IssueBucket | 'all'>('all')
-  const [sort, setSort] = useState<'queue' | 'name'>('queue')
+  const [sort, setSort] = useState<IndexViewSort>(() => savedView().sort)
+  const [grouping, setGrouping] = useState<IndexViewGroup>(() => savedView().grouping)
+  const [descending, setDescending] = useState(() => savedView().descending)
+  useEffect(() => {
+    try {
+      localStorage.setItem(VIEW_KEY, JSON.stringify({ sort, grouping, descending }))
+    } catch {
+      /* View preferences are optional when storage is disabled. */
+    }
+  }, [sort, grouping, descending])
   const [loadFailed, setLoadFailed] = useState(false)
   const [refresh, setRefresh] = useState(0)
   const [working, setWorking] = useState(false)
@@ -317,13 +347,56 @@ export function TodoTab(props: TodoTabProps) {
                 ×
               </button>
             )}
+          </div>
+          <div className="todo-view-controls">
             <select
               value={sort}
               aria-label={d.sort}
-              onChange={(event) => setSort(event.target.value as 'queue' | 'name')}
+              onChange={(event) => setSort(event.target.value as IndexViewSort)}
             >
               <option value="queue">{d.queue}</option>
               <option value="name">{d.name}</option>
+              <option value="folder">{lang === 'vi' ? 'Thư mục' : 'Folder'}</option>
+              <option value="type">{lang === 'vi' ? 'Loại tệp' : 'File type'}</option>
+              <option value="progress">{lang === 'vi' ? 'Tiến độ' : 'Progress'}</option>
+              <option value="status">{lang === 'vi' ? 'Trạng thái' : 'Status'}</option>
+              <option value="connection">
+                {lang === 'vi' ? 'Kết nối ổ' : 'Source connection'}
+              </option>
+            </select>
+            <button
+              type="button"
+              className="idx-btn todo-sort-direction"
+              aria-label={lang === 'vi' ? 'Đảo chiều sắp xếp' : 'Reverse sort direction'}
+              aria-pressed={descending}
+              title={
+                lang === 'vi'
+                  ? descending
+                    ? 'Giảm dần'
+                    : 'Tăng dần'
+                  : descending
+                    ? 'Descending'
+                    : 'Ascending'
+              }
+              onClick={() => setDescending((value) => !value)}
+            >
+              {descending ? '↓' : '↑'}
+            </button>
+            <select
+              value={grouping}
+              aria-label={lang === 'vi' ? 'Gom nhóm tệp' : 'Group files'}
+              onChange={(event) => setGrouping(event.target.value as IndexViewGroup)}
+            >
+              <option value="reason">
+                {lang === 'vi' ? 'Nhóm theo vấn đề' : 'Group by issue'}
+              </option>
+              <option value="folder">
+                {lang === 'vi' ? 'Nhóm theo thư mục' : 'Group by folder'}
+              </option>
+              <option value="type">
+                {lang === 'vi' ? 'Nhóm theo loại tệp' : 'Group by file type'}
+              </option>
+              <option value="none">{lang === 'vi' ? 'Không gom nhóm' : 'No grouping'}</option>
             </select>
           </div>
         </div>
@@ -347,6 +420,8 @@ export function TodoTab(props: TodoTabProps) {
             summary={summary}
             bucket={bucket}
             sort={sort}
+            grouping={grouping}
+            descending={descending}
           />
         )}
         {summary && counts[bucket] > 0 && <p className="todo-selection-hint">{d.selectionHint}</p>}

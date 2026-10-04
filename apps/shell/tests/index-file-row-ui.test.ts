@@ -81,6 +81,21 @@ afterEach(async () => {
 })
 
 describe('Index file interaction feedback', () => {
+  it('keeps offline details readable but prevents opening or starting a new read', async () => {
+    const offlineApi = api()
+    await render({
+      api: offlineApi,
+      file: { ...item, path: 'Z:/scan.pdf', reason: 'no-text', offline: true },
+    })
+    expect(container.querySelector('li')?.classList.contains('is-muted-source')).toBe(true)
+    expect(container.textContent).toContain('Source offline')
+    expect(
+      container.querySelector<HTMLButtonElement>('button[aria-label="Open file"]')?.disabled,
+    ).toBe(true)
+    expect(container.querySelector('button[aria-label="Read with Antigravity now"]')).toBeNull()
+    await act(async () => container.querySelector<HTMLButtonElement>('.ixp-main')!.click())
+    expect(offlineApi.getIndexFileDetail).toHaveBeenCalledWith(1)
+  })
   it('acknowledges a click immediately and then shows queued instead of claiming completion', async () => {
     let acknowledge!: (value: { queued: number; skipped: number }) => void
     const enqueue = vi.fn(

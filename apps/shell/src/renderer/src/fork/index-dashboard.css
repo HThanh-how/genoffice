@@ -533,6 +533,32 @@
   gap: 1px;
   min-width: 0;
 }
+
+/* Dim unavailable content, preserving readable labels, selection and recovery actions. */
+.ixp-files > li.is-muted-source .ixp-file-name,
+.ixp-files > li.is-muted-source .ixp-icon-wrap {
+  opacity: 0.55;
+}
+.ixp-files > li.is-muted-source .ixp-file-sub {
+  color: var(--text-tertiary);
+}
+.ixp-alternate-view {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+.ixp-view-coverage {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.ixp-alternate-view .ixp-head-text strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .ixp-file-name {
   overflow: hidden;
   font-size: 13px;

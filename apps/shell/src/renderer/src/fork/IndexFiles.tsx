@@ -97,6 +97,7 @@ export interface FileItem {
   error?: string
   progress?: { kind: 'ocr' | 'chunks'; done: number; total: number }
   deleted?: boolean
+  offline?: boolean
 }
 
 const EN = {
@@ -866,36 +867,45 @@ export function FileRow({
           : live?.kind === 'paused'
             ? w.pausedNow
             : ''
-  const working = live?.kind === 'reading' || (live?.kind === 'embedding' && live.active !== false)
+  const working =
+    !item.offline &&
+    (live?.kind === 'reading' || (live?.kind === 'embedding' && live.active !== false))
   // Issue groups explain the cause; rows identify where each file is stored.
   const sub = item.reason ? folderOf(item.path) : item.error
   const issueHint =
     item.reason && !['waiting', 'no-text', 'empty'].includes(item.reason)
       ? activityCopy(lang).reasons[item.reason].hint
       : undefined
-  const description = finished
-    ? w.done
-    : busy
-      ? w.requesting
-      : (readingAgy || working ? (readingAgy ? ocrText : liveText) : '') ||
-        actions.feedback[item.id]?.text ||
-        (readingAgy
-          ? ocrText
-          : ocrQueued
-            ? ocrWaitReason
-              ? fill(w.ocrBlocked, { reason: ocrWaitReason })
-              : w.ocrWaiting
-            : liveText) ||
-        (ocrError
-          ? fill(w.ocrError, { reason: ocrError })
-          : (status ??
-            (item.reason === 'waiting'
-              ? item.progress?.kind === 'chunks'
-                ? fill(w.waitingVectors, { d: item.progress.done, n: item.progress.total })
-                : w.waitingLocal
-              : isOpen
-                ? ''
-                : (issueHint ?? sub))))
+  const interrupted = /^Stopped by you\./.test(item.error ?? '')
+  const description = item.offline
+    ? lang === 'vi'
+      ? 'Ổ đang ngoại tuyến · chỉ mục đã lưu được giữ lại'
+      : 'Source offline · cached index retained'
+    : interrupted && !working && !readingAgy
+      ? w.stopped
+      : finished
+        ? w.done
+        : busy
+          ? w.requesting
+          : (readingAgy || working ? (readingAgy ? ocrText : liveText) : '') ||
+            actions.feedback[item.id]?.text ||
+            (readingAgy
+              ? ocrText
+              : ocrQueued
+                ? ocrWaitReason
+                  ? fill(w.ocrBlocked, { reason: ocrWaitReason })
+                  : w.ocrWaiting
+                : liveText) ||
+            (ocrError
+              ? fill(w.ocrError, { reason: ocrError })
+              : (status ??
+                (item.reason === 'waiting'
+                  ? item.progress?.kind === 'chunks'
+                    ? fill(w.waitingVectors, { d: item.progress.done, n: item.progress.total })
+                    : w.waitingLocal
+                  : isOpen
+                    ? ''
+                    : (issueHint ?? sub))))
   const stoppable = available.stop
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const menuId = useId()
@@ -990,7 +1000,7 @@ export function FileRow({
         {
           label: w.reveal,
           icon: <IFolder />,
-          disabled: busy,
+          disabled: busy || item.offline,
           run: () => void actions.reveal(item),
         },
         ...(available.ocr
@@ -1095,7 +1105,7 @@ export function FileRow({
               : undefined))
   return (
     <li
-      className={`${isOpen ? 'is-selected' : ''}${finished ? ' is-done' : ''}${picked ? ' is-picked' : ''}${readingAgy || working ? ' is-processing' : ''}`}
+      className={`${isOpen ? 'is-selected' : ''}${finished ? ' is-done' : ''}${picked ? ' is-picked' : ''}${!item.offline && (readingAgy || working) ? ' is-processing' : ''}${item.offline || interrupted ? ' is-muted-source' : ''}`}
     >
       <div
         className="ixp-row"
@@ -1208,7 +1218,11 @@ export function FileRow({
               <IRetry />
             </IconButton>
           ) : null}
-          <IconButton label={w.reveal} disabled={busy} onClick={() => void actions.reveal(item)}>
+          <IconButton
+            label={w.reveal}
+            disabled={busy || item.offline}
+            onClick={() => void actions.reveal(item)}
+          >
             <IFolder />
           </IconButton>
           <button

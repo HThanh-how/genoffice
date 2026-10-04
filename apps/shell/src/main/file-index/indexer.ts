@@ -180,17 +180,16 @@ export class FileIndexer {
     for (const path of known.keys()) {
       if (seen.has(path)) continue
       // An offline root or a partial walk says nothing about the files omitted from it.
-      if (
-        roots.some((root) => isInside(root, path)) &&
-        !completeRoots.some((root) => isInside(root, path))
-      )
-        continue
+      const configuredRoot = roots
+        .filter((root) => isInside(root, path))
+        .sort((a, b) => b.length - a.length)[0]
+      if (configuredRoot && !completeRoots.includes(configuredRoot)) continue
       const state = await asyncFileStat(path)
       if (state.kind !== 'missing') continue
       if (await parentConfirmsMissing(path)) gone.push(path)
-      else if (completeRoots.some((root) => isInside(root, path))) {
+      else if (configuredRoot && completeRoots.includes(configuredRoot)) {
         // Whole subfolders can really be deleted, but the mount root must still be reachable.
-        const root = completeRoots.find((root) => isInside(root, path))!
+        const root = configuredRoot
         if (!reachableRoots.has(root)) {
           try {
             await readdir(root)

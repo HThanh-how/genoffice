@@ -5,6 +5,7 @@ export interface RowActionState {
   reason?: IndexIssueReason
   status?: string
   deleted?: boolean
+  offline?: boolean
 }
 
 /** Only offer operations that make sense for this file's current pipeline stage. */
@@ -19,14 +20,20 @@ export function indexRowActions(
   const localWaiting =
     localStage === 'queued' || localStage === 'paused' || item.reason === 'waiting'
   return {
-    open: !item.deleted,
+    open: !item.deleted && !item.offline,
     retry:
+      !item.offline &&
       !cloudWork &&
       !localActive &&
       (item.status === 'ready' || (item.reason !== undefined && isRetryableReason(item.reason))),
-    ocr: !cloudWork && !localActive && /\.pdf$/i.test(item.path) && item.reason === 'no-text',
+    ocr:
+      !item.offline &&
+      !cloudWork &&
+      !localActive &&
+      /\.pdf$/i.test(item.path) &&
+      item.reason === 'no-text',
     stop: cloudWork || localActive || localWaiting,
-    defer: !cloudWork && (localActive || localWaiting),
+    defer: !item.offline && !cloudWork && (localActive || localWaiting),
   }
 }
 

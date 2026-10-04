@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { fileProgress, indexRowActions } from '../src/renderer/src/fork/index-row-state'
 
 describe('State-specific Index actions', () => {
+  it('keeps cancellation possible but disables disk/OCR reads while a source is offline', () => {
+    expect(
+      indexRowActions({ path: 'Z:/scan.pdf', reason: 'no-text', offline: true }, undefined, true),
+    ).toMatchObject({ open: false, retry: false, ocr: false, defer: false, stop: true })
+  })
   it('offers retry for stopped/error files, without pretending they are still stoppable', () => {
     expect(indexRowActions({ path: 'a.docx', reason: 'timeout' })).toMatchObject({
       retry: true,
