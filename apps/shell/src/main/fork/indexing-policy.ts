@@ -41,6 +41,9 @@ export interface ResolvedPolicy {
   reason: string
   /** on battery: 3 = 80% or more, 2 = 50-79% (or unknown), 1 = below 50%; the work shrinks with it */
   batteryBand?: BatteryBand
+  memoryTier: 'low' | 'normal' | 'high'
+  allowHeavyEmbedding: boolean
+  maxBatchTokens: number
 }
 
 export type BatteryBand = 1 | 2 | 3
@@ -91,7 +94,11 @@ export function batteryBand(percent: number | undefined): BatteryBand {
 const BALANCED_ACTIVE_SHARE = 0.5
 const FAST_ACTIVE_SHARE = 0.6
 
-function paused(reason: IndexingPauseReason, why: string): ResolvedPolicy {
+function paused(
+  reason: IndexingPauseReason,
+  why: string,
+  memoryTier: 'low' | 'normal' | 'high' = 'normal',
+): ResolvedPolicy {
   return {
     paused: true,
     pauseReason: reason,
@@ -100,37 +107,57 @@ function paused(reason: IndexingPauseReason, why: string): ResolvedPolicy {
     priority: 'idle',
     tier: 'paused',
     reason: why,
+    memoryTier,
+    allowHeavyEmbedding: false,
+    maxBatchTokens: memoryTier === 'low' ? 1600 : memoryTier === 'normal' ? 3000 : 6000,
   }
 }
 
 export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
+  const memoryTier: 'low' | 'normal' | 'high' =
+    input.totalMemMB === undefined
+      ? 'normal'
+      : input.totalMemMB < 6 * 1024
+        ? 'low'
+        : input.totalMemMB < 12 * 1024
+          ? 'normal'
+          : 'high'
+
   const cores = Number.isFinite(input.cores) ? Math.floor(input.cores) : 1
   // The UI keeps at least half of the cores free.
   const cap = Math.max(1, Math.floor(cores / 2))
-  const threads = (wanted: number) => Math.max(1, Math.min(wanted, cap))
+  const threads = (wanted: number) => {
+    if (memoryTier === 'low') return 1
+    return Math.max(1, Math.min(wanted, cap))
+  }
   const percent = input.batteryPercent
 
-  if (input.userPaused) return paused('user', 'paused by the user')
-  if (input.thermalCritical) return paused('thermal', 'thermal state is critical')
+  if (input.userPaused) return paused('user', 'paused by the user', memoryTier)
+  if (input.thermalCritical) return paused('thermal', 'thermal state is critical', memoryTier)
   if (input.freeMemMB < memoryThresholds(input.totalMemMB).low) {
-    return paused('low-memory', 'free memory is low')
+    return paused('low-memory', 'free memory is low', memoryTier)
   }
   if (input.onBattery && input.pauseOnBattery) {
     if (
       input.batterySaver &&
       !(typeof percent === 'number' && batteryBand(percent) >= OCR_MIN_BATTERY_BAND)
     )
-      return paused('battery-saver', 'battery saver is on and the charge is below half')
+      return paused('battery-saver', 'battery saver is on and the charge is below half', memoryTier)
     if (typeof percent === 'number' && percent < LOW_BATTERY_PERCENT)
-      return paused('low-battery', 'battery is low')
+      return paused('low-battery', 'battery is low', memoryTier)
     // a locked screen on a charge that is still good is no reason to stop; on a low or unreadable one it is
-    if (input.suspended) return paused('locked', 'the machine is asleep')
+    if (input.suspended) return paused('locked', 'the machine is asleep', memoryTier)
     if (
       input.locked &&
       (typeof percent !== 'number' || batteryBand(percent) < OCR_MIN_BATTERY_BAND)
     )
-      return paused('locked', 'screen is locked on a low battery')
+      return paused('locked', 'screen is locked on a low battery', memoryTier)
   }
+
+  const allowHeavyEmbedding =
+    memoryTier !== 'low' && !input.onBattery && input.mode !== 'light'
+  const maxBatchTokens =
+    memoryTier === 'low' ? 1600 : memoryTier === 'normal' ? 3000 : 6000
 
   if (input.onBattery) {
     const light = input.mode === 'light'
@@ -145,6 +172,9 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
       tier: 'battery',
       reason: `on battery${input.batterySaver ? ' with battery saver' : ''} (${typeof percent === 'number' ? `${percent}%` : 'level unknown'}): one thread, ${Math.round(share * 100)}% duty cycle`,
       batteryBand: band,
+      memoryTier,
+      allowHeavyEmbedding: false,
+      maxBatchTokens: Math.min(maxBatchTokens, 1600),
     }
   }
 
@@ -158,6 +188,9 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
         priority: 'below-normal',
         tier: 'light',
         reason: 'light mode: one thread, low duty cycle',
+        memoryTier,
+        allowHeavyEmbedding: false,
+        maxBatchTokens: 1600,
       }
     case 'fast':
       return idle
@@ -168,6 +201,9 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
             priority: 'below-normal',
             tier: 'idle',
             reason: 'fast mode, idle on AC: uncapped',
+            memoryTier,
+            allowHeavyEmbedding,
+            maxBatchTokens,
           }
         : {
             paused: false,
@@ -176,6 +212,9 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
             priority: 'below-normal',
             tier: 'active',
             reason: 'fast mode, user active: modest share',
+            memoryTier,
+            allowHeavyEmbedding: memoryTier === 'high',
+            maxBatchTokens,
           }
     default:
       return idle
@@ -186,6 +225,9 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
             priority: 'below-normal',
             tier: 'idle',
             reason: 'balanced mode, idle on AC: uncapped',
+            memoryTier,
+            allowHeavyEmbedding,
+            maxBatchTokens,
           }
         : {
             paused: false,
@@ -194,6 +236,9 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
             priority: 'below-normal',
             tier: 'active',
             reason: 'balanced mode, user active: half a core',
+            memoryTier,
+            allowHeavyEmbedding: false,
+            maxBatchTokens,
           }
   }
 }

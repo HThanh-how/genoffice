@@ -35,7 +35,10 @@ export function samePolicy(a: PublishedPolicy | null, b: PublishedPolicy | null)
     a.priority === b.priority &&
     a.tier === b.tier &&
     a.onBattery === b.onBattery &&
-    a.batteryBand === b.batteryBand
+    a.batteryBand === b.batteryBand &&
+    a.memoryTier === b.memoryTier &&
+    a.allowHeavyEmbedding === b.allowHeavyEmbedding &&
+    a.maxBatchTokens === b.maxBatchTokens
   )
 }
 
@@ -68,6 +71,7 @@ export function effectiveStateOf(policy: PublishedPolicy | null): IndexingEffect
     threads: policy.threads,
     cpuShare: policy.cpuShare,
     onBattery: policy.onBattery,
+    memoryTier: policy.memoryTier,
   }
 }
 

@@ -23,6 +23,7 @@ export interface IndexingEffectiveState {
   /** 0..1 duty cycle; 1 means uncapped */
   cpuShare: number
   onBattery: boolean
+  memoryTier?: 'low' | 'normal' | 'high'
 }
 
 export interface IndexingModeState {

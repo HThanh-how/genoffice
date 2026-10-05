@@ -13,6 +13,7 @@ import {
   embeddingProfile,
   type EmbeddingProfile,
   type EmbeddingProfileFile,
+  type EmbeddingProfileId,
 } from './embedding-profiles'
 
 // The standard profile, under the names this module always exported.
@@ -25,7 +26,13 @@ type Loaded = {
   session: InferenceSession
   keeper: SessionKeeper<InferenceSession>
 }
-const loading = new Map<string, Promise<Loaded>>()
+
+let loaded:
+  | {
+      profileId: EmbeddingProfileId
+      value: Promise<Loaded>
+    }
+  | undefined
 
 function filePath(cache: string, profile: EmbeddingProfile, file: EmbeddingProfileFile): string {
   return join(cache, profile.repo, profile.revision, file.path)
@@ -59,63 +66,48 @@ async function verified(path: string, file: EmbeddingProfileFile): Promise<boole
   return true
 }
 
+async function downloadFile(url: string, destination: string): Promise<void> {
+  await mkdir(dirname(destination), { recursive: true })
+  const response = await fetch(url)
+  if (!response.ok || !response.body)
+    throw new Error(`Download of ${url} failed with HTTP ${response.status}`)
+  const reader = response.body.getReader()
+  const part = `${destination}.part-${Date.now()}`
+  const file = await open(part, 'w')
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      await file.write(value)
+    }
+    await file.sync()
+    await file.close()
+    await rename(part, destination)
+  } catch (error) {
+    await file.close().catch(() => {})
+    await rm(part, { force: true }).catch(() => {})
+    throw error
+  }
+}
+
 async function cachedFile(
   cache: string,
   profile: EmbeddingProfile,
   file: EmbeddingProfileFile,
 ): Promise<string> {
   const path = filePath(cache, profile, file)
-  try {
-    await stat(path)
-    if (await verified(path, file)) return path
-    await rm(path, { force: true })
-    throw new Error('Model checksum mismatch; retry download')
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('checksum')) throw error
-    /* download the missing file */
-  }
-  const response = await fetch(
-    `https://huggingface.co/${profile.repo}/resolve/${profile.revision}/${file.path}`,
-    // a 2 GB file on a slow line needs far longer than the small model did
-    { signal: AbortSignal.timeout(file.bytes ? 3 * 3600_000 : 180_000) },
-  )
-  if (!response.ok || !response.body) throw new Error('Model download failed')
-  await mkdir(dirname(path), { recursive: true })
-  const temporary = `${path}.partial`
-  const handle = await open(temporary, 'w', 0o600)
-  try {
-    let received = 0
-    const total = Number(response.headers.get('content-length')) || file.bytes || 0
-    const reader = response.body.getReader()
-    while (true) {
-      const { done, value: chunk } = await reader.read()
-      if (done) break
-      await handle.write(chunk)
-      received += chunk.length
-      postIndexMessage({
-        type: 'model',
-        state: 'downloading',
-        progress: total > 0 ? (received / total) * 100 : undefined,
-      })
-    }
-    await handle.close()
-    await rename(temporary, path)
-  } catch (error) {
-    await handle.close().catch(() => {})
-    await rm(temporary, { force: true })
-    throw error
-  }
   if (!(await verified(path, file))) {
-    await rm(path, { force: true })
-    throw new Error('Model checksum mismatch; retry download')
+    const url = `https://huggingface.co/${profile.repo}/resolve/${profile.revision}/${file.path}`
+    await downloadFile(url, path)
+    if (!(await verified(path, file))) {
+      await rm(path, { force: true }).catch(() => {})
+      throw new Error(`Downloaded file ${file.path} failed SHA-256 checksum`)
+    }
   }
   return path
 }
 
-export async function loadEmbeddingModel(
-  cacheDir: string,
-  profile: EmbeddingProfile = embeddingProfile(indexingWorkerData.embeddingProfile),
-): Promise<Loaded> {
+async function loadEmbeddingModel(cacheDir: string, profile: EmbeddingProfile): Promise<Loaded> {
   const paths = new Map<string, string>()
   for (const file of profile.files) paths.set(file.path, await cachedFile(cacheDir, profile, file))
   const tokenizer = new Tokenizer(
@@ -127,6 +119,15 @@ export async function loadEmbeddingModel(
   return { tokenizer, session: keeper.current(), keeper }
 }
 
+function validateDimensions(vector: number[], profile: EmbeddingProfile): number[] {
+  if (vector.length !== profile.dimensions) {
+    throw new Error(
+      `Embedding dimension mismatch: expected ${profile.dimensions}, got ${vector.length}`,
+    )
+  }
+  return vector
+}
+
 export async function embedTexts(
   texts: string[],
   kind: 'query' | 'passage',
@@ -134,7 +135,16 @@ export async function embedTexts(
   profile: EmbeddingProfile = embeddingProfile(indexingWorkerData.embeddingProfile),
 ): Promise<number[][]> {
   if (!cacheDir) throw new Error('Embedding cache unavailable')
-  let pending = loading.get(profile.id)
+
+  if (loaded && loaded.profileId !== profile.id) {
+    const old = await loaded.value.catch(() => null)
+    if (old) {
+      await old.keeper.dispose?.()
+    }
+    loaded = undefined
+  }
+
+  let pending = loaded?.value
   if (!pending) {
     postIndexMessage({ type: 'model', state: 'downloading' })
     pending = loadEmbeddingModel(cacheDir, profile)
@@ -143,7 +153,9 @@ export async function embedTexts(
         return model
       })
       .catch(() => {
-        loading.delete(profile.id)
+        if (loaded?.profileId === profile.id) {
+          loaded = undefined
+        }
         postIndexMessage({
           type: 'model',
           state: 'error',
@@ -151,20 +163,35 @@ export async function embedTexts(
         })
         throw new Error('Local embedding model unavailable')
       })
-    loading.set(profile.id, pending)
+    loaded = { profileId: profile.id, value: pending }
   }
+
   const { tokenizer, keeper } = await pending
   if (kind === 'passage') await keeper.align()
   const session = keeper.current()
-  const prefix = kind === 'query' ? profile.queryPrefix : profile.passagePrefix
+
+  const formatted = (text: string): string => {
+    if (kind === 'query') {
+      const instruction = profile.queryInstruction?.trim()
+      if (instruction) {
+        return `Instruct: ${instruction}\nQuery: ${text}`
+      }
+      return `${profile.queryPrefix}${text}`
+    }
+    return `${profile.passagePrefix}${text}`
+  }
+
   async function encode(text: string): Promise<number[]> {
-    const { ids, attention_mask } = tokenizer.encode(`${prefix}${text}`)
+    const { ids, attention_mask } = tokenizer.encode(formatted(text))
     // Never silently truncate a chunk: split unusually token-dense text and pool both vectors.
-    if (ids.length > 512) {
+    if (ids.length > profile.maxInputTokens) {
       const middle = Math.floor(text.length / 2)
       const a = await encode(text.slice(0, middle)),
         b = await encode(text.slice(middle))
-      return normalize(a.map((value, i) => value + b[i]!))
+      return validateDimensions(
+        normalize(a.map((value, i) => value + b[i]!)),
+        profile,
+      )
     }
     const feeds: Record<string, Tensor> = {
       input_ids: new Tensor('int64', BigInt64Array.from(ids, BigInt), [1, ids.length]),
@@ -176,18 +203,42 @@ export async function embedTexts(
     if (session.inputNames.includes('token_type_ids'))
       feeds.token_type_ids = new Tensor('int64', new BigInt64Array(ids.length), [1, ids.length])
     const output = await session.run(feeds)
-    if (profile.pooling === 'sentence' && output.sentence_embedding)
-      return normalize(Array.from(output.sentence_embedding.data as Float32Array, Number))
+
+    if (profile.pooling === 'sentence' && output.sentence_embedding) {
+      const vec = Array.from(output.sentence_embedding.data as Float32Array, Number)
+      const truncated = profile.dimensions < vec.length ? vec.slice(0, profile.dimensions) : vec
+      return validateDimensions(normalize(truncated), profile)
+    }
+
     const hidden =
       output.last_hidden_state ?? output.token_embeddings ?? output[session.outputNames[0]!]!
-    const dimensions = hidden.dims[2]!
-    const vector = Array<number>(dimensions).fill(0)
+    const nativeDimensions = hidden.dims[2]!
+
+    if (profile.pooling === 'last-token') {
+      let lastToken = attention_mask.length - 1
+      while (lastToken > 0 && !attention_mask[lastToken]) {
+        lastToken--
+      }
+      const vector = Array.from({ length: nativeDimensions }, (_, j) =>
+        Number(hidden.data[lastToken * nativeDimensions + j]),
+      )
+      const truncated =
+        profile.dimensions < vector.length ? vector.slice(0, profile.dimensions) : vector
+      return validateDimensions(normalize(truncated), profile)
+    }
+
+    // Default: mean pooling
+    const vector = Array<number>(nativeDimensions).fill(0)
     for (let token = 0; token < ids.length; token++) {
       if (!attention_mask[token]) continue
-      for (let j = 0; j < dimensions; j++) vector[j]! += Number(hidden.data[token * dimensions + j])
+      for (let j = 0; j < nativeDimensions; j++)
+        vector[j]! += Number(hidden.data[token * nativeDimensions + j])
     }
-    return normalize(vector)
+    const truncated =
+      profile.dimensions < vector.length ? vector.slice(0, profile.dimensions) : vector
+    return validateDimensions(normalize(truncated), profile)
   }
+
   const vectors: number[][] = []
   for (const text of texts)
     vectors.push(
@@ -195,6 +246,7 @@ export async function embedTexts(
     )
   return vectors
 }
+
 function normalize(vector: number[]): number[] {
   const norm = Math.sqrt(vector.reduce((sum, n) => sum + n * n, 0))
   if (!norm || vector.some((n) => !Number.isFinite(n))) throw new Error('Invalid embedding')

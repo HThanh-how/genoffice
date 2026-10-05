@@ -7,9 +7,11 @@ import { extname } from 'node:path'
 import { parseFileToText, pdfPageTextsSlice } from '@genoffice/file-parse'
 import {
   capChunks,
-  chunkDocumentText,
+  chunkDocumentTextV1,
+  chunkDocumentTextV2,
   chunkTabularText,
   clampPdfPages,
+  CHUNKER_VERSION,
   DEFAULT_PDF_PAGES,
 } from './chunks'
 import { DocumentMemoryStore } from './store'
@@ -119,7 +121,14 @@ export async function extractDocumentSliced(
   const tabular = /^\.(csv|tsv|xls)$/.test(extname(path).toLowerCase())
   const base = tabular
     ? chunkTabularText(text)
-    : { ...capChunks(chunkDocumentText(text)), numeric: false }
+    : {
+        ...capChunks(
+          chunkDocumentTextV2(text, {
+            title: path.split(/[\\/]/).pop(),
+          }),
+        ),
+        numeric: false,
+      }
   const numeric = base.numeric
   let chunks = base.chunks
   let truncated = base.truncated || pagesLeftOut
@@ -144,6 +153,7 @@ export async function extractDocumentSliced(
     mtimeMs: after.mtimeMs,
     sizeBytes: after.size,
     chunks,
+    chunkerVersion: CHUNKER_VERSION,
     status: chunks.length ? 'text-only' : 'empty',
     ...(truncated ? { truncated: true } : {}),
     // Pages with no text layer, so the OCR reader knows which pages (and only those) to read.
@@ -227,6 +237,7 @@ onIndexRequest(
     vector: number[] | null
     limit: number
     embeddingModel: string
+    embeddingSpaceId?: string
     interactive?: boolean
     sliceMs?: number
     maxPdfPages?: number
@@ -258,6 +269,16 @@ onIndexRequest(
             request.limit,
             request.embeddingModel,
           )
+        } else if (request.type === 'search-lexical') {
+          searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!)
+          result = searchStore.searchLexical(request.query, request.limit)
+        } else if (request.type === 'search-semantic') {
+          searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!)
+          result = searchStore.searchSemantic(
+            request.vector!,
+            request.limit,
+            request.embeddingSpaceId ?? request.embeddingModel,
+          )
         } else result = await embedTexts(request.texts, request.kind)
         postIndexMessage({ id: request.id, result })
       } catch (error) {
@@ -267,7 +288,12 @@ onIndexRequest(
         })
       }
     }
-    if (request.type === 'search') void execute()
+    if (
+      request.type === 'search' ||
+      request.type === 'search-lexical' ||
+      request.type === 'search-semantic'
+    )
+      void execute()
     else
       schedule(
         {

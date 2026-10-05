@@ -1,13 +1,24 @@
+export interface ChunkMetadata {
+  pageStart?: number
+  pageEnd?: number
+  sectionPath?: string[]
+  slide?: number
+  sheet?: string
+}
+
 export interface DocumentChunk {
   text: string
   location: string
+  metadata?: ChunkMetadata
 }
+
+export const CHUNKER_VERSION = 2
 
 const MAX_CHARS = 500
 const OVERLAP_CHARS = 80
 
 /** Split extracted text without discarding content; locations are ordinal, never guessed pages. */
-export function chunkDocumentText(input: string): DocumentChunk[] {
+export function chunkDocumentTextV1(input: string): DocumentChunk[] {
   const normalized = input
     .replace(/\r\n?/g, '\n')
     .replace(/[\t\u00a0]+/g, ' ')
@@ -45,6 +56,9 @@ export function chunkDocumentText(input: string): DocumentChunk[] {
   return chunks.map((text, index) => ({ text, location: `Chunk ${index + 1}` }))
 }
 
+/** Backward compatibility alias */
+export const chunkDocumentText = chunkDocumentTextV1
+
 function splitLongUnit(text: string): string[] {
   if (text.length <= MAX_CHARS) return [text]
   const parts: string[] = []
@@ -68,6 +82,136 @@ function splitLongUnit(text: string): string[] {
     while (start < text.length && /\s/.test(text[start]!)) start++
   }
   return parts.filter(Boolean)
+}
+
+const TARGET_CHARS = 1200
+const MAX_CHARS_V2 = 1800
+const OVERLAP_CHARS_V2 = 160
+
+function splitLongSentenceV2(text: string): string[] {
+  if (text.length <= MAX_CHARS_V2) return [text]
+  const parts: string[] = []
+  let start = 0
+  while (start < text.length) {
+    const hardEnd = Math.min(start + MAX_CHARS_V2, text.length)
+    let end = hardEnd
+    if (hardEnd < text.length) {
+      const boundary = Math.max(
+        text.lastIndexOf('; ', hardEnd),
+        text.lastIndexOf(', ', hardEnd),
+        text.lastIndexOf(' ', hardEnd),
+      )
+      if (boundary > start + Math.floor(MAX_CHARS_V2 * 0.6)) {
+        end = boundary + (text[boundary] === ' ' ? 1 : 0)
+      }
+    }
+    parts.push(text.slice(start, end).trim())
+    if (end >= text.length) break
+    start = Math.max(start + 1, end - OVERLAP_CHARS_V2)
+    while (start < text.length && /\s/.test(text[start]!)) start++
+  }
+  return parts.filter(Boolean)
+}
+
+function splitParagraphV2(text: string): string[] {
+  if (text.length <= MAX_CHARS_V2) return [text]
+  // Sentence boundaries
+  const rawSentences = text
+    .split(/(?<=[.!?。！？])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+
+  const sentences = (rawSentences.length ? rawSentences : [text]).flatMap(splitLongSentenceV2)
+  const units: string[] = []
+  let current = ''
+  for (const s of sentences) {
+    if (!current) {
+      current = s
+    } else if (current.length + 1 + s.length <= MAX_CHARS_V2) {
+      current += ` ${s}`
+    } else {
+      units.push(current)
+      current = s
+    }
+  }
+  if (current) units.push(current)
+  return units
+}
+
+/**
+ * Chunker V2: Target ~1200 chars (200-350 tokens), respects paragraph boundaries first,
+ * then sentence boundaries, with gentle overlap when splits occur.
+ */
+export function chunkDocumentTextV2(
+  input: string,
+  context?: {
+    title?: string
+    sectionPath?: string[]
+  },
+): DocumentChunk[] {
+  const normalized = input
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\t\u00a0]+/g, ' ')
+    .trim()
+  if (!normalized) return []
+
+  const paragraphs = normalized
+    .split(/\n\s*\n+/)
+    .map((p) => p.trim())
+    .filter(Boolean)
+
+  const units = (paragraphs.length ? paragraphs : [normalized]).flatMap(splitParagraphV2)
+  const chunks: string[] = []
+  let current = ''
+
+  for (const unit of units) {
+    const candidate = current ? `${current}\n\n${unit}` : unit
+    if (candidate.length <= TARGET_CHARS) {
+      current = candidate
+      continue
+    }
+    if (candidate.length <= MAX_CHARS_V2) {
+      current = candidate
+      chunks.push(current)
+      current = ''
+      continue
+    }
+
+    if (current) {
+      chunks.push(current)
+      current = ''
+    }
+
+    if (unit.length <= MAX_CHARS_V2) {
+      current = unit
+    } else {
+      const parts = splitParagraphV2(unit)
+      for (const part of parts) {
+        if (current && current.length + 2 + part.length > MAX_CHARS_V2) {
+          chunks.push(current)
+          current = part
+        } else if (current) {
+          current = `${current}\n\n${part}`
+        } else {
+          current = part
+        }
+      }
+    }
+  }
+
+  if (current) {
+    chunks.push(current)
+  }
+
+  const metadata: ChunkMetadata | undefined = context?.sectionPath
+    ? { sectionPath: context.sectionPath }
+    : undefined
+
+  return chunks.map((text, index) => ({
+    text,
+    location: `Chunk ${index + 1}`,
+    ...(metadata ? { metadata } : {}),
+  }))
 }
 
 /** Safety ceiling of chunks stored for one file (~25 M characters); beyond it the file is truncated and flagged. */
@@ -112,7 +256,7 @@ export interface TabularChunks extends CappedChunks {
  * Index a CSV/TSV as its header plus evenly sampled rows. Every chunk repeats the header so
  * a matching row stays interpretable; a huge export can no longer produce thousands of chunks.
  */
-export function chunkTabularText(input: string): TabularChunks {
+export function chunkTabularText(input: string, options?: { sheet?: string }): TabularChunks {
   const lines = input
     .replace(/\r\n?/g, '\n')
     .split('\n')
@@ -143,6 +287,7 @@ export function chunkTabularText(input: string): TabularChunks {
     chunks.push({
       text: `${header}\n${current.join('\n')}`,
       location: `${stride > 1 ? 'Sampled rows' : 'Rows'} ${range}`,
+      ...(options?.sheet ? { metadata: { sheet: options.sheet } } : {}),
     })
     current = []
     currentChars = 0
@@ -155,7 +300,12 @@ export function chunkTabularText(input: string): TabularChunks {
     last = row.line
   }
   flush()
-  if (!chunks.length) chunks.push({ text: header, location: 'Header' })
+  if (!chunks.length)
+    chunks.push({
+      text: header,
+      location: 'Header',
+      ...(options?.sheet ? { metadata: { sheet: options.sheet } } : {}),
+    })
   if (chunks.length > MAX_TABULAR_CHUNKS) {
     chunks.length = MAX_TABULAR_CHUNKS
     truncated = true

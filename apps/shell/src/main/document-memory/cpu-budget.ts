@@ -17,6 +17,19 @@ export function coolDownMs(activeMs: number, share: number): number {
   return Math.min(2000, Math.max(10, Math.ceil(activeMs * (1 / safeShare - 1))))
 }
 
+/** Check whether heavy embedding models can run based on current worker policy or explicit tier */
+export function canRunHeavyEmbedding(
+  tier?: 'low' | 'normal' | 'high',
+  onBattery?: boolean,
+): boolean {
+  if (tier !== undefined) {
+    if (tier === 'low') return false
+    if (onBattery) return false
+    return true
+  }
+  return workerPolicy.allowHeavyEmbedding ?? false
+}
+
 /**
  * Limit sustained background work to the indexing policy's duty cycle. Without a policy
  * message the share stays at the historic ~35% of one logical CPU.

@@ -2,6 +2,7 @@ import type { IndexingNow } from '../../shared/fork/document-index-api'
 import { stat } from 'node:fs/promises'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import type { Worker } from 'node:worker_threads'
+import { totalmem } from 'node:os'
 import { createIndexProcess } from './process-worker'
 import { isIndexingPaused, subscribeIndexingPolicy } from '../fork/indexing-policy-bus'
 import { createReadStream, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
@@ -9,6 +10,9 @@ import { createHash } from 'node:crypto'
 import { extname, join, resolve, sep } from 'node:path'
 import workerPath from './worker?modulePath'
 import type { PdfScanInfo } from './ocr-sidecar'
+import { EmbeddingMigration } from './embedding-migration'
+import { QueryEmbeddingCache } from './query-embedding-cache'
+import { memoryTierFromTotal, type MemoryTier } from './memory-tier'
 import {
   DEFAULT_EMBEDDING_PROFILE,
   embeddingProfile,
@@ -67,6 +71,7 @@ interface ExtractResult {
   mtimeMs: number
   sizeBytes: number
   chunks: DocumentChunk[]
+  chunkerVersion?: number
   status: 'text-only' | 'empty' | 'ready'
   error?: string
   /** Only part of the file was indexed (chunk cap or sampled tabular rows). */
@@ -107,6 +112,21 @@ type WorkerRequest =
       vector: number[] | null
       limit: number
       embeddingModel: string
+    }
+  | {
+      type: 'search-lexical'
+      query: string
+      limit: number
+    }
+  | {
+      type: 'search-semantic'
+      vector: number[]
+      limit: number
+      embeddingSpaceId: string
+    }
+  | {
+      type: 'ann-rebuild'
+      embeddingSpaceId: string
     }
 interface PendingRequest {
   resolve: (reply: WorkerReply | null) => void
@@ -218,6 +238,9 @@ export class DocumentMemoryManager {
   private counterBackfill: Promise<void> = Promise.resolve()
   private ftsTimer: NodeJS.Timeout | null = null
   private stopPolicyWatch: () => void = () => {}
+  private searchGeneration = 0
+  private readonly queryCache = new QueryEmbeddingCache(64)
+  private readonly embeddingMigration: EmbeddingMigration
 
   constructor(userData: string, options: ManagerOptions = {}) {
     mkdirSync(userData, { recursive: true })
@@ -238,6 +261,8 @@ export class DocumentMemoryManager {
     this.externalNames = options.externalNames
     this.autoDeferAfterMs = options.autoDeferAfterMs ?? AUTO_DEFER_AFTER_MS
     this.store = new DocumentMemoryStore(this.dbPath)
+    this.embeddingMigration = new EmbeddingMigration(this.store.rawDb)
+    this.embeddingMigration.setTarget(this.embeddingProfile.embeddingId)
     this.enabled = readEnabled(this.settingsPath)
     this.store.purgeDiscoveredByName(isIgnoredFileName)
     this.store.requeueNowReadable()
@@ -703,13 +728,24 @@ export class DocumentMemoryManager {
     modelProgress?: number
     pending: number
     errors: number
+    memoryTier: MemoryTier
+    activeEmbeddingSpace: string
+    semanticCoverage: number
+    migrationState: string
   } {
+    const stats = this.store.stats(this.embeddingProfile.embeddingId)
+    const migration = this.embeddingMigration.progress()
+    const memoryTier = memoryTierFromTotal(totalmem() / (1024 * 1024))
     return {
       enabled: this.enabled,
       modelState: this.modelState,
       ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }),
       pending: this.pendingCount + this.queue.length + this.embeds.length,
       errors: this.store.errorCount(),
+      memoryTier,
+      activeEmbeddingSpace: this.embeddingProfile.embeddingId,
+      semanticCoverage: stats.semanticCoverage ?? 0,
+      migrationState: migration.state,
     }
   }
 
@@ -736,27 +772,22 @@ export class DocumentMemoryManager {
   }
 
   /**
-   * Switch the embedding model. Existing vectors belong to the old model, so every document that
-   * has them is queued to be read again; search keeps working on text (FTS) and on whatever
-   * vectors of the new model exist while that happens.
+   * Switch the embedding model without clearing or requeuing existing chunks.
+   * New target embedding space is set and background migration handles backfilling.
    */
-  setEmbeddingProfile(id: EmbeddingProfileId): { ok: boolean; requeued: number } {
-    if (this.stopped || id === this.embeddingProfileId) return { ok: !this.stopped, requeued: 0 }
+  setEmbeddingProfile(id: EmbeddingProfileId): { ok: boolean; migrationStarted: boolean } {
+    if (this.stopped || id === this.embeddingProfileId) {
+      return { ok: !this.stopped, migrationStarted: false }
+    }
     this.embeddingProfileId = id
     writeFileSync(this.embeddingSettingsPath, JSON.stringify({ profile: id }), { mode: 0o600 })
-    // the running worker has the old model loaded: a fresh one starts with the new profile
-    this.epoch++
-    this.queue.length = 0
-    this.queued.clear()
-    this.embeds.length = 0
     this.modelState = 'not-loaded'
     this.modelProgress = undefined
     this.recycleWorker('Embedding model changed.')
-    this.lastError = undefined
-    const requeued = this.store.requeueForEmbeddingModel(this.embeddingProfile.embeddingId)
-    if (this.enabled) void this.poll()
+    this.store.ensureEmbeddingSpace(this.embeddingProfile)
+    this.embeddingMigration.setTarget(this.embeddingProfile.embeddingId)
     this.notify(this.enabledListeners)
-    return { ok: true, requeued }
+    return { ok: true, migrationStarted: true }
   }
 
   /** How many pages of each PDF are read and indexed. */
@@ -820,20 +851,32 @@ export class DocumentMemoryManager {
     this.notify(this.clearedListeners)
   }
 
-  async search(
+  async searchProgressive(
     query: string,
     limit = 8,
-  ): Promise<{
-    hits: FreshDocumentMemoryHit[]
-    pending: number
-    errors: number
-    modelState: string
-  }> {
-    let vector: number[] | null = null
-    // started now so the outside lookup runs while the passages are searched
+    handlers: {
+      onLexical?: (hits: FreshDocumentMemoryHit[]) => void
+      onFinal?: (hits: FreshDocumentMemoryHit[]) => void
+    } = {},
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const generation = ++this.searchGeneration
     const outside = this.searchExternal(query, 5)
-    // Do not place a query behind a long passage batch; lexical FTS answers now.
+
+    // Immediate lexical search directly in store
+    const lexicalHits = this.store.search(query, null, limit)
+    const seenLexical = new Set(lexicalHits.map((hit) => hit.documentId))
+    const namedLexical = this.store.searchNames(query, 5).filter((hit) => !seenLexical.has(hit.documentId))
+    const freshLexical = await this.annotateFreshness([...namedLexical.slice(0, 3), ...lexicalHits])
+    if (signal?.aborted || generation !== this.searchGeneration) return
+    handlers.onLexical?.(freshLexical)
+
+    // Check query embedding cache
+    const spaceId = this.embeddingProfile.embeddingId
+    let vector: number[] | null = this.queryCache.get(spaceId, query) ?? null
+
     if (
+      !vector &&
       (this.enabled || this.modelState === 'ready') &&
       this.modelState !== 'downloading' &&
       this.modelState !== 'error' &&
@@ -850,30 +893,57 @@ export class DocumentMemoryManager {
         Array.isArray(reply.result[0])
       ) {
         vector = reply.result[0] as number[]
+        this.queryCache.set(spaceId, query, vector)
       }
     }
+
+    if (signal?.aborted || generation !== this.searchGeneration) return
+
     const reply = await this.ask(
-      { type: 'search', query, vector, limit, embeddingModel: this.embeddingProfile.embeddingId },
+      { type: 'search', query, vector, limit, embeddingModel: spaceId },
       30_000,
     )
+    if (signal?.aborted || generation !== this.searchGeneration) return
+
     const result =
       reply && 'result' in reply && Array.isArray(reply.result)
         ? (reply.result as DocumentMemoryHit[])
-        : this.store.search(query, null, limit)
-    // A file with no readable text (a scanned PDF) has no passages to match; its name can still
-    // answer, so name matches join the content hits (one entry per document).
+        : this.store.search(query, vector, limit, spaceId)
+
     const seen = new Set(result.map((hit) => hit.documentId))
     const named = this.store.searchNames(query, 5).filter((hit) => !seen.has(hit.documentId))
-    // A name that fits the question comes first: with a full page of passage hits it would
-    // otherwise be cut off by the caller's limit.
     const seenPaths = new Set([...result, ...named].map((hit) => pathKey(hit.path)))
     const elsewhere = (await outside)
       .filter((file) => !seenPaths.has(pathKey(file.path)))
       .slice(0, 3)
       .map((file) => this.externalHit(file))
     const merged = [...named.slice(0, 3), ...elsewhere, ...result]
+    const finalHits = await this.annotateFreshness(merged)
+
+    if (signal?.aborted || generation !== this.searchGeneration) return
+    handlers.onFinal?.(finalHits)
+  }
+
+  async search(
+    query: string,
+    limit = 8,
+  ): Promise<{
+    hits: FreshDocumentMemoryHit[]
+    pending: number
+    errors: number
+    modelState: string
+  }> {
+    let finalHits: FreshDocumentMemoryHit[] = []
+    await this.searchProgressive(query, limit, {
+      onLexical: (hits) => {
+        if (!finalHits.length) finalHits = hits
+      },
+      onFinal: (hits) => {
+        finalHits = hits
+      },
+    })
     return {
-      hits: await this.annotateFreshness(merged),
+      hits: finalHits,
       pending: this.queue.length + this.embeds.length + this.pendingCount,
       errors: this.store.errorCount(),
       modelState: this.modelState,

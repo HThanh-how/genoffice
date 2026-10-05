@@ -10,6 +10,7 @@ export interface SessionKeeperDeps<S> {
   create: (threads: number) => Promise<S>
   release: (session: S) => Promise<void> | void
   freeMemMB: () => number
+  memoryPressure?: () => boolean
   now?: () => number
   /** Minimum gap between two rebuilds (a rebuild loads the model again). */
   minIntervalMs?: number
@@ -25,6 +26,7 @@ export interface SessionKeeper<S> {
   threads(): number
   /** Call between batches; resolves when the session is (or stays) the right size. */
   align(): Promise<void>
+  dispose(): Promise<void>
 }
 
 export function createSessionKeeper<S>(
@@ -44,6 +46,7 @@ export function createSessionKeeper<S>(
     current: () => session,
     threads: () => threads,
     async align() {
+      if (deps.memoryPressure?.()) return
       const wanted = deps.desiredThreads()
       if (wanted === threads || rebuilding) return
       if (now() - failedAt < minInterval) return
@@ -67,6 +70,14 @@ export function createSessionKeeper<S>(
         failedAt = now()
       } finally {
         rebuilding = false
+      }
+    },
+    async dispose() {
+      const old = session
+      try {
+        await deps.release(old)
+      } catch {
+        // process exit remains final fallback
       }
     },
   }

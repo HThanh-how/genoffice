@@ -12,6 +12,12 @@ import {
   queryTokens,
 } from './normalization'
 import { OcrSidecar, isOcrLocation } from './ocr-sidecar'
+import {
+  LEGACY_E5_EMBEDDING_ID,
+  LEGACY_VIETNAMESE_EMBEDDING_ID,
+  type EmbeddingProfile,
+} from './embedding-profiles'
+import { fuseHybridResults } from './hybrid-ranker'
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
 export interface StoredDocument {
@@ -70,6 +76,8 @@ export interface DocumentMemoryStats {
   chunks: number
   vectors: number
   errors: number
+  semanticCoverage?: number
+  activeEmbeddingSpace?: string
 }
 export interface DocumentChunkProgress {
   document: StoredDocument | null
@@ -87,6 +95,8 @@ export interface FolderChunkProgress {
   partialFileProgress: number
   /** Files that are only partially indexed (chunk cap or sampled rows). */
   truncatedFiles: number
+  semanticCoverage?: number
+  activeEmbeddingSpace?: string
 }
 
 const SCHEMA = `
@@ -100,6 +110,7 @@ CREATE TABLE IF NOT EXISTS documents (
   size_bytes INTEGER,
   hash TEXT,
   embedding_model TEXT,
+  active_chunk_set_id INTEGER,
   error TEXT,
   excluded INTEGER NOT NULL DEFAULT 0 CHECK (excluded IN (0, 1)),
   truncated INTEGER NOT NULL DEFAULT 0,
@@ -110,9 +121,26 @@ CREATE TABLE IF NOT EXISTS documents (
   chunk_done INTEGER NOT NULL DEFAULT 0,
   chunk_counted INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS embedding_spaces (
+  id TEXT PRIMARY KEY,
+  model_repo TEXT NOT NULL,
+  model_revision TEXT NOT NULL,
+  pooling TEXT NOT NULL,
+  dimensions INTEGER NOT NULL,
+  quantization TEXT NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE TABLE IF NOT EXISTS chunk_sets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  chunker_version INTEGER NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('building', 'active', 'retired')),
+  created_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
 CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  chunk_set_id INTEGER REFERENCES chunk_sets(id) ON DELETE CASCADE,
   ordinal INTEGER NOT NULL,
   text TEXT NOT NULL,
   normalized TEXT NOT NULL,
@@ -121,6 +149,31 @@ CREATE TABLE IF NOT EXISTS chunks (
   vector_dim INTEGER,
   UNIQUE(document_id, ordinal),
   CHECK ((vector IS NULL AND vector_dim IS NULL) OR (vector IS NOT NULL AND vector_dim > 0))
+);
+CREATE TABLE IF NOT EXISTS chunk_embeddings (
+  chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
+  space_id TEXT NOT NULL REFERENCES embedding_spaces(id) ON DELETE CASCADE,
+  vector BLOB NOT NULL,
+  vector_dim INTEGER NOT NULL,
+  created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (chunk_id, space_id)
+);
+CREATE INDEX IF NOT EXISTS chunk_embeddings_space ON chunk_embeddings(space_id, chunk_id);
+CREATE TABLE IF NOT EXISTS embedding_migrations (
+  target_space_id TEXT PRIMARY KEY,
+  source_space_id TEXT,
+  total_chunks INTEGER NOT NULL DEFAULT 0,
+  completed_chunks INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'paused', 'complete', 'failed')),
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+);
+CREATE TABLE IF NOT EXISTS ann_indexes (
+  space_id TEXT PRIMARY KEY,
+  generation INTEGER NOT NULL DEFAULT 0,
+  file_path TEXT,
+  indexed_count INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'dirty',
+  updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 CREATE INDEX IF NOT EXISTS chunks_document_id ON chunks(document_id);
@@ -198,6 +251,10 @@ export class DocumentMemoryStore {
     return (this.ocrSidecar ??= new OcrSidecar(this.db))
   }
 
+  get rawDb(): DatabaseSync {
+    return this.db
+  }
+
   constructor(dbPath: string, options: DocumentMemorySearchOptions = {}) {
     this.searchOptions = {
       semanticRecentScan: options.semanticRecentScan ?? SEMANTIC_RECENT_SCAN,
@@ -228,6 +285,7 @@ export class DocumentMemoryStore {
     this.db.exec(
       'CREATE INDEX IF NOT EXISTS documents_priority ON documents(excluded, priority_at DESC)',
     )
+    this.migrateEmbeddingSchema()
     this.migrateChunkCounters()
     // a blank Word/Excel/Markdown file used to be filed as "scanned, needs OCR": only a PDF can be
     this.db.exec(
@@ -240,6 +298,66 @@ export class DocumentMemoryStore {
     } catch {
       // Some filesystems and in-memory databases do not support chmod.
     }
+  }
+
+  /**
+   * Migrate legacy schema to V2: ensure embedding spaces exist and copy legacy vectors
+   * from chunks.vector to chunk_embeddings without recomputing.
+   */
+  private migrateEmbeddingSchema(): void {
+    const docColumns = (
+      this.db.prepare('PRAGMA table_info(documents)').all() as Array<{ name: string }>
+    ).map((c) => c.name)
+    if (!docColumns.includes('active_chunk_set_id')) {
+      this.db.exec('ALTER TABLE documents ADD COLUMN active_chunk_set_id INTEGER')
+    }
+
+    const chunkColumns = (
+      this.db.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>
+    ).map((c) => c.name)
+    if (!chunkColumns.includes('chunk_set_id')) {
+      this.db.exec('ALTER TABLE chunks ADD COLUMN chunk_set_id INTEGER')
+    }
+    this.db.exec('CREATE INDEX IF NOT EXISTS chunks_chunk_set_id ON chunks(chunk_set_id)')
+
+    // Ensure legacy spaces exist
+    this.db.prepare(`
+      INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+      VALUES
+        (?, 'Xenova/multilingual-e5-small', '761b726dd34fb83930e26aab4e9ac3899aa1fa78', 'mean', 384, 'q8'),
+        (?, 'AITeamVN/Vietnamese_Embedding', 'dea33aa1ab339f38d66ae0a40e6c40e0a9249568', 'sentence', 1024, 'fp32')
+    `).run(LEGACY_E5_EMBEDDING_ID, LEGACY_VIETNAMESE_EMBEDDING_ID)
+
+    // Copy legacy vectors from chunks into chunk_embeddings without recomputing
+    this.db.prepare(`
+      INSERT OR IGNORE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
+      SELECT c.id, ?, c.vector, c.vector_dim
+      FROM chunks c
+      JOIN documents d ON d.id = c.document_id
+      WHERE c.vector IS NOT NULL AND (d.embedding_model IS NULL OR d.embedding_model = ?)
+    `).run(LEGACY_E5_EMBEDDING_ID, LEGACY_E5_EMBEDDING_ID)
+
+    this.db.prepare(`
+      INSERT OR IGNORE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
+      SELECT c.id, ?, c.vector, c.vector_dim
+      FROM chunks c
+      JOIN documents d ON d.id = c.document_id
+      WHERE c.vector IS NOT NULL AND d.embedding_model = ?
+    `).run(LEGACY_VIETNAMESE_EMBEDDING_ID, LEGACY_VIETNAMESE_EMBEDDING_ID)
+  }
+
+  ensureEmbeddingSpace(profile: EmbeddingProfile): void {
+    this.db.prepare(`
+      INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      profile.embeddingId,
+      profile.repo,
+      profile.revision,
+      profile.pooling,
+      profile.dimensions,
+      'q8',
+    )
   }
 
   /**
@@ -642,7 +760,7 @@ export class DocumentMemoryStore {
       const row = this.lockDocumentForReplace(normalizedPath)
       this.deleteChunks(row.id)
       this.updateReplacedDocument(row.id, normalizedPath, replacement)
-      const insert = this.chunkInserter(row.id)
+      const insert = this.chunkInserter(row.id, replacement.embeddingModel)
       replacement.chunks.forEach((chunk, ordinal) => insert(chunk, ordinal))
     })
   }
@@ -682,7 +800,7 @@ export class DocumentMemoryStore {
           if (!this.deleteChunksBudgeted(documentId, outOfBudget)) return 'more'
           phase = 'insert'
         }
-        insert ??= this.chunkInserter(documentId)
+        insert ??= this.chunkInserter(documentId, replacement.embeddingModel)
         while (next < replacement.chunks.length) {
           insert(replacement.chunks[next]!, next)
           next++
@@ -730,11 +848,20 @@ export class DocumentMemoryStore {
 
   private chunkInserter(
     documentId: number,
+    embeddingModel?: string | null,
   ): (chunk: ReplacementDocument['chunks'][number], ordinal: number) => void {
     const addChunk = this.db
       .prepare(`INSERT INTO chunks(document_id, ordinal, text, normalized, location, vector, vector_dim)
         VALUES (?, ?, ?, ?, ?, ?, ?)`)
     const addFts = this.db.prepare('INSERT INTO chunk_fts(rowid, text) VALUES (?, ?)')
+    const addChunkEmbedding = this.db.prepare(`
+      INSERT OR REPLACE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
+      VALUES (?, ?, ?, ?)
+    `)
+    const ensureSpace = this.db.prepare(`
+      INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+      VALUES (?, ?, 'pinned', 'mean', ?, 'q8')
+    `)
     return (chunk, ordinal) => {
       const fields = documentIndexFields(chunk.text)
       const result = addChunk.run(
@@ -747,6 +874,15 @@ export class DocumentMemoryStore {
         chunk.vector?.length ?? null,
       )
       addFts.run(result.lastInsertRowid, fields.searchText)
+      if (chunk.vector && embeddingModel) {
+        ensureSpace.run(embeddingModel, embeddingModel, chunk.vector.length)
+        addChunkEmbedding.run(
+          result.lastInsertRowid,
+          embeddingModel,
+          floatBlob(chunk.vector),
+          chunk.vector.length,
+        )
+      }
     }
   }
 
@@ -860,17 +996,17 @@ export class DocumentMemoryStore {
       )
   }
 
-  /** Add one embedding batch without replacing chunks or invalidating their IDs. */
-  setChunkVectors(
+  /** Add one embedding batch to chunk_embeddings without replacing chunks or invalidating their IDs. */
+  setChunkEmbeddings(
     path: string,
     hash: string,
     offset: number,
     vectors: number[][],
-    embeddingModel: string,
+    embeddingSpaceId: string,
     complete: boolean,
   ): void {
     if (!Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid vector offset')
-    if (!embeddingModel) throw new Error('Embedding model is required')
+    if (!embeddingSpaceId) throw new Error('Embedding space ID is required')
     const dimensions = new Set(vectors.map((vector) => vector.length))
     if (
       dimensions.size > 1 ||
@@ -884,40 +1020,79 @@ export class DocumentMemoryStore {
         .get(normalizedPath) as { id: number; hash: string | null; excluded: number } | undefined
       if (!document || document.excluded || document.hash !== hash)
         throw new Error('Document changed before vectors were stored')
-      const existing = this.db
+
+      const chunkRows = this.db
         .prepare(
-          'SELECT vector_dim FROM chunks WHERE document_id = ? AND vector IS NOT NULL LIMIT 1',
+          'SELECT id, ordinal FROM chunks WHERE document_id = ? AND ordinal >= ? ORDER BY ordinal ASC LIMIT ?',
         )
-        .get(document.id) as { vector_dim: number } | undefined
-      const dimension = vectors[0]?.length ?? existing?.vector_dim
-      if (dimension !== undefined && existing && existing.vector_dim !== dimension)
-        throw new Error('Vector dimension does not match stored vectors')
-      const update = this.db.prepare(
-        'UPDATE chunks SET vector = ?, vector_dim = ? WHERE document_id = ? AND ordinal = ?',
+        .all(document.id, offset, vectors.length) as Array<{ id: number; ordinal: number }>
+
+      if (chunkRows.length !== vectors.length) {
+        throw new Error('Vector batch does not match indexed chunks')
+      }
+
+      this.db
+        .prepare(
+          `INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+           VALUES (?, ?, 'pinned', 'mean', ?, 'q8')`,
+        )
+        .run(embeddingSpaceId, embeddingSpaceId, dimensions.values().next().value ?? 384)
+
+      const insertEmbedding = this.db.prepare(`
+        INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (chunk_id, space_id)
+        DO UPDATE SET
+          vector = excluded.vector,
+          vector_dim = excluded.vector_dim,
+          created_at = unixepoch()
+      `)
+
+      const updateChunkLegacy = this.db.prepare(
+        'UPDATE chunks SET vector = ?, vector_dim = ? WHERE id = ?',
       )
+
       vectors.forEach((vector, index) => {
-        const result = update.run(floatBlob(vector), vector.length, document.id, offset + index)
-        if (Number(result.changes) !== 1)
-          throw new Error('Vector batch does not match indexed chunks')
+        const chunk = chunkRows[index]!
+        const blob = floatBlob(vector)
+        insertEmbedding.run(chunk.id, embeddingSpaceId, blob, vector.length)
+        updateChunkLegacy.run(blob, vector.length, chunk.id)
       })
+
       const count = this.db
         .prepare(
-          'SELECT count(*) AS total, count(vector) AS vectors FROM chunks WHERE document_id = ?',
+          `SELECT count(*) AS total, count(e.chunk_id) AS vectors
+           FROM chunks c
+           LEFT JOIN chunk_embeddings e ON e.chunk_id = c.id AND e.space_id = ?
+           WHERE c.document_id = ?`,
         )
-        .get(document.id) as { total: number; vectors: number }
+        .get(embeddingSpaceId, document.id) as { total: number; vectors: number }
+
       if (complete && count.total !== count.vectors)
         throw new Error('Document vector batches are incomplete')
+
       this.db
         .prepare(
           `UPDATE documents SET embedding_model = ?, status = ?, error = NULL, updated_at = unixepoch()
-        WHERE id = ?`,
+           WHERE id = ?`,
         )
-        .run(embeddingModel, complete ? 'ready' : 'text-only', document.id)
+        .run(embeddingSpaceId, complete ? 'ready' : 'text-only', document.id)
     })
   }
 
+  setChunkVectors(
+    path: string,
+    hash: string,
+    offset: number,
+    vectors: number[][],
+    embeddingModel: string,
+    complete: boolean,
+  ): void {
+    return this.setChunkEmbeddings(path, hash, offset, vectors, embeddingModel, complete)
+  }
+
   /** Find a committed embedding checkpoint, retaining chunk IDs and completed vectors. */
-  resumeVectorOffset(path: string, hash: string, model: string): number | null {
+  resumeEmbeddingOffset(path: string, hash: string, embeddingSpaceId: string): number | null {
     const doc = this.db
       .prepare('SELECT id, hash, embedding_model, excluded, status FROM documents WHERE path = ?')
       .get(resolve(path)) as
@@ -936,16 +1111,26 @@ export class DocumentMemoryStore {
       // A file still waiting to be read has no complete text stored, whatever hash it carries
       // (the folder scan records one, and an interrupted write leaves part of the text):
       // resuming would skip storing the text and leave the file waiting for good.
-      doc.status === 'pending' ||
-      (doc.embedding_model && doc.embedding_model !== model)
+      doc.status === 'pending'
     )
       return null
+
     const row = this.db
-      .prepare(
-        'SELECT min(CASE WHEN vector IS NULL THEN ordinal END) AS missing, count(*) AS total FROM chunks WHERE document_id = ?',
-      )
-      .get(doc.id) as { missing: number | null; total: number }
+      .prepare(`
+        SELECT min(c.ordinal) AS missing, count(*) AS total
+        FROM chunks c
+        LEFT JOIN chunk_embeddings e
+          ON e.chunk_id = c.id
+          AND e.space_id = ?
+        WHERE c.document_id = ? AND e.chunk_id IS NULL
+      `)
+      .get(embeddingSpaceId, doc.id) as { missing: number | null; total: number }
+
     return row.missing ?? row.total
+  }
+
+  resumeVectorOffset(path: string, hash: string, model: string): number | null {
+    return this.resumeEmbeddingOffset(path, hash, model)
   }
 
   move(oldPath: string, newPath: string): void {
@@ -1175,6 +1360,160 @@ export class DocumentMemoryStore {
     })
   }
 
+  /** Standalone lexical search using FTS5 (BM25) */
+  searchLexical(
+    query: string,
+    limit = 200,
+  ): Array<{ chunkId: number; rank: number; score: number; documentId: number }> {
+    const tokens = queryTokens(query)
+    if (!tokens.length) return []
+    const match = tokens.map(quoteFtsToken).join(' OR ')
+    const rows = this.db
+      .prepare(
+        `SELECT f.rowid AS chunk_id, bm25(chunk_fts) AS rank, c.document_id
+         FROM chunk_fts f
+         JOIN chunks c ON c.id = f.rowid
+         JOIN documents d ON d.id = c.document_id
+         WHERE chunk_fts MATCH ? AND d.excluded = 0
+         ORDER BY rank LIMIT ?`,
+      )
+      .all(match, limit) as Array<{ chunk_id: number; rank: number; document_id: number }>
+
+    const results: Array<{ chunkId: number; rank: number; score: number; documentId: number }> = []
+    let rank = 0
+    let previousRank: number | undefined
+    rows.forEach((row, index) => {
+      if (previousRank !== row.rank) rank = index + 1
+      results.push({
+        chunkId: row.chunk_id,
+        rank,
+        score: row.rank,
+        documentId: row.document_id,
+      })
+      previousRank = row.rank
+    })
+    return results
+  }
+
+  /** Standalone semantic search using chunk_embeddings and cosine similarity (exact fallback) */
+  searchSemantic(
+    vector: number[],
+    limit = 200,
+    embeddingSpaceId?: string,
+  ): Array<{ chunkId: number; rank: number; score: number; documentId: number }> {
+    if (vector.some((v) => !Number.isFinite(v))) {
+      throw new Error('Query vector must contain only finite numbers')
+    }
+    let queryNorm = 0
+    for (const value of vector) queryNorm += value * value
+
+    // Check if we have chunk_embeddings for this space
+    const countRow = this.db
+      .prepare(
+        `SELECT count(*) AS count
+         FROM chunk_embeddings e
+         JOIN chunks c ON c.id = e.chunk_id
+         JOIN documents d ON d.id = c.document_id
+         WHERE d.excluded = 0 AND (? IS NULL OR e.space_id = ?)`,
+      )
+      .get(embeddingSpaceId ?? null, embeddingSpaceId ?? null) as { count: number }
+
+    const legacyCountRow =
+      countRow.count === 0
+        ? (this.db
+            .prepare(
+              `SELECT count(*) AS count FROM chunks c JOIN documents d ON d.id = c.document_id
+               WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
+                 AND (? IS NULL OR d.embedding_model = ?)`,
+            )
+            .get(vector.length, embeddingSpaceId ?? null, embeddingSpaceId ?? null) as {
+            count: number
+          })
+        : { count: 0 }
+
+    if (countRow.count === 0 && legacyCountRow.count === 0) {
+      return []
+    }
+
+    function* scoredRows(store: DocumentMemoryStore) {
+      if (countRow.count > 0) {
+        const rows = store.db
+          .prepare(
+            `SELECT e.chunk_id AS id, e.vector, e.vector_dim, c.document_id, d.priority_at
+             FROM chunk_embeddings e
+             JOIN chunks c ON c.id = e.chunk_id
+             JOIN documents d ON d.id = c.document_id
+             WHERE d.excluded = 0 AND (? IS NULL OR e.space_id = ?)
+             ORDER BY d.priority_at DESC, d.id DESC`,
+          )
+          .iterate(embeddingSpaceId ?? null, embeddingSpaceId ?? null) as Iterable<{
+            id: number
+            vector: Uint8Array
+            vector_dim: number
+            document_id: number
+            priority_at: number
+          }>
+
+        let documentRank = 0
+        for (const row of rows) {
+          if (row.vector_dim !== vector.length) continue
+          documentRank++
+          const score = cosine(vector, blobVector(row.vector, row.vector_dim), queryNorm)
+          yield {
+            id: row.id,
+            score: score + 1e-8 / documentRank,
+            cosineScore: score,
+            documentId: row.document_id,
+          }
+        }
+      } else {
+        // Fallback to legacy chunks.vector if chunk_embeddings is empty
+        const legacyRows = store.db
+          .prepare(
+            `SELECT c.id, c.vector, c.vector_dim, c.document_id, d.priority_at
+             FROM chunks c
+             JOIN documents d ON d.id = c.document_id
+             WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
+               AND (? IS NULL OR d.embedding_model = ?)
+             ORDER BY d.priority_at DESC, d.id DESC`,
+          )
+          .iterate(vector.length, embeddingSpaceId ?? null, embeddingSpaceId ?? null) as Iterable<{
+            id: number
+            vector: Uint8Array
+            vector_dim: number
+            document_id: number
+            priority_at: number
+          }>
+
+        let documentRank = 0
+        for (const row of legacyRows) {
+          documentRank++
+          const score = cosine(vector, blobVector(row.vector, row.vector_dim), queryNorm)
+          yield {
+            id: row.id,
+            score: score + 1e-8 / documentRank,
+            cosineScore: score,
+            documentId: row.document_id,
+          }
+        }
+      }
+    }
+
+    const top = topVectors(scoredRows(this), limit)
+    let rank = 0
+    let previousScore: number | undefined
+    return top.map((item, index) => {
+      if (previousScore !== item.cosineScore) rank = index + 1
+      previousScore = item.cosineScore
+      return {
+        chunkId: item.id,
+        rank,
+        score: item.cosineScore,
+        documentId: item.documentId,
+      }
+    })
+  }
+
   search(
     query: string,
     vector: number[] | null,
@@ -1183,167 +1522,57 @@ export class DocumentMemoryStore {
   ): DocumentMemoryHit[] {
     if (vector && vector.some((v) => !Number.isFinite(v)))
       throw new Error('Query vector must contain only finite numbers')
-    const tokens = queryTokens(query)
-    const lexical = new Map<number, number>()
-    if (tokens.length) {
-      const match = tokens.map(quoteFtsToken).join(' OR ')
-      const rows = this.db
-        .prepare(
-          `SELECT f.rowid AS chunk_id, bm25(chunk_fts) AS rank
-        FROM chunk_fts f JOIN chunks c ON c.id = f.rowid JOIN documents d ON d.id = c.document_id
-        WHERE chunk_fts MATCH ? AND d.excluded = 0 ORDER BY rank LIMIT 200`,
-        )
-        .all(match) as Array<{ chunk_id: number; rank: number }>
-      let rank = 0
-      let previousRank: number | undefined
-      rows.forEach((row, index) => {
-        if (previousRank !== row.rank) rank = index + 1
-        lexical.set(row.chunk_id, rank)
-        previousRank = row.rank
-      })
+
+    const lexicalHits = this.searchLexical(query, 200)
+    const semanticHits = vector?.length ? this.searchSemantic(vector, 200, embeddingModel) : []
+
+    if (!lexicalHits.length && !semanticHits.length) return []
+
+    const candidateChunkIds = new Set<number>()
+    const chunkToDoc = new Map<number, number>()
+    for (const item of lexicalHits) {
+      candidateChunkIds.add(item.chunkId)
+      chunkToDoc.set(item.chunkId, item.documentId)
+    }
+    for (const item of semanticHits) {
+      candidateChunkIds.add(item.chunkId)
+      chunkToDoc.set(item.chunkId, item.documentId)
     }
 
-    const semantic = new Map<number, number>()
-    if (vector?.length) {
-      const docsQuery = this.db.prepare(
-        `SELECT d.id, d.priority_at FROM documents d WHERE d.excluded = 0 AND EXISTS (
-          SELECT 1 FROM chunks c WHERE c.document_id = d.id AND c.vector IS NOT NULL AND c.vector_dim = ?
-        ) AND (? IS NULL OR d.embedding_model = ?)
-        ORDER BY d.priority_at DESC, d.id DESC LIMIT ?`,
-      )
-      const chunksQuery = this.db.prepare(`SELECT c.id, c.vector, c.vector_dim FROM chunks c
-        WHERE c.document_id = ? AND c.vector IS NOT NULL AND c.vector_dim = ?`)
-      const vectorCount = (
-        this.db
-          .prepare(
-            `SELECT count(*) AS count FROM chunks c JOIN documents d ON d.id = c.document_id
-            WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
-              AND (? IS NULL OR d.embedding_model = ?)`,
-          )
-          .get(vector.length, embeddingModel ?? null, embeddingModel ?? null) as { count: number }
-      ).count
-      const vectorDocumentCount = (
-        this.db
-          .prepare(
-            `SELECT count(DISTINCT d.id) AS count FROM chunks c JOIN documents d ON d.id = c.document_id
-            WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
-              AND (? IS NULL OR d.embedding_model = ?)`,
-          )
-          .get(vector.length, embeddingModel ?? null, embeddingModel ?? null) as { count: number }
-      ).count
-      const scanLimit =
-        vectorCount <= this.searchOptions.semanticFullScanThreshold
-          ? vectorCount
-          : this.searchOptions.semanticRecentScan
-      let queryNorm = 0
-      for (const value of vector) queryNorm += value * value
-      const scan = (maxRows: number, maxDocuments: number) => {
-        function* scoredRows() {
-          let scanned = 0
-          let documentRank = 0
-          const docs = docsQuery.iterate(
-            vector!.length,
-            embeddingModel ?? null,
-            embeddingModel ?? null,
-            maxDocuments,
-          ) as Iterable<{ id: number; priority_at: number }>
-          for (const doc of docs) {
-            documentRank++
-            const rows = chunksQuery.iterate(doc.id, vector!.length) as Iterable<{
-              id: number
-              vector: Uint8Array
-              vector_dim: number
-            }>
-            for (const row of rows) {
-              const score = cosine(vector!, blobVector(row.vector, row.vector_dim), queryNorm)
-              // Preserve equal semantic scores in the top-200 heap by recent document order.
-              yield { id: row.id, score: score + 1e-8 / documentRank, cosineScore: score }
-              if (++scanned >= maxRows) return
-            }
-          }
-        }
-        return topVectors(scoredRows(), 200)
-      }
-      let best = scan(
-        scanLimit,
-        vectorCount <= this.searchOptions.semanticFullScanThreshold
-          ? Number.MAX_SAFE_INTEGER
-          : this.searchOptions.semanticRecentDocuments,
-      )
-      let semanticRelevance = best[0] ? best[0].cosineScore : Number.NEGATIVE_INFINITY
-      const informativeTokens = tokens.filter((token) => token.length >= 4 || /^\d+$/.test(token))
-      const strongLexical =
-        informativeTokens.length > 0
-          ? !!this.db
-              .prepare(
-                `SELECT 1 FROM chunk_fts f JOIN chunks c ON c.id = f.rowid
-          JOIN documents d ON d.id = c.document_id
-          WHERE chunk_fts MATCH ? AND d.excluded = 0 LIMIT 1`,
-              )
-              .get(informativeTokens.map(quoteFtsToken).join(' AND '))
-          : false
-      const margin =
-        best.length > 1 ? semanticRelevance - best[1]!.cosineScore : Number.NEGATIVE_INFINITY
-      const enoughEvidence =
-        strongLexical ||
-        (semanticRelevance >= this.searchOptions.semanticRelevanceThreshold &&
-          margin >= SEMANTIC_RELEVANCE_MARGIN)
-      if (vectorCount > this.searchOptions.semanticFullScanThreshold && !enoughEvidence) {
-        best = scan(
-          Math.min(vectorCount, this.searchOptions.semanticWideScan),
-          this.searchOptions.semanticWideDocuments,
-        )
-        semanticRelevance = best[0] ? best[0].cosineScore : Number.NEGATIVE_INFINITY
-        const wideMargin =
-          best.length > 1 ? semanticRelevance - best[1]!.cosineScore : Number.NEGATIVE_INFINITY
-        if (
-          !strongLexical &&
-          (semanticRelevance < this.searchOptions.semanticRelevanceThreshold ||
-            wideMargin < SEMANTIC_RELEVANCE_MARGIN) &&
-          (vectorCount > this.searchOptions.semanticWideScan ||
-            vectorDocumentCount > this.searchOptions.semanticWideDocuments)
-        )
-          best = scan(vectorCount, Number.MAX_SAFE_INTEGER)
-      }
-      let semanticRank = 0
-      let previousScore: number | undefined
-      best.forEach((row, index) => {
-        const score = row.cosineScore
-        if (previousScore !== score) semanticRank = index + 1
-        semantic.set(row.id, semanticRank)
-        previousScore = score
-      })
-    }
-
-    const scores = new Map<number, number>()
-    for (const [id, rank] of lexical) scores.set(id, (scores.get(id) ?? 0) + 2 / (60 + rank))
-    for (const [id, rank] of semantic) scores.set(id, (scores.get(id) ?? 0) + 1 / (60 + rank))
-    const recency = new Map<number, number>()
-    if (scores.size) {
-      const placeholders = [...scores.keys()].map(() => '?').join(',')
+    const recencyScores = new Map<number, number>()
+    if (candidateChunkIds.size > 0) {
+      const placeholders = [...candidateChunkIds].map(() => '?').join(',')
       const rows = this.db
         .prepare(
           `SELECT c.id, max(d.last_opened_at, coalesce(d.mtime_ms, 0)) AS recent
-          FROM chunks c JOIN documents d ON d.id = c.document_id WHERE c.id IN (${placeholders})`,
+           FROM chunks c JOIN documents d ON d.id = c.document_id WHERE c.id IN (${placeholders})`,
         )
-        .all(...scores.keys()) as Array<{ id: number; recent: number }>
+        .all(...candidateChunkIds) as Array<{ id: number; recent: number }>
       const now = Date.now()
       for (const row of rows) {
         const age = Math.max(0, now - row.recent)
-        // At most 0.00002: enough to settle near-ties, never enough to eclipse a strong match.
-        recency.set(row.id, Math.max(0, 1 - age / (90 * 24 * 60 * 60 * 1000)) * 0.00002)
+        recencyScores.set(row.id, Math.max(0, 1 - age / (90 * 24 * 60 * 60 * 1000)) * 0.00002)
       }
     }
-    const ids = [...scores]
-      .sort((a, b) => b[1] + (recency.get(b[0]) ?? 0) - (a[1] + (recency.get(a[0]) ?? 0)))
-      .slice(0, Math.max(0, limit))
-      .map(([id]) => id)
-    if (!ids.length) return []
+
+    const fusedIds = fuseHybridResults(
+      lexicalHits.map((h) => ({ chunkId: h.chunkId, rank: h.rank, documentId: h.documentId })),
+      semanticHits.map((h) => ({ chunkId: h.chunkId, rank: h.rank, documentId: h.documentId })),
+      {
+        limit,
+        maxChunksPerDocument: 2,
+        chunkToDocument: chunkToDoc,
+        recencyScores,
+      },
+    )
+
+    if (!fusedIds.length) return []
     const get = this.db
       .prepare(`SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, c.id AS chunk_id, c.text, c.location
       FROM chunks c JOIN documents d ON d.id = c.document_id
       WHERE c.id = ? AND d.excluded = 0`)
-    return ids.flatMap((id) => {
+
+    return fusedIds.flatMap((id) => {
       const row = get.get(id) as HitRow | undefined
       return row
         ? [
@@ -1354,7 +1583,7 @@ export class DocumentMemoryStore {
               chunkId: row.chunk_id,
               text: row.text,
               location: row.location,
-              score: scores.get(id)! + (recency.get(id) ?? 0),
+              score: recencyScores.get(id) ?? 0,
               hash: row.hash,
               mtimeMs: row.mtime_ms,
               sizeBytes: row.size_bytes,
@@ -1395,9 +1624,9 @@ export class DocumentMemoryStore {
   }
 
   /** Library totals from the per-document counters (one pass over the documents table). */
-  stats(): DocumentMemoryStats {
+  stats(activeEmbeddingSpace?: string): DocumentMemoryStats {
     const counts = this.countSource()
-    return this.db
+    const base = this.db
       .prepare(
         `${counts.with}
         SELECT count(*) AS docs,
@@ -1407,6 +1636,57 @@ export class DocumentMemoryStore {
         FROM documents d WHERE d.excluded = 0`,
       )
       .get() as unknown as DocumentMemoryStats
+
+    let semanticCoverage: number | undefined
+    if (activeEmbeddingSpace && base.chunks > 0) {
+      const spaceCount = this.db
+        .prepare(`
+          SELECT count(DISTINCT e.chunk_id) AS done
+          FROM chunk_embeddings e
+          JOIN chunks c ON c.id = e.chunk_id
+          JOIN documents d ON d.id = c.document_id
+          WHERE e.space_id = ? AND d.excluded = 0
+        `)
+        .get(activeEmbeddingSpace) as { done: number }
+      semanticCoverage = Math.min(1, spaceCount.done / base.chunks)
+    }
+
+    return {
+      ...base,
+      ...(semanticCoverage !== undefined ? { semanticCoverage } : {}),
+      ...(activeEmbeddingSpace ? { activeEmbeddingSpace } : {}),
+    }
+  }
+
+  getEmbeddingSpaces(): Array<{
+    id: string
+    modelRepo: string
+    modelRevision: string
+    pooling: string
+    dimensions: number
+    quantization: string
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT id, model_repo, model_revision, pooling, dimensions, quantization
+         FROM embedding_spaces ORDER BY created_at ASC`,
+      )
+      .all() as Array<{
+        id: string
+        model_repo: string
+        model_revision: string
+        pooling: string
+        dimensions: number
+        quantization: string
+      }>
+    return rows.map((r) => ({
+      id: r.id,
+      modelRepo: r.model_repo,
+      modelRevision: r.model_revision,
+      pooling: r.pooling,
+      dimensions: r.dimensions,
+      quantization: r.quantization,
+    }))
   }
 
   /**

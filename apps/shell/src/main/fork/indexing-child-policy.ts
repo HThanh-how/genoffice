@@ -39,7 +39,14 @@ export function attachChildToPolicy(child: ChildControl): () => void {
   const apply = (policy: PublishedPolicy): void => {
     try {
       if (child.connected())
-        child.send({ type: 'policy', threads: policy.threads, cpuShare: policy.cpuShare })
+        child.send({
+          type: 'policy',
+          threads: policy.threads,
+          cpuShare: policy.cpuShare,
+          memoryTier: policy.memoryTier,
+          maxBatchTokens: policy.maxBatchTokens,
+          allowHeavyEmbedding: policy.allowHeavyEmbedding,
+        })
     } catch {
       // The child exited; the manager restarts it and the next attach pushes the policy again.
     }
