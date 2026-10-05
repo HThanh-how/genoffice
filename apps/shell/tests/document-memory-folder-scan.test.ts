@@ -499,4 +499,123 @@ describe('FolderScanManager', () => {
     if (jobE) jobE.state = 'stopped'
     expect(instance.registrationState(folderE)).toBe('stopped')
   })
+
+  it('FS-06: A đang active scan, Clear Index được gọi. Trước khi runner cũ của A thoát, gọi start(A, manual) -> A tồn tại trong manifest, scan hoàn tất complete/watching, không bị stopped orphan', async () => {
+    const folderA = join(dir, 'readd_folderA')
+    mkdirSync(folderA, { recursive: true })
+    for (let i = 0; i < 50; i++) {
+      writeFileSync(join(folderA, `docA_${i}.txt`), `contentA_${i}`)
+    }
+
+    let clearHandler: (() => void) | undefined
+    const enrolledA: string[] = []
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: (path) => {
+        if (path.includes('readd_folderA')) {
+          enrolledA.push(path)
+        }
+        return true
+      },
+      onCleared: (listener) => {
+        clearHandler = listener
+        return () => {
+          clearHandler = undefined
+        }
+      },
+    })
+    scanners.push(instance)
+
+    // Bắt đầu scan A
+    instance.start(folderA, 'manual')
+    expect(instance.status().running).toBe(true)
+
+    // Clear Index được gọi trong khi A đang active
+    expect(clearHandler).toBeDefined()
+    clearHandler!()
+
+    // Trước khi runner cũ của A thoát, gọi start(A, 'manual') ngay lập tức
+    instance.start(folderA, 'manual')
+
+    // Đợi cho runner cũ thoát và runner mới hoàn tất quá trình scan
+    await until(() => !instance.status().running)
+
+    // A phải tồn tại trong manifest
+    const folderAEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderA))
+    expect(folderAEntry).toBeDefined()
+
+    // Hoàn thành scan sang trạng thái complete / watching
+    expect(folderAEntry?.state).toBe('complete')
+    expect(instance.registrationState(folderA)).toBe('watching')
+
+    // Có owner 'manual'
+    expect(folderAEntry?.owners).toContain('manual')
+
+    // Tuyệt đối không bị stopped orphan
+    expect(folderAEntry?.state).not.toBe('stopped')
+    expect(instance.registrationState(folderA)).not.toBe('stopped')
+
+    // Các tệp của A đã được index thành công
+    expect(enrolledA.length).toBeGreaterThan(0)
+  })
+
+  it('FS-07: A active, B manual queued. B bị unavailable khi đến lượt dequeue. Khi B xuất hiện trở lại và chu kỳ startup reconciliation / retry chạy -> B tự động được quét thành công', async () => {
+    const folderA = join(dir, 'unavail_folderA')
+    const folderB = join(dir, 'unavail_folderB')
+    mkdirSync(folderA, { recursive: true })
+    mkdirSync(folderB, { recursive: true })
+    for (let i = 0; i < 50; i++) {
+      writeFileSync(join(folderA, `docA_${i}.txt`), `contentA_${i}`)
+    }
+    writeFileSync(join(folderB, 'docB.txt'), 'contentB')
+
+    const enrolledFiles: string[] = []
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: (path) => {
+        enrolledFiles.push(path)
+        return true
+      },
+    })
+    scanners.push(instance)
+
+    // Start A (active scan)
+    instance.start(folderA, 'manual')
+    expect(instance.status().running).toBe(true)
+
+    // Start B dưới quyền manual -> B vào hàng đợi waiting (queued)
+    instance.start(folderB, 'manual')
+    expect(instance.isWaiting(folderB)).toBe(true)
+    expect(instance.registrationState(folderB)).toBe('queued')
+
+    // USB / Thư mục B bị tháo / xóa trước khi dequeue
+    rmSync(folderB, { recursive: true, force: true })
+
+    // Chờ A hoàn thành, runner A kết thúc và kích hoạt dequeue B
+    await until(() => !instance.status().running)
+
+    // B đã được dequeue khỏi waiting và ghi nhận lỗi unavailable
+    expect(instance.isWaiting(folderB)).toBe(false)
+    let folderBEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderB))
+    expect(folderBEntry).toBeDefined()
+    expect(folderBEntry?.state).toBe('stopped')
+    expect(folderBEntry?.unavailable).toBe(true)
+    expect(folderBEntry?.lastError).toMatch(/unavailable/i)
+    expect(enrolledFiles.some((f) => f.includes('docB.txt'))).toBe(false)
+
+    // B xuất hiện trở lại (USB cắm lại)
+    mkdirSync(folderB, { recursive: true })
+    writeFileSync(join(folderB, 'docB.txt'), 'contentB')
+
+    // Chu kỳ startup reconciliation / retry chạy
+    const retriedRoots = instance.retryUnavailable()
+    expect(retriedRoots).toContain(resolve(folderB))
+
+    // Chờ B quét xong thành công
+    await until(() => !instance.status().running && enrolledFiles.some((f) => f.includes('docB.txt')))
+
+    // B đã hoàn thành sang complete / watching
+    folderBEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderB))
+    expect(folderBEntry?.state).toBe('complete')
+    expect(instance.registrationState(folderB)).toBe('watching')
+    expect(folderBEntry?.unavailable).toBeFalsy()
+  })
 })

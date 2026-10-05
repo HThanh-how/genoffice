@@ -16,6 +16,8 @@ describe('UI Audit Fixes: SearchResults, RecentFiles & IndexedFolders (Section 2
 
   beforeEach(() => {
     vi.useFakeTimers()
+    vi.spyOn(console, 'error').mockImplementation(() => {})
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
     container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -27,6 +29,7 @@ describe('UI Audit Fixes: SearchResults, RecentFiles & IndexedFolders (Section 2
     })
     container.remove()
     vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 
   describe('SearchResults - Keyboard Events & Navigation (Mission C4 & C5)', () => {
@@ -1111,6 +1114,89 @@ describe('UI Audit Fixes: SearchResults, RecentFiles & IndexedFolders (Section 2
 
       const callsForBAfterRefresh = calls.filter((c) => c.q === 'queryB')
       expect(callsForBAfterRefresh.length).toBe(2)
+    })
+
+    it('UI-05: Periodic fetch bắt đầu chậm, user thực hiện toggle source và toggle hoàn tất thành công. Khi periodic fetch cũ phản hồi muộn, UI giữ nguyên trạng thái mới vừa toggle, không bị giật về trạng thái cũ', async () => {
+      let callCount = 0
+      let resolveSlowPeriodic: ((value: unknown) => void) | null = null
+
+      const initialSources: KnownSearchSourceEntry[] = [
+        { id: 'documents', path: 'C:/Users/Admin/Documents', enabled: true, status: 'watching' },
+        { id: 'downloads', path: 'C:/Users/Admin/Downloads', enabled: true, status: 'watching' },
+        { id: 'desktop', path: 'C:/Users/Admin/Desktop', enabled: false, status: 'disabled' },
+      ]
+
+      const getKnownSearchSourcesMock = vi.fn().mockImplementation(() => {
+        callCount++
+        if (callCount === 1) {
+          // Lần fetch ban đầu khi mount
+          return Promise.resolve(initialSources)
+        }
+        // Lần fetch định kỳ tiếp theo: giả lập phản hồi chậm / bị trễ
+        return new Promise((resolve) => {
+          resolveSlowPeriodic = resolve
+        })
+      })
+
+      const setKnownSearchSourceMock = vi.fn().mockResolvedValue({
+        id: 'desktop',
+        path: 'C:/Users/Admin/Desktop',
+        enabled: true,
+        status: 'watching',
+      })
+
+      const api = {
+        getKnownSearchSources: getKnownSearchSourcesMock,
+        setKnownSearchSource: setKnownSearchSourceMock,
+        listIndexedFolders: vi.fn().mockResolvedValue([]),
+      } as unknown as HomeApi
+
+      // 1. Render IndexedFolders ban đầu
+      await act(async () => {
+        root.render(
+          createElement(LocaleProvider, {
+            initial: 'vi',
+            children: createElement(IndexedFolders, { api }),
+          }),
+        )
+      })
+
+      const cards = container.querySelectorAll('.idx-common-source-card')
+      const desktopCard = cards[2]
+      const checkbox = desktopCard.querySelector('input[type="checkbox"]') as HTMLInputElement
+      const chip = desktopCard.querySelector('.idx-common-source-chip')
+
+      expect(checkbox.checked).toBe(false)
+      expect(chip?.getAttribute('data-status')).toBe('disabled')
+      expect(getKnownSearchSourcesMock).toHaveBeenCalledTimes(1)
+
+      // 2. Kích hoạt periodic refresh sau 5s -> getKnownSearchSources lần 2 được gọi nhưng chưa resolve
+      await act(async () => {
+        vi.advanceTimersByTime(5000)
+      })
+
+      expect(getKnownSearchSourcesMock).toHaveBeenCalledTimes(2)
+      expect(resolveSlowPeriodic).not.toBeNull()
+
+      // 3. Trong lúc periodic fetch đang pending, user thao tác click toggle bật desktop
+      await act(async () => {
+        checkbox.click()
+      })
+
+      expect(setKnownSearchSourceMock).toHaveBeenCalledWith('desktop', true)
+      // Toggle hoàn tất thành công: checkbox bật, chip chuyển sang watching
+      expect(checkbox.checked).toBe(true)
+      expect(chip?.getAttribute('data-status')).toBe('watching')
+
+      // 4. Lúc này periodic fetch cũ (được gửi trước khi toggle) mới phản hồi muộn mang dữ liệu cũ (desktop = disabled)
+      await act(async () => {
+        resolveSlowPeriodic?.(initialSources)
+      })
+
+      // 5. Khẳng định: UI giữ nguyên trạng thái mới vừa toggle (enabled/watching), KHÔNG bị giật về trạng thái cũ
+      expect(checkbox.checked).toBe(true)
+      expect(chip?.getAttribute('data-status')).toBe('watching')
+      expect(chip?.textContent).toBe('Đang theo dõi')
     })
   })
 })

@@ -96,6 +96,8 @@ export interface ScanJob {
   skipped: number
   errors: number
   lastError?: string
+  /** Whether the folder was stopped because it was unavailable/unreachable. */
+  unavailable?: boolean
   /** Epoch ms of the last completed metadata-only reconcile pass. */
   reconciledAt?: number
   /** Epoch ms the last full scan finished. */
@@ -131,6 +133,7 @@ export interface FolderSummary {
   skipped: number
   errors: number
   lastError?: string
+  unavailable?: boolean
   history: ScanRun[]
 }
 
@@ -176,8 +179,17 @@ export class FolderScanManager {
       interrupted.skipped = 0
       interrupted.errors = 0
       delete interrupted.lastError
+      delete interrupted.unavailable
       this.save()
       queueMicrotask(() => this.resume(interrupted.root))
+    } else {
+      const hasUnavailable = this.manifest.jobs.some(
+        (job) =>
+          job.state === 'stopped' && (job.unavailable || job.lastError?.includes('unavailable')),
+      )
+      if (hasUnavailable) {
+        queueMicrotask(() => this.retryUnavailable())
+      }
     }
     const { isEnabled, onEnabledChange, handleFileEvents } = memory
     // Live change detection (watcher + periodic reconcile) is owned by the scanner so the
@@ -450,6 +462,7 @@ export class FolderScanManager {
       job.skipped = 0
       job.errors = 0
       delete job.lastError
+      delete job.unavailable
     }
     this.save()
     this.run(job)
@@ -508,6 +521,7 @@ export class FolderScanManager {
       const job = this.jobFor(this.activeRoot)
       if (job?.state === 'running') {
         job.state = 'stopped'
+        delete job.unavailable
         this.save()
         this.emitRootsChanged()
       }
@@ -597,10 +611,6 @@ export class FolderScanManager {
         this.activeRoot = null
         this.runner = null
 
-        if (currentEpoch !== this.registrationEpoch) {
-          return
-        }
-
         if (this.pendingRestartRoots.has(job.root)) {
           const restartOwners = this.pendingRestartRoots.get(job.root) ?? ['manual']
           this.pendingRestartRoots.delete(job.root)
@@ -627,7 +637,12 @@ export class FolderScanManager {
           if (!this.waiting.some((w) => resolve(w) === job.root)) {
             this.waiting.unshift(job.root)
           }
-          this.startNextWaiting(currentEpoch)
+          this.startNextWaiting(this.registrationEpoch)
+          return
+        }
+
+        if (currentEpoch !== this.registrationEpoch) {
+          this.pendingForgetRoots.delete(job.root)
           return
         }
 
@@ -661,8 +676,19 @@ export class FolderScanManager {
         const job = this.jobFor(normalizedNext)
         const owner = job?.owners?.[0] ?? 'manual'
         this.start(next, owner)
-      } catch {
+      } catch (error) {
         // gone or unplugged meanwhile: the next start of the app picks it up again
+        const job = this.jobFor(normalizedNext)
+        if (job) {
+          job.state = 'stopped'
+          job.unavailable = true
+          job.errors++
+          job.lastError =
+            error instanceof Error ? error.message : 'The selected folder is unavailable.'
+          this.recordRun(job, 'scan', 'unavailable')
+          this.save()
+          this.emitRootsChanged()
+        }
       }
     }
   }
@@ -803,9 +829,42 @@ export class FolderScanManager {
         skipped: job.skipped,
         errors: job.errors,
         ...(job.lastError ? { lastError: job.lastError } : {}),
+        ...(job.unavailable ? { unavailable: true } : {}),
         history: job.history ?? [],
       }))
       .sort((a, b) => (b.completedAt ?? b.startedAt ?? 0) - (a.completedAt ?? a.startedAt ?? 0))
+  }
+
+  /**
+   * Retry scanning any registered folders that were marked stopped due to being unavailable,
+   * provided the root is now accessible.
+   */
+  retryUnavailable(): string[] {
+    if (this.closed) return []
+    const retried: string[] = []
+    for (const job of this.manifest.jobs) {
+      if (job.state === 'stopped' && (job.unavailable || job.lastError?.includes('unavailable'))) {
+        try {
+          validateRoot(job.root)
+          job.unavailable = false
+          delete job.lastError
+          const owner = job.owners?.[0] ?? 'manual'
+          this.start(job.root, owner)
+          retried.push(job.root)
+        } catch {
+          // Still unavailable
+        }
+      }
+    }
+    return retried
+  }
+
+  /**
+   * Reconcile roots on startup or periodic check: retries any unavailable roots that
+   * have become accessible again.
+   */
+  reconcileStartup(): string[] {
+    return this.retryUnavailable()
   }
 
   /** Toggle "index this folder first"; takes effect on the files already waiting. */

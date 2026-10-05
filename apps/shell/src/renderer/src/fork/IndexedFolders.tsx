@@ -259,17 +259,21 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
 
   const busySourcesRef = useRef<Record<string, boolean>>({})
   busySourcesRef.current = busySources
+  const sourceActionSeqRef = useRef<Record<string, number>>({})
 
   // Sync known sources from API (Single source of truth)
   const fetchKnown = useCallback(async () => {
     try {
       const getFn = (effectiveApi as Record<string, unknown> | undefined)?.getKnownSearchSources
       if (typeof getFn === 'function') {
+        const capturedSeqs = { ...sourceActionSeqRef.current }
         const res = await (getFn as () => Promise<unknown>).call(effectiveApi)
         if (mounted.current && Array.isArray(res)) {
           setKnownSources((prev) => {
             return (res as KnownSearchSourceEntry[]).map((entry) => {
-              if (busySourcesRef.current[entry.id]) {
+              const isBusy = busySourcesRef.current[entry.id]
+              const seqChanged = (sourceActionSeqRef.current[entry.id] ?? 0) !== (capturedSeqs[entry.id] ?? 0)
+              if (isBusy || seqChanged) {
                 const existing = prev.find((s) => s.id === entry.id)
                 if (existing) return existing
               }
@@ -286,6 +290,7 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
   const toggleKnownSource = async (id: KnownSearchSource, enabled: boolean) => {
     if (busySources[id]) return
 
+    sourceActionSeqRef.current[id] = (sourceActionSeqRef.current[id] ?? 0) + 1
     setBusySources((prev) => ({ ...prev, [id]: true }))
     setSourceErrors((prev) => {
       const next = { ...prev }

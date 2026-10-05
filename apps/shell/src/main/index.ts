@@ -4460,7 +4460,11 @@ function statEntries(paths: string[]): RecentEntry[] {
  */
 function indexAddedFoldersNotYetScanned(): void {
   if (!folderScan) return
-  const scanned = folderScan.folders().map((entry) => resolve(entry.root))
+  folderScan.retryUnavailable?.()
+  const scanned = folderScan
+    .folders()
+    .filter((entry) => entry.state === 'running' || entry.state === 'complete')
+    .map((entry) => resolve(entry.root))
   // a folder inside another that is listed (or already scanned) is covered by that one's scan:
   // scanning it too would walk, watch and refresh the same files twice
   for (const root of outermostPaths(extraFolderRoots())) {

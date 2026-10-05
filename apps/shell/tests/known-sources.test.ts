@@ -3,6 +3,7 @@ import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
+  CLEANUP_RETRY_INTERVALS_MS,
   DEFAULT_KNOWN_SOURCES,
   FAST_RETRY_INTERVALS_MS,
   KNOWN_SEARCH_SOURCES,
@@ -10,6 +11,7 @@ import {
   KNOWN_SEARCH_SOURCES_KEY,
   KNOWN_SEARCH_SOURCES_VERSION_KEY,
   KnownSourcesManager,
+  MAX_CLEANUP_RETRIES,
   PROBE_PATH_DEADLINE_MS,
   SLOW_PERIODIC_RETRY_INTERVAL_MS,
   UNINITIALIZED_KNOWN_SOURCES,
@@ -647,6 +649,202 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       })
       await probePathAvailable(probeDir)
       expect(immediateFired).toBe(true)
+    })
+
+    it('KS-05: Source ON, retry đang in-flight (probe chưa resolve), user tắt source (OFF). Sau đó probe cũ resolve available -> scanner.start TUYỆT ĐỐI KHÔNG được gọi, root không có owner', async () => {
+      vi.useFakeTimers()
+      try {
+        const docsDir = join(testDir, 'DocsKS05')
+        mkdirSync(docsDir, { recursive: true })
+
+        const startMock = vi.fn()
+        const unregisterMock = vi.fn().mockResolvedValue(true)
+        const mockScanner = {
+          start: startMock,
+          unregisterRoot: unregisterMock,
+          status: vi.fn().mockReturnValue({ running: false }),
+          folders: vi.fn().mockReturnValue([]),
+          isWaiting: vi.fn().mockReturnValue(false),
+        }
+
+        const manager = new KnownSourcesManager({
+          settingsPath: () => settingsFile,
+          scanner: mockScanner as any,
+          getPath: () => docsDir,
+          initialState: { documents: false, downloads: false, desktop: false },
+          initialized: true,
+        })
+
+        // Bật source nhưng lần đầu unavailable -> scheduleRetry
+        vi.spyOn(manager, 'isPathAvailable').mockResolvedValueOnce(false)
+        await manager.setKnownSearchSource('documents', true)
+
+        expect(startMock).not.toHaveBeenCalled()
+
+        // Chuẩn bị deferred probe cho lần retry callback
+        let probeResolve: (val: boolean) => void = () => {}
+        vi.spyOn(manager, 'isPathAvailable').mockImplementation(async () => {
+          return new Promise<boolean>((resolve) => {
+            probeResolve = resolve
+          })
+        })
+
+        // Tua fake timer 1.5s để retry callback kích hoạt và vào trạng thái in-flight
+        await vi.advanceTimersByTimeAsync(1600)
+
+        // Retry callback đang chờ probe: retry in-flight!
+        // Người dùng tắt source (OFF) -> thế hệ tăng, trạng thái đổi thành false
+        await manager.setKnownSearchSource('documents', false)
+
+        expect(unregisterMock).toHaveBeenCalledWith(resolve(docsDir), 'known:documents')
+
+        // Sau đó probe cũ resolve available
+        probeResolve(true)
+        await manager.waitForRetry('documents')
+
+        // scanner.start TUYỆT ĐỐI KHÔNG được gọi vì source đã OFF và thế hệ đã đổi!
+        expect(startMock).not.toHaveBeenCalled()
+
+        manager.close()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('KS-06: Retry đang in-flight, manager gọi close(), probe resolve unavailable -> không có timer mới nào được tạo, activeRetryPromises rỗng, scanner.start không được gọi', async () => {
+      vi.useFakeTimers()
+      try {
+        const docsDir = join(testDir, 'DocsKS06')
+        mkdirSync(docsDir, { recursive: true })
+
+        const startMock = vi.fn()
+        const mockScanner = {
+          start: startMock,
+          unregisterRoot: vi.fn().mockResolvedValue(true),
+          status: vi.fn().mockReturnValue({ running: false }),
+          folders: vi.fn().mockReturnValue([]),
+          isWaiting: vi.fn().mockReturnValue(false),
+        }
+
+        const manager = new KnownSourcesManager({
+          settingsPath: () => settingsFile,
+          scanner: mockScanner as any,
+          getPath: () => docsDir,
+          initialState: { documents: false, downloads: false, desktop: false },
+          initialized: true,
+        })
+
+        // Bật source nhưng lần đầu unavailable -> scheduleRetry
+        vi.spyOn(manager, 'isPathAvailable').mockResolvedValueOnce(false)
+        await manager.setKnownSearchSource('documents', true)
+
+        expect(startMock).not.toHaveBeenCalled()
+
+        // Cài đặt deferred probe cho lần retry
+        let probeResolve: (val: boolean) => void = () => {}
+        vi.spyOn(manager, 'isPathAvailable').mockImplementation(async () => {
+          return new Promise<boolean>((resolve) => {
+            probeResolve = resolve
+          })
+        })
+
+        // Tua fake timer 1.5s để retry callback chạy và treo ở probe (in-flight)
+        await vi.advanceTimersByTimeAsync(1600)
+
+        // Manager gọi close() trong khi probe vẫn chưa resolve
+        manager.close()
+        expect(manager.isClosed()).toBe(true)
+
+        // Probe resolve unavailable sau khi close()
+        probeResolve(false)
+        await manager.waitForRetry('documents')
+
+        // Kiểm tra không có timer mới nào được tạo và scanner.start không được gọi
+        expect(startMock).not.toHaveBeenCalled()
+
+        // Tua thêm thời gian dài để đảm bảo không có timer ngầm nào hoạt động
+        await vi.advanceTimersByTimeAsync(600_000)
+        expect(startMock).not.toHaveBeenCalled()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('KS-07: scanner.unregisterRoot throw error lần đầu khi tắt source, desired state là OFF -> retry cleanup chạy và gỡ bỏ owner thành công', async () => {
+      vi.useFakeTimers()
+      try {
+        const docsDir = join(testDir, 'DocsKS07')
+        mkdirSync(docsDir, { recursive: true })
+
+        const startMock = vi.fn()
+        let unregisterAttempts = 0
+        const unregisterMock = vi.fn().mockImplementation(async () => {
+          unregisterAttempts++
+          if (unregisterAttempts === 1) {
+            throw new Error('Lock timeout or file in use')
+          }
+          return true
+        })
+
+        const mockScanner = {
+          start: startMock,
+          unregisterRoot: unregisterMock,
+          status: vi.fn().mockReturnValue({ running: false }),
+          folders: vi.fn().mockReturnValue([]),
+          isWaiting: vi.fn().mockReturnValue(false),
+        }
+
+        const manager = new KnownSourcesManager({
+          settingsPath: () => settingsFile,
+          scanner: mockScanner as any,
+          getPath: () => docsDir,
+          initialState: { documents: true, downloads: false, desktop: false },
+          initialized: true,
+        })
+
+        // Source đang ON
+        const entryBefore = await manager.getEntry('documents')
+        expect(entryBefore.enabled).toBe(true)
+
+        // User tắt source -> unregisterRoot bị lỗi lần đầu
+        const entryAfter = await manager.setKnownSearchSource('documents', false)
+        expect(entryAfter.enabled).toBe(false)
+        expect(unregisterMock).toHaveBeenCalledTimes(1)
+
+        // Tua thời gian tới mốc cleanup retry (500ms)
+        await vi.advanceTimersByTimeAsync(600)
+        await manager.waitForCleanup('documents')
+
+        // Cleanup retry đã chạy lần 2 và thành công gỡ bỏ owner
+        expect(unregisterMock).toHaveBeenCalledTimes(2)
+        expect(unregisterMock).toHaveBeenLastCalledWith(resolve(docsDir), 'known:documents')
+
+        manager.close()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('KS-08: Path probe coalescing: các cuộc gọi probe đồng thời trên cùng đường dẫn chia sẻ chung kết quả, không spam I/O', async () => {
+      const targetDir = join(testDir, 'CoalesceTestDir')
+      mkdirSync(targetDir, { recursive: true })
+
+      // Gọi đồng thời 2 lần probePathAvailable trên cùng 1 đường dẫn
+      const p1 = probePathAvailable(targetDir)
+      const p2 = probePathAvailable(targetDir)
+
+      // Cả 2 cuộc gọi in-flight phải tái sử dụng chung cùng 1 instance Promise
+      expect(p1).toBe(p2)
+
+      const [res1, res2] = await Promise.all([p1, p2])
+      expect(res1).toBe(true)
+      expect(res2).toBe(true)
+
+      // Sau khi probe đã hoàn thành, cuộc gọi tiếp theo tạo một promise mới độc lập
+      const p3 = probePathAvailable(targetDir)
+      expect(p3).not.toBe(p1)
+      const res3 = await p3
+      expect(res3).toBe(true)
     })
   })
 })

@@ -53,42 +53,65 @@ export const SLOW_PERIODIC_RETRY_INTERVAL_MS = 300_000
 /** Async deadline for path availability probe to avoid hanging Electron on offline SMB shares */
 export const PROBE_PATH_DEADLINE_MS = 3000
 
+/** Cleanup retry intervals for unregisterRoot failures: 500ms, 1500ms, 3000ms */
+export const CLEANUP_RETRY_INTERVALS_MS: readonly number[] = Object.freeze([500, 1500, 3000])
+
+/** Maximum cleanup retry attempts */
+export const MAX_CLEANUP_RETRIES = 3
+
+/** In-flight path probe cache for coalescing concurrent probes on the same target */
+const inFlightPathProbes = new Map<string, Promise<boolean>>()
+
 /**
  * Asynchronously probes whether targetPath exists and is a directory.
  * Bounded by deadlineMs (default: 3000ms) with AbortController to never freeze the Electron main thread.
+ * Coalesces concurrent in-flight probes on the same resolved path to avoid I/O stampede.
  */
-export async function probePathAvailable(
+export function probePathAvailable(
   targetPath: string,
   deadlineMs: number = PROBE_PATH_DEADLINE_MS,
 ): Promise<boolean> {
-  const controller = new AbortController()
-  let timer: NodeJS.Timeout | undefined
+  const normalizedPath = resolve(targetPath)
+  const existing = inFlightPathProbes.get(normalizedPath)
+  if (existing) {
+    return existing
+  }
 
-  const timeoutPromise = new Promise<false>((resolvePromise) => {
-    timer = setTimeout(() => {
-      controller.abort()
-      resolvePromise(false)
-    }, deadlineMs)
-    timer.unref?.()
+  const probePromise = (async () => {
+    const controller = new AbortController()
+    let timer: NodeJS.Timeout | undefined
+
+    const timeoutPromise = new Promise<false>((resolvePromise) => {
+      timer = setTimeout(() => {
+        controller.abort()
+        resolvePromise(false)
+      }, deadlineMs)
+      timer.unref?.()
+    })
+
+    const statPromise = (async () => {
+      try {
+        const stats = await (stat as (path: string, opts?: unknown) => Promise<{ isDirectory(): boolean }>)(
+          normalizedPath,
+          { signal: controller.signal },
+        )
+        return stats.isDirectory()
+      } catch {
+        return false
+      }
+    })()
+
+    try {
+      return await Promise.race([statPromise, timeoutPromise])
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  })().finally(() => {
+    inFlightPathProbes.delete(normalizedPath)
   })
 
-  const statPromise = (async () => {
-    try {
-      const stats = await (stat as (path: string, opts?: unknown) => Promise<{ isDirectory(): boolean }>)(
-        targetPath,
-        { signal: controller.signal },
-      )
-      return stats.isDirectory()
-    } catch {
-      return false
-    }
-  })()
-
-  try {
-    return await Promise.race([statPromise, timeoutPromise])
-  } finally {
-    if (timer) clearTimeout(timer)
-  }
+  inFlightPathProbes.set(normalizedPath, probePromise)
+  return probePromise
 }
 
 export function isKnownSearchSource(value: unknown): value is KnownSearchSource {
@@ -173,11 +196,16 @@ export class KnownSourcesManager {
   private readonly customGetPath?: (id: KnownSearchSource) => string
   private state: Record<KnownSearchSource, boolean>
   private initialized: boolean
+  private closed = false
+  private readonly sourceGeneration = new Map<KnownSearchSource, number>()
   private readonly retryTimers = new Map<KnownSearchSource, NodeJS.Timeout>()
   private readonly retryCounts = new Map<KnownSearchSource, number>()
+  private readonly cleanupTimers = new Map<KnownSearchSource, NodeJS.Timeout>()
+  private readonly cleanupCounts = new Map<KnownSearchSource, number>()
   private readonly sourceErrors = new Map<KnownSearchSource, string>()
   private readonly pathAvailabilityCache = new Map<string, boolean>()
   private readonly activeRetryPromises = new Map<KnownSearchSource, Promise<void>>()
+  private readonly activeCleanupPromises = new Map<KnownSearchSource, Promise<void>>()
 
   constructor(options: KnownSourcesManagerOptions = {}) {
     this.settingsPath = options.settingsPath
@@ -189,6 +217,10 @@ export class KnownSourcesManager {
       this.getScanner = () => s
     } else {
       this.getScanner = () => null
+    }
+
+    for (const source of KNOWN_SEARCH_SOURCES) {
+      this.sourceGeneration.set(source, 0)
     }
 
     if (options.initialState) {
@@ -203,6 +235,10 @@ export class KnownSourcesManager {
       this.state = loaded.state
       this.initialized = loaded.initialized
     }
+  }
+
+  public isClosed(): boolean {
+    return this.closed
   }
 
   public setScanner(scanner: FolderScanManager | null | (() => FolderScanManager | null)): void {
@@ -406,6 +442,9 @@ export class KnownSourcesManager {
     id: KnownSearchSource,
     enabled: boolean,
   ): Promise<KnownSearchSourceEntry> {
+    if (this.closed) {
+      throw new Error('KnownSourcesManager is closed')
+    }
     if (!isKnownSearchSource(id)) {
       throw new Error(`Invalid known search source id: ${String(id)}`)
     }
@@ -425,17 +464,23 @@ export class KnownSourcesManager {
       })
     }
 
-    // Disk write succeeded: mutate in-memory state
+    // Disk write succeeded: mutate in-memory state and bump generation token
     this.state = nextState
     this.initialized = true
+    this.sourceGeneration.set(id, (this.sourceGeneration.get(id) ?? 0) + 1)
+    const currentGeneration = this.sourceGeneration.get(id)!
 
     const resolvedPath = this.resolvePath(id)
     const scanner = this.getScanner()
     const owner: FolderOwner = `known:${id}`
 
     if (enabled) {
+      this.cancelCleanupRetry(id)
       this.sourceErrors.delete(id)
       const available = await this.isPathAvailable(resolvedPath)
+      if (this.closed || !this.state[id] || this.sourceGeneration.get(id) !== currentGeneration) {
+        return this.getEntry(id)
+      }
       if (available) {
         if (scanner) {
           try {
@@ -458,8 +503,9 @@ export class KnownSourcesManager {
       if (scanner) {
         try {
           await scanner.unregisterRoot(resolvedPath, owner)
+          this.cancelCleanupRetry(id)
         } catch {
-          // Scanner cleanup failure handled safely
+          this.scheduleCleanupRetry(id, resolvedPath, owner)
         }
       }
     }
@@ -476,14 +522,23 @@ export class KnownSourcesManager {
     this.retryCounts.delete(id)
   }
 
+  private cancelCleanupRetry(id: KnownSearchSource): void {
+    const timer = this.cleanupTimers.get(id)
+    if (timer) {
+      clearTimeout(timer)
+      this.cleanupTimers.delete(id)
+    }
+    this.cleanupCounts.delete(id)
+  }
+
   /**
    * Schedules infinite retries for unavailable or failed sources.
    * Fast recovery phase: 1.5s, 5s, 15s, 60s.
    * Slow periodic retry phase: every 5 minutes (300,000 ms) while source is enabled.
    */
   private scheduleRetry(id: KnownSearchSource): void {
+    if (this.closed || !this.state[id]) return
     if (this.retryTimers.has(id)) return
-    if (!this.state[id]) return
 
     const count = this.retryCounts.get(id) ?? 0
     const delay =
@@ -492,17 +547,28 @@ export class KnownSourcesManager {
         : SLOW_PERIODIC_RETRY_INTERVAL_MS
 
     this.retryCounts.set(id, count + 1)
+    const generation = this.sourceGeneration.get(id) ?? 0
 
     const timer = setTimeout(() => {
       this.retryTimers.delete(id)
+      if (this.closed || !this.state[id] || generation !== (this.sourceGeneration.get(id) ?? 0)) {
+        this.retryCounts.delete(id)
+        return
+      }
+
       const promise = (async () => {
-        if (!this.state[id]) {
+        if (this.closed || !this.state[id] || generation !== (this.sourceGeneration.get(id) ?? 0)) {
           this.retryCounts.delete(id)
           return
         }
 
         const resolvedPath = this.resolvePath(id)
         const available = await this.isPathAvailable(resolvedPath)
+
+        // BẮT BUỘC kiểm tra lại sau async probe boundary
+        if (this.closed || !this.state[id] || generation !== (this.sourceGeneration.get(id) ?? 0)) {
+          return
+        }
 
         if (available) {
           const scanner = this.getScanner()
@@ -513,6 +579,9 @@ export class KnownSourcesManager {
               this.retryCounts.delete(id)
               return
             } catch (err: unknown) {
+              if (this.closed || !this.state[id] || generation !== (this.sourceGeneration.get(id) ?? 0)) {
+                return
+              }
               const message = err instanceof Error ? err.message : String(err)
               this.sourceErrors.set(id, message)
               this.scheduleRetry(id)
@@ -537,14 +606,90 @@ export class KnownSourcesManager {
   }
 
   /**
+   * Schedules bounded retries for unregistering root when scanner throws during source disable.
+   * Prevents scanner from being trapped with stale owners.
+   */
+  private scheduleCleanupRetry(
+    id: KnownSearchSource,
+    targetPath: string,
+    owner: FolderOwner,
+  ): void {
+    if (this.closed || this.state[id]) return
+    if (this.cleanupTimers.has(id)) return
+
+    const count = this.cleanupCounts.get(id) ?? 0
+    if (count >= MAX_CLEANUP_RETRIES) {
+      this.cleanupCounts.delete(id)
+      return
+    }
+
+    const delay =
+      count < CLEANUP_RETRY_INTERVALS_MS.length
+        ? CLEANUP_RETRY_INTERVALS_MS[count]
+        : CLEANUP_RETRY_INTERVALS_MS[CLEANUP_RETRY_INTERVALS_MS.length - 1]
+
+    this.cleanupCounts.set(id, count + 1)
+
+    const timer = setTimeout(() => {
+      this.cleanupTimers.delete(id)
+      if (this.closed || this.state[id]) {
+        this.cleanupCounts.delete(id)
+        return
+      }
+
+      const promise = (async () => {
+        if (this.closed || this.state[id]) {
+          this.cleanupCounts.delete(id)
+          return
+        }
+
+        const scanner = this.getScanner()
+        if (!scanner) return
+
+        try {
+          await scanner.unregisterRoot(targetPath, owner)
+          this.cleanupCounts.delete(id)
+        } catch {
+          if (!this.closed && !this.state[id]) {
+            this.scheduleCleanupRetry(id, targetPath, owner)
+          }
+        }
+      })().finally(() => {
+        if (this.activeCleanupPromises.get(id) === promise) {
+          this.activeCleanupPromises.delete(id)
+        }
+      })
+
+      this.activeCleanupPromises.set(id, promise)
+    }, delay)
+
+    timer.unref?.()
+    this.cleanupTimers.set(id, timer)
+  }
+
+  /**
    * Waits for any currently executing retry async task to settle.
    * Useful for testing and deterministic synchronization.
    */
   public async waitForRetry(id?: KnownSearchSource): Promise<void> {
     if (id) {
-      await this.activeRetryPromises.get(id)
+      const p = this.activeRetryPromises.get(id)
+      if (p) await p
     } else {
       await Promise.all([...this.activeRetryPromises.values()])
+    }
+  }
+
+  /**
+   * Waits for any currently executing cleanup async task to settle.
+   * Useful for testing and deterministic synchronization.
+   */
+  public async waitForCleanup(id?: KnownSearchSource): Promise<void> {
+    if (id) {
+      const p = this.activeCleanupPromises.get(id)
+      if (p) await p
+    } else {
+      await Promise.all([...this.activeCleanupPromises.values()])
     }
   }
 
@@ -555,15 +700,20 @@ export class KnownSourcesManager {
    * If source is disabled: unregisters root with owner `known:${id}`.
    */
   public async reconcileDesiredSources(): Promise<void> {
+    if (this.closed) return
     const scanner = this.getScanner()
 
     for (const id of KNOWN_SEARCH_SOURCES) {
+      if (this.closed) return
       const enabled = this.state[id]
       const resolvedPath = this.resolvePath(id)
       const owner: FolderOwner = `known:${id}`
 
       if (enabled) {
+        this.cancelCleanupRetry(id)
         const available = await this.isPathAvailable(resolvedPath)
+        if (this.closed || !this.state[id]) continue
+
         if (available) {
           if (scanner) {
             try {
@@ -587,8 +737,9 @@ export class KnownSourcesManager {
         if (scanner) {
           try {
             await scanner.unregisterRoot(resolvedPath, owner)
+            this.cancelCleanupRetry(id)
           } catch {
-            // Best effort
+            this.scheduleCleanupRetry(id, resolvedPath, owner)
           }
         }
       }
@@ -604,13 +755,22 @@ export class KnownSourcesManager {
   }
 
   public close(): void {
+    this.closed = true
     for (const timer of this.retryTimers.values()) {
       clearTimeout(timer)
     }
     this.retryTimers.clear()
     this.retryCounts.clear()
+
+    for (const timer of this.cleanupTimers.values()) {
+      clearTimeout(timer)
+    }
+    this.cleanupTimers.clear()
+    this.cleanupCounts.clear()
+
     this.sourceErrors.clear()
     this.pathAvailabilityCache.clear()
     this.activeRetryPromises.clear()
+    this.activeCleanupPromises.clear()
   }
 }
