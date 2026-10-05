@@ -18,6 +18,7 @@ import {
   type EmbeddingProfile,
 } from './embedding-profiles'
 import { fuseHybridResults } from './hybrid-ranker'
+import { activateSet, createBuildingSet, retireOldSets } from './chunk-sets'
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
 export interface StoredDocument {
@@ -147,7 +148,6 @@ CREATE TABLE IF NOT EXISTS chunks (
   location TEXT NOT NULL,
   vector BLOB,
   vector_dim INTEGER,
-  UNIQUE(document_id, ordinal),
   CHECK ((vector IS NULL AND vector_dim IS NULL) OR (vector IS NOT NULL AND vector_dim > 0))
 );
 CREATE TABLE IF NOT EXISTS chunk_embeddings (
@@ -318,7 +318,44 @@ export class DocumentMemoryStore {
     if (!chunkColumns.includes('chunk_set_id')) {
       this.db.exec('ALTER TABLE chunks ADD COLUMN chunk_set_id INTEGER')
     }
-    this.db.exec('CREATE INDEX IF NOT EXISTS chunks_chunk_set_id ON chunks(chunk_set_id)')
+
+    const indexList = this.db.prepare("PRAGMA index_list('chunks')").all() as Array<{
+      name: string
+      unique: number
+    }>
+    const hasOldUnique = indexList.some(
+      (idx) => idx.unique === 1 && idx.name.startsWith('sqlite_autoindex_chunks_'),
+    )
+    if (hasOldUnique) {
+      this.db.exec(`
+        PRAGMA foreign_keys = OFF;
+        CREATE TABLE chunks_v2_migration (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+          chunk_set_id INTEGER REFERENCES chunk_sets(id) ON DELETE CASCADE,
+          ordinal INTEGER NOT NULL,
+          text TEXT NOT NULL,
+          normalized TEXT NOT NULL,
+          location TEXT NOT NULL,
+          vector BLOB,
+          vector_dim INTEGER,
+          CHECK ((vector IS NULL AND vector_dim IS NULL) OR (vector IS NOT NULL AND vector_dim > 0))
+        );
+        INSERT INTO chunks_v2_migration (id, document_id, chunk_set_id, ordinal, text, normalized, location, vector, vector_dim)
+        SELECT id, document_id, chunk_set_id, ordinal, text, normalized, location, vector, vector_dim FROM chunks;
+        DROP TABLE chunks;
+        ALTER TABLE chunks_v2_migration RENAME TO chunks;
+        PRAGMA foreign_keys = ON;
+      `)
+    }
+
+    this.db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS chunks_set_ordinal ON chunks(chunk_set_id, ordinal) WHERE chunk_set_id IS NOT NULL;
+      CREATE UNIQUE INDEX IF NOT EXISTS chunks_legacy_doc_ordinal ON chunks(document_id, ordinal) WHERE chunk_set_id IS NULL;
+      CREATE INDEX IF NOT EXISTS chunks_chunk_set_id ON chunks(chunk_set_id);
+      CREATE INDEX IF NOT EXISTS chunks_document_id ON chunks(document_id);
+      CREATE INDEX IF NOT EXISTS chunks_vector_lookup ON chunks(vector_dim, document_id) WHERE vector IS NOT NULL;
+    `)
 
     // Ensure legacy spaces exist
     this.db.prepare(`
@@ -758,10 +795,12 @@ export class DocumentMemoryStore {
     validateReplacement(replacement)
     this.transaction(() => {
       const row = this.lockDocumentForReplace(normalizedPath)
-      this.deleteChunks(row.id)
+      const chunkSetId = createBuildingSet(this.db, row.id, 2)
       this.updateReplacedDocument(row.id, normalizedPath, replacement)
-      const insert = this.chunkInserter(row.id, replacement.embeddingModel)
+      const insert = this.chunkInserter(row.id, replacement.embeddingModel, chunkSetId)
       replacement.chunks.forEach((chunk, ordinal) => insert(chunk, ordinal))
+      activateSet(this.db, row.id, chunkSetId)
+      this.deleteOldChunksForDocument(row.id, chunkSetId)
     })
   }
 
@@ -779,16 +818,17 @@ export class DocumentMemoryStore {
   ): Promise<boolean> {
     const normalizedPath = resolve(path)
     validateReplacement(replacement)
-    let phase: 'delete' | 'insert' = 'delete'
     let next = 0
     let first = true
     let documentId = 0
+    let chunkSetId = 0
     let insert: ReturnType<DocumentMemoryStore['chunkInserter']> | null = null
     return this.runSliced(
       options,
       (outOfBudget) => {
         if (first) {
           documentId = this.lockDocumentForReplace(normalizedPath).id
+          chunkSetId = createBuildingSet(this.db, documentId, 2)
           first = false
         } else {
           const row = this.db
@@ -796,21 +836,35 @@ export class DocumentMemoryStore {
             .get(documentId) as { excluded: number } | undefined
           if (!row || row.excluded) return 'abort'
         }
-        if (phase === 'delete') {
-          if (!this.deleteChunksBudgeted(documentId, outOfBudget)) return 'more'
-          phase = 'insert'
-        }
-        insert ??= this.chunkInserter(documentId, replacement.embeddingModel)
+        insert ??= this.chunkInserter(documentId, replacement.embeddingModel, chunkSetId)
         while (next < replacement.chunks.length) {
           insert(replacement.chunks[next]!, next)
           next++
           if (next < replacement.chunks.length && outOfBudget()) return 'more'
         }
         this.updateReplacedDocument(documentId, normalizedPath, replacement)
+        activateSet(this.db, documentId, chunkSetId)
+        this.deleteOldChunksForDocument(documentId, chunkSetId)
         return 'done'
       },
       () => this.markPending(documentId),
     )
+  }
+
+  private deleteOldChunksForDocument(documentId: number, activeChunkSetId: number): void {
+    const oldChunkIds = this.db
+      .prepare(
+        'SELECT id FROM chunks WHERE document_id = ? AND (chunk_set_id IS NULL OR chunk_set_id <> ?)',
+      )
+      .all(documentId, activeChunkSetId) as Array<{ id: number }>
+    if (!oldChunkIds.length) return
+    const delFts = this.db.prepare('DELETE FROM chunk_fts WHERE rowid = ?')
+    const delChunk = this.db.prepare('DELETE FROM chunks WHERE id = ?')
+    for (const { id } of oldChunkIds) {
+      delFts.run(id)
+      delChunk.run(id)
+    }
+    retireOldSets(this.db, documentId)
   }
 
   private lockDocumentForReplace(normalizedPath: string): { id: number } {
@@ -849,10 +903,11 @@ export class DocumentMemoryStore {
   private chunkInserter(
     documentId: number,
     embeddingModel?: string | null,
+    chunkSetId?: number | null,
   ): (chunk: ReplacementDocument['chunks'][number], ordinal: number) => void {
     const addChunk = this.db
-      .prepare(`INSERT INTO chunks(document_id, ordinal, text, normalized, location, vector, vector_dim)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .prepare(`INSERT INTO chunks(document_id, chunk_set_id, ordinal, text, normalized, location, vector, vector_dim)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
     const addFts = this.db.prepare('INSERT INTO chunk_fts(rowid, text) VALUES (?, ?)')
     const addChunkEmbedding = this.db.prepare(`
       INSERT OR REPLACE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
@@ -860,12 +915,13 @@ export class DocumentMemoryStore {
     `)
     const ensureSpace = this.db.prepare(`
       INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
-      VALUES (?, ?, 'pinned', 'mean', ?, 'q8')
+      VALUES (?, ?, 'pinned', 'last-token', ?, 'q8')
     `)
     return (chunk, ordinal) => {
       const fields = documentIndexFields(chunk.text)
       const result = addChunk.run(
         documentId,
+        chunkSetId ?? null,
         ordinal,
         chunk.text,
         fields.normalized,
@@ -1023,7 +1079,12 @@ export class DocumentMemoryStore {
 
       const chunkRows = this.db
         .prepare(
-          'SELECT id, ordinal FROM chunks WHERE document_id = ? AND ordinal >= ? ORDER BY ordinal ASC LIMIT ?',
+          `SELECT c.id, c.ordinal FROM chunks c
+           JOIN documents d ON d.id = c.document_id
+           WHERE c.document_id = ?
+             AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+             AND c.ordinal >= ?
+           ORDER BY c.ordinal ASC LIMIT ?`,
         )
         .all(document.id, offset, vectors.length) as Array<{ id: number; ordinal: number }>
 
@@ -1034,7 +1095,7 @@ export class DocumentMemoryStore {
       this.db
         .prepare(
           `INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
-           VALUES (?, ?, 'pinned', 'mean', ?, 'q8')`,
+           VALUES (?, ?, 'pinned', 'last-token', ?, 'q8')`,
         )
         .run(embeddingSpaceId, embeddingSpaceId, dimensions.values().next().value ?? 384)
 
@@ -1063,8 +1124,10 @@ export class DocumentMemoryStore {
         .prepare(
           `SELECT count(*) AS total, count(e.chunk_id) AS vectors
            FROM chunks c
+           JOIN documents d ON d.id = c.document_id
            LEFT JOIN chunk_embeddings e ON e.chunk_id = c.id AND e.space_id = ?
-           WHERE c.document_id = ?`,
+           WHERE c.document_id = ?
+             AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
         )
         .get(embeddingSpaceId, document.id) as { total: number; vectors: number }
 
@@ -1089,6 +1152,27 @@ export class DocumentMemoryStore {
     complete: boolean,
   ): void {
     return this.setChunkEmbeddings(path, hash, offset, vectors, embeddingModel, complete)
+  }
+
+  recordMigrationEmbeddings(
+    embeddingSpaceId: string,
+    batch: Array<{ chunkId: number; vector: number[] }>,
+  ): void {
+    if (!batch.length) return
+    this.transaction(() => {
+      const insert = this.db.prepare(`
+        INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT (chunk_id, space_id)
+        DO UPDATE SET
+          vector = excluded.vector,
+          vector_dim = excluded.vector_dim,
+          created_at = unixepoch()
+      `)
+      for (const item of batch) {
+        insert.run(item.chunkId, embeddingSpaceId, floatBlob(item.vector), item.vector.length)
+      }
+    })
   }
 
   /** Find a committed embedding checkpoint, retaining chunk IDs and completed vectors. */
@@ -1119,10 +1203,13 @@ export class DocumentMemoryStore {
       .prepare(`
         SELECT min(c.ordinal) AS missing, count(*) AS total
         FROM chunks c
+        JOIN documents d ON d.id = c.document_id
         LEFT JOIN chunk_embeddings e
           ON e.chunk_id = c.id
           AND e.space_id = ?
-        WHERE c.document_id = ? AND e.chunk_id IS NULL
+        WHERE c.document_id = ?
+          AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+          AND e.chunk_id IS NULL
       `)
       .get(embeddingSpaceId, doc.id) as { missing: number | null; total: number }
 
@@ -1375,6 +1462,7 @@ export class DocumentMemoryStore {
          JOIN chunks c ON c.id = f.rowid
          JOIN documents d ON d.id = c.document_id
          WHERE chunk_fts MATCH ? AND d.excluded = 0
+           AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
          ORDER BY rank LIMIT ?`,
       )
       .all(match, limit) as Array<{ chunk_id: number; rank: number; document_id: number }>
@@ -1414,7 +1502,8 @@ export class DocumentMemoryStore {
          FROM chunk_embeddings e
          JOIN chunks c ON c.id = e.chunk_id
          JOIN documents d ON d.id = c.document_id
-         WHERE d.excluded = 0 AND (? IS NULL OR e.space_id = ?)`,
+         WHERE d.excluded = 0 AND (? IS NULL OR e.space_id = ?)
+           AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
       )
       .get(embeddingSpaceId ?? null, embeddingSpaceId ?? null) as { count: number }
 
@@ -1424,7 +1513,8 @@ export class DocumentMemoryStore {
             .prepare(
               `SELECT count(*) AS count FROM chunks c JOIN documents d ON d.id = c.document_id
                WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
-                 AND (? IS NULL OR d.embedding_model = ?)`,
+                 AND (? IS NULL OR d.embedding_model = ?)
+                 AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
             )
             .get(vector.length, embeddingSpaceId ?? null, embeddingSpaceId ?? null) as {
             count: number
@@ -1444,6 +1534,7 @@ export class DocumentMemoryStore {
              JOIN chunks c ON c.id = e.chunk_id
              JOIN documents d ON d.id = c.document_id
              WHERE d.excluded = 0 AND (? IS NULL OR e.space_id = ?)
+               AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
              ORDER BY d.priority_at DESC, d.id DESC`,
           )
           .iterate(embeddingSpaceId ?? null, embeddingSpaceId ?? null) as Iterable<{
@@ -1475,6 +1566,7 @@ export class DocumentMemoryStore {
              JOIN documents d ON d.id = c.document_id
              WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
                AND (? IS NULL OR d.embedding_model = ?)
+               AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
              ORDER BY d.priority_at DESC, d.id DESC`,
           )
           .iterate(vector.length, embeddingSpaceId ?? null, embeddingSpaceId ?? null) as Iterable<{
@@ -1555,7 +1647,7 @@ export class DocumentMemoryStore {
       }
     }
 
-    const fusedIds = fuseHybridResults(
+    const fusedHits = fuseHybridResults(
       lexicalHits.map((h) => ({ chunkId: h.chunkId, rank: h.rank, documentId: h.documentId })),
       semanticHits.map((h) => ({ chunkId: h.chunkId, rank: h.rank, documentId: h.documentId })),
       {
@@ -1566,14 +1658,15 @@ export class DocumentMemoryStore {
       },
     )
 
-    if (!fusedIds.length) return []
+    if (!fusedHits.length) return []
     const get = this.db
       .prepare(`SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, c.id AS chunk_id, c.text, c.location
       FROM chunks c JOIN documents d ON d.id = c.document_id
-      WHERE c.id = ? AND d.excluded = 0`)
+      WHERE c.id = ? AND d.excluded = 0
+        AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`)
 
-    return fusedIds.flatMap((id) => {
-      const row = get.get(id) as HitRow | undefined
+    return fusedHits.flatMap((hit) => {
+      const row = get.get(hit.chunkId) as HitRow | undefined
       return row
         ? [
             {
@@ -1583,7 +1676,7 @@ export class DocumentMemoryStore {
               chunkId: row.chunk_id,
               text: row.text,
               location: row.location,
-              score: recencyScores.get(id) ?? 0,
+              score: hit.score,
               hash: row.hash,
               mtimeMs: row.mtime_ms,
               sizeBytes: row.size_bytes,
@@ -1601,7 +1694,8 @@ export class DocumentMemoryStore {
       .prepare(
         `SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, c.id AS chunk_id, c.text, c.location
       FROM chunks c JOIN documents d ON d.id = c.document_id
-      WHERE c.id = ? AND d.excluded = 0`,
+      WHERE c.id = ? AND d.excluded = 0
+        AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
       )
       .get(chunkId) as HitRow | undefined
     return row
@@ -1646,6 +1740,7 @@ export class DocumentMemoryStore {
           JOIN chunks c ON c.id = e.chunk_id
           JOIN documents d ON d.id = c.document_id
           WHERE e.space_id = ? AND d.excluded = 0
+            AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
         `)
         .get(activeEmbeddingSpace) as { done: number }
       semanticCoverage = Math.min(1, spaceCount.done / base.chunks)

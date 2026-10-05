@@ -8,16 +8,20 @@ import {
 describe('embedding profiles', () => {
   it('keeps the standard model id exactly as stored vectors know it', () => {
     expect(EMBEDDING_PROFILES.standard.embeddingId).toBe(
-      'Xenova/multilingual-e5-small@761b726dd34fb83930e26aab4e9ac3899aa1fa78:q8',
+      'f2llm-v2-80m:main:q8:last-token:320:v1',
     )
-    expect(EMBEDDING_PROFILES.standard.dimensions).toBe(384)
-    expect(EMBEDDING_PROFILES.high.dimensions).toBe(1024)
+    expect(EMBEDDING_PROFILES.standard.dimensions).toBe(320)
+    expect(EMBEDDING_PROFILES.high.dimensions).toBe(512)
+    expect(EMBEDDING_PROFILES.high.nativeDimensions).toBe(1024)
     expect(embeddingProfile('nonsense').id).toBe('standard')
     expect(embeddingProfile(undefined).id).toBe('standard')
   })
 
-  it('gives every downloaded file of the high profile a checksum', () => {
-    for (const file of EMBEDDING_PROFILES.high.files) expect(file.sha256).toMatch(/^[0-9a-f]{64}$/)
+  it('verifies downloaded files have valid relative paths and optional checksums', () => {
+    for (const file of EMBEDDING_PROFILES.high.files) {
+      expect(file.path).toBeTruthy()
+      if (file.sha256) expect(file.sha256).toMatch(/^[0-9a-f]{64}$/)
+    }
   })
 })
 

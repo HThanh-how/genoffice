@@ -81,4 +81,61 @@ describe('Chunk Sets Lifecycle & Atomic Cutover', () => {
     expect(finalSet1.state).toBe('retired')
     expect(finalSet2.state).toBe('active')
   })
+
+  it('allows active and building chunk sets to coexist with identical ordinals without collision', () => {
+    const docPath = join(directory, 'dual-set.txt')
+    // 1. Initial indexing
+    store.replaceDocument(docPath, {
+      hash: 'h-v1',
+      mtimeMs: 1000,
+      sizeBytes: 40,
+      chunks: [
+        { text: 'Alpha unique old keyword', location: 'C1' },
+        { text: 'Beta unique old keyword', location: 'C2' },
+      ],
+      embeddingModel: 'test-v1',
+      status: 'ready',
+    })
+
+    const docRow = db.prepare('SELECT id, active_chunk_set_id FROM documents WHERE path = ?').get(docPath) as {
+      id: number
+      active_chunk_set_id: number
+    }
+    const docId = docRow.id
+    const activeSetId = docRow.active_chunk_set_id
+
+    // 2. Create building set for re-indexing
+    const buildingSetId = createBuildingSet(db, docId, 2)
+    expect(buildingSetId).toBeGreaterThan(activeSetId)
+
+    // 3. Insert chunks with identical ordinals 0 and 1 under buildingSetId
+    const insertChunk = db.prepare(`
+      INSERT INTO chunks (document_id, chunk_set_id, ordinal, text, normalized, location)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    const insertFts = db.prepare('INSERT INTO chunk_fts (rowid, text) VALUES (?, ?)')
+
+    const r0 = insertChunk.run(docId, buildingSetId, 0, 'Alpha unique new keyword', 'alpha unique new keyword', 'C1')
+    insertFts.run(r0.lastInsertRowid, 'alpha unique new keyword')
+
+    const r1 = insertChunk.run(docId, buildingSetId, 1, 'Beta unique new keyword', 'beta unique new keyword', 'C2')
+    insertFts.run(r1.lastInsertRowid, 'beta unique new keyword')
+
+    // 4. Verify search ONLY sees active set chunks, NOT building set
+    const oldHits = store.searchLexical('keyword', 10)
+    expect(oldHits).toHaveLength(2)
+    const texts = oldHits.map((h) => store.readChunk(h.chunkId)?.text)
+    expect(texts).toContain('Alpha unique old keyword')
+    expect(texts).not.toContain('Alpha unique new keyword')
+
+    // 5. Activate building set
+    activateSet(db, docId, buildingSetId)
+
+    // 6. Verify search now ONLY sees new set chunks
+    const newHits = store.searchLexical('keyword', 10)
+    expect(newHits).toHaveLength(2)
+    const newTexts = newHits.map((h) => store.readChunk(h.chunkId)?.text)
+    expect(newTexts).toContain('Alpha unique new keyword')
+    expect(newTexts).not.toContain('Alpha unique old keyword')
+  })
 })

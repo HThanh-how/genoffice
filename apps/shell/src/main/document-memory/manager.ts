@@ -12,7 +12,7 @@ import workerPath from './worker?modulePath'
 import type { PdfScanInfo } from './ocr-sidecar'
 import { EmbeddingMigration } from './embedding-migration'
 import { QueryEmbeddingCache } from './query-embedding-cache'
-import { memoryTierFromTotal, type MemoryTier } from './memory-tier'
+import { memoryTierFromTotal, MEMORY_TIER_POLICIES, type MemoryTier } from './memory-tier'
 import {
   DEFAULT_EMBEDDING_PROFILE,
   embeddingProfile,
@@ -241,6 +241,7 @@ export class DocumentMemoryManager {
   private searchGeneration = 0
   private readonly queryCache = new QueryEmbeddingCache(64)
   private readonly embeddingMigration: EmbeddingMigration
+  private migrationTimer: NodeJS.Timeout | null = null
 
   constructor(userData: string, options: ManagerOptions = {}) {
     mkdirSync(userData, { recursive: true })
@@ -261,6 +262,7 @@ export class DocumentMemoryManager {
     this.externalNames = options.externalNames
     this.autoDeferAfterMs = options.autoDeferAfterMs ?? AUTO_DEFER_AFTER_MS
     this.store = new DocumentMemoryStore(this.dbPath)
+    this.store.ensureEmbeddingSpace(this.embeddingProfile)
     this.embeddingMigration = new EmbeddingMigration(this.store.rawDb)
     this.embeddingMigration.setTarget(this.embeddingProfile.embeddingId)
     this.enabled = readEnabled(this.settingsPath)
@@ -269,7 +271,10 @@ export class DocumentMemoryManager {
     this.counterBackfill = this.runCounterBackfill()
     this.scheduleFtsMaintenance()
 
-    if (this.enabled) void this.poll()
+    if (this.enabled) {
+      void this.poll()
+      this.scheduleMigrationStep(1000)
+    }
     this.pollTimer = setInterval(() => void this.poll(), this.pollIntervalMs)
     this.pollTimer.unref?.()
     this.stopPolicyWatch = subscribeIndexingPolicy((policy) => {
@@ -779,6 +784,9 @@ export class DocumentMemoryManager {
     if (this.stopped || id === this.embeddingProfileId) {
       return { ok: !this.stopped, migrationStarted: false }
     }
+    if (id === 'high' && totalmem() / (1024 * 1024 * 1024) < 6) {
+      return { ok: false, migrationStarted: false }
+    }
     this.embeddingProfileId = id
     writeFileSync(this.embeddingSettingsPath, JSON.stringify({ profile: id }), { mode: 0o600 })
     this.modelState = 'not-loaded'
@@ -787,6 +795,7 @@ export class DocumentMemoryManager {
     this.store.ensureEmbeddingSpace(this.embeddingProfile)
     this.embeddingMigration.setTarget(this.embeddingProfile.embeddingId)
     this.notify(this.enabledListeners)
+    this.scheduleMigrationStep(100)
     return { ok: true, migrationStarted: true }
   }
 
@@ -819,7 +828,16 @@ export class DocumentMemoryManager {
       this.queue.length = 0
       this.queued.clear()
       this.embeds.length = 0
-    } else void this.poll()
+      if (this.migrationTimer) {
+        clearTimeout(this.migrationTimer)
+        this.migrationTimer = null
+      }
+      this.embeddingMigration.pause()
+    } else {
+      this.embeddingMigration.resume()
+      void this.poll()
+      this.scheduleMigrationStep(1000)
+    }
     this.notify(this.enabledListeners)
     return this.status()
   }
@@ -845,6 +863,10 @@ export class DocumentMemoryManager {
     this.queue.length = 0
     this.queued.clear()
     this.embeds.length = 0
+    if (this.migrationTimer) {
+      clearTimeout(this.migrationTimer)
+      this.migrationTimer = null
+    }
     for (const entry of this.missing.values()) clearTimeout(entry.timer)
     this.missing.clear()
     this.store.clear()
@@ -1169,6 +1191,8 @@ export class DocumentMemoryManager {
     this.pollTimer = null
     if (this.ftsTimer) clearTimeout(this.ftsTimer)
     this.ftsTimer = null
+    if (this.migrationTimer) clearTimeout(this.migrationTimer)
+    this.migrationTimer = null
     for (const entry of this.missing.values()) clearTimeout(entry.timer)
     this.missing.clear()
     this.enabledListeners.clear()
@@ -1805,7 +1829,10 @@ export class DocumentMemoryManager {
           // Commit one small batch per turn, then rotate incomplete files for fair queue progress.
           const start = job.startOffset ?? 0
           if (!this.isCurrent(job.path, job.generation, job.epoch)) break
-          const part = job.chunks.slice(start, start + 8)
+          const tier = memoryTierFromTotal(totalmem() / (1024 * 1024))
+          const policy = MEMORY_TIER_POLICIES[tier]
+          const batchLimit = tier === 'low' ? policy.embeddingBatch : 8
+          const part = job.chunks.slice(start, start + batchLimit)
           const reply = await this.ask(
             { type: 'embed', texts: part.map((chunk) => chunk.text), kind: 'passage' },
             this.workerTimeoutMs,
@@ -1860,7 +1887,72 @@ export class DocumentMemoryManager {
       }
     } finally {
       this.embedding = false
-      if (!this.stopped && this.enabled) this.drain()
+      if (!this.stopped && this.enabled) {
+        this.drain()
+        if (this.embeds.length === 0) {
+          this.scheduleMigrationStep(200)
+        }
+      }
+    }
+  }
+
+  private scheduleMigrationStep(delayMs = 500): void {
+    if (this.migrationTimer || this.stopped || !this.enabled || isIndexingPaused()) return
+    this.migrationTimer = setTimeout(() => {
+      this.migrationTimer = null
+      void this.runMigrationStep()
+    }, delayMs)
+    this.migrationTimer.unref?.()
+  }
+
+  private async runMigrationStep(): Promise<void> {
+    if (this.stopped || !this.enabled || isIndexingPaused()) return
+    // Main extraction and document embedding take priority
+    if (this.embedding || this.extracting || this.embeds.length > 0 || this.queue.length > 0) {
+      this.scheduleMigrationStep(2000)
+      return
+    }
+
+    const tier = memoryTierFromTotal(totalmem() / (1024 * 1024))
+    const policy = MEMORY_TIER_POLICIES[tier]
+    const batch = this.embeddingMigration.nextBatch(policy.embeddingBatch)
+    if (!batch.chunks.length) {
+      return
+    }
+
+    try {
+      const texts = batch.chunks.map((c) => c.text)
+      const reply = await this.ask(
+        { type: 'embed', texts, kind: 'passage' },
+        this.workerTimeoutMs,
+        true,
+      )
+
+      if (
+        !reply ||
+        !('result' in reply) ||
+        !Array.isArray(reply.result) ||
+        !reply.result.every((v) => Array.isArray(v))
+      ) {
+        this.scheduleMigrationStep(10_000)
+        return
+      }
+
+      const vectors = reply.result as number[][]
+      if (vectors.length === batch.chunks.length) {
+        const records = batch.chunks.map((c, i) => ({
+          chunkId: c.chunkId,
+          vector: vectors[i]!,
+        }))
+        this.store.recordMigrationEmbeddings(batch.spaceId, records)
+        this.embeddingMigration.markCompleted(batch.chunks.map((c) => c.chunkId))
+      }
+
+      if (!this.embeddingMigration.isComplete()) {
+        this.scheduleMigrationStep(tier === 'low' ? 300 : 100)
+      }
+    } catch {
+      this.scheduleMigrationStep(15_000)
     }
   }
 

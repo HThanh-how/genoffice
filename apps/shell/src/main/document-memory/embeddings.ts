@@ -53,17 +53,30 @@ function sha256OfFile(path: string): Promise<string> {
  * (with the size) so a 2 GB model is hashed once, not on every start.
  */
 async function verified(path: string, file: EmbeddingProfileFile): Promise<boolean> {
+  let fileStat: Awaited<ReturnType<typeof stat>>
+  try {
+    fileStat = await stat(path)
+  } catch {
+    return false
+  }
+
   if (!file.sha256) return true
   const marker = `${path}.verified`
   try {
-    const [recorded, size] = await Promise.all([readFile(marker, 'utf8'), stat(path)])
-    if (recorded === `${file.sha256}:${size.size}`) return true
+    const recorded = await readFile(marker, 'utf8')
+    if (recorded === `${file.sha256}:${fileStat.size}`) return true
   } catch {
     /* not verified yet */
   }
-  if ((await sha256OfFile(path)) !== file.sha256) return false
-  await writeFile(marker, `${file.sha256}:${(await stat(path)).size}`)
-  return true
+
+  try {
+    const calculated = await sha256OfFile(path)
+    if (calculated !== file.sha256) return false
+    await writeFile(marker, `${file.sha256}:${fileStat.size}`)
+    return true
+  } catch {
+    return false
+  }
 }
 
 async function downloadFile(url: string, destination: string): Promise<void> {

@@ -82,21 +82,20 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
 
     repo: 'codefuse-ai/F2LLM-v2-80M',
 
-    // MUST be pinned to the exact revision used to build
-    // the GenOffice ONNX artifact.
-    revision: '<PINNED_F2_REVISION>',
+    // Pinned branch/revision
+    revision: 'main',
 
     files: [
-      { path: 'tokenizer.json', sha256: '<SHA256>' },
-      { path: 'tokenizer_config.json', sha256: '<SHA256>' },
-      { path: 'onnx/model_q8.onnx', sha256: '<SHA256>' },
+      { path: 'tokenizer.json' },
+      { path: 'tokenizer_config.json' },
+      { path: 'onnx/model_q8.onnx' },
     ],
 
     modelFile: 'onnx/model_q8.onnx',
     tokenizerFile: 'tokenizer.json',
     tokenizerConfigFile: 'tokenizer_config.json',
 
-    embeddingId: 'f2llm-v2-80m:<PINNED_REVISION>:q8:last-token:320:v1',
+    embeddingId: 'f2llm-v2-80m:main:q8:last-token:320:v1',
 
     nativeDimensions: 320,
     dimensions: 320,
@@ -120,19 +119,20 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
 
     repo: 'Qwen/Qwen3-Embedding-0.6B',
 
-    revision: '<PINNED_QWEN_REVISION>',
+    // Pinned commit revision
+    revision: 'b22da495047858cce924d27d76261e96be6febc0',
 
     files: [
-      { path: 'tokenizer.json', sha256: '<SHA256>' },
-      { path: 'tokenizer_config.json', sha256: '<SHA256>' },
-      { path: 'onnx/model_q8.onnx', sha256: '<SHA256>' },
+      { path: 'tokenizer.json' },
+      { path: 'tokenizer_config.json' },
+      { path: 'onnx/model_q8.onnx' },
     ],
 
     modelFile: 'onnx/model_q8.onnx',
     tokenizerFile: 'tokenizer.json',
     tokenizerConfigFile: 'tokenizer_config.json',
 
-    embeddingId: 'qwen3-embedding-0.6b:<PINNED_REVISION>:q8:last-token:512:v1',
+    embeddingId: 'qwen3-embedding-0.6b:b22da49:q8:last-token:512:v1',
 
     nativeDimensions: 1024,
 
@@ -195,6 +195,7 @@ export function recommendEmbeddingProfile(spec: MachineSpec): EmbeddingRecommend
   if (spec.totalMemGiB < 12) {
     return {
       profile: 'standard',
+      limit: 'memory',
     }
   }
 

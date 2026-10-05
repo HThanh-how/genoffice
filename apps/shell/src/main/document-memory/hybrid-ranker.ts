@@ -12,6 +12,11 @@ export interface HybridFuseOptions {
   recencyScores?: Map<number, number>
 }
 
+export interface FusedHit {
+  chunkId: number
+  score: number
+}
+
 /**
  * Combines lexical and semantic ranks with reciprocal rank fusion (RRF),
  * optional recency weighting, and document diversification (e.g. max 2 chunks per doc).
@@ -20,7 +25,7 @@ export function fuseHybridResults(
   lexical: RankedCandidate[],
   semantic: RankedCandidate[],
   options: HybridFuseOptions = {},
-): number[] {
+): FusedHit[] {
   const limit = options.limit ?? 8
   const maxPerDoc = options.maxChunksPerDocument ?? 2
   const chunkToDoc = options.chunkToDocument ?? new Map<number, number>()
@@ -52,38 +57,52 @@ export function fuseHybridResults(
 
   if (!scores.size) return []
 
-  const sorted = [...scores.entries()].sort((a, b) => {
-    const scoreA = a[1] + (recency.get(a[0]) ?? 0)
-    const scoreB = b[1] + (recency.get(b[0]) ?? 0)
-    return scoreB - scoreA || a[0] - b[0]
+  const finalScores = new Map<number, number>()
+  for (const [chunkId, rrfScore] of scores) {
+    finalScores.set(chunkId, rrfScore + (recency.get(chunkId) ?? 0))
+  }
+
+  const sorted = [...scores.keys()].sort((a, b) => {
+    const scoreA = finalScores.get(a) ?? 0
+    const scoreB = finalScores.get(b) ?? 0
+    return scoreB - scoreA || a - b
   })
 
   // Apply document diversification (max chunks per document)
   const docCounts = new Map<number, number>()
-  const selected: number[] = []
+  const selected: FusedHit[] = []
 
-  for (const [chunkId] of sorted) {
+  for (const chunkId of sorted) {
     const docId = chunkToDoc.get(chunkId)
     if (docId !== undefined) {
       const count = docCounts.get(docId) ?? 0
       if (count >= maxPerDoc) continue
       docCounts.set(docId, count + 1)
     }
-    selected.push(chunkId)
+    selected.push({ chunkId, score: finalScores.get(chunkId) ?? 0 })
     if (selected.length >= limit) break
   }
 
   // If diversification filtered too aggressively and we have fewer than limit,
   // backfill remaining chunks without exceeding limit
   if (selected.length < limit && selected.length < sorted.length) {
-    const selectedSet = new Set(selected)
-    for (const [chunkId] of sorted) {
+    const selectedSet = new Set(selected.map((s) => s.chunkId))
+    for (const chunkId of sorted) {
       if (!selectedSet.has(chunkId)) {
-        selected.push(chunkId)
+        selected.push({ chunkId, score: finalScores.get(chunkId) ?? 0 })
         if (selected.length >= limit) break
       }
     }
   }
 
   return selected
+}
+
+/** Convenience helper returning only chunk IDs */
+export function fuseHybridResultIds(
+  lexical: RankedCandidate[],
+  semantic: RankedCandidate[],
+  options: HybridFuseOptions = {},
+): number[] {
+  return fuseHybridResults(lexical, semantic, options).map((h) => h.chunkId)
 }
