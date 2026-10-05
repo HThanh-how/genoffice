@@ -8,7 +8,7 @@ import { formatBytes } from './index-file-log'
 export interface SearchResultsProps {
   api: HomeApi
   query: string
-  onOpenPath?: (path: string) => void
+  onOpened?: () => void
 }
 
 function highlightText(text: string, needles: readonly string[]): ReactElement[] | string {
@@ -25,14 +25,21 @@ function highlightText(text: string, needles: readonly string[]): ReactElement[]
   )
 }
 
-export function SearchResults({ api, query, onOpenPath }: SearchResultsProps) {
+export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
   const { lang, dateLocale } = useI18n()
   const isVi = lang === 'vi'
 
   const [searchPage, setSearchPage] = useState<FileSearchPage | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [selectedIndex, setSelectedIndex] = useState(0)
   const searchSeq = useRef(0)
+  const selectedItemRef = useRef<HTMLLIElement | null>(null)
+
+  // Reset selectedIndex whenever query changes
+  useEffect(() => {
+    setSelectedIndex(0)
+  }, [query])
 
   // Debounce 100ms (within required 80-120ms range)
   useEffect(() => {
@@ -75,11 +82,12 @@ export function SearchResults({ api, query, onOpenPath }: SearchResultsProps) {
     }
   }, [api, query, isVi])
 
-  const handleOpen = (path: string) => {
-    if (onOpenPath) {
-      onOpenPath(path)
-    } else {
-      void api.openPath(path)
+  const handleOpen = async (path: string) => {
+    try {
+      await api.openPath(path)
+      onOpened?.()
+    } catch (err) {
+      console.error('Failed to open path:', err)
     }
   }
 
@@ -118,21 +126,59 @@ export function SearchResults({ api, query, onOpenPath }: SearchResultsProps) {
     }
   }
 
+  const visibleHits = [...bestMatches, ...contentMatches]
+
+  // Keyboard navigation
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (visibleHits.length === 0) return
+
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSelectedIndex((prev) => Math.min(prev + 1, visibleHits.length - 1))
+      } else if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSelectedIndex((prev) => Math.max(prev - 1, 0))
+      } else if (e.key === 'Enter') {
+        const target = visibleHits[selectedIndex]
+        if (target) {
+          e.preventDefault()
+          void handleOpen(target.path)
+        }
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [visibleHits, selectedIndex])
+
+  // Scroll selected item into view smoothly
+  useEffect(() => {
+    if (selectedItemRef.current) {
+      selectedItemRef.current.scrollIntoView({ block: 'nearest' })
+    }
+  }, [selectedIndex])
+
   const isIndexing = !!searchPage && (searchPage.index.pending > 0 || searchPage.index.scanning)
 
-  const renderHitItem = (hit: FileSearchHit, isContentGroup = false) => {
+  const renderHitItem = (hit: FileSearchHit, itemIndex: number) => {
+    const isSelected = itemIndex === selectedIndex
     const dir = getDirectoryPath(hit.path)
     return (
       <li
         key={hit.path}
-        className="idx-search-hit-item"
+        ref={isSelected ? selectedItemRef : undefined}
+        className={`idx-search-hit-item${isSelected ? ' is-selected' : ''}`}
         role="button"
         tabIndex={0}
-        onClick={() => handleOpen(hit.path)}
+        aria-selected={isSelected}
+        onClick={() => void handleOpen(hit.path)}
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
-            handleOpen(hit.path)
+            void handleOpen(hit.path)
           }
         }}
       >
@@ -178,8 +224,8 @@ export function SearchResults({ api, query, onOpenPath }: SearchResultsProps) {
           <span className="idx-spinner" aria-hidden="true" />
           <span>
             {isVi
-              ? `Đang lập chỉ mục thêm (${searchPage?.index.pending} tệp)… Kết quả sẽ tự động mở rộng.`
-              : `Indexing remaining files (${searchPage?.index.pending} pending)… Results will update automatically.`}
+              ? `Đang tối ưu hóa tìm kiếm (${searchPage?.index.pending} tệp)… Kết quả sẽ tự động mở rộng.`
+              : `Optimizing search (${searchPage?.index.pending} pending)… Results will update automatically.`}
           </span>
         </div>
       )}
@@ -251,7 +297,9 @@ export function SearchResults({ api, query, onOpenPath }: SearchResultsProps) {
                   {bestMatches.length} {isVi ? 'kết quả' : 'results'}
                 </span>
               </div>
-              <ul className="idx-search-list">{bestMatches.map((h) => renderHitItem(h, false))}</ul>
+              <ul className="idx-search-list">
+                {bestMatches.map((h, i) => renderHitItem(h, i))}
+              </ul>
             </section>
           )}
 
@@ -285,7 +333,7 @@ export function SearchResults({ api, query, onOpenPath }: SearchResultsProps) {
                 </span>
               </div>
               <ul className="idx-search-list">
-                {contentMatches.map((h) => renderHitItem(h, true))}
+                {contentMatches.map((h, i) => renderHitItem(h, bestMatches.length + i))}
               </ul>
             </section>
           )}

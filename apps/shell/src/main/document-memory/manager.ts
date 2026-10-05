@@ -12,7 +12,7 @@ import workerPath from './worker?modulePath'
 import type { PdfScanInfo } from './ocr-sidecar'
 import { EmbeddingMigration } from './embedding-migration'
 import { FileStabilityGate } from './file-stability'
-import { ChunkUpgradeCoordinator } from './chunk-upgrade'
+import { ChunkUpgradeCoordinator, type DocumentNeedingUpgrade } from './chunk-upgrade'
 import { QueryEmbeddingCache } from './query-embedding-cache'
 import { memoryTierFromTotal, MEMORY_TIER_POLICIES, type MemoryTier } from './memory-tier'
 import { fuseHybridResults } from './hybrid-ranker'
@@ -251,6 +251,7 @@ export class DocumentMemoryManager {
   private readonly embeddingMigration: EmbeddingMigration
   private readonly chunkUpgrade: ChunkUpgradeCoordinator
   private readonly stabilityGate: FileStabilityGate
+  private readonly skippedMigrationDocs = new Set<number>()
   private migrationTimer: NodeJS.Timeout | null = null
 
   constructor(userData: string, options: ManagerOptions = {}) {
@@ -1241,6 +1242,7 @@ export class DocumentMemoryManager {
     this.clearedListeners.clear()
     this.stabilityGate.dispose()
     this.chunkUpgrade.pause()
+    this.skippedMigrationDocs.clear()
     this.queue.length = 0
     this.embeds.length = 0
     for (const [id, pending] of this.waiting) {
@@ -1263,6 +1265,7 @@ export class DocumentMemoryManager {
     if (this.stopped || !this.enabled || this.polling) return
     this.polling = true
     try {
+      this.skippedMigrationDocs.clear()
       await this.resumeIncomplete()
       if (this.stopped) return
       if (Date.now() - this.lastOpenedCheck >= OPENED_CHECK_INTERVAL_MS) {
@@ -1969,17 +1972,24 @@ export class DocumentMemoryManager {
 
   private async runMigrationStep(): Promise<void> {
     if (this.stopped || !this.enabled || isIndexingPaused()) return
-    // Main extraction and document embedding take priority
-    if (this.embedding || this.extracting || this.embeds.length > 0 || this.queue.length > 0) {
-      this.scheduleMigrationStep(2000)
+    // Main extraction and document embedding take priority: File mới > Migration
+    if (
+      this.queue.length > 0 ||
+      this.activeExtractions.size > 0 ||
+      this.embeds.length > 0 ||
+      this.activeEmbedJob ||
+      this.embedding ||
+      this.extracting
+    ) {
+      this.scheduleMigrationStep(1000)
       return
     }
 
     // Step 1: Rolling upgrade of legacy V1 documents to Chunker V2 before embedding
-    const needingUpgrade = this.chunkUpgrade.getDocumentsNeedingUpgrade(1)
+    const needingUpgrade = this.chunkUpgrade.getDocumentsNeedingUpgrade(1, this.skippedMigrationDocs)
     if (needingUpgrade.length > 0) {
-      this.chunkUpgrade.upgradeDocument(needingUpgrade[0]!.id)
-      this.scheduleMigrationStep(100)
+      await this.migrateLegacyDocument(needingUpgrade[0]!)
+      this.scheduleMigrationStep(500)
       return
     }
 
@@ -2035,6 +2045,94 @@ export class DocumentMemoryManager {
     } catch {
       this.scheduleMigrationStep(15_000)
     }
+  }
+
+  private async migrateLegacyDocument(doc: DocumentNeedingUpgrade): Promise<boolean> {
+    if (this.stopped || !this.enabled || isIndexingPaused()) return false
+
+    // 1. Kiểm tra file nguồn: statMeta(doc.path).
+    // Nếu file không tồn tại hoặc ổ đĩa offline (source unavailable) -> bỏ qua, giữ nguyên legacy chunks cũ để tìm kiếm, KHÔNG xóa index.
+    const meta = await statMeta(doc.path)
+    if (!meta || (await this.sourceUnavailable(doc.path))) {
+      this.skippedMigrationDocs.add(doc.id)
+      return false
+    }
+
+    // 2. Nếu mtime/size hiện tại khác stored metadata -> file đã bị sửa đổi, đưa vào normal changed-file P1 queue this.enqueue(doc.path, true).
+    const stored = this.store.documentByPath(doc.path)
+    if (!stored) {
+      this.skippedMigrationDocs.add(doc.id)
+      return false
+    }
+    if (stored.mtimeMs !== meta.mtimeMs || stored.sizeBytes !== meta.sizeBytes) {
+      this.skippedMigrationDocs.add(doc.id)
+      this.enqueue(doc.path, true)
+      return false
+    }
+
+    // 3. Gửi yêu cầu trích xuất tới Worker hiện hữu:
+    const reply = await this.ask(
+      { type: 'extract', path: doc.path, maxPdfPages: this.pdfMaxPages },
+      this.workerTimeoutMs,
+    )
+
+    if (this.stopped || !this.enabled) return false
+
+    if (!reply || !('result' in reply) || !isExtractResult(reply.result)) {
+      if (await this.sourceUnavailable(doc.path)) {
+        this.skippedMigrationDocs.add(doc.id)
+        return false
+      }
+      this.skippedMigrationDocs.add(doc.id)
+      return false
+    }
+
+    const extracted = reply.result
+
+    // 4. Áp dụng kết quả qua this.store.replaceDocumentSliced(doc.path, extracted, ...):
+    const generation = this.currentGeneration(doc.path)
+    const epoch = this.epoch
+    const written = await this.store.replaceDocumentSliced(
+      doc.path,
+      {
+        hash: extracted.hash,
+        mtimeMs: extracted.mtimeMs,
+        sizeBytes: extracted.sizeBytes,
+        chunks: extracted.chunks,
+        embeddingModel: null,
+        status: extractedStatus(extracted),
+        error: extracted.error,
+        truncated: extracted.truncated,
+      },
+      { shouldContinue: () => this.isCurrent(doc.path, generation, epoch) },
+    )
+
+    if (!written) return false
+
+    this.recordScanInfo(doc.path, extracted)
+    this.scheduleFtsMaintenance()
+
+    // 5. Ghi nhận hoàn thành trong coordinator:
+    this.chunkUpgrade.markDocumentUpgraded(doc.id)
+    this.skippedMigrationDocs.delete(doc.id)
+
+    // 6. Đưa vào hàng đợi nhúng vector F2:
+    const lexicalOnly = !!extracted.skipEmbeddings && extracted.chunks.length > 0
+    if (extracted.chunks.length && !lexicalOnly) {
+      this.enqueueEmbed({
+        path: doc.path,
+        generation,
+        epoch,
+        hash: extracted.hash,
+        mtimeMs: extracted.mtimeMs,
+        sizeBytes: extracted.sizeBytes,
+        chunks: extracted.chunks,
+        startOffset: 0,
+      })
+      this.drain()
+    }
+
+    return true
   }
 
   private enqueueEmbed(job: EmbedJob): void {

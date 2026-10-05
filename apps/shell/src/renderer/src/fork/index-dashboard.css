@@ -1263,6 +1263,12 @@
   background: var(--surface-hover, rgba(0, 0, 0, 0.03));
   border-color: var(--border-hover, #bbb);
 }
+.idx-search-hit-item.is-selected {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  outline: 2px solid color-mix(in srgb, var(--accent) 35%, transparent);
+  outline-offset: -1px;
+}
 .idx-search-hit-icon {
   width: 28px;
   height: 28px;

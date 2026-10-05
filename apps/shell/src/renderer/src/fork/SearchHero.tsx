@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
 import { useI18n } from '../locale'
 
 export interface SearchHeroProps {
@@ -9,16 +9,21 @@ export interface SearchHeroProps {
   autoFocus?: boolean
 }
 
-export function SearchHero({
-  value,
-  onChange,
-  onClear,
-  placeholder,
-  autoFocus = true,
-}: SearchHeroProps) {
+export const SearchHero = forwardRef<HTMLInputElement, SearchHeroProps>(function SearchHero(
+  {
+    value,
+    onChange,
+    onClear,
+    placeholder,
+    autoFocus = true,
+  },
+  ref,
+) {
   const { lang } = useI18n()
   const isVi = lang === 'vi'
   const inputRef = useRef<HTMLInputElement>(null)
+
+  useImperativeHandle(ref, () => inputRef.current as HTMLInputElement)
 
   const defaultPlaceholder = isVi
     ? 'Tìm kiếm tên tệp và nội dung...'
@@ -90,4 +95,4 @@ export function SearchHero({
       </div>
     </div>
   )
-}
+})

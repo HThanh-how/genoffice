@@ -1,11 +1,12 @@
 import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FolderScanManager, isIndexablePath } from '../src/main/document-memory/folder-scan'
 import {
   FolderWatchManager,
+  addCollapsedSubtree,
   type FolderEventSink,
   type WatchedFolders,
 } from '../src/main/document-memory/folder-watch'
@@ -32,7 +33,9 @@ function harness(roots: string[]) {
   >()
   const batches: string[][] = []
   const reconciles: string[] = []
+  const subtreeReconciles: Array<{ root: string; subtree: string }> = []
   let reconcileResult: { ok: boolean; reason?: string } = { ok: true }
+  let subtreeReconcileResult: { ok: boolean; reason?: string } = { ok: true }
   let enabled = true
   let failOpen = false
   const enabledListeners = new Set<() => void>()
@@ -46,6 +49,10 @@ function harness(roots: string[]) {
     reconcile: async (root) => {
       reconciles.push(root)
       return reconcileResult
+    },
+    reconcileSubtree: async (root, subtree) => {
+      subtreeReconciles.push({ root, subtree })
+      return subtreeReconcileResult
     },
   }
   const sink: FolderEventSink = {
@@ -83,6 +90,7 @@ function harness(roots: string[]) {
     manager,
     batches,
     reconciles,
+    subtreeReconciles,
     watchers,
     setEnabled(value: boolean) {
       enabled = value
@@ -93,6 +101,9 @@ function harness(roots: string[]) {
     },
     setReconcileResult(value: { ok: boolean; reason?: string }) {
       reconcileResult = value
+    },
+    setSubtreeReconcileResult(value: { ok: boolean; reason?: string }) {
+      subtreeReconcileResult = value
     },
     changeRoots(next: string[]) {
       roots = next
@@ -215,6 +226,74 @@ describe('FolderWatchManager', () => {
     expect(h.manager.watchedRoots()).toEqual([a])
     expect(h.watchers.get(b)![0]!.watcher.closed).toBe(true)
     h.manager.close()
+  })
+
+  it('triggers targeted subtree scan when folder is detected on disk and collapses subtrees', async () => {
+    const root = join(dir, 'docs')
+    const sub = join(root, 'Research', 'Papers')
+    const deep = join(sub, '2026')
+    mkdirSync(deep, { recursive: true })
+
+    const h = harness([root])
+    const [first] = h.watchers.get(root)!
+    first!.emit(join('Research', 'Papers', '2026'))
+    first!.emit(join('Research', 'Papers'))
+
+    await wait(1650)
+    expect(h.subtreeReconciles).toEqual([{ root, subtree: resolve(sub) }])
+    expect(h.reconciles).toHaveLength(0)
+    h.manager.close()
+  })
+
+  it('falls back to full root reconcile if reconcileSubtree fails', async () => {
+    const root = join(dir, 'docs')
+    const sub = join(root, 'subfolder')
+    mkdirSync(sub, { recursive: true })
+
+    const h = harness([root])
+    h.setSubtreeReconcileResult({ ok: false, reason: 'error' })
+    const [first] = h.watchers.get(root)!
+    first!.emit('subfolder')
+
+    await wait(1650)
+    expect(h.subtreeReconciles).toEqual([{ root, subtree: resolve(sub) }])
+    await wait(100)
+    expect(h.reconciles).toEqual([root])
+    h.manager.close()
+  })
+
+  it('staggers reconcileAll across multiple roots by 750ms', async () => {
+    const a = join(dir, 'a')
+    const b = join(dir, 'b')
+    const h = harness([a, b])
+    const start = Date.now()
+    await h.manager.reconcileAll()
+    const elapsed = Date.now() - start
+    expect(h.reconciles).toEqual([a, b])
+    expect(elapsed).toBeGreaterThanOrEqual(700)
+    h.manager.close()
+  })
+})
+
+describe('addCollapsedSubtree', () => {
+  it('collapses nested child directories into their common ancestor', () => {
+    const set = new Set<string>()
+    addCollapsedSubtree(set, join(dir, 'Research', 'Papers', '2026'))
+    expect([...set]).toEqual([resolve(dir, 'Research', 'Papers', '2026')])
+
+    // Adding ancestor replaces child
+    addCollapsedSubtree(set, join(dir, 'Research', 'Papers'))
+    expect([...set]).toEqual([resolve(dir, 'Research', 'Papers')])
+
+    // Adding child again is a no-op
+    addCollapsedSubtree(set, join(dir, 'Research', 'Papers', '2026'))
+    expect([...set]).toEqual([resolve(dir, 'Research', 'Papers')])
+
+    // Sibling directory is preserved
+    addCollapsedSubtree(set, join(dir, 'Research', 'Data'))
+    expect([...set].sort()).toEqual(
+      [resolve(dir, 'Research', 'Papers'), resolve(dir, 'Research', 'Data')].sort(),
+    )
   })
 })
 

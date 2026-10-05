@@ -113,6 +113,22 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const [statusFailed, setStatusFailed] = useState(false)
   const actionInFlight = useRef(false)
   const pollKick = useRef<() => void>(() => undefined)
+  const searchInputRef = useRef<HTMLInputElement>(null)
+
+  // Focus SearchHero input on Ctrl+F or Cmd+F
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
+        e.preventDefault()
+        searchInputRef.current?.focus()
+        searchInputRef.current?.select()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [])
 
   useEffect(() => {
     let alive = true
@@ -319,6 +335,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
 
       {/* Search Hero (always placed at top) */}
       <SearchHero
+        ref={searchInputRef}
         value={searchQuery}
         onChange={setSearchQuery}
         onClear={() => setSearchQuery('')}
@@ -326,7 +343,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
 
       {/* If actively searching, display SearchResults; otherwise display Navigation & Tabs */}
       {searchQuery.trim().length > 0 ? (
-        <SearchResults api={api} query={searchQuery} onOpenPath={onClose} />
+        <SearchResults api={api} query={searchQuery} onOpened={onClose} />
       ) : (
         <>
           <IndexNav activeTab={tab} onChangeTab={setTab} issuesCount={todo} />
@@ -346,7 +363,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
                   if (reason) setFocus(reason)
                   setTab(nextTab)
                 }}
-                onOpenPath={onClose}
+                onOpened={onClose}
               />
             )}
 

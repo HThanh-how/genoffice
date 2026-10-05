@@ -1,6 +1,13 @@
 import { watch as fsWatch, type FSWatcher } from 'node:fs'
-import { basename, extname, relative, resolve, sep } from 'node:path'
+import { stat } from 'node:fs/promises'
+import { basename, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isIgnoredFileName, isIndexablePath, shouldSkipDirectory } from './folder-scan'
+
+export interface FolderReconcileOutcome {
+  ok: boolean
+  reason?: string
+  files?: number
+}
 
 /** What the watcher needs from the folder scanner. */
 export interface WatchedFolders {
@@ -8,7 +15,11 @@ export interface WatchedFolders {
   watchedRoots(): string[]
   onRootsChanged(listener: () => void): () => void
   /** Cheap metadata-only re-walk of a finished root. */
-  reconcile(root: string): Promise<{ ok: boolean; reason?: string } | unknown>
+  reconcile(root: string): Promise<FolderReconcileOutcome | null>
+  reconcileSubtree?(
+    root: string,
+    subtree: string,
+  ): Promise<{ ok: boolean; reason?: string } | unknown>
 }
 
 /** What the watcher needs from the document-memory manager. */
@@ -23,7 +34,7 @@ export interface FolderWatchOptions {
   debounceMs?: number
   /** Longest a continuous burst may delay a flush (default 30 s). */
   maxWaitMs?: number
-  /** First reconcile after start / resume (default 45 s). */
+  /** First reconcile after start / resume (default 7 s). */
   reconcileDelayMs?: number
   /** Reconcile cadence (default 6 h). */
   reconcileIntervalMs?: number
@@ -45,6 +56,37 @@ interface RootState {
   lastReconcile: number
   /** The watcher was down (or this is a resume): re-check the root once it is back. */
   needsCatchUp: boolean
+  pendingSubtrees: Set<string>
+  subtreeTimer: NodeJS.Timeout | null
+}
+
+function isSubpathOrEqual(parent: string, child: string): boolean {
+  const p = resolve(parent)
+  const c = resolve(child)
+  if (p === c) return true
+  const rel = relative(p, c)
+  return !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+/**
+ * Coalesces nested directory subtrees into their closest common ancestor.
+ * E.g., if "Research/Papers" is present, "Research/Papers/2026" is discarded.
+ * If "Research/Papers/2026" is present and "Research/Papers" is added,
+ * the narrower child is replaced by the broader ancestor.
+ */
+export function addCollapsedSubtree(pending: Set<string>, subtree: string): void {
+  const normalized = resolve(subtree)
+  for (const existing of pending) {
+    if (isSubpathOrEqual(existing, normalized)) {
+      return
+    }
+  }
+  for (const existing of [...pending]) {
+    if (isSubpathOrEqual(normalized, existing)) {
+      pending.delete(existing)
+    }
+  }
+  pending.add(normalized)
 }
 
 const HOUR_MS = 60 * 60_000
@@ -79,7 +121,7 @@ export class FolderWatchManager {
     this.options = {
       debounceMs: options.debounceMs ?? 4_000,
       maxWaitMs: options.maxWaitMs ?? 30_000,
-      reconcileDelayMs: options.reconcileDelayMs ?? 45_000,
+      reconcileDelayMs: options.reconcileDelayMs ?? 7_000,
       reconcileIntervalMs: options.reconcileIntervalMs ?? 6 * HOUR_MS,
       dirReconcileDelayMs: options.dirReconcileDelayMs ?? 15_000,
       minReconcileGapMs: options.minReconcileGapMs ?? 5 * 60_000,
@@ -112,6 +154,8 @@ export class FolderWatchManager {
         attempt: 0,
         lastReconcile: 0,
         needsCatchUp: false,
+        pendingSubtrees: new Set<string>(),
+        subtreeTimer: null,
       })
       this.open(root)
     }
@@ -119,6 +163,13 @@ export class FolderWatchManager {
       this.pending.clear()
       this.clearFlush()
       this.clearReconcileTimer()
+      for (const state of this.roots.values()) {
+        if (state.subtreeTimer) {
+          clearTimeout(state.subtreeTimer)
+          state.subtreeTimer = null
+        }
+        state.pendingSubtrees.clear()
+      }
     } else if (!this.wasEnabled) this.scheduleReconcile(this.options.reconcileDelayMs)
     this.wasEnabled = enabled
   }
@@ -128,8 +179,14 @@ export class FolderWatchManager {
     if (this.closed || this.reconciling || !this.safeEnabled()) return
     this.reconciling = true
     try {
+      let isFirst = true
       for (const [root, state] of [...this.roots]) {
         if (this.closed || !this.safeEnabled()) break
+        if (!isFirst) {
+          await new Promise((r) => setTimeout(r, 750))
+          if (this.closed || !this.safeEnabled()) break
+        }
+        isFirst = false
         try {
           const result = (await this.folders.reconcile(root)) as { ok?: boolean; reason?: string }
           if (result?.ok === false) {
@@ -220,6 +277,9 @@ export class FolderWatchManager {
   private retryAfterReconcileFailure(root: string, state: RootState): void {
     if (state.dirTimer) clearTimeout(state.dirTimer)
     state.dirTimer = null
+    if (state.subtreeTimer) clearTimeout(state.subtreeTimer)
+    state.subtreeTimer = null
+    state.pendingSubtrees.clear()
     state.needsCatchUp = true
     if (state.watcher) this.fail(root, state.watcher)
     else this.retry(root)
@@ -231,6 +291,8 @@ export class FolderWatchManager {
     this.roots.delete(root)
     if (state.retryTimer) clearTimeout(state.retryTimer)
     if (state.dirTimer) clearTimeout(state.dirTimer)
+    if (state.subtreeTimer) clearTimeout(state.subtreeTimer)
+    state.pendingSubtrees.clear()
     try {
       state.watcher?.close()
     } catch {
@@ -258,7 +320,65 @@ export class FolderWatchManager {
     if (!leaf || parts.some((part) => part === '..')) return
     if (isIgnoredFileName(leaf) || parts.slice(0, -1).some(shouldSkipDirectory)) return
     if (shouldSkipDirectory(basename(leaf))) return
-    if (extname(leaf) === '') this.markDirty(root)
+    void this.handlePossibleDirectory(root, full)
+  }
+
+  private async handlePossibleDirectory(root: string, full: string): Promise<void> {
+    try {
+      const s = await stat(full)
+      if (this.closed || !this.safeEnabled()) return
+      if (s.isDirectory()) {
+        this.markSubtreeDirty(root, full)
+        return
+      }
+    } catch {
+      // Deleted/renamed directory or ENOENT -> fallback full root reconcile
+    }
+    if (this.closed || !this.safeEnabled()) return
+    this.markDirty(root)
+  }
+
+  private markSubtreeDirty(root: string, subtree: string): void {
+    const state = this.roots.get(root)
+    if (!state || this.closed || !this.safeEnabled()) return
+    addCollapsedSubtree(state.pendingSubtrees, subtree)
+    if (state.subtreeTimer) clearTimeout(state.subtreeTimer)
+    state.subtreeTimer = setTimeout(() => {
+      state.subtreeTimer = null
+      void this.reconcilePendingSubtrees(root)
+    }, 1500)
+    state.subtreeTimer.unref?.()
+  }
+
+  private async reconcilePendingSubtrees(root: string): Promise<void> {
+    const state = this.roots.get(root)
+    if (!state || this.closed || !this.safeEnabled()) return
+    if (!state.pendingSubtrees.size) return
+
+    if (!this.folders.reconcileSubtree) {
+      state.pendingSubtrees.clear()
+      this.markDirty(root)
+      return
+    }
+
+    const subtrees = [...state.pendingSubtrees]
+    state.pendingSubtrees.clear()
+
+    for (const subtree of subtrees) {
+      if (this.closed || !this.safeEnabled()) return
+      try {
+        const result = (await this.folders.reconcileSubtree(root, subtree)) as
+          | { ok?: boolean; reason?: string }
+          | undefined
+        if (!result || result.ok === false) {
+          this.markDirty(root)
+          return
+        }
+      } catch {
+        this.markDirty(root)
+        return
+      }
+    }
   }
 
   private armFlush(): void {
@@ -310,6 +430,11 @@ export class FolderWatchManager {
   private async reconcileRoot(root: string): Promise<void> {
     const state = this.roots.get(root)
     if (!state || this.closed || !this.safeEnabled()) return
+    if (state.subtreeTimer) {
+      clearTimeout(state.subtreeTimer)
+      state.subtreeTimer = null
+    }
+    state.pendingSubtrees.clear()
     try {
       const result = (await this.folders.reconcile(root)) as { ok?: boolean; reason?: string }
       if (result?.ok === false && result.reason === 'busy') {

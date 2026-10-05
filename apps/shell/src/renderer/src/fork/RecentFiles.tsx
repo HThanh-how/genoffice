@@ -7,10 +7,10 @@ import { formatBytes } from './index-file-log'
 export interface RecentFilesProps {
   api: HomeApi
   limit?: number
-  onOpenPath?: (path: string) => void
+  onOpened?: () => void
 }
 
-export function RecentFiles({ api, limit = 12, onOpenPath }: RecentFilesProps) {
+export function RecentFiles({ api, limit = 12, onOpened }: RecentFilesProps) {
   const { lang, dateLocale } = useI18n()
   const isVi = lang === 'vi'
 
@@ -47,11 +47,12 @@ export function RecentFiles({ api, limit = 12, onOpenPath }: RecentFilesProps) {
     }
   }, [api, limit, isVi])
 
-  const handleOpen = (path: string) => {
-    if (onOpenPath) {
-      onOpenPath(path)
-    } else {
-      void api.openPath(path)
+  const handleOpen = async (path: string) => {
+    try {
+      await api.openPath(path)
+      onOpened?.()
+    } catch (err) {
+      console.error('Failed to open path:', err)
     }
   }
 
@@ -135,11 +136,11 @@ export function RecentFiles({ api, limit = 12, onOpenPath }: RecentFilesProps) {
                 className="idx-recent-item"
                 role="button"
                 tabIndex={0}
-                onClick={() => handleOpen(file.path)}
+                onClick={() => void handleOpen(file.path)}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
-                    handleOpen(file.path)
+                    void handleOpen(file.path)
                   }
                 }}
               >

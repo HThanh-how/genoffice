@@ -19,7 +19,7 @@ export interface IndexOverviewProps {
   actionBusy: boolean
   onTogglePause: () => void
   onNavigateTab: (tab: IndexTabId, reason?: IndexIssueReason) => void
-  onOpenPath?: (path: string) => void
+  onOpened?: () => void
 }
 
 export function IndexOverview({
@@ -32,7 +32,7 @@ export function IndexOverview({
   actionBusy,
   onTogglePause,
   onNavigateTab,
-  onOpenPath,
+  onOpened,
 }: IndexOverviewProps) {
   const { lang, dateLocale } = useI18n()
   const isVi = lang === 'vi'
@@ -93,8 +93,8 @@ export function IndexOverview({
             <strong>{isVi ? 'Tìm kiếm tiết kiệm tài nguyên' : 'Resource Saver Mode'}</strong>
             <p>
               {isVi
-                ? 'Tìm kiếm ngữ nghĩa tạm dừng để tiết kiệm tài nguyên. Tìm kiếm tên tệp và văn bản vẫn hoạt động bình thường.'
-                : 'Semantic search is paused to conserve system resources. File name and text search continue to work normally.'}
+                ? 'Tìm kiếm nâng cao tạm dừng để tiết kiệm tài nguyên. Tìm kiếm tên tệp và nội dung văn bản vẫn hoạt động bình thường.'
+                : 'Advanced search is paused to conserve system resources. File name and text search continue to work normally.'}
             </p>
           </div>
           <button
@@ -114,7 +114,7 @@ export function IndexOverview({
           <div className="idx-status-card-header">
             <div className="idx-status-card-title">
               <span className="idx-status-indicator is-busy" aria-hidden="true" />
-              <h3>{isVi ? 'Đang đọc và lập chỉ mục tài liệu' : 'Indexing documents'}</h3>
+              <h3>{isVi ? 'Đang tối ưu hóa tìm kiếm' : 'Optimizing search'}</h3>
             </div>
             <button
               type="button"
@@ -225,7 +225,7 @@ export function IndexOverview({
       )}
 
       {/* Recent Files Section */}
-      <RecentFiles api={api} onOpenPath={onOpenPath} />
+      <RecentFiles api={api} onOpened={onOpened} />
     </div>
   )
 }

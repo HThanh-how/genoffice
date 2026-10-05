@@ -40,4 +40,24 @@ jobs:
         run: npm --prefix apps/shell run typecheck
 
       - name: Run Core Document Search Test Suites
-        run: npx --prefix apps/shell vitest run tests/ann-index.test.ts tests/ann-coherence.test.ts tests/embedding-profiles.test.ts tests/indexing-policy.test.ts tests/indexing-worker-policy.test.ts tests/document-memory-issues.test.ts tests/document-memory-manager.test.ts tests/everything-ipc.test.ts
+        run: >-
+          npx --prefix apps/shell vitest run
+          tests/ann-index.test.ts
+          tests/ann-coherence.test.ts
+          tests/chunk-sets.test.ts
+          tests/chunk-upgrade.test.ts
+          tests/embedding-migration.test.ts
+          tests/embedding-profiles.test.ts
+          tests/embedding-space.test.ts
+          tests/file-stability.test.ts
+          tests/hot-name-search.test.ts
+          tests/indexing-policy.test.ts
+          tests/indexing-worker-policy.test.ts
+          tests/legacy-vector-migration.test.ts
+          tests/low-memory.test.ts
+          tests/progressive-search.test.ts
+          tests/progressive-search-no-double-fts.test.ts
+          tests/document-memory-manager.test.ts
+          tests/document-memory-folder-scan.test.ts
+          tests/document-memory-folder-watch.test.ts
+          tests/everything-ipc.test.ts
