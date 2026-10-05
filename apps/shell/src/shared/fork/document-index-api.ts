@@ -1,9 +1,10 @@
+import type { FolderOwner } from '../../main/document-memory/folder-scan'
 import type { IndexIssueReason } from '../../main/document-memory/issues'
 import type { IndexIssueSummary } from '../../main/document-memory/issue-reader'
 import type { DbLocationState, DbMoveError } from '../../main/document-memory/db-location'
 import type { KnownSearchSource, KnownSearchSourceEntry, KnownSearchSourceStatus } from '../../main/document-memory/known-sources'
 
-export type { DbLocationState, DbMoveError, KnownSearchSource, KnownSearchSourceEntry, KnownSearchSourceStatus }
+export type { DbLocationState, DbMoveError, FolderOwner, KnownSearchSource, KnownSearchSourceEntry, KnownSearchSourceStatus }
 
 /** The answer to "move the index here": nothing moves until the app restarts. */
 export type DbMoveResult =
@@ -172,6 +173,7 @@ export interface IndexedFolderRun {
 /** A folder the user asked to index, with when it was last read and what is in the index now. */
 export interface IndexedFolder {
   root: string
+  owners?: FolderOwner[]
   state: 'running' | 'complete' | 'stopped'
   priority: boolean
   /** a PC folder that is not reachable right now (unplugged drive...) */

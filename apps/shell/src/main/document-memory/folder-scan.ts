@@ -150,6 +150,8 @@ export class FolderScanManager {
   /** roots asked for while another scan runs: they start, one after another, as each finishes */
   private readonly waiting: string[] = []
   private readonly pendingForgetRoots = new Set<string>()
+  private readonly pendingRestartRoots = new Map<string, FolderOwner[]>()
+  private registrationEpoch = 0
   private stopRequested = false
   private closed = false
   private runner: Promise<void> | null = null
@@ -378,7 +380,39 @@ export class FolderScanManager {
     const normalizedRoot = validateRoot(root)
     if (this.closed) throw new Error('Folder scanner is closed')
 
+    if (this.activeRoot === normalizedRoot && this.pendingForgetRoots.has(normalizedRoot)) {
+      const existingOwners = this.pendingRestartRoots.get(normalizedRoot) ?? []
+      if (!existingOwners.includes(owner)) {
+        existingOwners.push(owner)
+      }
+      this.pendingRestartRoots.set(normalizedRoot, existingOwners)
+
+      let job = this.manifest.jobs.find((entry) => entry.root === normalizedRoot)
+      if (!job) {
+        job = {
+          root: normalizedRoot,
+          owners: [owner],
+          startedAt: Date.now(),
+          state: 'stopped',
+          discovered: 0,
+          enrolled: 0,
+          skipped: 0,
+          errors: 0,
+        }
+        this.manifest.jobs.push(job)
+      } else {
+        if (!job.owners || !Array.isArray(job.owners) || job.owners.length === 0) {
+          job.owners = [owner]
+        } else if (!job.owners.includes(owner)) {
+          job.owners.push(owner)
+        }
+      }
+      this.save()
+      return this.status()
+    }
+
     this.pendingForgetRoots.delete(normalizedRoot)
+    this.pendingRestartRoots.delete(normalizedRoot)
 
     let job = this.manifest.jobs.find((entry) => entry.root === normalizedRoot)
     if (!job) {
@@ -423,6 +457,46 @@ export class FolderScanManager {
     return this.status()
   }
 
+  /**
+   * Rescan an already registered folder, preserving its existing owners without defaulting to 'manual'.
+   */
+  async rescanExisting(root: string): Promise<{ ok: boolean; error?: string }> {
+    if (this.closed) return { ok: false, error: 'Folder scanner is closed' }
+    const normalizedRoot = resolve(root)
+    const job = this.jobFor(normalizedRoot)
+    if (!job) {
+      return { ok: false, error: 'Unknown folder' }
+    }
+
+    const existingOwners =
+      job.owners && job.owners.length > 0 ? [...job.owners] : (['manual'] as FolderOwner[])
+    job.owners = existingOwners
+
+    this.pendingForgetRoots.delete(normalizedRoot)
+    this.pendingRestartRoots.delete(normalizedRoot)
+
+    if (this.activeRoot) {
+      if (this.activeRoot !== normalizedRoot && !this.waiting.some((w) => resolve(w) === normalizedRoot)) {
+        this.waiting.push(normalizedRoot)
+      }
+      this.save()
+      return { ok: true }
+    }
+
+    job.state = 'running'
+    job.startedAt = Date.now()
+    job.discovered = 0
+    job.enrolled = 0
+    job.skipped = 0
+    job.errors = 0
+    delete job.lastError
+
+    this.save()
+    this.run(job)
+    this.emitRootsChanged()
+    return { ok: true }
+  }
+
   /** Alias used by callers that phrase the action as a scan. */
   scan(root: string, owner: FolderOwner = 'manual'): FolderScanStatus {
     return this.start(root, owner)
@@ -443,7 +517,14 @@ export class FolderScanManager {
 
   /** The index was cleared: forget every folder so nothing re-imports it. */
   private unregisterAll(): void {
+    this.registrationEpoch++
     this.stopRequested = true
+    this.waiting.length = 0
+    this.pendingForgetRoots.clear()
+    this.pendingRestartRoots.clear()
+    if (this.activeRoot) {
+      this.pendingForgetRoots.add(resolve(this.activeRoot))
+    }
     this.manifest.jobs = []
     this.save()
     this.emitRootsChanged()
@@ -502,10 +583,12 @@ export class FolderScanManager {
   }
 
   private run(job: ScanJob): void {
+    const currentEpoch = this.registrationEpoch
     this.activeRoot = job.root
     this.stopRequested = false
     this.runner = this.walk(job)
       .catch((error: unknown) => {
+        if (currentEpoch !== this.registrationEpoch) return
         job.state = 'stopped'
         job.errors++
         job.lastError = error instanceof Error ? error.message : 'Folder scan failed.'
@@ -513,6 +596,41 @@ export class FolderScanManager {
       .finally(() => {
         this.activeRoot = null
         this.runner = null
+
+        if (currentEpoch !== this.registrationEpoch) {
+          return
+        }
+
+        if (this.pendingRestartRoots.has(job.root)) {
+          const restartOwners = this.pendingRestartRoots.get(job.root) ?? ['manual']
+          this.pendingRestartRoots.delete(job.root)
+          this.pendingForgetRoots.delete(job.root)
+
+          let restartJob = this.jobFor(job.root)
+          if (!restartJob) {
+            restartJob = {
+              root: job.root,
+              owners: restartOwners,
+              startedAt: Date.now(),
+              state: 'stopped',
+              discovered: 0,
+              enrolled: 0,
+              skipped: 0,
+              errors: 0,
+            }
+            this.manifest.jobs.push(restartJob)
+          } else {
+            restartJob.owners = restartOwners
+          }
+          this.save()
+
+          if (!this.waiting.some((w) => resolve(w) === job.root)) {
+            this.waiting.unshift(job.root)
+          }
+          this.startNextWaiting(currentEpoch)
+          return
+        }
+
         if (this.pendingForgetRoots.has(job.root)) {
           this.pendingForgetRoots.delete(job.root)
           this.manifest.jobs = this.manifest.jobs.filter((j) => j.root !== job.root)
@@ -524,12 +642,14 @@ export class FolderScanManager {
           if (job.state === 'complete' && job.priority) this.memory.prioritizeFolder?.(job.root)
           this.save()
         }
-        this.startNextWaiting()
+        this.startNextWaiting(currentEpoch)
       })
   }
 
-  private startNextWaiting(): void {
-    while (!this.closed && !this.activeRoot) {
+  private startNextWaiting(targetEpoch?: number): void {
+    const epoch = targetEpoch ?? this.registrationEpoch
+    while (!this.closed && !this.activeRoot && epoch === this.registrationEpoch) {
+      if (this.waiting.length === 0) return
       const next = this.waiting.shift()
       if (!next) return
       const normalizedNext = resolve(next)
@@ -701,7 +821,6 @@ export class FolderScanManager {
   /** Stop watching and forget a folder. Files already indexed stay searchable. */
   forget(root: string, owner: FolderOwner = 'manual'): boolean {
     const normalized = resolve(root)
-    this.removeFromWaiting(normalized)
     const job = this.jobFor(normalized)
     if (!job) return false
 
@@ -711,9 +830,20 @@ export class FolderScanManager {
     job.owners = job.owners.filter((o) => o !== owner)
 
     if (job.owners.length > 0) {
+      if (this.pendingRestartRoots.has(normalized)) {
+        const remaining = (this.pendingRestartRoots.get(normalized) ?? []).filter((o) => o !== owner)
+        if (remaining.length > 0) {
+          this.pendingRestartRoots.set(normalized, remaining)
+        } else {
+          this.pendingRestartRoots.delete(normalized)
+        }
+      }
       this.save()
       return true
     }
+
+    this.removeFromWaiting(normalized)
+    this.pendingRestartRoots.delete(normalized)
 
     if (this.activeRoot === normalized) {
       this.pendingForgetRoots.add(normalized)
@@ -737,7 +867,6 @@ export class FolderScanManager {
    */
   async unregisterRoot(root: string, owner: FolderOwner = 'manual'): Promise<boolean> {
     const normalized = resolve(root)
-    this.removeFromWaiting(normalized)
     const job = this.jobFor(normalized)
     if (!job) return false
 
@@ -747,9 +876,20 @@ export class FolderScanManager {
     job.owners = job.owners.filter((o) => o !== owner)
 
     if (job.owners.length > 0) {
+      if (this.pendingRestartRoots.has(normalized)) {
+        const remaining = (this.pendingRestartRoots.get(normalized) ?? []).filter((o) => o !== owner)
+        if (remaining.length > 0) {
+          this.pendingRestartRoots.set(normalized, remaining)
+        } else {
+          this.pendingRestartRoots.delete(normalized)
+        }
+      }
       this.save()
       return true
     }
+
+    this.removeFromWaiting(normalized)
+    this.pendingRestartRoots.delete(normalized)
 
     if (this.activeRoot === normalized) {
       this.pendingForgetRoots.add(normalized)
@@ -768,6 +908,31 @@ export class FolderScanManager {
     this.save()
     this.emitRootsChanged()
     return true
+  }
+
+  /** Whether the given root is currently registered under the specified owner. */
+  hasOwner(root: string, owner: FolderOwner): boolean {
+    const normalized = resolve(root)
+    const job = this.jobFor(normalized)
+    return job?.owners?.includes(owner) ?? false
+  }
+
+  /**
+   * Current registration and execution state of a root for UI and known search source lifecycle.
+   */
+  registrationState(
+    root: string,
+    owner?: FolderOwner,
+  ): 'none' | 'queued' | 'scanning' | 'watching' | 'stopped' {
+    const normalized = resolve(root)
+    const job = this.jobFor(normalized)
+    if (!job) return 'none'
+    if (owner && !job.owners?.includes(owner)) return 'none'
+    if (this.activeRoot === normalized) return 'scanning'
+    if (this.isWaiting(normalized)) return 'queued'
+    if (job.state === 'running' || job.state === 'complete') return 'watching'
+    if (job.state === 'stopped') return 'stopped'
+    return 'none'
   }
 
   private recordError(job: ScanJob, error: unknown): void {

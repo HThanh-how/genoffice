@@ -228,15 +228,20 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
       return result
     },
   )
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.rescanIndexedFolder, (_event, root: unknown) => {
-    try {
-      getFolderScan()?.start(knownRoot(root))
-      folderCounts.invalidate()
-      return { ok: true }
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : 'failed' }
-    }
-  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.rescanIndexedFolder,
+    async (_event, root: unknown): Promise<{ ok: boolean; error?: string }> => {
+      try {
+        const scan = getFolderScan()
+        if (!scan) return { ok: false, error: 'unavailable' }
+        const result = await scan.rescanExisting(knownRoot(root))
+        folderCounts.invalidate()
+        return result
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : 'failed' }
+      }
+    },
+  )
   ipcMain.handle(
     DOCUMENT_INDEX_CHANNELS.forgetIndexedFolder,
     async (_event, root: unknown): Promise<boolean> => {

@@ -293,4 +293,210 @@ describe('FolderScanManager', () => {
     expect(instance.status().running).toBe(false)
     expect(instance.folders()).toHaveLength(0)
   })
+
+  it('FS-01: Clear index while A active, B queued -> B không bao giờ được scan, waiting rỗng', async () => {
+    const folderA = join(dir, 'clear_folderA')
+    const folderB = join(dir, 'clear_folderB')
+    mkdirSync(folderA, { recursive: true })
+    mkdirSync(folderB, { recursive: true })
+    for (let i = 0; i < 50; i++) {
+      writeFileSync(join(folderA, `docA_${i}.txt`), `contentA_${i}`)
+    }
+    writeFileSync(join(folderB, 'docB.txt'), 'contentB')
+
+    let clearHandler: (() => void) | undefined
+    const enrolledB: string[] = []
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: (path) => {
+        if (path.includes('clear_folderB')) {
+          enrolledB.push(path)
+        }
+        return true
+      },
+      onCleared: (listener) => {
+        clearHandler = listener
+        return () => {
+          clearHandler = undefined
+        }
+      },
+    })
+    scanners.push(instance)
+
+    // Khởi động A
+    instance.start(folderA, 'manual')
+    expect(instance.status().running).toBe(true)
+
+    // Đưa B vào hàng đợi waiting
+    instance.start(folderB, 'known:downloads')
+    expect(instance.isWaiting(folderB)).toBe(true)
+
+    // Gọi clear index
+    expect(clearHandler).toBeDefined()
+    clearHandler!()
+
+    // Sau khi clear index, B phải lập tức bị dọn khỏi waiting
+    expect(instance.isWaiting(folderB)).toBe(false)
+    expect(instance.folders()).toHaveLength(0)
+
+    // Chờ cho runner của A kết thúc hoàn toàn
+    await until(() => !instance.status().running)
+
+    // B không bao giờ được scan, và danh sách folders vẫn rỗng (không bị re-import)
+    expect(enrolledB).toHaveLength(0)
+    expect(instance.folders()).toHaveLength(0)
+    expect(instance.isWaiting(folderB)).toBe(false)
+  })
+
+  it('FS-02: Queued B có cả manual và known:downloads, hủy known:downloads -> B vẫn nằm trong waiting và sẽ được scan dưới quyền manual!', async () => {
+    const folderA = join(dir, 'multi_folderA')
+    const folderB = join(dir, 'multi_folderB')
+    mkdirSync(folderA, { recursive: true })
+    mkdirSync(folderB, { recursive: true })
+    for (let i = 0; i < 50; i++) {
+      writeFileSync(join(folderA, `docA_${i}.txt`), `contentA_${i}`)
+    }
+    writeFileSync(join(folderB, 'docB.txt'), 'contentB')
+
+    const enrolledB: string[] = []
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: (path) => {
+        if (path.includes('multi_folderB')) {
+          enrolledB.push(path)
+        }
+        return true
+      },
+    })
+    scanners.push(instance)
+
+    // Bắt đầu A (active scan)
+    instance.start(folderA, 'manual')
+
+    // Bắt đầu B với cả manual và known:downloads khi A đang chạy -> B vào waiting
+    instance.start(folderB, 'manual')
+    instance.start(folderB, 'known:downloads')
+    expect(instance.isWaiting(folderB)).toBe(true)
+
+    // Hủy known:downloads của B
+    const unregisterResult = await instance.unregisterRoot(folderB, 'known:downloads')
+    expect(unregisterResult).toBe(true)
+
+    // Vì B vẫn còn owner 'manual', B TUYỆT ĐỐI KHÔNG bị xóa khỏi waiting!
+    expect(instance.isWaiting(folderB)).toBe(true)
+
+    // Chờ cho toàn bộ quá trình scan kết thúc (A xong -> B tự động được scan)
+    await until(() => !instance.status().running && enrolledB.length > 0)
+
+    // B đã được scan dưới quyền owner 'manual'
+    expect(enrolledB).toHaveLength(1)
+    const folderBEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderB))
+    expect(folderBEntry).toBeDefined()
+    expect(folderBEntry?.owners).toEqual(['manual'])
+  })
+
+  it('FS-03: Rescan known-only root -> owners không bị thêm manual', async () => {
+    const folderC = join(dir, 'known_folderC')
+    mkdirSync(folderC, { recursive: true })
+    writeFileSync(join(folderC, 'docC.txt'), 'contentC')
+
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: () => true,
+    })
+    scanners.push(instance)
+
+    // Đăng ký và scan dưới quyền known:downloads
+    instance.start(folderC, 'known:downloads')
+    await until(() => !instance.status().running)
+
+    let entry = instance.folders().find((f) => resolve(f.root) === resolve(folderC))
+    expect(entry?.owners).toEqual(['known:downloads'])
+
+    // Gọi rescanExisting
+    const rescanResult = await instance.rescanExisting(folderC)
+    expect(rescanResult.ok).toBe(true)
+
+    await until(() => !instance.status().running)
+
+    // Sau khi rescan, owners vẫn giữ nguyên là ['known:downloads'], không có 'manual'
+    entry = instance.folders().find((f) => resolve(f.root) === resolve(folderC))
+    expect(entry?.owners).toEqual(['known:downloads'])
+    expect(entry?.owners).not.toContain('manual')
+  })
+
+  it('FS-04: Re-enable root trong khi unregister trước đó đang stopping -> root khởi động lại thành công', async () => {
+    const folderD = join(dir, 'restart_folderD')
+    mkdirSync(folderD, { recursive: true })
+    for (let i = 0; i < 50; i++) {
+      writeFileSync(join(folderD, `docD_${i}.txt`), `contentD_${i}`)
+    }
+
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: () => true,
+    })
+    scanners.push(instance)
+
+    // Bắt đầu scan folderD
+    instance.start(folderD, 'known:documents')
+    expect(instance.status().running).toBe(true)
+
+    // Gửi yêu cầu forget/unregister trong khi đang scan
+    instance.forget(folderD, 'known:documents')
+
+    // Bật lại folderD ngay lập tức trong khi runner cũ đang dừng
+    instance.start(folderD, 'known:documents')
+
+    // Chờ cho toàn bộ runner (kể cả runner restart) hoàn thành
+    await until(() => !instance.status().running)
+
+    // Thư mục D phải tồn tại trong danh sách folders với trạng thái complete
+    const folderDEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderD))
+    expect(folderDEntry).toBeDefined()
+    expect(folderDEntry?.state).toBe('complete')
+    expect(folderDEntry?.owners).toContain('known:documents')
+  })
+
+  it('FS-05: hasOwner và registrationState phản ánh chính xác trạng thái lifecycle', async () => {
+    const folderE = join(dir, 'state_folderE')
+    const folderF = join(dir, 'state_folderF')
+    mkdirSync(folderE, { recursive: true })
+    mkdirSync(folderF, { recursive: true })
+    for (let i = 0; i < 50; i++) {
+      writeFileSync(join(folderE, `docE_${i}.txt`), `contentE_${i}`)
+    }
+    writeFileSync(join(folderF, 'docF.txt'), 'contentF')
+
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: () => true,
+    })
+    scanners.push(instance)
+
+    // Khi chưa đăng ký
+    expect(instance.registrationState(folderE)).toBe('none')
+    expect(instance.hasOwner(folderE, 'manual')).toBe(false)
+
+    // Start folderE (active)
+    instance.start(folderE, 'manual')
+    expect(instance.registrationState(folderE)).toBe('scanning')
+    expect(instance.hasOwner(folderE, 'manual')).toBe(true)
+
+    // Start folderF (queued vì E đang active)
+    instance.start(folderF, 'known:desktop')
+    expect(instance.registrationState(folderF)).toBe('queued')
+    expect(instance.hasOwner(folderF, 'known:desktop')).toBe(true)
+    expect(instance.hasOwner(folderF, 'manual')).toBe(false)
+    expect(instance.registrationState(folderF, 'manual')).toBe('none')
+
+    // Chờ E và F quét xong
+    await until(() => !instance.status().running)
+
+    // Sau khi quét xong: chuyển sang watching
+    expect(instance.registrationState(folderE)).toBe('watching')
+    expect(instance.registrationState(folderF)).toBe('watching')
+
+    // Thử dừng folderE
+    instance.stop()
+    // Đổi state sang stopped trong manifest để test registrationState('stopped')
+    const jobE = instance['jobFor'](resolve(folderE))
+    if (jobE) jobE.state = 'stopped'
+    expect(instance.registrationState(folderE)).toBe('stopped')
+  })
 })
