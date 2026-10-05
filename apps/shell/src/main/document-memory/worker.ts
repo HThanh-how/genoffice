@@ -246,11 +246,9 @@ onIndexRequest(
     const execute = async () => {
       try {
         let result: unknown
-        const lookup: OcrLookup = (path, hash) =>
-          (searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!)).ocr.pages(
-            path,
-            hash,
-          )
+        const getWorkerStore = () =>
+          (searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!, { role: 'worker' }))
+        const lookup: OcrLookup = (path, hash) => getWorkerStore().ocr.pages(path, hash)
         if (request.type === 'extract')
           result = request.interactive
             ? await extractDocument(request.path, lookup, request.maxPdfPages)
@@ -262,21 +260,22 @@ onIndexRequest(
             renderPdfPagesForOcr(request.path, request.ocr!),
           )
         else if (request.type === 'search') {
-          searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!)
-          result = searchStore.search(
+          result = getWorkerStore().search(
             request.query,
             request.vector,
             request.limit,
             request.embeddingModel,
           )
         } else if (request.type === 'search-lexical') {
-          searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!)
-          result = searchStore.searchLexical(request.query, request.limit)
+          result = getWorkerStore().searchLexical(request.query, request.limit)
         } else if (request.type === 'search-semantic') {
-          searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!)
-          result = searchStore.searchSemantic(
+          result = getWorkerStore().searchSemantic(
             request.vector!,
             request.limit,
+            request.embeddingSpaceId ?? request.embeddingModel,
+          )
+        } else if (request.type === 'ann-rebuild') {
+          result = await getWorkerStore().rebuildAnnIndex(
             request.embeddingSpaceId ?? request.embeddingModel,
           )
         } else result = await embedTexts(request.texts, request.kind)
@@ -291,7 +290,8 @@ onIndexRequest(
     if (
       request.type === 'search' ||
       request.type === 'search-lexical' ||
-      request.type === 'search-semantic'
+      request.type === 'search-semantic' ||
+      request.type === 'ann-rebuild'
     )
       void execute()
     else

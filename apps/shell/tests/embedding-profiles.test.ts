@@ -8,7 +8,7 @@ import {
 describe('embedding profiles', () => {
   it('keeps the standard model id exactly as stored vectors know it', () => {
     expect(EMBEDDING_PROFILES.standard.embeddingId).toBe(
-      'f2llm-v2-80m:main:q8:last-token:320:v1',
+      'f2llm-v2-80m:ad88d7a126:q8:last-token:320:v1',
     )
     expect(EMBEDDING_PROFILES.standard.dimensions).toBe(320)
     expect(EMBEDDING_PROFILES.high.dimensions).toBe(512)

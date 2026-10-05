@@ -3,6 +3,7 @@ import { withBackgroundBudget } from './cpu-budget'
 import { createEmbeddingSessionKeeper } from '../fork/embedding-ort'
 import type { SessionKeeper } from '../fork/embedding-session'
 import { createReadStream } from 'node:fs'
+import { freemem } from 'node:os'
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
@@ -159,22 +160,36 @@ export async function embedTexts(
 
   let pending = loaded?.value
   if (!pending) {
+    const freeMB = freemem() / (1024 * 1024)
+    if (profile.minFreeMemoryMB && freeMB < profile.minFreeMemoryMB) {
+      postIndexMessage({
+        type: 'model',
+        state: 'error',
+        error: `Insufficient free memory (${Math.round(freeMB)} MB free, ${profile.minFreeMemoryMB} MB required). Semantic search temporarily paused; text search remains available.`,
+      })
+      throw new Error(`Insufficient free memory: ${Math.round(freeMB)} MB free, ${profile.minFreeMemoryMB} MB required`)
+    }
+
     postIndexMessage({ type: 'model', state: 'downloading' })
     pending = loadEmbeddingModel(cacheDir, profile)
       .then((model) => {
         postIndexMessage({ type: 'model', state: 'ready' })
         return model
       })
-      .catch(() => {
+      .catch((err) => {
         if (loaded?.profileId === profile.id) {
           loaded = undefined
         }
+        const errorMsg =
+          err instanceof Error && err.message.startsWith('Insufficient free memory')
+            ? err.message
+            : 'Local embedding model unavailable; text search remains available'
         postIndexMessage({
           type: 'model',
           state: 'error',
-          error: 'Local embedding model unavailable; text search remains available',
+          error: errorMsg,
         })
-        throw new Error('Local embedding model unavailable')
+        throw err
       })
     loaded = { profileId: profile.id, value: pending }
   }

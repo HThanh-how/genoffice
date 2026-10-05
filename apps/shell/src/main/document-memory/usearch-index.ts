@@ -94,10 +94,62 @@ export class USearchIndex implements AnnIndex {
     this.isOpen = true
   }
 
-  async search(vector: number[], limit: number): Promise<AnnHit[]> {
-    if (!this.isOpen) await this.open()
+  openSync(): void {
+    if (this.isOpen) return
+    const mod = getUsearchModule()
+    if (!mod) {
+      this.fallbackExact = new ExactVectorIndex()
+      const fallbackFile = `${this.indexPath}.fallback.json`
+      if (existsSync(fallbackFile)) {
+        try {
+          const raw = readFileSync(fallbackFile, 'utf-8')
+          const entries = JSON.parse(raw) as Array<[number, number[]]>
+          for (const [id, vec] of entries) {
+            this.fallbackExact.add([id], [vec])
+          }
+        } catch {
+          // ignore corrupt fallback cache
+        }
+      }
+      this.isOpen = true
+      return
+    }
+
+    try {
+      this.nativeIndex = new mod.Index({
+        dimensions: this.dimensions,
+        metric: 'cos',
+      })
+      if (existsSync(this.indexPath)) {
+        this.nativeIndex.load(this.indexPath)
+      }
+    } catch {
+      this.nativeIndex = null
+      this.fallbackExact = new ExactVectorIndex()
+    }
+    this.isOpen = true
+  }
+
+  isAvailable(): boolean {
+    if (!this.isOpen) this.openSync()
+    return !!this.nativeIndex || !!this.fallbackExact
+  }
+
+  searchSync(vector: number[], limit: number): AnnHit[] {
+    if (!this.isOpen) this.openSync()
     if (this.fallbackExact) {
-      return this.fallbackExact.search(vector, limit)
+      const entries = Array.from(this.fallbackExact.getAllEntries())
+      const scored = entries.map(([chunkId, vec]) => {
+        let dot = 0, normA = 0, normB = 0
+        for (let i = 0; i < vector.length; i++) {
+          const a = vector[i]!, b = vec[i] ?? 0
+          dot += a * b; normA += a * a; normB += b * b
+        }
+        const denom = Math.sqrt(normA) * Math.sqrt(normB)
+        return { id: chunkId, score: denom ? dot / denom : 0 }
+      })
+      scored.sort((a, b) => b.score - a.score)
+      return scored.slice(0, limit).map((h) => ({ chunkId: h.id, distance: 1 - h.score }))
     }
 
     if (!this.nativeIndex || limit <= 0) return []
@@ -116,18 +168,14 @@ export class USearchIndex implements AnnIndex {
       }
       return hits
     } catch {
-      if (!this.fallbackExact) {
-        this.fallbackExact = new ExactVectorIndex()
-        await this.fallbackExact.open()
-      }
-      return this.fallbackExact.search(vector, limit)
+      return []
     }
   }
 
-  async add(chunkIds: number[], vectors: number[][]): Promise<void> {
-    if (!this.isOpen) await this.open()
+  addSync(chunkIds: number[], vectors: number[][]): void {
+    if (!this.isOpen) this.openSync()
     if (this.fallbackExact) {
-      await this.fallbackExact.add(chunkIds, vectors)
+      void this.fallbackExact.add(chunkIds, vectors)
       this.saveAtomic()
       return
     }
@@ -144,13 +192,38 @@ export class USearchIndex implements AnnIndex {
       }
       this.saveAtomic()
     } catch {
-      if (!this.fallbackExact) {
-        this.fallbackExact = new ExactVectorIndex()
-        await this.fallbackExact.open()
-      }
-      await this.fallbackExact.add(chunkIds, vectors)
-      this.saveAtomic()
+      // Best effort update
     }
+  }
+
+  removeSync(chunkIds: number[]): void {
+    if (!this.isOpen) this.openSync()
+    if (this.fallbackExact) {
+      void this.fallbackExact.remove(chunkIds)
+      this.saveAtomic()
+      return
+    }
+
+    if (!this.nativeIndex) return
+
+    try {
+      if (typeof this.nativeIndex.remove === 'function') {
+        for (const id of chunkIds) {
+          this.nativeIndex.remove(id)
+        }
+        this.saveAtomic()
+      }
+    } catch {
+      // Deletions on unsupported versions may require rebuild
+    }
+  }
+
+  async search(vector: number[], limit: number): Promise<AnnHit[]> {
+    return this.searchSync(vector, limit)
+  }
+
+  async add(chunkIds: number[], vectors: number[][]): Promise<void> {
+    this.addSync(chunkIds, vectors)
   }
 
   async remove(chunkIds: number[]): Promise<void> {

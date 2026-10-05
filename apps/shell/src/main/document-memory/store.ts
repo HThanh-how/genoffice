@@ -2,7 +2,8 @@ import { issueReason, type IndexIssue } from './issues'
 import { topVectors } from './top-vectors'
 import { DatabaseSync } from 'node:sqlite'
 import { chmodSync } from 'node:fs'
-import { basename, resolve, sep } from 'node:path'
+import { totalmem } from 'node:os'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import {
   documentIndexFields,
@@ -19,6 +20,10 @@ import {
 } from './embedding-profiles'
 import { fuseHybridResults } from './hybrid-ranker'
 import { activateSet, createBuildingSet, retireOldSets } from './chunk-sets'
+import { USearchIndex } from './usearch-index'
+import { ANN_MIN_VECTORS } from './ann-index'
+import { defaultSqliteCacheKiB } from './memory-tier'
+import { HotMetadataSearch } from './hot-metadata-search'
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
 export interface StoredDocument {
@@ -176,6 +181,28 @@ CREATE TABLE IF NOT EXISTS ann_indexes (
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
 CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(text, tokenize='unicode61 remove_diacritics 2');
+CREATE VIRTUAL TABLE IF NOT EXISTS document_name_fts USING fts5(
+  name,
+  path,
+  content='documents',
+  content_rowid='id',
+  tokenize='unicode61 remove_diacritics 2',
+  prefix='3 4'
+);
+CREATE TRIGGER IF NOT EXISTS documents_name_ai AFTER INSERT ON documents BEGIN
+  INSERT INTO document_name_fts(rowid, name, path) VALUES(new.id, new.name, new.path);
+END;
+CREATE TRIGGER IF NOT EXISTS documents_name_ad AFTER DELETE ON documents BEGIN
+  INSERT INTO document_name_fts(document_name_fts, rowid, name, path) VALUES('delete', old.id, old.name, old.path);
+END;
+CREATE TRIGGER IF NOT EXISTS documents_name_au AFTER UPDATE OF name, path ON documents BEGIN
+  INSERT INTO document_name_fts(document_name_fts, rowid, name, path) VALUES('delete', old.id, old.name, old.path);
+  INSERT INTO document_name_fts(rowid, name, path) VALUES(new.id, new.name, new.path);
+END;
+CREATE TABLE IF NOT EXISTS document_memory_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS chunks_vector_lookup ON chunks(vector_dim, document_id) WHERE vector IS NOT NULL;
 CREATE INDEX IF NOT EXISTS documents_excluded_status ON documents(excluded, status);
@@ -238,13 +265,18 @@ export interface DocumentMemorySearchOptions {
   semanticRelevanceThreshold?: number
   semanticRecentDocuments?: number
   semanticWideDocuments?: number
+  role?: 'search' | 'worker'
+  cacheKiB?: number
 }
 
 /** Durable memory for explicitly opened documents. Only enrolled documents are searchable. */
 export class DocumentMemoryStore {
   private readonly db: DatabaseSync
-  private readonly searchOptions: Required<DocumentMemorySearchOptions>
+  readonly dbPath: string
+  private readonly searchOptions: Required<Omit<DocumentMemorySearchOptions, 'role' | 'cacheKiB'>>
   private ocrSidecar: OcrSidecar | null = null
+  private readonly annIndexes = new Map<string, USearchIndex>()
+  private readonly hotMetadataSearch: HotMetadataSearch
 
   /** Text transcribed by the scanned-PDF reader (see ocr-sidecar.ts). */
   get ocr(): OcrSidecar {
@@ -256,6 +288,7 @@ export class DocumentMemoryStore {
   }
 
   constructor(dbPath: string, options: DocumentMemorySearchOptions = {}) {
+    this.dbPath = dbPath
     this.searchOptions = {
       semanticRecentScan: options.semanticRecentScan ?? SEMANTIC_RECENT_SCAN,
       semanticWideScan: options.semanticWideScan ?? SEMANTIC_WIDE_SCAN,
@@ -269,6 +302,8 @@ export class DocumentMemoryStore {
     this.db.exec(
       'PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;',
     )
+    const cacheKiB = options.cacheKiB ?? defaultSqliteCacheKiB(options.role ?? 'search')
+    this.db.exec(`PRAGMA cache_size = -${cacheKiB};`)
     this.db.exec(SCHEMA)
     OcrSidecar.ensureSchema(this.db)
     // Older databases predate explicit open timestamps. Preserve all existing rows and vectors.
@@ -287,6 +322,8 @@ export class DocumentMemoryStore {
     )
     this.migrateEmbeddingSchema()
     this.migrateChunkCounters()
+    this.ensureNameFtsV1()
+    this.hotMetadataSearch = new HotMetadataSearch(this.db)
     // a blank Word/Excel/Markdown file used to be filed as "scanned, needs OCR": only a PDF can be
     this.db.exec(
       `UPDATE documents SET error = 'No readable text in this file; there is nothing to search'
@@ -297,6 +334,24 @@ export class DocumentMemoryStore {
       chmodSync(resolve(dbPath), 0o600)
     } catch {
       // Some filesystems and in-memory databases do not support chmod.
+    }
+  }
+
+  private ensureNameFtsV1(): void {
+    const row = this.db
+      .prepare("SELECT value FROM document_memory_meta WHERE key = 'name_fts_version'")
+      .get() as { value: string } | undefined
+    if (!row || row.value !== '1') {
+      try {
+        this.db.prepare("INSERT INTO document_name_fts(document_name_fts) VALUES('rebuild')").run()
+      } catch {
+        // In case table was just created or rebuild syntax not yet populated
+      }
+      this.db
+        .prepare(
+          "INSERT OR REPLACE INTO document_memory_meta(key, value) VALUES('name_fts_version', '1')",
+        )
+        .run()
     }
   }
 
@@ -355,6 +410,12 @@ export class DocumentMemoryStore {
       CREATE INDEX IF NOT EXISTS chunks_chunk_set_id ON chunks(chunk_set_id);
       CREATE INDEX IF NOT EXISTS chunks_document_id ON chunks(document_id);
       CREATE INDEX IF NOT EXISTS chunks_vector_lookup ON chunks(vector_dim, document_id) WHERE vector IS NOT NULL;
+    `)
+
+    this.db.exec(`
+      DROP TRIGGER IF EXISTS documents_ai_name;
+      DROP TRIGGER IF EXISTS documents_ad_name;
+      DROP TRIGGER IF EXISTS documents_au_name;
     `)
 
     // Ensure legacy spaces exist
@@ -865,6 +926,14 @@ export class DocumentMemoryStore {
       delChunk.run(id)
     }
     retireOldSets(this.db, documentId)
+    const chunkIds = oldChunkIds.map((c) => c.id)
+    for (const ann of this.annIndexes.values()) {
+      try {
+        if (ann.isAvailable()) ann.removeSync(chunkIds)
+      } catch {
+        // ignore
+      }
+    }
   }
 
   private lockDocumentForReplace(normalizedPath: string): { id: number } {
@@ -891,9 +960,9 @@ export class DocumentMemoryStore {
         replacement.status,
         replacement.mtimeMs,
         replacement.mtimeMs,
-        replacement.sizeBytes,
-        replacement.hash,
-        replacement.embeddingModel,
+        replacement.sizeBytes ?? null,
+        replacement.hash ?? null,
+        replacement.embeddingModel ?? null,
         replacement.error ?? null,
         replacement.truncated ? 1 : 0,
         id,
@@ -938,6 +1007,14 @@ export class DocumentMemoryStore {
           floatBlob(chunk.vector),
           chunk.vector.length,
         )
+        try {
+          const ann = this.getAnnIndex(embeddingModel, chunk.vector.length)
+          if (ann.isAvailable()) {
+            ann.addSync([Number(result.lastInsertRowid)], [chunk.vector])
+          }
+        } catch {
+          // Non-blocking ANN update
+        }
       }
     }
   }
@@ -1141,6 +1218,26 @@ export class DocumentMemoryStore {
         )
         .run(embeddingSpaceId, complete ? 'ready' : 'text-only', document.id)
     })
+    try {
+      const ann = this.getAnnIndex(embeddingSpaceId, vectors[0]!.length)
+      if (ann.isAvailable()) {
+        const chunkRows = this.db
+          .prepare(
+            `SELECT c.id FROM chunks c
+             JOIN documents d ON d.id = c.document_id
+             WHERE c.document_id = (SELECT id FROM documents WHERE path = ?)
+               AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+               AND c.ordinal >= ?
+             ORDER BY c.ordinal ASC LIMIT ?`,
+          )
+          .all(normalizedPath, offset, vectors.length) as Array<{ id: number }>
+        if (chunkRows.length === vectors.length) {
+          ann.addSync(chunkRows.map((c) => c.id), vectors)
+        }
+      }
+    } catch {
+      // Non-blocking ANN update
+    }
   }
 
   setChunkVectors(
@@ -1173,6 +1270,17 @@ export class DocumentMemoryStore {
         insert.run(item.chunkId, embeddingSpaceId, floatBlob(item.vector), item.vector.length)
       }
     })
+    try {
+      const ann = this.getAnnIndex(embeddingSpaceId, batch[0]!.vector.length)
+      if (ann.isAvailable()) {
+        ann.addSync(
+          batch.map((b) => b.chunkId),
+          batch.map((b) => b.vector),
+        )
+      }
+    } catch {
+      // Non-blocking ANN update
+    }
   }
 
   /** Find a committed embedding checkpoint, retaining chunk IDs and completed vectors. */
@@ -1383,22 +1491,42 @@ export class DocumentMemoryStore {
   }
 
   /**
-   * Files whose NAME (or its folders) fits the question, whether or not their content was ever
-   * read. A scanned PDF has no passages, so passage search can never find it; its name can.
+   * Files whose NAME (or its folders) fits the question, using SQLite document_name_fts
+   * and hot metadata scoring.
    */
   searchNames(query: string, limit = 5): DocumentMemoryHit[] {
-    const words = nameWords(query)
-    if (words.length === 0) return []
-    // one very short word ("le") fits far too many names to be worth showing
-    if (words.length === 1 && words[0]!.length < 3) return []
-    const need = words.length <= 2 ? words.length : Math.max(2, Math.ceil(words.length * 0.4))
+    return this.hotMetadataSearch.searchNames(query, limit)
+  }
+
+  recent(limit = 20): StoredDocument[] {
+    return this.hotMetadataSearch.recent(limit)
+  }
+
+  /**
+   * Batch hydrate chunk hits into DocumentMemoryHit objects in a single SQL query.
+   */
+  hydrateChunkHits(
+    hits: Array<{ chunkId: number; rank?: number; score?: number }>,
+  ): DocumentMemoryHit[] {
+    if (!hits.length) return []
+    const placeholders = hits.map(() => '?').join(',')
+    const chunkIds = hits.map((h) => h.chunkId)
     const rows = this.db
       .prepare(
-        `SELECT id, path, name, status, hash, mtime_ms, size_bytes, updated_at, truncated
-        FROM documents WHERE excluded = 0`,
+        `SELECT
+           c.id, c.text, c.location, c.document_id,
+           d.path, d.name, d.status, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated
+         FROM chunks c
+         JOIN documents d ON d.id = c.document_id
+         WHERE c.id IN (${placeholders})
+           AND d.excluded = 0
+           AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
       )
-      .all() as unknown as Array<{
+      .all(...chunkIds) as Array<{
       id: number
+      text: string
+      location: string
+      document_id: number
       path: string
       name: string
       status: string
@@ -1408,43 +1536,32 @@ export class DocumentMemoryStore {
       updated_at: number
       truncated: number
     }>
-    const scored: Array<{ row: (typeof rows)[number]; matched: number }> = []
+
+    const rowMap = new Map<number, (typeof rows)[number]>()
     for (const row of rows) {
-      const folders = row.path.split(/[\\/]/).slice(-3, -1).join(' ')
-      const folded = normalizeDocumentText(`${row.name} ${folders}`)
-      const joined = folded.replace(/ /g, '')
-      let matched = matchedNameWords(words, `${row.name} ${folders}`)
-      // a name written in one piece ("MyLe") still counts when the words come in that order
-      if (words.length >= 2 && joined.includes(words.join(''))) matched = words.length
-      if (words.length >= 2 && folded.includes(words.join(' '))) matched += 0.5
-      if (matched >= need) scored.push({ row, matched })
+      rowMap.set(row.id, row)
     }
-    scored.sort(
-      (a, b) =>
-        b.matched - a.matched ||
-        Number(a.row.status === 'ready') - Number(b.row.status === 'ready') ||
-        b.row.updated_at - a.row.updated_at,
-    )
-    return scored.slice(0, limit).map(({ row, matched }) => {
-      const unread = row.status !== 'ready' && row.status !== 'text-only'
-      return {
-        documentId: row.id,
+
+    const result: DocumentMemoryHit[] = []
+    for (const hit of hits) {
+      const row = rowMap.get(hit.chunkId)
+      if (!row) continue
+      result.push({
+        documentId: row.document_id,
         path: row.path,
         name: row.name,
-        chunkId: 0,
-        text: unread
-          ? 'The file name matches. Its content has not been read yet (a scanned PDF waiting for OCR, or unreadable), so what it says is unknown.'
-          : 'The file name matches.',
-        location: 'file name',
-        score: matched / words.length,
+        chunkId: row.id,
+        text: row.text,
+        location: row.location,
+        score: hit.score ?? 0,
         hash: row.hash,
         mtimeMs: row.mtime_ms,
         sizeBytes: row.size_bytes,
         indexedAt: row.updated_at * 1000,
         truncated: row.truncated === 1,
-        ...(unread ? { contentUnread: true } : {}),
-      }
-    })
+      })
+    }
+    return result
   }
 
   /** Standalone lexical search using FTS5 (BM25) */
@@ -1523,6 +1640,50 @@ export class DocumentMemoryStore {
 
     if (countRow.count === 0 && legacyCountRow.count === 0) {
       return []
+    }
+
+    // Production ANN routing: when semantic vector count >= ANN_MIN_VECTORS (20k), query USearchIndex
+    if (countRow.count >= ANN_MIN_VECTORS && embeddingSpaceId) {
+      try {
+        const ann = this.getAnnIndex(embeddingSpaceId, vector.length)
+        if (ann.isAvailable()) {
+          const annHits = ann.searchSync(vector, limit * 2)
+          if (annHits.length > 0) {
+            const chunkIds = annHits.map((h) => h.chunkId)
+            const placeholders = chunkIds.map(() => '?').join(',')
+            const validRows = this.db
+              .prepare(
+                `SELECT c.id, c.document_id, d.priority_at
+                 FROM chunks c
+                 JOIN documents d ON d.id = c.document_id
+                 WHERE c.id IN (${placeholders}) AND d.excluded = 0
+                   AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
+              )
+              .all(...chunkIds) as Array<{ id: number; document_id: number; priority_at: number }>
+
+            const validMap = new Map(validRows.map((r) => [r.id, r]))
+            const hits: Array<{ chunkId: number; rank: number; score: number; documentId: number }> = []
+            let rank = 1
+            for (const annHit of annHits) {
+              const row = validMap.get(annHit.chunkId)
+              if (row) {
+                hits.push({
+                  chunkId: annHit.chunkId,
+                  rank: rank++,
+                  score: Math.max(0, 1 - annHit.distance),
+                  documentId: row.document_id,
+                })
+                if (hits.length >= limit) break
+              }
+            }
+            if (hits.length > 0) {
+              return hits
+            }
+          }
+        }
+      } catch {
+        // Fallback directly to SQLite exact scan
+      }
     }
 
     function* scoredRows(store: DocumentMemoryStore) {
@@ -1784,6 +1945,50 @@ export class DocumentMemoryStore {
     }))
   }
 
+  getAnnIndex(spaceId: string, dimensions: number): USearchIndex {
+    let idx = this.annIndexes.get(spaceId)
+    if (!idx) {
+      const sanitized = spaceId.replace(/[^a-zA-Z0-9_.-]/g, '_')
+      const indexPath = join(dirname(this.dbPath), `ann-${sanitized}.usearch`)
+      idx = new USearchIndex(dimensions, indexPath)
+      this.annIndexes.set(spaceId, idx)
+    }
+    return idx
+  }
+
+  async rebuildAnnIndex(spaceId: string): Promise<{ ok: boolean; count: number }> {
+    const rows = this.db
+      .prepare(
+        `SELECT e.chunk_id, e.vector, e.vector_dim
+         FROM chunk_embeddings e
+         JOIN chunks c ON c.id = e.chunk_id
+         JOIN documents d ON d.id = c.document_id
+         WHERE e.space_id = ? AND d.excluded = 0
+           AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
+      )
+      .all(spaceId) as Array<{ chunk_id: number; vector: Uint8Array; vector_dim: number }>
+
+    if (!rows.length) return { ok: true, count: 0 }
+    const dim = rows[0]!.vector_dim
+    const ann = this.getAnnIndex(spaceId, dim)
+    await ann.rebuild()
+    const chunkIds = rows.map((r) => r.chunk_id)
+    const vectors = rows.map((r) => Array.from(blobVector(r.vector, r.vector_dim)))
+    await ann.add(chunkIds, vectors)
+    this.db
+      .prepare(
+        `INSERT INTO ann_indexes (space_id, generation, file_path, indexed_count, state, updated_at)
+         VALUES (?, 1, ?, ?, 'ready', unixepoch())
+         ON CONFLICT (space_id) DO UPDATE SET
+           generation = generation + 1,
+           indexed_count = excluded.indexed_count,
+           state = 'ready',
+           updated_at = unixepoch()`,
+      )
+      .run(spaceId, `ann-${spaceId.replace(/[^a-zA-Z0-9_.-]/g, '_')}.usearch`, rows.length)
+    return { ok: true, count: rows.length }
+  }
+
   /**
    * SQL fragments giving every document's chunk and vector counts (alias `d`). Normally these are
    * the stored counters. While a backfill is outstanding, documents without counters are counted
@@ -1823,6 +2028,16 @@ export class DocumentMemoryStore {
     const delFts = this.db.prepare('DELETE FROM chunk_fts WHERE rowid = ?')
     for (const { id } of ids) delFts.run(id)
     this.db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId)
+    if (ids.length > 0) {
+      const chunkIds = ids.map((c) => c.id)
+      for (const ann of this.annIndexes.values()) {
+        try {
+          if (ann.isAvailable()) ann.removeSync(chunkIds)
+        } catch {
+          // Non-blocking
+        }
+      }
+    }
   }
 
   /** Delete a document's chunks until `outOfBudget()`; true when none remain. */
@@ -1836,6 +2051,13 @@ export class DocumentMemoryStore {
       for (const { id } of ids) {
         delFts.run(id)
         delChunk.run(id)
+        for (const ann of this.annIndexes.values()) {
+          try {
+            if (ann.isAvailable()) ann.removeSync([id])
+          } catch {
+            // Non-blocking
+          }
+        }
         if (outOfBudget()) return false
       }
     }

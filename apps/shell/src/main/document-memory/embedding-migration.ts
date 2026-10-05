@@ -75,7 +75,7 @@ export class EmbeddingMigration {
     this.db.prepare(`
       UPDATE embedding_migrations
       SET state = 'running', updated_at = unixepoch()
-      WHERE target_space_id = ? AND state IN ('pending', 'paused')
+      WHERE target_space_id = ? AND state IN ('pending', 'paused', 'complete')
     `).run(this.targetSpaceId)
 
     // Select chunks that lack an embedding for targetSpaceId
@@ -153,10 +153,14 @@ export class EmbeddingMigration {
       UPDATE embedding_migrations
       SET total_chunks = ?,
           completed_chunks = ?,
-          state = CASE WHEN ? THEN 'complete' ELSE state END,
+          state = CASE
+            WHEN ? THEN 'complete'
+            WHEN state = 'complete' AND ? = 0 THEN (CASE WHEN ? THEN 'paused' ELSE 'pending' END)
+            ELSE state
+          END,
           updated_at = unixepoch()
       WHERE target_space_id = ?
-    `).run(total, done, isComplete ? 1 : 0, this.targetSpaceId)
+    `).run(total, done, isComplete ? 1 : 0, isComplete ? 1 : 0, this.isPaused ? 1 : 0, this.targetSpaceId)
   }
 
   progress(): MigrationProgress {

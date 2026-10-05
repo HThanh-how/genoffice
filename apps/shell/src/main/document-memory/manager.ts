@@ -13,6 +13,7 @@ import type { PdfScanInfo } from './ocr-sidecar'
 import { EmbeddingMigration } from './embedding-migration'
 import { QueryEmbeddingCache } from './query-embedding-cache'
 import { memoryTierFromTotal, MEMORY_TIER_POLICIES, type MemoryTier } from './memory-tier'
+import { fuseHybridResults } from './hybrid-ranker'
 import {
   DEFAULT_EMBEDDING_PROFILE,
   embeddingProfile,
@@ -261,7 +262,7 @@ export class DocumentMemoryManager {
     this.tombstoneGraceMs = options.tombstoneGraceMs ?? TOMBSTONE_GRACE_MS
     this.externalNames = options.externalNames
     this.autoDeferAfterMs = options.autoDeferAfterMs ?? AUTO_DEFER_AFTER_MS
-    this.store = new DocumentMemoryStore(this.dbPath)
+    this.store = new DocumentMemoryStore(this.dbPath, { role: 'search' })
     this.store.ensureEmbeddingSpace(this.embeddingProfile)
     this.embeddingMigration = new EmbeddingMigration(this.store.rawDb)
     this.embeddingMigration.setTarget(this.embeddingProfile.embeddingId)
@@ -885,15 +886,19 @@ export class DocumentMemoryManager {
     const generation = ++this.searchGeneration
     const outside = this.searchExternal(query, 5)
 
-    // Immediate lexical search directly in store
-    const lexicalHits = this.store.search(query, null, limit)
-    const seenLexical = new Set(lexicalHits.map((hit) => hit.documentId))
-    const namedLexical = this.store.searchNames(query, 5).filter((hit) => !seenLexical.has(hit.documentId))
-    const freshLexical = await this.annotateFreshness([...namedLexical.slice(0, 3), ...lexicalHits])
+    // Stage 1: Immediate hot filename search + single lexical search directly in store
+    const nameHits = this.store.searchNames(query, 5)
+    const seenNames = new Set(nameHits.map((hit) => hit.documentId))
+    const lexicalCandidates = this.store.searchLexical(query, 200)
+    const lexicalHits = this.store
+      .hydrateChunkHits(lexicalCandidates.slice(0, limit))
+      .filter((hit) => !seenNames.has(hit.documentId))
+
+    const freshLexical = await this.annotateFreshness([...nameHits.slice(0, 3), ...lexicalHits])
     if (signal?.aborted || generation !== this.searchGeneration) return
     handlers.onLexical?.(freshLexical)
 
-    // Check query embedding cache
+    // Stage 2: Check query embedding cache and embed query if needed
     const spaceId = this.embeddingProfile.embeddingId
     let vector: number[] | null = this.queryCache.get(spaceId, query) ?? null
 
@@ -921,25 +926,39 @@ export class DocumentMemoryManager {
 
     if (signal?.aborted || generation !== this.searchGeneration) return
 
-    const reply = await this.ask(
-      { type: 'search', query, vector, limit, embeddingModel: spaceId },
-      30_000,
-    )
+    // Run semantic search only (via worker or local fallback)
+    let semanticCandidates: Array<{ chunkId: number; rank: number; score: number; documentId: number }> = []
+    if (vector) {
+      const reply = await this.ask(
+        { type: 'search-semantic', vector, limit: 200, embeddingSpaceId: spaceId },
+        30_000,
+      )
+      if (reply && 'result' in reply && Array.isArray(reply.result)) {
+        semanticCandidates = reply.result as unknown as typeof semanticCandidates
+      } else {
+        semanticCandidates = this.store.searchSemantic(vector, 200, spaceId)
+      }
+    }
+
     if (signal?.aborted || generation !== this.searchGeneration) return
 
-    const result =
-      reply && 'result' in reply && Array.isArray(reply.result)
-        ? (reply.result as DocumentMemoryHit[])
-        : this.store.search(query, vector, limit, spaceId)
+    // Hybrid RRF fusion performed on main thread using the already fetched lexical candidates
+    let finalChunkHits: DocumentMemoryHit[] = []
+    if (vector && semanticCandidates.length > 0) {
+      const fused = fuseHybridResults(lexicalCandidates, semanticCandidates, { limit })
+      finalChunkHits = this.store.hydrateChunkHits(fused)
+    } else {
+      finalChunkHits = lexicalHits
+    }
 
-    const seen = new Set(result.map((hit) => hit.documentId))
-    const named = this.store.searchNames(query, 5).filter((hit) => !seen.has(hit.documentId))
-    const seenPaths = new Set([...result, ...named].map((hit) => pathKey(hit.path)))
+    const seen = new Set(finalChunkHits.map((hit) => hit.documentId))
+    const named = nameHits.filter((hit) => !seen.has(hit.documentId))
+    const seenPaths = new Set([...finalChunkHits, ...named].map((hit) => pathKey(hit.path)))
     const elsewhere = (await outside)
       .filter((file) => !seenPaths.has(pathKey(file.path)))
       .slice(0, 3)
       .map((file) => this.externalHit(file))
-    const merged = [...named.slice(0, 3), ...elsewhere, ...result]
+    const merged = [...named.slice(0, 3), ...elsewhere, ...finalChunkHits]
     const finalHits = await this.annotateFreshness(merged)
 
     if (signal?.aborted || generation !== this.searchGeneration) return
@@ -1832,7 +1851,17 @@ export class DocumentMemoryManager {
           const tier = memoryTierFromTotal(totalmem() / (1024 * 1024))
           const policy = MEMORY_TIER_POLICIES[tier]
           const batchLimit = tier === 'low' ? policy.embeddingBatch : 8
-          const part = job.chunks.slice(start, start + batchLimit)
+          let totalTokens = 0
+          const part: DocumentChunk[] = []
+          for (let i = start; i < Math.min(job.chunks.length, start + batchLimit); i++) {
+            const chunk = job.chunks[i]!
+            const estTokens = Math.ceil(chunk.text.length / 3.5)
+            if (part.length > 0 && totalTokens + estTokens > policy.maxBatchTokens) {
+              break
+            }
+            part.push(chunk)
+            totalTokens += estTokens
+          }
           const reply = await this.ask(
             { type: 'embed', texts: part.map((chunk) => chunk.text), kind: 'passage' },
             this.workerTimeoutMs,
@@ -1920,8 +1949,19 @@ export class DocumentMemoryManager {
       return
     }
 
+    let totalTokens = 0
+    const chunksToEmbed: typeof batch.chunks = []
+    for (const chunk of batch.chunks) {
+      const estTokens = Math.ceil(chunk.text.length / 3.5)
+      if (chunksToEmbed.length > 0 && totalTokens + estTokens > policy.maxBatchTokens) {
+        break
+      }
+      chunksToEmbed.push(chunk)
+      totalTokens += estTokens
+    }
+
     try {
-      const texts = batch.chunks.map((c) => c.text)
+      const texts = chunksToEmbed.map((c) => c.text)
       const reply = await this.ask(
         { type: 'embed', texts, kind: 'passage' },
         this.workerTimeoutMs,
@@ -1939,13 +1979,13 @@ export class DocumentMemoryManager {
       }
 
       const vectors = reply.result as number[][]
-      if (vectors.length === batch.chunks.length) {
-        const records = batch.chunks.map((c, i) => ({
+      if (vectors.length === chunksToEmbed.length) {
+        const records = chunksToEmbed.map((c, i) => ({
           chunkId: c.chunkId,
           vector: vectors[i]!,
         }))
         this.store.recordMigrationEmbeddings(batch.spaceId, records)
-        this.embeddingMigration.markCompleted(batch.chunks.map((c) => c.chunkId))
+        this.embeddingMigration.markCompleted(chunksToEmbed.map((c) => c.chunkId))
       }
 
       if (!this.embeddingMigration.isComplete()) {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fuseHybridResults } from '../src/main/document-memory/hybrid-ranker'
+import { fuseHybridResultIds } from '../src/main/document-memory/hybrid-ranker'
 import { QueryEmbeddingCache } from '../src/main/document-memory/query-embedding-cache'
 
 describe('Progressive Search, RRF Fusion & Query Cache', () => {
@@ -15,7 +15,7 @@ describe('Progressive Search, RRF Fusion & Query Cache', () => {
         { chunkId: 3, rank: 2, documentId: 30 },
       ]
 
-      const fused = fuseHybridResults(lexical, semantic, { limit: 3 })
+      const fused = fuseHybridResultIds(lexical, semantic, { limit: 3 })
       expect(fused).toContain(1)
       expect(fused).toContain(2)
       // Chunk 2 appears in both lexical and semantic, so its fused score is highest
@@ -33,7 +33,7 @@ describe('Progressive Search, RRF Fusion & Query Cache', () => {
       ]
       const semantic: Array<{ chunkId: number; rank: number; documentId: number }> = []
 
-      const fused = fuseHybridResults(lexical, semantic, {
+      const fused = fuseHybridResultIds(lexical, semantic, {
         limit: 3,
         maxChunksPerDocument: 2,
       })
@@ -55,7 +55,7 @@ describe('Progressive Search, RRF Fusion & Query Cache', () => {
         [2, 0.000],
       ])
 
-      const fused = fuseHybridResults(lexical, [], {
+      const fused = fuseHybridResultIds(lexical, [], {
         limit: 2,
         recencyScores,
       })

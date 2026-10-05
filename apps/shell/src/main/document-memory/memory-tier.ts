@@ -1,3 +1,5 @@
+import { totalmem } from 'node:os'
+
 export type MemoryTier = 'low' | 'normal' | 'high'
 
 export function memoryTierFromTotal(totalMemMB: number): MemoryTier {
@@ -11,6 +13,8 @@ export interface MemoryTierPolicy {
   embeddingBatch: number
   maxBatchTokens: number
   unloadIdleMs: number
+  sqliteSearchCacheKiB: number
+  sqliteWorkerCacheKiB: number
 }
 
 export const MEMORY_TIER_POLICIES: Record<MemoryTier, MemoryTierPolicy> = {
@@ -19,19 +23,34 @@ export const MEMORY_TIER_POLICIES: Record<MemoryTier, MemoryTierPolicy> = {
     embeddingBatch: 4,
     maxBatchTokens: 1600,
     unloadIdleMs: 30_000,
+    sqliteSearchCacheKiB: 8192,
+    sqliteWorkerCacheKiB: 4096,
   },
   normal: {
     allowQualityModel: true,
     embeddingBatch: 8,
     maxBatchTokens: 3000,
     unloadIdleMs: 120_000,
+    sqliteSearchCacheKiB: 24576,
+    sqliteWorkerCacheKiB: 8192,
   },
   high: {
     allowQualityModel: true,
     embeddingBatch: 16,
     maxBatchTokens: 6000,
     unloadIdleMs: 300_000,
+    sqliteSearchCacheKiB: 49152,
+    sqliteWorkerCacheKiB: 16384,
   },
+}
+
+export function defaultSqliteCacheKiB(
+  role: 'search' | 'worker' = 'search',
+  tier?: MemoryTier,
+): number {
+  const currentTier = tier ?? memoryTierFromTotal(totalmem() / (1024 * 1024))
+  const policy = MEMORY_TIER_POLICIES[currentTier]
+  return role === 'worker' ? policy.sqliteWorkerCacheKiB : policy.sqliteSearchCacheKiB
 }
 
 export function detectMemoryTier(totalMemGiB: number): MemoryTier {

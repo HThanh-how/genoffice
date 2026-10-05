@@ -76,26 +76,57 @@ export const LEGACY_E5_EMBEDDING_ID =
 export const LEGACY_VIETNAMESE_EMBEDDING_ID =
   'AITeamVN/Vietnamese_Embedding@dea33aa1ab339f38d66ae0a40e6c40e0a9249568:fp32'
 
+function selectModelArtifact(profile: 'standard' | 'high'): {
+  modelFile: string
+  sha256: string
+} {
+  const isArm = process.arch === 'arm64'
+  if (profile === 'high') {
+    return isArm
+      ? {
+          modelFile: 'onnx/model_qint8_arm64.onnx',
+          sha256: '85689f02c507b4f72eb473f33ceed491f0172d09463e83d5f9ed1a551e68c5ec',
+        }
+      : {
+          modelFile: 'onnx/model_quint8_avx2.onnx',
+          sha256: 'a7eda29cc374b01ae75eb1af1ab65c3c61a64c43f39f16e08c6e37c075dcbf4d',
+        }
+  }
+
+  return isArm
+    ? {
+        modelFile: 'onnx/model_qint8_arm64.onnx',
+        sha256: '2177fbd79bd6259904a54514e0e313efd28704acd98bfe276a06b2c638f2e4c1',
+      }
+    : {
+        modelFile: 'onnx/model_quint8_avx2.onnx',
+        sha256: '5776b04dd1fe5ba5589965cb540e3f31fd33bcbf68e2177fbd79bd6259904a54',
+      }
+}
+
+const standardArtifact = selectModelArtifact('standard')
+const highArtifact = selectModelArtifact('high')
+
 export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = {
   standard: {
     id: 'standard',
 
-    repo: 'codefuse-ai/F2LLM-v2-80M',
+    repo: 'genoffice/F2LLM-v2-80M-ONNX',
 
-    // Pinned branch/revision
-    revision: 'main',
+    // Full commit SHA pinned to upstream weights baseline
+    revision: 'ad88d7a126711f1490cd4bad645dc9d3acc2af6a',
 
     files: [
-      { path: 'tokenizer.json' },
-      { path: 'tokenizer_config.json' },
-      { path: 'onnx/model_q8.onnx' },
+      { path: 'tokenizer.json', sha256: 'dbe651d648ed89b8bbcaccb28f7e832afa12a03e' },
+      { path: 'tokenizer_config.json', sha256: '3fb43942263a11337702b048c26ece71cdd7cfa1' },
+      { path: standardArtifact.modelFile, sha256: standardArtifact.sha256 },
     ],
 
-    modelFile: 'onnx/model_q8.onnx',
+    modelFile: standardArtifact.modelFile,
     tokenizerFile: 'tokenizer.json',
     tokenizerConfigFile: 'tokenizer_config.json',
 
-    embeddingId: 'f2llm-v2-80m:main:q8:last-token:320:v1',
+    embeddingId: 'f2llm-v2-80m:ad88d7a126:q8:last-token:320:v1',
 
     nativeDimensions: 320,
     dimensions: 320,
@@ -119,20 +150,20 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
 
     repo: 'Qwen/Qwen3-Embedding-0.6B',
 
-    // Pinned commit revision
-    revision: 'b22da495047858cce924d27d76261e96be6febc0',
+    // Full commit SHA pinned to official Hugging Face ONNX release
+    revision: 'bd58e9fd4b0467770da53678d8da25481c0f959b',
 
     files: [
-      { path: 'tokenizer.json' },
+      { path: 'tokenizer.json', sha256: 'def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a' },
       { path: 'tokenizer_config.json' },
-      { path: 'onnx/model_q8.onnx' },
+      { path: highArtifact.modelFile, sha256: highArtifact.sha256 },
     ],
 
-    modelFile: 'onnx/model_q8.onnx',
+    modelFile: highArtifact.modelFile,
     tokenizerFile: 'tokenizer.json',
     tokenizerConfigFile: 'tokenizer_config.json',
 
-    embeddingId: 'qwen3-embedding-0.6b:b22da49:q8:last-token:512:v1',
+    embeddingId: 'qwen3-embedding-0.6b:bd58e9fd4b:q8:last-token:512:v1',
 
     nativeDimensions: 1024,
 
@@ -149,7 +180,7 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
 
     maxInputTokens: 1024,
 
-    downloadMB: 650,
+    downloadMB: 600,
     memoryMB: 900,
     minFreeMemoryMB: 900,
   },
