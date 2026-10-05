@@ -35,13 +35,17 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
   const [openError, setOpenError] = useState<string | null>(null)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const searchSeq = useRef(0)
+  const inFlightSeqRef = useRef<number | null>(null)
+  const searchPageQueryRef = useRef<string | null>(null)
   const selectedItemRef = useRef<HTMLLIElement | null>(null)
   const containerRef = useRef<HTMLDivElement | null>(null)
 
-  // Reset selectedIndex and openError whenever query changes
+  // Reset selectedIndex, openError and searchPage whenever query changes
   useEffect(() => {
     setSelectedIndex(0)
     setOpenError(null)
+    setSearchPage(null)
+    searchPageQueryRef.current = null
   }, [query])
 
   // Debounce 100ms (within required 80-120ms range)
@@ -49,6 +53,8 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
     const q = query.trim()
     if (!q) {
       searchSeq.current++
+      inFlightSeqRef.current = null
+      searchPageQueryRef.current = null
       setSearchPage(null)
       setLoading(false)
       setError(null)
@@ -56,13 +62,23 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
     }
 
     const seq = ++searchSeq.current
+    inFlightSeqRef.current = null
+    searchPageQueryRef.current = null
+    setSearchPage(null)
     setLoading(true)
     setError(null)
 
     const timer = window.setTimeout(async () => {
+      // Coordinator check: do not run if a request is already in-flight for this generation
+      if (inFlightSeqRef.current === seq) {
+        return
+      }
+      inFlightSeqRef.current = seq
+
       try {
         const res = await api.searchFiles({ q, limit: 100 })
         if (seq === searchSeq.current) {
+          searchPageQueryRef.current = q
           setSearchPage(res)
         }
       } catch (err) {
@@ -74,6 +90,9 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
           )
         }
       } finally {
+        if (inFlightSeqRef.current === seq) {
+          inFlightSeqRef.current = null
+        }
         if (seq === searchSeq.current) {
           setLoading(false)
         }
@@ -82,19 +101,21 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
 
     return () => {
       window.clearTimeout(timer)
+      if (inFlightSeqRef.current === seq) {
+        inFlightSeqRef.current = null
+      }
     }
   }, [api, query, isVi])
 
   // Auto-refresh search results while indexing is pending or scanning (Serialized Chained setTimeout)
   useEffect(() => {
     const q = query.trim()
-    if (!q || !searchPage) return
+    if (!q || !searchPage || searchPageQueryRef.current !== q) return
     const isIndexing = searchPage.index.pending > 0 || searchPage.index.scanning
     if (!isIndexing) return
 
     let alive = true
     let timerId: number | ReturnType<typeof setTimeout> | null = null
-    let inFlight = false
 
     const scheduleNext = () => {
       if (!alive) return
@@ -104,19 +125,30 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
     }
 
     const poll = async () => {
-      if (!alive || inFlight) return
-      inFlight = true
+      if (!alive) return
       const currentSeq = searchSeq.current
+
+      // Coordinator: Never allow concurrent in-flight requests for the same generation
+      if (inFlightSeqRef.current === currentSeq) {
+        if (alive) {
+          scheduleNext()
+        }
+        return
+      }
+
+      inFlightSeqRef.current = currentSeq
       try {
         const res = await api.searchFiles({ q, limit: 100 })
-        // Stale Query Guard: Drop response if sequence has advanced or component unmounted
-        if (alive && currentSeq === searchSeq.current) {
+        // Stale Query Guard: Drop response if sequence has advanced, component unmounted, or query changed
+        if (alive && currentSeq === searchSeq.current && searchPageQueryRef.current === q) {
           setSearchPage(res)
         }
       } catch (err) {
         console.error('Auto-refresh search failed:', err)
       } finally {
-        inFlight = false
+        if (inFlightSeqRef.current === currentSeq) {
+          inFlightSeqRef.current = null
+        }
         if (alive) {
           scheduleNext()
         }
@@ -131,7 +163,7 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
         window.clearTimeout(timerId as unknown as number)
       }
     }
-  }, [api, query, searchPage?.index.pending, searchPage?.index.scanning])
+  }, [api, query, searchPage, searchPage?.index.pending, searchPage?.index.scanning])
 
   const openingRef = useRef(false)
 

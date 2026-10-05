@@ -856,4 +856,260 @@ describe('UI Audit Fixes: SearchResults, RecentFiles & IndexedFolders (Section 2
       expect(checkbox.checked).toBe(true)
     })
   })
+
+  describe('P1 Audit Fixes: UI State Consistency (Subagent IT 3)', () => {
+    it('UI-01: Known source chuyển từ scanning sang watching tự động cập nhật UI sau 5s refresh mà không cần remount', async () => {
+      let pollCount = 0
+      const getKnownSearchSourcesMock = vi.fn().mockImplementation(async () => {
+        pollCount++
+        if (pollCount === 1) {
+          return [
+            { id: 'downloads', path: 'C:/Users/Admin/Downloads', enabled: true, status: 'scanning' },
+          ]
+        }
+        return [
+          { id: 'downloads', path: 'C:/Users/Admin/Downloads', enabled: true, status: 'watching' },
+        ]
+      })
+
+      const api = {
+        getKnownSearchSources: getKnownSearchSourcesMock,
+        listIndexedFolders: vi.fn().mockResolvedValue([]),
+      } as unknown as HomeApi
+
+      await act(async () => {
+        root.render(
+          createElement(LocaleProvider, {
+            initial: 'vi',
+            children: createElement(IndexedFolders, { api }),
+          }),
+        )
+      })
+
+      // Check initial state: chip displays Scanning
+      const cards = container.querySelectorAll('.idx-common-source-card')
+      const downloadsCard = cards[1]
+      const chip = downloadsCard?.querySelector('.idx-common-source-chip')
+      expect(chip?.getAttribute('data-status')).toBe('scanning')
+      expect(chip?.textContent).toBe('Đang quét')
+      expect(getKnownSearchSourcesMock).toHaveBeenCalledTimes(1)
+
+      // Fast forward 5s interval
+      await act(async () => {
+        vi.advanceTimersByTime(5000)
+      })
+
+      // Verify that UI updated to watching without remount
+      expect(getKnownSearchSourcesMock).toHaveBeenCalledTimes(2)
+      expect(chip?.getAttribute('data-status')).toBe('watching')
+      expect(chip?.textContent).toBe('Đang theo dõi')
+    })
+
+    it('UI-02: Thư mục chỉ có owner known-* không xuất hiện trong danh sách Custom Folders', async () => {
+      const canonicalSources: KnownSearchSourceEntry[] = [
+        { id: 'documents', path: 'C:/Users/Admin/Documents', enabled: false, status: 'disabled' },
+        { id: 'downloads', path: 'C:/Users/Admin/Downloads', enabled: true, status: 'watching' },
+        { id: 'desktop', path: 'C:/Users/Admin/Desktop', enabled: false, status: 'disabled' },
+      ]
+
+      const listIndexedFoldersMock = vi.fn().mockResolvedValue([
+        {
+          root: 'C:/Users/Admin/Downloads',
+          owners: ['known:downloads'],
+          state: 'complete',
+          priority: false,
+          unavailable: false,
+          totalFiles: 42,
+          readyFiles: 42,
+          pendingFiles: 0,
+          errorFiles: 0,
+          history: [],
+        },
+      ])
+
+      const api = {
+        getKnownSearchSources: vi.fn().mockResolvedValue(canonicalSources),
+        listIndexedFolders: listIndexedFoldersMock,
+      } as unknown as HomeApi
+
+      await act(async () => {
+        root.render(
+          createElement(LocaleProvider, {
+            initial: 'vi',
+            children: createElement(IndexedFolders, { api }),
+          }),
+        )
+      })
+
+      // Check Known Sources section has downloads card
+      const cards = container.querySelectorAll('.idx-common-source-card')
+      const downloadsCard = cards[1]
+      expect(downloadsCard).not.toBeNull()
+      expect(downloadsCard?.textContent).toContain('Tải về (Downloads)')
+
+      // Check Custom Folders section does NOT list the downloads folder
+      const customFolderCards = container.querySelectorAll('.set-folder')
+      expect(customFolderCards.length).toBe(0)
+
+      // Empty message should be displayed
+      expect(container.textContent).toContain('Chưa quét thư mục nào')
+    })
+
+    it('UI-03: Thư mục có cả manual và known-* xuất hiện ở cả 2 khu vực', async () => {
+      const canonicalSources: KnownSearchSourceEntry[] = [
+        { id: 'documents', path: 'C:/Users/Admin/Documents', enabled: false, status: 'disabled' },
+        { id: 'downloads', path: 'C:/Users/Admin/Downloads', enabled: true, status: 'watching' },
+        { id: 'desktop', path: 'C:/Users/Admin/Desktop', enabled: false, status: 'disabled' },
+      ]
+
+      const listIndexedFoldersMock = vi.fn().mockResolvedValue([
+        {
+          root: 'C:/Users/Admin/Downloads',
+          owners: ['manual', 'known:downloads'],
+          state: 'complete',
+          priority: false,
+          unavailable: false,
+          totalFiles: 42,
+          readyFiles: 42,
+          pendingFiles: 0,
+          errorFiles: 0,
+          history: [],
+        },
+      ])
+
+      const api = {
+        getKnownSearchSources: vi.fn().mockResolvedValue(canonicalSources),
+        listIndexedFolders: listIndexedFoldersMock,
+      } as unknown as HomeApi
+
+      await act(async () => {
+        root.render(
+          createElement(LocaleProvider, {
+            initial: 'vi',
+            children: createElement(IndexedFolders, { api }),
+          }),
+        )
+      })
+
+      // Check Known Sources section has downloads card
+      const cards = container.querySelectorAll('.idx-common-source-card')
+      const downloadsCard = cards[1]
+      expect(downloadsCard).not.toBeNull()
+      expect(downloadsCard?.textContent).toContain('Tải về (Downloads)')
+
+      // Check Custom Folders section ALSO lists the downloads folder because it has manual registration
+      const customFolderCards = container.querySelectorAll('.set-folder')
+      expect(customFolderCards.length).toBe(1)
+      expect(customFolderCards[0].textContent).toContain('Downloads')
+    })
+
+    it('UI-04: Đổi query từ A sang B, request ban đầu của B bị hoãn > 2s -> không có request auto-refresh B nào chạy đè đồng thời', async () => {
+      const calls: Array<{ q: string; time: number }> = []
+      let resolveInitialB: ((value: unknown) => void) | null = null
+
+      const searchFilesMock = vi.fn().mockImplementation(({ q }: { q: string }) => {
+        calls.push({ q, time: Date.now() })
+        if (q === 'queryA') {
+          return Promise.resolve({
+            hits: [
+              {
+                path: 'D:/docA.docx',
+                name: 'docA.docx',
+                mtimeMs: Date.now(),
+                sizeBytes: 1024,
+                needles: ['queryA'],
+              },
+            ],
+            index: { pending: 2, scanning: true },
+          })
+        }
+        if (q === 'queryB') {
+          return new Promise((resolve) => {
+            resolveInitialB = resolve
+          })
+        }
+        return Promise.resolve({ hits: [], index: { pending: 0, scanning: false } })
+      })
+
+      const api = {
+        openPath: vi.fn(),
+        searchFiles: searchFilesMock,
+      } as unknown as HomeApi
+
+      // 1. Initial render with queryA
+      await act(async () => {
+        root.render(
+          createElement(LocaleProvider, {
+            initial: 'en',
+            children: createElement(SearchResults, { api, query: 'queryA' }),
+          }),
+        )
+      })
+
+      // Fast forward debounce 150ms
+      await act(async () => {
+        vi.advanceTimersByTime(150)
+      })
+
+      expect(searchFilesMock).toHaveBeenCalledWith(expect.objectContaining({ q: 'queryA' }))
+      expect(container.textContent).toContain('docA.docx')
+
+      // 2. Change query to queryB
+      await act(async () => {
+        root.render(
+          createElement(LocaleProvider, {
+            initial: 'en',
+            children: createElement(SearchResults, { api, query: 'queryB' }),
+          }),
+        )
+      })
+
+      // Immediately upon query change: searchPage should be cleared
+      expect(container.textContent).not.toContain('docA.docx')
+
+      // Fast forward debounce 150ms for queryB -> initial request for queryB is triggered
+      await act(async () => {
+        vi.advanceTimersByTime(150)
+      })
+
+      expect(searchFilesMock).toHaveBeenCalledWith(expect.objectContaining({ q: 'queryB' }))
+      const callsForBBeforeDelay = calls.filter((c) => c.q === 'queryB')
+      expect(callsForBBeforeDelay.length).toBe(1)
+
+      // 3. Request for queryB is delayed for > 2 seconds (advance 2500ms while unresolved)
+      await act(async () => {
+        vi.advanceTimersByTime(2500)
+      })
+
+      // Assert coordinator prevented any overlapping auto-refresh for queryB
+      const callsForBDuringDelay = calls.filter((c) => c.q === 'queryB')
+      expect(callsForBDuringDelay.length).toBe(1)
+
+      // 4. Now resolve the initial request for queryB
+      await act(async () => {
+        resolveInitialB?.({
+          hits: [
+            {
+              path: 'D:/docB.docx',
+              name: 'docB.docx',
+              mtimeMs: Date.now(),
+              sizeBytes: 2048,
+              needles: ['queryB'],
+            },
+          ],
+          index: { pending: 1, scanning: true },
+        })
+      })
+
+      expect(container.textContent).toContain('docB.docx')
+
+      // 5. After initial request finished, auto-refresh is scheduled and triggers after 2000ms
+      await act(async () => {
+        vi.advanceTimersByTime(2000)
+      })
+
+      const callsForBAfterRefresh = calls.filter((c) => c.q === 'queryB')
+      expect(callsForBAfterRefresh.length).toBe(2)
+    })
+  })
 })

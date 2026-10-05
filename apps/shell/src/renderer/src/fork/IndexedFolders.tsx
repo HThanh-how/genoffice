@@ -257,24 +257,31 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
   const [busySources, setBusySources] = useState<Record<string, boolean>>({})
   const [sourceErrors, setSourceErrors] = useState<Record<string, string>>({})
 
+  const busySourcesRef = useRef<Record<string, boolean>>({})
+  busySourcesRef.current = busySources
+
   // Sync known sources from API (Single source of truth)
   const fetchKnown = useCallback(async () => {
     try {
       const getFn = (effectiveApi as Record<string, unknown> | undefined)?.getKnownSearchSources
       if (typeof getFn === 'function') {
         const res = await (getFn as () => Promise<unknown>).call(effectiveApi)
-        if (Array.isArray(res)) {
-          setKnownSources(res as KnownSearchSourceEntry[])
+        if (mounted.current && Array.isArray(res)) {
+          setKnownSources((prev) => {
+            return (res as KnownSearchSourceEntry[]).map((entry) => {
+              if (busySourcesRef.current[entry.id]) {
+                const existing = prev.find((s) => s.id === entry.id)
+                if (existing) return existing
+              }
+              return entry
+            })
+          })
         }
       }
     } catch (err) {
       console.warn('api.getKnownSearchSources error:', err)
     }
   }, [effectiveApi])
-
-  useEffect(() => {
-    void fetchKnown()
-  }, [fetchKnown])
 
   const toggleKnownSource = async (id: KnownSearchSource, enabled: boolean) => {
     if (busySources[id]) return
@@ -346,30 +353,38 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
   ]
 
   const refresh = useCallback(async () => {
-    if (loading.current || document.visibilityState !== 'visible' || !effectiveApi?.listIndexedFolders) return
+    if (loading.current || document.visibilityState !== 'visible' || !effectiveApi) return
     loading.current = true
     try {
-      const next = await readIndexRequest(
-        () => effectiveApi.listIndexedFolders(),
-        (value): value is IndexedFolder[] =>
-          Array.isArray(value) &&
-          value.every(
-            (folder) =>
-              typeof folder.root === 'string' &&
-              Number.isFinite(folder.totalFiles) &&
-              Array.isArray(folder.history),
-          ),
-      )
-      if (mounted.current) {
-        setFolders(next)
-        setFailed(false)
-      }
-    } catch {
-      if (mounted.current) setFailed(true)
+      await Promise.allSettled([
+        (async () => {
+          if (!effectiveApi.listIndexedFolders) return
+          try {
+            const next = await readIndexRequest(
+              () => effectiveApi.listIndexedFolders(),
+              (value): value is IndexedFolder[] =>
+                Array.isArray(value) &&
+                value.every(
+                  (folder) =>
+                    typeof folder.root === 'string' &&
+                    Number.isFinite(folder.totalFiles) &&
+                    Array.isArray(folder.history),
+                ),
+            )
+            if (mounted.current) {
+              setFolders(next)
+              setFailed(false)
+            }
+          } catch {
+            if (mounted.current) setFailed(true)
+          }
+        })(),
+        fetchKnown(),
+      ])
     } finally {
       loading.current = false
     }
-  }, [effectiveApi])
+  }, [effectiveApi, fetchKnown])
 
   useEffect(() => {
     mounted.current = true
@@ -459,6 +474,13 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
         {lang === 'vi' ? 'Đang lấy tiến độ thư mục…' : 'Loading folder progress…'}
       </p>
     )
+
+  const customFolders =
+    folders?.filter((folder) => {
+      if (!folder.owners || folder.owners.length === 0) return true
+      return folder.owners.includes('manual')
+    }) ?? null
+
   return (
     <div className="set-folders">
       {/* Vị trí phổ biến / Common locations */}
@@ -534,8 +556,8 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
           </button>
         </p>
       )}
-      {folders?.length === 0 && <p className="set-field-desc">{dict.empty}</p>}
-      {folders?.map((folder) => {
+      {customFolders?.length === 0 && <p className="set-field-desc">{dict.empty}</p>}
+      {customFolders?.map((folder) => {
         const isOpen = open === folder.root
         const status = folder.unavailable
           ? dict.offline
