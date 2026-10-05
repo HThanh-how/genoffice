@@ -618,4 +618,58 @@ describe('FolderScanManager', () => {
     expect(instance.registrationState(folderB)).toBe('watching')
     expect(folderBEntry?.unavailable).toBeFalsy()
   })
+
+  it('FS-04: Interrupted job với known-only owner (known:downloads) chuyển thành stopped và không resume chạy nền khi khởi tạo FolderScanManager', async () => {
+    const root = join(dir, 'interrupted_known_downloads')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'file1.txt'), 'content1')
+
+    const userData = join(dir, 'state')
+    mkdirSync(userData, { recursive: true })
+    const manifestPath = join(userData, 'document-memory-folders.json')
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        version: 1,
+        jobs: [
+          {
+            root,
+            owners: ['known:downloads'],
+            state: 'running',
+            discovered: 10,
+            enrolled: 5,
+            skipped: 2,
+            errors: 1,
+            lastError: 'some error',
+            unavailable: true,
+          },
+        ],
+      }),
+    )
+
+    let enrollments = 0
+    const instance = scanner(userData, () => {
+      enrollments++
+      return true
+    })
+
+    // Đợi để đảm bảo microtask hoặc background runner (nếu có) có cơ hội chạy
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    // Job chuyển thành stopped và KHÔNG resume chạy nền
+    expect(enrollments).toBe(0)
+    expect(instance.status().running).toBe(false)
+
+    const folderEntry = instance.folders().find((f) => resolve(f.root) === resolve(root))
+    expect(folderEntry).toBeDefined()
+    expect(folderEntry?.state).toBe('stopped')
+    expect(folderEntry?.owners).toEqual(['known:downloads'])
+    expect(folderEntry?.discovered).toBe(0)
+    expect(folderEntry?.enrolled).toBe(0)
+    expect(folderEntry?.skipped).toBe(0)
+    expect(folderEntry?.errors).toBe(0)
+    expect(folderEntry?.lastError).toBeUndefined()
+    expect(folderEntry?.unavailable).toBeUndefined()
+    expect(instance.registrationState(root)).toBe('stopped')
+  })
 })

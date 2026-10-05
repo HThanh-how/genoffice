@@ -1198,5 +1198,89 @@ describe('UI Audit Fixes: SearchResults, RecentFiles & IndexedFolders (Section 2
       expect(chip?.getAttribute('data-status')).toBe('watching')
       expect(chip?.textContent).toBe('Đang theo dõi')
     })
+
+    it('UI-06: Per-source Rollback - khi toggle một source bị lỗi thì chỉ rollback duy nhất source đó, giữ nguyên trạng thái của các source khác', async () => {
+      let rejectDesktopToggle: ((err: Error) => void) | null = null
+
+      const currentSources: KnownSearchSourceEntry[] = [
+        { id: 'documents', path: 'C:/Users/Admin/Documents', enabled: false, status: 'disabled' },
+        { id: 'downloads', path: 'C:/Users/Admin/Downloads', enabled: false, status: 'disabled' },
+        { id: 'desktop', path: 'C:/Users/Admin/Desktop', enabled: false, status: 'disabled' },
+      ]
+
+      const getKnownSearchSourcesMock = vi.fn().mockImplementation(async () => {
+        return currentSources.map((s) => ({ ...s }))
+      })
+
+      const setKnownSearchSourceMock = vi.fn().mockImplementation((id: string) => {
+        if (id === 'desktop') {
+          return new Promise((_, reject) => {
+            rejectDesktopToggle = reject
+          })
+        }
+        return Promise.resolve({ id, path: '', enabled: true, status: 'watching' })
+      })
+
+      const api = {
+        getKnownSearchSources: getKnownSearchSourcesMock,
+        setKnownSearchSource: setKnownSearchSourceMock,
+        listIndexedFolders: vi.fn().mockResolvedValue([]),
+      } as unknown as HomeApi
+
+      await act(async () => {
+        root.render(
+          createElement(LocaleProvider, {
+            initial: 'vi',
+            children: createElement(IndexedFolders, { api }),
+          }),
+        )
+      })
+
+      const cards = container.querySelectorAll('.idx-common-source-card')
+      const downloadsCard = cards[1]
+      const desktopCard = cards[2]
+
+      const downloadsCheckbox = downloadsCard.querySelector('input[type="checkbox"]') as HTMLInputElement
+      const desktopCheckbox = desktopCard.querySelector('input[type="checkbox"]') as HTMLInputElement
+
+      expect(downloadsCheckbox.checked).toBe(false)
+      expect(desktopCheckbox.checked).toBe(false)
+
+      // 1. User click toggle desktop -> request pending (in-flight)
+      await act(async () => {
+        desktopCheckbox.click()
+      })
+
+      expect(setKnownSearchSourceMock).toHaveBeenCalledWith('desktop', true)
+      expect(desktopCheckbox.checked).toBe(true) // Optimistic update
+
+      // 2. Trong lúc desktop đang pending, hệ thống cập nhật downloads thành enabled: true (ví dụ qua background sync)
+      currentSources[1] = {
+        id: 'downloads',
+        path: 'C:/Users/Admin/Downloads',
+        enabled: true,
+        status: 'watching',
+      }
+
+      await act(async () => {
+        vi.advanceTimersByTime(5000) // Kích hoạt periodic fetchKnown
+      })
+
+      // Downloads trên UI đã cập nhật thành true
+      expect(downloadsCheckbox.checked).toBe(true)
+
+      // 3. Bây giờ request desktop bị lỗi và reject
+      await act(async () => {
+        rejectDesktopToggle?.(new Error('Desktop access denied'))
+      })
+
+      // 4. Per-source Rollback: Chỉ có desktop bị rollback về false và hiển thị lỗi
+      expect(desktopCheckbox.checked).toBe(false)
+      const errorMsg = desktopCard.querySelector('.idx-common-source-error')
+      expect(errorMsg?.textContent).toContain('Desktop access denied')
+
+      // 5. Downloads PHẢI GIỮ NGUYÊN trạng thái checked = true, không bị rollback nhầm theo snapshot cũ của desktop
+      expect(downloadsCheckbox.checked).toBe(true)
+    })
   })
 })

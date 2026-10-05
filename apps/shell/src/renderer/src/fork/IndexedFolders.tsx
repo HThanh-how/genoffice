@@ -298,7 +298,7 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
       return next
     })
 
-    const previousSources = knownSources
+    const previousEntry = knownSources.find((s) => s.id === id)
     // Optimistic UI update
     setKnownSources((prev) => {
       const exists = prev.some((s) => s.id === id)
@@ -326,7 +326,15 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
     } catch (err) {
       console.warn(`api.setKnownSearchSource(${id}, ${enabled}) failed:`, err)
       // Rollback optimistic update
-      setKnownSources(previousSources)
+      setKnownSources((prev) =>
+        prev.map((s) =>
+          s.id === id
+            ? previousEntry
+              ? { ...previousEntry }
+              : { ...s, enabled: !enabled }
+            : s,
+        ),
+      )
       const errorMsg =
         err instanceof Error && err.message ? err.message : dict.sourceToggleFailed
       setSourceErrors((prev) => ({ ...prev, [id]: errorMsg }))

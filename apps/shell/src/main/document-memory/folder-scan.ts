@@ -86,6 +86,14 @@ export function isValidFolderOwner(value: unknown): value is FolderOwner {
   )
 }
 
+function ownersOf(job: ScanJob): FolderOwner[] {
+  return Array.isArray(job.owners) && job.owners.length > 0 ? job.owners : ['manual']
+}
+
+function hasManualOwner(job: ScanJob): boolean {
+  return ownersOf(job).includes('manual')
+}
+
 export interface ScanJob {
   root: string
   owners?: FolderOwner[]
@@ -180,8 +188,13 @@ export class FolderScanManager {
       interrupted.errors = 0
       delete interrupted.lastError
       delete interrupted.unavailable
-      this.save()
-      queueMicrotask(() => this.resume(interrupted.root))
+      if (hasManualOwner(interrupted)) {
+        this.save()
+        queueMicrotask(() => this.resume(interrupted.root))
+      } else {
+        interrupted.state = 'stopped'
+        this.save()
+      }
     } else {
       const hasUnavailable = this.manifest.jobs.some(
         (job) =>
