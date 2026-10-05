@@ -1911,5 +1911,72 @@
 .idx-switch input:checked + .idx-switch-slider::before {
   transform: translateX(16px);
 }
+.idx-switch input:disabled + .idx-switch-slider {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.idx-common-source-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.idx-common-source-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.idx-common-source-chip.status-watching {
+  background: color-mix(in srgb, #10b981 14%, transparent);
+  color: #059669;
+}
+.idx-common-source-chip.status-scanning {
+  background: color-mix(in srgb, #3b82f6 14%, transparent);
+  color: #2563eb;
+}
+.idx-common-source-chip.status-queued {
+  background: color-mix(in srgb, #f59e0b 14%, transparent);
+  color: #d97706;
+}
+.idx-common-source-chip.status-unavailable {
+  background: color-mix(in srgb, #6b7280 14%, transparent);
+  color: #4b5563;
+}
+.idx-common-source-chip.status-error {
+  background: color-mix(in srgb, #ef4444 14%, transparent);
+  color: #dc2626;
+}
+.idx-common-source-chip.status-disabled {
+  background: color-mix(in srgb, #9ca3af 12%, transparent);
+  color: #6b7280;
+}
+
+.idx-common-source-card.is-unavailable {
+  opacity: 0.82;
+  border-style: dashed;
+}
+
+.idx-common-source-path {
+  font-size: 11px;
+  color: var(--text-tertiary, #94a3b8);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 2px;
+}
+
+.idx-common-source-error {
+  font-size: 11px;
+  color: var(--danger, #ef4444);
+  margin-top: 3px;
+  line-height: 1.3;
+}
+
 
 

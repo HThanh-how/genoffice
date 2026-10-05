@@ -773,4 +773,61 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
       .get() as { count: number }
     expect(orphanedV1Count.count).toBe(0)
   })
+
+  it('triggers normal P1 re-index when file changes immediately after cutover (D-02 Post-Cutover Re-Stat Healing)', async () => {
+    const filePath = resolve(join(directory, 'post-cutover-heal.txt'))
+    const initialContent = 'Pristine document version 1 content.'
+    writeFileSync(filePath, initialContent, 'utf8')
+    const initialStat = statSync(filePath)
+
+    const { manager, db, store } = createManager()
+
+    insertLegacyV1Document(
+      db,
+      404,
+      filePath,
+      'post-cutover-heal.txt',
+      [{ text: initialContent, location: 'Chunk 1' }],
+      {
+        status: 'ready',
+        sizeBytes: initialStat.size,
+        mtimeMs: initialStat.mtimeMs,
+      },
+    )
+
+    const coordinator = new ChunkUpgradeCoordinator(db)
+    const needing = coordinator.getDocumentsNeedingUpgrade()
+    expect(needing).toHaveLength(1)
+    const candidate = needing[0]!
+
+    const enqueueSpy = vi.spyOn(manager as any, 'enqueue')
+
+    // Intercept replaceDocumentSliced: immediately alter file on disk after cutover write succeeds
+    const originalReplaceSliced = store.replaceDocumentSliced.bind(store)
+    vi.spyOn(store, 'replaceDocumentSliced').mockImplementationOnce(async (targetPath, doc, options) => {
+      const res = await originalReplaceSliced(targetPath, doc, options)
+      // File modified immediately post-cutover
+      writeFileSync(filePath, 'Modified content post-cutover with different size and mtime.', 'utf8')
+      return res
+    })
+
+    const ok = await (manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }).migrateLegacyDocument(candidate)
+
+    // Migration returns false due to post-cutover mismatch
+    expect(ok).toBe(false)
+
+    // Automatically routed to normal changed-file P1 queue
+    expect(enqueueSpy).toHaveBeenCalledWith(candidate.path, true)
+
+    // Coordinator does not mark document complete so P1 queue can cleanly re-index
+    expect(coordinator.getProgress().completedDocuments).toBe(0)
+
+    // Active chunk set V2 remains intact without rollback corruption
+    const docRow = db.prepare('SELECT active_chunk_set_id, status FROM documents WHERE id = 404').get() as {
+      active_chunk_set_id: number | null
+      status: string
+    }
+    expect(docRow.active_chunk_set_id).toBeGreaterThan(0)
+  })
 })
+

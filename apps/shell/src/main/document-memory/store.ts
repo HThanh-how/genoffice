@@ -20,7 +20,6 @@ import {
 } from './embedding-profiles'
 import { fuseHybridResults } from './hybrid-ranker'
 import { activateSet, createBuildingSet, retireOldSets } from './chunk-sets'
-import { capChunks, chunkDocumentTextV2 } from './chunks'
 import { USearchIndex } from './usearch-index'
 import { ANN_MIN_VECTORS } from './ann-index'
 import { defaultSqliteCacheKiB } from './memory-tier'

@@ -22,10 +22,64 @@ export interface FileStabilityGateOptions {
   totalTimeoutMs?: number
   /** Maximum concurrent fs.stat operations permitted (default: 16, max 32) */
   maxConcurrentStats?: number
+  /** Timeout for individual I/O operations (fs.stat, fs.open probe) in ms (default: 10_000 ms) */
+  ioTimeoutMs?: number
   /** Custom stat function seam for unit testing and virtualization */
   statFn?: (path: string) => Promise<{ isFile(): boolean; size: number; mtimeMs: number }>
   /** Custom file open probe seam for testing lock states */
   openFn?: (path: string, flags: string) => Promise<{ close: () => Promise<void> }>
+}
+
+/**
+ * Wraps an asynchronous operation with an individual deadline.
+ * If the deadline expires before completion, rejects with ETIMEDOUT.
+ * If the wrapped operation resolves after timing out, optional cleanup callback onLateResolved is invoked.
+ */
+export async function withIoDeadline<T>(
+  operation: Promise<T>,
+  ms: number,
+  onLateResolved?: (result: T) => void,
+): Promise<T> {
+  let timer: NodeJS.Timeout | null = null
+  let timedOut = false
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      timedOut = true
+      const err = new Error(`I/O deadline exceeded after ${ms}ms`) as NodeJS.ErrnoException
+      err.code = 'ETIMEDOUT'
+      reject(err)
+    }, ms)
+    timer.unref?.()
+  })
+
+  const trackedOperation = operation.then(
+    (result) => {
+      if (timedOut && onLateResolved) {
+        try {
+          onLateResolved(result)
+        } catch {
+          // ignore cleanup errors
+        }
+      }
+      return result
+    },
+    (err) => {
+      if (timedOut) {
+        // Operation failed after deadline already expired; swallow to avoid unhandled rejection
+        return undefined as unknown as T
+      }
+      throw err
+    },
+  )
+
+  try {
+    return await Promise.race([trackedOperation, timeoutPromise])
+  } finally {
+    if (timer) {
+      clearTimeout(timer)
+    }
+  }
 }
 
 /** Temporary download and lock file extensions to immediately ignore */
@@ -113,12 +167,14 @@ export class FileStabilityGate {
   private readonly sampleIntervalMs: number
   private readonly backoffScheduleMs: number[]
   private readonly totalTimeoutMs: number
+  private readonly ioTimeoutMs: number
   private disposed = false
 
   constructor(options: FileStabilityGateOptions = {}) {
     this.sampleIntervalMs = options.sampleIntervalMs ?? 1500
     this.backoffScheduleMs = options.backoffScheduleMs ?? [2000, 3000, 5000, 8000, 15000, 30000]
     this.totalTimeoutMs = options.totalTimeoutMs ?? 120_000
+    this.ioTimeoutMs = options.ioTimeoutMs ?? 10_000
     const concurrency = Math.min(Math.max(options.maxConcurrentStats ?? 16, 1), 32)
     this.semaphore = new AsyncSemaphore(concurrency)
     this.statFn = options.statFn ?? ((targetPath: string) => stat(targetPath))
@@ -240,41 +296,48 @@ export class FileStabilityGate {
       if (sample1.kind === 'gone') return { kind: 'gone' }
       if (sample1.kind === 'unavailable') return { kind: 'unavailable' }
 
-      // Sleep between sample 1 and sample 2
-      const sleep1Ok = await this.sleep(this.sampleIntervalMs, entry)
-      if (!sleep1Ok || this.disposed || entry.abortController.signal.aborted) {
-        return { kind: 'unavailable' }
-      }
+      if (sample1.kind === 'file') {
+        // Sleep between sample 1 and sample 2
+        const sleep1Ok = await this.sleep(this.sampleIntervalMs, entry)
+        if (!sleep1Ok || this.disposed || entry.abortController.signal.aborted) {
+          return { kind: 'unavailable' }
+        }
 
-      if (Date.now() - startedAt >= this.totalTimeoutMs) {
-        return { kind: 'timeout' }
-      }
+        if (Date.now() - startedAt >= this.totalTimeoutMs) {
+          return { kind: 'timeout' }
+        }
 
-      // Sample 2
-      const sample2 = await this.safeStat(normalizedPath)
-      if (sample2.kind === 'gone') return { kind: 'gone' }
-      if (sample2.kind === 'unavailable') return { kind: 'unavailable' }
+        // Sample 2
+        const sample2 = await this.safeStat(normalizedPath)
+        if (sample2.kind === 'gone') return { kind: 'gone' }
+        if (sample2.kind === 'unavailable') return { kind: 'unavailable' }
 
-      // Stability verification: size and mtime unchanged
-      if (sample1.sizeBytes === sample2.sizeBytes && sample1.mtimeMs === sample2.mtimeMs) {
-        const probe = await this.probeReadable(normalizedPath)
-        if (probe === 'stable') {
-          return {
-            kind: 'stable',
-            file: {
-              path: normalizedPath,
-              mtimeMs: sample2.mtimeMs,
-              sizeBytes: sample2.sizeBytes,
-            },
+        if (sample2.kind === 'file') {
+          // Stability verification: size and mtime unchanged
+          if (sample1.sizeBytes === sample2.sizeBytes && sample1.mtimeMs === sample2.mtimeMs) {
+            const probe = await this.probeReadable(normalizedPath)
+            if (probe === 'stable') {
+              return {
+                kind: 'stable',
+                file: {
+                  path: normalizedPath,
+                  mtimeMs: sample2.mtimeMs,
+                  sizeBytes: sample2.sizeBytes,
+                },
+              }
+            }
+            if (probe === 'gone') {
+              return { kind: 'gone' }
+            }
+            if (probe === 'unavailable') {
+              return { kind: 'unavailable' }
+            }
+            // probe === 'busy' (exclusive lock / open in other app) -> fallthrough to backoff ladder
           }
         }
-        if (probe === 'gone') {
-          return { kind: 'gone' }
-        }
-        // probe === 'busy' (exclusive lock / open in other app) -> fallthrough to backoff ladder
       }
 
-      // Content or metadata changed -> reset timer and apply backoff ladder
+      // Content or metadata changed, or file is busy -> reset timer and apply backoff ladder
       const delay =
         this.backoffScheduleMs[Math.min(backoffIndex, this.backoffScheduleMs.length - 1)] ?? 2000
       backoffIndex++
@@ -295,15 +358,18 @@ export class FileStabilityGate {
     }
   }
 
-  /** Execute fs.stat under semaphore concurrency control with error categorization */
+  /** Execute fs.stat under semaphore concurrency control with error categorization and per-I/O deadline */
   private async safeStat(
     targetPath: string,
   ): Promise<
-    { kind: 'file'; sizeBytes: number; mtimeMs: number } | { kind: 'gone' } | { kind: 'unavailable' }
+    | { kind: 'file'; sizeBytes: number; mtimeMs: number }
+    | { kind: 'gone' }
+    | { kind: 'busy' }
+    | { kind: 'unavailable' }
   > {
     return this.semaphore.run(async () => {
       try {
-        const s = await this.statFn(targetPath)
+        const s = await withIoDeadline(this.statFn(targetPath), this.ioTimeoutMs)
         if (!s.isFile()) {
           return { kind: 'unavailable' }
         }
@@ -313,42 +379,86 @@ export class FileStabilityGate {
           mtimeMs: s.mtimeMs,
         }
       } catch (err: unknown) {
-        const isEnoent =
-          typeof err === 'object' &&
-          err !== null &&
-          (('code' in err && (err as { code: unknown }).code === 'ENOENT') ||
-            ('name' in err && (err as { name: unknown }).name === 'NotFoundError'))
-        if (isEnoent) {
+        const code =
+          typeof err === 'object' && err !== null && 'code' in err
+            ? String((err as { code: unknown }).code)
+            : ''
+        const name =
+          typeof err === 'object' && err !== null && 'name' in err
+            ? String((err as { name: unknown }).name)
+            : ''
+        if (code === 'ENOENT' || code === 'ENOTDIR' || name === 'NotFoundError') {
           return { kind: 'gone' }
+        }
+        if (code === 'EBUSY' || code === 'ETXTBSY' || code === 'EPERM' || code === 'EACCES') {
+          return { kind: 'busy' }
+        }
+        if (
+          code === 'ETIMEDOUT' ||
+          code === 'ERR_IO_TIMEOUT' ||
+          code === 'EIO' ||
+          code === 'ENODEV' ||
+          code === 'ENETUNREACH' ||
+          code === 'ECONNRESET' ||
+          code === 'EHOSTUNREACH'
+        ) {
+          return { kind: 'unavailable' }
         }
         return { kind: 'unavailable' }
       }
     })
   }
 
-  /** Probe readability/lock status before declaring file stable */
-  private async probeReadable(targetPath: string): Promise<'stable' | 'gone' | 'busy'> {
+  /** Probe readability/lock status before declaring file stable with per-I/O deadline and leak protection */
+  private async probeReadable(
+    targetPath: string,
+  ): Promise<'stable' | 'gone' | 'busy' | 'unavailable'> {
     return this.semaphore.run(async () => {
+      let handle: { close: () => Promise<void> } | null = null
       try {
-        const handle = await this.openFn(targetPath, 'r')
-        try {
-          await handle.close()
-        } catch {
-          // ignore close error
-        }
+        handle = await withIoDeadline(
+          this.openFn(targetPath, 'r'),
+          this.ioTimeoutMs,
+          (lateHandle) => {
+            lateHandle.close().catch(() => {})
+          },
+        )
         return 'stable'
       } catch (err: unknown) {
         const code =
           typeof err === 'object' && err !== null && 'code' in err
-            ? (err as { code: string }).code
+            ? String((err as { code: unknown }).code)
             : ''
-        if (code === 'ENOENT' || code === 'ENOTDIR') {
+        const name =
+          typeof err === 'object' && err !== null && 'name' in err
+            ? String((err as { name: unknown }).name)
+            : ''
+        if (code === 'ENOENT' || code === 'ENOTDIR' || name === 'NotFoundError') {
           return 'gone'
         }
         if (code === 'EBUSY' || code === 'ETXTBSY' || code === 'EPERM' || code === 'EACCES') {
           return 'busy'
         }
-        return 'busy'
+        if (
+          code === 'ETIMEDOUT' ||
+          code === 'ERR_IO_TIMEOUT' ||
+          code === 'EIO' ||
+          code === 'ENODEV' ||
+          code === 'ENETUNREACH' ||
+          code === 'ECONNRESET' ||
+          code === 'EHOSTUNREACH'
+        ) {
+          return 'unavailable'
+        }
+        return 'unavailable'
+      } finally {
+        if (handle) {
+          try {
+            await handle.close()
+          } catch {
+            // ignore close error
+          }
+        }
       }
     })
   }

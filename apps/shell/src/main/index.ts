@@ -144,6 +144,7 @@ import { handleDroppedFiles } from './dropped-files'
 import { collectLaunchPaths } from './launch-paths'
 import { parseFolderScanArgv, withoutFolderScanArgs } from './folder-scan-argv'
 import { FolderScanManager } from './document-memory/folder-scan'
+import { KnownSourcesManager } from './document-memory/known-sources'
 import { installMacFolderScanService } from './mac-folder-scan-service'
 import {
   genofficeLogout,
@@ -4510,10 +4511,17 @@ function registerHomeIpc(): void {
     userDataPath: () => app.getPath('userData'),
     getDocumentMemory: () => documentMemory,
   })
+  if (!knownSources) {
+    knownSources = new KnownSourcesManager({
+      settingsPath: APP_SETTINGS_PATH,
+      getScanner: () => folderScan,
+    })
+  }
   registerDocumentIndexIpc({
     ipcMain,
     getDocumentMemory: () => documentMemory,
     getFolderScan: () => folderScan,
+    getKnownSources: () => knownSources,
     dbPath: () =>
       documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db'),
     settingsPath: APP_SETTINGS_PATH,
@@ -6643,6 +6651,7 @@ async function installMainProcessProxy(): Promise<void> {
 // ---- lifecycle (the shell is the only owner) ----
 
 let folderScan: FolderScanManager | null = null
+let knownSources: KnownSourcesManager | null = null
 let pendingFolderScanPaths = parseFolderScanArgv(process.argv)
 let pendingLaunchPaths = collectLaunchPaths(withoutFolderScanArgs(process.argv))
 let controlServer: ControlServer | null = null
@@ -7030,6 +7039,7 @@ app.whenReady().then(async () => {
 
   if (app.isPackaged && process.platform === 'darwin') installMacFolderScanService()
   if (documentMemory) folderScan = new FolderScanManager(app.getPath('userData'), documentMemory)
+  if (folderScan && knownSources) void knownSources.reconcileDesiredSources()
   openLaunchPaths(pendingLaunchPaths)
   // a start-up file that turned into no document must not keep the window hidden
   revealColdOpeningIfNoDocuments()
@@ -7080,6 +7090,7 @@ app.on('before-quit', () => {
 // after every window has closed, so the shell window's own 'closed' republish cannot revive the file
 app.on('will-quit', () => {
   folderScan?.close()
+  knownSources?.close()
   documentMemory?.close()
   fileIndexer?.stop()
   fileIndexStore?.close()

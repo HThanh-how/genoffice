@@ -91,6 +91,27 @@ describe('ANN Vector Indexing & Exact Search Fallback', () => {
       await index.close()
     })
 
+    it('transitions to dirty when native index lacks remove() support (D-01)', async () => {
+      const indexPath = join(directory, 'test-no-remove.usearch')
+      const index = new USearchIndex(2, indexPath)
+      await index.open()
+
+      expect(index.isHealthy()).toBe(true)
+      expect(index.getState()).toBe('ready')
+
+      // Simulate nativeIndex lacking remove function (incompatibility with certain native bindings)
+      const rawNativeIndex = (index as unknown as { nativeIndex: Record<string, unknown> | null }).nativeIndex
+      if (rawNativeIndex) {
+        rawNativeIndex.remove = undefined
+      }
+
+      index.removeSync([10])
+      expect(index.getState()).toBe('dirty')
+      expect(index.isHealthy()).toBe(false)
+
+      await index.close()
+    })
+
     it('performs atomic rebuild successfully without deleting old index prematurely', async () => {
       const indexPath = join(directory, 'test-atomic.usearch')
       const index = new USearchIndex(2, indexPath)

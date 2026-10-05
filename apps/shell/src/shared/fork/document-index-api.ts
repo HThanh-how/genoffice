@@ -1,9 +1,9 @@
 import type { IndexIssueReason } from '../../main/document-memory/issues'
 import type { IndexIssueSummary } from '../../main/document-memory/issue-reader'
 import type { DbLocationState, DbMoveError } from '../../main/document-memory/db-location'
-import type { KnownSearchSource, KnownSearchSourceEntry } from '../../main/document-memory/known-sources'
+import type { KnownSearchSource, KnownSearchSourceEntry, KnownSearchSourceStatus } from '../../main/document-memory/known-sources'
 
-export type { DbLocationState, DbMoveError, KnownSearchSource, KnownSearchSourceEntry }
+export type { DbLocationState, DbMoveError, KnownSearchSource, KnownSearchSourceEntry, KnownSearchSourceStatus }
 
 /** The answer to "move the index here": nothing moves until the app restarts. */
 export type DbMoveResult =
@@ -215,7 +215,7 @@ export interface DocumentIndexApi {
   /** Retrieve the list of known search sources (Documents, Downloads, Desktop) with their paths and enabled states. */
   getKnownSearchSources(): Promise<KnownSearchSourceEntry[]>
   /** Enable or disable a known search source; toggles scanning and watching. */
-  setKnownSearchSource(id: KnownSearchSource, enabled: boolean): Promise<void>
+  setKnownSearchSource(id: KnownSearchSource, enabled: boolean): Promise<KnownSearchSourceEntry | void>
   /** Files in the index whose name or folder matches every word typed (accents ignored). */
   searchIndexedFiles(query: string): Promise<IndexedFileHit[]>
   /** Which files the indexer is reading now and who is next. */

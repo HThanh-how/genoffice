@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { HomeApi, RecentEntry } from '../../../shared/home-api'
 import { useI18n } from '../locale'
 import { iconFor } from '../file-icons'
@@ -48,7 +48,11 @@ export function RecentFiles({ api, limit = 12, onOpened }: RecentFilesProps) {
     }
   }, [api, limit, isVi])
 
+  const openingRef = useRef(false)
+
   const handleOpen = async (path: string) => {
+    if (openingRef.current) return
+    openingRef.current = true
     try {
       setOpenError(null)
       await api.openPath(path)
@@ -60,6 +64,8 @@ export function RecentFiles({ api, limit = 12, onOpened }: RecentFilesProps) {
           ? 'Không thể mở tệp. Tệp có thể đã được di chuyển hoặc ổ đĩa đang không khả dụng.'
           : 'Could not open the file. It may have moved or the drive may be unavailable.',
       )
+    } finally {
+      openingRef.current = false
     }
   }
 
@@ -136,7 +142,17 @@ export function RecentFiles({ api, limit = 12, onOpened }: RecentFilesProps) {
             type="button"
             className="idx-error-dismiss-btn"
             aria-label={isVi ? 'Đóng thông báo lỗi' : 'Dismiss error'}
-            onClick={() => setOpenError(null)}
+            onClick={(e) => {
+              e.stopPropagation()
+              setOpenError(null)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                setOpenError(null)
+              }
+            }}
           >
             ×
           </button>
@@ -176,6 +192,7 @@ export function RecentFiles({ api, limit = 12, onOpened }: RecentFilesProps) {
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault()
+                    e.stopPropagation()
                     void handleOpen(file.path)
                   }
                 }}

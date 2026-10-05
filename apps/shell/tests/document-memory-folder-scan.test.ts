@@ -1,6 +1,6 @@
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { FolderScanManager } from '../src/main/document-memory/folder-scan'
 
@@ -227,5 +227,70 @@ describe('FolderScanManager', () => {
     expect(instance.setPriority(join(dir, 'unknown'), true)).toBe(false)
     expect(instance.forget(root)).toBe(true)
     expect(instance.folders()).toEqual([])
+  })
+
+  it('A-03 & A-04: Bật B khi A đang scan -> B vào waiting. Tắt B ngay lập tức -> B bị xóa khỏi waiting, B không bao giờ được scan!', async () => {
+    const folderA = join(dir, 'folderA')
+    const folderB = join(dir, 'folderB')
+    mkdirSync(folderA, { recursive: true })
+    mkdirSync(folderB, { recursive: true })
+    for (let i = 0; i < 50; i++) {
+      writeFileSync(join(folderA, `docA_${i}.txt`), `contentA_${i}`)
+    }
+    writeFileSync(join(folderB, 'docB.txt'), 'contentB')
+
+    const enrolledB: string[] = []
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: (path) => {
+        if (path.includes('folderB')) {
+          enrolledB.push(path)
+        }
+        return true
+      },
+    })
+    scanners.push(instance)
+
+    // Start A
+    instance.start(folderA, 'manual')
+
+    // Bật B khi A đang scan -> B vào waiting
+    instance.start(folderB, 'known:downloads')
+    expect(instance.isWaiting(folderB)).toBe(true)
+
+    // Tắt B ngay lập tức
+    const unregisterResult = await instance.unregisterRoot(folderB, 'known:downloads')
+    expect(unregisterResult).toBe(true)
+
+    // B phải bị xóa khỏi waiting ngay lập tức
+    expect(instance.isWaiting(folderB)).toBe(false)
+
+    // Chờ A hoàn thành
+    await until(() => !instance.status().running)
+
+    // B không bao giờ được scan
+    expect(enrolledB).toHaveLength(0)
+    expect(instance.folders().map((f) => f.root)).not.toContain(resolve(folderB))
+  })
+
+  it('A-05: Tắt B đang active scan -> dừng an toàn và gỡ bỏ sau khi runner exit', async () => {
+    const folderB = join(dir, 'folderB')
+    mkdirSync(folderB, { recursive: true })
+    for (let i = 0; i < 50; i++) {
+      writeFileSync(join(folderB, `file_${i}.txt`), `content ${i}`)
+    }
+
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      indexDiscoveredFile: () => true,
+    })
+    scanners.push(instance)
+
+    instance.start(folderB, 'manual')
+    expect(instance.status().running).toBe(true)
+
+    const result = await instance.unregisterRoot(folderB, 'manual')
+    expect(result).toBe(true)
+
+    expect(instance.status().running).toBe(false)
+    expect(instance.folders()).toHaveLength(0)
   })
 })

@@ -237,21 +237,21 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
       return { ok: false, error: error instanceof Error ? error.message : 'failed' }
     }
   })
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.forgetIndexedFolder, (_event, root: unknown): boolean => {
-    return getFolderScan()?.forget(knownRoot(root)) ?? false
-  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.forgetIndexedFolder,
+    async (_event, root: unknown): Promise<boolean> => {
+      const scan = getFolderScan()
+      if (!scan) return false
+      return await scan.unregisterRoot(knownRoot(root), 'manual')
+    },
+  )
   // ---- known search sources: Downloads, Documents, Desktop ----
-  let lazyKnownSources: KnownSourcesManager | null = null
   const getKnownSourcesManager = (): KnownSourcesManager => {
     const provided = deps.getKnownSources?.()
-    if (provided) return provided
-    if (!lazyKnownSources) {
-      lazyKnownSources = new KnownSourcesManager({
-        settingsPath: deps.settingsPath,
-        getScanner: deps.getFolderScan,
-      })
+    if (!provided) {
+      throw new Error('KnownSourcesManager must be initialized at application startup')
     }
-    return lazyKnownSources
+    return provided
   }
   ipcMain.handle(
     DOCUMENT_INDEX_CHANNELS.getKnownSearchSources,
@@ -261,15 +261,16 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   )
   ipcMain.handle(
     DOCUMENT_INDEX_CHANNELS.setKnownSearchSource,
-    async (_event, id: unknown, enabled: unknown): Promise<void> => {
+    async (_event, id: unknown, enabled: unknown): Promise<KnownSearchSourceEntry> => {
       if (!isKnownSearchSource(id)) {
         throw new Error('Invalid known search source id')
       }
       if (typeof enabled !== 'boolean') {
         throw new Error('Invalid enabled state')
       }
-      await getKnownSourcesManager().setKnownSearchSource(id, enabled)
+      const result = await getKnownSourcesManager().setKnownSearchSource(id, enabled)
       folderCounts.invalidate()
+      return result
     },
   )
   // ---- search model: standard (fast) or high (Vietnamese retrieval model) ----

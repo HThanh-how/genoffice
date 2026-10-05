@@ -1,18 +1,23 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_KNOWN_SOURCES,
   KNOWN_SEARCH_SOURCES,
+  KNOWN_SEARCH_SOURCES_INITIALIZED_KEY,
   KNOWN_SEARCH_SOURCES_KEY,
+  KNOWN_SEARCH_SOURCES_VERSION_KEY,
   KnownSourcesManager,
+  UNINITIALIZED_KNOWN_SOURCES,
   isKnownSearchSource,
+  parseKnownSourcesFullSettings,
   parseKnownSourcesSettings,
   type KnownSearchSource,
 } from '../src/main/document-memory/known-sources'
+import { FolderScanManager } from '../src/main/document-memory/folder-scan'
 import { registerDocumentIndexIpc } from '../src/main/fork/document-index-ipc'
-import { DOCUMENT_INDEX_CHANNELS } from '../src/shared/fork/document-index-api'
+import { DOCUMENT_INDEX_CHANNELS, type KnownSearchSourceEntry } from '../src/shared/fork/document-index-api'
 
 type Handler = (event: unknown, ...args: unknown[]) => unknown
 
@@ -79,115 +84,15 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
     })
   })
 
-  describe('State and Persistence', () => {
-    it('defaults to documents: true, downloads: true, desktop: false', async () => {
-      const manager = new KnownSourcesManager({
-        settingsPath: () => settingsFile,
-      })
+  describe('Initialization, Privacy & State (Mission A2)', () => {
+    it('A-02: Profile cũ uninitialized -> không silent scan và runtime enabled = false', async () => {
+      // Giả lập profile cũ chỉ có cấu hình theme/language, chưa từng khởi tạo known search sources
+      writeFileSync(settingsFile, JSON.stringify({ theme: 'dark', language: 'vi' }))
 
-      const sources = await manager.getKnownSearchSources()
-      expect(sources).toHaveLength(3)
-
-      const map = Object.fromEntries(sources.map((s) => [s.id, s.enabled]))
-      expect(map).toEqual({
-        documents: true,
-        downloads: true,
-        desktop: false,
-      })
-    })
-
-    it('persists changes to app-settings.json and reloads on new instance', async () => {
-      const manager1 = new KnownSourcesManager({
-        settingsPath: () => settingsFile,
-      })
-
-      // Toggle desktop on and documents off
-      await manager1.setKnownSearchSource('desktop', true)
-      await manager1.setKnownSearchSource('documents', false)
-
-      const savedJson = JSON.parse(readFileSync(settingsFile, 'utf8'))
-      expect(savedJson[KNOWN_SEARCH_SOURCES_KEY]).toEqual({
-        documents: false,
-        downloads: true,
-        desktop: true,
-      })
-
-      // New instance reading the same file
-      const manager2 = new KnownSourcesManager({
-        settingsPath: () => settingsFile,
-      })
-      const sources2 = await manager2.getKnownSearchSources()
-      const map2 = Object.fromEntries(sources2.map((s) => [s.id, s.enabled]))
-      expect(map2).toEqual({
-        documents: false,
-        downloads: true,
-        desktop: true,
-      })
-    })
-
-    it('safely handles corrupted or partial settings file with default fallback', () => {
-      // Partial settings
-      writeFileSync(settingsFile, JSON.stringify({ [KNOWN_SEARCH_SOURCES_KEY]: { desktop: true } }))
-      const partialResult = parseKnownSourcesSettings(
-        JSON.parse(readFileSync(settingsFile, 'utf8')),
-      )
-      expect(partialResult).toEqual({
-        documents: true,
-        downloads: true,
-        desktop: true,
-      })
-
-      // Corrupted / invalid types
-      const invalidResult = parseKnownSourcesSettings({
-        [KNOWN_SEARCH_SOURCES_KEY]: {
-          documents: 'yes',
-          downloads: null,
-          desktop: 123,
-        },
-      })
-      expect(invalidResult).toEqual(DEFAULT_KNOWN_SOURCES)
-    })
-  })
-
-  describe('Scanner Integration', () => {
-    it('triggers scanner.start when enabled is true, and scanner.stop/forget when enabled is false', async () => {
-      const startMock = vi.fn()
-      const stopMock = vi.fn()
-      const forgetMock = vi.fn()
-      const statusMock = vi.fn().mockReturnValue({ running: false, root: null })
-
-      const mockScanner = {
-        start: startMock,
-        stop: stopMock,
-        forget: forgetMock,
-        status: statusMock,
-        folders: vi.fn().mockReturnValue([]),
-      }
-
-      const desktopDir = join(testDir, 'Desktop')
-      const manager = new KnownSourcesManager({
-        settingsPath: () => settingsFile,
-        scanner: mockScanner as any,
-        getPath: (id) => (id === 'desktop' ? desktopDir : join(testDir, id)),
-      })
-
-      // 1. Enable Desktop -> calls scanner.start
-      await manager.setKnownSearchSource('desktop', true)
-      expect(startMock).toHaveBeenCalledWith(resolve(desktopDir))
-
-      // 2. Disable Desktop while scanner is reported running for that root
-      statusMock.mockReturnValue({ running: true, root: resolve(desktopDir) })
-      await manager.setKnownSearchSource('desktop', false)
-      expect(stopMock).toHaveBeenCalled()
-      expect(forgetMock).toHaveBeenCalledWith(resolve(desktopDir))
-    })
-
-    it('syncWithScanner synchronizes all currently enabled sources on startup', async () => {
       const startMock = vi.fn()
       const mockScanner = {
         start: startMock,
-        stop: vi.fn(),
-        forget: vi.fn(),
+        unregisterRoot: vi.fn(),
         status: vi.fn().mockReturnValue({ running: false }),
         folders: vi.fn().mockReturnValue([]),
       }
@@ -197,11 +102,233 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
         scanner: mockScanner as any,
       })
 
-      await manager.syncWithScanner()
-      // By default documents and downloads are enabled, so start should be called for both
-      expect(startMock).toHaveBeenCalledTimes(2)
-      expect(startMock).toHaveBeenCalledWith(manager.resolvePath('documents'))
-      expect(startMock).toHaveBeenCalledWith(manager.resolvePath('downloads'))
+      expect(manager.isInitialized()).toBe(false)
+      const sources = await manager.getKnownSearchSources()
+      // Tất cả source phải ở trạng thái enabled: false
+      for (const source of sources) {
+        expect(source.enabled).toBe(false)
+        expect(source.status).toBe('disabled')
+      }
+
+      // Reconcile không được gọi scan bất kỳ thư mục nào
+      await manager.reconcileDesiredSources()
+      expect(startMock).not.toHaveBeenCalled()
+    })
+
+    it('A-01: Startup với Downloads=true -> tự động reconcile scanner', async () => {
+      const downloadsDir = join(testDir, 'Downloads')
+      mkdirSync(downloadsDir, { recursive: true })
+
+      writeFileSync(
+        settingsFile,
+        JSON.stringify({
+          [KNOWN_SEARCH_SOURCES_VERSION_KEY]: 1,
+          [KNOWN_SEARCH_SOURCES_INITIALIZED_KEY]: true,
+          [KNOWN_SEARCH_SOURCES_KEY]: {
+            documents: false,
+            downloads: true,
+            desktop: false,
+          },
+        }),
+      )
+
+      const startMock = vi.fn()
+      const mockScanner = {
+        start: startMock,
+        unregisterRoot: vi.fn().mockResolvedValue(true),
+        status: vi.fn().mockReturnValue({ running: false }),
+        folders: vi.fn().mockReturnValue([]),
+      }
+
+      const manager = new KnownSourcesManager({
+        settingsPath: () => settingsFile,
+        scanner: mockScanner as any,
+        getPath: (id) => (id === 'downloads' ? downloadsDir : join(testDir, id)),
+      })
+
+      expect(manager.isInitialized()).toBe(true)
+      await manager.reconcileDesiredSources()
+
+      expect(startMock).toHaveBeenCalledWith(resolve(downloadsDir), 'known:downloads')
+      expect(startMock).toHaveBeenCalledTimes(1)
+    })
+
+    it('defaults to documents: true, downloads: true, desktop: false when profile initialized without keys', async () => {
+      writeFileSync(
+        settingsFile,
+        JSON.stringify({
+          [KNOWN_SEARCH_SOURCES_VERSION_KEY]: 1,
+          [KNOWN_SEARCH_SOURCES_INITIALIZED_KEY]: true,
+        }),
+      )
+
+      const manager = new KnownSourcesManager({
+        settingsPath: () => settingsFile,
+      })
+
+      const sources = await manager.getKnownSearchSources()
+      const map = Object.fromEntries(sources.map((s) => [s.id, s.enabled]))
+      expect(map).toEqual(DEFAULT_KNOWN_SOURCES)
+    })
+
+    it('persists changes with marker to app-settings.json and reloads on new instance', async () => {
+      const manager1 = new KnownSourcesManager({
+        settingsPath: () => settingsFile,
+      })
+
+      // User chủ động kích hoạt -> đánh dấu initialized
+      await manager1.setKnownSearchSource('desktop', true)
+
+      const savedJson = JSON.parse(readFileSync(settingsFile, 'utf8'))
+      expect(savedJson[KNOWN_SEARCH_SOURCES_INITIALIZED_KEY]).toBe(true)
+      expect(savedJson[KNOWN_SEARCH_SOURCES_VERSION_KEY]).toBe(1)
+      expect(savedJson[KNOWN_SEARCH_SOURCES_KEY]).toMatchObject({
+        desktop: true,
+      })
+
+      const manager2 = new KnownSourcesManager({
+        settingsPath: () => settingsFile,
+      })
+      expect(manager2.isInitialized()).toBe(true)
+      const sources2 = await manager2.getKnownSearchSources()
+      const desktopSource = sources2.find((s) => s.id === 'desktop')
+      expect(desktopSource?.enabled).toBe(true)
+    })
+  })
+
+  describe('Transactional Persistence (Mission A5)', () => {
+    it('A-09: Persistence failure -> rollback memory và scanner', async () => {
+      const startMock = vi.fn()
+      const unregisterMock = vi.fn()
+      const mockScanner = {
+        start: startMock,
+        unregisterRoot: unregisterMock,
+        status: vi.fn().mockReturnValue({ running: false }),
+        folders: vi.fn().mockReturnValue([]),
+      }
+
+      // Đường dẫn file settings không hợp lệ (trỏ vào thư mục không tồn tại và không thể tạo)
+      const invalidSettingsFile = join(testDir, 'non_existent_folder', 'deep', 'app-settings.json')
+
+      const manager = new KnownSourcesManager({
+        settingsPath: () => invalidSettingsFile,
+        scanner: mockScanner as any,
+        initialState: { desktop: false },
+        initialized: true,
+      })
+
+      // Cố gắng bật desktop nhưng ghi đĩa sẽ lỗi
+      await expect(manager.setKnownSearchSource('desktop', true)).rejects.toThrow()
+
+      // Trạng thái trong RAM không được phép thay đổi
+      const sources = await manager.getKnownSearchSources()
+      const desktop = sources.find((s) => s.id === 'desktop')
+      expect(desktop?.enabled).toBe(false)
+
+      // Scanner không bao giờ được gọi
+      expect(startMock).not.toHaveBeenCalled()
+      expect(unregisterMock).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('Folder Ownership Matrix (Mission A3)', () => {
+    it('A-06 & A-07 & A-08: Thư mục trùng giữa manual và known source: bật/tắt cái này không xóa cái kia', async () => {
+      const documentsDir = join(testDir, 'Documents')
+      mkdirSync(documentsDir, { recursive: true })
+
+      const memory = { indexDiscoveredFile: () => true }
+      const scanManager = new FolderScanManager(join(testDir, 'scanner-state'), memory)
+
+      const knownSources = new KnownSourcesManager({
+        settingsPath: () => settingsFile,
+        scanner: scanManager,
+        getPath: () => documentsDir,
+      })
+
+      // 1. User add thủ công thư mục Documents ('manual')
+      scanManager.start(documentsDir, 'manual')
+      let folders = scanManager.folders()
+      expect(folders).toHaveLength(1)
+      expect(folders[0].owners).toContain('manual')
+
+      // 2. User bật Known Source Documents ('known:documents')
+      await knownSources.setKnownSearchSource('documents', true)
+      folders = scanManager.folders()
+      expect(folders).toHaveLength(1)
+      expect(folders[0].owners).toContain('manual')
+      expect(folders[0].owners).toContain('known:documents')
+
+      // 3. (A-06) Tắt Known Source Documents: chỉ gỡ owner 'known:documents', root manual vẫn tồn tại!
+      await knownSources.setKnownSearchSource('documents', false)
+      folders = scanManager.folders()
+      expect(folders).toHaveLength(1)
+      expect(folders[0].owners).toEqual(['manual'])
+
+      // 4. (A-07) Bật lại Known Source Documents, sau đó xóa manual: root vẫn tồn tại vì known source vẫn bật!
+      await knownSources.setKnownSearchSource('documents', true)
+      await scanManager.unregisterRoot(documentsDir, 'manual')
+      folders = scanManager.folders()
+      expect(folders).toHaveLength(1)
+      expect(folders[0].owners).toEqual(['known:documents'])
+
+      // 5. (A-08) Tắt nốt Known Source: không còn owner nào -> root mới bị xóa hoàn toàn khỏi manifest!
+      await knownSources.setKnownSearchSource('documents', false)
+      folders = scanManager.folders()
+      expect(folders).toHaveLength(0)
+
+      scanManager.close()
+      knownSources.close()
+    })
+  })
+
+  describe('Canonical Status API (Mission A6) & Bounded Retry (Mission A7)', () => {
+    it('returns canonical status: disabled, scanning, queued, unavailable', async () => {
+      const existingDir = join(testDir, 'Exists')
+      const missingDir = join(testDir, 'MissingDrive', 'Folder')
+      mkdirSync(existingDir, { recursive: true })
+
+      const isWaitingMock = vi.fn().mockReturnValue(false)
+      const mockScanner = {
+        start: vi.fn(),
+        unregisterRoot: vi.fn(),
+        isWaiting: isWaitingMock,
+        status: vi.fn().mockReturnValue({ running: true, root: resolve(existingDir) }),
+        folders: vi.fn().mockReturnValue([]),
+      }
+
+      const manager = new KnownSourcesManager({
+        settingsPath: () => settingsFile,
+        scanner: mockScanner as any,
+        getPath: (id) => (id === 'documents' ? existingDir : missingDir),
+        initialState: {
+          documents: true,
+          downloads: true,
+          desktop: false,
+        },
+        initialized: true,
+      })
+
+      const sources = await manager.getKnownSearchSources()
+      const docs = sources.find((s) => s.id === 'documents')
+      const downloads = sources.find((s) => s.id === 'downloads')
+      const desktop = sources.find((s) => s.id === 'desktop')
+
+      // Desktop: disabled
+      expect(desktop?.status).toBe('disabled')
+
+      // Documents: path tồn tại và scanner đang chạy -> scanning
+      expect(docs?.status).toBe('scanning')
+
+      // Downloads: path không tồn tại -> unavailable
+      expect(downloads?.status).toBe('unavailable')
+
+      // Khi scanner không active root mà đang waiting -> queued
+      mockScanner.status.mockReturnValue({ running: true, root: resolve(join(testDir, 'other')) })
+      isWaitingMock.mockReturnValue(true)
+      const statusQueued = manager.getStatus('documents')
+      expect(statusQueued.status).toBe('queued')
+
+      manager.close()
     })
   })
 
@@ -225,13 +352,13 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       return { call, handlers }
     }
 
-    it('exposes getKnownSearchSources via IPC and returns valid list', async () => {
+    it('exposes getKnownSearchSources via IPC and returns valid list with canonical status', async () => {
       const manager = new KnownSourcesManager({ settingsPath: () => settingsFile })
       const { call } = setupIpc(manager)
 
       const result = (await call(
         DOCUMENT_INDEX_CHANNELS.getKnownSearchSources,
-      )) as Array<{ id: KnownSearchSource; path: string; enabled: boolean }>
+      )) as KnownSearchSourceEntry[]
 
       expect(result).toHaveLength(3)
       expect(result.map((r) => r.id)).toEqual(KNOWN_SEARCH_SOURCES)
@@ -239,6 +366,7 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
         expect(typeof entry.path).toBe('string')
         expect(entry.path.length).toBeGreaterThan(0)
         expect(typeof entry.enabled).toBe('boolean')
+        expect(typeof entry.status).toBe('string')
       }
     })
 
@@ -246,10 +374,14 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       const manager = new KnownSourcesManager({ settingsPath: () => settingsFile })
       const { call } = setupIpc(manager)
 
-      // Valid toggle
-      await call(DOCUMENT_INDEX_CHANNELS.setKnownSearchSource, 'desktop', true)
-      const afterSources = (await call(DOCUMENT_INDEX_CHANNELS.getKnownSearchSources)) as any[]
-      expect(afterSources.find((s) => s.id === 'desktop').enabled).toBe(true)
+      // Valid toggle returns entry
+      const entry = (await call(
+        DOCUMENT_INDEX_CHANNELS.setKnownSearchSource,
+        'desktop',
+        true,
+      )) as KnownSearchSourceEntry
+      expect(entry.id).toBe('desktop')
+      expect(entry.enabled).toBe(true)
 
       // Invalid ID: arbitrary path
       await expect(

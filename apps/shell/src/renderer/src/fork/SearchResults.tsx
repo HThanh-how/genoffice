@@ -85,31 +85,59 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
     }
   }, [api, query, isVi])
 
-  // FIX UI-3: Auto-refresh search results every 2000ms while indexing is pending or scanning
+  // Auto-refresh search results while indexing is pending or scanning (Serialized Chained setTimeout)
   useEffect(() => {
     const q = query.trim()
     if (!q || !searchPage) return
     const isIndexing = searchPage.index.pending > 0 || searchPage.index.scanning
     if (!isIndexing) return
 
-    const currentSeq = searchSeq.current
-    const intervalTimer = window.setInterval(async () => {
+    let alive = true
+    let timerId: number | ReturnType<typeof setTimeout> | null = null
+    let inFlight = false
+
+    const scheduleNext = () => {
+      if (!alive) return
+      timerId = window.setTimeout(() => {
+        void poll()
+      }, 2000)
+    }
+
+    const poll = async () => {
+      if (!alive || inFlight) return
+      inFlight = true
+      const currentSeq = searchSeq.current
       try {
         const res = await api.searchFiles({ q, limit: 100 })
-        if (currentSeq === searchSeq.current) {
+        // Stale Query Guard: Drop response if sequence has advanced or component unmounted
+        if (alive && currentSeq === searchSeq.current) {
           setSearchPage(res)
         }
       } catch (err) {
         console.error('Auto-refresh search failed:', err)
+      } finally {
+        inFlight = false
+        if (alive) {
+          scheduleNext()
+        }
       }
-    }, 2000)
+    }
+
+    scheduleNext()
 
     return () => {
-      window.clearInterval(intervalTimer)
+      alive = false
+      if (timerId !== null) {
+        window.clearTimeout(timerId as unknown as number)
+      }
     }
   }, [api, query, searchPage?.index.pending, searchPage?.index.scanning])
 
+  const openingRef = useRef(false)
+
   const handleOpen = async (path: string) => {
+    if (openingRef.current) return
+    openingRef.current = true
     try {
       setOpenError(null)
       await api.openPath(path)
@@ -121,6 +149,8 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
           ? 'Không thể mở tệp. Tệp có thể đã được di chuyển hoặc ổ đĩa đang không khả dụng.'
           : 'Could not open the file. It may have moved or the drive may be unavailable.',
       )
+    } finally {
+      openingRef.current = false
     }
   }
 
@@ -167,10 +197,21 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
       if (visibleHits.length === 0) return
 
       const active = document.activeElement
-      const inSearch =
-        active?.classList.contains('idx-search-hero-input') ||
-        containerRef.current?.contains(active)
-      if (!inSearch) return
+
+      // If focus is on any button (e.g. dismiss error button or outside action button),
+      // do not hijack Enter or Space
+      if (
+        active?.tagName === 'BUTTON' ||
+        active?.closest('button') ||
+        active?.classList.contains('idx-error-dismiss-btn')
+      ) {
+        return
+      }
+
+      const isInputFocused = active?.classList.contains('idx-search-hero-input')
+      const isContainerFocused = containerRef.current?.contains(active)
+
+      if (!isInputFocused && !isContainerFocused) return
 
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -179,10 +220,14 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
         e.preventDefault()
         setSelectedIndex((prev) => Math.max(prev - 1, 0))
       } else if (e.key === 'Enter') {
-        const target = visibleHits[selectedIndex]
-        if (target) {
-          e.preventDefault()
-          void handleOpen(target.path)
+        // Only trigger from window listener if search input is focused.
+        // Hit item (li) has its own onKeyDown handler with e.stopPropagation().
+        if (isInputFocused) {
+          const target = visibleHits[selectedIndex]
+          if (target) {
+            e.preventDefault()
+            void handleOpen(target.path)
+          }
         }
       }
     }
@@ -217,6 +262,7 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
         onKeyDown={(e) => {
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault()
+            e.stopPropagation()
             void handleOpen(hit.path)
           }
         }}
@@ -280,7 +326,17 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
             type="button"
             className="idx-error-dismiss-btn"
             aria-label={isVi ? 'Đóng thông báo lỗi' : 'Dismiss error'}
-            onClick={() => setOpenError(null)}
+            onClick={(e) => {
+              e.stopPropagation()
+              setOpenError(null)
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault()
+                e.stopPropagation()
+                setOpenError(null)
+              }
+            }}
           >
             ×
           </button>

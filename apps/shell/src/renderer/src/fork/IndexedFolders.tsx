@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { IndexedFolder, IndexedFolderRun } from '../../../shared/fork/document-index-api'
+import type {
+  IndexedFolder,
+  IndexedFolderRun,
+  KnownSearchSource,
+  KnownSearchSourceEntry,
+  KnownSearchSourceStatus,
+} from '../../../shared/fork/document-index-api'
 import type { HomeApi } from '../../../shared/home-api'
 import { useI18n } from '../locale'
 import { readIndexRequest } from './index-request'
@@ -43,6 +49,13 @@ const EN = {
   runUnavailable: 'not reachable',
   noHistory: 'No history yet.',
   now: 'just now',
+  statusWatching: 'Watching',
+  statusScanning: 'Scanning',
+  statusQueued: 'Queued',
+  statusUnavailable: 'Unavailable',
+  statusError: 'Error',
+  statusDisabled: 'Disabled',
+  sourceToggleFailed: 'Failed to update folder setting.',
 }
 
 type Dict = Record<keyof typeof EN, string>
@@ -84,6 +97,13 @@ const STRINGS: Record<'en' | 'vi' | 'zh', Dict> = {
     runUnavailable: 'không truy cập được',
     noHistory: 'Chưa có lịch sử.',
     now: 'vừa xong',
+    statusWatching: 'Đang theo dõi',
+    statusScanning: 'Đang quét',
+    statusQueued: 'Đang chờ',
+    statusUnavailable: 'Không khả dụng',
+    statusError: 'Lỗi',
+    statusDisabled: 'Đã tắt',
+    sourceToggleFailed: 'Không thể cập nhật thiết lập thư mục.',
   },
   zh: {
     title: '已索引的文件夹',
@@ -120,6 +140,13 @@ const STRINGS: Record<'en' | 'vi' | 'zh', Dict> = {
     runUnavailable: '无法访问',
     noHistory: '暂无历史。',
     now: '刚刚',
+    statusWatching: '正在监视',
+    statusScanning: '正在扫描',
+    statusQueued: '等待扫描',
+    statusUnavailable: '无法访问',
+    statusError: '错误',
+    statusDisabled: '已禁用',
+    sourceToggleFailed: '无法更新文件夹设置。',
   },
 }
 
@@ -186,18 +213,29 @@ function RunRow({
   )
 }
 
-const KNOWN_SOURCES_STORAGE_KEY = 'genoffice_known_search_sources'
-const DEFAULT_KNOWN_SOURCES: Record<string, boolean> = {
-  documents: true,
-  downloads: true,
-  desktop: false,
-}
-
 interface CommonLocationItem {
-  id: 'documents' | 'downloads' | 'desktop'
+  id: KnownSearchSource
   name: string
   desc: string
   icon: 'documents' | 'downloads' | 'desktop'
+}
+
+function getStatusLabel(status: KnownSearchSourceStatus | undefined, d: Dict): string {
+  switch (status) {
+    case 'watching':
+      return d.statusWatching
+    case 'scanning':
+      return d.statusScanning
+    case 'queued':
+      return d.statusQueued
+    case 'unavailable':
+      return d.statusUnavailable
+    case 'error':
+      return d.statusError
+    case 'disabled':
+    default:
+      return d.statusDisabled
+  }
 }
 
 export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
@@ -214,72 +252,75 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
   const mounted = useRef(false)
   const loading = useRef(false)
 
-  // State for known search sources (Documents, Downloads, Desktop)
-  const [knownSources, setKnownSources] = useState<Record<string, boolean>>(() => {
-    try {
-      const raw = localStorage.getItem(KNOWN_SOURCES_STORAGE_KEY)
-      if (raw) {
-        return { ...DEFAULT_KNOWN_SOURCES, ...JSON.parse(raw) }
-      }
-    } catch {
-      // fallback default
-    }
-    return DEFAULT_KNOWN_SOURCES
-  })
+  // Canonical state for known search sources directly from backend
+  const [knownSources, setKnownSources] = useState<KnownSearchSourceEntry[]>([])
+  const [busySources, setBusySources] = useState<Record<string, boolean>>({})
+  const [sourceErrors, setSourceErrors] = useState<Record<string, string>>({})
 
-  // Sync known sources from API if available
-  useEffect(() => {
-    let alive = true
-    const fetchKnown = async () => {
-      try {
-        const getFn = (effectiveApi as Record<string, unknown> | undefined)?.getKnownSearchSources
-        if (typeof getFn === 'function') {
-          const res = await (getFn as () => Promise<unknown>).call(effectiveApi)
-          if (!alive || !res) return
-          if (Array.isArray(res)) {
-            const mapped: Record<string, boolean> = {}
-            for (const item of res) {
-              if (item && typeof item === 'object' && 'id' in item && typeof (item as { id: unknown }).id === 'string') {
-                mapped[(item as { id: string }).id] = !!(item as { enabled?: boolean }).enabled
-              }
-            }
-            setKnownSources((prev) => ({ ...prev, ...mapped }))
-          } else if (typeof res === 'object') {
-            setKnownSources((prev) => ({ ...prev, ...(res as Record<string, boolean>) }))
-          }
+  // Sync known sources from API (Single source of truth)
+  const fetchKnown = useCallback(async () => {
+    try {
+      const getFn = (effectiveApi as Record<string, unknown> | undefined)?.getKnownSearchSources
+      if (typeof getFn === 'function') {
+        const res = await (getFn as () => Promise<unknown>).call(effectiveApi)
+        if (Array.isArray(res)) {
+          setKnownSources(res as KnownSearchSourceEntry[])
         }
-      } catch (err) {
-        console.warn('api.getKnownSearchSources error or unavailable, using fallback:', err)
       }
-    }
-    void fetchKnown()
-    return () => {
-      alive = false
+    } catch (err) {
+      console.warn('api.getKnownSearchSources error:', err)
     }
   }, [effectiveApi])
 
-  const toggleKnownSource = async (id: string, enabled: boolean) => {
-    setKnownSources((prev) => {
-      const next = { ...prev, [id]: enabled }
-      try {
-        localStorage.setItem(KNOWN_SOURCES_STORAGE_KEY, JSON.stringify(next))
-      } catch {
-        // ignore
-      }
+  useEffect(() => {
+    void fetchKnown()
+  }, [fetchKnown])
+
+  const toggleKnownSource = async (id: KnownSearchSource, enabled: boolean) => {
+    if (busySources[id]) return
+
+    setBusySources((prev) => ({ ...prev, [id]: true }))
+    setSourceErrors((prev) => {
+      const next = { ...prev }
+      delete next[id]
       return next
+    })
+
+    const previousSources = knownSources
+    // Optimistic UI update
+    setKnownSources((prev) => {
+      const exists = prev.some((s) => s.id === id)
+      if (exists) {
+        return prev.map((s) => (s.id === id ? { ...s, enabled } : s))
+      }
+      return [...prev, { id, path: '', enabled, status: enabled ? 'queued' : 'disabled' }]
     })
 
     try {
       const setFn = (effectiveApi as Record<string, unknown> | undefined)?.setKnownSearchSource
       if (typeof setFn === 'function') {
-        await (setFn as (sourceId: string, isEnabled: boolean) => Promise<unknown>).call(
+        const res = await (setFn as (sourceId: string, isEnabled: boolean) => Promise<unknown>).call(
           effectiveApi,
           id,
           enabled,
         )
+        if (res && typeof res === 'object' && 'id' in res) {
+          const updated = res as KnownSearchSourceEntry
+          setKnownSources((prev) => prev.map((s) => (s.id === id ? updated : s)))
+        } else {
+          await fetchKnown()
+        }
       }
     } catch (err) {
       console.warn(`api.setKnownSearchSource(${id}, ${enabled}) failed:`, err)
+      // Rollback optimistic update
+      setKnownSources(previousSources)
+      const errorMsg =
+        err instanceof Error && err.message ? err.message : dict.sourceToggleFailed
+      setSourceErrors((prev) => ({ ...prev, [id]: errorMsg }))
+      await fetchKnown()
+    } finally {
+      setBusySources((prev) => ({ ...prev, [id]: false }))
     }
   }
 
@@ -428,21 +469,47 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
         </div>
         <div className="idx-common-sources-grid">
           {commonLocations.map((loc) => {
-            const isChecked = !!knownSources[loc.id]
+            const entry = knownSources.find((s) => s.id === loc.id)
+            const isChecked = !!entry?.enabled
+            const isBusy = !!busySources[loc.id]
+            const status: KnownSearchSourceStatus = entry?.status ?? (isChecked ? 'queued' : 'disabled')
+            const statusText = getStatusLabel(status, dict)
+            const inlineError = sourceErrors[loc.id] || entry?.error
+            const isUnavailable = status === 'unavailable'
+
             return (
               <div
                 key={loc.id}
-                className={`idx-common-source-card${isChecked ? ' is-active' : ''}`}
+                className={`idx-common-source-card${isChecked ? ' is-active' : ''}${isUnavailable ? ' is-unavailable' : ''}`}
               >
                 <div className="idx-common-source-icon">{renderLocationIcon(loc.icon)}</div>
                 <div className="idx-common-source-info">
-                  <span className="idx-common-source-name">{loc.name}</span>
+                  <div className="idx-common-source-row">
+                    <span className="idx-common-source-name">{loc.name}</span>
+                    <span
+                      className={`idx-common-source-chip status-${status}`}
+                      data-status={status}
+                    >
+                      {statusText}
+                    </span>
+                  </div>
                   <span className="idx-common-source-desc">{loc.desc}</span>
+                  {entry?.path && (
+                    <span className="idx-common-source-path" title={entry.path}>
+                      {entry.path}
+                    </span>
+                  )}
+                  {inlineError && (
+                    <span className="idx-common-source-error" role="alert">
+                      {inlineError}
+                    </span>
+                  )}
                 </div>
                 <label className="idx-switch" aria-label={loc.name}>
                   <input
                     type="checkbox"
                     checked={isChecked}
+                    disabled={isBusy}
                     onChange={(e) => void toggleKnownSource(loc.id, e.target.checked)}
                   />
                   <span className="idx-switch-slider" />

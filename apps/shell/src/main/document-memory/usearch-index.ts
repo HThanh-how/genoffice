@@ -312,13 +312,16 @@ export class USearchIndex implements AnnIndex {
 
     if (!this.nativeIndex) return
 
+    if (typeof this.nativeIndex.remove !== 'function') {
+      this.state = 'dirty'
+      return
+    }
+
     try {
-      if (typeof this.nativeIndex.remove === 'function') {
-        for (const id of chunkIds) {
-          this.nativeIndex.remove(id)
-        }
-        this.saveAtomic()
+      for (const id of chunkIds) {
+        this.nativeIndex.remove(id)
       }
+      this.saveAtomic()
     } catch {
       this.state = 'dirty'
     }

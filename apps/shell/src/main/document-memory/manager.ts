@@ -11,7 +11,7 @@ import { extname, join, resolve, sep } from 'node:path'
 import workerPath from './worker?modulePath'
 import type { PdfScanInfo } from './ocr-sidecar'
 import { EmbeddingMigration } from './embedding-migration'
-import { FileStabilityGate } from './file-stability'
+import { FileStabilityGate, type FileStabilityGateOptions } from './file-stability'
 import { ChunkUpgradeCoordinator, type DocumentNeedingUpgrade } from './chunk-upgrade'
 import { QueryEmbeddingCache } from './query-embedding-cache'
 import { memoryTierFromTotal, MEMORY_TIER_POLICIES, type MemoryTier } from './memory-tier'
@@ -68,6 +68,8 @@ const EMBED_RETRY_DELAY_MS = 30_000
 const FTS_MAINTENANCE_DELAY_MS = 250
 /** Longest one maintenance run may keep going before it reschedules itself. */
 const FTS_MAINTENANCE_RUN_MS = 2_000
+/** Backoff schedule for retrying files locked or unavailable during stability check (15s, 60s, 5m, 15m) */
+const STABILITY_RETRY_SCHEDULE_MS = [15_000, 60_000, 5 * 60_000, 15 * 60_000]
 
 interface ExtractResult {
   hash: string
@@ -168,6 +170,10 @@ interface ManagerOptions {
   autoDeferAfterMs?: number
   /** Another source of file names (Everything): files on disk that were never opened or indexed. */
   externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>
+  /** Custom stability retry schedule (ms) for testing or tuning (default: [15s, 60s, 5m, 15m]) */
+  stabilityRetryScheduleMs?: number[]
+  /** Custom options forwarded to FileStabilityGate */
+  stabilityGateOptions?: FileStabilityGateOptions
 }
 
 /** Coordinates opened-document enrollment, local extraction, embedding and fresh reads. */
@@ -251,6 +257,8 @@ export class DocumentMemoryManager {
   private readonly embeddingMigration: EmbeddingMigration
   private readonly chunkUpgrade: ChunkUpgradeCoordinator
   private readonly stabilityGate: FileStabilityGate
+  private readonly stabilityRetries = new Map<string, { timer: NodeJS.Timeout; attempt: number }>()
+  private readonly stabilityRetryScheduleMs: number[]
   private readonly skippedMigrationDocs = new Set<number>()
   private migrationTimer: NodeJS.Timeout | null = null
 
@@ -272,12 +280,13 @@ export class DocumentMemoryManager {
     this.tombstoneGraceMs = options.tombstoneGraceMs ?? TOMBSTONE_GRACE_MS
     this.externalNames = options.externalNames
     this.autoDeferAfterMs = options.autoDeferAfterMs ?? AUTO_DEFER_AFTER_MS
+    this.stabilityRetryScheduleMs = options.stabilityRetryScheduleMs ?? STABILITY_RETRY_SCHEDULE_MS
     this.store = new DocumentMemoryStore(this.dbPath, { role: 'search' })
     this.store.ensureEmbeddingSpace(this.embeddingProfile)
     this.embeddingMigration = new EmbeddingMigration(this.store.rawDb)
     this.embeddingMigration.setTarget(this.embeddingProfile.embeddingId)
     this.chunkUpgrade = new ChunkUpgradeCoordinator(this.store.rawDb)
-    this.stabilityGate = new FileStabilityGate()
+    this.stabilityGate = new FileStabilityGate(options.stabilityGateOptions)
     this.enabled = readEnabled(this.settingsPath)
     this.store.purgeDiscoveredByName(isIgnoredFileName)
     this.store.requeueNowReadable()
@@ -850,6 +859,7 @@ export class DocumentMemoryManager {
       this.queue.length = 0
       this.queued.clear()
       this.embeds.length = 0
+      this.clearAllStabilityRetries()
       if (this.migrationTimer) {
         clearTimeout(this.migrationTimer)
         this.migrationTimer = null
@@ -878,6 +888,8 @@ export class DocumentMemoryManager {
 
   exclude(path: string): void {
     const p = resolve(path)
+    this.clearStabilityRetry(p)
+    this.stabilityGate.cancel(p)
     this.invalidatePath(p)
     this.store.exclude(p)
   }
@@ -887,6 +899,7 @@ export class DocumentMemoryManager {
     this.queue.length = 0
     this.queued.clear()
     this.embeds.length = 0
+    this.clearAllStabilityRetries()
     if (this.migrationTimer) {
       clearTimeout(this.migrationTimer)
       this.migrationTimer = null
@@ -1240,6 +1253,7 @@ export class DocumentMemoryManager {
     this.missing.clear()
     this.enabledListeners.clear()
     this.clearedListeners.clear()
+    this.clearAllStabilityRetries()
     this.stabilityGate.dispose()
     this.chunkUpgrade.pause()
     this.skippedMigrationDocs.clear()
@@ -1333,19 +1347,27 @@ export class DocumentMemoryManager {
       paths.map(async (raw) => {
         if (this.stopped || !this.enabled) return
         const path = resolve(raw)
+        if (this.store.documentByPath(path)?.status === 'excluded') {
+          this.clearStabilityRetry(path)
+          return
+        }
         const outcome = await this.stabilityGate.waitForStability(path)
         if (this.stopped || !this.enabled) return
         if (outcome.kind === 'gone') {
+          this.clearStabilityRetry(path)
           if (this.store.documentByPath(path)) this.markMissing(path)
         } else if (
           outcome.kind === 'stable' &&
           SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase()) &&
           outcome.file.sizeBytes <= MAX_DOCUMENT_BYTES
         ) {
+          this.clearStabilityRetry(path)
           present.push({
             path,
             meta: { mtimeMs: outcome.file.mtimeMs, sizeBytes: outcome.file.sizeBytes },
           })
+        } else if (outcome.kind === 'timeout' || outcome.kind === 'unavailable') {
+          this.scheduleStabilityRetry(path, 0)
         }
       }),
     )
@@ -1357,6 +1379,92 @@ export class DocumentMemoryManager {
       if (this.store.documentByPath(path)) this.indexDiscoveredFile(path, meta)
       else await this.enrollNew(path, meta, candidates)
     }
+  }
+
+  /** Schedule a backoff retry for a file whose stability check timed out or was temporarily unavailable */
+  private scheduleStabilityRetry(path: string, attempt = 0): void {
+    if (this.stopped || !this.enabled) return
+    if (!SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase())) return
+    const doc = this.store.documentByPath(path)
+    if (doc?.status === 'excluded') {
+      this.clearStabilityRetry(path)
+      return
+    }
+    if (attempt >= this.stabilityRetryScheduleMs.length) {
+      this.clearStabilityRetry(path)
+      return
+    }
+
+    // Cancel existing timer for this path if any
+    const existing = this.stabilityRetries.get(path)
+    if (existing) {
+      clearTimeout(existing.timer)
+    }
+
+    const delayMs = this.stabilityRetryScheduleMs[attempt] ?? 15_000
+    const timer = setTimeout(() => {
+      this.stabilityRetries.delete(path)
+      void this.retryStabilityCheck(path, attempt + 1)
+    }, delayMs)
+    timer.unref?.()
+
+    this.stabilityRetries.set(path, { timer, attempt })
+  }
+
+  /** Background execution of a scheduled stability retry when no new fs events arrived */
+  private async retryStabilityCheck(path: string, nextAttempt: number): Promise<void> {
+    if (this.stopped || !this.enabled) return
+    const doc = this.store.documentByPath(path)
+    if (doc?.status === 'excluded') {
+      this.clearStabilityRetry(path)
+      return
+    }
+
+    const outcome = await this.stabilityGate.waitForStability(path)
+    if (this.stopped || !this.enabled) return
+
+    if (outcome.kind === 'stable') {
+      this.clearStabilityRetry(path)
+      if (
+        SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase()) &&
+        outcome.file.sizeBytes <= MAX_DOCUMENT_BYTES
+      ) {
+        const meta = { mtimeMs: outcome.file.mtimeMs, sizeBytes: outcome.file.sizeBytes }
+        if (this.store.documentByPath(path)) {
+          this.indexDiscoveredFile(path, meta)
+        } else {
+          const candidates = new Map<number, MissingCandidate[]>()
+          for (const entry of this.missing.values()) {
+            if (entry.candidate) addCandidate(candidates, entry.candidate)
+          }
+          await this.enrollNew(path, meta, candidates)
+        }
+      }
+    } else if (outcome.kind === 'gone') {
+      this.clearStabilityRetry(path)
+      if (this.store.documentByPath(path)) {
+        this.markMissing(path)
+      }
+    } else if (outcome.kind === 'timeout' || outcome.kind === 'unavailable') {
+      this.scheduleStabilityRetry(path, nextAttempt)
+    }
+  }
+
+  /** Cancel and remove pending stability retry for a path */
+  private clearStabilityRetry(path: string): void {
+    const entry = this.stabilityRetries.get(path)
+    if (entry) {
+      clearTimeout(entry.timer)
+      this.stabilityRetries.delete(path)
+    }
+  }
+
+  /** Cancel and clear all pending stability retries */
+  private clearAllStabilityRetries(): void {
+    for (const entry of this.stabilityRetries.values()) {
+      clearTimeout(entry.timer)
+    }
+    this.stabilityRetries.clear()
   }
 
   /**
@@ -2125,6 +2233,16 @@ export class DocumentMemoryManager {
     )
 
     if (!written) return false
+
+    // Post-Cutover Re-Stat Healing:
+    // Kiểm tra tính toàn vẹn của file ngay sau cutover để phòng ngừa file bị sửa đổi trong cửa sổ cực hẹp
+    const finalMeta = await statMeta(doc.path)
+    if (!finalMeta || finalMeta.mtimeMs !== extracted.mtimeMs || finalMeta.sizeBytes !== extracted.sizeBytes) {
+      if (finalMeta) {
+        this.enqueue(doc.path, true)
+      }
+      return false
+    }
 
     this.recordScanInfo(doc.path, extracted)
     this.scheduleFtsMaintenance()
