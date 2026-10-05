@@ -186,6 +186,10 @@ export class USearchIndex implements AnnIndex {
     return this.state
   }
 
+  markDirty(): void {
+    this.state = 'dirty'
+  }
+
   getLoadedGeneration(): number {
     return this.loadedGeneration
   }
@@ -215,6 +219,7 @@ export class USearchIndex implements AnnIndex {
       this.nativeIndex = nextIndex
       this.loadedGeneration = generation
       this.state = 'ready'
+      this.isOpen = true
       return true
     } catch {
       this.state = 'dirty'

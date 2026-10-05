@@ -79,18 +79,19 @@ export class EmbeddingMigration {
     `).run(this.targetSpaceId)
 
     // Select chunks that lack an embedding for targetSpaceId
-    // Prioritize by documents.priority_at DESC
+    // Prioritize by documents.priority_at DESC (only V2 active chunks - MIG-9)
     const rows = this.db.prepare(`
       SELECT c.id AS chunk_id, c.document_id, c.text
       FROM chunks c
       JOIN documents d ON d.id = c.document_id
-      LEFT JOIN chunk_sets s ON s.id = c.chunk_set_id
+      JOIN chunk_sets s ON s.id = c.chunk_set_id
       LEFT JOIN chunk_embeddings e
         ON e.chunk_id = c.id
         AND e.space_id = ?
       WHERE
         d.excluded = 0
-        AND (c.chunk_set_id IS NULL OR s.state = 'active')
+        AND s.state = 'active'
+        AND s.chunker_version = 2
         AND e.chunk_id IS NULL
       ORDER BY d.priority_at DESC, d.id DESC, c.ordinal ASC
       LIMIT ?
@@ -132,8 +133,8 @@ export class EmbeddingMigration {
       SELECT count(*) AS total
       FROM chunks c
       JOIN documents d ON d.id = c.document_id
-      LEFT JOIN chunk_sets s ON s.id = c.chunk_set_id
-      WHERE d.excluded = 0 AND (c.chunk_set_id IS NULL OR s.state = 'active')
+      JOIN chunk_sets s ON s.id = c.chunk_set_id
+      WHERE d.excluded = 0 AND s.state = 'active' AND s.chunker_version = 2
     `).get() as { total: number }
 
     const doneRow = this.db.prepare(`
@@ -141,8 +142,8 @@ export class EmbeddingMigration {
       FROM chunk_embeddings e
       JOIN chunks c ON c.id = e.chunk_id
       JOIN documents d ON d.id = c.document_id
-      LEFT JOIN chunk_sets s ON s.id = c.chunk_set_id
-      WHERE e.space_id = ? AND d.excluded = 0 AND (c.chunk_set_id IS NULL OR s.state = 'active')
+      JOIN chunk_sets s ON s.id = c.chunk_set_id
+      WHERE e.space_id = ? AND d.excluded = 0 AND s.state = 'active' AND s.chunker_version = 2
     `).get(this.targetSpaceId) as { done: number }
 
     const total = totalRow.total

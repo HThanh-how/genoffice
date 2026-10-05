@@ -1,7 +1,7 @@
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { opendir, stat } from 'node:fs/promises'
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, extname, isAbsolute, parse, resolve } from 'node:path'
+import { dirname, extname, isAbsolute, parse, relative, resolve } from 'node:path'
 import { FolderWatchManager } from './folder-watch'
 import { SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
 export { IGNORED_DIRECTORIES, SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
@@ -49,6 +49,12 @@ export interface DiscoveredDocumentIndexer {
   /** Reconcile a root against a fresh metadata-only listing (adds, changes, moves, deletions). */
   reconcileFolder?(
     root: string,
+    files: Map<string, { mtimeMs: number; sizeBytes: number }>,
+  ): Promise<unknown>
+  /** Reconcile a specific subtree under a root against a fresh metadata-only listing. */
+  reconcileSubtree?(
+    root: string,
+    subtree: string,
     files: Map<string, { mtimeMs: number; sizeBytes: number }>,
   ): Promise<unknown>
   /** Put the waiting files below `root` first in the indexing order. */
@@ -226,6 +232,108 @@ export class FolderScanManager {
       if (!completed) return { ok: false, reason: 'interrupted' }
       if (unavailable) return { ok: false, reason: 'unavailable' }
       await this.memory.reconcileFolder(job.root, files)
+      job.reconciledAt = Date.now()
+      this.recordRun(job, 'refresh', 'complete', { discovered: files.size })
+      if (job.priority) this.memory.prioritizeFolder?.(job.root)
+      this.save()
+      return { ok: true, files: files.size }
+    } catch (error) {
+      return { ok: false, reason: error instanceof Error ? error.message : 'failed' }
+    } finally {
+      this.reconciling = false
+    }
+  }
+
+  /**
+   * Reconcile only a newly extracted or copied subdirectory below a finished root.
+   * Walks only files under `subtree` instead of rescanning the entire root tree.
+   */
+  async reconcileSubtree(
+    root: string,
+    subtree: string,
+  ): Promise<{ ok: boolean; reason?: string; files?: number }> {
+    const normalizedRoot = resolve(root)
+    const normalizedSubtree = resolve(subtree)
+    const rel = relative(normalizedRoot, normalizedSubtree)
+    if (rel.startsWith('..') || isAbsolute(rel)) {
+      return { ok: false, reason: 'invalid-subtree' }
+    }
+    if (this.closed || this.activeRoot || this.reconciling) return { ok: false, reason: 'busy' }
+    const job = this.jobFor(normalizedRoot)
+    if (!job || job.state !== 'complete') return { ok: false, reason: 'not-complete' }
+    if (!this.memory.reconcileSubtree && !this.memory.reconcileFolder) {
+      return { ok: false, reason: 'unsupported' }
+    }
+    this.reconciling = true
+    try {
+      try {
+        if (!(await stat(job.root)).isDirectory()) return { ok: false, reason: 'unavailable' }
+      } catch {
+        // An unplugged drive or deleted root: never treat its files as deleted.
+        return { ok: false, reason: 'unavailable' }
+      }
+
+      let subtreeIsDir = false
+      try {
+        const subtreeStat = await stat(normalizedSubtree)
+        subtreeIsDir = subtreeStat.isDirectory()
+      } catch (err: unknown) {
+        const isEnoent =
+          typeof err === 'object' &&
+          err !== null &&
+          'code' in err &&
+          (err as { code: string }).code === 'ENOENT'
+        if (isEnoent) {
+          const files = new Map<string, { mtimeMs: number; sizeBytes: number }>()
+          if (this.memory.reconcileSubtree) {
+            await this.memory.reconcileSubtree(job.root, normalizedSubtree, files)
+          } else if (this.memory.reconcileFolder) {
+            await this.memory.reconcileFolder(normalizedSubtree, files)
+          }
+          job.reconciledAt = Date.now()
+          this.recordRun(job, 'refresh', 'complete', { discovered: 0 })
+          if (job.priority) this.memory.prioritizeFolder?.(job.root)
+          this.save()
+          return { ok: true, files: 0 }
+        }
+        return { ok: false, reason: 'unavailable' }
+      }
+
+      if (!subtreeIsDir) {
+        return { ok: false, reason: 'not-a-directory' }
+      }
+
+      const files = new Map<string, { mtimeMs: number; sizeBytes: number }>()
+      let unavailable = false
+      const completed = await this.traverse(
+        normalizedSubtree,
+        {
+          onSkipped: () => undefined,
+          onError: () => {
+            unavailable = true
+          },
+          onFile: async (path) => {
+            try {
+              const fileStat = await stat(path)
+              if (fileStat.isFile() && fileStat.size <= MAX_DOCUMENT_BYTES)
+                files.set(path, { mtimeMs: fileStat.mtimeMs, sizeBytes: fileStat.size })
+            } catch {
+              unavailable = true
+            }
+            return true
+          },
+        },
+        () => this.closed,
+      )
+      if (!completed) return { ok: false, reason: 'interrupted' }
+      if (unavailable) return { ok: false, reason: 'unavailable' }
+
+      if (this.memory.reconcileSubtree) {
+        await this.memory.reconcileSubtree(job.root, normalizedSubtree, files)
+      } else if (this.memory.reconcileFolder) {
+        await this.memory.reconcileFolder(normalizedSubtree, files)
+      }
+
       job.reconciledAt = Date.now()
       this.recordRun(job, 'refresh', 'complete', { discovered: files.size })
       if (job.priority) this.memory.prioritizeFolder?.(job.root)
@@ -648,3 +756,15 @@ function saveManifest(path: string, manifest: Manifest): void {
   writeFileSync(temporary, JSON.stringify(manifest), { mode: 0o600 })
   renameSync(temporary, path)
 }
+
+/**
+ * Reconcile a specific subtree below a root using a FolderScanManager instance.
+ */
+export async function reconcileSubtree(
+  scanner: FolderScanManager,
+  root: string,
+  subtree: string,
+): Promise<{ ok: boolean; reason?: string; files?: number }> {
+  return scanner.reconcileSubtree(root, subtree)
+}
+

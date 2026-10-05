@@ -11,6 +11,8 @@ import { extname, join, resolve, sep } from 'node:path'
 import workerPath from './worker?modulePath'
 import type { PdfScanInfo } from './ocr-sidecar'
 import { EmbeddingMigration } from './embedding-migration'
+import { FileStabilityGate } from './file-stability'
+import { ChunkUpgradeCoordinator } from './chunk-upgrade'
 import { QueryEmbeddingCache } from './query-embedding-cache'
 import { memoryTierFromTotal, MEMORY_TIER_POLICIES, type MemoryTier } from './memory-tier'
 import { fuseHybridResults } from './hybrid-ranker'
@@ -247,6 +249,8 @@ export class DocumentMemoryManager {
   private searchGeneration = 0
   private readonly queryCache = new QueryEmbeddingCache(64)
   private readonly embeddingMigration: EmbeddingMigration
+  private readonly chunkUpgrade: ChunkUpgradeCoordinator
+  private readonly stabilityGate: FileStabilityGate
   private migrationTimer: NodeJS.Timeout | null = null
 
   constructor(userData: string, options: ManagerOptions = {}) {
@@ -271,6 +275,8 @@ export class DocumentMemoryManager {
     this.store.ensureEmbeddingSpace(this.embeddingProfile)
     this.embeddingMigration = new EmbeddingMigration(this.store.rawDb)
     this.embeddingMigration.setTarget(this.embeddingProfile.embeddingId)
+    this.chunkUpgrade = new ChunkUpgradeCoordinator(this.store.rawDb)
+    this.stabilityGate = new FileStabilityGate()
     this.enabled = readEnabled(this.settingsPath)
     this.store.purgeDiscoveredByName(isIgnoredFileName)
     this.store.requeueNowReadable()
@@ -848,8 +854,10 @@ export class DocumentMemoryManager {
         this.migrationTimer = null
       }
       this.embeddingMigration.pause()
+      this.chunkUpgrade.pause()
     } else {
       this.embeddingMigration.resume()
+      this.chunkUpgrade.resume()
       void this.poll()
       this.scheduleMigrationStep(1000)
     }
@@ -1231,6 +1239,8 @@ export class DocumentMemoryManager {
     this.missing.clear()
     this.enabledListeners.clear()
     this.clearedListeners.clear()
+    this.stabilityGate.dispose()
+    this.chunkUpgrade.pause()
     this.queue.length = 0
     this.embeds.length = 0
     for (const [id, pending] of this.waiting) {
@@ -1309,24 +1319,32 @@ export class DocumentMemoryManager {
   async handleFileEvents(paths: string[]): Promise<void> {
     if (this.stopped || !this.enabled) return
     const present: Array<{ path: string; meta: { mtimeMs: number; sizeBytes: number } }> = []
-    const maybeYield = createYielder()
-    for (const raw of paths) {
-      if (this.stopped || !this.enabled) return
-      await maybeYield()
-      const path = resolve(raw)
-      const current = await this.statOutcome(path)
-      if (current.kind === 'gone') {
-        if (this.store.documentByPath(path)) this.markMissing(path)
-      } else if (
-        current.kind === 'file' &&
-        SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase()) &&
-        current.sizeBytes <= MAX_DOCUMENT_BYTES
-      )
-        present.push({ path, meta: { mtimeMs: current.mtimeMs, sizeBytes: current.sizeBytes } })
-    }
     const candidates = new Map<number, MissingCandidate[]>()
     for (const entry of this.missing.values())
       if (entry.candidate) addCandidate(candidates, entry.candidate)
+
+    await Promise.all(
+      paths.map(async (raw) => {
+        if (this.stopped || !this.enabled) return
+        const path = resolve(raw)
+        const outcome = await this.stabilityGate.waitForStability(path)
+        if (this.stopped || !this.enabled) return
+        if (outcome.kind === 'gone') {
+          if (this.store.documentByPath(path)) this.markMissing(path)
+        } else if (
+          outcome.kind === 'stable' &&
+          SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase()) &&
+          outcome.file.sizeBytes <= MAX_DOCUMENT_BYTES
+        ) {
+          present.push({
+            path,
+            meta: { mtimeMs: outcome.file.mtimeMs, sizeBytes: outcome.file.sizeBytes },
+          })
+        }
+      }),
+    )
+
+    const maybeYield = createYielder()
     for (const { path, meta } of present) {
       if (this.stopped || !this.enabled) return
       await maybeYield()
@@ -1954,6 +1972,14 @@ export class DocumentMemoryManager {
     // Main extraction and document embedding take priority
     if (this.embedding || this.extracting || this.embeds.length > 0 || this.queue.length > 0) {
       this.scheduleMigrationStep(2000)
+      return
+    }
+
+    // Step 1: Rolling upgrade of legacy V1 documents to Chunker V2 before embedding
+    const needingUpgrade = this.chunkUpgrade.getDocumentsNeedingUpgrade(1)
+    if (needingUpgrade.length > 0) {
+      this.chunkUpgrade.upgradeDocument(needingUpgrade[0]!.id)
+      this.scheduleMigrationStep(100)
       return
     }
 

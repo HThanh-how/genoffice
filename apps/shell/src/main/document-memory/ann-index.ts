@@ -16,4 +16,13 @@ export interface AnnIndex {
   setLoadedGeneration?(gen: number): void
   reloadSync?(generation: number): boolean
   isHealthy?(): boolean
+  isAvailable?(): boolean
+  searchSync?(vector: number[], limit: number): AnnHit[]
+  addSync?(chunkIds: number[], vectors: number[][]): void
+  removeSync?(chunkIds: number[]): void
+  rebuildAtomic?(chunkIds: number[], vectors: number[][], generation?: number): Promise<boolean>
+  getState?(): 'ready' | 'dirty'
+  saveAtomic?(generation?: number): void
+  markDirty?(): void
+  size?(): number
 }

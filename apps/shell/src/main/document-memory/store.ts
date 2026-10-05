@@ -20,6 +20,7 @@ import {
 } from './embedding-profiles'
 import { fuseHybridResults } from './hybrid-ranker'
 import { activateSet, createBuildingSet, retireOldSets } from './chunk-sets'
+import { capChunks, chunkDocumentTextV2 } from './chunks'
 import { USearchIndex } from './usearch-index'
 import { ANN_MIN_VECTORS } from './ann-index'
 import { defaultSqliteCacheKiB } from './memory-tier'
@@ -172,9 +173,21 @@ CREATE TABLE IF NOT EXISTS embedding_migrations (
   state TEXT NOT NULL CHECK (state IN ('pending', 'running', 'paused', 'complete', 'failed')),
   updated_at INTEGER NOT NULL DEFAULT (unixepoch())
 );
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS chunk_migrations (
+  version INTEGER PRIMARY KEY,
+  total_documents INTEGER NOT NULL,
+  completed_documents INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS ann_indexes (
   space_id TEXT PRIMARY KEY,
   generation INTEGER NOT NULL DEFAULT 0,
+  desired_generation INTEGER NOT NULL DEFAULT 0,
   file_path TEXT,
   indexed_count INTEGER NOT NULL DEFAULT 0,
   state TEXT NOT NULL DEFAULT 'dirty',
@@ -378,6 +391,13 @@ export class DocumentMemoryStore {
       this.db.exec('ALTER TABLE chunks ADD COLUMN chunk_set_id INTEGER')
     }
 
+    const annColumns = (
+      this.db.prepare('PRAGMA table_info(ann_indexes)').all() as Array<{ name: string }>
+    ).map((c) => c.name)
+    if (!annColumns.includes('desired_generation')) {
+      this.db.exec('ALTER TABLE ann_indexes ADD COLUMN desired_generation INTEGER NOT NULL DEFAULT 0')
+    }
+
     const indexList = this.db.prepare("PRAGMA index_list('chunks')").all() as Array<{
       name: string
       unique: number
@@ -446,6 +466,21 @@ export class DocumentMemoryStore {
       JOIN documents d ON d.id = c.document_id
       WHERE c.vector IS NOT NULL AND d.embedding_model = ?
     `).run(LEGACY_VIETNAMESE_EMBEDDING_ID, LEGACY_VIETNAMESE_EMBEDDING_ID)
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        id TEXT PRIMARY KEY,
+        applied_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS chunk_migrations (
+        version INTEGER PRIMARY KEY,
+        total_documents INTEGER NOT NULL,
+        completed_documents INTEGER NOT NULL,
+        state TEXT NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES ('v2_chunk_migrations', unixepoch());
+    `)
   }
 
   ensureEmbeddingSpace(profile: EmbeddingProfile): void {
@@ -916,7 +951,7 @@ export class DocumentMemoryStore {
     )
   }
 
-  private deleteOldChunksForDocument(documentId: number, activeChunkSetId: number): void {
+  deleteOldChunksForDocument(documentId: number, activeChunkSetId: number): void {
     const oldChunkIds = this.db
       .prepare(
         'SELECT id FROM chunks WHERE document_id = ? AND (chunk_set_id IS NULL OR chunk_set_id <> ?)',
@@ -949,6 +984,186 @@ export class DocumentMemoryStore {
         this.markAnnDirty(spaceId)
       }
     }
+  }
+
+  /**
+   * Cleans up orphaned or incomplete building chunk sets created before an interruption/crash (MIG-14).
+   * Ensures dangling chunks and FTS rows are purged before resuming migration.
+   */
+  cleanupDanglingBuildingSets(): number {
+    const danglingSets = this.db
+      .prepare("SELECT id, document_id FROM chunk_sets WHERE state = 'building'")
+      .all() as Array<{ id: number; document_id: number }>
+
+    if (!danglingSets.length) return 0
+
+    this.transaction(() => {
+      const delFts = this.db.prepare('DELETE FROM chunk_fts WHERE rowid = ?')
+      const delChunk = this.db.prepare('DELETE FROM chunks WHERE id = ?')
+      const delSet = this.db.prepare('DELETE FROM chunk_sets WHERE id = ?')
+
+      for (const set of danglingSets) {
+        const chunks = this.db
+          .prepare('SELECT id FROM chunks WHERE chunk_set_id = ?')
+          .all(set.id) as Array<{ id: number }>
+        for (const c of chunks) {
+          delFts.run(c.id)
+          delChunk.run(c.id)
+        }
+        delSet.run(set.id)
+      }
+    })
+
+    return danglingSets.length
+  }
+
+  /**
+   * Retrieves documents requiring chunk upgrade to Chunker V2, prioritized by:
+   * 1. priority_at DESC (recently opened/searched documents first)
+   * 2. size_bytes ASC (small documents first)
+   * 3. id ASC (consistent order for rest)
+   */
+  getDocumentsNeedingChunkUpgrade(limit = 100): Array<{
+    id: number
+    path: string
+    name: string
+    priorityAt: number
+    sizeBytes: number
+  }> {
+    const rows = this.db
+      .prepare(
+        `SELECT d.id, d.path, d.name, d.priority_at, d.size_bytes
+         FROM documents d
+         LEFT JOIN chunk_sets s ON s.id = d.active_chunk_set_id
+         WHERE d.excluded = 0 AND d.status = 'ready'
+           AND (d.active_chunk_set_id IS NULL OR s.chunker_version < 2 OR s.state <> 'active')
+           AND EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id)
+         ORDER BY d.priority_at DESC, coalesce(d.size_bytes, 0) ASC, d.id ASC
+         LIMIT ?`,
+      )
+      .all(limit) as Array<{
+      id: number
+      path: string
+      name: string
+      priority_at: number
+      size_bytes: number
+    }>
+
+    return rows.map((r) => ({
+      id: r.id,
+      path: r.path,
+      name: r.name,
+      priorityAt: r.priority_at,
+      sizeBytes: r.size_bytes,
+    }))
+  }
+
+  /**
+   * Gets current chunk migration status from chunk_migrations table.
+   */
+  getChunkMigrationProgress(version = 2): {
+    version: number
+    totalDocuments: number
+    completedDocuments: number
+    state: 'pending' | 'running' | 'paused' | 'complete' | 'failed'
+    updatedAt: number
+  } | null {
+    const row = this.db
+      .prepare(
+        `SELECT version, total_documents, completed_documents, state, updated_at
+         FROM chunk_migrations WHERE version = ?`,
+      )
+      .get(version) as
+      | {
+          version: number
+          total_documents: number
+          completed_documents: number
+          state: 'pending' | 'running' | 'paused' | 'complete' | 'failed'
+          updated_at: number
+        }
+      | undefined
+
+    if (!row) return null
+    return {
+      version: row.version,
+      totalDocuments: row.total_documents,
+      completedDocuments: row.completed_documents,
+      state: row.state,
+      updatedAt: row.updated_at,
+    }
+  }
+
+  /**
+   * Upgrades a single document's chunks from legacy/V1 to Chunker V2 atomically.
+   */
+  upgradeDocumentToChunkerV2(documentId: number): boolean {
+    const doc = this.db
+      .prepare(
+        `SELECT d.id, d.path, d.name, d.active_chunk_set_id
+         FROM documents d
+         LEFT JOIN chunk_sets s ON s.id = d.active_chunk_set_id
+         WHERE d.id = ? AND d.excluded = 0 AND d.status = 'ready'
+           AND (d.active_chunk_set_id IS NULL OR s.chunker_version < 2 OR s.state <> 'active')`,
+      )
+      .get(documentId) as
+      | { id: number; path: string; name: string; active_chunk_set_id: number | null }
+      | undefined
+
+    if (!doc) return false
+
+    const oldChunks = this.db
+      .prepare(
+        `SELECT text, location, ordinal
+         FROM chunks
+         WHERE document_id = ?
+           AND (chunk_set_id IS NULL OR chunk_set_id = ?)
+         ORDER BY ordinal ASC`,
+      )
+      .all(documentId, doc.active_chunk_set_id ?? -1) as Array<{
+      text: string
+      location: string
+      ordinal: number
+    }>
+
+    if (!oldChunks.length) return false
+
+    const fullText = oldChunks.map((c) => c.text).join('\n')
+    const v2Chunks = capChunks(
+      chunkDocumentTextV2(fullText, {
+        title: doc.name || doc.path.split(/[\\/]/).pop(),
+      }),
+    ).chunks
+
+    if (!v2Chunks.length && fullText.trim().length > 0) {
+      v2Chunks.push({ text: fullText.trim(), location: 'Chunk 1' })
+    }
+
+    this.transaction(() => {
+      const chunkSetId = createBuildingSet(this.db, documentId, 2)
+      const addChunk = this.db.prepare(
+        `INSERT INTO chunks(document_id, chunk_set_id, ordinal, text, normalized, location)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      const addFts = this.db.prepare('INSERT INTO chunk_fts(rowid, text) VALUES (?, ?)')
+
+      v2Chunks.forEach((chunk, ordinal) => {
+        const fields = documentIndexFields(chunk.text)
+        const result = addChunk.run(
+          documentId,
+          chunkSetId,
+          ordinal,
+          chunk.text,
+          fields.normalized,
+          chunk.location || `Chunk ${ordinal + 1}`,
+        )
+        addFts.run(result.lastInsertRowid, fields.searchText)
+      })
+
+      activateSet(this.db, documentId, chunkSetId)
+      this.deleteOldChunksForDocument(documentId, chunkSetId)
+    })
+
+    return true
   }
 
   private lockDocumentForReplace(normalizedPath: string): { id: number } {
@@ -1692,32 +1907,40 @@ export class DocumentMemoryStore {
     if (countRow.count >= ANN_MIN_VECTORS && embeddingSpaceId) {
       try {
         const annMeta = this.db
-          .prepare('SELECT generation, indexed_count, state FROM ann_indexes WHERE space_id = ?')
-          .get(embeddingSpaceId) as { generation: number; indexed_count: number; state: string } | undefined
+          .prepare(
+            'SELECT generation, desired_generation, indexed_count, state FROM ann_indexes WHERE space_id = ?',
+          )
+          .get(embeddingSpaceId) as
+          | { generation: number; desired_generation: number; indexed_count: number; state: string }
+          | undefined
 
         const ann = this.getAnnIndex(embeddingSpaceId, vector.length)
         if (
           annMeta &&
           annMeta.state === 'ready' &&
-          annMeta.indexed_count === countRow.count &&
-          ann.isAvailable() &&
-          ann.isHealthy()
+          ann.isHealthy() &&
+          typeof ann.getLoadedGeneration === 'function' &&
+          typeof ann.reloadSync === 'function' &&
+          annMeta.generation !== ann.getLoadedGeneration()
         ) {
-          if (
+          ann.reloadSync(annMeta.generation)
+        }
+
+        const isAnnTrusted = Boolean(
+          annMeta &&
+            annMeta.state === 'ready' &&
+            annMeta.generation === annMeta.desired_generation &&
+            annMeta.indexed_count === countRow.count &&
+            ann.isHealthy() &&
             typeof ann.getLoadedGeneration === 'function' &&
-            typeof ann.reloadSync === 'function' &&
-            annMeta.generation > ann.getLoadedGeneration()
-          ) {
-            ann.reloadSync(annMeta.generation)
-          }
+            ann.getLoadedGeneration() === annMeta.generation,
+        )
+
+        if (isAnnTrusted) {
+          const annHits = ann.searchSync(vector, limit * 2)
           if (!ann.isHealthy()) {
             this.markAnnDirty(embeddingSpaceId)
-          } else {
-            const annHits = ann.searchSync(vector, limit * 2)
-            if (!ann.isHealthy()) {
-              this.markAnnDirty(embeddingSpaceId)
-            }
-            if (annHits.length > 0) {
+          } else if (annHits.length > 0) {
             const chunkIds = annHits.map((h) => h.chunkId)
             const placeholders = chunkIds.map(() => '?').join(',')
             const validRows = this.db
@@ -1749,8 +1972,9 @@ export class DocumentMemoryStore {
               return hits
             }
           }
+        } else if (annMeta && !ann.isHealthy()) {
+          this.markAnnDirty(embeddingSpaceId)
         }
-      }
       } catch {
         // Fallback directly to SQLite exact scan
       }
@@ -2026,10 +2250,18 @@ export class DocumentMemoryStore {
     return idx
   }
 
-  private markAnnDirty(spaceId: string): void {
+  markAnnDirty(spaceId: string): void {
     try {
       this.db
-        .prepare("UPDATE ann_indexes SET state = 'dirty', updated_at = unixepoch() WHERE space_id = ?")
+        .prepare(
+          `INSERT INTO ann_indexes (space_id, generation, desired_generation, indexed_count, state, updated_at)
+           VALUES (?, 0, 1, 0, 'dirty', unixepoch())
+           ON CONFLICT(space_id)
+           DO UPDATE SET
+             desired_generation = desired_generation + 1,
+             state = 'dirty',
+             updated_at = unixepoch()`,
+        )
         .run(spaceId)
     } catch {
       // Non-blocking
@@ -2041,11 +2273,20 @@ export class DocumentMemoryStore {
     const fileName = `ann-${sanitized}.usearch`
     this.db
       .prepare(
-        `INSERT INTO ann_indexes (space_id, generation, file_path, indexed_count, state, updated_at)
-         VALUES (?, 0, ?, 0, 'rebuilding', unixepoch())
-         ON CONFLICT (space_id) DO UPDATE SET state = 'rebuilding', updated_at = unixepoch()`,
+        `INSERT INTO ann_indexes (space_id, generation, desired_generation, file_path, indexed_count, state, updated_at)
+         VALUES (?, 0, 1, ?, 0, 'rebuilding', unixepoch())
+         ON CONFLICT (space_id) DO UPDATE SET
+           file_path = excluded.file_path,
+           desired_generation = CASE WHEN ann_indexes.desired_generation = 0 THEN 1 ELSE ann_indexes.desired_generation END,
+           state = 'rebuilding',
+           updated_at = unixepoch()`,
       )
       .run(spaceId, fileName)
+
+    const currentMeta = this.db
+      .prepare('SELECT generation, desired_generation FROM ann_indexes WHERE space_id = ?')
+      .get(spaceId) as { generation?: number; desired_generation?: number } | undefined
+    const targetGeneration = currentMeta?.desired_generation ?? 1
 
     const rows = this.db
       .prepare(
@@ -2059,11 +2300,22 @@ export class DocumentMemoryStore {
       .all(spaceId) as Array<{ chunk_id: number; vector: Uint8Array; vector_dim: number }>
 
     if (!rows.length) {
-      this.db
+      const info = this.db
         .prepare(
-          `UPDATE ann_indexes SET indexed_count = 0, state = 'ready', updated_at = unixepoch() WHERE space_id = ?`,
+          `UPDATE ann_indexes
+           SET generation = ?,
+               indexed_count = 0,
+               state = 'ready',
+               updated_at = unixepoch()
+           WHERE space_id = ? AND desired_generation = ?`,
         )
-        .run(spaceId)
+        .run(targetGeneration, spaceId, targetGeneration)
+      if (info.changes === 0) {
+        this.db
+          .prepare("UPDATE ann_indexes SET state = 'dirty', updated_at = unixepoch() WHERE space_id = ?")
+          .run(spaceId)
+        return { ok: false, count: 0 }
+      }
       return { ok: true, count: 0 }
     }
     const dim = rows[0]!.vector_dim
@@ -2071,39 +2323,49 @@ export class DocumentMemoryStore {
     const chunkIds = rows.map((r) => r.chunk_id)
     const vectors = rows.map((r) => Array.from(blobVector(r.vector, r.vector_dim)))
 
-    const annMeta = this.db
-      .prepare('SELECT generation FROM ann_indexes WHERE space_id = ?')
-      .get(spaceId) as { generation?: number } | undefined
-    const nextGeneration = (annMeta?.generation ?? 0) + 1
-
     try {
-      const success = await ann.rebuildAtomic(chunkIds, vectors, nextGeneration)
+      const success = await ann.rebuildAtomic(chunkIds, vectors, targetGeneration)
       if (success) {
-        this.db
+        const info = this.db
           .prepare(
             `UPDATE ann_indexes
              SET generation = ?,
                  indexed_count = ?,
                  state = 'ready',
                  updated_at = unixepoch()
-             WHERE space_id = ?`,
+             WHERE space_id = ?
+               AND desired_generation = ?`,
           )
-          .run(nextGeneration, rows.length, spaceId)
+          .run(targetGeneration, rows.length, spaceId, targetGeneration)
+
+        if (info.changes === 0) {
+          // Canonical data was mutated during rebuild!
+          // DO NOT set ready. Keep state = 'dirty' and return { ok: false, count: 0 }
+          this.db
+            .prepare("UPDATE ann_indexes SET state = 'dirty', updated_at = unixepoch() WHERE space_id = ?")
+            .run(spaceId)
+          if (typeof ann.markDirty === 'function') {
+            ann.markDirty()
+          }
+          return { ok: false, count: 0 }
+        }
         return { ok: true, count: rows.length }
       } else {
         this.db
-          .prepare(
-            `UPDATE ann_indexes SET state = 'failed', updated_at = unixepoch() WHERE space_id = ?`,
-          )
+          .prepare("UPDATE ann_indexes SET state = 'dirty', updated_at = unixepoch() WHERE space_id = ?")
           .run(spaceId)
+        if (typeof ann.markDirty === 'function') {
+          ann.markDirty()
+        }
         return { ok: false, count: 0 }
       }
     } catch {
       this.db
-        .prepare(
-          `UPDATE ann_indexes SET state = 'failed', updated_at = unixepoch() WHERE space_id = ?`,
-        )
+        .prepare("UPDATE ann_indexes SET state = 'dirty', updated_at = unixepoch() WHERE space_id = ?")
         .run(spaceId)
+      if (typeof ann.markDirty === 'function') {
+        ann.markDirty()
+      }
       return { ok: false, count: 0 }
     }
   }

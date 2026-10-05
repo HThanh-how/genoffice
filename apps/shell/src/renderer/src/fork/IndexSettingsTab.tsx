@@ -8,6 +8,7 @@ import { EmbeddingModelSettings } from './EmbeddingModelSettings'
 import { EverythingSettings } from './EverythingSettings'
 import { DbLocationSettings } from './DbLocationSettings'
 import { PdfPagesSettings } from './PdfPagesSettings'
+import { IndexDiagnostics } from './IndexDiagnostics'
 import './index-settings.css'
 import { IndexMutationTimeout, runIndexMutation } from './index-mutation'
 
@@ -33,6 +34,8 @@ const EN = {
   ocrHint: 'Daily limit, pages, model, quota floors',
   model: 'Search model',
   modelHint: 'Standard or high quality',
+  diagnostics: 'Diagnostics',
+  diagnosticsHint: 'Model architecture, vector dimensions, ANN state, and cache',
   data: 'Data',
   dataHint: 'Where the index is kept, and clearing it',
   clear: 'Clear indexed content…',
@@ -61,6 +64,8 @@ const VI: typeof EN = {
   ocrHint: 'Số PDF mỗi ngày, số trang, mô hình, ngưỡng quota',
   model: 'Mô hình tìm kiếm',
   modelHint: 'Chuẩn hay chất lượng cao',
+  diagnostics: 'Chẩn đoán',
+  diagnosticsHint: 'Kiến trúc mô hình, số chiều vector, trạng thái ANN và bộ nhớ đệm',
   data: 'Dữ liệu',
   dataHint: 'Chỉ mục nằm ở đâu, và xoá nó',
   clear: 'Xoá nội dung chỉ mục…',
@@ -69,12 +74,13 @@ const VI: typeof EN = {
   cleared: 'Đã xoá nội dung chỉ mục.',
 }
 
-type SectionIcon = 'run' | 'pdf' | 'ocr' | 'model' | 'data'
+type SectionIcon = 'run' | 'pdf' | 'ocr' | 'model' | 'data' | 'diagnostics'
 const ICON_PATHS: Record<SectionIcon, string> = {
   run: 'M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
   pdf: 'M7 3h7l4 4v14H7zM14 3v5h4M10 12h5m-5 4h5',
   ocr: 'M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 9h8m-4 0v7m-3 0h6',
   model: 'M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Zm5.5-2 5 5',
+  diagnostics: 'M22 12h-4l-3 9L9 3l-3 9H2',
   data: 'M4 6c0-4 16-4 16 0s-16 4-16 0Zm0 0v6c0 4 16 4 16 0V6M4 12v6c0 4 16 4 16 0v-6',
 }
 function Section({
@@ -178,6 +184,9 @@ export function IndexSettingsTab({ api, focus }: { api: HomeApi; focus?: 'ocr' }
       </Section>
       <Section title={d.model} hint={d.modelHint} icon="model">
         <EmbeddingModelSettings />
+      </Section>
+      <Section title={d.diagnostics} hint={d.diagnosticsHint} icon="diagnostics">
+        <IndexDiagnostics api={api} />
       </Section>
       <EverythingSettings api={api} />
       <Section title={d.storage} hint={d.storageHint} icon="data" open>

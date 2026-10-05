@@ -32,6 +32,64 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
     rmSync(directory, { recursive: true, force: true })
   })
 
+  function createStoreWith20kEmbeddings(spaceId = 'space-audit'): { store: DocumentMemoryStore; dbPath: string } {
+    const dbPath = join(directory, `${spaceId}.sqlite`)
+    const store = new DocumentMemoryStore(dbPath)
+    activeStores.push(store)
+
+    // Register embedding space
+    store.rawDb
+      .prepare(
+        `INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+         VALUES (?, 'test-repo', 'v1', 'mean', 2, 'fp32')`,
+      )
+      .run(spaceId)
+
+    // Insert 1 canonical document
+    const docPath = join(directory, `${spaceId}-report.docx`)
+    store.rawDb
+      .prepare(
+        `INSERT INTO documents (id, path, name, status, excluded, chunk_counted, priority_at)
+         VALUES (1, ?, 'report.docx', 'ready', 0, 1, 1000)`,
+      )
+      .run(docPath)
+
+    // Insert 20,000 chunks and embeddings in a single atomic transaction
+    store.rawDb.exec('BEGIN IMMEDIATE')
+    const insertChunk = store.rawDb.prepare(
+      'INSERT INTO chunks (id, document_id, text, normalized, location, ordinal) VALUES (?, 1, ?, ?, ?, ?)',
+    )
+    const insertEmb = store.rawDb.prepare(
+      'INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, 2)',
+    )
+
+    // Chunk 1: [1, 0] (best match for query [1, 0])
+    insertChunk.run(1, 'Target Chunk One', 'target chunk one', '1', 0)
+    insertEmb.run(1, spaceId, floatBlob([1, 0]))
+
+    // Chunk 2: [0.8, 0.6] (second match)
+    insertChunk.run(2, 'Target Chunk Two', 'target chunk two', '2', 1)
+    insertEmb.run(2, spaceId, floatBlob([0.8, 0.6]))
+
+    // Chunks 3..20,000: orthogonal vectors [0, 1]
+    const otherVectorBlob = floatBlob([0, 1])
+    for (let i = 3; i <= ANN_MIN_VECTORS; i++) {
+      insertChunk.run(i, `Chunk ${i}`, `chunk ${i}`, String(i), i - 1)
+      insertEmb.run(i, spaceId, otherVectorBlob)
+    }
+    store.rawDb.exec('COMMIT')
+
+    // Pre-populate ann_indexes entry
+    store.rawDb
+      .prepare(
+        `INSERT INTO ann_indexes (space_id, generation, desired_generation, file_path, indexed_count, state, updated_at)
+         VALUES (?, 1, 1, ?, ?, 'ready', unixepoch())`,
+      )
+      .run(spaceId, `ann-${spaceId}.usearch`, ANN_MIN_VECTORS)
+
+    return { store, dbPath }
+  }
+
   // =========================================================================
   // 1. Generation Coherence & Cross-Process Tests (Audit P0 / Mục 2)
   // =========================================================================
@@ -127,64 +185,6 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
   // =========================================================================
   describe('2. Crash Window & Stale Prevention Test', () => {
     const spaceId = 'space-audit'
-
-    function createStoreWith20kEmbeddings(): { store: DocumentMemoryStore; dbPath: string } {
-      const dbPath = join(directory, 'audit-store.sqlite')
-      const store = new DocumentMemoryStore(dbPath)
-      activeStores.push(store)
-
-      // Register embedding space
-      store.rawDb
-        .prepare(
-          `INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
-           VALUES (?, 'test-repo', 'v1', 'mean', 2, 'fp32')`,
-        )
-        .run(spaceId)
-
-      // Insert 1 canonical document
-      const docPath = join(directory, 'report.docx')
-      store.rawDb
-        .prepare(
-          `INSERT INTO documents (id, path, name, status, excluded, chunk_counted, priority_at)
-           VALUES (1, ?, 'report.docx', 'ready', 0, 1, 1000)`,
-        )
-        .run(docPath)
-
-      // Insert 20,000 chunks and embeddings in a single atomic transaction
-      store.rawDb.exec('BEGIN IMMEDIATE')
-      const insertChunk = store.rawDb.prepare(
-        'INSERT INTO chunks (id, document_id, text, normalized, location, ordinal) VALUES (?, 1, ?, ?, ?, ?)',
-      )
-      const insertEmb = store.rawDb.prepare(
-        'INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, 2)',
-      )
-
-      // Chunk 1: [1, 0] (best match for query [1, 0])
-      insertChunk.run(1, 'Target Chunk One', 'target chunk one', '1', 0)
-      insertEmb.run(1, spaceId, floatBlob([1, 0]))
-
-      // Chunk 2: [0.8, 0.6] (second match)
-      insertChunk.run(2, 'Target Chunk Two', 'target chunk two', '2', 1)
-      insertEmb.run(2, spaceId, floatBlob([0.8, 0.6]))
-
-      // Chunks 3..20,000: orthogonal vectors [0, 1]
-      const otherVectorBlob = floatBlob([0, 1])
-      for (let i = 3; i <= ANN_MIN_VECTORS; i++) {
-        insertChunk.run(i, `Chunk ${i}`, `chunk ${i}`, String(i), i - 1)
-        insertEmb.run(i, spaceId, otherVectorBlob)
-      }
-      store.rawDb.exec('COMMIT')
-
-      // Pre-populate ann_indexes entry
-      store.rawDb
-        .prepare(
-          `INSERT INTO ann_indexes (space_id, generation, file_path, indexed_count, state, updated_at)
-           VALUES (?, 1, ?, ?, 'ready', unixepoch())`,
-        )
-        .run(spaceId, `ann-${spaceId}.usearch`, ANN_MIN_VECTORS)
-
-      return { store, dbPath }
-    }
 
     it('blocks ANN query and falls back to SQLite exact cosine scan when state is dirty', () => {
       const { store } = createStoreWith20kEmbeddings()
@@ -352,8 +352,8 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
 
       store.rawDb
         .prepare(
-          `INSERT INTO ann_indexes (space_id, generation, file_path, indexed_count, state, updated_at)
-           VALUES (?, 1, ?, ?, 'ready', unixepoch())`,
+          `INSERT INTO ann_indexes (space_id, generation, desired_generation, file_path, indexed_count, state, updated_at)
+           VALUES (?, 1, 1, ?, ?, 'ready', unixepoch())`,
         )
         .run(spaceId, `ann-${spaceId}.usearch`, ANN_MIN_VECTORS)
 
@@ -438,8 +438,8 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
 
       store.rawDb
         .prepare(
-          `INSERT INTO ann_indexes (space_id, generation, file_path, indexed_count, state, updated_at)
-           VALUES (?, 1, ?, ?, 'ready', unixepoch())`,
+          `INSERT INTO ann_indexes (space_id, generation, desired_generation, file_path, indexed_count, state, updated_at)
+           VALUES (?, 1, 1, ?, ?, 'ready', unixepoch())`,
         )
         .run(spaceId, `ann-${spaceId}.usearch`, ANN_MIN_VECTORS)
 
@@ -456,9 +456,9 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
       workerAnn.saveAtomic(2)
       expect(workerAnn.getLoadedGeneration()).toBe(2)
 
-      // Worker updates SQLite ann_indexes to generation = 2
+      // Worker updates SQLite ann_indexes to generation = 2, desired_generation = 2
       store.rawDb
-        .prepare('UPDATE ann_indexes SET generation = 2, updated_at = unixepoch() WHERE space_id = ?')
+        .prepare('UPDATE ann_indexes SET generation = 2, desired_generation = 2, updated_at = unixepoch() WHERE space_id = ?')
         .run(spaceId)
 
       // Prior to search, residentAnn still has loadedGeneration = 1
@@ -470,4 +470,57 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
       expect(results[0]?.chunkId).toBe(2)
     })
   })
+
+  // =========================================================================
+  // 5. Mutation During Rebuild & Race Prevention (Audit P0-A)
+  // =========================================================================
+  describe('5. Mutation During Rebuild & Race Prevention (P0-A)', () => {
+    it('prevents stale ANN ready state when mutation occurs during rebuild and falls back to SQLite', async () => {
+      const { store } = createStoreWith20kEmbeddings()
+      const spaceId = 'space-audit'
+
+      // Set initial state to dirty with desired_generation = 1
+      store.rawDb
+        .prepare("UPDATE ann_indexes SET state = 'dirty', desired_generation = 1, generation = 0 WHERE space_id = ?")
+        .run(spaceId)
+
+      const ann = store.getAnnIndex(spaceId, 2)
+      expect(ann).toBeDefined()
+
+      // Spy on rebuildAtomic: simulate main process mutating data and calling markAnnDirty during rebuild
+      const originalRebuildAtomic = ann.rebuildAtomic.bind(ann)
+      vi.spyOn(ann, 'rebuildAtomic').mockImplementation(async (ids, vecs, gen) => {
+        // Main process triggers mutation during rebuild of the old snapshot:
+        // Calling markAnnDirty increments desired_generation from 1 to 2 and sets state to dirty
+        store.markAnnDirty(spaceId)
+        return originalRebuildAtomic(ids, vecs, gen)
+      })
+
+      // Execute rebuildAnnIndex: started with desired_generation = 1
+      const rebuildResult = await store.rebuildAnnIndex(spaceId)
+
+      // Strict contract: info.changes === 0 because desired_generation advanced to 2
+      // Must NOT set state to 'ready', must return { ok: false, count: 0 }
+      expect(rebuildResult.ok).toBe(false)
+      expect(rebuildResult.count).toBe(0)
+
+      // Verify SQLite state remains 'dirty' and desired_generation is 2
+      const meta = store.rawDb
+        .prepare('SELECT generation, desired_generation, state FROM ann_indexes WHERE space_id = ?')
+        .get(spaceId) as { generation: number; desired_generation: number; state: string }
+      expect(meta.state).toBe('dirty')
+      expect(meta.desired_generation).toBe(2)
+
+      // Query semantic search: ANN is dirty and generation !== desired_generation
+      // Must NOT invoke ANN searchSync, must safely fallback 100% to SQLite exact cosine scan
+      const searchSyncSpy = vi.spyOn(ann, 'searchSync')
+      const results = store.searchSemantic([1, 0], 5, spaceId)
+
+      expect(searchSyncSpy).not.toHaveBeenCalled()
+      expect(results.length).toBeGreaterThan(0)
+      expect(results[0]?.chunkId).toBe(1)
+      expect(results[0]?.score).toBeCloseTo(1.0, 3)
+    })
+  })
 })
+
