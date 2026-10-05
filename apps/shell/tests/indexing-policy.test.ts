@@ -243,6 +243,18 @@ describe('resolvePolicy on battery', () => {
 })
 
 describe('resolvePolicy global pauses', () => {
+  it('pauses when the machine is suspended on AC power', () => {
+    expect(policy({ suspended: true, onBattery: false })).toMatchObject({
+      paused: true,
+      pauseReason: 'suspended',
+    })
+  })
+  it('pauses when the machine is suspended on battery even if pauseOnBattery is false', () => {
+    expect(policy({ suspended: true, onBattery: true, pauseOnBattery: false })).toMatchObject({
+      paused: true,
+      pauseReason: 'suspended',
+    })
+  })
   it('pauses on low memory regardless of power', () => {
     expect(policy({ freeMemMB: 1499 })).toMatchObject({ paused: true, pauseReason: 'low-memory' })
     expect(policy({ freeMemMB: 1500 }).paused).toBe(false)
@@ -255,8 +267,15 @@ describe('resolvePolicy global pauses', () => {
     })
   })
   it('reports a user pause first', () => {
-    expect(policy({ userPaused: true, freeMemMB: 10, thermalCritical: true })).toMatchObject({
+    expect(
+      policy({ userPaused: true, suspended: true, freeMemMB: 10, thermalCritical: true }),
+    ).toMatchObject({
       pauseReason: 'user',
+    })
+  })
+  it('reports suspended before thermal and low memory', () => {
+    expect(policy({ suspended: true, freeMemMB: 10, thermalCritical: true })).toMatchObject({
+      pauseReason: 'suspended',
     })
   })
   it('a paused policy asks for no CPU', () => {

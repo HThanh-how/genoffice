@@ -117,8 +117,8 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
     revision: 'ad88d7a126711f1490cd4bad645dc9d3acc2af6a',
 
     files: [
-      { path: 'tokenizer.json', sha256: 'dbe651d648ed89b8bbcaccb28f7e832afa12a03e' },
-      { path: 'tokenizer_config.json', sha256: '3fb43942263a11337702b048c26ece71cdd7cfa1' },
+      { path: 'tokenizer.json', sha256: '7e295e5bb91a3d35335f92fa4294a6e4e0ab4aa586db853e14312a62135bfddc' },
+      { path: 'tokenizer_config.json', sha256: '3c0884a30471f4f542dc89630f62a380bb70a341fafda826136a7be921fec7ea' },
       { path: standardArtifact.modelFile, sha256: standardArtifact.sha256 },
     ],
 
@@ -185,6 +185,17 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
     minFreeMemoryMB: 900,
   },
 }
+
+export function assertEmbeddingManifest(profile: EmbeddingProfile): void {
+  for (const file of profile.files) {
+    if (file.sha256 && !/^[a-f0-9]{64}$/i.test(file.sha256)) {
+      throw new Error(`Invalid SHA-256 for ${profile.id}:${file.path}`)
+    }
+  }
+}
+
+assertEmbeddingManifest(EMBEDDING_PROFILES.standard)
+assertEmbeddingManifest(EMBEDDING_PROFILES.high)
 
 export const DEFAULT_EMBEDDING_PROFILE: EmbeddingProfileId = 'standard'
 

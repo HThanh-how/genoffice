@@ -29,6 +29,8 @@ interface RecentRow {
   truncated: number
 }
 
+const readyRank = (status: string): number => (status === 'ready' || status === 'text-only' ? 1 : 0)
+
 export class HotMetadataSearch {
   private readonly searchNameStatement: StatementSync
   private readonly recentStatement: StatementSync
@@ -134,7 +136,7 @@ export class HotMetadataSearch {
     scored.sort(
       (a, b) =>
         b.score - a.score ||
-        Number(a.row.status === 'ready') - Number(b.row.status === 'ready') ||
+        readyRank(b.row.status) - readyRank(a.row.status) ||
         b.row.updated_at - a.row.updated_at,
     )
 

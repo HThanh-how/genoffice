@@ -198,6 +198,7 @@ describe('indexing strings', () => {
       'low-memory',
       'thermal',
       'user',
+      'suspended',
     ] as const)
       for (const lang of ['en', 'vi', 'zh'] as const)
         expect(

@@ -1,4 +1,4 @@
-import { existsSync, renameSync, unlinkSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, renameSync, unlinkSync, mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { AnnHit, AnnIndex } from './ann-index'
 import { ExactVectorIndex } from './exact-vector-index'
@@ -48,6 +48,7 @@ function getUsearchModule(): USearchModule | null {
 export class USearchIndex implements AnnIndex {
   private nativeIndex: USearchNativeIndex | null = null
   private fallbackExact: ExactVectorIndex | null = null
+  private state: 'ready' | 'dirty' = 'ready'
   private isOpen = false
 
   constructor(
@@ -59,21 +60,10 @@ export class USearchIndex implements AnnIndex {
     if (this.isOpen) return
     const mod = getUsearchModule()
     if (!mod) {
+      this.nativeIndex = null
       this.fallbackExact = new ExactVectorIndex()
-      const fallbackFile = `${this.indexPath}.fallback.json`
-      if (existsSync(fallbackFile)) {
-        try {
-          const raw = readFileSync(fallbackFile, 'utf-8')
-          const entries = JSON.parse(raw) as Array<[number, number[]]>
-          await this.fallbackExact.add(
-            entries.map((e) => e[0]),
-            entries.map((e) => e[1]),
-          )
-        } catch {
-          // ignore corrupt fallback cache
-        }
-      }
       await this.fallbackExact.open()
+      this.state = 'ready'
       this.isOpen = true
       return
     }
@@ -86,10 +76,12 @@ export class USearchIndex implements AnnIndex {
       if (existsSync(this.indexPath)) {
         this.nativeIndex.load(this.indexPath)
       }
+      this.state = 'ready'
     } catch {
       this.nativeIndex = null
       this.fallbackExact = new ExactVectorIndex()
       await this.fallbackExact.open()
+      this.state = 'dirty'
     }
     this.isOpen = true
   }
@@ -98,19 +90,9 @@ export class USearchIndex implements AnnIndex {
     if (this.isOpen) return
     const mod = getUsearchModule()
     if (!mod) {
+      this.nativeIndex = null
       this.fallbackExact = new ExactVectorIndex()
-      const fallbackFile = `${this.indexPath}.fallback.json`
-      if (existsSync(fallbackFile)) {
-        try {
-          const raw = readFileSync(fallbackFile, 'utf-8')
-          const entries = JSON.parse(raw) as Array<[number, number[]]>
-          for (const [id, vec] of entries) {
-            this.fallbackExact.add([id], [vec])
-          }
-        } catch {
-          // ignore corrupt fallback cache
-        }
-      }
+      this.state = 'ready'
       this.isOpen = true
       return
     }
@@ -123,20 +105,51 @@ export class USearchIndex implements AnnIndex {
       if (existsSync(this.indexPath)) {
         this.nativeIndex.load(this.indexPath)
       }
+      this.state = 'ready'
     } catch {
       this.nativeIndex = null
       this.fallbackExact = new ExactVectorIndex()
+      this.state = 'dirty'
     }
     this.isOpen = true
   }
 
   isAvailable(): boolean {
     if (!this.isOpen) this.openSync()
-    return !!this.nativeIndex || !!this.fallbackExact
+    return this.nativeIndex !== null
+  }
+
+  isHealthy(): boolean {
+    return this.state === 'ready'
+  }
+
+  getState(): 'ready' | 'dirty' {
+    return this.state
   }
 
   searchSync(vector: number[], limit: number): AnnHit[] {
     if (!this.isOpen) this.openSync()
+    if (this.nativeIndex) {
+      if (limit <= 0) return []
+
+      try {
+        const results = this.nativeIndex.search(new Float32Array(vector), limit)
+        const hits: AnnHit[] = []
+        const keys = results.keys
+        const distances = results.distances
+
+        for (let i = 0; i < keys.length; i++) {
+          const rawKey = keys[i]!
+          const key = typeof rawKey === 'bigint' ? Number(rawKey) : Number(rawKey)
+          const dist = Number(distances[i] ?? 0)
+          hits.push({ chunkId: key, distance: dist })
+        }
+        return hits
+      } catch {
+        return []
+      }
+    }
+
     if (this.fallbackExact) {
       const entries = Array.from(this.fallbackExact.getAllEntries())
       const scored = entries.map(([chunkId, vec]) => {
@@ -152,31 +165,17 @@ export class USearchIndex implements AnnIndex {
       return scored.slice(0, limit).map((h) => ({ chunkId: h.id, distance: 1 - h.score }))
     }
 
-    if (!this.nativeIndex || limit <= 0) return []
-
-    try {
-      const results = this.nativeIndex.search(new Float32Array(vector), limit)
-      const hits: AnnHit[] = []
-      const keys = results.keys
-      const distances = results.distances
-
-      for (let i = 0; i < keys.length; i++) {
-        const rawKey = keys[i]!
-        const key = typeof rawKey === 'bigint' ? Number(rawKey) : Number(rawKey)
-        const dist = Number(distances[i] ?? 0)
-        hits.push({ chunkId: key, distance: dist })
-      }
-      return hits
-    } catch {
-      return []
-    }
+    return []
   }
 
   addSync(chunkIds: number[], vectors: number[][]): void {
     if (!this.isOpen) this.openSync()
     if (this.fallbackExact) {
-      void this.fallbackExact.add(chunkIds, vectors)
-      this.saveAtomic()
+      try {
+        void this.fallbackExact.add(chunkIds, vectors)
+      } catch {
+        this.state = 'dirty'
+      }
       return
     }
 
@@ -192,15 +191,18 @@ export class USearchIndex implements AnnIndex {
       }
       this.saveAtomic()
     } catch {
-      // Best effort update
+      this.state = 'dirty'
     }
   }
 
   removeSync(chunkIds: number[]): void {
     if (!this.isOpen) this.openSync()
     if (this.fallbackExact) {
-      void this.fallbackExact.remove(chunkIds)
-      this.saveAtomic()
+      try {
+        void this.fallbackExact.remove(chunkIds)
+      } catch {
+        this.state = 'dirty'
+      }
       return
     }
 
@@ -214,7 +216,7 @@ export class USearchIndex implements AnnIndex {
         this.saveAtomic()
       }
     } catch {
-      // Deletions on unsupported versions may require rebuild
+      this.state = 'dirty'
     }
   }
 
@@ -223,50 +225,79 @@ export class USearchIndex implements AnnIndex {
   }
 
   async add(chunkIds: number[], vectors: number[][]): Promise<void> {
+    if (!this.isOpen) await this.open()
     this.addSync(chunkIds, vectors)
   }
 
   async remove(chunkIds: number[]): Promise<void> {
     if (!this.isOpen) await this.open()
-    if (this.fallbackExact) {
-      await this.fallbackExact.remove(chunkIds)
-      this.saveAtomic()
-      return
-    }
-
-    if (!this.nativeIndex) return
-
-    try {
-      if (typeof this.nativeIndex.remove === 'function') {
-        for (const id of chunkIds) {
-          this.nativeIndex.remove(id)
-        }
-        this.saveAtomic()
-      }
-    } catch {
-      // Deletions on unsupported versions may require rebuild
-    }
+    this.removeSync(chunkIds)
   }
 
   async rebuild(): Promise<void> {
     if (this.fallbackExact) {
       await this.fallbackExact.rebuild()
-      this.saveAtomic()
       return
     }
     const mod = getUsearchModule()
     if (mod) {
-      this.nativeIndex = new mod.Index({
+      try {
+        this.nativeIndex = new mod.Index({
+          dimensions: this.dimensions,
+          metric: 'cos',
+        })
+        this.state = 'ready'
+      } catch {
+        this.state = 'dirty'
+      }
+    }
+  }
+
+  async rebuildAtomic(chunkIds: number[], vectors: number[][]): Promise<boolean> {
+    if (!this.isOpen) await this.open()
+    const mod = getUsearchModule()
+    if (!mod) {
+      if (this.fallbackExact) {
+        await this.fallbackExact.rebuild()
+        await this.fallbackExact.add(chunkIds, vectors)
+      }
+      this.state = 'ready'
+      return true
+    }
+
+    const tempPath = `${this.indexPath}.rebuild.tmp`
+    try {
+      const dir = dirname(this.indexPath)
+      if (dir && !existsSync(dir)) {
+        mkdirSync(dir, { recursive: true })
+      }
+
+      const nextIndex = new mod.Index({
         dimensions: this.dimensions,
         metric: 'cos',
       })
-      if (existsSync(this.indexPath)) {
-        try {
-          unlinkSync(this.indexPath)
-        } catch {
-          // ignore
+      for (let i = 0; i < chunkIds.length; i++) {
+        const id = chunkIds[i]!
+        const vec = vectors[i]
+        if (vec) {
+          nextIndex.add(id, new Float32Array(vec))
         }
       }
+      nextIndex.save(tempPath)
+      renameSync(tempPath, this.indexPath)
+      this.nativeIndex = nextIndex
+      this.state = 'ready'
+      return true
+    } catch {
+      try {
+        if (existsSync(tempPath)) {
+          unlinkSync(tempPath)
+        }
+      } catch {
+        // ignore cleanup error
+      }
+      this.state = 'dirty'
+      return false
     }
   }
 
@@ -277,42 +308,35 @@ export class USearchIndex implements AnnIndex {
     }
     this.nativeIndex = null
     this.isOpen = false
+    this.state = 'ready'
+  }
+
+  size(): number {
+    if (this.nativeIndex && typeof this.nativeIndex.size === 'function') {
+      return this.nativeIndex.size()
+    }
+    if (this.fallbackExact) {
+      return this.fallbackExact.size()
+    }
+    return 0
   }
 
   private saveAtomic(): void {
-    if (!this.indexPath) return
-    const dir = dirname(this.indexPath)
-    if (!existsSync(dir)) {
-      mkdirSync(dir, { recursive: true })
-    }
-
-    if (this.fallbackExact) {
-      const fallbackFile = `${this.indexPath}.fallback.json`
-      const tempPath = `${fallbackFile}.tmp`
-      try {
-        const data = Array.from(this.fallbackExact.getAllEntries())
-        writeFileSync(tempPath, JSON.stringify(data), 'utf-8')
-        renameSync(tempPath, fallbackFile)
-      } catch {
-        try {
-          if (existsSync(tempPath)) unlinkSync(tempPath)
-        } catch {
-          // ignore
-        }
-      }
-      return
-    }
-
-    if (!this.nativeIndex) return
+    if (!this.indexPath || !this.nativeIndex) return
     const tempPath = `${this.indexPath}.tmp`
     try {
+      const dir = dirname(this.indexPath)
+      if (dir && !existsSync(dir)) {
+        mkdirSync(dir, { recursive: true })
+      }
       this.nativeIndex.save(tempPath)
       renameSync(tempPath, this.indexPath)
     } catch {
+      this.state = 'dirty'
       try {
         if (existsSync(tempPath)) unlinkSync(tempPath)
       } catch {
-        // ignore
+        // ignore cleanup error
       }
     }
   }

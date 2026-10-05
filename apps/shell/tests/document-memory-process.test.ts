@@ -4,8 +4,10 @@ import { join } from 'node:path'
 import { expect, it } from 'vitest'
 import { createIndexProcess } from '../src/main/document-memory/process-worker'
 import { withBackgroundBudget } from '../src/main/document-memory/cpu-budget'
+import { resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
 
 it('runs index IPC in a separate process and terminates it on close', async () => {
+  resetIndexingPolicyBus()
   const dir = mkdtempSync(join(tmpdir(), 'index-process-'))
   const file = join(dir, 'worker.cjs')
   writeFileSync(

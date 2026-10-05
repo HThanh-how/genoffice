@@ -8,9 +8,17 @@ export const DEFAULT_PAUSE_ON_BATTERY = true
 /** app-settings.json keys. */
 export const INDEXING_MODE_KEY = 'indexingMode'
 export const PAUSE_INDEXING_ON_BATTERY_KEY = 'pauseIndexingOnBattery'
-
 export type IndexingPauseReason =
-  'battery' | 'low-battery' | 'battery-saver' | 'locked' | 'low-memory' | 'thermal' | 'user'
+  | 'battery'
+  | 'low-battery'
+  | 'battery-saver'
+  | 'locked'
+  | 'low-memory'
+  | 'thermal'
+  | 'user'
+  | 'suspended'
+
+export type PauseReason = IndexingPauseReason
 
 /** Coarse state the UI describes in one sentence. */
 export type IndexingTier = 'paused' | 'battery' | 'light' | 'active' | 'idle'

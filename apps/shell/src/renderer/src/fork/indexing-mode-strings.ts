@@ -35,6 +35,7 @@ const zh = {
   whyLowMemory: '可用内存不足',
   whyThermal: '电脑过热',
   whyUser: '你已关闭文档记忆',
+  whySuspended: '电脑已休眠',
   popupIdle: '快速运行中（{threads}）',
   popupActive: '轻量运行中（{threads}）',
   popupLight: '安静运行中（{threads}）',
@@ -72,6 +73,7 @@ const en = {
   whyLowMemory: 'the computer is low on memory',
   whyThermal: 'the computer is too hot',
   whyUser: 'document memory is switched off',
+  whySuspended: 'the computer is asleep',
   popupIdle: 'Running fast ({threads})',
   popupActive: 'Running gently ({threads})',
   popupLight: 'Running quietly ({threads})',
@@ -107,6 +109,7 @@ const vi = {
   whyLowMemory: 'máy sắp hết bộ nhớ trống',
   whyThermal: 'máy đang quá nóng',
   whyUser: 'bạn đã tắt bộ nhớ tài liệu',
+  whySuspended: 'máy tính đang tạm nghỉ',
   popupIdle: 'Đang chạy nhanh ({threads})',
   popupActive: 'Đang chạy nhẹ ({threads})',
   popupLight: 'Đang chạy êm ({threads})',
@@ -146,6 +149,7 @@ const WHY_KEYS: Record<IndexingPauseReason, IndexingStringKey> = {
   'low-memory': 'whyLowMemory',
   thermal: 'whyThermal',
   user: 'whyUser',
+  suspended: 'whySuspended',
 }
 
 /**

@@ -557,4 +557,21 @@ describe('DocumentMemoryManager', () => {
       expect(reopened.listPaths()).toEqual([pausedPath])
     })
   })
+
+  it('recycles background indexing worker gracefully without changing enabled state', async () => {
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    const terminateSpy = vi.spyOn(fake, 'terminate')
+    const instance = manager(fake)
+    expect(instance.status().enabled).toBe(true)
+
+    const docPath = join(dir, 'doc.txt')
+    writeFileSync(docPath, 'Sample content to index')
+    instance.remember(docPath)
+    await until(() => instance.status().chunks === 1)
+
+    instance.recycleEmbeddingWorker('Model retry requested from diagnostics')
+    expect(terminateSpy).toHaveBeenCalled()
+    expect(instance.status().enabled).toBe(true)
+    expect(instance.status().lastError).toBe('Model retry requested from diagnostics')
+  })
 })

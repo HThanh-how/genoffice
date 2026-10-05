@@ -3,6 +3,7 @@ import type {
   IndexingPauseReason,
   IndexingTier,
 } from '../../shared/fork/indexing-mode'
+export type PauseReason = IndexingPauseReason
 
 /**
  * Pure policy for the background document-index job. The user and the UI always come first:
@@ -133,6 +134,7 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
   const percent = input.batteryPercent
 
   if (input.userPaused) return paused('user', 'paused by the user', memoryTier)
+  if (input.suspended) return paused('suspended', 'machine is suspended', memoryTier)
   if (input.thermalCritical) return paused('thermal', 'thermal state is critical', memoryTier)
   if (input.freeMemMB < memoryThresholds(input.totalMemMB).low) {
     return paused('low-memory', 'free memory is low', memoryTier)
@@ -146,7 +148,6 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
     if (typeof percent === 'number' && percent < LOW_BATTERY_PERCENT)
       return paused('low-battery', 'battery is low', memoryTier)
     // a locked screen on a charge that is still good is no reason to stop; on a low or unreadable one it is
-    if (input.suspended) return paused('locked', 'the machine is asleep', memoryTier)
     if (
       input.locked &&
       (typeof percent !== 'number' || batteryBand(percent) < OCR_MIN_BATTERY_BAND)

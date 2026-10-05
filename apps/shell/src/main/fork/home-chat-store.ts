@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, readdir, readFile, unlink } from 'node:fs/promises'
+import { chmod, mkdir, readdir, readFile, rename, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   HOME_CHAT_LIMITS,
@@ -132,7 +132,7 @@ function parseSession(raw: unknown, expectedId: string): HomeChatSession | null 
 /**
  * One JSON file per conversation plus a small index cache. The index is
  * rebuilt from the session files whenever it is missing or unreadable, and a
- * corrupt session file is skipped (and removed) instead of failing the list.
+ * corrupt session file is skipped (and quarantined) instead of failing the list.
  * All operations run through one queue so save/delete never interleave.
  */
 export class HomeChatStore {
@@ -219,8 +219,9 @@ export class HomeChatStore {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
     }
-    // unreadable or malformed: remove it so it cannot break the list again
-    await unlink(this.file(id)).catch(() => {})
+    // unreadable or malformed: quarantine it so it cannot break the list again while preserving data
+    const corruptPath = `${this.file(id)}.corrupt-${Date.now()}`
+    await rename(this.file(id), corruptPath).catch(() => {})
     return null
   }
 

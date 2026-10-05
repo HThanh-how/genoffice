@@ -1,4 +1,5 @@
-import { join } from 'node:path'
+import { basename, isAbsolute, join } from 'node:path'
+import { existsSync, statSync } from 'node:fs'
 import type { IpcMain } from 'electron'
 import { DOCUMENT_INDEX_CHANNELS, type EverythingState } from '../../shared/fork/document-index-api'
 import { EverythingSearch } from '../everything/es-client'
@@ -33,7 +34,9 @@ export function createEverything(userData: string): EverythingController {
     set(change) {
       settings = {
         enabled: change.enabled,
-        ...(change.path?.trim() ? { path: change.path.trim().slice(0, 1024) } : {}),
+        ...(change.path === undefined
+          ? (settings.path ? { path: settings.path } : {})
+          : (change.path.trim() ? { path: change.path.trim().slice(0, 1024) } : {})),
       }
       writeEverythingSettings(file, settings)
     },
@@ -63,7 +66,30 @@ export function registerEverythingIpc(
     if (path !== undefined && typeof path !== 'string') throw new Error('Invalid Everything path')
     const current = controller()
     if (!current) throw new Error('Everything is not ready yet')
-    current.set({ enabled, ...(path === undefined ? {} : { path }) })
+
+    if (path === undefined) {
+      current.set({ enabled })
+      return current.state()
+    }
+
+    const trimmed = path.trim()
+    if (trimmed !== '') {
+      if (/[\r\n\0]/.test(trimmed)) {
+        throw new Error('Invalid characters in executable path')
+      }
+      if (!isAbsolute(trimmed)) {
+        throw new Error('Executable path must be absolute')
+      }
+      const expectedExe = process.platform === 'win32' ? 'es.exe' : 'es'
+      if (basename(trimmed).toLowerCase() !== expectedExe) {
+        throw new Error(`Executable must be ${expectedExe}`)
+      }
+      if (!existsSync(trimmed) || !statSync(trimmed).isFile()) {
+        throw new Error('Configured executable does not exist or is not a file')
+      }
+    }
+
+    current.set({ enabled, ...(trimmed === '' ? { path: '' } : { path: trimmed }) })
     return current.state()
   })
 }

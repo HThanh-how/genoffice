@@ -4,6 +4,8 @@ import { constants, setPriority } from 'node:os'
 import type { Worker } from 'node:worker_threads'
 import { attachChildToPolicy } from '../fork/indexing-child-policy'
 
+export const DEFAULT_WORKER_TERMINATE_TIMEOUT_MS = 3000
+
 /** A separate, lower-priority process keeps model CPU and memory away from the UI. */
 export function createIndexProcess(
   path: string,
@@ -46,6 +48,7 @@ export function createIndexProcess(
     detachPolicy?.()
     channel.emit('exit', code ?? 1)
   })
+
   return Object.assign(channel, {
     postMessage(message: unknown) {
       if (!child.connected) throw new Error('Index process is unavailable')
@@ -53,12 +56,41 @@ export function createIndexProcess(
         if (error) channel.emit('error', error)
       })
     },
-    terminate(): Promise<number> {
+    terminate(gracefulMs: number = DEFAULT_WORKER_TERMINATE_TIMEOUT_MS): Promise<number> {
       if (child.exitCode !== null || child.signalCode !== null)
         return Promise.resolve(child.exitCode ?? 0)
       return new Promise((resolve) => {
-        child.once('exit', (code) => resolve(code ?? 0))
-        child.kill()
+        let forceKillTimer: NodeJS.Timeout | null = null
+
+        const onExit = (code: number | null) => {
+          if (forceKillTimer !== null) {
+            clearTimeout(forceKillTimer)
+            forceKillTimer = null
+          }
+          resolve(code ?? 0)
+        }
+
+        child.once('exit', onExit)
+
+        if (gracefulMs > 0 && Number.isFinite(gracefulMs)) {
+          forceKillTimer = setTimeout(() => {
+            forceKillTimer = null
+            if (child.exitCode === null && child.signalCode === null) {
+              try {
+                child.kill('SIGKILL')
+              } catch {
+                // Child might have exited or OS rejected the signal.
+              }
+            }
+          }, gracefulMs)
+          forceKillTimer.unref?.()
+        }
+
+        try {
+          child.kill('SIGTERM')
+        } catch {
+          // If the initial kill signal fails, wait for the exit event or timeout.
+        }
       })
     },
   }) as unknown as Worker

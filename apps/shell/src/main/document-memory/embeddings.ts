@@ -2,6 +2,7 @@ import { indexingWorkerData, postIndexMessage } from './runtime'
 import { withBackgroundBudget } from './cpu-budget'
 import { createEmbeddingSessionKeeper } from '../fork/embedding-ort'
 import type { SessionKeeper } from '../fork/embedding-session'
+import { workerPolicy } from '../fork/indexing-worker-policy'
 import { createReadStream } from 'node:fs'
 import { freemem } from 'node:os'
 import { mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
@@ -160,6 +161,16 @@ export async function embedTexts(
 
   let pending = loaded?.value
   if (!pending) {
+    if (profile.id === 'high' && workerPolicy.allowHeavyEmbedding === false) {
+      postIndexMessage({
+        type: 'model',
+        state: 'error',
+        error:
+          'High-accuracy embedding model disabled by indexing policy (low RAM or battery). Semantic search temporarily paused; text search remains available.',
+      })
+      throw new Error('High-accuracy embedding model disabled by indexing policy')
+    }
+
     const freeMB = freemem() / (1024 * 1024)
     if (profile.minFreeMemoryMB && freeMB < profile.minFreeMemoryMB) {
       postIndexMessage({

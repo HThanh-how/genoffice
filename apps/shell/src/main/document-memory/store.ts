@@ -343,15 +343,17 @@ export class DocumentMemoryStore {
       .get() as { value: string } | undefined
     if (!row || row.value !== '1') {
       try {
-        this.db.prepare("INSERT INTO document_name_fts(document_name_fts) VALUES('rebuild')").run()
+        this.transaction(() => {
+          this.db.prepare("INSERT INTO document_name_fts(document_name_fts) VALUES('rebuild')").run()
+          this.db
+            .prepare(
+              "INSERT OR REPLACE INTO document_memory_meta(key, value) VALUES('name_fts_version', '1')",
+            )
+            .run()
+        })
       } catch {
-        // In case table was just created or rebuild syntax not yet populated
+        // If rebuild fails, transaction rolls back and version is not written, allowing retry next startup
       }
-      this.db
-        .prepare(
-          "INSERT OR REPLACE INTO document_memory_meta(key, value) VALUES('name_fts_version', '1')",
-        )
-        .run()
     }
   }
 
@@ -927,11 +929,16 @@ export class DocumentMemoryStore {
     }
     retireOldSets(this.db, documentId)
     const chunkIds = oldChunkIds.map((c) => c.id)
-    for (const ann of this.annIndexes.values()) {
+    for (const [spaceId, ann] of this.annIndexes.entries()) {
       try {
-        if (ann.isAvailable()) ann.removeSync(chunkIds)
+        if (ann.isAvailable()) {
+          ann.removeSync(chunkIds)
+          if (!ann.isHealthy()) {
+            this.markAnnDirty(spaceId)
+          }
+        }
       } catch {
-        // ignore
+        this.markAnnDirty(spaceId)
       }
     }
   }
@@ -1234,9 +1241,18 @@ export class DocumentMemoryStore {
         if (chunkRows.length === vectors.length) {
           ann.addSync(chunkRows.map((c) => c.id), vectors)
         }
+        if (!ann.isHealthy()) {
+          this.markAnnDirty(embeddingSpaceId)
+        } else {
+          this.db
+            .prepare(
+              `UPDATE ann_indexes SET indexed_count = (SELECT count(*) FROM chunk_embeddings e JOIN chunks c ON c.id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ? AND d.excluded = 0 AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)), updated_at = unixepoch() WHERE space_id = ?`,
+            )
+            .run(embeddingSpaceId, embeddingSpaceId)
+        }
       }
     } catch {
-      // Non-blocking ANN update
+      this.markAnnDirty(embeddingSpaceId)
     }
   }
 
@@ -1277,9 +1293,18 @@ export class DocumentMemoryStore {
           batch.map((b) => b.chunkId),
           batch.map((b) => b.vector),
         )
+        if (!ann.isHealthy()) {
+          this.markAnnDirty(embeddingSpaceId)
+        } else {
+          this.db
+            .prepare(
+              `UPDATE ann_indexes SET indexed_count = (SELECT count(*) FROM chunk_embeddings e JOIN chunks c ON c.id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ? AND d.excluded = 0 AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)), updated_at = unixepoch() WHERE space_id = ?`,
+            )
+            .run(embeddingSpaceId, embeddingSpaceId)
+        }
       }
     } catch {
-      // Non-blocking ANN update
+      this.markAnnDirty(embeddingSpaceId)
     }
   }
 
@@ -1643,10 +1668,21 @@ export class DocumentMemoryStore {
     }
 
     // Production ANN routing: when semantic vector count >= ANN_MIN_VECTORS (20k), query USearchIndex
+    // Strict contract: ONLY trust ANN if state is 'ready', coverage matches canonical count, and index is healthy
     if (countRow.count >= ANN_MIN_VECTORS && embeddingSpaceId) {
       try {
+        const annMeta = this.db
+          .prepare('SELECT generation, indexed_count, state FROM ann_indexes WHERE space_id = ?')
+          .get(embeddingSpaceId) as { generation: number; indexed_count: number; state: string } | undefined
+
         const ann = this.getAnnIndex(embeddingSpaceId, vector.length)
-        if (ann.isAvailable()) {
+        if (
+          annMeta &&
+          annMeta.state === 'ready' &&
+          annMeta.indexed_count === countRow.count &&
+          ann.isAvailable() &&
+          ann.isHealthy()
+        ) {
           const annHits = ann.searchSync(vector, limit * 2)
           if (annHits.length > 0) {
             const chunkIds = annHits.map((h) => h.chunkId)
@@ -1956,7 +1992,27 @@ export class DocumentMemoryStore {
     return idx
   }
 
+  private markAnnDirty(spaceId: string): void {
+    try {
+      this.db
+        .prepare("UPDATE ann_indexes SET state = 'dirty', updated_at = unixepoch() WHERE space_id = ?")
+        .run(spaceId)
+    } catch {
+      // Non-blocking
+    }
+  }
+
   async rebuildAnnIndex(spaceId: string): Promise<{ ok: boolean; count: number }> {
+    const sanitized = spaceId.replace(/[^a-zA-Z0-9_.-]/g, '_')
+    const fileName = `ann-${sanitized}.usearch`
+    this.db
+      .prepare(
+        `INSERT INTO ann_indexes (space_id, generation, file_path, indexed_count, state, updated_at)
+         VALUES (?, 0, ?, 0, 'rebuilding', unixepoch())
+         ON CONFLICT (space_id) DO UPDATE SET state = 'rebuilding', updated_at = unixepoch()`,
+      )
+      .run(spaceId, fileName)
+
     const rows = this.db
       .prepare(
         `SELECT e.chunk_id, e.vector, e.vector_dim
@@ -1968,25 +2024,49 @@ export class DocumentMemoryStore {
       )
       .all(spaceId) as Array<{ chunk_id: number; vector: Uint8Array; vector_dim: number }>
 
-    if (!rows.length) return { ok: true, count: 0 }
+    if (!rows.length) {
+      this.db
+        .prepare(
+          `UPDATE ann_indexes SET indexed_count = 0, state = 'ready', updated_at = unixepoch() WHERE space_id = ?`,
+        )
+        .run(spaceId)
+      return { ok: true, count: 0 }
+    }
     const dim = rows[0]!.vector_dim
     const ann = this.getAnnIndex(spaceId, dim)
-    await ann.rebuild()
     const chunkIds = rows.map((r) => r.chunk_id)
     const vectors = rows.map((r) => Array.from(blobVector(r.vector, r.vector_dim)))
-    await ann.add(chunkIds, vectors)
-    this.db
-      .prepare(
-        `INSERT INTO ann_indexes (space_id, generation, file_path, indexed_count, state, updated_at)
-         VALUES (?, 1, ?, ?, 'ready', unixepoch())
-         ON CONFLICT (space_id) DO UPDATE SET
-           generation = generation + 1,
-           indexed_count = excluded.indexed_count,
-           state = 'ready',
-           updated_at = unixepoch()`,
-      )
-      .run(spaceId, `ann-${spaceId.replace(/[^a-zA-Z0-9_.-]/g, '_')}.usearch`, rows.length)
-    return { ok: true, count: rows.length }
+
+    try {
+      const success = await ann.rebuildAtomic(chunkIds, vectors)
+      if (success) {
+        this.db
+          .prepare(
+            `UPDATE ann_indexes
+             SET generation = generation + 1,
+                 indexed_count = ?,
+                 state = 'ready',
+                 updated_at = unixepoch()
+             WHERE space_id = ?`,
+          )
+          .run(rows.length, spaceId)
+        return { ok: true, count: rows.length }
+      } else {
+        this.db
+          .prepare(
+            `UPDATE ann_indexes SET state = 'failed', updated_at = unixepoch() WHERE space_id = ?`,
+          )
+          .run(spaceId)
+        return { ok: false, count: 0 }
+      }
+    } catch {
+      this.db
+        .prepare(
+          `UPDATE ann_indexes SET state = 'failed', updated_at = unixepoch() WHERE space_id = ?`,
+        )
+        .run(spaceId)
+      return { ok: false, count: 0 }
+    }
   }
 
   /**
@@ -2030,11 +2110,16 @@ export class DocumentMemoryStore {
     this.db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId)
     if (ids.length > 0) {
       const chunkIds = ids.map((c) => c.id)
-      for (const ann of this.annIndexes.values()) {
+      for (const [spaceId, ann] of this.annIndexes.entries()) {
         try {
-          if (ann.isAvailable()) ann.removeSync(chunkIds)
+          if (ann.isAvailable()) {
+            ann.removeSync(chunkIds)
+            if (!ann.isHealthy()) {
+              this.markAnnDirty(spaceId)
+            }
+          }
         } catch {
-          // Non-blocking
+          this.markAnnDirty(spaceId)
         }
       }
     }
@@ -2051,11 +2136,16 @@ export class DocumentMemoryStore {
       for (const { id } of ids) {
         delFts.run(id)
         delChunk.run(id)
-        for (const ann of this.annIndexes.values()) {
+        for (const [spaceId, ann] of this.annIndexes.entries()) {
           try {
-            if (ann.isAvailable()) ann.removeSync([id])
+            if (ann.isAvailable()) {
+              ann.removeSync([id])
+              if (!ann.isHealthy()) {
+                this.markAnnDirty(spaceId)
+              }
+            }
           } catch {
-            // Non-blocking
+            this.markAnnDirty(spaceId)
           }
         }
         if (outOfBudget()) return false

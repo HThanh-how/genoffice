@@ -6,6 +6,7 @@ import type { DocumentMemoryManager } from '../document-memory/manager'
 import { foldFolderProgress } from '../document-memory/folder-progress'
 import type { FolderChunkProgress } from '../document-memory/store'
 import { createSwrCache } from './activity-cache'
+import { currentIndexingPolicy } from './indexing-policy-bus'
 import { HOME_CHANNELS, type HomeIndexingActivity } from '../../shared/home-api'
 import { stat } from 'node:fs/promises'
 import { availableParallelism, totalmem } from 'node:os'
@@ -154,12 +155,10 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
       const documentMemory = getDocumentMemory()
       if (!documentMemory) return { ok: false, retried: 0, error: 'unavailable' }
       if (only === 'model') {
-        // The model has no retry of its own: pausing and resuming restarts the worker and
-        // re-queues files that were waiting on embeddings.
         const wasEnabled = documentMemory.indexingActivityStatus().enabled
         if (!wasEnabled) return { ok: false, retried: 0, error: 'paused' }
-        documentMemory.setEnabled(false)
-        documentMemory.setEnabled(true)
+        // Thay vì gọi toggle setEnabled(false) / setEnabled(true) gây chập chờn toàn hệ thống:
+        documentMemory.recycleEmbeddingWorker('Model retry requested from diagnostics')
         folderCounts.invalidate()
         return { ok: true, retried: 0 }
       }
@@ -243,20 +242,24 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
       arch: process.arch,
       platform: process.platform,
     })
-    const info = (id: EmbeddingProfileId, name: string) => ({
-      name,
-      dimensions: EMBEDDING_PROFILES[id].dimensions,
-      downloadMB: EMBEDDING_PROFILES[id].downloadMB,
-      memoryMB: EMBEDDING_PROFILES[id].memoryMB,
-    })
+    const info = (id: EmbeddingProfileId) => {
+      const profile = EMBEDDING_PROFILES[id]
+      return {
+        name: profile.repo,
+        embeddingId: profile.embeddingId,
+        dimensions: profile.dimensions,
+        downloadMB: profile.downloadMB,
+        memoryMB: profile.memoryMB,
+      }
+    }
     return {
       profile: getDocumentMemory()?.embeddingSettings().profile ?? 'standard',
       recommended: advice.profile,
       ...(advice.limit ? { limit: advice.limit } : {}),
       machine,
       profiles: {
-        standard: info('standard', 'multilingual-e5-small'),
-        high: info('high', 'Vietnamese_Embedding'),
+        standard: info('standard'),
+        high: info('high'),
       },
     }
   })
@@ -320,12 +323,15 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     const counts = documentMemory
       ? folderCounts.get(ALL_FOLDERS, () => documentMemory.getLibraryIndexCounts())
       : null
+    const policy = currentIndexingPolicy()
+    const cpuMode: 'gentle' | undefined =
+      !policy || (!policy.paused && policy.cpuShare < 1) ? 'gentle' : undefined
     return {
       folder,
       progressScope: 'library',
       memory: {
         enabled: memory?.enabled ?? false,
-        cpuMode: 'gentle' as const,
+        ...(cpuMode ? { cpuMode } : {}),
         modelState: memory?.modelState ?? 'not-loaded',
         ...(memory?.modelProgress === undefined ? {} : { modelProgress: memory.modelProgress }),
         pending: memory?.pending ?? 0,

@@ -16,6 +16,7 @@ const REASONS = new Set([
   'low-memory',
   'thermal',
   'user',
+  'suspended',
 ])
 
 function effectiveFrom(value: unknown): IndexingEffectiveState | null {

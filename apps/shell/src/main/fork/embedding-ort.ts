@@ -42,7 +42,7 @@ export async function createEmbeddingSessionKeeper(
     create: (wanted) => createOrtSession(modelPath, wanted),
     release: (session) => session.release(),
     freeMemMB: () => childFreeMemMB(),
-    minFreeMB: workerPolicy.memoryTier === 'low' ? 384 : 768,
+    minFreeMB: workerPolicy.memoryTier === 'low' ? 1024 : 1500,
     memoryPressure: () => workerPolicy.memoryTier === 'low' && !workerPolicy.allowHeavyEmbedding,
   })
 }

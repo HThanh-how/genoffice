@@ -81,7 +81,13 @@ export interface EmbeddingModelState {
   machine: { totalMemGiB: number; logicalCores: number }
   profiles: Record<
     EmbeddingProfileChoice,
-    { name: string; dimensions: number; downloadMB: number; memoryMB: number }
+    {
+      name: string
+      dimensions: number
+      downloadMB: number
+      memoryMB: number
+      embeddingId?: string
+    }
   >
 }
 

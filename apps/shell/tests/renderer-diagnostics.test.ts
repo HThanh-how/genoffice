@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { WebContents } from 'electron'
 import {
+  PROBE_SCRIPT,
   attachRendererDiagnostics,
   rotatingFileWriter,
 } from '../src/main/fork/renderer-diagnostics'
@@ -89,6 +90,13 @@ describe('the tab diagnostics record', () => {
     await vi.advanceTimersByTimeAsync(2000)
     expect(lines.join('\n')).not.toContain('probe@')
     expect(lines.join('\n')).toContain('destroyed')
+  })
+
+  it('omits document text samples from probe script for privacy compliance, recording bodyLength only', () => {
+    expect(PROBE_SCRIPT).toContain('bodyLength:')
+    expect(PROBE_SCRIPT).not.toContain('bodyTextSample')
+    expect(PROBE_SCRIPT).not.toContain('text:')
+    expect(PROBE_SCRIPT).not.toContain('.slice(')
   })
 })
 

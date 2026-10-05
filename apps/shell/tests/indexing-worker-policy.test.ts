@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { constants } from 'node:os'
 import type { spawn } from 'node:child_process'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { coolDownMs, withBackgroundBudget } from '../src/main/document-memory/cpu-budget'
 import { createIndexProcess } from '../src/main/document-memory/process-worker'
 import { childFreeMemMB, ortSessionOptions } from '../src/main/fork/embedding-ort'
@@ -33,6 +33,11 @@ function policy(patch: Partial<PublishedPolicy> = {}): PublishedPolicy {
 }
 
 beforeEach(() => {
+  resetIndexingPolicyBus()
+  resetWorkerPolicy()
+})
+
+afterEach(() => {
   resetIndexingPolicyBus()
   resetWorkerPolicy()
 })
@@ -211,6 +216,71 @@ describe('createIndexProcess with a fake child', () => {
     publishIndexingPolicy(policy({ threads: 6, cpuShare: 1 }))
     expect(child.send).toHaveBeenCalledTimes(2)
     expect(worker).toBeTruthy()
+  })
+
+  it('terminates gracefully with SIGTERM when child exits within grace period', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 777,
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: vi.fn(),
+      kill: vi.fn((signal?: string) => {
+        if (signal === 'SIGTERM') {
+          queueMicrotask(() => {
+            child.exitCode = 0
+            child.emit('exit', 0)
+          })
+        }
+      }),
+    })
+    const fakeSpawn = vi.fn(() => child) as unknown as typeof spawn
+    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn)
+
+    const code = await worker.terminate(1000)
+    expect(code).toBe(0)
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM')
+    expect(child.kill).not.toHaveBeenCalledWith('SIGKILL')
+  })
+
+  it('escalates to SIGKILL if child does not exit before graceful timeout', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 777,
+      connected: true,
+      exitCode: null,
+      signalCode: null,
+      send: vi.fn(),
+      kill: vi.fn((signal?: string) => {
+        if (signal === 'SIGKILL') {
+          child.exitCode = 137
+          child.emit('exit', 137)
+        }
+      }),
+    })
+    const fakeSpawn = vi.fn(() => child) as unknown as typeof spawn
+    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn)
+
+    const code = await worker.terminate(20)
+    expect(code).toBe(137)
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM')
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL')
+  })
+
+  it('returns exitCode immediately without signaling if child is already dead', async () => {
+    const child = Object.assign(new EventEmitter(), {
+      pid: 777,
+      connected: false,
+      exitCode: 42,
+      signalCode: null,
+      send: vi.fn(),
+      kill: vi.fn(),
+    })
+    const fakeSpawn = vi.fn(() => child) as unknown as typeof spawn
+    const worker = createIndexProcess('worker.cjs', { cacheDir: 'c', dbPath: 'd' }, fakeSpawn)
+
+    const code = await worker.terminate()
+    expect(code).toBe(42)
+    expect(child.kill).not.toHaveBeenCalled()
   })
 })
 

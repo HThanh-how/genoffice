@@ -178,14 +178,18 @@ describe('HomeChatStore', () => {
     expect(JSON.parse(await readFile(join(dir, 'index.json'), 'utf8')).sessions).toHaveLength(1)
   })
 
-  it('skips and removes a corrupt session file instead of failing the list', async () => {
+  it('skips and quarantines a corrupt session file instead of failing the list', async () => {
     const good = await store.save({ messages: convo('good') })
     const badId = '11111111-2222-4333-8444-555555555555'
     await writeFile(join(dir, `${badId}.json`), 'garbage{{')
     await rm(join(dir, 'index.json'))
     const fresh = new HomeChatStore(dir)
     expect((await fresh.list()).map((s) => s.id)).toEqual([good!.id])
-    expect(await readdir(dir)).not.toContain(`${badId}.json`)
+    const files = await readdir(dir)
+    expect(files).not.toContain(`${badId}.json`)
+    const quarantined = files.find((name) => name.startsWith(`${badId}.json.corrupt-`))
+    expect(quarantined).toBeDefined()
+    expect(await readFile(join(dir, quarantined!), 'utf8')).toBe('garbage{{')
   })
 
   it('returns null and drops the index entry when a session file vanished', async () => {

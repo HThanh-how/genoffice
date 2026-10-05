@@ -14,14 +14,14 @@ const clip = (value: unknown): string =>
     .replace(/\s+/g, ' ')
     .slice(0, MAX_MESSAGE)
 
-/** What to look for on the page: is anything mounted, how big is it, is there any text. */
+/** What to look for on the page: is anything mounted, how big is it, how much text is there (length only, never content). */
 export const PROBE_SCRIPT = `(function(){
   var root=document.getElementById('root')||document.getElementById('app')||document.body;
   var canvases=document.querySelectorAll('canvas');
   var area=0; for(var i=0;i<canvases.length;i++){area+=canvases[i].width*canvases[i].height}
   return JSON.stringify({state:document.readyState, w:innerWidth, h:innerHeight, visible:document.visibilityState,
     rootChildren:root?root.children.length:-1, canvases:canvases.length, canvasPixels:area,
-    text:(document.body&&document.body.innerText||'').slice(0,60).replace(/\\s+/g,' ')});
+    bodyLength:(document.body&&document.body.innerText||'').length});
 })()`
 
 export function attachRendererDiagnostics(

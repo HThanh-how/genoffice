@@ -290,8 +290,7 @@ onIndexRequest(
     if (
       request.type === 'search' ||
       request.type === 'search-lexical' ||
-      request.type === 'search-semantic' ||
-      request.type === 'ann-rebuild'
+      request.type === 'search-semantic'
     )
       void execute()
     else

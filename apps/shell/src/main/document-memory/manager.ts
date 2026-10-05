@@ -800,6 +800,11 @@ export class DocumentMemoryManager {
     return { ok: true, migrationStarted: true }
   }
 
+  /** Gracefully recycle the background indexing worker, e.g. when retrying embedding model. */
+  recycleEmbeddingWorker(reason = 'Model retry requested'): void {
+    this.recycleWorker(reason)
+  }
+
   /** How many pages of each PDF are read and indexed. */
   getPdfMaxPages(): number {
     return this.pdfMaxPages

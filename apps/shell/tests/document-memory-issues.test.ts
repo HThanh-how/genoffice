@@ -237,10 +237,16 @@ it('allows the blank-file issue reason through the document-index IPC contract',
       handle: (channel: string, handler: (event: unknown, ...args: unknown[]) => unknown) =>
         handlers.set(channel, handler),
     }
+    const recycled: string[] = []
+    let memoryEnabled = true
     closeReader = registerDocumentIndexIpc({
       ipcMain: ipcMain as never,
       getDocumentMemory: () =>
         ({
+          indexingActivityStatus: () => ({ enabled: memoryEnabled }),
+          recycleEmbeddingWorker: (reason?: string) => {
+            recycled.push(reason ?? '')
+          },
           retryDocument: (id: number) => {
             retried.push(id)
             return { ok: true }
@@ -264,6 +270,17 @@ it('allows the blank-file issue reason through the document-index IPC contract',
       retried: 1,
     })
     expect(retried).toHaveLength(1)
+    expect(call(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, '*', 'model')).toEqual({
+      ok: true,
+      retried: 0,
+    })
+    expect(recycled).toEqual(['Model retry requested from diagnostics'])
+    memoryEnabled = false
+    expect(call(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, '*', 'model')).toEqual({
+      ok: false,
+      retried: 0,
+      error: 'paused',
+    })
     expect(call(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, [1, 1, 2])).toEqual({
       queued: 2,
       skipped: 1,

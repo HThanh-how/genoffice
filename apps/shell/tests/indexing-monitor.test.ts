@@ -168,15 +168,24 @@ describe('IndexingMonitor', () => {
     expect(t.last().paused).toBe(false)
   })
 
-  it('treats suspend as locked until resume', async () => {
+  it('pauses on suspend until resume', async () => {
     const t = setup({ battery: { percent: 90 } })
     t.power.battery = true
     t.monitor.start()
     await flush()
     t.power.emit('suspend')
-    expect(t.last().pauseReason).toBe('locked')
+    expect(t.last().pauseReason).toBe('suspended')
     t.power.emit('resume')
     await flush()
+    expect(t.last().paused).toBe(false)
+  })
+
+  it('pauses on suspend on AC until resume', () => {
+    const t = setup()
+    t.monitor.start()
+    t.power.emit('suspend')
+    expect(t.last()).toMatchObject({ paused: true, pauseReason: 'suspended' })
+    t.power.emit('resume')
     expect(t.last().paused).toBe(false)
   })
 
