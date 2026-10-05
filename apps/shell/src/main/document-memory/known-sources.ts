@@ -1,4 +1,4 @@
-import { existsSync, statSync } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { readAppSettings, writeAppSettings } from '../app-settings'
@@ -43,6 +43,53 @@ export const UNINITIALIZED_KNOWN_SOURCES: Readonly<Record<KnownSearchSource, boo
   downloads: false,
   desktop: false,
 })
+
+/** Fast recovery intervals: 1.5s, 5s, 15s, 60s */
+export const FAST_RETRY_INTERVALS_MS: readonly number[] = Object.freeze([1500, 5000, 15000, 60000])
+
+/** Slow periodic retry interval: 5 minutes (300,000 ms) */
+export const SLOW_PERIODIC_RETRY_INTERVAL_MS = 300_000
+
+/** Async deadline for path availability probe to avoid hanging Electron on offline SMB shares */
+export const PROBE_PATH_DEADLINE_MS = 3000
+
+/**
+ * Asynchronously probes whether targetPath exists and is a directory.
+ * Bounded by deadlineMs (default: 3000ms) with AbortController to never freeze the Electron main thread.
+ */
+export async function probePathAvailable(
+  targetPath: string,
+  deadlineMs: number = PROBE_PATH_DEADLINE_MS,
+): Promise<boolean> {
+  const controller = new AbortController()
+  let timer: NodeJS.Timeout | undefined
+
+  const timeoutPromise = new Promise<false>((resolvePromise) => {
+    timer = setTimeout(() => {
+      controller.abort()
+      resolvePromise(false)
+    }, deadlineMs)
+    timer.unref?.()
+  })
+
+  const statPromise = (async () => {
+    try {
+      const stats = await (stat as (path: string, opts?: unknown) => Promise<{ isDirectory(): boolean }>)(
+        targetPath,
+        { signal: controller.signal },
+      )
+      return stats.isDirectory()
+    } catch {
+      return false
+    }
+  })()
+
+  try {
+    return await Promise.race([statPromise, timeoutPromise])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 
 export function isKnownSearchSource(value: unknown): value is KnownSearchSource {
   return value === 'documents' || value === 'downloads' || value === 'desktop'
@@ -128,8 +175,9 @@ export class KnownSourcesManager {
   private initialized: boolean
   private readonly retryTimers = new Map<KnownSearchSource, NodeJS.Timeout>()
   private readonly retryCounts = new Map<KnownSearchSource, number>()
-  private static readonly MAX_RETRIES = 5
-  private static readonly RETRY_BASE_INTERVAL_MS = 1500
+  private readonly sourceErrors = new Map<KnownSearchSource, string>()
+  private readonly pathAvailabilityCache = new Map<string, boolean>()
+  private readonly activeRetryPromises = new Map<KnownSearchSource, Promise<void>>()
 
   constructor(options: KnownSourcesManagerOptions = {}) {
     this.settingsPath = options.settingsPath
@@ -240,14 +288,21 @@ export class KnownSourcesManager {
     return resolve(join(homedir(), folderName))
   }
 
-  public isPathAvailable(path: string): boolean {
-    try {
-      return existsSync(path) && statSync(path).isDirectory()
-    } catch {
-      return false
-    }
+  /**
+   * Asynchronously probes whether targetPath exists and is a directory.
+   * Bounded by deadline to prevent freezing the Electron main process.
+   * Caches result internally for immediate synchronous inspection by getStatus().
+   */
+  public async isPathAvailable(path: string, timeoutMs = PROBE_PATH_DEADLINE_MS): Promise<boolean> {
+    const available = await probePathAvailable(path, timeoutMs)
+    this.pathAvailabilityCache.set(path, available)
+    return available
   }
 
+  /**
+   * Returns runtime truth status for a known source id.
+   * Never reports 'watching' without actual registration and confirmed readiness in scanner.
+   */
   public getStatus(id: KnownSearchSource): { status: KnownSearchSourceStatus; error?: string } {
     const enabled = this.state[id] ?? false
     if (!enabled) {
@@ -255,13 +310,20 @@ export class KnownSourcesManager {
     }
 
     const resolvedPath = this.resolvePath(id)
-    if (!this.isPathAvailable(resolvedPath)) {
+    const isAvailable = this.pathAvailabilityCache.get(resolvedPath) ?? false
+    if (!isAvailable) {
       return { status: 'unavailable', error: 'The selected folder is unavailable.' }
+    }
+
+    // If start failed on this source, report error status and maintain retry
+    if (this.sourceErrors.has(id)) {
+      return { status: 'error', error: this.sourceErrors.get(id) }
     }
 
     const scanner = this.getScanner()
     if (!scanner) {
-      return { status: 'watching' }
+      // Enabled & path exists, but scanner is not attached: queued (never report 'watching')
+      return { status: 'queued' }
     }
 
     const scanStatus = scanner.status()
@@ -274,21 +336,47 @@ export class KnownSourcesManager {
     }
 
     const job = scanner.folders().find((f) => resolve(f.root) === resolve(resolvedPath))
-    if (job) {
-      if (job.state === 'running') {
-        return { status: 'scanning' }
-      }
-      if (job.lastError && job.errors > 0 && job.state === 'stopped') {
+    if (!job) {
+      // Path exists and source is enabled, but not yet registered in scanner: queued (never 'watching')
+      return { status: 'queued' }
+    }
+
+    // Check ownership: scanner.hasOwner if available, or job.owners array
+    const owner: FolderOwner = `known:${id}`
+    const hasOwner =
+      typeof (scanner as unknown as { hasOwner?: (r: string, o: FolderOwner) => boolean }).hasOwner ===
+      'function'
+        ? Boolean((scanner as unknown as { hasOwner: (r: string, o: FolderOwner) => boolean }).hasOwner(resolvedPath, owner))
+        : Boolean(job.owners?.includes(owner))
+
+    if (!hasOwner) {
+      // Folder exists in scanner under another owner, but not registered for this known source
+      return { status: 'queued' }
+    }
+
+    if (job.state === 'running') {
+      return { status: 'scanning' }
+    }
+
+    if (job.state === 'stopped') {
+      if (job.lastError && job.errors > 0) {
         return { status: 'error', error: job.lastError }
       }
+      return { status: 'unavailable', error: 'Folder scanning is stopped.' }
+    }
+
+    if (job.state === 'complete') {
       return { status: 'watching' }
     }
 
-    return { status: 'watching' }
+    return { status: 'queued' }
   }
 
-  public getEntry(id: KnownSearchSource): KnownSearchSourceEntry {
+  public async getEntry(id: KnownSearchSource): Promise<KnownSearchSourceEntry> {
     const resolvedPath = this.resolvePath(id)
+    if (this.state[id]) {
+      await this.isPathAvailable(resolvedPath)
+    }
     const { status, error } = this.getStatus(id)
     return {
       id,
@@ -301,17 +389,18 @@ export class KnownSourcesManager {
 
   /**
    * Returns current list of known sources with resolved paths, enabled states and canonical status.
+   * Performs async path probing across all sources without blocking main thread.
    */
   public async getKnownSearchSources(): Promise<KnownSearchSourceEntry[]> {
-    return KNOWN_SEARCH_SOURCES.map((id) => this.getEntry(id))
+    return Promise.all(KNOWN_SEARCH_SOURCES.map((id) => this.getEntry(id)))
   }
 
   /**
    * Enables or disables a known search source.
    * Strictly validates that `id` is a known search source enum.
    * Persist-before-apply: writes to disk first before updating memory and runtime scanner.
-   * When enabled: adds to watched folders and triggers scan/watch via FolderScanManager.
-   * When disabled: unregisters root with owner `known:${id}`.
+   * When enabled: probes path, adds to scanner with owner `known:${id}`, handles exceptions, and sets retry.
+   * When disabled: cancels retries, unregisters root with owner `known:${id}`.
    */
   public async setKnownSearchSource(
     id: KnownSearchSource,
@@ -344,20 +433,29 @@ export class KnownSourcesManager {
     const scanner = this.getScanner()
     const owner: FolderOwner = `known:${id}`
 
-    if (scanner) {
-      if (enabled) {
-        if (this.isPathAvailable(resolvedPath)) {
-          this.cancelRetry(id)
+    if (enabled) {
+      this.sourceErrors.delete(id)
+      const available = await this.isPathAvailable(resolvedPath)
+      if (available) {
+        if (scanner) {
           try {
             scanner.start(resolvedPath, owner)
-          } catch {
-            // Scanner handles errors
+            this.cancelRetry(id)
+          } catch (err: unknown) {
+            const message = err instanceof Error ? err.message : String(err)
+            this.sourceErrors.set(id, message)
+            this.scheduleRetry(id)
           }
         } else {
           this.scheduleRetry(id)
         }
       } else {
-        this.cancelRetry(id)
+        this.scheduleRetry(id)
+      }
+    } else {
+      this.cancelRetry(id)
+      this.sourceErrors.delete(id)
+      if (scanner) {
         try {
           await scanner.unregisterRoot(resolvedPath, owner)
         } catch {
@@ -378,31 +476,60 @@ export class KnownSourcesManager {
     this.retryCounts.delete(id)
   }
 
+  /**
+   * Schedules infinite retries for unavailable or failed sources.
+   * Fast recovery phase: 1.5s, 5s, 15s, 60s.
+   * Slow periodic retry phase: every 5 minutes (300,000 ms) while source is enabled.
+   */
   private scheduleRetry(id: KnownSearchSource): void {
     if (this.retryTimers.has(id)) return
+    if (!this.state[id]) return
+
     const count = this.retryCounts.get(id) ?? 0
-    if (count >= KnownSourcesManager.MAX_RETRIES) return
+    const delay =
+      count < FAST_RETRY_INTERVALS_MS.length
+        ? FAST_RETRY_INTERVALS_MS[count]
+        : SLOW_PERIODIC_RETRY_INTERVAL_MS
 
     this.retryCounts.set(id, count + 1)
-    const delay = KnownSourcesManager.RETRY_BASE_INTERVAL_MS * Math.pow(1.5, count)
-    const timer = setTimeout(async () => {
-      this.retryTimers.delete(id)
-      if (!this.state[id]) return
 
-      const resolvedPath = this.resolvePath(id)
-      if (this.isPathAvailable(resolvedPath)) {
-        this.retryCounts.delete(id)
-        const scanner = this.getScanner()
-        if (scanner) {
-          try {
-            scanner.start(resolvedPath, `known:${id}`)
-          } catch {
-            // Best effort
-          }
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(id)
+      const promise = (async () => {
+        if (!this.state[id]) {
+          this.retryCounts.delete(id)
+          return
         }
-      } else {
-        this.scheduleRetry(id)
-      }
+
+        const resolvedPath = this.resolvePath(id)
+        const available = await this.isPathAvailable(resolvedPath)
+
+        if (available) {
+          const scanner = this.getScanner()
+          if (scanner) {
+            try {
+              scanner.start(resolvedPath, `known:${id}`)
+              this.sourceErrors.delete(id)
+              this.retryCounts.delete(id)
+              return
+            } catch (err: unknown) {
+              const message = err instanceof Error ? err.message : String(err)
+              this.sourceErrors.set(id, message)
+              this.scheduleRetry(id)
+            }
+          } else {
+            this.scheduleRetry(id)
+          }
+        } else {
+          this.scheduleRetry(id)
+        }
+      })().finally(() => {
+        if (this.activeRetryPromises.get(id) === promise) {
+          this.activeRetryPromises.delete(id)
+        }
+      })
+
+      this.activeRetryPromises.set(id, promise)
     }, delay)
 
     timer.unref?.()
@@ -410,14 +537,25 @@ export class KnownSourcesManager {
   }
 
   /**
+   * Waits for any currently executing retry async task to settle.
+   * Useful for testing and deterministic synchronization.
+   */
+  public async waitForRetry(id?: KnownSearchSource): Promise<void> {
+    if (id) {
+      await this.activeRetryPromises.get(id)
+    } else {
+      await Promise.all([...this.activeRetryPromises.values()])
+    }
+  }
+
+  /**
    * Reconciles desired sources with the runtime FolderScanManager.
-   * If source is enabled and available: starts scan with owner `known:${id}`.
-   * If source is enabled and unavailable: schedules bounded retry.
+   * If source is enabled and available: starts scan with owner `known:${id}`, handles errors.
+   * If source is enabled and unavailable: schedules bounded fast recovery / slow periodic retry.
    * If source is disabled: unregisters root with owner `known:${id}`.
    */
   public async reconcileDesiredSources(): Promise<void> {
     const scanner = this.getScanner()
-    if (!scanner) return
 
     for (const id of KNOWN_SEARCH_SOURCES) {
       const enabled = this.state[id]
@@ -425,22 +563,33 @@ export class KnownSourcesManager {
       const owner: FolderOwner = `known:${id}`
 
       if (enabled) {
-        if (this.isPathAvailable(resolvedPath)) {
-          this.cancelRetry(id)
-          try {
-            scanner.start(resolvedPath, owner)
-          } catch {
-            // Scanner handles errors
+        const available = await this.isPathAvailable(resolvedPath)
+        if (available) {
+          if (scanner) {
+            try {
+              scanner.start(resolvedPath, owner)
+              this.sourceErrors.delete(id)
+              this.cancelRetry(id)
+            } catch (err: unknown) {
+              const message = err instanceof Error ? err.message : String(err)
+              this.sourceErrors.set(id, message)
+              this.scheduleRetry(id)
+            }
+          } else {
+            this.scheduleRetry(id)
           }
         } else {
           this.scheduleRetry(id)
         }
       } else {
         this.cancelRetry(id)
-        try {
-          await scanner.unregisterRoot(resolvedPath, owner)
-        } catch {
-          // Best effort
+        this.sourceErrors.delete(id)
+        if (scanner) {
+          try {
+            await scanner.unregisterRoot(resolvedPath, owner)
+          } catch {
+            // Best effort
+          }
         }
       }
     }
@@ -460,5 +609,8 @@ export class KnownSourcesManager {
     }
     this.retryTimers.clear()
     this.retryCounts.clear()
+    this.sourceErrors.clear()
+    this.pathAvailabilityCache.clear()
+    this.activeRetryPromises.clear()
   }
 }

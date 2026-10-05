@@ -4,15 +4,19 @@ import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   DEFAULT_KNOWN_SOURCES,
+  FAST_RETRY_INTERVALS_MS,
   KNOWN_SEARCH_SOURCES,
   KNOWN_SEARCH_SOURCES_INITIALIZED_KEY,
   KNOWN_SEARCH_SOURCES_KEY,
   KNOWN_SEARCH_SOURCES_VERSION_KEY,
   KnownSourcesManager,
+  PROBE_PATH_DEADLINE_MS,
+  SLOW_PERIODIC_RETRY_INTERVAL_MS,
   UNINITIALIZED_KNOWN_SOURCES,
   isKnownSearchSource,
   parseKnownSourcesFullSettings,
   parseKnownSourcesSettings,
+  probePathAvailable,
   type KnownSearchSource,
 } from '../src/main/document-memory/known-sources'
 import { FolderScanManager } from '../src/main/document-memory/folder-scan'
@@ -399,4 +403,251 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       ).rejects.toThrow('Invalid enabled state')
     })
   })
+
+  describe('Audit Fixes: Known Sources Truth & Reconciliation (P0-2, P1, P2)', () => {
+    it('KS-01: Enabled + path exists nhưng chưa có job trong scanner -> status KHÔNG PHẢI watching', async () => {
+      const docsDir = join(testDir, 'Documents')
+      mkdirSync(docsDir, { recursive: true })
+
+      const mockScanner = {
+        start: vi.fn(),
+        unregisterRoot: vi.fn(),
+        status: vi.fn().mockReturnValue({ running: false }),
+        folders: vi.fn().mockReturnValue([]),
+        isWaiting: vi.fn().mockReturnValue(false),
+      }
+
+      const manager = new KnownSourcesManager({
+        settingsPath: () => settingsFile,
+        scanner: mockScanner as any,
+        getPath: () => docsDir,
+        initialState: { documents: true, downloads: false, desktop: false },
+        initialized: true,
+      })
+
+      // Path tồn tại, source bật, nhưng scanner chưa có job -> status KHÔNG ĐƯỢC LÀ 'watching'
+      const sources = await manager.getKnownSearchSources()
+      const docSource = sources.find((s) => s.id === 'documents')
+      expect(docSource?.status).not.toBe('watching')
+      expect(docSource?.status).toBe('queued')
+
+      // Trường hợp thư mục có trong scanner nhưng chỉ do user add thủ công (owner: 'manual')
+      mockScanner.folders.mockReturnValue([
+        {
+          root: resolve(docsDir),
+          owners: ['manual'],
+          state: 'complete',
+          discovered: 5,
+          enrolled: 5,
+          skipped: 0,
+          errors: 0,
+          history: [],
+          priority: false,
+        },
+      ])
+
+      const sourcesManual = await manager.getKnownSearchSources()
+      const docManual = sourcesManual.find((s) => s.id === 'documents')
+      expect(docManual?.status).not.toBe('watching')
+      expect(docManual?.status).toBe('queued')
+
+      // Chỉ khi job có owner 'known:documents' VÀ state là 'complete' -> mới báo 'watching'
+      mockScanner.folders.mockReturnValue([
+        {
+          root: resolve(docsDir),
+          owners: ['manual', 'known:documents'],
+          state: 'complete',
+          discovered: 5,
+          enrolled: 5,
+          skipped: 0,
+          errors: 0,
+          history: [],
+          priority: false,
+        },
+      ])
+
+      const sourcesWatching = await manager.getKnownSearchSources()
+      const docWatching = sourcesWatching.find((s) => s.id === 'documents')
+      expect(docWatching?.status).toBe('watching')
+
+      manager.close()
+    })
+
+    it('KS-02: Source unavailable quá 20s (vượt qua mốc retry cũ), sau đó xuất hiện -> tự động register và chuyển sang watching thành công', async () => {
+      vi.useFakeTimers()
+      try {
+        const remoteDrive = join(testDir, 'RemoteNetworkDrive', 'Documents')
+
+        const startMock = vi.fn()
+        const mockFolders: any[] = []
+        const mockScanner = {
+          start: startMock.mockImplementation((root: string, owner: string) => {
+            mockFolders.push({
+              root: resolve(root),
+              owners: [owner],
+              state: 'complete',
+              discovered: 2,
+              enrolled: 2,
+              skipped: 0,
+              errors: 0,
+              history: [],
+              priority: false,
+            })
+          }),
+          unregisterRoot: vi.fn(),
+          status: vi.fn().mockReturnValue({ running: false }),
+          folders: vi.fn().mockImplementation(() => mockFolders),
+          isWaiting: vi.fn().mockReturnValue(false),
+        }
+
+        const manager = new KnownSourcesManager({
+          settingsPath: () => settingsFile,
+          scanner: mockScanner as any,
+          getPath: () => remoteDrive,
+          initialState: { documents: true, downloads: false, desktop: false },
+          initialized: true,
+        })
+
+        // Lúc khởi tạo, thư mục mạng chưa tồn tại
+        await manager.reconcileDesiredSources()
+
+        expect(startMock).not.toHaveBeenCalled()
+        let entry = (await manager.getKnownSearchSources()).find((s) => s.id === 'documents')
+        expect(entry?.status).toBe('unavailable')
+
+        // Tua thời gian qua các mốc hồi phục nhanh:
+        // Attempt 0: 1.5s
+        await vi.advanceTimersByTimeAsync(1600)
+        await manager.waitForRetry('documents')
+        expect(startMock).not.toHaveBeenCalled()
+
+        // Attempt 1: 5s (tổng cộng 6.6s)
+        await vi.advanceTimersByTimeAsync(5100)
+        await manager.waitForRetry('documents')
+        expect(startMock).not.toHaveBeenCalled()
+
+        // Attempt 2: 15s (tổng cộng 21.7s -> ĐÃ VƯỢT QUÁ MỐC 20S CŨ)
+        await vi.advanceTimersByTimeAsync(15100)
+        await manager.waitForRetry('documents')
+        expect(startMock).not.toHaveBeenCalled()
+
+        // Tại mốc > 20s, ổ đĩa mạng bất ngờ kết nối lại (thư mục được tạo ra)
+        mkdirSync(remoteDrive, { recursive: true })
+
+        // Tua thời gian kích hoạt Attempt 3: 60s
+        await vi.advanceTimersByTimeAsync(60100)
+        await manager.waitForRetry('documents')
+
+        // Hệ thống tự động reconcile và đăng ký scanner thành công mà không cần restart app!
+        expect(startMock).toHaveBeenCalledWith(resolve(remoteDrive), 'known:documents')
+
+        // Trạng thái tự động cập nhật sang 'watching'
+        entry = (await manager.getKnownSearchSources()).find((s) => s.id === 'documents')
+        expect(entry?.status).toBe('watching')
+
+        manager.close()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('KS-03: scanner.start throw error -> status chuyển sang error hoặc unavailable, retry timer vẫn hoạt động', async () => {
+      vi.useFakeTimers()
+      try {
+        const docsDir = join(testDir, 'DocsWithFailure')
+        mkdirSync(docsDir, { recursive: true })
+
+        const startError = new Error('Disk I/O error or permission denied')
+        const startMock = vi.fn().mockImplementation(() => {
+          throw startError
+        })
+
+        const mockScanner = {
+          start: startMock,
+          unregisterRoot: vi.fn(),
+          status: vi.fn().mockReturnValue({ running: false }),
+          folders: vi.fn().mockReturnValue([]),
+          isWaiting: vi.fn().mockReturnValue(false),
+        }
+
+        const manager = new KnownSourcesManager({
+          settingsPath: () => settingsFile,
+          scanner: mockScanner as any,
+          getPath: () => docsDir,
+          initialState: { documents: false, downloads: false, desktop: false },
+          initialized: true,
+        })
+
+        // Kích hoạt source: scanner.start bị throw ngoại lệ
+        await manager.setKnownSearchSource('documents', true)
+
+        expect(startMock).toHaveBeenCalledTimes(1)
+        const statusAfterError = manager.getStatus('documents')
+        expect(statusAfterError.status).toBe('error')
+        expect(statusAfterError.error).toBe('Disk I/O error or permission denied')
+
+        // Kiểm tra retry timer vẫn hoạt động: sửa lỗi cho scanner.start thành công
+        const mockFolders: any[] = []
+        startMock.mockImplementation((root: string, owner: string) => {
+          mockFolders.push({
+            root: resolve(root),
+            owners: [owner],
+            state: 'complete',
+            discovered: 1,
+            enrolled: 1,
+            skipped: 0,
+            errors: 0,
+            history: [],
+            priority: false,
+          })
+        })
+        mockScanner.folders.mockImplementation(() => mockFolders)
+
+        // Tua fake timer 1.5s để retry tự động chạy
+        await vi.advanceTimersByTimeAsync(1600)
+        await manager.waitForRetry('documents')
+
+        // Đã retry gọi lại start
+        expect(startMock).toHaveBeenCalledTimes(2)
+
+        // Lỗi đã được xóa và trạng thái chuyển sang watching
+        const statusRecovered = manager.getStatus('documents')
+        expect(statusRecovered.status).toBe('watching')
+        expect(statusRecovered.error).toBeUndefined()
+
+        manager.close()
+      } finally {
+        vi.useRealTimers()
+      }
+    })
+
+    it('KS-04: Async probe không block tiến trình', async () => {
+      const probeDir = join(testDir, 'AsyncProbeTest')
+      mkdirSync(probeDir, { recursive: true })
+
+      // 1. Path hợp lệ -> trả về true bất đồng bộ
+      const exists = await probePathAvailable(probeDir, 3000)
+      expect(exists).toBe(true)
+
+      // 2. Path không tồn tại -> trả về false bất đồng bộ
+      const nonExistent = await probePathAvailable(join(testDir, 'non_existent_folder'), 3000)
+      expect(nonExistent).toBe(false)
+
+      // 3. Deadline timeout bảo vệ main thread: deadline ngắn kết thúc an toàn
+      const startMs = Date.now()
+      const timeoutProbe = await probePathAvailable(join(testDir, 'timeout_check'), 50)
+      const durationMs = Date.now() - startMs
+      expect(timeoutProbe).toBe(false)
+      expect(durationMs).toBeLessThan(1000)
+
+      // 4. Đảm bảo event loop không bị block
+      let immediateFired = false
+      setImmediate(() => {
+        immediateFired = true
+      })
+      await probePathAvailable(probeDir)
+      expect(immediateFired).toBe(true)
+    })
+  })
 })
+
