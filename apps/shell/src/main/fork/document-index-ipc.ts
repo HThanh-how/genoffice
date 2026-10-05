@@ -27,6 +27,11 @@ import {
 } from '../../shared/fork/document-index-api'
 import { DEFAULT_PDF_PAGES, LARGE_PDF_PAGES } from '../document-memory/chunks'
 import { createSourceAvailabilityProbe } from '../document-memory/source-availability'
+import {
+  KnownSourcesManager,
+  isKnownSearchSource,
+  type KnownSearchSourceEntry,
+} from '../document-memory/known-sources'
 
 export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
@@ -34,6 +39,10 @@ export interface DocumentIndexIpcDeps {
   getFolderScan: () => FolderScanManager | null
   /** absolute path of the document-memory SQLite file */
   dbPath: () => string
+  /** optional getter for KnownSourcesManager instance */
+  getKnownSources?: () => KnownSourcesManager | null
+  /** optional absolute path of app-settings.json or getter */
+  settingsPath?: string | (() => string)
 }
 
 /** Windows paths compare without regard to case. */
@@ -231,6 +240,38 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.forgetIndexedFolder, (_event, root: unknown): boolean => {
     return getFolderScan()?.forget(knownRoot(root)) ?? false
   })
+  // ---- known search sources: Downloads, Documents, Desktop ----
+  let lazyKnownSources: KnownSourcesManager | null = null
+  const getKnownSourcesManager = (): KnownSourcesManager => {
+    const provided = deps.getKnownSources?.()
+    if (provided) return provided
+    if (!lazyKnownSources) {
+      lazyKnownSources = new KnownSourcesManager({
+        settingsPath: deps.settingsPath,
+        getScanner: deps.getFolderScan,
+      })
+    }
+    return lazyKnownSources
+  }
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.getKnownSearchSources,
+    async (): Promise<KnownSearchSourceEntry[]> => {
+      return getKnownSourcesManager().getKnownSearchSources()
+    },
+  )
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.setKnownSearchSource,
+    async (_event, id: unknown, enabled: unknown): Promise<void> => {
+      if (!isKnownSearchSource(id)) {
+        throw new Error('Invalid known search source id')
+      }
+      if (typeof enabled !== 'boolean') {
+        throw new Error('Invalid enabled state')
+      }
+      await getKnownSourcesManager().setKnownSearchSource(id, enabled)
+      folderCounts.invalidate()
+    },
+  )
   // ---- search model: standard (fast) or high (Vietnamese retrieval model) ----
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getEmbeddingModel, (): EmbeddingModelState => {
     const machine = {

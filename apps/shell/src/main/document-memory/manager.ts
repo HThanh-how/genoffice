@@ -1272,6 +1272,9 @@ export class DocumentMemoryManager {
         this.lastOpenedCheck = Date.now()
         await this.checkOpenedDocuments()
       }
+      if (!this.stopped && this.enabled && !isIndexingPaused()) {
+        this.scheduleMigrationStep(1000)
+      }
     } finally {
       this.polling = false
     }
@@ -2070,13 +2073,22 @@ export class DocumentMemoryManager {
       return false
     }
 
-    // 3. Gửi yêu cầu trích xuất tới Worker hiện hữu:
+    // 3. Ghi nhận generation & epoch TRƯỚC khi gọi Worker trích xuất để chống race condition
+    const generation = this.currentGeneration(doc.path)
+    const epoch = this.epoch
+
+    // Gửi yêu cầu trích xuất tới Worker hiện hữu:
     const reply = await this.ask(
       { type: 'extract', path: doc.path, maxPdfPages: this.pdfMaxPages },
       this.workerTimeoutMs,
     )
 
     if (this.stopped || !this.enabled) return false
+
+    // Nếu file đã thay đổi thế hệ trong lúc worker extract, từ chối commit kết quả cũ
+    if (!this.isCurrent(doc.path, generation, epoch)) {
+      return false
+    }
 
     if (!reply || !('result' in reply) || !isExtractResult(reply.result)) {
       if (await this.sourceUnavailable(doc.path)) {
@@ -2089,9 +2101,14 @@ export class DocumentMemoryManager {
 
     const extracted = reply.result
 
-    // 4. Áp dụng kết quả qua this.store.replaceDocumentSliced(doc.path, extracted, ...):
-    const generation = this.currentGeneration(doc.path)
-    const epoch = this.epoch
+    // 4. Đối soát lại metadata trên đĩa sau khi trích xuất
+    const after = await statMeta(doc.path)
+    if (!after || after.mtimeMs !== extracted.mtimeMs || after.sizeBytes !== extracted.sizeBytes) {
+      if (after) this.enqueue(doc.path, true)
+      return false
+    }
+
+    // 5. Áp dụng kết quả qua this.store.replaceDocumentSliced(doc.path, extracted, ...):
     const written = await this.store.replaceDocumentSliced(
       doc.path,
       {

@@ -322,6 +322,42 @@ describe('FolderScanManager reconcileSubtree', () => {
 
     scanner.close()
   })
+
+  it('retries during temporary exclusive lock (EBUSY) and becomes stable once unlocked', async () => {
+    let openAttempts = 0
+    let lockReleased = false
+
+    const gate = createGate({
+      sampleIntervalMs: 30,
+      backoffScheduleMs: [30, 50],
+      totalTimeoutMs: 2000,
+      openFn: async () => {
+        openAttempts++
+        if (!lockReleased) {
+          const err = new Error('resource busy or locked') as NodeJS.ErrnoException
+          err.code = 'EBUSY'
+          throw err
+        }
+        return { close: async () => {} }
+      },
+    })
+
+    const filePath = join(testDir, 'locked-doc.pdf')
+    writeFileSync(filePath, 'important document content')
+
+    const stabilityPromise = gate.waitForStability(filePath)
+
+    // Initially locked (open #1 -> EBUSY)
+    await delay(100)
+    expect(openAttempts).toBeGreaterThanOrEqual(1)
+
+    // Release lock
+    lockReleased = true
+
+    const result = await stabilityPromise
+    expect(result.kind).toBe('stable')
+    expect(openAttempts).toBeGreaterThanOrEqual(2)
+  })
 })
 
 function resultSize(result: StabilityResult): number | undefined {

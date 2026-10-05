@@ -4516,6 +4516,7 @@ function registerHomeIpc(): void {
     getFolderScan: () => folderScan,
     dbPath: () =>
       documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db'),
+    settingsPath: APP_SETTINGS_PATH,
   })
   registerEverythingIpc(ipcMain, () => everything)
   registerDbLocationIpc({

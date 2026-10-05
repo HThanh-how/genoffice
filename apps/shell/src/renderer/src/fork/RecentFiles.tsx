@@ -17,6 +17,7 @@ export function RecentFiles({ api, limit = 12, onOpened }: RecentFilesProps) {
   const [recents, setRecents] = useState<RecentEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [openError, setOpenError] = useState<string | null>(null)
 
   useEffect(() => {
     let alive = true
@@ -49,10 +50,16 @@ export function RecentFiles({ api, limit = 12, onOpened }: RecentFilesProps) {
 
   const handleOpen = async (path: string) => {
     try {
+      setOpenError(null)
       await api.openPath(path)
       onOpened?.()
     } catch (err) {
       console.error('Failed to open path:', err)
+      setOpenError(
+        isVi
+          ? 'Không thể mở tệp. Tệp có thể đã được di chuyển hoặc ổ đĩa đang không khả dụng.'
+          : 'Could not open the file. It may have moved or the drive may be unavailable.',
+      )
     }
   }
 
@@ -106,6 +113,35 @@ export function RecentFiles({ api, limit = 12, onOpened }: RecentFilesProps) {
           </span>
         )}
       </div>
+
+      {openError && (
+        <div className="idx-recent-open-error" role="alert">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <span className="idx-recent-open-error-msg">{openError}</span>
+          <button
+            type="button"
+            className="idx-error-dismiss-btn"
+            aria-label={isVi ? 'Đóng thông báo lỗi' : 'Dismiss error'}
+            onClick={() => setOpenError(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       {loading && (
         <div className="idx-recent-loading" role="status">

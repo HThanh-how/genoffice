@@ -32,13 +32,16 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
   const [searchPage, setSearchPage] = useState<FileSearchPage | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [openError, setOpenError] = useState<string | null>(null)
   const [selectedIndex, setSelectedIndex] = useState(0)
   const searchSeq = useRef(0)
   const selectedItemRef = useRef<HTMLLIElement | null>(null)
+  const containerRef = useRef<HTMLDivElement | null>(null)
 
-  // Reset selectedIndex whenever query changes
+  // Reset selectedIndex and openError whenever query changes
   useEffect(() => {
     setSelectedIndex(0)
+    setOpenError(null)
   }, [query])
 
   // Debounce 100ms (within required 80-120ms range)
@@ -82,12 +85,42 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
     }
   }, [api, query, isVi])
 
+  // FIX UI-3: Auto-refresh search results every 2000ms while indexing is pending or scanning
+  useEffect(() => {
+    const q = query.trim()
+    if (!q || !searchPage) return
+    const isIndexing = searchPage.index.pending > 0 || searchPage.index.scanning
+    if (!isIndexing) return
+
+    const currentSeq = searchSeq.current
+    const intervalTimer = window.setInterval(async () => {
+      try {
+        const res = await api.searchFiles({ q, limit: 100 })
+        if (currentSeq === searchSeq.current) {
+          setSearchPage(res)
+        }
+      } catch (err) {
+        console.error('Auto-refresh search failed:', err)
+      }
+    }, 2000)
+
+    return () => {
+      window.clearInterval(intervalTimer)
+    }
+  }, [api, query, searchPage?.index.pending, searchPage?.index.scanning])
+
   const handleOpen = async (path: string) => {
     try {
+      setOpenError(null)
       await api.openPath(path)
       onOpened?.()
     } catch (err) {
       console.error('Failed to open path:', err)
+      setOpenError(
+        isVi
+          ? 'Không thể mở tệp. Tệp có thể đã được di chuyển hoặc ổ đĩa đang không khả dụng.'
+          : 'Could not open the file. It may have moved or the drive may be unavailable.',
+      )
     }
   }
 
@@ -128,10 +161,16 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
 
   const visibleHits = [...bestMatches, ...contentMatches]
 
-  // Keyboard navigation
+  // Keyboard navigation (FIX UI-1: Keyboard handler scope)
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (visibleHits.length === 0) return
+
+      const active = document.activeElement
+      const inSearch =
+        active?.classList.contains('idx-search-hero-input') ||
+        containerRef.current?.contains(active)
+      if (!inSearch) return
 
       if (e.key === 'ArrowDown') {
         e.preventDefault()
@@ -152,7 +191,7 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
     return () => {
       window.removeEventListener('keydown', handleKeyDown)
     }
-  }, [visibleHits, selectedIndex])
+  }, [visibleHits, selectedIndex, isVi])
 
   // Scroll selected item into view smoothly
   useEffect(() => {
@@ -218,7 +257,36 @@ export function SearchResults({ api, query, onOpened }: SearchResultsProps) {
   }
 
   return (
-    <div className="idx-search-results-container" aria-live="polite">
+    <div ref={containerRef} className="idx-search-results-container" aria-live="polite">
+      {openError && (
+        <div className="idx-search-open-error" role="alert">
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <circle cx="12" cy="12" r="10" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+          <span className="idx-search-open-error-msg">{openError}</span>
+          <button
+            type="button"
+            className="idx-error-dismiss-btn"
+            aria-label={isVi ? 'Đóng thông báo lỗi' : 'Dismiss error'}
+            onClick={() => setOpenError(null)}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       {isIndexing && (
         <div className="idx-search-indexing-banner" role="status">
           <span className="idx-spinner" aria-hidden="true" />

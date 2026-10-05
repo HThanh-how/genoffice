@@ -107,5 +107,11 @@ export function createDocumentIndexPreloadApi(
     async forgetIndexedFolder(root) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.forgetIndexedFolder, root)
     },
+    async getKnownSearchSources() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getKnownSearchSources)
+    },
+    async setKnownSearchSource(id, enabled) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setKnownSearchSource, id, enabled)
+    },
   }
 }

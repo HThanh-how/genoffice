@@ -369,7 +369,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
 
             {tab === 'sources' && (
               <div className="idx-body idx-embed">
-                <IndexedFolders />
+                <IndexedFolders api={api} />
               </div>
             )}
 

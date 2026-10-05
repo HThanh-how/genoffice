@@ -1,4 +1,4 @@
-import { stat } from 'node:fs/promises'
+import { open, stat } from 'node:fs/promises'
 import { extname, resolve } from 'node:path'
 
 export interface StableFile {
@@ -24,6 +24,8 @@ export interface FileStabilityGateOptions {
   maxConcurrentStats?: number
   /** Custom stat function seam for unit testing and virtualization */
   statFn?: (path: string) => Promise<{ isFile(): boolean; size: number; mtimeMs: number }>
+  /** Custom file open probe seam for testing lock states */
+  openFn?: (path: string, flags: string) => Promise<{ close: () => Promise<void> }>
 }
 
 /** Temporary download and lock file extensions to immediately ignore */
@@ -104,6 +106,10 @@ export class FileStabilityGate {
   private readonly statFn: (
     path: string,
   ) => Promise<{ isFile(): boolean; size: number; mtimeMs: number }>
+  private readonly openFn: (
+    path: string,
+    flags: string,
+  ) => Promise<{ close: () => Promise<void> }>
   private readonly sampleIntervalMs: number
   private readonly backoffScheduleMs: number[]
   private readonly totalTimeoutMs: number
@@ -116,6 +122,11 @@ export class FileStabilityGate {
     const concurrency = Math.min(Math.max(options.maxConcurrentStats ?? 16, 1), 32)
     this.semaphore = new AsyncSemaphore(concurrency)
     this.statFn = options.statFn ?? ((targetPath: string) => stat(targetPath))
+    this.openFn =
+      options.openFn ??
+      (options.statFn
+        ? async () => ({ close: async () => {} })
+        : (targetPath: string, flags: string) => open(targetPath, flags))
   }
 
   /**
@@ -246,14 +257,21 @@ export class FileStabilityGate {
 
       // Stability verification: size and mtime unchanged
       if (sample1.sizeBytes === sample2.sizeBytes && sample1.mtimeMs === sample2.mtimeMs) {
-        return {
-          kind: 'stable',
-          file: {
-            path: normalizedPath,
-            mtimeMs: sample2.mtimeMs,
-            sizeBytes: sample2.sizeBytes,
-          },
+        const probe = await this.probeReadable(normalizedPath)
+        if (probe === 'stable') {
+          return {
+            kind: 'stable',
+            file: {
+              path: normalizedPath,
+              mtimeMs: sample2.mtimeMs,
+              sizeBytes: sample2.sizeBytes,
+            },
+          }
         }
+        if (probe === 'gone') {
+          return { kind: 'gone' }
+        }
+        // probe === 'busy' (exclusive lock / open in other app) -> fallthrough to backoff ladder
       }
 
       // Content or metadata changed -> reset timer and apply backoff ladder
@@ -304,6 +322,33 @@ export class FileStabilityGate {
           return { kind: 'gone' }
         }
         return { kind: 'unavailable' }
+      }
+    })
+  }
+
+  /** Probe readability/lock status before declaring file stable */
+  private async probeReadable(targetPath: string): Promise<'stable' | 'gone' | 'busy'> {
+    return this.semaphore.run(async () => {
+      try {
+        const handle = await this.openFn(targetPath, 'r')
+        try {
+          await handle.close()
+        } catch {
+          // ignore close error
+        }
+        return 'stable'
+      } catch (err: unknown) {
+        const code =
+          typeof err === 'object' && err !== null && 'code' in err
+            ? (err as { code: string }).code
+            : ''
+        if (code === 'ENOENT' || code === 'ENOTDIR') {
+          return 'gone'
+        }
+        if (code === 'EBUSY' || code === 'ETXTBSY' || code === 'EPERM' || code === 'EACCES') {
+          return 'busy'
+        }
+        return 'busy'
       }
     })
   }

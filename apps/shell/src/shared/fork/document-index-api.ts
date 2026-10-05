@@ -1,8 +1,9 @@
 import type { IndexIssueReason } from '../../main/document-memory/issues'
 import type { IndexIssueSummary } from '../../main/document-memory/issue-reader'
 import type { DbLocationState, DbMoveError } from '../../main/document-memory/db-location'
+import type { KnownSearchSource, KnownSearchSourceEntry } from '../../main/document-memory/known-sources'
 
-export type { DbLocationState, DbMoveError }
+export type { DbLocationState, DbMoveError, KnownSearchSource, KnownSearchSourceEntry }
 
 /** The answer to "move the index here": nothing moves until the app restarts. */
 export type DbMoveResult =
@@ -16,6 +17,8 @@ export const DOCUMENT_INDEX_CHANNELS = {
   setIndexedFolderPriority: 'home:set-indexed-folder-priority',
   rescanIndexedFolder: 'home:rescan-indexed-folder',
   forgetIndexedFolder: 'home:forget-indexed-folder',
+  getKnownSearchSources: 'home:get-known-search-sources',
+  setKnownSearchSource: 'home:set-known-search-source',
   getEmbeddingModel: 'home:get-embedding-model',
   setEmbeddingModel: 'home:set-embedding-model',
   getIndexFileDetail: 'home:get-index-file-detail',
@@ -209,6 +212,10 @@ export interface DocumentIndexApi {
   rescanIndexedFolder(root: string): Promise<{ ok: boolean; error?: string }>
   /** Stop watching a folder and drop it from the list (indexed files stay searchable). */
   forgetIndexedFolder(root: string): Promise<boolean>
+  /** Retrieve the list of known search sources (Documents, Downloads, Desktop) with their paths and enabled states. */
+  getKnownSearchSources(): Promise<KnownSearchSourceEntry[]>
+  /** Enable or disable a known search source; toggles scanning and watching. */
+  setKnownSearchSource(id: KnownSearchSource, enabled: boolean): Promise<void>
   /** Files in the index whose name or folder matches every word typed (accents ignored). */
   searchIndexedFiles(query: string): Promise<IndexedFileHit[]>
   /** Which files the indexer is reading now and who is next. */

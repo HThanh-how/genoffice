@@ -1,11 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { IndexedFolder, IndexedFolderRun } from '../../../shared/fork/document-index-api'
+import type { HomeApi } from '../../../shared/home-api'
 import { useI18n } from '../locale'
 import { readIndexRequest } from './index-request'
+
+export interface IndexedFoldersProps {
+  api?: HomeApi
+}
 
 const EN = {
   title: 'Indexed folders',
   desc: 'When each folder was last read, what is waiting, and which folder goes first.',
+  commonTitle: 'Common locations',
+  commonDesc: 'Quickly enable indexing for standard folders on this computer.',
+  locDocuments: 'Documents',
+  locDocumentsDesc: 'Personal documents',
+  locDownloads: 'Downloads',
+  locDownloadsDesc: 'Watching for new downloads',
+  locDesktop: 'Desktop',
+  locDesktopDesc: 'Desktop files',
   empty: 'No folder has been scanned yet. Use "Choose folder and scan" above.',
   never: 'Never finished',
   last: 'Last scan {when}',
@@ -39,6 +52,14 @@ const STRINGS: Record<'en' | 'vi' | 'zh', Dict> = {
   vi: {
     title: 'Thư mục đã lập chỉ mục',
     desc: 'Mỗi thư mục được đọc lần cuối khi nào, còn gì đang chờ và thư mục nào được ưu tiên.',
+    commonTitle: 'Vị trí phổ biến',
+    commonDesc: 'Tự động quét và lập chỉ mục các thư mục người dùng tiêu chuẩn trên máy.',
+    locDocuments: 'Tài liệu (Documents)',
+    locDocumentsDesc: 'Tài liệu cá nhân',
+    locDownloads: 'Tải về (Downloads)',
+    locDownloadsDesc: 'Tự động theo dõi tệp tải về mới',
+    locDesktop: 'Màn hình chính (Desktop)',
+    locDesktopDesc: 'Màn hình chính',
     empty: 'Chưa quét thư mục nào. Hãy dùng "Chọn thư mục và quét" ở trên.',
     never: 'Chưa quét xong',
     last: 'Quét lần cuối {when}',
@@ -67,6 +88,14 @@ const STRINGS: Record<'en' | 'vi' | 'zh', Dict> = {
   zh: {
     title: '已索引的文件夹',
     desc: '每个文件夹上次读取的时间、待处理的内容，以及哪个文件夹优先。',
+    commonTitle: '常用位置',
+    commonDesc: '快速启用此计算机上常用文件夹的自动索引。',
+    locDocuments: '文档',
+    locDocumentsDesc: '个人文档',
+    locDownloads: '下载',
+    locDownloadsDesc: '自动监视新下载的文件',
+    locDesktop: '桌面',
+    locDesktopDesc: '桌面文件',
     empty: '尚未扫描任何文件夹。请使用上方的“选择文件夹并扫描”。',
     never: '尚未完成',
     last: '上次扫描 {when}',
@@ -157,7 +186,24 @@ function RunRow({
   )
 }
 
-export function IndexedFolders() {
+const KNOWN_SOURCES_STORAGE_KEY = 'genoffice_known_search_sources'
+const DEFAULT_KNOWN_SOURCES: Record<string, boolean> = {
+  documents: true,
+  downloads: true,
+  desktop: false,
+}
+
+interface CommonLocationItem {
+  id: 'documents' | 'downloads' | 'desktop'
+  name: string
+  desc: string
+  icon: 'documents' | 'downloads' | 'desktop'
+}
+
+export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
+  const effectiveApi =
+    api ?? (typeof window !== 'undefined' ? (window as unknown as { aiOffice?: HomeApi }).aiOffice : undefined)
+
   const { lang } = useI18n()
   const dict: Dict = (STRINGS as Record<string, Dict | undefined>)[lang] ?? STRINGS.en
   const when = useWhen(lang, dict)
@@ -168,12 +214,102 @@ export function IndexedFolders() {
   const mounted = useRef(false)
   const loading = useRef(false)
 
+  // State for known search sources (Documents, Downloads, Desktop)
+  const [knownSources, setKnownSources] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem(KNOWN_SOURCES_STORAGE_KEY)
+      if (raw) {
+        return { ...DEFAULT_KNOWN_SOURCES, ...JSON.parse(raw) }
+      }
+    } catch {
+      // fallback default
+    }
+    return DEFAULT_KNOWN_SOURCES
+  })
+
+  // Sync known sources from API if available
+  useEffect(() => {
+    let alive = true
+    const fetchKnown = async () => {
+      try {
+        const getFn = (effectiveApi as Record<string, unknown> | undefined)?.getKnownSearchSources
+        if (typeof getFn === 'function') {
+          const res = await (getFn as () => Promise<unknown>).call(effectiveApi)
+          if (!alive || !res) return
+          if (Array.isArray(res)) {
+            const mapped: Record<string, boolean> = {}
+            for (const item of res) {
+              if (item && typeof item === 'object' && 'id' in item && typeof (item as { id: unknown }).id === 'string') {
+                mapped[(item as { id: string }).id] = !!(item as { enabled?: boolean }).enabled
+              }
+            }
+            setKnownSources((prev) => ({ ...prev, ...mapped }))
+          } else if (typeof res === 'object') {
+            setKnownSources((prev) => ({ ...prev, ...(res as Record<string, boolean>) }))
+          }
+        }
+      } catch (err) {
+        console.warn('api.getKnownSearchSources error or unavailable, using fallback:', err)
+      }
+    }
+    void fetchKnown()
+    return () => {
+      alive = false
+    }
+  }, [effectiveApi])
+
+  const toggleKnownSource = async (id: string, enabled: boolean) => {
+    setKnownSources((prev) => {
+      const next = { ...prev, [id]: enabled }
+      try {
+        localStorage.setItem(KNOWN_SOURCES_STORAGE_KEY, JSON.stringify(next))
+      } catch {
+        // ignore
+      }
+      return next
+    })
+
+    try {
+      const setFn = (effectiveApi as Record<string, unknown> | undefined)?.setKnownSearchSource
+      if (typeof setFn === 'function') {
+        await (setFn as (sourceId: string, isEnabled: boolean) => Promise<unknown>).call(
+          effectiveApi,
+          id,
+          enabled,
+        )
+      }
+    } catch (err) {
+      console.warn(`api.setKnownSearchSource(${id}, ${enabled}) failed:`, err)
+    }
+  }
+
+  const commonLocations: CommonLocationItem[] = [
+    {
+      id: 'documents',
+      name: dict.locDocuments,
+      desc: dict.locDocumentsDesc,
+      icon: 'documents',
+    },
+    {
+      id: 'downloads',
+      name: dict.locDownloads,
+      desc: dict.locDownloadsDesc,
+      icon: 'downloads',
+    },
+    {
+      id: 'desktop',
+      name: dict.locDesktop,
+      desc: dict.locDesktopDesc,
+      icon: 'desktop',
+    },
+  ]
+
   const refresh = useCallback(async () => {
-    if (loading.current || document.visibilityState !== 'visible') return
+    if (loading.current || document.visibilityState !== 'visible' || !effectiveApi?.listIndexedFolders) return
     loading.current = true
     try {
       const next = await readIndexRequest(
-        () => window.aiOffice.listIndexedFolders(),
+        () => effectiveApi.listIndexedFolders(),
         (value): value is IndexedFolder[] =>
           Array.isArray(value) &&
           value.every(
@@ -192,7 +328,7 @@ export function IndexedFolders() {
     } finally {
       loading.current = false
     }
-  }, [])
+  }, [effectiveApi])
 
   useEffect(() => {
     mounted.current = true
@@ -216,6 +352,66 @@ export function IndexedFolders() {
     }
   }
 
+  const renderLocationIcon = (icon: 'documents' | 'downloads' | 'desktop') => {
+    if (icon === 'documents') {
+      return (
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+          <line x1="16" y1="13" x2="8" y2="13" />
+          <line x1="16" y1="17" x2="8" y2="17" />
+          <polyline points="10 9 9 9 8 9" />
+        </svg>
+      )
+    }
+    if (icon === 'downloads') {
+      return (
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+      )
+    }
+    return (
+      <svg
+        width="18"
+        height="18"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <rect x="2" y="3" width="20" height="14" rx="2" ry="2" />
+        <line x1="8" y1="21" x2="16" y2="21" />
+        <line x1="12" y1="17" x2="12" y2="21" />
+      </svg>
+    )
+  }
+
   if (folders === null && !failed)
     return (
       <p role="status">
@@ -224,8 +420,43 @@ export function IndexedFolders() {
     )
   return (
     <div className="set-folders">
-      <h4 className="set-field-label">{dict.title}</h4>
-      <p className="set-field-desc">{dict.desc}</p>
+      {/* Vị trí phổ biến / Common locations */}
+      <section className="idx-common-sources-section" aria-label={dict.commonTitle}>
+        <div className="idx-common-sources-header">
+          <h4 className="set-field-label">{dict.commonTitle}</h4>
+          <p className="set-field-desc">{dict.commonDesc}</p>
+        </div>
+        <div className="idx-common-sources-grid">
+          {commonLocations.map((loc) => {
+            const isChecked = !!knownSources[loc.id]
+            return (
+              <div
+                key={loc.id}
+                className={`idx-common-source-card${isChecked ? ' is-active' : ''}`}
+              >
+                <div className="idx-common-source-icon">{renderLocationIcon(loc.icon)}</div>
+                <div className="idx-common-source-info">
+                  <span className="idx-common-source-name">{loc.name}</span>
+                  <span className="idx-common-source-desc">{loc.desc}</span>
+                </div>
+                <label className="idx-switch" aria-label={loc.name}>
+                  <input
+                    type="checkbox"
+                    checked={isChecked}
+                    onChange={(e) => void toggleKnownSource(loc.id, e.target.checked)}
+                  />
+                  <span className="idx-switch-slider" />
+                </label>
+              </div>
+            )
+          })}
+        </div>
+      </section>
+
+      <div className="idx-custom-sources-header" style={{ marginTop: 14 }}>
+        <h4 className="set-field-label">{dict.title}</h4>
+        <p className="set-field-desc">{dict.desc}</p>
+      </div>
       {failed && (
         <p role="status" className="set-field-desc">
           {lang === 'vi'
