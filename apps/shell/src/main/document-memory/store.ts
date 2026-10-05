@@ -271,6 +271,7 @@ export interface DocumentMemorySearchOptions {
 
 /** Durable memory for explicitly opened documents. Only enrolled documents are searchable. */
 export class DocumentMemoryStore {
+  readonly role: 'search' | 'worker'
   private readonly db: DatabaseSync
   readonly dbPath: string
   private readonly searchOptions: Required<Omit<DocumentMemorySearchOptions, 'role' | 'cacheKiB'>>
@@ -288,6 +289,7 @@ export class DocumentMemoryStore {
   }
 
   constructor(dbPath: string, options: DocumentMemorySearchOptions = {}) {
+    this.role = options.role ?? 'search'
     this.dbPath = dbPath
     this.searchOptions = {
       semanticRecentScan: options.semanticRecentScan ?? SEMANTIC_RECENT_SCAN,
@@ -929,15 +931,21 @@ export class DocumentMemoryStore {
     }
     retireOldSets(this.db, documentId)
     const chunkIds = oldChunkIds.map((c) => c.id)
-    for (const [spaceId, ann] of this.annIndexes.entries()) {
-      try {
-        if (ann.isAvailable()) {
-          ann.removeSync(chunkIds)
-          if (!ann.isHealthy()) {
-            this.markAnnDirty(spaceId)
+    if (this.role === 'worker') {
+      for (const [spaceId, ann] of this.annIndexes.entries()) {
+        try {
+          if (ann.isAvailable()) {
+            ann.removeSync(chunkIds)
+            if (!ann.isHealthy()) {
+              this.markAnnDirty(spaceId)
+            }
           }
+        } catch {
+          this.markAnnDirty(spaceId)
         }
-      } catch {
+      }
+    } else {
+      for (const spaceId of this.annIndexes.keys()) {
         this.markAnnDirty(spaceId)
       }
     }
@@ -1014,13 +1022,17 @@ export class DocumentMemoryStore {
           floatBlob(chunk.vector),
           chunk.vector.length,
         )
-        try {
-          const ann = this.getAnnIndex(embeddingModel, chunk.vector.length)
-          if (ann.isAvailable()) {
-            ann.addSync([Number(result.lastInsertRowid)], [chunk.vector])
+        if (this.role === 'worker') {
+          try {
+            const ann = this.getAnnIndex(embeddingModel, chunk.vector.length)
+            if (ann.isAvailable()) {
+              ann.addSync([Number(result.lastInsertRowid)], [chunk.vector])
+            }
+          } catch {
+            // Non-blocking ANN update
           }
-        } catch {
-          // Non-blocking ANN update
+        } else {
+          this.markAnnDirty(embeddingModel)
         }
       }
     }
@@ -1225,33 +1237,37 @@ export class DocumentMemoryStore {
         )
         .run(embeddingSpaceId, complete ? 'ready' : 'text-only', document.id)
     })
-    try {
-      const ann = this.getAnnIndex(embeddingSpaceId, vectors[0]!.length)
-      if (ann.isAvailable()) {
-        const chunkRows = this.db
-          .prepare(
-            `SELECT c.id FROM chunks c
-             JOIN documents d ON d.id = c.document_id
-             WHERE c.document_id = (SELECT id FROM documents WHERE path = ?)
-               AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-               AND c.ordinal >= ?
-             ORDER BY c.ordinal ASC LIMIT ?`,
-          )
-          .all(normalizedPath, offset, vectors.length) as Array<{ id: number }>
-        if (chunkRows.length === vectors.length) {
-          ann.addSync(chunkRows.map((c) => c.id), vectors)
-        }
-        if (!ann.isHealthy()) {
-          this.markAnnDirty(embeddingSpaceId)
-        } else {
-          this.db
+    if (this.role === 'worker') {
+      try {
+        const ann = this.getAnnIndex(embeddingSpaceId, vectors[0]!.length)
+        if (ann.isAvailable()) {
+          const chunkRows = this.db
             .prepare(
-              `UPDATE ann_indexes SET indexed_count = (SELECT count(*) FROM chunk_embeddings e JOIN chunks c ON c.id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ? AND d.excluded = 0 AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)), updated_at = unixepoch() WHERE space_id = ?`,
+              `SELECT c.id FROM chunks c
+               JOIN documents d ON d.id = c.document_id
+               WHERE c.document_id = (SELECT id FROM documents WHERE path = ?)
+                 AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+                 AND c.ordinal >= ?
+               ORDER BY c.ordinal ASC LIMIT ?`,
             )
-            .run(embeddingSpaceId, embeddingSpaceId)
+            .all(normalizedPath, offset, vectors.length) as Array<{ id: number }>
+          if (chunkRows.length === vectors.length) {
+            ann.addSync(chunkRows.map((c) => c.id), vectors)
+          }
+          if (!ann.isHealthy()) {
+            this.markAnnDirty(embeddingSpaceId)
+          } else {
+            this.db
+              .prepare(
+                `UPDATE ann_indexes SET indexed_count = (SELECT count(*) FROM chunk_embeddings e JOIN chunks c ON c.id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ? AND d.excluded = 0 AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)), updated_at = unixepoch() WHERE space_id = ?`,
+              )
+              .run(embeddingSpaceId, embeddingSpaceId)
+          }
         }
+      } catch {
+        this.markAnnDirty(embeddingSpaceId)
       }
-    } catch {
+    } else {
       this.markAnnDirty(embeddingSpaceId)
     }
   }
@@ -1286,24 +1302,28 @@ export class DocumentMemoryStore {
         insert.run(item.chunkId, embeddingSpaceId, floatBlob(item.vector), item.vector.length)
       }
     })
-    try {
-      const ann = this.getAnnIndex(embeddingSpaceId, batch[0]!.vector.length)
-      if (ann.isAvailable()) {
-        ann.addSync(
-          batch.map((b) => b.chunkId),
-          batch.map((b) => b.vector),
-        )
-        if (!ann.isHealthy()) {
-          this.markAnnDirty(embeddingSpaceId)
-        } else {
-          this.db
-            .prepare(
-              `UPDATE ann_indexes SET indexed_count = (SELECT count(*) FROM chunk_embeddings e JOIN chunks c ON c.id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ? AND d.excluded = 0 AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)), updated_at = unixepoch() WHERE space_id = ?`,
-            )
-            .run(embeddingSpaceId, embeddingSpaceId)
+    if (this.role === 'worker') {
+      try {
+        const ann = this.getAnnIndex(embeddingSpaceId, batch[0]!.vector.length)
+        if (ann.isAvailable()) {
+          ann.addSync(
+            batch.map((b) => b.chunkId),
+            batch.map((b) => b.vector),
+          )
+          if (!ann.isHealthy()) {
+            this.markAnnDirty(embeddingSpaceId)
+          } else {
+            this.db
+              .prepare(
+                `UPDATE ann_indexes SET indexed_count = (SELECT count(*) FROM chunk_embeddings e JOIN chunks c ON c.id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE e.space_id = ? AND d.excluded = 0 AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)), updated_at = unixepoch() WHERE space_id = ?`,
+              )
+              .run(embeddingSpaceId, embeddingSpaceId)
+          }
         }
+      } catch {
+        this.markAnnDirty(embeddingSpaceId)
       }
-    } catch {
+    } else {
       this.markAnnDirty(embeddingSpaceId)
     }
   }
@@ -1683,8 +1703,21 @@ export class DocumentMemoryStore {
           ann.isAvailable() &&
           ann.isHealthy()
         ) {
-          const annHits = ann.searchSync(vector, limit * 2)
-          if (annHits.length > 0) {
+          if (
+            typeof ann.getLoadedGeneration === 'function' &&
+            typeof ann.reloadSync === 'function' &&
+            annMeta.generation > ann.getLoadedGeneration()
+          ) {
+            ann.reloadSync(annMeta.generation)
+          }
+          if (!ann.isHealthy()) {
+            this.markAnnDirty(embeddingSpaceId)
+          } else {
+            const annHits = ann.searchSync(vector, limit * 2)
+            if (!ann.isHealthy()) {
+              this.markAnnDirty(embeddingSpaceId)
+            }
+            if (annHits.length > 0) {
             const chunkIds = annHits.map((h) => h.chunkId)
             const placeholders = chunkIds.map(() => '?').join(',')
             const validRows = this.db
@@ -1717,6 +1750,7 @@ export class DocumentMemoryStore {
             }
           }
         }
+      }
       } catch {
         // Fallback directly to SQLite exact scan
       }
@@ -2037,19 +2071,24 @@ export class DocumentMemoryStore {
     const chunkIds = rows.map((r) => r.chunk_id)
     const vectors = rows.map((r) => Array.from(blobVector(r.vector, r.vector_dim)))
 
+    const annMeta = this.db
+      .prepare('SELECT generation FROM ann_indexes WHERE space_id = ?')
+      .get(spaceId) as { generation?: number } | undefined
+    const nextGeneration = (annMeta?.generation ?? 0) + 1
+
     try {
-      const success = await ann.rebuildAtomic(chunkIds, vectors)
+      const success = await ann.rebuildAtomic(chunkIds, vectors, nextGeneration)
       if (success) {
         this.db
           .prepare(
             `UPDATE ann_indexes
-             SET generation = generation + 1,
+             SET generation = ?,
                  indexed_count = ?,
                  state = 'ready',
                  updated_at = unixepoch()
              WHERE space_id = ?`,
           )
-          .run(rows.length, spaceId)
+          .run(nextGeneration, rows.length, spaceId)
         return { ok: true, count: rows.length }
       } else {
         this.db
@@ -2067,6 +2106,11 @@ export class DocumentMemoryStore {
         .run(spaceId)
       return { ok: false, count: 0 }
     }
+  }
+
+  /** Synchronizes the in-memory/on-disk ANN index for the given space (worker-side entrypoint). */
+  async syncAnnIndex(spaceId: string): Promise<{ ok: boolean; count: number }> {
+    return this.rebuildAnnIndex(spaceId)
   }
 
   /**
@@ -2110,15 +2154,21 @@ export class DocumentMemoryStore {
     this.db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId)
     if (ids.length > 0) {
       const chunkIds = ids.map((c) => c.id)
-      for (const [spaceId, ann] of this.annIndexes.entries()) {
-        try {
-          if (ann.isAvailable()) {
-            ann.removeSync(chunkIds)
-            if (!ann.isHealthy()) {
-              this.markAnnDirty(spaceId)
+      if (this.role === 'worker') {
+        for (const [spaceId, ann] of this.annIndexes.entries()) {
+          try {
+            if (ann.isAvailable()) {
+              ann.removeSync(chunkIds)
+              if (!ann.isHealthy()) {
+                this.markAnnDirty(spaceId)
+              }
             }
+          } catch {
+            this.markAnnDirty(spaceId)
           }
-        } catch {
+        }
+      } else {
+        for (const spaceId of this.annIndexes.keys()) {
           this.markAnnDirty(spaceId)
         }
       }
@@ -2136,15 +2186,21 @@ export class DocumentMemoryStore {
       for (const { id } of ids) {
         delFts.run(id)
         delChunk.run(id)
-        for (const [spaceId, ann] of this.annIndexes.entries()) {
-          try {
-            if (ann.isAvailable()) {
-              ann.removeSync([id])
-              if (!ann.isHealthy()) {
-                this.markAnnDirty(spaceId)
+        if (this.role === 'worker') {
+          for (const [spaceId, ann] of this.annIndexes.entries()) {
+            try {
+              if (ann.isAvailable()) {
+                ann.removeSync([id])
+                if (!ann.isHealthy()) {
+                  this.markAnnDirty(spaceId)
+                }
               }
+            } catch {
+              this.markAnnDirty(spaceId)
             }
-          } catch {
+          }
+        } else {
+          for (const spaceId of this.annIndexes.keys()) {
             this.markAnnDirty(spaceId)
           }
         }

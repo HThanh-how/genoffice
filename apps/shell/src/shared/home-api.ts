@@ -203,7 +203,7 @@ export interface DefaultAppStatus {
 /** Status of the local document-content index shown in Settings → General. */
 export interface DocumentMemoryStatus {
   enabled: boolean
-  modelState: 'not-loaded' | 'downloading' | 'ready' | 'error'
+  modelState: 'not-loaded' | 'downloading' | 'ready' | 'blocked' | 'error'
   modelProgress?: number
   documents: number
   chunks: number

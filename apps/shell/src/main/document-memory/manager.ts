@@ -102,7 +102,12 @@ type StatOutcome =
 type WorkerReply =
   | { id: number; result: ExtractResult | number[][] | DocumentMemoryHit[] }
   | { id: number; error: string; restartRequired?: boolean }
-  | { type: 'model'; state: 'downloading' | 'ready' | 'error'; progress?: number; error?: string }
+  | {
+      type: 'model'
+      state: 'downloading' | 'ready' | 'blocked' | 'error'
+      progress?: number
+      error?: string
+    }
 type WorkerRequest =
   | { type: 'extract'; path: string; interactive?: boolean; sliceMs?: number; maxPdfPages?: number }
   | { type: 'embed'; texts: string[]; kind: 'query' | 'passage' }
@@ -126,7 +131,7 @@ type WorkerRequest =
       embeddingSpaceId: string
     }
   | {
-      type: 'ann-rebuild'
+      type: 'ann-rebuild' | 'ann-sync'
       embeddingSpaceId: string
     }
 interface PendingRequest {
@@ -232,7 +237,7 @@ export class DocumentMemoryManager {
   private pendingCount = 0
   private stopped = false
   private enabled: boolean
-  private modelState: DocumentMemoryStatus['modelState'] = 'not-loaded'
+  private modelState: 'not-loaded' | 'downloading' | 'ready' | 'blocked' | 'error' = 'not-loaded'
   private modelProgress: number | undefined
   private lastError: string | undefined
   private pollTimer: NodeJS.Timeout | null = null
@@ -279,6 +284,10 @@ export class DocumentMemoryManager {
     this.pollTimer = setInterval(() => void this.poll(), this.pollIntervalMs)
     this.pollTimer.unref?.()
     this.stopPolicyWatch = subscribeIndexingPolicy((policy) => {
+      if (this.modelState === 'blocked' && policy.allowHeavyEmbedding !== false) {
+        this.modelState = 'not-loaded'
+        this.lastError = undefined
+      }
       if (!policy.paused) this.drain()
     })
   }
@@ -653,7 +662,7 @@ export class DocumentMemoryManager {
         ...(document.error ? { error: document.error } : {}),
       }
     if (document.status === 'text-only') {
-      if (!this.enabled || isIndexingPaused())
+      if (!this.enabled || isIndexingPaused() || this.modelState === 'blocked')
         return { ...base, state: 'paused', percent: progressPercent(progress) }
       if (this.modelState === 'error')
         return {
@@ -912,6 +921,7 @@ export class DocumentMemoryManager {
       (this.enabled || this.modelState === 'ready') &&
       this.modelState !== 'downloading' &&
       this.modelState !== 'error' &&
+      this.modelState !== 'blocked' &&
       (this.modelState === 'ready' || (this.embeds.length === 0 && !this.embedding))
     ) {
       const reply = await this.ask(
@@ -2132,6 +2142,28 @@ export class DocumentMemoryManager {
     })
     this.worker = worker
     return worker
+  }
+
+  /**
+   * Request the worker process (sole ANN owner) to synchronize / rebuild
+   * the persistent USearch index for the current or specified embedding space.
+   */
+  async triggerAnnSync(
+    embeddingSpaceId?: string,
+  ): Promise<{ ok: boolean; count: number } | null> {
+    try {
+      const spaceId = embeddingSpaceId ?? this.embeddingProfile.embeddingId
+      const reply = await this.ask(
+        { type: 'ann-sync', embeddingSpaceId: spaceId },
+        180_000,
+      )
+      if (reply && 'result' in reply && reply.result && typeof reply.result === 'object') {
+        return reply.result as unknown as { ok: boolean; count: number }
+      }
+      return null
+    } catch {
+      return null
+    }
   }
 }
 

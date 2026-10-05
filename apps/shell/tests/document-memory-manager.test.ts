@@ -574,4 +574,42 @@ describe('DocumentMemoryManager', () => {
     expect(instance.status().enabled).toBe(true)
     expect(instance.status().lastError).toBe('Model retry requested from diagnostics')
   })
+
+  it('handles blocked modelState and recovers when indexing policy allows heavy embedding', async () => {
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    const instance = manager(fake)
+    ;(instance as unknown as { ensureWorker(): Worker }).ensureWorker()
+
+    // Simulate worker notifying that high embedding model is blocked by policy
+    fake.emit('message', {
+      type: 'model',
+      state: 'blocked',
+      error: 'High-accuracy embedding model disabled by indexing policy (low RAM or battery).',
+    })
+
+    expect(instance.status().modelState).toBe('blocked')
+    expect(instance.status().lastError).toContain('High-accuracy embedding model disabled')
+
+    // During blocked state, searchProgressive should skip query embedding and return lexical results cleanly
+    const lexicalHits: unknown[] = []
+    await instance.searchProgressive('test', 5, {
+      onLexical: (hits) => lexicalHits.push(...hits),
+    })
+    expect(fake.embeddingCalls).toHaveLength(0)
+
+    // When policy recovers and allows heavy embedding
+    publishIndexingPolicy({
+      paused: false,
+      threads: 2,
+      cpuShare: 0.5,
+      priority: 'below-normal',
+      tier: 'active',
+      reason: 'test',
+      onBattery: false,
+      allowHeavyEmbedding: true,
+    } as any)
+
+    expect(instance.status().modelState).toBe('not-loaded')
+    expect(instance.status().lastError).toBeUndefined()
+  })
 })

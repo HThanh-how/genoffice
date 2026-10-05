@@ -274,7 +274,7 @@ onIndexRequest(
             request.limit,
             request.embeddingSpaceId ?? request.embeddingModel,
           )
-        } else if (request.type === 'ann-rebuild') {
+        } else if (request.type === 'ann-rebuild' || request.type === 'ann-sync') {
           result = await getWorkerStore().rebuildAnnIndex(
             request.embeddingSpaceId ?? request.embeddingModel,
           )

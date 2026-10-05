@@ -38,6 +38,7 @@ export const DOCUMENT_INDEX_CHANNELS = {
   cancelDbMove: 'home:cancel-db-move',
   restartForDbMove: 'home:restart-for-db-move',
   setEverything: 'home:set-everything',
+  chooseEverythingExecutable: 'home:choose-everything-executable',
 } as const
 
 /** Everything (voidtools) as an optional, instant file-name search next to the document index. */
@@ -239,6 +240,8 @@ export interface DocumentIndexApi {
   getEverything(): Promise<EverythingState>
   /** Turn it on or off, optionally pointing at es.exe; returns the new state. */
   setEverything(change: { enabled: boolean; path?: string }): Promise<EverythingState>
+  /** Pick an Everything executable via system file picker; returns the new state. */
+  chooseEverythingExecutable(): Promise<EverythingState>
   /** Push one file to the back of the line (cutting its read short if it is being read). */
   deferIndexFile(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** Stop reading one waiting file; it stays in the list as a problem to retry. */

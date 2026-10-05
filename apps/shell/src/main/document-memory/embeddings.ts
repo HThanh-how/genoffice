@@ -130,7 +130,10 @@ async function loadEmbeddingModel(cacheDir: string, profile: EmbeddingProfile): 
     JSON.parse(await readFile(paths.get(profile.tokenizerConfigFile)!, 'utf8')),
   )
   // Sized to the indexing policy; the keeper re-creates it between batches when that changes.
-  const keeper = await createEmbeddingSessionKeeper(paths.get(profile.modelFile)!)
+  const keeper = await createEmbeddingSessionKeeper(
+    paths.get(profile.modelFile)!,
+    profile.id !== 'high',
+  )
   return { tokenizer, session: keeper.current(), keeper }
 }
 
@@ -164,7 +167,7 @@ export async function embedTexts(
     if (profile.id === 'high' && workerPolicy.allowHeavyEmbedding === false) {
       postIndexMessage({
         type: 'model',
-        state: 'error',
+        state: 'blocked',
         error:
           'High-accuracy embedding model disabled by indexing policy (low RAM or battery). Semantic search temporarily paused; text search remains available.',
       })

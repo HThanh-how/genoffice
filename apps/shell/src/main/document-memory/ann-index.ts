@@ -12,4 +12,8 @@ export interface AnnIndex {
   remove(chunkIds: number[]): Promise<void>
   rebuild(): Promise<void>
   close(): Promise<void>
+  getLoadedGeneration?(): number
+  setLoadedGeneration?(gen: number): void
+  reloadSync?(generation: number): boolean
+  isHealthy?(): boolean
 }

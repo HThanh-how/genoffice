@@ -1,6 +1,6 @@
 import { basename, isAbsolute, join } from 'node:path'
-import { existsSync, statSync } from 'node:fs'
-import type { IpcMain } from 'electron'
+import { stat } from 'node:fs/promises'
+import { dialog, type IpcMain } from 'electron'
 import { DOCUMENT_INDEX_CHANNELS, type EverythingState } from '../../shared/fork/document-index-api'
 import { EverythingSearch } from '../everything/es-client'
 import {
@@ -50,6 +50,7 @@ export function createEverything(userData: string): EverythingController {
 export function registerEverythingIpc(
   ipcMain: IpcMain,
   controller: () => EverythingController | null,
+  dialogProvider: Pick<typeof dialog, 'showOpenDialog'> = dialog,
 ): void {
   ipcMain.handle(
     DOCUMENT_INDEX_CHANNELS.getEverything,
@@ -72,24 +73,54 @@ export function registerEverythingIpc(
       return current.state()
     }
 
-    const trimmed = path.trim()
-    if (trimmed !== '') {
-      if (/[\r\n\0]/.test(trimmed)) {
-        throw new Error('Invalid characters in executable path')
-      }
-      if (!isAbsolute(trimmed)) {
-        throw new Error('Executable path must be absolute')
-      }
-      const expectedExe = process.platform === 'win32' ? 'es.exe' : 'es'
-      if (basename(trimmed).toLowerCase() !== expectedExe) {
-        throw new Error(`Executable must be ${expectedExe}`)
-      }
-      if (!existsSync(trimmed) || !statSync(trimmed).isFile()) {
-        throw new Error('Configured executable does not exist or is not a file')
-      }
+    if (path.trim() === '') {
+      current.set({ enabled, path: '' })
+      return current.state()
     }
 
-    current.set({ enabled, ...(trimmed === '' ? { path: '' } : { path: trimmed }) })
+    throw new Error('Custom executable path can only be configured via system file picker')
+  })
+
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.chooseEverythingExecutable, async () => {
+    const current = controller()
+    if (!current) throw new Error('Everything is not ready yet')
+
+    const outcome = await dialogProvider.showOpenDialog({
+      title: 'Select Everything Command-line (es.exe)',
+      properties: ['openFile'],
+      filters: [
+        {
+          name: 'Everything Executable',
+          extensions: process.platform === 'win32' ? ['exe'] : ['*'],
+        },
+      ],
+    })
+
+    if (outcome.canceled || !outcome.filePaths.length) {
+      return current.state()
+    }
+
+    const selected = outcome.filePaths[0]!.trim()
+    if (/[\r\n\0]/.test(selected)) {
+      throw new Error('Invalid characters in executable path')
+    }
+    if (!isAbsolute(selected)) {
+      throw new Error('Executable path must be absolute')
+    }
+    const expectedExe = process.platform === 'win32' ? 'es.exe' : 'es'
+    if (basename(selected).toLowerCase() !== expectedExe) {
+      throw new Error(`Executable must be ${expectedExe}`)
+    }
+    try {
+      const s = await stat(selected)
+      if (!s.isFile()) {
+        throw new Error('Selected path is not a file')
+      }
+    } catch {
+      throw new Error('Configured executable does not exist or is not a file')
+    }
+
+    current.set({ enabled: true, path: selected })
     return current.state()
   })
 }

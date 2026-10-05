@@ -1,7 +1,44 @@
-import { existsSync, renameSync, unlinkSync, mkdirSync } from 'node:fs'
+import { existsSync, renameSync, unlinkSync, mkdirSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { dirname } from 'node:path'
 import type { AnnHit, AnnIndex } from './ann-index'
 import { ExactVectorIndex } from './exact-vector-index'
+
+function isValidUsearchHeader(filePath: string): boolean {
+  try {
+    const stat = statSync(filePath)
+    if (stat.size < 64) return false
+    const fd = openSync(filePath, 'r')
+    try {
+      const head = Buffer.alloc(16)
+      readSync(fd, head, 0, 16, 0)
+      if (head.subarray(0, 7).toString('ascii') === 'usearch') return true
+
+      const rows32 = head.readUInt32LE(0)
+      const cols32 = head.readUInt32LE(4)
+      const offset32 = 8 + rows32 * cols32
+      if (offset32 + 7 <= stat.size) {
+        const magicBuf = Buffer.alloc(7)
+        readSync(fd, magicBuf, 0, 7, offset32)
+        if (magicBuf.toString('ascii') === 'usearch') return true
+      }
+
+      const rows64 = Number(head.readBigUInt64LE(0))
+      const cols64 = Number(head.readBigUInt64LE(8))
+      const offset64 = 16 + rows64 * cols64
+      if (offset64 + 7 <= stat.size) {
+        const magicBuf = Buffer.alloc(7)
+        readSync(fd, magicBuf, 0, 7, offset64)
+        if (magicBuf.toString('ascii') === 'usearch') return true
+      }
+
+      return false
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    return false
+  }
+}
 
 interface USearchNativeIndex {
   dimensions: number
@@ -49,12 +86,19 @@ export class USearchIndex implements AnnIndex {
   private nativeIndex: USearchNativeIndex | null = null
   private fallbackExact: ExactVectorIndex | null = null
   private state: 'ready' | 'dirty' = 'ready'
+  private loadedGeneration = 0
   private isOpen = false
 
+  readonly dimensions: number
+  readonly indexPath: string
+
   constructor(
-    private readonly dimensions: number,
-    private readonly indexPath: string,
-  ) {}
+    dimensions: number,
+    indexPath: string,
+  ) {
+    this.dimensions = dimensions
+    this.indexPath = indexPath
+  }
 
   async open(): Promise<void> {
     if (this.isOpen) return
@@ -74,6 +118,14 @@ export class USearchIndex implements AnnIndex {
         metric: 'cos',
       })
       if (existsSync(this.indexPath)) {
+        if (!isValidUsearchHeader(this.indexPath)) {
+          this.nativeIndex = null
+          this.fallbackExact = new ExactVectorIndex()
+          await this.fallbackExact.open()
+          this.state = 'dirty'
+          this.isOpen = true
+          return
+        }
         this.nativeIndex.load(this.indexPath)
       }
       this.state = 'ready'
@@ -103,6 +155,13 @@ export class USearchIndex implements AnnIndex {
         metric: 'cos',
       })
       if (existsSync(this.indexPath)) {
+        if (!isValidUsearchHeader(this.indexPath)) {
+          this.nativeIndex = null
+          this.fallbackExact = new ExactVectorIndex()
+          this.state = 'dirty'
+          this.isOpen = true
+          return
+        }
         this.nativeIndex.load(this.indexPath)
       }
       this.state = 'ready'
@@ -127,6 +186,42 @@ export class USearchIndex implements AnnIndex {
     return this.state
   }
 
+  getLoadedGeneration(): number {
+    return this.loadedGeneration
+  }
+
+  setLoadedGeneration(gen: number): void {
+    this.loadedGeneration = gen
+  }
+
+  reloadSync(generation: number): boolean {
+    const mod = getUsearchModule()
+    if (!mod) {
+      this.loadedGeneration = generation
+      return false
+    }
+    try {
+      const nextIndex = new mod.Index({
+        dimensions: this.dimensions,
+        metric: 'cos',
+      })
+      if (existsSync(this.indexPath)) {
+        if (!isValidUsearchHeader(this.indexPath)) {
+          this.state = 'dirty'
+          return false
+        }
+        nextIndex.load(this.indexPath)
+      }
+      this.nativeIndex = nextIndex
+      this.loadedGeneration = generation
+      this.state = 'ready'
+      return true
+    } catch {
+      this.state = 'dirty'
+      return false
+    }
+  }
+
   searchSync(vector: number[], limit: number): AnnHit[] {
     if (!this.isOpen) this.openSync()
     if (this.nativeIndex) {
@@ -146,6 +241,7 @@ export class USearchIndex implements AnnIndex {
         }
         return hits
       } catch {
+        this.state = 'dirty'
         return []
       }
     }
@@ -186,6 +282,9 @@ export class USearchIndex implements AnnIndex {
         const id = chunkIds[i]!
         const vec = vectors[i]
         if (vec) {
+          if (vec.length !== this.dimensions) {
+            throw new Error(`Vector dimension mismatch: expected ${this.dimensions}, got ${vec.length}`)
+          }
           this.nativeIndex.add(id, new Float32Array(vec))
         }
       }
@@ -253,7 +352,7 @@ export class USearchIndex implements AnnIndex {
     }
   }
 
-  async rebuildAtomic(chunkIds: number[], vectors: number[][]): Promise<boolean> {
+  async rebuildAtomic(chunkIds: number[], vectors: number[][], generation?: number): Promise<boolean> {
     if (!this.isOpen) await this.open()
     const mod = getUsearchModule()
     if (!mod) {
@@ -261,6 +360,7 @@ export class USearchIndex implements AnnIndex {
         await this.fallbackExact.rebuild()
         await this.fallbackExact.add(chunkIds, vectors)
       }
+      this.loadedGeneration = generation !== undefined ? generation : this.loadedGeneration + 1
       this.state = 'ready'
       return true
     }
@@ -286,6 +386,7 @@ export class USearchIndex implements AnnIndex {
       nextIndex.save(tempPath)
       renameSync(tempPath, this.indexPath)
       this.nativeIndex = nextIndex
+      this.loadedGeneration = generation !== undefined ? generation : this.loadedGeneration + 1
       this.state = 'ready'
       return true
     } catch {
@@ -321,7 +422,7 @@ export class USearchIndex implements AnnIndex {
     return 0
   }
 
-  private saveAtomic(): void {
+  saveAtomic(generation?: number): void {
     if (!this.indexPath || !this.nativeIndex) return
     const tempPath = `${this.indexPath}.tmp`
     try {
@@ -331,6 +432,7 @@ export class USearchIndex implements AnnIndex {
       }
       this.nativeIndex.save(tempPath)
       renameSync(tempPath, this.indexPath)
+      if (generation !== undefined) this.loadedGeneration = generation
     } catch {
       this.state = 'dirty'
       try {

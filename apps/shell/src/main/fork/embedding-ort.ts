@@ -34,9 +34,24 @@ export function childFreeMemMB(
 /** First session at the policy's current thread count, plus the between-batch resizer. */
 export async function createEmbeddingSessionKeeper(
   modelPath: string,
+  allowDynamicResize = true,
 ): Promise<SessionKeeper<InferenceSession>> {
   const threads = workerPolicy.threads
   const initial = await createOrtSession(modelPath, threads)
+  if (!allowDynamicResize) {
+    return {
+      current: () => initial,
+      threads: () => threads,
+      align: () => Promise.resolve(),
+      dispose: async () => {
+        try {
+          await initial.release()
+        } catch {
+          // The replaced session is garbage collected if releasing it fails.
+        }
+      },
+    }
+  }
   return createSessionKeeper(initial, threads, {
     desiredThreads: () => workerPolicy.threads,
     create: (wanted) => createOrtSession(modelPath, wanted),

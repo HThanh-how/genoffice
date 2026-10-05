@@ -68,6 +68,9 @@ export function createDocumentIndexPreloadApi(
     async getEverything() {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getEverything)
     },
+    async chooseEverythingExecutable() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.chooseEverythingExecutable)
+    },
     async setEverything(change) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setEverything, change)
     },

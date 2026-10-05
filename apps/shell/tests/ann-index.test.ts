@@ -158,12 +158,100 @@ describe('ANN Vector Indexing & Exact Search Fallback', () => {
 
       await index.close()
     })
+
+    it('tracks loadedGeneration initialized at 0, updated by setLoadedGeneration and rebuildAtomic', async () => {
+      const indexPath = join(directory, 'test-generation.usearch')
+      const index = new USearchIndex(2, indexPath)
+      await index.open()
+
+      expect(index.getLoadedGeneration()).toBe(0)
+
+      index.setLoadedGeneration(5)
+      expect(index.getLoadedGeneration()).toBe(5)
+
+      // rebuildAtomic without generation increments loadedGeneration
+      await index.rebuildAtomic([1], [[1, 0]])
+      expect(index.getLoadedGeneration()).toBe(6)
+
+      // rebuildAtomic with explicit generation sets loadedGeneration
+      await index.rebuildAtomic([2], [[0, 1]], 42)
+      expect(index.getLoadedGeneration()).toBe(42)
+
+      // saveAtomic with explicit generation updates loadedGeneration
+      index.saveAtomic(99)
+      expect(index.getLoadedGeneration()).toBe(99)
+
+      // saveAtomic without generation preserves loadedGeneration
+      index.saveAtomic()
+      expect(index.getLoadedGeneration()).toBe(99)
+
+      await index.close()
+    })
+
+    it('reloads index from disk and updates loadedGeneration via reloadSync', async () => {
+      const indexPath = join(directory, 'test-reload.usearch')
+      const index1 = new USearchIndex(2, indexPath)
+      await index1.open()
+
+      await index1.add([10, 20], [[1, 0], [0, 1]])
+      expect(index1.isHealthy()).toBe(true)
+
+      const index2 = new USearchIndex(2, indexPath)
+      await index2.open()
+      expect(index2.getLoadedGeneration()).toBe(0)
+
+      // Now index1 adds new vector and rebuilds atomic to generation 2
+      await index1.rebuildAtomic([10, 20, 30], [[1, 0], [0, 1], [0.707, 0.707]], 2)
+
+      // index2 reloads with generation 2
+      const reloadSuccess = index2.reloadSync(2)
+      expect(reloadSuccess).toBe(true)
+      expect(index2.getLoadedGeneration()).toBe(2)
+      expect(index2.isHealthy()).toBe(true)
+
+      // Verify index2 can find the newly added vector from index1
+      const hits = index2.searchSync([0.707, 0.707], 1)
+      expect(hits).toHaveLength(1)
+      expect(hits[0]?.chunkId).toBe(30)
+
+      await index1.close()
+      await index2.close()
+    })
+
+    it('marks index as dirty and returns empty array when searchSync encounters native index error', async () => {
+      const indexPath = join(directory, 'test-search-error.usearch')
+      const index = new USearchIndex(2, indexPath)
+      await index.open()
+
+      await index.add([1], [[1, 0]])
+      expect(index.isHealthy()).toBe(true)
+      expect(index.getState()).toBe('ready')
+
+      // Mock or cause search failure on native index
+      const nativeIndex = (index as unknown as { nativeIndex: { search: () => unknown } }).nativeIndex
+      if (nativeIndex) {
+        const originalSearch = nativeIndex.search
+        nativeIndex.search = () => {
+          throw new Error('Simulated native search error')
+        }
+
+        const hits = index.searchSync([1, 0], 1)
+        expect(hits).toEqual([])
+        expect(index.getState()).toBe('dirty')
+        expect(index.isHealthy()).toBe(false)
+
+        nativeIndex.search = originalSearch
+      }
+
+      await index.close()
+    })
   })
 
   describe('DocumentMemoryStore ANN hardening (Audit P0 / P1 / A2 / A3 / B4)', () => {
     it('updates indexed_count in ann_indexes on setChunkEmbeddings and rebuildAnnIndex', async () => {
       const dbPath = join(directory, 'test-store.sqlite')
-      const store = new DocumentMemoryStore(dbPath)
+      const store = new DocumentMemoryStore(dbPath, { role: 'worker' })
+      try {
 
       const docPath = join(directory, 'doc.txt')
       store.replaceDocument(docPath, {
@@ -243,8 +331,9 @@ describe('ANN Vector Indexing & Exact Search Fallback', () => {
         .prepare('SELECT state FROM ann_indexes WHERE space_id = ?')
         .get('space-1') as { state: string }
       expect(row.state).toBe('dirty')
-
-      store.close()
+      } finally {
+        store.close()
+      }
     })
   })
 })

@@ -4,7 +4,12 @@ import type { spawn } from 'node:child_process'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { coolDownMs, withBackgroundBudget } from '../src/main/document-memory/cpu-budget'
 import { createIndexProcess } from '../src/main/document-memory/process-worker'
-import { childFreeMemMB, ortSessionOptions } from '../src/main/fork/embedding-ort'
+import { InferenceSession } from 'onnxruntime-node'
+import {
+  childFreeMemMB,
+  createEmbeddingSessionKeeper,
+  ortSessionOptions,
+} from '../src/main/fork/embedding-ort'
 import { createSessionKeeper } from '../src/main/fork/embedding-session'
 import { attachChildToPolicy, osPriorityFor } from '../src/main/fork/indexing-child-policy'
 import {
@@ -394,5 +399,40 @@ describe('onnxruntime options', () => {
     expect(childFreeMemMB('darwin', () => 100 * 1024 * 1024)).toBe(Number.POSITIVE_INFINITY)
     expect(childFreeMemMB('linux', () => 2048 * 1024 * 1024)).toBe(2048)
     expect(childFreeMemMB('win32', () => 512 * 1024 * 1024)).toBe(512)
+  })
+})
+
+describe('createEmbeddingSessionKeeper', () => {
+  it('disables dynamic thread resize when allowDynamicResize is false', async () => {
+    const fakeSession = {
+      release: vi.fn().mockResolvedValue(undefined),
+    } as unknown as InferenceSession
+    const createSpy = vi.spyOn(InferenceSession, 'create').mockResolvedValue(fakeSession)
+
+    const keeper = await createEmbeddingSessionKeeper('model.onnx', false)
+    expect(keeper.current()).toBe(fakeSession)
+    expect(keeper.threads()).toBe(workerPolicy.threads)
+
+    // align() is a no-op when allowDynamicResize is false
+    await keeper.align()
+    expect(createSpy).toHaveBeenCalledTimes(1)
+
+    await keeper.dispose()
+    expect(fakeSession.release).toHaveBeenCalledTimes(1)
+    createSpy.mockRestore()
+  })
+
+  it('enables dynamic thread resize by default', async () => {
+    const fakeSession = {
+      release: vi.fn().mockResolvedValue(undefined),
+    } as unknown as InferenceSession
+    const createSpy = vi.spyOn(InferenceSession, 'create').mockResolvedValue(fakeSession)
+
+    const keeper = await createEmbeddingSessionKeeper('model.onnx')
+    expect(keeper.current()).toBe(fakeSession)
+    expect(keeper.threads()).toBe(workerPolicy.threads)
+
+    await keeper.dispose()
+    createSpy.mockRestore()
   })
 })
