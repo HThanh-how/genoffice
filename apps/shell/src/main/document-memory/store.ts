@@ -156,10 +156,7 @@ CREATE TABLE IF NOT EXISTS chunks (
   chunk_set_id INTEGER,
   ordinal INTEGER NOT NULL,
   text TEXT NOT NULL,
-  location TEXT NOT NULL,
-  vector BLOB,
-  vector_dim INTEGER,
-  normalized INTEGER NOT NULL DEFAULT 0
+  location TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS document_embedding_counts (
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
@@ -1460,15 +1457,10 @@ export class DocumentMemoryStore {
           created_at = unixepoch()
       `)
 
-      const updateChunkLegacy = this.db.prepare(
-        'UPDATE chunks SET vector = ?, vector_dim = ? WHERE id = ?',
-      )
-
       vectors.forEach((vector, index) => {
         const chunk = chunkRows[index]!
         const blob = floatBlob(vector)
         insertEmbedding.run(chunk.id, embeddingSpaceId, blob, vector.length)
-        updateChunkLegacy.run(blob, vector.length, chunk.id)
       })
 
       const count = this.db
@@ -2026,72 +2018,35 @@ export class DocumentMemoryStore {
       }
     }
 
-    const hasChunkEmbeddings = this.db
-      .prepare('SELECT 1 FROM chunk_embeddings LIMIT 1')
-      .get()
-
     function* scoredRows(store: DocumentMemoryStore) {
-      if (hasChunkEmbeddings) {
-        const rows = store.db
-          .prepare(
-            `SELECT e.chunk_id AS id, e.vector, e.vector_dim, c.document_id, d.priority_at
-             FROM chunk_embeddings e
-             JOIN chunks c ON c.id = e.chunk_id
-             JOIN documents d ON d.id = c.document_id
-             WHERE d.excluded = 0 AND (? IS NULL OR e.space_id = ?)
-               AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-             ORDER BY d.priority_at DESC, d.id DESC`,
-          )
-          .iterate(embeddingSpaceId ?? null, embeddingSpaceId ?? null) as Iterable<{
-            id: number
-            vector: Uint8Array
-            vector_dim: number
-            document_id: number
-            priority_at: number
-          }>
+      const rows = store.db
+        .prepare(
+          `SELECT e.chunk_id AS id, e.vector, e.vector_dim, c.document_id, d.priority_at
+           FROM chunk_embeddings e
+           JOIN chunks c ON c.id = e.chunk_id
+           JOIN documents d ON d.id = c.document_id
+           WHERE d.excluded = 0 AND (? IS NULL OR e.space_id = ?)
+             AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+           ORDER BY d.priority_at DESC, d.id DESC`,
+        )
+        .iterate(embeddingSpaceId ?? null, embeddingSpaceId ?? null) as Iterable<{
+          id: number
+          vector: Uint8Array
+          vector_dim: number
+          document_id: number
+          priority_at: number
+        }>
 
-        let documentRank = 0
-        for (const row of rows) {
-          if (row.vector_dim !== vector.length) continue
-          documentRank++
-          const score = cosine(vector, blobVector(row.vector, row.vector_dim), queryNorm)
-          yield {
-            id: row.id,
-            score: score + 1e-8 / documentRank,
-            cosineScore: score,
-            documentId: row.document_id,
-          }
-        }
-      } else {
-        // Fallback to legacy chunks.vector if chunk_embeddings is empty
-        const legacyRows = store.db
-          .prepare(
-            `SELECT c.id, c.vector, c.vector_dim, c.document_id, d.priority_at
-             FROM chunks c
-             JOIN documents d ON d.id = c.document_id
-             WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
-               AND (? IS NULL OR d.embedding_model = ?)
-               AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-             ORDER BY d.priority_at DESC, d.id DESC`,
-          )
-          .iterate(vector.length, embeddingSpaceId ?? null, embeddingSpaceId ?? null) as Iterable<{
-            id: number
-            vector: Uint8Array
-            vector_dim: number
-            document_id: number
-            priority_at: number
-          }>
-
-        let documentRank = 0
-        for (const row of legacyRows) {
-          documentRank++
-          const score = cosine(vector, blobVector(row.vector, row.vector_dim), queryNorm)
-          yield {
-            id: row.id,
-            score: score + 1e-8 / documentRank,
-            cosineScore: score,
-            documentId: row.document_id,
-          }
+      let documentRank = 0
+      for (const row of rows) {
+        if (row.vector_dim !== vector.length) continue
+        documentRank++
+        const score = cosine(vector, blobVector(row.vector, row.vector_dim), queryNorm)
+        yield {
+          id: row.id,
+          score: score + 1e-8 / documentRank,
+          cosineScore: score,
+          documentId: row.document_id,
         }
       }
     }

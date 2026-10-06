@@ -148,4 +148,23 @@ describe('Document Memory V3 Storage Schema & Embedding Counts', () => {
         .run()
     }).toThrow()
   })
+
+  it('ensures V3 chunks table does not contain vector, vector_dim, or normalized columns', () => {
+    const rawDb = store.rawDb
+    const chunkCols = (
+      rawDb.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>
+    ).map((c) => c.name)
+
+    expect(chunkCols).toContain('id')
+    expect(chunkCols).toContain('document_id')
+    expect(chunkCols).toContain('chunk_set_id')
+    expect(chunkCols).toContain('ordinal')
+    expect(chunkCols).toContain('text')
+    expect(chunkCols).toContain('location')
+
+    // Columns that MUST be omitted in V3 chunks table
+    expect(chunkCols).not.toContain('vector')
+    expect(chunkCols).not.toContain('vector_dim')
+    expect(chunkCols).not.toContain('normalized')
+  })
 })
