@@ -1,12 +1,24 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { existsSync, statSync } from 'node:fs'
 import type { DocumentIndexStorageDiagnostics } from '../../../../shared/fork/document-index-api'
+import {
+  inspectPhysicalStorageState,
+  type SchemaPhysicalState,
+} from '../schema-inspector'
 
 export class DiagnosticsRepository {
   constructor(
     private readonly db: DatabaseSync,
     private readonly dbPath: string,
   ) {}
+
+  getSchemaPhysicalState(): SchemaPhysicalState {
+    return inspectPhysicalStorageState(this.db, this.dbPath)
+  }
+
+  getSchemaState(): SchemaPhysicalState {
+    return this.getSchemaPhysicalState()
+  }
 
   getStorageDiagnostics(backupPath?: string): DocumentIndexStorageDiagnostics {
     let activeDbSizeBytes = 0
@@ -33,53 +45,108 @@ export class DiagnosticsRepository {
       // ignore
     }
 
-    const pageSize = (this.db.prepare('PRAGMA page_size').get() as { page_size: number }).page_size
-    const pageCount = (this.db.prepare('PRAGMA page_count').get() as { page_count: number }).page_count
-    const freelistCount = (this.db.prepare('PRAGMA freelist_count').get() as { freelist_count: number }).freelist_count
+    let pageSize = 4096
+    let pageCount = 0
+    let freelistCount = 0
+    try {
+      pageSize = (this.db.prepare('PRAGMA page_size').get() as { page_size: number }).page_size
+      pageCount = (this.db.prepare('PRAGMA page_count').get() as { page_count: number }).page_count
+      freelistCount = (this.db.prepare('PRAGMA freelist_count').get() as { freelist_count: number }).freelist_count
+    } catch {
+      // ignore
+    }
     const estimatedReclaimableBytes = freelistCount * pageSize
 
-    const schemaVersionRow = this.db
-      .prepare("SELECT value FROM document_memory_meta WHERE key = 'schema_version'")
-      .get() as { value: string } | undefined
-    const schemaVersion = schemaVersionRow?.value ?? '3'
+    const physicalState = this.getSchemaPhysicalState()
 
-    const topOffendersByChunks = (
-      this.db
-        .prepare(`
-          SELECT d.id, d.path, d.name, count(c.id) AS chunks, d.truncated
-          FROM documents d
-          JOIN chunks c ON c.document_id = d.id
-          WHERE d.excluded = 0
-          GROUP BY d.id
-          ORDER BY chunks DESC
-          LIMIT 20
-        `)
-        .all() as Array<{ id: number; path: string; name: string; chunks: number; truncated: number }>
-    ).map((row) => ({
-      id: row.id,
-      path: row.path,
-      name: row.name,
-      chunks: row.chunks,
-      truncated: !!row.truncated,
-    }))
+    let schemaVersionRow: { value: string } | undefined
+    try {
+      schemaVersionRow = this.db
+        .prepare("SELECT value FROM document_memory_meta WHERE key = 'schema_version'")
+        .get() as { value: string } | undefined
+    } catch {
+      // ignore
+    }
 
-    const topOffendersBySize = (
-      this.db
-        .prepare(`
-          SELECT d.id, d.path, d.name, coalesce(d.size_bytes, 0) AS sizeBytes, d.chunk_total AS chunks
-          FROM documents d
-          WHERE d.excluded = 0
-          ORDER BY sizeBytes DESC
-          LIMIT 20
-        `)
-        .all() as Array<{ id: number; path: string; name: string; sizeBytes: number; chunks: number }>
-    ).map((row) => ({
-      id: row.id,
-      path: row.path,
-      name: row.name,
-      sizeBytes: row.sizeBytes,
-      chunks: row.chunks,
-    }))
+    let schemaVersion: string
+    let migrationStatus: DocumentIndexStorageDiagnostics['migrationStatus']
+
+    switch (physicalState) {
+      case 'v3':
+        // Physical inspection confirmed Canonical V3 schema
+        schemaVersion = schemaVersionRow?.value ?? '3'
+        migrationStatus = 'completed'
+        break
+      case 'migration-in-progress':
+        schemaVersion = 'migration-in-progress'
+        migrationStatus = 'in-progress'
+        break
+      case 'v2':
+        schemaVersion = schemaVersionRow?.value ?? 'v2'
+        migrationStatus = 'none'
+        break
+      case 'migration-needed':
+        schemaVersion = schemaVersionRow?.value ?? 'migration-needed'
+        migrationStatus = 'none'
+        break
+      case 'corrupt':
+        schemaVersion = 'corrupt'
+        migrationStatus = 'none'
+        break
+      case 'unknown':
+      default:
+        schemaVersion = schemaVersionRow?.value ?? 'unknown'
+        migrationStatus = 'none'
+        break
+    }
+
+    let topOffendersByChunks: DocumentIndexStorageDiagnostics['topOffendersByChunks'] = []
+    try {
+      topOffendersByChunks = (
+        this.db
+          .prepare(`
+            SELECT d.id, d.path, d.name, count(c.id) AS chunks, d.truncated
+            FROM documents d
+            JOIN chunks c ON c.document_id = d.id
+            WHERE d.excluded = 0
+            GROUP BY d.id
+            ORDER BY chunks DESC
+            LIMIT 20
+          `)
+          .all() as Array<{ id: number; path: string; name: string; chunks: number; truncated: number }>
+      ).map((row) => ({
+        id: row.id,
+        path: row.path,
+        name: row.name,
+        chunks: row.chunks,
+        truncated: !!row.truncated,
+      }))
+    } catch {
+      // ignore
+    }
+
+    let topOffendersBySize: DocumentIndexStorageDiagnostics['topOffendersBySize'] = []
+    try {
+      topOffendersBySize = (
+        this.db
+          .prepare(`
+            SELECT d.id, d.path, d.name, coalesce(d.size_bytes, 0) AS sizeBytes, d.chunk_total AS chunks
+            FROM documents d
+            WHERE d.excluded = 0
+            ORDER BY sizeBytes DESC
+            LIMIT 20
+          `)
+          .all() as Array<{ id: number; path: string; name: string; sizeBytes: number; chunks: number }>
+      ).map((row) => ({
+        id: row.id,
+        path: row.path,
+        name: row.name,
+        sizeBytes: row.sizeBytes,
+        chunks: row.chunks,
+      }))
+    } catch {
+      // ignore
+    }
 
     let breakdown: DocumentIndexStorageDiagnostics['breakdown']
     try {
@@ -141,7 +208,7 @@ export class DiagnosticsRepository {
       estimatedReclaimableBytes,
       v2BackupSizeBytes,
       schemaVersion,
-      migrationStatus: 'completed',
+      migrationStatus,
       topOffendersByChunks,
       topOffendersBySize,
       ...(breakdown ? { breakdown } : {}),
