@@ -110,7 +110,7 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
   const now = Date.now()
   const documentMemory = ctx.getDocumentMemory()
   const folder = ctx.getFolderScan()?.status() ?? null
-  const memoryStatus: DocumentMemoryStatus = documentMemory?.status() ?? {
+  const memoryStatus: DocumentMemoryStatus = typeof documentMemory?.status === 'function' ? documentMemory.status() : {
     enabled: false,
     modelState: 'not-loaded',
     documents: 0,
@@ -121,11 +121,11 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
     dbPath: ctx.dbPath(),
     files: [],
   }
-  const actMem = documentMemory?.indexingActivityStatus()
-  const extractingPath = actMem?.activity.extracting[0]?.path
+  const actMem = documentMemory?.indexingActivityStatus?.()
+  const extractingPath = actMem?.activity?.extracting?.[0]?.path
   const modelError =
     extractingPath && documentMemory?.lastIndexError ? shortCause(documentMemory.lastIndexError) : ''
-  const counts = documentMemory
+  const counts = documentMemory && typeof documentMemory.getLibraryIndexCounts === 'function'
     ? ctx.getFolderCounts().get(ALL_FOLDERS, () => documentMemory.getLibraryIndexCounts())
     : null
   const policy = currentIndexingPolicy()
@@ -136,11 +136,11 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
     folder,
     progressScope: 'library',
     memory: {
-      enabled: documentMemory?.isEnabled() ?? false,
+      enabled: documentMemory?.isEnabled?.() ?? actMem?.enabled ?? memoryStatus.enabled ?? false,
       ...(cpuMode ? { cpuMode } : {}),
-      modelState: memoryStatus.modelState,
-      pending: actMem?.activity.queued ?? 0,
-      errors: memoryStatus.errors,
+      modelState: (actMem as any)?.modelState ?? memoryStatus.modelState,
+      pending: actMem?.activity?.queued ?? (actMem as any)?.pending ?? memoryStatus.pending ?? 0,
+      errors: (actMem as any)?.errors ?? memoryStatus.errors,
       ...(modelError ? { lastError: modelError } : {}),
     },
     folderProgress: counts
@@ -155,7 +155,7 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
     // ignore
   }
 
-  const nowState: IndexingNow = documentMemory?.nowStatus() ?? {
+  const nowState: IndexingNow = typeof documentMemory?.nowStatus === 'function' ? documentMemory.nowStatus() : {
     extracting: [],
     embedding: {},
     positions: {},
@@ -211,9 +211,9 @@ export function getDocumentIndexDiagnostics(ctx: SnapshotContext, forceRefresh?:
 
   const now = Date.now()
   const memory = ctx.getDocumentMemory()
-  const storage = memory?.getStorageDiagnostics() ?? emptyStorageDiagnostics()
+  const storage = typeof memory?.getStorageDiagnostics === 'function' ? memory.getStorageDiagnostics() : emptyStorageDiagnostics()
 
-  const migration: DocumentIndexMigrationDiagnostics = memory?.getMigrationDiagnostics() ?? {
+  const migration: DocumentIndexMigrationDiagnostics = typeof memory?.getMigrationDiagnostics === 'function' ? memory.getMigrationDiagnostics() : {
     activeEmbeddingSpace: 'standard',
     state: 'idle',
     totalChunks: 0,

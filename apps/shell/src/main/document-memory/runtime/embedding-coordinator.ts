@@ -108,11 +108,35 @@ export class EmbeddingCoordinator {
   }
 
   removePath(path: string): void {
+    if (this.activeEmbedJob?.path === path) {
+      this.activeEmbedJob = null
+    }
     for (let i = this.embeds.length - 1; i >= 0; i--) {
       if (this.embeds[i]?.path === path) {
         this.embeds.splice(i, 1)
       }
     }
+  }
+
+  promotePath(path: string): boolean {
+    const idx = this.embeds.findIndex((j) => j.path === path)
+    if (idx >= 0) {
+      const [job] = this.embeds.splice(idx, 1)
+      if (job) this.embeds.unshift(job)
+      this.embeddingRetryAt = 0
+      if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null }
+      return true
+    }
+    if (this.activeEmbedJob?.path === path) {
+      this.embeddingRetryAt = 0
+      if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null }
+      return true
+    }
+    return false
+  }
+
+  isEmbeddingPath(path: string): boolean {
+    return this.activeEmbedJob?.path === path
   }
 
   enqueueEmbed(job: EmbedJob): void {
@@ -280,5 +304,12 @@ export class EmbeddingCoordinator {
 
     const requeued = this.options.store.requeueForEmbeddingModel(this.profile.embeddingId)
     return { changed: true, requeued }
+  }
+
+  getEmbeddingProgress(): Record<string, { done: number; total: number }> {
+    const res: Record<string, { done: number; total: number }> = {}
+    for (const job of this.embeds) res[job.path] = { done: job.startOffset ?? 0, total: job.chunks.length }
+    if (this.activeEmbedJob) res[this.activeEmbedJob.path] = { done: this.activeEmbedJob.startOffset ?? 0, total: this.activeEmbedJob.chunks.length }
+    return res
   }
 }

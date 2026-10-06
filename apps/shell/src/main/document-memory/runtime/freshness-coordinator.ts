@@ -241,7 +241,7 @@ export class FreshnessCoordinator {
     this.missing.set(path, { candidate, timer })
   }
 
-  private async finalizeMissing(path: string): Promise<void> {
+  async finalizeMissing(path: string): Promise<void> {
     this.missing.delete(path)
     if (await this.isGone(path)) {
       await this.tombstone(path)

@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs'
 import type { DocumentMemoryStore, DocumentMemoryHit } from '../store'
 import { QueryEmbeddingCache } from '../query-embedding-cache'
+import { fuseHybridResults } from '../hybrid-ranker'
 
 export type FreshDocumentMemoryHit = DocumentMemoryHit & { stale?: boolean; missing?: boolean }
 
@@ -8,6 +9,7 @@ export interface SearchServiceOptions {
   store: DocumentMemoryStore
   externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>
   askEmbed?: (text: string) => Promise<number[] | null>
+  askSemantic?: (vector: number[], limit: number, spaceId: string) => Promise<Array<{ chunkId: number; rank: number; score: number; documentId: number }> | null>
   annotateFreshness?: (hits: DocumentMemoryHit[]) => Promise<FreshDocumentMemoryHit[]>
 }
 
@@ -30,10 +32,15 @@ export class SearchService {
     },
     activeEmbeddingModel?: string,
   ): Promise<FreshDocumentMemoryHit[]> {
-    // 1. Lexical hits first
-    const lexicalRaw = this.store.search(query, null, limit, activeEmbeddingModel)
+    // 1. Lexical and name matches
+    const namedRaw = this.store.searchNames(query, 5)
+    const seenNames = new Set(namedRaw.map((h) => h.documentId))
+    const lexicalCandidates = this.store.searchLexical(query, 200)
+    const lexicalRaw = this.store
+      .hydrateChunkHits(lexicalCandidates.slice(0, limit))
+      .filter((h) => !seenNames.has(h.documentId))
     const annotate = this.options.annotateFreshness ?? (async (hits) => hits.map((h) => ({ ...h, stale: false, missing: false })))
-    const lexicalHits = await annotate(lexicalRaw)
+    const lexicalHits = await annotate([...namedRaw.slice(0, 3), ...lexicalRaw])
     callbacks?.onLexical?.(lexicalHits)
 
     // 2. Query embedding for semantic hybrid search
@@ -49,8 +56,23 @@ export class SearchService {
           }
         }
         if (vector && vector.length) {
-          const hybridRaw = this.store.search(query, vector, limit, activeEmbeddingModel)
-          finalHits = await annotate(hybridRaw)
+          let semanticCandidates: Array<{ chunkId: number; rank: number; score: number; documentId: number }> = []
+          if (this.options.askSemantic) {
+            const reply = await this.options.askSemantic(vector, 200, spaceId)
+            if (reply) semanticCandidates = reply
+          } else {
+            semanticCandidates = this.store.searchSemantic(vector, 200, spaceId)
+          }
+          let finalChunkHits: DocumentMemoryHit[] = []
+          if (semanticCandidates.length > 0) {
+            const fused = fuseHybridResults(lexicalCandidates, semanticCandidates, { limit })
+            finalChunkHits = this.store.hydrateChunkHits(fused)
+          } else {
+            finalChunkHits = lexicalRaw
+          }
+          const seen = new Set(finalChunkHits.map((h) => h.documentId))
+          const namedForHybrid = namedRaw.filter((h) => !seen.has(h.documentId))
+          finalHits = await annotate([...namedForHybrid.slice(0, 3), ...finalChunkHits])
           const stalePaths = new Set(lexicalHits.filter((h) => h.stale).map((h) => h.path))
           const missingPaths = new Set(lexicalHits.filter((h) => h.missing).map((h) => h.path))
           if (stalePaths.size > 0 || missingPaths.size > 0) {

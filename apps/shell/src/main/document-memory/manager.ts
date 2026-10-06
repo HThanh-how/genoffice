@@ -98,16 +98,11 @@ export class DocumentMemoryManager {
   get lastIndexError(): string | undefined { return this.lastError }
   get countersReady(): Promise<void> { return Promise.resolve() }
   constructor(userDataDir: string, options: DocumentMemoryManagerOptions = {}) {
-    const dbDir = options.dbDir ?? userDataDir
-    this.dbPath = join(dbDir, 'document-memory.db')
-    this.cacheDir = options.cacheDir ?? join(userDataDir, 'models')
-    this.settingsDir = options.settingsDir ?? userDataDir
-    this.enabledSettingsPath = join(this.settingsDir, 'enabled.json')
-    this.pathToWorker = options.pathToWorker ?? options.workerPath ?? workerPath
-    this.workerFactory = options.workerFactory ?? ((s, env) => createIndexProcess(s, env as any))
-    this.workerTimeoutMs = options.workerTimeoutMs ?? 60_000
-    this.autoDeferAfterMs = options.autoDeferAfterMs ?? 30_000
-    this.enabled = options.initialEnabled ?? readEnabled(this.enabledSettingsPath)
+    const dbDir = options.dbDir ?? userDataDir; this.dbPath = join(dbDir, 'document-memory.db')
+    this.cacheDir = options.cacheDir ?? join(userDataDir, 'document-memory-models'); this.settingsDir = options.settingsDir ?? userDataDir
+    this.enabledSettingsPath = join(this.settingsDir, 'enabled.json'); this.pathToWorker = options.pathToWorker ?? options.workerPath ?? workerPath
+    this.workerFactory = options.workerFactory ?? ((s, env) => createIndexProcess(s, env as any)); this.workerTimeoutMs = options.workerTimeoutMs ?? 60_000
+    this.autoDeferAfterMs = options.autoDeferAfterMs ?? 30_000; this.enabled = options.initialEnabled ?? readEnabled(this.enabledSettingsPath)
     mkdirSync(dbDir, { recursive: true })
     this.store = new DocumentMemoryStore(this.dbPath, { role: 'search' })
     this.freshnessCoord = new FreshnessCoordinator({
@@ -124,10 +119,11 @@ export class DocumentMemoryManager {
     this.searchService = new SearchService({
       store: this.store, externalNames: options.externalNames,
       askEmbed: async (t) => {
-        if (this.modelState !== 'ready') return null
+        if (this.modelState === 'downloading' || this.modelState === 'error') return null
         const r = await this.ask({ type: 'embed', texts: [t], kind: 'query' }, this.workerTimeoutMs)
         return r && 'result' in r && Array.isArray(r.result) ? (r.result[0] as number[]) : null
       },
+      askSemantic: async (v, lim, sp) => { const r = await this.ask({ type: 'search-semantic', vector: v, limit: lim, embeddingSpaceId: sp }, 30_000); return r && 'result' in r && Array.isArray(r.result) ? (r.result as any) : null },
       annotateFreshness: (hits) => this.freshnessCoord.annotateFreshness(hits),
     })
     this.stabilityGate = new FileStabilityGate()
@@ -135,11 +131,9 @@ export class DocumentMemoryManager {
 
     this.extractionCoord = new ExtractionCoordinator({ store: this.store, workerTimeoutMs: this.workerTimeoutMs, pdfPagesPath: join(this.settingsDir, 'document-memory-pdf.json') })
     this.maintScheduler = new MaintenanceScheduler({
-      store: this.store,
-      backgroundGate: this.backgroundGate,
-      askWorker: (req) => this.ask(req, 30_000),
-      isPaused: () => isIndexingPaused(),
-      isStopped: () => this.stopped,
+      store: this.store, backgroundGate: this.backgroundGate, askWorker: (req) => this.ask(req, 30_000),
+      isPaused: () => !this.enabled || isIndexingPaused(), isStopped: () => this.stopped,
+      isQueued: (p) => this.queued.has(p), isExtracting: (p) => this.activeExtractions.has(p),
     })
     this.chunkUpgrade = new ChunkUpgradeCoordinator(this.store)
     this.legacyMigrator = new LegacyChunkMigrator({
@@ -154,15 +148,14 @@ export class DocumentMemoryManager {
     this.embeddingMigration.setTarget(this.embeddingCoord.currentProfile.embeddingId)
 
     this.stopPolicyWatch = onIndexingPolicyChange((policy) => {
-      if (!policy.paused && this.enabled && !this.stopped) {
-        this.drain()
-        this.maintScheduler.scheduleFtsMaintenance()
-      }
+      if (this.modelState === 'blocked' && (policy as any).allowHeavyEmbedding !== false) { this.modelState = 'not-loaded'; this.lastError = undefined }
+      if (!policy.paused && this.enabled && !this.stopped) { this.drain(); this.maintScheduler.scheduleFtsMaintenance() }
     })
 
     const pollInterval = options.pollIntervalMs ?? 60_000
     this.pollTimer = setInterval(() => void this.poll(), pollInterval)
     this.pollTimer.unref?.()
+    if (this.enabled) void this.poll()
   }
   onEnabledChange(l: () => void): () => void { this.enabledListeners.add(l); return () => this.enabledListeners.delete(l) }
   onCleared(l: () => void): () => void { this.clearedListeners.add(l); return () => this.clearedListeners.delete(l) }
@@ -174,7 +167,7 @@ export class DocumentMemoryManager {
     for (const [p, prog] of this.readProgress) pages[p] = prog
     return {
       extracting: active ? [{ path: active, since: this.activeSince.get(active) ?? Date.now() }] : [],
-      embedding: {}, positions, pages, queued: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength(), paused: isIndexingPaused(),
+      embedding: this.embeddingCoord.getEmbeddingProgress(), positions, pages, queued: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength(), paused: isIndexingPaused(),
     }
   }
   remember(path: string): void { this.store.remember(path); this.enqueue(resolve(path), true) }
@@ -185,6 +178,7 @@ export class DocumentMemoryManager {
     const p = this.store.retryDocument(id); if (!p) return { ok: false, error: 'unavailable' }
     if (opts.prioritize !== false || opts.now) { this.deferred.delete(p); this.urgent.add(p) }
     if (this.activeExtractions.has(p)) return { ok: true }
+    if (this.embeddingCoord.promotePath(p)) { this.drain(); return { ok: true } }
     if (opts.now) {
       const blk = [...this.activeExtractions].filter((o) => o !== p && !this.slicing.has(o))
       for (const o of blk) { this.invalidatePath(o); this.enqueue(o, false, this.activeBytes.get(o)) }
@@ -203,8 +197,9 @@ export class DocumentMemoryManager {
   async stopDocument(idOrPath: number | string): Promise<{ ok: boolean; error?: string }> {
     const doc = typeof idOrPath === 'number' ? this.store.documentById(idOrPath) : this.store.documentByPath(resolve(idOrPath))
     if (!doc || !['pending', 'text-only'].includes(doc.status)) return { ok: false, error: 'unavailable' }
-    const p = doc.path; this.invalidatePath(p); if (this.activeExtractions.has(p)) this.recycleWorker('Stopped by user')
-    await this.store.markErrorSliced(p, 'Stopped by user', await statMeta(p)); return { ok: true }
+    const p = doc.path; this.invalidatePath(p)
+    if (this.activeExtractions.has(p) || this.embeddingCoord.isEmbeddingPath(p)) this.recycleWorker('Stopped by you.')
+    await this.store.markErrorSliced(p, 'Stopped by you.', await statMeta(p)); return { ok: true }
   }
   indexDocumentPath(id: number): string | null {
     const d = this.store.documentById(id); return d && d.status !== 'excluded' ? d.path : null
@@ -218,18 +213,14 @@ export class DocumentMemoryManager {
     }
     if (this.enabled && this.store.documentByPath(newR)?.status !== 'excluded') this.enqueue(newR)
   }
-  legacyPaths(ext: readonly string[], lim: number) { return this.store.legacyPaths(ext, lim) }
-  listPaths() { return this.store.listPaths() }
+  legacyPaths(ext: readonly string[], lim: number) { return this.store.legacyPaths(ext, lim) }; listPaths() { return this.store.listPaths() }
   getDocumentIndexProgress(p: string): DocumentIndexProgress { return this.maintScheduler.getDocumentIndexProgress(p) }
-  getFolderIndexProgress(f?: string): FolderIndexProgress { return this.maintScheduler.getFolderIndexProgress(f, this.embeddingCoord.currentProfile.embeddingId) }
-  getFolderIndexCounts(f?: string): FolderChunkProgress { return this.maintScheduler.getFolderIndexCounts(f) }
-  getLibraryIndexCounts(): FolderChunkProgress { return this.maintScheduler.getLibraryIndexCounts() }
+  getFolderIndexProgress(f?: string, d?: boolean | string, e?: number): FolderIndexProgress { return this.maintScheduler.getFolderIndexProgress(f, d, e) }
+  getFolderIndexCounts(f?: string): FolderChunkProgress { return this.maintScheduler.getFolderIndexCounts(f) }; getLibraryIndexCounts(): FolderChunkProgress { return this.maintScheduler.getLibraryIndexCounts() }
   prioritizeFolder(folder: string): number { return this.freshnessCoord.prioritizeFolder(folder) }
-  runFtsMaintenance(): Promise<void> { return this.maintScheduler.runFtsMaintenance() }
-  scheduleFtsMaintenance(delayMs?: number): void { this.maintScheduler.scheduleFtsMaintenance(delayMs) }
-  runGcStep(): Promise<void> { return this.maintScheduler.runGcStep() }
-  runVacuumStep(): Promise<void> { return this.maintScheduler.runVacuumStep() }
-  runPeriodicMaintenance(): Promise<void> { return this.maintScheduler.runPeriodicMaintenance() }
+  runFtsMaintenance(): Promise<void> { return this.maintScheduler.runFtsMaintenance() }; scheduleFtsMaintenance(delayMs?: number): void { this.maintScheduler.scheduleFtsMaintenance(delayMs) }
+  runGcStep(): Promise<void> { return this.maintScheduler.runGcStep() }; runVacuumStep(): Promise<void> { return this.maintScheduler.runVacuumStep() }; runPeriodicMaintenance(): Promise<void> { return this.maintScheduler.runPeriodicMaintenance() }
+  statOutcome(p: string, t?: number) { return this.freshnessCoord.statOutcome(p, t) }; finalizeMissing(p: string) { return this.freshnessCoord.finalizeMissing(p) }
   status(): DocumentMemoryStatus {
     const stats = this.store.stats(); const files = this.store.recentDocuments(20).map(({ id, path, name, status }) => ({ id, path, name, status }))
     return { enabled: this.enabled, modelState: this.modelState, documents: stats.docs, chunks: stats.chunks, vectors: stats.vectors, pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(), errors: stats.errors, dbPath: this.dbPath, ...(this.lastError ? { lastError: this.lastError } : {}), files }
@@ -238,38 +229,47 @@ export class DocumentMemoryManager {
     const act = this.nowStatus(); const stats = this.store.stats(this.embeddingCoord.currentProfile.embeddingId); const migration = this.embeddingMigration.progress()
     return { enabled: this.enabled, modelState: this.modelState, ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(), errors: stats.errors, mode: 'balanced', activity: act, activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, semanticCoverage: stats.semanticCoverage, migrationState: migration.state }
   }
-  embeddingSettings() { return this.embeddingCoord.getEmbeddingSettings() }
-  setEmbeddingProfile(id: EmbeddingProfileId) { const res = this.embeddingCoord.setEmbeddingProfile(id); if (res.changed) this.recycleWorker('Embedding profile changed'); return res }
-  recycleEmbeddingWorker(): void { this.recycleWorker('Recycle worker requested') }
-  getPdfMaxPages(): number { return this.extractionCoord.getPdfMaxPages() }
-  setPdfMaxPages(pages: number) { return this.extractionCoord.setPdfMaxPages(pages, join(this.settingsDir, 'document-memory-pdf.json')) }
-  getStorageDiagnostics(b?: string): DocumentIndexStorageDiagnostics { return this.store.getStorageDiagnostics(b) }
-  getMigrationDiagnostics(): DocumentIndexMigrationDiagnostics {
-    const m = this.embeddingMigration.progress(); return { activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, state: m.state, completedChunks: m.completedChunks, totalChunks: m.totalChunks }
-  }
-  setEnabled(enabled: boolean): DocumentMemoryStats {
+  embeddingSettings() { return this.embeddingCoord.getEmbeddingSettings() }; setEmbeddingProfile(id: EmbeddingProfileId) { const res = this.embeddingCoord.setEmbeddingProfile(id); if (res.changed) this.recycleWorker('Embedding profile changed'); return res }
+  recycleEmbeddingWorker(reason = 'Recycle worker requested'): void { this.recycleWorker(reason) }; getStorageDiagnostics(b?: string): DocumentIndexStorageDiagnostics { return this.store.getStorageDiagnostics(b) }
+  getPdfMaxPages(): number { return this.extractionCoord.getPdfMaxPages() }; setPdfMaxPages(pages: number) { return this.extractionCoord.setPdfMaxPages(pages, join(this.settingsDir, 'document-memory-pdf.json')) }
+  getMigrationDiagnostics(): DocumentIndexMigrationDiagnostics { const m = this.embeddingMigration.progress(); return { activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, state: m.state, completedChunks: m.completedChunks, totalChunks: m.totalChunks } }
+  setEnabled(enabled: boolean): DocumentMemoryStatus {
     const changed = this.enabled !== enabled; this.enabled = enabled; saveEnabled(this.enabledSettingsPath, enabled)
+    if (!enabled) { this.epoch++; this.queue.length = 0; this.queued.clear(); this.embeddingCoord.clearQueue() }
     if (changed) for (const fn of this.enabledListeners) try { fn() } catch {}
-    if (enabled) this.drain()
-    return this.store.stats()
+    if (enabled) void this.poll(); return this.status()
   }
   exclude(path: string): void { this.store.exclude(path) }
   clear(): void {
-    this.store.clear(); this.queue.length = 0; this.queued.clear(); this.urgent.clear(); this.deferred.clear()
-    this.embeddingCoord.clearQueue(); for (const fn of this.clearedListeners) try { fn() } catch {}
+    this.store.clear(); this.queue.length = 0; this.queued.clear(); this.urgent.clear(); this.deferred.clear(); this.embeddingCoord.clearQueue()
+    for (const fn of this.clearedListeners) try { fn() } catch {}
   }
   async search(query: string, limit = 8): Promise<{ hits: FreshDocumentMemoryHit[]; pending: number; errors: number; modelState: string }> {
     const hits = await this.searchService.searchProgressive(query, limit, undefined, this.embeddingCoord.currentProfile.embeddingId)
     return { hits, pending: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength(), errors: this.store.errorCount(), modelState: this.modelState }
   }
-  async read(chunkId: number) {
-    const chunk = this.store.readChunk(chunkId)
-    if (!chunk) return { path: '', name: '', location: '', text: '', verified: false, error: 'Chunk unavailable' }
-    return { path: chunk.path, name: chunk.name, location: chunk.location, text: chunk.text, verified: true }
+  searchProgressive(query: string, limit = 8, callbacks?: any) {
+    return this.searchService.searchProgressive(query, limit, callbacks, this.embeddingCoord.currentProfile.embeddingId)
   }
-  searchExternal(q: string, l: number) { return this.searchService.searchExternal(q, l) }
-  openOffered(p: string) { return this.searchService.openOffered(p) }
-  open(id: number) { return this.searchService.open(id) }
+  async read(chunkId: number): Promise<{ path: string; name: string; location: string; text: string; verified: boolean; error?: string }> {
+    const hit = this.store.readChunk(chunkId); if (!hit) return { path: '', name: '', location: '', text: '', verified: false, error: 'The indexed chunk is no longer available.' }
+    const generation = this.currentGeneration(hit.path); const epoch = this.epoch
+    if ((await this.statOutcome(hit.path)).kind === 'gone') {
+      this.freshnessCoord.markMissing(hit.path); return { path: hit.path, name: hit.name, location: hit.location, text: '', verified: false, error: 'The source file is temporarily unavailable.' }
+    }
+    const reply = await this.ask({ type: 'extract', path: hit.path, interactive: true, maxPdfPages: this.extractionCoord.getPdfMaxPages() }, this.workerTimeoutMs)
+    if (!reply || !('result' in reply) || !isExtractResult(reply.result)) return { path: hit.path, name: hit.name, location: hit.location, text: '', verified: false, error: (reply && 'error' in reply && typeof reply.error === 'string') ? reply.error : 'Document verification timed out.' }
+    const fresh = reply.result
+    if (this.stopped || generation !== this.currentGeneration(hit.path) || epoch !== this.epoch || !this.store.documentByPath(hit.path) || this.store.documentByPath(hit.path)?.status === 'excluded') {
+      return { path: hit.path, name: hit.name, location: hit.location, text: '', verified: false, error: 'Document memory changed during verification.' }
+    }
+    const after = await statMeta(hit.path)
+    if (!after || after.mtimeMs !== fresh.mtimeMs || after.sizeBytes !== fresh.sizeBytes || fresh.hash !== hit.hash) {
+      this.invalidatePath(hit.path); return { path: hit.path, name: hit.name, location: hit.location, text: '', verified: false, error: 'The source file has changed since it was indexed.' }
+    }
+    return { path: hit.path, name: hit.name, location: hit.location, text: hit.text, verified: true }
+  }
+  searchExternal(q: string, l: number) { return this.searchService.searchExternal(q, l) }; openOffered(p: string) { return this.searchService.openOffered(p) }; open(id: number) { return this.searchService.open(id) }
   async handleFileEvents(paths: string[]): Promise<void> {
     return this.freshnessCoord.handleFileEvents(paths, this.stabilityGate)
   }
@@ -297,7 +297,7 @@ export class DocumentMemoryManager {
   private async waitUntilRead(path: string): Promise<void> {
     const deadline = Date.now() + this.workerTimeoutMs * 2
     while (!this.stopped && Date.now() < deadline && (this.activeExtractions.has(path) || this.queued.has(path)))
-      await new Promise((r) => setTimeout(r, 100))
+      await new Promise((r) => setTimeout(r, 20))
   }
   private async readOnce(path: string): Promise<void> {
     const generation = this.currentGeneration(path); const epoch = this.epoch
@@ -343,7 +343,7 @@ export class DocumentMemoryManager {
     if (this.pollTimer) clearInterval(this.pollTimer); if (this.migrationTimer) clearTimeout(this.migrationTimer)
     this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear()
     this.queue.length = 0; this.queued.clear(); this.urgent.clear(); this.deferred.clear()
-    const worker = this.worker; this.worker = null; if (worker) void worker.terminate()
+    const worker = this.worker; this.worker = null; if (worker && typeof (worker as any).terminate === 'function') void worker.terminate()
     this.store.close()
   }
   private enqueue(path: string, prioritize = false, bytes?: number): void {
@@ -449,12 +449,12 @@ export class DocumentMemoryManager {
   }
   private async poll(): Promise<void> {
     if (this.stopped || !this.enabled || isIndexingPaused()) return
+    for (const p of this.store.incompletePaths()) this.enqueue(p)
     this.skippedMigrationDocs.clear(); this.scheduleMigrationStep(1000)
-    void this.maintScheduler.runPeriodicMaintenance()
     this.drain()
   }
   private recycleWorker(reason: string): void {
-    const worker = this.worker; if (!worker) return; this.worker = null; this.lastError = reason; void worker.terminate()
+    const worker = this.worker; if (!worker) return; this.worker = null; this.lastError = reason; if (typeof (worker as any).terminate === 'function') void worker.terminate()
     for (const [id, pending] of this.waiting) { clearTimeout(pending.timer); pending.resolve({ id, error: reason }); this.waiting.delete(id) }
   }
   private ask(request: WorkerRequest, timeoutMs: number, recycleOnTimeout = false): Promise<WorkerReply | null> {

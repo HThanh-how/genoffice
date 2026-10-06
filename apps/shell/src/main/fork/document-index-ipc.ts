@@ -127,7 +127,14 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     const memory = getDocumentMemory()
     if (!memory) return { ok: false, retried: 0, error: 'unavailable' }
     if (only === 'model') {
-      memory.recycleEmbeddingWorker()
+      const isEnabled = memory.indexingActivityStatus ? memory.indexingActivityStatus().enabled : memory.isEnabled?.()
+      if (isEnabled === false) return { ok: false, retried: 0, error: 'paused' }
+      if (typeof (memory as any).recycleEmbeddingWorker === 'function') {
+        ;(memory as any).recycleEmbeddingWorker('Model retry requested from diagnostics')
+      } else {
+        memory.setEnabled(false)
+        memory.setEnabled(true)
+      }
       folderCounts.invalidate()
       return { ok: true, retried: 0 }
     }

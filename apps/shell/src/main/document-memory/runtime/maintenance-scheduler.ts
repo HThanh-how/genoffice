@@ -1,6 +1,6 @@
 import type { DocumentMemoryStore, FolderChunkProgress } from '../store'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'
-import type { FolderIndexProgress } from '../folder-progress'
+import { foldFolderProgress, type FolderIndexProgress } from '../folder-progress'
 import { isIndexingPaused } from '../../fork/indexing-policy-bus'
 import type { BackgroundWorkGate } from '../background-work-gate'
 import type { WorkerRequest, WorkerReply } from '../worker-types'
@@ -15,6 +15,8 @@ export interface MaintenanceSchedulerOptions {
   backgroundGate?: BackgroundWorkGate
   isPaused?: () => boolean
   isStopped?: () => boolean
+  isQueued?: (path: string) => boolean
+  isExtracting?: (path: string) => boolean
 }
 
 export class MaintenanceScheduler {
@@ -210,8 +212,14 @@ export class MaintenanceScheduler {
       truncated: doc.truncated,
     }
     const pct = progress.totalChunks > 0 ? Math.floor((progress.completedChunks / progress.totalChunks) * 100) : null
+    const paused = this.isPaused()
 
     if (doc.status === 'excluded') return { ...base, state: 'excluded', percent: null }
+
+    const awaitingSnapshot = { ...base, completedChunks: 0, totalChunks: 0, percent: null }
+    if (this.options.isExtracting?.(doc.path)) return { ...awaitingSnapshot, state: 'extracting' }
+    if (this.options.isQueued?.(doc.path)) return { ...awaitingSnapshot, state: paused ? 'paused' : 'queued' }
+
     if (doc.status === 'empty') return { ...base, state: 'empty', percent: 100 }
     if (doc.status === 'ready') return { ...base, state: 'ready', percent: 100 }
     if (doc.status === 'error') {
@@ -225,19 +233,22 @@ export class MaintenanceScheduler {
     if (doc.status === 'text-only') {
       return {
         ...base,
-        state: 'indexing',
+        state: paused ? 'paused' : 'indexing',
         percent: pct,
       }
     }
-    return { ...base, state: 'queued', percent: null }
+    return { ...base, state: paused ? 'paused' : 'queued', percent: null }
   }
 
-  getFolderIndexProgress(folder?: string, activeEmbeddingSpace?: string): FolderIndexProgress {
-    const raw = this.store.folderChunkProgress(folder, activeEmbeddingSpace)
-    return {
-      ...raw,
-      percent: raw.totalChunks > 0 ? Math.floor((raw.completedChunks / raw.totalChunks) * 100) : 100,
-    }
+  getFolderIndexProgress(
+    folder?: string,
+    discoveryCompleteOrSpace?: boolean | string,
+    scanErrors = 0,
+  ): FolderIndexProgress {
+    const discoveryComplete = typeof discoveryCompleteOrSpace === 'boolean' ? discoveryCompleteOrSpace : true
+    const spaceId = typeof discoveryCompleteOrSpace === 'string' ? discoveryCompleteOrSpace : undefined
+    const raw = this.store.folderChunkProgress(folder, spaceId)
+    return foldFolderProgress(raw, discoveryComplete, scanErrors)
   }
 
   getFolderIndexCounts(folder?: string, activeEmbeddingSpace?: string): FolderChunkProgress {

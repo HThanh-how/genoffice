@@ -40,7 +40,7 @@ export function registerFolderAndModelHandlers(
 
   const syncMemoryPdfPages = () => {
     const memory = getDocumentMemory()
-    if (memory && !synced) {
+    if (memory && typeof (memory as any).setPdfMaxPages === 'function' && !synced) {
       const persisted = readPdfPages(pdfConfigFile)
       memory.setPdfMaxPages(persisted)
       synced = true
