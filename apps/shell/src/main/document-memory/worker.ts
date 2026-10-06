@@ -297,6 +297,10 @@ onIndexRequest(
           result = await getWorkerStore().rebuildAnnIndex(
             request.embeddingSpaceId ?? request.embeddingModel,
           )
+        } else if (request.type === 'fts-maintenance-step') {
+          const started = Date.now()
+          const more = await withBackgroundBudget(async () => getWorkerStore().mergeFtsStep())
+          result = { more: Boolean(more), durationMs: Date.now() - started }
         } else result = await embedTexts(request.texts, request.kind)
         postIndexMessage({ id: request.id, result })
       } catch (error) {

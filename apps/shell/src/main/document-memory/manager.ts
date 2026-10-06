@@ -66,8 +66,6 @@ const MAX_PENDING_EMBED_DOCUMENTS = 16
 const EMBED_RETRY_DELAY_MS = 30_000
 /** Wait after an index write before merging full-text segments (one pending run at a time). */
 const FTS_MAINTENANCE_DELAY_MS = 250
-/** Longest one maintenance run may keep going before it reschedules itself. */
-const FTS_MAINTENANCE_RUN_MS = 2_000
 /** Backoff schedule for retrying files locked or unavailable during stability check (15s, 60s, 5m, 15m) */
 const STABILITY_RETRY_SCHEDULE_MS = [15_000, 60_000, 5 * 60_000, 15 * 60_000]
 
@@ -105,7 +103,14 @@ type StatOutcome =
   | { kind: 'gone' }
   | { kind: 'unknown' }
 type WorkerReply =
-  | { id: number; result: ExtractResult | number[][] | DocumentMemoryHit[] }
+  | {
+      id: number
+      result:
+        | ExtractResult
+        | number[][]
+        | DocumentMemoryHit[]
+        | { more: boolean; durationMs: number }
+    }
   | { id: number; error: string; restartRequired?: boolean }
   | {
       type: 'model'
@@ -138,6 +143,9 @@ type WorkerRequest =
   | {
       type: 'ann-rebuild' | 'ann-sync'
       embeddingSpaceId: string
+    }
+  | {
+      type: 'fts-maintenance-step'
     }
 interface PendingRequest {
   resolve: (reply: WorkerReply | null) => void
@@ -252,6 +260,7 @@ export class DocumentMemoryManager {
   private pollTimer: NodeJS.Timeout | null = null
   private counterBackfill: Promise<void> = Promise.resolve()
   private ftsTimer: NodeJS.Timeout | null = null
+  private ftsRunning = false
   private stopPolicyWatch: () => void = () => {}
   private searchGeneration = 0
   private readonly queryCache = new QueryEmbeddingCache(64)
@@ -408,17 +417,27 @@ export class DocumentMemoryManager {
   }
 
   private async runFtsMaintenance(): Promise<void> {
-    const started = Date.now()
+    if (this.stopped || this.ftsRunning) return
+    this.ftsRunning = true
     try {
-      while (!this.stopped && this.store.mergeFtsStep()) {
-        await yieldToEventLoop()
-        if (Date.now() - started > FTS_MAINTENANCE_RUN_MS) {
+      const reply = await this.ask({ type: 'fts-maintenance-step' }, 30_000)
+      if (this.stopped) return
+      if (
+        reply &&
+        'result' in reply &&
+        reply.result &&
+        typeof reply.result === 'object' &&
+        'more' in reply.result
+      ) {
+        const { more } = reply.result as { more: boolean; durationMs: number }
+        if (more && !this.stopped) {
           this.scheduleFtsMaintenance()
-          return
         }
       }
     } catch {
       // Merging is housekeeping; a locked or closed database is simply retried after a later write.
+    } finally {
+      this.ftsRunning = false
     }
   }
 
