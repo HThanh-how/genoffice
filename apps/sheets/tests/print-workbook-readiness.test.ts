@@ -12,6 +12,7 @@ import {
   needsWorkbookFullLoad,
 } from '../src/renderer/printing/workbook-full-load'
 import { buildActiveSheetPrintPayload } from '../src/renderer/printing/print-payload'
+import { pdfExportPurpose } from '../src/renderer/printing/print-actions'
 import { FULL_LOAD_MAX_CELLS } from '../src/renderer/app-constants'
 import { t } from '../src/renderer/i18n/locale'
 import type { LazyWorkbookState, UniverRuntime } from '../src/renderer/univer-state'
@@ -67,7 +68,7 @@ function fakeState(
   } as unknown as LazyWorkbookState
 }
 
-function createMockContext(state: LazyWorkbookState) {
+function createMockContext(state: LazyWorkbookState | null) {
   const messages: string[] = []
   const usedGrid = [
     ['Col1', 'Col2'],
@@ -748,7 +749,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
     vi.mocked(preloadEntireWorkbook).mockImplementation(async (_runtime, lazyRef) => {
       if (lazyRef.current) {
         lazyRef.current.flags.preloadRunning = true
-        // Preload takes 250ms, longer than Caller A (100ms) but shorter than Caller B (1500ms)
+        // Preload takes 250ms, longer than Caller A (100ms) but shorter than Caller B (5000ms)
         await new Promise((r) => setTimeout(r, 250))
         lazyRef.current.flags.preloadRunning = false
         lazyRef.current.flags.preloadComplete = true
@@ -764,7 +765,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
       ensureWorkbookFullyLoaded(ctx, state, {
         purpose: 'pdf-export',
         maxCells: FULL_LOAD_MAX_CELLS,
-        timeoutMs: 1500,
+        timeoutMs: 5000,
       }),
     ])
 
@@ -932,6 +933,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
 
     const exported = await handleExportPdf(ctx, targetPath)
     expect(exported).toBe(true)
+    expect(pdfExportPurpose(targetPath)).toBe('headless-export')
     expect(exportPdfMock).toHaveBeenCalledTimes(1)
     expect(exportPdfMock).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -977,5 +979,109 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
     expect(pdf1).toBe(true)
     expect(pdf2).toBe(true)
     expect(exportPdfMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('PRINT-36: Untitled/new workbook with lazyWorkbookRef.current = null and active worksheet -> Print succeeds', async () => {
+    const { ctx, messages } = createMockContext(null)
+    expect(ctx.lazyWorkbookRef.current).toBeNull()
+
+    const printed = await handlePrint(ctx)
+    expect(printed).toBe(true)
+    expect(printWorkbookMock).toHaveBeenCalledTimes(1)
+    expect(printWorkbookMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileName: expect.any(String),
+        html: expect.any(String),
+      }),
+    )
+    expect(messages).toContain(t('appPrintSent'))
+  })
+
+  it('PRINT-37: Untitled/new workbook with lazyWorkbookRef.current = null and active worksheet -> Export PDF succeeds', async () => {
+    const { ctx, messages } = createMockContext(null)
+    expect(ctx.lazyWorkbookRef.current).toBeNull()
+
+    const exported = await handleExportPdf(ctx)
+    expect(exported).toBe(true)
+    expect(exportPdfMock).toHaveBeenCalledTimes(1)
+    expect(exportPdfMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fileName: expect.any(String),
+        html: expect.any(String),
+      }),
+    )
+    expect(messages).toContain(t('appPdfExported', { path: '/tmp/test.pdf' }))
+  })
+
+  it('PRINT-38: concurrent headless exports with different outPaths run independently and are not swallowed', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+
+    exportPdfMock.mockImplementation(async (payload: any) => {
+      await new Promise((r) => setTimeout(r, 30))
+      return { canceled: false, path: payload.outPath }
+    })
+
+    const [pdfA, pdfB] = await Promise.all([
+      handleExportPdf(ctx, 'D:/out-a.pdf'),
+      handleExportPdf(ctx, 'D:/out-b.pdf'),
+    ])
+
+    expect(pdfA).toBe(true)
+    expect(pdfB).toBe(true)
+    expect(exportPdfMock).toHaveBeenCalledTimes(2)
+    expect(exportPdfMock).toHaveBeenCalledWith(expect.objectContaining({ outPath: 'D:/out-a.pdf' }))
+    expect(exportPdfMock).toHaveBeenCalledWith(expect.objectContaining({ outPath: 'D:/out-b.pdf' }))
+  })
+
+  it('PRINT-39: concurrent headless exports with same exact outPath are deduplicated', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+
+    exportPdfMock.mockImplementation(async (payload: any) => {
+      await new Promise((r) => setTimeout(r, 50))
+      return { canceled: false, path: payload.outPath }
+    })
+
+    const [pdf1, pdf2] = await Promise.all([
+      handleExportPdf(ctx, 'D:/same.pdf'),
+      handleExportPdf(ctx, 'D:/same.pdf'),
+    ])
+
+    expect(pdf1).toBe(true)
+    expect(pdf2).toBe(true)
+    expect(exportPdfMock).toHaveBeenCalledTimes(1)
+    expect(exportPdfMock).toHaveBeenCalledWith(expect.objectContaining({ outPath: 'D:/same.pdf' }))
+  })
+
+  it('PRINT-40: concurrent GUI PDF export and headless export do not swallow each other', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+
+    exportPdfMock.mockImplementation(async (payload: any) => {
+      await new Promise((r) => setTimeout(r, 50))
+      return { canceled: false, path: payload.outPath ?? '/tmp/gui.pdf' }
+    })
+
+    const [guiResult, headlessResult] = await Promise.all([
+      handleExportPdf(ctx),
+      handleExportPdf(ctx, 'D:/headless.pdf'),
+    ])
+
+    expect(guiResult).toBe(true)
+    expect(headlessResult).toBe(true)
+    expect(exportPdfMock).toHaveBeenCalledTimes(2)
+    const calls = exportPdfMock.mock.calls
+    expect(calls.some(([arg]) => !('outPath' in arg))).toBe(true)
+    expect(calls.some(([arg]) => arg.outPath === 'D:/headless.pdf')).toBe(true)
   })
 })

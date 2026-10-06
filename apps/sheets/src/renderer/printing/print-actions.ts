@@ -5,16 +5,18 @@ import type { PrintContext, WorkbookFullLoadPurpose } from './types'
 import { needsWorkbookFullLoad } from './workbook-full-load'
 
 const inFlightPrintActions = new WeakMap<LazyWorkbookState, Promise<boolean>>()
-const inFlightPdfActions = new WeakMap<LazyWorkbookState, Promise<boolean>>()
+let inFlightPrintActionNullState: Promise<boolean> | null = null
+
+let inFlightPdfDialog: Promise<boolean> | null = null
+const inFlightHeadlessExports = new Map<string, Promise<boolean>>()
+
+export function pdfExportPurpose(outPath?: string): WorkbookFullLoadPurpose {
+  return outPath === undefined ? 'pdf-export' : 'headless-export'
+}
 
 export async function handlePrint(ctx: PrintContext): Promise<boolean> {
   const state = ctx.lazyWorkbookRef.current
-  if (!state) {
-    ctx.setMessage(t('appPrintCanceled'))
-    return false
-  }
-
-  const existing = inFlightPrintActions.get(state)
+  const existing = state !== null ? inFlightPrintActions.get(state) : inFlightPrintActionNullState
   if (existing) {
     return existing
   }
@@ -60,29 +62,43 @@ export async function handlePrint(ctx: PrintContext): Promise<boolean> {
     }
   })()
 
-  inFlightPrintActions.set(state, actionPromise)
+  if (state !== null) {
+    inFlightPrintActions.set(state, actionPromise)
+  } else {
+    inFlightPrintActionNullState = actionPromise
+  }
+
   try {
     return await actionPromise
   } finally {
-    if (inFlightPrintActions.get(state) === actionPromise) {
-      inFlightPrintActions.delete(state)
+    if (state !== null) {
+      if (inFlightPrintActions.get(state) === actionPromise) {
+        inFlightPrintActions.delete(state)
+      }
+    } else {
+      if (inFlightPrintActionNullState === actionPromise) {
+        inFlightPrintActionNullState = null
+      }
     }
   }
 }
 
 export async function handleExportPdf(ctx: PrintContext, outPath?: string): Promise<boolean> {
   const state = ctx.lazyWorkbookRef.current
-  if (!state) {
-    ctx.setMessage(t('appPdfCanceled'))
-    return false
+  const normalizedPath = outPath !== undefined ? outPath.trim().toLowerCase() : undefined
+
+  if (outPath === undefined) {
+    if (inFlightPdfDialog) {
+      return inFlightPdfDialog
+    }
+  } else {
+    const existing = inFlightHeadlessExports.get(normalizedPath!)
+    if (existing) {
+      return existing
+    }
   }
 
-  const existing = inFlightPdfActions.get(state)
-  if (existing) {
-    return existing
-  }
-
-  const purpose: WorkbookFullLoadPurpose = outPath === undefined ? 'pdf-export' : 'headless-export'
+  const purpose = pdfExportPurpose(outPath)
 
   const actionPromise = (async (): Promise<boolean> => {
     try {
@@ -126,12 +142,23 @@ export async function handleExportPdf(ctx: PrintContext, outPath?: string): Prom
     }
   })()
 
-  inFlightPdfActions.set(state, actionPromise)
+  if (outPath === undefined) {
+    inFlightPdfDialog = actionPromise
+  } else {
+    inFlightHeadlessExports.set(normalizedPath!, actionPromise)
+  }
+
   try {
     return await actionPromise
   } finally {
-    if (inFlightPdfActions.get(state) === actionPromise) {
-      inFlightPdfActions.delete(state)
+    if (outPath === undefined) {
+      if (inFlightPdfDialog === actionPromise) {
+        inFlightPdfDialog = null
+      }
+    } else {
+      if (inFlightHeadlessExports.get(normalizedPath!) === actionPromise) {
+        inFlightHeadlessExports.delete(normalizedPath!)
+      }
     }
   }
 }
