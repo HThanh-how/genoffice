@@ -102,7 +102,8 @@ export function registerFolderAndModelHandlers(
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setKnownSearchSource, async (_event, id: unknown, enabled: unknown) => {
-    if (!isKnownSearchSource(id) || typeof enabled !== 'boolean') throw new Error('Invalid known search source id')
+    if (!isKnownSearchSource(id)) throw new Error('Invalid known search source id')
+    if (typeof enabled !== 'boolean') throw new Error('Invalid enabled state')
     const res = await deps.getKnownSources?.()?.setKnownSearchSource(id, enabled)
     invalidateCounts()
     return res!
@@ -148,12 +149,14 @@ export function registerFolderAndModelHandlers(
     writePdfPages(pdfConfigFile, pages)
     const memory = getDocumentMemory()
     let requeued = 0
+    let activePages = pages
     if (memory) {
       const res = memory.setPdfMaxPages(pages)
-      requeued = typeof res === 'number' ? res : (res?.requeued ?? 0)
+      requeued = typeof res === 'object' && res !== null ? (res.requeued ?? 0) : (typeof res === 'number' ? res : 0)
+      if (typeof res === 'object' && res && typeof res.pages === 'number') activePages = res.pages
       synced = true
       invalidateCounts()
     }
-    return { ...pdfPagesState(pages), requeued }
+    return { ...pdfPagesState(activePages), requeued }
   })
 }

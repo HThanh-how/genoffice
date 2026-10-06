@@ -69,8 +69,8 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     let queued = 0, error: string | undefined
     for (const id of new Set(ids)) {
       const result = memory.retryDocument(id)
-      if (result) queued++
-      else error = 'Failed to enqueue'
+      if (result.ok) queued++
+      else error = result.error ?? 'Failed to enqueue'
     }
     return { queued, skipped: ids.length - queued, ...(error ? { error } : {}) }
   })
@@ -141,7 +141,8 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     let retried = 0
     const ids = reader().ids(scope, only)
     for (const id of only === 'waiting' ? ids.slice(0, 100) : ids) {
-      if (memory.retryDocument(id)) retried++
+      const result = memory.retryDocument(id)
+      if (result.ok) retried++
     }
     folderCounts.invalidate()
     return { ok: true, retried }
@@ -150,25 +151,26 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.deferIndexFile, (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
     const memory = getDocumentMemory()
-    const doc = memory?.store.documentById(id)
-    if (doc) memory?.deferDocument(doc.path)
-    return { ok: !!doc }
+    if (!memory) return { ok: false, error: 'unavailable' }
+    return memory.deferDocument(id)
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.stopIndexFile, async (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
     folderCounts.invalidate()
     const memory = getDocumentMemory()
-    const doc = memory?.store.documentById(id)
-    return doc ? (await memory?.stopDocument(doc.path)) ?? false : false
+    if (!memory) return { ok: false, error: 'unavailable' }
+    const res = await memory.stopDocument(id)
+    folderCounts.invalidate()
+    return res
   })
 
   ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, async (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
     folderCounts.invalidate()
     const memory = getDocumentMemory()
-    const doc = memory?.store.documentById(id)
-    const res = doc ? await memory?.readNowDocument(doc.path) : { ok: false, error: 'unavailable' }
+    if (!memory) return { ok: false, error: 'unavailable' }
+    const res = await memory.readNowDocument(id)
     folderCounts.invalidate()
     return res
   })
