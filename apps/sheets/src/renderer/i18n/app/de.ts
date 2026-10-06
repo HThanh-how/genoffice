@@ -564,6 +564,8 @@ export const de = {
   appPdfRendering: 'PDF wird gerendert…',
   appPdfCanceled: 'PDF-Export abgebrochen.',
   appPdfExported: '{path} exportiert.',
+  appPdfDestinationBusy:
+    'Ein anderer PDF-Export schreibt bereits in diese Datei. Warten Sie, bis er abgeschlossen ist, oder wählen Sie ein anderes Ziel.',
   appPdfExportFailed: 'PDF kann nicht exportiert werden.',
   appPrintPreparing: 'Druck wird vorbereitet…',
   appPrintSent: 'An den Drucker gesendet.',

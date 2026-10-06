@@ -2402,6 +2402,7 @@ export const workbookExportPdfRequestSchema = z
 export const workbookExportPdfResultSchema = z.union([
   z.object({ canceled: z.literal(true) }).strict(),
   z.object({ canceled: z.literal(false), path: z.string().min(1) }).strict(),
+  z.object({ canceled: z.literal(false), error: z.literal('destination-busy') }).strict(),
 ])
 
 export type WorkbookExportPdfRequest = z.infer<typeof workbookExportPdfRequestSchema>

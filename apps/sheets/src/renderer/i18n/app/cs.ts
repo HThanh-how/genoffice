@@ -527,6 +527,8 @@ export const cs = {
   appPdfRendering: 'Vykresluje se PDF…',
   appPdfCanceled: 'Export do PDF zrušen.',
   appPdfExported: 'Exportováno {path}.',
+  appPdfDestinationBusy:
+    'Do tohoto souboru již zapisuje jiný export do PDF. Počkejte na jeho dokončení nebo zvolte jiné cílové umístění.',
   appPdfExportFailed: 'PDF nelze exportovat.',
   appPrintPreparing: 'Připravuje se tisk…',
   appPrintSent: 'Odesláno na tiskárnu.',

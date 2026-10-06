@@ -522,6 +522,8 @@ export const id = {
   appPdfRendering: 'Merender PDF…',
   appPdfCanceled: 'Ekspor PDF dibatalkan.',
   appPdfExported: '{path} diekspor.',
+  appPdfDestinationBusy:
+    'Ekspor PDF lain sedang menulis ke file ini. Tunggu hingga selesai atau pilih tujuan lain.',
   appPdfExportFailed: 'Tidak dapat mengekspor PDF.',
   appPrintPreparing: 'Menyiapkan pencetakan…',
   appPrintSent: 'Dikirim ke printer.',

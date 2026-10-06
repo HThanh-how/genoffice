@@ -559,6 +559,8 @@ export const pt = {
   appPdfRendering: 'Renderizando o PDF…',
   appPdfCanceled: 'Exportação de PDF cancelada.',
   appPdfExported: '{path} exportado.',
+  appPdfDestinationBusy:
+    'Outra exportação de PDF já está gravando neste arquivo. Aguarde o término ou escolha um destino diferente.',
   appPdfExportFailed: 'Não foi possível exportar o PDF.',
   appPrintPreparing: 'Preparando a impressão…',
   appPrintSent: 'Enviado para a impressora.',

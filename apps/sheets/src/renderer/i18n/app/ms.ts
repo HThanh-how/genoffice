@@ -523,6 +523,8 @@ export const ms = {
   appPdfRendering: 'Memaparkan PDF…',
   appPdfCanceled: 'Eksport PDF dibatalkan.',
   appPdfExported: '{path} dieksport.',
+  appPdfDestinationBusy:
+    'Eksport PDF lain sedang menulis ke fail ini. Tunggu sehingga ia selesai atau pilih destinasi lain.',
   appPdfExportFailed: 'Tidak dapat mengeksport PDF.',
   appPrintPreparing: 'Menyediakan cetakan…',
   appPrintSent: 'Dihantar ke pencetak.',

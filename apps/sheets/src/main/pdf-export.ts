@@ -11,6 +11,7 @@ import { BrowserWindow, dialog } from 'electron'
 import { isHeadlessMode, showSaveDialogWithMemory } from '@genoffice/electron-utils'
 
 import { atomicWriteFile } from './atomic-write'
+import { tryAcquirePdfDestination } from './pdf-destination-lock'
 import { evenPageRanges, stitchPlan, type PageVariant } from './pdf-page-variants'
 import { printOptionsFor } from './print-options'
 
@@ -38,21 +39,39 @@ export async function exportPdf(
       : await showSaveDialogWithMemory(dialog, parent, dialogOptions)
   if (selection.canceled || !selection.filePath) return { canceled: true }
 
-  const workDir = await mkdtemp(join(tmpdir(), 'ai-excel-pdf-'))
-  const htmlPath = join(workDir, 'print.html')
-  const window = new BrowserWindow({
-    show: false,
-    webPreferences: { sandbox: true, javascript: false },
-  })
+  const lease = tryAcquirePdfDestination(selection.filePath)
+  if (!lease) {
+    return { canceled: false, error: 'destination-busy' }
+  }
+
+  let workDir: string | null = null
+  let window: BrowserWindow | null = null
   try {
+    workDir = await mkdtemp(join(tmpdir(), 'ai-excel-pdf-'))
+    const htmlPath = join(workDir, 'print.html')
+    window = new BrowserWindow({
+      show: false,
+      webPreferences: { sandbox: true, javascript: false },
+    })
     await writeFile(htmlPath, request.html, 'utf8')
     await window.loadFile(htmlPath)
     const pdf = await renderPdf(window.webContents, request)
     await atomicWriteFile(selection.filePath, pdf)
     return { canceled: false, path: selection.filePath }
   } finally {
-    window.destroy()
-    await rm(workDir, { recursive: true, force: true })
+    try {
+      if (window && !window.isDestroyed()) {
+        window.destroy()
+      }
+    } finally {
+      try {
+        if (workDir) {
+          await rm(workDir, { recursive: true, force: true })
+        }
+      } finally {
+        lease.release()
+      }
+    }
   }
 }
 

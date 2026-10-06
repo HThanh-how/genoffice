@@ -462,6 +462,7 @@ export const zhTW = {
   appPdfRendering: '正在轉譯 PDF…',
   appPdfCanceled: 'PDF 匯出已取消。',
   appPdfExported: '已匯出 {path}。',
+  appPdfDestinationBusy: '另一個 PDF 匯出作業正在寫入此檔案。請等待其完成或選擇其他目標位置。',
   appPdfExportFailed: '無法匯出 PDF。',
   appPrintPreparing: '正在準備列印…',
   appPrintSent: '已傳送至印表機。',

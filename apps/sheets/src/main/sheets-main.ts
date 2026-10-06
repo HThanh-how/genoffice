@@ -2980,7 +2980,7 @@ export function registerSheetsIpc(): void {
     sessionFor(event)
     const request = workbookExportPdfRequestSchema.parse(input)
     const result = await exportPdf(event, request)
-    if (!result.canceled && result.path) openGeneratedFile(result.path)
+    if (!result.canceled && 'path' in result) openGeneratedFile(result.path)
     return result
   })
 

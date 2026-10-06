@@ -481,6 +481,7 @@ export const he = {
   appPdfRendering: 'מעבד את ה-PDF…',
   appPdfCanceled: 'ייצוא ה-PDF בוטל.',
   appPdfExported: '{path} יוצא.',
+  appPdfDestinationBusy: 'ייצוא PDF אחר כבר כותב לקובץ זה. המתן לסיומו או בחר יעד אחר.',
   appPdfExportFailed: 'לא ניתן לייצא את ה-PDF.',
   appPrintPreparing: 'מתכונן להדפסה…',
   appPrintSent: 'נשלח למדפסת.',

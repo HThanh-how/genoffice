@@ -521,6 +521,8 @@ export const hi = {
   appPdfRendering: 'PDF रेंडर हो रहा है…',
   appPdfCanceled: 'PDF निर्यात रद्द किया गया।',
   appPdfExported: '{path} निर्यात किया गया।',
+  appPdfDestinationBusy:
+    'एक अन्य PDF निर्यात पहले से ही इस फ़ाइल में लिख रहा है। इसके समाप्त होने की प्रतीक्षा करें या कोई अन्य गंतव्य चुनें।',
   appPdfExportFailed: 'PDF निर्यात नहीं किया जा सका।',
   appPrintPreparing: 'प्रिंट की तैयारी हो रही है…',
   appPrintSent: 'प्रिंटर को भेज दिया गया।',

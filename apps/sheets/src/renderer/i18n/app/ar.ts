@@ -501,6 +501,8 @@ export const ar = {
   appPdfRendering: 'جارٍ إخراج PDF…',
   appPdfCanceled: 'أُلغي تصدير PDF.',
   appPdfExported: 'تم التصدير: {path}.',
+  appPdfDestinationBusy:
+    'تصدير PDF آخر يكتب بالفعل إلى هذا الملف. انتظر حتى ينتهي أو اختر وجهة مختلفة.',
   appPdfExportFailed: 'يتعذر تصدير PDF.',
   appPrintPreparing: 'جارٍ التحضير للطباعة…',
   appPrintSent: 'تم الإرسال إلى الطابعة.',

@@ -1170,35 +1170,43 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
     expect(messagesA).toContain(t('appPrintCanceled'))
   })
 
-  it("PRINT-44: Same destination, different workbook targets run distinct exports and do not return A's promise as B", async () => {
+  it("PRINT-44: Target A exporting to destination while target B exports to same path -> B does not borrow A's promise, receives destination-busy error, returns false with appPdfDestinationBusy, A succeeds", async () => {
     const modelA = { id: 'wb-a' }
     const modelB = { id: 'wb-b' }
-    const { ctx: ctxA } = createMockContext(null, modelA)
-    const { ctx: ctxB } = createMockContext(null, modelB)
-
-    exportPdfMock.mockImplementation(async (payload: any) => {
-      await new Promise((r) => setTimeout(r, 20))
-      return { canceled: false, path: payload.outPath }
-    })
+    const { ctx: ctxA, messages: messagesA } = createMockContext(null, modelA)
+    const { ctx: ctxB, messages: messagesB } = createMockContext(null, modelB)
 
     const destPath = 'D:/report.pdf'
-    const [resultA, resultB] = await Promise.all([
-      handleExportPdf(ctxA, destPath),
-      handleExportPdf(ctxB, destPath),
-    ])
+    let resolveExportA!: (val: any) => void
+    const exportPromiseA = new Promise((resolve) => {
+      resolveExportA = resolve
+    })
+
+    exportPdfMock.mockImplementation(async (payload: any) => {
+      if (exportPdfMock.mock.calls.length === 1) {
+        return exportPromiseA
+      }
+      return { canceled: false, error: 'destination-busy' }
+    })
+
+    const pendingA = handleExportPdf(ctxA, destPath)
+    const resultB = await handleExportPdf(ctxB, destPath)
+
+    expect(resultB).toBe(false)
+    expect(messagesB).toContain(t('appPdfDestinationBusy'))
+
+    resolveExportA({ canceled: false, path: destPath })
+    const resultA = await pendingA
 
     expect(resultA).toBe(true)
-    expect(resultB).toBe(true)
+    expect(messagesA).toContain(t('appPdfExported', { path: destPath }))
     expect(exportPdfMock).toHaveBeenCalledTimes(2)
-    expect(exportPdfMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ outPath: destPath }))
-    expect(exportPdfMock).toHaveBeenNthCalledWith(2, expect.objectContaining({ outPath: destPath }))
   })
 
-  it("PRINT-45: Case-sensitive destinations ('/tmp/A.pdf' vs '/tmp/a.pdf') trigger distinct headless exports", async () => {
+  it("PRINT-45: Renderer preserves destination path casing ('/tmp/A.pdf' vs '/tmp/a.pdf') and passes verbatim to IPC", async () => {
     const { ctx } = createMockContext(null)
 
     exportPdfMock.mockImplementation(async (payload: any) => {
-      await new Promise((r) => setTimeout(r, 20))
       return { canceled: false, path: payload.outPath }
     })
 
@@ -1210,9 +1218,8 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
     expect(result1).toBe(true)
     expect(result2).toBe(true)
     expect(exportPdfMock).toHaveBeenCalledTimes(2)
-    const calledPaths = exportPdfMock.mock.calls.map(([arg]) => arg.outPath)
-    expect(calledPaths).toContain('/tmp/A.pdf')
-    expect(calledPaths).toContain('/tmp/a.pdf')
+    expect(exportPdfMock).toHaveBeenCalledWith(expect.objectContaining({ outPath: '/tmp/A.pdf' }))
+    expect(exportPdfMock).toHaveBeenCalledWith(expect.objectContaining({ outPath: '/tmp/a.pdf' }))
   })
 
   it('PRINT-46: outPath with empty string or whitespace is explicitly rejected without IPC exportPdf call', async () => {

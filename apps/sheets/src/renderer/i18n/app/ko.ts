@@ -530,6 +530,8 @@ export const ko = {
   appPdfRendering: 'PDF를 렌더링하는 중…',
   appPdfCanceled: 'PDF 내보내기를 취소했습니다.',
   appPdfExported: '{path}을(를) 내보냈습니다.',
+  appPdfDestinationBusy:
+    '다른 PDF 내보내기 작업이 이미 이 파일에 쓰고 있습니다. 완료될 때까지 기다리거나 다른 대상을 선택하세요.',
   appPdfExportFailed: 'PDF를 내보낼 수 없습니다.',
   appPrintPreparing: '인쇄를 준비하는 중…',
   appPrintSent: '프린터로 전송했습니다.',

@@ -554,6 +554,8 @@ export const ja = {
   appPdfRendering: 'PDF をレンダリング中…',
   appPdfCanceled: 'PDF エクスポートをキャンセルしました。',
   appPdfExported: '{path} をエクスポートしました。',
+  appPdfDestinationBusy:
+    '別の PDF エクスポートが既にこのファイルに書き込み中です。完了するまで待つか、別の保存先を選択してください。',
   appPdfExportFailed: 'PDF をエクスポートできません。',
   appPrintPreparing: '印刷を準備しています…',
   appPrintSent: 'プリンターに送信しました。',

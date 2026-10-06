@@ -507,6 +507,8 @@ export const en = {
   appPdfRendering: 'Rendering the PDF…',
   appPdfCanceled: 'PDF export canceled.',
   appPdfExported: 'Exported {path}.',
+  appPdfDestinationBusy:
+    'Another PDF export is already writing to this file. Wait for it to finish or choose a different destination.',
   appPdfExportFailed: 'Unable to export the PDF.',
   appPrintPreparing: 'Preparing to print…',
   appPrintSent: 'Sent to the printer.',

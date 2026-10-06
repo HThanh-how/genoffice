@@ -577,6 +577,8 @@ export const fr = {
   appPdfRendering: 'Rendu du PDF en cours…',
   appPdfCanceled: 'Export PDF annulé.',
   appPdfExported: '{path} exporté.',
+  appPdfDestinationBusy:
+    'Une autre exportation PDF est déjà en cours d’écriture dans ce fichier. Attendez qu’elle se termine ou choisissez un autre emplacement.',
   appPdfExportFailed: "Impossible d'exporter le PDF.",
   appPrintPreparing: 'Préparation de l’impression…',
   appPrintSent: 'Envoyé à l’imprimante.',

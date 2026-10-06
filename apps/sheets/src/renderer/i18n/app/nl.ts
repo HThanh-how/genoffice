@@ -553,6 +553,8 @@ export const nl = {
   appPdfRendering: 'PDF wordt gerenderd…',
   appPdfCanceled: 'PDF-export geannuleerd.',
   appPdfExported: '{path} geëxporteerd.',
+  appPdfDestinationBusy:
+    'Een andere PDF-export schrijft al naar dit bestand. Wacht tot deze is voltooid of kies een andere bestemming.',
   appPdfExportFailed: 'Kan de PDF niet exporteren.',
   appPrintPreparing: 'Afdrukken voorbereiden…',
   appPrintSent: 'Naar de printer verzonden.',

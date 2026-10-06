@@ -500,6 +500,8 @@ export const th = {
   appPdfRendering: 'กำลังเรนเดอร์ PDF…',
   appPdfCanceled: 'ยกเลิกการส่งออก PDF แล้ว',
   appPdfExported: 'ส่งออก {path} แล้ว',
+  appPdfDestinationBusy:
+    'การส่งออก PDF อื่นกำลังเขียนลงในไฟล์นี้อยู่ โปรดรอให้เสร็จสิ้นหรือเลือกปลายทางอื่น',
   appPdfExportFailed: 'ส่งออก PDF ไม่ได้',
   appPrintPreparing: 'กำลังเตรียมพิมพ์…',
   appPrintSent: 'ส่งไปยังเครื่องพิมพ์แล้ว',

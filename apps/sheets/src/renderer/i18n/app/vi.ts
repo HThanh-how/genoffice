@@ -515,6 +515,8 @@ export const vi = {
   appPdfRendering: 'Đang kết xuất PDF…',
   appPdfCanceled: 'Đã hủy xuất PDF.',
   appPdfExported: 'Đã xuất {path}.',
+  appPdfDestinationBusy:
+    'Một tác vụ xuất PDF khác đang ghi vào tệp này. Hãy đợi tác vụ đó hoàn tất hoặc chọn vị trí khác.',
   appPdfExportFailed: 'Không thể xuất PDF.',
   appPrintPreparing: 'Đang chuẩn bị in…',
   appPrintSent: 'Đã gửi tới máy in.',

@@ -100,7 +100,7 @@ export async function handleExportPdf(ctx: PrintContext, outPath?: string): Prom
     return false
   }
 
-  const pathKey = outPath !== undefined ? outPath.trim() : undefined
+  const pathKey = outPath
   let targetMap: Map<string, Promise<boolean>> | undefined
 
   if (outPath === undefined) {
@@ -159,6 +159,13 @@ export async function handleExportPdf(ctx: PrintContext, outPath?: string): Prom
             ctx.setMessage(t('appPdfCanceled'))
             return false
           }
+          if ('error' in exportResult) {
+            switch (exportResult.error) {
+              case 'destination-busy':
+                ctx.setMessage(t('appPdfDestinationBusy'))
+                return false
+            }
+          }
           ctx.setMessage(t('appPdfExported', { path: exportResult.path }))
           return true
         }
@@ -187,9 +194,12 @@ export async function handleExportPdf(ctx: PrintContext, outPath?: string): Prom
         activePdfDialogTarget = null
       }
     } else {
-      const currentTargetMap = inFlightHeadless.get(target)
-      if (currentTargetMap?.get(pathKey!) === actionPromise) {
-        currentTargetMap.delete(pathKey!)
+      const targetMap = inFlightHeadless.get(target)
+      if (targetMap?.get(pathKey!) === actionPromise) {
+        targetMap.delete(pathKey!)
+        if (targetMap.size === 0) {
+          inFlightHeadless.delete(target)
+        }
       }
     }
   }

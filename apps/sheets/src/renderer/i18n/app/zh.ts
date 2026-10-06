@@ -472,6 +472,7 @@ export const zh = {
   appPdfRendering: '正在渲染 PDF…',
   appPdfCanceled: 'PDF 导出已取消。',
   appPdfExported: '已导出 {path}。',
+  appPdfDestinationBusy: '另一个 PDF 导出任务正在写入此文件。请等待其完成或选择其他目标位置。',
   appPdfExportFailed: '无法导出 PDF。',
   appPrintPreparing: '正在准备打印…',
   appPrintSent: '已发送到打印机。',

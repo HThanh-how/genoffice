@@ -546,6 +546,8 @@ export const pl = {
   appPdfRendering: 'Renderowanie pliku PDF…',
   appPdfCanceled: 'Anulowano eksport do PDF.',
   appPdfExported: 'Wyeksportowano {path}.',
+  appPdfDestinationBusy:
+    'Inny eksport do formatu PDF zapisuje już dane do tego pliku. Poczekaj na jego zakończenie lub wybierz inne miejsce docelowe.',
   appPdfExportFailed: 'Nie można wyeksportować pliku PDF.',
   appPrintPreparing: 'Przygotowywanie wydruku…',
   appPrintSent: 'Wysłano do drukarki.',

@@ -536,6 +536,8 @@ export const ru = {
   appPdfRendering: 'Отрисовка PDF…',
   appPdfCanceled: 'Экспорт в PDF отменён.',
   appPdfExported: 'Экспортировано: {path}.',
+  appPdfDestinationBusy:
+    'Другой процесс экспорта в PDF уже записывает в этот файл. Подождите, пока он завершится, или выберите другое место.',
   appPdfExportFailed: 'Не удаётся экспортировать PDF.',
   appPrintPreparing: 'Подготовка к печати…',
   appPrintSent: 'Отправлено на принтер.',
