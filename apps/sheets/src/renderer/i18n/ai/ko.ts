@@ -105,4 +105,6 @@ export const ko = {
   aiScopeRangeTip:
     'AI는 "이 열 / 이 행들 / 선택한 부분"을 이 범위로 해석하며, 전송하면 이번 실행 동안 고정됩니다',
   aiScopeClearTitle: '범위 지정을 해제하고 시트 전체를 대상으로 하기',
+  aiProviderNotConfigured:
+    'AI 공급자가 구성되지 않았습니다. 공급자를 선택하거나 로그인한 후 다시 시도하세요.',
 } satisfies Record<keyof typeof zh, string>

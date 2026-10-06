@@ -107,4 +107,6 @@ export const it = {
   aiScopeRangeTip:
     "L'IA interpreta «questa colonna / queste righe / la parte selezionata» come questo intervallo, che all'invio resta fisso per tutta l'esecuzione",
   aiScopeClearTitle: "Rimuovi l'ambito dell'intervallo e usa tutto il foglio",
+  aiProviderNotConfigured:
+    'Il provider di intelligenza artificiale non è configurato. Scegli un provider o accedi, quindi riprova.',
 } satisfies Record<keyof typeof zh, string>

@@ -106,4 +106,6 @@ export const pl = {
   aiScopeRangeTip:
     'AI rozumie „tę kolumnę / te wiersze / zaznaczoną część” jako ten zakres; po wysłaniu pozostaje on stały przez cały przebieg',
   aiScopeClearTitle: 'Usuń zakres zaznaczenia i obejmij cały arkusz',
+  aiProviderNotConfigured:
+    'Dostawca sztucznej inteligencji nie jest skonfigurowany. Wybierz dostawcę lub zaloguj się i spróbuj ponownie.',
 } satisfies Record<keyof typeof zh, string>

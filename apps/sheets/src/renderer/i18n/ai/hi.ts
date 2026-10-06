@@ -107,4 +107,6 @@ export const hi = {
   aiScopeRangeTip:
     'AI "इस कॉलम / इन पंक्तियों / चयनित भाग" को इसी श्रेणी के रूप में समझता है; भेजने पर यह पूरे रन के लिए तय हो जाता है',
   aiScopeClearTitle: 'श्रेणी दायरा हटाएँ और पूरी शीट पर काम करें',
+  aiProviderNotConfigured:
+    'AI प्रदाता कॉन्फ़िगर नहीं है। कोई प्रदाता चुनें या साइन इन करें, फिर पुनः प्रयास करें।',
 } satisfies Record<keyof typeof zh, string>

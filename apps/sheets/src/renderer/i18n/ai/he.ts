@@ -102,4 +102,5 @@ export const he = {
   aiScopeRangeTip:
     'ה-AI מפרש "העמודה הזו / השורות האלה / החלק הנבחר" כטווח הזה, והוא מקובע לכל ההרצה עם השליחה',
   aiScopeClearTitle: 'ביטול טווח הבחירה ומיקוד בגיליון כולו',
+  aiProviderNotConfigured: 'ספק ה-AI אינו מוגדר. בחר ספק או היכנס ולאחר מכן נסה שוב.',
 } satisfies Record<keyof typeof zh, string>

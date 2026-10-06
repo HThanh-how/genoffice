@@ -107,4 +107,6 @@ export const ms = {
   aiScopeRangeTip:
     'AI membaca "lajur ini / baris ini / bahagian yang dipilih" sebagai julat ini, dan ia dikunci sepanjang larian selepas anda hantar',
   aiScopeClearTitle: 'Buang skop julat dan gunakan seluruh helaian',
+  aiProviderNotConfigured:
+    'Pembekal AI belum dikonfigurasikan. Pilih pembekal hoặc log masuk, kemudian cuba lagi.',
 } satisfies Record<keyof typeof zh, string>
