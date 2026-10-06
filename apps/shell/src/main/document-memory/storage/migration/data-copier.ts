@@ -25,6 +25,10 @@ export function prepareMigrationStatements(sourceDb: DatabaseSync, tempDb: Datab
     insertFts: tempDb.prepare('INSERT INTO chunk_fts (rowid, text) VALUES (?, ?)'),
     insertEmbedding: tempDb.prepare('INSERT OR REPLACE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim, created_at) VALUES (?, ?, ?, ?, unixepoch())'),
     ensureEmbeddingSpace: tempDb.prepare("INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization) VALUES (?, ?, 'legacy', 'mean', ?, 'fp32')"),
+    insertDocEmbeddingCount: tempDb.prepare('INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, 1) ON CONFLICT(document_id, space_id) DO UPDATE SET completed_chunks = document_embedding_counts.completed_chunks + 1'),
+    updateDocStatusAndModel: tempDb.prepare('UPDATE documents SET status = ?, embedding_model = ?, chunk_done = ? WHERE id = ?'),
+    updateDocChunkDone: tempDb.prepare('UPDATE documents SET chunk_done = ? WHERE id = ?'),
+    selectChunkEmbedding: sTables.includes('chunk_embeddings') ? sourceDb.prepare('SELECT space_id, vector, vector_dim FROM chunk_embeddings WHERE chunk_id = ? AND space_id = ?') : null,
     insertOcrPage: sTables.includes('ocr_pages') ? tempDb.prepare('INSERT OR REPLACE INTO ocr_pages (path, page, hash, mtime_ms, size_bytes, total_pages, text, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)') : null,
     insertPdfScan: sTables.includes('pdf_scan_info') ? tempDb.prepare('INSERT OR REPLACE INTO pdf_scan_info (path, mtime_ms, size_bytes, total_pages, scanned) VALUES (?, ?, ?, ?, ?)') : null,
   }
@@ -57,25 +61,44 @@ export function copyDocumentActiveChunks(
     stmts.insertFts.run(c.id, documentIndexFields(c.text).searchText)
 
     let vec: Uint8Array | null = null, dim = 0, space = activeSpaceId
-    if (stmts.sTables.includes('chunk_embeddings')) {
-      const e = sourceDb.prepare('SELECT space_id, vector, vector_dim FROM chunk_embeddings WHERE chunk_id = ? AND space_id = ?').get(c.id, activeSpaceId) as any
+    if (stmts.selectChunkEmbedding) {
+      const e = stmts.selectChunkEmbedding.get(c.id, activeSpaceId) as any
       if (e?.vector) { vec = e.vector; dim = e.vector_dim ?? activeDimensions; space = e.space_id }
     }
     if (!vec && c.vector) {
-      const legacyDim = c.vector_dim ?? (c.vector.byteLength / 4)
-      if (legacyDim === activeDimensions || (!stmts.sTables.includes('chunk_embeddings') && !doc.embedding_model)) {
+      const legacyDim = c.vector_dim ?? (c.vector.byteLength ? (c.vector.byteLength / 4) : 0)
+      if (doc.embedding_model === activeSpaceId && legacyDim === activeDimensions) {
         vec = c.vector
         dim = legacyDim
+        space = activeSpaceId
       }
     }
     if (vec && dim > 0) {
       stmts.ensureEmbeddingSpace.run(space, space, dim)
       stmts.insertEmbedding.run(c.id, space, vec, dim)
       embCount++
-      tempDb.prepare('INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, 1) ON CONFLICT(document_id, space_id) DO UPDATE SET completed_chunks = document_embedding_counts.completed_chunks + 1').run(doc.id, space)
+      stmts.insertDocEmbeddingCount.run(doc.id, space)
     }
   }
-  if (embCount > 0) tempDb.prepare('UPDATE documents SET chunk_done = ? WHERE id = ?').run(embCount, doc.id)
+
+  if (chunkCount > 0) {
+    if (embCount === chunkCount) {
+      if (doc.status !== 'excluded' && doc.status !== 'error') {
+        stmts.updateDocStatusAndModel.run('ready', activeSpaceId, embCount, doc.id)
+      } else {
+        stmts.updateDocChunkDone.run(embCount, doc.id)
+      }
+    } else {
+      if (doc.status !== 'excluded' && doc.status !== 'error') {
+        stmts.updateDocStatusAndModel.run('text-only', embCount > 0 ? activeSpaceId : null, embCount, doc.id)
+      } else {
+        stmts.updateDocChunkDone.run(embCount, doc.id)
+      }
+    }
+  } else if (embCount > 0) {
+    stmts.updateDocChunkDone.run(embCount, doc.id)
+  }
+
   return { chunks: chunkCount, embeddings: embCount }
 }
 
