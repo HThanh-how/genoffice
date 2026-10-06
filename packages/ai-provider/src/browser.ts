@@ -53,3 +53,4 @@ export { AI_MEDIA_PROVIDERS, imageGenerationAvailable, mediaAnalysisAvailable } 
 export { AI_SEARCH_PROVIDERS } from './search-settings'
 export { agyErrorText, formatAgyResetTime } from './agy-error-text'
 export type { AgyErrorLang, AgyErrorTextCode } from './agy-error-text'
+export { canAttemptChat } from './readiness'
