@@ -110,15 +110,15 @@ describe('Chunk Sets Lifecycle & Atomic Cutover', () => {
 
     // 3. Insert chunks with identical ordinals 0 and 1 under buildingSetId
     const insertChunk = db.prepare(`
-      INSERT INTO chunks (document_id, chunk_set_id, ordinal, text, normalized, location)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO chunks (document_id, chunk_set_id, ordinal, text, location)
+      VALUES (?, ?, ?, ?, ?)
     `)
     const insertFts = db.prepare('INSERT INTO chunk_fts (rowid, text) VALUES (?, ?)')
 
-    const r0 = insertChunk.run(docId, buildingSetId, 0, 'Alpha unique new keyword', 'alpha unique new keyword', 'C1')
+    const r0 = insertChunk.run(docId, buildingSetId, 0, 'Alpha unique new keyword', 'C1')
     insertFts.run(r0.lastInsertRowid, 'alpha unique new keyword')
 
-    const r1 = insertChunk.run(docId, buildingSetId, 1, 'Beta unique new keyword', 'beta unique new keyword', 'C2')
+    const r1 = insertChunk.run(docId, buildingSetId, 1, 'Beta unique new keyword', 'C2')
     insertFts.run(r1.lastInsertRowid, 'beta unique new keyword')
 
     // 4. Verify search ONLY sees active set chunks, NOT building set

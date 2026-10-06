@@ -1,5 +1,6 @@
 import { showAppMessageBox, setFeedbackThemeGetter } from './app-message-box'
 import { DocumentMemoryManager } from './document-memory/manager'
+import { ensureDocumentMemoryStorageReady } from './document-memory/storage-bootstrap'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { rotatingFileWriter } from './fork/renderer-diagnostics'
 import {
@@ -6823,8 +6824,10 @@ app.whenReady().then(async () => {
   if (dbMove.error) console.warn('[document-memory] index move failed:', dbMove.error)
   everything = createEverything(userDataDir)
   setOpeningConfig({ prefs: openingPrefs, customHtml: customOpeningHtml })
+  const indexDbDir = resolveDbDir(userDataDir)
+  await ensureDocumentMemoryStorageReady(indexDbDir)
   documentMemory = new DocumentMemoryManager(userDataDir, {
-    dbDir: resolveDbDir(userDataDir),
+    dbDir: indexDbDir,
     externalNames: (query, limit) => everything!.search.search(query, limit),
   })
   startLegacyConverter()

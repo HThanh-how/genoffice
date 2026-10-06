@@ -57,6 +57,13 @@ export interface DocumentIndexMigrationDiagnostics {
   lastGcTimestamp?: number
 }
 
+/** Detailed diagnostics breakdown for storage, migration, and performance. */
+export interface DocumentIndexDiagnostics {
+  storage: DocumentIndexStorageDiagnostics
+  migration: DocumentIndexMigrationDiagnostics
+  timestamp: number
+}
+
 /** Consolidated snapshot of document memory and background indexing status. */
 export interface DocumentIndexSnapshot {
   memory: DocumentMemoryStatus

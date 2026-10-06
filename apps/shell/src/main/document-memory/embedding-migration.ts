@@ -209,3 +209,6 @@ export class EmbeddingMigration {
     return this.progress().state === 'complete'
   }
 }
+
+export { EmbeddingMigration as EmbeddingMigrationCoordinator }
+

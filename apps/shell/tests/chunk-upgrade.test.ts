@@ -135,14 +135,14 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     )
 
     const insertChunk = db.prepare(`
-      INSERT INTO chunks (document_id, chunk_set_id, ordinal, text, normalized, location)
-      VALUES (?, NULL, ?, ?, ?, ?)
+      INSERT INTO chunks (document_id, chunk_set_id, ordinal, text, location)
+      VALUES (?, NULL, ?, ?, ?)
     `)
     const insertFts = db.prepare('INSERT INTO chunk_fts (rowid, text) VALUES (?, ?)')
 
     chunks.forEach((c, idx) => {
       const norm = c.text.toLowerCase()
-      const res = insertChunk.run(docId, idx, c.text, norm, c.location)
+      const res = insertChunk.run(docId, idx, c.text, c.location)
       insertFts.run(res.lastInsertRowid, norm)
     })
   }
@@ -259,8 +259,8 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     // 2. Simulate intermediate building set state: building set created, chunks inserted, NOT yet activated
     const buildingSetId = createBuildingSet(db, 10, 2)
     const insertChunk = db.prepare(`
-      INSERT INTO chunks (document_id, chunk_set_id, ordinal, text, normalized, location)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO chunks (document_id, chunk_set_id, ordinal, text, location)
+      VALUES (?, ?, ?, ?, ?)
     `)
     const insertFts = db.prepare('INSERT INTO chunk_fts (rowid, text) VALUES (?, ?)')
     const res = insertChunk.run(
@@ -268,7 +268,6 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
       buildingSetId,
       0,
       'Bản nháp mới về bảo mật thông tin.',
-      'bản nháp mới về bảo mật thông tin.',
       'Chunk 1',
     )
     insertFts.run(res.lastInsertRowid, 'bản nháp mới về bảo mật thông tin.')
@@ -405,11 +404,11 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     // Simulate crash: an incomplete building set was created with chunks in DB but never activated
     const danglingSetId = createBuildingSet(db, 1, 2)
     const insertChunk = db.prepare(`
-      INSERT INTO chunks (document_id, chunk_set_id, ordinal, text, normalized, location)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT INTO chunks (document_id, chunk_set_id, ordinal, text, location)
+      VALUES (?, ?, ?, ?, ?)
     `)
     const insertFts = db.prepare('INSERT INTO chunk_fts (rowid, text) VALUES (?, ?)')
-    const res = insertChunk.run(1, danglingSetId, 0, 'Dangling text chunk', 'dangling text chunk', 'C1')
+    const res = insertChunk.run(1, danglingSetId, 0, 'Dangling text chunk', 'C1')
     insertFts.run(res.lastInsertRowid, 'dangling text chunk')
 
     // Verify dangling state exists

@@ -57,24 +57,24 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
     // Insert 20,000 chunks and embeddings in a single atomic transaction
     store.rawDb.exec('BEGIN IMMEDIATE')
     const insertChunk = store.rawDb.prepare(
-      'INSERT INTO chunks (id, document_id, text, normalized, location, ordinal) VALUES (?, 1, ?, ?, ?, ?)',
+      'INSERT INTO chunks (id, document_id, text, location, ordinal) VALUES (?, 1, ?, ?, ?)',
     )
     const insertEmb = store.rawDb.prepare(
       'INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, 2)',
     )
 
     // Chunk 1: [1, 0] (best match for query [1, 0])
-    insertChunk.run(1, 'Target Chunk One', 'target chunk one', '1', 0)
+    insertChunk.run(1, 'Target Chunk One', '1', 0)
     insertEmb.run(1, spaceId, floatBlob([1, 0]))
 
     // Chunk 2: [0.8, 0.6] (second match)
-    insertChunk.run(2, 'Target Chunk Two', 'target chunk two', '2', 1)
+    insertChunk.run(2, 'Target Chunk Two', '2', 1)
     insertEmb.run(2, spaceId, floatBlob([0.8, 0.6]))
 
     // Chunks 3..20,000: orthogonal vectors [0, 1]
     const otherVectorBlob = floatBlob([0, 1])
     for (let i = 3; i <= ANN_MIN_VECTORS; i++) {
-      insertChunk.run(i, `Chunk ${i}`, `chunk ${i}`, String(i), i - 1)
+      insertChunk.run(i, `Chunk ${i}`, String(i), i - 1)
       insertEmb.run(i, spaceId, otherVectorBlob)
     }
     store.rawDb.exec('COMMIT')
@@ -334,18 +334,18 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
       // Insert 20,000 vectors
       store.rawDb.exec('BEGIN IMMEDIATE')
       const insertChunk = store.rawDb.prepare(
-        'INSERT INTO chunks (id, document_id, text, normalized, location, ordinal) VALUES (?, 1, ?, ?, ?, ?)',
+        'INSERT INTO chunks (id, document_id, text, location, ordinal) VALUES (?, 1, ?, ?, ?)',
       )
       const insertEmb = store.rawDb.prepare(
         'INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, 2)',
       )
 
-      insertChunk.run(1, 'Target Chunk', 'target chunk', '1', 0)
+      insertChunk.run(1, 'Target Chunk', '1', 0)
       insertEmb.run(1, spaceId, floatBlob([1, 0]))
 
       const filler = floatBlob([0, 1])
       for (let i = 2; i <= ANN_MIN_VECTORS; i++) {
-        insertChunk.run(i, `Filler ${i}`, `filler ${i}`, String(i), i - 1)
+        insertChunk.run(i, `Filler ${i}`, String(i), i - 1)
         insertEmb.run(i, spaceId, filler)
       }
       store.rawDb.exec('COMMIT')
@@ -420,18 +420,18 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
 
       store.rawDb.exec('BEGIN IMMEDIATE')
       const insertChunk = store.rawDb.prepare(
-        'INSERT INTO chunks (id, document_id, text, normalized, location, ordinal) VALUES (?, 1, ?, ?, ?, ?)',
+        'INSERT INTO chunks (id, document_id, text, location, ordinal) VALUES (?, 1, ?, ?, ?)',
       )
       const insertEmb = store.rawDb.prepare(
         'INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, 2)',
       )
 
-      insertChunk.run(1, 'Initial Chunk 1', 'initial chunk 1', '1', 0)
+      insertChunk.run(1, 'Initial Chunk 1', '1', 0)
       insertEmb.run(1, spaceId, floatBlob([0.6, 0.8]))
 
       const filler = floatBlob([0, 1])
       for (let i = 2; i <= ANN_MIN_VECTORS; i++) {
-        insertChunk.run(i, `Chunk ${i}`, `chunk ${i}`, String(i), i - 1)
+        insertChunk.run(i, `Chunk ${i}`, String(i), i - 1)
         insertEmb.run(i, spaceId, filler)
       }
       store.rawDb.exec('COMMIT')

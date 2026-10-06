@@ -1,0 +1,247 @@
+import type { DatabaseSync } from 'node:sqlite'
+import { resolve } from 'node:path'
+import { issueReason, type IndexIssue } from '../../issues'
+import { measureSqlite } from '../../sqlite-timing'
+import { toDocument, type DocRow, type StoredDocument } from './document-repository'
+
+export interface DocumentChunkProgress {
+  document: StoredDocument | null
+  completedChunks: number
+  totalChunks: number
+}
+
+export interface FolderChunkProgress {
+  totalFiles: number
+  readyFiles: number
+  pendingFiles: number
+  errorFiles: number
+  emptyFiles?: number
+  completedChunks: number
+  totalChunks: number
+  partialFileProgress: number
+  truncatedFiles: number
+  semanticCoverage?: number
+  activeEmbeddingSpace?: string
+}
+
+export interface DocumentMemoryStats {
+  docs: number
+  chunks: number
+  vectors: number
+  errors: number
+  semanticCoverage?: number
+  activeEmbeddingSpace?: string
+}
+
+export class ProgressRepository {
+  constructor(private readonly db: DatabaseSync) {}
+
+  hasUncountedDocuments(): boolean {
+    return !!this.db.prepare('SELECT 1 FROM documents WHERE chunk_counted = 0 LIMIT 1').get()
+  }
+
+  backfillCounters(maxDocuments = 200): boolean {
+    return measureSqlite('embedding-count rebuild', () => {
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        const ids = (
+          this.db
+            .prepare('SELECT id FROM documents WHERE chunk_counted = 0 ORDER BY id LIMIT ?')
+            .all(maxDocuments) as Array<{ id: number }>
+        ).map((row) => row.id)
+        if (!ids.length) {
+          this.db.exec('COMMIT')
+          return false
+        }
+        const first = ids[0]!
+        const last = ids[ids.length - 1]!
+        const totals = new Map<number, number>()
+        for (const row of this.db
+          .prepare(
+            'SELECT document_id, count(*) AS n FROM chunks WHERE document_id BETWEEN ? AND ? GROUP BY document_id',
+          )
+          .all(first, last) as Array<{ document_id: number; n: number }>)
+          totals.set(row.document_id, row.n)
+
+        const done = new Map<number, number>()
+        const counts = this.db
+          .prepare(
+            'SELECT document_id, coalesce(sum(completed_chunks), 0) AS n FROM document_embedding_counts WHERE document_id BETWEEN ? AND ? GROUP BY document_id',
+          )
+          .all(first, last) as Array<{ document_id: number; n: number }>
+        for (const hit of counts) {
+          done.set(hit.document_id, hit.n)
+        }
+
+        const update = this.db.prepare(
+          'UPDATE documents SET chunk_total = ?, chunk_done = ?, chunk_counted = 1 WHERE id = ?',
+        )
+        for (const id of ids) update.run(totals.get(id) ?? 0, done.get(id) ?? 0, id)
+        this.db.exec('COMMIT')
+      } catch (err) {
+        this.db.exec('ROLLBACK')
+        throw err
+      }
+      return this.hasUncountedDocuments()
+    })
+  }
+
+  chunkProgress(path: string): DocumentChunkProgress {
+    const row = this.db
+      .prepare(
+        `SELECT d.id, d.path, d.name, d.status, d.mtime_ms, d.size_bytes, d.hash, d.error, d.truncated, d.truncated_reason,
+          CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
+            ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END AS total_chunks,
+          CASE WHEN d.chunk_counted = 1 THEN d.chunk_done
+            ELSE coalesce((SELECT ec.completed_chunks FROM document_embedding_counts ec WHERE ec.document_id = d.id AND ec.space_id = d.embedding_model), d.chunk_done) END
+            AS completed_chunks
+        FROM documents d WHERE d.path = ?`,
+      )
+      .get(resolve(path)) as
+      | (DocRow & { total_chunks: number; completed_chunks: number | null })
+      | undefined
+    return {
+      document: row ? toDocument(row) : null,
+      completedChunks: row?.completed_chunks ?? 0,
+      totalChunks: row?.total_chunks ?? 0,
+    }
+  }
+
+  countSource(): { with: string; total: string; done: string } {
+    if (!this.hasUncountedDocuments())
+      return { with: '', total: 'd.chunk_total', done: 'd.chunk_done' }
+    return {
+      with: `WITH tot AS MATERIALIZED (SELECT document_id, count(*) AS n FROM chunks GROUP BY document_id),
+        dn AS MATERIALIZED (SELECT document_id, coalesce(sum(completed_chunks), 0) AS n FROM document_embedding_counts GROUP BY document_id)`,
+      total: `CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
+        ELSE coalesce((SELECT n FROM tot WHERE tot.document_id = d.id), 0) END`,
+      done: `CASE WHEN d.chunk_counted = 1 THEN d.chunk_done
+        ELSE coalesce((SELECT n FROM dn WHERE dn.document_id = d.id), 0) END`,
+    }
+  }
+
+  folderChunkProgress(root?: string): FolderChunkProgress {
+    return measureSqlite('folderChunkProgress', () => {
+      const normalized = root === undefined ? null : resolve(root)
+      const prefix =
+        normalized === null
+          ? null
+          : normalized.endsWith('/') || normalized.endsWith('\\')
+            ? normalized
+            : `${normalized}${normalized.includes('\\') ? '\\' : '/'}`
+      const counts = this.countSource()
+      const row = this.db
+        .prepare(
+          `${counts.with}
+          SELECT count(*) AS total_files,
+            sum(CASE WHEN status IN ('ready', 'empty') THEN 1 ELSE 0 END) AS ready_files,
+            sum(CASE WHEN status IN ('pending', 'text-only') THEN 1 ELSE 0 END) AS pending_files,
+            sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_files,
+            sum(CASE WHEN status = 'empty' THEN 1 ELSE 0 END) AS empty_files,
+            coalesce(sum(truncated), 0) AS truncated_files,
+            coalesce(sum(done_chunks), 0) AS completed_chunks,
+            coalesce(sum(total_chunks), 0) AS total_chunks,
+            coalesce(sum(CASE WHEN status IN ('ready','empty') THEN 1.0
+              WHEN status = 'text-only' AND total_chunks > 0
+                THEN (done_chunks * 1.0 / total_chunks)
+              ELSE 0.0 END), 0.0) AS partial_file_progress
+          FROM (SELECT d.status, d.truncated, ${counts.total} AS total_chunks, ${counts.done} AS done_chunks
+            FROM documents d
+            WHERE d.excluded = 0 ${normalized === null ? '' : 'AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)'})`,
+        )
+        .get(...(normalized === null ? [] : [normalized, prefix!, prefix!])) as
+        | {
+            total_files: number
+            ready_files: number
+            pending_files: number
+            error_files: number
+            empty_files: number
+            truncated_files: number
+            completed_chunks: number
+            total_chunks: number
+            partial_file_progress: number
+          }
+        | undefined
+      return {
+        totalFiles: row?.total_files ?? 0,
+        readyFiles: row?.ready_files ?? 0,
+        pendingFiles: row?.pending_files ?? 0,
+        errorFiles: row?.error_files ?? 0,
+        emptyFiles: row?.empty_files ?? 0,
+        completedChunks: row?.completed_chunks ?? 0,
+        totalChunks: row?.total_chunks ?? 0,
+        partialFileProgress: row?.partial_file_progress ?? 0,
+        truncatedFiles: row?.truncated_files ?? 0,
+      }
+    })
+  }
+
+  indexIssues(root: string, offset = 0): { total: number; items: IndexIssue[] } {
+    const normalized = resolve(root)
+    const prefix = normalized + (normalized.includes('\\') ? '\\' : '/')
+    const where =
+      "excluded = 0 AND status IN ('error', 'empty') AND (path = ? OR substr(path, 1, length(?)) = ?)"
+    const total = (
+      this.db
+        .prepare(`SELECT count(*) n FROM documents WHERE ${where}`)
+        .get(normalized, prefix, prefix) as { n: number }
+    ).n
+    const rows = this.db
+      .prepare(
+        `SELECT id, path, name, status, error FROM documents WHERE ${where}
+      ORDER BY status ASC, priority_at DESC, id DESC LIMIT 10 OFFSET ?`,
+      )
+      .all(normalized, prefix, prefix, offset) as Array<{
+      id: number
+      path: string
+      name: string
+      status: string
+      error: string | null
+    }>
+    return {
+      total,
+      items: rows.map(({ status, error, ...row }) => ({
+        ...row,
+        reason: issueReason(error, status),
+        ...(error ? { error } : {}),
+      })),
+    }
+  }
+
+  stats(activeEmbeddingSpace?: string): DocumentMemoryStats {
+    return measureSqlite('stats', () => {
+      const counts = this.countSource()
+      const base = this.db
+        .prepare(
+          `${counts.with}
+          SELECT count(*) AS docs,
+            coalesce(sum(${counts.total}), 0) AS chunks,
+            coalesce(sum(${counts.done}), 0) AS vectors,
+            coalesce(sum(CASE WHEN d.status = 'error' THEN 1 ELSE 0 END), 0) AS errors
+          FROM documents d WHERE d.excluded = 0`,
+        )
+        .get() as unknown as DocumentMemoryStats
+
+      let semanticCoverage: number | undefined
+      if (activeEmbeddingSpace && base.chunks > 0) {
+        const spaceCount = this.db
+          .prepare(`
+            SELECT count(DISTINCT e.chunk_id) AS done
+            FROM chunk_embeddings e
+            JOIN chunks c ON c.id = e.chunk_id
+            JOIN documents d ON d.id = c.document_id
+            WHERE e.space_id = ? AND d.excluded = 0
+              AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+          `)
+          .get(activeEmbeddingSpace) as { done: number }
+        semanticCoverage = Math.min(1, spaceCount.done / base.chunks)
+      }
+
+      return {
+        ...base,
+        ...(semanticCoverage !== undefined ? { semanticCoverage } : {}),
+        ...(activeEmbeddingSpace ? { activeEmbeddingSpace } : {}),
+      }
+    })
+  }
+}

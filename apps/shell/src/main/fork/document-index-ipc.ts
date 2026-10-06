@@ -1,115 +1,89 @@
 import type { IpcMain } from 'electron'
+import { stat } from 'node:fs/promises'
 import type { FolderScanManager } from '../document-memory/folder-scan'
 import { ALL_FOLDERS, IndexIssueReader } from '../document-memory/issue-reader'
-import { ISSUE_REASON_ORDER, shortCause, type IndexIssueReason } from '../document-memory/issues'
+import { ISSUE_REASON_ORDER, type IndexIssueReason } from '../document-memory/issues'
 import type { DocumentMemoryManager } from '../document-memory/manager'
-import { foldFolderProgress } from '../document-memory/folder-progress'
 import type { FolderChunkProgress } from '../document-memory/store'
 import { createSwrCache } from './activity-cache'
-import { currentIndexingPolicy } from './indexing-policy-bus'
 import { HOME_CHANNELS, type HomeIndexingActivity } from '../../shared/home-api'
-import { stat } from 'node:fs/promises'
-import { availableParallelism, totalmem } from 'node:os'
-import {
-  EMBEDDING_PROFILES,
-  isEmbeddingProfileId,
-  recommendEmbeddingProfile,
-  type EmbeddingProfileId,
-} from '../document-memory/embedding-profiles'
 import {
   DOCUMENT_INDEX_CHANNELS,
-  type DocumentIndexSnapshot,
-  type EmbeddingModelState,
   type IndexedFileHit,
   type IndexingNow,
   type IndexFileDetail,
-  type IndexedFolder,
-  type PdfPagesState,
 } from '../../shared/fork/document-index-api'
-import { getEventLoopMetrics, getSqliteTimingSummary } from '../document-memory/sqlite-timing'
-import type { IndexIssueSummary } from '../document-memory/issue-reader'
-import { DEFAULT_PDF_PAGES, LARGE_PDF_PAGES } from '../document-memory/chunks'
-import { createSourceAvailabilityProbe } from '../document-memory/source-availability'
+import type { KnownSourcesManager } from '../document-memory/known-sources'
 import {
-  KnownSourcesManager,
-  isKnownSearchSource,
-  type KnownSearchSourceEntry,
-} from '../document-memory/known-sources'
+  getDocumentIndexSnapshot,
+  getDocumentIndexDiagnostics,
+} from './document-index-snapshot-service'
+import { registerFolderAndModelHandlers } from './document-index-folder-handlers'
 
 export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
   getDocumentMemory: () => DocumentMemoryManager | null
   getFolderScan: () => FolderScanManager | null
-  /** absolute path of the document-memory SQLite file */
   dbPath: () => string
-  /** optional getter for KnownSourcesManager instance */
   getKnownSources?: () => KnownSourcesManager | null
-  /** optional absolute path of app-settings.json or getter */
   settingsPath?: string | (() => string)
 }
 
-/** Windows paths compare without regard to case. */
-const samePath = (path: string): string =>
-  process.platform === 'win32' ? path.toLowerCase() : path
-
+const samePath = (path: string): string => process.platform === 'win32' ? path.toLowerCase() : path
 const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set(ISSUE_REASON_ORDER)
 
-/**
- * Document-index popup IPC: grouped problem files, per-group retry and the cached
- * indexing-activity payload. Replaces the upstream getDocumentIndexIssues,
- * retryDocumentIndex and getIndexingActivity handlers (do not register those twice).
- */
+/** Document-index popup IPC handler registration (< 250 LOC). */
 export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void {
   const { ipcMain, getDocumentMemory, getFolderScan } = deps
-  const sourceUnavailable = createSourceAvailabilityProbe()
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, (_event, ids: unknown) => {
-    if (
-      !Array.isArray(ids) ||
-      ids.length > 200 ||
-      ids.some((id) => !Number.isSafeInteger(id) || id < 1)
-    )
-      return { queued: 0, skipped: Array.isArray(ids) ? ids.length : 0, error: 'invalid-request' }
-    const memory = getDocumentMemory()
-    if (!memory) return { queued: 0, skipped: ids.length, error: 'unavailable' }
-    let queued = 0
-    let error: string | undefined
-    for (const id of new Set(ids)) {
-      const result = memory.retryDocument(id)
-      if (result.ok) queued++
-      else error = result.error
-    }
-    return { queued, skipped: ids.length - queued, ...(error ? { error } : {}) }
-  })
-  // Folder chunk counts are the only database aggregate in the popup poll. They are served
-  // stale-while-revalidate (see activity-cache.ts); everything else is live and in-memory.
   const folderCounts = createSwrCache<FolderChunkProgress>()
   let issueReader: IndexIssueReader | null = null
   const reader = (): IndexIssueReader => (issueReader ??= new IndexIssueReader(deps.dbPath()))
+
   const activeRoot = (root: unknown): string => {
     if (root === ALL_FOLDERS) return ALL_FOLDERS
-    if (typeof root !== 'string' || root !== getFolderScan()?.status().root)
-      throw new Error('Invalid index issue request')
+    if (typeof root !== 'string' || root !== getFolderScan()?.status().root) throw new Error('Invalid index issue request')
     return root
   }
   const issueReason = (reason: unknown): IndexIssueReason | undefined => {
     if (reason === undefined || reason === null) return undefined
-    if (typeof reason !== 'string' || !ISSUE_REASONS.has(reason as IndexIssueReason))
-      throw new Error('Invalid index issue reason')
+    if (typeof reason !== 'string' || !ISSUE_REASONS.has(reason as IndexIssueReason)) throw new Error('Invalid index issue reason')
     return reason as IndexIssueReason
   }
 
-  ipcMain.handle(
-    HOME_CHANNELS.getDocumentIndexIssues,
-    (_event, root: unknown, offset: unknown = 0, reason?: unknown) => {
-      if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0)
-        throw new Error('Invalid index issue page')
-      if (!getDocumentMemory()) return { total: 0, items: [] }
-      return reader().page(activeRoot(root), offset, issueReason(reason))
-    },
-  )
+  const snapshotCtx = {
+    getDocumentMemory, getFolderScan,
+    getIssueReader: reader,
+    getFolderCounts: () => folderCounts,
+    dbPath: deps.dbPath,
+  }
+
+  registerFolderAndModelHandlers(deps, () => folderCounts.invalidate())
+
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, (_event, ids: unknown) => {
+    if (!Array.isArray(ids) || ids.length > 200 || ids.some((id) => !Number.isSafeInteger(id) || id < 1)) {
+      return { queued: 0, skipped: Array.isArray(ids) ? ids.length : 0, error: 'invalid-request' }
+    }
+    const memory = getDocumentMemory()
+    if (!memory) return { queued: 0, skipped: ids.length, error: 'unavailable' }
+    let queued = 0, error: string | undefined
+    for (const id of new Set(ids)) {
+      const result = memory.retryDocument(id)
+      if (result) queued++
+      else error = 'Failed to enqueue'
+    }
+    return { queued, skipped: ids.length - queued, ...(error ? { error } : {}) }
+  })
+
+  ipcMain.handle(HOME_CHANNELS.getDocumentIndexIssues, (_event, root: unknown, offset: unknown = 0, reason?: unknown) => {
+    if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid index issue page')
+    if (!getDocumentMemory()) return { total: 0, items: [] }
+    return reader().page(activeRoot(root), offset, issueReason(reason))
+  })
+
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getIndexingNow, (): IndexingNow => {
+    const memory = getDocumentMemory()
     return (
-      getDocumentMemory()?.nowStatus() ?? {
+      memory?.nowStatus() ?? {
         extracting: [],
         embedding: {},
         positions: {},
@@ -119,406 +93,91 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
       }
     )
   })
-  ipcMain.handle(
-    DOCUMENT_INDEX_CHANNELS.searchIndexedFiles,
-    async (_event, query: unknown): Promise<IndexedFileHit[]> => {
-      if (typeof query !== 'string' || query.length > 200) return []
-      const memory = getDocumentMemory()
-      if (!memory) return []
-      const indexed = reader().search(query)
-      // files that exist on disk but were never opened or indexed, from Everything when it is on
-      const known = new Set(indexed.map((hit) => samePath(hit.path)))
-      const elsewhere = (await memory.searchExternal(query, 8))
-        .filter((file) => !known.has(samePath(file.path)))
-        .map((file) => ({
-          id: 0,
-          path: file.path,
-          name: file.name,
-          status: 'on-disk',
-          external: true,
-        }))
-      return [...indexed, ...elsewhere]
-    },
-  )
-  ipcMain.handle(
-    DOCUMENT_INDEX_CHANNELS.getIndexFileDetail,
-    async (_event, id: unknown): Promise<IndexFileDetail | null> => {
-      if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
-        throw new Error('Invalid document id')
-      if (!getDocumentMemory()) return null
-      const detail = reader().detail(id)
-      if (!detail) return null
-      const exists = await stat(detail.path).then(
-        (s) => s.isFile(),
-        () => false,
-      )
-      return { ...detail, exists }
-    },
-  )
+
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.searchIndexedFiles, async (_event, query: unknown): Promise<IndexedFileHit[]> => {
+    if (typeof query !== 'string' || query.length > 200) return []
+    const memory = getDocumentMemory()
+    if (!memory) return []
+    const indexed = reader().search(query)
+    const known = new Set(indexed.map((hit) => samePath(hit.path)))
+    const elsewhere = (await memory.searchExternal(query, 8))
+      .filter((file) => !known.has(samePath(file.path)))
+      .map((file) => ({ id: 0, path: file.path, name: file.name, status: 'on-disk' as const, external: true }))
+    return [...indexed, ...elsewhere]
+  })
+
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getIndexFileDetail, async (_event, id: unknown): Promise<IndexFileDetail | null> => {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
+    if (!getDocumentMemory()) return null
+    const detail = reader().detail(id)
+    if (!detail) return null
+    const exists = await stat(detail.path).then((s) => s.isFile(), () => false)
+    return { ...detail, exists }
+  })
+
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexIssueSummary, (_event, root: unknown) => {
     if (!getDocumentMemory()) return { total: 0, groups: [] }
     return reader().summary(activeRoot(root))
   })
-  ipcMain.handle(
-    DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup,
-    (_event, root: unknown, reason?: unknown) => {
-      const scope = activeRoot(root)
-      const only = issueReason(reason)
-      const documentMemory = getDocumentMemory()
-      if (!documentMemory) return { ok: false, retried: 0, error: 'unavailable' }
-      if (only === 'model') {
-        const wasEnabled = documentMemory.indexingActivityStatus().enabled
-        if (!wasEnabled) return { ok: false, retried: 0, error: 'paused' }
-        // Thay vì gọi toggle setEnabled(false) / setEnabled(true) gây chập chờn toàn hệ thống:
-        documentMemory.recycleEmbeddingWorker('Model retry requested from diagnostics')
-        folderCounts.invalidate()
-        return { ok: true, retried: 0 }
-      }
-      let retried = 0
-      // The waiting queue can be thousands long: put the first hundred (highest priority) first.
-      const ids = reader().ids(scope, only)
-      for (const id of only === 'waiting' ? ids.slice(0, 100) : ids) {
-        const result = documentMemory.retryDocument(id)
-        if (!result.ok) {
-          if (result.error === 'paused') return { ok: false, retried, error: 'paused' }
-          continue
-        }
-        retried++
-      }
-      folderCounts.invalidate()
-      return { ok: true, retried }
-    },
-  )
-  // ---- folder list: when each folder was last read, its history, and which goes first ----
-  const knownRoot = (root: unknown): string => {
-    if (
-      typeof root !== 'string' ||
-      !getFolderScan()
-        ?.folders()
-        .some((f) => f.root === root)
-    )
-      throw new Error('Unknown folder')
-    return root
-  }
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.listIndexedFolders, async (): Promise<IndexedFolder[]> => {
-    const scan = getFolderScan()
+
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, (_event, root: unknown, reason?: unknown) => {
+    const scope = activeRoot(root)
+    const only = issueReason(reason)
     const memory = getDocumentMemory()
-    if (!scan) return []
-    return Promise.all(
-      scan.folders().map(async (folder) => {
-        const counts = memory?.getFolderIndexCounts(folder.root)
-        const unavailable = await sourceUnavailable(folder.root)
-        return {
-          ...folder,
-          unavailable,
-          totalFiles: counts?.totalFiles ?? 0,
-          readyFiles: counts?.readyFiles ?? 0,
-          pendingFiles: counts?.pendingFiles ?? 0,
-          errorFiles: counts?.errorFiles ?? 0,
-          emptyFiles: counts?.emptyFiles ?? 0,
-          completedChunks: counts?.completedChunks ?? 0,
-          totalChunks: counts?.totalChunks ?? 0,
-        }
-      }),
-    )
-  })
-  ipcMain.handle(
-    DOCUMENT_INDEX_CHANNELS.setIndexedFolderPriority,
-    (_event, root: unknown, priority: unknown): boolean => {
-      if (typeof priority !== 'boolean') return false
-      const result = getFolderScan()?.setPriority(knownRoot(root), priority) ?? false
+    if (!memory) return { ok: false, retried: 0, error: 'unavailable' }
+    if (only === 'model') {
+      memory.recycleEmbeddingWorker()
       folderCounts.invalidate()
-      return result
-    },
-  )
-  ipcMain.handle(
-    DOCUMENT_INDEX_CHANNELS.rescanIndexedFolder,
-    async (_event, root: unknown): Promise<{ ok: boolean; error?: string }> => {
-      try {
-        const scan = getFolderScan()
-        if (!scan) return { ok: false, error: 'unavailable' }
-        const result = await scan.rescanExisting(knownRoot(root))
-        folderCounts.invalidate()
-        return result
-      } catch (error) {
-        return { ok: false, error: error instanceof Error ? error.message : 'failed' }
-      }
-    },
-  )
-  ipcMain.handle(
-    DOCUMENT_INDEX_CHANNELS.forgetIndexedFolder,
-    async (_event, root: unknown): Promise<boolean> => {
-      const scan = getFolderScan()
-      if (!scan) return false
-      return await scan.unregisterRoot(knownRoot(root), 'manual')
-    },
-  )
-  // ---- known search sources: Downloads, Documents, Desktop ----
-  const getKnownSourcesManager = (): KnownSourcesManager => {
-    const provided = deps.getKnownSources?.()
-    if (!provided) {
-      throw new Error('KnownSourcesManager must be initialized at application startup')
+      return { ok: true, retried: 0 }
     }
-    return provided
-  }
-  ipcMain.handle(
-    DOCUMENT_INDEX_CHANNELS.getKnownSearchSources,
-    async (): Promise<KnownSearchSourceEntry[]> => {
-      return getKnownSourcesManager().getKnownSearchSources()
-    },
-  )
-  ipcMain.handle(
-    DOCUMENT_INDEX_CHANNELS.setKnownSearchSource,
-    async (_event, id: unknown, enabled: unknown): Promise<KnownSearchSourceEntry> => {
-      if (!isKnownSearchSource(id)) {
-        throw new Error('Invalid known search source id')
-      }
-      if (typeof enabled !== 'boolean') {
-        throw new Error('Invalid enabled state')
-      }
-      const result = await getKnownSourcesManager().setKnownSearchSource(id, enabled)
-      folderCounts.invalidate()
-      return result
-    },
-  )
-  // ---- search model: standard (fast) or high (Vietnamese retrieval model) ----
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getEmbeddingModel, (): EmbeddingModelState => {
-    const machine = {
-      totalMemGiB: Math.round((totalmem() / 1024 ** 3) * 10) / 10,
-      logicalCores: availableParallelism(),
+    let retried = 0
+    const ids = reader().ids(scope, only)
+    for (const id of only === 'waiting' ? ids.slice(0, 100) : ids) {
+      if (memory.retryDocument(id)) retried++
     }
-    const advice = recommendEmbeddingProfile({
-      ...machine,
-      arch: process.arch,
-      platform: process.platform,
-    })
-    const info = (id: EmbeddingProfileId) => {
-      const profile = EMBEDDING_PROFILES[id]
-      return {
-        name: profile.repo,
-        embeddingId: profile.embeddingId,
-        dimensions: profile.dimensions,
-        downloadMB: profile.downloadMB,
-        memoryMB: profile.memoryMB,
-      }
-    }
-    return {
-      profile: getDocumentMemory()?.embeddingSettings().profile ?? 'standard',
-      recommended: advice.profile,
-      ...(advice.limit ? { limit: advice.limit } : {}),
-      machine,
-      profiles: {
-        standard: info('standard'),
-        high: info('high'),
-      },
-    }
-  })
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setEmbeddingModel, (_event, profile: unknown) => {
-    if (!isEmbeddingProfileId(profile)) throw new Error('Invalid search model')
-    const memory = getDocumentMemory()
-    if (!memory) return { ok: false, requeued: 0 }
-    const result = memory.setEmbeddingProfile(profile)
     folderCounts.invalidate()
-    return result
+    return { ok: true, retried }
   })
-  const pdfPagesState = (pages: number): PdfPagesState => ({
-    pages,
-    default: DEFAULT_PDF_PAGES,
-    max: LARGE_PDF_PAGES,
-  })
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getPdfPages, (): PdfPagesState =>
-    pdfPagesState(getDocumentMemory()?.getPdfMaxPages() ?? DEFAULT_PDF_PAGES),
-  )
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setPdfPages, (_event, pages: unknown) => {
-    if (typeof pages !== 'number' || !Number.isFinite(pages)) throw new Error('Invalid page count')
-    const memory = getDocumentMemory()
-    if (!memory) return { ...pdfPagesState(DEFAULT_PDF_PAGES), requeued: 0 }
-    const result = memory.setPdfMaxPages(pages)
-    folderCounts.invalidate()
-    return { ...pdfPagesState(result.pages), requeued: result.requeued }
-  })
+
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.deferIndexFile, (_event, id: unknown) => {
-    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
-      throw new Error('Invalid document id')
-    return getDocumentMemory()?.deferDocument(id) ?? { ok: false, error: 'unavailable' }
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
+    const memory = getDocumentMemory()
+    const doc = memory?.store.documentById(id)
+    if (doc) memory?.deferDocument(doc.path)
+    return { ok: !!doc }
   })
+
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.stopIndexFile, async (_event, id: unknown) => {
-    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
-      throw new Error('Invalid document id')
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
     folderCounts.invalidate()
-    return (await getDocumentMemory()?.stopDocument(id)) ?? { ok: false, error: 'unavailable' }
+    const memory = getDocumentMemory()
+    const doc = memory?.store.documentById(id)
+    return doc ? (await memory?.stopDocument(doc.path)) ?? false : false
   })
-  // one file's "read this" button: read it now, and answer once it has been read (or has failed)
+
   ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, async (_event, id: unknown) => {
-    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
-      throw new Error('Invalid document id')
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
     folderCounts.invalidate()
-    const result = (await getDocumentMemory()?.readNowDocument(id)) ?? {
-      ok: false,
-      error: 'unavailable',
-    }
+    const memory = getDocumentMemory()
+    const doc = memory?.store.documentById(id)
+    const res = doc ? await memory?.readNowDocument(doc.path) : { ok: false, error: 'unavailable' }
     folderCounts.invalidate()
-    return result
+    return res
   })
+
   ipcMain.handle(HOME_CHANNELS.getIndexingActivity, (): HomeIndexingActivity => {
-    // Runs on the main thread for every renderer poll, so it does no database work of its own:
-    // scan state and pending/error counts are read live (in-memory or a one-row index count),
-    // and the folder chunk counts come from a stale-while-revalidate cache that refreshes
-    // off this call. The scan state and error count are folded into the cached counts live.
-    const folder = getFolderScan()?.status() ?? null
-    const documentMemory = getDocumentMemory()
-    const memory = documentMemory?.indexingActivityStatus()
-    const modelError =
-      memory?.modelState === 'error' ? shortCause(documentMemory?.lastIndexError()) : ''
-    const counts = documentMemory
-      ? folderCounts.get(ALL_FOLDERS, () => documentMemory.getLibraryIndexCounts())
-      : null
-    const policy = currentIndexingPolicy()
-    const cpuMode: 'gentle' | undefined =
-      !policy || (!policy.paused && policy.cpuShare < 1) ? 'gentle' : undefined
-    return {
-      folder,
-      progressScope: 'library',
-      memory: {
-        enabled: memory?.enabled ?? false,
-        ...(cpuMode ? { cpuMode } : {}),
-        modelState: memory?.modelState ?? 'not-loaded',
-        ...(memory?.modelProgress === undefined ? {} : { modelProgress: memory.modelProgress }),
-        pending: memory?.pending ?? 0,
-        errors: memory?.errors ?? 0,
-        ...(modelError ? { lastError: modelError } : {}),
-      },
-        folderProgress: counts
-          ? foldFolderProgress(counts, !folder?.running, folder?.running ? (folder.errors ?? 0) : 0)
-          : null,
-      }
-    })
-    let snapshotCache: { data: DocumentIndexSnapshot; expiresAt: number } | null = null
-    const SNAPSHOT_CACHE_TTL_MS = 1500
+    return getDocumentIndexSnapshot(snapshotCtx).activity
+  })
 
-    ipcMain.handle(
-      DOCUMENT_INDEX_CHANNELS.getDocumentIndexSnapshot,
-      (_event, forceRefresh?: boolean): DocumentIndexSnapshot => {
-        const now = Date.now()
-        if (!forceRefresh && snapshotCache && now < snapshotCache.expiresAt) {
-          return snapshotCache.data
-        }
+  // Fast 2s polling snapshot endpoint
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexSnapshot, (_event, forceRefresh?: boolean) => {
+    return getDocumentIndexSnapshot(snapshotCtx, forceRefresh)
+  })
 
-        const documentMemory = getDocumentMemory()
-        const folder = getFolderScan()?.status() ?? null
-        const memoryStatus = documentMemory?.status() ?? {
-          enabled: false,
-          modelState: 'not-loaded',
-          documents: 0,
-          chunks: 0,
-          vectors: 0,
-          pending: 0,
-          errors: 0,
-          dbPath: deps.dbPath(),
-          files: [],
-        }
-        const actMem = documentMemory?.indexingActivityStatus()
-        const modelError =
-          actMem?.modelState === 'error' ? shortCause(documentMemory?.lastIndexError()) : ''
-        const counts = documentMemory
-          ? folderCounts.get(ALL_FOLDERS, () => documentMemory.getLibraryIndexCounts())
-          : null
-        const policy = currentIndexingPolicy()
-        const cpuMode: 'gentle' | undefined =
-          !policy || (!policy.paused && policy.cpuShare < 1) ? 'gentle' : undefined
+  // Heavy diagnostics endpoint cached for 60s (INV-10)
+  ipcMain.handle('get-document-index-diagnostics', (_event, forceRefresh?: boolean) => {
+    return getDocumentIndexDiagnostics(snapshotCtx, forceRefresh)
+  })
 
-        const activity: HomeIndexingActivity = {
-          folder,
-          progressScope: 'library',
-          memory: {
-            enabled: actMem?.enabled ?? false,
-            ...(cpuMode ? { cpuMode } : {}),
-            modelState: actMem?.modelState ?? 'not-loaded',
-            ...(actMem?.modelProgress === undefined ? {} : { modelProgress: actMem.modelProgress }),
-            pending: actMem?.pending ?? 0,
-            errors: actMem?.errors ?? 0,
-            ...(modelError ? { lastError: modelError } : {}),
-          },
-          folderProgress: counts
-            ? foldFolderProgress(counts, !folder?.running, folder?.running ? (folder.errors ?? 0) : 0)
-            : null,
-        }
-
-        let issues: IndexIssueSummary = { total: 0, groups: [] }
-        try {
-          issues = reader().summary('*')
-        } catch {
-          // ignore
-        }
-
-        const nowState = documentMemory?.nowStatus() ?? {
-          extracting: [],
-          embedding: {},
-          positions: {},
-          pages: {},
-          queued: 0,
-          paused: true,
-        }
-
-        const storage = documentMemory?.getStorageDiagnostics() ?? {
-          activeDbSizeBytes: 0,
-          walSizeBytes: 0,
-          pageSize: 4096,
-          pageCount: 0,
-          freelistCount: 0,
-          estimatedReclaimableBytes: 0,
-          v2BackupSizeBytes: null,
-          schemaVersion: '3',
-          migrationStatus: 'none',
-          topOffendersByChunks: [],
-          topOffendersBySize: [],
-        }
-
-        const timing = getSqliteTimingSummary()
-        const eventLoop = getEventLoopMetrics()
-        const performance = {
-          eventLoop,
-          sqliteLatency: {
-            slowOperationCount: timing.slowOperations,
-            criticalOperations: timing.recentSlow
-              .filter((r) => r.severity === 'critical')
-              .slice(-10)
-              .map((r) => ({
-                operation: r.operation,
-                durationMs: r.durationMs,
-                timestamp: r.timestamp,
-              })),
-          },
-          paused: !policy || policy.paused,
-          cpuShare: policy?.cpuShare ?? 1,
-        }
-
-        const migration = documentMemory?.getMigrationDiagnostics() ?? {
-          activeEmbeddingSpace: 'standard',
-          state: 'complete',
-          completedChunks: 0,
-          totalChunks: 0,
-        }
-
-        const snapshot: DocumentIndexSnapshot = {
-          memory: memoryStatus,
-          activity,
-          mode: null,
-          issues,
-          now: nowState,
-          storage,
-          performance,
-          migration,
-          timestamp: now,
-        }
-
-        snapshotCache = {
-          data: snapshot,
-          expiresAt: now + SNAPSHOT_CACHE_TTL_MS,
-        }
-
-        return snapshot
-      },
-    )
-    return () => issueReader?.close()
-  }
+  return () => issueReader?.close()
+}
