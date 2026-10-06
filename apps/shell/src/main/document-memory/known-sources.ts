@@ -531,7 +531,8 @@ export class KnownSourcesManager {
           }
         }
       }
-      // Last desired state wins: nếu sau unregister mà source đã được bật lại
+      // Last desired state wins: if the source was re-enabled while
+      // unregister was pending, reconcile the latest generation.
       if (!this.closed && this.state[id] === true) {
         await this.reconcileOneSource(id, this.generationOf(id))
       }

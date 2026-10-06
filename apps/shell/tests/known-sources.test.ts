@@ -1001,6 +1001,83 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
 
       manager.close()
     })
+
+    it('KS-12 [P0-2b]: stale startup reconcile probe cannot re-enable a source after the user turns it off', async () => {
+      const docsDir = join(testDir, 'DocsStartupRaceKS12')
+      mkdirSync(docsDir, { recursive: true })
+
+      const startMock = vi.fn()
+      const unregisterMock = vi.fn().mockResolvedValue(true)
+
+      const mockScanner = {
+        start: startMock,
+        unregisterRoot: unregisterMock,
+        status: vi.fn().mockReturnValue({ running: false }),
+        folders: vi.fn().mockReturnValue([]),
+        isWaiting: vi.fn().mockReturnValue(false),
+        registrationState: vi.fn().mockReturnValue('none'),
+      }
+
+      const manager = new KnownSourcesManager({
+        settingsPath: () => settingsFile,
+        scanner: mockScanner as any,
+        getPath: (id) =>
+          id === 'documents'
+            ? docsDir
+            : join(testDir, id),
+        initialState: {
+          documents: true,
+          downloads: false,
+          desktop: false,
+        },
+        initialized: true,
+      })
+
+      let resolveStartupProbe!: (available: boolean) => void
+
+      const startupProbe = new Promise<boolean>((resolvePromise) => {
+        resolveStartupProbe = resolvePromise
+      })
+
+      const availabilitySpy = vi
+        .spyOn(manager, 'isPathAvailable')
+        .mockImplementationOnce(() => startupProbe)
+
+      // Startup reconciliation observes Documents as enabled and then blocks
+      // while checking whether its path is available.
+      const startupReconcile = manager.reconcileDesiredSources()
+
+      expect(availabilitySpy).toHaveBeenCalledWith(resolve(docsDir))
+      expect(startMock).not.toHaveBeenCalled()
+
+      // The user disables Documents while the old startup probe is still pending.
+      await manager.setKnownSearchSource('documents', false)
+
+      expect(unregisterMock).toHaveBeenCalledWith(
+        resolve(docsDir),
+        'known:documents',
+      )
+
+      expect(manager.getStatus('documents')).toEqual({
+        status: 'disabled',
+      })
+
+      // The stale startup probe now completes successfully.
+      // Its old generation must not be allowed to start the scanner.
+      resolveStartupProbe(true)
+
+      await startupReconcile
+
+      expect(startMock).not.toHaveBeenCalled()
+
+      // The latest desired state must still win after the stale async operation
+      // has fully settled.
+      expect(manager.getStatus('documents')).toEqual({
+        status: 'disabled',
+      })
+
+      manager.close()
+    })
   })
 })
 
