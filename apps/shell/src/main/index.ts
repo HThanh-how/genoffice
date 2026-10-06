@@ -6825,11 +6825,16 @@ app.whenReady().then(async () => {
   everything = createEverything(userDataDir)
   setOpeningConfig({ prefs: openingPrefs, customHtml: customOpeningHtml })
   const indexDbDir = resolveDbDir(userDataDir)
-  await ensureDocumentMemoryStorageReady(indexDbDir)
-  documentMemory = new DocumentMemoryManager(userDataDir, {
-    dbDir: indexDbDir,
-    externalNames: (query, limit) => everything!.search.search(query, limit),
-  })
+  const bootstrap = await ensureDocumentMemoryStorageReady(indexDbDir)
+  if (!bootstrap.ready) {
+    console.error('[document-memory] Critical: Storage bootstrap failed, entering fail-closed mode:', bootstrap.error)
+    documentMemory = null
+  } else {
+    documentMemory = new DocumentMemoryManager(userDataDir, {
+      dbDir: indexDbDir,
+      externalNames: (query, limit) => everything!.search.search(query, limit),
+    })
+  }
   startLegacyConverter()
   void listLegacyRecovery(app.getPath('userData')).catch((error) =>
     console.warn('[shell] legacy recovery cleanup failed:', error),

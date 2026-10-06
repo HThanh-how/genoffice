@@ -1,5 +1,19 @@
-import { existsSync, renameSync, unlinkSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { verifyDatabaseIntegrity } from './logical-verifier'
+import { enforceBackupRetentionPolicy } from './backup-retention'
+
+export const MIGRATION_MANIFEST_FILENAME = 'document-memory.migration-state.json'
+
+export type CutoverPhase = 'source-backed-up' | 'temp-renamed-to-source' | 'completed'
+
+export interface CutoverStateManifest {
+  phase: CutoverPhase
+  sourceDbPath: string
+  tempPath: string
+  backupPath: string
+  timestamp: number
+}
 
 export function cleanWalFiles(path: string): void {
   const wal = `${path}-wal`
@@ -58,11 +72,108 @@ function safeUnlinkWithRetry(targetPath: string, maxAttempts = 5): void {
   }
 }
 
+export function getManifestPath(sourcePathOrDir: string): string {
+  const dir = sourcePathOrDir.endsWith('.db') ? dirname(sourcePathOrDir) : sourcePathOrDir
+  return join(dir, MIGRATION_MANIFEST_FILENAME)
+}
+
+function writeManifest(manifestPath: string, manifest: CutoverStateManifest): void {
+  try {
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
+  } catch {
+    // Best-effort manifest persistence
+  }
+}
+
+function removeManifest(manifestPath: string): void {
+  try {
+    if (existsSync(manifestPath)) unlinkSync(manifestPath)
+  } catch {
+    // ignore
+  }
+}
+
 /**
- * Executes file-system atomic cutover with safe automatic rollback (INV-09, INV-12).
+ * Crash recovery handler: inspects migration-state.json and automatically
+ * restores consistency if an abrupt process termination occurred during cutover (BEH-16).
+ */
+export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
+  const manifestPath = getManifestPath(sourcePathOrDir)
+  if (!existsSync(manifestPath)) return false
+
+  let manifest: CutoverStateManifest | null = null
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as CutoverStateManifest
+  } catch {
+    removeManifest(manifestPath)
+    return false
+  }
+
+  if (!manifest) return false
+
+  const { phase, sourceDbPath, tempPath, backupPath } = manifest
+
+  if (phase === 'source-backed-up') {
+    // Abrupt termination after source was renamed to backup, but before temp became source.
+    // Must restore backup to source.
+    if (existsSync(backupPath)) {
+      cleanWalFiles(sourceDbPath)
+      cleanWalFiles(backupPath)
+      if (existsSync(sourceDbPath)) {
+        try { safeUnlinkWithRetry(sourceDbPath) } catch { /* ignore */ }
+      }
+      safeRenameWithRetry(backupPath, sourceDbPath)
+    }
+    if (existsSync(tempPath)) {
+      cleanWalFiles(tempPath)
+      try { safeUnlinkWithRetry(tempPath) } catch { /* ignore */ }
+    }
+    removeManifest(manifestPath)
+    return true
+  }
+
+  if (phase === 'temp-renamed-to-source') {
+    // Temp was already renamed to source. Validate its integrity.
+    if (existsSync(sourceDbPath)) {
+      const integrity = verifyDatabaseIntegrity(sourceDbPath)
+      if (integrity.ok) {
+        removeManifest(manifestPath)
+        enforceBackupRetentionPolicy(sourceDbPath)
+        return true
+      }
+    }
+    // Corrupted state: restore backup back to source
+    if (existsSync(backupPath)) {
+      cleanWalFiles(sourceDbPath)
+      cleanWalFiles(backupPath)
+      if (existsSync(sourceDbPath)) {
+        try { safeUnlinkWithRetry(sourceDbPath) } catch { /* ignore */ }
+      }
+      safeRenameWithRetry(backupPath, sourceDbPath)
+    }
+    if (existsSync(tempPath)) {
+      cleanWalFiles(tempPath)
+      try { safeUnlinkWithRetry(tempPath) } catch { /* ignore */ }
+    }
+    removeManifest(manifestPath)
+    return true
+  }
+
+  if (phase === 'completed') {
+    removeManifest(manifestPath)
+    return true
+  }
+
+  removeManifest(manifestPath)
+  return false
+}
+
+/**
+ * Executes file-system atomic cutover with State Machine Manifest and safe automatic rollback (BEH-16).
  */
 export function performAtomicCutover(options: CutoverOptions): void {
   const { resolvedSource, tempPath, backupPath, testFailureInjectionPoint, onRollback } = options
+  const manifestPath = getManifestPath(resolvedSource)
 
   cleanWalFiles(resolvedSource)
   cleanWalFiles(tempPath)
@@ -72,9 +183,23 @@ export function performAtomicCutover(options: CutoverOptions): void {
     // 1. Rename source -> backup
     safeRenameWithRetry(resolvedSource, backupPath)
     backupCreated = true
+    writeManifest(manifestPath, {
+      phase: 'source-backed-up',
+      sourceDbPath: resolvedSource,
+      tempPath,
+      backupPath,
+      timestamp: Date.now(),
+    })
 
     // 2. Rename temp -> source
     safeRenameWithRetry(tempPath, resolvedSource)
+    writeManifest(manifestPath, {
+      phase: 'temp-renamed-to-source',
+      sourceDbPath: resolvedSource,
+      tempPath,
+      backupPath,
+      timestamp: Date.now(),
+    })
 
     // Test failure injection
     if (testFailureInjectionPoint === 'verification-failed') {
@@ -88,6 +213,19 @@ export function performAtomicCutover(options: CutoverOptions): void {
         `Integrity verification failed post-cutover: integrity=${verification.integrity}, fkErrors=${verification.foreignKeyErrors.length}`,
       )
     }
+
+    // 4. Mark completed and purge manifest
+    writeManifest(manifestPath, {
+      phase: 'completed',
+      sourceDbPath: resolvedSource,
+      tempPath,
+      backupPath,
+      timestamp: Date.now(),
+    })
+    removeManifest(manifestPath)
+
+    // Enforce backup retention policy
+    enforceBackupRetentionPolicy(resolvedSource)
   } catch (error) {
     onRollback?.()
 
@@ -112,6 +250,8 @@ export function performAtomicCutover(options: CutoverOptions): void {
         // ignore
       }
     }
+
+    removeManifest(manifestPath)
 
     throw new Error(
       `V2 to V3 migration failed and was safely rolled back. Reason: ${(error as Error).message}`,

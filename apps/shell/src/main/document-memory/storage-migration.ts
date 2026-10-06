@@ -1,11 +1,12 @@
 import { DatabaseSync } from 'node:sqlite'
 import { existsSync, unlinkSync } from 'node:fs'
-import { basename, resolve } from 'node:path'
+import { basename, dirname, resolve } from 'node:path'
 import { CANONICAL_SCHEMA_V3, applyCanonicalSchemaV3 } from './storage/schema-v3'
 import { OcrSidecar } from './ocr-sidecar'
 import { evaluateRetentionPolicy } from './storage/migration/retention-policy'
 import { verifyDatabaseIntegrity, verifyLogicalConsistency } from './storage/migration/logical-verifier'
 import { performAtomicCutover, cleanWalFiles } from './storage/migration/cutover'
+import { readActiveEmbeddingConfig } from './storage/embedding-settings'
 import {
   copyEmbeddingSpaces,
   prepareMigrationStatements,
@@ -21,6 +22,7 @@ export interface StorageMigrationOptions {
   tempDbPath?: string
   backupDbPath?: string
   activeSpaceId?: string
+  activeDimensions?: number
   onProgress?: (progress: StorageMigrationProgress) => void
   testFailureInjectionPoint?: 'before-cutover' | 'corrupt-temp' | 'verification-failed'
 }
@@ -48,11 +50,19 @@ export interface StorageMigrationResult {
   verified: boolean
 }
 
+function resolveActiveSpace(sourceDb: DatabaseSync, dir: string, opts: StorageMigrationOptions) {
+  if (opts.activeSpaceId && opts.activeDimensions) return { spaceId: opts.activeSpaceId, dims: opts.activeDimensions }
+  const cfg = readActiveEmbeddingConfig(dir)
+  const tables = (sourceDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((t) => t.name)
+  if (tables.includes('embedding_spaces')) {
+    const s = sourceDb.prepare('SELECT id, dimensions FROM embedding_spaces ORDER BY created_at ASC LIMIT 1').get() as any
+    if (s?.id && s?.dimensions) return { spaceId: opts.activeSpaceId ?? s.id, dims: opts.activeDimensions ?? s.dimensions }
+  }
+  return { spaceId: opts.activeSpaceId ?? cfg.activeSpaceId, dims: opts.activeDimensions ?? cfg.activeDimensions }
+}
+
 /** Executes V2 to V3 storage migration runner (INV-01, INV-02, INV-08, INV-09). */
-export function migrateStorageV2ToV3(
-  sourceDbPath: string,
-  options: StorageMigrationOptions = {},
-): StorageMigrationResult {
+export function migrateStorageV2ToV3(sourceDbPath: string, options: StorageMigrationOptions = {}): StorageMigrationResult {
   const startTime = performance.now()
   const resolvedSource = resolve(sourceDbPath)
   const tempPath = resolve(options.tempDbPath ?? `${resolvedSource}.v3.tmp`)
@@ -60,11 +70,7 @@ export function migrateStorageV2ToV3(
   const pageSize = options.pageSize ?? 500
 
   if (!existsSync(resolvedSource)) throw new Error(`Source database does not exist: ${resolvedSource}`)
-
-  if (existsSync(tempPath)) {
-    cleanWalFiles(tempPath)
-    try { unlinkSync(tempPath) } catch { /* ignore */ }
-  }
+  if (existsSync(tempPath)) { cleanWalFiles(tempPath); try { unlinkSync(tempPath) } catch { /* ignore */ } }
 
   const tempDb = new DatabaseSync(tempPath)
   tempDb.exec('PRAGMA busy_timeout = 5000; PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;')
@@ -73,20 +79,18 @@ export function migrateStorageV2ToV3(
 
   const sourceDb = new DatabaseSync(resolvedSource)
   sourceDb.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;')
+  const { spaceId: activeSpaceId, dims: activeDimensions } = resolveActiveSpace(sourceDb, dirname(resolvedSource), options)
 
   let totalProcessed = 0, totalCopied = 0, totalDropped = 0, totalChunks = 0, totalEmbeddings = 0
-
   try {
     options.onProgress?.({ phase: 'schema', documentsProcessed: 0, documentsCopied: 0, documentsDropped: 0, chunksCopied: 0, embeddingsCopied: 0 })
     copyEmbeddingSpaces(sourceDb, tempDb)
-
     const stmts = prepareMigrationStatements(sourceDb, tempDb)
     let lastId = 0, hasMore = true
 
     while (hasMore) {
       const pageDocs = sourceDb.prepare('SELECT * FROM documents WHERE id > ? ORDER BY id ASC LIMIT ?').all(lastId, pageSize) as Array<any>
       if (pageDocs.length === 0) { hasMore = false; break }
-
       tempDb.exec('BEGIN IMMEDIATE')
       try {
         for (const doc of pageDocs) {
@@ -104,7 +108,7 @@ export function migrateStorageV2ToV3(
           )
           if (!decision.shouldCopyChunksAndEmbeddings) continue
 
-          const counts = copyDocumentActiveChunks(sourceDb, tempDb, doc, stmts)
+          const counts = copyDocumentActiveChunks(sourceDb, tempDb, doc, stmts, activeSpaceId, activeDimensions)
           totalChunks += counts.chunks
           totalEmbeddings += counts.embeddings
           copyOcrData(sourceDb, doc.path, stmts)
@@ -114,24 +118,18 @@ export function migrateStorageV2ToV3(
         tempDb.exec('ROLLBACK')
         throw err
       }
-
       options.onProgress?.({ phase: 'documents', documentsProcessed: totalProcessed, documentsCopied: totalCopied, documentsDropped: totalDropped, chunksCopied: totalChunks, embeddingsCopied: totalEmbeddings })
     }
 
     copyAnnMetadata(sourceDb, tempDb)
     tempDb.prepare("INSERT OR REPLACE INTO document_memory_meta (key, value) VALUES ('schema_version', '3'), ('name_fts_version', '1')").run()
-
     if (options.testFailureInjectionPoint === 'before-cutover') throw new Error('Test injected failure before cutover')
     if (options.testFailureInjectionPoint === 'corrupt-temp') tempDb.exec('DROP TABLE documents;')
 
     const integrity = verifyDatabaseIntegrity(tempDb)
-    if (!integrity.ok) {
-      throw new Error(`Integrity verification failed before cutover: integrity=${integrity.integrity}`)
-    }
+    if (!integrity.ok) throw new Error(`Integrity verification failed before cutover: integrity=${integrity.integrity}`)
     const logical = verifyLogicalConsistency(tempDb, totalCopied, totalChunks)
-    if (!logical.ok) {
-      throw new Error(`Logical consistency verification failed before cutover: ${logical.reasons.join('; ')}`)
-    }
+    if (!logical.ok) throw new Error(`Logical consistency verification failed before cutover: ${logical.reasons.join('; ')}`)
 
     options.onProgress?.({ phase: 'cutover', documentsProcessed: totalProcessed, documentsCopied: totalCopied, documentsDropped: totalDropped, chunksCopied: totalChunks, embeddingsCopied: totalEmbeddings })
     sourceDb.exec('PRAGMA wal_checkpoint(TRUNCATE);')
@@ -153,4 +151,3 @@ export function migrateStorageV2ToV3(
     chunksCopied: totalChunks, embeddingsCopied: totalEmbeddings, durationMs: Math.round(performance.now() - startTime), verified: true,
   }
 }
-

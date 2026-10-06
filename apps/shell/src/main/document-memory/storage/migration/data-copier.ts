@@ -30,7 +30,14 @@ export function prepareMigrationStatements(sourceDb: DatabaseSync, tempDb: Datab
   }
 }
 
-export function copyDocumentActiveChunks(sourceDb: DatabaseSync, tempDb: DatabaseSync, doc: any, stmts: ReturnType<typeof prepareMigrationStatements>): { chunks: number; embeddings: number } {
+export function copyDocumentActiveChunks(
+  sourceDb: DatabaseSync,
+  tempDb: DatabaseSync,
+  doc: any,
+  stmts: ReturnType<typeof prepareMigrationStatements>,
+  activeSpaceId: string,
+  activeDimensions: number,
+): { chunks: number; embeddings: number } {
   let chunks: any[] = []
   const hasChunkSets = stmts.sTables.includes('chunk_sets')
   if (!stmts.sTables.includes('chunks')) return { chunks: 0, embeddings: 0 }
@@ -49,12 +56,18 @@ export function copyDocumentActiveChunks(sourceDb: DatabaseSync, tempDb: Databas
     stmts.insertChunk.run(c.id, doc.id, c.chunk_set_id ?? null, c.ordinal, c.text, c.location)
     stmts.insertFts.run(c.id, documentIndexFields(c.text).searchText)
 
-    let vec: Uint8Array | null = null, dim = 0, space = doc.embedding_model ?? LEGACY_E5_EMBEDDING_ID
+    let vec: Uint8Array | null = null, dim = 0, space = activeSpaceId
     if (stmts.sTables.includes('chunk_embeddings')) {
-      const e = sourceDb.prepare('SELECT space_id, vector, vector_dim FROM chunk_embeddings WHERE chunk_id = ?').get(c.id) as any
-      if (e?.vector) { vec = e.vector; dim = e.vector_dim; space = e.space_id }
+      const e = sourceDb.prepare('SELECT space_id, vector, vector_dim FROM chunk_embeddings WHERE chunk_id = ? AND space_id = ?').get(c.id, activeSpaceId) as any
+      if (e?.vector) { vec = e.vector; dim = e.vector_dim ?? activeDimensions; space = e.space_id }
     }
-    if (!vec && c.vector) { vec = c.vector; dim = c.vector_dim ?? (c.vector.byteLength / 4) }
+    if (!vec && c.vector) {
+      const legacyDim = c.vector_dim ?? (c.vector.byteLength / 4)
+      if (legacyDim === activeDimensions || (!stmts.sTables.includes('chunk_embeddings') && !doc.embedding_model)) {
+        vec = c.vector
+        dim = legacyDim
+      }
+    }
     if (vec && dim > 0) {
       stmts.ensureEmbeddingSpace.run(space, space, dim)
       stmts.insertEmbedding.run(c.id, space, vec, dim)

@@ -2,6 +2,8 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { inspectDatabaseVersion, type StorageVersionReport } from './storage/schema-inspector'
 import { migrateStorageV2ToV3, type StorageMigrationResult } from './storage-migration'
+import { recoverInterruptedCutover } from './storage/migration/cutover'
+import { readActiveEmbeddingConfig } from './storage/embedding-settings'
 
 export interface BootstrapResult {
   ready: boolean
@@ -20,6 +22,16 @@ export interface BootstrapResult {
 export async function ensureDocumentMemoryStorageReady(dbDir: string): Promise<BootstrapResult> {
   const dbPath = join(dbDir, 'document-memory.db')
 
+  // Check and recover from any interrupted cutover state first (BEH-16)
+  try {
+    const recovered = recoverInterruptedCutover(dbDir)
+    if (recovered) {
+      console.info('[document-memory-bootstrap] Recovered from interrupted cutover state.')
+    }
+  } catch (recoverErr) {
+    console.warn('[document-memory-bootstrap] Interrupted cutover recovery warning:', recoverErr)
+  }
+
   if (!existsSync(dbPath)) {
     return { ready: true, migrated: false }
   }
@@ -29,13 +41,20 @@ export async function ensureDocumentMemoryStorageReady(dbDir: string): Promise<B
     return { ready: true, migrated: false, report }
   }
 
+  // Read active embedding configuration independently before database access (BEH-14)
+  const activeConfig = readActiveEmbeddingConfig(dbDir)
+
   console.info('[document-memory-bootstrap] V2 storage detected. Starting verified V2->V3 migration...', {
     reasons: report.reasons,
     autoVacuum: report.autoVacuum,
+    activeSpaceId: activeConfig.activeSpaceId,
   })
 
   try {
-    const migrationResult = migrateStorageV2ToV3(dbPath)
+    const migrationResult = migrateStorageV2ToV3(dbPath, {
+      activeSpaceId: activeConfig.activeSpaceId,
+      activeDimensions: activeConfig.activeDimensions,
+    })
     console.info('[document-memory-bootstrap] V2->V3 storage migration completed successfully.', {
       documentsCopied: migrationResult.documentsCopied,
       chunksCopied: migrationResult.chunksCopied,
