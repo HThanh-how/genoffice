@@ -68,7 +68,7 @@ function fakeState(
   } as unknown as LazyWorkbookState
 }
 
-function createMockContext(state: LazyWorkbookState | null) {
+function createMockContext(state: LazyWorkbookState | null, model?: object) {
   const messages: string[] = []
   const usedGrid = [
     ['Col1', 'Col2'],
@@ -94,9 +94,11 @@ function createMockContext(state: LazyWorkbookState | null) {
       getCellStyleData: () => null,
     }),
   }
+  const workbookModel = model ?? {}
   const workbook = {
     getActiveSheet: () => worksheet,
     getSheetBySheetId: (_id: string) => worksheet,
+    getWorkbook: () => workbookModel,
   }
   const runtime = {
     univerAPI: {
@@ -114,7 +116,7 @@ function createMockContext(state: LazyWorkbookState | null) {
     runOps: vi.fn(),
   }
 
-  return { ctx, messages, worksheet, runtime }
+  return { ctx, messages, worksheet, runtime, workbook }
 }
 
 describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
@@ -1083,5 +1085,144 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
     const calls = exportPdfMock.mock.calls
     expect(calls.some(([arg]) => !('outPath' in arg))).toBe(true)
     expect(calls.some(([arg]) => arg.outPath === 'D:/headless.pdf')).toBe(true)
+  })
+
+  it("PRINT-41: Workbook A GUI PDF pending -> switch B -> Export PDF B does NOT receive A's promise/result", async () => {
+    const modelA = { id: 'wb-a' }
+    const modelB = { id: 'wb-b' }
+    const { ctx: ctxA } = createMockContext(null, modelA)
+    const { ctx: ctxB } = createMockContext(null, modelB)
+
+    let resolveExportA!: (val: any) => void
+    const exportPromiseA = new Promise((resolve) => {
+      resolveExportA = resolve
+    })
+    exportPdfMock.mockImplementationOnce(() => exportPromiseA)
+
+    const pendingExportA = handleExportPdf(ctxA)
+    const resultB = await handleExportPdf(ctxB)
+
+    expect(resultB).toBe(false)
+
+    resolveExportA({ canceled: false, path: '/tmp/wb-a.pdf' })
+    const resultA = await pendingExportA
+    expect(resultA).toBe(true)
+  })
+
+  it('PRINT-42: Null-state workbook A Print pending -> replace with null-state workbook B (same sheetId) -> Print B does NOT dedup with A', async () => {
+    const modelA = { id: 'null-wb-a' }
+    const modelB = { id: 'null-wb-b' }
+    const { ctx: ctxA } = createMockContext(null, modelA)
+    const { ctx: ctxB } = createMockContext(null, modelB)
+
+    let resolvePrintA!: (val: any) => void
+    const printPromiseA = new Promise((resolve) => {
+      resolvePrintA = resolve
+    })
+    printWorkbookMock.mockImplementationOnce(() => printPromiseA)
+
+    const pendingPrintA = handlePrint(ctxA)
+    const pendingPrintB = handlePrint(ctxB)
+
+    await new Promise((r) => setTimeout(r, 20))
+
+    expect(printWorkbookMock).toHaveBeenCalledTimes(2)
+
+    resolvePrintA({ ok: true })
+    const [resultA, resultB] = await Promise.all([pendingPrintA, pendingPrintB])
+    expect(resultA).toBe(true)
+    expect(resultB).toBe(true)
+  })
+
+  it('PRINT-43: Null-state A building payload -> replace with null-state B (same sheetId) -> A returns stale-workbook, does not print B under action A', async () => {
+    const modelA = { id: 'null-wb-a' }
+    const modelB = { id: 'null-wb-b' }
+    const {
+      ctx: ctxA,
+      messages: messagesA,
+      runtime,
+      workbook: workbookA,
+    } = createMockContext(null, modelA)
+    const { workbook: workbookB } = createMockContext(null, modelB)
+
+    let activeWorkbook: any = workbookA
+    vi.spyOn(runtime.univerAPI, 'getActiveWorkbook').mockImplementation(() => activeWorkbook)
+
+    let switched = false
+    const origGetSheetId = ctxA.univerRef
+      .current!.univerAPI.getActiveWorkbook()!
+      .getActiveSheet().getSheetId
+    vi.spyOn(
+      ctxA.univerRef.current!.univerAPI.getActiveWorkbook()!.getActiveSheet(),
+      'getSheetId',
+    ).mockImplementation(() => {
+      if (!switched) {
+        switched = true
+        // Active workbook is replaced by workbook B during A's payload assembly
+        activeWorkbook = workbookB
+      }
+      return origGetSheetId()
+    })
+
+    const printed = await handlePrint(ctxA)
+    expect(printed).toBe(false)
+    expect(printWorkbookMock).not.toHaveBeenCalled()
+    expect(messagesA).toContain(t('appPrintCanceled'))
+  })
+
+  it("PRINT-44: Same destination, different workbook targets run distinct exports and do not return A's promise as B", async () => {
+    const modelA = { id: 'wb-a' }
+    const modelB = { id: 'wb-b' }
+    const { ctx: ctxA } = createMockContext(null, modelA)
+    const { ctx: ctxB } = createMockContext(null, modelB)
+
+    exportPdfMock.mockImplementation(async (payload: any) => {
+      await new Promise((r) => setTimeout(r, 20))
+      return { canceled: false, path: payload.outPath }
+    })
+
+    const destPath = 'D:/report.pdf'
+    const [resultA, resultB] = await Promise.all([
+      handleExportPdf(ctxA, destPath),
+      handleExportPdf(ctxB, destPath),
+    ])
+
+    expect(resultA).toBe(true)
+    expect(resultB).toBe(true)
+    expect(exportPdfMock).toHaveBeenCalledTimes(2)
+    expect(exportPdfMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ outPath: destPath }))
+    expect(exportPdfMock).toHaveBeenNthCalledWith(2, expect.objectContaining({ outPath: destPath }))
+  })
+
+  it("PRINT-45: Case-sensitive destinations ('/tmp/A.pdf' vs '/tmp/a.pdf') trigger distinct headless exports", async () => {
+    const { ctx } = createMockContext(null)
+
+    exportPdfMock.mockImplementation(async (payload: any) => {
+      await new Promise((r) => setTimeout(r, 20))
+      return { canceled: false, path: payload.outPath }
+    })
+
+    const [result1, result2] = await Promise.all([
+      handleExportPdf(ctx, '/tmp/A.pdf'),
+      handleExportPdf(ctx, '/tmp/a.pdf'),
+    ])
+
+    expect(result1).toBe(true)
+    expect(result2).toBe(true)
+    expect(exportPdfMock).toHaveBeenCalledTimes(2)
+    const calledPaths = exportPdfMock.mock.calls.map(([arg]) => arg.outPath)
+    expect(calledPaths).toContain('/tmp/A.pdf')
+    expect(calledPaths).toContain('/tmp/a.pdf')
+  })
+
+  it('PRINT-46: outPath with empty string or whitespace is explicitly rejected without IPC exportPdf call', async () => {
+    const { ctx } = createMockContext(null)
+
+    const resultEmpty = await handleExportPdf(ctx, '')
+    const resultWhitespace = await handleExportPdf(ctx, '   ')
+
+    expect(resultEmpty).toBe(false)
+    expect(resultWhitespace).toBe(false)
+    expect(exportPdfMock).not.toHaveBeenCalled()
   })
 })

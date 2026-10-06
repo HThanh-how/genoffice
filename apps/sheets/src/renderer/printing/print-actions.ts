@@ -1,25 +1,41 @@
-import type { LazyWorkbookState } from '../univer-state'
 import { t } from '../i18n/locale'
 import { buildActiveSheetPrintPayload } from './print-payload'
 import type { PrintContext, WorkbookFullLoadPurpose } from './types'
 import { needsWorkbookFullLoad } from './workbook-full-load'
 
-const inFlightPrintActions = new WeakMap<LazyWorkbookState, Promise<boolean>>()
-let inFlightPrintActionNullState: Promise<boolean> | null = null
+export type PrintTargetToken = object
 
-let inFlightPdfDialog: Promise<boolean> | null = null
-const inFlightHeadlessExports = new Map<string, Promise<boolean>>()
+export function printTarget(ctx: PrintContext): PrintTargetToken | null {
+  const workbook = ctx.univerRef.current?.univerAPI.getActiveWorkbook()
+  return (
+    (workbook?.getWorkbook?.() as PrintTargetToken | undefined) ??
+    (workbook as unknown as PrintTargetToken | undefined) ??
+    null
+  )
+}
+
+const inFlightPrint = new WeakMap<PrintTargetToken, Promise<boolean>>()
+const inFlightPdfForTarget = new WeakMap<PrintTargetToken, Promise<boolean>>()
+let activePdfDialogTarget: PrintTargetToken | null = null
+const inFlightHeadless = new WeakMap<PrintTargetToken, Map<string, Promise<boolean>>>()
 
 export function pdfExportPurpose(outPath?: string): WorkbookFullLoadPurpose {
   return outPath === undefined ? 'pdf-export' : 'headless-export'
 }
 
 export async function handlePrint(ctx: PrintContext): Promise<boolean> {
-  const state = ctx.lazyWorkbookRef.current
-  const existing = state !== null ? inFlightPrintActions.get(state) : inFlightPrintActionNullState
+  const target = printTarget(ctx)
+  if (!target) {
+    ctx.setMessage(t('appActiveSheetUnavailable'))
+    return false
+  }
+
+  const existing = inFlightPrint.get(target)
   if (existing) {
     return existing
   }
+
+  const state = ctx.lazyWorkbookRef.current
 
   const actionPromise = (async (): Promise<boolean> => {
     try {
@@ -62,42 +78,53 @@ export async function handlePrint(ctx: PrintContext): Promise<boolean> {
     }
   })()
 
-  if (state !== null) {
-    inFlightPrintActions.set(state, actionPromise)
-  } else {
-    inFlightPrintActionNullState = actionPromise
-  }
+  inFlightPrint.set(target, actionPromise)
 
   try {
     return await actionPromise
   } finally {
-    if (state !== null) {
-      if (inFlightPrintActions.get(state) === actionPromise) {
-        inFlightPrintActions.delete(state)
-      }
-    } else {
-      if (inFlightPrintActionNullState === actionPromise) {
-        inFlightPrintActionNullState = null
-      }
+    if (inFlightPrint.get(target) === actionPromise) {
+      inFlightPrint.delete(target)
     }
   }
 }
 
 export async function handleExportPdf(ctx: PrintContext, outPath?: string): Promise<boolean> {
-  const state = ctx.lazyWorkbookRef.current
-  const normalizedPath = outPath !== undefined ? outPath.trim().toLowerCase() : undefined
+  if (outPath !== undefined && outPath.trim().length === 0) {
+    return false
+  }
+
+  const target = printTarget(ctx)
+  if (!target) {
+    ctx.setMessage(t('appActiveSheetUnavailable'))
+    return false
+  }
+
+  const pathKey = outPath !== undefined ? outPath.trim() : undefined
+  let targetMap: Map<string, Promise<boolean>> | undefined
 
   if (outPath === undefined) {
-    if (inFlightPdfDialog) {
-      return inFlightPdfDialog
+    const existing = inFlightPdfForTarget.get(target)
+    if (existing) {
+      return existing
+    }
+    if (activePdfDialogTarget !== null && activePdfDialogTarget !== target) {
+      ctx.setMessage(t('appPdfExportFailed'))
+      return false
     }
   } else {
-    const existing = inFlightHeadlessExports.get(normalizedPath!)
+    targetMap = inFlightHeadless.get(target)
+    if (!targetMap) {
+      targetMap = new Map()
+      inFlightHeadless.set(target, targetMap)
+    }
+    const existing = targetMap.get(pathKey!)
     if (existing) {
       return existing
     }
   }
 
+  const state = ctx.lazyWorkbookRef.current
   const purpose = pdfExportPurpose(outPath)
 
   const actionPromise = (async (): Promise<boolean> => {
@@ -143,21 +170,26 @@ export async function handleExportPdf(ctx: PrintContext, outPath?: string): Prom
   })()
 
   if (outPath === undefined) {
-    inFlightPdfDialog = actionPromise
+    inFlightPdfForTarget.set(target, actionPromise)
+    activePdfDialogTarget = target
   } else {
-    inFlightHeadlessExports.set(normalizedPath!, actionPromise)
+    targetMap!.set(pathKey!, actionPromise)
   }
 
   try {
     return await actionPromise
   } finally {
     if (outPath === undefined) {
-      if (inFlightPdfDialog === actionPromise) {
-        inFlightPdfDialog = null
+      if (inFlightPdfForTarget.get(target) === actionPromise) {
+        inFlightPdfForTarget.delete(target)
+      }
+      if (activePdfDialogTarget === target) {
+        activePdfDialogTarget = null
       }
     } else {
-      if (inFlightHeadlessExports.get(normalizedPath!) === actionPromise) {
-        inFlightHeadlessExports.delete(normalizedPath!)
+      const currentTargetMap = inFlightHeadless.get(target)
+      if (currentTargetMap?.get(pathKey!) === actionPromise) {
+        currentTargetMap.delete(pathKey!)
       }
     }
   }

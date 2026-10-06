@@ -15,15 +15,23 @@ import { DEFAULT_FULL_LOAD_TIMEOUT_MS, ensureWorkbookFullyLoaded } from './workb
 function isPrintTargetCurrent(
   ctx: PrintContext,
   expectedState: LazyWorkbookState | null,
+  expectedWorkbookModel: object | null,
   expectedSheetId: string,
 ): boolean {
   if (ctx.lazyWorkbookRef.current !== expectedState) {
     return false
   }
-  const currentSheetId = ctx.univerRef.current?.univerAPI
-    .getActiveWorkbook()
-    ?.getActiveSheet()
-    ?.getSheetId()
+  const currentWorkbook = ctx.univerRef.current?.univerAPI.getActiveWorkbook()
+  if (!currentWorkbook) {
+    return false
+  }
+  const currentModel =
+    (currentWorkbook.getWorkbook?.() as object | undefined) ??
+    (currentWorkbook as unknown as object)
+  if (currentModel !== expectedWorkbookModel) {
+    return false
+  }
+  const currentSheetId = currentWorkbook.getActiveSheet()?.getSheetId()
   return currentSheetId === expectedSheetId
 }
 
@@ -49,10 +57,12 @@ export async function buildActiveSheetPrintPayload(
   const runtime = ctx.univerRef.current
   const workbook = runtime?.univerAPI.getActiveWorkbook()
   const worksheet = workbook?.getActiveSheet()
-  if (!runtime || !worksheet) {
+  if (!runtime || !workbook || !worksheet) {
     return { status: 'active-sheet-unavailable' }
   }
 
+  const expectedWorkbookModel =
+    (workbook.getWorkbook?.() as object | undefined) ?? (workbook as unknown as object)
   const expectedSheetId = worksheet.getSheetId()
   const journal = expectedState?.editJournal.pageSetup.get(expectedSheetId) ?? {}
   const fileSetup = expectedState?.sheetFilePageSetups.get(expectedSheetId) ?? null
@@ -71,17 +81,17 @@ export async function buildActiveSheetPrintPayload(
     ? await loadHeaderFooterPictures(expectedState.file.sessionId, setup.headerFooterPictures)
     : new Map<string, HeaderFooterPictureImage>()
 
-  if (!isPrintTargetCurrent(ctx, expectedState, expectedSheetId)) {
+  if (!isPrintTargetCurrent(ctx, expectedState, expectedWorkbookModel, expectedSheetId)) {
     return { status: 'stale-workbook' }
   }
 
   const framesResult = await settledVisualFrames(ctx, expectedState, expectedSheetId)
 
-  if (!isPrintTargetCurrent(ctx, expectedState, expectedSheetId)) {
+  if (!isPrintTargetCurrent(ctx, expectedState, expectedWorkbookModel, expectedSheetId)) {
     return { status: 'stale-workbook' }
   }
 
-  if (ctx.lazyWorkbookRef.current !== expectedState) {
+  if (!isPrintTargetCurrent(ctx, expectedState, expectedWorkbookModel, expectedSheetId)) {
     return { status: 'stale-workbook' }
   }
 
