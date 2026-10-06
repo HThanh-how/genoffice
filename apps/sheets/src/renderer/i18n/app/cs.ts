@@ -533,6 +533,13 @@ export const cs = {
   appPrintCanceled: 'Tisk zrušen.',
   appPrintFailed: 'Nelze tisknout.',
   appPrintNeedsFullLoad: 'Tisk vyžaduje úplné načtení sešitu – počkejte na dokončení načítání.',
+  appPrintLoadingWorkbook: 'Načítání sešitu pro tisk…',
+  appPrintWorkbookTooLarge: 'Sešit je příliš velký na to, aby jej bylo možné plně načíst pro tisk.',
+  appPrintLoadTimedOut: 'Vypršel časový limit načítání sešitu pro tisk.',
+  appPdfLoadingWorkbook: 'Načítání sešitu pro export do PDF…',
+  appPdfWorkbookTooLarge:
+    'Sešit je příliš velký na to, aby jej bylo možné plně načíst pro export do PDF.',
+  appPdfLoadTimedOut: 'Vypršel časový limit načítání sešitu pro export do PDF.',
   appCsvExportNeedsFullLoad:
     'Export do CSV vyžaduje plně načtený sešit — počkejte na dokončení načítání.',
   appCsvExportTooLarge: 'List je příliš velký na export do CSV.',

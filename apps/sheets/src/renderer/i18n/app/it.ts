@@ -562,6 +562,15 @@ export const it = {
   appPrintFailed: 'Impossibile stampare.',
   appPrintNeedsFullLoad:
     'La stampa richiede il caricamento completo della cartella di lavoro: attendere il termine del caricamento.',
+  appPrintLoadingWorkbook: 'Caricamento della cartella di lavoro per la stampa…',
+  appPrintWorkbookTooLarge:
+    'La cartella di lavoro è troppo grande per essere caricata completamente per la stampa.',
+  appPrintLoadTimedOut: 'Tempo scaduto per il caricamento della cartella di lavoro per la stampa.',
+  appPdfLoadingWorkbook: 'Caricamento della cartella di lavoro per l’esportazione PDF…',
+  appPdfWorkbookTooLarge:
+    'La cartella di lavoro è troppo grande per essere caricata completamente per l’esportazione PDF.',
+  appPdfLoadTimedOut:
+    'Tempo scaduto per il caricamento della cartella di lavoro per l’esportazione PDF.',
   appCsvExportNeedsFullLoad:
     "L'esportazione in CSV richiede la cartella di lavoro completamente caricata — attendi la fine del caricamento.",
   appCsvExportTooLarge: 'Il foglio è troppo grande per essere esportato come CSV.',

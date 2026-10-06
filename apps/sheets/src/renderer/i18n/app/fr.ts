@@ -584,6 +584,14 @@ export const fr = {
   appPrintFailed: 'Impression impossible.',
   appPrintNeedsFullLoad:
     'L’impression nécessite le chargement complet du classeur ; attendez la fin du chargement.',
+  appPrintLoadingWorkbook: 'Chargement du classeur pour l’impression…',
+  appPrintWorkbookTooLarge:
+    'Le classeur est trop volumineux pour être entièrement chargé pour l’impression.',
+  appPrintLoadTimedOut: 'Délai d’attente dépassé pour le chargement du classeur pour l’impression.',
+  appPdfLoadingWorkbook: 'Chargement du classeur pour l’export PDF…',
+  appPdfWorkbookTooLarge:
+    'Le classeur est trop volumineux pour être entièrement chargé pour l’export PDF.',
+  appPdfLoadTimedOut: 'Délai d’attente dépassé pour le chargement du classeur pour l’export PDF.',
   appCsvExportNeedsFullLoad:
     "L'export CSV nécessite un classeur entièrement chargé — attendez la fin du chargement.",
   appCsvExportTooLarge: 'La feuille est trop grande pour être exportée en CSV.',

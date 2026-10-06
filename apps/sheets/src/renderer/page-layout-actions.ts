@@ -21,9 +21,10 @@ import {
 } from './edit-journal'
 import type { HeaderFooterResult } from './HeaderFooterDialog'
 import { t } from './i18n/locale'
+import { FULL_LOAD_MAX_CELLS } from './app-constants'
 import { effectivePageBreaks } from './page-break-preview'
 import { COLOR_SCHEMES, FONT_SCHEMES, rethemeStyles, THEME_PRESETS } from './themes'
-import { loadVisibleRange } from './univer-sync'
+import { loadVisibleRange, preloadEntireWorkbook } from './univer-sync'
 import {
   buildSheetPrintPayload,
   type HeaderFooterPictureImage,
@@ -37,6 +38,16 @@ import {
 import { settleVisualNodes, snapshotPrintVisuals } from './print-visuals'
 import { installedVisualFrames, type InstalledVisualFrame } from './WorkbookVisuals'
 import type { LazyWorkbookState, UniverRuntime } from './univer-state'
+import { pollUntilReady } from '@genoffice/electron-utils/headless-export'
+
+export interface PrintReadinessMessages {
+  readonly notLoaded: string
+  readonly loading: string
+  readonly tooLarge: string
+  readonly timedOut: string
+  readonly failed: string
+  readonly preparing: string
+}
 
 const PAPER_NAMES: Record<string, string> = {
   1: 'Letter',
@@ -352,11 +363,80 @@ export function handleApplyHeaderFooter(
   return null
 }
 
+export async function ensurePrintWorkbookLoaded(
+  ctx: PageLayoutContext,
+  state: LazyWorkbookState,
+  messages: PrintReadinessMessages,
+): Promise<boolean> {
+  if (state.flags.preloadComplete) return true
+
+  const totalCells = state.file.sheets.reduce(
+    (sum, sheet) => sum + sheet.rowCount * sheet.columnCount,
+    0,
+  )
+
+  if (totalCells > FULL_LOAD_MAX_CELLS) {
+    ctx.setMessage(messages.tooLarge)
+    return false
+  }
+
+  const runtime = ctx.univerRef.current
+  if (!runtime) {
+    ctx.setMessage(messages.notLoaded)
+    return false
+  }
+
+  ctx.setMessage(messages.loading)
+
+  let preloadFailed = false
+  if (!state.flags.preloadRunning) {
+    void preloadEntireWorkbook(runtime, ctx.lazyWorkbookRef, ctx.setMessage).catch(() => {
+      preloadFailed = true
+    })
+  }
+
+  try {
+    await pollUntilReady(
+      () =>
+        ctx.lazyWorkbookRef.current !== state ||
+        state.flags.preloadComplete ||
+        preloadFailed ||
+        !state.flags.preloadRunning,
+      messages.timedOut,
+      {
+        timeoutMs: 180_000,
+        pollMs: 50,
+      },
+    )
+  } catch {
+    if (ctx.lazyWorkbookRef.current === state) {
+      ctx.setMessage(messages.timedOut)
+    }
+    return false
+  }
+
+  if (ctx.lazyWorkbookRef.current !== state) {
+    return false
+  }
+
+  if (preloadFailed) {
+    ctx.setMessage(messages.failed)
+    return false
+  }
+
+  if (!state.flags.preloadComplete) {
+    ctx.setMessage(messages.notLoaded)
+    return false
+  }
+
+  return true
+}
+
 /// The active sheet laid out as print HTML with its Page Layout settings, or
 /// null (after a status message) when the workbook is not ready for it.
 async function activeSheetPrintPayload(
   ctx: PageLayoutContext,
-  messages: { readonly notLoaded: string; readonly preparing: string },
+  messages: PrintReadinessMessages,
 ): Promise<WorkbookExportPdfRequest | null> {
   const runtime = ctx.univerRef.current
   const worksheet = runtime?.univerAPI.getActiveWorkbook()?.getActiveSheet()
@@ -366,8 +446,10 @@ async function activeSheetPrintPayload(
   }
   const state = ctx.lazyWorkbookRef.current
   if (state && !state.flags.preloadComplete) {
-    ctx.setMessage(messages.notLoaded)
-    return null
+    const loaded = await ensurePrintWorkbookLoaded(ctx, state, messages)
+    if (!loaded) {
+      return null
+    }
   }
   ctx.setMessage(messages.preparing)
   const sheetId = worksheet.getSheetId()
@@ -406,6 +488,10 @@ export async function handleExportPdf(ctx: PageLayoutContext, outPath?: string):
   try {
     const payload = await activeSheetPrintPayload(ctx, {
       notLoaded: t('appPdfNeedsFullLoad'),
+      loading: t('appPdfLoadingWorkbook'),
+      tooLarge: t('appPdfWorkbookTooLarge'),
+      timedOut: t('appPdfLoadTimedOut'),
+      failed: t('appPdfExportFailed'),
       preparing: t('appPdfRendering'),
     })
     if (!payload) return false
@@ -428,6 +514,10 @@ export async function handlePrint(ctx: PageLayoutContext): Promise<boolean> {
   try {
     const payload = await activeSheetPrintPayload(ctx, {
       notLoaded: t('appPrintNeedsFullLoad'),
+      loading: t('appPrintLoadingWorkbook'),
+      tooLarge: t('appPrintWorkbookTooLarge'),
+      timedOut: t('appPrintLoadTimedOut'),
+      failed: t('appPrintFailed'),
       preparing: t('appPrintPreparing'),
     })
     if (!payload) return false
