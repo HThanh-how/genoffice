@@ -1283,4 +1283,138 @@ describe('UI Audit Fixes: SearchResults, RecentFiles & IndexedFolders (Section 2
       expect(downloadsCheckbox.checked).toBe(true)
     })
   })
+
+  describe('P2 Audit Fixes: Rapid Double-Click & Failure Cleanup (Subagent IT 4)', () => {
+    it('P2-01: Rapid double-click trên toggle switch chỉ gửi đúng 1 API request duy nhất', async () => {
+      let resolveToggle: ((value: unknown) => void) | null = null
+      const setKnownSearchSourceMock = vi.fn().mockImplementation(() => {
+        return new Promise((resolve) => {
+          resolveToggle = resolve
+        })
+      })
+
+      const canonicalSources: KnownSearchSourceEntry[] = [
+        { id: 'documents', path: 'C:/Users/Admin/Documents', enabled: false, status: 'disabled' },
+        { id: 'downloads', path: 'C:/Users/Admin/Downloads', enabled: false, status: 'disabled' },
+        { id: 'desktop', path: 'C:/Users/Admin/Desktop', enabled: false, status: 'disabled' },
+      ]
+
+      const api = {
+        getKnownSearchSources: vi.fn().mockResolvedValue(canonicalSources),
+        setKnownSearchSource: setKnownSearchSourceMock,
+        listIndexedFolders: vi.fn().mockResolvedValue([]),
+      } as unknown as HomeApi
+
+      await act(async () => {
+        root.render(
+          createElement(LocaleProvider, {
+            initial: 'vi',
+            children: createElement(IndexedFolders, { api }),
+          }),
+        )
+      })
+
+      const cards = container.querySelectorAll('.idx-common-source-card')
+      const desktopCard = cards[2]
+      const checkbox = desktopCard.querySelector('input[type="checkbox"]') as HTMLInputElement
+      expect(checkbox.checked).toBe(false)
+
+      // Thực hiện rapid double-click liên tiếp trước khi request đầu tiên kịp hoàn tất
+      await act(async () => {
+        checkbox.click()
+        checkbox.click()
+      })
+
+      // Đảm bảo chỉ gửi duy nhất 1 API request
+      expect(setKnownSearchSourceMock).toHaveBeenCalledTimes(1)
+      expect(setKnownSearchSourceMock).toHaveBeenCalledWith('desktop', true)
+
+      // Hoàn tất toggle request
+      await act(async () => {
+        resolveToggle?.({
+          id: 'desktop',
+          path: 'C:/Users/Admin/Desktop',
+          enabled: true,
+          status: 'watching',
+        })
+      })
+
+      expect(checkbox.checked).toBe(true)
+    })
+
+    it('P2-02: Toggle lỗi -> fetchKnown được gọi sau khi hoàn tất dọn dẹp busySources, canonical state mới không bị filter bỏ qua', async () => {
+      let fetchCount = 0
+
+      const initialSources: KnownSearchSourceEntry[] = [
+        { id: 'documents', path: 'C:/Users/Admin/Documents', enabled: false, status: 'disabled' },
+        { id: 'downloads', path: 'C:/Users/Admin/Downloads', enabled: false, status: 'disabled' },
+        { id: 'desktop', path: 'C:/Users/Admin/Desktop', enabled: false, status: 'disabled' },
+      ]
+
+      const recoveredSources: KnownSearchSourceEntry[] = [
+        { id: 'documents', path: 'C:/Users/Admin/Documents', enabled: false, status: 'disabled' },
+        { id: 'downloads', path: 'C:/Users/Admin/Downloads', enabled: false, status: 'disabled' },
+        { id: 'desktop', path: 'C:/Users/Admin/Desktop_Canonical_Recovered', enabled: false, status: 'disabled' },
+      ]
+
+      const getKnownSearchSourcesMock = vi.fn().mockImplementation(async () => {
+        fetchCount++
+        if (fetchCount === 1) {
+          return initialSources
+        }
+        return recoveredSources
+      })
+
+      const setKnownSearchSourceMock = vi.fn().mockRejectedValue(new Error('Permission denied on disk'))
+
+      const api = {
+        getKnownSearchSources: getKnownSearchSourcesMock,
+        setKnownSearchSource: setKnownSearchSourceMock,
+        listIndexedFolders: vi.fn().mockResolvedValue([]),
+      } as unknown as HomeApi
+
+      await act(async () => {
+        root.render(
+          createElement(LocaleProvider, {
+            initial: 'vi',
+            children: createElement(IndexedFolders, { api }),
+          }),
+        )
+      })
+
+      const cards = container.querySelectorAll('.idx-common-source-card')
+      const desktopCard = cards[2]
+      const checkbox = desktopCard.querySelector('input[type="checkbox"]') as HTMLInputElement
+      const pathSpan = desktopCard.querySelector('.idx-common-source-path')
+
+      expect(checkbox.checked).toBe(false)
+      expect(pathSpan?.textContent).toBe('C:/Users/Admin/Desktop')
+      expect(getKnownSearchSourcesMock).toHaveBeenCalledTimes(1)
+
+      // Cố gắng bật Desktop nhưng API bị lỗi
+      await act(async () => {
+        checkbox.click()
+      })
+
+      expect(setKnownSearchSourceMock).toHaveBeenCalledWith('desktop', true)
+
+      // Rollback: checkbox phải quay về false
+      expect(checkbox.checked).toBe(false)
+
+      // Thông báo lỗi inline phải được hiển thị
+      const errorMsg = desktopCard.querySelector('.idx-common-source-error')
+      expect(errorMsg?.textContent).toContain('Permission denied on disk')
+
+      // getKnownSearchSources được gọi lần 2 sau khi dọn dẹp busySources
+      expect(getKnownSearchSourcesMock).toHaveBeenCalledTimes(2)
+
+      // Kiểm tra: Dữ liệu canonical mới từ backend ('C:/Users/Admin/Desktop_Canonical_Recovered')
+      // ĐÃ được cập nhật lên UI vì busySourcesRef.current['desktop'] = false đã chạy trước fetchKnown(),
+      // không bị filter isBusy bỏ qua như phiên bản cũ!
+      expect(pathSpan?.textContent).toBe('C:/Users/Admin/Desktop_Canonical_Recovered')
+
+      // Switch không còn bị disabled
+      expect(checkbox.disabled).toBe(false)
+    })
+  })
 })

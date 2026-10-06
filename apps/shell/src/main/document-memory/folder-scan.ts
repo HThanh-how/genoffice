@@ -198,7 +198,9 @@ export class FolderScanManager {
     } else {
       const hasUnavailable = this.manifest.jobs.some(
         (job) =>
-          job.state === 'stopped' && (job.unavailable || job.lastError?.includes('unavailable')),
+          hasManualOwner(job) &&
+          job.state === 'stopped' &&
+          (job.unavailable || job.lastError?.includes('unavailable')),
       )
       if (hasUnavailable) {
         queueMicrotask(() => this.retryUnavailable())
@@ -656,6 +658,12 @@ export class FolderScanManager {
 
         if (currentEpoch !== this.registrationEpoch) {
           this.pendingForgetRoots.delete(job.root)
+          /*
+           * unregisterAll() already removed every old-epoch
+           * queued root. Any root remaining in waiting now
+           * was registered after the clear.
+           */
+          this.startNextWaiting(this.registrationEpoch)
           return
         }
 
@@ -857,12 +865,14 @@ export class FolderScanManager {
     const retried: string[] = []
     for (const job of this.manifest.jobs) {
       if (job.state === 'stopped' && (job.unavailable || job.lastError?.includes('unavailable'))) {
+        if (!hasManualOwner(job)) {
+          continue
+        }
         try {
           validateRoot(job.root)
           job.unavailable = false
           delete job.lastError
-          const owner = job.owners?.[0] ?? 'manual'
-          this.start(job.root, owner)
+          this.start(job.root, 'manual')
           retried.push(job.root)
         } catch {
           // Still unavailable

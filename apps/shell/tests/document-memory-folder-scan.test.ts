@@ -672,4 +672,155 @@ describe('FolderScanManager', () => {
     expect(folderEntry?.unavailable).toBeUndefined()
     expect(instance.registrationState(root)).toBe('stopped')
   })
+
+  it('P0-1 Kịch bản 1: Job có owners: [known:downloads], state: stopped, unavailable: true -> retryUnavailable không retry root này, job giữ nguyên stopped', async () => {
+    const root = join(dir, 'p0_1_known_only')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'file.txt'), 'content')
+
+    const userData = join(dir, 'state_p0_1')
+    mkdirSync(userData, { recursive: true })
+    const manifestPath = join(userData, 'document-memory-folders.json')
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        version: 1,
+        jobs: [
+          {
+            root,
+            owners: ['known:downloads'],
+            state: 'stopped',
+            discovered: 0,
+            enrolled: 0,
+            skipped: 0,
+            errors: 1,
+            lastError: 'The selected folder is unavailable.',
+            unavailable: true,
+          },
+        ],
+      }),
+    )
+
+    let enrollments = 0
+    const instance = scanner(userData, () => {
+      enrollments++
+      return true
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 50))
+
+    const retried = instance.retryUnavailable()
+    expect(retried).toEqual([])
+    expect(enrollments).toBe(0)
+    expect(instance.status().running).toBe(false)
+
+    const folderEntry = instance.folders().find((f) => resolve(f.root) === resolve(root))
+    expect(folderEntry).toBeDefined()
+    expect(folderEntry?.state).toBe('stopped')
+    expect(folderEntry?.unavailable).toBe(true)
+    expect(folderEntry?.owners).toEqual(['known:downloads'])
+    expect(instance.registrationState(root)).toBe('stopped')
+  })
+
+  it('P0-1 Kịch bản 2: Job có owners: [known:downloads, manual], state: stopped, unavailable: true -> retryUnavailable retry thành công và start root', async () => {
+    const root = join(dir, 'p0_1_shared_owner')
+    mkdirSync(root, { recursive: true })
+    writeFileSync(join(root, 'file.txt'), 'content')
+
+    const userData = join(dir, 'state_p0_2')
+    mkdirSync(userData, { recursive: true })
+    const manifestPath = join(userData, 'document-memory-folders.json')
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        version: 1,
+        jobs: [
+          {
+            root,
+            owners: ['known:downloads', 'manual'],
+            state: 'stopped',
+            discovered: 0,
+            enrolled: 0,
+            skipped: 0,
+            errors: 1,
+            lastError: 'The selected folder is unavailable.',
+            unavailable: true,
+          },
+        ],
+      }),
+    )
+
+    const enrolled: string[] = []
+    const instance = scanner(userData, (path) => {
+      enrolled.push(path)
+      return true
+    })
+
+    const retried = instance.retryUnavailable()
+    expect(retried).toContain(resolve(root))
+
+    await until(() => !instance.status().running && enrolled.length > 0)
+
+    const folderEntry = instance.folders().find((f) => resolve(f.root) === resolve(root))
+    expect(folderEntry).toBeDefined()
+    expect(folderEntry?.state).toBe('complete')
+    expect(folderEntry?.unavailable).toBeFalsy()
+    expect(folderEntry?.lastError).toBeUndefined()
+    expect(instance.registrationState(root)).toBe('watching')
+  })
+
+  it('P1-2: Khởi động scan root A, Clear Index gọi unregisterAll, lập tức thêm root C khi runner A chưa thoát -> C tự động được pick up và scan sau khi A thoát', async () => {
+    const folderA = join(dir, 'p1_2_folderA')
+    const folderC = join(dir, 'p1_2_folderC')
+    mkdirSync(folderA, { recursive: true })
+    mkdirSync(folderC, { recursive: true })
+
+    for (let i = 0; i < 50; i++) {
+      writeFileSync(join(folderA, `docA_${i}.txt`), `contentA_${i}`)
+    }
+    writeFileSync(join(folderC, 'docC.txt'), 'contentC')
+
+    let clearHandler: (() => void) | undefined
+    const enrolledFiles: string[] = []
+    const instance = new FolderScanManager(join(dir, 'state_p1_2'), {
+      indexDiscoveredFile: (path) => {
+        enrolledFiles.push(path)
+        return true
+      },
+      onCleared: (listener) => {
+        clearHandler = listener
+        return () => {
+          clearHandler = undefined
+        }
+      },
+    })
+    scanners.push(instance)
+
+    // Khởi động scan root A (đang running)
+    instance.start(folderA, 'manual')
+    expect(instance.status().running).toBe(true)
+
+    // Clear Index (gọi unregisterAll qua onCleared)
+    expect(clearHandler).toBeDefined()
+    clearHandler!()
+
+    // Lập tức thêm root C (trong khi runner A chưa thoát hoàn toàn khỏi event loop)
+    instance.start(folderC, 'manual')
+    expect(instance.isWaiting(folderC)).toBe(true)
+
+    // Đợi đến khi toàn bộ hoàn tất
+    await until(() => !instance.status().running && enrolledFiles.some((f) => f.includes('docC.txt')))
+
+    // Khi runner A thoát, C phải được tự động pick up và scan, không bị kẹt trong waiting queue
+    expect(instance.isWaiting(folderC)).toBe(false)
+
+    const folderCEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderC))
+    expect(folderCEntry).toBeDefined()
+    expect(folderCEntry?.state).toBe('complete')
+    expect(instance.registrationState(folderC)).toBe('watching')
+
+    // Root A đã bị unregister sạch sẽ
+    const folderAEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderA))
+    expect(folderAEntry).toBeUndefined()
+  })
 })

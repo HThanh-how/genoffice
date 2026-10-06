@@ -288,10 +288,11 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
   }, [effectiveApi])
 
   const toggleKnownSource = async (id: KnownSearchSource, enabled: boolean) => {
-    if (busySources[id]) return
+    if (busySourcesRef.current[id]) return
+    busySourcesRef.current[id] = true
+    setBusySources((prev) => ({ ...prev, [id]: true }))
 
     sourceActionSeqRef.current[id] = (sourceActionSeqRef.current[id] ?? 0) + 1
-    setBusySources((prev) => ({ ...prev, [id]: true }))
     setSourceErrors((prev) => {
       const next = { ...prev }
       delete next[id]
@@ -308,6 +309,7 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
       return [...prev, { id, path: '', enabled, status: enabled ? 'queued' : 'disabled' }]
     })
 
+    let refreshAfterFailure = false
     try {
       const setFn = (effectiveApi as Record<string, unknown> | undefined)?.setKnownSearchSource
       if (typeof setFn === 'function') {
@@ -325,6 +327,7 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
       }
     } catch (err) {
       console.warn(`api.setKnownSearchSource(${id}, ${enabled}) failed:`, err)
+      refreshAfterFailure = true
       // Rollback optimistic update
       setKnownSources((prev) =>
         prev.map((s) =>
@@ -338,9 +341,13 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
       const errorMsg =
         err instanceof Error && err.message ? err.message : dict.sourceToggleFailed
       setSourceErrors((prev) => ({ ...prev, [id]: errorMsg }))
-      await fetchKnown()
     } finally {
+      busySourcesRef.current[id] = false
       setBusySources((prev) => ({ ...prev, [id]: false }))
+    }
+
+    if (refreshAfterFailure) {
+      await fetchKnown()
     }
   }
 

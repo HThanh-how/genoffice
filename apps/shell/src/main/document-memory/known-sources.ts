@@ -59,59 +59,52 @@ export const CLEANUP_RETRY_INTERVALS_MS: readonly number[] = Object.freeze([500,
 /** Maximum cleanup retry attempts */
 export const MAX_CLEANUP_RETRIES = 3
 
-/** In-flight path probe cache for coalescing concurrent probes on the same target */
-const inFlightPathProbes = new Map<string, Promise<boolean>>()
+/** Native path probe cache for coalescing concurrent filesystem stat calls on the same target */
+export const nativePathProbes = new Map<string, Promise<boolean>>()
+
+export function getOrCreateNativePathProbe(targetPath: string): Promise<boolean> {
+  const path = resolve(targetPath)
+  const existing = nativePathProbes.get(path)
+  if (existing) {
+    return existing
+  }
+  let nativeProbe: Promise<boolean>
+  nativeProbe = stat(path)
+    .then((stats) => stats.isDirectory())
+    .catch(() => false)
+    .finally(() => {
+      if (nativePathProbes.get(path) === nativeProbe) {
+        nativePathProbes.delete(path)
+      }
+    })
+  nativePathProbes.set(path, nativeProbe)
+  return nativeProbe
+}
 
 /**
  * Asynchronously probes whether targetPath exists and is a directory.
- * Bounded by deadlineMs (default: 3000ms) with AbortController to never freeze the Electron main thread.
- * Coalesces concurrent in-flight probes on the same resolved path to avoid I/O stampede.
+ * Bounded by deadlineMs (default: 3000ms) to never freeze the Electron main thread.
+ * Coalesces concurrent in-flight probes on the same resolved path using nativePathProbes to avoid I/O stampede.
+ * Caller deadline timeout does NOT evict native probe from cache.
  */
 export function probePathAvailable(
   targetPath: string,
   deadlineMs: number = PROBE_PATH_DEADLINE_MS,
 ): Promise<boolean> {
-  const normalizedPath = resolve(targetPath)
-  const existing = inFlightPathProbes.get(normalizedPath)
-  if (existing) {
-    return existing
-  }
+  const path = resolve(targetPath)
+  const nativeProbe = getOrCreateNativePathProbe(path)
 
-  const probePromise = (async () => {
-    const controller = new AbortController()
-    let timer: NodeJS.Timeout | undefined
-
-    const timeoutPromise = new Promise<false>((resolvePromise) => {
-      timer = setTimeout(() => {
-        controller.abort()
-        resolvePromise(false)
-      }, deadlineMs)
-      timer.unref?.()
-    })
-
-    const statPromise = (async () => {
-      try {
-        const stats = await (stat as (path: string, opts?: unknown) => Promise<{ isDirectory(): boolean }>)(
-          normalizedPath,
-          { signal: controller.signal },
-        )
-        return stats.isDirectory()
-      } catch {
-        return false
-      }
-    })()
-
-    try {
-      return await Promise.race([statPromise, timeoutPromise])
-    } finally {
-      if (timer) clearTimeout(timer)
-    }
-  })().finally(() => {
-    inFlightPathProbes.delete(normalizedPath)
+  let timer: NodeJS.Timeout | undefined
+  const timeoutPromise = new Promise<false>((resolvePromise) => {
+    timer = setTimeout(() => {
+      resolvePromise(false)
+    }, deadlineMs)
+    timer.unref?.()
   })
 
-  inFlightPathProbes.set(normalizedPath, probePromise)
-  return probePromise
+  return Promise.race([nativeProbe, timeoutPromise]).finally(() => {
+    if (timer) clearTimeout(timer)
+  })
 }
 
 export function isKnownSearchSource(value: unknown): value is KnownSearchSource {
@@ -358,54 +351,51 @@ export class KnownSourcesManager {
 
     const scanner = this.getScanner()
     if (!scanner) {
-      // Enabled & path exists, but scanner is not attached: queued (never report 'watching')
       return { status: 'queued' }
     }
 
-    const scanStatus = scanner.status()
-    if (scanStatus.running && scanStatus.root && resolve(scanStatus.root) === resolve(resolvedPath)) {
-      return { status: 'scanning' }
-    }
-
-    if (scanner.isWaiting(resolvedPath)) {
-      return { status: 'queued' }
-    }
-
-    const job = scanner.folders().find((f) => resolve(f.root) === resolve(resolvedPath))
-    if (!job) {
-      // Path exists and source is enabled, but not yet registered in scanner: queued (never 'watching')
-      return { status: 'queued' }
-    }
-
-    // Check ownership: scanner.hasOwner if available, or job.owners array
     const owner: FolderOwner = `known:${id}`
-    const hasOwner =
-      typeof (scanner as unknown as { hasOwner?: (r: string, o: FolderOwner) => boolean }).hasOwner ===
-      'function'
-        ? Boolean((scanner as unknown as { hasOwner: (r: string, o: FolderOwner) => boolean }).hasOwner(resolvedPath, owner))
-        : Boolean(job.owners?.includes(owner))
+    const regState =
+      typeof scanner.registrationState === 'function'
+        ? scanner.registrationState(resolvedPath, owner)
+        : (() => {
+            const job = scanner.folders?.().find((f) => resolve(f.root) === resolve(resolvedPath))
+            if (job && job.owners && !job.owners.includes(owner)) return 'none'
+            const scanStatus = scanner.status?.()
+            if (
+              scanStatus?.running &&
+              scanStatus.root &&
+              resolve(scanStatus.root) === resolve(resolvedPath)
+            ) {
+              if (job && !job.owners?.includes(owner)) return 'none'
+              return 'scanning'
+            }
+            if (scanner.isWaiting?.(resolvedPath)) return 'queued'
+            if (!job || (job.owners && !job.owners.includes(owner))) return 'none'
+            if (job.state === 'running') return 'scanning'
+            if (job.state === 'complete') return 'watching'
+            if (job.state === 'stopped') return 'stopped'
+            return 'none'
+          })()
 
-    if (!hasOwner) {
-      // Folder exists in scanner under another owner, but not registered for this known source
-      return { status: 'queued' }
-    }
-
-    if (job.state === 'running') {
-      return { status: 'scanning' }
-    }
-
-    if (job.state === 'stopped') {
-      if (job.lastError && job.errors > 0) {
-        return { status: 'error', error: job.lastError }
+    switch (regState) {
+      case 'scanning':
+        return { status: 'scanning' }
+      case 'queued':
+        return { status: 'queued' }
+      case 'watching':
+        return { status: 'watching' }
+      case 'stopped': {
+        const job = scanner.folders().find((f) => resolve(f.root) === resolve(resolvedPath))
+        if (job?.lastError && job.errors > 0) {
+          return { status: 'error', error: job.lastError }
+        }
+        return { status: 'unavailable', error: 'Folder scanning is stopped.' }
       }
-      return { status: 'unavailable', error: 'Folder scanning is stopped.' }
+      case 'none':
+      default:
+        return { status: 'queued' }
     }
-
-    if (job.state === 'complete') {
-      return { status: 'watching' }
-    }
-
-    return { status: 'queued' }
   }
 
   public async getEntry(id: KnownSearchSource): Promise<KnownSearchSourceEntry> {
@@ -468,7 +458,36 @@ export class KnownSourcesManager {
     this.state = nextState
     this.initialized = true
     this.sourceGeneration.set(id, (this.sourceGeneration.get(id) ?? 0) + 1)
-    const currentGeneration = this.sourceGeneration.get(id)!
+
+    await this.reconcileOneSource(id, this.generationOf(id))
+    return this.getEntry(id)
+  }
+
+  private generationOf(id: KnownSearchSource): number {
+    return this.sourceGeneration.get(id) ?? 0
+  }
+
+  private isCurrentDesiredState(
+    id: KnownSearchSource,
+    generation: number,
+    enabled: boolean,
+  ): boolean {
+    return (
+      !this.closed &&
+      this.state[id] === enabled &&
+      this.generationOf(id) === generation
+    )
+  }
+
+  public async reconcileOneSource(
+    id: KnownSearchSource,
+    generation = this.generationOf(id),
+  ): Promise<void> {
+    if (this.closed) return
+    const enabled = this.state[id] ?? false
+    if (!this.isCurrentDesiredState(id, generation, enabled)) {
+      return
+    }
 
     const resolvedPath = this.resolvePath(id)
     const scanner = this.getScanner()
@@ -478,15 +497,17 @@ export class KnownSourcesManager {
       this.cancelCleanupRetry(id)
       this.sourceErrors.delete(id)
       const available = await this.isPathAvailable(resolvedPath)
-      if (this.closed || !this.state[id] || this.sourceGeneration.get(id) !== currentGeneration) {
-        return this.getEntry(id)
+      if (!this.isCurrentDesiredState(id, generation, true)) {
+        return
       }
+
       if (available) {
         if (scanner) {
           try {
             scanner.start(resolvedPath, owner)
             this.cancelRetry(id)
           } catch (err: unknown) {
+            if (!this.isCurrentDesiredState(id, generation, true)) return
             const message = err instanceof Error ? err.message : String(err)
             this.sourceErrors.set(id, message)
             this.scheduleRetry(id)
@@ -505,12 +526,16 @@ export class KnownSourcesManager {
           await scanner.unregisterRoot(resolvedPath, owner)
           this.cancelCleanupRetry(id)
         } catch {
-          this.scheduleCleanupRetry(id, resolvedPath, owner)
+          if (!this.closed && !this.state[id]) {
+            this.scheduleCleanupRetry(id, resolvedPath, owner)
+          }
         }
       }
+      // Last desired state wins: nếu sau unregister mà source đã được bật lại
+      if (!this.closed && this.state[id] === true) {
+        await this.reconcileOneSource(id, this.generationOf(id))
+      }
     }
-
-    return this.getEntry(id)
   }
 
   private cancelRetry(id: KnownSearchSource): void {
@@ -701,48 +726,9 @@ export class KnownSourcesManager {
    */
   public async reconcileDesiredSources(): Promise<void> {
     if (this.closed) return
-    const scanner = this.getScanner()
-
     for (const id of KNOWN_SEARCH_SOURCES) {
       if (this.closed) return
-      const enabled = this.state[id]
-      const resolvedPath = this.resolvePath(id)
-      const owner: FolderOwner = `known:${id}`
-
-      if (enabled) {
-        this.cancelCleanupRetry(id)
-        const available = await this.isPathAvailable(resolvedPath)
-        if (this.closed || !this.state[id]) continue
-
-        if (available) {
-          if (scanner) {
-            try {
-              scanner.start(resolvedPath, owner)
-              this.sourceErrors.delete(id)
-              this.cancelRetry(id)
-            } catch (err: unknown) {
-              const message = err instanceof Error ? err.message : String(err)
-              this.sourceErrors.set(id, message)
-              this.scheduleRetry(id)
-            }
-          } else {
-            this.scheduleRetry(id)
-          }
-        } else {
-          this.scheduleRetry(id)
-        }
-      } else {
-        this.cancelRetry(id)
-        this.sourceErrors.delete(id)
-        if (scanner) {
-          try {
-            await scanner.unregisterRoot(resolvedPath, owner)
-            this.cancelCleanupRetry(id)
-          } catch {
-            this.scheduleCleanupRetry(id, resolvedPath, owner)
-          }
-        }
-      }
+      await this.reconcileOneSource(id, this.generationOf(id))
     }
   }
 

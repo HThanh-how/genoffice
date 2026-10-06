@@ -14,8 +14,9 @@ import {
   MAX_CLEANUP_RETRIES,
   PROBE_PATH_DEADLINE_MS,
   SLOW_PERIODIC_RETRY_INTERVAL_MS,
-  UNINITIALIZED_KNOWN_SOURCES,
+  getOrCreateNativePathProbe,
   isKnownSearchSource,
+  nativePathProbes,
   parseKnownSourcesFullSettings,
   parseKnownSourcesSettings,
   probePathAvailable,
@@ -829,9 +830,9 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       const targetDir = join(testDir, 'CoalesceTestDir')
       mkdirSync(targetDir, { recursive: true })
 
-      // Gọi đồng thời 2 lần probePathAvailable trên cùng 1 đường dẫn
-      const p1 = probePathAvailable(targetDir)
-      const p2 = probePathAvailable(targetDir)
+      // Gọi đồng thời 2 lần native probe trên cùng 1 đường dẫn
+      const p1 = getOrCreateNativePathProbe(targetDir)
+      const p2 = getOrCreateNativePathProbe(targetDir)
 
       // Cả 2 cuộc gọi in-flight phải tái sử dụng chung cùng 1 instance Promise
       expect(p1).toBe(p2)
@@ -841,10 +842,164 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       expect(res2).toBe(true)
 
       // Sau khi probe đã hoàn thành, cuộc gọi tiếp theo tạo một promise mới độc lập
-      const p3 = probePathAvailable(targetDir)
+      const p3 = getOrCreateNativePathProbe(targetDir)
       expect(p3).not.toBe(p1)
       const res3 = await p3
       expect(res3).toBe(true)
+    })
+
+    it('KS-09 [P1-1]: Caller deadline timeout không xóa native probe map; caller thứ 2 đến sau deadline vẫn tái sử dụng native probe đang in-flight', async () => {
+      const targetDir = join(testDir, 'SlowProbeDirP1_1')
+      const normalized = resolve(targetDir)
+
+      let statResolve: (val: boolean) => void = () => {}
+      let inFlightNativeProbe: Promise<boolean>
+      inFlightNativeProbe = new Promise<boolean>((resolvePromise) => {
+        statResolve = resolvePromise
+      }).finally(() => {
+        if (nativePathProbes.get(normalized) === inFlightNativeProbe) {
+          nativePathProbes.delete(normalized)
+        }
+      })
+
+      // Đưa native probe đang in-flight vào nativePathProbes
+      nativePathProbes.set(normalized, inFlightNativeProbe)
+
+      try {
+        // Caller 1 gọi với deadline ngắn 15ms
+        const caller1Promise = probePathAvailable(targetDir, 15)
+
+        // Native probe tồn tại trong nativePathProbes
+        expect(nativePathProbes.has(normalized)).toBe(true)
+        expect(nativePathProbes.get(normalized)).toBe(inFlightNativeProbe)
+
+        // Caller 1 timeout sau 15ms -> nhận false
+        const res1 = await caller1Promise
+        expect(res1).toBe(false)
+
+        // Caller 1 timeout KHÔNG ĐƯỢC xóa entry khỏi nativePathProbes
+        expect(nativePathProbes.has(normalized)).toBe(true)
+        expect(nativePathProbes.get(normalized)).toBe(inFlightNativeProbe)
+
+        // Caller thứ 2 đến sau deadline của caller 1, với deadline 5000ms
+        const caller2Promise = probePathAvailable(targetDir, 5000)
+
+        // Caller 2 tái sử dụng chính native probe đang in-flight
+        expect(nativePathProbes.get(normalized)).toBe(inFlightNativeProbe)
+
+        // Native stat hoàn tất
+        statResolve(true)
+
+        // Caller 2 nhận được true từ native probe được chia sẻ
+        const res2 = await caller2Promise
+        expect(res2).toBe(true)
+
+        // Sau khi native stat thực sự hoàn tất trong .finally(), entry mới được xóa
+        expect(nativePathProbes.has(normalized)).toBe(false)
+      } finally {
+        nativePathProbes.delete(normalized)
+      }
+    })
+
+    it('KS-10 [P0-2]: Race unregister pending nhưng source bật lại ON -> latest ON wins', async () => {
+      const docsDir = join(testDir, 'DocsRaceP0_2')
+      mkdirSync(docsDir, { recursive: true })
+
+      const startMock = vi.fn()
+      let unregisterResolve: (val: boolean) => void = () => {}
+      const unregisterMock = vi.fn().mockImplementation(() => {
+        return new Promise<boolean>((resolvePromise) => {
+          unregisterResolve = resolvePromise
+        })
+      })
+
+      const mockScanner = {
+        start: startMock,
+        unregisterRoot: unregisterMock,
+        status: vi.fn().mockReturnValue({ running: false }),
+        folders: vi.fn().mockReturnValue([]),
+        isWaiting: vi.fn().mockReturnValue(false),
+        registrationState: vi.fn().mockReturnValue('none'),
+      }
+
+      const manager = new KnownSourcesManager({
+        settingsPath: () => settingsFile,
+        scanner: mockScanner as any,
+        getPath: () => docsDir,
+        initialState: { documents: true, downloads: false, desktop: false },
+        initialized: true,
+      })
+
+      // 1. User tắt source: documents -> false. unregisterRoot bắt đầu chạy và pending
+      const disablePromise = manager.setKnownSearchSource('documents', false)
+      expect(unregisterMock).toHaveBeenCalledTimes(1)
+
+      // 2. Trong lúc unregisterRoot đang pending, user bật lại: documents -> true
+      const enablePromise = manager.setKnownSearchSource('documents', true)
+
+      // 3. unregisterRoot giải quyết xong
+      unregisterResolve(true)
+
+      // Chờ cả 2 promise hoàn tất
+      await Promise.all([disablePromise, enablePromise])
+
+      // 4. Latest state là ON -> scanner.start PHẢI được gọi, source bật lại thành công
+      expect(startMock).toHaveBeenCalledWith(resolve(docsDir), 'known:documents')
+      const entry = await manager.getEntry('documents')
+      expect(entry.enabled).toBe(true)
+
+      manager.close()
+    })
+
+    it('KS-11 [P2-2]: Cùng physical path đang scan bởi owner khác (manual) thì getStatus(downloads) trả về queued thay vì scanning', async () => {
+      const downloadsDir = join(testDir, 'DownloadsSharedP2_2')
+      mkdirSync(downloadsDir, { recursive: true })
+
+      const mockScanner = {
+        start: vi.fn(),
+        unregisterRoot: vi.fn(),
+        status: vi.fn().mockReturnValue({ running: true, root: resolve(downloadsDir) }),
+        folders: vi.fn().mockReturnValue([
+          {
+            root: resolve(downloadsDir),
+            owners: ['manual'],
+            state: 'running',
+            discovered: 10,
+            enrolled: 5,
+            skipped: 0,
+            errors: 0,
+          },
+        ]),
+        isWaiting: vi.fn().mockReturnValue(false),
+        registrationState: vi.fn().mockImplementation((root: string, owner?: string) => {
+          if (resolve(root) === resolve(downloadsDir)) {
+            if (owner === 'known:downloads') {
+              return 'none'
+            }
+            if (owner === 'manual') {
+              return 'scanning'
+            }
+          }
+          return 'none'
+        }),
+      }
+
+      const manager = new KnownSourcesManager({
+        settingsPath: () => settingsFile,
+        scanner: mockScanner as any,
+        getPath: () => downloadsDir,
+        initialState: { documents: false, downloads: true, desktop: false },
+        initialized: true,
+      })
+
+      // Cập nhật path availability cache
+      await manager.isPathAvailable(downloadsDir)
+
+      // getStatus('downloads') phải trả về 'queued' thay vì 'scanning'
+      const statusResult = manager.getStatus('downloads')
+      expect(statusResult.status).toBe('queued')
+
+      manager.close()
     })
   })
 })
