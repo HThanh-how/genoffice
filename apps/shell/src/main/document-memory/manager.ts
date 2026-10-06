@@ -21,8 +21,8 @@ import {
   MAX_PENDING_EMBED_DOCUMENTS, PDF_SLICE_MS,
 } from './runtime/extraction-coordinator'
 import { EmbeddingCoordinator } from './runtime/embedding-coordinator'
-import { MaintenanceScheduler } from './runtime/maintenance-scheduler'
-import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'
+import { MaintenanceScheduler } from './runtime/maintenance-scheduler'; import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'
+import { readActiveEmbeddingConfig } from './storage/embedding-settings'
 import { createIndexProcess } from './process-worker'
 import workerPath from './worker?modulePath'
 import { safeError } from './issues'
@@ -110,9 +110,10 @@ export class DocumentMemoryManager {
       onEnqueue: (p, prior, bytes) => this.enqueue(p, prior, bytes), onTombstone: async (p) => { await this.store.tombstoneSliced(p) },
       onInvalidatePath: (p) => this.invalidatePath(p), isStopped: () => this.stopped, isEnabled: () => this.enabled,
     })
+    const embeddingConfig = readActiveEmbeddingConfig(this.settingsDir)
     this.embeddingCoord = new EmbeddingCoordinator({
-      store: this.store, settingsPath: join(this.settingsDir, 'embedding-settings.json'), workerTimeoutMs: this.workerTimeoutMs,
-      isStoppedOrPaused: () => this.stopped || !this.enabled || isIndexingPaused(),
+      store: this.store, settingsDir: this.settingsDir, initialProfileId: embeddingConfig.profileId,
+      workerTimeoutMs: this.workerTimeoutMs, isStoppedOrPaused: () => this.stopped || !this.enabled || isIndexingPaused(),
       isCurrent: (p, gen, ep) => this.isCurrent(p, gen, ep), onDrainNeeded: () => this.drain(),
       onEnqueueExtract: (p) => this.enqueue(p), onError: (err) => { this.lastError = err },
     })
@@ -144,8 +145,7 @@ export class DocumentMemoryManager {
       isCurrent: (p, gen, ep) => this.isCurrent(p, gen, ep), getEpoch: () => this.epoch,
       isStoppedOrPaused: () => this.stopped || !this.enabled || isIndexingPaused(),
     })
-    this.embeddingMigration = new EmbeddingMigration(this.store.rawDb)
-    this.embeddingMigration.setTarget(this.embeddingCoord.currentProfile.embeddingId)
+    this.embeddingMigration = new EmbeddingMigration(this.store.rawDb); this.embeddingMigration.setTarget(this.embeddingCoord.currentProfile.embeddingId)
 
     this.stopPolicyWatch = onIndexingPolicyChange((policy) => {
       if (this.modelState === 'blocked' && (policy as any).allowHeavyEmbedding !== false) { this.modelState = 'not-loaded'; this.lastError = undefined }

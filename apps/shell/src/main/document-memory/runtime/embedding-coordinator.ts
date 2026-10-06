@@ -1,6 +1,4 @@
-import { writeFileSync, mkdirSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import { dirname } from 'node:path'
 import { totalmem } from 'node:os'
 import type { DocumentMemoryStore } from '../store'
 import type { DocumentChunk } from '../chunks'
@@ -11,6 +9,7 @@ import {
   type EmbeddingProfile,
   type EmbeddingProfileId,
 } from '../embedding-profiles'
+import { writeActiveEmbeddingConfig } from '../storage/embedding-settings'
 
 const EMBED_RETRY_DELAY_MS = 15_000
 
@@ -33,7 +32,8 @@ export type AskWorkerEmbed = (
 
 export interface EmbeddingCoordinatorOptions {
   store: DocumentMemoryStore
-  settingsPath: string
+  settingsDir?: string
+  settingsPath?: string
   initialProfileId?: EmbeddingProfileId
   workerTimeoutMs?: number
   isStoppedOrPaused?: () => boolean
@@ -291,15 +291,13 @@ export class EmbeddingCoordinator {
     this.profile = EMBEDDING_PROFILES[nextId]
     this.options.store.ensureEmbeddingSpace(this.profile)
 
-    try {
-      mkdirSync(dirname(this.options.settingsPath), { recursive: true })
-      writeFileSync(
-        this.options.settingsPath,
-        JSON.stringify({ profile: nextId }),
-        'utf8',
-      )
-    } catch {
-      // ignore
+    const target = this.options.settingsDir ?? this.options.settingsPath
+    if (target) {
+      try {
+        writeActiveEmbeddingConfig(target, nextId)
+      } catch {
+        // ignore
+      }
     }
 
     const requeued = this.options.store.requeueForEmbeddingModel(this.profile.embeddingId)
