@@ -27,7 +27,21 @@ export function inspectDatabaseVersion(dbPath: string): StorageVersionReport {
     }
   }
 
-  const db = new DatabaseSync(dbPath)
+  let db: DatabaseSync
+  try {
+    db = new DatabaseSync(dbPath)
+  } catch (err: any) {
+    return {
+      isV3: false,
+      needsMigration: true,
+      reasons: [`Database corrupted or invalid: ${err?.message}`],
+      tableNames: [],
+      hasObsoleteChunkColumns: false,
+      hasDocumentEmbeddingCounts: false,
+      autoVacuum: 0,
+    }
+  }
+
   try {
     const tables = (
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{

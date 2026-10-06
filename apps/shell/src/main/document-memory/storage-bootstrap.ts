@@ -36,21 +36,21 @@ export async function ensureDocumentMemoryStorageReady(dbDir: string): Promise<B
     return { ready: true, migrated: false }
   }
 
-  const report = inspectDatabaseVersion(dbPath)
-  if (!report.needsMigration) {
-    return { ready: true, migrated: false, report }
-  }
-
-  // Read active embedding configuration independently before database access (BEH-14)
-  const activeConfig = readActiveEmbeddingConfig(dbDir)
-
-  console.info('[document-memory-bootstrap] V2 storage detected. Starting verified V2->V3 migration...', {
-    reasons: report.reasons,
-    autoVacuum: report.autoVacuum,
-    activeSpaceId: activeConfig.activeSpaceId,
-  })
-
   try {
+    const report = inspectDatabaseVersion(dbPath)
+    if (!report.needsMigration) {
+      return { ready: true, migrated: false, report }
+    }
+
+    // Read active embedding configuration independently before database access (BEH-14)
+    const activeConfig = readActiveEmbeddingConfig(dbDir)
+
+    console.info('[document-memory-bootstrap] V2 storage detected. Starting verified V2->V3 migration...', {
+      reasons: report.reasons,
+      autoVacuum: report.autoVacuum,
+      activeSpaceId: activeConfig.activeSpaceId,
+    })
+
     const migrationResult = migrateStorageV2ToV3(dbPath, {
       activeSpaceId: activeConfig.activeSpaceId,
       activeDimensions: activeConfig.activeDimensions,
@@ -74,7 +74,6 @@ export async function ensureDocumentMemoryStorageReady(dbDir: string): Promise<B
     return {
       ready: false,
       migrated: false,
-      report,
       error: errorMsg,
     }
   }

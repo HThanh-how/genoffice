@@ -133,7 +133,7 @@ export class DocumentMemoryManager {
     this.stabilityGate = new FileStabilityGate()
     this.backgroundGate = new BackgroundWorkGate()
 
-    this.extractionCoord = new ExtractionCoordinator({ store: this.store, workerTimeoutMs: this.workerTimeoutMs })
+    this.extractionCoord = new ExtractionCoordinator({ store: this.store, workerTimeoutMs: this.workerTimeoutMs, pdfPagesPath: join(this.settingsDir, 'document-memory-pdf.json') })
     this.maintScheduler = new MaintenanceScheduler({
       store: this.store,
       backgroundGate: this.backgroundGate,
@@ -168,21 +168,43 @@ export class DocumentMemoryManager {
   onCleared(l: () => void): () => void { this.clearedListeners.add(l); return () => this.clearedListeners.delete(l) }
   nowStatus(): IndexingNow {
     const active = this.activeExtractions.values().next().value ?? null
+    const positions: Record<string, number> = {}
+    orderQueue(this.queue, { urgent: this.urgent, deferred: this.deferred, bytes: this.activeBytes }).slice(0, 400).forEach((p, i) => { positions[p] = i + 1 })
+    const pages: Record<string, { done: number; total: number }> = {}
+    for (const [p, prog] of this.readProgress) pages[p] = prog
     return {
       extracting: active ? [{ path: active, since: this.activeSince.get(active) ?? Date.now() }] : [],
-      embedding: {}, positions: {}, pages: {},
-      queued: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength(),
-      paused: isIndexingPaused(),
+      embedding: {}, positions, pages, queued: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength(), paused: isIndexingPaused(),
     }
   }
   remember(path: string): void { this.store.remember(path); this.enqueue(resolve(path), true) }
   indexDiscoveredFile(p: string, meta?: { mtimeMs: number; sizeBytes: number }) { return this.freshnessCoord.indexDiscoveredFile(p, meta) }
   isEnabled(): boolean { return this.enabled }
-  retryDocument(id: number) { return this.extractionCoord.retryDocument(id) }
-  deferDocument(path: string) { this.deferred.add(resolve(path)) }
-  async stopDocument(path: string): Promise<boolean> {
-    const p = resolve(path); this.queued.delete(p)
-    const idx = this.queue.indexOf(p); if (idx >= 0) this.queue.splice(idx, 1); return true
+  retryDocument(id: number, opts: { now?: boolean; prioritize?: boolean } = {}): { ok: boolean; error?: string } {
+    if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
+    const p = this.store.retryDocument(id); if (!p) return { ok: false, error: 'unavailable' }
+    if (opts.prioritize !== false || opts.now) { this.deferred.delete(p); this.urgent.add(p) }
+    if (this.activeExtractions.has(p)) return { ok: true }
+    if (opts.now) {
+      const blk = [...this.activeExtractions].filter((o) => o !== p && !this.slicing.has(o))
+      for (const o of blk) { this.invalidatePath(o); this.enqueue(o, false, this.activeBytes.get(o)) }
+      if (blk.length) this.recycleWorker(INTERRUPTED_FOR_USER)
+    }
+    this.enqueue(p, opts.prioritize !== false || opts.now); return { ok: true }
+  }
+  deferDocument(idOrPath: number | string): { ok: boolean; error?: string } {
+    const doc = typeof idOrPath === 'number' ? this.store.documentById(idOrPath) : this.store.documentByPath(resolve(idOrPath))
+    if (!doc || !['pending', 'text-only'].includes(doc.status)) return { ok: false, error: 'unavailable' }
+    const p = doc.path; this.deferred.add(p); this.urgent.delete(p)
+    const reading = this.activeExtractions.has(p); this.invalidatePath(p)
+    if (reading && !this.slicing.has(p)) { this.enqueue(p, false, this.activeBytes.get(p)); this.recycleWorker(INTERRUPTED_FOR_USER) }
+    return { ok: true }
+  }
+  async stopDocument(idOrPath: number | string): Promise<{ ok: boolean; error?: string }> {
+    const doc = typeof idOrPath === 'number' ? this.store.documentById(idOrPath) : this.store.documentByPath(resolve(idOrPath))
+    if (!doc || !['pending', 'text-only'].includes(doc.status)) return { ok: false, error: 'unavailable' }
+    const p = doc.path; this.invalidatePath(p); if (this.activeExtractions.has(p)) this.recycleWorker('Stopped by user')
+    await this.store.markErrorSliced(p, 'Stopped by user', await statMeta(p)); return { ok: true }
   }
   indexDocumentPath(id: number): string | null {
     const d = this.store.documentById(id); return d && d.status !== 'excluded' ? d.path : null
@@ -209,39 +231,21 @@ export class DocumentMemoryManager {
   runVacuumStep(): Promise<void> { return this.maintScheduler.runVacuumStep() }
   runPeriodicMaintenance(): Promise<void> { return this.maintScheduler.runPeriodicMaintenance() }
   status(): DocumentMemoryStatus {
-    const stats = this.store.stats()
-    const files = this.store.recentDocuments(20).map(({ id, path, name, status }) => ({ id, path, name, status }))
-    return {
-      enabled: this.enabled, modelState: this.modelState, documents: stats.docs, chunks: stats.chunks,
-      vectors: stats.vectors, pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(),
-      errors: stats.errors, dbPath: this.dbPath, ...(this.lastError ? { lastError: this.lastError } : {}), files,
-    }
+    const stats = this.store.stats(); const files = this.store.recentDocuments(20).map(({ id, path, name, status }) => ({ id, path, name, status }))
+    return { enabled: this.enabled, modelState: this.modelState, documents: stats.docs, chunks: stats.chunks, vectors: stats.vectors, pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(), errors: stats.errors, dbPath: this.dbPath, ...(this.lastError ? { lastError: this.lastError } : {}), files }
   }
   indexingActivityStatus() {
-    const act = this.nowStatus(); const stats = this.store.stats(this.embeddingCoord.currentProfile.embeddingId)
-    const migration = this.embeddingMigration.progress()
-    return {
-      enabled: this.enabled, modelState: this.modelState,
-      ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }),
-      pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(),
-      errors: stats.errors, mode: 'balanced', activity: act,
-      activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId,
-      semanticCoverage: stats.semanticCoverage, migrationState: migration.state,
-    }
+    const act = this.nowStatus(); const stats = this.store.stats(this.embeddingCoord.currentProfile.embeddingId); const migration = this.embeddingMigration.progress()
+    return { enabled: this.enabled, modelState: this.modelState, ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(), errors: stats.errors, mode: 'balanced', activity: act, activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, semanticCoverage: stats.semanticCoverage, migrationState: migration.state }
   }
   embeddingSettings() { return this.embeddingCoord.getEmbeddingSettings() }
-  setEmbeddingProfile(id: EmbeddingProfileId) {
-    const res = this.embeddingCoord.setEmbeddingProfile(id)
-    if (res.changed) this.recycleWorker('Embedding profile changed')
-    return res
-  }
+  setEmbeddingProfile(id: EmbeddingProfileId) { const res = this.embeddingCoord.setEmbeddingProfile(id); if (res.changed) this.recycleWorker('Embedding profile changed'); return res }
   recycleEmbeddingWorker(): void { this.recycleWorker('Recycle worker requested') }
   getPdfMaxPages(): number { return this.extractionCoord.getPdfMaxPages() }
-  setPdfMaxPages(pages: number) { return this.extractionCoord.setPdfMaxPages(pages) }
+  setPdfMaxPages(pages: number) { return this.extractionCoord.setPdfMaxPages(pages, join(this.settingsDir, 'document-memory-pdf.json')) }
   getStorageDiagnostics(b?: string): DocumentIndexStorageDiagnostics { return this.store.getStorageDiagnostics(b) }
   getMigrationDiagnostics(): DocumentIndexMigrationDiagnostics {
-    const m = this.embeddingMigration.progress()
-    return { activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, state: m.state, completedChunks: m.completedChunks, totalChunks: m.totalChunks }
+    const m = this.embeddingMigration.progress(); return { activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, state: m.state, completedChunks: m.completedChunks, totalChunks: m.totalChunks }
   }
   setEnabled(enabled: boolean): DocumentMemoryStats {
     const changed = this.enabled !== enabled; this.enabled = enabled; saveEnabled(this.enabledSettingsPath, enabled)
@@ -369,16 +373,15 @@ export class DocumentMemoryManager {
     if (this.stopped || !this.enabled) return
     if (!this.activeExtractions.has(path) || this.activeGeneration.get(path) !== generation) return
     const hasWaiting = this.queue.some((p) => !this.deferred.has(p) && weightOf(this.activeBytes.get(p) ?? 0) <= 2)
-    if (hasWaiting) this.deferred.add(path)
+    if (hasWaiting) {
+      this.deferred.add(path); this.invalidatePath(path); this.enqueue(path, false, this.activeBytes.get(path))
+      this.recycleWorker('Made way for lighter documents')
+    }
   }
   private drain(): void {
     if (this.stopped || !this.enabled || isIndexingPaused()) return
-    if (!this.extracting && !this.embeddingCoord.isEmbedding() && this.queue.length > 0 && this.embeddingCoord.getQueueLength() < MAX_PENDING_EMBED_DOCUMENTS) {
-      void this.drainExtractions()
-    }
-    if (!this.embeddingCoord.isEmbedding() && !this.extracting && this.embeddingCoord.getQueueLength() > 0 && !this.embeddingCoord.isRetryPending() && (this.queue.length === 0 || this.embeddingCoord.getQueueLength() >= MAX_PENDING_EMBED_DOCUMENTS)) {
-      void this.embeddingCoord.drainEmbeddings((req, timeout) => this.ask(req, timeout, true) as any)
-    }
+    if (!this.extracting && !this.embeddingCoord.isEmbedding() && this.queue.length > 0 && this.embeddingCoord.getQueueLength() < MAX_PENDING_EMBED_DOCUMENTS) void this.drainExtractions()
+    if (!this.embeddingCoord.isEmbedding() && !this.extracting && this.embeddingCoord.getQueueLength() > 0 && !this.embeddingCoord.isRetryPending() && (this.queue.length === 0 || this.embeddingCoord.getQueueLength() >= MAX_PENDING_EMBED_DOCUMENTS)) void this.embeddingCoord.drainEmbeddings((req, timeout) => this.ask(req, timeout, true) as any)
   }
   private async drainExtractions(): Promise<void> {
     if (this.extracting || this.stopped) return
@@ -396,7 +399,8 @@ export class DocumentMemoryManager {
           const reply = await this.ask({ type: 'extract', path, maxPdfPages: this.extractionCoord.getPdfMaxPages(), ...(sliceMs ? { sliceMs } : {}) }, this.workerTimeoutMs, true)
           await this.applyExtractReply(path, reply, generation, epoch)
         } finally {
-          clearTimeout(heavyWatch); this.slicing.delete(path); this.activeBytes.delete(path)
+          clearTimeout(heavyWatch); this.slicing.delete(path)
+          if (!this.queued.has(path)) this.activeBytes.delete(path)
           if (this.activeGeneration.get(path) === generation) this.activeGeneration.delete(path)
           this.activeExtractions.delete(path); this.activeSince.delete(path); this.pendingCount--
         }
@@ -418,7 +422,7 @@ export class DocumentMemoryManager {
       await this.store.markErrorSliced(path, err, await statMeta(path), { shouldContinue: () => this.isCurrent(path, generation, epoch) })
       this.lastError = err; return
     }
-    const ext = reply.result; const prev = this.store.documentByPath(path); const lexicalOnly = !!ext.skipEmbeddings && ext.chunks.length > 0
+    const ext = reply.result; this.readProgress.delete(path); const prev = this.store.documentByPath(path); const lexicalOnly = !!ext.skipEmbeddings && ext.chunks.length > 0
     const resumeOffset = !lexicalOnly && prev?.mtimeMs === ext.mtimeMs && prev?.sizeBytes === ext.sizeBytes ? this.store.resumeVectorOffset(path, ext.hash, this.embeddingCoord.currentProfile.embeddingId) : null
     if (resumeOffset === null) {
       const written = await this.store.replaceDocumentSliced(path, {
@@ -450,8 +454,7 @@ export class DocumentMemoryManager {
     this.drain()
   }
   private recycleWorker(reason: string): void {
-    const worker = this.worker; if (!worker) return
-    this.worker = null; this.lastError = reason; void worker.terminate()
+    const worker = this.worker; if (!worker) return; this.worker = null; this.lastError = reason; void worker.terminate()
     for (const [id, pending] of this.waiting) { clearTimeout(pending.timer); pending.resolve({ id, error: reason }); this.waiting.delete(id) }
   }
   private ask(request: WorkerRequest, timeoutMs: number, recycleOnTimeout = false): Promise<WorkerReply | null> {
@@ -471,28 +474,25 @@ export class DocumentMemoryManager {
   private ensureWorker(): Worker {
     if (this.worker) return this.worker
     mkdirSync(this.cacheDir, { recursive: true })
-    const worker = this.workerFactory(this.pathToWorker, {
-      cacheDir: this.cacheDir, dbPath: this.dbPath, embeddingProfile: this.embeddingCoord.currentProfile.embeddingId,
-    } as any)
-    worker.on('message', (message: WorkerReply) => {
+    const worker = this.workerFactory(this.pathToWorker, { cacheDir: this.cacheDir, dbPath: this.dbPath, embeddingProfile: this.embeddingCoord.currentProfile.embeddingId } as any)
+    worker.on('message', (msg: WorkerReply) => {
       if (this.worker !== worker) return
-      if ('type' in message && message.type === 'model') {
-        this.modelState = message.state as any; this.modelProgress = (message as any).progress
-        if (message.error) this.lastError = message.error; else if (message.state === 'ready') this.lastError = undefined
+      if ('type' in msg && msg.type === 'model') {
+        this.modelState = msg.state as any; this.modelProgress = (msg as any).progress
+        if (msg.error) this.lastError = msg.error; else if (msg.state === 'ready') this.lastError = undefined
         return
       }
-      if (!('id' in message)) return
-      const pending = this.waiting.get(message.id); if (!pending) return
-      clearTimeout(pending.timer); this.waiting.delete(message.id); pending.resolve(message)
-      if ('error' in message && message.restartRequired === true) this.recycleWorker(message.error)
+      if (!('id' in msg)) return
+      const p = this.waiting.get(msg.id); if (!p) return
+      clearTimeout(p.timer); this.waiting.delete(msg.id); p.resolve(msg)
+      if ('error' in msg && msg.restartRequired === true) this.recycleWorker(msg.error)
     })
     const fail = (error: string) => {
       if (this.worker !== worker) return
       this.worker = null; this.modelState = 'error'; this.lastError = error
-      for (const [id, pending] of this.waiting) { clearTimeout(pending.timer); pending.resolve({ id, error }); this.waiting.delete(id) }
+      for (const [id, p] of this.waiting) { clearTimeout(p.timer); p.resolve({ id, error }); this.waiting.delete(id) }
     }
-    worker.on('error', (error) => fail(safeError(error)))
-    worker.on('exit', () => { if (!this.stopped && this.worker === worker) fail('Document memory worker exited unexpectedly.') })
+    worker.on('error', (e) => fail(safeError(e))); worker.on('exit', () => { if (!this.stopped && this.worker === worker) fail('Document memory worker exited unexpectedly.') })
     this.worker = worker; return worker
   }
 }

@@ -49,9 +49,13 @@ export function readOutcome(doc: StoredDocument | null | undefined): { ok: boole
   return doc?.status === 'pending' ? { ok: false, error: 'not finished' } : { ok: true }
 }
 
+import { readPdfPages, writePdfPages } from '../pdf-pages'
+import { clampPdfPages, DEFAULT_PDF_PAGES } from '../chunks'
+
 export interface ExtractionCoordinatorOptions {
   store: DocumentMemoryStore
   pdfMaxPages?: number
+  pdfPagesPath?: string
   workerTimeoutMs?: number
 }
 
@@ -60,7 +64,7 @@ export class ExtractionCoordinator {
   private readonly workerTimeoutMs: number
 
   constructor(private readonly options: ExtractionCoordinatorOptions) {
-    this.pdfMaxPages = options.pdfMaxPages ?? 100
+    this.pdfMaxPages = options.pdfPagesPath ? readPdfPages(options.pdfPagesPath) : (options.pdfMaxPages ?? DEFAULT_PDF_PAGES)
     this.workerTimeoutMs = options.workerTimeoutMs ?? 60_000
   }
 
@@ -72,13 +76,13 @@ export class ExtractionCoordinator {
     return this.pdfMaxPages
   }
 
-  setPdfMaxPages(maxPages: number): number {
+  setPdfMaxPages(maxPages: number, settingsPath?: string): { pages: number; requeued: number } {
+    const clamped = clampPdfPages(maxPages)
     const prior = this.pdfMaxPages
-    this.pdfMaxPages = Math.max(1, Math.min(1000, maxPages))
-    if (this.pdfMaxPages > prior) {
-      return this.store.requeueTruncatedPdfs()
-    }
-    return 0
+    this.pdfMaxPages = clamped
+    if (settingsPath) writePdfPages(settingsPath, clamped)
+    const requeued = clamped > prior ? this.store.requeueTruncatedPdfs() : 0
+    return { pages: clamped, requeued }
   }
 
   retryDocument(id: number): string | null {

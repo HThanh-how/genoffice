@@ -13,16 +13,23 @@ export interface IntegrityCheckResult {
  */
 export function verifyDatabaseIntegrity(dbOrPath: string | DatabaseSync): IntegrityCheckResult {
   const isPath = typeof dbOrPath === 'string'
-  const db = isPath ? new DatabaseSync(dbOrPath) : dbOrPath
+  let db: DatabaseSync | null = null
   try {
+    db = isPath ? new DatabaseSync(dbOrPath) : dbOrPath
     const integrityRow = db.prepare('PRAGMA integrity_check').get() as { integrity_check?: string }
     const integrity = integrityRow?.integrity_check ?? 'unknown'
     const foreignKeyErrors = db.prepare('PRAGMA foreign_key_check').all()
     const ok = integrity === 'ok' && foreignKeyErrors.length === 0
     return { ok, integrity, foreignKeyErrors }
+  } catch (err: any) {
+    return { ok: false, integrity: err?.message ?? 'unknown', foreignKeyErrors: [err?.message] }
   } finally {
-    if (isPath) {
-      db.close()
+    if (isPath && db) {
+      try {
+        db.close()
+      } catch {
+        // ignore
+      }
     }
   }
 }

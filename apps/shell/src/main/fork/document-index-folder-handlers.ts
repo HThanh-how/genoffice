@@ -149,7 +149,8 @@ export function registerFolderAndModelHandlers(
     const memory = getDocumentMemory()
     let requeued = 0
     if (memory) {
-      requeued = memory.setPdfMaxPages(pages)
+      const res = memory.setPdfMaxPages(pages)
+      requeued = typeof res === 'number' ? res : (res?.requeued ?? 0)
       synced = true
       invalidateCounts()
     }
