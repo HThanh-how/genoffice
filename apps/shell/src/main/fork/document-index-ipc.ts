@@ -55,6 +55,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     getIssueReader: reader,
     getFolderCounts: () => folderCounts,
     dbPath: deps.dbPath,
+    settingsPath: deps.settingsPath,
   }
 
   registerFolderAndModelHandlers(deps, () => folderCounts.invalidate())

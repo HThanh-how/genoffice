@@ -3,8 +3,17 @@ import type { DocumentMemoryManager } from '../document-memory/manager'
 import { foldFolderProgress } from '../document-memory/folder-progress'
 import { ALL_FOLDERS, type IndexIssueReader, type IndexIssueSummary } from '../document-memory/issue-reader'
 import { shortCause } from '../document-memory/issues'
-import { currentIndexingPolicy } from './indexing-policy-bus'
+import { currentIndexingPolicy, effectiveStateOf } from './indexing-policy-bus'
 import { getEventLoopMetrics, getSqliteTimingSummary } from '../document-memory/sqlite-timing'
+import { readAppSettings } from '../app-settings'
+import {
+  DEFAULT_INDEXING_MODE,
+  DEFAULT_PAUSE_ON_BATTERY,
+  indexingModeFrom,
+  pauseOnBatteryFrom,
+  type IndexingMode,
+  type IndexingModeState,
+} from '../../shared/fork/indexing-mode'
 import type { DocumentMemoryStatus, HomeIndexingActivity } from '../../shared/home-api'
 import type {
   DocumentIndexSnapshot,
@@ -21,20 +30,84 @@ export interface SnapshotContext {
   getIssueReader: () => IndexIssueReader
   getFolderCounts: () => { get: (root: string, fetcher: () => FolderChunkProgress) => FolderChunkProgress }
   dbPath: () => string
+  settingsPath?: string | (() => string)
 }
 
-let snapshotCache: { data: DocumentIndexSnapshot; expiresAt: number } | null = null
-const SNAPSHOT_CACHE_TTL_MS = 1500
+/** In-memory TTL cache with support for forced refresh and invalidation. */
+export class IndexStatusCache<T> {
+  private entry: { data: T; expiresAt: number } | null = null
 
-let diagnosticsCache: { data: DocumentIndexDiagnostics; expiresAt: number } | null = null
-const DIAGNOSTICS_CACHE_TTL_MS = 60_000
+  constructor(public readonly ttlMs: number) {}
 
-export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: boolean): DocumentIndexSnapshot {
-  const now = Date.now()
-  if (!forceRefresh && snapshotCache && now < snapshotCache.expiresAt) {
-    return snapshotCache.data
+  get(forceRefresh = false): T | null {
+    if (!forceRefresh && this.entry && Date.now() < this.entry.expiresAt) {
+      return this.entry.data
+    }
+    return null
   }
 
+  set(data: T): T {
+    this.entry = {
+      data,
+      expiresAt: Date.now() + this.ttlMs,
+    }
+    return data
+  }
+
+  clear(): void {
+    this.entry = null
+  }
+}
+
+export const SNAPSHOT_CACHE_TTL_MS = 2000
+export const DIAGNOSTICS_CACHE_TTL_MS = 60_000
+
+export const snapshotCache = new IndexStatusCache<DocumentIndexSnapshot>(SNAPSHOT_CACHE_TTL_MS)
+export const diagnosticsCache = new IndexStatusCache<DocumentIndexDiagnostics>(DIAGNOSTICS_CACHE_TTL_MS)
+
+function emptyStorageDiagnostics(): DocumentIndexStorageDiagnostics {
+  return {
+    activeDbSizeBytes: 0,
+    walSizeBytes: 0,
+    pageSize: 4096,
+    pageCount: 0,
+    freelistCount: 0,
+    estimatedReclaimableBytes: 0,
+    v2BackupSizeBytes: null,
+    schemaVersion: '',
+    migrationStatus: 'none',
+    topOffendersByChunks: [],
+    topOffendersBySize: [],
+  }
+}
+
+function getSnapshotMode(ctx: SnapshotContext): IndexingModeState {
+  let mode: IndexingMode = DEFAULT_INDEXING_MODE
+  let pauseOnBattery = DEFAULT_PAUSE_ON_BATTERY
+  if (ctx.settingsPath) {
+    try {
+      const sPath = typeof ctx.settingsPath === 'function' ? ctx.settingsPath() : ctx.settingsPath
+      const stored = readAppSettings(sPath)
+      mode = indexingModeFrom(stored)
+      pauseOnBattery = pauseOnBatteryFrom(stored)
+    } catch {
+      // ignore
+    }
+  }
+  return {
+    mode,
+    pauseOnBattery,
+    effective: effectiveStateOf(currentIndexingPolicy()),
+  }
+}
+
+export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: boolean): DocumentIndexSnapshot {
+  const cached = snapshotCache.get(forceRefresh)
+  if (cached) {
+    return cached
+  }
+
+  const now = Date.now()
   const documentMemory = ctx.getDocumentMemory()
   const folder = ctx.getFolderScan()?.status() ?? null
   const memoryStatus: DocumentMemoryStatus = documentMemory?.status() ?? {
@@ -65,7 +138,7 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
     memory: {
       enabled: documentMemory?.isEnabled() ?? false,
       ...(cpuMode ? { cpuMode } : {}),
-      modelState: 'ready',
+      modelState: memoryStatus.modelState,
       pending: actMem?.activity.queued ?? 0,
       errors: memoryStatus.errors,
       ...(modelError ? { lastError: modelError } : {}),
@@ -110,68 +183,35 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
     cpuShare: policy?.cpuShare ?? 1,
   }
 
-  // Lightweight snapshot for 2s polling: does NOT compute heavy storage dbstat or top offenders!
-  const lightStorage: DocumentIndexStorageDiagnostics = {
-    activeDbSizeBytes: 0,
-    walSizeBytes: 0,
-    pageSize: 4096,
-    pageCount: 0,
-    freelistCount: 0,
-    estimatedReclaimableBytes: 0,
-    v2BackupSizeBytes: null,
-    schemaVersion: '3',
-    migrationStatus: 'completed',
-    topOffendersByChunks: [],
-    topOffendersBySize: [],
-  }
+  // Heavy diagnostics (table analysis, top offenders) cached for 60s
+  const diagnostics = getDocumentIndexDiagnostics(ctx, forceRefresh)
 
-  const migration: DocumentIndexMigrationDiagnostics = documentMemory?.getMigrationDiagnostics() ?? {
-    activeEmbeddingSpace: 'standard',
-    state: 'idle',
-    completedChunks: 0,
-    totalChunks: 0,
-  }
+  const modeState = getSnapshotMode(ctx)
 
   const snapshot: DocumentIndexSnapshot = {
     memory: memoryStatus,
     activity,
-    mode: null,
+    mode: modeState,
     issues,
     now: nowState,
-    storage: lightStorage,
+    storage: diagnostics.storage,
     performance,
-    migration,
+    migration: diagnostics.migration,
     timestamp: now,
   }
 
-  snapshotCache = {
-    data: snapshot,
-    expiresAt: now + SNAPSHOT_CACHE_TTL_MS,
-  }
-
-  return snapshot
+  return snapshotCache.set(snapshot)
 }
 
 export function getDocumentIndexDiagnostics(ctx: SnapshotContext, forceRefresh?: boolean): DocumentIndexDiagnostics {
-  const now = Date.now()
-  if (!forceRefresh && diagnosticsCache && now < diagnosticsCache.expiresAt) {
-    return diagnosticsCache.data
+  const cached = diagnosticsCache.get(forceRefresh)
+  if (cached) {
+    return cached
   }
 
+  const now = Date.now()
   const memory = ctx.getDocumentMemory()
-  const storage = memory?.getStorageDiagnostics() ?? {
-    activeDbSizeBytes: 0,
-    walSizeBytes: 0,
-    pageSize: 4096,
-    pageCount: 0,
-    freelistCount: 0,
-    estimatedReclaimableBytes: 0,
-    v2BackupSizeBytes: null,
-    schemaVersion: '3',
-    migrationStatus: 'none',
-    topOffendersByChunks: [],
-    topOffendersBySize: [],
-  }
+  const storage = memory?.getStorageDiagnostics() ?? emptyStorageDiagnostics()
 
   const migration: DocumentIndexMigrationDiagnostics = memory?.getMigrationDiagnostics() ?? {
     activeEmbeddingSpace: 'standard',
@@ -186,10 +226,5 @@ export function getDocumentIndexDiagnostics(ctx: SnapshotContext, forceRefresh?:
     timestamp: now,
   }
 
-  diagnosticsCache = {
-    data: diagnostics,
-    expiresAt: now + DIAGNOSTICS_CACHE_TTL_MS,
-  }
-
-  return diagnostics
+  return diagnosticsCache.set(diagnostics)
 }

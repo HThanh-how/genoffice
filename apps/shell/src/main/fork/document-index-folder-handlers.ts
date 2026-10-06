@@ -1,5 +1,6 @@
 import type { IpcMain } from 'electron'
 import { availableParallelism, totalmem } from 'node:os'
+import { dirname, join } from 'node:path'
 import {
   DOCUMENT_INDEX_CHANNELS,
   type EmbeddingModelState,
@@ -12,18 +13,41 @@ import {
   recommendEmbeddingProfile,
   type EmbeddingProfileId,
 } from '../document-memory/embedding-profiles'
-import { DEFAULT_PDF_PAGES, LARGE_PDF_PAGES } from '../document-memory/chunks'
+import { clampPdfPages, DEFAULT_PDF_PAGES, LARGE_PDF_PAGES } from '../document-memory/chunks'
+import { readPdfPages, writePdfPages } from '../document-memory/pdf-pages'
 import {
   isKnownSearchSource,
   type KnownSearchSourceEntry,
 } from '../document-memory/known-sources'
 import type { DocumentIndexIpcDeps } from './document-index-ipc'
 
+function resolvePdfPagesPath(deps: DocumentIndexIpcDeps): string {
+  if (deps.settingsPath) {
+    const sPath = typeof deps.settingsPath === 'function' ? deps.settingsPath() : deps.settingsPath
+    const dir = sPath.endsWith('.json') ? dirname(sPath) : sPath
+    return join(dir, 'document-memory-pdf.json')
+  }
+  return join(dirname(deps.dbPath()), 'document-memory-pdf.json')
+}
+
 export function registerFolderAndModelHandlers(
   deps: DocumentIndexIpcDeps,
   invalidateCounts: () => void,
 ): void {
   const { ipcMain, getDocumentMemory, getFolderScan } = deps
+  const pdfConfigFile = resolvePdfPagesPath(deps)
+  let synced = false
+
+  const syncMemoryPdfPages = () => {
+    const memory = getDocumentMemory()
+    if (memory && !synced) {
+      const persisted = readPdfPages(pdfConfigFile)
+      memory.setPdfMaxPages(persisted)
+      synced = true
+    }
+  }
+
+  syncMemoryPdfPages()
 
   const knownRoot = (root: unknown): string => {
     if (typeof root !== 'string' || !getFolderScan()?.folders().some((f) => f.root === root)) {
@@ -110,13 +134,25 @@ export function registerFolderAndModelHandlers(
   })
 
   const pdfPagesState = (pages: number): PdfPagesState => ({ pages, default: DEFAULT_PDF_PAGES, max: LARGE_PDF_PAGES })
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getPdfPages, () => pdfPagesState(getDocumentMemory()?.getPdfMaxPages() ?? DEFAULT_PDF_PAGES))
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setPdfPages, (_event, pages: unknown) => {
-    if (typeof pages !== 'number' || !Number.isFinite(pages)) throw new Error('Invalid page count')
+
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getPdfPages, (): PdfPagesState => {
+    syncMemoryPdfPages()
     const memory = getDocumentMemory()
-    if (!memory) return { ...pdfPagesState(DEFAULT_PDF_PAGES), requeued: 0 }
-    const res = memory.setPdfMaxPages(pages)
-    invalidateCounts()
-    return { ...pdfPagesState(res), requeued: res }
+    const pages = memory ? memory.getPdfMaxPages() : readPdfPages(pdfConfigFile)
+    return pdfPagesState(pages)
+  })
+
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.setPdfPages, (_event, rawPages: unknown) => {
+    if (typeof rawPages !== 'number' || !Number.isFinite(rawPages)) throw new Error('Invalid page count')
+    const pages = clampPdfPages(rawPages)
+    writePdfPages(pdfConfigFile, pages)
+    const memory = getDocumentMemory()
+    let requeued = 0
+    if (memory) {
+      requeued = memory.setPdfMaxPages(pages)
+      synced = true
+      invalidateCounts()
+    }
+    return { ...pdfPagesState(pages), requeued }
   })
 }

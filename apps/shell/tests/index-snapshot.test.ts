@@ -1,10 +1,19 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { getEventLoopMetrics, getSqliteTimingSummary } from '../src/main/document-memory/sqlite-timing'
+import {
+  getDocumentIndexSnapshot,
+  IndexStatusCache,
+  snapshotCache,
+  diagnosticsCache,
+} from '../src/main/fork/document-index-snapshot-service'
+import { registerFolderAndModelHandlers } from '../src/main/fork/document-index-folder-handlers'
+import { DOCUMENT_INDEX_CHANNELS } from '../src/shared/fork/document-index-api'
+import { IndexIssueReader } from '../src/main/document-memory/issue-reader'
 
 describe('Document Memory Snapshot & Consolidated Telemetry Suite (IT-4)', () => {
   let directory: string
@@ -89,5 +98,95 @@ describe('Document Memory Snapshot & Consolidated Telemetry Suite (IT-4)', () =>
     expect(eventLoop).toHaveProperty('p95')
     expect(eventLoop).toHaveProperty('p99')
     expect(eventLoop).toHaveProperty('max')
+  })
+
+  it('IndexStatusCache respects TTL and forceRefresh', () => {
+    const cache = new IndexStatusCache<string>(100)
+    expect(cache.get()).toBeNull()
+    cache.set('initial')
+    expect(cache.get()).toBe('initial')
+    expect(cache.get(true)).toBeNull()
+  })
+
+  it('provides truthful snapshot without hardcoded mock values', () => {
+    snapshotCache.clear()
+    diagnosticsCache.clear()
+
+    const issueReader = new IndexIssueReader(dbPath)
+    const ctx = {
+      getDocumentMemory: () => null,
+      getFolderScan: () => null,
+      getIssueReader: () => issueReader,
+      getFolderCounts: () => ({
+        get: () => ({
+          completedChunks: 0,
+          totalChunks: 0,
+          totalFiles: 0,
+          readyFiles: 0,
+          pendingFiles: 0,
+          errorFiles: 0,
+          emptyFiles: 0,
+        }),
+      }),
+      dbPath: () => dbPath,
+    }
+
+    const snap = getDocumentIndexSnapshot(ctx)
+    // mode must not be null
+    expect(snap.mode).not.toBeNull()
+    expect(snap.mode?.mode).toBe('balanced')
+    expect(snap.mode?.pauseOnBattery).toBe(true)
+
+    // modelState must reflect memoryStatus ('not-loaded', not hardcoded 'ready')
+    expect(snap.activity.memory.modelState).toBe('not-loaded')
+    expect(snap.memory.modelState).toBe('not-loaded')
+
+    // storage schemaVersion should not be hardcoded '3' when memory is null
+    expect(snap.storage.schemaVersion).toBe('')
+
+    issueReader.close()
+  })
+
+  it('loads, saves and returns truthful PDF pages state and contract', async () => {
+    const handlers = new Map<string, Function>()
+    const fakeIpcMain = {
+      handle: (ch: string, fn: Function) => handlers.set(ch, fn),
+    }
+
+    const pdfConfigFile = join(directory, 'document-memory-pdf.json')
+    writeFileSync(pdfConfigFile, JSON.stringify({ maxPages: 55 }), 'utf8')
+
+    registerFolderAndModelHandlers(
+      {
+        ipcMain: fakeIpcMain as any,
+        getDocumentMemory: () => null,
+        getFolderScan: () => null,
+        dbPath: () => dbPath,
+        settingsPath: () => join(directory, 'app-settings.json'),
+      },
+      () => {},
+    )
+
+    const getHandler = handlers.get(DOCUMENT_INDEX_CHANNELS.getPdfPages)!
+    const setHandler = handlers.get(DOCUMENT_INDEX_CHANNELS.setPdfPages)!
+
+    expect(getHandler).toBeDefined()
+    expect(setHandler).toBeDefined()
+
+    const initial = await getHandler()
+    expect(initial.pages).toBe(55)
+    expect(initial.default).toBe(30)
+    expect(initial.max).toBe(400)
+
+    const updated = await setHandler({}, 75)
+    expect(updated).toEqual({
+      pages: 75,
+      default: 30,
+      max: 400,
+      requeued: 0,
+    })
+
+    const persisted = JSON.parse(readFileSync(pdfConfigFile, 'utf8'))
+    expect(persisted.maxPages).toBe(75)
   })
 })
