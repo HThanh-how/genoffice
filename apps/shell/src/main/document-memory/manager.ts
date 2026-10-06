@@ -12,6 +12,7 @@ import workerPath from './worker?modulePath'
 import type { PdfScanInfo } from './ocr-sidecar'
 import { EmbeddingMigration } from './embedding-migration'
 import { FileStabilityGate, type FileStabilityGateOptions } from './file-stability'
+import { BackgroundWorkGate, BackgroundWorkPriority } from './background-work-gate'
 import { ChunkUpgradeCoordinator, type DocumentNeedingUpgrade } from './chunk-upgrade'
 import { QueryEmbeddingCache } from './query-embedding-cache'
 import { memoryTierFromTotal, MEMORY_TIER_POLICIES, type MemoryTier } from './memory-tier'
@@ -267,6 +268,7 @@ export class DocumentMemoryManager {
   private readonly embeddingMigration: EmbeddingMigration
   private readonly chunkUpgrade: ChunkUpgradeCoordinator
   private readonly stabilityGate: FileStabilityGate
+  private readonly backgroundGate = new BackgroundWorkGate()
   private readonly stabilityRetries = new Map<string, { timer: NodeJS.Timeout; attempt: number }>()
   private readonly stabilityRetryScheduleMs: number[]
   private readonly skippedMigrationDocs = new Set<number>()
@@ -396,7 +398,9 @@ export class DocumentMemoryManager {
   private async runCounterBackfill(): Promise<void> {
     try {
       await yieldToEventLoop()
-      while (!this.stopped && this.store.backfillCounters()) await yieldToEventLoop()
+      while (!this.stopped && this.backgroundGate.canRun(BackgroundWorkPriority.P4_HOUSEKEEPING) && this.store.backfillCounters()) {
+        await yieldToEventLoop()
+      }
     } catch {
       // Counting is an optimisation: aggregates fall back to exact index counts meanwhile.
     }
@@ -408,7 +412,7 @@ export class DocumentMemoryManager {
    * the segment count stays far below the point where FTS5 forces a merge on its own.
    */
   private scheduleFtsMaintenance(): void {
-    if (this.stopped || this.ftsTimer) return
+    if (this.stopped || this.ftsTimer || !this.backgroundGate.canRun(BackgroundWorkPriority.P4_HOUSEKEEPING)) return
     this.ftsTimer = setTimeout(() => {
       this.ftsTimer = null
       void this.runFtsMaintenance()
@@ -417,7 +421,7 @@ export class DocumentMemoryManager {
   }
 
   private async runFtsMaintenance(): Promise<void> {
-    if (this.stopped || this.ftsRunning) return
+    if (this.stopped || this.ftsRunning || !this.backgroundGate.canRun(BackgroundWorkPriority.P4_HOUSEKEEPING)) return
     this.ftsRunning = true
     try {
       const reply = await this.ask({ type: 'fts-maintenance-step' }, 30_000)
@@ -430,7 +434,7 @@ export class DocumentMemoryManager {
         'more' in reply.result
       ) {
         const { more } = reply.result as { more: boolean; durationMs: number }
-        if (more && !this.stopped) {
+        if (more && !this.stopped && this.backgroundGate.canRun(BackgroundWorkPriority.P4_HOUSEKEEPING)) {
           this.scheduleFtsMaintenance()
         }
       }
@@ -1274,6 +1278,7 @@ export class DocumentMemoryManager {
     this.clearedListeners.clear()
     this.clearAllStabilityRetries()
     this.stabilityGate.dispose()
+    this.backgroundGate.dispose()
     this.chunkUpgrade.pause()
     this.skippedMigrationDocs.clear()
     this.queue.length = 0
