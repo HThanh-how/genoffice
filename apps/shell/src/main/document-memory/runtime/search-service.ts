@@ -1,5 +1,6 @@
 import { statSync } from 'node:fs'
 import type { DocumentMemoryStore, DocumentMemoryHit } from '../store'
+import { QueryEmbeddingCache } from '../query-embedding-cache'
 
 export type FreshDocumentMemoryHit = DocumentMemoryHit & { stale?: boolean; missing?: boolean }
 
@@ -12,6 +13,7 @@ export interface SearchServiceOptions {
 
 export class SearchService {
   private readonly offeredPaths = new Set<string>()
+  private readonly queryCache = new QueryEmbeddingCache(64)
 
   constructor(private readonly options: SearchServiceOptions) {}
 
@@ -38,10 +40,26 @@ export class SearchService {
     let finalHits = lexicalHits
     if (this.options.askEmbed) {
       try {
-        const vector = await this.options.askEmbed(query)
+        const spaceId = activeEmbeddingModel ?? 'default'
+        let vector: number[] | null = this.queryCache.get(spaceId, query) ?? null
+        if (!vector) {
+          vector = await this.options.askEmbed(query)
+          if (vector && vector.length) {
+            this.queryCache.set(spaceId, query, vector)
+          }
+        }
         if (vector && vector.length) {
           const hybridRaw = this.store.search(query, vector, limit, activeEmbeddingModel)
           finalHits = await annotate(hybridRaw)
+          const stalePaths = new Set(lexicalHits.filter((h) => h.stale).map((h) => h.path))
+          const missingPaths = new Set(lexicalHits.filter((h) => h.missing).map((h) => h.path))
+          if (stalePaths.size > 0 || missingPaths.size > 0) {
+            finalHits = finalHits.map((h) => ({
+              ...h,
+              stale: h.stale || stalePaths.has(h.path),
+              missing: h.missing || missingPaths.has(h.path),
+            }))
+          }
         }
       } catch {
         // Fallback to lexical hits if embedding fails

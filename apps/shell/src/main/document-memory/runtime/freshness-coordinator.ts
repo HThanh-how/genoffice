@@ -1,8 +1,14 @@
+import { statSync, createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import { resolve, basename } from 'node:path'
-import type { DocumentMemoryStore } from '../store'
+import { resolve, extname } from 'node:path'
+import { createHash } from 'node:crypto'
+import type { DocumentMemoryStore, DocumentMemoryHit, StoredDocument } from '../store'
+import type { FreshDocumentMemoryHit } from './search-service'
+import type { FileStabilityGate } from '../file-stability'
 import { volumeRootOf } from '../volume-root'
 import { discoveredPathAdmission } from '../artifact-policy'
+import { SUPPORTED_EXTENSIONS } from '../scan-policy'
+import { MAX_DOCUMENT_BYTES } from '../folder-scan'
 
 export type StatOutcome =
   | { kind: 'file'; mtimeMs: number; sizeBytes: number }
@@ -19,8 +25,53 @@ export interface MissingCandidate {
 export interface FreshnessCoordinatorOptions {
   store: DocumentMemoryStore
   tombstoneGraceMs?: number
-  onEnqueue?: (path: string, prioritize?: boolean) => void
+  onEnqueue?: (path: string, prioritize?: boolean, sizeBytes?: number) => void
   onTombstone?: (path: string) => Promise<void>
+  onInvalidatePath?: (path: string) => void
+  isStopped?: () => boolean
+  isEnabled?: () => boolean
+}
+
+const RENAME_HASH_MAX_BYTES = 64 * 1024 * 1024
+const FRESHNESS_STAT_TIMEOUT_MS = 1_500
+
+function pathKey(p: string): string {
+  return process.platform === 'win32' ? p.toLowerCase() : p
+}
+
+function safeStat(path: string): { mtimeMs: number; sizeBytes: number } | null {
+  try {
+    const s = statSync(path)
+    return s.isFile() ? { mtimeMs: s.mtimeMs, sizeBytes: s.size } : null
+  } catch {
+    return null
+  }
+}
+
+function addCandidate(map: Map<number, MissingCandidate[]>, c: MissingCandidate): void {
+  const list = map.get(c.sizeBytes)
+  if (list) list.push(c)
+  else map.set(c.sizeBytes, [c])
+}
+
+function createYielder(intervalMs = 8): () => Promise<void> {
+  let last = Date.now()
+  return async () => {
+    if (Date.now() - last >= intervalMs) {
+      await new Promise<void>((r) => setImmediate(r))
+      last = Date.now()
+    }
+  }
+}
+
+async function hashFile(filePath: string): Promise<string> {
+  const hash = createHash('sha256')
+  const stream = createReadStream(filePath)
+  return new Promise((resolve, reject) => {
+    stream.on('data', (data) => hash.update(data))
+    stream.on('end', () => resolve(hash.digest('hex')))
+    stream.on('error', reject)
+  })
 }
 
 export class FreshnessCoordinator {
@@ -28,6 +79,8 @@ export class FreshnessCoordinator {
     string,
     { candidate: MissingCandidate | null; timer: NodeJS.Timeout }
   >()
+  private readonly stabilityRetries = new Map<string, { timer: NodeJS.Timeout }>()
+  private readonly stabilityRetryScheduleMs = [15_000, 30_000, 60_000]
   private readonly tombstoneGraceMs: number
 
   constructor(private readonly options: FreshnessCoordinatorOptions) {
@@ -40,14 +93,28 @@ export class FreshnessCoordinator {
 
   indexDiscoveredFile(
     path: string,
-    meta: { mtimeMs: number; sizeBytes: number },
+    metadata?: { mtimeMs: number; sizeBytes: number },
   ): boolean {
+    if (this.options.isStopped?.()) return false
     const p = resolve(path)
     const admission = discoveredPathAdmission(p)
     if (!admission.allowed) return false
-    const needed = this.store.enrollDiscovered(p, meta.mtimeMs, meta.sizeBytes)
-    if (needed) this.options.onEnqueue?.(p)
-    return needed
+    const current = metadata ?? safeStat(p)
+    if (!current) return false
+    const needsIndex = this.store.enrollDiscovered(p, current.mtimeMs, current.sizeBytes)
+    const document = this.store.documentByPath(p)
+    if (!document || document.status === 'excluded') return false
+    if (
+      needsIndex &&
+      (this.options.isEnabled?.() ?? true) &&
+      (document.status === 'pending' ||
+        document.status === 'text-only' ||
+        document.mtimeMs !== current.mtimeMs ||
+        document.sizeBytes !== current.sizeBytes)
+    ) {
+      this.options.onEnqueue?.(p, false, current.sizeBytes)
+    }
+    return needsIndex
   }
 
   prioritizeFolder(folder: string): number {
@@ -63,11 +130,79 @@ export class FreshnessCoordinator {
     return moved
   }
 
+  async reconcileFolder(
+    root: string,
+    files: Map<string, { mtimeMs: number; sizeBytes: number }>,
+  ): Promise<{ added: number; changed: number; moved: number; removed: number }> {
+    const result = { added: 0, changed: 0, moved: 0, removed: 0 }
+    if (this.options.isStopped?.()) return result
+    const seen = new Set<string>()
+    for (const path of files.keys()) seen.add(pathKey(path))
+    const candidates = new Map<number, MissingCandidate[]>()
+    const gone: StoredDocument[] = []
+    const maybeYield = createYielder()
+
+    for (let afterId = 0; ;) {
+      const page = this.store.documentsUnderPage(root, afterId, 500)
+      if (!page.length) break
+      afterId = page[page.length - 1]!.id
+      for (const row of page) {
+        if (seen.has(pathKey(row.path))) continue
+        await maybeYield()
+        if (this.options.isStopped?.()) return result
+        if (!(await this.isGone(row.path))) continue
+        gone.push(row)
+        if (row.hash && row.sizeBytes !== null)
+          addCandidate(candidates, { path: row.path, sizeBytes: row.sizeBytes, hash: row.hash })
+      }
+      await maybeYield()
+    }
+
+    for (const [path, meta] of files) {
+      if (this.options.isStopped?.()) return result
+      await maybeYield()
+      if (this.store.documentByPath(path)) {
+        if (this.indexDiscoveredFile(path, meta)) result.changed++
+        continue
+      }
+      const outcome = await this.enrollNew(path, meta, candidates)
+      if (outcome === 'moved') result.moved++
+      else if (outcome === 'indexed') result.added++
+    }
+
+    for (const row of gone) {
+      if (this.options.isStopped?.()) return result
+      if (!this.store.documentByPath(row.path)) continue
+      await this.tombstone(row.path)
+      result.removed++
+    }
+    return result
+  }
+
+  private async enrollNew(
+    path: string,
+    meta: { mtimeMs: number; sizeBytes: number },
+    candidates: Map<number, MissingCandidate[]>,
+  ): Promise<'moved' | 'indexed' | 'skipped'> {
+    const list = candidates.get(meta.sizeBytes)
+    if (list?.length && meta.sizeBytes <= RENAME_HASH_MAX_BYTES) {
+      const hash = await hashFile(path).catch(() => null)
+      const index = hash ? list.findIndex((candidate) => candidate.hash === hash) : -1
+      if (index >= 0 && this.moveIndexed(list[index]!.path, path, meta)) {
+        list.splice(index, 1)
+        return 'moved'
+      }
+    }
+    return this.indexDiscoveredFile(path, meta) ? 'indexed' : 'skipped'
+  }
+
   moveIndexed(
     oldPath: string,
     newPath: string,
     meta: { mtimeMs: number; sizeBytes: number },
   ): boolean {
+    if (this.options.isStopped?.()) return false
+    this.options.onInvalidatePath?.(oldPath)
     const pending = this.missing.get(oldPath)
     if (pending) {
       clearTimeout(pending.timer)
@@ -87,6 +222,14 @@ export class FreshnessCoordinator {
     return true
   }
 
+  async tombstone(path: string): Promise<void> {
+    if (this.options.onTombstone) {
+      await this.options.onTombstone(path)
+    } else {
+      await this.store.tombstoneSliced(path)
+    }
+  }
+
   markMissing(path: string): void {
     if (this.missing.has(path)) return
     const doc = this.store.documentByPath(path)
@@ -101,8 +244,154 @@ export class FreshnessCoordinator {
   private async finalizeMissing(path: string): Promise<void> {
     this.missing.delete(path)
     if (await this.isGone(path)) {
-      await this.options.onTombstone?.(path)
+      await this.tombstone(path)
     }
+  }
+
+  async annotateFreshness(hits: DocumentMemoryHit[]): Promise<FreshDocumentMemoryHit[]> {
+    const byPath = new Map<string, Promise<'fresh' | 'stale' | 'missing'>>()
+    for (const hit of hits) {
+      if (!byPath.has(hit.path)) byPath.set(hit.path, this.checkFreshness(hit))
+    }
+    const outcomes = new Map<string, 'fresh' | 'stale' | 'missing'>()
+    for (const [path, outcome] of byPath) outcomes.set(path, await outcome)
+    for (const [path, outcome] of outcomes) {
+      if (this.options.isStopped?.()) break
+      if (outcome === 'stale') this.options.onEnqueue?.(path, true)
+      else if (outcome === 'missing') this.markMissing(path)
+    }
+    return hits.map((hit) => {
+      const outcome = outcomes.get(hit.path) ?? 'fresh'
+      return { ...hit, stale: outcome !== 'fresh', missing: outcome === 'missing' }
+    })
+  }
+
+  private async checkFreshness(hit: DocumentMemoryHit): Promise<'fresh' | 'stale' | 'missing'> {
+    if (hit.mtimeMs === null || hit.sizeBytes === null) return 'fresh'
+    const current = await this.statOutcome(hit.path, FRESHNESS_STAT_TIMEOUT_MS)
+    if (current.kind === 'gone') return 'missing'
+    if (current.kind === 'file')
+      return current.mtimeMs !== hit.mtimeMs || current.sizeBytes !== hit.sizeBytes
+        ? 'stale'
+        : 'fresh'
+    return 'fresh'
+  }
+
+  async handleFileEvents(paths: string[], stabilityGate: FileStabilityGate): Promise<void> {
+    if (this.options.isStopped?.()) return
+    const present: Array<{ path: string; meta: { mtimeMs: number; sizeBytes: number } }> = []
+
+    await Promise.all(
+      paths.map(async (raw) => {
+        if (this.options.isStopped?.()) return
+        const path = resolve(raw)
+        if (this.store.documentByPath(path)?.status === 'excluded') {
+          this.clearStabilityRetry(path)
+          return
+        }
+        const outcome = await stabilityGate.waitForStability(path)
+        if (this.options.isStopped?.()) return
+        if (outcome.kind === 'gone') {
+          this.clearStabilityRetry(path)
+          if (this.store.documentByPath(path)) this.markMissing(path)
+        } else if (
+          outcome.kind === 'stable' &&
+          SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase()) &&
+          outcome.file.sizeBytes <= MAX_DOCUMENT_BYTES
+        ) {
+          this.clearStabilityRetry(path)
+          present.push({
+            path,
+            meta: { mtimeMs: outcome.file.mtimeMs, sizeBytes: outcome.file.sizeBytes },
+          })
+        } else if (outcome.kind === 'timeout' || outcome.kind === 'unavailable') {
+          this.scheduleStabilityRetry(path, 0, stabilityGate)
+        }
+      }),
+    )
+
+    // Candidates MUST be gathered AFTER Promise.all has marked missing files (e.g. from rename / move)
+    const candidates = new Map<number, MissingCandidate[]>()
+    for (const entry of this.missing.values()) {
+      if (entry.candidate) addCandidate(candidates, entry.candidate)
+    }
+
+    const maybeYield = createYielder()
+    for (const { path, meta } of present) {
+      if (this.options.isStopped?.()) return
+      await maybeYield()
+      if (this.store.documentByPath(path)) this.indexDiscoveredFile(path, meta)
+      else await this.enrollNew(path, meta, candidates)
+    }
+  }
+
+  private scheduleStabilityRetry(path: string, attempt: number, stabilityGate: FileStabilityGate): void {
+    if (this.options.isStopped?.()) return
+    if (!SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase())) return
+    const doc = this.store.documentByPath(path)
+    if (doc?.status === 'excluded') {
+      this.clearStabilityRetry(path)
+      return
+    }
+    if (attempt >= this.stabilityRetryScheduleMs.length) {
+      this.clearStabilityRetry(path)
+      return
+    }
+
+    const existing = this.stabilityRetries.get(path)
+    if (existing) clearTimeout(existing.timer)
+
+    const delayMs = this.stabilityRetryScheduleMs[attempt] ?? 15_000
+    const timer = setTimeout(() => {
+      this.stabilityRetries.delete(path)
+      void this.retryStabilityCheck(path, attempt + 1, stabilityGate)
+    }, delayMs)
+    timer.unref?.()
+    this.stabilityRetries.set(path, { timer })
+  }
+
+  private async retryStabilityCheck(path: string, nextAttempt: number, stabilityGate: FileStabilityGate): Promise<void> {
+    if (this.options.isStopped?.()) return
+    const outcome = await stabilityGate.waitForStability(path)
+    if (this.options.isStopped?.()) return
+    if (outcome.kind === 'stable') {
+      this.clearStabilityRetry(path)
+      if (
+        SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase()) &&
+        outcome.file.sizeBytes <= MAX_DOCUMENT_BYTES
+      ) {
+        const meta = { mtimeMs: outcome.file.mtimeMs, sizeBytes: outcome.file.sizeBytes }
+        if (this.store.documentByPath(path)) {
+          this.indexDiscoveredFile(path, meta)
+        } else {
+          const candidates = new Map<number, MissingCandidate[]>()
+          for (const entry of this.missing.values()) {
+            if (entry.candidate) addCandidate(candidates, entry.candidate)
+          }
+          await this.enrollNew(path, meta, candidates)
+        }
+      }
+    } else if (outcome.kind === 'gone') {
+      this.clearStabilityRetry(path)
+      if (this.store.documentByPath(path)) {
+        this.markMissing(path)
+      }
+    } else if (outcome.kind === 'timeout' || outcome.kind === 'unavailable') {
+      this.scheduleStabilityRetry(path, nextAttempt, stabilityGate)
+    }
+  }
+
+  clearStabilityRetry(path: string): void {
+    const entry = this.stabilityRetries.get(path)
+    if (entry) {
+      clearTimeout(entry.timer)
+      this.stabilityRetries.delete(path)
+    }
+  }
+
+  clearAllStabilityRetries(): void {
+    for (const entry of this.stabilityRetries.values()) clearTimeout(entry.timer)
+    this.stabilityRetries.clear()
   }
 
   async isGone(path: string): Promise<boolean> {
@@ -142,5 +431,6 @@ export class FreshnessCoordinator {
   clearMissing(): void {
     for (const entry of this.missing.values()) clearTimeout(entry.timer)
     this.missing.clear()
+    this.clearAllStabilityRetries()
   }
 }

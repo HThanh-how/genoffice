@@ -162,8 +162,10 @@ export class DocumentMemoryStore {
   mergeFtsStep(pages = FTS_MERGE_PAGES): boolean {
     return this.maintRepo.mergeFtsStep(pages)
   }
-  backfillCounters(maxDocuments = COUNTER_BACKFILL_SLICE): boolean {
-    return this.progressRepo.backfillCounters(maxDocuments)
+  backfillCounters(spaceOrLimit?: string | number, maxDocuments = COUNTER_BACKFILL_SLICE): boolean {
+    return typeof spaceOrLimit === 'number'
+      ? this.progressRepo.backfillCounters(undefined, spaceOrLimit)
+      : this.progressRepo.backfillCounters(spaceOrLimit, maxDocuments)
   }
   hasUncountedDocuments(): boolean {
     return this.progressRepo.hasUncountedDocuments()

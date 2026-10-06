@@ -152,3 +152,8 @@ export function shortCause(error: string | null | undefined, max = 140): string 
     .trim()
   return cleaned.length > max ? `${cleaned.slice(0, max - 1)}…` : cleaned
 }
+
+export function safeError(error: unknown): string {
+  return error instanceof Error ? error.message : 'Document memory operation failed.'
+}
+

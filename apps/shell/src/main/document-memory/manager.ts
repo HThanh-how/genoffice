@@ -112,8 +112,8 @@ export class DocumentMemoryManager {
     this.store = new DocumentMemoryStore(this.dbPath, { role: 'search' })
     this.freshnessCoord = new FreshnessCoordinator({
       store: this.store, tombstoneGraceMs: options.tombstoneGraceMs,
-      onEnqueue: (p, prior) => this.enqueue(p, prior), onTombstone: async (p) => { await this.store.tombstoneSliced(p) },
-      onInvalidatePath: (p) => this.invalidatePath(p), isStoppedOrPaused: () => this.stopped || !this.enabled || isIndexingPaused(),
+      onEnqueue: (p, prior, bytes) => this.enqueue(p, prior, bytes), onTombstone: async (p) => { await this.store.tombstoneSliced(p) },
+      onInvalidatePath: (p) => this.invalidatePath(p), isStopped: () => this.stopped, isEnabled: () => this.enabled,
     })
     this.embeddingCoord = new EmbeddingCoordinator({
       store: this.store, settingsPath: join(this.settingsDir, 'embedding-settings.json'), workerTimeoutMs: this.workerTimeoutMs,
@@ -124,6 +124,7 @@ export class DocumentMemoryManager {
     this.searchService = new SearchService({
       store: this.store, externalNames: options.externalNames,
       askEmbed: async (t) => {
+        if (this.modelState !== 'ready') return null
         const r = await this.ask({ type: 'embed', texts: [t], kind: 'query' }, this.workerTimeoutMs)
         return r && 'result' in r && Array.isArray(r.result) ? (r.result[0] as number[]) : null
       },
@@ -343,10 +344,17 @@ export class DocumentMemoryManager {
   }
   private enqueue(path: string, prioritize = false, bytes?: number): void {
     if (this.stopped || !this.enabled) return
-    const p = resolve(path); this.pathGeneration.set(p, (this.pathGeneration.get(p) ?? 0) + 1)
-    if (bytes !== undefined) this.activeBytes.set(p, bytes)
-    if (prioritize) this.urgent.add(p)
-    if (this.queued.has(p)) return
+    const p = resolve(path)
+    if (this.activeGeneration.get(p) === this.currentGeneration(p)) return
+    if (this.queued.has(p)) {
+      if (prioritize) { const idx = this.queue.indexOf(p); if (idx > 0) { this.queue.splice(idx, 1); this.queue.unshift(p) } }
+      return
+    }
+    const doc = this.store.documentByPath(p)
+    if (!doc || doc.status === 'excluded') return
+    this.pathGeneration.set(p, this.currentGeneration(p) + 1)
+    const size = bytes ?? doc.sizeBytes ?? undefined
+    if (size !== undefined) this.activeBytes.set(p, size)
     this.queued.add(p)
     if (prioritize) this.queue.unshift(p)
     else this.queue.push(p)
@@ -380,6 +388,7 @@ export class DocumentMemoryManager {
         const path = this.takeNext(); this.queued.delete(path); this.activeExtractions.add(path)
         this.activeSince.set(path, Date.now()); const generation = this.currentGeneration(path)
         const epoch = this.epoch; this.activeGeneration.set(path, generation); this.pendingCount++
+        if (!this.activeBytes.has(path)) { const doc = this.store.documentByPath(path); if (doc?.sizeBytes) this.activeBytes.set(path, doc.sizeBytes) }
         const heavyWatch = setTimeout(() => this.makeWayForLightFiles(path, generation), this.autoDeferAfterMs)
         try {
           const sliceMs = /\.pdf$/i.test(path) && weightOf(this.activeBytes.get(path) ?? 0) >= 2 ? PDF_SLICE_MS : undefined
