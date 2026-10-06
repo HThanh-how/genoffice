@@ -37,10 +37,14 @@ const EXCEPTIONS = {
   khroma: 'MIT',
 }
 
+const LICENSE_ALIASES = {
+  'Apache 2.0': 'Apache-2.0',
+}
+
 /** Minimal SPDX expression check: OR passes if any branch is allowed,
  * AND requires every branch, WITH falls back to the base license. */
 function isAllowed(expr) {
-  let s = expr.trim()
+  let s = LICENSE_ALIASES[expr.trim()] ?? expr.trim()
   while (s.startsWith('(') && s.endsWith(')')) {
     const inner = s.slice(1, -1)
     let depth = 0
