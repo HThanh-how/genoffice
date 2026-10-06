@@ -21,6 +21,17 @@ import { ANN_MIN_VECTORS } from './ann-index'
 import { defaultSqliteCacheKiB } from './memory-tier'
 import { HotMetadataSearch } from './hot-metadata-search'
 import { measureSqlite } from './sqlite-timing'
+import {
+  garbageCollectObsoleteStorage,
+  getStorageFreelistStats,
+  runIncrementalVacuum,
+  type GarbageCollectionStats,
+  type StorageFreelistStats,
+  type IncrementalVacuumOptions,
+  type VacuumResult,
+} from './storage-gc'
+
+export type { GarbageCollectionStats, StorageFreelistStats, IncrementalVacuumOptions, VacuumResult }
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
 export type TruncatedReason =
@@ -2409,6 +2420,21 @@ export class DocumentMemoryStore {
         .prepare("SELECT count(*) AS n FROM documents WHERE excluded = 0 AND status = 'error'")
         .get() as { n: number }
     ).n
+  }
+
+  /** Reclaims obsolete storage: drops retired sets, orphan chunks, and obsolete embeddings. */
+  runMaintenanceGc(): GarbageCollectionStats {
+    return garbageCollectObsoleteStorage(this.db)
+  }
+
+  /** Read freelist statistics and vacuum readiness of the database. */
+  getStorageFreelistStats(): StorageFreelistStats {
+    return getStorageFreelistStats(this.db)
+  }
+
+  /** Run incremental vacuum in batches of 256 pages. */
+  runIncrementalVacuum(options?: IncrementalVacuumOptions): VacuumResult {
+    return runIncrementalVacuum(this.db, options)
   }
 
   close(): void {
