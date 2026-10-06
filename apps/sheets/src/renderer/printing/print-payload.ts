@@ -1,7 +1,4 @@
 import { isMetafileMime, metafileToDataUrl } from '@genoffice/docx-engine/metafile'
-import type { WorkbookExportPdfRequest } from '../../shared/desktop-api'
-import { FULL_LOAD_MAX_CELLS } from '../app-constants'
-import type { PageLayoutContext } from '../page-layout-actions'
 import {
   buildSheetPrintPayload,
   type HeaderFooterPictureImage,
@@ -11,45 +8,57 @@ import { resolveEffectivePageSetup, type HeaderFooterPictureSlot } from '../prin
 import { settleVisualNodes, snapshotPrintVisuals } from '../print-visuals'
 import type { LazyWorkbookState } from '../univer-state'
 import { installedVisualFrames, type InstalledVisualFrame } from '../WorkbookVisuals'
-import type { WorkbookFullLoadPurpose, WorkbookFullLoadResult } from './types'
+import type { PrintContext, PrintPayloadResult, WorkbookFullLoadPurpose } from './types'
 import { DEFAULT_FULL_LOAD_TIMEOUT_MS, ensureWorkbookFullyLoaded } from './workbook-full-load'
 
+function isPrintTargetCurrent(
+  ctx: PrintContext,
+  expectedState: LazyWorkbookState,
+  expectedSheetId: string,
+): boolean {
+  if (ctx.lazyWorkbookRef.current !== expectedState) {
+    return false
+  }
+  const currentSheetId = ctx.univerRef.current?.univerAPI
+    .getActiveWorkbook()
+    ?.getActiveSheet()
+    ?.getSheetId()
+  return currentSheetId === expectedSheetId
+}
+
 export async function buildActiveSheetPrintPayload(
-  ctx: PageLayoutContext,
+  ctx: PrintContext,
   purpose: WorkbookFullLoadPurpose = 'print',
-): Promise<{
-  status: WorkbookFullLoadResult['status']
-  payload?: WorkbookExportPdfRequest
-  totalCells?: number
-  error?: unknown
-}> {
-  const state = ctx.lazyWorkbookRef.current
-  if (state) {
-    const loadResult = await ensureWorkbookFullyLoaded(ctx, state, {
-      purpose,
-      maxCells: FULL_LOAD_MAX_CELLS,
-      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
-    })
-    if (loadResult.status !== 'ready') {
-      return loadResult
-    }
-    if (ctx.lazyWorkbookRef.current !== state) {
-      return { status: 'stale-workbook' }
-    }
+): Promise<PrintPayloadResult> {
+  const expectedState = ctx.lazyWorkbookRef.current
+  if (!expectedState) {
+    return { status: 'stale-workbook' }
+  }
+
+  const loadResult = await ensureWorkbookFullyLoaded(ctx, expectedState, {
+    purpose,
+    maxCells: 250_000,
+    timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+  })
+  if (loadResult.status !== 'ready') {
+    return loadResult
+  }
+
+  if (ctx.lazyWorkbookRef.current !== expectedState) {
+    return { status: 'stale-workbook' }
   }
 
   const runtime = ctx.univerRef.current
   const workbook = runtime?.univerAPI.getActiveWorkbook()
   const worksheet = workbook?.getActiveSheet()
   if (!runtime || !worksheet) {
-    return { status: 'failed', error: new Error('Active sheet unavailable') }
+    return { status: 'active-sheet-unavailable' }
   }
 
-  const freshState = ctx.lazyWorkbookRef.current
-  const sheetId = worksheet.getSheetId()
-  const journal = freshState?.editJournal.pageSetup.get(sheetId) ?? {}
-  const fileSetup = freshState?.sheetFilePageSetups.get(sheetId) ?? null
-  const fileSheet = freshState?.file.sheets.find((sheet) => sheet.id === sheetId)
+  const expectedSheetId = worksheet.getSheetId()
+  const journal = expectedState.editJournal.pageSetup.get(expectedSheetId) ?? {}
+  const fileSetup = expectedState.sheetFilePageSetups.get(expectedSheetId) ?? null
+  const fileSheet = expectedState.file.sheets.find((sheet) => sheet.id === expectedSheetId)
   const setup = resolveEffectivePageSetup(
     journal,
     fileSetup,
@@ -57,26 +66,42 @@ export async function buildActiveSheetPrintPayload(
       ...(fileSheet?.printArea === undefined ? {} : { printArea: fileSheet.printArea }),
       ...(fileSheet?.printTitles === undefined ? {} : { printTitles: fileSheet.printTitles }),
     },
-    freshState?.editJournal.structuralOps.get(sheetId) ?? [],
+    expectedState.editJournal.structuralOps.get(expectedSheetId) ?? [],
   )
-  const baseName = (freshState?.file.name ?? 'Book1').replace(/\.[^.]+$/, '')
-  const pictures = freshState
-    ? await loadHeaderFooterPictures(freshState.file.sessionId, setup.headerFooterPictures)
-    : new Map<string, HeaderFooterPictureImage>()
-  const frames = await settledVisualFrames(ctx, freshState, sheetId)
+  const baseName = (expectedState.file.name ?? 'Book1').replace(/\.[^.]+$/, '')
+  const pictures = await loadHeaderFooterPictures(
+    expectedState.file.sessionId,
+    setup.headerFooterPictures,
+  )
+
+  if (!isPrintTargetCurrent(ctx, expectedState, expectedSheetId)) {
+    return { status: 'stale-workbook' }
+  }
+
+  const framesResult = await settledVisualFrames(ctx, expectedState, expectedSheetId)
+
+  if (!isPrintTargetCurrent(ctx, expectedState, expectedSheetId)) {
+    return { status: 'stale-workbook' }
+  }
+
+  const freshState = ctx.lazyWorkbookRef.current
+  if (freshState !== expectedState) {
+    return { status: 'stale-workbook' }
+  }
+
   const payload = buildSheetPrintPayload(
     worksheet as unknown as PrintWorksheet,
     setup,
     `${baseName}.pdf`,
     worksheet.getSheetName(),
     pictures,
-    snapshotPrintVisuals(document, frames),
+    snapshotPrintVisuals(document, framesResult),
   )
   return { status: 'ready', payload }
 }
 
 async function settledVisualFrames(
-  ctx: PageLayoutContext,
+  ctx: PrintContext,
   state: LazyWorkbookState | null,
   sheetId: string,
 ): Promise<readonly InstalledVisualFrame[]> {

@@ -194,7 +194,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
     expect(messages).toContain(t('appPrintSent'))
   })
 
-  it('PRINT-04: two callers enter while preload starts -> only one preloadEntireWorkbook invocation', async () => {
+  it('PRINT-04: two callers enter while preload starts -> action-level single-flight dedupes print execution', async () => {
     const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
       preloadComplete: false,
       preloadRunning: false,
@@ -215,7 +215,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
     expect(result1).toBe(true)
     expect(result2).toBe(true)
     expect(preloadEntireWorkbook).toHaveBeenCalledTimes(1)
-    expect(printWorkbookMock).toHaveBeenCalledTimes(2)
+    expect(printWorkbookMock).toHaveBeenCalledTimes(1)
   })
 
   it('PRINT-05: exactly FULL_LOAD_MAX_CELLS (250_000) -> allowed', async () => {
@@ -548,7 +548,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
     expect(preloadEntireWorkbook).not.toHaveBeenCalled()
   })
 
-  it('PRINT-20: active sheet unavailable after preload -> buildActiveSheetPrintPayload fails -> handlePrint sets appPrintFailed', async () => {
+  it('PRINT-20: active sheet unavailable after preload -> buildActiveSheetPrintPayload returns active-sheet-unavailable -> handlePrint sets appActiveSheetUnavailable', async () => {
     const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
       preloadComplete: true,
       preloadRunning: false,
@@ -560,11 +560,11 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
     } as any)
 
     const payloadResult = await buildActiveSheetPrintPayload(ctx, 'print')
-    expect(payloadResult.status).toBe('failed')
+    expect(payloadResult.status).toBe('active-sheet-unavailable')
 
     const printed = await handlePrint(ctx)
     expect(printed).toBe(false)
-    expect(messages).toContain(t('appPrintFailed'))
+    expect(messages).toContain(t('appActiveSheetUnavailable'))
   })
 
   it('PRINT-21: stale workbook detected in buildActiveSheetPrintPayload -> returns stale-workbook', async () => {
@@ -585,6 +585,397 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
 
     const payloadResult = await buildActiveSheetPrintPayload(ctx, 'print')
     expect(payloadResult.status).toBe('stale-workbook')
-    expect(payloadResult.payload).toBeUndefined()
+    expect('payload' in payloadResult).toBe(false)
+  })
+
+  it('PRINT-22: switch workbook while header/footer media (readWorkbookMedia) is loading -> returns stale-workbook, ctx.setMessage receives appPrintCanceled, printWorkbook not called', async () => {
+    const stateOld = fakeState([{ id: 'sh1', name: 'SheetOld', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    stateOld.sheetFilePageSetups.set('sh1', {
+      headerFooterPictures: [
+        {
+          id: 'media-header-logo',
+          position: '&L',
+          widthPt: 120,
+          heightPt: 40,
+          mediaType: 'image/png',
+        },
+      ],
+    })
+    const stateNew = fakeState([{ id: 'sh2', name: 'SheetNew', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx, messages } = createMockContext(stateOld)
+
+    readWorkbookMediaMock.mockImplementationOnce(async () => {
+      // User switches workbook during media fetch
+      ctx.lazyWorkbookRef.current = stateNew
+      return {
+        mediaType: 'image/png',
+        base64:
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+      }
+    })
+
+    const printed = await handlePrint(ctx)
+    expect(printed).toBe(false)
+    expect(printWorkbookMock).not.toHaveBeenCalled()
+    expect(messages).toContain(t('appPrintCanceled'))
+  })
+
+  it('PRINT-23: switch workbook while visual nodes are settling (settledVisualFrames) -> stale-workbook, no print', async () => {
+    const stateOld = fakeState([{ id: 'sh1', name: 'SheetOld', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    stateOld.file.visuals.push({
+      id: 'chart-1',
+      sheetId: 'sh1',
+      frame: { left: 10, top: 10, width: 200, height: 150 },
+    } as any)
+    const stateNew = fakeState([{ id: 'sh2', name: 'SheetNew', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx, messages } = createMockContext(stateOld)
+    ctx.requestVisualInstall = vi.fn(() => {
+      // User switches workbook during visual settlement
+      ctx.lazyWorkbookRef.current = stateNew
+    })
+
+    const printed = await handlePrint(ctx)
+    expect(printed).toBe(false)
+    expect(printWorkbookMock).not.toHaveBeenCalled()
+    expect(messages).toContain(t('appPrintCanceled'))
+  })
+
+  it('PRINT-24: active sheet changes during visual preparation -> stale, no print', async () => {
+    const state = fakeState(
+      [
+        { id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 },
+        { id: 'sh2', name: 'Sheet2', rowCount: 100, columnCount: 10 },
+      ],
+      {
+        preloadComplete: true,
+        preloadRunning: false,
+      },
+    )
+    state.file.visuals.push({
+      id: 'chart-1',
+      sheetId: 'sh1',
+      frame: { left: 10, top: 10, width: 200, height: 150 },
+    } as any)
+    const { ctx, messages, runtime, worksheet } = createMockContext(state)
+
+    const worksheet2 = {
+      ...worksheet,
+      getSheetId: () => 'sh2',
+      getSheetName: () => 'Sheet2',
+    }
+
+    ctx.requestVisualInstall = vi.fn(() => {
+      // User switches active sheet during visual preparation
+      vi.spyOn(runtime.univerAPI.getActiveWorkbook()!, 'getActiveSheet').mockReturnValue(
+        worksheet2 as any,
+      )
+    })
+
+    const printed = await handlePrint(ctx)
+    expect(printed).toBe(false)
+    expect(printWorkbookMock).not.toHaveBeenCalled()
+    expect(messages).toContain(t('appPrintCanceled'))
+  })
+
+  it('PRINT-25: Print + PDF share single physical preload -> preloadEntireWorkbook called exactly once', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: false,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+
+    vi.mocked(preloadEntireWorkbook).mockImplementation(async (_runtime, lazyRef) => {
+      if (lazyRef.current) {
+        lazyRef.current.flags.preloadRunning = true
+        await new Promise((r) => setTimeout(r, 60))
+        lazyRef.current.flags.preloadRunning = false
+        lazyRef.current.flags.preloadComplete = true
+      }
+    })
+
+    const [printOk, pdfOk] = await Promise.all([handlePrint(ctx), handleExportPdf(ctx)])
+
+    expect(printOk).toBe(true)
+    expect(pdfOk).toBe(true)
+    expect(preloadEntireWorkbook).toHaveBeenCalledTimes(1)
+    expect(printWorkbookMock).toHaveBeenCalledTimes(1)
+    expect(exportPdfMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('PRINT-26: double PDF calls share single physical preload -> preload exactly once', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: false,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+
+    vi.mocked(preloadEntireWorkbook).mockImplementation(async (_runtime, lazyRef) => {
+      if (lazyRef.current) {
+        lazyRef.current.flags.preloadRunning = true
+        await new Promise((r) => setTimeout(r, 60))
+        lazyRef.current.flags.preloadRunning = false
+        lazyRef.current.flags.preloadComplete = true
+      }
+    })
+
+    const [pdf1, pdf2] = await Promise.all([handleExportPdf(ctx), handleExportPdf(ctx)])
+
+    expect(pdf1).toBe(true)
+    expect(pdf2).toBe(true)
+    expect(preloadEntireWorkbook).toHaveBeenCalledTimes(1)
+    expect(exportPdfMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('PRINT-27: Caller A (timeout 100ms) and Caller B (timeout 5000ms) have independent timeout policies while sharing one hanging preload', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: false,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+
+    vi.mocked(preloadEntireWorkbook).mockImplementation(async (_runtime, lazyRef) => {
+      if (lazyRef.current) {
+        lazyRef.current.flags.preloadRunning = true
+        // Preload takes 250ms, longer than Caller A (100ms) but shorter than Caller B (1500ms)
+        await new Promise((r) => setTimeout(r, 250))
+        lazyRef.current.flags.preloadRunning = false
+        lazyRef.current.flags.preloadComplete = true
+      }
+    })
+
+    const [resultA, resultB] = await Promise.all([
+      ensureWorkbookFullyLoaded(ctx, state, {
+        purpose: 'print',
+        maxCells: FULL_LOAD_MAX_CELLS,
+        timeoutMs: 100,
+      }),
+      ensureWorkbookFullyLoaded(ctx, state, {
+        purpose: 'pdf-export',
+        maxCells: FULL_LOAD_MAX_CELLS,
+        timeoutMs: 1500,
+      }),
+    ])
+
+    expect(resultA.status).toBe('timeout')
+    expect(resultB.status).toBe('ready')
+    expect(preloadEntireWorkbook).toHaveBeenCalledTimes(1)
+  })
+
+  it('PRINT-28: successful preload cleans up shared operation in WeakMap -> second preload call starts fresh without stale promise', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: false,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+
+    vi.mocked(preloadEntireWorkbook).mockImplementation(async (_runtime, lazyRef) => {
+      if (lazyRef.current) {
+        lazyRef.current.flags.preloadRunning = true
+        await new Promise((r) => setTimeout(r, 20))
+        lazyRef.current.flags.preloadRunning = false
+        lazyRef.current.flags.preloadComplete = true
+      }
+    })
+
+    const firstResult = await ensureWorkbookFullyLoaded(ctx, state, {
+      purpose: 'print',
+      maxCells: FULL_LOAD_MAX_CELLS,
+      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+    })
+    expect(firstResult.status).toBe('ready')
+    expect(preloadEntireWorkbook).toHaveBeenCalledTimes(1)
+
+    // Reset preloadComplete to test if second preload starts fresh
+    state.flags.preloadComplete = false
+
+    const secondResult = await ensureWorkbookFullyLoaded(ctx, state, {
+      purpose: 'print',
+      maxCells: FULL_LOAD_MAX_CELLS,
+      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+    })
+    expect(secondResult.status).toBe('ready')
+    expect(preloadEntireWorkbook).toHaveBeenCalledTimes(2)
+  })
+
+  it('PRINT-29: workbook declaring Number.MAX_SAFE_INTEGER cells fails safely with status failed', async () => {
+    const state = fakeState(
+      [{ id: 'sh1', name: 'SheetHuge', rowCount: Number.MAX_SAFE_INTEGER, columnCount: 1 }],
+      {
+        preloadComplete: false,
+        preloadRunning: false,
+      },
+    )
+    const { ctx } = createMockContext(state)
+
+    const result = await ensureWorkbookFullyLoaded(ctx, state, {
+      purpose: 'print',
+      maxCells: FULL_LOAD_MAX_CELLS,
+      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+    })
+
+    expect(result.status).toBe('failed')
+    expect(result).toHaveProperty('error')
+    expect((result as { error: Error }).error.message).toBe('Invalid workbook dimensions')
+    expect(preloadEntireWorkbook).not.toHaveBeenCalled()
+  })
+
+  it('PRINT-30: workbook declaring Infinity or NaN dimensions fails safely', async () => {
+    const stateInfinity = fakeState(
+      [{ id: 'sh1', name: 'SheetInf', rowCount: Infinity, columnCount: 10 }],
+      {
+        preloadComplete: false,
+        preloadRunning: false,
+      },
+    )
+    const { ctx: ctxInf } = createMockContext(stateInfinity)
+
+    const resultInf = await ensureWorkbookFullyLoaded(ctxInf, stateInfinity, {
+      purpose: 'print',
+      maxCells: FULL_LOAD_MAX_CELLS,
+      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+    })
+    expect(resultInf.status).toBe('failed')
+    expect((resultInf as { error: Error }).error.message).toBe('Invalid workbook dimensions')
+
+    const stateNaN = fakeState([{ id: 'sh1', name: 'SheetNaN', rowCount: NaN, columnCount: 10 }], {
+      preloadComplete: false,
+      preloadRunning: false,
+    })
+    const { ctx: ctxNaN } = createMockContext(stateNaN)
+
+    const resultNaN = await ensureWorkbookFullyLoaded(ctxNaN, stateNaN, {
+      purpose: 'print',
+      maxCells: FULL_LOAD_MAX_CELLS,
+      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+    })
+    expect(resultNaN.status).toBe('failed')
+    expect((resultNaN as { error: Error }).error.message).toBe('Invalid workbook dimensions')
+    expect(preloadEntireWorkbook).not.toHaveBeenCalled()
+  })
+
+  it('PRINT-31: active sheet unavailable -> sets appActiveSheetUnavailable (NOT generic appPrintFailed)', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx, messages, runtime } = createMockContext(state)
+    vi.spyOn(runtime.univerAPI, 'getActiveWorkbook').mockReturnValue({
+      getActiveSheet: () => null as unknown as any,
+      getSheetBySheetId: () => null as unknown as any,
+    } as any)
+
+    const printed = await handlePrint(ctx)
+    expect(printed).toBe(false)
+    expect(messages).toContain(t('appActiveSheetUnavailable'))
+    expect(messages).not.toContain(t('appPrintFailed'))
+  })
+
+  it('PRINT-32: stale workbook after loading message displayed -> clears stale loading message, sets appPrintCanceled or appPdfCanceled', async () => {
+    const stateOld = fakeState([{ id: 'sh1', name: 'SheetOld', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: false,
+      preloadRunning: false,
+    })
+    const stateNew = fakeState([{ id: 'sh2', name: 'SheetNew', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx: ctxPrint, messages: messagesPrint } = createMockContext(stateOld)
+
+    vi.mocked(preloadEntireWorkbook).mockImplementationOnce(async () => {
+      // User switches workbook while loading message is displayed
+      ctxPrint.lazyWorkbookRef.current = stateNew
+    })
+
+    const printed = await handlePrint(ctxPrint)
+    expect(printed).toBe(false)
+    expect(messagesPrint).toContain(t('appPrintLoadingWorkbook'))
+    expect(messagesPrint[messagesPrint.length - 1]).toBe(t('appPrintCanceled'))
+
+    const statePdfOld = fakeState(
+      [{ id: 'sh1', name: 'SheetPdfOld', rowCount: 100, columnCount: 10 }],
+      {
+        preloadComplete: false,
+        preloadRunning: false,
+      },
+    )
+    const { ctx: ctxPdf, messages: messagesPdf } = createMockContext(statePdfOld)
+
+    vi.mocked(preloadEntireWorkbook).mockImplementationOnce(async () => {
+      ctxPdf.lazyWorkbookRef.current = stateNew
+    })
+
+    const exported = await handleExportPdf(ctxPdf)
+    expect(exported).toBe(false)
+    expect(messagesPdf).toContain(t('appPdfLoadingWorkbook'))
+    expect(messagesPdf[messagesPdf.length - 1]).toBe(t('appPdfCanceled'))
+  })
+
+  it('PRINT-33: PDF with outPath -> routes to headless-export purpose and passes outPath to exportPdf', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx, messages } = createMockContext(state)
+    const targetPath = '/tmp/headless-automated-report.pdf'
+
+    const exported = await handleExportPdf(ctx, targetPath)
+    expect(exported).toBe(true)
+    expect(exportPdfMock).toHaveBeenCalledTimes(1)
+    expect(exportPdfMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outPath: targetPath,
+      }),
+    )
+    expect(messages).toContain(t('appPdfExported', { path: '/tmp/test.pdf' }))
+  })
+
+  it('PRINT-34: double Print rapid clicks on same workbook -> action-level dedup: opens only 1 print dialog', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+
+    printWorkbookMock.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 50))
+      return { ok: true }
+    })
+
+    const [p1, p2] = await Promise.all([handlePrint(ctx), handlePrint(ctx)])
+
+    expect(p1).toBe(true)
+    expect(p2).toBe(true)
+    expect(printWorkbookMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('PRINT-35: double PDF export rapid clicks on same workbook -> action-level dedup: opens only 1 export dialog', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+
+    exportPdfMock.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 50))
+      return { canceled: false, path: '/tmp/test.pdf' }
+    })
+
+    const [pdf1, pdf2] = await Promise.all([handleExportPdf(ctx), handleExportPdf(ctx)])
+
+    expect(pdf1).toBe(true)
+    expect(pdf2).toBe(true)
+    expect(exportPdfMock).toHaveBeenCalledTimes(1)
   })
 })

@@ -1,12 +1,8 @@
 /**
- * Page Layout commands, header/footer, freeze journaling and PDF export.
- * Extracted from App.tsx; the App component passes a PageLayoutContext built
- * fresh per call so refs and state never go stale. Page-setup edits journal
- * per-sheet print settings; nothing renders in the grid (Univer has no
- * page-layout view), everything lands in the saved file.
+ * Page Layout commands and header/footer journaling.
+ * Print/PDF actions are delegated to ./printing.
  */
 import type { WorkbookOperation } from '@genoffice/xlsx-gateway/domain/workbook-dsl'
-import type { ApplyOutcome } from '@genoffice/xlsx-gateway/domain/workbook.types'
 
 import { columnLabel } from '@genoffice/xlsx-gateway/domain/cell-address'
 import {
@@ -23,16 +19,9 @@ import { effectivePageBreaks } from './page-break-preview'
 import { COLOR_SCHEMES, FONT_SCHEMES, rethemeStyles, THEME_PRESETS } from './themes'
 import { loadVisibleRange } from './univer-sync'
 import { clampTitleRows } from './print-settings'
-import type { LazyWorkbookState, UniverRuntime } from './univer-state'
+import type { PageLayoutContext } from './page-layout-context'
 
-export interface PrintReadinessMessages {
-  readonly notLoaded: string
-  readonly loading: string
-  readonly tooLarge: string
-  readonly timedOut: string
-  readonly failed: string
-  readonly preparing: string
-}
+export type { PageLayoutContext } from './page-layout-context'
 
 const PAPER_NAMES: Record<string, string> = {
   1: 'Letter',
@@ -42,26 +31,6 @@ const PAPER_NAMES: Record<string, string> = {
   8: 'A3',
   9: 'A4',
   11: 'A5',
-}
-
-/** The App refs/state the page-layout actions need; built fresh per call. */
-export interface PageLayoutContext {
-  univerRef: { readonly current: UniverRuntime | null }
-  /// The App's live ref (not a snapshot): loadVisibleRange's staleness
-  /// guards compare against `.current` after awaits.
-  lazyWorkbookRef: { current: LazyWorkbookState | null }
-  setMessage: (message: string) => void
-  setPendingEdits: (count: number) => void
-  /// Re-renders the Page Break Preview overlay when page geometry changed.
-  refreshPageBreakPreview?: () => void
-  /// Re-queues the floating visuals' install so a print right after load
-  /// (headless export) finds their frames; optional for callers without visuals.
-  requestVisualInstall?: () => void
-  /// Page-setup edits run as set_page_setup ops through the shared executor.
-  runOps: (
-    ops: readonly WorkbookOperation[],
-    successMessage?: string | null,
-  ) => Promise<ApplyOutcome>
 }
 
 const PAGE_SETUP_OP_FIELDS = new Set([

@@ -1,5 +1,4 @@
 import { pollUntilReady } from '@genoffice/electron-utils/headless-export'
-import { FULL_LOAD_MAX_CELLS } from '../app-constants'
 import type { LazyWorkbookState } from '../univer-state'
 import { preloadEntireWorkbook } from '../univer-sync'
 import type {
@@ -22,23 +21,79 @@ function workbookDeclaredCellCount(state: LazyWorkbookState): number | null {
       !Number.isSafeInteger(rowCount) ||
       !Number.isSafeInteger(columnCount) ||
       rowCount < 0 ||
-      columnCount < 0
+      columnCount < 0 ||
+      rowCount >= Number.MAX_SAFE_INTEGER ||
+      columnCount >= Number.MAX_SAFE_INTEGER
     ) {
       return null
     }
     const sheetCells = rowCount * columnCount
-    if (!Number.isSafeInteger(sheetCells) || sheetCells < 0) {
+    if (
+      !Number.isSafeInteger(sheetCells) ||
+      sheetCells < 0 ||
+      sheetCells >= Number.MAX_SAFE_INTEGER
+    ) {
       return null
     }
     totalCells += sheetCells
-    if (!Number.isSafeInteger(totalCells) || totalCells < 0) {
+    if (
+      !Number.isSafeInteger(totalCells) ||
+      totalCells < 0 ||
+      totalCells >= Number.MAX_SAFE_INTEGER
+    ) {
       return null
     }
   }
   return totalCells
 }
 
-const inFlightLoads = new WeakMap<LazyWorkbookState, Promise<WorkbookFullLoadResult>>()
+interface SharedPreloadOperation {
+  readonly promise: Promise<void>
+  error: unknown | null
+}
+
+const inFlightPreloads = new WeakMap<LazyWorkbookState, SharedPreloadOperation>()
+
+function ensurePreloadStarted(
+  ctx: WorkbookFullLoadContext,
+  state: LazyWorkbookState,
+): SharedPreloadOperation | null {
+  const existing = inFlightPreloads.get(state)
+  if (existing) {
+    return existing
+  }
+  if (state.flags.preloadRunning) {
+    return null
+  }
+
+  const runtime = ctx.univerRef.current
+  if (!runtime) {
+    return null
+  }
+
+  const operationHolder: { current: SharedPreloadOperation | null } = { current: null }
+  const promise = (async () => {
+    try {
+      await preloadEntireWorkbook(runtime, ctx.lazyWorkbookRef, () => undefined)
+    } catch (err: unknown) {
+      if (operationHolder.current) {
+        operationHolder.current.error = err
+      }
+    } finally {
+      if (operationHolder.current && inFlightPreloads.get(state) === operationHolder.current) {
+        inFlightPreloads.delete(state)
+      }
+    }
+  })()
+
+  const operation: SharedPreloadOperation = {
+    promise,
+    error: null,
+  }
+  operationHolder.current = operation
+  inFlightPreloads.set(state, operation)
+  return operation
+}
 
 export async function ensureWorkbookFullyLoaded(
   ctx: WorkbookFullLoadContext,
@@ -62,51 +117,19 @@ export async function ensureWorkbookFullyLoaded(
     return { status: 'too-large', totalCells, maxCells: request.maxCells }
   }
 
-  const existingLoad = inFlightLoads.get(state)
-  if (existingLoad) {
-    return existingLoad
-  }
-
-  const promise = performFullLoad(ctx, state, request)
-  inFlightLoads.set(state, promise)
-  try {
-    return await promise
-  } finally {
-    if (inFlightLoads.get(state) === promise) {
-      inFlightLoads.delete(state)
-    }
-  }
-}
-
-async function performFullLoad(
-  ctx: WorkbookFullLoadContext,
-  state: LazyWorkbookState,
-  request: WorkbookFullLoadRequest,
-): Promise<WorkbookFullLoadResult> {
-  if (ctx.lazyWorkbookRef.current !== state) {
-    return { status: 'stale-workbook' }
-  }
-
   const runtime = ctx.univerRef.current
   if (!runtime) {
     return { status: 'failed', error: new Error('Univer runtime not initialized') }
   }
 
-  let preloadFailed = false
-  let preloadError: unknown = null
-  if (!state.flags.preloadRunning) {
-    void preloadEntireWorkbook(runtime, ctx.lazyWorkbookRef, () => undefined).catch((err) => {
-      preloadFailed = true
-      preloadError = err
-    })
-  }
+  const operation = ensurePreloadStarted(ctx, state)
 
   try {
     await pollUntilReady(
       () =>
         ctx.lazyWorkbookRef.current !== state ||
         state.flags.preloadComplete ||
-        preloadFailed ||
+        Boolean(operation?.error) ||
         !state.flags.preloadRunning,
       'timeout',
       {
@@ -125,8 +148,8 @@ async function performFullLoad(
     return { status: 'stale-workbook' }
   }
 
-  if (preloadFailed) {
-    return { status: 'failed', error: preloadError }
+  if (operation?.error) {
+    return { status: 'failed', error: operation.error }
   }
 
   if (!state.flags.preloadComplete) {
