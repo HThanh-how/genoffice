@@ -46,6 +46,14 @@ export class IndexStatusCache<T> {
     return null
   }
 
+  latest(): T | null {
+    return this.entry?.data ?? null
+  }
+
+  peek(): T | null {
+    return this.entry?.data ?? null
+  }
+
   set(data: T): T {
     this.entry = {
       data,
@@ -78,6 +86,31 @@ function emptyStorageDiagnostics(): DocumentIndexStorageDiagnostics {
     migrationStatus: 'none',
     topOffendersByChunks: [],
     topOffendersBySize: [],
+  }
+}
+
+function fallbackStorageDiagnostics(hasMemory: boolean): DocumentIndexStorageDiagnostics {
+  return {
+    activeDbSizeBytes: 0,
+    walSizeBytes: 0,
+    pageSize: 4096,
+    pageCount: 0,
+    freelistCount: 0,
+    estimatedReclaimableBytes: 0,
+    v2BackupSizeBytes: null,
+    schemaVersion: hasMemory ? 'unknown' : '',
+    migrationStatus: 'none',
+    topOffendersByChunks: [],
+    topOffendersBySize: [],
+  }
+}
+
+function fallbackMigrationDiagnostics(): DocumentIndexMigrationDiagnostics {
+  return {
+    activeEmbeddingSpace: 'unknown',
+    state: 'unknown',
+    completedChunks: 0,
+    totalChunks: 0,
   }
 }
 
@@ -183,8 +216,12 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
     cpuShare: policy?.cpuShare ?? 1,
   }
 
-  // Heavy diagnostics (table analysis, top offenders) cached for 60s
-  const diagnostics = getDocumentIndexDiagnostics(ctx, forceRefresh)
+  // Diagnostics are heavy (PRAGMA, dbstat, top offenders GROUP BY) and strictly banned inside snapshot.
+  // We use the last cached diagnostics if available; otherwise provide a lightweight fallback with 'unknown'
+  // without triggering any synchronous diagnostics fetch.
+  const cachedDiagnostics = diagnosticsCache.latest()
+  const storage = cachedDiagnostics?.storage ?? fallbackStorageDiagnostics(Boolean(documentMemory))
+  const migration = cachedDiagnostics?.migration ?? fallbackMigrationDiagnostics()
 
   const modeState = getSnapshotMode(ctx)
 
@@ -194,9 +231,9 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
     mode: modeState,
     issues,
     now: nowState,
-    storage: diagnostics.storage,
+    storage,
     performance,
-    migration: diagnostics.migration,
+    migration,
     timestamp: now,
   }
 
