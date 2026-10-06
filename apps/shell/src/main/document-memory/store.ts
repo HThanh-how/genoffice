@@ -23,6 +23,12 @@ import { HotMetadataSearch } from './hot-metadata-search'
 import { measureSqlite } from './sqlite-timing'
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
+export type TruncatedReason =
+  | 'chunk-limit'
+  | 'content-limit'
+  | 'pdf-page-limit'
+  | 'tabular-sampling'
+
 export interface StoredDocument {
   id: number
   path: string
@@ -34,6 +40,7 @@ export interface StoredDocument {
   error: string | null
   /** The index holds only part of this file (chunk cap or sampled tabular rows). */
   truncated: boolean
+  truncatedReason?: TruncatedReason | null
 }
 export interface ReplacementDocument {
   hash: string
@@ -44,6 +51,7 @@ export interface ReplacementDocument {
   status: 'ready' | 'text-only' | 'empty' | 'error'
   error?: string
   truncated?: boolean
+  truncatedReason?: TruncatedReason | null
 }
 export interface DocumentMemoryHit {
   documentId: number
@@ -60,6 +68,7 @@ export interface DocumentMemoryHit {
   indexedAt: number | null
   /** The document is only partially indexed (chunk cap or sampled rows). */
   truncated: boolean
+  truncatedReason?: TruncatedReason | null
   /** The text was transcribed from page images (OCR) and may contain recognition errors. */
   ocr?: boolean
   /** Matched by file name only: the file's content has not been read (scanned PDF, unreadable). */
@@ -117,6 +126,7 @@ CREATE TABLE IF NOT EXISTS documents (
   error TEXT,
   excluded INTEGER NOT NULL DEFAULT 0 CHECK (excluded IN (0, 1)),
   truncated INTEGER NOT NULL DEFAULT 0,
+  truncated_reason TEXT CHECK (truncated_reason IN ('chunk-limit', 'content-limit', 'pdf-page-limit', 'tabular-sampling') OR truncated_reason IS NULL),
   last_opened_at INTEGER NOT NULL DEFAULT 0,
   priority_at INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
@@ -143,14 +153,19 @@ CREATE TABLE IF NOT EXISTS chunk_sets (
 CREATE TABLE IF NOT EXISTS chunks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-  chunk_set_id INTEGER REFERENCES chunk_sets(id) ON DELETE CASCADE,
+  chunk_set_id INTEGER,
   ordinal INTEGER NOT NULL,
   text TEXT NOT NULL,
-  normalized TEXT NOT NULL,
   location TEXT NOT NULL,
   vector BLOB,
   vector_dim INTEGER,
-  CHECK ((vector IS NULL AND vector_dim IS NULL) OR (vector IS NOT NULL AND vector_dim > 0))
+  normalized INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS document_embedding_counts (
+  document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+  space_id TEXT NOT NULL REFERENCES embedding_spaces(id) ON DELETE CASCADE,
+  completed_chunks INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(document_id, space_id)
 );
 CREATE TABLE IF NOT EXISTS chunk_embeddings (
   chunk_id INTEGER NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,
@@ -213,7 +228,6 @@ CREATE TABLE IF NOT EXISTS document_memory_meta (
   value TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS chunks_document_id ON chunks(document_id);
-CREATE INDEX IF NOT EXISTS chunks_vector_lookup ON chunks(vector_dim, document_id) WHERE vector IS NOT NULL;
 CREATE INDEX IF NOT EXISTS documents_excluded_status ON documents(excluded, status);
 `
 
@@ -227,24 +241,15 @@ CREATE INDEX IF NOT EXISTS documents_excluded_status ON documents(excluded, stat
 const COUNTER_TRIGGER_NAMES = [
   'chunks_counter_insert',
   'chunks_counter_delete',
-  'chunks_counter_vector',
 ] as const
 const COUNTER_TRIGGERS = `
 CREATE TRIGGER IF NOT EXISTS chunks_counter_insert AFTER INSERT ON chunks
 BEGIN
-  UPDATE documents SET chunk_total = chunk_total + 1,
-    chunk_done = chunk_done + (new.vector IS NOT NULL) WHERE id = new.document_id;
+  UPDATE documents SET chunk_total = chunk_total + 1 WHERE id = new.document_id;
 END;
 CREATE TRIGGER IF NOT EXISTS chunks_counter_delete AFTER DELETE ON chunks
 BEGIN
-  UPDATE documents SET chunk_total = chunk_total - 1,
-    chunk_done = chunk_done - (old.vector IS NOT NULL) WHERE id = old.document_id;
-END;
-CREATE TRIGGER IF NOT EXISTS chunks_counter_vector AFTER UPDATE OF vector ON chunks
-WHEN (old.vector IS NULL) <> (new.vector IS NULL)
-BEGIN
-  UPDATE documents SET chunk_done = chunk_done + (new.vector IS NOT NULL) - (old.vector IS NOT NULL)
-  WHERE id = new.document_id;
+  UPDATE documents SET chunk_total = chunk_total - 1 WHERE id = old.document_id;
 END;
 `
 /**
@@ -311,7 +316,7 @@ export class DocumentMemoryStore {
     }
     this.db = new DatabaseSync(dbPath)
     this.db.exec(
-      'PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;',
+      'PRAGMA busy_timeout = 5000; PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;',
     )
     const cacheKiB = options.cacheKiB ?? defaultSqliteCacheKiB(options.role ?? 'search')
     this.db.exec(`PRAGMA cache_size = -${cacheKiB};`)
@@ -323,6 +328,11 @@ export class DocumentMemoryStore {
       this.db.exec('ALTER TABLE documents ADD COLUMN last_opened_at INTEGER NOT NULL DEFAULT 0')
     if (!columns.some((column) => column.name === 'truncated'))
       this.db.exec('ALTER TABLE documents ADD COLUMN truncated INTEGER NOT NULL DEFAULT 0')
+    if (!columns.some((column) => column.name === 'truncated_reason')) {
+      this.db.exec(
+        "ALTER TABLE documents ADD COLUMN truncated_reason TEXT CHECK (truncated_reason IN ('chunk-limit', 'content-limit', 'pdf-page-limit', 'tabular-sampling') OR truncated_reason IS NULL)",
+      )
+    }
     if (!columns.some((column) => column.name === 'priority_at')) {
       this.db.exec('ALTER TABLE documents ADD COLUMN priority_at INTEGER NOT NULL DEFAULT 0')
       this.db.exec(`UPDATE documents SET priority_at = max(last_opened_at,
@@ -429,8 +439,12 @@ export class DocumentMemoryStore {
       CREATE UNIQUE INDEX IF NOT EXISTS chunks_legacy_doc_ordinal ON chunks(document_id, ordinal) WHERE chunk_set_id IS NULL;
       CREATE INDEX IF NOT EXISTS chunks_chunk_set_id ON chunks(chunk_set_id);
       CREATE INDEX IF NOT EXISTS chunks_document_id ON chunks(document_id);
-      CREATE INDEX IF NOT EXISTS chunks_vector_lookup ON chunks(vector_dim, document_id) WHERE vector IS NOT NULL;
     `)
+    if (chunkColumns.includes('vector')) {
+      this.db.exec(`CREATE INDEX IF NOT EXISTS chunks_vector_lookup ON chunks(vector_dim, document_id) WHERE vector IS NOT NULL;`)
+    } else {
+      this.db.exec('DROP INDEX IF EXISTS chunks_vector_lookup;')
+    }
 
     this.db.exec(`
       DROP TRIGGER IF EXISTS documents_ai_name;
@@ -446,24 +460,38 @@ export class DocumentMemoryStore {
         (?, 'AITeamVN/Vietnamese_Embedding', 'dea33aa1ab339f38d66ae0a40e6c40e0a9249568', 'sentence', 1024, 'fp32')
     `).run(LEGACY_E5_EMBEDDING_ID, LEGACY_VIETNAMESE_EMBEDDING_ID)
 
-    // Copy legacy vectors from chunks into chunk_embeddings without recomputing
-    this.db.prepare(`
-      INSERT OR IGNORE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
-      SELECT c.id, ?, c.vector, c.vector_dim
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      WHERE c.vector IS NOT NULL AND (d.embedding_model IS NULL OR d.embedding_model = ?)
-    `).run(LEGACY_E5_EMBEDDING_ID, LEGACY_E5_EMBEDDING_ID)
+    if (chunkColumns.includes('vector')) {
+      // Ensure embedding spaces exist for all models in documents
+      this.db.prepare(`
+        INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+        SELECT DISTINCT d.embedding_model, d.embedding_model, 'legacy', 'mean', coalesce(c.vector_dim, 384), 'fp32'
+        FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.vector IS NOT NULL AND d.embedding_model IS NOT NULL
+      `).run()
 
-    this.db.prepare(`
-      INSERT OR IGNORE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
-      SELECT c.id, ?, c.vector, c.vector_dim
-      FROM chunks c
-      JOIN documents d ON d.id = c.document_id
-      WHERE c.vector IS NOT NULL AND d.embedding_model = ?
-    `).run(LEGACY_VIETNAMESE_EMBEDDING_ID, LEGACY_VIETNAMESE_EMBEDDING_ID)
+      // Copy legacy vectors from chunks into chunk_embeddings without recomputing
+      this.db.prepare(`
+        INSERT OR IGNORE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
+        SELECT c.id, coalesce(d.embedding_model, ?), c.vector, c.vector_dim
+        FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.vector IS NOT NULL
+      `).run(LEGACY_E5_EMBEDDING_ID)
+    }
 
     this.db.exec(`
+      CREATE TABLE IF NOT EXISTS document_embedding_counts (
+        document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        space_id TEXT NOT NULL REFERENCES embedding_spaces(id) ON DELETE CASCADE,
+        completed_chunks INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(document_id, space_id)
+      );
+      INSERT OR IGNORE INTO document_embedding_counts (document_id, space_id, completed_chunks)
+      SELECT c.document_id, e.space_id, count(e.chunk_id)
+      FROM chunk_embeddings e
+      JOIN chunks c ON c.id = e.chunk_id
+      GROUP BY c.document_id, e.space_id;
       CREATE TABLE IF NOT EXISTS schema_migrations (
         id TEXT PRIMARY KEY,
         applied_at INTEGER NOT NULL
@@ -476,6 +504,7 @@ export class DocumentMemoryStore {
         updated_at INTEGER NOT NULL
       );
       INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES ('v2_chunk_migrations', unixepoch());
+      INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES ('v3_storage_schema', unixepoch());
     `)
   }
 
@@ -513,9 +542,16 @@ export class DocumentMemoryStore {
     const complete = (): boolean => {
       const columns = present()
       const names = triggers()
+      const triggerDef = this.db
+        .prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'chunks_counter_insert'")
+        .get() as { sql: string } | undefined
+      const triggerHasVector = triggerDef ? triggerDef.sql.includes('vector') : false
+      const hasOldVectorTrigger = names.includes('chunks_counter_vector')
       return (
         ['chunk_total', 'chunk_done', 'chunk_counted'].every((name) => columns.includes(name)) &&
         COUNTER_TRIGGER_NAMES.every((name) => names.includes(name)) &&
+        !hasOldVectorTrigger &&
+        !triggerHasVector &&
         this.ftsAutomergeDisabled()
       )
     }
@@ -525,12 +561,23 @@ export class DocumentMemoryStore {
       for (const name of ['chunk_total', 'chunk_done', 'chunk_counted'])
         if (!columns.includes(name))
           this.db.exec(`ALTER TABLE documents ADD COLUMN ${name} INTEGER NOT NULL DEFAULT 0`)
+      this.db.exec('DROP TRIGGER IF EXISTS chunks_counter_vector;')
+      this.db.exec('DROP TRIGGER IF EXISTS chunks_counter_insert;')
+      this.db.exec('DROP TRIGGER IF EXISTS chunks_counter_delete;')
       this.db.exec(COUNTER_TRIGGERS)
       this.db.exec(
         'CREATE INDEX IF NOT EXISTS documents_uncounted ON documents(id) WHERE chunk_counted = 0',
       )
       if (!this.ftsAutomergeDisabled())
         this.db.exec("INSERT INTO chunk_fts(chunk_fts, rank) VALUES('automerge', 0)")
+      this.db.exec(`
+        UPDATE documents SET chunk_done = coalesce((
+          SELECT count(e.chunk_id)
+          FROM chunks c
+          JOIN chunk_embeddings e ON e.chunk_id = c.id
+          WHERE c.document_id = documents.id
+        ), 0) WHERE chunk_counted = 0 OR chunk_done = 0;
+      `)
     })
   }
 
@@ -577,28 +624,48 @@ export class DocumentMemoryStore {
           )
           .all(first, last) as Array<{ document_id: number; n: number }>)
           totals.set(row.document_id, row.n)
-        // The partial index (vector_dim, document_id) holds exactly the vectored chunks, so the
-        // count never touches a BLOB. Walk the (normally single) distinct dimension by index seek;
-        // the planner would otherwise prefer chunks_document_id and read every row.
+        // Walk vector counts: in V3, read from document_embedding_counts. In legacy, seek chunks_vector_lookup.
         const done = new Map<number, number>()
-        const nextDimension = this.db.prepare(
-          `SELECT vector_dim FROM chunks INDEXED BY chunks_vector_lookup
-          WHERE vector IS NOT NULL AND vector_dim > ? ORDER BY vector_dim LIMIT 1`,
-        )
-        const countDone = this.db.prepare(
-          `SELECT document_id, count(*) AS n FROM chunks INDEXED BY chunks_vector_lookup
-          WHERE vector IS NOT NULL AND vector_dim = ? AND document_id BETWEEN ? AND ?
-          GROUP BY document_id`,
-        )
-        for (let dimension = 0; ;) {
-          const next = nextDimension.get(dimension) as { vector_dim: number } | undefined
-          if (!next) break
-          dimension = next.vector_dim
-          for (const hit of countDone.all(dimension, first, last) as Array<{
-            document_id: number
-            n: number
-          }>)
-            done.set(hit.document_id, (done.get(hit.document_id) ?? 0) + hit.n)
+        const chunkColumns = (
+          this.db.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>
+        ).map((c) => c.name)
+        if (chunkColumns.includes('vector')) {
+          try {
+            const nextDimension = this.db.prepare(
+              `SELECT vector_dim FROM chunks INDEXED BY chunks_vector_lookup
+              WHERE vector IS NOT NULL AND vector_dim > ? ORDER BY vector_dim LIMIT 1`,
+            )
+            const countDone = this.db.prepare(
+              `SELECT document_id, count(*) AS n FROM chunks INDEXED BY chunks_vector_lookup
+              WHERE vector IS NOT NULL AND vector_dim = ? AND document_id BETWEEN ? AND ?
+              GROUP BY document_id`,
+            )
+            for (let dimension = 0; ;) {
+              const next = nextDimension.get(dimension) as { vector_dim: number } | undefined
+              if (!next) break
+              dimension = next.vector_dim
+              for (const hit of countDone.all(dimension, first, last) as Array<{
+                document_id: number
+                n: number
+              }>)
+                done.set(hit.document_id, (done.get(hit.document_id) ?? 0) + hit.n)
+            }
+          } catch {
+            // Index seek fallback
+          }
+        } else {
+          try {
+            const counts = this.db
+              .prepare(
+                'SELECT document_id, coalesce(sum(completed_chunks), 0) AS n FROM document_embedding_counts WHERE document_id BETWEEN ? AND ? GROUP BY document_id',
+              )
+              .all(first, last) as Array<{ document_id: number; n: number }>
+            for (const hit of counts) {
+              done.set(hit.document_id, hit.n)
+            }
+          } catch {
+            // document_embedding_counts fallback
+          }
         }
         const update = this.db.prepare(
           'UPDATE documents SET chunk_total = ?, chunk_done = ?, chunk_counted = 1 WHERE id = ?',
@@ -661,7 +728,7 @@ export class DocumentMemoryStore {
     return (
       this.db
         .prepare(
-          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated
+          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated, truncated_reason
       FROM documents ORDER BY priority_at DESC, id DESC`,
         )
         .all() as unknown as DocRow[]
@@ -672,7 +739,7 @@ export class DocumentMemoryStore {
     return (
       this.db
         .prepare(
-          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated
+          `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated, truncated_reason
       FROM documents WHERE excluded = 0 ORDER BY priority_at DESC, id DESC LIMIT ?`,
         )
         .all(limit) as unknown as DocRow[]
@@ -682,7 +749,7 @@ export class DocumentMemoryStore {
   documentByPath(path: string): StoredDocument | null {
     const row = this.db
       .prepare(
-        `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated
+        `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated, truncated_reason
       FROM documents WHERE path = ?`,
       )
       .get(resolve(path)) as DocRow | undefined
@@ -692,7 +759,7 @@ export class DocumentMemoryStore {
   documentById(id: number): StoredDocument | null {
     const row = this.db
       .prepare(
-        `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated
+        `SELECT id, path, name, status, mtime_ms, size_bytes, hash, error, truncated, truncated_reason
       FROM documents WHERE id = ?`,
       )
       .get(id) as DocRow | undefined
@@ -703,11 +770,11 @@ export class DocumentMemoryStore {
   chunkProgress(path: string): DocumentChunkProgress {
     const row = this.db
       .prepare(
-        `SELECT d.id, d.path, d.name, d.status, d.mtime_ms, d.size_bytes, d.hash, d.error, d.truncated,
+        `SELECT d.id, d.path, d.name, d.status, d.mtime_ms, d.size_bytes, d.hash, d.error, d.truncated, d.truncated_reason,
           CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
             ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END AS total_chunks,
           CASE WHEN d.chunk_counted = 1 THEN d.chunk_done
-            ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id AND c.vector IS NOT NULL) END
+            ELSE coalesce((SELECT ec.completed_chunks FROM document_embedding_counts ec WHERE ec.document_id = d.id AND ec.space_id = d.embedding_model), d.chunk_done) END
             AS completed_chunks
         FROM documents d WHERE d.path = ?`,
       )
@@ -718,6 +785,20 @@ export class DocumentMemoryStore {
       completedChunks: row?.completed_chunks ?? 0,
       totalChunks: row?.total_chunks ?? 0,
     }
+  }
+
+  /** Read completed embedding count for a document and space directly from document_embedding_counts. */
+  getEmbeddingCounts(documentId: number, spaceId?: string): number {
+    if (spaceId) {
+      const row = this.db
+        .prepare('SELECT completed_chunks FROM document_embedding_counts WHERE document_id = ? AND space_id = ?')
+        .get(documentId, spaceId) as { completed_chunks: number } | undefined
+      return row?.completed_chunks ?? 0
+    }
+    const row = this.db
+      .prepare('SELECT coalesce(sum(completed_chunks), 0) AS total FROM document_embedding_counts WHERE document_id = ?')
+      .get(documentId) as { total: number } | undefined
+    return row?.total ?? 0
   }
 
   /**
@@ -968,6 +1049,25 @@ export class DocumentMemoryStore {
       delChunk.run(id)
     }
     retireOldSets(this.db, documentId)
+    this.db.prepare('DELETE FROM document_embedding_counts WHERE document_id = ?').run(documentId)
+    this.db.prepare(`
+      INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks)
+      SELECT c.document_id, e.space_id, count(e.chunk_id)
+      FROM chunks c
+      JOIN chunk_embeddings e ON e.chunk_id = c.id
+      JOIN documents d ON d.id = c.document_id
+      WHERE c.document_id = ? AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+      GROUP BY c.document_id, e.space_id
+    `).run(documentId)
+    this.db.prepare(`
+      UPDATE documents SET chunk_done = coalesce((
+        SELECT count(e.chunk_id)
+        FROM chunks c
+        JOIN chunk_embeddings e ON e.chunk_id = c.id
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.document_id = ? AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+      ), 0) WHERE id = ?
+    `).run(documentId, documentId)
     const chunkIds = oldChunkIds.map((c) => c.id)
     if (this.role === 'worker') {
       for (const [spaceId, ann] of this.annIndexes.entries()) {
@@ -1117,7 +1217,7 @@ export class DocumentMemoryStore {
     this.db
       .prepare(
         `UPDATE documents SET name = ?, status = ?, mtime_ms = ?, priority_at = max(last_opened_at, ?), size_bytes = ?, hash = ?,
-        embedding_model = ?, error = ?, truncated = ?, excluded = 0, updated_at = unixepoch() WHERE id = ?`,
+        embedding_model = ?, error = ?, truncated = ?, truncated_reason = ?, excluded = 0, updated_at = unixepoch() WHERE id = ?`,
       )
       .run(
         basename(normalizedPath),
@@ -1129,6 +1229,7 @@ export class DocumentMemoryStore {
         replacement.embeddingModel ?? null,
         replacement.error ?? null,
         replacement.truncated ? 1 : 0,
+        replacement.truncated ? (replacement.truncatedReason ?? null) : null,
         id,
       )
   }
@@ -1139,8 +1240,8 @@ export class DocumentMemoryStore {
     chunkSetId?: number | null,
   ): (chunk: ReplacementDocument['chunks'][number], ordinal: number) => void {
     const addChunk = this.db
-      .prepare(`INSERT INTO chunks(document_id, chunk_set_id, ordinal, text, normalized, location, vector, vector_dim)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .prepare(`INSERT INTO chunks(document_id, chunk_set_id, ordinal, text, location)
+        VALUES (?, ?, ?, ?, ?)`)
     const addFts = this.db.prepare('INSERT INTO chunk_fts(rowid, text) VALUES (?, ?)')
     const addChunkEmbedding = this.db.prepare(`
       INSERT OR REPLACE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
@@ -1150,6 +1251,12 @@ export class DocumentMemoryStore {
       INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
       VALUES (?, ?, 'pinned', 'last-token', ?, 'q8')
     `)
+    const addEmbeddingCount = this.db.prepare(`
+      INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks)
+      VALUES (?, ?, 1)
+      ON CONFLICT (document_id, space_id)
+      DO UPDATE SET completed_chunks = document_embedding_counts.completed_chunks + 1
+    `)
     return (chunk, ordinal) => {
       const fields = documentIndexFields(chunk.text)
       const result = addChunk.run(
@@ -1157,10 +1264,7 @@ export class DocumentMemoryStore {
         chunkSetId ?? null,
         ordinal,
         chunk.text,
-        fields.normalized,
         chunk.location,
-        chunk.vector ? floatBlob(chunk.vector) : null,
-        chunk.vector?.length ?? null,
       )
       addFts.run(result.lastInsertRowid, fields.searchText)
       if (chunk.vector && embeddingModel) {
@@ -1171,6 +1275,8 @@ export class DocumentMemoryStore {
           floatBlob(chunk.vector),
           chunk.vector.length,
         )
+        addEmbeddingCount.run(documentId, embeddingModel)
+        this.db.prepare('UPDATE documents SET chunk_done = chunk_done + 1 WHERE id = ?').run(documentId)
         if (this.role === 'worker') {
           try {
             const ann = this.getAnnIndex(embeddingModel, chunk.vector.length)
@@ -1381,10 +1487,19 @@ export class DocumentMemoryStore {
 
       this.db
         .prepare(
-          `UPDATE documents SET embedding_model = ?, status = ?, error = NULL, updated_at = unixepoch()
+          `INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks)
+           VALUES (?, ?, ?)
+           ON CONFLICT (document_id, space_id)
+           DO UPDATE SET completed_chunks = excluded.completed_chunks`,
+        )
+        .run(document.id, embeddingSpaceId, count.vectors)
+
+      this.db
+        .prepare(
+          `UPDATE documents SET embedding_model = ?, status = ?, chunk_done = ?, error = NULL, updated_at = unixepoch()
            WHERE id = ?`,
         )
-        .run(embeddingSpaceId, complete ? 'ready' : 'text-only', document.id)
+        .run(embeddingSpaceId, complete ? 'ready' : 'text-only', count.vectors, document.id)
     })
     if (this.role === 'worker') {
       try {
@@ -1715,7 +1830,7 @@ export class DocumentMemoryStore {
         .prepare(
           `SELECT
              c.id, c.text, c.location, c.document_id,
-             d.path, d.name, d.status, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated
+             d.path, d.name, d.status, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, d.truncated_reason
            FROM chunks c
            JOIN documents d ON d.id = c.document_id
            WHERE c.id IN (${placeholders})
@@ -1735,6 +1850,7 @@ export class DocumentMemoryStore {
         size_bytes: number | null
         updated_at: number
         truncated: number
+        truncated_reason: string | null
       }>
 
       const rowMap = new Map<number, (typeof rows)[number]>()
@@ -1759,6 +1875,7 @@ export class DocumentMemoryStore {
           sizeBytes: row.size_bytes,
           indexedAt: row.updated_at * 1000,
           truncated: row.truncated === 1,
+          truncatedReason: (row.truncated_reason as TruncatedReason | undefined) ?? null,
         })
       }
       return result
@@ -1815,7 +1932,7 @@ export class DocumentMemoryStore {
     let queryNorm = 0
     for (const value of vector) queryNorm += value * value
 
-    // Check if we have chunk_embeddings for this space
+    // Canonical vector store: ONLY chunk_embeddings
     const countRow = this.db
       .prepare(
         `SELECT count(*) AS count
@@ -1827,21 +1944,7 @@ export class DocumentMemoryStore {
       )
       .get(embeddingSpaceId ?? null, embeddingSpaceId ?? null) as { count: number }
 
-    const legacyCountRow =
-      countRow.count === 0
-        ? (this.db
-            .prepare(
-              `SELECT count(*) AS count FROM chunks c JOIN documents d ON d.id = c.document_id
-               WHERE d.excluded = 0 AND c.vector IS NOT NULL AND c.vector_dim = ?
-                 AND (? IS NULL OR d.embedding_model = ?)
-                 AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
-            )
-            .get(vector.length, embeddingSpaceId ?? null, embeddingSpaceId ?? null) as {
-            count: number
-          })
-        : { count: 0 }
-
-    if (countRow.count === 0 && legacyCountRow.count === 0) {
+    if (countRow.count === 0) {
       return []
     }
 
@@ -1923,8 +2026,12 @@ export class DocumentMemoryStore {
       }
     }
 
+    const hasChunkEmbeddings = this.db
+      .prepare('SELECT 1 FROM chunk_embeddings LIMIT 1')
+      .get()
+
     function* scoredRows(store: DocumentMemoryStore) {
-      if (countRow.count > 0) {
+      if (hasChunkEmbeddings) {
         const rows = store.db
           .prepare(
             `SELECT e.chunk_id AS id, e.vector, e.vector_dim, c.document_id, d.priority_at
@@ -2058,7 +2165,7 @@ export class DocumentMemoryStore {
 
     if (!fusedHits.length) return []
     const get = this.db
-      .prepare(`SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, c.id AS chunk_id, c.text, c.location
+      .prepare(`SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, d.truncated_reason, c.id AS chunk_id, c.text, c.location
       FROM chunks c JOIN documents d ON d.id = c.document_id
       WHERE c.id = ? AND d.excluded = 0
         AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`)
@@ -2080,6 +2187,7 @@ export class DocumentMemoryStore {
               sizeBytes: row.size_bytes,
               indexedAt: indexedAt(row.updated_at),
               truncated: !!row.truncated,
+              truncatedReason: (row.truncated_reason as TruncatedReason | undefined) ?? null,
               ...(isOcrLocation(row.location) ? { ocr: true } : {}),
             },
           ]
@@ -2090,7 +2198,7 @@ export class DocumentMemoryStore {
   readChunk(chunkId: number): DocumentMemoryHit | null {
     const row = this.db
       .prepare(
-        `SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, c.id AS chunk_id, c.text, c.location
+        `SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, d.truncated_reason, c.id AS chunk_id, c.text, c.location
       FROM chunks c JOIN documents d ON d.id = c.document_id
       WHERE c.id = ? AND d.excluded = 0
         AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
@@ -2110,6 +2218,7 @@ export class DocumentMemoryStore {
           sizeBytes: row.size_bytes,
           indexedAt: indexedAt(row.updated_at),
           truncated: !!row.truncated,
+          truncatedReason: (row.truncated_reason as TruncatedReason | undefined) ?? null,
           ...(isOcrLocation(row.location) ? { ocr: true } : {}),
         }
       : null
@@ -2330,8 +2439,7 @@ export class DocumentMemoryStore {
       return { with: '', total: 'd.chunk_total', done: 'd.chunk_done' }
     return {
       with: `WITH tot AS MATERIALIZED (SELECT document_id, count(*) AS n FROM chunks GROUP BY document_id),
-        dn AS MATERIALIZED (SELECT document_id, count(*) AS n FROM chunks INDEXED BY chunks_vector_lookup
-          WHERE vector IS NOT NULL AND vector_dim > 0 GROUP BY document_id)`,
+        dn AS MATERIALIZED (SELECT document_id, coalesce(sum(completed_chunks), 0) AS n FROM document_embedding_counts GROUP BY document_id)`,
       total: `CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
         ELSE coalesce((SELECT n FROM tot WHERE tot.document_id = d.id), 0) END`,
       done: `CASE WHEN d.chunk_counted = 1 THEN d.chunk_done
@@ -2359,6 +2467,8 @@ export class DocumentMemoryStore {
     const delFts = this.db.prepare('DELETE FROM chunk_fts WHERE rowid = ?')
     for (const { id } of ids) delFts.run(id)
     this.db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId)
+    this.db.prepare('DELETE FROM document_embedding_counts WHERE document_id = ?').run(documentId)
+    this.db.prepare('UPDATE documents SET chunk_done = 0 WHERE id = ?').run(documentId)
     if (ids.length > 0) {
       const chunkIds = ids.map((c) => c.id)
       if (this.role === 'worker') {
@@ -2463,6 +2573,7 @@ interface DocRow {
   hash: string | null
   error: string | null
   truncated: number
+  truncated_reason?: string | null
 }
 interface HitRow {
   document_id: number
@@ -2473,6 +2584,7 @@ interface HitRow {
   size_bytes: number | null
   updated_at: number | null
   truncated: number
+  truncated_reason?: string | null
   chunk_id: number
   text: string
   location: string
@@ -2488,6 +2600,7 @@ function toDocument(row: DocRow): StoredDocument {
     hash: row.hash,
     error: row.error,
     truncated: !!row.truncated,
+    truncatedReason: (row.truncated_reason as TruncatedReason | undefined) ?? null,
   }
 }
 function quoteFtsToken(token: string): string {
