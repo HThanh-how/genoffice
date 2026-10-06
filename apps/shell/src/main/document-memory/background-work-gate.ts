@@ -192,7 +192,7 @@ export class BackgroundWorkGate {
         priority,
         classification,
         task,
-        resolve,
+        resolve: resolve as (value: unknown) => void,
         reject,
         controller,
       }

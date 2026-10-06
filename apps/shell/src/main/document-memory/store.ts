@@ -20,6 +20,7 @@ import { USearchIndex } from './usearch-index'
 import { ANN_MIN_VECTORS } from './ann-index'
 import { defaultSqliteCacheKiB } from './memory-tier'
 import { HotMetadataSearch } from './hot-metadata-search'
+import { measureSqlite } from './sqlite-timing'
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
 export interface StoredDocument {
@@ -545,10 +546,12 @@ export class DocumentMemoryStore {
    * any time outside a write transaction; a no-op when the index is already compact.
    */
   mergeFtsStep(pages = FTS_MERGE_PAGES): boolean {
-    const changes = () => (this.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n
-    const before = changes()
-    this.db.exec(`INSERT INTO chunk_fts(chunk_fts, rank) VALUES('merge', ${Math.trunc(pages)})`)
-    return changes() - before > 1
+    return measureSqlite('FTS step', () => {
+      const changes = () => (this.db.prepare('SELECT total_changes() AS n').get() as { n: number }).n
+      const before = changes()
+      this.db.exec(`INSERT INTO chunk_fts(chunk_fts, rank) VALUES('merge', ${Math.trunc(pages)})`)
+      return changes() - before > 1
+    })
   }
 
   /**
@@ -557,51 +560,53 @@ export class DocumentMemoryStore {
    * `chunks_vector_lookup`), so no vector BLOB is read. Returns whether documents remain.
    */
   backfillCounters(maxDocuments = COUNTER_BACKFILL_SLICE): boolean {
-    this.transaction(() => {
-      const ids = (
-        this.db
-          .prepare('SELECT id FROM documents WHERE chunk_counted = 0 ORDER BY id LIMIT ?')
-          .all(maxDocuments) as Array<{ id: number }>
-      ).map((row) => row.id)
-      if (!ids.length) return
-      const first = ids[0]!
-      const last = ids[ids.length - 1]!
-      const totals = new Map<number, number>()
-      for (const row of this.db
-        .prepare(
-          'SELECT document_id, count(*) AS n FROM chunks WHERE document_id BETWEEN ? AND ? GROUP BY document_id',
+    return measureSqlite('embedding-count rebuild', () => {
+      this.transaction(() => {
+        const ids = (
+          this.db
+            .prepare('SELECT id FROM documents WHERE chunk_counted = 0 ORDER BY id LIMIT ?')
+            .all(maxDocuments) as Array<{ id: number }>
+        ).map((row) => row.id)
+        if (!ids.length) return
+        const first = ids[0]!
+        const last = ids[ids.length - 1]!
+        const totals = new Map<number, number>()
+        for (const row of this.db
+          .prepare(
+            'SELECT document_id, count(*) AS n FROM chunks WHERE document_id BETWEEN ? AND ? GROUP BY document_id',
+          )
+          .all(first, last) as Array<{ document_id: number; n: number }>)
+          totals.set(row.document_id, row.n)
+        // The partial index (vector_dim, document_id) holds exactly the vectored chunks, so the
+        // count never touches a BLOB. Walk the (normally single) distinct dimension by index seek;
+        // the planner would otherwise prefer chunks_document_id and read every row.
+        const done = new Map<number, number>()
+        const nextDimension = this.db.prepare(
+          `SELECT vector_dim FROM chunks INDEXED BY chunks_vector_lookup
+          WHERE vector IS NOT NULL AND vector_dim > ? ORDER BY vector_dim LIMIT 1`,
         )
-        .all(first, last) as Array<{ document_id: number; n: number }>)
-        totals.set(row.document_id, row.n)
-      // The partial index (vector_dim, document_id) holds exactly the vectored chunks, so the
-      // count never touches a BLOB. Walk the (normally single) distinct dimension by index seek;
-      // the planner would otherwise prefer chunks_document_id and read every row.
-      const done = new Map<number, number>()
-      const nextDimension = this.db.prepare(
-        `SELECT vector_dim FROM chunks INDEXED BY chunks_vector_lookup
-        WHERE vector IS NOT NULL AND vector_dim > ? ORDER BY vector_dim LIMIT 1`,
-      )
-      const countDone = this.db.prepare(
-        `SELECT document_id, count(*) AS n FROM chunks INDEXED BY chunks_vector_lookup
-        WHERE vector IS NOT NULL AND vector_dim = ? AND document_id BETWEEN ? AND ?
-        GROUP BY document_id`,
-      )
-      for (let dimension = 0; ;) {
-        const next = nextDimension.get(dimension) as { vector_dim: number } | undefined
-        if (!next) break
-        dimension = next.vector_dim
-        for (const hit of countDone.all(dimension, first, last) as Array<{
-          document_id: number
-          n: number
-        }>)
-          done.set(hit.document_id, (done.get(hit.document_id) ?? 0) + hit.n)
-      }
-      const update = this.db.prepare(
-        'UPDATE documents SET chunk_total = ?, chunk_done = ?, chunk_counted = 1 WHERE id = ?',
-      )
-      for (const id of ids) update.run(totals.get(id) ?? 0, done.get(id) ?? 0, id)
+        const countDone = this.db.prepare(
+          `SELECT document_id, count(*) AS n FROM chunks INDEXED BY chunks_vector_lookup
+          WHERE vector IS NOT NULL AND vector_dim = ? AND document_id BETWEEN ? AND ?
+          GROUP BY document_id`,
+        )
+        for (let dimension = 0; ;) {
+          const next = nextDimension.get(dimension) as { vector_dim: number } | undefined
+          if (!next) break
+          dimension = next.vector_dim
+          for (const hit of countDone.all(dimension, first, last) as Array<{
+            document_id: number
+            n: number
+          }>)
+            done.set(hit.document_id, (done.get(hit.document_id) ?? 0) + hit.n)
+        }
+        const update = this.db.prepare(
+          'UPDATE documents SET chunk_total = ?, chunk_done = ?, chunk_counted = 1 WHERE id = ?',
+        )
+        for (const id of ids) update.run(totals.get(id) ?? 0, done.get(id) ?? 0, id)
+      })
+      return this.hasUncountedDocuments()
     })
-    return this.hasUncountedDocuments()
   }
 
   /** True while some document still lacks exact counters (a backfill is outstanding). */
@@ -732,57 +737,59 @@ export class DocumentMemoryStore {
 
   /** Count a folder, or the complete library when no folder is selected. */
   folderChunkProgress(root?: string): FolderChunkProgress {
-    const normalized = root === undefined ? null : resolve(root)
-    const prefix =
-      normalized === null
-        ? null
-        : normalized.endsWith('/') || normalized.endsWith('\\')
-          ? normalized
-          : `${normalized}${normalized.includes('\\') ? '\\' : '/'}`
-    const counts = this.countSource()
-    const row = this.db
-      .prepare(
-        `${counts.with}
-        SELECT count(*) AS total_files,
-          sum(CASE WHEN status IN ('ready', 'empty') THEN 1 ELSE 0 END) AS ready_files,
-          sum(CASE WHEN status IN ('pending', 'text-only') THEN 1 ELSE 0 END) AS pending_files,
-          sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_files,
-          sum(CASE WHEN status = 'empty' THEN 1 ELSE 0 END) AS empty_files,
-          coalesce(sum(truncated), 0) AS truncated_files,
-          coalesce(sum(done_chunks), 0) AS completed_chunks,
-          coalesce(sum(total_chunks), 0) AS total_chunks,
-          coalesce(sum(CASE WHEN status IN ('ready','empty') THEN 1.0
-            WHEN status = 'text-only' AND total_chunks > 0
-              THEN (done_chunks * 1.0 / total_chunks)
-            ELSE 0.0 END), 0.0) AS partial_file_progress
-        FROM (SELECT d.status, d.truncated, ${counts.total} AS total_chunks, ${counts.done} AS done_chunks
-          FROM documents d
-          WHERE d.excluded = 0 ${normalized === null ? '' : 'AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)'})`,
-      )
-      .get(...(normalized === null ? [] : [normalized, prefix!, prefix!])) as
-      | {
-          total_files: number
-          ready_files: number
-          pending_files: number
-          error_files: number
-          empty_files: number
-          truncated_files: number
-          completed_chunks: number
-          total_chunks: number
-          partial_file_progress: number
-        }
-      | undefined
-    return {
-      totalFiles: row?.total_files ?? 0,
-      readyFiles: row?.ready_files ?? 0,
-      pendingFiles: row?.pending_files ?? 0,
-      errorFiles: row?.error_files ?? 0,
-      emptyFiles: row?.empty_files ?? 0,
-      completedChunks: row?.completed_chunks ?? 0,
-      totalChunks: row?.total_chunks ?? 0,
-      partialFileProgress: row?.partial_file_progress ?? 0,
-      truncatedFiles: row?.truncated_files ?? 0,
-    }
+    return measureSqlite('folderChunkProgress', () => {
+      const normalized = root === undefined ? null : resolve(root)
+      const prefix =
+        normalized === null
+          ? null
+          : normalized.endsWith('/') || normalized.endsWith('\\')
+            ? normalized
+            : `${normalized}${normalized.includes('\\') ? '\\' : '/'}`
+      const counts = this.countSource()
+      const row = this.db
+        .prepare(
+          `${counts.with}
+          SELECT count(*) AS total_files,
+            sum(CASE WHEN status IN ('ready', 'empty') THEN 1 ELSE 0 END) AS ready_files,
+            sum(CASE WHEN status IN ('pending', 'text-only') THEN 1 ELSE 0 END) AS pending_files,
+            sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_files,
+            sum(CASE WHEN status = 'empty' THEN 1 ELSE 0 END) AS empty_files,
+            coalesce(sum(truncated), 0) AS truncated_files,
+            coalesce(sum(done_chunks), 0) AS completed_chunks,
+            coalesce(sum(total_chunks), 0) AS total_chunks,
+            coalesce(sum(CASE WHEN status IN ('ready','empty') THEN 1.0
+              WHEN status = 'text-only' AND total_chunks > 0
+                THEN (done_chunks * 1.0 / total_chunks)
+              ELSE 0.0 END), 0.0) AS partial_file_progress
+          FROM (SELECT d.status, d.truncated, ${counts.total} AS total_chunks, ${counts.done} AS done_chunks
+            FROM documents d
+            WHERE d.excluded = 0 ${normalized === null ? '' : 'AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)'})`,
+        )
+        .get(...(normalized === null ? [] : [normalized, prefix!, prefix!])) as
+        | {
+            total_files: number
+            ready_files: number
+            pending_files: number
+            error_files: number
+            empty_files: number
+            truncated_files: number
+            completed_chunks: number
+            total_chunks: number
+            partial_file_progress: number
+          }
+        | undefined
+      return {
+        totalFiles: row?.total_files ?? 0,
+        readyFiles: row?.ready_files ?? 0,
+        pendingFiles: row?.pending_files ?? 0,
+        errorFiles: row?.error_files ?? 0,
+        emptyFiles: row?.empty_files ?? 0,
+        completedChunks: row?.completed_chunks ?? 0,
+        totalChunks: row?.total_chunks ?? 0,
+        partialFileProgress: row?.partial_file_progress ?? 0,
+        truncatedFiles: row?.truncated_files ?? 0,
+      }
+    })
   }
 
   indexIssues(root: string, offset = 0): { total: number; items: IndexIssue[] } {
@@ -943,6 +950,7 @@ export class DocumentMemoryStore {
         return 'done'
       },
       () => this.markPending(documentId),
+      'replace slice',
     )
   }
 
@@ -986,30 +994,32 @@ export class DocumentMemoryStore {
    * Ensures dangling chunks and FTS rows are purged before resuming migration.
    */
   cleanupDanglingBuildingSets(): number {
-    const danglingSets = this.db
-      .prepare("SELECT id, document_id FROM chunk_sets WHERE state = 'building'")
-      .all() as Array<{ id: number; document_id: number }>
+    return measureSqlite('GC step', () => {
+      const danglingSets = this.db
+        .prepare("SELECT id, document_id FROM chunk_sets WHERE state = 'building'")
+        .all() as Array<{ id: number; document_id: number }>
 
-    if (!danglingSets.length) return 0
+      if (!danglingSets.length) return 0
 
-    this.transaction(() => {
-      const delFts = this.db.prepare('DELETE FROM chunk_fts WHERE rowid = ?')
-      const delChunk = this.db.prepare('DELETE FROM chunks WHERE id = ?')
-      const delSet = this.db.prepare('DELETE FROM chunk_sets WHERE id = ?')
+      this.transaction(() => {
+        const delFts = this.db.prepare('DELETE FROM chunk_fts WHERE rowid = ?')
+        const delChunk = this.db.prepare('DELETE FROM chunks WHERE id = ?')
+        const delSet = this.db.prepare('DELETE FROM chunk_sets WHERE id = ?')
 
-      for (const set of danglingSets) {
-        const chunks = this.db
-          .prepare('SELECT id FROM chunks WHERE chunk_set_id = ?')
-          .all(set.id) as Array<{ id: number }>
-        for (const c of chunks) {
-          delFts.run(c.id)
-          delChunk.run(c.id)
+        for (const set of danglingSets) {
+          const chunks = this.db
+            .prepare('SELECT id FROM chunks WHERE chunk_set_id = ?')
+            .all(set.id) as Array<{ id: number }>
+          for (const c of chunks) {
+            delFts.run(c.id)
+            delChunk.run(c.id)
+          }
+          delSet.run(set.id)
         }
-        delSet.run(set.id)
-      }
-    })
+      })
 
-    return danglingSets.length
+      return danglingSets.length
+    })
   }
 
   /**
@@ -1025,32 +1035,34 @@ export class DocumentMemoryStore {
     priorityAt: number
     sizeBytes: number
   }> {
-    const rows = this.db
-      .prepare(
-        `SELECT d.id, d.path, d.name, d.priority_at, d.size_bytes
-         FROM documents d
-         LEFT JOIN chunk_sets s ON s.id = d.active_chunk_set_id
-         WHERE d.excluded = 0 AND d.status = 'ready'
-           AND (d.active_chunk_set_id IS NULL OR s.chunker_version < 2 OR s.state <> 'active')
-           AND EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id)
-         ORDER BY d.priority_at DESC, coalesce(d.size_bytes, 0) ASC, d.id ASC
-         LIMIT ?`,
-      )
-      .all(limit) as Array<{
-      id: number
-      path: string
-      name: string
-      priority_at: number
-      size_bytes: number
-    }>
+    return measureSqlite('migration copy batch', () => {
+      const rows = this.db
+        .prepare(
+          `SELECT d.id, d.path, d.name, d.priority_at, d.size_bytes
+           FROM documents d
+           LEFT JOIN chunk_sets s ON s.id = d.active_chunk_set_id
+           WHERE d.excluded = 0 AND d.status = 'ready'
+             AND (d.active_chunk_set_id IS NULL OR s.chunker_version < 2 OR s.state <> 'active')
+             AND EXISTS (SELECT 1 FROM chunks c WHERE c.document_id = d.id)
+           ORDER BY d.priority_at DESC, coalesce(d.size_bytes, 0) ASC, d.id ASC
+           LIMIT ?`,
+        )
+        .all(limit) as Array<{
+        id: number
+        path: string
+        name: string
+        priority_at: number
+        size_bytes: number
+      }>
 
-    return rows.map((r) => ({
-      id: r.id,
-      path: r.path,
-      name: r.name,
-      priorityAt: r.priority_at,
-      sizeBytes: r.size_bytes,
-    }))
+      return rows.map((r) => ({
+        id: r.id,
+        path: r.path,
+        name: r.name,
+        priorityAt: r.priority_at,
+        sizeBytes: r.size_bytes,
+      }))
+    })
   }
 
   /**
@@ -1547,16 +1559,21 @@ export class DocumentMemoryStore {
   async tombstoneSliced(path: string, options: SliceOptions = {}): Promise<boolean> {
     const p = resolve(path)
     let removed = false
-    await this.runSliced(options, (outOfBudget) => {
-      const row = this.db.prepare('SELECT id, excluded FROM documents WHERE path = ?').get(p) as
-        { id: number; excluded: number } | undefined
-      if (!row || row.excluded) return 'done'
-      if (!this.deleteChunksBudgeted(row.id, outOfBudget)) return 'more'
-      this.db.prepare('DELETE FROM documents WHERE id = ?').run(row.id)
-      this.ocr.remove(p)
-      removed = true
-      return 'done'
-    })
+    await this.runSliced(
+      options,
+      (outOfBudget) => {
+        const row = this.db.prepare('SELECT id, excluded FROM documents WHERE path = ?').get(p) as
+          { id: number; excluded: number } | undefined
+        if (!row || row.excluded) return 'done'
+        if (!this.deleteChunksBudgeted(row.id, outOfBudget)) return 'more'
+        this.db.prepare('DELETE FROM documents WHERE id = ?').run(row.id)
+        this.ocr.remove(p)
+        removed = true
+        return 'done'
+      },
+      undefined,
+      'tombstone slice',
+    )
     return removed
   }
 
@@ -1690,60 +1707,62 @@ export class DocumentMemoryStore {
   hydrateChunkHits(
     hits: Array<{ chunkId: number; rank?: number; score?: number }>,
   ): DocumentMemoryHit[] {
-    if (!hits.length) return []
-    const placeholders = hits.map(() => '?').join(',')
-    const chunkIds = hits.map((h) => h.chunkId)
-    const rows = this.db
-      .prepare(
-        `SELECT
-           c.id, c.text, c.location, c.document_id,
-           d.path, d.name, d.status, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated
-         FROM chunks c
-         JOIN documents d ON d.id = c.document_id
-         WHERE c.id IN (${placeholders})
-           AND d.excluded = 0
-           AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
-      )
-      .all(...chunkIds) as Array<{
-      id: number
-      text: string
-      location: string
-      document_id: number
-      path: string
-      name: string
-      status: string
-      hash: string | null
-      mtime_ms: number | null
-      size_bytes: number | null
-      updated_at: number
-      truncated: number
-    }>
+    return measureSqlite('hydrateChunkHits', () => {
+      if (!hits.length) return []
+      const placeholders = hits.map(() => '?').join(',')
+      const chunkIds = hits.map((h) => h.chunkId)
+      const rows = this.db
+        .prepare(
+          `SELECT
+             c.id, c.text, c.location, c.document_id,
+             d.path, d.name, d.status, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated
+           FROM chunks c
+           JOIN documents d ON d.id = c.document_id
+           WHERE c.id IN (${placeholders})
+             AND d.excluded = 0
+             AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
+        )
+        .all(...chunkIds) as Array<{
+        id: number
+        text: string
+        location: string
+        document_id: number
+        path: string
+        name: string
+        status: string
+        hash: string | null
+        mtime_ms: number | null
+        size_bytes: number | null
+        updated_at: number
+        truncated: number
+      }>
 
-    const rowMap = new Map<number, (typeof rows)[number]>()
-    for (const row of rows) {
-      rowMap.set(row.id, row)
-    }
+      const rowMap = new Map<number, (typeof rows)[number]>()
+      for (const row of rows) {
+        rowMap.set(row.id, row)
+      }
 
-    const result: DocumentMemoryHit[] = []
-    for (const hit of hits) {
-      const row = rowMap.get(hit.chunkId)
-      if (!row) continue
-      result.push({
-        documentId: row.document_id,
-        path: row.path,
-        name: row.name,
-        chunkId: row.id,
-        text: row.text,
-        location: row.location,
-        score: hit.score ?? 0,
-        hash: row.hash,
-        mtimeMs: row.mtime_ms,
-        sizeBytes: row.size_bytes,
-        indexedAt: row.updated_at * 1000,
-        truncated: row.truncated === 1,
-      })
-    }
-    return result
+      const result: DocumentMemoryHit[] = []
+      for (const hit of hits) {
+        const row = rowMap.get(hit.chunkId)
+        if (!row) continue
+        result.push({
+          documentId: row.document_id,
+          path: row.path,
+          name: row.name,
+          chunkId: row.id,
+          text: row.text,
+          location: row.location,
+          score: hit.score ?? 0,
+          hash: row.hash,
+          mtimeMs: row.mtime_ms,
+          sizeBytes: row.size_bytes,
+          indexedAt: row.updated_at * 1000,
+          truncated: row.truncated === 1,
+        })
+      }
+      return result
+    })
   }
 
   /** Standalone lexical search using FTS5 (BM25) */
@@ -1751,35 +1770,37 @@ export class DocumentMemoryStore {
     query: string,
     limit = 200,
   ): Array<{ chunkId: number; rank: number; score: number; documentId: number }> {
-    const tokens = queryTokens(query)
-    if (!tokens.length) return []
-    const match = tokens.map(quoteFtsToken).join(' OR ')
-    const rows = this.db
-      .prepare(
-        `SELECT f.rowid AS chunk_id, bm25(chunk_fts) AS rank, c.document_id
-         FROM chunk_fts f
-         JOIN chunks c ON c.id = f.rowid
-         JOIN documents d ON d.id = c.document_id
-         WHERE chunk_fts MATCH ? AND d.excluded = 0
-           AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-         ORDER BY rank LIMIT ?`,
-      )
-      .all(match, limit) as Array<{ chunk_id: number; rank: number; document_id: number }>
+    return measureSqlite('searchLexical', () => {
+      const tokens = queryTokens(query)
+      if (!tokens.length) return []
+      const match = tokens.map(quoteFtsToken).join(' OR ')
+      const rows = this.db
+        .prepare(
+          `SELECT f.rowid AS chunk_id, bm25(chunk_fts) AS rank, c.document_id
+           FROM chunk_fts f
+           JOIN chunks c ON c.id = f.rowid
+           JOIN documents d ON d.id = c.document_id
+           WHERE chunk_fts MATCH ? AND d.excluded = 0
+             AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+           ORDER BY rank LIMIT ?`,
+        )
+        .all(match, limit) as Array<{ chunk_id: number; rank: number; document_id: number }>
 
-    const results: Array<{ chunkId: number; rank: number; score: number; documentId: number }> = []
-    let rank = 0
-    let previousRank: number | undefined
-    rows.forEach((row, index) => {
-      if (previousRank !== row.rank) rank = index + 1
-      results.push({
-        chunkId: row.chunk_id,
-        rank,
-        score: row.rank,
-        documentId: row.document_id,
+      const results: Array<{ chunkId: number; rank: number; score: number; documentId: number }> = []
+      let rank = 0
+      let previousRank: number | undefined
+      rows.forEach((row, index) => {
+        if (previousRank !== row.rank) rank = index + 1
+        results.push({
+          chunkId: row.chunk_id,
+          rank,
+          score: row.rank,
+          documentId: row.document_id,
+        })
+        previousRank = row.rank
       })
-      previousRank = row.rank
+      return results
     })
-    return results
   }
 
   /** Standalone semantic search using chunk_embeddings and cosine similarity (exact fallback) */
@@ -2096,38 +2117,40 @@ export class DocumentMemoryStore {
 
   /** Library totals from the per-document counters (one pass over the documents table). */
   stats(activeEmbeddingSpace?: string): DocumentMemoryStats {
-    const counts = this.countSource()
-    const base = this.db
-      .prepare(
-        `${counts.with}
-        SELECT count(*) AS docs,
-          coalesce(sum(${counts.total}), 0) AS chunks,
-          coalesce(sum(${counts.done}), 0) AS vectors,
-          coalesce(sum(CASE WHEN d.status = 'error' THEN 1 ELSE 0 END), 0) AS errors
-        FROM documents d WHERE d.excluded = 0`,
-      )
-      .get() as unknown as DocumentMemoryStats
+    return measureSqlite('stats', () => {
+      const counts = this.countSource()
+      const base = this.db
+        .prepare(
+          `${counts.with}
+          SELECT count(*) AS docs,
+            coalesce(sum(${counts.total}), 0) AS chunks,
+            coalesce(sum(${counts.done}), 0) AS vectors,
+            coalesce(sum(CASE WHEN d.status = 'error' THEN 1 ELSE 0 END), 0) AS errors
+          FROM documents d WHERE d.excluded = 0`,
+        )
+        .get() as unknown as DocumentMemoryStats
 
-    let semanticCoverage: number | undefined
-    if (activeEmbeddingSpace && base.chunks > 0) {
-      const spaceCount = this.db
-        .prepare(`
-          SELECT count(DISTINCT e.chunk_id) AS done
-          FROM chunk_embeddings e
-          JOIN chunks c ON c.id = e.chunk_id
-          JOIN documents d ON d.id = c.document_id
-          WHERE e.space_id = ? AND d.excluded = 0
-            AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-        `)
-        .get(activeEmbeddingSpace) as { done: number }
-      semanticCoverage = Math.min(1, spaceCount.done / base.chunks)
-    }
+      let semanticCoverage: number | undefined
+      if (activeEmbeddingSpace && base.chunks > 0) {
+        const spaceCount = this.db
+          .prepare(`
+            SELECT count(DISTINCT e.chunk_id) AS done
+            FROM chunk_embeddings e
+            JOIN chunks c ON c.id = e.chunk_id
+            JOIN documents d ON d.id = c.document_id
+            WHERE e.space_id = ? AND d.excluded = 0
+              AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+          `)
+          .get(activeEmbeddingSpace) as { done: number }
+        semanticCoverage = Math.min(1, spaceCount.done / base.chunks)
+      }
 
-    return {
-      ...base,
-      ...(semanticCoverage !== undefined ? { semanticCoverage } : {}),
-      ...(activeEmbeddingSpace ? { activeEmbeddingSpace } : {}),
-    }
+      return {
+        ...base,
+        ...(semanticCoverage !== undefined ? { semanticCoverage } : {}),
+        ...(activeEmbeddingSpace ? { activeEmbeddingSpace } : {}),
+      }
+    })
   }
 
   getEmbeddingSpaces(): Array<{
@@ -2402,13 +2425,14 @@ export class DocumentMemoryStore {
     options: SliceOptions,
     step: (outOfBudget: () => boolean) => 'done' | 'more' | 'abort',
     onMore?: () => void,
+    operationName = 'slice',
   ): Promise<boolean> {
     const budget = options.budgetMs ?? WRITE_SLICE_MS
     for (;;) {
       const started = performance.now()
       let outcome = 'done' as 'done' | 'more' | 'abort'
       this.transaction(() => {
-        outcome = step(() => performance.now() - started >= budget)
+        outcome = measureSqlite(operationName, () => step(() => performance.now() - started >= budget))
         if (outcome === 'more') onMore?.()
       })
       if (outcome !== 'more') return outcome === 'done'
