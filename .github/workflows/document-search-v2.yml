@@ -40,6 +40,16 @@ jobs:
       - name: Typecheck shell
         run: npm --prefix apps/shell run typecheck
 
+      - name: Typecheck HTML
+        run: npm run typecheck -w @genoffice/html
+
+      - name: Run HTML Print Regression Tests
+        run: >-
+          npm run test -w @genoffice/html --
+          tests/print-request.test.ts
+          tests/print-guard.test.ts
+          tests/print-window.test.ts
+
       - name: Run Core Document Search Test Suites
         run: >-
           npx --prefix apps/shell vitest run
