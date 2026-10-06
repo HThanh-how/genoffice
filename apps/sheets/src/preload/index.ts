@@ -2,6 +2,7 @@ import { installRendererDialogs } from '@genoffice/electron-utils/renderer-dialo
 import { createAgyChatPreloadApi } from '@genoffice/electron-utils/agy-chat-preload'
 import type { AiPanelPrefs } from '@genoffice/ui'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import { parsePdfExportResult } from './pdf-export-result'
 
 import type {
   AiChatResponse,
@@ -302,16 +303,12 @@ const desktopApi: DesktopApi = {
     return result as { renamed: boolean; name?: string }
   },
   async exportPdf(request) {
-    if (!isPdfExportRequest(request)) throw new Error('Invalid PDF export request.')
-    const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.exportPdf, request)
-    if (
-      !isRecord(result) ||
-      typeof result.canceled !== 'boolean' ||
-      (result.canceled === false && typeof result.path !== 'string')
-    ) {
-      throw new Error('Invalid PDF export response.')
+    if (!isPdfExportRequest(request)) {
+      throw new Error('Invalid PDF export request.')
     }
-    return result as { canceled: true } | { canceled: false; path: string }
+
+    const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.exportPdf, request)
+    return parsePdfExportResult(result)
   },
   async printWorkbook(request) {
     if (!isPdfExportRequest(request)) throw new Error('Invalid print request.')

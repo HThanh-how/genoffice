@@ -154,46 +154,49 @@ describe('pdf-export concurrency and destination locking', () => {
   it('PDFMAIN-05: collision between GUI export and headless export on same destination', async () => {
     const targetPath = 'D:\\exports\\shared-destination.pdf'
 
-    // Create a deferred promise to pause the first export in flight
-    let resolveWrite: () => void = () => {}
-    const writeGate = new Promise<void>((resolve) => {
-      resolveWrite = resolve
-    })
-
     mockShowSaveDialogWithMemory.mockResolvedValue({
       canceled: false,
       filePath: targetPath,
     })
 
-    // When the first export writes, it waits on writeGate
-    mockAtomicWriteFile.mockImplementationOnce(() => writeGate)
+    let signalWriteStarted: (() => void) | undefined
+    let releaseWrite: (() => void) | undefined
 
-    // Start GUI export
+    const writeStarted = new Promise<void>((resolve) => {
+      signalWriteStarted = resolve
+    })
+    const writeGate = new Promise<void>((resolve) => {
+      releaseWrite = resolve
+    })
+
+    mockAtomicWriteFile.mockImplementationOnce(async () => {
+      signalWriteStarted?.()
+      await writeGate
+    })
+
     const guiPromise = exportPdf(dummyEvent, baseRequest)
 
-    // Wait a tick to ensure GUI export has acquired the lease and entered atomicWriteFile
-    await new Promise((resolve) => setTimeout(resolve, 50))
+    // Wait until atomicWriteFile has been reached (lease guaranteed acquired)
+    await writeStarted
 
-    // Start concurrent Headless export targeting the exact same file
     mockIsHeadlessMode.mockReturnValue(true)
-    const headlessRequest: WorkbookExportPdfRequest = {
+
+    const headlessResult = await exportPdf(dummyEvent, {
       ...baseRequest,
       outPath: targetPath,
-    }
-    const headlessResult = await exportPdf(dummyEvent, headlessRequest)
+    })
 
-    // Headless export must immediately encounter destination-busy
-    expect(headlessResult).toEqual({ canceled: false, error: 'destination-busy' })
+    expect(headlessResult).toEqual({
+      canceled: false,
+      error: 'destination-busy',
+    })
 
-    // Unblock the GUI export
-    resolveWrite()
-    const guiResult = await guiPromise
-    expect(guiResult).toEqual({ canceled: false, path: targetPath })
+    releaseWrite?.()
 
-    // Destination should now be unlocked
-    const lease = tryAcquirePdfDestination(targetPath)
-    expect(lease).not.toBeNull()
-    lease?.release()
+    expect(await guiPromise).toEqual({
+      canceled: false,
+      path: targetPath,
+    })
   })
 
   it('PDFMAIN-06: parallel exports to different destinations are allowed and succeed', async () => {

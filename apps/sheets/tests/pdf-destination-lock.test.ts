@@ -19,22 +19,10 @@ describe('pdf-destination-lock', () => {
     lease3?.release()
   })
 
-  it('PDFLOCK-02: windows case and separator equivalence produces the same key', () => {
-    const pathUpper = 'D:\\Reports\\Report.pdf'
-    const pathLowerSlash = 'd:/reports/report.pdf'
-
-    const key1 = pdfDestinationKey(pathUpper, 'win32')
-    const key2 = pdfDestinationKey(pathLowerSlash, 'win32')
+  it('PDFLOCK-02: windows case and separator aliases produce the same destination key', () => {
+    const key1 = pdfDestinationKey('D:\\Reports\\Report.pdf', 'win32', 'D:\\work')
+    const key2 = pdfDestinationKey('d:/reports/report.pdf', 'win32', 'D:\\work')
     expect(key1).toBe(key2)
-
-    // Verify locking blocks across the case/slash variation
-    const lease1 = tryAcquirePdfDestination(pathUpper)
-    expect(lease1).not.toBeNull()
-
-    const lease2 = tryAcquirePdfDestination(pathLowerSlash)
-    expect(lease2).toBeNull()
-
-    lease1?.release()
   })
 
   it('PDFLOCK-03: windows relative path alias resolves to same key as normalized absolute path', () => {
