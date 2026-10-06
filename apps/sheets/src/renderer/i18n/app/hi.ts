@@ -528,6 +528,12 @@ export const hi = {
   appPrintFailed: 'प्रिंट नहीं किया जा सका।',
   appPrintNeedsFullLoad:
     'प्रिंट करने के लिए कार्यपुस्तिका पूरी लोड होनी चाहिए — लोडिंग पूरी होने तक प्रतीक्षा करें।',
+  appPrintLoadingWorkbook: 'प्रिंटिंग के लिए वर्कबुक लोड हो रही है…',
+  appPrintWorkbookTooLarge: 'प्रिंटिंग के लिए वर्कबुक पूरी तरह लोड करने हेतु बहुत बड़ी है।',
+  appPrintLoadTimedOut: 'प्रिंटिंग के लिए वर्कबुक लोड करने का समय समाप्त हो गया।',
+  appPdfLoadingWorkbook: 'PDF निर्यात के लिए वर्कबुक लोड हो रही है…',
+  appPdfWorkbookTooLarge: 'PDF निर्यात के लिए वर्कबुक पूरी तरह लोड करने हेतु बहुत बड़ी है।',
+  appPdfLoadTimedOut: 'PDF निर्यात के लिए वर्कबुक लोड करने का समय समाप्त हो गया।',
   appCsvExportNeedsFullLoad:
     'CSV निर्यात के लिए पूरी तरह लोड की गई कार्यपुस्तिका चाहिए — लोडिंग पूरी होने तक प्रतीक्षा करें।',
   appCsvExportTooLarge: 'शीट बहुत बड़ी है, CSV के रूप में निर्यात नहीं की जा सकती।',

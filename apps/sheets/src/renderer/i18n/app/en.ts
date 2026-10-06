@@ -514,6 +514,12 @@ export const en = {
   appPrintFailed: 'Unable to print.',
   appPrintNeedsFullLoad:
     'Printing needs the whole workbook loaded — please wait for loading to finish.',
+  appPrintLoadingWorkbook: 'Loading workbook for printing…',
+  appPrintWorkbookTooLarge: 'The workbook is too large to load fully for printing.',
+  appPrintLoadTimedOut: 'Loading the workbook for printing timed out.',
+  appPdfLoadingWorkbook: 'Loading workbook for PDF export…',
+  appPdfWorkbookTooLarge: 'The workbook is too large to load fully for PDF export.',
+  appPdfLoadTimedOut: 'Loading the workbook for PDF export timed out.',
   appCsvExportNeedsFullLoad:
     'CSV export needs the fully loaded workbook — wait for loading to finish.',
   appCsvExportTooLarge: 'The sheet is too large to export as CSV.',

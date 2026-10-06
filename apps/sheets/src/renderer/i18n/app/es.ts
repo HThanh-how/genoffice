@@ -566,6 +566,15 @@ export const es = {
   appPrintFailed: 'No se puede imprimir.',
   appPrintNeedsFullLoad:
     'Para imprimir, el libro debe estar completamente cargado; espere a que termine la carga.',
+  appPrintLoadingWorkbook: 'Cargando libro de trabajo para imprimir…',
+  appPrintWorkbookTooLarge:
+    'El libro de trabajo es demasiado grande para cargarlo por completo para imprimir.',
+  appPrintLoadTimedOut: 'Se agotó el tiempo de espera al cargar el libro de trabajo para imprimir.',
+  appPdfLoadingWorkbook: 'Cargando libro de trabajo para exportar a PDF…',
+  appPdfWorkbookTooLarge:
+    'El libro de trabajo es demasiado grande para cargarlo por completo para exportar a PDF.',
+  appPdfLoadTimedOut:
+    'Se agotó el tiempo de espera al cargar el libro de trabajo para exportar a PDF.',
   appCsvExportNeedsFullLoad:
     'La exportación a CSV requiere el libro completamente cargado — espere a que termine la carga.',
   appCsvExportTooLarge: 'La hoja es demasiado grande para exportarla como CSV.',

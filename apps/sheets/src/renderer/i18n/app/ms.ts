@@ -530,6 +530,12 @@ export const ms = {
   appPrintFailed: 'Tidak dapat mencetak.',
   appPrintNeedsFullLoad:
     'Cetakan memerlukan buku kerja dimuatkan sepenuhnya — tunggu sehingga pemuatan selesai.',
+  appPrintLoadingWorkbook: 'Memuatkan buku kerja untuk pencetakan…',
+  appPrintWorkbookTooLarge: 'Buku kerja terlalu besar untuk dimuatkan sepenuhnya bagi pencetakan.',
+  appPrintLoadTimedOut: 'Masa tamat memuatkan buku kerja untuk pencetakan.',
+  appPdfLoadingWorkbook: 'Memuatkan buku kerja untuk eksport PDF…',
+  appPdfWorkbookTooLarge: 'Buku kerja terlalu besar untuk dimuatkan sepenuhnya bagi eksport PDF.',
+  appPdfLoadTimedOut: 'Masa tamat memuatkan buku kerja untuk eksport PDF.',
   appCsvExportNeedsFullLoad:
     'Eksport CSV memerlukan buku kerja dimuatkan sepenuhnya — tunggu pemuatan selesai.',
   appCsvExportTooLarge: 'Helaian terlalu besar untuk dieksport sebagai CSV.',

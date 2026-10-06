@@ -537,6 +537,12 @@ export const ko = {
   appPrintFailed: '인쇄할 수 없습니다.',
   appPrintNeedsFullLoad:
     '인쇄하려면 워크북이 완전히 로드되어야 합니다. 로드가 끝날 때까지 기다려 주세요.',
+  appPrintLoadingWorkbook: '인쇄를 위해 통합 문서를 로드하는 중…',
+  appPrintWorkbookTooLarge: '통합 문서가 너무 커서 인쇄용으로 완전히 로드할 수 없습니다.',
+  appPrintLoadTimedOut: '인쇄용 통합 문서 로드 시간이 초과되었습니다.',
+  appPdfLoadingWorkbook: 'PDF 내보내기를 위해 통합 문서를 로드하는 중…',
+  appPdfWorkbookTooLarge: '통합 문서가 너무 커서 PDF 내보내기용으로 완전히 로드할 수 없습니다.',
+  appPdfLoadTimedOut: 'PDF 내보내기용 통합 문서 로드 시간이 초과되었습니다.',
   appCsvExportNeedsFullLoad:
     'CSV 내보내기에는 통합 문서 전체 로드가 필요합니다 — 로드가 완료될 때까지 기다리십시오.',
   appCsvExportTooLarge: '시트가 너무 커서 CSV로 내보낼 수 없습니다.',

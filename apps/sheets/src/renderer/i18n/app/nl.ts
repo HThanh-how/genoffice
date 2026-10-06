@@ -560,6 +560,12 @@ export const nl = {
   appPrintFailed: 'Kan niet afdrukken.',
   appPrintNeedsFullLoad:
     'Afdrukken vereist dat de werkmap volledig is geladen. Wacht tot het laden is voltooid.',
+  appPrintLoadingWorkbook: 'Werkmap laden voor afdrukken…',
+  appPrintWorkbookTooLarge: 'De werkmap is te groot om volledig te laden voor afdrukken.',
+  appPrintLoadTimedOut: 'Time-out bij het laden van de werkmap voor afdrukken.',
+  appPdfLoadingWorkbook: 'Werkmap laden voor PDF-export…',
+  appPdfWorkbookTooLarge: 'De werkmap is te groot om volledig te laden voor PDF-export.',
+  appPdfLoadTimedOut: 'Time-out bij het laden van de werkmap voor PDF-export.',
   appCsvExportNeedsFullLoad:
     'CSV-export vereist een volledig geladen werkmap — wacht tot het laden is voltooid.',
   appCsvExportTooLarge: 'Het blad is te groot om als CSV te exporteren.',
