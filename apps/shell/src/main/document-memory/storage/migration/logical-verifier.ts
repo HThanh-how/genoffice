@@ -34,6 +34,201 @@ export function verifyDatabaseIntegrity(dbOrPath: string | DatabaseSync): Integr
   }
 }
 
+export interface EmbeddingVerifierOptions {
+  activeSpaceId: string
+  activeDimensions: number
+}
+
+export interface EmbeddingIntegrityResult {
+  ok: boolean
+  reasons: string[]
+  activeSpaceId?: string
+  activeDimensions?: number
+  totalActiveVectors?: number
+}
+
+/**
+ * Rigorously verifies active embedding integrity before cutover:
+ * - Target space exists in embedding_spaces
+ * - Active vectors in chunk_embeddings have exact dimensions (dim == activeDimensions)
+ * - No active vector wrong dimensionality (exact blob byte length matching dimensions)
+ * - document_embedding_counts rows match actual chunk_embeddings vectors count
+ */
+export function verifyEmbeddingIntegrity(
+  targetDb: DatabaseSync,
+  activeSpaceId: string,
+  activeDimensions: number,
+): EmbeddingIntegrityResult
+export function verifyEmbeddingIntegrity(
+  targetDb: DatabaseSync,
+  options: EmbeddingVerifierOptions,
+): EmbeddingIntegrityResult
+export function verifyEmbeddingIntegrity(
+  options: EmbeddingVerifierOptions & { targetDb?: DatabaseSync; db?: DatabaseSync },
+): EmbeddingIntegrityResult
+export function verifyEmbeddingIntegrity(
+  targetDbOrOptions: DatabaseSync | (EmbeddingVerifierOptions & { targetDb?: DatabaseSync; db?: DatabaseSync }),
+  activeSpaceIdOrOptions?: string | EmbeddingVerifierOptions,
+  maybeDimensions?: number,
+): EmbeddingIntegrityResult {
+  let targetDb: DatabaseSync
+  let activeSpaceId: string
+  let activeDimensions: number
+
+  if ('prepare' in targetDbOrOptions) {
+    targetDb = targetDbOrOptions
+    if (typeof activeSpaceIdOrOptions === 'string') {
+      activeSpaceId = activeSpaceIdOrOptions
+      activeDimensions = typeof maybeDimensions === 'number' ? maybeDimensions : 0
+    } else if (activeSpaceIdOrOptions && typeof activeSpaceIdOrOptions === 'object') {
+      activeSpaceId = activeSpaceIdOrOptions.activeSpaceId
+      activeDimensions = activeSpaceIdOrOptions.activeDimensions
+    } else {
+      throw new Error('Invalid arguments to verifyEmbeddingIntegrity: missing activeSpaceId and activeDimensions')
+    }
+  } else {
+    const opts = targetDbOrOptions
+    const resolvedDb = opts.targetDb ?? opts.db
+    if (!resolvedDb) {
+      throw new Error('Invalid arguments to verifyEmbeddingIntegrity: missing targetDb or db')
+    }
+    targetDb = resolvedDb
+    activeSpaceId = opts.activeSpaceId
+    activeDimensions = opts.activeDimensions
+  }
+
+  const reasons: string[] = []
+
+  // 1. Target space exists in embedding_spaces
+  const spaceRow = targetDb
+    .prepare('SELECT id, dimensions FROM embedding_spaces WHERE id = ?')
+    .get(activeSpaceId) as { id: string; dimensions?: number } | undefined
+
+  if (!spaceRow) {
+    reasons.push(`Target embedding space '${activeSpaceId}' does not exist in embedding_spaces`)
+  } else if (typeof spaceRow.dimensions === 'number' && spaceRow.dimensions !== activeDimensions) {
+    reasons.push(
+      `Target embedding space '${activeSpaceId}' declared dimensions (${spaceRow.dimensions}) does not match activeDimensions (${activeDimensions})`,
+    )
+  }
+
+  // 2. Active vectors in chunk_embeddings have exact dimensions (dim == activeDimensions)
+  const exactDimMismatchRow = targetDb
+    .prepare(`
+      SELECT count(*) AS n FROM chunk_embeddings
+      WHERE space_id = ? AND (vector_dim IS NULL OR vector_dim != ?)
+    `)
+    .get(activeSpaceId, activeDimensions) as { n: number }
+
+  if (exactDimMismatchRow.n > 0) {
+    reasons.push(
+      `Active vectors in chunk_embeddings do not have exact dimensions: ${exactDimMismatchRow.n} record(s) have vector_dim != ${activeDimensions}`,
+    )
+  }
+
+  // 3. No active vector wrong dimensionality (exact blob byte length == activeDimensions * 4 and matches vector_dim * 4)
+  const wrongDimRow = targetDb
+    .prepare(`
+      SELECT count(*) AS n FROM chunk_embeddings
+      WHERE space_id = ? AND (
+        length(vector) != ? * 4
+        OR length(vector) != vector_dim * 4
+        OR vector_dim <= 0
+        OR vector IS NULL
+      )
+    `)
+    .get(activeSpaceId, activeDimensions) as { n: number }
+
+  if (wrongDimRow.n > 0) {
+    reasons.push(
+      `Active vectors in chunk_embeddings have wrong dimensionality: ${wrongDimRow.n} record(s) violate expected dimension ${activeDimensions} or blob byte length (${activeDimensions * 4} bytes)`,
+    )
+  }
+
+  // 4. document_embedding_counts rows match actual chunk_embeddings vectors count
+  // 4a. Per-document completed_chunks matches actual chunk_embeddings vectors count for activeSpaceId
+  const docCountMismatchRow = targetDb
+    .prepare(`
+      SELECT count(*) AS n FROM (
+        SELECT d.document_id, d.space_id, d.completed_chunks,
+               (
+                 SELECT count(*)
+                 FROM chunks c
+                 JOIN chunk_embeddings ce ON ce.chunk_id = c.id
+                 WHERE c.document_id = d.document_id AND ce.space_id = d.space_id
+               ) AS actual_chunks
+        FROM document_embedding_counts d
+        WHERE d.space_id = ?
+      )
+      WHERE completed_chunks != actual_chunks
+    `)
+    .get(activeSpaceId) as { n: number }
+
+  if (docCountMismatchRow.n > 0) {
+    reasons.push(
+      `Mismatch in document_embedding_counts for space '${activeSpaceId}': ${docCountMismatchRow.n} document(s) have completed_chunks not matching actual chunk_embeddings count`,
+    )
+  }
+
+  // 4b. No documents with chunk_embeddings missing from document_embedding_counts
+  const missingDocCountsRow = targetDb
+    .prepare(`
+      SELECT count(*) AS n FROM (
+        SELECT c.document_id
+        FROM chunks c
+        JOIN chunk_embeddings ce ON ce.chunk_id = c.id
+        WHERE ce.space_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM document_embedding_counts d
+            WHERE d.document_id = c.document_id AND d.space_id = ce.space_id
+          )
+        GROUP BY c.document_id
+      )
+    `)
+    .get(activeSpaceId) as { n: number }
+
+  if (missingDocCountsRow.n > 0) {
+    reasons.push(
+      `Missing document_embedding_counts records for space '${activeSpaceId}': ${missingDocCountsRow.n} document(s) have chunk_embeddings but no document_embedding_counts record`,
+    )
+  }
+
+  // 4c. Total document_embedding_counts sum matches total chunk_embeddings count for activeSpaceId
+  const totalCountRow = targetDb
+    .prepare(`
+      SELECT 
+        (SELECT coalesce(sum(completed_chunks), 0) FROM document_embedding_counts WHERE space_id = ?) AS counted_total,
+        (SELECT count(*) FROM chunk_embeddings WHERE space_id = ?) AS actual_total
+    `)
+    .get(activeSpaceId, activeSpaceId) as { counted_total: number; actual_total: number }
+
+  if (totalCountRow.counted_total !== totalCountRow.actual_total) {
+    reasons.push(
+      `document_embedding_counts total (${totalCountRow.counted_total}) does not match actual chunk_embeddings vectors count (${totalCountRow.actual_total}) for space '${activeSpaceId}'`,
+    )
+  }
+
+  const totalActiveVectorsRow = targetDb
+    .prepare('SELECT count(*) AS n FROM chunk_embeddings WHERE space_id = ?')
+    .get(activeSpaceId) as { n: number }
+  const totalActiveVectors = totalActiveVectorsRow?.n ?? 0
+
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    activeSpaceId,
+    activeDimensions,
+    totalActiveVectors,
+  }
+}
+
+export const verifyActiveEmbeddingIntegrity = verifyEmbeddingIntegrity
+
+export interface LogicalConsistencyOptions {
+  activeSpaceId?: string
+  activeDimensions?: number
+}
+
 export interface LogicalConsistencyResult {
   ok: boolean
   reasons: string[]
@@ -64,8 +259,40 @@ export function verifyLogicalConsistency(
   targetDb: DatabaseSync,
   expectedDocuments: number,
   expectedChunks: number,
+  options?: LogicalConsistencyOptions,
+): LogicalConsistencyResult
+export function verifyLogicalConsistency(
+  targetDb: DatabaseSync,
+  expectedDocuments: number,
+  expectedChunks: number,
+  activeSpaceId: string,
+  activeDimensions: number,
+): LogicalConsistencyResult
+export function verifyLogicalConsistency(
+  targetDb: DatabaseSync,
+  expectedDocuments: number,
+  expectedChunks: number,
+  optionsOrActiveSpaceId?: LogicalConsistencyOptions | string,
+  maybeActiveDimensions?: number,
 ): LogicalConsistencyResult {
   const reasons: string[] = []
+
+  let activeSpaceId: string | undefined
+  let activeDimensions: number | undefined
+  if (typeof optionsOrActiveSpaceId === 'string') {
+    activeSpaceId = optionsOrActiveSpaceId
+    activeDimensions = maybeActiveDimensions
+  } else if (optionsOrActiveSpaceId && typeof optionsOrActiveSpaceId === 'object') {
+    activeSpaceId = optionsOrActiveSpaceId.activeSpaceId
+    activeDimensions = optionsOrActiveSpaceId.activeDimensions
+  }
+
+  if (activeSpaceId && typeof activeDimensions === 'number') {
+    const embResult = verifyEmbeddingIntegrity(targetDb, activeSpaceId, activeDimensions)
+    if (!embResult.ok) {
+      reasons.push(...embResult.reasons)
+    }
+  }
 
   // V01: Physical SQLite Integrity
   const integrityRow = targetDb.prepare('PRAGMA integrity_check').get() as { integrity_check?: string }
