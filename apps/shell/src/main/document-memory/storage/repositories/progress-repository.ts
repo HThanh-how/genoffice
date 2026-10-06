@@ -91,6 +91,7 @@ export class ProgressRepository {
     })
   }
 
+  /** Scopes document chunk progress to active embedding space (BEH-20). */
   chunkProgress(path: string, activeSpaceId?: string): DocumentChunkProgress {
     const targetSpace = activeSpaceId ?? null
     const row = this.db

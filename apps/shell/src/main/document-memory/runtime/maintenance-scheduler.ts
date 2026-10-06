@@ -198,8 +198,8 @@ export class MaintenanceScheduler {
     }
   }
 
-  getDocumentIndexProgress(path: string): DocumentIndexProgress {
-    const progress = this.store.chunkProgress(path)
+  getDocumentIndexProgress(path: string, activeSpaceId: string): DocumentIndexProgress {
+    const progress = this.store.chunkProgress(path, activeSpaceId)
     const doc = progress.document ?? this.store.documentByPath(path)
     if (!doc) {
       return { state: 'idle', percent: null, completedChunks: 0, totalChunks: 0 }

@@ -214,7 +214,7 @@ export class DocumentMemoryManager {
     if (this.enabled && this.store.documentByPath(newR)?.status !== 'excluded') this.enqueue(newR)
   }
   legacyPaths(ext: readonly string[], lim: number) { return this.store.legacyPaths(ext, lim) }; listPaths() { return this.store.listPaths() }
-  getDocumentIndexProgress(p: string): DocumentIndexProgress { return this.maintScheduler.getDocumentIndexProgress(p) }
+  getDocumentIndexProgress(p: string, activeSpaceId = this.embeddingCoord.currentProfile.embeddingId): DocumentIndexProgress { return this.maintScheduler.getDocumentIndexProgress(p, activeSpaceId) }
   getFolderIndexProgress(f?: string, d?: boolean | string, e?: number): FolderIndexProgress { return this.maintScheduler.getFolderIndexProgress(f, d, e) }
   getFolderIndexCounts(f?: string): FolderChunkProgress { return this.maintScheduler.getFolderIndexCounts(f) }; getLibraryIndexCounts(): FolderChunkProgress { return this.maintScheduler.getLibraryIndexCounts() }
   prioritizeFolder(folder: string): number { return this.freshnessCoord.prioritizeFolder(folder) }
