@@ -214,8 +214,8 @@ export function chunkDocumentTextV2(
   }))
 }
 
-/** Safety ceiling of chunks stored for one file (~25 M characters); beyond it the file is truncated and flagged. */
-export const MAX_CHUNKS_PER_FILE = 50_000
+/** Safety ceiling of chunks stored for one file; beyond it the file is truncated and flagged. */
+export const MAX_CHUNKS_PER_FILE = 4_096
 /**
  * The most pages of one PDF that are ever read and indexed, whatever the setting: reading all of
  * a 4,000-page textbook costs hours of work and a week of quota to make one file searchable.
@@ -234,16 +234,23 @@ export const MAX_TABULAR_CHUNKS = 120
 const MAX_HEADER_CHARS = 160
 const NUMERIC_LETTER_RATIO = 0.2
 
+export type TruncatedReason =
+  | 'chunk-limit'
+  | 'content-limit'
+  | 'pdf-page-limit'
+  | 'tabular-sampling'
+
 export interface CappedChunks {
   chunks: DocumentChunk[]
   /** True when content beyond the cap was left out of the index. */
   truncated: boolean
+  truncatedReason?: TruncatedReason
 }
 
 /** Keep the first `max` chunks and report whether anything was dropped. */
 export function capChunks(chunks: DocumentChunk[], max = MAX_CHUNKS_PER_FILE): CappedChunks {
   return chunks.length > max
-    ? { chunks: chunks.slice(0, max), truncated: true }
+    ? { chunks: chunks.slice(0, max), truncated: true, truncatedReason: 'chunk-limit' }
     : { chunks, truncated: false }
 }
 
@@ -316,6 +323,7 @@ export function chunkTabularText(input: string, options?: { sheet?: string }): T
   return {
     chunks,
     truncated,
+    ...(truncated ? { truncatedReason: 'tabular-sampling' } : {}),
     numeric: nonSpace > 0 && letters / nonSpace < NUMERIC_LETTER_RATIO,
   }
 }

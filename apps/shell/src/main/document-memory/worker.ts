@@ -12,7 +12,10 @@ import {
   clampPdfPages,
   CHUNKER_VERSION,
   DEFAULT_PDF_PAGES,
+  type TruncatedReason,
 } from './chunks'
+
+export const MAX_INDEX_TEXT_CHARS = 8 * 1024 * 1024
 import { DocumentMemoryStore } from './store'
 import { embedTexts } from './embeddings'
 import { renderPdfPagesForOcr, type OcrRenderRequest } from './agy-ocr-render'
@@ -116,6 +119,11 @@ export async function extractDocumentSliced(
       .replace(/&lt;/g, '<')
       .replace(/&gt;/g, '>')
   }
+  let contentTruncated = false
+  if (text.length > MAX_INDEX_TEXT_CHARS) {
+    text = text.slice(0, MAX_INDEX_TEXT_CHARS)
+    contentTruncated = true
+  }
   // Cost control: tabular exports index header + sampled rows; everything else is capped.
   const tabular = /^\.(csv|tsv|xls)$/.test(extname(path).toLowerCase())
   const base = tabular
@@ -130,7 +138,15 @@ export async function extractDocumentSliced(
       }
   const numeric = base.numeric
   let chunks = base.chunks
-  let truncated = base.truncated || pagesLeftOut
+  let truncated = base.truncated || pagesLeftOut || contentTruncated
+  let truncatedReason: TruncatedReason | undefined
+  if (contentTruncated) {
+    truncatedReason = 'content-limit'
+  } else if (base.truncated) {
+    truncatedReason = base.truncatedReason ?? (tabular ? 'tabular-sampling' : 'chunk-limit')
+  } else if (pagesLeftOut) {
+    truncatedReason = 'pdf-page-limit'
+  }
   const fileHash = createHash('sha256').update(bytes).digest('hex')
   let hash = fileHash
   let ocrRead = false
@@ -142,8 +158,12 @@ export async function extractDocumentSliced(
     if (stored && pages.length) {
       ocrRead = true
       const fromOcr = ocrChunksFromPages({ totalPages: scannedPages.length, pages })
-      chunks = capChunks([...chunks, ...fromOcr.chunks]).chunks
-      truncated = truncated || fromOcr.truncated
+      const capped = capChunks([...chunks, ...fromOcr.chunks])
+      chunks = capped.chunks
+      if (capped.truncated || fromOcr.truncated) {
+        truncated = true
+        truncatedReason = truncatedReason ?? 'chunk-limit'
+      }
       hash = ocrDocumentHash(fileHash, pages)
     }
   }
@@ -154,7 +174,7 @@ export async function extractDocumentSliced(
     chunks,
     chunkerVersion: CHUNKER_VERSION,
     status: chunks.length ? 'text-only' : 'empty',
-    ...(truncated ? { truncated: true } : {}),
+    ...(truncated ? { truncated: true, ...(truncatedReason ? { truncatedReason } : {}) } : {}),
     // Pages with no text layer, so the OCR reader knows which pages (and only those) to read.
     ...(pdfPages && scannedPages.length
       ? { scan: { totalPages: pdfPages.length, scannedPages } }

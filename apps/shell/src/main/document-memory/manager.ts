@@ -32,7 +32,7 @@ import { readPdfPages, writePdfPages } from './pdf-pages'
 import { foldFolderProgress, type FolderIndexProgress } from './folder-progress'
 import type { FolderChunkProgress } from './store'
 import { DocumentMemoryStore, type DocumentMemoryHit, type StoredDocument } from './store'
-import type { DocumentChunk } from './chunks'
+import type { DocumentChunk, TruncatedReason } from './chunks'
 import type { DocumentMemoryStatus } from '../../shared/home-api'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'
 import { createOcrHost } from './ocr-host'
@@ -81,6 +81,7 @@ interface ExtractResult {
   error?: string
   /** Only part of the file was indexed (chunk cap or sampled tabular rows). */
   truncated?: boolean
+  truncatedReason?: TruncatedReason
   /** Lexical-only: embedding adds nothing (numeric tables). */
   skipEmbeddings?: boolean
   /** PDF pages with no text layer of their own (the OCR reader's work list). */

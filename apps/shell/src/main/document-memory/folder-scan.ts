@@ -4,7 +4,9 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSy
 import { dirname, extname, isAbsolute, parse, relative, resolve } from 'node:path'
 import { FolderWatchManager } from './folder-watch'
 import { SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
+import { isGeneratedArtifactPath } from './artifact-policy'
 export { IGNORED_DIRECTORIES, SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
+export { isGeneratedArtifactPath } from './artifact-policy'
 
 export const MAX_DOCUMENT_BYTES = 128 * 1024 * 1024
 const MAX_ROOT_LENGTH = 32_768
@@ -28,7 +30,9 @@ export function isIndexablePath(root: string, path: string): boolean {
   const name = relative.pop()
   if (!name || isIgnoredFileName(name)) return false
   if (relative.some(shouldSkipDirectory)) return false
-  return SUPPORTED_EXTENSIONS.has(extname(name).toLowerCase())
+  if (!SUPPORTED_EXTENSIONS.has(extname(name).toLowerCase())) return false
+  if (isGeneratedArtifactPath(path)) return false
+  return true
 }
 
 export interface FolderScanStatus {
@@ -790,7 +794,7 @@ export class FolderScanManager {
             continue
           }
           if (entry.isDirectory()) {
-            if (shouldSkipDirectory(entry.name)) handlers.onSkipped()
+            if (shouldSkipDirectory(entry.name) || isGeneratedArtifactPath(path)) handlers.onSkipped()
             else pending.push(path)
             continue
           }
@@ -799,6 +803,10 @@ export class FolderScanManager {
             continue
           }
           if (!SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
+            handlers.onSkipped()
+            continue
+          }
+          if (isGeneratedArtifactPath(path)) {
             handlers.onSkipped()
             continue
           }
