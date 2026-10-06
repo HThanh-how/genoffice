@@ -6,6 +6,37 @@ import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import {
+  publishIndexingPolicy,
+  resetIndexingPolicyBus,
+} from '../src/main/fork/indexing-policy-bus'
+
+const PAUSED_POLICY = {
+  paused: true,
+  pauseReason: 'low-battery' as const,
+  threads: 1,
+  cpuShare: 0,
+  priority: 'idle' as const,
+  tier: 'paused' as const,
+  reason: 'test pause',
+  onBattery: true,
+  memoryTier: 'normal' as const,
+  allowHeavyEmbedding: false,
+  maxBatchTokens: 3000,
+}
+
+const RESUMED_POLICY = {
+  paused: false,
+  threads: 2,
+  cpuShare: 0.5,
+  priority: 'below-normal' as const,
+  tier: 'active' as const,
+  reason: 'test active',
+  onBattery: false,
+  memoryTier: 'normal' as const,
+  allowHeavyEmbedding: true,
+  maxBatchTokens: 3000,
+}
 
 class MockFtsWorker extends EventEmitter {
   sentRequests: Array<{ id: number; type: string }> = []
@@ -28,6 +59,37 @@ class MockFtsWorker extends EventEmitter {
           },
         })
       }, 5)
+    } else if (message.type === 'gc-step') {
+      setTimeout(() => {
+        this.emit('message', {
+          id: message.id,
+          result: {
+            gcStats: {
+              retiredSetsDeleted: 0,
+              orphanChunksDeleted: 0,
+              obsoleteEmbeddingsDeleted: 0,
+              ftsRowsCleaned: 0,
+            },
+            durationMs: 4,
+          },
+        })
+      }, 5)
+    } else if (message.type === 'vacuum-step') {
+      setTimeout(() => {
+        this.emit('message', {
+          id: message.id,
+          result: {
+            vacuumResult: {
+              vacuumed: true,
+              initialFreelistPages: 256,
+              finalFreelistPages: 0,
+              pagesReclaimed: 256,
+              bytesReclaimed: 1048576,
+            },
+            durationMs: 4,
+          },
+        })
+      }, 5)
     }
   }
 
@@ -43,9 +105,11 @@ describe('FTS Maintenance Worker Delegation', () => {
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'genoffice-fts-test-'))
     mockWorker = new MockFtsWorker()
+    publishIndexingPolicy(RESUMED_POLICY)
   })
 
   afterEach(() => {
+    resetIndexingPolicyBus()
     vi.restoreAllMocks()
     try {
       rmSync(tempDir, { recursive: true, force: true })
@@ -103,6 +167,51 @@ describe('FTS Maintenance Worker Delegation', () => {
     await new Promise((resolve) => setTimeout(resolve, 300))
     const ftsRequestsAfter = mockWorker.sentRequests.filter((r) => r.type === 'fts-maintenance-step')
     expect(ftsRequestsAfter.length).toBe(2)
+
+    manager.close()
+  })
+
+  it('delegates gc-step and vacuum-step to worker process', async () => {
+    const runGcSpy = vi.spyOn(DocumentMemoryStore.prototype, 'runMaintenanceGc')
+    const runVacuumSpy = vi.spyOn(DocumentMemoryStore.prototype, 'runIncrementalVacuum')
+
+    const manager = new DocumentMemoryManager(tempDir, {
+      dbDir: tempDir,
+      workerFactory: () => mockWorker as unknown as Worker,
+      pollIntervalMs: 60_000,
+    })
+
+    await manager.runGcStep()
+    await manager.runVacuumStep()
+
+    // Verify main thread store was not called directly
+    expect(runGcSpy).not.toHaveBeenCalled()
+    expect(runVacuumSpy).not.toHaveBeenCalled()
+
+    // Verify worker received both steps
+    const gcRequests = mockWorker.sentRequests.filter((r) => r.type === 'gc-step')
+    const vacuumRequests = mockWorker.sentRequests.filter((r) => r.type === 'vacuum-step')
+    expect(gcRequests.length).toBe(1)
+    expect(vacuumRequests.length).toBe(1)
+
+    manager.close()
+  })
+
+  it('suspends maintenance when isIndexingPaused is active', async () => {
+    publishIndexingPolicy(PAUSED_POLICY)
+
+    const manager = new DocumentMemoryManager(tempDir, {
+      dbDir: tempDir,
+      workerFactory: () => mockWorker as unknown as Worker,
+      pollIntervalMs: 60_000,
+    })
+
+    await manager.runFtsMaintenance()
+    await manager.runGcStep()
+    await manager.runVacuumStep()
+
+    // When paused, no requests should be sent to worker
+    expect(mockWorker.sentRequests.length).toBe(0)
 
     manager.close()
   })

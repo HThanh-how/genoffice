@@ -1,4 +1,5 @@
 /** CPU extraction and real multilingual embeddings, isolated from Electron's UI thread. */
+export type { WorkerRequest, WorkerReply } from './worker-types'
 import { indexingWorkerData, postIndexMessage, onIndexRequest } from './runtime'
 import { interruptBackgroundSleep, withBackgroundBudget } from './cpu-budget'
 import { readFile, stat } from 'node:fs/promises'
@@ -301,6 +302,16 @@ onIndexRequest(
           const started = Date.now()
           const more = await withBackgroundBudget(async () => getWorkerStore().mergeFtsStep())
           result = { more: Boolean(more), durationMs: Date.now() - started }
+        } else if (request.type === 'gc-step') {
+          const started = Date.now()
+          const gcStats = await withBackgroundBudget(async () => getWorkerStore().runMaintenanceGc())
+          result = { gcStats, durationMs: Date.now() - started }
+        } else if (request.type === 'vacuum-step') {
+          const started = Date.now()
+          const vacuumResult = await withBackgroundBudget(async () =>
+            getWorkerStore().runIncrementalVacuum({ maxPages: 256, batchPages: 256 }),
+          )
+          result = { vacuumResult, durationMs: Date.now() - started }
         } else result = await embedTexts(request.texts, request.kind)
         postIndexMessage({ id: request.id, result })
       } catch (error) {

@@ -1,5 +1,11 @@
 import { isIndexingPaused, subscribeIndexingPolicy, type PublishedPolicy } from '../fork/indexing-policy-bus'
 
+export { isIndexingPaused, type PublishedPolicy }
+
+export function onIndexingPolicyChange(callback: (policy: PublishedPolicy) => void): () => void {
+  return subscribeIndexingPolicy(callback)
+}
+
 export enum BackgroundWorkPriority {
   P0_INTERACTIVE = 0,
   P1_USER_INITIATED = 1,
@@ -51,6 +57,7 @@ export function classifyRequestType(type: string): RequestClassification {
     case 'gc':
     case 'gc-step':
     case 'vacuum':
+    case 'vacuum-step':
     case 'incremental-vacuum':
     case 'ann-rebuild':
     case 'ann-sync':
@@ -92,6 +99,7 @@ export function getPriorityForType(type: string): BackgroundWorkPriority {
     case 'gc':
     case 'gc-step':
     case 'vacuum':
+    case 'vacuum-step':
     case 'incremental-vacuum':
     case 'ann-rebuild':
     case 'ann-sync':

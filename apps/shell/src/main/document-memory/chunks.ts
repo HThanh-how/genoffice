@@ -12,6 +12,19 @@ export interface DocumentChunk {
   metadata?: ChunkMetadata
 }
 
+export interface ExtractResult {
+  hash: string
+  mtimeMs: number
+  sizeBytes: number
+  chunks: DocumentChunk[]
+  chunkerVersion?: number
+  status: 'text-only' | 'empty' | 'ready'
+  error?: string
+  truncated?: boolean
+  skipEmbeddings?: boolean
+  scan?: any
+}
+
 export const CHUNKER_VERSION = 2
 
 const MAX_CHARS = 500

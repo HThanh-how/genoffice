@@ -1,0 +1,58 @@
+import type { ExtractResult } from './runtime/extraction-coordinator'
+import type { DocumentMemoryHit } from './store'
+import type { OcrRenderRequest } from './agy-ocr-render'
+
+export type WorkerRequest =
+  | { type: 'extract'; path: string; interactive?: boolean; sliceMs?: number; maxPdfPages?: number }
+  | { type: 'embed'; texts: string[]; kind: 'query' | 'passage' }
+  | { type: 'ocr-render'; path: string; ocr: OcrRenderRequest }
+  | {
+      type: 'search'
+      query: string
+      vector: number[] | null
+      limit: number
+      embeddingModel: string
+    }
+  | {
+      type: 'search-lexical'
+      query: string
+      limit: number
+    }
+  | {
+      type: 'search-semantic'
+      vector: number[]
+      limit: number
+      embeddingSpaceId: string
+    }
+  | {
+      type: 'ann-rebuild' | 'ann-sync'
+      embeddingSpaceId: string
+    }
+  | {
+      type: 'fts-maintenance-step'
+    }
+  | {
+      type: 'gc-step'
+    }
+  | {
+      type: 'vacuum-step'
+    }
+
+export type WorkerReply =
+  | {
+      id: number
+      result:
+        | ExtractResult
+        | number[][]
+        | DocumentMemoryHit[]
+        | { more: boolean; durationMs: number }
+        | { freedBytes?: number }
+        | unknown
+    }
+  | { id: number; error: string; restartRequired?: boolean }
+  | {
+      type: 'model'
+      state: 'downloading' | 'ready' | 'blocked' | 'error'
+      progress?: number
+      error?: string
+    }
