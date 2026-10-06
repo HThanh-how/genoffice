@@ -23,6 +23,9 @@ export function createDocumentIndexPreloadApi(
     ...createIndexingModePreloadApi(ipcRenderer),
     // Scanned-PDF reader (Antigravity): settings, live status, manual "read now".
     ...createAgyOcrPreloadApi(ipcRenderer),
+    async getDocumentIndexSnapshot(forceRefresh = false) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getDocumentIndexSnapshot, forceRefresh)
+    },
     async getDocumentIndexIssueSummary(root) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getDocumentIndexIssueSummary, root)
     },

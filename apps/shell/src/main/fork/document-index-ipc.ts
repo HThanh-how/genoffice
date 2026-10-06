@@ -18,6 +18,7 @@ import {
 } from '../document-memory/embedding-profiles'
 import {
   DOCUMENT_INDEX_CHANNELS,
+  type DocumentIndexSnapshot,
   type EmbeddingModelState,
   type IndexedFileHit,
   type IndexingNow,
@@ -25,6 +26,8 @@ import {
   type IndexedFolder,
   type PdfPagesState,
 } from '../../shared/fork/document-index-api'
+import { getEventLoopMetrics, getSqliteTimingSummary } from '../document-memory/sqlite-timing'
+import type { IndexIssueSummary } from '../document-memory/issue-reader'
 import { DEFAULT_PDF_PAGES, LARGE_PDF_PAGES } from '../document-memory/chunks'
 import { createSourceAvailabilityProbe } from '../document-memory/source-availability'
 import {
@@ -385,10 +388,137 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
         errors: memory?.errors ?? 0,
         ...(modelError ? { lastError: modelError } : {}),
       },
-      folderProgress: counts
-        ? foldFolderProgress(counts, !folder?.running, folder?.running ? (folder.errors ?? 0) : 0)
-        : null,
-    }
-  })
-  return () => issueReader?.close()
-}
+        folderProgress: counts
+          ? foldFolderProgress(counts, !folder?.running, folder?.running ? (folder.errors ?? 0) : 0)
+          : null,
+      }
+    })
+    let snapshotCache: { data: DocumentIndexSnapshot; expiresAt: number } | null = null
+    const SNAPSHOT_CACHE_TTL_MS = 1500
+
+    ipcMain.handle(
+      DOCUMENT_INDEX_CHANNELS.getDocumentIndexSnapshot,
+      (_event, forceRefresh?: boolean): DocumentIndexSnapshot => {
+        const now = Date.now()
+        if (!forceRefresh && snapshotCache && now < snapshotCache.expiresAt) {
+          return snapshotCache.data
+        }
+
+        const documentMemory = getDocumentMemory()
+        const folder = getFolderScan()?.status() ?? null
+        const memoryStatus = documentMemory?.status() ?? {
+          enabled: false,
+          modelState: 'not-loaded',
+          documents: 0,
+          chunks: 0,
+          vectors: 0,
+          pending: 0,
+          errors: 0,
+          dbPath: deps.dbPath(),
+          files: [],
+        }
+        const actMem = documentMemory?.indexingActivityStatus()
+        const modelError =
+          actMem?.modelState === 'error' ? shortCause(documentMemory?.lastIndexError()) : ''
+        const counts = documentMemory
+          ? folderCounts.get(ALL_FOLDERS, () => documentMemory.getLibraryIndexCounts())
+          : null
+        const policy = currentIndexingPolicy()
+        const cpuMode: 'gentle' | undefined =
+          !policy || (!policy.paused && policy.cpuShare < 1) ? 'gentle' : undefined
+
+        const activity: HomeIndexingActivity = {
+          folder,
+          progressScope: 'library',
+          memory: {
+            enabled: actMem?.enabled ?? false,
+            ...(cpuMode ? { cpuMode } : {}),
+            modelState: actMem?.modelState ?? 'not-loaded',
+            ...(actMem?.modelProgress === undefined ? {} : { modelProgress: actMem.modelProgress }),
+            pending: actMem?.pending ?? 0,
+            errors: actMem?.errors ?? 0,
+            ...(modelError ? { lastError: modelError } : {}),
+          },
+          folderProgress: counts
+            ? foldFolderProgress(counts, !folder?.running, folder?.running ? (folder.errors ?? 0) : 0)
+            : null,
+        }
+
+        let issues: IndexIssueSummary = { total: 0, groups: [] }
+        try {
+          issues = reader().summary('*')
+        } catch {
+          // ignore
+        }
+
+        const nowState = documentMemory?.nowStatus() ?? {
+          extracting: [],
+          embedding: {},
+          positions: {},
+          pages: {},
+          queued: 0,
+          paused: true,
+        }
+
+        const storage = documentMemory?.getStorageDiagnostics() ?? {
+          activeDbSizeBytes: 0,
+          walSizeBytes: 0,
+          pageSize: 4096,
+          pageCount: 0,
+          freelistCount: 0,
+          estimatedReclaimableBytes: 0,
+          v2BackupSizeBytes: null,
+          schemaVersion: '3',
+          migrationStatus: 'none',
+          topOffendersByChunks: [],
+          topOffendersBySize: [],
+        }
+
+        const timing = getSqliteTimingSummary()
+        const eventLoop = getEventLoopMetrics()
+        const performance = {
+          eventLoop,
+          sqliteLatency: {
+            slowOperationCount: timing.slowOperations,
+            criticalOperations: timing.recentSlow
+              .filter((r) => r.severity === 'critical')
+              .slice(-10)
+              .map((r) => ({
+                operation: r.operation,
+                durationMs: r.durationMs,
+                timestamp: r.timestamp,
+              })),
+          },
+          paused: !policy || policy.paused,
+          cpuShare: policy?.cpuShare ?? 1,
+        }
+
+        const migration = documentMemory?.getMigrationDiagnostics() ?? {
+          activeEmbeddingSpace: 'standard',
+          state: 'complete',
+          completedChunks: 0,
+          totalChunks: 0,
+        }
+
+        const snapshot: DocumentIndexSnapshot = {
+          memory: memoryStatus,
+          activity,
+          mode: null,
+          issues,
+          now: nowState,
+          storage,
+          performance,
+          migration,
+          timestamp: now,
+        }
+
+        snapshotCache = {
+          data: snapshot,
+          expiresAt: now + SNAPSHOT_CACHE_TTL_MS,
+        }
+
+        return snapshot
+      },
+    )
+    return () => issueReader?.close()
+  }

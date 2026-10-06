@@ -19,7 +19,8 @@ import { IndexOverview } from './IndexOverview'
 import './index-dashboard.css'
 import './todo-workspace.css'
 
-const POLL_MS = 2000
+const ACTIVE_POLL_MS = 2000
+const IDLE_POLL_MS = 5000
 
 const EN = {
   title: 'Document index',
@@ -135,70 +136,115 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
     let timer: ReturnType<typeof setTimeout> | null = null
     let loading = false
     let refreshQueued = false
+    let pollIntervalMs = IDLE_POLL_MS
+
     const load = async () => {
       if (!alive) return
       if (loading) {
         refreshQueued = true
         return
       }
-      loading = true
-      if (document.visibilityState === 'visible') {
-        const [memory, activity, mode, issues, now] = await Promise.allSettled([
-          readIndexRequest(
-            () => api.getDocumentMemoryStatus(),
-            (value): value is DocumentMemoryStatus =>
-              !!value &&
-              typeof value === 'object' &&
-              typeof (value as DocumentMemoryStatus).enabled === 'boolean',
-          ),
-          readIndexRequest(
-            () => api.getIndexingActivity(),
-            (value): value is HomeIndexingActivity =>
-              !!value && typeof value === 'object' && !!(value as HomeIndexingActivity).memory,
-          ),
-          readIndexRequest(
-            () => api.getIndexingModeState?.() ?? Promise.resolve(null),
-            (value): value is IndexingModeState | null =>
-              value === null ||
-              (!!value &&
-                typeof value === 'object' &&
-                INDEXING_MODES.includes((value as IndexingModeState).mode)),
-          ),
-          readIndexRequest(() => api.getDocumentIndexIssueSummary('*'), isIndexIssueSummary),
-          readIndexRequest(() => api.getIndexingNow(), isIndexingNow),
-        ])
-        if (!alive) return
-        setStatusFailed(
-          memory.status === 'rejected' ||
-            activity.status === 'rejected' ||
-            issues.status === 'rejected',
-        )
-        if (issues.status === 'fulfilled') setAttention(issues.value)
-        const next: Snapshot = {
-          memory: memory.status === 'fulfilled' ? memory.value : null,
-          activity: activity.status === 'fulfilled' ? activity.value : null,
-          mode: mode.status === 'fulfilled' ? mode.value : null,
-          now: now.status === 'fulfilled' ? now.value : null,
-        }
-        setSnap((previous) => ({
-          memory: next.memory ?? previous.memory,
-          activity: next.activity ?? previous.activity,
-          mode: next.mode ?? previous.mode,
-          now: next.now,
-        }))
+      if (document.visibilityState !== 'visible') {
+        // Document Search closed or tab hidden: do not poll
+        return
       }
-      loading = false
-      if (alive) timer = setTimeout(() => void load(), refreshQueued ? 0 : POLL_MS)
-      refreshQueued = false
+      loading = true
+      try {
+        if (typeof api.getDocumentIndexSnapshot === 'function') {
+          try {
+            const snapData = await api.getDocumentIndexSnapshot(refreshQueued)
+            if (!alive) return
+            setStatusFailed(false)
+            if (snapData.issues) setAttention(snapData.issues)
+            setSnap({
+              memory: snapData.memory,
+              activity: snapData.activity,
+              mode: snapData.mode,
+              now: snapData.now,
+            })
+            const isPaused = !!snapData.mode?.effective?.paused || snapData.memory?.enabled === false
+            const pendingCount = snapData.memory?.pending ?? snapData.activity?.memory?.pending ?? 0
+            pollIntervalMs = isPaused || pendingCount === 0 ? IDLE_POLL_MS : ACTIVE_POLL_MS
+          } catch {
+            if (!alive) return
+            setStatusFailed(true)
+            pollIntervalMs = IDLE_POLL_MS
+          }
+        } else {
+          const [memory, activity, mode, issues, now] = await Promise.allSettled([
+            readIndexRequest(
+              () => api.getDocumentMemoryStatus(),
+              (value): value is DocumentMemoryStatus =>
+                !!value &&
+                typeof value === 'object' &&
+                typeof (value as DocumentMemoryStatus).enabled === 'boolean',
+            ),
+            readIndexRequest(
+              () => api.getIndexingActivity(),
+              (value): value is HomeIndexingActivity =>
+                !!value && typeof value === 'object' && !!(value as HomeIndexingActivity).memory,
+            ),
+            readIndexRequest(
+              () => api.getIndexingModeState?.() ?? Promise.resolve(null),
+              (value): value is IndexingModeState | null =>
+                value === null ||
+                (!!value &&
+                  typeof value === 'object' &&
+                  INDEXING_MODES.includes((value as IndexingModeState).mode)),
+            ),
+            readIndexRequest(() => api.getDocumentIndexIssueSummary('*'), isIndexIssueSummary),
+            readIndexRequest(() => api.getIndexingNow(), isIndexingNow),
+          ])
+          if (!alive) return
+          setStatusFailed(
+            memory.status === 'rejected' ||
+              activity.status === 'rejected' ||
+              issues.status === 'rejected',
+          )
+          if (issues.status === 'fulfilled') setAttention(issues.value)
+          const next: Snapshot = {
+            memory: memory.status === 'fulfilled' ? memory.value : null,
+            activity: activity.status === 'fulfilled' ? activity.value : null,
+            mode: mode.status === 'fulfilled' ? mode.value : null,
+            now: now.status === 'fulfilled' ? now.value : null,
+          }
+          setSnap((previous) => ({
+            memory: next.memory ?? previous.memory,
+            activity: next.activity ?? previous.activity,
+            mode: next.mode ?? previous.mode,
+            now: next.now,
+          }))
+          const isPaused = !!next.mode?.effective?.paused || next.memory?.enabled === false
+          const pendingCount = next.memory?.pending ?? next.activity?.memory?.pending ?? 0
+          pollIntervalMs = isPaused || pendingCount === 0 ? IDLE_POLL_MS : ACTIVE_POLL_MS
+        }
+      } finally {
+        loading = false
+        if (alive && document.visibilityState === 'visible') {
+          timer = setTimeout(() => void load(), refreshQueued ? 0 : pollIntervalMs)
+        }
+        refreshQueued = false
+      }
     }
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        if (timer) clearTimeout(timer)
+        void load()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
     pollKick.current = () => {
       if (timer) clearTimeout(timer)
       void load()
     }
     void load()
+
     return () => {
       alive = false
       if (timer) clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [api])
 

@@ -498,6 +498,12 @@ const homeApi: HomeApi = {
       await ipcRenderer.invoke(HOME_CHANNELS.getDocumentMemoryStatus),
     )
   },
+  async getDocumentIndexSnapshot(forceRefresh = false) {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.getDocumentIndexSnapshot,
+      forceRefresh,
+    )) as import('../shared/fork/document-index-api').DocumentIndexSnapshot
+  },
   async getDocumentIndexIssues(root, offset = 0, reason) {
     return ipcRenderer.invoke(HOME_CHANNELS.getDocumentIndexIssues, root, offset, reason)
   },

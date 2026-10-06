@@ -1,4 +1,8 @@
-import type { IndexingNow } from '../../shared/fork/document-index-api'
+import type {
+  IndexingNow,
+  DocumentIndexStorageDiagnostics,
+  DocumentIndexMigrationDiagnostics,
+} from '../../shared/fork/document-index-api'
 import { stat } from 'node:fs/promises'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import type { Worker } from 'node:worker_threads'
@@ -857,6 +861,26 @@ export class DocumentMemoryManager {
   /** How many pages of each PDF are read and indexed. */
   getPdfMaxPages(): number {
     return this.pdfMaxPages
+  }
+
+  /** Storage diagnostics breakdown and high-level database metrics. */
+  getStorageDiagnostics(): DocumentIndexStorageDiagnostics {
+    return this.store.getStorageDiagnostics(this.v2BackupPath)
+  }
+
+  /** Current migration state and progress across embedding spaces. */
+  getMigrationDiagnostics(): DocumentIndexMigrationDiagnostics {
+    const migration = this.embeddingMigration.progress()
+    return {
+      activeEmbeddingSpace: this.embeddingProfile.embeddingId,
+      state: migration.state,
+      completedChunks: migration.completedChunks,
+      totalChunks: migration.totalChunks,
+    }
+  }
+
+  get v2BackupPath(): string {
+    return `${this.dbPath}.v2.backup.db`
   }
 
   /**

@@ -22,6 +22,12 @@ import type { UpdateChannel } from './update-api'
 import type { UpdateSource } from './update-source'
 import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 import type { ForkHomeApi } from './fork/fork-home-api'
+export type {
+  DocumentIndexSnapshot,
+  DocumentIndexStorageDiagnostics,
+  DocumentIndexPerformanceDiagnostics,
+  DocumentIndexMigrationDiagnostics,
+} from './fork/document-index-api'
 
 /** UI language; kept self-contained here (mirrors Lang in @genoffice/i18n) */
 export type UiLanguage =
@@ -690,6 +696,7 @@ export const HOME_CHANNELS = {
   getAnalyticsEnabled: 'home:get-analytics-enabled',
   setAnalyticsEnabled: 'home:set-analytics-enabled',
   getDocumentMemoryStatus: 'home:get-document-memory-status',
+  getDocumentIndexSnapshot: 'home:get-document-index-snapshot',
   getIndexingActivity: 'home:get-indexing-activity',
   getDocumentIndexIssues: 'home:get-document-index-issues',
   retryDocumentIndex: 'home:retry-document-index',

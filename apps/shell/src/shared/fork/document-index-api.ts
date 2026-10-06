@@ -4,7 +4,71 @@ import type { IndexIssueSummary } from '../../main/document-memory/issue-reader'
 import type { DbLocationState, DbMoveError } from '../../main/document-memory/db-location'
 import type { KnownSearchSource, KnownSearchSourceEntry, KnownSearchSourceStatus } from '../../main/document-memory/known-sources'
 
+import type { DocumentMemoryStatus, HomeIndexingActivity } from '../home-api'
+import type { IndexingModeState } from './indexing-mode'
+
 export type { DbLocationState, DbMoveError, FolderOwner, KnownSearchSource, KnownSearchSourceEntry, KnownSearchSourceStatus }
+
+/** Storage diagnostics breakdown and high-level database metrics. */
+export interface DocumentIndexStorageDiagnostics {
+  activeDbSizeBytes: number
+  walSizeBytes: number
+  pageSize: number
+  pageCount: number
+  freelistCount: number
+  estimatedReclaimableBytes: number
+  v2BackupSizeBytes: number | null
+  schemaVersion: string
+  migrationStatus: 'completed' | 'in-progress' | 'none'
+  topOffendersByChunks: Array<{ id: number; path: string; name: string; chunks: number; truncated: boolean }>
+  topOffendersBySize: Array<{ id: number; path: string; name: string; sizeBytes: number; chunks: number }>
+  breakdown?: {
+    chunksBytes: number
+    embeddingsBytes: number
+    ftsBytes: number
+    documentsBytes: number
+    ocrBytes: number
+    otherBytes: number
+  }
+}
+
+/** Performance diagnostics: event-loop lag and SQLite latency profiling. */
+export interface DocumentIndexPerformanceDiagnostics {
+  eventLoop: {
+    p50: number
+    p95: number
+    p99: number
+    max: number
+  }
+  sqliteLatency: {
+    slowOperationCount: number
+    criticalOperations: Array<{ operation: string; durationMs: number; timestamp: number }>
+  }
+  paused: boolean
+  cpuShare: number
+}
+
+/** Migration progress and current embedding space state. */
+export interface DocumentIndexMigrationDiagnostics {
+  activeEmbeddingSpace: string
+  state: string
+  completedChunks: number
+  totalChunks: number
+  lastGcTimestamp?: number
+}
+
+/** Consolidated snapshot of document memory and background indexing status. */
+export interface DocumentIndexSnapshot {
+  memory: DocumentMemoryStatus
+  activity: HomeIndexingActivity
+  mode: IndexingModeState | null
+  issues: IndexIssueSummary
+  now: IndexingNow | null
+  storage: DocumentIndexStorageDiagnostics
+  performance: DocumentIndexPerformanceDiagnostics
+  migration: DocumentIndexMigrationDiagnostics
+  timestamp: number
+}
 
 /** The answer to "move the index here": nothing moves until the app restarts. */
 export type DbMoveResult =
@@ -12,6 +76,7 @@ export type DbMoveResult =
 
 /** IPC channels added by the document-index popup rework (fork-only). */
 export const DOCUMENT_INDEX_CHANNELS = {
+  getDocumentIndexSnapshot: 'home:get-document-index-snapshot',
   getDocumentIndexIssueSummary: 'home:get-document-index-issue-summary',
   retryDocumentIndexGroup: 'home:retry-document-index-group',
   listIndexedFolders: 'home:list-indexed-folders',
@@ -260,4 +325,6 @@ export interface DocumentIndexApi {
   getEmbeddingModel(): Promise<EmbeddingModelState>
   /** Switch the search model; documents are read again with it in the background. */
   setEmbeddingModel(profile: EmbeddingProfileChoice): Promise<{ ok: boolean; requeued: number }>
+  /** Consolidated snapshot of document memory and background indexing status (cached on main thread). */
+  getDocumentIndexSnapshot(forceRefresh?: boolean): Promise<DocumentIndexSnapshot>
 }
