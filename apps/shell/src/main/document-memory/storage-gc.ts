@@ -84,16 +84,23 @@ export function garbageCollectObsoleteStorage(db: DatabaseSync): GarbageCollecti
     // - Chunks không thuộc document nào
     // - Chunks có chunk_set_id nhưng chunk_set không tồn tại
     // - Chunks thuộc document có active_chunk_set_id nhưng chunk_set_id <> active_chunk_set_id
+    //   (LOẠI TRỪ các chunk thuộc chunk set đang ở trạng thái 'building' - BEH-19)
     const orphanChunks = db
       .prepare(`
         SELECT c.id FROM chunks c
         WHERE c.document_id NOT IN (SELECT id FROM documents)
            OR (c.chunk_set_id IS NOT NULL AND c.chunk_set_id NOT IN (SELECT id FROM chunk_sets))
-           OR EXISTS (
-             SELECT 1 FROM documents d
-             WHERE d.id = c.document_id
-               AND d.active_chunk_set_id IS NOT NULL
-               AND c.chunk_set_id <> d.active_chunk_set_id
+           OR (
+             EXISTS (
+               SELECT 1 FROM documents d
+               WHERE d.id = c.document_id
+                 AND d.active_chunk_set_id IS NOT NULL
+                 AND c.chunk_set_id <> d.active_chunk_set_id
+             )
+             AND (
+               c.chunk_set_id IS NULL
+               OR c.chunk_set_id NOT IN (SELECT id FROM chunk_sets WHERE state = 'building')
+             )
            )
       `)
       .all() as Array<{ id: number }>
@@ -123,10 +130,35 @@ export function garbageCollectObsoleteStorage(db: DatabaseSync): GarbageCollecti
       .run()
     obsoleteEmbeddingsDeleted += Number(delOrphanEmbs.changes)
 
-    // 4. Resync document_embedding_counts
+    // 4. Resync and recount document_embedding_counts & documents counters (BEH-19)
     db.exec(`
       DELETE FROM document_embedding_counts WHERE document_id NOT IN (SELECT id FROM documents);
       DELETE FROM document_embedding_counts WHERE space_id NOT IN (SELECT id FROM embedding_spaces);
+
+      DELETE FROM document_embedding_counts
+      WHERE NOT EXISTS (
+        SELECT 1 FROM chunk_embeddings ce
+        JOIN chunks c ON c.id = ce.chunk_id
+        WHERE c.document_id = document_embedding_counts.document_id
+          AND ce.space_id = document_embedding_counts.space_id
+      );
+
+      UPDATE document_embedding_counts
+      SET completed_chunks = (
+        SELECT count(ce.chunk_id)
+        FROM chunk_embeddings ce
+        JOIN chunks c ON c.id = ce.chunk_id
+        WHERE c.document_id = document_embedding_counts.document_id
+          AND ce.space_id = document_embedding_counts.space_id
+      );
+
+      UPDATE documents
+      SET chunk_total = (SELECT count(*) FROM chunks c WHERE c.document_id = documents.id),
+          chunk_done = coalesce(
+            (SELECT completed_chunks FROM document_embedding_counts ec 
+             WHERE ec.document_id = documents.id AND ec.space_id = documents.embedding_model),
+            0
+          );
     `)
 
     db.exec('COMMIT')

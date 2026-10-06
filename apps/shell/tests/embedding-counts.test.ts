@@ -167,4 +167,63 @@ describe('Document Memory V3 Storage Schema & Embedding Counts', () => {
     expect(chunkCols).not.toContain('vector_dim')
     expect(chunkCols).not.toContain('normalized')
   })
+
+  it('scopes progress and stats strictly to activeSpaceId and does not sum across multiple spaces', () => {
+    const rawDb = store.rawDb
+
+    // Create 2 spaces
+    rawDb
+      .prepare(`
+      INSERT INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+      VALUES ('space-1', 'm1', 'r1', 'mean', 2, 'q8'),
+             ('space-2', 'm2', 'r2', 'mean', 2, 'q8')
+    `)
+      .run()
+
+    const docPath = join(directory, 'multi-space.txt')
+    store.replaceDocument(docPath, {
+      hash: 'h-multi',
+      mtimeMs: 100,
+      sizeBytes: 100,
+      chunks: [
+        { text: 'Chunk 1', location: 'C1' },
+        { text: 'Chunk 2', location: 'C2' },
+      ],
+      embeddingModel: 'space-1',
+      status: 'ready',
+    })
+
+    const doc = store.documentByPath(docPath)!
+
+    // Populate space-1 with 2 completed chunks
+    rawDb
+      .prepare(
+        'INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)',
+      )
+      .run(doc.id, 'space-1', 2)
+
+    // Populate space-2 with 2 completed chunks
+    rawDb
+      .prepare(
+        'INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)',
+      )
+      .run(doc.id, 'space-2', 2)
+
+    // Progress for space-1 must be 2 (out of 2), NOT 4!
+    const progSpace1 = store.chunkProgress(docPath, 'space-1')
+    expect(progSpace1.completedChunks).toBe(2)
+    expect(progSpace1.totalChunks).toBe(2)
+
+    // Folder progress scoped to space-1 must be 2 completedChunks, NOT 4!
+    const folderProg1 = store.folderChunkProgress(directory, 'space-1')
+    expect(folderProg1.completedChunks).toBe(2)
+    expect(folderProg1.totalChunks).toBe(2)
+    expect(folderProg1.semanticCoverage).toBe(1) // 2 / 2 = 1.0 (NOT 2.0!)
+
+    // Stats scoped to space-1 must have vectors = 2, NOT 4!
+    const stats1 = store.stats('space-1')
+    expect(stats1.vectors).toBe(2)
+    expect(stats1.chunks).toBe(2)
+    expect(stats1.semanticCoverage).toBe(1)
+  })
 })

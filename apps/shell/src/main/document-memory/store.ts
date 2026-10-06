@@ -186,8 +186,8 @@ export class DocumentMemoryStore {
   documentById(id: number): StoredDocument | null {
     return this.docRepo.documentById(id)
   }
-  chunkProgress(path: string): DocumentChunkProgress {
-    return this.progressRepo.chunkProgress(path)
+  chunkProgress(path: string, activeSpaceId?: string): DocumentChunkProgress {
+    return this.progressRepo.chunkProgress(path, activeSpaceId)
   }
   getEmbeddingCounts(documentId: number, spaceId?: string): number {
     return this.embRepo.getEmbeddingCounts(documentId, spaceId)
@@ -195,8 +195,8 @@ export class DocumentMemoryStore {
   boostFolder(root: string, at: number): void {
     this.docRepo.boostFolder(root, at)
   }
-  folderChunkProgress(root?: string): FolderChunkProgress {
-    return this.progressRepo.folderChunkProgress(root)
+  folderChunkProgress(root?: string, activeSpaceId?: string): FolderChunkProgress {
+    return this.progressRepo.folderChunkProgress(root, activeSpaceId)
   }
   indexIssues(root: string, offset = 0) {
     return this.progressRepo.indexIssues(root, offset)

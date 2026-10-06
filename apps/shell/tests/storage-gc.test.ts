@@ -198,4 +198,82 @@ describe('Document Memory Storage Maintenance GC & Incremental Vacuum Suite', ()
     const statsFinal = store.getStorageFreelistStats()
     expect(statsFinal.freelistCount).toBe(0)
   })
+
+  it('protects chunk sets in building state from GC and recounts document_embedding_counts', () => {
+    const rawDb = store.rawDb
+
+    // Insert doc 1 with active_chunk_set_id = 1
+    rawDb
+      .prepare(`
+      INSERT INTO documents (id, path, name, status, active_chunk_set_id, embedding_model)
+      VALUES (1, 'D:/docs/building-test.txt', 'building-test.txt', 'ready', 1, 'space-a')
+    `)
+      .run()
+
+    // Create space-a
+    rawDb
+      .prepare(`
+      INSERT INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+      VALUES ('space-a', 'repo/a', 'rev1', 'mean', 2, 'q8')
+    `)
+      .run()
+
+    // Chunk set 1 (active) and Chunk set 2 (building)
+    rawDb.exec(`
+      INSERT INTO chunk_sets (id, document_id, chunker_version, state) VALUES
+        (1, 1, 1, 'active'),
+        (2, 1, 2, 'building');
+
+      -- Chunk 101 in active set
+      INSERT INTO chunks (id, document_id, chunk_set_id, ordinal, text, location) VALUES
+        (101, 1, 1, 0, 'Active chunk text', 'Chunk 1');
+
+      -- Chunk 102 in building set (must NOT be deleted by GC!)
+      INSERT INTO chunks (id, document_id, chunk_set_id, ordinal, text, location) VALUES
+        (102, 1, 2, 0, 'Building chunk draft text', 'Chunk 1');
+    `)
+
+    // Orphan chunk 103 (no document)
+    rawDb.exec('PRAGMA foreign_keys = OFF;')
+    rawDb.exec(`
+      INSERT INTO chunks (id, document_id, chunk_set_id, ordinal, text, location) VALUES
+        (103, 999, NULL, 0, 'Orphan text', 'Chunk 1');
+    `)
+    rawDb.exec('PRAGMA foreign_keys = ON;')
+
+    rawDb
+      .prepare('INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (101, ?, ?, 2)')
+      .run('space-a', floatBlob([0.1, 0.2]))
+
+    rawDb.exec('PRAGMA foreign_keys = OFF;')
+    rawDb
+      .prepare('INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (103, ?, ?, 2)')
+      .run('space-a', floatBlob([0.5, 0.6]))
+    rawDb.exec('PRAGMA foreign_keys = ON;')
+
+    // Initially document_embedding_counts has 2
+    rawDb
+      .prepare('INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (1, ?, 2)')
+      .run('space-a')
+
+    // Run GC
+    const stats = store.runMaintenanceGc()
+    expect(stats.orphanChunksDeleted).toBeGreaterThanOrEqual(1) // chunk 103 deleted
+
+    // Building chunk 102 MUST SURVIVE
+    const chunk102 = rawDb.prepare('SELECT id FROM chunks WHERE id = 102').get()
+    expect(chunk102).toBeDefined()
+
+    // Active chunk 101 MUST SURVIVE
+    const chunk101 = rawDb.prepare('SELECT id FROM chunks WHERE id = 101').get()
+    expect(chunk101).toBeDefined()
+
+    // Orphan chunk 103 MUST BE DELETED
+    const chunk103 = rawDb.prepare('SELECT id FROM chunks WHERE id = 103').get()
+    expect(chunk103).toBeUndefined()
+
+    // document_embedding_counts must be correctly recounted to 1 (only chunk 101 belongs to doc 1)
+    const counts = store.getEmbeddingCounts(1, 'space-a')
+    expect(counts).toBe(1)
+  })
 })

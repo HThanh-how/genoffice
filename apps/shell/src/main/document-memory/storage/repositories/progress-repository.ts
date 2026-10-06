@@ -40,7 +40,7 @@ export class ProgressRepository {
     return !!this.db.prepare('SELECT 1 FROM documents WHERE chunk_counted = 0 LIMIT 1').get()
   }
 
-  backfillCounters(maxDocuments = 200): boolean {
+  backfillCounters(activeSpaceId?: string, maxDocuments = 200): boolean {
     return measureSqlite('embedding-count rebuild', () => {
       this.db.exec('BEGIN IMMEDIATE')
       try {
@@ -64,11 +64,16 @@ export class ProgressRepository {
           totals.set(row.document_id, row.n)
 
         const done = new Map<number, number>()
+        // Scope to active space or document's embedding_model, DO NOT sum across all spaces (BEH-20)
         const counts = this.db
           .prepare(
-            'SELECT document_id, coalesce(sum(completed_chunks), 0) AS n FROM document_embedding_counts WHERE document_id BETWEEN ? AND ? GROUP BY document_id',
+            `SELECT ec.document_id, ec.completed_chunks AS n 
+             FROM document_embedding_counts ec
+             JOIN documents d ON d.id = ec.document_id
+             WHERE ec.document_id BETWEEN ? AND ? 
+               AND ec.space_id = coalesce(?, d.embedding_model)`,
           )
-          .all(first, last) as Array<{ document_id: number; n: number }>
+          .all(first, last, activeSpaceId ?? null) as Array<{ document_id: number; n: number }>
         for (const hit of counts) {
           done.set(hit.document_id, hit.n)
         }
@@ -86,18 +91,21 @@ export class ProgressRepository {
     })
   }
 
-  chunkProgress(path: string): DocumentChunkProgress {
+  chunkProgress(path: string, activeSpaceId?: string): DocumentChunkProgress {
+    const targetSpace = activeSpaceId ?? null
     const row = this.db
       .prepare(
         `SELECT d.id, d.path, d.name, d.status, d.mtime_ms, d.size_bytes, d.hash, d.error, d.truncated, d.truncated_reason,
           CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
             ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END AS total_chunks,
-          CASE WHEN d.chunk_counted = 1 THEN d.chunk_done
-            ELSE coalesce((SELECT ec.completed_chunks FROM document_embedding_counts ec WHERE ec.document_id = d.id AND ec.space_id = d.embedding_model), d.chunk_done) END
-            AS completed_chunks
+          coalesce(
+            (SELECT ec.completed_chunks FROM document_embedding_counts ec 
+             WHERE ec.document_id = d.id AND ec.space_id = coalesce(?, d.embedding_model)),
+            CASE WHEN d.chunk_counted = 1 AND (? IS NULL OR ? = d.embedding_model) THEN d.chunk_done ELSE 0 END
+          ) AS completed_chunks
         FROM documents d WHERE d.path = ?`,
       )
-      .get(resolve(path)) as
+      .get(targetSpace, targetSpace, targetSpace, resolve(path)) as
       | (DocRow & { total_chunks: number; completed_chunks: number | null })
       | undefined
     return {
@@ -107,20 +115,7 @@ export class ProgressRepository {
     }
   }
 
-  countSource(): { with: string; total: string; done: string } {
-    if (!this.hasUncountedDocuments())
-      return { with: '', total: 'd.chunk_total', done: 'd.chunk_done' }
-    return {
-      with: `WITH tot AS MATERIALIZED (SELECT document_id, count(*) AS n FROM chunks GROUP BY document_id),
-        dn AS MATERIALIZED (SELECT document_id, coalesce(sum(completed_chunks), 0) AS n FROM document_embedding_counts GROUP BY document_id)`,
-      total: `CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
-        ELSE coalesce((SELECT n FROM tot WHERE tot.document_id = d.id), 0) END`,
-      done: `CASE WHEN d.chunk_counted = 1 THEN d.chunk_done
-        ELSE coalesce((SELECT n FROM dn WHERE dn.document_id = d.id), 0) END`,
-    }
-  }
-
-  folderChunkProgress(root?: string): FolderChunkProgress {
+  folderChunkProgress(root?: string, activeSpaceId?: string): FolderChunkProgress {
     return measureSqlite('folderChunkProgress', () => {
       const normalized = root === undefined ? null : resolve(root)
       const prefix =
@@ -129,11 +124,11 @@ export class ProgressRepository {
           : normalized.endsWith('/') || normalized.endsWith('\\')
             ? normalized
             : `${normalized}${normalized.includes('\\') ? '\\' : '/'}`
-      const counts = this.countSource()
+      const targetSpace = activeSpaceId ?? null
+
       const row = this.db
         .prepare(
-          `${counts.with}
-          SELECT count(*) AS total_files,
+          `SELECT count(*) AS total_files,
             sum(CASE WHEN status IN ('ready', 'empty') THEN 1 ELSE 0 END) AS ready_files,
             sum(CASE WHEN status IN ('pending', 'text-only') THEN 1 ELSE 0 END) AS pending_files,
             sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_files,
@@ -145,11 +140,25 @@ export class ProgressRepository {
               WHEN status = 'text-only' AND total_chunks > 0
                 THEN (done_chunks * 1.0 / total_chunks)
               ELSE 0.0 END), 0.0) AS partial_file_progress
-          FROM (SELECT d.status, d.truncated, ${counts.total} AS total_chunks, ${counts.done} AS done_chunks
+          FROM (
+            SELECT d.status, d.truncated,
+              CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
+                ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END AS total_chunks,
+              coalesce(
+                (SELECT ec.completed_chunks FROM document_embedding_counts ec 
+                 WHERE ec.document_id = d.id AND ec.space_id = coalesce(?, d.embedding_model)),
+                CASE WHEN d.chunk_counted = 1 AND (? IS NULL OR ? = d.embedding_model) THEN d.chunk_done ELSE 0 END
+              ) AS done_chunks
             FROM documents d
-            WHERE d.excluded = 0 ${normalized === null ? '' : 'AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)'})`,
+            WHERE d.excluded = 0 ${normalized === null ? '' : 'AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)'}
+          )`,
         )
-        .get(...(normalized === null ? [] : [normalized, prefix!, prefix!])) as
+        .get(
+          targetSpace,
+          targetSpace,
+          targetSpace,
+          ...(normalized === null ? [] : [normalized, prefix!, prefix!]),
+        ) as
         | {
             total_files: number
             ready_files: number
@@ -162,16 +171,26 @@ export class ProgressRepository {
             partial_file_progress: number
           }
         | undefined
+
+      const completedChunks = row?.completed_chunks ?? 0
+      const totalChunks = row?.total_chunks ?? 0
+      let semanticCoverage: number | undefined
+      if (activeSpaceId && totalChunks > 0) {
+        semanticCoverage = Math.min(1, completedChunks / totalChunks)
+      }
+
       return {
         totalFiles: row?.total_files ?? 0,
         readyFiles: row?.ready_files ?? 0,
         pendingFiles: row?.pending_files ?? 0,
         errorFiles: row?.error_files ?? 0,
         emptyFiles: row?.empty_files ?? 0,
-        completedChunks: row?.completed_chunks ?? 0,
-        totalChunks: row?.total_chunks ?? 0,
+        completedChunks,
+        totalChunks,
         partialFileProgress: row?.partial_file_progress ?? 0,
         truncatedFiles: row?.truncated_files ?? 0,
+        ...(semanticCoverage !== undefined ? { semanticCoverage } : {}),
+        ...(activeSpaceId ? { activeEmbeddingSpace: activeSpaceId } : {}),
       }
     })
   }
@@ -210,35 +229,38 @@ export class ProgressRepository {
 
   stats(activeEmbeddingSpace?: string): DocumentMemoryStats {
     return measureSqlite('stats', () => {
-      const counts = this.countSource()
-      const base = this.db
+      const targetSpace = activeEmbeddingSpace ?? null
+      const row = this.db
         .prepare(
-          `${counts.with}
-          SELECT count(*) AS docs,
-            coalesce(sum(${counts.total}), 0) AS chunks,
-            coalesce(sum(${counts.done}), 0) AS vectors,
+          `SELECT count(*) AS docs,
+            coalesce(sum(CASE WHEN d.chunk_counted = 1 THEN d.chunk_total ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END), 0) AS chunks,
+            coalesce(sum(
+              coalesce(
+                (SELECT ec.completed_chunks FROM document_embedding_counts ec 
+                 WHERE ec.document_id = d.id AND ec.space_id = coalesce(?, d.embedding_model)),
+                CASE WHEN d.chunk_counted = 1 AND (? IS NULL OR ? = d.embedding_model) THEN d.chunk_done ELSE 0 END
+              )
+            ), 0) AS vectors,
             coalesce(sum(CASE WHEN d.status = 'error' THEN 1 ELSE 0 END), 0) AS errors
           FROM documents d WHERE d.excluded = 0`,
         )
-        .get() as unknown as DocumentMemoryStats
+        .get(targetSpace, targetSpace, targetSpace) as {
+          docs: number
+          chunks: number
+          vectors: number
+          errors: number
+        }
 
       let semanticCoverage: number | undefined
-      if (activeEmbeddingSpace && base.chunks > 0) {
-        const spaceCount = this.db
-          .prepare(`
-            SELECT count(DISTINCT e.chunk_id) AS done
-            FROM chunk_embeddings e
-            JOIN chunks c ON c.id = e.chunk_id
-            JOIN documents d ON d.id = c.document_id
-            WHERE e.space_id = ? AND d.excluded = 0
-              AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-          `)
-          .get(activeEmbeddingSpace) as { done: number }
-        semanticCoverage = Math.min(1, spaceCount.done / base.chunks)
+      if (activeEmbeddingSpace && row.chunks > 0) {
+        semanticCoverage = Math.min(1, row.vectors / row.chunks)
       }
 
       return {
-        ...base,
+        docs: row.docs,
+        chunks: row.chunks,
+        vectors: row.vectors,
+        errors: row.errors,
         ...(semanticCoverage !== undefined ? { semanticCoverage } : {}),
         ...(activeEmbeddingSpace ? { activeEmbeddingSpace } : {}),
       }
