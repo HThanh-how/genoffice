@@ -244,7 +244,7 @@ export class DocumentRepository {
   ): void {
     this.db
       .prepare(
-        `UPDATE documents SET status = 'error', error = ?, hash = NULL, embedding_model = NULL, truncated = 0,
+        `UPDATE documents SET status = 'error', error = ?, hash = NULL, embedding_model = NULL, truncated = 0, truncated_reason = NULL,
         mtime_ms = CASE WHEN ? = 0 THEN mtime_ms ELSE ? END,
         size_bytes = CASE WHEN ? = 0 THEN size_bytes ELSE ? END,
         updated_at = unixepoch() WHERE id = ?`,

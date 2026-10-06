@@ -90,6 +90,7 @@ export class LegacyChunkMigrator {
         status: extracted.status ?? 'ready',
         error: extracted.error,
         truncated: extracted.truncated,
+        truncatedReason: extracted.truncatedReason ?? null,
       },
       { shouldContinue: () => isCurrent(doc.path, generation, epoch) },
     )
