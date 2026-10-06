@@ -431,7 +431,7 @@ describe('UI Audit Fixes: SearchResults, RecentFiles & IndexedFolders (Section 2
       let maxConcurrentRequests = 0
       let callCount = 0
 
-      let deferredResolvers: Array<() => void> = []
+      const deferredResolvers: Array<() => void> = []
 
       const searchFilesMock = vi.fn().mockImplementation(() => {
         callCount++

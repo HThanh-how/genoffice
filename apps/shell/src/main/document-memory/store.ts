@@ -2,14 +2,10 @@ import { issueReason, type IndexIssue } from './issues'
 import { topVectors } from './top-vectors'
 import { DatabaseSync } from 'node:sqlite'
 import { chmodSync } from 'node:fs'
-import { totalmem } from 'node:os'
 import { basename, dirname, join, resolve, sep } from 'node:path'
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import {
   documentIndexFields,
-  matchedNameWords,
-  nameWords,
-  normalizeDocumentText,
   queryTokens,
 } from './normalization'
 import { OcrSidecar, isOcrLocation } from './ocr-sidecar'

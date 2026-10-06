@@ -183,7 +183,7 @@ export class ChunkUpgradeCoordinator {
   /**
    * Ghi nhận hoàn thành cho 1 tài liệu sau khi upgrade thành công.
    */
-  markDocumentUpgraded(documentId: number): void {
+  markDocumentUpgraded(_documentId: number): void {
     if (!this.isPaused) {
       this.db
         .prepare(

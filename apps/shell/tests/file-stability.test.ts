@@ -11,7 +11,6 @@ import {
 } from '../src/main/document-memory/file-stability'
 import { FolderScanManager, reconcileSubtree } from '../src/main/document-memory/folder-scan'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
-import { DocumentMemoryStore } from '../src/main/document-memory/store'
 
 let testDir: string
 let gates: FileStabilityGate[]

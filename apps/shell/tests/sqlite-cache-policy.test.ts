@@ -6,7 +6,6 @@ import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import {
   defaultSqliteCacheKiB,
   MEMORY_TIER_POLICIES,
-  memoryTierFromTotal,
 } from '../src/main/document-memory/memory-tier'
 
 describe('SQLite Page Cache Policy & Connection Roles', () => {

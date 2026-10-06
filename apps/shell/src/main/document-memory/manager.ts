@@ -980,13 +980,12 @@ export class DocumentMemoryManager {
     if (signal?.aborted || generation !== this.searchGeneration) return
 
     // Hybrid RRF fusion performed on main thread using the already fetched lexical candidates
-    let finalChunkHits: DocumentMemoryHit[] = []
-    if (vector && semanticCandidates.length > 0) {
-      const fused = fuseHybridResults(lexicalCandidates, semanticCandidates, { limit })
-      finalChunkHits = this.store.hydrateChunkHits(fused)
-    } else {
-      finalChunkHits = lexicalHits
-    }
+    const finalChunkHits: DocumentMemoryHit[] =
+      vector && semanticCandidates.length > 0
+        ? this.store.hydrateChunkHits(
+            fuseHybridResults(lexicalCandidates, semanticCandidates, { limit }),
+          )
+        : lexicalHits
 
     const seen = new Set(finalChunkHits.map((hit) => hit.documentId))
     const named = nameHits.filter((hit) => !seen.has(hit.documentId))

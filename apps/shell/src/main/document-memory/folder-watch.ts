@@ -1,6 +1,6 @@
 import { watch as fsWatch, type FSWatcher } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import { basename, extname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isIgnoredFileName, isIndexablePath, shouldSkipDirectory } from './folder-scan'
 
 export interface FolderReconcileOutcome {

@@ -68,8 +68,7 @@ export function getOrCreateNativePathProbe(targetPath: string): Promise<boolean>
   if (existing) {
     return existing
   }
-  let nativeProbe: Promise<boolean>
-  nativeProbe = stat(path)
+  const nativeProbe: Promise<boolean> = stat(path)
     .then((stats) => stats.isDirectory())
     .catch(() => false)
     .finally(() => {

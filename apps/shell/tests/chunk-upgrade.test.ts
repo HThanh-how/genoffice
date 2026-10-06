@@ -12,7 +12,7 @@ import { EmbeddingMigration } from '../src/main/document-memory/embedding-migrat
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { capChunks, chunkDocumentTextV2 } from '../src/main/document-memory/chunks'
 import { createBuildingSet } from '../src/main/document-memory/chunk-sets'
-import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
+import { resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
 
 class FakeWorker extends EventEmitter {
   onBeforeExtractReply?: (message: { id: number; type: string; path?: string }) => void

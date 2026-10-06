@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react'
 import type { FileSearchHit, FileSearchPage, HomeApi } from '../../../shared/home-api'
-import { markText, type TextMark } from '../../../shared/text-marks'
+import { markText } from '../../../shared/text-marks'
 import { useI18n } from '../locale'
 import { iconFor } from '../file-icons'
 import { formatBytes } from './index-file-log'

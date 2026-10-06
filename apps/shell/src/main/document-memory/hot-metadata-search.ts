@@ -73,7 +73,7 @@ export class HotMetadataSearch {
     if (words.length === 1 && words[0]!.length < 3) return []
     const need = words.length <= 2 ? words.length : Math.max(2, Math.ceil(words.length * 0.4))
 
-    let rows: CandidateRow[] = []
+    let rows: CandidateRow[]
     try {
       const ftsTokens = words.map((w) => `"${w.replace(/"/g, '""')}"*`)
       const ftsQuery = ftsTokens.join(' OR ')

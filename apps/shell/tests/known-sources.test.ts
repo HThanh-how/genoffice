@@ -3,22 +3,15 @@ import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  CLEANUP_RETRY_INTERVALS_MS,
   DEFAULT_KNOWN_SOURCES,
-  FAST_RETRY_INTERVALS_MS,
   KNOWN_SEARCH_SOURCES,
   KNOWN_SEARCH_SOURCES_INITIALIZED_KEY,
   KNOWN_SEARCH_SOURCES_KEY,
   KNOWN_SEARCH_SOURCES_VERSION_KEY,
   KnownSourcesManager,
-  MAX_CLEANUP_RETRIES,
-  PROBE_PATH_DEADLINE_MS,
-  SLOW_PERIODIC_RETRY_INTERVAL_MS,
   getOrCreateNativePathProbe,
   isKnownSearchSource,
   nativePathProbes,
-  parseKnownSourcesFullSettings,
-  parseKnownSourcesSettings,
   probePathAvailable,
   type KnownSearchSource,
 } from '../src/main/document-memory/known-sources'
@@ -853,8 +846,7 @@ describe('KnownSourcesManager and Known Search Sources IPC', () => {
       const normalized = resolve(targetDir)
 
       let statResolve: (val: boolean) => void = () => {}
-      let inFlightNativeProbe: Promise<boolean>
-      inFlightNativeProbe = new Promise<boolean>((resolvePromise) => {
+      const inFlightNativeProbe: Promise<boolean> = new Promise<boolean>((resolvePromise) => {
         statResolve = resolvePromise
       }).finally(() => {
         if (nativePathProbes.get(normalized) === inFlightNativeProbe) {

@@ -7,7 +7,6 @@ import { extname } from 'node:path'
 import { parseFileToText, pdfPageTextsSlice } from '@genoffice/file-parse'
 import {
   capChunks,
-  chunkDocumentTextV1,
   chunkDocumentTextV2,
   chunkTabularText,
   clampPdfPages,
