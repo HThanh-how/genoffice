@@ -2,12 +2,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  ensurePrintWorkbookLoaded,
   handleExportPdf,
   handlePrint,
   type PageLayoutContext,
-  type PrintReadinessMessages,
 } from '../src/renderer/page-layout-actions'
+import {
+  DEFAULT_FULL_LOAD_TIMEOUT_MS,
+  ensureWorkbookFullyLoaded,
+  needsWorkbookFullLoad,
+} from '../src/renderer/printing/workbook-full-load'
+import { buildActiveSheetPrintPayload } from '../src/renderer/printing/print-payload'
 import { FULL_LOAD_MAX_CELLS } from '../src/renderer/app-constants'
 import { t } from '../src/renderer/i18n/locale'
 import type { LazyWorkbookState, UniverRuntime } from '../src/renderer/univer-state'
@@ -112,19 +116,10 @@ function createMockContext(state: LazyWorkbookState) {
   return { ctx, messages, worksheet, runtime }
 }
 
-describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
+describe('print-workbook-readiness (PRINT-01 to PRINT-21)', () => {
   const printWorkbookMock = vi.fn().mockResolvedValue({ ok: true })
   const exportPdfMock = vi.fn().mockResolvedValue({ canceled: false, path: '/tmp/test.pdf' })
   const readWorkbookMediaMock = vi.fn().mockResolvedValue({ mediaType: 'image/png', base64: '' })
-
-  const testPrintMessages: PrintReadinessMessages = {
-    notLoaded: t('appPrintNeedsFullLoad'),
-    loading: t('appPrintLoadingWorkbook'),
-    tooLarge: t('appPrintWorkbookTooLarge'),
-    timedOut: t('appPrintLoadTimedOut'),
-    failed: t('appPrintFailed'),
-    preparing: t('appPrintPreparing'),
-  }
 
   beforeEach(() => {
     vi.clearAllMocks()
@@ -142,6 +137,8 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
       preloadComplete: true,
       preloadRunning: false,
     })
+    expect(needsWorkbookFullLoad(state)).toBe(false)
+    expect(needsWorkbookFullLoad(null)).toBe(false)
     const { ctx, messages } = createMockContext(state)
 
     const printed = await handlePrint(ctx)
@@ -156,6 +153,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
       preloadComplete: false,
       preloadRunning: false,
     })
+    expect(needsWorkbookFullLoad(state)).toBe(true)
     const { ctx, messages } = createMockContext(state)
 
     vi.mocked(preloadEntireWorkbook).mockImplementation(async (_runtime, lazyRef) => {
@@ -238,8 +236,12 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
       }
     })
 
-    const success = await ensurePrintWorkbookLoaded(ctx, state, testPrintMessages)
-    expect(success).toBe(true)
+    const result = await ensureWorkbookFullyLoaded(ctx, state, {
+      purpose: 'print',
+      maxCells: FULL_LOAD_MAX_CELLS,
+      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+    })
+    expect(result.status).toBe('ready')
     expect(preloadEntireWorkbook).toHaveBeenCalledTimes(1)
     expect(messages).not.toContain(t('appPrintWorkbookTooLarge'))
   })
@@ -268,7 +270,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
     expect(messages[messages.length - 1]).toBe(t('appPrintWorkbookTooLarge'))
   })
 
-  it('PRINT-07: preloadRunning stops but preloadComplete remains false -> no print -> notLoaded', async () => {
+  it('PRINT-07: preloadRunning stops but preloadComplete remains false -> no print -> appPrintFailed', async () => {
     const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
       preloadComplete: false,
       preloadRunning: true,
@@ -283,7 +285,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
     const printed = await handlePrint(ctx)
     expect(printed).toBe(false)
     expect(printWorkbookMock).not.toHaveBeenCalled()
-    expect(messages).toContain(t('appPrintNeedsFullLoad'))
+    expect(messages).toContain(t('appPrintFailed'))
   })
 
   it('PRINT-08: preload promise rejects -> no print -> appPrintFailed', async () => {
@@ -322,7 +324,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
     }
   })
 
-  it('PRINT-09B: self-started preload (preloadRunning=false at start) hangs indefinitely -> after 185s timeout -> appPrintLoadTimedOut', async () => {
+  it('PRINT-10: self-started preload (preloadRunning=false at start) hangs indefinitely -> after 185s timeout -> appPrintLoadTimedOut', async () => {
     vi.useFakeTimers()
     try {
       const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
@@ -348,7 +350,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
     }
   })
 
-  it('PRINT-10: lazyWorkbookRef changes during preload -> stale state rejected -> old workbook never printed', async () => {
+  it('PRINT-11: lazyWorkbookRef changes during preload -> stale state rejected -> old workbook never printed', async () => {
     const stateOld = fakeState([{ id: 'sh1', name: 'SheetOld', rowCount: 100, columnCount: 10 }], {
       preloadComplete: false,
       preloadRunning: false,
@@ -370,7 +372,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
     expect(printWorkbookMock).not.toHaveBeenCalled()
   })
 
-  it('PRINT-11: handleExportPdf under limit -> preload -> exportPdf called', async () => {
+  it('PRINT-12: handleExportPdf under limit -> preload -> exportPdf called', async () => {
     const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
       preloadComplete: false,
       preloadRunning: false,
@@ -395,7 +397,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
     expect(messages).toContain(t('appPdfExported', { path: '/tmp/test.pdf' }))
   })
 
-  it('PRINT-12: handleExportPdf over limit -> no exportPdf call -> PDF-specific too-large message', async () => {
+  it('PRINT-13: handleExportPdf over limit -> no exportPdf call -> PDF-specific too-large message', async () => {
     const state = fakeState(
       [{ id: 'sh1', name: 'SheetHuge', rowCount: 1000, columnCount: 300 }], // 300,000 cells > 250,000
       { preloadComplete: false, preloadRunning: false },
@@ -410,7 +412,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
     expect(messages[messages.length - 1]).toBe(t('appPdfWorkbookTooLarge'))
   })
 
-  it('PRINT-13: normal already-loaded workbook -> output identical to baseline', async () => {
+  it('PRINT-14: normal already-loaded workbook -> output identical to baseline', async () => {
     const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
       preloadComplete: true,
       preloadRunning: false,
@@ -430,7 +432,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
     expect(messages).toContain(t('appPdfExported', { path: '/tmp/test.pdf' }))
   })
 
-  it('PDF-14: self-started preload for PDF export hangs indefinitely -> after 185s timeout -> appPdfLoadTimedOut', async () => {
+  it('PRINT-15: self-started preload for PDF export hangs indefinitely -> after 185s timeout -> appPdfLoadTimedOut', async () => {
     vi.useFakeTimers()
     try {
       const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
@@ -456,7 +458,7 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
     }
   })
 
-  it('PDF-15: preload promise rejects during PDF export -> no export -> appPdfExportFailed', async () => {
+  it('PRINT-16: preload promise rejects during PDF export -> no export -> appPdfExportFailed', async () => {
     const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
       preloadComplete: false,
       preloadRunning: false,
@@ -469,5 +471,120 @@ describe('print-workbook-readiness (PRINT-01 to PRINT-13)', () => {
     expect(exported).toBe(false)
     expect(exportPdfMock).not.toHaveBeenCalled()
     expect(messages).toContain(t('appPdfExportFailed'))
+  })
+
+  it('PRINT-17: ensureWorkbookFullyLoaded non-poisoning retry: first call rejects, subsequent call retries and succeeds', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: false,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+
+    vi.mocked(preloadEntireWorkbook).mockRejectedValueOnce(new Error('First try network failure'))
+
+    const firstResult = await ensureWorkbookFullyLoaded(ctx, state, {
+      purpose: 'print',
+      maxCells: FULL_LOAD_MAX_CELLS,
+      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+    })
+    expect(firstResult.status).toBe('failed')
+    expect(preloadEntireWorkbook).toHaveBeenCalledTimes(1)
+
+    vi.mocked(preloadEntireWorkbook).mockImplementationOnce(async (_runtime, lazyRef) => {
+      if (lazyRef.current) {
+        lazyRef.current.flags.preloadRunning = true
+        await new Promise((r) => setTimeout(r, 10))
+        lazyRef.current.flags.preloadRunning = false
+        lazyRef.current.flags.preloadComplete = true
+      }
+    })
+
+    const secondResult = await ensureWorkbookFullyLoaded(ctx, state, {
+      purpose: 'print',
+      maxCells: FULL_LOAD_MAX_CELLS,
+      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+    })
+    expect(secondResult.status).toBe('ready')
+    expect(preloadEntireWorkbook).toHaveBeenCalledTimes(2)
+  })
+
+  it('PRINT-18: invalid workbook dimensions -> ensureWorkbookFullyLoaded returns failed', async () => {
+    const stateNegative = fakeState(
+      [{ id: 'sh1', name: 'Sheet1', rowCount: -5, columnCount: 10 }],
+      {
+        preloadComplete: false,
+        preloadRunning: false,
+      },
+    )
+    const { ctx } = createMockContext(stateNegative)
+
+    const result = await ensureWorkbookFullyLoaded(ctx, stateNegative, {
+      purpose: 'print',
+      maxCells: FULL_LOAD_MAX_CELLS,
+      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+    })
+    expect(result.status).toBe('failed')
+    expect(result).toHaveProperty('error')
+    expect((result as { error: Error }).error.message).toBe('Invalid workbook dimensions')
+    expect(preloadEntireWorkbook).not.toHaveBeenCalled()
+  })
+
+  it('PRINT-19: runtime uninitialized -> ensureWorkbookFullyLoaded returns failed', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: false,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(state)
+    ;(ctx.univerRef as { current: UniverRuntime | null }).current = null
+
+    const result = await ensureWorkbookFullyLoaded(ctx, state, {
+      purpose: 'print',
+      maxCells: FULL_LOAD_MAX_CELLS,
+      timeoutMs: DEFAULT_FULL_LOAD_TIMEOUT_MS,
+    })
+    expect(result.status).toBe('failed')
+    expect(result).toHaveProperty('error')
+    expect((result as { error: Error }).error.message).toBe('Univer runtime not initialized')
+    expect(preloadEntireWorkbook).not.toHaveBeenCalled()
+  })
+
+  it('PRINT-20: active sheet unavailable after preload -> buildActiveSheetPrintPayload fails -> handlePrint sets appPrintFailed', async () => {
+    const state = fakeState([{ id: 'sh1', name: 'Sheet1', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx, messages, runtime } = createMockContext(state)
+    vi.spyOn(runtime.univerAPI, 'getActiveWorkbook').mockReturnValue({
+      getActiveSheet: () => null as unknown as any,
+      getSheetBySheetId: () => null as unknown as any,
+    } as any)
+
+    const payloadResult = await buildActiveSheetPrintPayload(ctx, 'print')
+    expect(payloadResult.status).toBe('failed')
+
+    const printed = await handlePrint(ctx)
+    expect(printed).toBe(false)
+    expect(messages).toContain(t('appPrintFailed'))
+  })
+
+  it('PRINT-21: stale workbook detected in buildActiveSheetPrintPayload -> returns stale-workbook', async () => {
+    const stateOld = fakeState([{ id: 'sh1', name: 'SheetOld', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: false,
+      preloadRunning: false,
+    })
+    const stateNew = fakeState([{ id: 'sh2', name: 'SheetNew', rowCount: 100, columnCount: 10 }], {
+      preloadComplete: true,
+      preloadRunning: false,
+    })
+    const { ctx } = createMockContext(stateOld)
+
+    vi.mocked(preloadEntireWorkbook).mockImplementation(async () => {
+      stateOld.flags.preloadComplete = true
+      ctx.lazyWorkbookRef.current = stateNew
+    })
+
+    const payloadResult = await buildActiveSheetPrintPayload(ctx, 'print')
+    expect(payloadResult.status).toBe('stale-workbook')
+    expect(payloadResult.payload).toBeUndefined()
   })
 })
