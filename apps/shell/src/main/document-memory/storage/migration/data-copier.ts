@@ -28,7 +28,7 @@ export function prepareMigrationStatements(sourceDb: DatabaseSync, tempDb: Datab
     insertDocEmbeddingCount: tempDb.prepare('INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, 1) ON CONFLICT(document_id, space_id) DO UPDATE SET completed_chunks = document_embedding_counts.completed_chunks + 1'),
     updateDocStatusAndModel: tempDb.prepare('UPDATE documents SET status = ?, embedding_model = ?, chunk_done = ? WHERE id = ?'),
     updateDocChunkDone: tempDb.prepare('UPDATE documents SET chunk_done = ? WHERE id = ?'),
-    selectChunkEmbedding: sTables.includes('chunk_embeddings') ? sourceDb.prepare('SELECT space_id, vector, vector_dim FROM chunk_embeddings WHERE chunk_id = ? AND space_id = ?') : null,
+    selectChunkEmbedding: sTables.includes('chunk_embeddings') ? sourceDb.prepare('SELECT vector, vector_dim FROM chunk_embeddings WHERE chunk_id = ? AND space_id = ?') : null,
     insertOcrPage: sTables.includes('ocr_pages') ? tempDb.prepare('INSERT OR REPLACE INTO ocr_pages (path, page, hash, mtime_ms, size_bytes, total_pages, text, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)') : null,
     insertPdfScan: sTables.includes('pdf_scan_info') ? tempDb.prepare('INSERT OR REPLACE INTO pdf_scan_info (path, mtime_ms, size_bytes, total_pages, scanned) VALUES (?, ?, ?, ?, ?)') : null,
   }
@@ -63,7 +63,7 @@ export function copyDocumentActiveChunks(
     let vec: Uint8Array | null = null, dim = 0, space = activeSpaceId
     if (stmts.selectChunkEmbedding) {
       const e = stmts.selectChunkEmbedding.get(c.id, activeSpaceId) as any
-      if (e?.vector) { vec = e.vector; dim = e.vector_dim ?? activeDimensions; space = e.space_id }
+      if (e?.vector) { vec = e.vector; dim = e.vector_dim ?? activeDimensions; space = activeSpaceId }
     }
     if (!vec && c.vector) {
       const legacyDim = c.vector_dim ?? (c.vector.byteLength ? (c.vector.byteLength / 4) : 0)

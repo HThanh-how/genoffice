@@ -1,12 +1,11 @@
 import { DatabaseSync } from 'node:sqlite'
 import { existsSync, unlinkSync } from 'node:fs'
-import { basename, dirname, resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 import { CANONICAL_SCHEMA_V3, applyCanonicalSchemaV3 } from './storage/schema-v3'
 import { OcrSidecar } from './ocr-sidecar'
 import { evaluateRetentionPolicy } from './storage/migration/retention-policy'
 import { verifyDatabaseIntegrity, verifyLogicalConsistency } from './storage/migration/logical-verifier'
 import { performAtomicCutover, cleanWalFiles } from './storage/migration/cutover'
-import { readActiveEmbeddingConfig } from './storage/embedding-settings'
 import {
   copyEmbeddingSpaces,
   prepareMigrationStatements,
@@ -18,11 +17,11 @@ import {
 export { CANONICAL_SCHEMA_V3 as SCHEMA_V3, verifyDatabaseIntegrity, verifyLogicalConsistency }
 
 export interface StorageMigrationOptions {
+  activeSpaceId: string
+  activeDimensions: number
   pageSize?: number
   tempDbPath?: string
   backupDbPath?: string
-  activeSpaceId?: string
-  activeDimensions?: number
   onProgress?: (progress: StorageMigrationProgress) => void
   testFailureInjectionPoint?: 'before-cutover' | 'corrupt-temp' | 'verification-failed'
 }
@@ -50,24 +49,19 @@ export interface StorageMigrationResult {
   verified: boolean
 }
 
-function resolveActiveSpace(sourceDb: DatabaseSync, dir: string, opts: StorageMigrationOptions) {
-  if (opts.activeSpaceId && opts.activeDimensions) return { spaceId: opts.activeSpaceId, dims: opts.activeDimensions }
-  const cfg = readActiveEmbeddingConfig(dir)
-  const tables = (sourceDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((t) => t.name)
-  if (tables.includes('embedding_spaces')) {
-    const s = sourceDb.prepare('SELECT id, dimensions FROM embedding_spaces ORDER BY created_at ASC LIMIT 1').get() as any
-    if (s?.id && s?.dimensions) return { spaceId: opts.activeSpaceId ?? s.id, dims: opts.activeDimensions ?? s.dimensions }
-  }
-  return { spaceId: opts.activeSpaceId ?? cfg.activeSpaceId, dims: opts.activeDimensions ?? cfg.activeDimensions }
-}
-
 /** Executes V2 to V3 storage migration runner (INV-01, INV-02, INV-08, INV-09). */
-export function migrateStorageV2ToV3(sourceDbPath: string, options: StorageMigrationOptions = {}): StorageMigrationResult {
+export function migrateStorageV2ToV3(sourceDbPath: string, options: StorageMigrationOptions): StorageMigrationResult {
+  if (!options?.activeSpaceId || typeof options.activeDimensions !== 'number') {
+    throw new Error('Migration target embedding space must be explicitly specified (activeSpaceId and activeDimensions are required).')
+  }
+
   const startTime = performance.now()
   const resolvedSource = resolve(sourceDbPath)
   const tempPath = resolve(options.tempDbPath ?? `${resolvedSource}.v3.tmp`)
   const backupPath = resolve(options.backupDbPath ?? `${resolvedSource}.v2.backup.db`)
   const pageSize = options.pageSize ?? 500
+  const activeSpaceId = options.activeSpaceId
+  const activeDimensions = options.activeDimensions
 
   if (!existsSync(resolvedSource)) throw new Error(`Source database does not exist: ${resolvedSource}`)
   if (existsSync(tempPath)) { cleanWalFiles(tempPath); try { unlinkSync(tempPath) } catch { /* ignore */ } }
@@ -79,7 +73,6 @@ export function migrateStorageV2ToV3(sourceDbPath: string, options: StorageMigra
 
   const sourceDb = new DatabaseSync(resolvedSource)
   sourceDb.exec('PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;')
-  const { spaceId: activeSpaceId, dims: activeDimensions } = resolveActiveSpace(sourceDb, dirname(resolvedSource), options)
 
   let totalProcessed = 0, totalCopied = 0, totalDropped = 0, totalChunks = 0, totalEmbeddings = 0
   try {
