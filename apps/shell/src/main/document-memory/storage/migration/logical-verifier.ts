@@ -49,10 +49,12 @@ export interface EmbeddingIntegrityResult {
 
 /**
  * Rigorously verifies active embedding integrity before cutover:
- * - Target space exists in embedding_spaces
+ * - Target space exists in embedding_spaces with matching declared dimensions
+ * - Target-space vectors belong exclusively to activeSpaceId (no foreign space vectors in chunk_embeddings)
  * - Active vectors in chunk_embeddings have exact dimensions (dim == activeDimensions)
- * - No active vector wrong dimensionality (exact blob byte length matching dimensions)
- * - document_embedding_counts rows match actual chunk_embeddings vectors count
+ * - Exact blob byte length matching dimensions (activeDimensions * 4 bytes)
+ * - No target semantic vector from foreign model (provenance rejection)
+ * - document_embedding_counts rows strictly consistent with actual chunk_embeddings vectors
  */
 export function verifyEmbeddingIntegrity(
   targetDb: DatabaseSync,
@@ -101,8 +103,8 @@ export function verifyEmbeddingIntegrity(
 
   // 1. Target space exists in embedding_spaces
   const spaceRow = targetDb
-    .prepare('SELECT id, dimensions FROM embedding_spaces WHERE id = ?')
-    .get(activeSpaceId) as { id: string; dimensions?: number } | undefined
+    .prepare('SELECT id, dimensions, model_repo FROM embedding_spaces WHERE id = ?')
+    .get(activeSpaceId) as { id: string; dimensions?: number; model_repo?: string } | undefined
 
   if (!spaceRow) {
     reasons.push(`Target embedding space '${activeSpaceId}' does not exist in embedding_spaces`)
@@ -112,7 +114,38 @@ export function verifyEmbeddingIntegrity(
     )
   }
 
-  // 2. Active vectors in chunk_embeddings have exact dimensions (dim == activeDimensions)
+  // 2. Target-space vectors belong exclusively to activeSpaceId
+  const foreignSpaceRow = targetDb
+    .prepare('SELECT count(*) AS n FROM chunk_embeddings WHERE space_id != ?')
+    .get(activeSpaceId) as { n: number }
+
+  if (foreignSpaceRow.n > 0) {
+    reasons.push(
+      `Target-space vectors must belong exclusively to activeSpaceId '${activeSpaceId}': ${foreignSpaceRow.n} record(s) have foreign space_id`,
+    )
+  }
+
+  const orphanEmbeddingSpaceRow = targetDb
+    .prepare('SELECT count(*) AS n FROM chunk_embeddings WHERE space_id NOT IN (SELECT id FROM embedding_spaces)')
+    .get() as { n: number }
+
+  if (orphanEmbeddingSpaceRow.n > 0) {
+    reasons.push(
+      `Invalid chunk embeddings detected: ${orphanEmbeddingSpaceRow.n} record(s) violate embedding_spaces reference`,
+    )
+  }
+
+  const orphanEmbeddingChunkRow = targetDb
+    .prepare('SELECT count(*) AS n FROM chunk_embeddings WHERE chunk_id NOT IN (SELECT id FROM chunks)')
+    .get() as { n: number }
+
+  if (orphanEmbeddingChunkRow.n > 0) {
+    reasons.push(
+      `Invalid chunk embeddings detected: ${orphanEmbeddingChunkRow.n} record(s) reference non-existent chunks`,
+    )
+  }
+
+  // 3. Vector dimensions == activeDimensions & exact blob byte length
   const exactDimMismatchRow = targetDb
     .prepare(`
       SELECT count(*) AS n FROM chunk_embeddings
@@ -126,7 +159,6 @@ export function verifyEmbeddingIntegrity(
     )
   }
 
-  // 3. No active vector wrong dimensionality (exact blob byte length == activeDimensions * 4 and matches vector_dim * 4)
   const wrongDimRow = targetDb
     .prepare(`
       SELECT count(*) AS n FROM chunk_embeddings
@@ -145,8 +177,59 @@ export function verifyEmbeddingIntegrity(
     )
   }
 
-  // 4. document_embedding_counts rows match actual chunk_embeddings vectors count
-  // 4a. Per-document completed_chunks matches actual chunk_embeddings vectors count for activeSpaceId
+  // 4. No target semantic vector from foreign model (provenance validation)
+  const foreignModelVectorRow = targetDb
+    .prepare(`
+      SELECT count(*) AS n FROM chunk_embeddings ce
+      JOIN chunks c ON c.id = ce.chunk_id
+      JOIN documents d ON d.id = c.document_id
+      WHERE ce.space_id = ? AND d.embedding_model IS NOT NULL AND d.embedding_model != ?
+    `)
+    .get(activeSpaceId, activeSpaceId) as { n: number }
+
+  if (foreignModelVectorRow.n > 0) {
+    reasons.push(
+      `Foreign model provenance violation: ${foreignModelVectorRow.n} vector(s) in active space '${activeSpaceId}' belong to documents with foreign embedding_model`,
+    )
+  }
+
+  const foreignModelDocRow = targetDb
+    .prepare(`
+      SELECT count(*) AS n FROM documents
+      WHERE embedding_model IS NOT NULL AND embedding_model != ?
+    `)
+    .get(activeSpaceId) as { n: number }
+
+  if (foreignModelDocRow.n > 0) {
+    reasons.push(
+      `Foreign embedding model detected in documents: ${foreignModelDocRow.n} document(s) specify foreign embedding_model instead of activeSpaceId '${activeSpaceId}'`,
+    )
+  }
+
+  // 5. document_embedding_counts consistent
+  // 5a. No foreign space records in document_embedding_counts
+  const foreignDocCountsRow = targetDb
+    .prepare('SELECT count(*) AS n FROM document_embedding_counts WHERE space_id != ?')
+    .get(activeSpaceId) as { n: number }
+
+  if (foreignDocCountsRow.n > 0) {
+    reasons.push(
+      `Mismatch in document_embedding_counts: ${foreignDocCountsRow.n} record(s) belong to foreign space(s) other than '${activeSpaceId}'`,
+    )
+  }
+
+  // 5b. No orphan records in document_embedding_counts
+  const orphanDocCountsRow = targetDb
+    .prepare('SELECT count(*) AS n FROM document_embedding_counts d WHERE d.document_id NOT IN (SELECT id FROM documents)')
+    .get() as { n: number }
+
+  if (orphanDocCountsRow.n > 0) {
+    reasons.push(
+      `Orphan records in document_embedding_counts: ${orphanDocCountsRow.n} record(s) reference non-existent documents`,
+    )
+  }
+
+  // 5c. Per-document completed_chunks matches actual chunk_embeddings vectors count for activeSpaceId
   const docCountMismatchRow = targetDb
     .prepare(`
       SELECT count(*) AS n FROM (
@@ -170,7 +253,7 @@ export function verifyEmbeddingIntegrity(
     )
   }
 
-  // 4b. No documents with chunk_embeddings missing from document_embedding_counts
+  // 5d. No documents with chunk_embeddings missing from document_embedding_counts
   const missingDocCountsRow = targetDb
     .prepare(`
       SELECT count(*) AS n FROM (
@@ -193,7 +276,7 @@ export function verifyEmbeddingIntegrity(
     )
   }
 
-  // 4c. Total document_embedding_counts sum matches total chunk_embeddings count for activeSpaceId
+  // 5e. Total document_embedding_counts sum matches total chunk_embeddings count for activeSpaceId
   const totalCountRow = targetDb
     .prepare(`
       SELECT 
@@ -205,6 +288,23 @@ export function verifyEmbeddingIntegrity(
   if (totalCountRow.counted_total !== totalCountRow.actual_total) {
     reasons.push(
       `document_embedding_counts total (${totalCountRow.counted_total}) does not match actual chunk_embeddings vectors count (${totalCountRow.actual_total}) for space '${activeSpaceId}'`,
+    )
+  }
+
+  // 5f. completed_chunks within valid range [0, total_chunks_for_document]
+  const invalidRangeRow = targetDb
+    .prepare(`
+      SELECT count(*) AS n FROM document_embedding_counts d
+      WHERE d.space_id = ? AND (
+        d.completed_chunks < 0
+        OR d.completed_chunks > (SELECT count(*) FROM chunks c WHERE c.document_id = d.document_id)
+      )
+    `)
+    .get(activeSpaceId) as { n: number }
+
+  if (invalidRangeRow.n > 0) {
+    reasons.push(
+      `Invalid completed_chunks in document_embedding_counts: ${invalidRangeRow.n} record(s) violate valid range [0, document chunks]`,
     )
   }
 
@@ -227,19 +327,29 @@ export const verifyActiveEmbeddingIntegrity = verifyEmbeddingIntegrity
 export interface LogicalConsistencyOptions {
   activeSpaceId?: string
   activeDimensions?: number
+  expectedDocuments?: number
+  expectedChunks?: number
+  targetDb?: DatabaseSync
+  db?: DatabaseSync
 }
 
 export interface LogicalConsistencyResult {
   ok: boolean
   reasons: string[]
-  expectedDocuments: number
+  expectedDocuments?: number
   actualDocuments: number
   actualChunks: number
 }
 
 /**
- * Rigorously validates all 12 enterprise integrity invariants (V01..V12)
+ * Rigorously validates all 14 enterprise integrity invariants (V01..V14)
  * on candidate V3 SQLite database before cutover is authorized (BEH-18).
+ * 
+ * Supports flexible invocations:
+ * - verifyLogicalConsistency(targetDb, { expectedDocuments, expectedChunks, activeSpaceId, activeDimensions })
+ * - verifyLogicalConsistency({ targetDb, expectedDocuments, expectedChunks, activeSpaceId, activeDimensions })
+ * - verifyLogicalConsistency(targetDb, expectedDocuments, expectedChunks, activeSpaceId, activeDimensions)
+ * - verifyLogicalConsistency(targetDb, expectedDocuments, expectedChunks, options)
  * 
  * Invariants:
  * - V01: Physical SQLite integrity (PRAGMA integrity_check === 'ok')
@@ -250,11 +360,20 @@ export interface LogicalConsistencyResult {
  * - V06: Document count matches expectedDocuments
  * - V07: Chunk count matches expectedChunks
  * - V08: No orphan chunks in chunks table
- * - V09: Chunk embeddings vector dimensions and space references valid
- * - V10: document_embedding_counts matches actual chunk_embeddings per document & space
+ * - V09: Target-space vectors belong to activeSpaceId, dimensions == activeDimensions, no foreign model vector
+ * - V10: document_embedding_counts consistent with actual chunk_embeddings per document & space
  * - V11: Active chunk sets referenced by documents exist with state = 'active'
  * - V12: document_memory_meta contains schema_version = '3'
+ * - V13: FTS rows reference valid active chunks & FTS completeness
+ * - V14: OCR sidecar integrity
  */
+export function verifyLogicalConsistency(
+  params: LogicalConsistencyOptions & { targetDb?: DatabaseSync; db?: DatabaseSync },
+): LogicalConsistencyResult
+export function verifyLogicalConsistency(
+  targetDb: DatabaseSync,
+  params: LogicalConsistencyOptions,
+): LogicalConsistencyResult
 export function verifyLogicalConsistency(
   targetDb: DatabaseSync,
   expectedDocuments: number,
@@ -269,24 +388,52 @@ export function verifyLogicalConsistency(
   activeDimensions: number,
 ): LogicalConsistencyResult
 export function verifyLogicalConsistency(
-  targetDb: DatabaseSync,
-  expectedDocuments: number,
-  expectedChunks: number,
+  targetDbOrParams: DatabaseSync | (LogicalConsistencyOptions & { targetDb?: DatabaseSync; db?: DatabaseSync }),
+  expectedDocumentsOrParams?: number | LogicalConsistencyOptions,
+  paramExpectedChunks?: number,
   optionsOrActiveSpaceId?: LogicalConsistencyOptions | string,
   maybeActiveDimensions?: number,
 ): LogicalConsistencyResult {
-  const reasons: string[] = []
-
+  let targetDb: DatabaseSync
+  let expectedDocuments: number | undefined
+  let expectedChunks: number | undefined
   let activeSpaceId: string | undefined
   let activeDimensions: number | undefined
-  if (typeof optionsOrActiveSpaceId === 'string') {
-    activeSpaceId = optionsOrActiveSpaceId
-    activeDimensions = maybeActiveDimensions
-  } else if (optionsOrActiveSpaceId && typeof optionsOrActiveSpaceId === 'object') {
-    activeSpaceId = optionsOrActiveSpaceId.activeSpaceId
-    activeDimensions = optionsOrActiveSpaceId.activeDimensions
+
+  if ('prepare' in targetDbOrParams) {
+    targetDb = targetDbOrParams
+    if (typeof expectedDocumentsOrParams === 'object' && expectedDocumentsOrParams !== null) {
+      expectedDocuments = expectedDocumentsOrParams.expectedDocuments
+      expectedChunks = expectedDocumentsOrParams.expectedChunks
+      activeSpaceId = expectedDocumentsOrParams.activeSpaceId
+      activeDimensions = expectedDocumentsOrParams.activeDimensions
+    } else {
+      expectedDocuments = typeof expectedDocumentsOrParams === 'number' ? expectedDocumentsOrParams : undefined
+      expectedChunks = typeof paramExpectedChunks === 'number' ? paramExpectedChunks : undefined
+      if (typeof optionsOrActiveSpaceId === 'string') {
+        activeSpaceId = optionsOrActiveSpaceId
+        activeDimensions = maybeActiveDimensions
+      } else if (optionsOrActiveSpaceId && typeof optionsOrActiveSpaceId === 'object') {
+        activeSpaceId = optionsOrActiveSpaceId.activeSpaceId
+        activeDimensions = optionsOrActiveSpaceId.activeDimensions
+      }
+    }
+  } else {
+    const opts = targetDbOrParams
+    const resolvedDb = opts.targetDb ?? opts.db
+    if (!resolvedDb) {
+      throw new Error('Invalid arguments to verifyLogicalConsistency: missing targetDb or db')
+    }
+    targetDb = resolvedDb
+    expectedDocuments = opts.expectedDocuments
+    expectedChunks = opts.expectedChunks
+    activeSpaceId = opts.activeSpaceId
+    activeDimensions = opts.activeDimensions
   }
 
+  const reasons: string[] = []
+
+  // Active space & embedding invariants
   if (activeSpaceId && typeof activeDimensions === 'number') {
     const embResult = verifyEmbeddingIntegrity(targetDb, activeSpaceId, activeDimensions)
     if (!embResult.ok) {
@@ -345,15 +492,37 @@ export function verifyLogicalConsistency(
     reasons.push(`[V08] Orphan chunks detected: ${orphanChunkRow.n} chunks lack valid document_id`)
   }
 
-  // V09: Chunk Embeddings Validity
+  // V09: Chunk Embeddings Validity & Provenance
   const invalidEmbeddingsRow = targetDb.prepare(`
     SELECT count(*) AS n FROM chunk_embeddings 
     WHERE vector_dim <= 0 
        OR length(vector) != vector_dim * 4
        OR space_id NOT IN (SELECT id FROM embedding_spaces)
+       OR chunk_id NOT IN (SELECT id FROM chunks)
   `).get() as { n: number }
   if (invalidEmbeddingsRow.n > 0) {
-    reasons.push(`[V09] Invalid chunk embeddings detected: ${invalidEmbeddingsRow.n} records violate vector dimension or space reference`)
+    reasons.push(`[V09] Invalid chunk embeddings detected: ${invalidEmbeddingsRow.n} records violate vector dimension, space, or chunk reference`)
+  }
+
+  if (activeSpaceId) {
+    const foreignVectorsRow = targetDb
+      .prepare('SELECT count(*) AS n FROM chunk_embeddings WHERE space_id != ?')
+      .get(activeSpaceId) as { n: number }
+    if (foreignVectorsRow.n > 0) {
+      reasons.push(`[V09] Foreign space vectors detected: ${foreignVectorsRow.n} chunk_embeddings records belong to space other than activeSpaceId '${activeSpaceId}'`)
+    }
+
+    const foreignModelVectorsRow = targetDb
+      .prepare(`
+        SELECT count(*) AS n FROM chunk_embeddings ce
+        JOIN chunks c ON c.id = ce.chunk_id
+        JOIN documents d ON d.id = c.document_id
+        WHERE ce.space_id = ? AND d.embedding_model IS NOT NULL AND d.embedding_model != ?
+      `)
+      .get(activeSpaceId, activeSpaceId) as { n: number }
+    if (foreignModelVectorsRow.n > 0) {
+      reasons.push(`[V09] Foreign model provenance violation: ${foreignModelVectorsRow.n} vector(s) in active space '${activeSpaceId}' belong to documents with foreign embedding_model`)
+    }
   }
 
   // V10: Document Embedding Counts Consistency
@@ -370,6 +539,13 @@ export function verifyLogicalConsistency(
   `).get() as { n: number }
   if (countMismatchRow.n > 0) {
     reasons.push(`[V10] Mismatch in document_embedding_counts: ${countMismatchRow.n} document-space pairs deviate from canonical embeddings`)
+  }
+
+  const orphanDocCountsRow = targetDb
+    .prepare('SELECT count(*) AS n FROM document_embedding_counts d WHERE d.document_id NOT IN (SELECT id FROM documents)')
+    .get() as { n: number }
+  if (orphanDocCountsRow.n > 0) {
+    reasons.push(`[V10] Orphan records in document_embedding_counts: ${orphanDocCountsRow.n} record(s) reference non-existent documents`)
   }
 
   // V11: Active Chunk Sets Integrity
@@ -418,6 +594,16 @@ export interface FtsIntegrityResult {
   totalFtsChunks?: number
 }
 
+/**
+ * Validates FTS index integrity and ensures all FTS rows reference valid active chunks:
+ * - chunk_fts virtual table integrity
+ * - No orphan FTS rows (referencing non-existent chunks)
+ * - No FTS rows referencing orphan chunks (referencing non-existent documents)
+ * - No FTS rows referencing inactive / retired chunk sets
+ * - No FTS rows referencing obsolete chunk sets for documents with active_chunk_set_id
+ * - Completeness: 100% of valid active chunks have chunk_fts records
+ * - document_name_fts completeness and integrity
+ */
 export function verifyFtsIntegrity(targetDb: DatabaseSync): FtsIntegrityResult {
   const reasons: string[] = []
 
@@ -429,22 +615,7 @@ export function verifyFtsIntegrity(targetDb: DatabaseSync): FtsIntegrityResult {
     reasons.push(`[V13] chunk_fts virtual table integrity check failed: ${err?.message ?? 'unknown error'}`)
   }
 
-  // Check missing chunk_fts for chunks
-  try {
-    const missingFtsRow = targetDb
-      .prepare(`
-        SELECT count(*) AS n FROM chunks c
-        WHERE c.id NOT IN (SELECT rowid FROM chunk_fts)
-      `)
-      .get() as { n: number }
-    if (missingFtsRow.n > 0) {
-      reasons.push(`[V13] FTS completeness failed: ${missingFtsRow.n} chunk(s) lack chunk_fts records`)
-    }
-  } catch (err: any) {
-    reasons.push(`[V13] Could not query chunk_fts completeness: ${err?.message}`)
-  }
-
-  // Check orphan chunk_fts rows
+  // 1. Orphan chunk_fts rows (rowid does not exist in chunks)
   try {
     const orphanFtsRow = targetDb
       .prepare(`
@@ -459,19 +630,107 @@ export function verifyFtsIntegrity(targetDb: DatabaseSync): FtsIntegrityResult {
     reasons.push(`[V13] Could not query orphan chunk_fts: ${err?.message}`)
   }
 
-  // Check document_name_fts completeness
+  // 2. FTS rows referencing chunks belonging to non-existent documents
   try {
-    const missingDocNameRow = targetDb
+    const orphanDocFtsRow = targetDb
       .prepare(`
-        SELECT count(*) AS n FROM documents d
-        WHERE d.excluded = 0 AND d.id NOT IN (SELECT rowid FROM document_name_fts)
+        SELECT count(*) AS n FROM chunk_fts f
+        JOIN chunks c ON c.id = f.rowid
+        WHERE c.document_id NOT IN (SELECT id FROM documents)
       `)
       .get() as { n: number }
-    if (missingDocNameRow.n > 0) {
-      reasons.push(`[V13] Document name FTS mismatch: ${missingDocNameRow.n} document(s) missing from document_name_fts`)
+    if (orphanDocFtsRow.n > 0) {
+      reasons.push(`[V13] FTS rows reference orphan chunks: ${orphanDocFtsRow.n} record(s) in chunk_fts belong to non-existent documents`)
     }
   } catch (err: any) {
-    reasons.push(`[V13] Could not query document_name_fts: ${err?.message}`)
+    reasons.push(`[V13] Could not query FTS orphan document references: ${err?.message}`)
+  }
+
+  // 3. FTS rows referencing inactive or obsolete chunk sets
+  const hasChunkSets = !!targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunk_sets'").get()
+  if (hasChunkSets) {
+    try {
+      // Chunk sets that are not in 'active' state
+      const inactiveSetFtsRow = targetDb
+        .prepare(`
+          SELECT count(*) AS n FROM chunk_fts f
+          JOIN chunks c ON c.id = f.rowid
+          JOIN chunk_sets cs ON cs.id = c.chunk_set_id
+          WHERE cs.state != 'active'
+        `)
+        .get() as { n: number }
+      if (inactiveSetFtsRow.n > 0) {
+        reasons.push(`[V13] Inactive chunk set FTS rows detected: ${inactiveSetFtsRow.n} record(s) in chunk_fts belong to non-active chunk sets`)
+      }
+
+      // Chunks not belonging to document's active_chunk_set_id
+      const obsoleteSetFtsRow = targetDb
+        .prepare(`
+          SELECT count(*) AS n FROM chunk_fts f
+          JOIN chunks c ON c.id = f.rowid
+          JOIN documents d ON d.id = c.document_id
+          WHERE d.active_chunk_set_id IS NOT NULL
+            AND (c.chunk_set_id IS NULL OR c.chunk_set_id != d.active_chunk_set_id)
+        `)
+        .get() as { n: number }
+      if (obsoleteSetFtsRow.n > 0) {
+        reasons.push(`[V13] Obsolete chunk FTS rows detected: ${obsoleteSetFtsRow.n} record(s) in chunk_fts belong to non-active chunk sets for their document`)
+      }
+    } catch (err: any) {
+      reasons.push(`[V13] Could not query active chunk set FTS alignment: ${err?.message}`)
+    }
+  }
+
+  // 4. Completeness: All valid active chunks must have chunk_fts records
+  try {
+    const missingFtsQuery = hasChunkSets
+      ? `
+        SELECT count(*) AS n FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE (d.active_chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+          AND (c.chunk_set_id IS NULL OR NOT EXISTS (SELECT 1 FROM chunk_sets cs WHERE cs.id = c.chunk_set_id AND cs.state != 'active'))
+          AND c.id NOT IN (SELECT rowid FROM chunk_fts)
+      `
+      : `
+        SELECT count(*) AS n FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE (d.active_chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+          AND c.id NOT IN (SELECT rowid FROM chunk_fts)
+      `
+    const missingFtsRow = targetDb.prepare(missingFtsQuery).get() as { n: number }
+    if (missingFtsRow.n > 0) {
+      reasons.push(`[V13] FTS completeness failed: ${missingFtsRow.n} valid active chunk(s) lack chunk_fts records`)
+    }
+  } catch (err: any) {
+    reasons.push(`[V13] Could not query chunk_fts completeness: ${err?.message}`)
+  }
+
+  // 5. document_name_fts completeness & orphan check
+  const hasDocNameFts = !!targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_name_fts'").get()
+  if (hasDocNameFts) {
+    try {
+      const missingDocNameRow = targetDb
+        .prepare(`
+          SELECT count(*) AS n FROM documents d
+          WHERE d.excluded = 0 AND d.id NOT IN (SELECT rowid FROM document_name_fts)
+        `)
+        .get() as { n: number }
+      if (missingDocNameRow.n > 0) {
+        reasons.push(`[V13] Document name FTS mismatch: ${missingDocNameRow.n} document(s) missing from document_name_fts`)
+      }
+
+      const orphanDocNameRow = targetDb
+        .prepare(`
+          SELECT count(*) AS n FROM document_name_fts f
+          WHERE f.rowid NOT IN (SELECT id FROM documents)
+        `)
+        .get() as { n: number }
+      if (orphanDocNameRow.n > 0) {
+        reasons.push(`[V13] Orphan document_name_fts rows detected: ${orphanDocNameRow.n} record(s) in document_name_fts do not correspond to any document`)
+      }
+    } catch (err: any) {
+      reasons.push(`[V13] Could not query document_name_fts: ${err?.message}`)
+    }
   }
 
   let totalFtsChunks = 0
