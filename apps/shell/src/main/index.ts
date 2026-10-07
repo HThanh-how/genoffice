@@ -6821,21 +6821,40 @@ app.whenReady().then(async () => {
   // a move of the index to another folder, chosen in the settings, happens here: nothing has the
   // database open yet
   const dbMove = await applyPendingDbMove(userDataDir)
-  if (dbMove.error) console.warn('[document-memory] index move failed:', dbMove.error)
   everything = createEverything(userDataDir)
   setOpeningConfig({ prefs: openingPrefs, customHtml: customOpeningHtml })
   const indexDbDir = resolveDbDir(userDataDir)
-  const bootstrap = await ensureDocumentMemoryStorageReady(indexDbDir, {
-    settingsDir: userDataDir,
-  })
-  if (!bootstrap.ready) {
-    console.error('[document-memory] Critical: Storage bootstrap failed, entering fail-closed mode:', bootstrap.error)
+
+  if (dbMove.error) {
+    console.error(
+      '[document-memory] Critical: Index move failed, entering fail-closed mode:',
+      dbMove.error,
+    )
     documentMemory = null
   } else {
-    documentMemory = new DocumentMemoryManager(userDataDir, {
-      dbDir: indexDbDir,
-      externalNames: (query, limit) => everything!.search.search(query, limit),
-    })
+    try {
+      const bootstrap = await ensureDocumentMemoryStorageReady(indexDbDir, {
+        settingsDir: userDataDir,
+      })
+      if (!bootstrap.ready) {
+        console.error(
+          '[document-memory] Critical: Storage bootstrap failed, entering fail-closed mode:',
+          bootstrap.error,
+        )
+        documentMemory = null
+      } else {
+        documentMemory = new DocumentMemoryManager(userDataDir, {
+          dbDir: indexDbDir,
+          externalNames: (query, limit) => everything!.search.search(query, limit),
+        })
+      }
+    } catch (bootstrapErr) {
+      console.error(
+        '[document-memory] Critical: Storage bootstrap threw error, entering fail-closed mode:',
+        bootstrapErr,
+      )
+      documentMemory = null
+    }
   }
   startLegacyConverter()
   void listLegacyRecovery(app.getPath('userData')).catch((error) =>

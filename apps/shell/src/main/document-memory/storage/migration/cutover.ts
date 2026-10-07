@@ -5,6 +5,13 @@ import { enforceBackupRetentionPolicy } from './backup-retention'
 
 export const MIGRATION_MANIFEST_FILENAME = 'document-memory.migration-state.json'
 
+/**
+ * Cutover state machine:
+ * PREPARED -> SOURCE_BACKED_UP -> TARGET_INSTALLED -> VERIFIED -> COMPLETED
+ *
+ * Invariant: PREPARED manifest must be persisted before the first filesystem mutation.
+ * Write failure = operation failure (fail-closed, no best-effort ignore).
+ */
 export const CutoverPhase = {
   PREPARED: 'prepared',
   SOURCE_BACKED_UP: 'source-backed-up',

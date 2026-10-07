@@ -1,4 +1,4 @@
-import { existsSync } from 'node:fs'
+import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { inspectDatabaseVersion, type StorageVersionReport } from './storage/schema-inspector'
 import { migrateStorageV2ToV3, type StorageMigrationResult } from './storage-migration'
@@ -6,6 +6,7 @@ import { recoverInterruptedCutover, getManifestPath } from './storage/migration/
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'
 import { verifyDatabaseIntegrity } from './storage/migration/logical-verifier'
 import {
+  findAllV2Backups,
   findMostRecentV2Backup,
   initV3RetentionState,
   readV3RetentionState,
@@ -25,6 +26,74 @@ export interface BootstrapResult {
 
 export interface StorageBootstrapOptions {
   settingsDir?: string
+}
+
+/**
+ * Detects any leftover or unexpected temporary files associated with migration or cutover.
+ */
+export function findUnexpectedTempArtifacts(dbDir: string, dbBase = 'document-memory.db'): string[] {
+  if (!existsSync(dbDir)) return []
+  const found: string[] = []
+  const prefix = dbBase.replace(/\.db$/, '')
+
+  try {
+    const entries = readdirSync(dbDir)
+    for (const name of entries) {
+      if (!name.startsWith(prefix)) continue
+      if (
+        name.includes('.tmp') ||
+        name.includes('.migrating') ||
+        name.includes('.moving')
+      ) {
+        found.push(join(dbDir, name))
+      }
+    }
+  } catch {
+    const directCandidates = [
+      join(dbDir, `${dbBase}.v3.tmp`),
+      join(dbDir, `${dbBase}.v3.tmp.db`),
+      join(dbDir, `${dbBase}.tmp`),
+      join(dbDir, `${dbBase}.migrating`),
+    ]
+    for (const candidate of directCandidates) {
+      if (existsSync(candidate)) found.push(candidate)
+    }
+  }
+
+  return found
+}
+
+/**
+ * Detects any candidate V2 rollback backup files present in the database directory.
+ */
+export function findAnyBackupArtifacts(dbDir: string, dbBase = 'document-memory.db'): string[] {
+  if (!existsSync(dbDir)) return []
+  const backups = findAllV2Backups(dbDir, dbBase).map((b) => b.path)
+  const mostRecent = findMostRecentV2Backup(dbDir, dbBase)
+  if (mostRecent && !backups.includes(mostRecent.path)) {
+    backups.push(mostRecent.path)
+  }
+
+  const prefix = dbBase.replace(/\.db$/, '')
+  try {
+    const entries = readdirSync(dbDir)
+    for (const name of entries) {
+      if (!name.startsWith(prefix)) continue
+      if (
+        (name.includes('.backup') || name.includes('.v2.') || name.endsWith('.bak')) &&
+        !name.includes('.tmp')
+      ) {
+        const full = join(dbDir, name)
+        if (!backups.includes(full)) {
+          backups.push(full)
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+
+  return backups
 }
 
 /**
@@ -67,15 +136,28 @@ export async function ensureDocumentMemoryStorageReady(
     }
   }
 
-  const rollbackBackup = findMostRecentV2Backup(dbDir, 'document-memory.db')
-  const migrationTemp = `${dbPath}.v3.tmp`
+  // Any unexpected temporary migration artifacts on disk indicate an interrupted/ambiguous state
+  const unexpectedTemps = findUnexpectedTempArtifacts(dbDir, 'document-memory.db')
+  if (unexpectedTemps.length > 0) {
+    const errorMsg = `Critical: unexpected temporary migration artifacts found on disk: ${unexpectedTemps.join(', ')}`
+    console.error('[document-memory-bootstrap]', errorMsg)
+    return {
+      ready: false,
+      migrated: false,
+      error: errorMsg,
+    }
+  }
+
+  const backupArtifacts = findAnyBackupArtifacts(dbDir, 'document-memory.db')
   const retentionState = readV3RetentionState(dbDir)
   if (!existsSync(dbPath)) {
-    if (rollbackBackup || existsSync(migrationTemp) || retentionState) {
+    if (backupArtifacts.length > 0 || retentionState) {
+      const errorMsg = 'Document-memory database is missing while migration or rollback artifacts still exist.'
+      console.error('[document-memory-bootstrap]', errorMsg)
       return {
         ready: false,
         migrated: false,
-        error: 'Document-memory database is missing while migration or rollback artifacts still exist.',
+        error: errorMsg,
       }
     }
     return {
@@ -86,6 +168,40 @@ export async function ensureDocumentMemoryStorageReady(
 
   try {
     const report = inspectDatabaseVersion(dbPath)
+
+    if (report.state === 'corrupt') {
+      const errorMsg = `Existing document-memory database is corrupted: ${report.reasons.join('; ')}`
+      console.error('[document-memory-bootstrap]', errorMsg)
+      return {
+        ready: false,
+        migrated: false,
+        report,
+        error: errorMsg,
+      }
+    }
+
+    if (report.state === 'migration-in-progress') {
+      const errorMsg = `Existing document-memory database has an unresolved migration in progress: ${report.reasons.join('; ')}`
+      console.error('[document-memory-bootstrap]', errorMsg)
+      return {
+        ready: false,
+        migrated: false,
+        report,
+        error: errorMsg,
+      }
+    }
+
+    if (report.state === 'unknown') {
+      const errorMsg = `Existing document-memory database has unknown schema: ${report.state}`
+      console.error('[document-memory-bootstrap]', errorMsg)
+      return {
+        ready: false,
+        migrated: false,
+        report,
+        error: errorMsg,
+      }
+    }
+
     if (!report.needsMigration) {
       if (!report.isV3) {
         return {
@@ -115,8 +231,7 @@ export async function ensureDocumentMemoryStorageReady(
       try {
         enforceBackupRetentionPolicy(dbPath)
       } catch {
-        // Cleanup failure must not make
-        // a verified database unavailable.
+        // Cleanup failure must not make a verified database unavailable.
       }
       return {
         ready: true,
@@ -162,7 +277,7 @@ export async function ensureDocumentMemoryStorageReady(
     }
   } catch (err) {
     const errorMsg = (err as Error).message
-    console.error('[document-memory-bootstrap] Critical: V2->V3 migration failed!', { error: errorMsg })
+    console.error('[document-memory-bootstrap] Critical: V2->V3 migration or verification failed!', { error: errorMsg })
     return {
       ready: false,
       migrated: false,
