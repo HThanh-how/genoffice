@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync, utimesSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -9,6 +9,7 @@ import {
   inspectDatabaseVersion,
   inspectPhysicalStorageState,
 } from '../src/main/document-memory/storage/schema-inspector'
+import { writeV3RetentionState } from '../src/main/document-memory/storage/migration/v3-retention-state'
 
 describe('Physical Storage State Inspection & Diagnostics Truthfulness Suite', () => {
   let directory: string
@@ -281,3 +282,103 @@ describe('Physical Storage State Inspection & Diagnostics Truthfulness Suite', (
     expect(reportEmpty.schemaState).toBe('unknown')
   })
 })
+
+describe('Timestamped Backup Diagnostics Resolution Suite', () => {
+  let directory: string
+  let dbPath: string
+  let db: DatabaseSync
+
+  beforeEach(() => {
+    directory = mkdtempSync(join(tmpdir(), 'genoffice-diag-backup-'))
+    dbPath = join(directory, 'document-memory.db')
+    db = new DatabaseSync(dbPath)
+    db.exec('CREATE TABLE test (id INTEGER PRIMARY KEY);')
+  })
+
+  afterEach(() => {
+    db.close()
+    rmSync(directory, { recursive: true, force: true })
+  })
+
+  it('DIAG-BACKUP-01: timestamped backup + retention state → correct v2BackupSizeBytes', () => {
+    const backupPath = join(directory, 'document-memory.v2.1700000000000.backup.db')
+    const expectedSize = 1024
+    writeFileSync(backupPath, Buffer.alloc(expectedSize, 0xaa))
+
+    writeV3RetentionState(dbPath, {
+      backupPath,
+      createdAt: 1700000000000,
+      verifiedLaunches: 0,
+    })
+
+    const diagRepo = new DiagnosticsRepository(db, dbPath)
+    const diagnostics = diagRepo.getStorageDiagnostics()
+
+    expect(diagnostics.v2BackupSizeBytes).toBe(expectedSize)
+  })
+
+  it('DIAG-BACKUP-02: no retention state + 2 timestamped backups → newest one used', () => {
+    const olderBackupPath = join(directory, 'document-memory.v2.1000.backup.db')
+    const newerBackupPath = join(directory, 'document-memory.v2.2000.backup.db')
+    const olderSize = 512
+    const newerSize = 2048
+
+    writeFileSync(olderBackupPath, Buffer.alloc(olderSize, 0x11))
+    writeFileSync(newerBackupPath, Buffer.alloc(newerSize, 0x22))
+
+    utimesSync(olderBackupPath, new Date(1000000), new Date(1000000))
+    utimesSync(newerBackupPath, new Date(2000000), new Date(2000000))
+
+    const diagRepo = new DiagnosticsRepository(db, dbPath)
+    const diagnostics = diagRepo.getStorageDiagnostics()
+
+    expect(diagnostics.v2BackupSizeBytes).toBe(newerSize)
+  })
+
+  it('DIAG-BACKUP-03: explicit backupPath → explicit wins', () => {
+    const discoveredBackupPath = join(directory, 'document-memory.v2.1700000000000.backup.db')
+    writeFileSync(discoveredBackupPath, Buffer.alloc(1024, 0x11))
+
+    writeV3RetentionState(dbPath, {
+      backupPath: discoveredBackupPath,
+      createdAt: 1700000000000,
+      verifiedLaunches: 0,
+    })
+
+    const explicitBackupPath = join(directory, 'custom-explicit.backup.db')
+    const explicitSize = 4096
+    writeFileSync(explicitBackupPath, Buffer.alloc(explicitSize, 0x33))
+
+    const diagRepo = new DiagnosticsRepository(db, dbPath)
+    const diagnostics = diagRepo.getStorageDiagnostics(explicitBackupPath)
+
+    expect(diagnostics.v2BackupSizeBytes).toBe(explicitSize)
+  })
+
+  it('DIAG-BACKUP-04: retention state points to missing file → fallback to discovered backup', () => {
+    const missingBackupPath = join(directory, 'document-memory.v2.ghost.backup.db')
+
+    writeV3RetentionState(dbPath, {
+      backupPath: missingBackupPath,
+      createdAt: 1700000000000,
+      verifiedLaunches: 0,
+    })
+
+    const validDiscoveredBackupPath = join(directory, 'document-memory.v2.1700000000000.backup.db')
+    const discoveredSize = 3072
+    writeFileSync(validDiscoveredBackupPath, Buffer.alloc(discoveredSize, 0x44))
+
+    const diagRepo = new DiagnosticsRepository(db, dbPath)
+    const diagnostics = diagRepo.getStorageDiagnostics()
+
+    expect(diagnostics.v2BackupSizeBytes).toBe(discoveredSize)
+  })
+
+  it('DIAG-BACKUP-05: no backups → null', () => {
+    const diagRepo = new DiagnosticsRepository(db, dbPath)
+    const diagnostics = diagRepo.getStorageDiagnostics()
+
+    expect(diagnostics.v2BackupSizeBytes).toBeNull()
+  })
+})
+
