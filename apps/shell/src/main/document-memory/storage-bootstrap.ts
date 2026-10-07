@@ -13,7 +13,6 @@ import {
   recordV3VerifiedLaunch,
   type V3RetentionState,
 } from './storage/migration/v3-retention-state'
-import { enforceBackupRetentionPolicy } from './storage/migration/backup-retention'
 
 export interface BootstrapResult {
   ready: boolean
@@ -228,11 +227,6 @@ export async function ensureDocumentMemoryStorageReady(
       const recorded = recordV3VerifiedLaunch(dbDir)
       if (recorded) {
         retentionState = recorded
-      }
-      try {
-        enforceBackupRetentionPolicy(dbPath)
-      } catch {
-        // Cleanup failure must not make a verified database unavailable.
       }
       return {
         ready: true,
