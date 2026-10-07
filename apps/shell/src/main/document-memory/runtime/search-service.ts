@@ -13,6 +13,11 @@ export interface SearchServiceOptions {
   annotateFreshness?: (hits: DocumentMemoryHit[]) => Promise<FreshDocumentMemoryHit[]>
 }
 
+function normalizeSearchPath(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, '/')
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
 export class SearchService {
   private readonly offeredPaths = new Set<string>()
   private readonly queryCache = new QueryEmbeddingCache(64)
@@ -22,6 +27,10 @@ export class SearchService {
 
   get store(): DocumentMemoryStore {
     return this.options.store
+  }
+
+  get activeQueryToken(): number {
+    return this.querySequence
   }
 
   cancelActiveQuery(): void {
@@ -56,22 +65,26 @@ export class SearchService {
     let finalHits = lexicalHits
     if (this.options.askEmbed) {
       try {
-        const spaceId = activeEmbeddingModel ?? 'default'
+        const spaceId = activeEmbeddingModel ?? (this.store.getEmbeddingSpaces?.()[0]?.id ?? 'default')
         let vector: number[] | null = this.queryCache.get(spaceId, query) ?? null
         if (!vector) {
           vector = await this.options.askEmbed(query)
+          if (this.querySequence !== queryId) return []
           if (vector && vector.length) {
             this.queryCache.set(spaceId, query, vector)
           }
         }
+        if (this.querySequence !== queryId) return []
         if (vector && vector.length) {
           let semanticCandidates: Array<{ chunkId: number; rank: number; score: number; documentId: number }> = []
           if (this.options.askSemantic) {
             const reply = await this.options.askSemantic(vector, 200, spaceId)
+            if (this.querySequence !== queryId) return []
             if (reply) semanticCandidates = reply
           } else {
             semanticCandidates = this.store.searchSemantic(vector, 200, spaceId)
           }
+          if (this.querySequence !== queryId) return []
           let finalChunkHits: DocumentMemoryHit[] = []
           if (semanticCandidates.length > 0) {
             const fused = fuseHybridResults(lexicalCandidates, semanticCandidates, { limit })
@@ -82,14 +95,18 @@ export class SearchService {
           const seen = new Set(finalChunkHits.map((h) => h.documentId))
           const namedForHybrid = namedRaw.filter((h) => !seen.has(h.documentId))
           finalHits = await annotate([...namedForHybrid.slice(0, 3), ...finalChunkHits])
-          const stalePaths = new Set(lexicalHits.filter((h) => h.stale).map((h) => h.path))
-          const missingPaths = new Set(lexicalHits.filter((h) => h.missing).map((h) => h.path))
+          if (this.querySequence !== queryId) return []
+          const stalePaths = new Set(lexicalHits.filter((h) => h.stale).map((h) => normalizeSearchPath(h.path)))
+          const missingPaths = new Set(lexicalHits.filter((h) => h.missing).map((h) => normalizeSearchPath(h.path)))
           if (stalePaths.size > 0 || missingPaths.size > 0) {
-            finalHits = finalHits.map((h) => ({
-              ...h,
-              stale: h.stale || stalePaths.has(h.path),
-              missing: h.missing || missingPaths.has(h.path),
-            }))
+            finalHits = finalHits.map((h) => {
+              const norm = normalizeSearchPath(h.path)
+              return {
+                ...h,
+                stale: h.stale || stalePaths.has(norm),
+                missing: h.missing || missingPaths.has(norm),
+              }
+            })
           }
         }
       } catch {
@@ -111,9 +128,15 @@ export class SearchService {
     const results: Array<{ path: string; name: string }> = []
     const seen = new Set<string>()
     for (const file of files) {
-      const norm = process.platform === 'win32' ? file.path.toLowerCase() : file.path
+      const norm = normalizeSearchPath(file.path)
       if (seen.has(norm)) continue
-      if (indexedPaths?.has(norm)) continue
+      if (
+        indexedPaths?.has(norm) ||
+        indexedPaths?.has(file.path) ||
+        (process.platform === 'win32' && indexedPaths?.has(file.path.toLowerCase()))
+      ) {
+        continue
+      }
       seen.add(norm)
       results.push(file)
       this.offeredPaths.add(file.path)

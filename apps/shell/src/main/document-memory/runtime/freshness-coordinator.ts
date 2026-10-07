@@ -36,7 +36,8 @@ const RENAME_HASH_MAX_BYTES = 64 * 1024 * 1024
 const FRESHNESS_STAT_TIMEOUT_MS = 1_500
 
 function pathKey(p: string): string {
-  return process.platform === 'win32' ? p.toLowerCase() : p
+  const norm = p.replace(/\\/g, '/')
+  return process.platform === 'win32' ? norm.toLowerCase() : norm
 }
 
 function safeStat(path: string): { mtimeMs: number; sizeBytes: number } | null {
@@ -203,10 +204,11 @@ export class FreshnessCoordinator {
   ): boolean {
     if (this.options.isStopped?.()) return false
     this.options.onInvalidatePath?.(oldPath)
-    const pending = this.missing.get(oldPath)
+    const oldKey = pathKey(oldPath)
+    const pending = this.missing.get(oldKey)
     if (pending) {
       clearTimeout(pending.timer)
-      this.missing.delete(oldPath)
+      this.missing.delete(oldKey)
     }
     if (this.store.documentByPath(newPath)) return false
     try {
@@ -231,18 +233,19 @@ export class FreshnessCoordinator {
   }
 
   markMissing(path: string): void {
-    if (this.missing.has(path)) return
+    const key = pathKey(path)
+    if (this.missing.has(key)) return
     const doc = this.store.documentByPath(path)
     if (!doc || doc.status === 'excluded') return
     const candidate: MissingCandidate | null =
       doc.hash && doc.sizeBytes !== null ? { path, sizeBytes: doc.sizeBytes, hash: doc.hash } : null
     const timer = setTimeout(() => void this.finalizeMissing(path), this.tombstoneGraceMs)
     timer.unref?.()
-    this.missing.set(path, { candidate, timer })
+    this.missing.set(key, { candidate, timer })
   }
 
   async finalizeMissing(path: string): Promise<void> {
-    this.missing.delete(path)
+    this.missing.delete(pathKey(path))
     if (await this.isGone(path)) {
       await this.tombstone(path)
     }
@@ -251,17 +254,20 @@ export class FreshnessCoordinator {
   async annotateFreshness(hits: DocumentMemoryHit[]): Promise<FreshDocumentMemoryHit[]> {
     const byPath = new Map<string, Promise<'fresh' | 'stale' | 'missing'>>()
     for (const hit of hits) {
-      if (!byPath.has(hit.path)) byPath.set(hit.path, this.checkFreshness(hit))
+      const key = pathKey(hit.path)
+      if (!byPath.has(key)) byPath.set(key, this.checkFreshness(hit))
     }
     const outcomes = new Map<string, 'fresh' | 'stale' | 'missing'>()
-    for (const [path, outcome] of byPath) outcomes.set(path, await outcome)
-    for (const [path, outcome] of outcomes) {
+    for (const [key, outcome] of byPath) outcomes.set(key, await outcome)
+    for (const hit of hits) {
       if (this.options.isStopped?.()) break
-      if (outcome === 'stale') this.options.onEnqueue?.(path, true)
-      else if (outcome === 'missing') this.markMissing(path)
+      const key = pathKey(hit.path)
+      const outcome = outcomes.get(key) ?? 'fresh'
+      if (outcome === 'stale') this.options.onEnqueue?.(hit.path, true)
+      else if (outcome === 'missing') this.markMissing(hit.path)
     }
     return hits.map((hit) => {
-      const outcome = outcomes.get(hit.path) ?? 'fresh'
+      const outcome = outcomes.get(pathKey(hit.path)) ?? 'fresh'
       return { ...hit, stale: outcome !== 'fresh', missing: outcome === 'missing' }
     })
   }
@@ -338,16 +344,17 @@ export class FreshnessCoordinator {
       return
     }
 
-    const existing = this.stabilityRetries.get(path)
+    const key = pathKey(path)
+    const existing = this.stabilityRetries.get(key)
     if (existing) clearTimeout(existing.timer)
 
     const delayMs = this.stabilityRetryScheduleMs[attempt] ?? 15_000
     const timer = setTimeout(() => {
-      this.stabilityRetries.delete(path)
+      this.stabilityRetries.delete(key)
       void this.retryStabilityCheck(path, attempt + 1, stabilityGate)
     }, delayMs)
     timer.unref?.()
-    this.stabilityRetries.set(path, { timer })
+    this.stabilityRetries.set(key, { timer })
   }
 
   private async retryStabilityCheck(path: string, nextAttempt: number, stabilityGate: FileStabilityGate): Promise<void> {
@@ -382,10 +389,11 @@ export class FreshnessCoordinator {
   }
 
   clearStabilityRetry(path: string): void {
-    const entry = this.stabilityRetries.get(path)
+    const key = pathKey(path)
+    const entry = this.stabilityRetries.get(key)
     if (entry) {
       clearTimeout(entry.timer)
-      this.stabilityRetries.delete(path)
+      this.stabilityRetries.delete(key)
     }
   }
 

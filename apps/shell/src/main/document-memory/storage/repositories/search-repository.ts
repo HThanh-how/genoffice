@@ -153,6 +153,10 @@ export class SearchRepository {
     limit = 200,
     spaceId?: string,
   ): Array<{ chunkId: number; rank: number; score: number; documentId: number }> {
+    if (!vector || !vector.length) return []
+    if (vector.some((v) => !Number.isFinite(v)))
+      throw new Error('Query vector must contain only finite numbers')
+
     const countRow = this.db
       .prepare(
         `SELECT count(*) AS count FROM chunk_embeddings e
