@@ -52,7 +52,12 @@ export interface StorageMigrationResult {
 
 /** Executes V2 to V3 storage migration runner (INV-01, INV-02, INV-08, INV-09). */
 export function migrateStorageV2ToV3(sourceDbPath: string, options: StorageMigrationOptions): StorageMigrationResult {
-  if (!options?.activeSpaceId || typeof options.activeDimensions !== 'number') {
+  if (
+    !options?.activeSpaceId ||
+    typeof options.activeDimensions !== 'number' ||
+    !Number.isFinite(options.activeDimensions) ||
+    options.activeDimensions <= 0
+  ) {
     throw new Error('Migration target embedding space must be explicitly specified (activeSpaceId and activeDimensions are required).')
   }
 

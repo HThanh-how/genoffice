@@ -66,8 +66,13 @@ export function copyDocumentActiveChunks(
       if (e?.vector) { vec = e.vector; dim = e.vector_dim ?? activeDimensions; space = activeSpaceId }
     }
     if (!vec && c.vector) {
-      const legacyDim = c.vector_dim ?? (c.vector.byteLength ? (c.vector.byteLength / 4) : 0)
-      if (doc.embedding_model === activeSpaceId && legacyDim === activeDimensions) {
+      const byteLen = c.vector.byteLength ?? (c.vector.length ? c.vector.length : 0)
+      const legacyDim = c.vector_dim ?? (byteLen > 0 ? (byteLen / 4) : 0)
+      if (
+        doc.embedding_model === activeSpaceId &&
+        legacyDim === activeDimensions &&
+        byteLen === activeDimensions * 4
+      ) {
         vec = c.vector
         dim = legacyDim
         space = activeSpaceId
