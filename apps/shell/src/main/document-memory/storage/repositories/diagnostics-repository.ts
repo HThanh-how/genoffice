@@ -215,3 +215,11 @@ export class DiagnosticsRepository {
     }
   }
 }
+
+export function collectStorageDiagnostics(
+  db: DatabaseSync,
+  dbPath: string,
+  backupPath?: string,
+): DocumentIndexStorageDiagnostics {
+  return new DiagnosticsRepository(db, dbPath).getStorageDiagnostics(backupPath)
+}

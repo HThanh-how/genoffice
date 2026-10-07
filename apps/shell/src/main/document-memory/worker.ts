@@ -262,6 +262,7 @@ onIndexRequest(
     sliceMs?: number
     maxPdfPages?: number
     ocr?: OcrRenderRequest
+    backupPath?: string
   }) => {
     const execute = async () => {
       try {
@@ -312,6 +313,8 @@ onIndexRequest(
             getWorkerStore().runIncrementalVacuum({ maxPages: 256, batchPages: 256 }),
           )
           result = { vacuumResult, durationMs: Date.now() - started }
+        } else if (request.type === 'storage-diagnostics') {
+          result = getWorkerStore().getStorageDiagnostics(request.backupPath)
         } else result = await embedTexts(request.texts, request.kind)
         postIndexMessage({ id: request.id, result })
       } catch (error) {
@@ -324,7 +327,8 @@ onIndexRequest(
     if (
       request.type === 'search' ||
       request.type === 'search-lexical' ||
-      request.type === 'search-semantic'
+      request.type === 'search-semantic' ||
+      request.type === 'storage-diagnostics'
     )
       void execute()
     else

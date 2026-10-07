@@ -1,6 +1,7 @@
 import type { ExtractResult } from './runtime/extraction-coordinator'
 import type { DocumentMemoryHit } from './store'
 import type { OcrRenderRequest } from './agy-ocr-render'
+import type { DocumentIndexStorageDiagnostics } from '../../shared/fork/document-index-api'
 
 export type WorkerRequest =
   | { type: 'extract'; path: string; interactive?: boolean; sliceMs?: number; maxPdfPages?: number }
@@ -37,6 +38,10 @@ export type WorkerRequest =
   | {
       type: 'vacuum-step'
     }
+  | {
+      type: 'storage-diagnostics'
+      backupPath?: string
+    }
 
 export type WorkerReply =
   | {
@@ -47,6 +52,7 @@ export type WorkerReply =
         | DocumentMemoryHit[]
         | { more: boolean; durationMs: number }
         | { freedBytes?: number }
+        | DocumentIndexStorageDiagnostics
         | unknown
     }
   | { id: number; error: string; restartRequired?: boolean }
