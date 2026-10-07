@@ -8,6 +8,7 @@ import {
   recoverInterruptedCutover,
   getManifestPath,
 } from '../src/main/document-memory/storage/migration/cutover'
+import { resolveRetentionDir } from '../src/main/document-memory/storage/migration/v3-retention-state'
 import { ensureDocumentMemoryStorageReady } from '../src/main/document-memory/storage-bootstrap'
 import { verifyDatabaseIntegrity } from '../src/main/document-memory/storage/migration/logical-verifier'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
@@ -313,5 +314,17 @@ describe('Cutover State Machine & Manifest Durability Suite (QA-CUT)', () => {
     const recovered = recoverInterruptedCutover(tempDir)
     expect(recovered).toBe(false)
     expect(existsSync(tempManifest)).toBe(false)
+  })
+
+  it('PATH-01 getManifestPath(db.sqlite) → manifest nằm cạnh DB', () => {
+    const sqlitePath = join(tempDir, 'document-memory.sqlite')
+    const manifest = getManifestPath(sqlitePath)
+    expect(manifest).toBe(join(tempDir, 'document-memory.migration-state.json'))
+  })
+
+  it('PATH-02 resolveRetentionDir(db.sqlite3) → dirname(DB)', () => {
+    const sqlite3Path = join(tempDir, 'document-memory.sqlite3')
+    const dir = resolveRetentionDir(sqlite3Path)
+    expect(dir).toBe(tempDir)
   })
 })
