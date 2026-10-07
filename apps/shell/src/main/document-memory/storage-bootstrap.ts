@@ -4,7 +4,7 @@ import { inspectDatabaseVersion, type StorageVersionReport } from './storage/sch
 import { migrateStorageV2ToV3, type StorageMigrationResult } from './storage-migration'
 import { recoverInterruptedCutover, getManifestPath } from './storage/migration/cutover'
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'
-import { verifyDatabaseIntegrity } from './storage/migration/logical-verifier'
+import { verifyDatabaseStartupHealth } from './storage/migration/logical-verifier'
 import {
   findAllV2Backups,
   findMostRecentV2Backup,
@@ -212,15 +212,15 @@ export async function ensureDocumentMemoryStorageReady(
           error: `Existing document-memory database is not a verified V3 database: ${report.state}`,
         }
       }
-      const integrity = verifyDatabaseIntegrity(dbPath)
+      const integrity = verifyDatabaseStartupHealth(dbPath)
       if (!integrity.ok) {
         return {
           ready: false,
           migrated: false,
           report,
           error:
-            `Existing V3 database failed integrity verification: ` +
-            `integrity=${integrity.integrity}, ` +
+            `Existing V3 database failed startup health verification: ` +
+            `quickCheck=${integrity.quickCheck}, ` +
             `fkErrors=${integrity.foreignKeyErrors.length}`,
         }
       }
