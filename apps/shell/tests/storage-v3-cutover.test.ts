@@ -62,7 +62,12 @@ describe('Storage V3 Atomic Cutover and Verification Suite', () => {
     const tempPath = `${dbPath}.v3.tmp`
 
     // 2. Run cutover
-    const result = migrateStorageV2ToV3(dbPath, { backupDbPath: backupPath, tempDbPath: tempPath })
+    const result = migrateStorageV2ToV3(dbPath, {
+      activeSpaceId: 'test-space',
+      activeDimensions: 384,
+      backupDbPath: backupPath,
+      tempDbPath: tempPath,
+    })
 
     expect(result.success).toBe(true)
     expect(result.verified).toBe(true)

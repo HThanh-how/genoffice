@@ -225,7 +225,10 @@ describe('Document Memory V2 to V3 Migration Suite', () => {
     v2Db.close()
 
     // 2. Run V2 to V3 Migration
-    const result = migrateStorageV2ToV3(dbPath)
+    const result = migrateStorageV2ToV3(dbPath, {
+      activeSpaceId: 'space-v2',
+      activeDimensions: 2,
+    })
     expect(result.success).toBe(true)
     expect(result.verified).toBe(true)
     expect(result.documentsDroppedArtifacts).toBe(1) // doc 1 dropped!

@@ -40,6 +40,8 @@ describe('Storage V3 Migration Safe Rollback Suite', () => {
     // 2. Trigger migration with verification-failed injection
     expect(() => {
       migrateStorageV2ToV3(dbPath, {
+        activeSpaceId: 'test-space',
+        activeDimensions: 384,
         testFailureInjectionPoint: 'verification-failed',
       })
     }).toThrow(/safely rolled back/)
@@ -79,6 +81,8 @@ describe('Storage V3 Migration Safe Rollback Suite', () => {
 
     expect(() => {
       migrateStorageV2ToV3(dbPath, {
+        activeSpaceId: 'test-space',
+        activeDimensions: 384,
         testFailureInjectionPoint: 'before-cutover',
         tempDbPath: tempPath,
       })

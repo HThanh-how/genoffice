@@ -54,6 +54,11 @@ describe('Embedding Integrity Verifier Test Suite (BEH-18)', () => {
     insertChunk.run(102, 1, 10, 1, 'Document 1 Chunk 1', 'page 2')
     insertChunk.run(201, 2, 20, 0, 'Document 2 Chunk 0', 'page 1')
 
+    const insertFts = database.prepare('INSERT INTO chunk_fts (rowid, text) VALUES (?, ?)')
+    insertFts.run(101, 'Document 1 Chunk 0')
+    insertFts.run(102, 'Document 1 Chunk 1')
+    insertFts.run(201, 'Document 2 Chunk 0')
+
     // 6. Chunk embeddings
     const insertEmb = database.prepare(`
       INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
