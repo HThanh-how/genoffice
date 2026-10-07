@@ -35,6 +35,8 @@ describe('Document Search V3 Enterprise Validation Suite (IT-5)', () => {
 
     // 2. Execute V3 Storage Migration
     const migrationResult = migrateStorageV2ToV3(fixtureDbPath, {
+      activeSpaceId: 'standard',
+      activeDimensions: 320,
       backupDbPath: `${fixtureDbPath}.v2.backup.db`,
       tempDbPath: `${fixtureDbPath}.v3.tmp`,
     })

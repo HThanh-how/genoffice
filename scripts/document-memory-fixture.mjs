@@ -2,8 +2,11 @@ import { DatabaseSync } from 'node:sqlite'
 import { existsSync, mkdirSync, unlinkSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
-function floatBlob(vector) {
-  const f32 = new Float32Array(vector)
+function floatBlob(vector, dim = 320) {
+  const f32 = new Float32Array(dim)
+  if (Array.isArray(vector)) {
+    for (let i = 0; i < vector.length && i < dim; i++) f32[i] = vector[i]
+  }
   return new Uint8Array(f32.buffer, f32.byteOffset, f32.byteLength)
 }
 
@@ -184,10 +187,10 @@ export function generateSyntheticFixture(options = {}) {
       for (let c = 0; c < 20; c++) {
         const chunkId = chunkIdSeq++
         const txt = `Chromium license chunk ${c} terms for index item ${i}`
-        const v = floatBlob([0.1, 0.2])
-        insertChunk.run(chunkId, docId, setId, c, txt, txt, `Chunk ${c + 1}`, v, 2)
+        const v = floatBlob([0.1, 0.2], 320)
+        insertChunk.run(chunkId, docId, setId, c, txt, txt, `Chunk ${c + 1}`, v, 320)
         insertFts.run(chunkId, txt)
-        insertEmbedding.run(chunkId, 'standard', v, 2)
+        insertEmbedding.run(chunkId, 'standard', v, 320)
       }
     }
 
@@ -203,10 +206,10 @@ export function generateSyntheticFixture(options = {}) {
     for (let c = 0; c < 5; c++) {
       const chunkId = chunkIdSeq++
       const txt = `User explicitly opened license passage ${c}`
-      const v = floatBlob([0.3, 0.4])
-      insertChunk.run(chunkId, userOpenedDocId, userOpenedSetId, c, txt, txt, `Chunk ${c + 1}`, v, 2)
+      const v = floatBlob([0.3, 0.4], 320)
+      insertChunk.run(chunkId, userOpenedDocId, userOpenedSetId, c, txt, txt, `Chunk ${c + 1}`, v, 320)
       insertFts.run(chunkId, txt)
-      insertEmbedding.run(chunkId, 'standard', v, 2)
+      insertEmbedding.run(chunkId, 'standard', v, 320)
     }
 
     // 4. Document with Retired and Active chunk sets
@@ -232,10 +235,10 @@ export function generateSyntheticFixture(options = {}) {
     for (let c = 0; c < 3; c++) {
       const chunkId = chunkIdSeq++
       const txt = `Final approved contract clause ${c}`
-      const v = floatBlob([0.5, 0.6])
-      insertChunk.run(chunkId, multiSetDocId, activeSetId, c, txt, txt, `Chunk ${c + 1}`, v, 2)
+      const v = floatBlob([0.5, 0.6], 320)
+      insertChunk.run(chunkId, multiSetDocId, activeSetId, c, txt, txt, `Chunk ${c + 1}`, v, 320)
       insertFts.run(chunkId, txt)
-      insertEmbedding.run(chunkId, 'standard', v, 2)
+      insertEmbedding.run(chunkId, 'standard', v, 320)
     }
 
     // 5. Excluded document
@@ -287,10 +290,10 @@ export function generateSyntheticFixture(options = {}) {
       for (let c = 0; c < chunksPerDoc; c++) {
         const chunkId = chunkIdSeq++
         const txt = `Document ${i} paragraph ${c} content on enterprise retrieval performance`
-        const v = floatBlob([0.1 * (i % 5), 0.2 * (c % 5)])
-        insertChunk.run(chunkId, docId, setId, c, txt, txt, `Chunk ${c + 1}`, v, 2)
+        const v = floatBlob([0.1 * (i % 5), 0.2 * (c % 5)], 320)
+        insertChunk.run(chunkId, docId, setId, c, txt, txt, `Chunk ${c + 1}`, v, 320)
         insertFts.run(chunkId, txt)
-        insertEmbedding.run(chunkId, 'standard', v, 2)
+        insertEmbedding.run(chunkId, 'standard', v, 320)
       }
     }
   }
