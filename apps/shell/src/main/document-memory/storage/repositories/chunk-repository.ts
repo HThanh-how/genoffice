@@ -3,7 +3,7 @@ import { activateSet, retireOldSets } from '../../chunk-sets'
 import { documentIndexFields } from '../../normalization'
 import { measureSqlite } from '../../sqlite-timing'
 import { isOcrLocation } from '../../ocr-sidecar'
-import { floatBlob } from './embedding-repository'
+import { floatBlob, getCanonicalProfile } from './embedding-repository'
 import type { DocumentMemoryHit, ReplacementDocument, TruncatedReason } from './document-repository'
 
 interface HitRow {
@@ -42,10 +42,17 @@ export class ChunkRepository {
       INSERT OR REPLACE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
       VALUES (?, ?, ?, ?)
     `)
-    const ensureSpace = this.db.prepare(`
+    const canonical = embeddingModel ? getCanonicalProfile(embeddingModel) : null
+    const checkSpace = this.db.prepare('SELECT dimensions, model_repo FROM embedding_spaces WHERE id = ?')
+    const ensureCanonicalSpace = this.db.prepare(`
+      INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+      VALUES (?, ?, ?, ?, ?, 'q8')
+    `)
+    const ensureFallbackSpace = this.db.prepare(`
       INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
       VALUES (?, ?, 'pinned', 'last-token', ?, 'q8')
     `)
+    let spaceEnsured = false
     const addEmbeddingCount = this.db.prepare(`
       INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks)
       VALUES (?, ?, 1)
@@ -69,7 +76,35 @@ export class ChunkRepository {
       addFts.run(chunkId, fields.searchText)
 
       if (chunk.vector && embeddingModel) {
-        ensureSpace.run(embeddingModel, embeddingModel, chunk.vector.length)
+        if (canonical) {
+          if (chunk.vector.length !== canonical.dimensions) {
+            throw new Error(
+              `Vector dimension mismatch for canonical space '${embeddingModel}': expected ${canonical.dimensions}, but received ${chunk.vector.length}`,
+            )
+          }
+          if (!spaceEnsured) {
+            const existing = checkSpace.get(embeddingModel) as { dimensions: number; model_repo: string } | undefined
+            if (existing) {
+              if (existing.dimensions !== canonical.dimensions) {
+                throw new Error(
+                  `Embedding space mismatch for canonical space '${embeddingModel}': expected dimensions=${canonical.dimensions}, but found dimensions=${existing.dimensions}`,
+                )
+              }
+            } else {
+              ensureCanonicalSpace.run(
+                embeddingModel,
+                canonical.repo,
+                canonical.revision,
+                canonical.pooling,
+                canonical.dimensions,
+              )
+            }
+            spaceEnsured = true
+          }
+        } else {
+          ensureFallbackSpace.run(embeddingModel, embeddingModel, chunk.vector.length)
+        }
+
         addChunkEmbedding.run(
           chunkId,
           embeddingModel,

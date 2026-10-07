@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { dirname, join } from 'node:path'
 import { measureSqlite } from '../../sqlite-timing'
 import { USearchIndex } from '../../usearch-index'
-import { blobVector } from './embedding-repository'
+import { blobVector, EmbeddingRepository, type RepairInvalidCanonicalEmbeddingsResult } from './embedding-repository'
 import {
   garbageCollectObsoleteStorage,
   getStorageFreelistStats,
@@ -312,5 +312,10 @@ export class MaintenanceRepository {
       limitStateAfter,
       reclaimedBytes,
     }
+  }
+
+  repairInvalidCanonicalEmbeddings(targetSpaceId?: string): RepairInvalidCanonicalEmbeddingsResult {
+    const embRepo = new EmbeddingRepository(this.db)
+    return embRepo.repairInvalidCanonicalEmbeddings((spaceId) => this.markAnnDirty(spaceId), targetSpaceId)
   }
 }

@@ -13,7 +13,10 @@ import {
   WRITE_SLICE_MS,
 } from './storage/repositories/document-repository'
 import { ChunkRepository } from './storage/repositories/chunk-repository'
-import { EmbeddingRepository } from './storage/repositories/embedding-repository'
+import {
+  EmbeddingRepository,
+  type RepairInvalidCanonicalEmbeddingsResult,
+} from './storage/repositories/embedding-repository'
 import { SearchRepository } from './storage/repositories/search-repository'
 import {
   ProgressRepository,
@@ -48,6 +51,7 @@ export type {
   IncrementalVacuumOptions,
   VacuumResult,
   SliceOptions,
+  RepairInvalidCanonicalEmbeddingsResult,
 }
 
 export interface DocumentMemoryHit {
@@ -363,6 +367,12 @@ export class DocumentMemoryStore {
   }
   syncAnnIndex(spaceId: string) {
     return this.maintRepo.syncAnnIndex(spaceId)
+  }
+  repairInvalidCanonicalEmbeddings(targetSpaceId?: string): RepairInvalidCanonicalEmbeddingsResult {
+    return this.embRepo.repairInvalidCanonicalEmbeddings(
+      (spaceId) => this.maintRepo.markAnnDirty(spaceId),
+      targetSpaceId,
+    )
   }
   errorCount(): number {
     return this.docRepo.errorCount()
