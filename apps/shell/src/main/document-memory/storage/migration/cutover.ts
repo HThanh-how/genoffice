@@ -5,7 +5,12 @@ import { enforceBackupRetentionPolicy } from './backup-retention'
 
 export const MIGRATION_MANIFEST_FILENAME = 'document-memory.migration-state.json'
 
-export type CutoverPhase = 'prepared' | 'source-backed-up' | 'temp-renamed-to-source' | 'completed'
+export type CutoverPhase =
+  | 'prepared'
+  | 'source-backed-up'
+  | 'temp-renamed-to-source'
+  | 'target-installed'
+  | 'completed'
 
 export interface CutoverStateManifest {
   phase: CutoverPhase
@@ -14,6 +19,14 @@ export interface CutoverStateManifest {
   backupPath: string
   timestamp: number
 }
+
+const VALID_PHASES = new Set<string>([
+  'prepared',
+  'source-backed-up',
+  'temp-renamed-to-source',
+  'target-installed',
+  'completed',
+])
 
 export function cleanWalFiles(path: string): void {
   const wal = `${path}-wal`
@@ -78,16 +91,33 @@ export function getManifestPath(sourcePathOrDir: string): string {
 }
 
 function writeManifest(manifestPath: string, manifest: CutoverStateManifest): void {
+  const tempManifest = `${manifestPath}.tmp`
+  const json = JSON.stringify(manifest, null, 2)
   try {
-    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { encoding: 'utf8', flush: true })
-  } catch {
-    // Best-effort manifest persistence
+    writeFileSync(tempManifest, json, {
+      encoding: 'utf8',
+      flush: true,
+    })
+    safeRenameWithRetry(tempManifest, manifestPath)
+  } catch (err) {
+    try {
+      if (existsSync(tempManifest)) unlinkSync(tempManifest)
+    } catch {
+      // ignore
+    }
+    throw err
   }
 }
 
 function removeManifest(manifestPath: string): void {
   try {
-    if (existsSync(manifestPath)) unlinkSync(manifestPath)
+    if (existsSync(manifestPath)) safeUnlinkWithRetry(manifestPath)
+  } catch {
+    // ignore
+  }
+  const tempManifest = `${manifestPath}.tmp`
+  try {
+    if (existsSync(tempManifest)) safeUnlinkWithRetry(tempManifest)
   } catch {
     // ignore
   }
@@ -99,21 +129,80 @@ function removeManifest(manifestPath: string): void {
  */
 export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
   const manifestPath = getManifestPath(sourcePathOrDir)
-  if (!existsSync(manifestPath)) return false
+  const tempManifest = `${manifestPath}.tmp`
 
-  let manifest: CutoverStateManifest | null = null
-  try {
-    manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as CutoverStateManifest
-  } catch {
-    removeManifest(manifestPath)
+  if (!existsSync(manifestPath)) {
+    // Clean up dangling temporary manifest left behind from an uncommitted write if present
+    if (existsSync(tempManifest)) {
+      try {
+        safeUnlinkWithRetry(tempManifest)
+      } catch {
+        // ignore
+      }
+    }
     return false
   }
 
-  if (!manifest) return false
+  let rawContent: string
+  try {
+    rawContent = readFileSync(manifestPath, 'utf8')
+  } catch (readErr) {
+    throw new Error(
+      `Corrupted cutover manifest at "${manifestPath}": failed to read manifest file (${(readErr as Error).message})`,
+      { cause: readErr },
+    )
+  }
+
+  let manifest: CutoverStateManifest
+  try {
+    manifest = JSON.parse(rawContent) as CutoverStateManifest
+  } catch (parseErr) {
+    throw new Error(
+      `Corrupted cutover manifest at "${manifestPath}": invalid JSON (${(parseErr as Error).message})`,
+      { cause: parseErr },
+    )
+  }
+
+  if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
+    throw new Error(
+      `Corrupted cutover manifest at "${manifestPath}": invalid JSON structure (manifest is not an object)`,
+    )
+  }
 
   const { phase, sourceDbPath, tempPath, backupPath } = manifest
 
-  if (phase === 'prepared') {
+  if (!sourceDbPath || typeof sourceDbPath !== 'string' || sourceDbPath.trim() === '') {
+    throw new Error(
+      `Corrupted cutover manifest at "${manifestPath}": missing required path "sourceDbPath"`,
+    )
+  }
+
+  if (!tempPath || typeof tempPath !== 'string' || tempPath.trim() === '') {
+    throw new Error(
+      `Corrupted cutover manifest at "${manifestPath}": missing required path "tempPath"`,
+    )
+  }
+
+  if (!backupPath || typeof backupPath !== 'string' || backupPath.trim() === '') {
+    throw new Error(
+      `Corrupted cutover manifest at "${manifestPath}": missing required path "backupPath"`,
+    )
+  }
+
+  if (!phase || typeof phase !== 'string' || phase.trim() === '') {
+    throw new Error(
+      `Corrupted cutover manifest at "${manifestPath}": unknown phase (missing phase)`,
+    )
+  }
+
+  const normalizedPhase = phase.trim().toLowerCase().replace(/_/g, '-')
+  if (!VALID_PHASES.has(normalizedPhase)) {
+    throw new Error(
+      `Corrupted cutover manifest at "${manifestPath}": unknown phase "${phase}"`,
+    )
+  }
+
+  if (normalizedPhase === 'prepared') {
     // Abrupt termination after manifest was written.
     // Check if source was already renamed to backup before state updated.
     if (!existsSync(sourceDbPath) && existsSync(backupPath)) {
@@ -129,7 +218,7 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
     return true
   }
 
-  if (phase === 'source-backed-up') {
+  if (normalizedPhase === 'source-backed-up') {
     // Abrupt termination after source was renamed to backup, but before temp became source.
     // Must restore backup to source.
     if (existsSync(backupPath)) {
@@ -139,6 +228,10 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
         try { safeUnlinkWithRetry(sourceDbPath) } catch { /* ignore */ }
       }
       safeRenameWithRetry(backupPath, sourceDbPath)
+    } else if (!existsSync(sourceDbPath)) {
+      throw new Error(
+        `Cutover recovery failed: source-backed-up phase recorded but neither source nor backup file exists at "${sourceDbPath}" or "${backupPath}"`,
+      )
     }
     if (existsSync(tempPath)) {
       cleanWalFiles(tempPath)
@@ -148,7 +241,7 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
     return true
   }
 
-  if (phase === 'temp-renamed-to-source') {
+  if (normalizedPhase === 'temp-renamed-to-source' || normalizedPhase === 'target-installed') {
     // Temp was already renamed to source. Validate its integrity.
     if (existsSync(sourceDbPath)) {
       const integrity = verifyDatabaseIntegrity(sourceDbPath)
@@ -166,6 +259,10 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
         try { safeUnlinkWithRetry(sourceDbPath) } catch { /* ignore */ }
       }
       safeRenameWithRetry(backupPath, sourceDbPath)
+    } else if (!existsSync(sourceDbPath)) {
+      throw new Error(
+        `Cutover recovery failed: target database corrupted and backup file does not exist at "${backupPath}"`,
+      )
     }
     if (existsSync(tempPath)) {
       cleanWalFiles(tempPath)
@@ -175,13 +272,12 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
     return true
   }
 
-  if (phase === 'completed') {
+  if (normalizedPhase === 'completed') {
     removeManifest(manifestPath)
     return true
   }
 
-  removeManifest(manifestPath)
-  return false
+  throw new Error(`Corrupted cutover manifest at "${manifestPath}": unknown phase "${phase}"`)
 }
 
 /**
@@ -227,14 +323,19 @@ export function performAtomicCutover(options: CutoverOptions): void {
     // 2. Rename temp -> source
     safeRenameWithRetry(tempPath, resolvedSource)
     writeManifest(manifestPath, {
-      phase: 'temp-renamed-to-source',
+      phase: 'target-installed',
       sourceDbPath: resolvedSource,
       tempPath,
       backupPath,
       timestamp: Date.now(),
     })
 
-    if (testFailureInjectionPoint === 'crash-after-temp-rename' || testFailureInjectionPoint === 'after-temp-rename') {
+    if (
+      testFailureInjectionPoint === 'crash-after-temp-rename' ||
+      testFailureInjectionPoint === 'after-temp-rename' ||
+      testFailureInjectionPoint === 'crash-after-target-installed' ||
+      testFailureInjectionPoint === 'after-target-installed'
+    ) {
       throw new Error('Test injected crash after temp rename')
     }
 

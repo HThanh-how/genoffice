@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { inspectDatabaseVersion, type StorageVersionReport } from './storage/schema-inspector'
 import { migrateStorageV2ToV3, type StorageMigrationResult } from './storage-migration'
-import { recoverInterruptedCutover } from './storage/migration/cutover'
+import { recoverInterruptedCutover, getManifestPath } from './storage/migration/cutover'
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'
 
 export interface BootstrapResult {
@@ -38,8 +38,9 @@ export async function ensureDocumentMemoryStorageReady(dbDir: string): Promise<B
     }
   }
 
-  const manifestPath = join(dbDir, 'document-memory.migration-state.json')
-  if (existsSync(manifestPath)) {
+  const manifestPath = getManifestPath(dbDir)
+  const tempManifestPath = `${manifestPath}.tmp`
+  if (existsSync(manifestPath) || existsSync(tempManifestPath)) {
     const errorMsg = 'Critical: migration manifest still present after cutover recovery'
     console.error('[document-memory-bootstrap]', errorMsg)
     return {
