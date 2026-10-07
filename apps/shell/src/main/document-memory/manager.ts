@@ -116,6 +116,7 @@ export class DocumentMemoryManager {
       workerTimeoutMs: this.workerTimeoutMs, isStopped: () => this.stopped || !this.enabled, isStoppedOrPaused: () => this.stopped || !this.enabled || isIndexingPaused(),
       isCurrent: (p, gen, ep) => this.isCurrent(p, gen, ep), onDrainNeeded: () => this.drain(),
       onEnqueueExtract: (p) => this.enqueue(p), onError: (err) => { this.lastError = err },
+      canAcceptExpensiveWork: () => this.maintScheduler.refreshCanAcceptExpensiveWork(),
     })
     this.searchService = new SearchService({
       store: this.store, externalNames: options.externalNames,

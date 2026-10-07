@@ -39,6 +39,7 @@ export interface EmbeddingCoordinatorOptions {
   isStopped?: () => boolean
   isStoppedOrPaused?: () => boolean
   isCurrent?: (path: string, generation: number, epoch: number) => boolean
+  canAcceptExpensiveWork?: () => boolean
   onDrainNeeded?: () => void
   onEnqueueExtract?: (path: string) => void
   onError?: (error: string) => void
@@ -165,12 +166,17 @@ export class EmbeddingCoordinator {
   ): Promise<void> {
     if (this.embedding || this.options.isStoppedOrPaused?.()) return
     this.embedding = true
+    let blockedByBudget = false
     try {
       while (
         !this.options.isStoppedOrPaused?.() &&
         this.embeds.length > 0 &&
         Date.now() >= this.embeddingRetryAt
       ) {
+        if (this.options.canAcceptExpensiveWork && !this.options.canAcceptExpensiveWork()) {
+          blockedByBudget = true
+          break
+        }
         const job = this.embeds.shift()!
         if (this.options.isCurrent && !this.options.isCurrent(job.path, job.generation, job.epoch)) {
           continue
@@ -265,7 +271,7 @@ export class EmbeddingCoordinator {
       }
     } finally {
       this.embedding = false
-      if (!this.options.isStoppedOrPaused?.()) {
+      if (!blockedByBudget && !this.options.isStoppedOrPaused?.()) {
         this.options.onDrainNeeded?.()
       }
     }
