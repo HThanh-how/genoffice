@@ -5,12 +5,26 @@ import { enforceBackupRetentionPolicy } from './backup-retention'
 
 export const MIGRATION_MANIFEST_FILENAME = 'document-memory.migration-state.json'
 
+export const CutoverPhase = {
+  PREPARED: 'prepared',
+  SOURCE_BACKED_UP: 'source-backed-up',
+  TARGET_INSTALLED: 'target-installed',
+  VERIFIED: 'verified',
+  COMPLETED: 'completed',
+} as const
+
 export type CutoverPhase =
   | 'prepared'
   | 'source-backed-up'
   | 'temp-renamed-to-source'
   | 'target-installed'
+  | 'verified'
   | 'completed'
+  | 'PREPARED'
+  | 'SOURCE_BACKED_UP'
+  | 'TARGET_INSTALLED'
+  | 'VERIFIED'
+  | 'COMPLETED'
 
 export interface CutoverStateManifest {
   phase: CutoverPhase
@@ -25,6 +39,7 @@ const VALID_PHASES = new Set<string>([
   'source-backed-up',
   'temp-renamed-to-source',
   'target-installed',
+  'verified',
   'completed',
 ])
 
@@ -246,7 +261,11 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
     return true
   }
 
-  if (normalizedPhase === 'temp-renamed-to-source' || normalizedPhase === 'target-installed') {
+  if (
+    normalizedPhase === 'temp-renamed-to-source' ||
+    normalizedPhase === 'target-installed' ||
+    normalizedPhase === 'verified'
+  ) {
     // Temp was already renamed to source. Validate its integrity.
     if (existsSync(sourceDbPath)) {
       const integrity = verifyDatabaseIntegrity(sourceDbPath)
@@ -357,7 +376,23 @@ export function performAtomicCutover(options: CutoverOptions): void {
       )
     }
 
-    // 4. Mark completed and purge manifest
+    // 4. State VERIFIED: integrity verified post-cutover
+    writeManifest(manifestPath, {
+      phase: 'verified',
+      sourceDbPath: resolvedSource,
+      tempPath,
+      backupPath,
+      timestamp: Date.now(),
+    })
+
+    if (
+      testFailureInjectionPoint === 'crash-after-verified' ||
+      testFailureInjectionPoint === 'after-verified'
+    ) {
+      throw new Error('Test injected crash after verification')
+    }
+
+    // 5. Mark completed and purge manifest
     writeManifest(manifestPath, {
       phase: 'completed',
       sourceDbPath: resolvedSource,

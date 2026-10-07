@@ -40,7 +40,7 @@ export function registerFolderAndModelHandlers(
 
   const syncMemoryPdfPages = () => {
     const memory = getDocumentMemory()
-    if (memory && typeof (memory as any).setPdfMaxPages === 'function' && !synced) {
+    if (memory && typeof memory.setPdfMaxPages === 'function' && !synced) {
       const persisted = readPdfPages(pdfConfigFile)
       memory.setPdfMaxPages(persisted)
       synced = true
@@ -152,8 +152,12 @@ export function registerFolderAndModelHandlers(
     let activePages = pages
     if (memory) {
       const res = memory.setPdfMaxPages(pages)
-      requeued = typeof res === 'object' && res !== null ? (res.requeued ?? 0) : (typeof res === 'number' ? res : 0)
-      if (typeof res === 'object' && res && typeof res.pages === 'number') activePages = res.pages
+      if (typeof res === 'number') {
+        requeued = res
+      } else if (typeof res === 'object' && res !== null) {
+        if (typeof res.requeued === 'number') requeued = res.requeued
+        if (typeof res.pages === 'number') activePages = res.pages
+      }
       synced = true
       invalidateCounts()
     }

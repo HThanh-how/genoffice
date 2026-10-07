@@ -69,8 +69,11 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     let queued = 0, error: string | undefined
     for (const id of new Set(ids)) {
       const result = memory.retryDocument(id)
-      if (result.ok) queued++
-      else error = result.error ?? 'Failed to enqueue'
+      if (result.ok) {
+        queued++
+      } else {
+        error ??= result.error ?? 'Failed to enqueue'
+      }
     }
     return { queued, skipped: ids.length - queued, ...(error ? { error } : {}) }
   })
@@ -129,8 +132,8 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     if (only === 'model') {
       const isEnabled = memory.indexingActivityStatus ? memory.indexingActivityStatus().enabled : memory.isEnabled?.()
       if (isEnabled === false) return { ok: false, retried: 0, error: 'paused' }
-      if (typeof (memory as any).recycleEmbeddingWorker === 'function') {
-        ;(memory as any).recycleEmbeddingWorker('Model retry requested from diagnostics')
+      if (typeof memory.recycleEmbeddingWorker === 'function') {
+        memory.recycleEmbeddingWorker('Model retry requested from diagnostics')
       } else {
         memory.setEnabled(false)
         memory.setEnabled(true)
@@ -152,7 +155,8 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
     const memory = getDocumentMemory()
     if (!memory) return { ok: false, error: 'unavailable' }
-    return memory.deferDocument(id)
+    const result = memory.deferDocument(id)
+    return result.ok ? { ok: true } : { ok: false, error: result.error ?? 'unavailable' }
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.stopIndexFile, async (_event, id: unknown) => {
@@ -162,7 +166,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     if (!memory) return { ok: false, error: 'unavailable' }
     const res = await memory.stopDocument(id)
     folderCounts.invalidate()
-    return res
+    return res.ok ? { ok: true } : { ok: false, error: res.error ?? 'unavailable' }
   })
 
   ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, async (_event, id: unknown) => {
