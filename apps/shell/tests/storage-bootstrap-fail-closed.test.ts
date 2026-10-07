@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ensureDocumentMemoryStorageReady } from '../src/main/document-memory/storage-bootstrap'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
@@ -89,5 +90,54 @@ describe('Storage Bootstrap Recovery Fail-Closed Suite (QA-05)', () => {
     expect(res.ready).toBe(true)
     expect(res.migrated).toBe(false)
     expect(res.report?.isV3).toBe(true)
+  })
+
+  it('BOOTFAIL-06 canonical physical V3 + foreign-key violation → ready=false', async () => {
+    const store = new DocumentMemoryStore(dbPath)
+    store.close()
+    const db = new DatabaseSync(dbPath)
+    db.exec('PRAGMA foreign_keys = OFF;')
+    /*
+     * Insert an orphan relationship that
+     * PRAGMA foreign_key_check can see.
+     */
+    db.prepare(
+      'INSERT INTO chunks (id, document_id, ordinal, text, location) VALUES (?, ?, ?, ?, ?)',
+    ).run(999, 99999, 0, 'orphan chunk violation', 'orphan:location:0')
+    db.close()
+
+    const result = await ensureDocumentMemoryStorageReady(tempDir)
+    expect(result.ready).toBe(false)
+  })
+
+  it('BOOTFAIL-07 existing non-empty/unknown DB → ready=false', async () => {
+    const db = new DatabaseSync(dbPath)
+    db.exec('CREATE TABLE custom_unknown_table (id INTEGER PRIMARY KEY, info TEXT);')
+    db.exec("INSERT INTO custom_unknown_table (info) VALUES ('unrecognized payload');")
+    db.close()
+
+    const result = await ensureDocumentMemoryStorageReady(tempDir)
+    expect(result.ready).toBe(false)
+  })
+
+  it('BOOTFAIL-08 source DB missing + timestamped V2 backup exists → ready=false', async () => {
+    const timestampedBackupPath = join(tempDir, `document-memory.${Date.now()}.v2.backup.db`)
+    writeFileSync(timestampedBackupPath, 'mock-v2-backup-content', 'utf8')
+
+    const result = await ensureDocumentMemoryStorageReady(tempDir)
+    expect(result.ready).toBe(false)
+  })
+
+  it('BOOTFAIL-09 source DB missing + document-memory.db.v3.tmp exists → ready=false', async () => {
+    const v3TmpPath = join(tempDir, 'document-memory.db.v3.tmp')
+    writeFileSync(v3TmpPath, 'mock-v3-temp-content', 'utf8')
+
+    const result = await ensureDocumentMemoryStorageReady(tempDir)
+    expect(result.ready).toBe(false)
+  })
+
+  it('BOOTFAIL-10 genuine fresh install: no DB no backup no temp no retention state → ready=true', async () => {
+    const result = await ensureDocumentMemoryStorageReady(tempDir)
+    expect(result.ready).toBe(true)
   })
 })
