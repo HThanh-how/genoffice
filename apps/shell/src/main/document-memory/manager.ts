@@ -15,11 +15,7 @@ import { ChunkUpgradeCoordinator, type DocumentNeedingUpgrade } from './chunk-up
 import { EmbeddingMigration } from './embedding-migration'
 import { SearchService, type FreshDocumentMemoryHit } from './runtime/search-service'
 import { FreshnessCoordinator } from './runtime/freshness-coordinator'
-import {
-  ExtractionCoordinator, statMeta, extractedStatus, isPartialExtract,
-  isExtractResult, readOutcome, READ_NOW_ATTEMPTS, INTERRUPTED_FOR_USER,
-  MAX_PENDING_EMBED_DOCUMENTS, PDF_SLICE_MS,
-} from './runtime/extraction-coordinator'
+import { ExtractionCoordinator, statMeta, extractedStatus, isPartialExtract, isExtractResult, readOutcome, READ_NOW_ATTEMPTS, INTERRUPTED_FOR_USER, MAX_PENDING_EMBED_DOCUMENTS, PDF_SLICE_MS } from './runtime/extraction-coordinator'
 import { EmbeddingCoordinator } from './runtime/embedding-coordinator'
 import { MaintenanceScheduler, INITIAL_MAINTENANCE_DELAY_MS } from './runtime/maintenance-scheduler'; import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'; import type { DocumentIndexStorageBudget } from './storage-budget'
@@ -36,11 +32,9 @@ function saveEnabled(p: string, enabled: boolean): void {
   try { writeFileSync(p, JSON.stringify({ enabled }), { mode: 0o600 }) } catch {}
 }
 export interface DocumentMemoryManagerOptions {
-  pathToWorker?: string; workerPath?: string
-  workerFactory?: (script: string, env: Record<string, string>) => Worker
+  pathToWorker?: string; workerPath?: string; workerFactory?: (script: string, env: Record<string, string>) => Worker
   workerTimeoutMs?: number; dbDir?: string; cacheDir?: string; settingsDir?: string; budget?: DocumentIndexStorageBudget
-  tombstoneGraceMs?: number; pollIntervalMs?: number; autoDeferAfterMs?: number
-  initialEnabled?: boolean; externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>
+  tombstoneGraceMs?: number; pollIntervalMs?: number; autoDeferAfterMs?: number; initialEnabled?: boolean; externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>
 }
 /** Central coordinator for background document extraction, vector indexing, and search. */
 export class DocumentMemoryManager {
@@ -222,11 +216,19 @@ export class DocumentMemoryManager {
     const act = this.nowStatus(); const stats = this.store.stats(activeSpaceId); const migration = this.embeddingMigration.progress()
     return { enabled: this.enabled, modelState: this.modelState, ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(), errors: stats.errors, mode: 'balanced', activity: act, activeEmbeddingSpace: activeSpaceId, semanticCoverage: stats.semanticCoverage, migrationState: migration.state }
   }
-  embeddingSettings() { return this.embeddingCoord.getEmbeddingSettings() }; setEmbeddingProfile(id: EmbeddingProfileId) { const res = this.embeddingCoord.setEmbeddingProfile(id); if (res.changed) this.recycleWorker('Embedding profile changed'); return res }
+  embeddingSettings() { return this.embeddingCoord.getEmbeddingSettings() }
+  setEmbeddingProfile(id: EmbeddingProfileId) {
+    const res = this.embeddingCoord.setEmbeddingProfile(id)
+    if (res.changed) {
+      this.epoch++
+      this.recycleWorker('Embedding profile changed')
+      this.embeddingMigration.setTarget(this.embeddingCoord.currentProfile.embeddingId)
+    }
+    return res
+  }
   recycleEmbeddingWorker(reason = 'Recycle worker requested'): void { this.recycleWorker(reason) }
   async getStorageDiagnosticsAsync(backupPath?: string): Promise<DocumentIndexStorageDiagnostics | null> {
-    const reply = await this.ask({ type: 'storage-diagnostics', backupPath }, this.workerTimeoutMs)
-    return reply && 'result' in reply ? (reply.result as DocumentIndexStorageDiagnostics) : null
+    const reply = await this.ask({ type: 'storage-diagnostics', backupPath }, this.workerTimeoutMs); return reply && 'result' in reply ? (reply.result as DocumentIndexStorageDiagnostics) : null
   }
   runBackupRetentionMaintenance(): Promise<{ purgedCount: number }> { return this.maintScheduler.runBackupRetentionMaintenance() }
   getPdfMaxPages(): number { return this.extractionCoord.getPdfMaxPages() }; setPdfMaxPages(pages: number) { return this.extractionCoord.setPdfMaxPages(pages, join(this.settingsDir, 'document-memory-pdf.json')) }; getMigrationDiagnostics(): DocumentIndexMigrationDiagnostics { const m = this.embeddingMigration.progress(); return { activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, state: m.state, completedChunks: m.completedChunks, totalChunks: m.totalChunks } }
@@ -245,9 +247,7 @@ export class DocumentMemoryManager {
     const hits = await this.searchService.searchProgressive(query, limit, undefined, this.embeddingCoord.currentProfile.embeddingId)
     return { hits, pending: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength(), errors: this.store.errorCount(), modelState: this.modelState }
   }
-  searchProgressive(query: string, limit = 8, callbacks?: any) {
-    return this.searchService.searchProgressive(query, limit, callbacks, this.embeddingCoord.currentProfile.embeddingId)
-  }
+  searchProgressive(query: string, limit = 8, callbacks?: any) { return this.searchService.searchProgressive(query, limit, callbacks, this.embeddingCoord.currentProfile.embeddingId) }
   async read(chunkId: number): Promise<{ path: string; name: string; location: string; text: string; verified: boolean; error?: string }> {
     const hit = this.store.readChunk(chunkId); if (!hit) return { path: '', name: '', location: '', text: '', verified: false, error: 'The indexed chunk is no longer available.' }
     const generation = this.currentGeneration(hit.path); const epoch = this.epoch

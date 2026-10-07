@@ -294,9 +294,11 @@ export class EmbeddingCoordinator {
     if (nextId === this.profileId || !(nextId in EMBEDDING_PROFILES)) {
       return { changed: false, requeued: 0 }
     }
+    const nextProfile = EMBEDDING_PROFILES[nextId]
+    this.options.store.ensureEmbeddingSpace(nextProfile)
     this.profileId = nextId
-    this.profile = EMBEDDING_PROFILES[nextId]
-    this.options.store.ensureEmbeddingSpace(this.profile)
+    this.profile = nextProfile
+    this.clearQueue()
 
     const target = this.options.settingsDir ?? this.options.settingsPath
     if (target) {
