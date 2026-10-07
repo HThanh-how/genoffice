@@ -27,7 +27,6 @@ import { DocumentMemoryStore } from './store'
 import { embedTexts } from './embeddings'
 import { renderPdfPagesForOcr, type OcrRenderRequest } from './agy-ocr-render'
 import { ocrChunksFromPages, ocrDocumentHash, type OcrLookup } from './ocr-sidecar'
-import { enforceBackupRetentionPolicy } from './storage/migration/backup-retention'
 /** `ocr` finds text the scanned-PDF reader stored for a PDF that has no text layer of its own. */
 /** A page with fewer characters than this has no usable text layer. */
 const MIN_PAGE_TEXT_CHARS = 20
@@ -329,9 +328,6 @@ onIndexRequest(
         } else if (request.type === 'storage-diagnostics') {
           // Off-main storage diagnostics isolating heavy SQL and file inspection from UI thread
           result = getWorkerStore().getStorageDiagnostics(request.backupPath)
-        } else if (request.type === 'backup-retention') {
-          const purgedCount = enforceBackupRetentionPolicy(request.dbPath ?? indexingWorkerData.dbPath!)
-          result = { purgedCount }
         } else result = await embedTexts(request.texts, request.kind)
         postIndexMessage({ id: request.id, result })
       } catch (error) {
@@ -345,8 +341,7 @@ onIndexRequest(
       request.type === 'search' ||
       request.type === 'search-lexical' ||
       request.type === 'search-semantic' ||
-      request.type === 'storage-diagnostics' ||
-      request.type === 'backup-retention'
+      request.type === 'storage-diagnostics'
     )
       void execute()
     else

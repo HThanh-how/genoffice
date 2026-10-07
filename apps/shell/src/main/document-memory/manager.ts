@@ -34,7 +34,7 @@ function saveEnabled(p: string, enabled: boolean): void {
 export interface DocumentMemoryManagerOptions {
   pathToWorker?: string; workerPath?: string; workerFactory?: (script: string, env: Record<string, string>) => Worker
   workerTimeoutMs?: number; dbDir?: string; cacheDir?: string; settingsDir?: string; budget?: DocumentIndexStorageBudget
-  tombstoneGraceMs?: number; pollIntervalMs?: number; autoDeferAfterMs?: number; initialEnabled?: boolean; externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>
+  tombstoneGraceMs?: number; pollIntervalMs?: number; autoDeferAfterMs?: number; initialEnabled?: boolean; externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>; backupRetentionRunner?: any
 }
 /** Central coordinator for background document extraction, vector indexing, and search. */
 export class DocumentMemoryManager {
@@ -115,7 +115,7 @@ export class DocumentMemoryManager {
     this.searchService = new SearchService({
       store: this.store, externalNames: options.externalNames,
       askEmbed: async (t) => {
-        if (this.modelState === 'downloading' || this.modelState === 'error') return null
+        if (this.modelState === 'downloading' || this.modelState === 'error' || this.modelState === 'blocked') return null
         const r = await this.ask({ type: 'embed', texts: [t], kind: 'query' }, this.workerTimeoutMs)
         return r && 'result' in r && Array.isArray(r.result) ? (r.result[0] as number[]) : null
       },
@@ -128,7 +128,7 @@ export class DocumentMemoryManager {
       store: this.store, backgroundGate: this.backgroundGate, askWorker: (req) => this.ask(req, 30_000),
       isPaused: () => !this.enabled || isIndexingPaused(), isStopped: () => this.stopped,
       isQueued: (p) => this.queued.has(p), isExtracting: (p) => this.activeExtractions.has(p),
-      onBudgetStateChange: (state) => { if (state !== 'full' && this.enabled && !this.stopped) void this.poll() }, budget: options.budget,
+      onBudgetStateChange: (state) => { if (state !== 'full' && this.enabled && !this.stopped) void this.poll() }, budget: options.budget, backupRetentionRunner: (options as any).backupRetentionRunner,
     })
     this.chunkUpgrade = new ChunkUpgradeCoordinator(this.store)
     this.legacyMigrator = new LegacyChunkMigrator({

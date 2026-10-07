@@ -12,6 +12,10 @@ import {
   createStorageBudgetSnapshot,
   safeGetFileSize,
 } from '../storage-budget'
+import {
+  BackupRetentionRunner,
+  type BackupRetentionRunnerOptions,
+} from './backup-retention-runner'
 
 export const FTS_MERGE_PAGES = 8
 export const VACUUM_STEP_MAX_PAGES = 256
@@ -29,9 +33,11 @@ export interface MaintenanceSchedulerOptions {
   isStopped?: () => boolean
   isQueued?: (path: string) => boolean
   isExtracting?: (path: string) => boolean
+  backupRetentionRunner?: BackupRetentionRunner
 }
 
 export class MaintenanceScheduler {
+  private readonly backupRetentionRunner: BackupRetentionRunner
   private ftsTimer: NodeJS.Timeout | null = null
   private gcTimer: NodeJS.Timeout | null = null
   private vacuumTimer: NodeJS.Timeout | null = null
@@ -46,7 +52,10 @@ export class MaintenanceScheduler {
   private lastBudgetState: StorageLimitState = 'ok'
   private lastBudgetSnapshot: StorageBudgetSnapshot | null = null
 
-  constructor(private readonly options: MaintenanceSchedulerOptions) {}
+  constructor(private readonly options: MaintenanceSchedulerOptions) {
+    this.backupRetentionRunner =
+      options.backupRetentionRunner ?? new BackupRetentionRunner()
+  }
 
   get store(): DocumentMemoryStore {
     return this.options.store
@@ -102,21 +111,8 @@ export class MaintenanceScheduler {
   }
 
   async runBackupRetentionMaintenance(): Promise<{ purgedCount: number }> {
-    if (!this.options.askWorker) return { purgedCount: 0 }
-    const reply = await this.options.askWorker({
-      type: 'backup-retention',
-      dbPath: this.store.dbPath,
-    })
-    if (
-      reply &&
-      'result' in reply &&
-      reply.result &&
-      typeof reply.result === 'object' &&
-      'purgedCount' in reply.result
-    ) {
-      return { purgedCount: Number((reply.result as { purgedCount?: unknown }).purgedCount) || 0 }
-    }
-    return { purgedCount: 0 }
+    if (this.isStopped()) return { purgedCount: 0 }
+    return this.backupRetentionRunner.run(this.store.dbPath)
   }
 
   private isStopped(): boolean {
@@ -388,6 +384,7 @@ export class MaintenanceScheduler {
 
   dispose(): void {
     this.disposed = true
+    this.backupRetentionRunner.dispose()
     if (this.ftsTimer) {
       clearTimeout(this.ftsTimer)
       this.ftsTimer = null
