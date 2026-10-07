@@ -22,14 +22,31 @@ export interface BootstrapResult {
 export async function ensureDocumentMemoryStorageReady(dbDir: string): Promise<BootstrapResult> {
   const dbPath = join(dbDir, 'document-memory.db')
 
-  // Check and recover from any interrupted cutover state first (BEH-16)
+  // Check and recover from any interrupted cutover state first (BEH-16 / INV-01 fail-closed)
   try {
     const recovered = recoverInterruptedCutover(dbDir)
     if (recovered) {
       console.info('[document-memory-bootstrap] Recovered from interrupted cutover state.')
     }
   } catch (recoverErr) {
-    console.warn('[document-memory-bootstrap] Interrupted cutover recovery warning:', recoverErr)
+    const errorMsg = `Interrupted cutover recovery failed: ${(recoverErr as Error).message}`
+    console.error('[document-memory-bootstrap] Critical:', errorMsg)
+    return {
+      ready: false,
+      migrated: false,
+      error: errorMsg,
+    }
+  }
+
+  const manifestPath = join(dbDir, 'document-memory.migration-state.json')
+  if (existsSync(manifestPath)) {
+    const errorMsg = 'Critical: migration manifest still present after cutover recovery'
+    console.error('[document-memory-bootstrap]', errorMsg)
+    return {
+      ready: false,
+      migrated: false,
+      error: errorMsg,
+    }
   }
 
   if (!existsSync(dbPath)) {
