@@ -227,6 +227,13 @@ export class DocumentMemoryManager {
     const reply = await this.ask({ type: 'storage-diagnostics', backupPath }, this.workerTimeoutMs)
     return reply && 'result' in reply ? (reply.result as DocumentIndexStorageDiagnostics) : null
   }
+  async runBackupRetentionMaintenance(): Promise<{ purgedCount: number }> {
+    const reply = await this.ask({ type: 'backup-retention', dbPath: this.dbPath })
+    if (reply && 'result' in reply && reply.result && typeof reply.result === 'object' && 'purgedCount' in reply.result) {
+      return { purgedCount: Number((reply.result as { purgedCount?: unknown }).purgedCount) || 0 }
+    }
+    return { purgedCount: 0 }
+  }
   getPdfMaxPages(): number { return this.extractionCoord.getPdfMaxPages() }; setPdfMaxPages(pages: number) { return this.extractionCoord.setPdfMaxPages(pages, join(this.settingsDir, 'document-memory-pdf.json')) }; getMigrationDiagnostics(): DocumentIndexMigrationDiagnostics { const m = this.embeddingMigration.progress(); return { activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, state: m.state, completedChunks: m.completedChunks, totalChunks: m.totalChunks } }
   setEnabled(enabled: boolean): DocumentMemoryStatus {
     const changed = this.enabled !== enabled; this.enabled = enabled; saveEnabled(this.enabledSettingsPath, enabled)
@@ -455,7 +462,7 @@ export class DocumentMemoryManager {
     const worker = this.worker; if (!worker) return; this.worker = null; this.lastError = reason; if (typeof (worker as any).terminate === 'function') void worker.terminate()
     for (const [id, pending] of this.waiting) { clearTimeout(pending.timer); pending.resolve({ id, error: reason }); this.waiting.delete(id) }
   }
-  private ask(request: WorkerRequest, timeoutMs: number, recycleOnTimeout = false): Promise<WorkerReply | null> {
+  private ask(request: WorkerRequest, timeoutMs: number = this.workerTimeoutMs, recycleOnTimeout = false): Promise<WorkerReply | null> {
     if (this.stopped) return Promise.resolve(null)
     const id = this.nextRequestId++
     return new Promise((resolveReply) => {
