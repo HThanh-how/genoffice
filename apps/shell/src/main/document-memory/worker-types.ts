@@ -39,6 +39,7 @@ export type WorkerRequest =
       type: 'vacuum-step'
     }
   | {
+      /** Execute storage diagnostics off the main thread inside the indexing worker */
       type: 'storage-diagnostics'
       backupPath?: string
     }

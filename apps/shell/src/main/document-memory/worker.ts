@@ -314,6 +314,7 @@ onIndexRequest(
           )
           result = { vacuumResult, durationMs: Date.now() - started }
         } else if (request.type === 'storage-diagnostics') {
+          // Off-main storage diagnostics isolating heavy SQL and file inspection from UI thread
           result = getWorkerStore().getStorageDiagnostics(request.backupPath)
         } else result = await embedTexts(request.texts, request.kind)
         postIndexMessage({ id: request.id, result })

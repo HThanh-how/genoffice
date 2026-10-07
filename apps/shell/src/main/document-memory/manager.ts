@@ -214,23 +214,23 @@ export class DocumentMemoryManager {
     if (this.enabled && this.store.documentByPath(newR)?.status !== 'excluded') this.enqueue(newR)
   }
   legacyPaths(ext: readonly string[], lim: number) { return this.store.legacyPaths(ext, lim) }; listPaths() { return this.store.listPaths() }; getDocumentIndexProgress(p: string, activeSpaceId = this.embeddingCoord.currentProfile.embeddingId): DocumentIndexProgress { return this.maintScheduler.getDocumentIndexProgress(p, activeSpaceId) }
-  getFolderIndexProgress(f?: string, d?: boolean | string, e?: number): FolderIndexProgress { return this.maintScheduler.getFolderIndexProgress(f, d, e) }
+  getFolderIndexProgress(f?: string, d?: boolean | string, e?: number, activeSpaceId = this.embeddingCoord.currentProfile.embeddingId): FolderIndexProgress { return this.maintScheduler.getFolderIndexProgress(f, d, e, activeSpaceId) }
   getFolderIndexCounts(f?: string, s = this.embeddingCoord.currentProfile.embeddingId): FolderChunkProgress { return this.maintScheduler.getFolderIndexCounts(f, s) }; getLibraryIndexCounts(s = this.embeddingCoord.currentProfile.embeddingId): FolderChunkProgress { return this.maintScheduler.getLibraryIndexCounts(s) }; prioritizeFolder(folder: string): number { return this.freshnessCoord.prioritizeFolder(folder) }
   runFtsMaintenance(): Promise<void> { return this.maintScheduler.runFtsMaintenance() }; scheduleFtsMaintenance(delayMs?: number): void { this.maintScheduler.scheduleFtsMaintenance(delayMs) }
   runGcStep(): Promise<void> { return this.maintScheduler.runGcStep() }; runVacuumStep(): Promise<void> { return this.maintScheduler.runVacuumStep() }; runPeriodicMaintenance(): Promise<void> { return this.maintScheduler.runPeriodicMaintenance() }; statOutcome(p: string, t?: number) { return this.freshnessCoord.statOutcome(p, t) }; finalizeMissing(p: string) { return this.freshnessCoord.finalizeMissing(p) }
-  status(): DocumentMemoryStatus {
-    const stats = this.store.stats(); const files = this.store.recentDocuments(20).map(({ id, path, name, status }) => ({ id, path, name, status }))
-    return { enabled: this.enabled, modelState: this.modelState, documents: stats.docs, chunks: stats.chunks, vectors: stats.vectors, pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(), errors: stats.errors, dbPath: this.dbPath, ...(this.lastError ? { lastError: this.lastError } : {}), files }
+  status(activeSpaceId = this.embeddingCoord.currentProfile.embeddingId): DocumentMemoryStatus {
+    const stats = this.store.stats(activeSpaceId); const files = this.store.recentDocuments(20).map(({ id, path, name, status }) => ({ id, path, name, status }))
+    return { enabled: this.enabled, modelState: this.modelState, documents: stats.docs, chunks: stats.chunks, vectors: Math.min(stats.vectors, stats.chunks), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(), errors: stats.errors, dbPath: this.dbPath, ...(this.lastError ? { lastError: this.lastError } : {}), files }
   }
-  indexingActivityStatus() {
-    const act = this.nowStatus(); const stats = this.store.stats(this.embeddingCoord.currentProfile.embeddingId); const migration = this.embeddingMigration.progress()
-    return { enabled: this.enabled, modelState: this.modelState, ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(), errors: stats.errors, mode: 'balanced', activity: act, activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, semanticCoverage: stats.semanticCoverage, migrationState: migration.state }
+  indexingActivityStatus(activeSpaceId = this.embeddingCoord.currentProfile.embeddingId) {
+    const act = this.nowStatus(); const stats = this.store.stats(activeSpaceId); const migration = this.embeddingMigration.progress()
+    return { enabled: this.enabled, modelState: this.modelState, ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(), errors: stats.errors, mode: 'balanced', activity: act, activeEmbeddingSpace: activeSpaceId, semanticCoverage: stats.semanticCoverage, migrationState: migration.state }
   }
   embeddingSettings() { return this.embeddingCoord.getEmbeddingSettings() }; setEmbeddingProfile(id: EmbeddingProfileId) { const res = this.embeddingCoord.setEmbeddingProfile(id); if (res.changed) this.recycleWorker('Embedding profile changed'); return res }
   recycleEmbeddingWorker(reason = 'Recycle worker requested'): void { this.recycleWorker(reason) }
-  async getStorageDiagnosticsAsync(b?: string): Promise<DocumentIndexStorageDiagnostics | null> {
-    const r = await this.ask({ type: 'storage-diagnostics', backupPath: b }, this.workerTimeoutMs)
-    return r && 'result' in r ? (r.result as DocumentIndexStorageDiagnostics) : null
+  async getStorageDiagnosticsAsync(backupPath?: string): Promise<DocumentIndexStorageDiagnostics | null> {
+    const reply = await this.ask({ type: 'storage-diagnostics', backupPath }, this.workerTimeoutMs)
+    return reply && 'result' in reply ? (reply.result as DocumentIndexStorageDiagnostics) : null
   }
   getPdfMaxPages(): number { return this.extractionCoord.getPdfMaxPages() }; setPdfMaxPages(pages: number) { return this.extractionCoord.setPdfMaxPages(pages, join(this.settingsDir, 'document-memory-pdf.json')) }; getMigrationDiagnostics(): DocumentIndexMigrationDiagnostics { const m = this.embeddingMigration.progress(); return { activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, state: m.state, completedChunks: m.completedChunks, totalChunks: m.totalChunks } }
   setEnabled(enabled: boolean): DocumentMemoryStatus {
