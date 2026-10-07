@@ -13,13 +13,20 @@ export interface BootstrapResult {
   error?: string
 }
 
+export interface StorageBootstrapOptions {
+  settingsDir?: string
+}
+
 /**
  * Ensures that Document Memory SQLite database is fully migrated and verified
  * according to Schema V3 BEFORE any runtime components open it (Invariant INV-01).
  * 
  * Must be executed before `new DocumentMemoryManager()` or any worker startup.
  */
-export async function ensureDocumentMemoryStorageReady(dbDir: string): Promise<BootstrapResult> {
+export async function ensureDocumentMemoryStorageReady(
+  dbDir: string,
+  options: StorageBootstrapOptions = {},
+): Promise<BootstrapResult> {
   const dbPath = join(dbDir, 'document-memory.db')
 
   // Check and recover from any interrupted cutover state first (BEH-16 / INV-01 fail-closed)
@@ -61,7 +68,8 @@ export async function ensureDocumentMemoryStorageReady(dbDir: string): Promise<B
     }
 
     // Read active embedding configuration independently before database access (BEH-14)
-    const activeConfig = readActiveEmbeddingConfig(dbDir)
+    const settingsDir = options.settingsDir ?? dbDir
+    const activeConfig = readActiveEmbeddingConfig(settingsDir)
 
     console.info('[document-memory-bootstrap] V2 storage detected. Starting verified V2->V3 migration...', {
       reasons: report.reasons,

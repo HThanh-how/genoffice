@@ -6825,7 +6825,9 @@ app.whenReady().then(async () => {
   everything = createEverything(userDataDir)
   setOpeningConfig({ prefs: openingPrefs, customHtml: customOpeningHtml })
   const indexDbDir = resolveDbDir(userDataDir)
-  const bootstrap = await ensureDocumentMemoryStorageReady(indexDbDir)
+  const bootstrap = await ensureDocumentMemoryStorageReady(indexDbDir, {
+    settingsDir: userDataDir,
+  })
   if (!bootstrap.ready) {
     console.error('[document-memory] Critical: Storage bootstrap failed, entering fail-closed mode:', bootstrap.error)
     documentMemory = null
