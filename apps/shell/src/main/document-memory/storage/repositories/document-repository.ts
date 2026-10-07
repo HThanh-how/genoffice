@@ -122,7 +122,15 @@ export class DocumentRepository {
     private readonly getOcr?: () => OcrSidecar,
     private readonly onAnnVectorsAdded?: (spaceId: string, ids: number[], vecs: number[][]) => void,
     private readonly onAnnVectorsRemoved?: (ids: number[]) => void,
-  ) {}
+  ) {
+    try {
+      this.db.exec(
+        `UPDATE documents SET error = 'No readable text in this file; there is nothing to search'
+         WHERE status = 'empty' AND error = 'No readable text; scanned documents need OCR'
+           AND lower(path) NOT LIKE '%.pdf'`,
+      )
+    } catch {}
+  }
 
   ensureDocument(path: string): void {
     this.db

@@ -241,13 +241,14 @@ describe('Physical Storage State Inspection & Diagnostics Truthfulness Suite', (
     // 5d. In-database migration active (embedding_migrations with pending row)
     const dbActive = new DatabaseSync(dbPath)
     dbActive.exec(`
+      CREATE TABLE IF NOT EXISTS documents (id INTEGER PRIMARY KEY);
       CREATE TABLE embedding_migrations (
         id INTEGER PRIMARY KEY,
         state TEXT NOT NULL
       );
       INSERT INTO embedding_migrations (state) VALUES ('pending');
     `)
-    expect(inspectPhysicalStorageState(dbActive, dbPath)).toBe('migration-in-progress')
+    expect(inspectPhysicalStorageState(dbActive, dbPath)).toBe('migration-needed')
     dbActive.close()
   })
 

@@ -229,6 +229,14 @@ it('adds vector batches without changing chunk ids or losing prior vectors', () 
     status: 'text-only',
   })
   const ids = store.search('chunk', null, 3).map((hit) => hit.chunkId)
+  store.ensureEmbeddingSpace({
+    id: 'test-v1' as any,
+    embeddingId: 'test-v1',
+    dimensions: 2,
+    repo: 'test',
+    revision: '1',
+    pooling: 'mean',
+  } as any)
   store.setChunkVectors(path, 'batch-hash', 0, [[1, 0]], 'test-v1', false)
   store.setChunkVectors(
     path,
@@ -241,7 +249,7 @@ it('adds vector batches without changing chunk ids or losing prior vectors', () 
     'test-v1',
     true,
   )
-  expect(store.stats().vectors).toBe(3)
+  expect(store.stats('test-v1').vectors).toBe(3)
   expect(store.search('unmatched', [1, 0], 3, 'test-v1').map((hit) => hit.chunkId)).toEqual([
     ids[0],
     ids[1],
