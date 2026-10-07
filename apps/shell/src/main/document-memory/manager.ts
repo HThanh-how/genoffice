@@ -22,7 +22,7 @@ import {
 } from './runtime/extraction-coordinator'
 import { EmbeddingCoordinator } from './runtime/embedding-coordinator'
 import { MaintenanceScheduler } from './runtime/maintenance-scheduler'; import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'
-import { readActiveEmbeddingConfig } from './storage/embedding-settings'
+import { readActiveEmbeddingConfig } from './storage/embedding-settings'; import type { DocumentIndexStorageBudget } from './storage-budget'
 import { createIndexProcess } from './process-worker'
 import workerPath from './worker?modulePath'
 import { safeError } from './issues'
@@ -38,7 +38,7 @@ function saveEnabled(p: string, enabled: boolean): void {
 export interface DocumentMemoryManagerOptions {
   pathToWorker?: string; workerPath?: string
   workerFactory?: (script: string, env: Record<string, string>) => Worker
-  workerTimeoutMs?: number; dbDir?: string; cacheDir?: string; settingsDir?: string
+  workerTimeoutMs?: number; dbDir?: string; cacheDir?: string; settingsDir?: string; budget?: DocumentIndexStorageBudget
   tombstoneGraceMs?: number; pollIntervalMs?: number; autoDeferAfterMs?: number
   initialEnabled?: boolean; externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>
 }
@@ -127,14 +127,13 @@ export class DocumentMemoryManager {
       askSemantic: async (v, lim, sp) => { const r = await this.ask({ type: 'search-semantic', vector: v, limit: lim, embeddingSpaceId: sp }, 30_000); return r && 'result' in r && Array.isArray(r.result) ? (r.result as any) : null },
       annotateFreshness: (hits) => this.freshnessCoord.annotateFreshness(hits),
     })
-    this.stabilityGate = new FileStabilityGate()
-    this.backgroundGate = new BackgroundWorkGate()
-
+    this.stabilityGate = new FileStabilityGate(); this.backgroundGate = new BackgroundWorkGate()
     this.extractionCoord = new ExtractionCoordinator({ store: this.store, workerTimeoutMs: this.workerTimeoutMs, pdfPagesPath: join(this.settingsDir, 'document-memory-pdf.json') })
     this.maintScheduler = new MaintenanceScheduler({
       store: this.store, backgroundGate: this.backgroundGate, askWorker: (req) => this.ask(req, 30_000),
       isPaused: () => !this.enabled || isIndexingPaused(), isStopped: () => this.stopped,
       isQueued: (p) => this.queued.has(p), isExtracting: (p) => this.activeExtractions.has(p),
+      onBudgetStateChange: (state) => { if (state !== 'full' && this.enabled && !this.stopped) void this.poll() }, budget: options.budget,
     })
     this.chunkUpgrade = new ChunkUpgradeCoordinator(this.store)
     this.legacyMigrator = new LegacyChunkMigrator({
@@ -146,15 +145,11 @@ export class DocumentMemoryManager {
       isStoppedOrPaused: () => this.stopped || !this.enabled || isIndexingPaused(),
     })
     this.embeddingMigration = new EmbeddingMigration(this.store.rawDb); this.embeddingMigration.setTarget(this.embeddingCoord.currentProfile.embeddingId)
-
     this.stopPolicyWatch = onIndexingPolicyChange((policy) => {
       if (this.modelState === 'blocked' && (policy as any).allowHeavyEmbedding !== false) { this.modelState = 'not-loaded'; this.lastError = undefined }
       if (!policy.paused && this.enabled && !this.stopped) { void this.poll(); this.drain(); this.maintScheduler.scheduleFtsMaintenance() }
     })
-
-    const pollInterval = options.pollIntervalMs ?? 60_000
-    this.pollTimer = setInterval(() => void this.poll(), pollInterval)
-    this.pollTimer.unref?.()
+    const pollInterval = options.pollIntervalMs ?? 60_000; this.pollTimer = setInterval(() => void this.poll(), pollInterval); this.pollTimer.unref?.()
     if (this.enabled) void this.poll()
   }
   onEnabledChange(l: () => void): () => void { this.enabledListeners.add(l); return () => this.enabledListeners.delete(l) }
@@ -392,6 +387,13 @@ export class DocumentMemoryManager {
         this.activeSince.set(path, Date.now()); const generation = this.currentGeneration(path)
         const epoch = this.epoch; this.activeGeneration.set(path, generation); this.pendingCount++
         if (!this.activeBytes.has(path)) { const doc = this.store.documentByPath(path); if (doc?.sizeBytes) this.activeBytes.set(path, doc.sizeBytes) }
+        const existingDoc = this.store.documentByPath(path)
+        if (existingDoc?.status === 'text-only' && !this.maintScheduler.canAcceptExpensiveWork()) {
+          const meta = await statMeta(path)
+          if (meta && existingDoc.mtimeMs === meta.mtimeMs && existingDoc.sizeBytes === meta.sizeBytes) {
+            this.activeExtractions.delete(path); this.activeSince.delete(path); this.activeGeneration.delete(path); this.pendingCount--; continue
+          }
+        }
         const heavyWatch = setTimeout(() => this.makeWayForLightFiles(path, generation), this.autoDeferAfterMs)
         try {
           const sliceMs = /\.pdf$/i.test(path) && weightOf(this.activeBytes.get(path) ?? 0) >= 2 ? PDF_SLICE_MS : undefined
@@ -433,13 +435,9 @@ export class DocumentMemoryManager {
       this.extractionCoord.recordScanInfo(path, ext as any); this.maintScheduler.scheduleFtsMaintenance()
     }
     this.lastError = undefined
-    if (ext.chunks.length && !lexicalOnly) {
-      if (!this.maintScheduler.canAcceptExpensiveWork()) {
-        void this.store.markErrorSliced(path, 'Storage budget hard limit reached: semantic embedding postponed', { mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes }, { shouldContinue: () => this.isCurrent(path, generation, epoch) })
-      } else {
-        this.embeddingCoord.enqueueEmbed({ path, generation, epoch, hash: ext.hash, mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes, chunks: ext.chunks, startOffset: resumeOffset ?? 0 })
-        this.drain()
-      }
+    if (ext.chunks.length && !lexicalOnly && this.maintScheduler.canAcceptExpensiveWork()) {
+      this.embeddingCoord.enqueueEmbed({ path, generation, epoch, hash: ext.hash, mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes, chunks: ext.chunks, startOffset: resumeOffset ?? 0 })
+      this.drain()
     }
   }
   private invalidatePath(path: string): void {
