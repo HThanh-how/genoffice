@@ -1,16 +1,37 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { existsSync, statSync } from 'node:fs'
+import { basename, dirname } from 'node:path'
 import type { DocumentIndexStorageDiagnostics } from '../../../../shared/fork/document-index-api'
 import {
   inspectPhysicalStorageState,
   type SchemaPhysicalState,
 } from '../schema-inspector'
+import {
+  readV3RetentionState,
+  findMostRecentV2Backup,
+} from '../migration/v3-retention-state'
 
 export class DiagnosticsRepository {
   constructor(
     private readonly db: DatabaseSync,
     private readonly dbPath: string,
   ) {}
+
+  private resolveBackupPath(explicit?: string): string | null {
+    if (explicit) {
+      return explicit
+    }
+    const state = readV3RetentionState(this.dbPath)
+    if (state?.backupPath && existsSync(state.backupPath)) {
+      return state.backupPath
+    }
+    const discovered = findMostRecentV2Backup(dirname(this.dbPath), basename(this.dbPath))
+    if (discovered) {
+      return discovered.path
+    }
+    const legacy = `${this.dbPath}.v2.backup.db`
+    return existsSync(legacy) ? legacy : null
+  }
 
   getSchemaPhysicalState(): SchemaPhysicalState {
     return inspectPhysicalStorageState(this.db, this.dbPath)
@@ -38,11 +59,13 @@ export class DiagnosticsRepository {
       // ignore
     }
 
-    const effectiveBackupPath = backupPath ?? `${this.dbPath}.v2.backup.db`
-    try {
-      if (existsSync(effectiveBackupPath)) v2BackupSizeBytes = statSync(effectiveBackupPath).size
-    } catch {
-      // ignore
+    const effectiveBackupPath = this.resolveBackupPath(backupPath)
+    if (effectiveBackupPath) {
+      try {
+        v2BackupSizeBytes = statSync(effectiveBackupPath).size
+      } catch {
+        v2BackupSizeBytes = null
+      }
     }
 
     let pageSize = 4096
