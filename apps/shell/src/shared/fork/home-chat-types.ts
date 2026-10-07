@@ -11,6 +11,8 @@ export interface HomeChatSource {
   stale?: boolean
   /** the file no longer exists */
   missing?: boolean
+  /** the source file cannot currently be verified */
+  unverified?: boolean
 }
 
 export interface HomeChatMessage {
