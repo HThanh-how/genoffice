@@ -5,7 +5,7 @@ import { enforceBackupRetentionPolicy } from './backup-retention'
 
 export const MIGRATION_MANIFEST_FILENAME = 'document-memory.migration-state.json'
 
-export type CutoverPhase = 'source-backed-up' | 'temp-renamed-to-source' | 'completed'
+export type CutoverPhase = 'prepared' | 'source-backed-up' | 'temp-renamed-to-source' | 'completed'
 
 export interface CutoverStateManifest {
   phase: CutoverPhase
@@ -79,7 +79,7 @@ export function getManifestPath(sourcePathOrDir: string): string {
 
 function writeManifest(manifestPath: string, manifest: CutoverStateManifest): void {
   try {
-    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), 'utf8')
+    writeFileSync(manifestPath, JSON.stringify(manifest, null, 2), { encoding: 'utf8', flush: true })
   } catch {
     // Best-effort manifest persistence
   }
@@ -112,6 +112,22 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
   if (!manifest) return false
 
   const { phase, sourceDbPath, tempPath, backupPath } = manifest
+
+  if (phase === 'prepared') {
+    // Abrupt termination after manifest was written.
+    // Check if source was already renamed to backup before state updated.
+    if (!existsSync(sourceDbPath) && existsSync(backupPath)) {
+      cleanWalFiles(sourceDbPath)
+      cleanWalFiles(backupPath)
+      safeRenameWithRetry(backupPath, sourceDbPath)
+    }
+    if (existsSync(tempPath)) {
+      cleanWalFiles(tempPath)
+      try { safeUnlinkWithRetry(tempPath) } catch { /* ignore */ }
+    }
+    removeManifest(manifestPath)
+    return true
+  }
 
   if (phase === 'source-backed-up') {
     // Abrupt termination after source was renamed to backup, but before temp became source.
@@ -180,6 +196,19 @@ export function performAtomicCutover(options: CutoverOptions): void {
 
   let backupCreated = false
   try {
+    // 0. Durable Manifest PREPARED before mutating filesystem
+    writeManifest(manifestPath, {
+      phase: 'prepared',
+      sourceDbPath: resolvedSource,
+      tempPath,
+      backupPath,
+      timestamp: Date.now(),
+    })
+
+    if (testFailureInjectionPoint === 'crash-before-backup' || testFailureInjectionPoint === 'before-source-backup') {
+      throw new Error('Test injected crash before source backup')
+    }
+
     // 1. Rename source -> backup
     safeRenameWithRetry(resolvedSource, backupPath)
     backupCreated = true
@@ -191,6 +220,10 @@ export function performAtomicCutover(options: CutoverOptions): void {
       timestamp: Date.now(),
     })
 
+    if (testFailureInjectionPoint === 'crash-after-backup' || testFailureInjectionPoint === 'after-source-backup') {
+      throw new Error('Test injected crash after source backup')
+    }
+
     // 2. Rename temp -> source
     safeRenameWithRetry(tempPath, resolvedSource)
     writeManifest(manifestPath, {
@@ -200,6 +233,10 @@ export function performAtomicCutover(options: CutoverOptions): void {
       backupPath,
       timestamp: Date.now(),
     })
+
+    if (testFailureInjectionPoint === 'crash-after-temp-rename' || testFailureInjectionPoint === 'after-temp-rename') {
+      throw new Error('Test injected crash after temp rename')
+    }
 
     // Test failure injection
     if (testFailureInjectionPoint === 'verification-failed') {
