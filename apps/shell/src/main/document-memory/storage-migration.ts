@@ -9,6 +9,7 @@ import { performAtomicCutover, cleanWalFiles } from './storage/migration/cutover
 import { generateCollisionSafeBackupPath } from './storage/migration/backup-retention'
 import {
   copyEmbeddingSpaces,
+  ensureActiveEmbeddingSpaceMetadata,
   prepareMigrationStatements,
   copyDocumentActiveChunks,
   copyOcrData,
@@ -85,8 +86,8 @@ export function migrateStorageV2ToV3(sourceDbPath: string, options: StorageMigra
   try {
     options.onProgress?.({ phase: 'schema', documentsProcessed: 0, documentsCopied: 0, documentsDropped: 0, chunksCopied: 0, embeddingsCopied: 0 })
     copyEmbeddingSpaces(sourceDb, tempDb)
+    ensureActiveEmbeddingSpaceMetadata(tempDb, activeSpaceId, activeDimensions)
     const stmts = prepareMigrationStatements(sourceDb, tempDb)
-    stmts.ensureEmbeddingSpace.run(activeSpaceId, activeSpaceId, activeDimensions)
     let lastId = 0, hasMore = true
 
     while (hasMore) {
