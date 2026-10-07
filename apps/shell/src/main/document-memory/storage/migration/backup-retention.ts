@@ -178,10 +178,39 @@ export function enforceBackupRetentionPolicy(
   const now = Date.now()
   const minAgeMs = minAgeHours * 60 * 60 * 1000
 
+  const protectedPaths = new Set<string>()
+
+  // Job R1: Cheap-checks trước:
+  // 1. backup < 24h -> chắc chắn protect -> không integrity scan
+  for (const item of candidateFiles) {
+    const ageMs = now - item.mtimeMs
+    if (ageMs < minAgeMs) {
+      protectedPaths.add(resolve(item.path))
+    }
+  }
+
+  // 2. verified launches chưa đủ -> tracked rollback backup protect -> không cần verify để delete
+  if (state && existsSync(state.backupPath)) {
+    if (state.verifiedLaunches < minVerifiedLaunches) {
+      protectedPaths.add(resolve(state.backupPath))
+    }
+  }
+
+  // 3. không có candidate nào có khả năng delete -> return 0 ngay (cheap return)
+  const hasPotentialDeletable = candidateFiles.some((item) => {
+    const resolvedPath = resolve(item.path)
+    const isProtected = protectedPaths.has(resolvedPath)
+    const isOld = now - item.mtimeMs >= minAgeMs
+    return !isProtected && isOld
+  })
+
+  if (!hasPotentialDeletable) {
+    return 0
+  }
+
   // Check launch-based single rollback backup eligibility (Pair 5 compatibility)
   let stateRollbackEligible = false
   if (state && existsSync(state.backupPath)) {
-    const backupHealthy = isBackupVerified(state.backupPath)
     const launchesPass = state.verifiedLaunches >= minVerifiedLaunches
     let backupMtimeMs = 0
     try {
@@ -191,15 +220,72 @@ export function enforceBackupRetentionPolicy(
     }
     const effectiveCreatedAt = Math.min(state.createdAt ?? backupMtimeMs, backupMtimeMs)
     const agePass = now - effectiveCreatedAt >= minAgeMs
-    if (backupHealthy && launchesPass && agePass) {
-      stateRollbackEligible = true
+
+    // Only if launches and age pass do we check physical backup verification
+    if (launchesPass && agePass) {
+      const backupHealthy = isBackupVerified(state.backupPath)
+      if (backupHealthy) {
+        stateRollbackEligible = true
+      }
     }
   }
 
-  // Audit and verify each backup candidate on disk
+  // If state tracks a rollback backup that is not eligible for retirement, protect it
+  if (state && !stateRollbackEligible && existsSync(state.backupPath)) {
+    protectedPaths.add(resolve(state.backupPath))
+  }
+
+  // Audit candidates with memoized verification and evaluate retention quota
   const auditedCandidates: BackupCandidate[] = []
+  let verifiedCount = 0
+
   for (const item of candidateFiles) {
-    const verified = isBackupVerified(item.path)
+    const resolvedPath = resolve(item.path)
+    const ageMs = now - item.mtimeMs
+    const isRecent = ageMs < minAgeMs
+
+    // If stateRollbackEligible is true and this is the only candidate backup on disk (single migration rollback),
+    // it has satisfied its launch duty and is eligible for retirement by Pair 5 launch policy.
+    const isSingleRetiringRollback =
+      state?.backupPath &&
+      resolve(item.path) === resolve(state.backupPath) &&
+      stateRollbackEligible &&
+      candidateFiles.length === 1
+
+    if (isSingleRetiringRollback) {
+      auditedCandidates.push({
+        path: item.path,
+        mtimeMs: item.mtimeMs,
+        verified: true,
+      })
+      continue
+    }
+
+    if (isRecent) {
+      // backup < 24h -> chắc chắn protect -> không integrity scan
+      protectedPaths.add(resolvedPath)
+      if (verifiedCount < minRetainedBackups) {
+        verifiedCount++
+      }
+      auditedCandidates.push({
+        path: item.path,
+        mtimeMs: item.mtimeMs,
+        verified: true,
+      })
+      continue
+    }
+
+    // Backup older than 24h (>= 24h):
+    // Only verify if needed for minRetainedBackups quota
+    let verified = false
+    if (verifiedCount < minRetainedBackups) {
+      verified = isBackupVerified(item.path)
+      if (verified) {
+        protectedPaths.add(resolvedPath)
+        verifiedCount++
+      }
+    }
+
     auditedCandidates.push({
       path: item.path,
       mtimeMs: item.mtimeMs,
@@ -207,40 +293,12 @@ export function enforceBackupRetentionPolicy(
     })
   }
 
-  const protectedPaths = new Set<string>()
-
-  // Invariant 1: Backup age < 24h -> NEVER DELETE
-  for (const item of auditedCandidates) {
-    const ageMs = now - item.mtimeMs
-    if (ageMs < minAgeMs) {
-      protectedPaths.add(item.path)
-    }
-  }
-
-  // Invariant 2: Keep at least minRetainedBackups (>= 3) verified backups
-  let verifiedCount = 0
-  for (const item of auditedCandidates) {
-    // If stateRollbackEligible is true and this is the only candidate backup on disk (single migration rollback),
-    // it has satisfied its launch duty and is eligible for retirement by Pair 5 launch policy.
-    if (item.path === state?.backupPath && stateRollbackEligible && auditedCandidates.length === 1) {
-      continue
-    }
-    if (item.verified && verifiedCount < minRetainedBackups) {
-      protectedPaths.add(item.path)
-      verifiedCount++
-    }
-  }
-
-  // If state tracks a rollback backup whose launch count < threshold, protect it
-  if (state && !stateRollbackEligible && existsSync(state.backupPath)) {
-    protectedPaths.add(state.backupPath)
-  }
-
   let purgedCount = 0
 
   // Purge eligible unprotected candidates (older than minAgeHours AND outside top verified backups)
   for (const item of auditedCandidates) {
-    if (protectedPaths.has(item.path)) {
+    const resolvedPath = resolve(item.path)
+    if (protectedPaths.has(resolvedPath)) {
       continue
     }
 
@@ -249,7 +307,7 @@ export function enforceBackupRetentionPolicy(
       try {
         unlinkSync(item.path)
         purgedCount++
-        if (state && item.path === state.backupPath) {
+        if (state && resolve(item.path) === resolve(state.backupPath)) {
           clearV3RetentionState(dbPath)
         }
       } catch {
