@@ -43,6 +43,13 @@ export type WorkerRequest =
       type: 'storage-diagnostics'
       backupPath?: string
     }
+  | {
+      /** Run backup retention policy off the main thread */
+      type: 'backup-retention'
+      dbPath: string
+    }
+
+export type DocumentMemoryWorkerRequest = WorkerRequest
 
 export type WorkerReply =
   | {
@@ -53,6 +60,7 @@ export type WorkerReply =
         | DocumentMemoryHit[]
         | { more: boolean; durationMs: number }
         | { freedBytes?: number }
+        | { purgedCount: number }
         | DocumentIndexStorageDiagnostics
         | unknown
     }
@@ -63,3 +71,5 @@ export type WorkerReply =
       progress?: number
       error?: string
     }
+
+export type DocumentMemoryWorkerReply = WorkerReply
