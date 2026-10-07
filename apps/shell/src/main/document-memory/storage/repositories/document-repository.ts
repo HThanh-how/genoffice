@@ -623,6 +623,7 @@ export class DocumentRepository {
   ): Promise<boolean> {
     const budget = options.budgetMs ?? WRITE_SLICE_MS
     for (;;) {
+      if (options.shouldContinue && !options.shouldContinue()) return false
       const started = performance.now()
       let outcome = 'done' as 'done' | 'more' | 'abort'
       this.db.exec('BEGIN IMMEDIATE')

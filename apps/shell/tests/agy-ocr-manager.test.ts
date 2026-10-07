@@ -8,6 +8,7 @@ import { renderPdfPagesForOcr } from '../src/main/document-memory/agy-ocr-render
 import { encodeGrayJpeg } from '../src/main/document-memory/jpeg-gray'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 import { extractDocument } from '../src/main/document-memory/worker'
 import { buildScannedPdf, testPattern } from './helpers/scanned-pdf'
 
@@ -48,7 +49,10 @@ class InProcessWorker extends EventEmitter {
           this.emit('message', { id: message.id, result })
         } else if (message.type === 'embed') {
           this.emit('message', { type: 'model', state: 'ready' })
-          this.emit('message', { id: message.id, result: (message.texts ?? []).map(() => [1, 0]) })
+          this.emit('message', {
+            id: message.id,
+            result: (message.texts ?? []).map(() => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)),
+          })
         } else {
           this.emit('message', { id: message.id, result: [] })
         }

@@ -55,9 +55,14 @@ export class SearchService {
     const lexicalCandidates = this.store.searchLexical(query, 200)
     const lexicalRaw = this.store
       .hydrateChunkHits(lexicalCandidates.slice(0, limit))
-      .filter((h) => !seenNames.has(h.documentId))
     const annotate = this.options.annotateFreshness ?? (async (hits) => hits.map((h) => ({ ...h, stale: false, missing: false })))
-    const lexicalHits = await annotate([...namedRaw.slice(0, 3), ...lexicalRaw])
+    let externalHits: DocumentMemoryHit[] = []
+    if (this.options.externalNames) {
+      const indexedPaths = new Set([...namedRaw, ...lexicalRaw].map((h) => normalizeSearchPath(h.path)))
+      const externalFiles = await this.searchExternal(query, 5, indexedPaths)
+      externalHits = externalFiles.slice(0, 3).map((f) => this.externalHit(f))
+    }
+    const lexicalHits = await annotate([...namedRaw.slice(0, 3), ...externalHits, ...lexicalRaw])
 
     if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
     callbacks?.onLexical?.(lexicalHits)
@@ -95,7 +100,7 @@ export class SearchService {
           }
           const seen = new Set(finalChunkHits.map((h) => h.documentId))
           const namedForHybrid = namedRaw.filter((h) => !seen.has(h.documentId))
-          finalHits = await annotate([...namedForHybrid.slice(0, 3), ...finalChunkHits])
+          finalHits = await annotate([...namedForHybrid.slice(0, 3), ...externalHits, ...finalChunkHits])
           if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
           const stalePaths = new Set(lexicalHits.filter((h) => h.stale).map((h) => normalizeSearchPath(h.path)))
           const missingPaths = new Set(lexicalHits.filter((h) => h.missing).map((h) => normalizeSearchPath(h.path)))

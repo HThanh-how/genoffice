@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
+import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 import {
   EverythingSearch,
   esQueryWords,
@@ -208,7 +209,10 @@ class QuietWorker extends EventEmitter {
   postMessage(message: { id: number; type: string; texts?: string[] }): void {
     setTimeout(() => {
       this.emit('message', { type: 'model', state: 'ready' })
-      this.emit('message', { id: message.id, result: (message.texts ?? []).map(() => [1, 0]) })
+      this.emit('message', {
+        id: message.id,
+        result: (message.texts ?? []).map(() => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)),
+      })
     }, 0)
   }
   terminate(): Promise<number> {
