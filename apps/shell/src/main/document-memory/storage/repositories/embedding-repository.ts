@@ -71,6 +71,45 @@ export class EmbeddingRepository {
       existing.pooling !== profile.pooling ||
       existing.quantization !== 'q8'
     ) {
+      const isKnownPlaceholder =
+        existing.dimensions === profile.dimensions &&
+        existing.model_repo === profile.embeddingId &&
+        existing.model_revision === 'legacy' &&
+        existing.pooling === 'mean' &&
+        existing.quantization === 'fp32'
+
+      if (isKnownPlaceholder) {
+        const invalidVector = this.db
+          .prepare(
+            `SELECT chunk_id, vector_dim, length(vector) as byte_len
+             FROM chunk_embeddings
+             WHERE space_id = ? AND (vector_dim != ? OR length(vector) != ?)
+             LIMIT 1`,
+          )
+          .get(profile.embeddingId, profile.dimensions, profile.dimensions * 4)
+
+        if (invalidVector) {
+          throw new Error(
+            `Cannot repair legacy placeholder space '${profile.embeddingId}': invalid existing vector dimensions detected`,
+          )
+        }
+
+        this.db
+          .prepare(
+            `UPDATE embedding_spaces
+             SET model_repo = ?, model_revision = ?, pooling = ?, dimensions = ?, quantization = 'q8'
+             WHERE id = ?`,
+          )
+          .run(
+            profile.repo,
+            profile.revision,
+            profile.pooling,
+            profile.dimensions,
+            profile.embeddingId,
+          )
+        return
+      }
+
       throw new Error(
         `Embedding space mismatch for '${profile.embeddingId}': ` +
           `expected dimensions=${profile.dimensions}, model_repo='${profile.repo}', model_revision='${profile.revision}', pooling='${profile.pooling}', quantization='q8'; ` +
