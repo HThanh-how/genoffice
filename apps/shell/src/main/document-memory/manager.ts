@@ -428,7 +428,7 @@ export class DocumentMemoryManager {
     if (resumeOffset === null) {
       const written = await this.store.replaceDocumentSliced(path, {
         hash: ext.hash, mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes, chunks: ext.chunks,
-        embeddingModel: null, status: extractedStatus(ext), error: ext.error, truncated: ext.truncated,
+        embeddingModel: null, status: extractedStatus(ext), error: ext.error, truncated: ext.truncated, truncatedReason: ext.truncatedReason ?? null,
       }, { shouldContinue: () => this.isCurrent(path, generation, epoch) })
       if (!written) return
       this.extractionCoord.recordScanInfo(path, ext as any); this.maintScheduler.scheduleFtsMaintenance()
