@@ -120,42 +120,6 @@ function inspectDatabaseHandle(db: DatabaseSync, dbPath?: string): InspectHandle
     }
   }
 
-  if (tables.includes('embedding_migrations')) {
-    try {
-      const active = db.prepare("SELECT 1 FROM embedding_migrations WHERE state IN ('pending', 'running') LIMIT 1").get()
-      if (active) {
-        return {
-          state: 'migration-in-progress',
-          reasons: ['embedding_migrations has pending or running jobs'],
-          tableNames: tables,
-          hasObsoleteChunkColumns: false,
-          hasDocumentEmbeddingCounts: tables.includes('document_embedding_counts'),
-          autoVacuum: 0,
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  if (tables.includes('chunk_migrations')) {
-    try {
-      const active = db.prepare("SELECT 1 FROM chunk_migrations WHERE state IN ('running', 'in-progress') LIMIT 1").get()
-      if (active) {
-        return {
-          state: 'migration-in-progress',
-          reasons: ['chunk_migrations has running or in-progress jobs'],
-          tableNames: tables,
-          hasObsoleteChunkColumns: false,
-          hasDocumentEmbeddingCounts: tables.includes('document_embedding_counts'),
-          autoVacuum: 0,
-        }
-      }
-    } catch {
-      // ignore
-    }
-  }
-
   const reasons: string[] = []
   let hasObsoleteChunkColumns = false
   const hasDocumentEmbeddingCounts = tables.includes('document_embedding_counts')
@@ -208,12 +172,40 @@ function inspectDatabaseHandle(db: DatabaseSync, dbPath?: string): InspectHandle
   let state: SchemaPhysicalState
   if (isV3) {
     state = 'v3'
-  } else if (isV2) {
-    state = 'v2'
-  } else if (tables.includes('documents') || tables.includes('chunks')) {
-    state = 'migration-needed'
   } else {
-    state = 'unknown'
+    let activeMigrationReason: string | null = null
+    if (tables.includes('embedding_migrations')) {
+      try {
+        const active = db.prepare("SELECT 1 FROM embedding_migrations WHERE state IN ('pending', 'running') LIMIT 1").get()
+        if (active) {
+          activeMigrationReason = 'embedding_migrations has pending or running jobs'
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (!activeMigrationReason && tables.includes('chunk_migrations')) {
+      try {
+        const active = db.prepare("SELECT 1 FROM chunk_migrations WHERE state IN ('running', 'in-progress') LIMIT 1").get()
+        if (active) {
+          activeMigrationReason = 'chunk_migrations has running or in-progress jobs'
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    if (activeMigrationReason) {
+      state = 'migration-in-progress'
+      reasons.unshift(activeMigrationReason)
+    } else if (isV2) {
+      state = 'v2'
+    } else if (tables.includes('documents') || tables.includes('chunks')) {
+      state = 'migration-needed'
+    } else {
+      state = 'unknown'
+    }
   }
 
   return {
