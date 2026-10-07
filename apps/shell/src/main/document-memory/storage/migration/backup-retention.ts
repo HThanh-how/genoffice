@@ -178,6 +178,18 @@ export function enforceBackupRetentionPolicy(
   const now = Date.now()
   const minAgeMs = minAgeHours * 60 * 60 * 1000
 
+  // Job R2: Memoization cache within a single retention run
+  const verificationCache = new Map<string, boolean>()
+  const checkVerifiedMemo = (targetPath: string): boolean => {
+    const resolvedKey = resolve(targetPath)
+    if (verificationCache.has(resolvedKey)) {
+      return verificationCache.get(resolvedKey)!
+    }
+    const result = isBackupVerified(targetPath)
+    verificationCache.set(resolvedKey, result)
+    return result
+  }
+
   const protectedPaths = new Set<string>()
 
   // Job R1: Cheap-checks trước:
@@ -223,7 +235,7 @@ export function enforceBackupRetentionPolicy(
 
     // Only if launches and age pass do we check physical backup verification
     if (launchesPass && agePass) {
-      const backupHealthy = isBackupVerified(state.backupPath)
+      const backupHealthy = checkVerifiedMemo(state.backupPath)
       if (backupHealthy) {
         stateRollbackEligible = true
       }
@@ -276,14 +288,16 @@ export function enforceBackupRetentionPolicy(
     }
 
     // Backup older than 24h (>= 24h):
-    // Only verify if needed for minRetainedBackups quota
+    // Only verify if needed for minRetainedBackups quota or if already in cache
     let verified = false
     if (verifiedCount < minRetainedBackups) {
-      verified = isBackupVerified(item.path)
+      verified = checkVerifiedMemo(item.path)
       if (verified) {
         protectedPaths.add(resolvedPath)
         verifiedCount++
       }
+    } else if (verificationCache.has(resolvedPath)) {
+      verified = verificationCache.get(resolvedPath)!
     }
 
     auditedCandidates.push({
