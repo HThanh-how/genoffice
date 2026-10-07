@@ -112,7 +112,7 @@ export class DocumentMemoryManager {
     })
     const embeddingConfig = readActiveEmbeddingConfig(this.settingsDir)
     this.embeddingCoord = new EmbeddingCoordinator({
-      store: this.store, settingsDir: this.settingsDir,
+      store: this.store, settingsDir: this.settingsDir, initialProfileId: embeddingConfig.profileId,
       workerTimeoutMs: this.workerTimeoutMs, isStoppedOrPaused: () => this.stopped || !this.enabled || isIndexingPaused(),
       isCurrent: (p, gen, ep) => this.isCurrent(p, gen, ep), onDrainNeeded: () => this.drain(),
       onEnqueueExtract: (p) => this.enqueue(p), onError: (err) => { this.lastError = err },
