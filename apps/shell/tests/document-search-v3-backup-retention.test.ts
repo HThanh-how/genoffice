@@ -1,3 +1,16 @@
+/**
+ * Document Search V3: Backup Collision & Retention Hardening Suite (QA-06)
+ *
+ * Verifies enterprise backup safety and lifecycle retention invariants:
+ * - BACKUP-01: Existing old backups do not collide or get clobbered during migration
+ * - BACKUP-02: Repeated migrations create distinct collision-safe backup paths
+ * - BACKUP-03: 3 newest verified backups are retained until launch/age conditions are met
+ * - BACKUP-04: Backups younger than 24 hours (< 24h) are strictly retained
+ * - BACKUP-05: Old 4th verified backup (>= 24h) is eligible for safe reclamation
+ * - BACKUP-06: Failed migration backup is rolled back and not treated as completed
+ * - BACKUP-07: Recovery uses exact manifest backup path rather than guessing
+ */
+
 import {
   existsSync,
   mkdtempSync,
