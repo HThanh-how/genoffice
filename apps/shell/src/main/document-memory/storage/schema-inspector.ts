@@ -47,7 +47,11 @@ function checkMigrationInProgressOnDisk(dbPath: string): boolean {
         return true
       }
     }
-    if (existsSync(`${dbPath}.v3.tmp.db`) || existsSync(`${dbPath}.migrating`)) {
+    if (
+      existsSync(`${dbPath}.v3.tmp.db`) ||
+      existsSync(`${dbPath}.v3.tmp`) ||
+      existsSync(`${dbPath}.migrating`)
+    ) {
       return true
     }
   } catch {
@@ -172,40 +176,12 @@ function inspectDatabaseHandle(db: DatabaseSync, dbPath?: string): InspectHandle
   let state: SchemaPhysicalState
   if (isV3) {
     state = 'v3'
+  } else if (isV2) {
+    state = 'v2'
+  } else if (tables.includes('documents') || tables.includes('chunks')) {
+    state = 'migration-needed'
   } else {
-    let activeMigrationReason: string | null = null
-    if (tables.includes('embedding_migrations')) {
-      try {
-        const active = db.prepare("SELECT 1 FROM embedding_migrations WHERE state IN ('pending', 'running') LIMIT 1").get()
-        if (active) {
-          activeMigrationReason = 'embedding_migrations has pending or running jobs'
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    if (!activeMigrationReason && tables.includes('chunk_migrations')) {
-      try {
-        const active = db.prepare("SELECT 1 FROM chunk_migrations WHERE state IN ('running', 'in-progress') LIMIT 1").get()
-        if (active) {
-          activeMigrationReason = 'chunk_migrations has running or in-progress jobs'
-        }
-      } catch {
-        // ignore
-      }
-    }
-
-    if (activeMigrationReason) {
-      state = 'migration-in-progress'
-      reasons.unshift(activeMigrationReason)
-    } else if (isV2) {
-      state = 'v2'
-    } else if (tables.includes('documents') || tables.includes('chunks')) {
-      state = 'migration-needed'
-    } else {
-      state = 'unknown'
-    }
+    state = 'unknown'
   }
 
   return {

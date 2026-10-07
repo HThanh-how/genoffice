@@ -285,7 +285,7 @@ describe('Pair 11 — Truthful Storage Diagnostics Reporting Suite (QA-11)', () 
     // Remove manifest
     rmSync(manifestPath, { force: true })
 
-    // 5b. In-database migration active (embedding_migrations with pending row)
+    // 5b. In-database rolling migration (embedding_migrations with pending row) without cutover artifact does NOT report migration-in-progress
     const dbActive = new DatabaseSync(dbPath)
     try {
       dbActive.exec(`
@@ -297,14 +297,26 @@ describe('Pair 11 — Truthful Storage Diagnostics Reporting Suite (QA-11)', () 
       `)
 
       const inDbPhysicalState = inspectPhysicalStorageState(dbActive, dbPath)
-      expect(inDbPhysicalState).toBe('migration-in-progress')
+      expect(inDbPhysicalState).toBe('migration-needed')
 
       const diagRepoActive = new DiagnosticsRepository(dbActive, dbPath)
       const diagActive = diagRepoActive.getStorageDiagnostics()
-      expect(diagActive.schemaVersion).toBe('migration-in-progress')
+      expect(diagActive.schemaVersion).toBe('migration-needed')
       expect(diagActive.schemaVersion).not.toBe('3')
-      expect(diagActive.migrationStatus).toBe('in-progress')
+      expect(diagActive.migrationStatus).toBe('none')
       expect(diagActive.migrationStatus).not.toBe('completed')
+
+      // 5c. Physical cutover artifact on disk (.v3.tmp.db) DOES report migration-in-progress
+      const tmpDbPath = `${dbPath}.v3.tmp.db`
+      writeFileSync(tmpDbPath, 'cutover temp payload')
+      try {
+        expect(inspectPhysicalStorageState(dbActive, dbPath)).toBe('migration-in-progress')
+        const diagCutover = diagRepoActive.getStorageDiagnostics()
+        expect(diagCutover.schemaVersion).toBe('migration-in-progress')
+        expect(diagCutover.migrationStatus).toBe('in-progress')
+      } finally {
+        rmSync(tmpDbPath, { force: true })
+      }
     } finally {
       dbActive.close()
     }
