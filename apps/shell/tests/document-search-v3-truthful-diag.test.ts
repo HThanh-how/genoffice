@@ -174,6 +174,27 @@ describe('Pair 11 — Truthful Storage Diagnostics Reporting Suite (QA-11)', () 
     } finally {
       emptyDb.close()
     }
+
+    // 3c. Deceptive metadata: document_memory_meta claims schema_version = '3',
+    // but database lacks document_embedding_counts and chunk_embeddings.
+    // Diagnostics repository MUST NOT report completed based solely on deceptive metadata.
+    const deceptiveDbPath = join(directory, 'deceptive-metadata.db')
+    const deceptiveDb = new DatabaseSync(deceptiveDbPath)
+    try {
+      deceptiveDb.exec(`
+        CREATE TABLE documents (id INTEGER PRIMARY KEY, path TEXT UNIQUE, name TEXT);
+        CREATE TABLE chunks (id INTEGER PRIMARY KEY, document_id INTEGER, ordinal INTEGER, text TEXT, location TEXT);
+        CREATE TABLE document_memory_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO document_memory_meta (key, value) VALUES ('schema_version', '3');
+      `)
+      const deceptiveDiagRepo = new DiagnosticsRepository(deceptiveDb, deceptiveDbPath)
+      const deceptiveDiag = deceptiveDiagRepo.getStorageDiagnostics()
+      // Despite metadata claiming '3', truthful physical inspection prevents reporting 'completed'
+      expect(deceptiveDiag.migrationStatus).not.toBe('completed')
+      expect(deceptiveDiag.migrationStatus).toBe('none')
+    } finally {
+      deceptiveDb.close()
+    }
   })
 
   // =========================================================================
