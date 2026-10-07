@@ -6,6 +6,19 @@ export interface IntegrityCheckResult {
   foreignKeyErrors: unknown[]
 }
 
+export interface DatabaseHealthReport {
+  ok: boolean
+  quickCheck: string
+  integrity: string
+  schemaVersion: number
+  foreignKeyErrors: unknown[]
+  errors?: string[]
+}
+
+export interface StartupHealthOptions {
+  maxErrors?: number
+}
+
 /**
  * Runs physical integrity checks on a SQLite database file:
  * - PRAGMA integrity_check === 'ok'
@@ -23,6 +36,55 @@ export function verifyDatabaseIntegrity(dbOrPath: string | DatabaseSync): Integr
     return { ok, integrity, foreignKeyErrors }
   } catch (err: any) {
     return { ok: false, integrity: err?.message ?? 'unknown', foreignKeyErrors: [err?.message] }
+  } finally {
+    if (isPath && db) {
+      try {
+        db.close()
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+/**
+ * Runs lightweight startup health checks on a SQLite database:
+ * - PRAGMA quick_check(1) === 'ok' (avoids slow PRAGMA integrity_check on normal startup)
+ * - PRAGMA schema_version read
+ * - PRAGMA foreign_key_check returns 0 errors
+ */
+export function verifyDatabaseStartupHealth(
+  dbOrPath: string | DatabaseSync,
+  options?: StartupHealthOptions,
+): DatabaseHealthReport {
+  const isPath = typeof dbOrPath === 'string'
+  let db: DatabaseSync | null = null
+  try {
+    db = isPath ? new DatabaseSync(dbOrPath) : dbOrPath
+    const maxErrors = options?.maxErrors ?? 1
+    const quickCheckRow = db.prepare(`PRAGMA quick_check(${maxErrors})`).get() as { quick_check?: string } | undefined
+    const quickCheck = quickCheckRow?.quick_check ?? 'unknown'
+    const schemaVersionRow = db.prepare('PRAGMA schema_version').get() as { schema_version?: number } | undefined
+    const schemaVersion = schemaVersionRow?.schema_version ?? 0
+    const foreignKeyErrors = db.prepare('PRAGMA foreign_key_check').all()
+    const ok = quickCheck === 'ok' && foreignKeyErrors.length === 0
+    return {
+      ok,
+      quickCheck,
+      integrity: quickCheck,
+      schemaVersion,
+      foreignKeyErrors,
+    }
+  } catch (err: any) {
+    const errorMsg = err?.message ?? 'unknown'
+    return {
+      ok: false,
+      quickCheck: errorMsg,
+      integrity: errorMsg,
+      schemaVersion: 0,
+      foreignKeyErrors: [errorMsg],
+      errors: [errorMsg],
+    }
   } finally {
     if (isPath && db) {
       try {
