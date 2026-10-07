@@ -36,6 +36,7 @@ export interface EmbeddingCoordinatorOptions {
   settingsPath?: string
   initialProfileId?: EmbeddingProfileId
   workerTimeoutMs?: number
+  isStopped?: () => boolean
   isStoppedOrPaused?: () => boolean
   isCurrent?: (path: string, generation: number, epoch: number) => boolean
   onDrainNeeded?: () => void
@@ -140,7 +141,7 @@ export class EmbeddingCoordinator {
   }
 
   enqueueEmbed(job: EmbedJob): void {
-    if (this.options.isStoppedOrPaused?.()) return
+    if (this.options.isStopped ? this.options.isStopped() : this.options.isStoppedOrPaused?.()) return
     job.priority = this.options.store.documentPriority(job.path)
     const position = this.embeds.findIndex((queued) => (job.priority ?? 0) > (queued.priority ?? 0))
     if (position < 0) this.embeds.push(job)

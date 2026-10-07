@@ -113,7 +113,7 @@ export class DocumentMemoryManager {
     const embeddingConfig = readActiveEmbeddingConfig(this.settingsDir)
     this.embeddingCoord = new EmbeddingCoordinator({
       store: this.store, settingsDir: this.settingsDir, initialProfileId: embeddingConfig.profileId,
-      workerTimeoutMs: this.workerTimeoutMs, isStoppedOrPaused: () => this.stopped || !this.enabled || isIndexingPaused(),
+      workerTimeoutMs: this.workerTimeoutMs, isStopped: () => this.stopped || !this.enabled, isStoppedOrPaused: () => this.stopped || !this.enabled || isIndexingPaused(),
       isCurrent: (p, gen, ep) => this.isCurrent(p, gen, ep), onDrainNeeded: () => this.drain(),
       onEnqueueExtract: (p) => this.enqueue(p), onError: (err) => { this.lastError = err },
     })
@@ -343,7 +343,7 @@ export class DocumentMemoryManager {
   }
   private enqueue(path: string, prioritize = false, bytes?: number): void {
     if (this.stopped || !this.enabled) return
-    const p = resolve(path)
+    const p = resolve(path); if (this.activeGeneration.get(p) === this.currentGeneration(p)) return
     if (this.queued.has(p)) {
       if (prioritize) { const idx = this.queue.indexOf(p); if (idx > 0) { this.queue.splice(idx, 1); this.queue.unshift(p) } }
       return
@@ -447,7 +447,7 @@ export class DocumentMemoryManager {
   }
   private async poll(): Promise<void> {
     if (this.stopped || !this.enabled || isIndexingPaused()) return
-    for (const p of this.store.incompletePaths()) { if (!this.activeExtractions.has(p)) this.enqueue(p) }
+    for (const p of this.store.incompletePaths()) { if (!this.activeExtractions.has(p) && !this.embeddingCoord.isEmbeddingPath(p) && !this.embeddingCoord.embedsQueue.some((j) => j.path === p)) this.enqueue(p) }
     this.skippedMigrationDocs.clear(); this.scheduleMigrationStep(1000)
     this.drain()
   }
