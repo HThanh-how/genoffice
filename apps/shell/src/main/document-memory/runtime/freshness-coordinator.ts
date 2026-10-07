@@ -279,12 +279,12 @@ export class FreshnessCoordinator {
   }
 
   async annotateFreshness(hits: DocumentMemoryHit[]): Promise<FreshDocumentMemoryHit[]> {
-    const byPath = new Map<string, Promise<'fresh' | 'stale' | 'missing'>>()
+    const byPath = new Map<string, Promise<'fresh' | 'stale' | 'missing' | 'unverified'>>()
     for (const hit of hits) {
       const key = pathKey(hit.path)
       if (!byPath.has(key)) byPath.set(key, this.checkFreshness(hit))
     }
-    const outcomes = new Map<string, 'fresh' | 'stale' | 'missing'>()
+    const outcomes = new Map<string, 'fresh' | 'stale' | 'missing' | 'unverified'>()
     for (const [key, outcome] of byPath) outcomes.set(key, await outcome)
     for (const hit of hits) {
       if (this.options.isStopped?.()) break
@@ -295,19 +295,24 @@ export class FreshnessCoordinator {
     }
     return hits.map((hit) => {
       const outcome = outcomes.get(pathKey(hit.path)) ?? 'fresh'
-      return { ...hit, stale: outcome !== 'fresh', missing: outcome === 'missing' }
+      return {
+        ...hit,
+        stale: outcome !== 'fresh',
+        missing: outcome === 'missing',
+        unverified: outcome === 'unverified',
+      }
     })
   }
 
-  private async checkFreshness(hit: DocumentMemoryHit): Promise<'fresh' | 'stale' | 'missing'> {
-    if (hit.mtimeMs === null || hit.sizeBytes === null) return 'fresh'
+  private async checkFreshness(hit: DocumentMemoryHit): Promise<'fresh' | 'stale' | 'missing' | 'unverified'> {
+    if (hit.mtimeMs === null || hit.sizeBytes === null) return 'unverified'
     const current = await this.statOutcome(hit.path, FRESHNESS_STAT_TIMEOUT_MS)
     if (current.kind === 'gone') return 'missing'
     if (current.kind === 'file')
       return current.mtimeMs !== hit.mtimeMs || current.sizeBytes !== hit.sizeBytes
         ? 'stale'
         : 'fresh'
-    return 'fresh'
+    return 'unverified'
   }
 
   async handleFileEvents(paths: string[], stabilityGate: FileStabilityGate): Promise<void> {
