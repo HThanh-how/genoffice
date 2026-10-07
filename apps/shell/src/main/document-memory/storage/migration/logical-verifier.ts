@@ -391,11 +391,159 @@ export function verifyLogicalConsistency(
     reasons.push(`[V12] Metadata schema_version is missing or not '3' (got ${metaRow?.value ?? 'null'})`)
   }
 
+  // V13: FTS Consistency & Completeness
+  const ftsResult = verifyFtsIntegrity(targetDb)
+  if (!ftsResult.ok) {
+    reasons.push(...ftsResult.reasons)
+  }
+
+  // V14: OCR Sidecar Integrity
+  const ocrResult = verifyOcrIntegrity(targetDb)
+  if (!ocrResult.ok) {
+    reasons.push(...ocrResult.reasons)
+  }
+
   return {
     ok: reasons.length === 0,
     reasons,
     expectedDocuments,
     actualDocuments: actualDocs,
     actualChunks,
+  }
+}
+
+export interface FtsIntegrityResult {
+  ok: boolean
+  reasons: string[]
+  totalFtsChunks?: number
+}
+
+export function verifyFtsIntegrity(targetDb: DatabaseSync): FtsIntegrityResult {
+  const reasons: string[] = []
+
+  // Check chunk_fts virtual table exists and is readable
+  try {
+    const ftsCheck = targetDb.prepare("INSERT INTO chunk_fts(chunk_fts) VALUES('integrity-check')")
+    ftsCheck.run()
+  } catch (err: any) {
+    reasons.push(`[V13] chunk_fts virtual table integrity check failed: ${err?.message ?? 'unknown error'}`)
+  }
+
+  // Check missing chunk_fts for chunks
+  try {
+    const missingFtsRow = targetDb
+      .prepare(`
+        SELECT count(*) AS n FROM chunks c
+        WHERE c.id NOT IN (SELECT rowid FROM chunk_fts)
+      `)
+      .get() as { n: number }
+    if (missingFtsRow.n > 0) {
+      reasons.push(`[V13] FTS completeness failed: ${missingFtsRow.n} chunk(s) lack chunk_fts records`)
+    }
+  } catch (err: any) {
+    reasons.push(`[V13] Could not query chunk_fts completeness: ${err?.message}`)
+  }
+
+  // Check orphan chunk_fts rows
+  try {
+    const orphanFtsRow = targetDb
+      .prepare(`
+        SELECT count(*) AS n FROM chunk_fts f
+        WHERE f.rowid NOT IN (SELECT id FROM chunks)
+      `)
+      .get() as { n: number }
+    if (orphanFtsRow.n > 0) {
+      reasons.push(`[V13] Orphan FTS rows detected: ${orphanFtsRow.n} record(s) in chunk_fts do not correspond to any chunk`)
+    }
+  } catch (err: any) {
+    reasons.push(`[V13] Could not query orphan chunk_fts: ${err?.message}`)
+  }
+
+  // Check document_name_fts completeness
+  try {
+    const missingDocNameRow = targetDb
+      .prepare(`
+        SELECT count(*) AS n FROM documents d
+        WHERE d.excluded = 0 AND d.id NOT IN (SELECT rowid FROM document_name_fts)
+      `)
+      .get() as { n: number }
+    if (missingDocNameRow.n > 0) {
+      reasons.push(`[V13] Document name FTS mismatch: ${missingDocNameRow.n} document(s) missing from document_name_fts`)
+    }
+  } catch (err: any) {
+    reasons.push(`[V13] Could not query document_name_fts: ${err?.message}`)
+  }
+
+  let totalFtsChunks = 0
+  try {
+    const totalRow = targetDb.prepare('SELECT count(*) AS n FROM chunk_fts').get() as { n: number }
+    totalFtsChunks = totalRow.n
+  } catch {
+    // ignore
+  }
+
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    totalFtsChunks,
+  }
+}
+
+export interface OcrIntegrityResult {
+  ok: boolean
+  reasons: string[]
+  totalOcrPages?: number
+}
+
+export function verifyOcrIntegrity(targetDb: DatabaseSync): OcrIntegrityResult {
+  const reasons: string[] = []
+
+  // Check table presence (if ocr_pages exists)
+  const hasOcrPages = !!targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'ocr_pages'").get()
+  if (!hasOcrPages) {
+    return { ok: true, reasons: [], totalOcrPages: 0 }
+  }
+
+  let totalOcrPages = 0
+  try {
+    const totalRow = targetDb.prepare('SELECT count(*) AS n FROM ocr_pages').get() as { n: number }
+    totalOcrPages = totalRow.n
+
+    // Check invalid page numbers
+    const invalidPageRow = targetDb
+      .prepare(`
+        SELECT count(*) AS n FROM ocr_pages
+        WHERE page <= 0 OR (total_pages > 0 AND page > total_pages)
+      `)
+      .get() as { n: number }
+    if (invalidPageRow.n > 0) {
+      reasons.push(`[V14] OCR page range violation: ${invalidPageRow.n} page(s) have invalid page <= 0 or page > total_pages`)
+    }
+  } catch (err: any) {
+    reasons.push(`[V14] Failed to inspect ocr_pages: ${err?.message}`)
+  }
+
+  // Check pdf_scan_info if present
+  const hasScanInfo = !!targetDb.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pdf_scan_info'").get()
+  if (hasScanInfo) {
+    try {
+      const invalidScanRow = targetDb
+        .prepare(`
+          SELECT count(*) AS n FROM pdf_scan_info
+          WHERE total_pages < 0 OR size_bytes < 0
+        `)
+        .get() as { n: number }
+      if (invalidScanRow.n > 0) {
+        reasons.push(`[V14] PDF scan info integrity violation: ${invalidScanRow.n} invalid records`)
+      }
+    } catch (err: any) {
+      reasons.push(`[V14] Failed to inspect pdf_scan_info: ${err?.message}`)
+    }
+  }
+
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    totalOcrPages,
   }
 }
