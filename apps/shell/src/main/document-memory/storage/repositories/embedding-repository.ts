@@ -32,17 +32,51 @@ export class EmbeddingRepository {
   constructor(private readonly db: DatabaseSync) {}
 
   ensureEmbeddingSpace(profile: EmbeddingProfile): void {
-    this.db.prepare(`
-      INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
-      profile.embeddingId,
-      profile.repo,
-      profile.revision,
-      profile.pooling,
-      profile.dimensions,
-      'q8',
-    )
+    const existing = this.db
+      .prepare(
+        `SELECT dimensions, model_repo, model_revision, pooling, quantization
+         FROM embedding_spaces WHERE id = ?`,
+      )
+      .get(profile.embeddingId) as
+      | {
+          dimensions: number
+          model_repo: string
+          model_revision: string
+          pooling: string
+          quantization: string
+        }
+      | undefined
+
+    if (!existing) {
+      this.db
+        .prepare(
+          `INSERT INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          profile.embeddingId,
+          profile.repo,
+          profile.revision,
+          profile.pooling,
+          profile.dimensions,
+          'q8',
+        )
+      return
+    }
+
+    if (
+      existing.dimensions !== profile.dimensions ||
+      existing.model_repo !== profile.repo ||
+      existing.model_revision !== profile.revision ||
+      existing.pooling !== profile.pooling ||
+      existing.quantization !== 'q8'
+    ) {
+      throw new Error(
+        `Embedding space mismatch for '${profile.embeddingId}': ` +
+          `expected dimensions=${profile.dimensions}, model_repo='${profile.repo}', model_revision='${profile.revision}', pooling='${profile.pooling}', quantization='q8'; ` +
+          `found dimensions=${existing.dimensions}, model_repo='${existing.model_repo}', model_revision='${existing.model_revision}', pooling='${existing.pooling}', quantization='${existing.quantization}'`,
+      )
+    }
   }
 
   getEmbeddingCounts(documentId: number, spaceId?: string): number {
@@ -106,6 +140,7 @@ export class EmbeddingRepository {
       vectors.some((vector) => !vector.length || vector.some((v) => !Number.isFinite(v)))
     )
       throw new Error('Vectors must have a consistent nonzero dimension and finite values')
+
     const normalizedPath = resolve(path)
 
     let chunkIdsForAnn: number[] = []
