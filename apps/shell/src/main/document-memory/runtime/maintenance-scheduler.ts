@@ -101,6 +101,24 @@ export class MaintenanceScheduler {
     return this.checkStorageBudget().limitState !== 'full'
   }
 
+  async runBackupRetentionMaintenance(): Promise<{ purgedCount: number }> {
+    if (!this.options.askWorker) return { purgedCount: 0 }
+    const reply = await this.options.askWorker({
+      type: 'backup-retention',
+      dbPath: this.store.dbPath,
+    })
+    if (
+      reply &&
+      'result' in reply &&
+      reply.result &&
+      typeof reply.result === 'object' &&
+      'purgedCount' in reply.result
+    ) {
+      return { purgedCount: Number((reply.result as { purgedCount?: unknown }).purgedCount) || 0 }
+    }
+    return { purgedCount: 0 }
+  }
+
   private isStopped(): boolean {
     return this.disposed || (this.options.isStopped ? this.options.isStopped() : false)
   }
