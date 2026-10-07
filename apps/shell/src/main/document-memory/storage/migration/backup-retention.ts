@@ -154,14 +154,6 @@ export function enforceBackupRetentionPolicy(
     }
   }
 
-  // Database must pass physical SQLite integrity & FK constraints if present
-  if (existsSync(dbPath)) {
-    const v3Integrity = verifyDatabaseIntegrity(dbPath)
-    if (!v3Integrity.ok) {
-      return 0
-    }
-  }
-
   const dbBase = basename(dbPath)
   const candidateFiles = findAllV2Backups(dir, dbBase)
   let state = readV3RetentionState(dbPath)
@@ -177,18 +169,6 @@ export function enforceBackupRetentionPolicy(
 
   const now = Date.now()
   const minAgeMs = minAgeHours * 60 * 60 * 1000
-
-  // Job R2: Memoization cache within a single retention run
-  const verificationCache = new Map<string, boolean>()
-  const checkVerifiedMemo = (targetPath: string): boolean => {
-    const resolvedKey = resolve(targetPath)
-    if (verificationCache.has(resolvedKey)) {
-      return verificationCache.get(resolvedKey)!
-    }
-    const result = isBackupVerified(targetPath)
-    verificationCache.set(resolvedKey, result)
-    return result
-  }
 
   const protectedPaths = new Set<string>()
 
@@ -218,6 +198,26 @@ export function enforceBackupRetentionPolicy(
 
   if (!hasPotentialDeletable) {
     return 0
+  }
+
+  // Database must pass physical SQLite integrity & FK constraints if present
+  if (existsSync(dbPath)) {
+    const v3Integrity = verifyDatabaseIntegrity(dbPath)
+    if (!v3Integrity.ok) {
+      return 0
+    }
+  }
+
+  // Job R2: Memoization cache within a single retention run
+  const verificationCache = new Map<string, boolean>()
+  const checkVerifiedMemo = (targetPath: string): boolean => {
+    const resolvedKey = resolve(targetPath)
+    if (verificationCache.has(resolvedKey)) {
+      return verificationCache.get(resolvedKey)!
+    }
+    const result = isBackupVerified(targetPath)
+    verificationCache.set(resolvedKey, result)
+    return result
   }
 
   // Check launch-based single rollback backup eligibility (Pair 5 compatibility)
@@ -276,13 +276,10 @@ export function enforceBackupRetentionPolicy(
     if (isRecent) {
       // backup < 24h -> chắc chắn protect -> không integrity scan
       protectedPaths.add(resolvedPath)
-      if (verifiedCount < minRetainedBackups) {
-        verifiedCount++
-      }
       auditedCandidates.push({
         path: item.path,
         mtimeMs: item.mtimeMs,
-        verified: true,
+        verified: false,
       })
       continue
     }
