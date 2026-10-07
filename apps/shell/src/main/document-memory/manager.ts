@@ -435,13 +435,9 @@ export class DocumentMemoryManager {
     this.lastError = undefined
     if (ext.chunks.length && !lexicalOnly) {
       if (!this.maintScheduler.canAcceptExpensiveWork()) {
-        const persistReason = 'Storage budget hard limit reached: semantic embedding postponed'
-        void this.store.markErrorSliced(path, persistReason, { mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes }, { shouldContinue: () => this.isCurrent(path, generation, epoch) })
+        void this.store.markErrorSliced(path, 'Storage budget hard limit reached: semantic embedding postponed', { mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes }, { shouldContinue: () => this.isCurrent(path, generation, epoch) })
       } else {
-        this.embeddingCoord.enqueueEmbed({
-          path, generation, epoch, hash: ext.hash, mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes,
-          chunks: ext.chunks, startOffset: resumeOffset ?? 0,
-        })
+        this.embeddingCoord.enqueueEmbed({ path, generation, epoch, hash: ext.hash, mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes, chunks: ext.chunks, startOffset: resumeOffset ?? 0 })
         this.drain()
       }
     }
