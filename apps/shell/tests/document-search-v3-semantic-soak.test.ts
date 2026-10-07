@@ -460,7 +460,7 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
             this.emit('message', { type: 'model', state: 'ready' })
             this.emit('message', {
               id: message.id,
-              result: (message.texts ?? []).map(() => [0.1, 0.2, 0.3, 0.4]),
+              result: (message.texts ?? []).map(() => Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)),
             })
           }
         }, 30)
@@ -679,13 +679,16 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
       chunks,
     })
 
+    store.ensureEmbeddingSpace(EMBEDDING_PROFILES.standard)
+    store.ensureEmbeddingSpace(EMBEDDING_PROFILES.high)
+
     // Write all 40 chunks for F2
-    const f2Vectors = Array.from({ length: CHUNK_COUNT }, () => [0.2, 0.4, 0.6, 0.8])
-    store.setChunkEmbeddings(docPath, 'hash-stress-40', 0, f2Vectors, F2_SPACE_ID, true)
+    const f2Vectors = Array.from({ length: CHUNK_COUNT }, () => Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.2))
+    store.setChunkEmbeddings(docPath, 'hash-stress-40', 0, f2Vectors, EMBEDDING_PROFILES.standard.embeddingId, true)
 
     // Write 20 chunks for Qwen
-    const qwenVectors = Array.from({ length: 20 }, () => [0.1, 0.3, 0.5, 0.7])
-    store.setChunkEmbeddings(docPath, 'hash-stress-40', 0, qwenVectors, QWEN_SPACE_ID, false)
+    const qwenVectors = Array.from({ length: 20 }, () => Array(EMBEDDING_PROFILES.high.dimensions).fill(0.1))
+    store.setChunkEmbeddings(docPath, 'hash-stress-40', 0, qwenVectors, EMBEDDING_PROFILES.high.embeddingId, false)
 
     manager = new DocumentMemoryManager(tempDir, {
       dbDir: tempDir,

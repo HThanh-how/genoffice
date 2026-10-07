@@ -228,9 +228,7 @@ export class DocumentMemoryManager {
     const reply = await this.ask({ type: 'storage-diagnostics', backupPath }, this.workerTimeoutMs)
     return reply && 'result' in reply ? (reply.result as DocumentIndexStorageDiagnostics) : null
   }
-  runBackupRetentionMaintenance(): Promise<{ purgedCount: number }> {
-    return this.maintScheduler.runBackupRetentionMaintenance()
-  }
+  runBackupRetentionMaintenance(): Promise<{ purgedCount: number }> { return this.maintScheduler.runBackupRetentionMaintenance() }
   getPdfMaxPages(): number { return this.extractionCoord.getPdfMaxPages() }; setPdfMaxPages(pages: number) { return this.extractionCoord.setPdfMaxPages(pages, join(this.settingsDir, 'document-memory-pdf.json')) }; getMigrationDiagnostics(): DocumentIndexMigrationDiagnostics { const m = this.embeddingMigration.progress(); return { activeEmbeddingSpace: this.embeddingCoord.currentProfile.embeddingId, state: m.state, completedChunks: m.completedChunks, totalChunks: m.totalChunks } }
   setEnabled(enabled: boolean): DocumentMemoryStatus {
     const changed = this.enabled !== enabled; this.enabled = enabled; saveEnabled(this.enabledSettingsPath, enabled)
