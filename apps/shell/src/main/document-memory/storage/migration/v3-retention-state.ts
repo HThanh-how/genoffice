@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 
 export interface V3RetentionState {
   backupPath: string
@@ -9,6 +9,30 @@ export interface V3RetentionState {
 
 export const V3_RETENTION_FILENAME = 'v3-retention-state.json'
 export const CANONICAL_V3_RETENTION_FILENAME = 'document-memory.v3-retention.json'
+
+/**
+ * Resolves authoritative creation timestamp for a backup candidate:
+ * 1. If candidate is tracked rollback backup in retention state (resolve(candidate.path) === resolve(state.backupPath)):
+ *    state.createdAt is the authoritative single source of truth (NEVER file mtime or guessed timestamp).
+ * 2. If untracked timestamped backup: timestamp extracted from filename (extractBackupTimestamp).
+ * 3. Fallback: file mtimeMs (only for legacy untracked backups without state or timestamp in name).
+ */
+export function getBackupCreationTime(
+  backupPath: string,
+  state?: V3RetentionState | null,
+): number {
+  if (
+    state &&
+    typeof state.backupPath === 'string' &&
+    resolve(backupPath) === resolve(state.backupPath) &&
+    typeof state.createdAt === 'number' &&
+    Number.isFinite(state.createdAt) &&
+    state.createdAt > 0
+  ) {
+    return state.createdAt
+  }
+  return extractBackupTimestamp(backupPath)
+}
 
 /**
  * Extracts creation timestamp from backup filename (e.g. *.v2.<timestamp>.*).
@@ -69,23 +93,26 @@ export function getV3RetentionStatePath(dbPathOrDir: string): string {
 
 /**
  * Finds all candidate V2 rollback backup files in the database directory,
- * sorted descending by last modification time (newest first).
+ * sorted descending by creation time (newest first).
+ * Tracked rollback backup uses state.createdAt as the authoritative creation timestamp.
  */
 export function findAllV2Backups(
   dir: string,
   dbBase = 'document-memory.db',
+  state?: V3RetentionState | null,
 ): Array<{ path: string; mtimeMs: number }> {
   if (!existsSync(dir)) return []
   try {
     const files = readdirSync(dir)
     const candidates: Array<{ path: string; mtimeMs: number }> = []
     const prefix = dbBase.replace(/\.db$/, '')
+    const activeState = state !== undefined ? state : readV3RetentionState(dir)
 
     for (const f of files) {
       if (f.startsWith(prefix) && f.includes('.v2.') && f.endsWith('.backup.db')) {
         const full = join(dir, f)
         try {
-          const mtimeMs = extractBackupTimestamp(full)
+          const mtimeMs = getBackupCreationTime(full, activeState)
           candidates.push({ path: full, mtimeMs })
         } catch {
           // ignore unreadable
@@ -105,8 +132,9 @@ export function findAllV2Backups(
 export function findMostRecentV2Backup(
   dir: string,
   dbBase = 'document-memory.db',
+  state?: V3RetentionState | null,
 ): { path: string; mtimeMs: number } | null {
-  const all = findAllV2Backups(dir, dbBase)
+  const all = findAllV2Backups(dir, dbBase, state)
   return all.length > 0 ? all[0] : null
 }
 
@@ -175,7 +203,23 @@ export function initV3RetentionState(
   backupPath: string,
   createdAt?: number,
 ): V3RetentionState {
-  const created = typeof createdAt === 'number' ? createdAt : extractBackupTimestamp(backupPath)
+  let created: number
+  if (typeof createdAt === 'number' && Number.isFinite(createdAt) && createdAt > 0) {
+    created = createdAt
+  } else {
+    const existing = readV3RetentionState(dbPathOrDir)
+    if (
+      existing &&
+      resolve(existing.backupPath) === resolve(backupPath) &&
+      typeof existing.createdAt === 'number' &&
+      Number.isFinite(existing.createdAt) &&
+      existing.createdAt > 0
+    ) {
+      created = existing.createdAt
+    } else {
+      created = extractBackupTimestamp(backupPath)
+    }
+  }
 
   const state: V3RetentionState = {
     backupPath,

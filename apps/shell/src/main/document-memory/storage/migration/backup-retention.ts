@@ -15,6 +15,7 @@ import {
   findAllV2Backups,
   findMostRecentV2Backup,
   extractBackupTimestamp,
+  getBackupCreationTime,
 } from './v3-retention-state'
 
 export {
@@ -28,6 +29,7 @@ export {
   findAllV2Backups,
   findMostRecentV2Backup,
   extractBackupTimestamp,
+  getBackupCreationTime,
 }
 
 export function getCanonicalBackupPath(dbPath: string): string {
@@ -156,14 +158,15 @@ export function enforceBackupRetentionPolicy(
     }
   }
 
-  const dbBase = basename(dbPath)
-  const candidateFiles = findAllV2Backups(dir, dbBase)
   let state = readV3RetentionState(dbPath)
 
   if (state && !existsSync(state.backupPath)) {
     clearV3RetentionState(dbPath)
     state = null
   }
+
+  const dbBase = basename(dbPath)
+  const candidateFiles = findAllV2Backups(dir, dbBase, state)
 
   if (candidateFiles.length === 0) {
     return 0
@@ -177,7 +180,7 @@ export function enforceBackupRetentionPolicy(
   // Job R1: Cheap-checks trước:
   // 1. backup < 24h -> chắc chắn protect -> không integrity scan
   for (const item of candidateFiles) {
-    const effectiveCreatedAt = extractBackupTimestamp(item.path)
+    const effectiveCreatedAt = getBackupCreationTime(item.path, state)
     const ageMs = now - effectiveCreatedAt
     if (ageMs < minAgeMs) {
       protectedPaths.add(resolve(item.path))
@@ -195,7 +198,7 @@ export function enforceBackupRetentionPolicy(
   const hasPotentialDeletable = candidateFiles.some((item) => {
     const resolvedPath = resolve(item.path)
     const isProtected = protectedPaths.has(resolvedPath)
-    const effectiveCreatedAt = extractBackupTimestamp(item.path)
+    const effectiveCreatedAt = getBackupCreationTime(item.path, state)
     const isOld = now - effectiveCreatedAt >= minAgeMs
     return !isProtected && isOld
   })
@@ -228,7 +231,7 @@ export function enforceBackupRetentionPolicy(
   let stateRollbackEligible = false
   if (state && existsSync(state.backupPath)) {
     const launchesPass = state.verifiedLaunches >= minVerifiedLaunches
-    const effectiveCreatedAt = extractBackupTimestamp(state.backupPath)
+    const effectiveCreatedAt = getBackupCreationTime(state.backupPath, state)
     const agePass = now - effectiveCreatedAt >= minAgeMs
 
     // Only if launches and age pass do we check physical backup verification
@@ -251,7 +254,7 @@ export function enforceBackupRetentionPolicy(
 
   for (const item of candidateFiles) {
     const resolvedPath = resolve(item.path)
-    const effectiveCreatedAt = extractBackupTimestamp(item.path)
+    const effectiveCreatedAt = getBackupCreationTime(item.path, state)
     const ageMs = now - effectiveCreatedAt
     const isRecent = ageMs < minAgeMs
 
@@ -334,7 +337,7 @@ export function enforceBackupRetentionPolicy(
       continue
     }
 
-    const effectiveCreatedAt = extractBackupTimestamp(item.path)
+    const effectiveCreatedAt = getBackupCreationTime(item.path, state)
     const ageMs = now - effectiveCreatedAt
     if (ageMs >= minAgeMs) {
       try {
@@ -352,10 +355,22 @@ export function enforceBackupRetentionPolicy(
   return purgedCount
 }
 
-export function cleanupObsoleteBackup(backupPath: string, maxAgeDays = 14): boolean {
+export function cleanupObsoleteBackup(
+  backupPath: string,
+  maxAgeDays = 14,
+  dbPathOrState?: string | V3RetentionState | null,
+): boolean {
   if (!existsSync(backupPath)) return false
   try {
-    const effectiveCreatedAt = extractBackupTimestamp(backupPath)
+    let state: V3RetentionState | null = null
+    if (dbPathOrState && typeof dbPathOrState === 'object') {
+      state = dbPathOrState
+    } else if (typeof dbPathOrState === 'string') {
+      state = readV3RetentionState(dbPathOrState)
+    } else {
+      state = readV3RetentionState(dirname(backupPath))
+    }
+    const effectiveCreatedAt = getBackupCreationTime(backupPath, state)
     const ageMs = Date.now() - effectiveCreatedAt
     if (ageMs > maxAgeDays * 24 * 60 * 60 * 1000) {
       unlinkSync(backupPath)

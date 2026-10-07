@@ -196,7 +196,11 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
     )
   }
 
-  const { phase, sourceDbPath, tempPath, backupPath } = manifest
+  const { phase, sourceDbPath, tempPath, backupPath, timestamp } = manifest
+  const backupCreatedAt =
+    typeof timestamp === 'number' && Number.isFinite(timestamp) && timestamp > 0
+      ? timestamp
+      : Date.now()
 
   if (!sourceDbPath || typeof sourceDbPath !== 'string' || sourceDbPath.trim() === '') {
     throw new Error(
@@ -278,7 +282,7 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
       const integrity = verifyDatabaseIntegrity(sourceDbPath)
       if (integrity.ok) {
         removeManifest(manifestPath)
-        initV3RetentionState(sourceDbPath, backupPath)
+        initV3RetentionState(sourceDbPath, backupPath, backupCreatedAt)
         return true
       }
     }
@@ -305,7 +309,7 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
 
   if (normalizedPhase === 'completed') {
     removeManifest(manifestPath)
-    initV3RetentionState(sourceDbPath, backupPath)
+    initV3RetentionState(sourceDbPath, backupPath, backupCreatedAt)
     return true
   }
 
@@ -322,6 +326,7 @@ export function performAtomicCutover(options: CutoverOptions): void {
   cleanWalFiles(resolvedSource)
   cleanWalFiles(tempPath)
 
+  const backupCreatedAt = Date.now()
   let backupCreated = false
   try {
     // 0. Durable Manifest PREPARED before mutating filesystem
@@ -330,7 +335,7 @@ export function performAtomicCutover(options: CutoverOptions): void {
       sourceDbPath: resolvedSource,
       tempPath,
       backupPath,
-      timestamp: Date.now(),
+      timestamp: backupCreatedAt,
     })
 
     if (testFailureInjectionPoint === 'crash-before-backup' || testFailureInjectionPoint === 'before-source-backup') {
@@ -345,7 +350,7 @@ export function performAtomicCutover(options: CutoverOptions): void {
       sourceDbPath: resolvedSource,
       tempPath,
       backupPath,
-      timestamp: Date.now(),
+      timestamp: backupCreatedAt,
     })
 
     if (testFailureInjectionPoint === 'crash-after-backup' || testFailureInjectionPoint === 'after-source-backup') {
@@ -359,7 +364,7 @@ export function performAtomicCutover(options: CutoverOptions): void {
       sourceDbPath: resolvedSource,
       tempPath,
       backupPath,
-      timestamp: Date.now(),
+      timestamp: backupCreatedAt,
     })
 
     if (
@@ -390,7 +395,7 @@ export function performAtomicCutover(options: CutoverOptions): void {
       sourceDbPath: resolvedSource,
       tempPath,
       backupPath,
-      timestamp: Date.now(),
+      timestamp: backupCreatedAt,
     })
 
     if (
@@ -406,12 +411,12 @@ export function performAtomicCutover(options: CutoverOptions): void {
       sourceDbPath: resolvedSource,
       tempPath,
       backupPath,
-      timestamp: Date.now(),
+      timestamp: backupCreatedAt,
     })
     removeManifest(manifestPath)
 
-    // Initialize V3 retention state immediately post-manifest
-    initV3RetentionState(resolvedSource, backupPath)
+    // Initialize V3 retention state immediately post-manifest with explicit creation timestamp
+    initV3RetentionState(resolvedSource, backupPath, backupCreatedAt)
   } catch (error) {
     onRollback?.()
 

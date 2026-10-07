@@ -67,10 +67,14 @@ export function findUnexpectedTempArtifacts(dbDir: string, dbBase = 'document-me
  */
 export function findAnyBackupArtifacts(dbDir: string, dbBase = 'document-memory.db'): string[] {
   if (!existsSync(dbDir)) return []
-  const backups = findAllV2Backups(dbDir, dbBase).map((b) => b.path)
-  const mostRecent = findMostRecentV2Backup(dbDir, dbBase)
+  const retentionState = readV3RetentionState(dbDir)
+  const backups = findAllV2Backups(dbDir, dbBase, retentionState).map((b) => b.path)
+  const mostRecent = findMostRecentV2Backup(dbDir, dbBase, retentionState)
   if (mostRecent && !backups.includes(mostRecent.path)) {
     backups.push(mostRecent.path)
+  }
+  if (retentionState?.backupPath && !backups.includes(retentionState.backupPath)) {
+    backups.push(retentionState.backupPath)
   }
 
   const prefix = dbBase.replace(/\.db$/, '')
@@ -260,7 +264,7 @@ export async function ensureDocumentMemoryStorageReady(
     // Sau migration: verifiedLaunches = 0
     let retentionState: V3RetentionState | undefined
     if (migrationResult.backupDbPath) {
-      retentionState = initV3RetentionState(dbDir, migrationResult.backupDbPath)
+      retentionState = readV3RetentionState(dbDir) ?? initV3RetentionState(dbDir, migrationResult.backupDbPath)
     }
 
     return {
