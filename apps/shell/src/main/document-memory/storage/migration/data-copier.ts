@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { documentIndexFields } from '../../normalization'
-import { LEGACY_E5_EMBEDDING_ID, LEGACY_VIETNAMESE_EMBEDDING_ID } from '../../embedding-profiles'
+import { EMBEDDING_PROFILES, LEGACY_E5_EMBEDDING_ID, LEGACY_VIETNAMESE_EMBEDDING_ID } from '../../embedding-profiles'
 
 export function copyEmbeddingSpaces(sourceDb: DatabaseSync, tempDb: DatabaseSync): void {
   const tables = (sourceDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((t) => t.name)
@@ -126,5 +126,78 @@ export function copyAnnMetadata(sourceDb: DatabaseSync, tempDb: DatabaseSync): v
     const annRows = sourceDb.prepare('SELECT space_id, file_path, generation, desired_generation FROM ann_indexes').all() as any[]
     const ins = tempDb.prepare("INSERT OR REPLACE INTO ann_indexes (space_id, generation, desired_generation, file_path, indexed_count, state, updated_at) VALUES (?, ?, ?, ?, 0, 'dirty', unixepoch())")
     for (const a of annRows) ins.run(a.space_id, a.generation ?? 0, a.desired_generation ?? 0, a.file_path ?? null)
+  }
+}
+
+export function ensureActiveEmbeddingSpaceMetadata(
+  db: DatabaseSync,
+  activeSpaceId: string,
+  activeDimensions: number,
+): void {
+  const profile =
+    activeSpaceId === EMBEDDING_PROFILES.standard.embeddingId
+      ? EMBEDDING_PROFILES.standard
+      : activeSpaceId === EMBEDDING_PROFILES.high.embeddingId
+        ? EMBEDDING_PROFILES.high
+        : null
+
+  const existing = db
+    .prepare(
+      `SELECT id, model_repo, model_revision, pooling, dimensions, quantization
+       FROM embedding_spaces WHERE id = ?`,
+    )
+    .get(activeSpaceId) as
+    | {
+        id: string
+        model_repo: string
+        model_revision: string
+        pooling: string
+        dimensions: number
+        quantization: string
+      }
+    | undefined
+
+  if (profile) {
+    const expectedRepo = profile.repo
+    const expectedRevision = profile.revision
+    const expectedPooling = profile.pooling
+    const expectedDimensions = profile.dimensions
+    const expectedQuantization = 'q8'
+
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(
+        profile.embeddingId,
+        expectedRepo,
+        expectedRevision,
+        expectedPooling,
+        expectedDimensions,
+        expectedQuantization,
+      )
+      return
+    }
+
+    if (
+      existing.model_repo !== expectedRepo ||
+      existing.model_revision !== expectedRevision ||
+      existing.pooling !== expectedPooling ||
+      existing.dimensions !== expectedDimensions ||
+      existing.quantization !== expectedQuantization
+    ) {
+      throw new Error(
+        `Embedding space metadata mismatch for canonical space '${activeSpaceId}': ` +
+          `expected repo='${expectedRepo}', revision='${expectedRevision}', pooling='${expectedPooling}', dimensions=${expectedDimensions}, quantization='${expectedQuantization}'; ` +
+          `found repo='${existing.model_repo}', revision='${existing.model_revision}', pooling='${existing.pooling}', dimensions=${existing.dimensions}, quantization='${existing.quantization}'`,
+      )
+    }
+  } else {
+    if (!existing) {
+      db.prepare(
+        `INSERT INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
+         VALUES (?, ?, 'legacy', 'mean', ?, 'fp32')`,
+      ).run(activeSpaceId, activeSpaceId, activeDimensions)
+    }
   }
 }
