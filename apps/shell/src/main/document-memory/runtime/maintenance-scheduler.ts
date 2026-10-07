@@ -15,6 +15,8 @@ import {
 
 export const FTS_MERGE_PAGES = 8
 export const VACUUM_STEP_MAX_PAGES = 256
+export const INITIAL_MAINTENANCE_DELAY_MS = 5_000
+export const PERIODIC_MAINTENANCE_INTERVAL_MS = 60_000
 
 export interface MaintenanceSchedulerOptions {
   store: DocumentMemoryStore
@@ -233,7 +235,7 @@ export class MaintenanceScheduler {
     await this.options.askWorker({ type: 'vacuum-step' })
   }
 
-  schedulePeriodicMaintenance(delayMs = 5000): void {
+  schedulePeriodicMaintenance(delayMs = PERIODIC_MAINTENANCE_INTERVAL_MS): void {
     if (this.isStopped() || this.periodicTimer) return
     this.periodicTimer = setTimeout(() => {
       this.periodicTimer = null
@@ -242,8 +244,23 @@ export class MaintenanceScheduler {
     this.periodicTimer.unref?.()
   }
 
+  isPeriodicMaintenanceArmed(): boolean {
+    return this.periodicTimer !== null
+  }
+
+  isPeriodicMaintenanceRunning(): boolean {
+    return this.periodicRunning
+  }
+
   async runPeriodicMaintenance(): Promise<void> {
-    if (this.isStopped() || this.periodicRunning || this.isPaused()) return
+    if (this.isStopped() || this.periodicRunning) return
+    if (this.isPaused()) {
+      if (!this.isStopped()) {
+        this.schedulePeriodicMaintenance(PERIODIC_MAINTENANCE_INTERVAL_MS)
+      }
+      return
+    }
+
     this.periodicRunning = true
     try {
       this.checkStorageBudget()
@@ -254,6 +271,9 @@ export class MaintenanceScheduler {
       await this.runVacuumStep()
     } finally {
       this.periodicRunning = false
+      if (!this.isStopped()) {
+        this.schedulePeriodicMaintenance(PERIODIC_MAINTENANCE_INTERVAL_MS)
+      }
     }
   }
 

@@ -21,7 +21,7 @@ import {
   MAX_PENDING_EMBED_DOCUMENTS, PDF_SLICE_MS,
 } from './runtime/extraction-coordinator'
 import { EmbeddingCoordinator } from './runtime/embedding-coordinator'
-import { MaintenanceScheduler } from './runtime/maintenance-scheduler'; import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'
+import { MaintenanceScheduler, INITIAL_MAINTENANCE_DELAY_MS } from './runtime/maintenance-scheduler'; import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'; import type { DocumentIndexStorageBudget } from './storage-budget'
 import { createIndexProcess } from './process-worker'
 import workerPath from './worker?modulePath'
@@ -150,7 +150,7 @@ export class DocumentMemoryManager {
       if (!policy.paused && this.enabled && !this.stopped) { void this.poll(); this.drain(); this.maintScheduler.scheduleFtsMaintenance() }
     })
     const pollInterval = options.pollIntervalMs ?? 60_000; this.pollTimer = setInterval(() => void this.poll(), pollInterval); this.pollTimer.unref?.()
-    if (this.enabled) void this.poll()
+    if (this.enabled) void this.poll(); this.maintScheduler.schedulePeriodicMaintenance(INITIAL_MAINTENANCE_DELAY_MS)
   }
   onEnabledChange(l: () => void): () => void { this.enabledListeners.add(l); return () => this.enabledListeners.delete(l) }
   onCleared(l: () => void): () => void { this.clearedListeners.add(l); return () => this.clearedListeners.delete(l) }
@@ -158,8 +158,7 @@ export class DocumentMemoryManager {
     const active = this.activeExtractions.values().next().value ?? null
     const positions: Record<string, number> = {}
     orderQueue(this.queue, { urgent: this.urgent, deferred: this.deferred, bytes: this.activeBytes }).slice(0, 400).forEach((p, i) => { positions[p] = i + 1 })
-    const pages: Record<string, { done: number; total: number }> = {}
-    for (const [p, prog] of this.readProgress) pages[p] = prog
+    const pages = Object.fromEntries(this.readProgress)
     return {
       extracting: active ? [{ path: active, since: this.activeSince.get(active) ?? Date.now() }] : [],
       embedding: this.embeddingCoord.getEmbeddingProgress(), positions, pages, queued: this.queue.length + this.pendingCount + this.embeddingCoord.getQueueLength(), paused: isIndexingPaused(),
