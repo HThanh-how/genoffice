@@ -112,7 +112,7 @@ export class DocumentMemoryManager {
     })
     const embeddingConfig = readActiveEmbeddingConfig(this.settingsDir)
     this.embeddingCoord = new EmbeddingCoordinator({
-      store: this.store, settingsDir: this.settingsDir, initialProfileId: embeddingConfig.profileId,
+      store: this.store, settingsDir: this.settingsDir,
       workerTimeoutMs: this.workerTimeoutMs, isStoppedOrPaused: () => this.stopped || !this.enabled || isIndexingPaused(),
       isCurrent: (p, gen, ep) => this.isCurrent(p, gen, ep), onDrainNeeded: () => this.drain(),
       onEnqueueExtract: (p) => this.enqueue(p), onError: (err) => { this.lastError = err },
@@ -213,6 +213,7 @@ export class DocumentMemoryManager {
     }
     if (this.enabled && this.store.documentByPath(newR)?.status !== 'excluded') this.enqueue(newR)
   }
+  // Scoped progress APIs to active embedding space (BEH-20)
   legacyPaths(ext: readonly string[], lim: number) { return this.store.legacyPaths(ext, lim) }; listPaths() { return this.store.listPaths() }; getDocumentIndexProgress(p: string, activeSpaceId = this.embeddingCoord.currentProfile.embeddingId): DocumentIndexProgress { return this.maintScheduler.getDocumentIndexProgress(p, activeSpaceId) }
   getFolderIndexProgress(f?: string, d?: boolean | string, e?: number, activeSpaceId = this.embeddingCoord.currentProfile.embeddingId): FolderIndexProgress { return this.maintScheduler.getFolderIndexProgress(f, d, e, activeSpaceId) }
   getFolderIndexCounts(f?: string, s = this.embeddingCoord.currentProfile.embeddingId): FolderChunkProgress { return this.maintScheduler.getFolderIndexCounts(f, s) }; getLibraryIndexCounts(s = this.embeddingCoord.currentProfile.embeddingId): FolderChunkProgress { return this.maintScheduler.getLibraryIndexCounts(s) }; prioritizeFolder(folder: string): number { return this.freshnessCoord.prioritizeFolder(folder) }
@@ -427,7 +428,7 @@ export class DocumentMemoryManager {
     if (resumeOffset === null) {
       const written = await this.store.replaceDocumentSliced(path, {
         hash: ext.hash, mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes, chunks: ext.chunks,
-        embeddingModel: null, status: extractedStatus(ext), error: ext.error, truncated: ext.truncated, truncatedReason: ext.truncatedReason ?? null,
+        embeddingModel: null, status: extractedStatus(ext), error: ext.error, truncated: ext.truncated,
       }, { shouldContinue: () => this.isCurrent(path, generation, epoch) })
       if (!written) return
       this.extractionCoord.recordScanInfo(path, ext as any); this.maintScheduler.scheduleFtsMaintenance()

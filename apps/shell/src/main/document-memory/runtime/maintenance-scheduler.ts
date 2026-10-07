@@ -204,14 +204,16 @@ export class MaintenanceScheduler {
     if (!doc) {
       return { state: 'idle', percent: null, completedChunks: 0, totalChunks: 0 }
     }
+    const totalChunks = Math.max(0, progress.totalChunks)
+    const completedChunks = Math.min(Math.max(0, progress.completedChunks), totalChunks)
     const base = {
       path: doc.path,
       name: doc.name,
-      completedChunks: progress.completedChunks,
-      totalChunks: progress.totalChunks,
+      completedChunks,
+      totalChunks,
       truncated: doc.truncated,
     }
-    const pct = progress.totalChunks > 0 ? Math.floor((progress.completedChunks / progress.totalChunks) * 100) : null
+    const pct = totalChunks > 0 ? Math.min(100, Math.floor((completedChunks / totalChunks) * 100)) : null
     const paused = this.isPaused()
 
     if (doc.status === 'excluded') return { ...base, state: 'excluded', percent: null }
@@ -221,7 +223,14 @@ export class MaintenanceScheduler {
     if (this.options.isQueued?.(doc.path)) return { ...awaitingSnapshot, state: paused ? 'paused' : 'queued' }
 
     if (doc.status === 'empty') return { ...base, state: 'empty', percent: 100 }
-    if (doc.status === 'ready') return { ...base, state: 'ready', percent: 100 }
+    if (doc.status === 'ready') {
+      const isComplete = totalChunks === 0 || completedChunks >= totalChunks
+      return {
+        ...base,
+        state: isComplete ? 'ready' : (paused ? 'paused' : 'indexing'),
+        percent: isComplete ? 100 : pct,
+      }
+    }
     if (doc.status === 'error') {
       return {
         ...base,
@@ -231,9 +240,10 @@ export class MaintenanceScheduler {
       }
     }
     if (doc.status === 'text-only') {
+      const isComplete = totalChunks > 0 && completedChunks >= totalChunks
       return {
         ...base,
-        state: paused ? 'paused' : 'indexing',
+        state: isComplete ? 'ready' : (paused ? 'paused' : 'indexing'),
         percent: pct,
       }
     }
@@ -243,10 +253,26 @@ export class MaintenanceScheduler {
   getFolderIndexProgress(
     folder?: string,
     discoveryCompleteOrSpace?: boolean | string,
-    scanErrors = 0,
+    scanErrorsOrSpace: number | string = 0,
+    activeSpaceId?: string,
   ): FolderIndexProgress {
-    const discoveryComplete = typeof discoveryCompleteOrSpace === 'boolean' ? discoveryCompleteOrSpace : true
-    const spaceId = typeof discoveryCompleteOrSpace === 'string' ? discoveryCompleteOrSpace : undefined
+    let discoveryComplete = true
+    let scanErrors = 0
+    let spaceId: string | undefined
+
+    if (typeof discoveryCompleteOrSpace === 'string') {
+      spaceId = discoveryCompleteOrSpace
+    } else if (typeof discoveryCompleteOrSpace === 'boolean') {
+      discoveryComplete = discoveryCompleteOrSpace
+      if (typeof scanErrorsOrSpace === 'string') {
+        spaceId = scanErrorsOrSpace
+      } else {
+        scanErrors = typeof scanErrorsOrSpace === 'number' ? scanErrorsOrSpace : 0
+        spaceId = activeSpaceId
+      }
+    } else if (typeof activeSpaceId === 'string') {
+      spaceId = activeSpaceId
+    }
     const raw = this.store.folderChunkProgress(folder, spaceId)
     return foldFolderProgress(raw, discoveryComplete, scanErrors)
   }

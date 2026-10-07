@@ -81,7 +81,11 @@ export class ProgressRepository {
         const update = this.db.prepare(
           'UPDATE documents SET chunk_total = ?, chunk_done = ?, chunk_counted = 1 WHERE id = ?',
         )
-        for (const id of ids) update.run(totals.get(id) ?? 0, done.get(id) ?? 0, id)
+        for (const id of ids) {
+          const tot = Math.max(0, totals.get(id) ?? 0)
+          const d = Math.min(Math.max(0, done.get(id) ?? 0), tot)
+          update.run(tot, d, id)
+        }
         this.db.exec('COMMIT')
       } catch (err) {
         this.db.exec('ROLLBACK')
@@ -109,10 +113,13 @@ export class ProgressRepository {
       .get(targetSpace, targetSpace, targetSpace, resolve(path)) as
       | (DocRow & { total_chunks: number; completed_chunks: number | null })
       | undefined
+    const totalChunks = Math.max(0, row?.total_chunks ?? 0)
+    const rawCompleted = Math.max(0, row?.completed_chunks ?? 0)
+    const completedChunks = Math.min(rawCompleted, totalChunks)
     return {
       document: row ? toDocument(row) : null,
-      completedChunks: row?.completed_chunks ?? 0,
-      totalChunks: row?.total_chunks ?? 0,
+      completedChunks,
+      totalChunks,
     }
   }
 
@@ -139,16 +146,20 @@ export class ProgressRepository {
             coalesce(sum(total_chunks), 0) AS total_chunks,
             coalesce(sum(CASE WHEN status IN ('ready','empty') THEN 1.0
               WHEN status = 'text-only' AND total_chunks > 0
-                THEN (done_chunks * 1.0 / total_chunks)
+                THEN min(1.0, max(0.0, done_chunks * 1.0 / total_chunks))
               ELSE 0.0 END), 0.0) AS partial_file_progress
           FROM (
             SELECT d.status, d.truncated,
               CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
                 ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END AS total_chunks,
-              coalesce(
-                (SELECT ec.completed_chunks FROM document_embedding_counts ec 
-                 WHERE ec.document_id = d.id AND ec.space_id = coalesce(?, d.embedding_model)),
-                CASE WHEN d.chunk_counted = 1 AND (? IS NULL OR ? = d.embedding_model) THEN d.chunk_done ELSE 0 END
+              min(
+                CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
+                  ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END,
+                coalesce(
+                  (SELECT ec.completed_chunks FROM document_embedding_counts ec 
+                   WHERE ec.document_id = d.id AND ec.space_id = coalesce(?, d.embedding_model)),
+                  CASE WHEN d.chunk_counted = 1 AND (? IS NULL OR ? = d.embedding_model) THEN d.chunk_done ELSE 0 END
+                )
               ) AS done_chunks
             FROM documents d
             WHERE d.excluded = 0 ${normalized === null ? '' : 'AND (d.path = ? OR substr(d.path, 1, length(?)) = ?)'}
@@ -173,11 +184,12 @@ export class ProgressRepository {
           }
         | undefined
 
-      const completedChunks = row?.completed_chunks ?? 0
-      const totalChunks = row?.total_chunks ?? 0
+      const totalChunks = Math.max(0, row?.total_chunks ?? 0)
+      const rawCompleted = Math.max(0, row?.completed_chunks ?? 0)
+      const completedChunks = Math.min(rawCompleted, totalChunks)
       let semanticCoverage: number | undefined
       if (activeSpaceId !== undefined) {
-        semanticCoverage = totalChunks > 0 ? Math.min(1, completedChunks / totalChunks) : 1
+        semanticCoverage = totalChunks > 0 ? Math.min(1, Math.max(0, completedChunks) / totalChunks) : 1
       }
 
       return {
@@ -236,10 +248,13 @@ export class ProgressRepository {
           `SELECT count(*) AS docs,
             coalesce(sum(CASE WHEN d.chunk_counted = 1 THEN d.chunk_total ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END), 0) AS chunks,
             coalesce(sum(
-              coalesce(
-                (SELECT ec.completed_chunks FROM document_embedding_counts ec 
-                 WHERE ec.document_id = d.id AND ec.space_id = coalesce(?, d.embedding_model)),
-                CASE WHEN d.chunk_counted = 1 AND (? IS NULL OR ? = d.embedding_model) THEN d.chunk_done ELSE 0 END
+              min(
+                CASE WHEN d.chunk_counted = 1 THEN d.chunk_total ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END,
+                coalesce(
+                  (SELECT ec.completed_chunks FROM document_embedding_counts ec 
+                   WHERE ec.document_id = d.id AND ec.space_id = coalesce(?, d.embedding_model)),
+                  CASE WHEN d.chunk_counted = 1 AND (? IS NULL OR ? = d.embedding_model) THEN d.chunk_done ELSE 0 END
+                )
               )
             ), 0) AS vectors,
             coalesce(sum(CASE WHEN d.status = 'error' THEN 1 ELSE 0 END), 0) AS errors
@@ -252,16 +267,20 @@ export class ProgressRepository {
           errors: number
         }
 
+      const chunks = Math.max(0, row?.chunks ?? 0)
+      const vectors = Math.min(Math.max(0, row?.vectors ?? 0), chunks)
       let semanticCoverage: number | undefined
-      if (activeEmbeddingSpace && row.chunks > 0) {
-        semanticCoverage = Math.min(1, row.vectors / row.chunks)
+      if (activeEmbeddingSpace && chunks > 0) {
+        semanticCoverage = Math.min(1, Math.max(0, vectors) / chunks)
+      } else if (activeEmbeddingSpace && chunks === 0) {
+        semanticCoverage = 1
       }
 
       return {
-        docs: row.docs,
-        chunks: row.chunks,
-        vectors: row.vectors,
-        errors: row.errors,
+        docs: row?.docs ?? 0,
+        chunks,
+        vectors,
+        errors: row?.errors ?? 0,
         ...(semanticCoverage !== undefined ? { semanticCoverage } : {}),
         ...(activeEmbeddingSpace ? { activeEmbeddingSpace } : {}),
       }
