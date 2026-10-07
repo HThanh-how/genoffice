@@ -188,6 +188,11 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     return getDocumentIndexSnapshot(snapshotCtx, forceRefresh)
   })
 
+  // Storage budget endpoint
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexStorageBudget, (_event, forceRefresh?: boolean) => {
+    return getDocumentIndexSnapshot(snapshotCtx, forceRefresh).storageBudget
+  })
+
   // Heavy diagnostics endpoint cached for 60s (INV-10)
   ipcMain.handle('get-document-index-diagnostics', async (_event, forceRefresh?: boolean) => {
     return await getDocumentIndexDiagnostics(snapshotCtx, forceRefresh)

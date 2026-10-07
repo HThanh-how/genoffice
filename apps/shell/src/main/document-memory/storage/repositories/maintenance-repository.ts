@@ -12,6 +12,21 @@ import {
   type IncrementalVacuumOptions,
   type VacuumResult,
 } from '../../storage-gc'
+import {
+  type DocumentIndexStorageBudget,
+  type StorageBudgetSnapshot,
+  DEFAULT_STORAGE_BUDGET,
+  createStorageBudgetSnapshot,
+  safeGetFileSize,
+} from '../../storage-budget'
+
+export interface StorageMaintenanceResult {
+  gc: GarbageCollectionStats
+  vacuum: VacuumResult
+  limitStateBefore: 'ok' | 'warning' | 'full'
+  limitStateAfter: 'ok' | 'warning' | 'full'
+  reclaimedBytes: number
+}
 
 export const FTS_MERGE_PAGES = 8
 
@@ -221,5 +236,81 @@ export class MaintenanceRepository {
 
   async syncAnnIndex(spaceId: string): Promise<{ ok: boolean; count: number }> {
     return this.rebuildAnnIndex(spaceId)
+  }
+
+  checkStorageBudget(budget: DocumentIndexStorageBudget = DEFAULT_STORAGE_BUDGET): StorageBudgetSnapshot {
+    const activeDbSizeBytes = safeGetFileSize(this.dbPath)
+    const walSizeBytes = safeGetFileSize(`${this.dbPath}-wal`)
+    const freelist = this.getStorageFreelistStats()
+
+    let chunksBytes = 0
+    let embeddingsBytes = 0
+    let ftsBytes = 0
+    let ocrBytes = 0
+    try {
+      const dbstatRows = this.db
+        .prepare('SELECT name, sum(pgsize) AS bytes FROM dbstat GROUP BY name')
+        .all() as Array<{ name: string; bytes: number }>
+      for (const row of dbstatRows) {
+        if (row.name === 'chunks' || row.name.startsWith('chunks_')) chunksBytes += row.bytes
+        else if (row.name === 'chunk_embeddings' || row.name.startsWith('chunk_embeddings_')) embeddingsBytes += row.bytes
+        else if (row.name.includes('fts')) ftsBytes += row.bytes
+        else if (row.name.includes('ocr')) ocrBytes += row.bytes
+      }
+    } catch {
+      // Non-blocking if dbstat is not enabled
+    }
+
+    return createStorageBudgetSnapshot({
+      activeDbSizeBytes,
+      walSizeBytes,
+      budgetBytes: budget.maxDatabaseBytes,
+      chunksBytes,
+      embeddingsBytes,
+      ftsBytes,
+      ocrBytes,
+      backupBytes: safeGetFileSize(`${this.dbPath}.v2.backup.db`),
+      reclaimableBytes: freelist.reclaimableBytes,
+    })
+  }
+
+  runStorageBudgetMaintenance(options?: {
+    budget?: DocumentIndexStorageBudget
+    forceVacuum?: boolean
+  }): StorageMaintenanceResult {
+    const budget = options?.budget ?? DEFAULT_STORAGE_BUDGET
+    const beforeSnapshot = this.checkStorageBudget(budget)
+    const limitStateBefore = beforeSnapshot.limitState
+
+    // 1. Run garbage collection on retired sets and obsolete embeddings
+    const gc = this.runMaintenanceGc()
+
+    // 2. Run incremental vacuum to reclaim freelist pages
+    const freelist = this.getStorageFreelistStats()
+    const shouldVacuum = options?.forceVacuum || freelist.shouldVacuum || limitStateBefore !== 'ok'
+    const vacuum = shouldVacuum
+      ? this.runIncrementalVacuum({ force: options?.forceVacuum })
+      : {
+          vacuumed: false,
+          initialFreelistPages: freelist.freelistCount,
+          finalFreelistPages: freelist.freelistCount,
+          pagesReclaimed: 0,
+          bytesReclaimed: 0,
+        }
+
+    // 3. Compact FTS
+    this.mergeFtsStep(FTS_MERGE_PAGES)
+
+    const afterSnapshot = this.checkStorageBudget(budget)
+    const limitStateAfter = afterSnapshot.limitState
+    const reclaimedBytes = Math.max(0, beforeSnapshot.databaseBytes - afterSnapshot.databaseBytes) + vacuum.bytesReclaimed
+
+    return {
+      gc,
+      vacuum,
+      limitStateBefore,
+      limitStateAfter,
+      reclaimedBytes,
+    }
   }
 }

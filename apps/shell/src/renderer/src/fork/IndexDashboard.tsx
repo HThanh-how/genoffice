@@ -29,7 +29,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const searchInputRef = useRef<HTMLInputElement>(null)
 
   const { snap, attention, statusFailed, kick } = useIndexSnapshot(api)
-  const { memory, activity, mode, now } = snap
+  const { memory, activity, mode, now, storageBudget } = snap
   const progress = activity?.folderProgress ?? null
   const folder = activity?.folder ?? null
   const paused = !!mode?.effective?.paused || memory?.enabled === false
@@ -114,6 +114,24 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
         <div className="todo-status" role="status">
           <span>{actionNote}</span>
           <button type="button" className="ixp-icon" aria-label={d.dismissNote} onClick={() => setActionNote('')}>×</button>
+        </div>
+      )}
+      {storageBudget?.limitState === 'warning' && (
+        <div className="todo-status is-warning" role="status">
+          <span>
+            {lang === 'vi'
+              ? `Dung lượng chỉ mục đạt ${Math.round(storageBudget.usageRatio * 100)}% (Cảnh báo). Đang tối ưu hóa nền.`
+              : `Index storage at ${Math.round(storageBudget.usageRatio * 100)}% (Warning). Running background maintenance.`}
+          </span>
+        </div>
+      )}
+      {storageBudget?.limitState === 'full' && (
+        <div className="todo-status is-full" role="status">
+          <span>
+            {lang === 'vi'
+              ? `Dung lượng chỉ mục đạt giới hạn tối đa. Tạm dừng tìm kiếm ngữ nghĩa để bảo vệ dữ liệu.`
+              : `Index storage budget full. Pausing semantic indexing to protect disk space.`}
+          </span>
         </div>
       )}
 

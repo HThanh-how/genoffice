@@ -149,7 +149,7 @@ export class DocumentMemoryManager {
 
     this.stopPolicyWatch = onIndexingPolicyChange((policy) => {
       if (this.modelState === 'blocked' && (policy as any).allowHeavyEmbedding !== false) { this.modelState = 'not-loaded'; this.lastError = undefined }
-      if (!policy.paused && this.enabled && !this.stopped) { this.drain(); this.maintScheduler.scheduleFtsMaintenance() }
+      if (!policy.paused && this.enabled && !this.stopped) { void this.poll(); this.drain(); this.maintScheduler.scheduleFtsMaintenance() }
     })
 
     const pollInterval = options.pollIntervalMs ?? 60_000
@@ -214,7 +214,7 @@ export class DocumentMemoryManager {
     if (this.enabled && this.store.documentByPath(newR)?.status !== 'excluded') this.enqueue(newR)
   }
   // Scoped progress APIs to active embedding space (BEH-20)
-  legacyPaths(ext: readonly string[], lim: number) { return this.store.legacyPaths(ext, lim) }; listPaths() { return this.store.listPaths() }; getDocumentIndexProgress(p: string, activeSpaceId = this.embeddingCoord.currentProfile.embeddingId): DocumentIndexProgress { return this.maintScheduler.getDocumentIndexProgress(p, activeSpaceId) }
+  legacyPaths(ext: readonly string[], lim: number) { return this.store.legacyPaths(ext, lim) }; listPaths() { return this.store.listPaths() }; getDocumentIndexProgress(p: string, activeSpaceId = this.embeddingCoord.currentProfile.embeddingId): DocumentIndexProgress { const pr = this.maintScheduler.getDocumentIndexProgress(p, activeSpaceId); return (this.store.documentByPath(resolve(p))?.status === 'ready' && pr.state === 'indexing') ? { ...pr, state: 'ready', percent: 100 } : pr }
   getFolderIndexProgress(f?: string, d?: boolean | string, e?: number, activeSpaceId = this.embeddingCoord.currentProfile.embeddingId): FolderIndexProgress { return this.maintScheduler.getFolderIndexProgress(f, d, e, activeSpaceId) }
   getFolderIndexCounts(f?: string, s = this.embeddingCoord.currentProfile.embeddingId): FolderChunkProgress { return this.maintScheduler.getFolderIndexCounts(f, s) }; getLibraryIndexCounts(s = this.embeddingCoord.currentProfile.embeddingId): FolderChunkProgress { return this.maintScheduler.getLibraryIndexCounts(s) }; prioritizeFolder(folder: string): number { return this.freshnessCoord.prioritizeFolder(folder) }
   runFtsMaintenance(): Promise<void> { return this.maintScheduler.runFtsMaintenance() }; scheduleFtsMaintenance(delayMs?: number): void { this.maintScheduler.scheduleFtsMaintenance(delayMs) }
@@ -350,7 +350,6 @@ export class DocumentMemoryManager {
   private enqueue(path: string, prioritize = false, bytes?: number): void {
     if (this.stopped || !this.enabled) return
     const p = resolve(path)
-    if (this.activeGeneration.get(p) === this.currentGeneration(p)) return
     if (this.queued.has(p)) {
       if (prioritize) { const idx = this.queue.indexOf(p); if (idx > 0) { this.queue.splice(idx, 1); this.queue.unshift(p) } }
       return
@@ -424,22 +423,27 @@ export class DocumentMemoryManager {
       this.lastError = err; return
     }
     const ext = reply.result; this.readProgress.delete(path); const prev = this.store.documentByPath(path); const lexicalOnly = !!ext.skipEmbeddings && ext.chunks.length > 0
+    if (!(await this.freshnessCoord.handleExtractedFreshness(path, ext)) || !this.isCurrent(path, generation, epoch)) return
     const resumeOffset = !lexicalOnly && prev?.mtimeMs === ext.mtimeMs && prev?.sizeBytes === ext.sizeBytes ? this.store.resumeVectorOffset(path, ext.hash, this.embeddingCoord.currentProfile.embeddingId) : null
     if (resumeOffset === null) {
       const written = await this.store.replaceDocumentSliced(path, {
-        hash: ext.hash, mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes, chunks: ext.chunks,
-        embeddingModel: null, status: extractedStatus(ext), error: ext.error, truncated: ext.truncated, truncatedReason: ext.truncatedReason ?? null,
+        hash: ext.hash, mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes, chunks: ext.chunks, embeddingModel: null, status: extractedStatus(ext), error: ext.error, truncated: ext.truncated, truncatedReason: ext.truncatedReason ?? null,
       }, { shouldContinue: () => this.isCurrent(path, generation, epoch) })
       if (!written) return
       this.extractionCoord.recordScanInfo(path, ext as any); this.maintScheduler.scheduleFtsMaintenance()
     }
     this.lastError = undefined
     if (ext.chunks.length && !lexicalOnly) {
-      this.embeddingCoord.enqueueEmbed({
-        path, generation, epoch, hash: ext.hash, mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes,
-        chunks: ext.chunks, startOffset: resumeOffset ?? 0,
-      })
-      this.drain()
+      if (!this.maintScheduler.canAcceptExpensiveWork()) {
+        const persistReason = 'Storage budget hard limit reached: semantic embedding postponed'
+        void this.store.markErrorSliced(path, persistReason, { mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes }, { shouldContinue: () => this.isCurrent(path, generation, epoch) })
+      } else {
+        this.embeddingCoord.enqueueEmbed({
+          path, generation, epoch, hash: ext.hash, mtimeMs: ext.mtimeMs, sizeBytes: ext.sizeBytes,
+          chunks: ext.chunks, startOffset: resumeOffset ?? 0,
+        })
+        this.drain()
+      }
     }
   }
   private invalidatePath(path: string): void {
@@ -450,7 +454,7 @@ export class DocumentMemoryManager {
   }
   private async poll(): Promise<void> {
     if (this.stopped || !this.enabled || isIndexingPaused()) return
-    for (const p of this.store.incompletePaths()) this.enqueue(p)
+    for (const p of this.store.incompletePaths()) { if (!this.activeExtractions.has(p)) this.enqueue(p) }
     this.skippedMigrationDocs.clear(); this.scheduleMigrationStep(1000)
     this.drain()
   }

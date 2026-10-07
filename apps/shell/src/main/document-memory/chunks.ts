@@ -1,3 +1,5 @@
+import { DEFAULT_STORAGE_BUDGET } from './storage-budget'
+
 export interface ChunkMetadata {
   pageStart?: number
   pageEnd?: number
@@ -228,7 +230,7 @@ export function chunkDocumentTextV2(
 }
 
 /** Safety ceiling of chunks stored for one file; beyond it the file is truncated and flagged. */
-export const MAX_CHUNKS_PER_FILE = 4_096
+export const MAX_CHUNKS_PER_FILE = DEFAULT_STORAGE_BUDGET.maxChunksPerFile
 /**
  * The most pages of one PDF that are ever read and indexed, whatever the setting: reading all of
  * a 4,000-page textbook costs hours of work and a week of quota to make one file searchable.

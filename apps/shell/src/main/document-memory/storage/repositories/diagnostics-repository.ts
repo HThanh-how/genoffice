@@ -10,6 +10,13 @@ import {
   readV3RetentionState,
   findMostRecentV2Backup,
 } from '../migration/v3-retention-state'
+import {
+  type DocumentIndexStorageBudget,
+  type StorageBudgetSnapshot,
+  DEFAULT_STORAGE_BUDGET,
+  calculateStorageLimitState,
+  createStorageBudgetSnapshot,
+} from '../../storage-budget'
 
 export class DiagnosticsRepository {
   constructor(
@@ -222,6 +229,16 @@ export class DiagnosticsRepository {
       }
     }
 
+    const databaseBytes = activeDbSizeBytes + walSizeBytes
+    const budgetBytes = DEFAULT_STORAGE_BUDGET.maxDatabaseBytes
+    const usageRatio = budgetBytes > 0 ? Number((databaseBytes / budgetBytes).toFixed(4)) : 0
+    const limitState = calculateStorageLimitState(databaseBytes, budgetBytes)
+    const chunksBytes = breakdown?.chunksBytes ?? 0
+    const embeddingsBytes = breakdown?.embeddingsBytes ?? 0
+    const ftsBytes = breakdown?.ftsBytes ?? 0
+    const ocrBytes = breakdown?.ocrBytes ?? 0
+    const backupBytes = v2BackupSizeBytes ?? 0
+
     return {
       activeDbSizeBytes,
       walSizeBytes,
@@ -235,7 +252,33 @@ export class DiagnosticsRepository {
       topOffendersByChunks,
       topOffendersBySize,
       ...(breakdown ? { breakdown } : {}),
+      databaseBytes,
+      budgetBytes,
+      usageRatio,
+      chunksBytes,
+      embeddingsBytes,
+      ftsBytes,
+      ocrBytes,
+      backupBytes,
+      reclaimableBytes: estimatedReclaimableBytes,
+      limitState,
     }
+  }
+
+  getStorageBudgetSnapshot(budget?: DocumentIndexStorageBudget, backupPath?: string): StorageBudgetSnapshot {
+    const diag = this.getStorageDiagnostics(backupPath)
+    const effBudget = budget?.maxDatabaseBytes ?? DEFAULT_STORAGE_BUDGET.maxDatabaseBytes
+    return createStorageBudgetSnapshot({
+      activeDbSizeBytes: diag.activeDbSizeBytes,
+      walSizeBytes: diag.walSizeBytes,
+      budgetBytes: effBudget,
+      chunksBytes: diag.breakdown?.chunksBytes ?? diag.chunksBytes ?? 0,
+      embeddingsBytes: diag.breakdown?.embeddingsBytes ?? diag.embeddingsBytes ?? 0,
+      ftsBytes: diag.breakdown?.ftsBytes ?? diag.ftsBytes ?? 0,
+      ocrBytes: diag.breakdown?.ocrBytes ?? diag.ocrBytes ?? 0,
+      backupBytes: diag.v2BackupSizeBytes ?? 0,
+      reclaimableBytes: diag.estimatedReclaimableBytes,
+    })
   }
 }
 

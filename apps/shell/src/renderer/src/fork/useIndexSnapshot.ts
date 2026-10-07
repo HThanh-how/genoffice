@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { HomeApi, HomeIndexingActivity, DocumentMemoryStatus } from '../../../shared/home-api'
-import type { IndexingNow } from '../../../shared/fork/document-index-api'
+import type { IndexingNow, StorageBudgetSnapshot } from '../../../shared/fork/document-index-api'
 import type { IndexingModeState } from '../../../shared/fork/indexing-mode'
 import { INDEXING_MODES } from '../../../shared/fork/indexing-mode'
 import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
@@ -14,6 +14,7 @@ export interface Snapshot {
   activity: HomeIndexingActivity | null
   mode: IndexingModeState | null
   now: IndexingNow | null
+  storageBudget?: StorageBudgetSnapshot | null
 }
 
 export function useIndexSnapshot(api: HomeApi) {
@@ -22,6 +23,7 @@ export function useIndexSnapshot(api: HomeApi) {
     activity: null,
     mode: null,
     now: null,
+    storageBudget: null,
   })
   const [attention, setAttention] = useState<IndexIssueSummary | null>(null)
   const [statusFailed, setStatusFailed] = useState(false)
@@ -55,6 +57,7 @@ export function useIndexSnapshot(api: HomeApi) {
               activity: snapData.activity,
               mode: snapData.mode,
               now: snapData.now,
+              storageBudget: snapData.storageBudget ?? null,
             })
             const isPaused = !!snapData.mode?.effective?.paused || snapData.memory?.enabled === false
             const pendingCount = snapData.memory?.pending ?? snapData.activity?.memory?.pending ?? 0

@@ -4,12 +4,22 @@ import { foldFolderProgress, type FolderIndexProgress } from '../folder-progress
 import { isIndexingPaused } from '../../fork/indexing-policy-bus'
 import type { BackgroundWorkGate } from '../background-work-gate'
 import type { WorkerRequest, WorkerReply } from '../worker-types'
+import {
+  type DocumentIndexStorageBudget,
+  type StorageBudgetSnapshot,
+  type StorageLimitState,
+  DEFAULT_STORAGE_BUDGET,
+  createStorageBudgetSnapshot,
+  safeGetFileSize,
+} from '../storage-budget'
 
 export const FTS_MERGE_PAGES = 8
 export const VACUUM_STEP_MAX_PAGES = 256
 
 export interface MaintenanceSchedulerOptions {
   store: DocumentMemoryStore
+  budget?: DocumentIndexStorageBudget
+  onBudgetStateChange?: (state: StorageLimitState, snapshot: StorageBudgetSnapshot) => void
   onFtsStep?: (pages: number) => boolean
   askWorker?: (request: WorkerRequest) => Promise<WorkerReply | null>
   backgroundGate?: BackgroundWorkGate
@@ -31,10 +41,58 @@ export class MaintenanceScheduler {
   private periodicRunning = false
   private disposed = false
 
+  private lastBudgetState: StorageLimitState = 'ok'
+  private lastBudgetSnapshot: StorageBudgetSnapshot | null = null
+
   constructor(private readonly options: MaintenanceSchedulerOptions) {}
 
   get store(): DocumentMemoryStore {
     return this.options.store
+  }
+
+  get budget(): DocumentIndexStorageBudget {
+    return this.options.budget ?? DEFAULT_STORAGE_BUDGET
+  }
+
+  checkStorageBudget(): StorageBudgetSnapshot {
+    const dbPath = this.store.dbPath
+    const activeDbSizeBytes = safeGetFileSize(dbPath)
+    const walSizeBytes = safeGetFileSize(`${dbPath}-wal`)
+    const freelist = typeof (this.store as any).getStorageFreelistStats === 'function'
+      ? (this.store as any).getStorageFreelistStats()
+      : { reclaimableBytes: 0 }
+
+    const snapshot = createStorageBudgetSnapshot({
+      activeDbSizeBytes,
+      walSizeBytes,
+      budgetBytes: this.budget.maxDatabaseBytes,
+      backupBytes: safeGetFileSize(`${dbPath}.v2.backup.db`),
+      reclaimableBytes: freelist?.reclaimableBytes ?? 0,
+    })
+
+    const prevState = this.lastBudgetState
+    this.lastBudgetState = snapshot.limitState
+    this.lastBudgetSnapshot = snapshot
+
+    if (snapshot.limitState === 'warning') {
+      this.scheduleGcStep(100)
+      this.scheduleVacuumStep(500)
+      this.scheduleFtsMaintenance(250)
+    } else if (snapshot.limitState === 'full') {
+      this.scheduleGcStep(50)
+      this.scheduleVacuumStep(100)
+    }
+
+    if (prevState !== snapshot.limitState && this.options.onBudgetStateChange) {
+      this.options.onBudgetStateChange(snapshot.limitState, snapshot)
+    }
+
+    return snapshot
+  }
+
+  canAcceptExpensiveWork(): boolean {
+    const snap = this.lastBudgetSnapshot ?? this.checkStorageBudget()
+    return snap.limitState !== 'full'
   }
 
   private isStopped(): boolean {
@@ -188,6 +246,7 @@ export class MaintenanceScheduler {
     if (this.isStopped() || this.periodicRunning || this.isPaused()) return
     this.periodicRunning = true
     try {
+      this.checkStorageBudget()
       await this.runFtsMaintenance()
       if (this.isStopped() || this.isPaused()) return
       await this.runGcStep()

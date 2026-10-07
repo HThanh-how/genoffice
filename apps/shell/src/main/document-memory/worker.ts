@@ -15,8 +15,9 @@ import {
   DEFAULT_PDF_PAGES,
   type TruncatedReason,
 } from './chunks'
+import { DEFAULT_STORAGE_BUDGET } from './storage-budget'
 
-export const MAX_INDEX_TEXT_CHARS = 8 * 1024 * 1024
+export const MAX_INDEX_TEXT_CHARS = DEFAULT_STORAGE_BUDGET.maxExtractedCharactersPerFile
 import { DocumentMemoryStore } from './store'
 import { embedTexts } from './embeddings'
 import { renderPdfPagesForOcr, type OcrRenderRequest } from './agy-ocr-render'
@@ -59,7 +60,7 @@ export async function extractDocumentSliced(
   maxPdfPages = DEFAULT_PDF_PAGES,
 ) {
   const before = await stat(path)
-  if (before.size > 128 * 1024 * 1024) throw new Error('Document exceeds the 128 MB indexing limit')
+  if (before.size > DEFAULT_STORAGE_BUDGET.maxFileBytes) throw new Error('Document exceeds the 128 MB indexing limit')
   const kept = partialPdfs.get(path)
   const resumable = !!kept && kept.mtimeMs === before.mtimeMs && kept.sizeBytes === before.size
   const bytes = resumable ? kept.bytes : await readFile(path)
@@ -152,10 +153,15 @@ export async function extractDocumentSliced(
   let hash = fileHash
   let ocrRead = false
   if (scannedPages.length && ocr && isPdf) {
+    const pagesToOcr = scannedPages.slice(0, DEFAULT_STORAGE_BUDGET.maxOcrPagesPerFile)
+    if (scannedPages.length > DEFAULT_STORAGE_BUDGET.maxOcrPagesPerFile) {
+      truncated = true
+      truncatedReason = truncatedReason ?? 'pdf-page-limit'
+    }
     // pages the user let Antigravity read: their transcription is added to whatever text the
     // PDF has itself (all of it for a pure scan, the missing pages for a mixed file)
     const stored = ocr(path, fileHash)
-    const pages = stored?.pages.filter((page) => scannedPages.includes(page.page)) ?? []
+    const pages = stored?.pages.filter((page) => pagesToOcr.includes(page.page)) ?? []
     if (stored && pages.length) {
       ocrRead = true
       const fromOcr = ocrChunksFromPages({ totalPages: scannedPages.length, pages })

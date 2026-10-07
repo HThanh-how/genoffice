@@ -23,6 +23,7 @@ import type {
   IndexingNow,
 } from '../../shared/fork/document-index-api'
 import type { FolderChunkProgress } from '../document-memory/store'
+import { createStorageBudgetSnapshot, safeGetFileSize } from '../document-memory/storage-budget'
 
 export interface SnapshotContext {
   getDocumentMemory: () => DocumentMemoryManager | null
@@ -223,6 +224,22 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
   const storage = cachedDiagnostics?.storage ?? fallbackStorageDiagnostics(Boolean(documentMemory))
   const migration = cachedDiagnostics?.migration ?? fallbackMigrationDiagnostics()
 
+  const liveDbPath = ctx.dbPath()
+  const liveActiveBytes = safeGetFileSize(liveDbPath)
+  const liveWalBytes = safeGetFileSize(`${liveDbPath}-wal`)
+
+  const storageBudget = createStorageBudgetSnapshot({
+    activeDbSizeBytes: liveActiveBytes > 0 ? liveActiveBytes : storage.activeDbSizeBytes,
+    walSizeBytes: liveWalBytes > 0 ? liveWalBytes : storage.walSizeBytes,
+    budgetBytes: storage.budgetBytes,
+    chunksBytes: storage.breakdown?.chunksBytes ?? storage.chunksBytes,
+    embeddingsBytes: storage.breakdown?.embeddingsBytes ?? storage.embeddingsBytes,
+    ftsBytes: storage.breakdown?.ftsBytes ?? storage.ftsBytes,
+    ocrBytes: storage.breakdown?.ocrBytes ?? storage.ocrBytes,
+    backupBytes: storage.v2BackupSizeBytes ?? storage.backupBytes,
+    reclaimableBytes: storage.estimatedReclaimableBytes ?? storage.reclaimableBytes,
+  })
+
   const modeState = getSnapshotMode(ctx)
 
   const snapshot: DocumentIndexSnapshot = {
@@ -232,6 +249,7 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
     issues,
     now: nowState,
     storage,
+    storageBudget,
     performance,
     migration,
     timestamp: now,

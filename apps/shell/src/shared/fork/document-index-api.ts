@@ -9,6 +9,20 @@ import type { IndexingModeState } from './indexing-mode'
 
 export type { DbLocationState, DbMoveError, FolderOwner, KnownSearchSource, KnownSearchSourceEntry, KnownSearchSourceStatus }
 
+/** User-visible and IPC-exposed storage snapshot. */
+export interface StorageBudgetSnapshot {
+  databaseBytes: number
+  budgetBytes: number
+  usageRatio: number
+  chunksBytes: number
+  embeddingsBytes: number
+  ftsBytes: number
+  ocrBytes: number
+  backupBytes: number
+  reclaimableBytes: number
+  limitState: 'ok' | 'warning' | 'full'
+}
+
 /** Storage diagnostics breakdown and high-level database metrics. */
 export interface DocumentIndexStorageDiagnostics {
   activeDbSizeBytes: number
@@ -30,6 +44,16 @@ export interface DocumentIndexStorageDiagnostics {
     ocrBytes: number
     otherBytes: number
   }
+  databaseBytes?: number
+  budgetBytes?: number
+  usageRatio?: number
+  chunksBytes?: number
+  embeddingsBytes?: number
+  ftsBytes?: number
+  ocrBytes?: number
+  backupBytes?: number | null
+  reclaimableBytes?: number
+  limitState?: 'ok' | 'warning' | 'full'
 }
 
 /** Performance diagnostics: event-loop lag and SQLite latency profiling. */
@@ -72,6 +96,7 @@ export interface DocumentIndexSnapshot {
   issues: IndexIssueSummary
   now: IndexingNow | null
   storage: DocumentIndexStorageDiagnostics
+  storageBudget?: StorageBudgetSnapshot
   performance: DocumentIndexPerformanceDiagnostics
   migration: DocumentIndexMigrationDiagnostics
   timestamp: number
@@ -84,6 +109,7 @@ export type DbMoveResult =
 /** IPC channels added by the document-index popup rework (fork-only). */
 export const DOCUMENT_INDEX_CHANNELS = {
   getDocumentIndexSnapshot: 'home:get-document-index-snapshot',
+  getDocumentIndexStorageBudget: 'home:get-document-index-storage-budget',
   getDocumentIndexIssueSummary: 'home:get-document-index-issue-summary',
   retryDocumentIndexGroup: 'home:retry-document-index-group',
   listIndexedFolders: 'home:list-indexed-folders',
@@ -334,4 +360,6 @@ export interface DocumentIndexApi {
   setEmbeddingModel(profile: EmbeddingProfileChoice): Promise<{ ok: boolean; requeued: number }>
   /** Consolidated snapshot of document memory and background indexing status (cached on main thread). */
   getDocumentIndexSnapshot(forceRefresh?: boolean): Promise<DocumentIndexSnapshot>
+  /** Storage budget snapshot and user-visible limits. */
+  getDocumentIndexStorageBudget?(): Promise<StorageBudgetSnapshot>
 }
