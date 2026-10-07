@@ -1,0 +1,56 @@
+name: Document Search CI
+
+on:
+  push:
+    branches: ['fix/document-search-*', 'main']
+  pull_request:
+    branches: ['main']
+    paths:
+      - 'apps/shell/**'
+      - 'packages/agent-core/**'
+      - 'packages/ai-search/**'
+      - 'tools/check-document-memory-architecture.mjs'
+      - '.github/workflows/document-search.yml'
+
+concurrency:
+  group: document-search-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }}, Node ${{ matrix.node-version }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node-version: [22]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck shell
+        run: npm run typecheck -w @genoffice/shell
+
+      - name: Check document memory architecture boundaries
+        run: npm run check:document-memory-architecture
+
+      - name: Run shell test suite
+        run: npm run test -w @genoffice/shell
+
+      - name: Run agent-core test suite
+        run: npx vitest run packages/agent-core/

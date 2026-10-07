@@ -128,6 +128,9 @@ jobs:
       - name: Check comments/docs are English-only
         run: npm run check:english-comments
 
+      - name: Check document memory architecture boundaries
+        run: npm run check:document-memory-architecture
+
       - name: Lint
         run: npm run lint
 
