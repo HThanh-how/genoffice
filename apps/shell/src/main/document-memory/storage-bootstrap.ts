@@ -6,7 +6,9 @@ import { recoverInterruptedCutover, getManifestPath } from './storage/migration/
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'
 import { verifyDatabaseIntegrity } from './storage/migration/logical-verifier'
 import {
+  findMostRecentV2Backup,
   initV3RetentionState,
+  readV3RetentionState,
   recordV3VerifiedLaunch,
   type V3RetentionState,
 } from './storage/migration/v3-retention-state'
@@ -65,31 +67,63 @@ export async function ensureDocumentMemoryStorageReady(
     }
   }
 
+  const rollbackBackup = findMostRecentV2Backup(dbDir, 'document-memory.db')
+  const migrationTemp = `${dbPath}.v3.tmp`
+  const retentionState = readV3RetentionState(dbDir)
   if (!existsSync(dbPath)) {
-    return { ready: true, migrated: false }
+    if (rollbackBackup || existsSync(migrationTemp) || retentionState) {
+      return {
+        ready: false,
+        migrated: false,
+        error: 'Document-memory database is missing while migration or rollback artifacts still exist.',
+      }
+    }
+    return {
+      ready: true,
+      migrated: false,
+    }
   }
 
   try {
     const report = inspectDatabaseVersion(dbPath)
     if (!report.needsMigration) {
-      // V3 database already exists. Verify physical & FK integrity.
-      let retentionState: V3RetentionState | undefined
-      const integrity = verifyDatabaseIntegrity(dbPath)
-      if (report.isV3 && integrity.ok) {
-        // Bootstrap V3 physical/integrity PASS -> verifiedLaunches += 1
-        const recorded = recordV3VerifiedLaunch(dbDir)
-        if (recorded) {
-          retentionState = recorded
-        }
-        // Enforce backup retention policy
-        try {
-          enforceBackupRetentionPolicy(dbPath)
-        } catch {
-          // Retention purge failure should not block bootstrap readiness
+      if (!report.isV3) {
+        return {
+          ready: false,
+          migrated: false,
+          report,
+          error: `Existing document-memory database is not a verified V3 database: ${report.state}`,
         }
       }
-
-      return { ready: true, migrated: false, report, retentionState }
+      const integrity = verifyDatabaseIntegrity(dbPath)
+      if (!integrity.ok) {
+        return {
+          ready: false,
+          migrated: false,
+          report,
+          error:
+            `Existing V3 database failed integrity verification: ` +
+            `integrity=${integrity.integrity}, ` +
+            `fkErrors=${integrity.foreignKeyErrors.length}`,
+        }
+      }
+      let retentionState: V3RetentionState | undefined
+      const recorded = recordV3VerifiedLaunch(dbDir)
+      if (recorded) {
+        retentionState = recorded
+      }
+      try {
+        enforceBackupRetentionPolicy(dbPath)
+      } catch {
+        // Cleanup failure must not make
+        // a verified database unavailable.
+      }
+      return {
+        ready: true,
+        migrated: false,
+        report,
+        retentionState,
+      }
     }
 
     // Read active embedding configuration independently before database access (BEH-14)
