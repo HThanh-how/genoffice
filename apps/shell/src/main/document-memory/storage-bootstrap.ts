@@ -4,12 +4,20 @@ import { inspectDatabaseVersion, type StorageVersionReport } from './storage/sch
 import { migrateStorageV2ToV3, type StorageMigrationResult } from './storage-migration'
 import { recoverInterruptedCutover, getManifestPath } from './storage/migration/cutover'
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'
+import { verifyDatabaseIntegrity } from './storage/migration/logical-verifier'
+import {
+  initV3RetentionState,
+  recordV3VerifiedLaunch,
+  type V3RetentionState,
+} from './storage/migration/v3-retention-state'
+import { enforceBackupRetentionPolicy } from './storage/migration/backup-retention'
 
 export interface BootstrapResult {
   ready: boolean
   migrated: boolean
   report?: StorageVersionReport
   migrationResult?: StorageMigrationResult
+  retentionState?: V3RetentionState
   error?: string
 }
 
@@ -64,7 +72,24 @@ export async function ensureDocumentMemoryStorageReady(
   try {
     const report = inspectDatabaseVersion(dbPath)
     if (!report.needsMigration) {
-      return { ready: true, migrated: false, report }
+      // V3 database already exists. Verify physical & FK integrity.
+      let retentionState: V3RetentionState | undefined
+      const integrity = verifyDatabaseIntegrity(dbPath)
+      if (report.isV3 && integrity.ok) {
+        // Bootstrap V3 physical/integrity PASS -> verifiedLaunches += 1
+        const recorded = recordV3VerifiedLaunch(dbDir)
+        if (recorded) {
+          retentionState = recorded
+        }
+        // Enforce backup retention policy
+        try {
+          enforceBackupRetentionPolicy(dbPath)
+        } catch {
+          // Retention purge failure should not block bootstrap readiness
+        }
+      }
+
+      return { ready: true, migrated: false, report, retentionState }
     }
 
     // Read active embedding configuration independently before database access (BEH-14)
@@ -88,11 +113,18 @@ export async function ensureDocumentMemoryStorageReady(
       durationMs: migrationResult.durationMs,
     })
 
+    // Sau migration: verifiedLaunches = 0
+    let retentionState: V3RetentionState | undefined
+    if (migrationResult.backupDbPath) {
+      retentionState = initV3RetentionState(dbDir, migrationResult.backupDbPath)
+    }
+
     return {
       ready: true,
       migrated: true,
       report,
       migrationResult,
+      retentionState,
     }
   } catch (err) {
     const errorMsg = (err as Error).message

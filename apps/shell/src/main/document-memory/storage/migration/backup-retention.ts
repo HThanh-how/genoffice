@@ -1,7 +1,30 @@
-import { existsSync, readdirSync, statSync, unlinkSync } from 'node:fs'
-import { basename, dirname, join } from 'node:path'
+import { existsSync, statSync, unlinkSync } from 'node:fs'
+import { basename, dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { verifyDatabaseIntegrity } from './logical-verifier'
+import {
+  type V3RetentionState,
+  readV3RetentionState,
+  writeV3RetentionState,
+  initV3RetentionState,
+  recordV3VerifiedLaunch,
+  clearV3RetentionState,
+  getV3RetentionStatePath,
+  findAllV2Backups,
+  findMostRecentV2Backup,
+} from './v3-retention-state'
+
+export {
+  type V3RetentionState,
+  readV3RetentionState,
+  writeV3RetentionState,
+  initV3RetentionState,
+  recordV3VerifiedLaunch,
+  clearV3RetentionState,
+  getV3RetentionStatePath,
+  findAllV2Backups,
+  findMostRecentV2Backup,
+}
 
 export function getCanonicalBackupPath(dbPath: string): string {
   return `${dbPath}.v2.backup.db`
@@ -55,81 +78,121 @@ export interface BackupCandidate {
   verified: boolean
 }
 
+export interface BackupRetentionOptions {
+  minVerifiedLaunches?: number
+  minAgeHours?: number
+}
+
 /**
- * Enforces enterprise backup retention policy (BEH-17 / Pair 07):
- * - Keeps at least 3 verified backups (>= 3 verified copies)
- * - Keeps all backups created within the last 24 hours (>= 24h retention)
- * - Backup chưa verified: do not count as safe verified launch
- * - Safely purges only backups that are older than 24h AND beyond the 3 most recent verified backups
+ * Enforces enterprise backup retention policy (Pair 5 / BLOCKER 5):
+ * - Retains V2 rollback backup until V3 has successfully launched and verified at least 3 times.
+ * - AND backup has existed for >= 24 hours.
+ * - AND backup integrity verification PASS.
+ * - AND current V3 database integrity verification PASS.
+ * 
+ * Safely purges V2 rollback backup ONLY when all 4 conditions are met.
  */
 export function enforceBackupRetentionPolicy(
   dbPath: string,
-  minRetainedBackups = 3,
-  minAgeHours = 24,
+  minVerifiedLaunchesOrOptions?: number | BackupRetentionOptions,
+  maybeMinAgeHours?: number,
 ): number {
   const dir = dirname(dbPath)
   if (!existsSync(dir)) return 0
 
-  const dbBase = basename(dbPath)
-  const candidateFiles: BackupCandidate[] = []
+  let minVerifiedLaunches = 3
+  let minAgeHours = 24
 
-  try {
-    const files = readdirSync(dir)
-    for (const f of files) {
-      if (f.startsWith(dbBase) && f.includes('.v2.') && f.endsWith('.backup.db')) {
-        const full = join(dir, f)
-        try {
-          const st = statSync(full)
-          const verified = isBackupVerified(full)
-          candidateFiles.push({ path: full, mtimeMs: st.mtimeMs, verified })
-        } catch {
-          // ignore unreadable files
-        }
-      }
+  if (typeof minVerifiedLaunchesOrOptions === 'number') {
+    minVerifiedLaunches = minVerifiedLaunchesOrOptions
+    if (typeof maybeMinAgeHours === 'number') {
+      minAgeHours = maybeMinAgeHours
     }
-  } catch {
+  } else if (minVerifiedLaunchesOrOptions && typeof minVerifiedLaunchesOrOptions === 'object') {
+    if (typeof minVerifiedLaunchesOrOptions.minVerifiedLaunches === 'number') {
+      minVerifiedLaunches = minVerifiedLaunchesOrOptions.minVerifiedLaunches
+    }
+    if (typeof minVerifiedLaunchesOrOptions.minAgeHours === 'number') {
+      minAgeHours = minVerifiedLaunchesOrOptions.minAgeHours
+    }
+  }
+
+  // Condition 4: Current V3 integrity PASS
+  // Database must exist and pass physical SQLite integrity & FK constraints
+  if (!existsSync(dbPath)) {
+    return 0
+  }
+  const v3Integrity = verifyDatabaseIntegrity(dbPath)
+  if (!v3Integrity.ok) {
     return 0
   }
 
-  // Sort descending by mtimeMs (most recent first)
-  candidateFiles.sort((a, b) => b.mtimeMs - a.mtimeMs)
+  const dbBase = basename(dbPath)
+  const candidateFiles = findAllV2Backups(dir, dbBase)
+  let state = readV3RetentionState(dbPath)
 
-  const now = Date.now()
-  const minAgeMs = minAgeHours * 60 * 60 * 1000
-
-  let verifiedCount = 0
-  const protectedPaths = new Set<string>()
-
-  for (const item of candidateFiles) {
-    const ageMs = now - item.mtimeMs
-    // Invariant: Never delete any backup younger than 24 hours
-    if (ageMs < minAgeMs) {
-      protectedPaths.add(item.path)
-    }
-
-    // Invariant: Keep at least minRetainedBackups (>= 3) verified backups
-    if (item.verified && verifiedCount < minRetainedBackups) {
-      protectedPaths.add(item.path)
-      verifiedCount++
+  if (!state) {
+    if (candidateFiles.length > 0) {
+      // Discover existing candidate backup on disk and initialize state with 0 verified launches
+      state = initV3RetentionState(dbPath, candidateFiles[0].path, candidateFiles[0].mtimeMs)
+    } else {
+      return 0
     }
   }
 
+  if (!existsSync(state.backupPath)) {
+    clearV3RetentionState(dbPath)
+    return 0
+  }
+
+  // Condition 3: Backup integrity PASS
+  const backupHealthy = isBackupVerified(state.backupPath)
+  if (!backupHealthy) {
+    return 0
+  }
+
+  // Condition 2: V3 verified launches >= 3
+  const launchesPass = state.verifiedLaunches >= minVerifiedLaunches
+  if (!launchesPass) {
+    return 0
+  }
+
+  // Condition 1: Age >= 24h
+  const now = Date.now()
+  let backupMtimeMs: number
+  try {
+    backupMtimeMs = statSync(state.backupPath).mtimeMs
+  } catch {
+    return 0
+  }
+  const effectiveCreatedAt = Math.min(state.createdAt ?? backupMtimeMs, backupMtimeMs)
+  const ageMs = now - effectiveCreatedAt
+  const minAgeMs = minAgeHours * 60 * 60 * 1000
+  const agePass = ageMs >= minAgeMs
+  if (!agePass) {
+    return 0
+  }
+
+  // All 4 conditions met: Purge V2 backup and reclaim storage
   let purgedCount = 0
+  try {
+    unlinkSync(state.backupPath)
+    purgedCount++
+    clearV3RetentionState(dbPath)
+  } catch {
+    // Safe: failure during unlink never throws or corrupts state
+  }
 
-  // Purge eligible unprotected candidates
+  // Also clean up any other orphan V2 backup files older than minAgeHours
   for (const item of candidateFiles) {
-    if (protectedPaths.has(item.path)) {
-      continue
-    }
-
-    const ageMs = now - item.mtimeMs
-    // Only purge if older than minAgeMs
-    if (ageMs >= minAgeMs) {
+    if (item.path === state.backupPath) continue
+    const ageItemMs = now - item.mtimeMs
+    if (ageItemMs >= minAgeMs) {
       try {
         unlinkSync(item.path)
         purgedCount++
       } catch {
-        // Safe: failure during unlink never affects other files or throws
+        // ignore
       }
     }
   }
