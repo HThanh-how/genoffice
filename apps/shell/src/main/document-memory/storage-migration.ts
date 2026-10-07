@@ -64,6 +64,7 @@ export function migrateStorageV2ToV3(sourceDbPath: string, options: StorageMigra
   const startTime = performance.now()
   const resolvedSource = resolve(sourceDbPath)
   const tempPath = resolve(options.tempDbPath ?? `${resolvedSource}.v3.tmp`)
+  // Unique collision-safe backup path; manifest preserves exact path throughout atomic cutover
   const backupPath = resolve(options.backupDbPath ?? generateCollisionSafeBackupPath(resolvedSource))
   const pageSize = options.pageSize ?? 500
   const activeSpaceId = options.activeSpaceId

@@ -1,7 +1,9 @@
-import { existsSync, statSync, unlinkSync } from 'node:fs'
-import { basename, dirname } from 'node:path'
+import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs'
+import { basename, dirname, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { DatabaseSync } from 'node:sqlite'
 import { verifyDatabaseIntegrity } from './logical-verifier'
+import { MIN_VERIFIED_BACKUPS, MIN_BACKUP_AGE_HOURS } from './retention-policy'
 import {
   type V3RetentionState,
   readV3RetentionState,
@@ -47,8 +49,37 @@ export function isBackupVerified(backupPath: string): boolean {
   try {
     const st = statSync(backupPath)
     if (st.size < 100) return false
+
+    // Condition A: If an active/interrupted cutover manifest exists for this backup, it is incomplete/failed!
+    const dir = dirname(backupPath)
+    const manifestPath = join(dir, 'document-memory.migration-state.json')
+    if (existsSync(manifestPath)) {
+      try {
+        const raw = readFileSync(manifestPath, 'utf8')
+        const manifest = JSON.parse(raw)
+        if (manifest && typeof manifest === 'object' && manifest.phase !== 'completed') {
+          if (manifest.backupPath && resolve(manifest.backupPath) === resolve(backupPath)) {
+            return false
+          }
+        }
+      } catch {
+        // ignore parse error
+      }
+    }
+
     const check = verifyDatabaseIntegrity(backupPath)
-    return check.ok === true
+    if (check.ok !== true) return false
+
+    // Condition B: Ensure database is readable SQLite with schema tables (not an empty/incomplete artifact)
+    const db = new DatabaseSync(backupPath, { readOnly: true })
+    try {
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+      if (tables.length === 0) return false
+    } finally {
+      db.close()
+    }
+
+    return true
   } catch {
     return false
   }
@@ -80,119 +111,149 @@ export interface BackupCandidate {
 
 export interface BackupRetentionOptions {
   minVerifiedLaunches?: number
+  minRetainedBackups?: number
   minAgeHours?: number
 }
 
 /**
- * Enforces enterprise backup retention policy (Pair 5 / BLOCKER 5):
- * - Retains V2 rollback backup until V3 has successfully launched and verified at least 3 times.
- * - AND backup has existed for >= 24 hours.
- * - AND backup integrity verification PASS.
- * - AND current V3 database integrity verification PASS.
- * 
- * Safely purges V2 rollback backup ONLY when all 4 conditions are met.
+ * Enforces enterprise backup retention policy (PAIR 06 / BEH-17 / BLOCKER 5):
+ * - Keeps at least 3 verified backups (>= 3 verified copies).
+ * - Keeps all backups created within the last 24 hours (>= 24h retention).
+ * - Backups younger than 24h or within the 3 newest verified backups are NEVER deleted.
+ * - Failed/incomplete migration backups are never treated as verified.
+ * - Safely purges only backups older than 24h beyond the 3 newest verified backups,
+ *   or a verified migration rollback backup once V3 has completed >= 3 verified launches.
  */
 export function enforceBackupRetentionPolicy(
   dbPath: string,
-  minVerifiedLaunchesOrOptions?: number | BackupRetentionOptions,
+  minVerifiedOrOptions?: number | BackupRetentionOptions,
   maybeMinAgeHours?: number,
 ): number {
   const dir = dirname(dbPath)
   if (!existsSync(dir)) return 0
 
+  let minRetainedBackups = MIN_VERIFIED_BACKUPS
   let minVerifiedLaunches = 3
-  let minAgeHours = 24
+  let minAgeHours = MIN_BACKUP_AGE_HOURS
 
-  if (typeof minVerifiedLaunchesOrOptions === 'number') {
-    minVerifiedLaunches = minVerifiedLaunchesOrOptions
+  if (typeof minVerifiedOrOptions === 'number') {
+    minRetainedBackups = minVerifiedOrOptions
+    minVerifiedLaunches = minVerifiedOrOptions
     if (typeof maybeMinAgeHours === 'number') {
       minAgeHours = maybeMinAgeHours
     }
-  } else if (minVerifiedLaunchesOrOptions && typeof minVerifiedLaunchesOrOptions === 'object') {
-    if (typeof minVerifiedLaunchesOrOptions.minVerifiedLaunches === 'number') {
-      minVerifiedLaunches = minVerifiedLaunchesOrOptions.minVerifiedLaunches
+  } else if (minVerifiedOrOptions && typeof minVerifiedOrOptions === 'object') {
+    if (typeof minVerifiedOrOptions.minRetainedBackups === 'number') {
+      minRetainedBackups = minVerifiedOrOptions.minRetainedBackups
     }
-    if (typeof minVerifiedLaunchesOrOptions.minAgeHours === 'number') {
-      minAgeHours = minVerifiedLaunchesOrOptions.minAgeHours
+    if (typeof minVerifiedOrOptions.minVerifiedLaunches === 'number') {
+      minVerifiedLaunches = minVerifiedOrOptions.minVerifiedLaunches
+    }
+    if (typeof minVerifiedOrOptions.minAgeHours === 'number') {
+      minAgeHours = minVerifiedOrOptions.minAgeHours
     }
   }
 
-  // Condition 4: Current V3 integrity PASS
-  // Database must exist and pass physical SQLite integrity & FK constraints
-  if (!existsSync(dbPath)) {
-    return 0
-  }
-  const v3Integrity = verifyDatabaseIntegrity(dbPath)
-  if (!v3Integrity.ok) {
-    return 0
+  // Database must pass physical SQLite integrity & FK constraints if present
+  if (existsSync(dbPath)) {
+    const v3Integrity = verifyDatabaseIntegrity(dbPath)
+    if (!v3Integrity.ok) {
+      return 0
+    }
   }
 
   const dbBase = basename(dbPath)
   const candidateFiles = findAllV2Backups(dir, dbBase)
   let state = readV3RetentionState(dbPath)
 
-  if (!state) {
-    if (candidateFiles.length > 0) {
-      // Discover existing candidate backup on disk and initialize state with 0 verified launches
-      state = initV3RetentionState(dbPath, candidateFiles[0].path, candidateFiles[0].mtimeMs)
-    } else {
-      return 0
+  if (state && !existsSync(state.backupPath)) {
+    clearV3RetentionState(dbPath)
+    state = null
+  }
+
+  if (candidateFiles.length === 0) {
+    return 0
+  }
+
+  const now = Date.now()
+  const minAgeMs = minAgeHours * 60 * 60 * 1000
+
+  // Check launch-based single rollback backup eligibility (Pair 5 compatibility)
+  let stateRollbackEligible = false
+  if (state && existsSync(state.backupPath)) {
+    const backupHealthy = isBackupVerified(state.backupPath)
+    const launchesPass = state.verifiedLaunches >= minVerifiedLaunches
+    let backupMtimeMs = 0
+    try {
+      backupMtimeMs = statSync(state.backupPath).mtimeMs
+    } catch {
+      backupMtimeMs = 0
+    }
+    const effectiveCreatedAt = Math.min(state.createdAt ?? backupMtimeMs, backupMtimeMs)
+    const agePass = now - effectiveCreatedAt >= minAgeMs
+    if (backupHealthy && launchesPass && agePass) {
+      stateRollbackEligible = true
     }
   }
 
-  if (!existsSync(state.backupPath)) {
-    clearV3RetentionState(dbPath)
-    return 0
-  }
-
-  // Condition 3: Backup integrity PASS
-  const backupHealthy = isBackupVerified(state.backupPath)
-  if (!backupHealthy) {
-    return 0
-  }
-
-  // Condition 2: V3 verified launches >= 3
-  const launchesPass = state.verifiedLaunches >= minVerifiedLaunches
-  if (!launchesPass) {
-    return 0
-  }
-
-  // Condition 1: Age >= 24h
-  const now = Date.now()
-  let backupMtimeMs: number
-  try {
-    backupMtimeMs = statSync(state.backupPath).mtimeMs
-  } catch {
-    return 0
-  }
-  const effectiveCreatedAt = Math.min(state.createdAt ?? backupMtimeMs, backupMtimeMs)
-  const ageMs = now - effectiveCreatedAt
-  const minAgeMs = minAgeHours * 60 * 60 * 1000
-  const agePass = ageMs >= minAgeMs
-  if (!agePass) {
-    return 0
-  }
-
-  // All 4 conditions met: Purge V2 backup and reclaim storage
-  let purgedCount = 0
-  try {
-    unlinkSync(state.backupPath)
-    purgedCount++
-    clearV3RetentionState(dbPath)
-  } catch {
-    // Safe: failure during unlink never throws or corrupts state
-  }
-
-  // Also clean up any other orphan V2 backup files older than minAgeHours
+  // Audit and verify each backup candidate on disk
+  const auditedCandidates: BackupCandidate[] = []
   for (const item of candidateFiles) {
-    if (item.path === state.backupPath) continue
-    const ageItemMs = now - item.mtimeMs
-    if (ageItemMs >= minAgeMs) {
+    const verified = isBackupVerified(item.path)
+    auditedCandidates.push({
+      path: item.path,
+      mtimeMs: item.mtimeMs,
+      verified,
+    })
+  }
+
+  const protectedPaths = new Set<string>()
+
+  // Invariant 1: Backup age < 24h -> NEVER DELETE
+  for (const item of auditedCandidates) {
+    const ageMs = now - item.mtimeMs
+    if (ageMs < minAgeMs) {
+      protectedPaths.add(item.path)
+    }
+  }
+
+  // Invariant 2: Keep at least minRetainedBackups (>= 3) verified backups
+  let verifiedCount = 0
+  for (const item of auditedCandidates) {
+    // If stateRollbackEligible is true and this is the only candidate backup on disk (single migration rollback),
+    // it has satisfied its launch duty and is eligible for retirement by Pair 5 launch policy.
+    if (item.path === state?.backupPath && stateRollbackEligible && auditedCandidates.length === 1) {
+      continue
+    }
+    if (item.verified && verifiedCount < minRetainedBackups) {
+      protectedPaths.add(item.path)
+      verifiedCount++
+    }
+  }
+
+  // If state tracks a rollback backup whose launch count < threshold, protect it
+  if (state && !stateRollbackEligible && existsSync(state.backupPath)) {
+    protectedPaths.add(state.backupPath)
+  }
+
+  let purgedCount = 0
+
+  // Purge eligible unprotected candidates (older than minAgeHours AND outside top verified backups)
+  for (const item of auditedCandidates) {
+    if (protectedPaths.has(item.path)) {
+      continue
+    }
+
+    const ageMs = now - item.mtimeMs
+    if (ageMs >= minAgeMs) {
       try {
         unlinkSync(item.path)
         purgedCount++
+        if (state && item.path === state.backupPath) {
+          clearV3RetentionState(dbPath)
+        }
       } catch {
-        // ignore
+        // Safe: failure during unlink never throws or corrupts state
       }
     }
   }

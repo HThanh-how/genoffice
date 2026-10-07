@@ -64,3 +64,39 @@ export function evaluateRetentionPolicy(doc: CandidateDocument): RetentionDecisi
     shouldCopyChunksAndEmbeddings: true,
   }
 }
+
+export const MIN_VERIFIED_BACKUPS = 3
+export const MIN_BACKUP_AGE_HOURS = 24
+
+export interface BackupRetentionDecision {
+  shouldRetain: boolean
+  reason: 'younger-than-24h' | 'top-3-verified' | 'unverified-under-threshold' | 'eligible-for-purge'
+}
+
+/**
+ * Evaluates Backup Retention Policy (PAIR 06 / BEH-17 / INV-02).
+ * 
+ * Rules:
+ * - Keep minimum 3 verified backups (verifiedRank < minVerifiedBackups).
+ * - Keep all backups created within the last 24 hours (ageHours < minAgeHours).
+ * - Purge only backups that are both older than 24h AND beyond the 3 newest verified backups.
+ */
+export function evaluateBackupRetention(
+  ageHours: number,
+  isVerified: boolean,
+  verifiedRank: number,
+  totalVerifiedCount: number,
+  minVerifiedBackups = MIN_VERIFIED_BACKUPS,
+  minAgeHours = MIN_BACKUP_AGE_HOURS,
+): BackupRetentionDecision {
+  if (ageHours < minAgeHours) {
+    return { shouldRetain: true, reason: 'younger-than-24h' }
+  }
+  if (isVerified && verifiedRank < minVerifiedBackups) {
+    return { shouldRetain: true, reason: 'top-3-verified' }
+  }
+  if (!isVerified && totalVerifiedCount < minVerifiedBackups) {
+    return { shouldRetain: true, reason: 'unverified-under-threshold' }
+  }
+  return { shouldRetain: false, reason: 'eligible-for-purge' }
+}
