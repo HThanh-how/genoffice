@@ -283,15 +283,20 @@ describe('Pair 14: Document Search V3 Search Service Parity Suite (QA-14)', () =
     })
 
     const finalEvents: string[] = []
+    let querySequence = 0
 
-    // Launch slow query 1
+    // Launch slow query 1 with caller-scoped cancellation token
+    const currentQuery = ++querySequence
     const p1 = service.searchProgressive('query-1', 5, {
       onFinal: () => finalEvents.push('query-1-finished'),
+      isCancelled: () => querySequence !== currentQuery,
     })
 
-    // Launch fast query 2 immediately after
+    // Launch fast query 2 immediately after (advancing caller querySequence)
+    const nextQuery = ++querySequence
     const p2 = service.searchProgressive('query-2', 5, {
       onFinal: () => finalEvents.push('query-2-finished'),
+      isCancelled: () => querySequence !== nextQuery,
     })
 
     await p2
@@ -302,6 +307,43 @@ describe('Pair 14: Document Search V3 Search Service Parity Suite (QA-14)', () =
 
     // Query 1 must NOT deliver onFinal callback after Query 2
     expect(finalEvents).toEqual(['query-2-finished'])
+
+    // Also verify explicit cancelActiveQuery() cancels in-flight queries
+    let slowResolve2: ((val: number[]) => void) | null = null
+    const slowPromise2 = new Promise<number[]>((res) => {
+      slowResolve2 = res
+    })
+    const service2 = new SearchService({
+      store,
+      askEmbed: async (text) => {
+        if (text === 'query-cancel-1') return slowPromise2
+        return [0.5, 0.5]
+      },
+    })
+    const cancelEvents: string[] = []
+    const pc1 = service2.searchProgressive('query-cancel-1', 5, {
+      onFinal: () => cancelEvents.push('query-cancel-1-finished'),
+    })
+    service2.cancelActiveQuery()
+    const pc2 = service2.searchProgressive('query-cancel-2', 5, {
+      onFinal: () => cancelEvents.push('query-cancel-2-finished'),
+    })
+    await pc2
+    slowResolve2!([0.1, 0.1])
+    await pc1
+    expect(cancelEvents).toEqual(['query-cancel-2-finished'])
+
+    // Verify independent queries without cancellation do NOT cancel each other
+    const independentEvents: string[] = []
+    const pi1 = service.searchProgressive('query-2', 5, {
+      onFinal: () => independentEvents.push('query-indep-1'),
+    })
+    const pi2 = service.searchProgressive('query-2', 5, {
+      onFinal: () => independentEvents.push('query-indep-2'),
+    })
+    await Promise.all([pi1, pi2])
+    expect(independentEvents).toContain('query-indep-1')
+    expect(independentEvents).toContain('query-indep-2')
   })
 
   it('SEARCH-10 active profile switch uses correct semantic space', async () => {

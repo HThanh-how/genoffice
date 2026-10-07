@@ -43,11 +43,11 @@ export class SearchService {
     callbacks?: {
       onLexical?: (hits: FreshDocumentMemoryHit[]) => void
       onFinal?: (hits: FreshDocumentMemoryHit[]) => void
+      isCancelled?: () => boolean
     },
     activeEmbeddingModel?: string,
   ): Promise<FreshDocumentMemoryHit[]> {
-    const hasCallbacks = Boolean(callbacks?.onLexical || callbacks?.onFinal)
-    const queryId = hasCallbacks ? ++this.querySequence : this.querySequence
+    const queryToken = this.querySequence
 
     // 1. Lexical and name matches
     const namedRaw = this.store.searchNames(query, 5)
@@ -59,7 +59,7 @@ export class SearchService {
     const annotate = this.options.annotateFreshness ?? (async (hits) => hits.map((h) => ({ ...h, stale: false, missing: false })))
     const lexicalHits = await annotate([...namedRaw.slice(0, 3), ...lexicalRaw])
 
-    if (this.querySequence !== queryId) return []
+    if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
     callbacks?.onLexical?.(lexicalHits)
 
     // 2. Query embedding for semantic hybrid search
@@ -70,22 +70,22 @@ export class SearchService {
         let vector: number[] | null = this.queryCache.get(spaceId, query) ?? null
         if (!vector) {
           vector = await this.options.askEmbed(query)
-          if (this.querySequence !== queryId) return []
+          if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
           if (vector && vector.length) {
             this.queryCache.set(spaceId, query, vector)
           }
         }
-        if (this.querySequence !== queryId) return []
+        if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
         if (vector && vector.length) {
           let semanticCandidates: Array<{ chunkId: number; rank: number; score: number; documentId: number }> = []
           if (this.options.askSemantic) {
             const reply = await this.options.askSemantic(vector, 200, spaceId)
-            if (this.querySequence !== queryId) return []
+            if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
             if (reply) semanticCandidates = reply
           } else {
             semanticCandidates = this.store.searchSemantic(vector, 200, spaceId)
           }
-          if (this.querySequence !== queryId) return []
+          if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
           let finalChunkHits: DocumentMemoryHit[] = []
           if (semanticCandidates.length > 0) {
             const fused = fuseHybridResults(lexicalCandidates, semanticCandidates, { limit })
@@ -96,7 +96,7 @@ export class SearchService {
           const seen = new Set(finalChunkHits.map((h) => h.documentId))
           const namedForHybrid = namedRaw.filter((h) => !seen.has(h.documentId))
           finalHits = await annotate([...namedForHybrid.slice(0, 3), ...finalChunkHits])
-          if (this.querySequence !== queryId) return []
+          if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
           const stalePaths = new Set(lexicalHits.filter((h) => h.stale).map((h) => normalizeSearchPath(h.path)))
           const missingPaths = new Set(lexicalHits.filter((h) => h.missing).map((h) => normalizeSearchPath(h.path)))
           if (stalePaths.size > 0 || missingPaths.size > 0) {
@@ -115,7 +115,7 @@ export class SearchService {
       }
     }
 
-    if (this.querySequence !== queryId) return []
+    if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
     callbacks?.onFinal?.(finalHits)
     return finalHits
   }
