@@ -19,11 +19,16 @@ export function resolveRetentionDir(dbPathOrDir: string): string {
       if (statSync(dbPathOrDir).isDirectory()) {
         return dbPathOrDir
       }
+      return dirname(dbPathOrDir)
     } catch {
       // ignore
     }
   }
-  return dbPathOrDir.endsWith('.db') ? dirname(dbPathOrDir) : dbPathOrDir
+  const isFile =
+    dbPathOrDir.endsWith('.db') ||
+    dbPathOrDir.endsWith('.sqlite') ||
+    dbPathOrDir.endsWith('.sqlite3')
+  return isFile ? dirname(dbPathOrDir) : dbPathOrDir
 }
 
 /**

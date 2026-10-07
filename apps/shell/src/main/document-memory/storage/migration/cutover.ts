@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { verifyDatabaseIntegrity } from './logical-verifier'
 import { enforceBackupRetentionPolicy } from './backup-retention'
@@ -86,7 +86,12 @@ function safeUnlinkWithRetry(targetPath: string, maxAttempts = 5): void {
 }
 
 export function getManifestPath(sourcePathOrDir: string): string {
-  const dir = sourcePathOrDir.endsWith('.db') ? dirname(sourcePathOrDir) : sourcePathOrDir
+  const isFile =
+    sourcePathOrDir.endsWith('.db') ||
+    sourcePathOrDir.endsWith('.sqlite') ||
+    sourcePathOrDir.endsWith('.sqlite3') ||
+    (existsSync(sourcePathOrDir) && statSync(sourcePathOrDir).isFile())
+  const dir = isFile ? dirname(sourcePathOrDir) : sourcePathOrDir
   return join(dir, MIGRATION_MANIFEST_FILENAME)
 }
 
