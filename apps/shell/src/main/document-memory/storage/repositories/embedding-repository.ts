@@ -283,7 +283,31 @@ export class EmbeddingRepository {
     batch: Array<{ chunkId: number; vector: number[] }>,
     onEmbeddingsInserted?: (chunkIds: number[], vectors: number[][]) => void,
   ): void {
+    if (!embeddingSpaceId) throw new Error('Embedding space ID is required')
     if (!batch.length) return
+
+    const space = this.db
+      .prepare('SELECT dimensions FROM embedding_spaces WHERE id = ?')
+      .get(embeddingSpaceId) as { dimensions: number } | undefined
+    if (!space) {
+      throw new Error(`Embedding space not found: '${embeddingSpaceId}'`)
+    }
+
+    for (const item of batch) {
+      if (
+        !item.vector ||
+        !item.vector.length ||
+        item.vector.some((v) => !Number.isFinite(v))
+      ) {
+        throw new Error('Vectors must have a consistent nonzero dimension and finite values')
+      }
+      if (item.vector.length !== space.dimensions) {
+        throw new Error(
+          `Vector dimension mismatch for space '${embeddingSpaceId}': expected ${space.dimensions}, but received ${item.vector.length}`,
+        )
+      }
+    }
+
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const insert = this.db.prepare(`
@@ -296,7 +320,7 @@ export class EmbeddingRepository {
           created_at = unixepoch()
       `)
       for (const item of batch) {
-        insert.run(item.chunkId, embeddingSpaceId, floatBlob(item.vector), item.vector.length)
+        insert.run(item.chunkId, embeddingSpaceId, floatBlob(item.vector), space.dimensions)
       }
       this.db.exec('COMMIT')
     } catch (err) {
