@@ -176,8 +176,8 @@ export class ProgressRepository {
       const completedChunks = row?.completed_chunks ?? 0
       const totalChunks = row?.total_chunks ?? 0
       let semanticCoverage: number | undefined
-      if (activeSpaceId && totalChunks > 0) {
-        semanticCoverage = Math.min(1, completedChunks / totalChunks)
+      if (activeSpaceId !== undefined) {
+        semanticCoverage = totalChunks > 0 ? Math.min(1, completedChunks / totalChunks) : 1
       }
 
       return {
