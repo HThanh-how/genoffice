@@ -3,7 +3,7 @@ import type { DocumentMemoryStore, DocumentMemoryHit } from '../store'
 import { QueryEmbeddingCache } from '../query-embedding-cache'
 import { fuseHybridResults } from '../hybrid-ranker'
 
-export type FreshDocumentMemoryHit = DocumentMemoryHit & { stale?: boolean; missing?: boolean }
+export type FreshDocumentMemoryHit = DocumentMemoryHit & { stale?: boolean; missing?: boolean; unverified?: boolean }
 
 export interface SearchServiceOptions {
   store: DocumentMemoryStore
