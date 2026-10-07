@@ -105,6 +105,15 @@ export class FreshnessCoordinator {
     const needsIndex = this.store.enrollDiscovered(p, current.mtimeMs, current.sizeBytes)
     const document = this.store.documentByPath(p)
     if (!document || document.status === 'excluded') return false
+    if (needsIndex && document.status !== 'pending' && document.status !== 'text-only') {
+      try {
+        this.store.rawDb
+          .prepare(
+            "UPDATE documents SET status = 'pending', priority_at = max(priority_at, ?) WHERE id = ?",
+          )
+          .run(current.mtimeMs, document.id)
+      } catch {}
+    }
     if (
       needsIndex &&
       (this.options.isEnabled?.() ?? true) &&
@@ -185,13 +194,31 @@ export class FreshnessCoordinator {
     meta: { mtimeMs: number; sizeBytes: number },
     candidates: Map<number, MissingCandidate[]>,
   ): Promise<'moved' | 'indexed' | 'skipped'> {
+    let fileSha: string | null | undefined
     const list = candidates.get(meta.sizeBytes)
     if (list?.length && meta.sizeBytes <= RENAME_HASH_MAX_BYTES) {
-      const hash = await hashFile(path).catch(() => null)
-      const index = hash ? list.findIndex((candidate) => candidate.hash === hash) : -1
+      fileSha = await hashFile(path).catch(() => null)
+      const index = fileSha ? list.findIndex((candidate) => candidate.hash === fileSha) : -1
       if (index >= 0 && this.moveIndexed(list[index]!.path, path, meta)) {
         list.splice(index, 1)
         return 'moved'
+      }
+    }
+    if (meta.sizeBytes <= RENAME_HASH_MAX_BYTES) {
+      if (fileSha === undefined) fileSha = await hashFile(path).catch(() => null)
+      if (fileSha) {
+        try {
+          const rows = this.store.rawDb
+            .prepare(
+              'SELECT path FROM documents WHERE hash = ? AND size_bytes = ? AND path != ? AND excluded = 0',
+            )
+            .all(fileSha, meta.sizeBytes, path) as Array<{ path: string }>
+          for (const row of rows) {
+            if (await this.isGone(row.path)) {
+              if (this.moveIndexed(row.path, path, meta)) return 'moved'
+            }
+          }
+        } catch {}
       }
     }
     return this.indexDiscoveredFile(path, meta) ? 'indexed' : 'skipped'
@@ -434,6 +461,33 @@ export class FreshnessCoordinator {
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  async verifyExtractedFreshness(
+    path: string,
+    extracted: { mtimeMs: number; sizeBytes: number },
+  ): Promise<{ kind: 'fresh' | 'modified'; meta: { mtimeMs: number; sizeBytes: number } } | { kind: 'gone' }> {
+    const outcome = await this.statOutcome(path, 1500)
+    if (outcome.kind !== 'file') return { kind: 'gone' }
+    if (outcome.mtimeMs !== extracted.mtimeMs || outcome.sizeBytes !== extracted.sizeBytes) {
+      return { kind: 'modified', meta: outcome }
+    }
+    return { kind: 'fresh', meta: outcome }
+  }
+
+  async handleExtractedFreshness(
+    path: string,
+    extracted: { mtimeMs: number; sizeBytes: number },
+  ): Promise<boolean> {
+    const check = await this.verifyExtractedFreshness(path, extracted)
+    if (check.kind === 'fresh') return true
+    this.options.onInvalidatePath?.(path)
+    if (check.kind === 'modified') {
+      this.indexDiscoveredFile(path, check.meta)
+    } else {
+      this.markMissing(path)
+    }
+    return false
   }
 
   clearMissing(): void {
