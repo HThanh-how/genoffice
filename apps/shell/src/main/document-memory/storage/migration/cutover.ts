@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { verifyDatabaseIntegrity } from './logical-verifier'
-import { enforceBackupRetentionPolicy } from './backup-retention'
+import { initV3RetentionState } from './v3-retention-state'
 
 export const MIGRATION_MANIFEST_FILENAME = 'document-memory.migration-state.json'
 
@@ -278,7 +278,7 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
       const integrity = verifyDatabaseIntegrity(sourceDbPath)
       if (integrity.ok) {
         removeManifest(manifestPath)
-        enforceBackupRetentionPolicy(sourceDbPath)
+        initV3RetentionState(sourceDbPath, backupPath)
         return true
       }
     }
@@ -305,6 +305,7 @@ export function recoverInterruptedCutover(sourcePathOrDir: string): boolean {
 
   if (normalizedPhase === 'completed') {
     removeManifest(manifestPath)
+    initV3RetentionState(sourceDbPath, backupPath)
     return true
   }
 
@@ -409,8 +410,8 @@ export function performAtomicCutover(options: CutoverOptions): void {
     })
     removeManifest(manifestPath)
 
-    // Enforce backup retention policy
-    enforceBackupRetentionPolicy(resolvedSource)
+    // Initialize V3 retention state immediately post-manifest
+    initV3RetentionState(resolvedSource, backupPath)
   } catch (error) {
     onRollback?.()
 

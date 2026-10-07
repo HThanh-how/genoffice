@@ -14,6 +14,7 @@ import {
   getV3RetentionStatePath,
   findAllV2Backups,
   findMostRecentV2Backup,
+  extractBackupTimestamp,
 } from './v3-retention-state'
 
 export {
@@ -26,6 +27,7 @@ export {
   getV3RetentionStatePath,
   findAllV2Backups,
   findMostRecentV2Backup,
+  extractBackupTimestamp,
 }
 
 export function getCanonicalBackupPath(dbPath: string): string {
@@ -175,7 +177,8 @@ export function enforceBackupRetentionPolicy(
   // Job R1: Cheap-checks trước:
   // 1. backup < 24h -> chắc chắn protect -> không integrity scan
   for (const item of candidateFiles) {
-    const ageMs = now - item.mtimeMs
+    const effectiveCreatedAt = extractBackupTimestamp(item.path)
+    const ageMs = now - effectiveCreatedAt
     if (ageMs < minAgeMs) {
       protectedPaths.add(resolve(item.path))
     }
@@ -192,7 +195,8 @@ export function enforceBackupRetentionPolicy(
   const hasPotentialDeletable = candidateFiles.some((item) => {
     const resolvedPath = resolve(item.path)
     const isProtected = protectedPaths.has(resolvedPath)
-    const isOld = now - item.mtimeMs >= minAgeMs
+    const effectiveCreatedAt = extractBackupTimestamp(item.path)
+    const isOld = now - effectiveCreatedAt >= minAgeMs
     return !isProtected && isOld
   })
 
@@ -224,13 +228,7 @@ export function enforceBackupRetentionPolicy(
   let stateRollbackEligible = false
   if (state && existsSync(state.backupPath)) {
     const launchesPass = state.verifiedLaunches >= minVerifiedLaunches
-    let backupMtimeMs = 0
-    try {
-      backupMtimeMs = statSync(state.backupPath).mtimeMs
-    } catch {
-      backupMtimeMs = 0
-    }
-    const effectiveCreatedAt = Math.min(state.createdAt ?? backupMtimeMs, backupMtimeMs)
+    const effectiveCreatedAt = extractBackupTimestamp(state.backupPath)
     const agePass = now - effectiveCreatedAt >= minAgeMs
 
     // Only if launches and age pass do we check physical backup verification
@@ -253,7 +251,8 @@ export function enforceBackupRetentionPolicy(
 
   for (const item of candidateFiles) {
     const resolvedPath = resolve(item.path)
-    const ageMs = now - item.mtimeMs
+    const effectiveCreatedAt = extractBackupTimestamp(item.path)
+    const ageMs = now - effectiveCreatedAt
     const isRecent = ageMs < minAgeMs
 
     // If stateRollbackEligible is true and this is the only candidate backup on disk (single migration rollback),
@@ -267,7 +266,7 @@ export function enforceBackupRetentionPolicy(
     if (isSingleRetiringRollback) {
       auditedCandidates.push({
         path: item.path,
-        mtimeMs: item.mtimeMs,
+        mtimeMs: effectiveCreatedAt,
         verified: true,
       })
       continue
@@ -287,7 +286,7 @@ export function enforceBackupRetentionPolicy(
       }
       auditedCandidates.push({
         path: item.path,
-        mtimeMs: item.mtimeMs,
+        mtimeMs: effectiveCreatedAt,
         verified,
       })
       continue
@@ -308,9 +307,22 @@ export function enforceBackupRetentionPolicy(
 
     auditedCandidates.push({
       path: item.path,
-      mtimeMs: item.mtimeMs,
+      mtimeMs: effectiveCreatedAt,
       verified,
     })
+  }
+
+  // Fail-closed invariant: Do not purge any candidate unless total verified backups reach minRetainedBackups
+  // (unless it is a single migration rollback backup that has satisfied verified launches requirement)
+  const isSingleRetiring =
+    candidateFiles.length === 1 &&
+    auditedCandidates.length === 1 &&
+    Boolean(state?.backupPath) &&
+    resolve(auditedCandidates[0].path) === resolve(state!.backupPath) &&
+    stateRollbackEligible
+
+  if (verifiedCount < minRetainedBackups && !isSingleRetiring) {
+    return 0
   }
 
   let purgedCount = 0
@@ -322,7 +334,8 @@ export function enforceBackupRetentionPolicy(
       continue
     }
 
-    const ageMs = now - item.mtimeMs
+    const effectiveCreatedAt = extractBackupTimestamp(item.path)
+    const ageMs = now - effectiveCreatedAt
     if (ageMs >= minAgeMs) {
       try {
         unlinkSync(item.path)
@@ -342,8 +355,8 @@ export function enforceBackupRetentionPolicy(
 export function cleanupObsoleteBackup(backupPath: string, maxAgeDays = 14): boolean {
   if (!existsSync(backupPath)) return false
   try {
-    const st = statSync(backupPath)
-    const ageMs = Date.now() - st.mtimeMs
+    const effectiveCreatedAt = extractBackupTimestamp(backupPath)
+    const ageMs = Date.now() - effectiveCreatedAt
     if (ageMs > maxAgeDays * 24 * 60 * 60 * 1000) {
       unlinkSync(backupPath)
       return true

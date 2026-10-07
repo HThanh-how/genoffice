@@ -1,5 +1,5 @@
 import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 
 export interface V3RetentionState {
   backupPath: string
@@ -9,6 +9,29 @@ export interface V3RetentionState {
 
 export const V3_RETENTION_FILENAME = 'v3-retention-state.json'
 export const CANONICAL_V3_RETENTION_FILENAME = 'document-memory.v3-retention.json'
+
+/**
+ * Extracts creation timestamp from backup filename (e.g. *.v2.<timestamp>.*).
+ * Falls back to statSync(backupPath).mtimeMs or Date.now() if not found.
+ */
+export function extractBackupTimestamp(backupPath: string): number {
+  const fileName = basename(backupPath)
+  const match = fileName.match(/\.v2\.(\d+)\./)
+  if (match) {
+    const parsed = Number(match[1])
+    if (parsed > 0) {
+      return parsed
+    }
+  }
+  if (existsSync(backupPath)) {
+    try {
+      return statSync(backupPath).mtimeMs
+    } catch {
+      return Date.now()
+    }
+  }
+  return Date.now()
+}
 
 /**
  * Resolves the target directory where the database and retention state reside.
@@ -62,8 +85,8 @@ export function findAllV2Backups(
       if (f.startsWith(prefix) && f.includes('.v2.') && f.endsWith('.backup.db')) {
         const full = join(dir, f)
         try {
-          const st = statSync(full)
-          candidates.push({ path: full, mtimeMs: st.mtimeMs })
+          const mtimeMs = extractBackupTimestamp(full)
+          candidates.push({ path: full, mtimeMs })
         } catch {
           // ignore unreadable
         }
@@ -152,18 +175,7 @@ export function initV3RetentionState(
   backupPath: string,
   createdAt?: number,
 ): V3RetentionState {
-  let created = createdAt
-  if (typeof created !== 'number') {
-    if (existsSync(backupPath)) {
-      try {
-        created = statSync(backupPath).mtimeMs
-      } catch {
-        created = Date.now()
-      }
-    } else {
-      created = Date.now()
-    }
-  }
+  const created = typeof createdAt === 'number' ? createdAt : extractBackupTimestamp(backupPath)
 
   const state: V3RetentionState = {
     backupPath,
