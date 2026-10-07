@@ -296,20 +296,33 @@ export class EmbeddingCoordinator {
     }
     const nextProfile = EMBEDDING_PROFILES[nextId]
     this.options.store.ensureEmbeddingSpace(nextProfile)
+
+    const target = this.options.settingsDir ?? this.options.settingsPath
+    const oldId = this.profileId
+    let settingsWritten = false
+
+    if (target) {
+      writeActiveEmbeddingConfig(target, nextId)
+      settingsWritten = true
+    }
+
+    let requeued = 0
+    try {
+      requeued = this.options.store.requeueForEmbeddingModel(nextProfile.embeddingId)
+    } catch (dbError) {
+      if (settingsWritten && target) {
+        try {
+          writeActiveEmbeddingConfig(target, oldId)
+        } catch {
+          // ignore rollback failure, rethrow original db error
+        }
+      }
+      throw dbError
+    }
+
     this.profileId = nextId
     this.profile = nextProfile
     this.clearQueue()
-
-    const target = this.options.settingsDir ?? this.options.settingsPath
-    if (target) {
-      try {
-        writeActiveEmbeddingConfig(target, nextId)
-      } catch {
-        // ignore
-      }
-    }
-
-    const requeued = this.options.store.requeueForEmbeddingModel(this.profile.embeddingId)
     return { changed: true, requeued }
   }
 

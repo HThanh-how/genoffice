@@ -3,13 +3,20 @@ import { EventEmitter } from 'node:events'
 import { constants, setPriority } from 'node:os'
 import type { Worker } from 'node:worker_threads'
 import { attachChildToPolicy } from '../fork/indexing-child-policy'
+import type { EmbeddingProfileId } from './embedding-profiles'
 
 export const DEFAULT_WORKER_TERMINATE_TIMEOUT_MS = 3000
+
+export interface IndexProcessData {
+  cacheDir: string
+  dbPath: string
+  embeddingProfile?: EmbeddingProfileId
+}
 
 /** A separate, lower-priority process keeps model CPU and memory away from the UI. */
 export function createIndexProcess(
   path: string,
-  data: { cacheDir: string; dbPath: string; embeddingProfile?: string },
+  data: IndexProcessData,
   spawnProcess: typeof spawn = spawn,
 ): Worker {
   const channel = new EventEmitter()
