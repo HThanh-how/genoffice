@@ -7083,6 +7083,21 @@ app.whenReady().then(async () => {
   pendingLaunchPaths = []
   for (const recoverAs of pendingUnsavedNewRecoveries()) void newSheetTab(recoverAs)
 
+  if (documentMemory) {
+    setTimeout(() => {
+      documentMemory
+        ?.runBackupRetentionMaintenance()
+        .then((res) => {
+          if (res && res.purgedCount > 0) {
+            console.info(`[document-memory] Background backup retention purged ${res.purgedCount} backups`)
+          }
+        })
+        .catch((err) => {
+          console.warn('[document-memory] Background backup retention failed:', err)
+        })
+    }, 15_000)
+  }
+
   startControlServer(
     app.getPath('userData'),
     controlHandler({
