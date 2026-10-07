@@ -6,6 +6,7 @@ import { OcrSidecar } from './ocr-sidecar'
 import { evaluateRetentionPolicy } from './storage/migration/retention-policy'
 import { verifyDatabaseIntegrity, verifyLogicalConsistency } from './storage/migration/logical-verifier'
 import { performAtomicCutover, cleanWalFiles } from './storage/migration/cutover'
+import { generateCollisionSafeBackupPath } from './storage/migration/backup-retention'
 import {
   copyEmbeddingSpaces,
   prepareMigrationStatements,
@@ -58,7 +59,7 @@ export function migrateStorageV2ToV3(sourceDbPath: string, options: StorageMigra
   const startTime = performance.now()
   const resolvedSource = resolve(sourceDbPath)
   const tempPath = resolve(options.tempDbPath ?? `${resolvedSource}.v3.tmp`)
-  const backupPath = resolve(options.backupDbPath ?? `${resolvedSource}.v2.backup.db`)
+  const backupPath = resolve(options.backupDbPath ?? generateCollisionSafeBackupPath(resolvedSource))
   const pageSize = options.pageSize ?? 500
   const activeSpaceId = options.activeSpaceId
   const activeDimensions = options.activeDimensions

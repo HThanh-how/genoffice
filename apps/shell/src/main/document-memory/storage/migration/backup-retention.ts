@@ -7,9 +7,15 @@ export function getCanonicalBackupPath(dbPath: string): string {
 }
 
 export function generateCollisionSafeBackupPath(dbPath: string): string {
-  const ts = Date.now()
-  const suffix = randomUUID().slice(0, 8)
-  return `${dbPath}.v2.${ts}.${suffix}.backup.db`
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const ts = Date.now()
+    const suffix = randomUUID().slice(0, 8)
+    const candidate = `${dbPath}.v2.${ts}.${suffix}.backup.db`
+    if (!existsSync(candidate)) {
+      return candidate
+    }
+  }
+  return `${dbPath}.v2.${Date.now()}.${randomUUID().replace(/-/g, '').slice(0, 12)}.backup.db`
 }
 
 export function checkBackupStatus(backupPath: string): {
