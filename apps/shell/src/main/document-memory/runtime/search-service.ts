@@ -46,7 +46,8 @@ export class SearchService {
     },
     activeEmbeddingModel?: string,
   ): Promise<FreshDocumentMemoryHit[]> {
-    const queryId = this.querySequence
+    const hasCallbacks = Boolean(callbacks?.onLexical || callbacks?.onFinal)
+    const queryId = hasCallbacks ? ++this.querySequence : this.querySequence
 
     // 1. Lexical and name matches
     const namedRaw = this.store.searchNames(query, 5)
