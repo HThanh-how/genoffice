@@ -39,14 +39,14 @@ import {
 import { IndexIssueReader } from '../src/main/document-memory/issue-reader'
 import { blobVector, floatBlob } from '../src/main/document-memory/storage/repositories/embedding-repository'
 
-const F2_SPACE_ID = EMBEDDING_PROFILES.standard.embeddingId
-const QWEN_SPACE_ID = EMBEDDING_PROFILES.high.embeddingId
+const F2_SPACE_ID = 'test-f2-dim4:v1'
+const QWEN_SPACE_ID = 'test-qwen-dim4:v1'
 
 const testProfileF2: EmbeddingProfile = {
   id: 'standard',
-  repo: EMBEDDING_PROFILES.standard.repo,
-  revision: EMBEDDING_PROFILES.standard.revision,
-  pooling: EMBEDDING_PROFILES.standard.pooling,
+  repo: 'test/f2-dim4',
+  revision: 'test-rev',
+  pooling: 'last-token',
   dimensions: 4,
   embeddingId: F2_SPACE_ID,
   nativeDimensions: 4,
@@ -58,9 +58,9 @@ const testProfileF2: EmbeddingProfile = {
 
 const testProfileQwen: EmbeddingProfile = {
   id: 'high',
-  repo: EMBEDDING_PROFILES.high.repo,
-  revision: EMBEDDING_PROFILES.high.revision,
-  pooling: EMBEDDING_PROFILES.high.pooling,
+  repo: 'test/qwen-dim4',
+  revision: 'test-rev',
+  pooling: 'last-token',
   dimensions: 4,
   embeddingId: QWEN_SPACE_ID,
   nativeDimensions: 4,
