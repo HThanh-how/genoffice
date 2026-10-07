@@ -32,13 +32,22 @@ const managerPath = resolve(rootDir, managerRelPath)
 try {
   const managerContent = readFileSync(managerPath, 'utf8')
   const managerViolations = []
-  if (managerContent.includes('DatabaseSync')) managerViolations.push('DatabaseSync')
-  if (managerContent.includes('.prepare(')) managerViolations.push('.prepare(')
-  if (/\bSELECT\b/.test(managerContent)) managerViolations.push('SELECT')
-  if (/\bINSERT\b/.test(managerContent)) managerViolations.push('INSERT')
-  if (/\bUPDATE\b/.test(managerContent)) managerViolations.push('UPDATE')
-  if (/\bDELETE\b/.test(managerContent)) managerViolations.push('DELETE')
+  if (
+    managerContent.includes('DatabaseSync') ||
+    /(?:import|require).*?DatabaseSync/.test(managerContent) ||
+    /(?:import|require)\s*\(?.*?(?:node:)?sqlite/i.test(managerContent)
+  ) {
+    managerViolations.push('DatabaseSync')
+  }
+  if (managerContent.includes('.prepare(') || /\.prepare\s*\(/.test(managerContent)) {
+    managerViolations.push('.prepare(')
+  }
+  if (/\bSELECT\b/i.test(managerContent)) managerViolations.push('SELECT')
+  if (/\bINSERT\b/i.test(managerContent)) managerViolations.push('INSERT')
+  if (/\bUPDATE\b/i.test(managerContent)) managerViolations.push('UPDATE')
+  if (/\bDELETE\b/.test(managerContent) || /\bDELETE\s+FROM\b/i.test(managerContent)) managerViolations.push('DELETE')
   if (/\bPRAGMA\b/i.test(managerContent)) managerViolations.push('PRAGMA')
+  if (/\b(?:CREATE|DROP|ALTER)\s+TABLE\b/i.test(managerContent)) managerViolations.push('RAW_SQL_DDL')
 
   if (managerViolations.length > 0) {
     console.error(`[FAIL] Manager boundary violated (${managerRelPath}): forbidden pattern(s) found: ${managerViolations.join(', ')}`)
@@ -56,6 +65,8 @@ try {
 const snapshotFiles = [
   'apps/shell/src/renderer/src/fork/useIndexSnapshot.ts',
   'apps/shell/src/renderer/src/fork/IndexDashboard.tsx',
+  'apps/shell/src/renderer/src/fork/IndexOverview.tsx',
+  'apps/shell/src/renderer/src/fork/IndexDiagnostics.tsx',
 ]
 let snapshotPassed = true
 for (const relPath of snapshotFiles) {
@@ -63,8 +74,8 @@ for (const relPath of snapshotFiles) {
   try {
     const content = readFileSync(fullPath, 'utf8')
     const violations = []
-    if (content.includes('getDocumentIndexDiagnostics(')) violations.push('getDocumentIndexDiagnostics(')
-    if (content.includes('getStorageDiagnostics(')) violations.push('getStorageDiagnostics(')
+    if (content.includes('getDocumentIndexDiagnostics(') || /getDocumentIndexDiagnostics\s*\(/.test(content)) violations.push('getDocumentIndexDiagnostics(')
+    if (content.includes('getStorageDiagnostics(') || /\.getStorageDiagnostics\s*\(/.test(content)) violations.push('getStorageDiagnostics(')
 
     if (violations.length > 0) {
       console.error(`[FAIL] Snapshot boundary violated (${relPath}): forbidden call(s) found: ${violations.join(', ')}`)
@@ -79,12 +90,21 @@ for (const relPath of snapshotFiles) {
 }
 
 // Snapshot Service: document-index-snapshot-service.ts MUST NOT contain: .getStorageDiagnostics(
+// Snapshot Service: getDocumentIndexSnapshot MUST NOT call getDocumentIndexDiagnostics(
 const snapshotServiceRelPath = 'apps/shell/src/main/fork/document-index-snapshot-service.ts'
 const snapshotServicePath = resolve(rootDir, snapshotServiceRelPath)
 try {
   const serviceContent = readFileSync(snapshotServicePath, 'utf8')
-  if (serviceContent.includes('.getStorageDiagnostics(')) {
+  if (serviceContent.includes('.getStorageDiagnostics(') || /\.getStorageDiagnostics\s*\(/.test(serviceContent)) {
     console.error(`[FAIL] Snapshot service boundary violated (${snapshotServiceRelPath}): forbidden call ".getStorageDiagnostics(" found`)
+    hasErrors = true
+    snapshotPassed = false
+  }
+
+  // Remove the declaration of getDocumentIndexDiagnostics to check for any forbidden invocations/calls
+  const withoutDeclaration = serviceContent.replace(/(?:export\s+)?(?:async\s+)?function\s+getDocumentIndexDiagnostics\s*\(/g, '')
+  if (withoutDeclaration.includes('getDocumentIndexDiagnostics(') || /getDocumentIndexDiagnostics\s*\(/.test(withoutDeclaration)) {
+    console.error(`[FAIL] Snapshot service boundary violated (${snapshotServiceRelPath}): forbidden call "getDocumentIndexDiagnostics(" found`)
     hasErrors = true
     snapshotPassed = false
   }
@@ -123,7 +143,8 @@ try {
     let match
     while ((match = importRegex.exec(content)) !== null) {
       const specifier = match[1]
-      if (/(?:^|\/)(?:storage|repository|repositories)(?:\/|$)/i.test(specifier)) {
+      const normalizedSpecifier = specifier.replace(/\\/g, '/')
+      if (/(?:^|\/)(?:storage|repository|repositories)(?:\/|$)/i.test(normalizedSpecifier)) {
         const relPath = filePath.replace(rootDir + '\\', '').replace(rootDir + '/', '')
         console.error(`[FAIL] Renderer boundary violated in ${relPath}: forbidden storage/repository import "${specifier}"`)
         hasErrors = true
@@ -141,16 +162,42 @@ try {
 
 // 4. IPC Boundary Check
 // IPC: NO DatabaseSync.
-const ipcFiles = [
+function getIpcFiles(dir) {
+  let results = []
+  try {
+    for (const entry of readdirSync(dir)) {
+      const full = resolve(dir, entry)
+      if (statSync(full).isDirectory()) {
+        results = results.concat(getIpcFiles(full))
+      } else if (/(?:ipc|-handlers)\.ts$/.test(entry)) {
+        results.push(full)
+      }
+    }
+  } catch { /* ignore */ }
+  return results
+}
+
+const defaultIpcFiles = [
   'apps/shell/src/main/fork/document-index-ipc.ts',
   'apps/shell/src/main/fork/document-index-folder-handlers.ts',
 ]
+const allDiscoveredIpc = getIpcFiles(resolve(rootDir, 'apps/shell/src/main'))
+const ipcFilesSet = new Set(defaultIpcFiles.map((p) => resolve(rootDir, p)))
+for (const discovered of allDiscoveredIpc) {
+  ipcFilesSet.add(discovered)
+}
+
 let ipcPassed = true
-for (const relPath of ipcFiles) {
-  const fullPath = resolve(rootDir, relPath)
+for (const fullPath of ipcFilesSet) {
+  const relPath = fullPath.replace(rootDir + '\\', '').replace(rootDir + '/', '')
   try {
     const content = readFileSync(fullPath, 'utf8')
-    if (content.includes('DatabaseSync')) {
+    const hasForbiddenSqlite =
+      content.includes('DatabaseSync') ||
+      /(?:import|require).*?DatabaseSync/.test(content) ||
+      /(?:import|require)\s*\(?.*?(?:node:)?sqlite/i.test(content)
+
+    if (hasForbiddenSqlite) {
       console.error(`[FAIL] IPC boundary violated (${relPath}): DatabaseSync is forbidden!`)
       hasErrors = true
       ipcPassed = false
@@ -199,6 +246,18 @@ try {
       console.error('[FAIL] Invariant INV-03 violated: chunks table contains vector column!')
       hasErrors = true
       schemaViolations++
+    }
+
+    // Check for ALTER TABLE chunks ADD COLUMN ...
+    const alterChunksRegex = /ALTER\s+TABLE\s+chunks\s+ADD\s+(?:COLUMN\s+)?([a-zA-Z0-9_]+)/gi
+    let alterMatch
+    while ((alterMatch = alterChunksRegex.exec(schemaContent)) !== null) {
+      const colName = alterMatch[1].toLowerCase()
+      if (['vector', 'vector_dim', 'normalized', 'embedding', 'dim', 'dims'].includes(colName)) {
+        console.error(`[FAIL] Invariant INV-03 violated: chunks table contains "${alterMatch[1]}" column via ALTER TABLE!`)
+        hasErrors = true
+        schemaViolations++
+      }
     }
 
     if (schemaViolations === 0) {
