@@ -141,6 +141,19 @@ export class EmbeddingRepository {
     )
       throw new Error('Vectors must have a consistent nonzero dimension and finite values')
 
+    const space = this.db
+      .prepare('SELECT dimensions FROM embedding_spaces WHERE id = ?')
+      .get(embeddingSpaceId) as { dimensions: number } | undefined
+    if (!space) {
+      throw new Error(`Embedding space not found: '${embeddingSpaceId}'`)
+    }
+    if (vectors.some((vector) => vector.length !== space.dimensions)) {
+      const mismatch = vectors.find((vector) => vector.length !== space.dimensions)
+      throw new Error(
+        `Vector dimension mismatch for space '${embeddingSpaceId}': expected ${space.dimensions}, but received ${mismatch?.length ?? 0}`,
+      )
+    }
+
     const normalizedPath = resolve(path)
 
     let chunkIdsForAnn: number[] = []
@@ -167,13 +180,6 @@ export class EmbeddingRepository {
       if (chunkRows.length !== vectors.length) {
         throw new Error('Vector batch does not match indexed chunks')
       }
-
-      this.db
-        .prepare(
-          `INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
-           VALUES (?, ?, 'pinned', 'last-token', ?, 'q8')`,
-        )
-        .run(embeddingSpaceId, embeddingSpaceId, dimensions.values().next().value ?? 384)
 
       const insertEmbedding = this.db.prepare(`
         INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
