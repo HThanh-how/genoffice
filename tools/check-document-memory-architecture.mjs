@@ -7,6 +7,7 @@ import { resolve } from 'node:path'
  * Required checks:
  * 1. Manager: NO DatabaseSync, NO .prepare(, NO SELECT, NO INSERT, NO UPDATE, NO DELETE, NO PRAGMA.
  * 2. Snapshot: NO getDocumentIndexDiagnostics(, NO getStorageDiagnostics(.
+ *    Snapshot Service: document-index-snapshot-service.ts MUST NOT contain: .getStorageDiagnostics(.
  * 3. Renderer: NO storage/repository imports.
  * 4. IPC: NO DatabaseSync.
  * 5. Schema: chunks.vector => FAIL, chunks.vector_dim => FAIL, chunks.normalized => FAIL.
@@ -76,6 +77,23 @@ for (const relPath of snapshotFiles) {
     snapshotPassed = false
   }
 }
+
+// Snapshot Service: document-index-snapshot-service.ts MUST NOT contain: .getStorageDiagnostics(
+const snapshotServiceRelPath = 'apps/shell/src/main/fork/document-index-snapshot-service.ts'
+const snapshotServicePath = resolve(rootDir, snapshotServiceRelPath)
+try {
+  const serviceContent = readFileSync(snapshotServicePath, 'utf8')
+  if (serviceContent.includes('.getStorageDiagnostics(')) {
+    console.error(`[FAIL] Snapshot service boundary violated (${snapshotServiceRelPath}): forbidden call ".getStorageDiagnostics(" found`)
+    hasErrors = true
+    snapshotPassed = false
+  }
+} catch (err) {
+  console.error(`[FAIL] Unable to read Snapshot service file (${snapshotServiceRelPath}): ${err.message}`)
+  hasErrors = true
+  snapshotPassed = false
+}
+
 if (snapshotPassed) {
   console.log('[PASS] Snapshot: NO getDocumentIndexDiagnostics(, NO getStorageDiagnostics(')
 }

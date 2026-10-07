@@ -185,8 +185,8 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   })
 
   // Heavy diagnostics endpoint cached for 60s (INV-10)
-  ipcMain.handle('get-document-index-diagnostics', (_event, forceRefresh?: boolean) => {
-    return getDocumentIndexDiagnostics(snapshotCtx, forceRefresh)
+  ipcMain.handle('get-document-index-diagnostics', async (_event, forceRefresh?: boolean) => {
+    return await getDocumentIndexDiagnostics(snapshotCtx, forceRefresh)
   })
 
   return () => issueReader?.close()

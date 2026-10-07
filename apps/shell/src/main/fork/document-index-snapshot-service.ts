@@ -240,7 +240,7 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
   return snapshotCache.set(snapshot)
 }
 
-export function getDocumentIndexDiagnostics(ctx: SnapshotContext, forceRefresh?: boolean): DocumentIndexDiagnostics {
+export async function getDocumentIndexDiagnostics(ctx: SnapshotContext, forceRefresh?: boolean): Promise<DocumentIndexDiagnostics> {
   const cached = diagnosticsCache.get(forceRefresh)
   if (cached) {
     return cached
@@ -248,7 +248,7 @@ export function getDocumentIndexDiagnostics(ctx: SnapshotContext, forceRefresh?:
 
   const now = Date.now()
   const memory = ctx.getDocumentMemory()
-  const storage = typeof memory?.getStorageDiagnostics === 'function' ? memory.getStorageDiagnostics() : emptyStorageDiagnostics()
+  const storage = (await memory?.getStorageDiagnosticsAsync?.()) ?? emptyStorageDiagnostics()
 
   const migration: DocumentIndexMigrationDiagnostics = typeof memory?.getMigrationDiagnostics === 'function' ? memory.getMigrationDiagnostics() : {
     activeEmbeddingSpace: 'standard',
