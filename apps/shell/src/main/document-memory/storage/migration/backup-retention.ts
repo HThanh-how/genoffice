@@ -274,12 +274,21 @@ export function enforceBackupRetentionPolicy(
     }
 
     if (isRecent) {
-      // backup < 24h -> chắc chắn protect -> không integrity scan
+      // backup < 24h -> luôn được bảo vệ bởi tuổi
       protectedPaths.add(resolvedPath)
+      let verified = false
+      if (verifiedCount < minRetainedBackups) {
+        verified = checkVerifiedMemo(item.path)
+        if (verified) {
+          verifiedCount++
+        }
+      } else if (verificationCache.has(resolvedPath)) {
+        verified = verificationCache.get(resolvedPath)!
+      }
       auditedCandidates.push({
         path: item.path,
         mtimeMs: item.mtimeMs,
-        verified: false,
+        verified,
       })
       continue
     }
