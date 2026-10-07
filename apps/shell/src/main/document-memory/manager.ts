@@ -474,7 +474,7 @@ export class DocumentMemoryManager {
   private ensureWorker(): Worker {
     if (this.worker) return this.worker
     mkdirSync(this.cacheDir, { recursive: true })
-    const worker = this.workerFactory(this.pathToWorker, { cacheDir: this.cacheDir, dbPath: this.dbPath, embeddingProfile: this.embeddingCoord.currentProfile.embeddingId } as any)
+    const worker = this.workerFactory(this.pathToWorker, { cacheDir: this.cacheDir, dbPath: this.dbPath, embeddingProfile: this.embeddingCoord.currentProfile.id } as any)
     worker.on('message', (msg: WorkerReply) => {
       if (this.worker !== worker) return
       if ('type' in msg && msg.type === 'model') {

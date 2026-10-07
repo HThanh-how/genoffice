@@ -204,7 +204,10 @@ export function isEmbeddingProfileId(value: unknown): value is EmbeddingProfileI
 }
 
 export function embeddingProfile(id: unknown): EmbeddingProfile {
-  return EMBEDDING_PROFILES[isEmbeddingProfileId(id) ? id : DEFAULT_EMBEDDING_PROFILE]
+  if (isEmbeddingProfileId(id)) return EMBEDDING_PROFILES[id]
+  if (id === EMBEDDING_PROFILES.standard.embeddingId) return EMBEDDING_PROFILES.standard
+  if (id === EMBEDDING_PROFILES.high.embeddingId) return EMBEDDING_PROFILES.high
+  return EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE]
 }
 
 export interface MachineSpec {
