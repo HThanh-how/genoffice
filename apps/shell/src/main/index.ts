@@ -6825,6 +6825,7 @@ app.whenReady().then(async () => {
   setOpeningConfig({ prefs: openingPrefs, customHtml: customOpeningHtml })
   const indexDbDir = resolveDbDir(userDataDir)
 
+  // Fail-closed storage initialization: never open or create fresh DB on ambiguity
   if (dbMove.error) {
     console.error(
       '[document-memory] Critical: Index move failed, entering fail-closed mode:',

@@ -99,6 +99,7 @@ export function findAnyBackupArtifacts(dbDir: string, dbBase = 'document-memory.
 /**
  * Ensures that Document Memory SQLite database is fully migrated and verified
  * according to Schema V3 BEFORE any runtime components open it (Invariant INV-01).
+ * Fails closed on any recovery error, corruption, or ambiguous temporary artifacts.
  * 
  * Must be executed before `new DocumentMemoryManager()` or any worker startup.
  */
