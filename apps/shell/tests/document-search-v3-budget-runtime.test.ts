@@ -7,6 +7,7 @@ import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { extractDocument } from '../src/main/document-memory/worker'
 import { DEFAULT_STORAGE_BUDGET, type DocumentIndexStorageBudget } from '../src/main/document-memory/storage-budget'
+import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 
 class MockBudgetWorker extends EventEmitter {
   public extractCalls = 0
@@ -43,7 +44,9 @@ class MockBudgetWorker extends EventEmitter {
           this.emit('message', { type: 'model', state: 'ready' })
           this.emit('message', {
             id: message.id,
-            result: (message.texts ?? []).map(() => new Array(384).fill(0.01)),
+            result: (message.texts ?? []).map(() =>
+              new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.01),
+            ),
           })
         } else if (message.type === 'search-semantic') {
           this.emit('message', { id: message.id, result: [] })
