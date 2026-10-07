@@ -80,6 +80,7 @@ export function migrateStorageV2ToV3(sourceDbPath: string, options: StorageMigra
     options.onProgress?.({ phase: 'schema', documentsProcessed: 0, documentsCopied: 0, documentsDropped: 0, chunksCopied: 0, embeddingsCopied: 0 })
     copyEmbeddingSpaces(sourceDb, tempDb)
     const stmts = prepareMigrationStatements(sourceDb, tempDb)
+    stmts.ensureEmbeddingSpace.run(activeSpaceId, activeSpaceId, activeDimensions)
     let lastId = 0, hasMore = true
 
     while (hasMore) {
@@ -122,7 +123,7 @@ export function migrateStorageV2ToV3(sourceDbPath: string, options: StorageMigra
 
     const integrity = verifyDatabaseIntegrity(tempDb)
     if (!integrity.ok) throw new Error(`Integrity verification failed before cutover: integrity=${integrity.integrity}`)
-    const logical = verifyLogicalConsistency(tempDb, totalCopied, totalChunks)
+    const logical = verifyLogicalConsistency(tempDb, totalCopied, totalChunks, activeSpaceId, activeDimensions)
     if (!logical.ok) throw new Error(`Logical consistency verification failed before cutover: ${logical.reasons.join('; ')}`)
 
     options.onProgress?.({ phase: 'cutover', documentsProcessed: totalProcessed, documentsCopied: totalCopied, documentsDropped: totalDropped, chunksCopied: totalChunks, embeddingsCopied: totalEmbeddings })
