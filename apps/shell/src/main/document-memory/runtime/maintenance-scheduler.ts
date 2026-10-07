@@ -97,6 +97,10 @@ export class MaintenanceScheduler {
     return snap.limitState !== 'full'
   }
 
+  refreshCanAcceptExpensiveWork(): boolean {
+    return this.checkStorageBudget().limitState !== 'full'
+  }
+
   private isStopped(): boolean {
     return this.disposed || (this.options.isStopped ? this.options.isStopped() : false)
   }
