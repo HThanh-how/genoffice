@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 
 let dir: string
 let managers: DocumentMemoryManager[]
@@ -66,7 +67,12 @@ class FakeWorker extends EventEmitter {
         } else if (message.type === 'embed') {
           this.embeddingCalls.push(message.texts ?? [])
           this.emit('message', { type: 'model', state: 'ready' })
-          this.emit('message', { id: message.id, result: (message.texts ?? []).map(() => [1, 0]) })
+          this.emit('message', {
+            id: message.id,
+            result: (message.texts ?? []).map(() =>
+              new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1),
+            ),
+          })
         } else {
           const store = new DocumentMemoryStore(this.dbPath)
           const result = store.search(

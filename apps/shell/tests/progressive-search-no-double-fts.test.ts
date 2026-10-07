@@ -5,7 +5,10 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 import { resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
+
+const mockVector320 = () => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)
 
 class FakeSearchWorker extends EventEmitter {
   sentMessages: Array<{ id: number; type: string; vector?: number[] | null }> = []
@@ -27,14 +30,14 @@ class FakeSearchWorker extends EventEmitter {
       if (message.type === 'embed') {
         this.emit('message', {
           id: message.id,
-          result: (message.texts ?? []).map(() => [0.1, 0.2]),
+          result: (message.texts ?? []).map(() => mockVector320()),
         })
       } else if (message.type === 'search-semantic') {
         const store = new DocumentMemoryStore(this.dbPath, { role: 'worker' })
         const result = store.searchSemantic(
-          message.vector ?? [0.1, 0.2],
+          message.vector ?? mockVector320(),
           message.limit ?? 200,
-          message.embeddingSpaceId ?? 'test-space',
+          message.embeddingSpaceId ?? EMBEDDING_PROFILES.standard.embeddingId,
         )
         store.close()
         this.emit('message', { id: message.id, result })
@@ -81,10 +84,10 @@ describe('Progressive Search: No Double Lexical FTS Query', () => {
       mtimeMs: 1000,
       sizeBytes: 200,
       chunks: [
-        { text: 'Financial summary and revenue for annual report', location: 'Page 1', vector: [0.1, 0.2] },
+        { text: 'Financial summary and revenue for annual report', location: 'Page 1', vector: mockVector320() },
       ],
       status: 'ready',
-      embeddingModel: mgr.store['embeddingProfileId'] ?? 'f2llm-v2-80m',
+      embeddingModel: EMBEDDING_PROFILES.standard.embeddingId,
     })
 
     // Instrument search methods on main store

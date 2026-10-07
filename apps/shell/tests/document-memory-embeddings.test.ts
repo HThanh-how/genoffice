@@ -7,6 +7,7 @@ import {
   EMBEDDING_MODEL,
   EMBEDDING_REVISION,
 } from '../src/main/document-memory/embeddings'
+import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 import { extractDocument } from '../src/main/document-memory/worker'
 
 it('extracts all contents, hashes source and detects empty content', async () => {
@@ -35,7 +36,7 @@ const cache =
   join(homedir(), 'Library/Application Support/GenOffice/document-memory-models')
 it.skipIf(
   !process.env.GENOFFICE_EMBEDDING_TEST_CACHE ||
-    !existsSync(join(cache, EMBEDDING_MODEL, EMBEDDING_REVISION, 'onnx/model_quantized.onnx')),
+    !existsSync(join(cache, EMBEDDING_MODEL, EMBEDDING_REVISION, EMBEDDING_PROFILES.standard.modelFile)),
 )(
   'real Vietnamese semantic retrieval ranks contact contents above unrelated documents',
   async () => {
@@ -54,7 +55,7 @@ it.skipIf(
       cache,
     )
     const scores = vectors.map((v) => v.reduce((sum, value, i) => sum + value * query![i]!, 0))
-    expect(query).toHaveLength(384)
+    expect(query).toHaveLength(EMBEDDING_PROFILES.standard.dimensions)
     expect(scores[0]).toBeGreaterThan(scores[1]!)
     expect(scores[0]).toBeGreaterThan(scores[2]!)
   },

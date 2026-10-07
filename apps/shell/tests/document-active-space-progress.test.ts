@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { MaintenanceScheduler } from '../src/main/document-memory/runtime/maintenance-scheduler'
+import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 
 describe('Document Active-Space Progress QA Suite (DOCPROG-01..04)', () => {
   let tempDir: string
@@ -11,14 +12,16 @@ describe('Document Active-Space Progress QA Suite (DOCPROG-01..04)', () => {
   let store: DocumentMemoryStore
   let scheduler: MaintenanceScheduler
   let docPath: string
-  const SPACE_F2 = 'f2llm-v2-80m:ad88d7a126:q8:last-token:320:v1'
-  const SPACE_QWEN = 'qwen3-embedding-0.6b:bd58e9fd4b:q8:last-token:512:v1'
+  const SPACE_F2 = EMBEDDING_PROFILES.standard.embeddingId
+  const SPACE_QWEN = EMBEDDING_PROFILES.high.embeddingId
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'genoffice-docprog-'))
     dbPath = join(tempDir, 'memory.sqlite')
     docPath = join(tempDir, 'spec-document.docx')
     store = new DocumentMemoryStore(dbPath)
+    store.ensureEmbeddingSpace(EMBEDDING_PROFILES.standard)
+    store.ensureEmbeddingSpace(EMBEDDING_PROFILES.high)
     scheduler = new MaintenanceScheduler({ store })
 
     // Setup 100 chunks for the document

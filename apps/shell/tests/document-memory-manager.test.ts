@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
+
+const mockVector320 = () => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)
 
 let dir: string
 let managers: DocumentMemoryManager[]
@@ -68,7 +71,7 @@ class FakeWorker extends EventEmitter {
             this.emit('message', { type: 'model', state: 'ready' })
             this.emit('message', {
               id: message.id,
-              result: (message.texts ?? []).map(() => [1, 0]),
+              result: (message.texts ?? []).map(() => mockVector320()),
             })
           }
         } else {
@@ -172,9 +175,9 @@ describe('DocumentMemoryManager', () => {
       chunks: Array.from({ length: 5 }, (_, i) => ({
         text: `old ${i}`,
         location: `${i}`,
-        vector: [1, 0],
+        vector: mockVector320(),
       })),
-      embeddingModel: 'test-v1',
+      embeddingModel: EMBEDDING_PROFILES.standard.embeddingId,
       status: 'ready',
     })
     store.close()
@@ -220,10 +223,10 @@ describe('DocumentMemoryManager', () => {
       mtimeMs: 1,
       sizeBytes: 2,
       chunks: [
-        { text: 'one', location: '1', vector: [1, 0] },
+        { text: 'one', location: '1', vector: mockVector320() },
         { text: 'two', location: '2' },
       ],
-      embeddingModel: 'test-v1',
+      embeddingModel: EMBEDDING_PROFILES.standard.embeddingId,
       status: 'text-only',
     })
     store.replaceDocument(excludedPath, {
@@ -239,8 +242,8 @@ describe('DocumentMemoryManager', () => {
       hash: 'outside',
       mtimeMs: 1,
       sizeBytes: 1,
-      chunks: [{ text: 'outside', location: '1', vector: [1, 0] }],
-      embeddingModel: 'test-v1',
+      chunks: [{ text: 'outside', location: '1', vector: mockVector320() }],
+      embeddingModel: EMBEDDING_PROFILES.standard.embeddingId,
       status: 'ready',
     })
 

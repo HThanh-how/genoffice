@@ -287,6 +287,15 @@ describe('ANN Vector Indexing & Exact Search Fallback', () => {
         status: 'text-only',
       })
 
+      store.ensureEmbeddingSpace({
+        id: 'space-1',
+        embeddingId: 'space-1',
+        repo: 'space-1',
+        revision: 'r1',
+        pooling: 'last-token',
+        dimensions: 2,
+      } as any)
+
       // Initially rebuild on empty
       const emptyRebuild = await store.rebuildAnnIndex('space-1')
       expect(emptyRebuild.ok).toBe(true)

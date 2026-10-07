@@ -117,6 +117,14 @@ describe('Embedding Rolling Migration Engine', () => {
       status: 'ready',
     })
 
+    store.ensureEmbeddingSpace({
+      id: 'target-complete',
+      embeddingId: 'target-complete',
+      repo: 'target-complete',
+      revision: 'r1',
+      pooling: 'last-token',
+      dimensions: 2,
+    } as any)
     migration.setTarget('target-complete')
     const batch = migration.nextBatch(10)
     expect(batch.chunks).toHaveLength(1)

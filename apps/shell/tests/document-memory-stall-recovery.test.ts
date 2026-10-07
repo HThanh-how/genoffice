@@ -7,6 +7,7 @@ import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
+import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 
 let dir: string
 let manager: DocumentMemoryManager | undefined
@@ -47,7 +48,12 @@ class HealthyWorker extends EventEmitter {
         })
       } else {
         this.emit('message', { type: 'model', state: 'ready' })
-        this.emit('message', { id: message.id, result: (message.texts ?? []).map(() => [1, 0]) })
+        this.emit('message', {
+          id: message.id,
+          result: (message.texts ?? []).map(() =>
+            new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1),
+          ),
+        })
       }
     }, 0)
   }

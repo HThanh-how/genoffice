@@ -80,6 +80,14 @@ describe('Document Memory V3 Storage Schema & Embedding Counts', () => {
     const doc = store.documentByPath(testPath)
     expect(doc).not.toBeNull()
     const docId = doc!.id
+    store.ensureEmbeddingSpace({
+      id: 'space-beta',
+      embeddingId: 'space-beta',
+      repo: 'space-beta',
+      revision: 'r1',
+      pooling: 'last-token',
+      dimensions: 2,
+    } as any)
     expect(store.getEmbeddingCounts(docId, 'space-beta')).toBe(0)
 
     // Record first vector batch
