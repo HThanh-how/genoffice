@@ -1,3 +1,13 @@
+/**
+ * PAIR 01 — Embedding Profile Persistence QA Audit Suite (QA-01)
+ *
+ * Invariant specifications:
+ * - PROFILE-01: save High → restart manager → High
+ * - PROFILE-02: bootstrap reads High → manager runtime reports High
+ * - PROFILE-03: High → Standard → canonical file updated
+ * - PROFILE-04: canonical file and legacy file conflict → canonical wins
+ * - PROFILE-05: runtime embeddingId after restart == bootstrap activeSpaceId
+ */
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
