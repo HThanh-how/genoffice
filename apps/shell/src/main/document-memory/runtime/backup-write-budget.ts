@@ -11,6 +11,7 @@ import {
   type StorageBudgetPreset,
 } from '../storage/storage-settings'
 import { collectStorageAccounting } from './storage-accounting'
+import { chunkVectorColumns, legacyVectorCopySql } from '../storage/migration/legacy-vector-policy'
 
 export const MIGRATION_CONSERVATIVE_HEADROOM_BYTES = 20 * 1024 * 1024 // 20 MB headroom
 export const MIGRATION_WAL_MULTIPLIER = 1.5
@@ -229,15 +230,12 @@ export function estimateMigrationGrowthBytes(
     estimated += docCount * 512
   }
 
-  let chunkCount = 0
-  let chunkTextBytes: number
-
   if (tables.includes('chunks')) {
     const chunkStats = sourceDb
       .prepare('SELECT COUNT(*) as count, SUM(length(CAST(text AS BLOB))) as totalText FROM chunks')
       .get() as { count: number; totalText: number | null }
-    chunkCount = chunkStats?.count ?? 0
-    chunkTextBytes = chunkStats?.totalText ?? 0
+    const chunkCount = chunkStats?.count ?? 0
+    const chunkTextBytes = chunkStats?.totalText ?? 0
     if (!Number.isSafeInteger(chunkCount) || chunkCount < 0 || !Number.isSafeInteger(chunkTextBytes) || chunkTextBytes < 0) {
       throw new Error('Invalid chunk count or byte length in source database')
     }
@@ -250,6 +248,10 @@ export function estimateMigrationGrowthBytes(
     estimated += chunkBytes
   }
 
+  // Only vectors the copier will really write are budgeted: those already in the active space, plus legacy inline
+  // vectors of documents embedded with the active space (see legacy-vector-policy.ts). Legacy vectors of any other
+  // space are never copied, so they cost nothing here.
+  let vectorCount = 0
   if (tables.includes('chunk_embeddings')) {
     const embStats = sourceDb
       .prepare('SELECT COUNT(*) as count FROM chunk_embeddings WHERE space_id = ?')
@@ -258,14 +260,24 @@ export function estimateMigrationGrowthBytes(
     if (!Number.isSafeInteger(embCount) || embCount < 0) {
       throw new Error('Invalid embedding count in source database')
     }
-    // Float32Array blob (dim * 4) + row overhead
-    const vectorBytes = activeDimensions * 4 + 64
-    estimated += embCount * vectorBytes
-  } else if (chunkCount > 0) {
-    // Legacy fallback: vector embedded in chunk rows
-    const vectorBytes = activeDimensions * 4 + 64
-    estimated += chunkCount * vectorBytes
+    vectorCount += embCount
   }
+  if (tables.includes('chunks') && tables.includes('documents')) {
+    const cols = chunkVectorColumns(sourceDb)
+    if (cols.hasVector) {
+      const legacy = sourceDb
+        .prepare(
+          `SELECT COUNT(*) as count FROM chunks c JOIN documents d ON d.id = c.document_id WHERE ${legacyVectorCopySql(cols)}`,
+        )
+        .get(activeSpaceId, activeDimensions * 4, activeDimensions) as { count: number }
+      if (!Number.isSafeInteger(legacy?.count) || legacy.count < 0) {
+        throw new Error('Invalid legacy vector count in source database')
+      }
+      vectorCount += legacy.count
+    }
+  }
+  // Float32Array blob (dim * 4) + row overhead
+  estimated += vectorCount * (activeDimensions * 4 + 64)
 
   if (tables.includes('ocr_pages')) {
     const ocrStats = sourceDb
@@ -302,6 +314,7 @@ export function estimateBatchMigrationGrowth(
   sourceDb: DatabaseSync,
   docIds: number[],
   activeDimensions: number,
+  activeSpaceId?: string,
 ): number {
   if (docIds.length === 0) return 1024
   for (const id of docIds) {
@@ -334,7 +347,35 @@ export function estimateBatchMigrationGrowth(
     }
     const ftsBytes = Math.ceil(textBytes * MIGRATION_FTS_MULTIPLIER)
     const chunkBytes = count * 256 + textBytes + ftsBytes
-    const vectorBytes = count * (activeDimensions * 4 + 64)
+    // With the active space known only the vectors the copier writes are budgeted (legacy-vector-policy.ts);
+    // without it every chunk is conservatively assumed to carry one.
+    let vectorCount = count
+    if (activeSpaceId !== undefined) {
+      vectorCount = 0
+      if (tables.includes('chunk_embeddings')) {
+        const emb = sourceDb
+          .prepare(
+            `SELECT COUNT(*) as count FROM chunk_embeddings e JOIN chunks c ON c.id = e.chunk_id
+             WHERE e.space_id = ? AND c.document_id IN (${placeholders})`,
+          )
+          .get(activeSpaceId, ...docIds) as { count: number }
+        vectorCount += emb?.count ?? 0
+      }
+      const cols = chunkVectorColumns(sourceDb)
+      if (cols.hasVector && tables.includes('documents')) {
+        const legacy = sourceDb
+          .prepare(
+            `SELECT COUNT(*) as count FROM chunks c JOIN documents d ON d.id = c.document_id
+             WHERE c.document_id IN (${placeholders}) AND ${legacyVectorCopySql(cols)}`,
+          )
+          .get(...docIds, activeSpaceId, activeDimensions * 4, activeDimensions) as { count: number }
+        vectorCount += legacy?.count ?? 0
+      }
+      if (!Number.isSafeInteger(vectorCount) || vectorCount < 0) {
+        throw new Error('Invalid vector count in batch')
+      }
+    }
+    const vectorBytes = vectorCount * (activeDimensions * 4 + 64)
     batchEstimated += chunkBytes + vectorBytes
   }
 

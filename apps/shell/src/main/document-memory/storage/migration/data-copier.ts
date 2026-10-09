@@ -1,6 +1,15 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { documentIndexFields } from '../../normalization'
 import { EMBEDDING_PROFILES, LEGACY_E5_EMBEDDING_ID, LEGACY_VIETNAMESE_EMBEDDING_ID } from '../../embedding-profiles'
+import {
+  CHUNK_CURSOR_START,
+  nextChunkSlice,
+  nextOcrSlice,
+  openChunkSource,
+  type ChunkSource,
+  type MigrationChunk,
+  type OcrPageRow,
+} from './chunk-pager'
 
 export function copyEmbeddingSpaces(sourceDb: DatabaseSync, tempDb: DatabaseSync): void {
   const tables = (sourceDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map((t) => t.name)
@@ -25,7 +34,10 @@ export function prepareMigrationStatements(sourceDb: DatabaseSync, tempDb: Datab
     insertFts: tempDb.prepare('INSERT INTO chunk_fts (rowid, text) VALUES (?, ?)'),
     insertEmbedding: tempDb.prepare('INSERT OR REPLACE INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim, created_at) VALUES (?, ?, ?, ?, unixepoch())'),
     ensureEmbeddingSpace: tempDb.prepare("INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization) VALUES (?, ?, 'legacy', 'mean', ?, 'fp32')"),
-    insertDocEmbeddingCount: tempDb.prepare('INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, 1) ON CONFLICT(document_id, space_id) DO UPDATE SET completed_chunks = document_embedding_counts.completed_chunks + 1'),
+    // completed_chunks is accumulated per written slice (a large document spans several transactions)
+    insertDocEmbeddingCount: tempDb.prepare('INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?) ON CONFLICT(document_id, space_id) DO UPDATE SET completed_chunks = document_embedding_counts.completed_chunks + excluded.completed_chunks'),
+    // a row or OCR page cut to the per-row cap marks the document with the normal truncation metadata (never overwrites an existing reason)
+    markTruncated: tempDb.prepare("UPDATE documents SET truncated_reason = CASE WHEN truncated = 1 THEN truncated_reason ELSE 'content-limit' END, truncated = 1 WHERE id = ?"),
     updateDocStatusAndModel: tempDb.prepare('UPDATE documents SET status = ?, embedding_model = ?, chunk_done = ? WHERE id = ?'),
     updateDocChunkDone: tempDb.prepare('UPDATE documents SET chunk_done = ? WHERE id = ?'),
     selectChunkEmbedding: sTables.includes('chunk_embeddings') ? sourceDb.prepare('SELECT vector, vector_dim FROM chunk_embeddings WHERE chunk_id = ? AND space_id = ?') : null,
@@ -37,85 +49,98 @@ export function prepareMigrationStatements(sourceDb: DatabaseSync, tempDb: Datab
   }
 }
 
+/**
+ * Resolves the document's active chunk set (writing its chunk_sets row, so call it inside the temp transaction) and
+ * returns a paged reader over its chunks, or null when the source has no chunks table.
+ */
+export function beginDocumentChunks(
+  sourceDb: DatabaseSync,
+  doc: any,
+  stmts: ReturnType<typeof prepareMigrationStatements>,
+  activeSpaceId: string,
+  activeDimensions: number,
+): ChunkSource | null {
+  if (!stmts.sTables.includes('chunks')) return null
+  let activeSetId: number | null = null
+  if (doc.active_chunk_set_id != null && stmts.sTables.includes('chunk_sets')) {
+    const activeSet = sourceDb.prepare('SELECT id, chunker_version, state, created_at FROM chunk_sets WHERE id = ?').get(doc.active_chunk_set_id) as any
+    if (activeSet) stmts.insertChunkSet.run(activeSet.id, doc.id, activeSet.chunker_version, 'active', activeSet.created_at)
+    activeSetId = doc.active_chunk_set_id
+  }
+  return openChunkSource(sourceDb, stmts.selectChunkEmbedding, doc, activeSetId, activeSpaceId, activeDimensions)
+}
+
+/** Writes one slice of chunks (row + FTS + active-space vector + its completed-count) into the temp database. */
+export function writeChunkSlice(
+  stmts: ReturnType<typeof prepareMigrationStatements>,
+  doc: any,
+  chunks: MigrationChunk[],
+  activeSpaceId: string,
+): { chunks: number; embeddings: number; truncated: boolean } {
+  let embeddings = 0
+  let truncated = false
+  for (const c of chunks) {
+    stmts.insertChunk.run(c.id, doc.id, c.chunkSetId, c.ordinal, c.text, c.location)
+    stmts.insertFts.run(c.id, documentIndexFields(c.text).searchText)
+    if (c.truncated) truncated = true
+    if (c.vec && c.dim > 0) {
+      stmts.ensureEmbeddingSpace.run(activeSpaceId, activeSpaceId, c.dim)
+      stmts.insertEmbedding.run(c.id, activeSpaceId, c.vec, c.dim)
+      embeddings++
+    }
+  }
+  if (embeddings > 0) stmts.insertDocEmbeddingCount.run(doc.id, activeSpaceId, embeddings)
+  return { chunks: chunks.length, embeddings, truncated }
+}
+
+/**
+ * Settles a document's status / counters once ALL its chunks are written (chunk_total is trigger-maintained):
+ * every chunk vectorised in the active space -> 'ready'; otherwise 'text-only' (searchable by text at once, and
+ * re-embedded in the background by the normal pipeline, newest / opened first). 'pending' documents stay pending
+ * (they still need extraction); excluded / error documents keep their meaning.
+ */
+export function finalizeDocumentChunks(
+  stmts: ReturnType<typeof prepareMigrationStatements>,
+  doc: any,
+  activeSpaceId: string,
+  totals: { chunks: number; embeddings: number; truncated: boolean },
+): void {
+  const { chunks: chunkCount, embeddings: embCount } = totals
+  if (totals.truncated) stmts.markTruncated.run(doc.id)
+  if (chunkCount === 0) return
+  const keepsStatus = doc.status === 'excluded' || doc.status === 'error'
+  if (keepsStatus) stmts.updateDocChunkDone.run(embCount, doc.id)
+  else if (embCount === chunkCount) stmts.updateDocStatusAndModel.run('ready', activeSpaceId, embCount, doc.id)
+  else stmts.updateDocStatusAndModel.run(doc.status === 'pending' ? 'pending' : 'text-only', embCount > 0 ? activeSpaceId : null, embCount, doc.id)
+}
+
+/** Copies a (bounded-size) document's whole active chunk set inside the caller's transaction. */
 export function copyDocumentActiveChunks(
   sourceDb: DatabaseSync,
-  tempDb: DatabaseSync,
+  _tempDb: DatabaseSync,
   doc: any,
   stmts: ReturnType<typeof prepareMigrationStatements>,
   activeSpaceId: string,
   activeDimensions: number,
 ): { chunks: number; embeddings: number } {
-  let chunks: any[]
-  const hasChunkSets = stmts.sTables.includes('chunk_sets')
-  if (!stmts.sTables.includes('chunks')) return { chunks: 0, embeddings: 0 }
-
-  if (doc.active_chunk_set_id != null && hasChunkSets) {
-    const activeSet = sourceDb.prepare('SELECT id, chunker_version, state, created_at FROM chunk_sets WHERE id = ?').get(doc.active_chunk_set_id) as any
-    if (activeSet) stmts.insertChunkSet.run(activeSet.id, doc.id, activeSet.chunker_version, 'active', activeSet.created_at)
-    chunks = sourceDb.prepare('SELECT * FROM chunks WHERE document_id = ? AND chunk_set_id = ? ORDER BY ordinal ASC').all(doc.id, doc.active_chunk_set_id) as any[]
-  } else {
-    chunks = sourceDb.prepare('SELECT * FROM chunks WHERE document_id = ? ORDER BY ordinal ASC').all(doc.id) as any[]
-  }
-
-  let chunkCount = 0, embCount = 0
-  for (const c of chunks) {
-    chunkCount++
-    stmts.insertChunk.run(c.id, doc.id, c.chunk_set_id ?? null, c.ordinal, c.text, c.location)
-    stmts.insertFts.run(c.id, documentIndexFields(c.text).searchText)
-
-    let vec: Uint8Array | null = null, dim = 0, space = activeSpaceId
-    if (stmts.selectChunkEmbedding) {
-      const e = stmts.selectChunkEmbedding.get(c.id, activeSpaceId) as any
-      if (e?.vector) { vec = e.vector; dim = e.vector_dim ?? activeDimensions; space = activeSpaceId }
-    }
-    if (!vec && c.vector) {
-      const byteLen = c.vector.byteLength ?? (c.vector.length ? c.vector.length : 0)
-      const legacyDim = c.vector_dim ?? (byteLen > 0 ? (byteLen / 4) : 0)
-      if (
-        doc.embedding_model === activeSpaceId &&
-        legacyDim === activeDimensions &&
-        byteLen === activeDimensions * 4
-      ) {
-        vec = c.vector
-        dim = legacyDim
-        space = activeSpaceId
-      }
-    }
-    if (vec && dim > 0) {
-      stmts.ensureEmbeddingSpace.run(space, space, dim)
-      stmts.insertEmbedding.run(c.id, space, vec, dim)
-      embCount++
-      stmts.insertDocEmbeddingCount.run(doc.id, space)
-    }
-  }
-
-  if (chunkCount > 0) {
-    if (embCount === chunkCount) {
-      if (doc.status !== 'excluded' && doc.status !== 'error') {
-        stmts.updateDocStatusAndModel.run('ready', activeSpaceId, embCount, doc.id)
-      } else {
-        stmts.updateDocChunkDone.run(embCount, doc.id)
-      }
-    } else {
-      if (doc.status !== 'excluded' && doc.status !== 'error') {
-        stmts.updateDocStatusAndModel.run('text-only', embCount > 0 ? activeSpaceId : null, embCount, doc.id)
-      } else {
-        stmts.updateDocChunkDone.run(embCount, doc.id)
-      }
-    }
-  } else if (embCount > 0) {
-    stmts.updateDocChunkDone.run(embCount, doc.id)
-  }
-
-  return { chunks: chunkCount, embeddings: embCount }
+  const source = beginDocumentChunks(sourceDb, doc, stmts, activeSpaceId, activeDimensions)
+  if (!source) return { chunks: 0, embeddings: 0 }
+  const slice = nextChunkSlice(source, CHUNK_CURSOR_START, Infinity)
+  const totals = writeChunkSlice(stmts, doc, slice.chunks, activeSpaceId)
+  finalizeDocumentChunks(stmts, doc, activeSpaceId, totals)
+  return { chunks: totals.chunks, embeddings: totals.embeddings }
 }
 
-export function copyOcrData(sourceDb: DatabaseSync, path: string, stmts: ReturnType<typeof prepareMigrationStatements>): void {
-  if (stmts.insertOcrPage) {
-    for (const o of sourceDb.prepare('SELECT * FROM ocr_pages WHERE path = ?').all(path) as any[]) {
-      stmts.insertOcrPage.run(o.path, o.page, o.hash, o.mtime_ms, o.size_bytes, o.total_pages, o.text, o.model ?? null, o.created_at, o.engine ?? null, o.quality ?? null, o.tier ?? null, o.escalate ?? 0)
-    }
+/** Writes OCR pages of one slice; returns whether any page text had to be truncated. */
+export function writeOcrPages(stmts: ReturnType<typeof prepareMigrationStatements>, rows: OcrPageRow[]): void {
+  if (!stmts.insertOcrPage) return
+  for (const o of rows) {
+    stmts.insertOcrPage.run(o.path, o.page, o.hash, o.mtime_ms, o.size_bytes, o.total_pages, o.text, o.model ?? null, o.created_at, o.engine ?? null, o.quality ?? null, o.tier ?? null, o.escalate ?? 0)
   }
+}
+
+/** Small per-document OCR side rows: local-OCR failure markers and the PDF scan verdict. */
+export function copyOcrSideRows(sourceDb: DatabaseSync, path: string, stmts: ReturnType<typeof prepareMigrationStatements>): void {
   if (stmts.insertLocalFailure) {
     for (const f of sourceDb.prepare('SELECT * FROM ocr_local_failures WHERE path = ?').all(path) as any[]) {
       stmts.insertLocalFailure.run(f.path, f.mtime_ms, f.size_bytes, f.attempts, f.code, f.updated_at ?? Math.floor(Date.now() / 1000))
@@ -126,6 +151,16 @@ export function copyOcrData(sourceDb: DatabaseSync, path: string, stmts: ReturnT
       stmts.insertPdfScan.run(p.path, p.mtime_ms, p.size_bytes, p.total_pages, p.scanned)
     }
   }
+}
+
+/** Copies a (bounded-size) document's OCR rows inside the caller's transaction. */
+export function copyOcrData(sourceDb: DatabaseSync, path: string, stmts: ReturnType<typeof prepareMigrationStatements>, doc?: any): void {
+  if (stmts.insertOcrPage) {
+    const slice = nextOcrSlice(sourceDb, path, -1, Infinity)
+    writeOcrPages(stmts, slice.rows)
+    if (slice.truncated && doc) stmts.markTruncated.run(doc.id)
+  }
+  copyOcrSideRows(sourceDb, path, stmts)
 }
 
 /** The media side row (kind, header facts, sensitive marker, OCR candidate / state) of a copied image or video. */

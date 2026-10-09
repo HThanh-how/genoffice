@@ -16,6 +16,7 @@ import {
   copyMediaRow,
   copyAnnMetadata,
 } from './data-copier'
+import { copyOversizedDocument } from './oversized-document-copier'
 import {
   getEffectiveStorageBudget,
   estimateMigrationGrowthBytes,
@@ -131,54 +132,9 @@ export function runStorageMigrationV2ToV3(
       throw new Error(`Concurrent writer detected on source database during migration: ${err?.message || String(err)}`, { cause: err })
     }
 
-    // 7. Verify single document bounds BEFORE temp work:
-    // A single huge document must truthfully deny before any temp mutation without deleting original user data
-    const sTables = (
-      sourceDb.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
-    ).map((t) => t.name)
-
-    if (sTables.includes('chunks')) {
-      const maxChunkDoc = sourceDb
-        .prepare(
-          `SELECT document_id, COUNT(*) as count, COALESCE(SUM(length(CAST(text AS BLOB))), 0) as totalText
-           FROM chunks
-           GROUP BY document_id
-           ORDER BY (COALESCE(SUM(length(CAST(text AS BLOB))), 0) + COUNT(*) * 256) DESC
-           LIMIT 1`,
-        )
-        .get() as { document_id: number; count: number; totalText: number } | undefined
-
-      if (maxChunkDoc) {
-        const docGrowth = estimateBatchMigrationGrowth(sourceDb, [maxChunkDoc.document_id], activeDimensions)
-        if (docGrowth > MAX_MIGRATION_BATCH_BYTES) {
-          throw new Error(
-            `Migration rejected: document ${maxChunkDoc.document_id} estimated size (${docGrowth} bytes) exceeds maximum migration batch size (${MAX_MIGRATION_BATCH_BYTES} bytes). Preserving original document without modification.`,
-          )
-        }
-      }
-    }
-
-    if (sTables.includes('ocr_pages') && sTables.includes('documents')) {
-      const maxOcrDoc = sourceDb
-        .prepare(
-          `SELECT d.id as doc_id, COUNT(*) as count, COALESCE(SUM(length(CAST(text AS BLOB))), 0) as totalText
-           FROM ocr_pages o
-           JOIN documents d ON d.path = o.path
-           GROUP BY o.path
-           ORDER BY (COALESCE(SUM(length(CAST(text AS BLOB))), 0) + COUNT(*) * 512) DESC
-           LIMIT 1`,
-        )
-        .get() as { doc_id: number; count: number; totalText: number } | undefined
-
-      if (maxOcrDoc) {
-        const docGrowth = estimateBatchMigrationGrowth(sourceDb, [maxOcrDoc.doc_id], activeDimensions)
-        if (docGrowth > MAX_MIGRATION_BATCH_BYTES) {
-          throw new Error(
-            `Migration rejected: document ${maxOcrDoc.doc_id} with OCR estimated size (${docGrowth} bytes) exceeds maximum migration batch size (${MAX_MIGRATION_BATCH_BYTES} bytes). Preserving original document without modification.`,
-          )
-        }
-      }
-    }
+    // 7. No single-document size gate: a document larger than MAX_MIGRATION_BATCH_BYTES is copied in byte-bounded
+    // slices (oversized-document-copier.ts), each admitted against the live quota / free disk before it is written.
+    // The whole-database admission below (grace zone + hardCapBytes) still denies a migration that cannot fit.
 
     // 8. Preflight quota and free disk admission check BEFORE new DatabaseSync(tempPath)
     const preReport = collectStorageAccounting({ dbPath: resolvedSource })
@@ -221,7 +177,7 @@ export function runStorageMigrationV2ToV3(
 
     ownedTempPath = tempPath
     tempDb = new DatabaseSync(tempPath)
-    tempDb.exec('PRAGMA busy_timeout = 5000; PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;')
+    tempDb.exec('PRAGMA busy_timeout = 5000; PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA cache_size = -65536; PRAGMA temp_store = MEMORY;')
     applyCanonicalSchemaV3(tempDb)
     OcrSidecar.ensureSchema(tempDb)
 
@@ -239,6 +195,45 @@ export function runStorageMigrationV2ToV3(
     let lastId = 0
     let hasMore = true
 
+    // Live recompute of free disk and base usage, then contract admission, before every write unit (batch or slice)
+    const admitLive = (estimatedBytes: number): void => {
+      const liveFreeDisk =
+        options.freeDiskBytes !== undefined ? options.freeDiskBytes : getValidatedFreeDiskBytesSync(dirname(resolvedSource))
+      const liveReport = collectStorageAccounting({ dbPath: resolvedSource })
+      if (liveReport.isDegraded) {
+        throw new Error('Storage accounting degraded during migration batch admission')
+      }
+      const batchAdmission = contract.admitBatch(estimatedBytes, liveFreeDisk, liveReport.totalManagedBytes)
+      if (!batchAdmission.admitted) {
+        throw new Error(`Storage quota exceeded during migration batch: ${batchAdmission.reason}`)
+      }
+    }
+    const insertDocumentRows = (doc: any): void => {
+      stmts.insertDoc.run(
+        doc.id,
+        doc.path,
+        doc.name ?? basename(doc.path),
+        doc.status,
+        doc.mtime_ms ?? null,
+        doc.size_bytes ?? null,
+        doc.hash ?? null,
+        // a model other than the active space is not carried: its vectors are not copied (legacy-vector-policy.ts)
+        doc.embedding_model === activeSpaceId ? activeSpaceId : null,
+        doc.active_chunk_set_id ?? null,
+        doc.error ?? null,
+        doc.excluded === 1 ? 1 : 0,
+        doc.truncated ? 1 : 0,
+        doc.truncated_reason ?? null,
+        doc.last_opened_at ?? 0,
+        doc.priority_at ?? (doc.last_opened_at ?? 0),
+        doc.updated_at ?? Math.floor(Date.now() / 1000),
+        0,
+        0,
+        1,
+      )
+      copyMediaRow(sourceDb!, doc.id, stmts)
+    }
+
     // 10. Copy documents in bounded batches (both page doc count and byte bounds strictly checked BEFORE BEGIN)
     while (hasMore) {
       const candidateDocs = sourceDb
@@ -254,73 +249,70 @@ export function runStorageMigrationV2ToV3(
       let batchGrowthBytes = 0
 
       for (const doc of candidateDocs) {
-        const docGrowth = estimateBatchMigrationGrowth(sourceDb, [doc.id], activeDimensions)
+        const docGrowth = estimateBatchMigrationGrowth(sourceDb, [doc.id], activeDimensions, activeSpaceId)
         if (batchDocs.length > 0 && batchGrowthBytes + docGrowth > MAX_MIGRATION_BATCH_BYTES) {
           break
         }
         batchDocs.push(doc)
         batchGrowthBytes += docGrowth
+        // A document that alone exceeds the bound travels alone and is copied in slices (never rejected)
+        if (docGrowth > MAX_MIGRATION_BATCH_BYTES) break
       }
+      const oversizedDoc = batchGrowthBytes > MAX_MIGRATION_BATCH_BYTES
 
-      // Live recompute free disk and base usage before each batch write
-      const liveFreeDisk =
-        options.freeDiskBytes !== undefined ? options.freeDiskBytes : getValidatedFreeDiskBytesSync(dirname(resolvedSource))
-      const liveReport = collectStorageAccounting({ dbPath: resolvedSource })
-      if (liveReport.isDegraded) {
-        throw new Error('Storage accounting degraded during migration batch admission')
-      }
-      const liveBaseUsage = liveReport.totalManagedBytes
 
-      const batchAdmission = contract.admitBatch(batchGrowthBytes, liveFreeDisk, liveBaseUsage)
-      if (!batchAdmission.admitted) {
-        throw new Error(`Storage quota exceeded during migration batch: ${batchAdmission.reason}`)
-      }
+      if (!oversizedDoc) admitLive(batchGrowthBytes)
 
-      tempDb.exec('BEGIN IMMEDIATE')
-      try {
-        for (const doc of batchDocs) {
-          totalProcessed++
-          lastId = doc.id
-          const decision = evaluateRetentionPolicy(doc)
-          if (!decision.shouldCopyDocument) {
-            totalDropped++
-            continue
-          }
+      if (oversizedDoc) {
+        const doc = batchDocs[0]
+        totalProcessed++
+        lastId = doc.id
+        const decision = evaluateRetentionPolicy(doc)
+        if (!decision.shouldCopyDocument) {
+          totalDropped++
+        } else {
           totalCopied++
-
-          stmts.insertDoc.run(
-            doc.id,
-            doc.path,
-            doc.name ?? basename(doc.path),
-            doc.status,
-            doc.mtime_ms ?? null,
-            doc.size_bytes ?? null,
-            doc.hash ?? null,
-            doc.embedding_model ?? null,
-            doc.active_chunk_set_id ?? null,
-            doc.error ?? null,
-            doc.excluded === 1 ? 1 : 0,
-            doc.truncated ? 1 : 0,
-            doc.truncated_reason ?? null,
-            doc.last_opened_at ?? 0,
-            doc.priority_at ?? (doc.last_opened_at ?? 0),
-            doc.updated_at ?? Math.floor(Date.now() / 1000),
-            0,
-            0,
-            1,
-          )
-          copyMediaRow(sourceDb, doc.id, stmts)
-          if (!decision.shouldCopyChunksAndEmbeddings) continue
-
-          const counts = copyDocumentActiveChunks(sourceDb, tempDb, doc, stmts, activeSpaceId, activeDimensions)
-          totalChunks += counts.chunks
-          totalEmbeddings += counts.embeddings
-          copyOcrData(sourceDb, doc.path, stmts)
+          const copied = copyOversizedDocument({
+            sourceDb,
+            tempDb,
+            stmts,
+            doc,
+            decision,
+            activeSpaceId,
+            activeDimensions,
+            maxSliceBytes: MAX_MIGRATION_BATCH_BYTES,
+            budget: { admit: admitLive, reconcile: () => contract.reconcileBatch(tempPath) },
+            insertDocumentRows: () => insertDocumentRows(doc),
+          })
+          totalChunks += copied.chunks
+          totalEmbeddings += copied.embeddings
         }
-        tempDb.exec('COMMIT')
-      } catch (err) {
-        tempDb.exec('ROLLBACK')
-        throw err
+      } else {
+        tempDb.exec('BEGIN IMMEDIATE')
+        try {
+          for (const doc of batchDocs) {
+            totalProcessed++
+            lastId = doc.id
+            const decision = evaluateRetentionPolicy(doc)
+            if (!decision.shouldCopyDocument) {
+              totalDropped++
+              continue
+            }
+            totalCopied++
+
+            insertDocumentRows(doc)
+            if (!decision.shouldCopyChunksAndEmbeddings) continue
+
+            const counts = copyDocumentActiveChunks(sourceDb, tempDb, doc, stmts, activeSpaceId, activeDimensions)
+            totalChunks += counts.chunks
+            totalEmbeddings += counts.embeddings
+            copyOcrData(sourceDb, doc.path, stmts, doc)
+          }
+          tempDb.exec('COMMIT')
+        } catch (err) {
+          tempDb.exec('ROLLBACK')
+          throw err
+        }
       }
 
       // Post-commit: reconcile fresh physical bytes on disk (fails closed on non-ENOENT stat errors)
