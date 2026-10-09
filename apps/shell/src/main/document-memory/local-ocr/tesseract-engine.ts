@@ -25,7 +25,7 @@ import {
 } from '../runtime/local-ocr-engine'
 import { TESSERACT_ESCALATION_THRESHOLD } from './escalation'
 import { prepareForTesseract, TESSERACT_MAX_EDGE_PX } from './tesseract-prepare'
-import { findTessdataDir, findTesseractWorkerScript } from './resources'
+import { findTessdataDir, findTesseractWorkerScript, tesseractCoresPresent } from './resources'
 
 export const TESSERACT_ENGINE_ID = 'tesseract-vie'
 
@@ -100,6 +100,7 @@ export class TesseractEngine implements LocalOcrEngine {
   }
 
   isAvailable(_platform: NodeJS.Platform, freeRamMB: number): boolean {
+    if (this.workerPath && !tesseractCoresPresent(this.workerPath)) return false
     return this.langPath !== null && freeRamMB >= this.descriptor.minFreeRamMB
   }
 

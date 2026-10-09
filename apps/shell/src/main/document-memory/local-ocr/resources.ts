@@ -65,6 +65,38 @@ export function findTessdataDir(): string | null {
 export function findTesseractWorkerScript(): string | null {
   const resources = (process as { resourcesPath?: string }).resourcesPath
   if (!resources) return null
-  const candidate = join(resources, 'app.asar.unpacked', 'node_modules', 'tesseract.js', 'src', 'worker-script', 'node', 'index.js')
+  const candidate = join(
+    resources,
+    'app.asar.unpacked',
+    'node_modules',
+    'tesseract.js',
+    'src',
+    'worker-script',
+    'node',
+    'index.js',
+  )
   return existsSync(candidate) ? candidate : null
+}
+
+/** The `.js` + `.wasm` pairs tesseract.js may load, whichever CPU features and OEM it picks. */
+const TESSERACT_CORE_BUILDS = [
+  'tesseract-core',
+  'tesseract-core-simd',
+  'tesseract-core-relaxedsimd',
+  'tesseract-core-lstm',
+  'tesseract-core-simd-lstm',
+  'tesseract-core-relaxedsimd-lstm',
+]
+
+/**
+ * True when every tesseract.js-core build sits next to the unpacked worker script. A missing core
+ * is a `require` failure inside the worker thread, which the main process reports as an uncaught
+ * exception, so an incomplete package must make the engine unavailable instead.
+ * `workerPath` is .../node_modules/tesseract.js/src/worker-script/node/index.js.
+ */
+export function tesseractCoresPresent(workerPath: string): boolean {
+  const coreDir = join(dirname(workerPath), '..', '..', '..', '..', 'tesseract.js-core')
+  return TESSERACT_CORE_BUILDS.every(
+    (name) => existsSync(join(coreDir, `${name}.js`)) && existsSync(join(coreDir, `${name}.wasm`)),
+  )
 }

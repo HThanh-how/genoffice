@@ -317,10 +317,12 @@ const config = {
   },
   files: [
     'out/**',
-    // tesseract.js-core ships six builds x (wasm + wasm.js); the local OCR engine runs LSTM only, in Node,
-    // which reads the plain .wasm next to the .js (never the base64 .wasm.js browser twin).
+    // tesseract.js-core ships six builds x (wasm + wasm.js); Node reads the plain .wasm next to the .js
+    // (never the base64 .wasm.js browser twin). All six builds stay: tesseract.js 7.0.0's Node getCore
+    // is handed a boolean where it expects an OEM number, so it always asks for the NON-LSTM build
+    // ('tesseract-core-relaxedsimd', '-simd' or the plain one, by CPU) even when LSTM only is requested.
+    // Dropping those made the packaged app die with "Cannot find module 'tesseract.js-core/...'".
     '!node_modules/tesseract.js-core/*.wasm.js',
-    '!node_modules/tesseract.js-core/tesseract-core{,-simd,-relaxedsimd}.{js,wasm}',
   ],
   asarUnpack: [
     'node_modules/onnxruntime-node/**',
