@@ -1,9 +1,13 @@
 import { isMainThread, parentPort, workerData } from 'node:worker_threads'
+import { dirname } from 'node:path'
 import { enforceBackupRetentionPolicy } from '../storage/migration/backup-retention'
+import { readBackupRetentionDays } from '../storage/migration/backup-retention-settings'
 
 export function runRetentionWorkerTask(dbPath: string): { purgedCount: number; error?: string } {
   try {
-    const purgedCount = enforceBackupRetentionPolicy(dbPath)
+    const purgedCount = enforceBackupRetentionPolicy(dbPath, {
+      minAgeHours: readBackupRetentionDays(dirname(dbPath)) * 24,
+    })
     return { purgedCount }
   } catch (error) {
     return {

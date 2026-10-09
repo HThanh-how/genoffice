@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { DatabaseSync } from 'node:sqlite'
 import { verifyDatabaseIntegrity } from './logical-verifier'
 import { MIN_VERIFIED_BACKUPS, MIN_BACKUP_AGE_HOURS } from './retention-policy'
+import { removeBackupCompanions } from './v2-backup-files'
 import {
   type V3RetentionState,
   type BackupDiagnosticError,
@@ -135,6 +136,8 @@ export interface BackupRetentionOptions {
  * - Failed/incomplete migration backups are never treated as verified.
  * - Safely purges only backups older than 24h beyond the 3 newest verified backups,
  *   or a verified migration rollback backup once V3 has completed >= 3 verified launches.
+ * - The 24h age floor is the default; the background worker passes `minAgeHours` from the user-configurable retention
+ *   period (default 14 days, backup-retention-settings.ts). Backups are not charged to the index quota.
  */
 export function enforceBackupRetentionPolicy(
   dbPath: string,
@@ -360,6 +363,7 @@ export function enforceBackupRetentionPolicy(
     if (ageMs >= minAgeMs) {
       try {
         unlinkSync(item.path)
+        removeBackupCompanions(item.path)
         purgedCount++
         if (state && resolve(item.path) === resolve(state.backupPath)) {
           clearV3RetentionState(dbPath)

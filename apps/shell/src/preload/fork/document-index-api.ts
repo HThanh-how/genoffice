@@ -128,5 +128,11 @@ export function createDocumentIndexPreloadApi(
     async setStorageBudgetSettings(settings) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setStorageBudgetSettings, settings)
     },
+    async getDocumentIndexBackup() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getDocumentIndexBackup)
+    },
+    async deleteDocumentIndexBackup() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.deleteDocumentIndexBackup)
+    },
   }
 }

@@ -4,10 +4,18 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { LANGS, type Lang } from '@genoffice/i18n'
 import { IndexStorageSettings } from '../src/renderer/src/fork/IndexStorageSettings'
+import { appConfirm } from '../src/renderer/src/ui-feedback'
 import { quotaString, type QuotaStringKey } from '../src/renderer/src/fork/storage-quota-i18n'
 import { LocaleProvider } from '../src/renderer/src/locale'
-import type { StorageBudgetConfig, StorageBudgetSnapshot } from '../src/shared/fork/document-index-api'
+import type {
+  DocumentIndexBackupDeleteResult,
+  DocumentIndexBackupInfo,
+  StorageBudgetConfig,
+  StorageBudgetSnapshot,
+} from '../src/shared/fork/document-index-api'
 import type { HomeApi } from '../src/shared/home-api'
+
+vi.mock('../src/renderer/src/ui-feedback', () => ({ appConfirm: vi.fn(async () => true) }))
 
 const GB = 1_000_000_000
 let container: HTMLDivElement
@@ -173,10 +181,93 @@ describe('IndexStorageSettings (index size)', () => {
   })
 })
 
+describe('old index backup (Settings > search index storage)', () => {
+  const backupInfo = (over: Partial<DocumentIndexBackupInfo> = {}): DocumentIndexBackupInfo => ({
+    exists: true, totalBytes: 5_461_098_496, files: 1, createdAt: 1791535907060, retentionDays: 14, deletable: true, ...over,
+  })
+  const backupApi = (info: DocumentIndexBackupInfo, del?: () => Promise<DocumentIndexBackupDeleteResult>) => {
+    const { api } = makeApi()
+    let current = info
+    const deleteDocumentIndexBackup = vi.fn(
+      del ??
+        (async () => {
+          current = { ...current, exists: false, totalBytes: 0, files: 0 }
+          return { ok: true, freedBytes: 5_461_098_496, deleted: 1 }
+        }),
+    )
+    Object.assign(api as object, { getDocumentIndexBackup: vi.fn(async () => current), deleteDocumentIndexBackup })
+    return { api, deleteDocumentIndexBackup }
+  }
+  const deleteButton = () => [...container.querySelectorAll<HTMLButtonElement>('[data-testid="index-backup"] button')][0]
+
+  beforeEach(() => vi.mocked(appConfirm).mockClear())
+
+  it('shows nothing when there is no backup', async () => {
+    await render(backupApi(backupInfo({ exists: false, totalBytes: 0, files: 0 })).api, 'en')
+    expect(container.querySelector('[data-testid="index-backup"]')).toBeNull()
+  })
+
+  it('shows the size, the keep period and a delete button that names the space it frees', async () => {
+    await render(backupApi(backupInfo()).api, 'en')
+    const box = container.querySelector('[data-testid="index-backup"]')!
+    expect(box.textContent).toContain('Old index backup')
+    expect(box.textContent).toContain('5.46 GB')
+    expect(box.textContent).toContain('after 14 days')
+    expect(deleteButton().textContent).toBe('Delete old index backup (frees 5.46 GB)')
+    expect(deleteButton().disabled).toBe(false)
+  })
+
+  it('asks for confirmation first; declining deletes nothing', async () => {
+    vi.mocked(appConfirm).mockResolvedValueOnce(false)
+    const { api, deleteDocumentIndexBackup } = backupApi(backupInfo())
+    await render(api, 'en')
+    await act(async () => deleteButton().click())
+    expect(appConfirm).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(appConfirm).mock.calls[0][0]).toContain('free 5.46 GB')
+    expect(vi.mocked(appConfirm).mock.calls[0][1]).toMatchObject({ tone: 'danger', confirmLabel: 'Delete backup' })
+    expect(deleteDocumentIndexBackup).not.toHaveBeenCalled()
+    expect(container.querySelector('[data-testid="index-backup"]')).not.toBeNull()
+  })
+
+  it('confirming deletes, reports the freed space and removes the row', async () => {
+    const { api, deleteDocumentIndexBackup } = backupApi(backupInfo())
+    await render(api, 'en')
+    await act(async () => deleteButton().click())
+    expect(deleteDocumentIndexBackup).toHaveBeenCalledTimes(1)
+    const box = container.querySelector('[data-testid="index-backup"]')!
+    expect(box.textContent).toContain('Old index backup deleted. Freed 5.46 GB.')
+    expect(box.querySelector('button')).toBeNull()
+  })
+
+  it('cannot be deleted while an upgrade is unfinished (button disabled, reason shown)', async () => {
+    const { api, deleteDocumentIndexBackup } = backupApi(backupInfo({ deletable: false }))
+    await render(api, 'en')
+    expect(deleteButton().disabled).toBe(true)
+    expect(container.querySelector('[data-testid="index-backup"]')!.textContent).toContain('cannot be deleted right now')
+    await act(async () => deleteButton().click())
+    expect(deleteDocumentIndexBackup).not.toHaveBeenCalled()
+  })
+
+  it('shows a failure instead of claiming success, and keeps the backup listed', async () => {
+    const { api } = backupApi(backupInfo(), async () => ({ ok: false, freedBytes: 0, deleted: 0, error: 'a.db: EBUSY' }))
+    await render(api, 'en')
+    await act(async () => deleteButton().click())
+    const alert = container.querySelector('[data-testid="index-backup"] [role="alert"]')!
+    expect(alert.textContent).toBe('Could not delete the backup: a.db: EBUSY')
+    expect(deleteButton()).toBeTruthy()
+  })
+
+  it('works in Vietnamese', async () => {
+    await render(backupApi(backupInfo()).api, 'vi')
+    expect(deleteButton().textContent).toBe('Xoá bản sao lưu chỉ mục cũ (giải phóng 5,46 GB)')
+  })
+})
+
 const KEYS: QuotaStringKey[] = [
   'title', 'hint', 'presetSaver', 'presetDefault', 'presetHigh', 'presetCustom', 'forRam', 'recommended', 'customLabel', 'save', 'saved',
   'savedPending', 'invalid', 'used', 'estimate', 'estimateLexical', 'estimateNote', 'grace', 'graceActive', 'full', 'lowerNote',
-  'statusApplied', 'statusPending', 'statusError',
+  'statusApplied', 'statusPending', 'statusError', 'backupTitle', 'backupText', 'backupDelete', 'backupConfirm', 'backupConfirmLabel',
+  'backupDeleted', 'backupFailed', 'backupBlocked',
 ]
 const raw = (lang: Lang, key: QuotaStringKey) => quotaString(lang, key) // unfilled: placeholders stay visible
 

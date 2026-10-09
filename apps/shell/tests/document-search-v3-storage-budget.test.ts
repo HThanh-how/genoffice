@@ -364,7 +364,7 @@ describe('Document Search V3 - Storage Budget & User-visible Limits Suite (PAIR 
     // Values verification
     expect(snapshot.databaseBytes).toBeGreaterThan(0)
     expect(snapshot.budgetBytes).toBe(50 * 1024 * 1024)
-    // Quota decisions are governed by totalManagedBytes (DB + WAL + SHM + ANN + OCR + temp + backups);
+    // Quota decisions are governed by totalManagedBytes (DB + WAL + SHM + ANN + OCR + temp; backups are reported, not charged);
     // databaseBytes stays the physical SQLite diagnostic.
     expect(snapshot.totalManagedBytes).toBeGreaterThanOrEqual(snapshot.databaseBytes)
     expect(snapshot.usageRatio).toBeCloseTo((snapshot.totalManagedBytes ?? 0) / snapshot.budgetBytes, 4)

@@ -286,7 +286,8 @@ export function compactionTarget(snapshot: UrgencyInput): CompactionTarget {
 
 /**
  * Constructs a consolidated StorageBudgetSnapshot ensuring unified quota decisions:
- * - totalManagedBytes governs usageRatio and limitState across DB, WAL, SHM, ANN, OCR, temp, and backups.
+ * - totalManagedBytes governs usageRatio and limitState across DB, WAL, SHM, ANN, OCR and temp files. Migration
+ *   backups (backupBytes) are reported next to it but are not part of it: the index does not own them.
  * - databaseBytes is preserved for physical SQLite diagnostics.
  * - model weights are reported separately and never counted toward managed index quota.
  */
@@ -342,7 +343,7 @@ export function createStorageBudgetSnapshot(params: {
     const b = params.breakdown
     effectiveManagedBytes = Math.max(
       0,
-      b.activeDbBytes + b.walBytes + b.shmBytes + b.annBytes + b.ocrExternalBytes + b.tempBytes + b.backupBytes,
+      b.activeDbBytes + b.walBytes + b.shmBytes + b.annBytes + b.ocrExternalBytes + b.tempBytes,
     )
   } else {
     effectiveManagedBytes = databaseBytes

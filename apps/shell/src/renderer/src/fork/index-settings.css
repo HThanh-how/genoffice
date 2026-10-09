@@ -248,6 +248,12 @@
   font-size: 12px;
   color: var(--text-secondary);
 }
+.ixq-backup {
+  margin-top: 10px;
+}
+.ixq-backup .idx-btn {
+  margin-top: 8px;
+}
 .ixq-bar {
   height: 6px;
   margin: 6px 0 8px;
