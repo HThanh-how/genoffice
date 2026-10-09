@@ -39,12 +39,23 @@ function cleanSources(value: unknown): HomeChatSource[] | undefined {
     seen.add(key)
     const source: HomeChatSource = {
       documentId: id,
-      ...(id === 0 ? { path } : {}),
+      ...(path ? { path } : {}),
       name: typeof raw.name === 'string' ? raw.name.slice(0, 260) : '',
       location: typeof raw.location === 'string' ? raw.location.slice(0, 260) : '',
     }
     if (raw.stale === true) source.stale = true
     if (raw.missing === true) source.missing = true
+    if (raw.unverified === true) source.unverified = true
+    if (raw.related === true) source.related = true
+    if (typeof raw.modifiedAt === 'number' && Number.isFinite(raw.modifiedAt) && raw.modifiedAt > 0)
+      source.modifiedAt = raw.modifiedAt
+    if (
+      typeof raw.ref === 'number' &&
+      Number.isSafeInteger(raw.ref) &&
+      raw.ref > 0 &&
+      raw.ref < 1000
+    )
+      source.ref = raw.ref
     out.push(source)
     if (out.length >= HOME_CHAT_LIMITS.maxSources) break
   }

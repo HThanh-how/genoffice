@@ -119,7 +119,8 @@ describe('chat sources found by name', () => {
 
 describe('nameWords', () => {
   it('keeps name words that look like English filler once the accents are gone', async () => {
-    const { nameWords, getNameQueryAliases } = await import('../src/main/document-memory/normalization')
+    const { nameWords, getNameQueryAliases } =
+      await import('../src/main/document-memory/normalization')
     expect(nameWords('mỹ lệ')).toEqual(['my', 'le'])
     expect(nameWords('mẹ tôi')).toEqual(['me'])
     // "xuất viện" and "ra viện" name the same paper: the alias is an alternative query variant
@@ -129,5 +130,35 @@ describe('nameWords', () => {
     expect(getNameQueryAliases(['giay', 'xuat', 'vien'])).toEqual([['giay', 'ra', 'vien']])
     expect(nameWords('tìm tài liệu về Lê Hữu Tài')).toEqual(['le', 'huu', 'tai'])
     expect(nameWords('co cai nao khong')).toEqual([])
+  })
+})
+
+describe('findFilesByName: names shared by dozens of files', () => {
+  const many = Array.from({ length: 40 }, (_, i) =>
+    entry(`Chungtu_chitien-LAN2018-${i + 1}_2025.docx`),
+  )
+  const api = () => ({
+    recents: vi.fn(async () => ({ entries: [], total: 0, totalAll: 0 })),
+    // the folder index honours `limit` the way the real one does
+    searchFiles: vi.fn(async (query: { limit: number }) => ({
+      hits: many.slice(0, query.limit),
+      total: many.length,
+      index: { indexed: 0, pending: 0, scanning: false },
+    })),
+  })
+
+  it('misses the exact file when only `limit` rows are asked from the index (the old lookup)', async () => {
+    const found = await findFilesByName(api() as never, 'Chungtu_chitien-LAN2018-33_2025.docx', 6)
+    expect(found.map((f) => f.name)).not.toContain('Chungtu_chitien-LAN2018-33_2025.docx')
+  })
+
+  it('finds it when the index is asked for more rows than are kept', async () => {
+    const found = await findFilesByName(
+      api() as never,
+      'Chungtu_chitien-LAN2018-33_2025.docx',
+      12,
+      60,
+    )
+    expect(found[0]?.name).toBe('Chungtu_chitien-LAN2018-33_2025.docx')
   })
 })

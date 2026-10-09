@@ -15,6 +15,12 @@ export interface MarkdownNav {
   /** href prefix that renders as an in-app navigation link (e.g. 'docnav://') */
   scheme: string
   onNavigate: (href: string) => void
+  /**
+   * Draws the link itself (an inline chip, say) instead of a plain anchor. Receives the href and
+   * the link text; the host decides whether the href is one it knows and returns null for none.
+   * With a renderer, bold and italic text is read for links too, so one inside `**…**` still works.
+   */
+  render?: (href: string, label: string) => ReactNode
 }
 
 export interface MarkdownImage {
@@ -43,7 +49,12 @@ function renderInline(text: string, nav?: MarkdownNav, images?: MarkdownImage): 
     if (i > last) out.push(text.slice(last, i))
     const tok = m[0] ?? ''
     if (tok.startsWith('`')) out.push(<code key={key++}>{tok.slice(1, -1)}</code>)
-    else if (tok.startsWith('**')) out.push(<strong key={key++}>{tok.slice(2, -2)}</strong>)
+    else if (tok.startsWith('**'))
+      out.push(
+        <strong key={key++}>
+          {nav?.render ? renderInline(tok.slice(2, -2), nav, images) : tok.slice(2, -2)}
+        </strong>,
+      )
     else if (tok.startsWith('![')) {
       // An image sharing a line with prose, a list step or a table cell — not
       // just a line of its own. parseBlocks only ever made a *whole* line an
@@ -61,7 +72,9 @@ function renderInline(text: string, nav?: MarkdownNav, images?: MarkdownImage): 
     } else if (tok.startsWith('[')) {
       const link = LINK_RE.exec(tok)
       const href = link?.[2] ?? ''
-      if (link && nav && href.startsWith(nav.scheme)) {
+      if (link && nav?.render && href.startsWith(nav.scheme)) {
+        out.push(<Fragment key={key++}>{nav.render(href, link[1] ?? '')}</Fragment>)
+      } else if (link && nav && href.startsWith(nav.scheme)) {
         out.push(
           <a
             key={key++}
@@ -78,7 +91,12 @@ function renderInline(text: string, nav?: MarkdownNav, images?: MarkdownImage): 
       } else {
         out.push(tok) // non-nav links keep today's literal rendering
       }
-    } else out.push(<em key={key++}>{tok.slice(1, -1)}</em>)
+    } else
+      out.push(
+        <em key={key++}>
+          {nav?.render ? renderInline(tok.slice(1, -1), nav, images) : tok.slice(1, -1)}
+        </em>,
+      )
     last = i + tok.length
   }
   if (last < text.length) out.push(text.slice(last))

@@ -45,6 +45,25 @@
   --shadow-modal-strong: 0 20px 25px rgb(0 0 0 / 10%);
   --shadow-btn-hover: 0 2px 8px rgb(35 36 37 / 15%);
   --shadow-menu: 0 8px 24px rgb(0 0 0 / 18%);
+  /* file types: icon/text colour + tinted tile background (home chat chips and cards) */
+  --file-pdf: #c7311d;
+  --file-pdf-soft: #fdebe7;
+  --file-sheet: #0f7a3f;
+  --file-sheet-soft: #e5f4ec;
+  --file-doc: #1b5ec9;
+  --file-doc-soft: #e6eefb;
+  --file-slides: #b35c00;
+  --file-slides-soft: #fdefdc;
+  --file-image: #7433bf;
+  --file-image-soft: #f1e8fb;
+  --file-video: #b81f86;
+  --file-video-soft: #fbe6f3;
+  --file-audio: #0a7479;
+  --file-audio-soft: #def3f3;
+  --file-text: #555b62;
+  --file-text-soft: #eceef0;
+  --file-other: #7a5f3f;
+  --file-other-soft: #f3ede5;
 
   /* AI panel (canonical names from the former per-app copies) */
   --gs-font-sans:
@@ -120,6 +139,25 @@
   --shadow-modal-strong: 0 20px 25px rgb(0 0 0 / 30%);
   --shadow-btn-hover: 0 2px 8px rgb(0 0 0 / 50%);
   --shadow-menu: 0 8px 24px rgb(0 0 0 / 55%);
+  /* file types: icon/text colour + tinted tile background (home chat chips and cards) */
+  --file-pdf: #ff8c78;
+  --file-pdf-soft: #3d1f1a;
+  --file-sheet: #52c985;
+  --file-sheet-soft: #163223;
+  --file-doc: #7fadf7;
+  --file-doc-soft: #182a4d;
+  --file-slides: #f5a342;
+  --file-slides-soft: #3b2810;
+  --file-image: #c4a2f4;
+  --file-image-soft: #2d1d45;
+  --file-video: #f58fcb;
+  --file-video-soft: #431a3a;
+  --file-audio: #5fd3d8;
+  --file-audio-soft: #133739;
+  --file-text: #b0b6bd;
+  --file-text-soft: #2d3035;
+  --file-other: #cdb598;
+  --file-other-soft: #342d25;
 
   --color-btn-primary: #e4e4e4;
   --color-btn-primary-hover: #d0d0d0;
@@ -179,6 +217,25 @@
     --shadow-modal-strong: 0 20px 25px rgb(0 0 0 / 30%);
     --shadow-btn-hover: 0 2px 8px rgb(0 0 0 / 50%);
     --shadow-menu: 0 8px 24px rgb(0 0 0 / 55%);
+    /* file types: icon/text colour + tinted tile background (home chat chips and cards) */
+    --file-pdf: #ff8c78;
+    --file-pdf-soft: #3d1f1a;
+    --file-sheet: #52c985;
+    --file-sheet-soft: #163223;
+    --file-doc: #7fadf7;
+    --file-doc-soft: #182a4d;
+    --file-slides: #f5a342;
+    --file-slides-soft: #3b2810;
+    --file-image: #c4a2f4;
+    --file-image-soft: #2d1d45;
+    --file-video: #f58fcb;
+    --file-video-soft: #431a3a;
+    --file-audio: #5fd3d8;
+    --file-audio-soft: #133739;
+    --file-text: #b0b6bd;
+    --file-text-soft: #2d3035;
+    --file-other: #cdb598;
+    --file-other-soft: #342d25;
 
     --color-btn-primary: #e4e4e4;
     --color-btn-primary-hover: #d0d0d0;

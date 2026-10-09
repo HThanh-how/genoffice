@@ -71,7 +71,9 @@ describe('home chat helpers', () => {
         role: 'assistant',
         text: 'hi',
         error: 'boom',
-        sources: [{ documentId: 3, name: 'a.docx', location: 'p1', stale: true }],
+        sources: [
+          { documentId: 3, name: 'a.docx', location: 'p1', stale: true, path: 'C:\\secret' },
+        ],
       },
     ])
   })
