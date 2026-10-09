@@ -1,7 +1,28 @@
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const mockedUnlink = vi.hoisted(() => vi.fn())
+const mockedReadFile = vi.hoisted(() => vi.fn())
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  mockedUnlink.mockImplementation((...args: Parameters<typeof actual.unlink>) =>
+    actual.unlink(...args),
+  )
+  mockedReadFile.mockImplementation((...args: Parameters<typeof actual.readFile>) =>
+    actual.readFile(...args),
+  )
+  return {
+    ...actual,
+    unlink: mockedUnlink,
+    readFile: mockedReadFile,
+  }
+})
+
+const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+
 import {
   HomeChatStore,
   cleanChatTitle,
@@ -16,6 +37,10 @@ let dir: string
 let store: HomeChatStore
 
 beforeEach(async () => {
+  mockedUnlink.mockReset()
+  mockedUnlink.mockImplementation((...args: any[]) => (actualFs.unlink as any)(...args))
+  mockedReadFile.mockReset()
+  mockedReadFile.mockImplementation((...args: any[]) => (actualFs.readFile as any)(...args))
   dir = await mkdtemp(join(tmpdir(), 'home-chat-'))
   store = new HomeChatStore(dir)
 })
@@ -257,5 +282,115 @@ describe('HomeChatStore', () => {
     if (process.platform === 'win32') return
     const mode = (await stat(join(dir, `${saved!.id}.json`))).mode & 0o777
     expect(mode).toBe(0o600)
+  })
+
+  describe('filesystem error handling regressions (Job 04)', () => {
+    it('TEST A: a valid session can be deleted normally', async () => {
+      const saved = await store.save({ messages: convo('session-a') })
+      expect(saved).not.toBeNull()
+      const id = saved!.id
+      expect(await store.delete(id)).toBe(true)
+      expect(await store.get(id)).toBeNull()
+      expect(await store.list()).toEqual([])
+      const files = await readdir(dir)
+      expect(files).not.toContain(`${id}.json`)
+    })
+
+    it('TEST B: deleting a session whose file is already absent does not throw an ENOENT exception', async () => {
+      const saved = await store.save({ messages: convo('session-b') })
+      expect(saved).not.toBeNull()
+      const id = saved!.id
+      await actualFs.unlink(join(dir, `${id}.json`))
+      await expect(store.delete(id)).resolves.toBe(true)
+      expect(await store.list()).toEqual([])
+    })
+
+    it('TEST C: a real unlink failure propagates', async () => {
+      const saved = await store.save({ messages: convo('session-c') })
+      expect(saved).not.toBeNull()
+      const id = saved!.id
+      const err = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      mockedUnlink.mockImplementationOnce(async () => {
+        throw err
+      })
+      await expect(store.delete(id)).rejects.toThrow(err)
+    })
+
+    it('TEST D: a failed deletion must not be reported as success', async () => {
+      const saved = await store.save({ messages: convo('session-d') })
+      expect(saved).not.toBeNull()
+      const id = saved!.id
+      const err = Object.assign(new Error('resource busy'), { code: 'EBUSY' })
+      mockedUnlink.mockImplementationOnce(async () => {
+        throw err
+      })
+      await expect(store.delete(id)).rejects.toThrow(err)
+      const list = await store.list()
+      expect(list.some((s) => s.id === id)).toBe(true)
+      const files = await readdir(dir)
+      expect(files).toContain(`${id}.json`)
+    })
+
+    it('TEST E: a successful clear removes all session files', async () => {
+      await store.save({ messages: convo('s1') })
+      await store.save({ messages: convo('s2') })
+      await store.save({ messages: convo('s3') })
+      expect(await store.list()).toHaveLength(3)
+      const cleared = await store.clear()
+      expect(cleared).toBe(3)
+      expect(await store.list()).toHaveLength(0)
+      const files = await readdir(dir)
+      expect(files.filter((name) => name !== 'index.json')).toEqual([])
+    })
+
+    it('TEST F: a partial clear failure leaves the remaining files discoverable', async () => {
+      const s1 = await store.save({ messages: convo('s1') })
+      const s2 = await store.save({ messages: convo('s2') })
+      expect(s1).not.toBeNull()
+      expect(s2).not.toBeNull()
+      const err = Object.assign(new Error('unlink blocked'), { code: 'EBUSY' })
+      mockedUnlink.mockImplementation(async (path: any, ...args: any[]) => {
+        if (String(path).includes(s2!.id)) {
+          throw err
+        }
+        return (actualFs.unlink as any)(path, ...args)
+      })
+      await expect(store.clear()).rejects.toThrow(AggregateError)
+      const remaining = await store.list()
+      expect(remaining.map((s) => s.id)).toEqual([s2!.id])
+      const loaded = await store.get(s2!.id)
+      expect(loaded).not.toBeNull()
+      expect(loaded!.id).toBe(s2!.id)
+    })
+
+    it('TEST G: malformed JSON is quarantined', async () => {
+      const badId = '12345678-1234-4234-8234-123456789abc'
+      const badFile = join(dir, `${badId}.json`)
+      await writeFile(badFile, '{"broken": json')
+      const result = await store.get(badId)
+      expect(result).toBeNull()
+      const files = await readdir(dir)
+      expect(files).not.toContain(`${badId}.json`)
+      const quarantined = files.find((f) => f.startsWith(`${badId}.json.corrupt-`))
+      expect(quarantined).toBeDefined()
+      expect(await readFile(join(dir, quarantined!), 'utf8')).toBe('{"broken": json')
+    })
+
+    it('TEST H: an I/O read error is not treated as malformed JSON', async () => {
+      const saved = await store.save({ messages: convo('session-h') })
+      expect(saved).not.toBeNull()
+      const id = saved!.id
+      const ioError = Object.assign(new Error('disk read failed'), { code: 'EIO' })
+      mockedReadFile.mockImplementation(async (path: any, ...args: any[]) => {
+        if (String(path).includes(id)) {
+          throw ioError
+        }
+        return (actualFs.readFile as any)(path, ...args)
+      })
+      await expect(store.get(id)).rejects.toThrow(ioError)
+      const files = await readdir(dir)
+      expect(files).toContain(`${id}.json`)
+      expect(files.some((f) => f.startsWith(`${id}.json.corrupt-`))).toBe(false)
+    })
   })
 })
