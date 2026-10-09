@@ -1,16 +1,22 @@
 import { createReadStream, statSync } from 'node:fs'
-import { mkdir, open, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { basename, dirname, join } from 'node:path'
 import type { EmbeddingProfile, EmbeddingProfileFile } from '../embedding-profiles'
+import { acquireDownloadLock } from './download-lock'
+import { modelFileUrl, modelSources } from './model-mirrors'
+import {
+  transferFromSource,
+  transferTuning,
+  type FetchLike,
+  type TransferTuning,
+} from './model-transfer'
+
+export { modelFileUrl } from './model-mirrors'
+export type { FetchLike } from './model-transfer'
 
 export type EmbeddingDownloadFailure =
-  | 'access-denied'
-  | 'not-found'
-  | 'http'
-  | 'network'
-  | 'checksum'
-  | 'size'
+  'access-denied' | 'not-found' | 'http' | 'network' | 'checksum' | 'size'
 
 /**
  * A model file could not be fetched or did not match its pinned checksum. `message` is safe
@@ -28,10 +34,6 @@ export class EmbeddingModelDownloadError extends Error {
     super(message)
     this.name = 'EmbeddingModelDownloadError'
   }
-}
-
-export function modelFileUrl(profile: EmbeddingProfile, file: EmbeddingProfileFile): string {
-  return `https://huggingface.co/${profile.repo}/resolve/${profile.revision}/${file.path}`
 }
 
 export function modelCacheFilePath(
@@ -54,47 +56,71 @@ export function modelFilesCached(cache: string, profile: EmbeddingProfile): bool
   })
 }
 
+/** One source that was tried, for the failure text. Only the host name is ever shown. */
+interface TriedSource {
+  host: string
+  url: string
+  failure: EmbeddingDownloadFailure
+  status?: number
+}
+
+function describeTried(source: TriedSource): string {
+  const what: Record<EmbeddingDownloadFailure, string> = {
+    'access-denied': `HTTP ${source.status} access denied`,
+    'not-found': `not found (HTTP ${source.status})`,
+    http: source.status === undefined ? 'unusable answer' : `HTTP ${source.status}`,
+    network: 'unreachable or too slow',
+    checksum: 'wrong content',
+    size: 'wrong size',
+  }
+  return `${source.host} (${what[source.failure]})`
+}
+
 function failureMessage(
   profile: EmbeddingProfile,
   file: EmbeddingProfileFile,
   cache: string,
   failure: EmbeddingDownloadFailure,
-  status?: number,
+  status: number | undefined,
+  tried: TriedSource[],
 ): string {
   const where = `${profile.repo}@${profile.revision.slice(0, 10)}`
-  const manual = `copy the model files into ${join(cache, profile.repo, profile.revision)} by hand`
+  const folder = join(cache, profile.repo, profile.revision)
+  const manual = `copy the model files into ${folder} by hand`
+  const trail = ` Cache folder: ${folder}. Sources tried: ${tried.map(describeTried).join(', ')}.`
   switch (failure) {
     case 'access-denied':
       return (
         `The search model ${where} could not be downloaded: the host answered HTTP ${status} ` +
         `(access denied) for ${file.path}. The model repository is private, gated or has been removed. ` +
         `Choose another search model in Settings (the Base, Balanced, Mid and Plus models use public repositories) ` +
-        `or ${manual}. Text search keeps working.`
+        `or ${manual}. Text search keeps working.${trail}`
       )
     case 'not-found':
       return (
         `The search model ${where} could not be downloaded: ${file.path} was not found (HTTP ${status}). ` +
-        `Choose another search model in Settings or ${manual}. Text search keeps working.`
+        `Choose another search model in Settings or ${manual}. Text search keeps working.${trail}`
       )
     case 'network':
       return (
-        `The search model ${where} could not be downloaded: the model host is unreachable. ` +
-        `Check the internet connection and try again, or ${manual}. Text search keeps working.`
+        `The search model ${where} could not be downloaded: the model host is unreachable or too slow. ` +
+        `Check the internet connection and try again (the download resumes where it stopped), or ${manual}. ` +
+        `Text search keeps working.${trail}`
       )
     case 'checksum':
       return (
         `The downloaded search model file ${file.path} (${where}) failed its SHA-256 check and was deleted. ` +
-        `Try again later or choose another search model in Settings. Text search keeps working.`
+        `Try again later, choose another search model in Settings or ${manual}. Text search keeps working.${trail}`
       )
     case 'size':
       return (
         `The downloaded search model file ${file.path} (${where}) has an unexpected size and was deleted. ` +
-        `Try again later or choose another search model in Settings. Text search keeps working.`
+        `Try again later, choose another search model in Settings or ${manual}. Text search keeps working.${trail}`
       )
     default:
       return (
-        `The search model ${where} could not be downloaded: the host answered HTTP ${status} for ${file.path}. ` +
-        `Try again later or choose another search model in Settings. Text search keeps working.`
+        `The search model ${where} could not be downloaded: the host answered ${status === undefined ? 'with an unusable response' : `HTTP ${status}`} for ${file.path}. ` +
+        `Try again later, choose another search model in Settings or ${manual}. Text search keeps working.${trail}`
       )
   }
 }
@@ -141,9 +167,26 @@ async function verified(path: string, file: EmbeddingProfileFile): Promise<boole
   }
 }
 
-export type FetchLike = (url: string) => Promise<Pick<Response, 'ok' | 'status' | 'body'>>
+/** Progress of one download, in bytes; `host` is the source that is delivering right now. */
+export interface ModelDownloadProgress {
+  doneBytes: number
+  /** 0 when the manifest does not pin sizes */
+  totalBytes: number
+  host: string
+  file: string
+}
 
-/** Partial downloads left behind by a process that was killed mid-transfer would otherwise sit on disk forever. */
+export interface ModelDownloadOptions extends Partial<TransferTuning> {
+  /** cachedModelFile reports the one file, ensureModelFiles the whole profile */
+  onProgress?: (progress: ModelDownloadProgress) => void
+  /** URL templates replacing the built-in mirrors and GENOFFICE_MODEL_MIRRORS (see model-mirrors.ts) */
+  mirrors?: readonly string[]
+}
+
+/**
+ * Partial downloads from the old naming scheme (`.part-<timestamp>`) that a killed process left
+ * behind would otherwise sit on disk forever. The current `<file>.part` is kept: it is resumed.
+ */
 async function removeStaleParts(destination: string): Promise<void> {
   const prefix = `${basename(destination)}.part-`
   try {
@@ -155,60 +198,85 @@ async function removeStaleParts(destination: string): Promise<void> {
   }
 }
 
+/** Calls `report` at most every 250 ms, but always for the first and the last byte count. */
+function throttled(
+  report: ((progress: ModelDownloadProgress) => void) | undefined,
+  file: EmbeddingProfileFile,
+): (bytes: number, host: string) => void {
+  let last = 0
+  return (bytes, host) => {
+    if (!report) return
+    const now = Date.now()
+    if (last !== 0 && now - last < 250 && bytes !== file.bytes) return
+    last = now
+    report({ doneBytes: bytes, totalBytes: file.bytes ?? 0, host, file: file.path })
+  }
+}
+
+/**
+ * Fills `destination` from the ordered sources (mirrors first, the original host last). The bytes
+ * of every source are untrusted: a source whose bytes fail the size or sha256 check is discarded,
+ * its file deleted, and the next source starts from zero. A source that merely dies keeps the
+ * `.part` file, so the next attempt (same source or the next one) resumes with a Range request.
+ */
 async function downloadFile(
   profile: EmbeddingProfile,
   file: EmbeddingProfileFile,
   cache: string,
   destination: string,
   fetchImpl: FetchLike,
+  options: ModelDownloadOptions,
 ): Promise<void> {
-  const url = modelFileUrl(profile, file)
+  const part = `${destination}.part`
   await mkdir(dirname(destination), { recursive: true })
-  let response: Awaited<ReturnType<FetchLike>>
-  try {
-    response = await fetchImpl(url)
-  } catch {
-    throw new EmbeddingModelDownloadError(
-      failureMessage(profile, file, cache, 'network'),
-      'network',
-      profile.id,
-      url,
-    )
-  }
-  if (!response.ok || !response.body) {
-    const status = response.status
-    const failure: EmbeddingDownloadFailure =
-      status === 401 || status === 403 ? 'access-denied' : status === 404 ? 'not-found' : 'http'
-    throw new EmbeddingModelDownloadError(
-      failureMessage(profile, file, cache, failure, status),
-      failure,
-      profile.id,
-      url,
-      status,
-    )
-  }
-  const reader = response.body.getReader()
   await removeStaleParts(destination)
-  const part = `${destination}.part-${Date.now()}`
-  const handle = await open(part, 'w')
-  try {
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      await handle.write(value)
-    }
-    await handle.sync()
-    await handle.close()
-    await rename(part, destination)
-  } catch (error) {
-    await handle.close().catch(() => {})
-    await rm(part, { force: true }).catch(() => {})
+  const release = await acquireDownloadLock(`${part}.lock`)
+  if (!release) {
     throw new EmbeddingModelDownloadError(
-      failureMessage(profile, file, cache, 'network'),
+      `The search model ${profile.repo}@${profile.revision.slice(0, 10)} is already being downloaded by another GenOffice process. Try again in a minute.`,
       'network',
       profile.id,
-      url,
+      modelFileUrl(profile, file),
     )
+  }
+  try {
+    if (await verified(destination, file)) return // finished by the process that held the lock
+    const tuning = transferTuning(options)
+    const report = throttled(options.onProgress, file)
+    const tried: TriedSource[] = []
+    for (const source of modelSources(profile, file, options.mirrors)) {
+      const failure = await transferFromSource(fetchImpl, source.url, part, file, tuning, (bytes) =>
+        report(bytes, source.host),
+      )
+      if (!failure) {
+        await rename(part, destination)
+        if (await verified(destination, file)) return
+        const sizeMismatch =
+          file.bytes !== undefined &&
+          (await stat(destination)
+            .then((s) => s.size !== file.bytes)
+            .catch(() => false))
+        await rm(destination, { force: true })
+        tried.push({
+          host: source.host,
+          url: source.url,
+          failure: sizeMismatch ? 'size' : 'checksum',
+        })
+        continue
+      }
+      if (failure.failure === 'size') await rm(part, { force: true })
+      tried.push({ host: source.host, url: source.url, ...failure })
+    }
+    const last = tried.at(-1)!
+    throw new EmbeddingModelDownloadError(
+      failureMessage(profile, file, cache, last.failure, last.status, tried),
+      last.failure,
+      profile.id,
+      last.url,
+      last.status,
+    )
+  } finally {
+    await release()
   }
 }
 
@@ -217,24 +285,12 @@ export async function cachedModelFile(
   cache: string,
   profile: EmbeddingProfile,
   file: EmbeddingProfileFile,
-  fetchImpl: FetchLike = (url) => fetch(url),
+  fetchImpl: FetchLike = (url, init) => fetch(url, init),
+  options: ModelDownloadOptions = {},
 ): Promise<string> {
   const path = modelCacheFilePath(cache, profile, file)
   if (await verified(path, file)) return path
-  await downloadFile(profile, file, cache, path, fetchImpl)
-  if (!(await verified(path, file))) {
-    const sizeMismatch =
-      file.bytes !== undefined &&
-      (await stat(path).then((s) => s.size !== file.bytes).catch(() => false))
-    await rm(path, { force: true }).catch(() => {})
-    const failure: EmbeddingDownloadFailure = sizeMismatch ? 'size' : 'checksum'
-    throw new EmbeddingModelDownloadError(
-      failureMessage(profile, file, cache, failure),
-      failure,
-      profile.id,
-      modelFileUrl(profile, file),
-    )
-  }
+  await downloadFile(profile, file, cache, path, fetchImpl, options)
   return path
 }
 
@@ -243,8 +299,26 @@ export async function ensureModelFiles(
   cache: string,
   profile: EmbeddingProfile,
   fetchImpl?: FetchLike,
+  options: ModelDownloadOptions = {},
 ): Promise<Map<string, string>> {
   const paths = new Map<string, string>()
-  for (const file of profile.files) paths.set(file.path, await cachedModelFile(cache, profile, file, fetchImpl))
+  const totalBytes = profile.files.reduce((sum, file) => sum + (file.bytes ?? 0), 0)
+  let finishedBytes = 0
+  for (const file of profile.files) {
+    const offset = finishedBytes
+    const path = await cachedModelFile(cache, profile, file, fetchImpl, {
+      ...options,
+      onProgress:
+        options.onProgress &&
+        ((p) => options.onProgress!({ ...p, doneBytes: offset + p.doneBytes, totalBytes })),
+    })
+    paths.set(file.path, path)
+    finishedBytes +=
+      file.bytes ??
+      (await stat(path).then(
+        (s) => s.size,
+        () => 0,
+      ))
+  }
   return paths
 }

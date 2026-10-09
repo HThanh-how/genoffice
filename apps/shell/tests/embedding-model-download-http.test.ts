@@ -76,7 +76,7 @@ describe('model download against a local HTTP server', () => {
     const walk = (dir: string) => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         if (entry.isDirectory()) walk(join(dir, entry.name))
-        else if (entry.name.includes('.part-')) found.push(join(dir, entry.name))
+        else if (entry.name.includes('.part-') || entry.name.endsWith('.part')) found.push(join(dir, entry.name))
       }
     }
     walk(cache)
@@ -154,7 +154,8 @@ describe('model download against a local HTTP server', () => {
     expect(error).toBeInstanceOf(EmbeddingModelDownloadError)
     expect(error.failure).toBe('network')
     expect(existsSync(modelCacheFilePath(cache, profile, last))).toBe(false)
-    expect(partFiles()).toEqual([])
+    // the partial file stays (under its fixed name) so the next start can resume it
+    expect(partFiles()).toEqual([`${modelCacheFilePath(cache, profile, last)}.part`])
     for (const file of profile.files.slice(0, -1)) expect(existsSync(modelCacheFilePath(cache, profile, file))).toBe(true)
 
     hits.length = 0
@@ -162,6 +163,7 @@ describe('model download against a local HTTP server', () => {
     const paths = await ensureModelFiles(cache, profile, toLocal)
     expect(hits).toEqual([lastPath])
     expect(readFileSync(paths.get(last.path)!).equals(blobs.get(last.path)!)).toBe(true)
+    expect(partFiles()).toEqual([])
   })
 
   it('removes the partial file a killed process left behind before downloading again', async () => {

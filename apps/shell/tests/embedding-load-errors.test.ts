@@ -9,7 +9,7 @@ vi.mock('../src/main/document-memory/runtime', async (importOriginal) => ({
   postIndexMessage: (message: Record<string, unknown>) => posted.push(message),
 }))
 
-import { embedTexts } from '../src/main/document-memory/embeddings'
+import { embedTexts, overrideModelWaitMs } from '../src/main/document-memory/embeddings'
 import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 import { overrideInstalledOrtVersion } from '../src/main/document-memory/embedding/ort-support'
 import { EmbeddingModelDownloadError } from '../src/main/document-memory/embedding/model-files'
@@ -22,6 +22,7 @@ describe('embedTexts failure reporting', () => {
   })
   afterEach(() => {
     vi.unstubAllGlobals()
+    overrideModelWaitMs(undefined)
     overrideInstalledOrtVersion(undefined)
     rmSync(cache, { recursive: true, force: true })
   })
@@ -55,5 +56,44 @@ describe('embedTexts failure reporting', () => {
     expect(fetchSpy).not.toHaveBeenCalled()
     expect(posted).toEqual([expect.objectContaining({ type: 'model', state: 'error' })])
     expect(String(posted[0]!.error)).toContain('Base or Balanced')
+  })
+
+  it('answers "still being prepared" instead of holding the worker queue while the download continues, and reports progress', async () => {
+    const files = EMBEDDING_PROFILES.base.files
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => (release = resolve))
+    const half = (n: number) => new Uint8Array(Math.floor(n / 2))
+    // the first file streams half of its bytes, then waits: a slow host
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        let sent = false
+        const body = new ReadableStream<Uint8Array>({
+          async pull(controller) {
+            if (!sent) {
+              sent = true
+              controller.enqueue(half(files[0]!.bytes!))
+              return
+            }
+            await gate
+            controller.error(new TypeError('connection lost'))
+          },
+        })
+        return new Response(body, { status: 200, headers: { 'content-length': String(files[0]!.bytes) } })
+      }),
+    )
+    overrideModelWaitMs(100)
+    const error = await embedTexts(['x'], 'passage', cache, EMBEDDING_PROFILES.base).catch((e) => e)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(EmbeddingModelDownloadError)
+    expect(String(error.message)).toContain('still being prepared')
+    // the model is still downloading: no 'error' state, and a percentage was reported
+    const models = posted.filter((m) => m.type === 'model')
+    expect(models[0]).toEqual({ type: 'model', state: 'downloading' })
+    expect(models.every((m) => m.state === 'downloading')).toBe(true)
+    expect(models.some((m) => typeof m.progress === 'number' && typeof m.source === 'string')).toBe(true)
+    // a failure that happens while nobody waits must not become an unhandled rejection
+    release()
+    await new Promise((resolve) => setTimeout(resolve, 200))
   })
 })

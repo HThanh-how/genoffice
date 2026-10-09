@@ -101,6 +101,12 @@ export interface EmbeddingProfile {
   /** Licence label for docs and the NOTICE file. */
   license: string
 
+  /**
+   * The files may also be fetched from the project's own mirrors (embedding/model-mirrors.ts).
+   * Only MIT-style artifacts qualify; Gemma-licensed weights are never redistributed by us.
+   */
+  mirrorable: boolean
+
   /** Oldest onnxruntime-node that can load this model's ONNX files (absent = any). */
   minOrtVersion?: string
 
@@ -192,6 +198,7 @@ const LEGACY_PROFILES: Record<'standard' | 'high', EmbeddingProfile> = {
     heavy: false,
     resizableSession: true,
     license: 'Apache-2.0',
+    mirrorable: false,
 
     downloadMB: 95,
     memoryMB: 180,
@@ -239,6 +246,7 @@ const LEGACY_PROFILES: Record<'standard' | 'high', EmbeddingProfile> = {
     heavy: true,
     resizableSession: false,
     license: 'Apache-2.0',
+    mirrorable: false,
 
     downloadMB: 600,
     memoryMB: 900,
@@ -269,6 +277,7 @@ export function tieredProfile(
     | 'resizableSession'
     | 'memoryMB'
     | 'minFreeMemoryMB'
+    | 'mirrorable'
   > & { minOrtVersion?: string },
 ): EmbeddingProfile {
   const vectorQuantisation = 'int8'
@@ -314,6 +323,7 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
     resizableSession: true,
     memoryMB: 800,
     minFreeMemoryMB: 1000,
+    mirrorable: true,
   }),
   balanced: tieredProfile('balanced', 'default', BEKKO_A25M, {
     maxInputTokens: 512,
@@ -323,6 +333,7 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
     resizableSession: true,
     memoryMB: 960,
     minFreeMemoryMB: 1200,
+    mirrorable: true,
   }),
   mid: tieredProfile('mid', 'mid', MID_MODEL, {
     maxInputTokens: 512,
@@ -332,6 +343,7 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
     resizableSession: true,
     memoryMB: 700,
     minFreeMemoryMB: 896,
+    mirrorable: false,
     minOrtVersion: ORT_WITH_GATHER_BLOCK_QUANTIZED_BITS,
   }),
   plus: tieredProfile('plus', 'high', MID_MODEL, {
@@ -342,6 +354,7 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
     resizableSession: true,
     memoryMB: 1000,
     minFreeMemoryMB: 1280,
+    mirrorable: false,
     minOrtVersion: ORT_WITH_GATHER_BLOCK_QUANTIZED_BITS,
   }),
 }
