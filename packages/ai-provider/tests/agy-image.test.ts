@@ -126,6 +126,13 @@ describe('agy image generation: prompt', () => {
     )
   })
 
+  it('asks for a single picture and a backdrop the local cutout can remove', () => {
+    expect(buildAgyImagePrompt({ prompt: 'a cat' })).toContain('Generate one image only.')
+    const transparent = buildAgyImagePrompt({ prompt: 'a cat', transparent: true })
+    expect(transparent).toContain('no shadow, gradient, border or texture')
+    expect(transparent.endsWith('Tell me the file path of the generated image.')).toBe(true)
+  })
+
   it('collapses newlines and caps very long prompts', () => {
     const prompt = buildAgyImagePrompt({ prompt: `line one\nline two ${'x'.repeat(9000)}` })
     expect(prompt).not.toMatch(/line one\nline two/)
@@ -157,6 +164,23 @@ describe('agy image generation: result parsing', () => {
     expect(message).toContain('RunCommand')
     expect(agyImageFailureMessage({ text: '' })).toContain('empty reply')
     expect(agyImageFailureMessage({ text: 'I cannot do that' })).toContain('I cannot do that')
+  })
+
+  it('names a rate limit of the image model instead of echoing the reply', () => {
+    // recorded from agy 1.3.2 on macOS (2026-10): the image subagent hit HTTP 429 twice
+    const reply =
+      'The built-in image generation tool was unable to generate the image due to reaching the current model quota/rate limit:\n\n- **Error**: `429 Too Many Requests (RESOURCE_EXHAUSTED / RATE_LIMIT_EXCEEDED)` - Capacity exhausted on the image generation model.'
+    const message = agyImageFailureMessage({ text: reply })
+    expect(message).toContain('rate limited or out of quota')
+    expect(message).toContain('try again')
+    expect(message).not.toContain('RESOURCE_EXHAUSTED')
+    // a sandbox denial still reports the denied action, whatever the reply says
+    expect(
+      agyImageFailureMessage({
+        text: 'quota',
+        deniedActions: [{ action: 'command', displayName: 'RunCommand' }],
+      }),
+    ).toContain('RunCommand')
   })
 
   it('reads the conversation id from the init event too', () => {
@@ -304,6 +328,31 @@ describe('generateImageWithAgy', () => {
       platform,
       now: () => NOW,
     })
+    expect(blob.bytes).toBe(PNG)
+  })
+
+  it('picks the newest of several attempts and never an attachment mirror', async () => {
+    const attempt1 = `${dir}\\attempt-1.jpg`
+    const attempt2 = `${dir}\\attempt-2.jpg`
+    const mirror = `${dir}\\.tempmediaStorage\\media_1.jpg`
+    const fs = fakeFs({
+      [attempt1]: { size: JPG.length, mtimeMs: NOW + 100, bytes: JPG },
+      [attempt2]: { size: PNG.length, mtimeMs: NOW + 200, bytes: PNG },
+      // the mirror of a staged reference is the newest file of all, and still not an output
+      [mirror]: {
+        size: JPG.length,
+        mtimeMs: NOW + 900,
+        bytes: new Uint8Array([0xff, 0xd8, 0xff, 9]),
+      },
+    })
+    const blob = await generateImageWithAgy(base, { prompt: 'x' }, undefined, {
+      run: run({ text: 'I generated it but forgot the path.' }),
+      fs,
+      home,
+      platform,
+      now: () => NOW,
+    })
+    expect(blob.name).toBe('attempt-2.jpg')
     expect(blob.bytes).toBe(PNG)
   })
 

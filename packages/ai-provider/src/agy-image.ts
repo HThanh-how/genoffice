@@ -16,6 +16,12 @@ import type { AiMediaProviderConfig } from './types'
  * our staging directory, under `<home>/.gemini/antigravity-cli/brain/<conversation_id>/`, and the
  * reply text names the path.
  *
+ * Since agy 1.2.16 the tool is an `image-generator` subagent that writes the prompt, checks every
+ * result and makes up to three attempts, so one request may leave several pictures behind. Re-checked
+ * on macOS with agy 1.3.2 (2026-10): the reply names the final file (`[name.jpg](file:///…/brain/<id>/name.jpg)`),
+ * the picture is a 1024x1024 JPEG (never alpha) and a plain one-image prompt used one attempt. The reply's
+ * path wins; the folder scan is the fallback and prefers the newest file.
+ *
  * Security: model text is untrusted. A path from the reply is never opened directly; it is
  * realpath-resolved and must live inside the conversation folder of THIS run (UUID taken from the
  * result, folder itself must resolve inside the brain root), carry an image extension, stay under
@@ -32,6 +38,8 @@ const MAX_SCAN_FILES = 400
 const MAX_SCAN_DEPTH = 3
 /** files older than the run start (minus filesystem timestamp slack) are not this run's output */
 const MTIME_SLACK_MS = 5_000
+/** agy mirrors every attachment (our staged reference pictures) here; those are inputs, never output */
+const ATTACHMENT_MIRROR_DIRS = new Set(['.tempmediaStorage'])
 
 export function isAgyConversationId(value: unknown): value is string {
   return typeof value === 'string' && UUID.test(value)
@@ -69,10 +77,13 @@ export function buildAgyImagePrompt(
 ): string {
   const description = input.prompt.replace(/\s+/g, ' ').trim().slice(0, MAX_PROMPT_CHARS)
   const aspect = input.aspectRatio ? ASPECT_WORDS[input.aspectRatio.trim()] : undefined
-  const hints: string[] = []
+  const hints: string[] = ['Generate one image only.']
   if (aspect) hints.push(`Make it ${aspect}.`)
   if (input.transparent) {
-    hints.push('Show the subject isolated on a plain, uniform, flat white background.')
+    // the tool has no alpha: the picture comes back opaque and the caller cuts this backdrop off locally
+    hints.push(
+      'Show the subject isolated on a plain, uniform, flat white background, with no shadow, gradient, border or texture behind it.',
+    )
   }
   if (referenceNames.length > 0) {
     hints.push(
@@ -251,12 +262,26 @@ export function sniffAgyImageMime(bytes: Uint8Array): string | undefined {
 
 export const AGY_IMAGE_FAILURE = 'Antigravity could not generate the image.'
 
+/**
+ * The image subagent reports its own failures in the reply (verified on agy 1.3.2: HTTP 429
+ * RESOURCE_EXHAUSTED from the image model after a "no image generated" first attempt). Those are
+ * transient capacity limits, not a prompt problem, so they get their own wording.
+ */
+const RATE_LIMIT_REPLY = /\b429\b|rate.?limit|resource.?exhausted|too many requests|quota|capacity/i
+
 /** Actionable error for "no image came out" (empty reply, sandbox refusal, text-only answer). */
 export function agyImageFailureMessage(
   result: Pick<AgyRunResult, 'text' | 'deniedActions'>,
 ): string {
   const denied = (result.deniedActions ?? []).map((d) => d.displayName || d.action).filter(Boolean)
   const text = result.text.replace(/\s+/g, ' ').trim()
+  if (denied.length === 0 && RATE_LIMIT_REPLY.test(text)) {
+    return (
+      `${AGY_IMAGE_FAILURE} Antigravity's image model is rate limited or out of quota right now ` +
+      '(HTTP 429). Wait a few minutes and try again, or choose another provider under ' +
+      'Settings → AI Media & Search.'
+    )
+  }
   const detail =
     denied.length > 0
       ? ` The agent tried to use ${[...new Set(denied)].join(', ')}, which the headless sandbox denies instead of its image tool.`
@@ -355,6 +380,7 @@ export async function generateImageWithAgy(
   const fresh: Array<{ file: string; mtimeMs: number }> = []
   for (const file of scanned) {
     if (!IMAGE_EXTENSIONS.has(path.extname(file).toLowerCase())) continue
+    if (file.split(/[\\/]/).some((part) => ATTACHMENT_MIRROR_DIRS.has(part))) continue
     try {
       const real = await confineAgyImagePath(file, conversationId, location, fs)
       const info = await fs.stat(real)

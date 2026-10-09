@@ -28,7 +28,7 @@ export const SKILL_NAME = 'genoffice'
 export const LEDGER_KEY = 'agentSkillInstalls'
 
 export type AgentId =
-  'claude-code' | 'codex' | 'cursor' | 'gemini' | 'copilot' | 'opencode' | 'windsurf'
+  'claude-code' | 'codex' | 'cursor' | 'gemini' | 'agy' | 'copilot' | 'opencode' | 'windsurf'
 
 export interface AgentTarget {
   id: AgentId
@@ -95,6 +95,16 @@ const AGENTS: readonly AgentDef[] = [
     id: 'gemini',
     label: 'Gemini CLI',
     probe: (_env, home) => join(home, '.gemini'),
+    skills: (p) => join(p, 'skills'),
+  },
+  {
+    // Google Antigravity CLI, a different tool from the Gemini CLI above. It keeps its customizations
+    // in ~/.gemini/config (verified on agy 1.3.2: `agy -p /skills` lists ~/.gemini/config/skills,
+    // `agy mcp add` writes ~/.gemini/config/mcp_config.json), not in ~/.gemini itself. The config
+    // folder is the probe because ~/.gemini also exists on machines that only run the Gemini CLI.
+    id: 'agy',
+    label: 'Antigravity CLI',
+    probe: (_env, home) => join(home, '.gemini', 'config'),
     skills: (p) => join(p, 'skills'),
   },
   {

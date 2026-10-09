@@ -38,6 +38,11 @@ interface JsonShape {
   entry: (launch: McpLaunch) => Record<string, unknown>
   /** what an existing entry starts */
   launchOf: (entry: unknown) => { command: string | null; args: string[] }
+  /**
+   * Fields the agent itself owns on an entry (a `disabled` toggle): ignored when deciding whether the
+   * entry is ours as written, and carried over when the entry is rewritten.
+   */
+  agentOwned?: readonly string[]
 }
 
 interface TomlShape {
@@ -78,6 +83,9 @@ const bareEntry: JsonShape = {
   launchOf: plainLaunch,
 }
 
+/** agy: `~/.gemini/config/mcp_config.json`, stdio entries are command / args / env (agy mcp add also writes `disabled`) */
+const agyEntry: JsonShape = { ...bareEntry, agentOwned: ['disabled'] }
+
 const MCP_AGENTS: readonly McpAgentDef[] = [
   {
     id: 'claude-code',
@@ -88,6 +96,7 @@ const MCP_AGENTS: readonly McpAgentDef[] = [
   { id: 'codex', file: (dir) => join(dir, 'config.toml'), shape: { kind: 'toml' } },
   { id: 'cursor', file: (dir) => join(dir, 'mcp.json'), shape: stdioEntry },
   { id: 'gemini', file: (dir) => join(dir, 'settings.json'), shape: bareEntry },
+  { id: 'agy', file: (dir) => join(dir, 'mcp_config.json'), shape: agyEntry },
   {
     id: 'copilot',
     file: (dir) => join(dir, 'mcp-config.json'),
@@ -181,7 +190,7 @@ export function readMcpEntry(id: AgentId, file: string, launch: McpLaunch): McpE
   const entry = map[MCP_SERVER_NAME]
   if (entry === undefined) return { status: 'absent', command: null }
   const { command, args } = def.shape.launchOf(entry)
-  if (JSON.stringify(entry) === JSON.stringify(def.shape.entry(launch))) {
+  if (sameEntry(def.shape, entry, def.shape.entry(launch))) {
     return { status: 'registered', command }
   }
   return { status: isGenofficeLauncher(command, args) ? 'stale' : 'occupied', command }
@@ -200,8 +209,40 @@ export function writeMcpEntry(id: AgentId, file: string, launch: McpLaunch): voi
   const doc = text.trim() ? parseJsonObject(text) : {}
   if (!doc) throw new Error(`${file} is not a JSON object`)
   const map = isRecord(doc[def.shape.key]) ? (doc[def.shape.key] as Record<string, unknown>) : {}
-  doc[def.shape.key] = { ...map, [MCP_SERVER_NAME]: def.shape.entry(launch) }
+  doc[def.shape.key] = {
+    ...map,
+    [MCP_SERVER_NAME]: {
+      ...def.shape.entry(launch),
+      ...agentOwnedFields(def.shape, map[MCP_SERVER_NAME]),
+    },
+  }
   save(file, `${JSON.stringify(doc, null, 2)}\n`)
+}
+
+/** An entry as written, or (for an agent that rewrites its own file) as written plus the agent's fields, in any key order. */
+function sameEntry(shape: JsonShape, existing: unknown, written: Record<string, unknown>): boolean {
+  if (!shape.agentOwned?.length) return JSON.stringify(existing) === JSON.stringify(written)
+  return canonicalJson(withoutAgentOwned(shape, existing)) === canonicalJson(written)
+}
+
+/** JSON with every object's keys sorted, so key order never decides equality. */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, v: unknown) =>
+    isRecord(v)
+      ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+      : v,
+  )
+}
+
+function withoutAgentOwned(shape: JsonShape, entry: unknown): unknown {
+  if (!shape.agentOwned?.length || !isRecord(entry)) return entry
+  return Object.fromEntries(Object.entries(entry).filter(([k]) => !shape.agentOwned!.includes(k)))
+}
+
+/** the agent's own fields of an existing entry (a user's `disabled: true` survives our update) */
+function agentOwnedFields(shape: JsonShape, entry: unknown): Record<string, unknown> {
+  if (!shape.agentOwned?.length || !isRecord(entry)) return {}
+  return Object.fromEntries(Object.entries(entry).filter(([k]) => shape.agentOwned!.includes(k)))
 }
 
 /** Remove the genoffice entry; false when there was none. Other keys stay. */
