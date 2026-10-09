@@ -43,8 +43,16 @@ export interface BootstrapResult {
   error?: string
 }
 
+/** Coarse progress of the start-up step; `percent` is only set while migrating. */
+export interface StorageBootstrapProgress {
+  phase: 'checking' | 'migrating' | 'finalizing'
+  percent: number | null
+}
+
 export interface StorageBootstrapOptions {
   settingsDir?: string
+  /** Called (not throttled) as the step moves on; a worker host forwards it to the UI. */
+  onProgress?: (progress: StorageBootstrapProgress) => void
   /**
    * Run the offline full compaction (opt-in; default: the `document-memory-compaction.json` setting, off). An object
    * also overrides the thresholds of runOfflineCompaction (tests; the defaults skip small / unfragmented databases).
@@ -57,7 +65,10 @@ export interface StorageBootstrapOptions {
 /**
  * Detects any leftover or unexpected temporary files associated with migration or cutover.
  */
-export function findUnexpectedTempArtifacts(dbDir: string, dbBase = 'document-memory.db'): string[] {
+export function findUnexpectedTempArtifacts(
+  dbDir: string,
+  dbBase = 'document-memory.db',
+): string[] {
   if (!existsSync(dbDir)) return []
   const found: string[] = []
   const prefix = dbBase.replace(/\.db$/, '')
@@ -66,11 +77,7 @@ export function findUnexpectedTempArtifacts(dbDir: string, dbBase = 'document-me
     const entries = readdirSync(dbDir)
     for (const name of entries) {
       if (!name.startsWith(prefix)) continue
-      if (
-        name.includes('.tmp') ||
-        name.includes('.migrating') ||
-        name.includes('.moving')
-      ) {
+      if (name.includes('.tmp') || name.includes('.migrating') || name.includes('.moving')) {
         found.push(join(dbDir, name))
       }
     }
@@ -131,18 +138,17 @@ export function findAnyBackupArtifacts(dbDir: string, dbBase = 'document-memory.
  * Ensures that Document Memory SQLite database is fully migrated and verified
  * according to Schema V3 BEFORE any runtime components open it (Invariant INV-01).
  * Fails closed on any recovery error, corruption, or ambiguous temporary artifacts.
- * 
+ *
  * Must be executed before `new DocumentMemoryManager()` or any worker startup.
- * 
- * ARCHITECTURAL LIMITATION & THREADING MODEL:
- * This method is an async function executed on the UI main process thread during startup.
- * The underlying migration runner (`migrateStorageV2ToV3`) runs SYNCHRONOUSLY on this thread.
- * It does NOT execute off-main thread (no fake setImmediate or background workers here).
- * This synchronous execution on the caller thread is intentional in this scope to guarantee
- * exclusive single-writer access and complete schema verification before any runtime stores,
- * indexers, or background workers initialize. The parent runtime / orchestrator is responsible
- * for blocking application launch or providing user-facing startup splash until complete,
- * or scheduling off-main migration when a dedicated worker architecture is implemented.
+ *
+ * THREADING MODEL:
+ * Both the V2->V3 migration (`migrateStorageV2ToV3`) and the start-up health check of an existing V3 database are
+ * synchronous SQLite work that scales with the database (minutes for a multi-gigabyte index). They must therefore
+ * never run on the Electron main thread: the main process hosts this function in a worker thread
+ * (`runtime/storage-bootstrap-runner.ts`) and opens the window straight away. Running it inline is only the
+ * fallback for a worker that cannot be started, and for tests.
+ * It still guarantees exclusive single-writer access and complete schema verification before any runtime store,
+ * indexer or background worker opens the database: the caller starts those only after this resolves `ready`.
  */
 export async function ensureDocumentMemoryStorageReady(
   dbDir: string,
@@ -152,28 +158,83 @@ export async function ensureDocumentMemoryStorageReady(
   try {
     const result = await bootstrapStorage(dbDir, options, logDir)
     if (!result.ready) {
-      const why = result.report?.reasons?.length ? ` [schema: ${result.report.reasons.join('; ')}]` : ''
-      appendBootstrapLog(logDir, 'error', `Document memory is unavailable (fail-closed): ${result.error ?? 'unknown reason'}${why}`)
+      const why = result.report?.reasons?.length
+        ? ` [schema: ${result.report.reasons.join('; ')}]`
+        : ''
+      appendBootstrapLog(
+        logDir,
+        'error',
+        `Document memory is unavailable (fail-closed): ${result.error ?? 'unknown reason'}${why}`,
+      )
     } else if (result.migrated) {
       const m = result.migrationResult
-      appendBootstrapLog(logDir, 'info', `V2->V3 migration completed: ${m?.documentsCopied ?? 0} documents, ${m?.chunksCopied ?? 0} chunks, ${m?.durationMs ?? 0} ms`)
+      appendBootstrapLog(
+        logDir,
+        'info',
+        `V2->V3 migration completed: ${m?.documentsCopied ?? 0} documents, ${m?.chunksCopied ?? 0} chunks, ${m?.durationMs ?? 0} ms`,
+      )
     }
     return result
   } catch (err) {
-    appendBootstrapLog(logDir, 'error', `Storage bootstrap threw: ${(err as Error)?.stack ?? String(err)}`)
+    appendBootstrapLog(
+      logDir,
+      'error',
+      `Storage bootstrap threw: ${(err as Error)?.stack ?? String(err)}`,
+    )
     throw err
   }
 }
 
-async function bootstrapStorage(dbDir: string, options: StorageBootstrapOptions, logDir: string): Promise<BootstrapResult> {
+/** Share of the migration that is done, from the runner's progress; the copy dominates, so it gets most of the bar. */
+export function migrationPercent(
+  progress: { phase: string; documentsProcessed: number },
+  totalDocuments: number,
+): number {
+  switch (progress.phase) {
+    case 'schema':
+      return 1
+    case 'documents':
+    case 'fts':
+      return totalDocuments > 0
+        ? Math.min(90, 1 + Math.floor((progress.documentsProcessed / totalDocuments) * 89))
+        : 50
+    case 'cutover':
+      return 95
+    case 'verified':
+      return 99
+    default:
+      return 0
+  }
+}
+
+async function bootstrapStorage(
+  dbDir: string,
+  options: StorageBootstrapOptions,
+  logDir: string,
+): Promise<BootstrapResult> {
   const dbPath = join(dbDir, 'document-memory.db')
+  const notify = (
+    phase: StorageBootstrapProgress['phase'],
+    percent: number | null = null,
+  ): void => {
+    try {
+      options.onProgress?.({ phase, percent })
+    } catch {
+      // a progress listener must never decide whether the index opens
+    }
+  }
+  notify('checking')
 
   // An offline compaction killed mid-swap is rolled back to the previous verified database (separate manifest from the
   // cutover); expired `.compact-prev` backups are removed. Neither step may fail startup on its own.
   try {
     const compaction = recoverInterruptedCompaction(dbPath)
-    if (compaction.recovered) console.info(`[document-memory-bootstrap] Recovered interrupted compaction (${compaction.action}).`)
-    if (compaction.error) console.warn('[document-memory-bootstrap] Compaction recovery error:', compaction.error)
+    if (compaction.recovered)
+      console.info(
+        `[document-memory-bootstrap] Recovered interrupted compaction (${compaction.action}).`,
+      )
+    if (compaction.error)
+      console.warn('[document-memory-bootstrap] Compaction recovery error:', compaction.error)
     cleanupCompactionBackups(dbPath)
   } catch (compactionErr) {
     console.warn('[document-memory-bootstrap] Compaction recovery failed:', compactionErr)
@@ -211,13 +272,21 @@ async function bootstrapStorage(dbDir: string, options: StorageBootstrapOptions,
   // untouched until the cutover manifest exists. Remove them so the next attempt starts clean instead of staying fail-closed.
   const stale = recoverStaleMigrationArtifacts(dbDir, 'document-memory.db')
   if (stale.removed.length > 0) {
-    console.warn('[document-memory-bootstrap] Removed leftovers of an interrupted V2->V3 migration:', stale.removed)
-    appendBootstrapLog(logDir, 'warn', `Removed leftovers of an interrupted V2->V3 migration: ${stale.removed.join(', ')}`)
+    console.warn(
+      '[document-memory-bootstrap] Removed leftovers of an interrupted V2->V3 migration:',
+      stale.removed,
+    )
+    appendBootstrapLog(
+      logDir,
+      'warn',
+      `Removed leftovers of an interrupted V2->V3 migration: ${stale.removed.join(', ')}`,
+    )
   }
   if (stale.blockedByPid !== undefined || stale.error) {
-    const errorMsg = stale.blockedByPid !== undefined
-      ? `Another process (pid ${stale.blockedByPid}) is migrating the document index; it will be retried on the next start.`
-      : `Interrupted migration cleanup failed: ${stale.error}. It will be retried on the next start.`
+    const errorMsg =
+      stale.blockedByPid !== undefined
+        ? `Another process (pid ${stale.blockedByPid}) is migrating the document index; it will be retried on the next start.`
+        : `Interrupted migration cleanup failed: ${stale.error}. It will be retried on the next start.`
     console.error('[document-memory-bootstrap]', errorMsg)
     return { ready: false, migrated: false, error: errorMsg }
   }
@@ -238,7 +307,8 @@ async function bootstrapStorage(dbDir: string, options: StorageBootstrapOptions,
   const retentionState = readV3RetentionState(dbDir)
   if (!existsSync(dbPath)) {
     if (backupArtifacts.length > 0 || retentionState) {
-      const errorMsg = 'Document-memory database is missing while migration or rollback artifacts still exist.'
+      const errorMsg =
+        'Document-memory database is missing while migration or rollback artifacts still exist.'
       console.error('[document-memory-bootstrap]', errorMsg)
       return {
         ready: false,
@@ -313,9 +383,19 @@ async function bootstrapStorage(dbDir: string, options: StorageBootstrapOptions,
       if (offline) {
         // Exclusive, before any connection of this process exists; every failure keeps the previous database.
         try {
-          const compacted = runOfflineCompaction(dbPath, { ...(typeof offline === 'object' ? offline : {}), enabled: true })
-          if (compacted.status === 'compacted') console.info(`[document-memory-bootstrap] Offline compaction saved ${compacted.bytesSaved} bytes.`)
-          else if (compacted.status === 'failed' || compacted.status === 'rolled-back') console.warn('[document-memory-bootstrap] Offline compaction not applied:', compacted.error ?? compacted.status)
+          const compacted = runOfflineCompaction(dbPath, {
+            ...(typeof offline === 'object' ? offline : {}),
+            enabled: true,
+          })
+          if (compacted.status === 'compacted')
+            console.info(
+              `[document-memory-bootstrap] Offline compaction saved ${compacted.bytesSaved} bytes.`,
+            )
+          else if (compacted.status === 'failed' || compacted.status === 'rolled-back')
+            console.warn(
+              '[document-memory-bootstrap] Offline compaction not applied:',
+              compacted.error ?? compacted.status,
+            )
         } catch (compactErr) {
           console.warn('[document-memory-bootstrap] Offline compaction failed:', compactErr)
         }
@@ -399,7 +479,8 @@ async function bootstrapStorage(dbDir: string, options: StorageBootstrapOptions,
     // 3. Quota preflight: physical DB + WAL + SHM + old ANN + OCR + sidecars + ALL existing protected backups
     const preAccounting = collectStorageAccounting({ dbPath })
     if (preAccounting.isDegraded) {
-      const errorMsg = 'Storage accounting is degraded due to I/O or permission errors before migration'
+      const errorMsg =
+        'Storage accounting is degraded due to I/O or permission errors before migration'
       console.error('[document-memory-bootstrap]', errorMsg)
       return {
         ready: false,
@@ -414,10 +495,25 @@ async function bootstrapStorage(dbDir: string, options: StorageBootstrapOptions,
 
     // Estimate conservative migration growth of new temp DB & WAL
     let estimatedGrowthBytes = 0
+    let totalDocuments = 0
     try {
       const statDb = new DatabaseSync(dbPath)
       try {
-        estimatedGrowthBytes = estimateMigrationGrowthBytes(statDb, activeConfig.activeSpaceId, activeConfig.activeDimensions)
+        estimatedGrowthBytes = estimateMigrationGrowthBytes(
+          statDb,
+          activeConfig.activeSpaceId,
+          activeConfig.activeDimensions,
+        )
+        try {
+          totalDocuments = Number(
+            (
+              statDb.prepare('SELECT count(*) AS n FROM documents').get() as
+                { n?: number } | undefined
+            )?.n ?? 0,
+          )
+        } catch {
+          totalDocuments = 0 // progress is cosmetic: an unreadable count leaves the bar indeterminate
+        }
       } finally {
         statDb.close()
       }
@@ -454,22 +550,34 @@ async function bootstrapStorage(dbDir: string, options: StorageBootstrapOptions,
       }
     }
 
-    console.info('[document-memory-bootstrap] V2 storage detected. Starting verified V2->V3 migration...', {
-      reasons: report.reasons,
-      autoVacuum: report.autoVacuum,
-      activeSpaceId: activeConfig.activeSpaceId,
-      budgetBytes,
-      currentUsageBytes: preAccounting.totalManagedBytes,
-      estimatedGrowthBytes,
-    })
+    console.info(
+      '[document-memory-bootstrap] V2 storage detected. Starting verified V2->V3 migration...',
+      {
+        reasons: report.reasons,
+        autoVacuum: report.autoVacuum,
+        activeSpaceId: activeConfig.activeSpaceId,
+        budgetBytes,
+        currentUsageBytes: preAccounting.totalManagedBytes,
+        estimatedGrowthBytes,
+      },
+    )
 
+    notify('migrating', 0)
     const migrationResult = migrateStorageV2ToV3(dbPath, {
       activeSpaceId: activeConfig.activeSpaceId,
       activeDimensions: activeConfig.activeDimensions,
       budgetBytes,
       settingsDir,
       freeDiskBytes,
+      onProgress: (progress) =>
+        notify(
+          'migrating',
+          totalDocuments > 0 || progress.phase !== 'documents'
+            ? migrationPercent(progress, totalDocuments)
+            : null,
+        ),
     })
+    notify('finalizing')
     console.info('[document-memory-bootstrap] V2->V3 storage migration completed successfully.', {
       documentsCopied: migrationResult.documentsCopied,
       chunksCopied: migrationResult.chunksCopied,
@@ -506,7 +614,8 @@ async function bootstrapStorage(dbDir: string, options: StorageBootstrapOptions,
     // Sau migration: verifiedLaunches = 0
     let retentionState: V3RetentionState | undefined
     if (migrationResult.backupDbPath) {
-      retentionState = readV3RetentionState(dbDir) ?? initV3RetentionState(dbDir, migrationResult.backupDbPath)
+      retentionState =
+        readV3RetentionState(dbDir) ?? initV3RetentionState(dbDir, migrationResult.backupDbPath)
     }
 
     return {
@@ -518,7 +627,10 @@ async function bootstrapStorage(dbDir: string, options: StorageBootstrapOptions,
     }
   } catch (err) {
     const errorMsg = (err as Error).message
-    console.error('[document-memory-bootstrap] Critical: V2->V3 migration or verification failed!', { error: errorMsg })
+    console.error(
+      '[document-memory-bootstrap] Critical: V2->V3 migration or verification failed!',
+      { error: errorMsg },
+    )
     return {
       ready: false,
       migrated: false,

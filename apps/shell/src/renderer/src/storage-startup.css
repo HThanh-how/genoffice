@@ -1,0 +1,64 @@
+/* Storage start-up banner: non-modal card at the bottom-center of the shell window while the search index is
+ * checked / upgraded in the background. Chrome-colored via semantic tokens. */
+
+.storage-startup {
+  position: fixed;
+  left: 50%;
+  bottom: 20px;
+  transform: translateX(-50%);
+  z-index: 55;
+  width: 320px;
+  padding: 12px 14px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: var(--shadow-modal-strong);
+  font-size: var(--text-small);
+}
+
+.storage-startup-warn {
+  width: auto;
+  max-width: 420px;
+  color: var(--text-secondary);
+}
+
+.storage-startup-title {
+  font-weight: 600;
+}
+
+.storage-startup-hint {
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: var(--text-caption);
+}
+
+.storage-startup-bar {
+  position: relative;
+  height: 4px;
+  margin-top: 10px;
+  overflow: hidden;
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.storage-startup-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease-out;
+}
+
+.storage-startup-fill.indeterminate {
+  width: 35%;
+  animation: storage-startup-slide 1.4s ease-in-out infinite;
+}
+
+@keyframes storage-startup-slide {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(300%);
+  }
+}

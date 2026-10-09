@@ -8,6 +8,7 @@ import type { Plugin } from 'vite'
 const TARGET_WORKER_NAMES = new Set([
   'storage-accounting-worker',
   'backup-retention-worker',
+  'storage-bootstrap-worker',
 ])
 
 const nodeBuiltinExternals = [
@@ -91,9 +92,7 @@ export interface BundledModulePathPluginOptions {
  * This allows Node Worker threads in test runs to execute actual current worker code without
  * crashing on extensionless TypeScript imports, matching production packaged engine behavior.
  */
-export function bundledModulePathPlugin(
-  options: BundledModulePathPluginOptions = {},
-): Plugin {
+export function bundledModulePathPlugin(options: BundledModulePathPluginOptions = {}): Plugin {
   registerGlobalExitHook()
 
   const bundleCache = new Map<string, string>()
@@ -119,8 +118,7 @@ export function bundledModulePathPlugin(
     return ownedTempDir
   }
 
-  const tsconfigPath =
-    options.tsconfigPath ?? resolve(__dirname, '../../tsconfig.json')
+  const tsconfigPath = options.tsconfigPath ?? resolve(__dirname, '../../tsconfig.json')
 
   return {
     name: 'genoffice:bundled-module-path',
@@ -178,9 +176,7 @@ export function bundledModulePathPlugin(
         } else if (existsSync(entryFile + '.js')) {
           entryFile = entryFile + '.js'
         } else {
-          throw new Error(
-            `[bundledModulePathPlugin] Entry file not found for ${cleanPath}`,
-          )
+          throw new Error(`[bundledModulePathPlugin] Entry file not found for ${cleanPath}`)
         }
       }
 
@@ -211,9 +207,10 @@ export function bundledModulePathPlugin(
         define: {
           'import.meta': '__genofficeWorkerImportMeta',
         },
-        banner: { js: 'const __genofficeWorkerImportMeta = { url: require("node:url").pathToFileURL(__filename).href, filename: __filename, dirname: __dirname };' },
-        tsconfig:
-          tsconfigPath && existsSync(tsconfigPath) ? tsconfigPath : undefined,
+        banner: {
+          js: 'const __genofficeWorkerImportMeta = { url: require("node:url").pathToFileURL(__filename).href, filename: __filename, dirname: __dirname };',
+        },
+        tsconfig: tsconfigPath && existsSync(tsconfigPath) ? tsconfigPath : undefined,
         logLevel: 'error',
       })
 

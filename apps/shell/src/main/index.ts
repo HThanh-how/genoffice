@@ -1,6 +1,7 @@
 import { showAppMessageBox, setFeedbackThemeGetter } from './app-message-box'
 import { DocumentMemoryManager } from './document-memory/manager'
-import { ensureDocumentMemoryStorageReady } from './document-memory/storage-bootstrap'
+import type { BootstrapResult } from './document-memory/storage-bootstrap'
+import { runStorageBootstrapOffThread } from './document-memory/runtime/storage-bootstrap-runner'
 import { currentMachineSpec } from './document-memory/embedding/initial-profile'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { rotatingFileWriter } from './fork/renderer-diagnostics'
@@ -337,6 +338,7 @@ import { registerDbLocationIpc } from './fork/db-location-ipc'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
 import { initClipboardHistory, registerClipboardHistory } from './fork/clipboard-history-ipc'
 import { registerIndexingMode } from './fork/indexing-mode-ipc'
+import { registerStorageStartup, type StorageStartupTracker } from './fork/storage-startup'
 import { registerAiInstructions } from './fork/ai-instructions-ipc'
 import { registerAgyOcr } from './fork/agy-ocr-ipc'
 import { registerAgyChat } from './fork/agy-chat-ipc'
@@ -3726,6 +3728,15 @@ function registerDroppedFilesIpc(): void {
 }
 
 let documentMemory: DocumentMemoryManager | null = null
+/** Progress of the index storage check / upgrade that runs off the main thread while the window is open. */
+const storageStartup: StorageStartupTracker = registerStorageStartup({
+  ipcMain,
+  send: (channel, state) => {
+    for (const win of BrowserWindow.getAllWindows())
+      if (!win.isDestroyed()) win.webContents.send(channel, state)
+  },
+})
+let appShuttingDown = false
 let everything: EverythingController | null = null
 function recordRecentFile(path: string): void {
   recordDocsRecentFile(path)
@@ -3959,6 +3970,65 @@ async function convertLegacyForIndex(path: string): Promise<LegacyConvertOutcome
     if (error instanceof ServiceRateLimitedError) return 'busy'
     throw error
   }
+}
+
+/**
+ * Opens the document-memory manager once the off-thread storage bootstrap has verified (or migrated) the database,
+ * then starts everything that needs the index: the legacy converter, folder scans and backup retention. Anything but
+ * a verified `ready` leaves `documentMemory` null for this run (fail-closed) and the documents themselves untouched.
+ */
+function attachDocumentMemory(
+  bootstrap: BootstrapResult,
+  userDataDir: string,
+  indexDbDir: string,
+): void {
+  if (appShuttingDown) return
+  if (!bootstrap.ready) {
+    console.error(
+      '[document-memory] Critical: Storage bootstrap failed, entering fail-closed mode:',
+      bootstrap.error,
+    )
+    documentMemory = null
+    storageStartup.set('unavailable')
+    return
+  }
+  try {
+    documentMemory = new DocumentMemoryManager(userDataDir, {
+      dbDir: indexDbDir,
+      machineSpec: currentMachineSpec(),
+      externalNames: (query, limit) => everything!.search.search(query, limit),
+    })
+  } catch (error) {
+    console.error(
+      '[document-memory] Critical: Storage bootstrap threw error, entering fail-closed mode:',
+      error,
+    )
+    documentMemory = null
+    storageStartup.set('unavailable')
+    return
+  }
+  startLegacyConverter()
+  folderScan = new FolderScanManager(userDataDir, documentMemory)
+  if (knownSources) void knownSources.reconcileDesiredSources()
+  const pendingScans = pendingFolderScanPaths
+  pendingFolderScanPaths = []
+  for (const folder of pendingScans) startFolderScan(folder)
+  indexAddedFoldersNotYetScanned()
+  setTimeout(() => {
+    documentMemory
+      ?.runBackupRetentionMaintenance()
+      .then((res) => {
+        if (res && res.purgedCount > 0) {
+          console.info(
+            `[document-memory] Background backup retention purged ${res.purgedCount} backups`,
+          )
+        }
+      })
+      .catch((err) => {
+        console.warn('[document-memory] Background backup retention failed:', err)
+      })
+  }, 15_000)
+  storageStartup.set('ready')
 }
 
 let legacyConverter: LegacyConverter | null = null
@@ -6930,40 +7000,24 @@ app.whenReady().then(async () => {
   setOpeningConfig({ prefs: openingPrefs, customHtml: customOpeningHtml })
   const indexDbDir = resolveDbDir(userDataDir)
 
-  // Fail-closed storage initialization: never open or create fresh DB on ambiguity
+  // Fail-closed storage initialization: never open or create fresh DB on ambiguity. The check and any V2->V3
+  // migration take minutes on a multi-gigabyte index, so they run in a worker thread while the window opens: the
+  // index stays closed (documentMemory === null) until attachDocumentMemory() runs with the verified result.
+  let storageBootstrap: Promise<BootstrapResult> | null = null
   if (dbMove.error) {
     console.error(
       '[document-memory] Critical: Index move failed, entering fail-closed mode:',
       dbMove.error,
     )
     documentMemory = null
+    storageStartup.set('unavailable')
   } else {
-    try {
-      const bootstrap = await ensureDocumentMemoryStorageReady(indexDbDir, {
-        settingsDir: userDataDir,
-      })
-      if (!bootstrap.ready) {
-        console.error(
-          '[document-memory] Critical: Storage bootstrap failed, entering fail-closed mode:',
-          bootstrap.error,
-        )
-        documentMemory = null
-      } else {
-        documentMemory = new DocumentMemoryManager(userDataDir, {
-          dbDir: indexDbDir,
-          machineSpec: currentMachineSpec(),
-          externalNames: (query, limit) => everything!.search.search(query, limit),
-        })
-      }
-    } catch (bootstrapErr) {
-      console.error(
-        '[document-memory] Critical: Storage bootstrap threw error, entering fail-closed mode:',
-        bootstrapErr,
-      )
-      documentMemory = null
-    }
+    storageBootstrap = runStorageBootstrapOffThread(
+      indexDbDir,
+      { settingsDir: userDataDir },
+      { onProgress: (progress) => storageStartup.set(progress.phase, progress.percent) },
+    )
   }
-  startLegacyConverter()
   void listLegacyRecovery(app.getPath('userData')).catch((error) =>
     console.warn('[shell] legacy recovery cleanup failed:', error),
   )
@@ -7178,33 +7232,20 @@ app.whenReady().then(async () => {
   }
 
   if (app.isPackaged && process.platform === 'darwin') installMacFolderScanService()
-  if (documentMemory) folderScan = new FolderScanManager(app.getPath('userData'), documentMemory)
-  if (folderScan && knownSources) void knownSources.reconcileDesiredSources()
   openLaunchPaths(pendingLaunchPaths)
   // a start-up file that turned into no document must not keep the window hidden
   revealColdOpeningIfNoDocuments()
-  for (const folder of pendingFolderScanPaths) startFolderScan(folder)
-  pendingFolderScanPaths = []
-  indexAddedFoldersNotYetScanned()
   pendingLaunchPaths = []
   for (const recoverAs of pendingUnsavedNewRecoveries()) void newSheetTab(recoverAs)
 
-  if (documentMemory) {
-    setTimeout(() => {
-      documentMemory
-        ?.runBackupRetentionMaintenance()
-        .then((res) => {
-          if (res && res.purgedCount > 0) {
-            console.info(
-              `[document-memory] Background backup retention purged ${res.purgedCount} backups`,
-            )
-          }
-        })
-        .catch((err) => {
-          console.warn('[document-memory] Background backup retention failed:', err)
-        })
-    }, 15_000)
-  }
+  // The window is up and answering; the index opens as soon as its storage check / upgrade is verified.
+  void storageBootstrap?.then(
+    (bootstrap) => attachDocumentMemory(bootstrap, userDataDir, indexDbDir),
+    (error: unknown) => {
+      console.error('[document-memory] Critical: Storage bootstrap rejected, fail-closed:', error)
+      storageStartup.set('unavailable')
+    },
+  )
 
   startControlServer(
     app.getPath('userData'),
@@ -7236,6 +7277,7 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  appShuttingDown = true
   // No close prompt may fall through to "Save" during shutdown
   markSheetsShuttingDown()
   stopSheetsSidecar()

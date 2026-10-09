@@ -5,6 +5,7 @@ import type { DocumentIndexApi } from './document-index-api'
 import type { HomeChatApi } from './home-chat-types'
 import type { IndexingModeApi } from './indexing-mode'
 import type { AiInstructionsApi } from './ai-instructions-meta'
+import type { StorageStartupApi } from './storage-startup'
 
 /** Every fork-only method on window.aiOffice; HomeApi extends this so upstream stays untouched. */
 export interface ForkHomeApi
@@ -15,4 +16,5 @@ export interface ForkHomeApi
     DocumentIndexApi,
     IndexingModeApi,
     AgyOcrApi,
-    AiInstructionsApi {}
+    AiInstructionsApi,
+    StorageStartupApi {}

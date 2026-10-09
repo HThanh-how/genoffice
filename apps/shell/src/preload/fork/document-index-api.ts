@@ -9,16 +9,20 @@ import { createAgyOcrPreloadApi } from './agy-ocr-api'
 import { createIndexingModePreloadApi } from './indexing-mode-api'
 import type { AiInstructionsApi } from '../../shared/fork/ai-instructions-meta'
 import { createAiInstructionsPreloadApi } from './ai-instructions-api'
+import type { StorageStartupApi } from '../../shared/fork/storage-startup'
+import { createStorageStartupPreloadApi } from './storage-startup-api'
 
 /** Preload half of the document-index popup additions (spread into the home API object). */
 export function createDocumentIndexPreloadApi(
   ipcRenderer: IpcRenderer,
-): DocumentIndexApi & IndexingModeApi & AgyOcrApi & AiInstructionsApi {
+): DocumentIndexApi & IndexingModeApi & AgyOcrApi & AiInstructionsApi & StorageStartupApi {
   return {
     async enqueueDocumentIndex(ids) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, ids)
     },
     ...createAiInstructionsPreloadApi(ipcRenderer),
+    // Progress of the index storage check / upgrade that runs while the window is already open.
+    ...createStorageStartupPreloadApi(ipcRenderer),
     // Indexing effort setting (Light / Balanced / Fast), shown in the same Settings section.
     ...createIndexingModePreloadApi(ipcRenderer),
     // Scanned-PDF reader (Antigravity): settings, live status, manual "read now".
@@ -90,7 +94,11 @@ export function createDocumentIndexPreloadApi(
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getIndexFileDetail, documentId)
     },
     async setIndexFileImportance(documentId, importance) {
-      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setIndexFileImportance, documentId, importance)
+      return ipcRenderer.invoke(
+        DOCUMENT_INDEX_CHANNELS.setIndexFileImportance,
+        documentId,
+        importance,
+      )
     },
     async retryDocumentIndexGroup(root, reason) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, root, reason)
