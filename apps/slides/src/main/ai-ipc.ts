@@ -43,6 +43,7 @@ import {
   readBodyCapped,
   writeJsonAtomic,
 } from '@genoffice/electron-utils'
+import { decodeWithElectron } from '@genoffice/electron-utils/image-cutout-electron'
 import {
   createSearchAbortRegistry,
   webSearchTool,
@@ -334,6 +335,8 @@ export function registerSlidesOnlyAiIpc(): void {
         {
           notLoggedInError: tm('errGskCli'),
           mediaRoots: slidesMediaRoots(event.sender.id),
+          // transparentBackground on an Antigravity picture is honoured by a local cutout
+          cutout: { decode: decodeWithElectron },
         },
       )
     },

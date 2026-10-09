@@ -49,11 +49,12 @@ genoffice pdf read scan.pdf [--page 3 | --range 1-5] [--full] --json     # text 
 genoffice guide docs                                                   # op signatures + restricted-HTML rules (`guide <domain> --json` = the catalog with each op's schema and a fingerprint)
 genoffice selection report.docx --json   # what the user has selected in the editor showing the file
 genoffice skill list   # coding agents found on this machine and the skill version each has
+genoffice skill install agy   # the Antigravity CLI (agy) reads skills from ~/.gemini/config/skills; the Gemini CLI from ~/.gemini/skills
 genoffice skill install --dir ./skills --force   # copy the bundled skill into a skills directory
 genoffice install-cli   # put genoffice on the PATH
 genoffice mcp --http 3000 [--host 127.0.0.1] [--token secret]   # Streamable HTTP for clients on other machines; omit --http for stdio
 genoffice mcp --compact-schemas   # advertise ops/cells/data as plain arrays instead of the per-op schema (smaller tools/list; also GENOFFICE_MCP_COMPACT_SCHEMAS=1)
-genoffice mcp install all   # register the stdio server with every coding agent found (or one: claude-code, codex, cursor, gemini, copilot, opencode, windsurf)
+genoffice mcp install all   # register the stdio server with every coding agent found (or one: claude-code, codex, cursor, gemini, agy, copilot, opencode, windsurf)
 genoffice mcp list          # each agent's MCP config and whether genoffice is registered; `mcp uninstall <agent>` removes the entry
 ```
 
@@ -127,7 +128,10 @@ on the PATH (on Windows, where MCP clients spawn without a shell, the entry
 runs `GenOffice.exe` as Node on the bundled `genoffice.cjs` with
 `ELECTRON_RUN_AS_NODE=1`, the same entry the app's Settings snippet shows): `~/.claude.json` (Claude Code, user scope; `CLAUDE_CONFIG_DIR`
 honoured), `~/.codex/config.toml` (`[mcp_servers.genoffice]`; `CODEX_HOME`),
-`~/.cursor/mcp.json`, `~/.gemini/settings.json`, `~/.copilot/mcp-config.json`
+`~/.cursor/mcp.json`, `~/.gemini/settings.json` (Gemini CLI),
+`~/.gemini/config/mcp_config.json` (Antigravity CLI, `agy`; detected by the
+`~/.gemini/config` folder, a `disabled` toggle set with `agy mcp disable` is
+kept), `~/.copilot/mcp-config.json`
 (Copilot CLI), `~/.config/opencode/opencode.json` and
 `~/.codeium/windsurf/mcp_config.json`. Only the `genoffice` key is touched; an
 entry of that name starting another program is reported as `occupied` and left

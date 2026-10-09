@@ -13,12 +13,13 @@ import {
 import { imageSearch, webSearch, type SearchOptions } from './index'
 import { readAiSettingsFile } from './media-tools'
 import { agyWebSearch } from './agy-search'
+import { agyImageSearchWithFallback } from './agy-image-search'
 
 export function searchOptionsFromSettings(settings: AiSettings): SearchOptions {
   const provider = activeSearchProvider(settings)
   const key = settings.search!.providers?.[provider]?.apiKey?.trim() ?? ''
-  // Antigravity CLI has no image-search protocol: its image-search action uses
-  // the established keyless source chain (Parallel, then DuckDuckGo).
+  // The keyless source chain (Parallel, then DuckDuckGo): imageSearchTool asks Antigravity first
+  // and falls back to this chain when it cannot name verifiable image URLs.
   if (provider === 'agy') return { useGsk: false, parallelKey: '', prefer: 'parallel' }
   if (provider === 'parallel') return { useGsk: false, parallelKey: key, prefer: 'parallel' }
   if (provider === 'serply') return { useGsk: false, serplyKey: key, prefer: 'serply' }
@@ -57,7 +58,20 @@ export function webSearchTool(
 }
 
 export function imageSearchTool(settingsPath: string, query: string, maxResults = 8) {
-  return imageSearch(query, maxResults, searchOptionsFromSettings(readAiSettingsFile(settingsPath)))
+  const settings = readAiSettingsFile(settingsPath)
+  const keyless = () => imageSearch(query, maxResults, searchOptionsFromSettings(settings))
+  if (activeSearchProvider(settings) !== 'agy') return keyless()
+  // same CLI path / model resolution as the agy web search
+  return agyImageSearchWithFallback(
+    query,
+    maxResults,
+    {
+      cliPath:
+        settings.search?.providers.agy?.cliPath?.trim() || settings.providers.agy?.cliPath?.trim(),
+      model: settings.search?.providers.agy?.model?.trim() || settings.providers.agy?.model?.trim(),
+    },
+    keyless,
+  )
 }
 
 /** settings-UI test: the selected backend (keyed or free) must answer one minimal query. */

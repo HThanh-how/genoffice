@@ -29,6 +29,8 @@ import {
   readBodyCapped,
 } from '@genoffice/electron-utils/remote-image'
 import { fetchWithSsrfGuard } from '@genoffice/electron-utils/safe-remote-url'
+import type { CutoutOptions } from '@genoffice/electron-utils/image-cutout'
+import { makeAgyImageTransparent } from './agy-transparency'
 import { gskAnalyzeMedia, gskGenerateImage, hasGskAuth, type GskGenerateImageOptions } from './gsk'
 
 export const GSK_NOT_LOGGED_IN_ERROR =
@@ -282,6 +284,8 @@ export interface MediaToolOptions {
   notLoggedInError?: string
   /** directories a bare local path may be read from; omitted = extension check only */
   mediaRoots?: readonly string[]
+  /** local background-removal overrides for the agy transparentBackground chain (tests) */
+  cutout?: CutoutOptions
 }
 
 export interface MediaBudget {
@@ -349,11 +353,20 @@ export type GenerateImageToolOp = GskGenerateImageOptions & {
   transparentBackground?: boolean
 }
 
+export interface GenerateImageToolResult {
+  url?: string
+  error?: string
+  /** set when transparentBackground was asked for: whether the returned picture really has alpha */
+  transparent?: boolean
+  /** human-readable reason the picture stayed opaque although transparency was asked for */
+  notice?: string
+}
+
 export async function generateImageTool(
   settingsPath: string,
   op: GenerateImageToolOp,
   options: MediaToolOptions = {},
-): Promise<{ url?: string; error?: string }> {
+): Promise<GenerateImageToolResult> {
   const prompt = String(op.prompt ?? '').trim()
   if (!prompt) return { error: 'prompt must not be empty' }
   const mediaRoots = options.mediaRoots ?? NO_MEDIA_ROOTS
@@ -391,6 +404,16 @@ export async function generateImageTool(
       references,
       transparent: op.transparentBackground === true,
     })
+    // Antigravity paints an opaque backdrop (its tool has no alpha): strip it locally so the
+    // transparentBackground contract holds for agy as it does for the Genspark RMBG chain above
+    if (op.transparentBackground && byok.provider === 'agy') {
+      const cut = await makeAgyImageTransparent(image, options.cutout)
+      return {
+        url: storeGeneratedImage(cut.bytes, cut.mime),
+        transparent: cut.transparent,
+        ...(cut.notice ? { notice: cut.notice } : {}),
+      }
+    }
     return { url: storeGeneratedImage(image.bytes, image.mime) }
   } catch (err) {
     return { error: errorText(err) }
