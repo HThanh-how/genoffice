@@ -275,6 +275,22 @@ export interface EmbeddingModelState {
   >
 }
 
+/**
+ * Why files are waiting while nothing is being read: the line is held on purpose, for a reason a person can read.
+ * (A policy pause - battery, locked screen, low memory, the user - is `paused` instead.)
+ */
+export type IndexingBlockReason =
+  /** the index process is starting or being restarted; it has not confirmed the storage limits yet */
+  | 'storage-starting'
+  /** the storage measurement is being redone before more is written (stale, unknown or degraded) */
+  | 'storage-checking'
+  /** the vector step is backing off after a refusal or an error, and extraction is waiting for it */
+  | 'embedding-retry'
+  /** the search model cannot run right now (downloading, blocked or failed) */
+  | 'model-unavailable'
+  /** files are waiting and nothing is running or armed to run: the queue is stuck (also logged to document-memory.log) */
+  | 'stalled'
+
 /** What the indexer is doing this moment, so a waiting file can show whether it is being read. */
 export interface IndexingNow {
   /** Queued embedding checkpoints remain in embedding; only this path is running a batch. */
@@ -290,6 +306,8 @@ export interface IndexingNow {
   queued: number
   /** background work is paused (battery, locked screen, low memory, or by the user) */
   paused: boolean
+  /** set while files wait and nothing runs for a reason other than `paused`: "idle but pending" is never silent */
+  blocked?: IndexingBlockReason
 }
 
 /** One file found by name in the index, whatever state it is in. */

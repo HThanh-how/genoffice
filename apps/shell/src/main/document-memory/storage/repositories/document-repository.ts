@@ -827,6 +827,32 @@ export class DocumentRepository {
     ).map((r) => r.path)
   }
 
+  /**
+   * One page of `incompletePaths()` in the same order (`priority_at DESC, id DESC`), resumed after `after`
+   * (the last row of the previous page; null = from the start). The cursor is a key range on `documents_priority`, so a page
+   * costs about its own size however deep it is: the poll reads the line in small slices instead of one query over every
+   * waiting file.
+   */
+  incompletePathsPage(
+    after: { priorityAt: number; id: number } | null,
+    limit: number,
+  ): Array<{ path: string; priorityAt: number; id: number }> {
+    const hasEvicted = hasContentEvictedColumn(this.db)
+    const evictedClause =
+      (hasEvicted ? ' AND (content_evicted IS NULL OR content_evicted = 0)' : '') +
+      (hasVectorEvictionTable(this.db) ? ` AND NOT ${VECTOR_EVICTION_APPLIES_SQL}` : '')
+    const cursor = after ? ' AND (priority_at < ? OR (priority_at = ? AND id < ?))' : ''
+    const args: Array<number> = after ? [after.priorityAt, after.priorityAt, after.id] : []
+    return (
+      this.db
+        .prepare(
+          `SELECT path, priority_at AS priorityAt, id FROM documents WHERE excluded = 0 AND status IN ('pending', 'text-only')${evictedClause}${cursor}
+          ORDER BY priority_at DESC, id DESC LIMIT ?`,
+        )
+        .all(...args, Math.max(1, Math.floor(limit))) as unknown as Array<{ path: string; priorityAt: number; id: number }>
+    )
+  }
+
   documentsUnderPage(root: string, afterId: number, limit: number): StoredDocument[] {
     const normalized = resolve(root)
     const prefix = normalized + (normalized.includes('\\') ? '\\' : '/')

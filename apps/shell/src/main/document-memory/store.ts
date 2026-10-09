@@ -301,6 +301,7 @@ export class DocumentMemoryStore {
   incompletePaths(): string[] {
     return this.docRepo.incompletePaths()
   }
+  incompletePathsPage(after: { priorityAt: number; id: number } | null, limit: number): Array<{ path: string; priorityAt: number; id: number }> { return this.docRepo.incompletePathsPage(after, limit) }
   documentsUnderPage(root: string, afterId: number, limit: number): StoredDocument[] {
     return this.docRepo.documentsUnderPage(root, afterId, limit)
   }

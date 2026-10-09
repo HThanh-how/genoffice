@@ -46,6 +46,25 @@ export function IndexPipeline({
         recognizing: 'Antigravity is reading',
         indexing: 'Adding to search',
       }
+  // files wait, nothing is read and nothing says why: the reason is shown, "idle but pending" is never silent
+  const blockedText =
+    now?.blocked && !paused && busyFiles.size === 0
+      ? vi
+        ? {
+            'storage-starting': 'Đang khởi động tiến trình lập chỉ mục…',
+            'storage-checking': 'Đang kiểm tra dung lượng lưu trữ trước khi ghi tiếp.',
+            'embedding-retry': 'Bước chuẩn bị tìm kiếm đang nghỉ ngắn rồi sẽ thử lại.',
+            'model-unavailable': 'Mô hình tìm kiếm chưa sẵn sàng.',
+            stalled: 'Hàng đợi đang chờ nhưng chưa chạy. Nếu kéo dài, hãy khởi động lại ứng dụng.',
+          }[now.blocked]
+        : {
+            'storage-starting': 'Starting the indexing process…',
+            'storage-checking': 'Checking storage before writing more.',
+            'embedding-retry': 'Search preparation is backing off briefly and will retry.',
+            'model-unavailable': 'The search model is not ready.',
+            stalled: 'Files are waiting but nothing is running. If this lasts, restart the app.',
+          }[now.blocked]
+      : null
   const localState = paused
     ? vi
       ? 'Đang tạm dừng'
@@ -78,6 +97,11 @@ export function IndexPipeline({
             ? 'Tên và đường dẫn có thể tìm trước. Nội dung được bổ sung dần.'
             : 'Names and paths are searchable first. Content is added as it is read.'}
         </p>
+        {blockedText && (
+          <small className="idx-lane-count" role="status">
+            {blockedText}
+          </small>
+        )}
         {busyFiles.size > 0 && (
           <ul className="idx-lane-files" aria-live="polite">
             {[...busyFiles].slice(0, 3).map(([path, status]) => (

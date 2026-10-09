@@ -284,20 +284,28 @@ export class EmbeddingCoordinator {
     return false
   }
 
+  /**
+   * `yieldAfterMs`: once at least one batch is committed and this much time has passed the pass ends (the owner then gives
+   * the other lane its turn and calls again), so a queue of small documents cannot hold the worker for minutes either.
+   */
   async drainEmbeddings(
     askWorker: AskWorkerEmbed,
     onBatchComplete?: (completedChunks: number) => void,
+    yieldAfterMs?: number,
   ): Promise<void> {
     if (this.embedding || this.options.isStoppedOrPaused?.()) return
     this.embedding = true
     let blockedByBudget = false
     let blockedOnAccounting = false
+    const startedAt = Date.now()
+    let committed = 0
     try {
       this.releaseGraceDeferred()
       while (
         !this.options.isStoppedOrPaused?.() &&
         this.embeds.length > 0 &&
-        Date.now() >= this.embeddingRetryAt
+        Date.now() >= this.embeddingRetryAt &&
+        !(yieldAfterMs !== undefined && committed > 0 && Date.now() - startedAt >= yieldAfterMs)
       ) {
         if (this.options.canAcceptExpensiveWork && !this.options.canAcceptExpensiveWork()) {
           blockedByBudget = true; blockedOnAccounting = true
@@ -579,6 +587,7 @@ export class EmbeddingCoordinator {
             this.profile.embeddingId,
             complete,
           )
+          committed++
           onBatchComplete?.(vectors.length)
 
           this.options.onAdmission?.(false)

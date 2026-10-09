@@ -524,7 +524,7 @@ describe('DocumentMemoryManager', () => {
     expect((await instance.search('rare lexical')).hits[0]?.path).toBe(path)
   })
 
-  it('bounds extracted documents while embedding stalls and avoids rescanning all paths for priority', async () => {
+  it('bounds the documents held for embedding while embedding stalls, keeps reading the files behind them, and avoids rescanning all paths for priority', async () => {
     const fake = new FakeWorker(join(dir, 'document-memory.db'))
     fake.stopAfterBatches = 0
     const instance = manager(fake)
@@ -536,10 +536,15 @@ describe('DocumentMemoryManager', () => {
         instance.indexDiscoveredFile(path)
       }
       await until(() => fake.embeddingCalls.length === 1)
-      await new Promise((resolve) => setTimeout(resolve, 50))
-      expect(fake.extractionCalls.length).toBe(16)
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      const coord = (instance as unknown as { embeddingCoord: { getQueueLength(): number } }).embeddingCoord
+      // memory stays bounded: no more than 16 documents' text waits in the vector line ...
+      expect(coord.getQueueLength()).toBeLessThanOrEqual(16)
+      // ... yet reading went on past that bound (the old line stopped at 16 read files until the vectors caught up)
+      expect(fake.extractionCalls.length).toBeGreaterThan(16)
+      expect(fake.embeddingCalls).toHaveLength(1)
       expect(listPaths).not.toHaveBeenCalled()
-      expect(instance.getDocumentIndexProgress(join(dir, 'bulk-63.txt')).state).toBe('queued')
+      expect(instance.status().pending).toBeGreaterThan(0) // the files waiting for vectors are still counted
     } finally {
       listPaths.mockRestore()
     }
@@ -556,8 +561,8 @@ describe('DocumentMemoryManager', () => {
     }
     await until(() => fake.embeddingCalls.length === 1)
     await new Promise((resolve) => setTimeout(resolve, 100))
+    // one failed vector batch, then the retry delay: no burst of attempts over the queue (reading goes on meanwhile)
     expect(fake.embeddingCalls).toHaveLength(1)
-    expect(fake.extractionCalls.length).toBeLessThanOrEqual(17)
     expect(instance.status().modelState).toBe('error')
   })
 

@@ -56,3 +56,44 @@ it('shows actual local work separately from queued vectors and an unavailable OC
     host.remove()
   }
 })
+
+it('says why files are waiting when nothing is being read and the queue is not paused', async () => {
+  const host = document.createElement('div')
+  document.body.append(host)
+  const root = createRoot(host)
+  const render = async (blocked: 'storage-checking' | undefined) => {
+    await act(async () => {
+      root.render(
+        createElement(
+          LocaleProvider,
+          { initial: 'en' },
+          createElement(IndexPipeline, {
+            api: {} as HomeApi,
+            activity: { memory: { pending: 12 } } as HomeIndexingActivity,
+            now: {
+              extracting: [],
+              embedding: {},
+              queued: 12,
+              positions: {},
+              pages: {},
+              paused: false,
+              ...(blocked ? { blocked } : {}),
+            },
+            paused: false,
+            onTodo: vi.fn(),
+            onSettings: vi.fn(),
+          }),
+        ),
+      )
+    })
+  }
+  try {
+    await render(undefined)
+    expect(host.textContent).not.toContain('Checking storage')
+    await render('storage-checking')
+    expect(host.textContent).toContain('Checking storage before writing more.')
+  } finally {
+    act(() => root.unmount())
+    host.remove()
+  }
+})

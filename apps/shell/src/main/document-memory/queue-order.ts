@@ -53,11 +53,20 @@ export function orderQueue(queue: readonly string[], info: QueueInfo): string[] 
   return [...buckets.keys()].sort((a, b) => a - b).flatMap((rank) => buckets.get(rank)!)
 }
 
-/** The head of `orderQueue(queue, info)` without sorting or copying the line: one pass, the earliest of the best rank. */
-export function nextInOrder(queue: readonly string[], info: QueueInfo): string | undefined {
+/**
+ * The head of `orderQueue(queue, info)` without sorting or copying the line: one pass, the earliest of the best rank.
+ * `skip` leaves a path out of the pick without removing it from the line (a file that cannot be taken yet): the pick is the
+ * first of the best rank among the others, and undefined when nothing else is left.
+ */
+export function nextInOrder(
+  queue: readonly string[],
+  info: QueueInfo,
+  skip?: (path: string) => boolean,
+): string | undefined {
   let best: string | undefined
   let bestRank = Infinity
   for (let index = 0; index < queue.length; index++) {
+    if (skip?.(queue[index]!)) continue
     const rank = rankOf(queue[index]!, info, index < PRIORITIZE_LOOKAHEAD)
     if (rank < bestRank) {
       best = queue[index]
