@@ -302,9 +302,25 @@ describe('streamAgy with tools', () => {
     }
   })
 
-  it('rejects malformed GenOffice tool blocks without silently ending or running partial calls', async () => {
-    const child = new FakeChild()
-    const { deps } = runDeps(child)
+  const BAD_REPLY = JSON.stringify({
+    event: 'result',
+    result: {
+      status: 'SUCCESS',
+      response:
+        'Should not leak\n<tool_call>not json</tool_call><tool_call>{"name":"replace_text","arguments":{}}</tool_call>',
+    },
+  })
+
+  async function runBadTurn(secondResult: Record<string, unknown>, jsonSchema: boolean) {
+    const first = new FakeChild()
+    const second = new FakeChild()
+    const children = [first, second]
+    // the text protocol is forced: these tests are about the <tool_call> reader and its retry
+    const { deps } = runDeps(first, {
+      spawn: () => children.shift()!.asChild(),
+      capabilities: async () => ({ effort: false, jsonSchema }),
+      env: { GENOFFICE_AGY_TOOL_MODE: 'text' },
+    })
     const onToolCall = vi.fn()
     const onDelta = vi.fn()
     const diagnostics: Array<Record<string, unknown>> = []
@@ -322,29 +338,70 @@ describe('streamAgy with tools', () => {
       },
       deps,
     )
+    // without a retry the turn can fail before the caller starts awaiting it
+    pending.catch(() => undefined)
     await tick()
     await tick()
-    child.emitLines([
-      JSON.stringify({
-        event: 'result',
-        result: {
-          status: 'SUCCESS',
-          response:
-            'Should not leak\n<tool_call>not json</tool_call><tool_call>{"name":"replace_text","arguments":{}}</tool_call>',
-        },
-      }),
-    ])
-    child.exit(0)
-    await expect(pending).rejects.toThrow(/malformed GenOffice <tool_call>/)
-    expect(onDelta).not.toHaveBeenCalled()
-    expect(onToolCall).not.toHaveBeenCalled()
-    expect(diagnostics).toMatchObject([
+    first.emitLines([BAD_REPLY])
+    first.exit(0)
+    await tick()
+    await tick()
+    await tick()
+    second.emitLines([JSON.stringify({ event: 'result', result: secondResult })])
+    second.exit(0)
+    return { pending, onToolCall, onDelta, diagnostics, second }
+  }
+
+  it('asks again with a JSON schema when the tool blocks cannot be read, and uses the validated reply', async () => {
+    const { pending, onToolCall, onDelta, diagnostics, second } = await runBadTurn(
       {
-        provider: 'agy',
+        status: 'SUCCESS',
+        response: 'ignored prose',
+        structured_output: {
+          text: 'Done.',
+          tool_calls: [{ name: 'replace_text', arguments: { find: 'x' } }],
+        },
+      },
+      true,
+    )
+    await pending
+    expect(second.stdinText).toContain('could not be read')
+    expect(onDelta).toHaveBeenCalledWith('Done.')
+    expect(onToolCall).toHaveBeenCalledTimes(1)
+    expect(onToolCall.mock.calls[0]![0]).toMatchObject({
+      name: 'replace_text',
+      input: { find: 'x' },
+    })
+    expect(diagnostics.map((d) => [d.status, d.reason])).toEqual([
+      ['retry', 'malformed_host_tool_call'],
+      ['success', 'malformed_host_tool_call'],
+    ])
+  })
+
+  it('still rejects, running nothing, when the structured retry is unusable or unsupported', async () => {
+    for (const [result, jsonSchema] of [
+      [{ status: 'SUCCESS', response: 'prose only' }, true],
+      [
+        {
+          status: 'SUCCESS',
+          response: 'x',
+          structured_output: { text: '', tool_calls: [{ name: 'run_command', arguments: {} }] },
+        },
+        true,
+      ],
+      [{ status: 'SUCCESS', response: 'x' }, false],
+    ] as const) {
+      const { pending, onToolCall, onDelta, diagnostics } = await runBadTurn(
+        { ...result },
+        jsonSchema,
+      )
+      await expect(pending).rejects.toThrow(/malformed GenOffice <tool_call>/)
+      expect(onDelta).not.toHaveBeenCalled()
+      expect(onToolCall).not.toHaveBeenCalled()
+      expect(diagnostics.at(-1)).toMatchObject({
         status: 'failure',
         reason: 'malformed_host_tool_call',
-        attempts: 1,
-      },
-    ])
+      })
+    }
   })
 })

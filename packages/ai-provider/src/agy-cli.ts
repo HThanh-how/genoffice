@@ -13,7 +13,7 @@ import {
 import { homedir, tmpdir } from 'node:os'
 import { join, posix, win32 } from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
-import type { AgentImage, AgentMessage, AgentToolDef } from '@genoffice/agent-core'
+import type { AgentImage, AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
 import type { StreamCallbacks } from './protocols/shared'
 import type { AiChatResponse, AiProviderConfig, AiTokenUsage, CodexModelCatalog } from './types'
 import { AiTimeoutError } from './watchdog'
@@ -40,6 +40,20 @@ import { agyMachineSemaphore, type AgyMachineSemaphore } from './agy-lock'
 
 import { AGY_DEFAULT_MODEL } from './agy-meta'
 import {
+  AGY_SCHEMA_NATIVE_RETRY_NOTE,
+  AGY_SCHEMA_TURN_NOTE,
+  AGY_STRUCTURED_RETRY_NOTE,
+  AGY_TEXT_RETRY_NOTE,
+  agyToolTurnSchema,
+  readStructuredToolTurn,
+  renderAgyStructuredTurn,
+  resolveAgyToolProtocol,
+  type AgyToolProtocol,
+  type StructuredToolTurn,
+} from './agy-structured-turn'
+import {
+  agyCallId,
+  agyToolList,
   agyToolNote,
   parseAgyToolCalls,
   renderAgyToolCalls,
@@ -606,7 +620,9 @@ export function buildAgyPrompt(
   system: string,
   messages: AgentMessage[],
   tools: AgentToolDef[] = [],
+  protocol: AgyToolProtocol = 'text',
 ): AgyPromptPlan {
+  const structured = protocol === 'schema' && tools.length > 0
   // newest-first image budget
   const staged = new Map<AgentImage, string>()
   const skipped = new Set<AgentImage>()
@@ -645,6 +661,10 @@ export function buildAgyPrompt(
       )
       turns.push(`User: ${[m.text, ...refs].filter(Boolean).join('\n')}`)
     } else if (m.role === 'assistant') {
+      if (structured && m.toolCalls?.length) {
+        turns.push(`Assistant: ${renderAgyStructuredTurn(m.text, m.toolCalls)}`)
+        continue
+      }
       const calls = m.toolCalls?.length ? renderAgyToolCalls(m.toolCalls) : ''
       const said = [m.text.trim(), calls].filter(Boolean).join('\n')
       if (said) turns.push(`Assistant: ${said}`)
@@ -662,14 +682,18 @@ export function buildAgyPrompt(
   const header =
     `${tools.length ? AGY_TOOLS_SYSTEM_NOTE : AGY_SYSTEM_NOTE}\n\n` +
     (system.trim() ? `Instructions from the application:\n${system.trim()}\n\n` : '') +
-    (tools.length ? `${agyToolNote(tools)}\n\n` : '') +
+    (tools.length
+      ? `${structured ? `${AGY_SCHEMA_TURN_NOTE}\n\nGenOffice tools:\n${agyToolList(tools)}` : agyToolNote(tools)}\n\n`
+      : '') +
     (files.length
       ? `Attachments in the current directory: ${files.map((f) => f.name).join(', ')}\n\n`
       : '')
   const footer =
     '\n\nWrite the Assistant’s next reply to the last User message.' +
     (tools.length
-      ? ' For document actions, output GenOffice <tool_call> blocks only; never invoke native Antigravity tools or request their approval.'
+      ? structured
+        ? ' Reply through the response schema only ("text" and "tool_calls"); never invoke native Antigravity tools or request their approval.'
+        : ' For document actions, output GenOffice <tool_call> blocks only; never invoke native Antigravity tools or request their approval.'
       : '')
   const budget = AGY_MAX_PROMPT_CHARS - header.length - footer.length
   // keep the newest turns that fit; the last turn is always kept (truncated if huge)
@@ -1073,8 +1097,10 @@ export async function runAgy(
 // ---------------------------------------------------------------------------
 
 /**
- * Streaming turn. With tools, agy asks for them through <tool_call> blocks (see agy-tools.ts);
- * the reply is then shown once complete so a block never leaks into the visible text.
+ * Streaming turn. With tools, agy answers either as one object under `--json-schema` (default
+ * whenever the installed agy has the flag) or through <tool_call> text blocks (agy-tools.ts);
+ * see agy-structured-turn.ts. Either way the reply is shown once complete, so a tool request
+ * never leaks into the visible text, and each protocol is the retry of the other.
  */
 export async function streamAgy(
   config: AiProviderConfig,
@@ -1114,6 +1140,34 @@ function shortTarget(target: string): string {
   return name.length > 60 ? `${name.slice(0, 57)}…` : name
 }
 
+/**
+ * Whether a turn with tools is asked through `--json-schema` or through `<tool_call>` text (see
+ * agy-structured-turn.ts). Tests without a capability probe, turns without tools and agy versions
+ * without the flag always use the text path.
+ */
+async function chooseToolProtocol(
+  config: AiProviderConfig,
+  tools: AgentToolDef[],
+  deps: AgyRunDeps | undefined,
+): Promise<{ protocol: AgyToolProtocol; schemaSupported: boolean }> {
+  const d = deps ?? realRunDeps
+  let schemaSupported = false
+  if (tools.length && d.capabilities) {
+    try {
+      const cliPath = await resolveAgyCliPath(config.cliPath, d)
+      schemaSupported = (await d.capabilities(cliPath)).jsonSchema
+    } catch {
+      // runAgy reports an unusable executable with a proper message
+    }
+  }
+  const protocol = resolveAgyToolProtocol({
+    hasTools: tools.length > 0,
+    schemaSupported,
+    override: d.env.GENOFFICE_AGY_TOOL_MODE,
+  })
+  return { protocol, schemaSupported }
+}
+
 async function streamAgyTurn(
   config: AiProviderConfig,
   system: string,
@@ -1124,9 +1178,16 @@ async function streamAgyTurn(
   deps: AgyRunDeps | undefined,
   say: AgySay,
 ): Promise<void> {
-  const plan = buildAgyPrompt(system, messages, tools)
+  const known: ReadonlySet<string> = new Set(tools.map((t) => t.name))
+  const { protocol, schemaSupported } = await chooseToolProtocol(config, tools, deps)
+  const schema = protocol === 'schema' ? agyToolTurnSchema(tools) : undefined
+  const plan = buildAgyPrompt(system, messages, tools, protocol)
   const deadline = Date.now() + AGY_REQUEST_TIMEOUT_MS
-  const run = async (prompt: AgyPromptPlan, timeoutMs: number) =>
+  const run = async (
+    prompt: AgyPromptPlan,
+    timeoutMs: number,
+    jsonSchema?: Record<string, unknown>,
+  ) =>
     runAgy(
       {
         onStep: (step) => {
@@ -1155,6 +1216,7 @@ async function streamAgyTurn(
         signal: cb.signal,
         timeoutMs,
         task: 'chat',
+        ...(jsonSchema ? { jsonSchema } : {}),
         ...(tools.length ? {} : { onText: cb.onDelta }),
         ...(cb.onUsage ? { onUsage: cb.onUsage } : {}),
         ...(cb.onActivity ? { onActivity: cb.onActivity } : {}),
@@ -1185,13 +1247,16 @@ async function streamAgyTurn(
     }
     attempts++
     const retryPlan = buildAgyPrompt(
-      [system, AGY_TOOLS_RETRY_NOTE].filter(Boolean).join('\n\n'),
+      [system, protocol === 'schema' ? AGY_SCHEMA_NATIVE_RETRY_NOTE : AGY_TOOLS_RETRY_NOTE]
+        .filter(Boolean)
+        .join('\n\n'),
       messages,
       tools,
+      protocol,
     )
     let retried: AgyRunResult
     try {
-      retried = await run(retryPlan, remainingMs)
+      retried = await run(retryPlan, remainingMs, schema)
     } catch (error) {
       const stillMalformed = isMalformedNativeFunctionCall(error)
       if (!isAbortError(error))
@@ -1223,8 +1288,94 @@ async function streamAgyTurn(
     return retried
   }
 
+  /**
+   * One more try, asked the other way, after the first protocol produced nothing readable: a
+   * text turn is repeated under `--json-schema` (agy validates the shape itself), a schema turn is
+   * repeated as plain `<tool_call>` text. Null when it also fails, or when there is no time left
+   * or no `--json-schema` to ask with.
+   */
+  const retryOtherProtocol = async (): Promise<StructuredToolTurn | null> => {
+    if (cb.signal.aborted) throw abortError()
+    const remainingMs = deadline - Date.now()
+    if (remainingMs <= 0) return null
+    if (protocol === 'text' && !schemaSupported) return null
+    reportAgyDiagnostic(cb, {
+      provider: 'agy',
+      status: 'retry',
+      reason: 'malformed_host_tool_call',
+      attempts,
+    })
+    attempts++
+    try {
+      if (protocol === 'text') {
+        const retryPlan = buildAgyPrompt(
+          [system, AGY_STRUCTURED_RETRY_NOTE].filter(Boolean).join('\n\n'),
+          messages,
+          tools,
+          'schema',
+        )
+        const retried = await run(retryPlan, remainingMs, agyToolTurnSchema(tools))
+        return readStructuredToolTurn(retried.structured, known)
+      }
+      const retryPlan = buildAgyPrompt(
+        [system, AGY_TEXT_RETRY_NOTE].filter(Boolean).join('\n\n'),
+        messages,
+        tools,
+        'text',
+      )
+      const retried = await run(retryPlan, remainingMs)
+      const parsed = parseAgyToolCalls(retried.text, known)
+      if (parsed.invalidBlocks > 0) return null
+      return {
+        text: parsed.text,
+        calls: parsed.calls.map((call) => ({ name: call.name, input: call.input })),
+      }
+    } catch (error) {
+      if (isAbortError(error)) throw error
+      return null
+    }
+  }
+
+  /** Hand a finished turn (visible text plus tool calls) to the caller. */
+  const deliver = (
+    text: string,
+    calls: AgentToolCall[],
+    reason: 'cli_result' | 'malformed_host_tool_call',
+  ): void => {
+    if (!text && calls.length === 0) {
+      reportAgyDiagnostic(cb, {
+        provider: 'agy',
+        status: 'failure',
+        reason: 'cli_result',
+        attempts,
+      })
+      throw new Error('Antigravity CLI returned no content')
+    }
+    if (text) cb.onDelta(text)
+    for (const call of calls) cb.onToolCall(call)
+    reportAgyDiagnostic(cb, {
+      provider: 'agy',
+      status: 'success',
+      reason,
+      attempts,
+      toolCallCount: calls.length,
+    })
+    cb.onStopReason?.(calls.length ? 'tool_use' : 'end_turn')
+  }
+  const withIds = (calls: StructuredToolTurn['calls']): AgentToolCall[] =>
+    calls.map((call, index) => ({ id: agyCallId(index), name: call.name, input: call.input }))
+  const unreadable = (detail: string): never => {
+    reportAgyDiagnostic(cb, {
+      provider: 'agy',
+      status: 'failure',
+      reason: 'malformed_host_tool_call',
+      attempts,
+    })
+    throw new Error(`${detail} No host tool was run; retry the document action.`)
+  }
+
   try {
-    result = await run(plan, AGY_REQUEST_TIMEOUT_MS)
+    result = await run(plan, AGY_REQUEST_TIMEOUT_MS, schema)
   } catch (error) {
     if (tools.length && isMalformedNativeFunctionCall(error)) {
       result = await retryMalformedNativeCall()
@@ -1243,6 +1394,21 @@ async function streamAgyTurn(
   if (tools.length && isMalformedNativeFunctionCall(result.text)) {
     result = await retryMalformedNativeCall()
   }
+  if (tools.length && protocol === 'schema') {
+    const structured = readStructuredToolTurn(result.structured, known)
+    if (structured) return deliver(structured.text, withIds(structured.calls), 'cli_result')
+    // No usable object. Without any object, plain prose or readable <tool_call> blocks still
+    // make a reply; an object that names an unknown tool or has the wrong shape does not.
+    if (result.structured === undefined) {
+      const parsed = parseAgyToolCalls(result.text, known)
+      if (parsed.invalidBlocks === 0 && result.text.trim()) {
+        return deliver(parsed.text, parsed.calls, 'cli_result')
+      }
+    }
+    const retried = await retryOtherProtocol()
+    if (retried) return deliver(retried.text, withIds(retried.calls), 'malformed_host_tool_call')
+    return unreadable('Antigravity returned a GenOffice tool request that could not be read.')
+  }
   if (!result.text.trim()) {
     reportAgyDiagnostic(cb, {
       provider: 'agy',
@@ -1253,29 +1419,15 @@ async function streamAgyTurn(
     throw new Error('Antigravity CLI returned no content')
   }
   if (tools.length) {
-    const parsed = parseAgyToolCalls(result.text, new Set(tools.map((t) => t.name)))
+    const parsed = parseAgyToolCalls(result.text, known)
     if (parsed.invalidBlocks > 0) {
-      reportAgyDiagnostic(cb, {
-        provider: 'agy',
-        status: 'failure',
-        reason: 'malformed_host_tool_call',
-        attempts,
-      })
-      throw new Error(
-        `Antigravity returned ${parsed.invalidBlocks} malformed GenOffice <tool_call> block(s). No host tool was run; retry the document action.`,
+      const retried = await retryOtherProtocol()
+      if (retried) return deliver(retried.text, withIds(retried.calls), 'malformed_host_tool_call')
+      return unreadable(
+        `Antigravity returned ${parsed.invalidBlocks} malformed GenOffice <tool_call> block(s).`,
       )
     }
-    if (parsed.text) cb.onDelta(parsed.text)
-    for (const call of parsed.calls) cb.onToolCall(call)
-    reportAgyDiagnostic(cb, {
-      provider: 'agy',
-      status: 'success',
-      reason: 'cli_result',
-      attempts,
-      toolCallCount: parsed.calls.length,
-    })
-    cb.onStopReason?.(parsed.calls.length ? 'tool_use' : 'end_turn')
-    return
+    return deliver(parsed.text, parsed.calls, 'cli_result')
   }
   reportAgyDiagnostic(cb, {
     provider: 'agy',

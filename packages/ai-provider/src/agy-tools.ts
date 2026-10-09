@@ -2,8 +2,10 @@ import type { AgentToolCall, AgentToolDef, AgentToolResult } from '@genoffice/ag
 import { readToolCallBody } from './agy-tool-repair'
 
 /**
- * Text tool protocol for the Antigravity CLI. agy cannot receive function schemas, so the host
- * describes its tools in the prompt and agy answers with <tool_call> blocks. The host executes
+ * Text tool protocol for the Antigravity CLI (the fallback; the default is the `--json-schema`
+ * object of agy-structured-turn.ts when the installed agy supports it). agy cannot receive
+ * function schemas, so the host describes its tools in the prompt and agy answers with
+ * <tool_call> blocks. The host executes
  * them in its normal agent loop and sends the results back as the next turn. No MCP and no agy
  * permissions are involved: agy never touches the documents itself.
  */
@@ -15,14 +17,19 @@ export const AGY_MAX_TOOL_CALLS_PER_TURN = 8
 /** per-result cap when results are replayed in the prompt */
 export const AGY_TOOL_RESULT_CHARS = 12_000
 
-export function agyToolNote(tools: AgentToolDef[]): string {
-  if (!tools.length) return ''
-  const list = tools
+/** The tool catalogue shown to the model, shared by the text and the schema protocol. */
+export function agyToolList(tools: readonly AgentToolDef[]): string {
+  return tools
     .map(
       (tool) =>
         `- ${tool.name}: ${tool.description}\n  input schema: ${JSON.stringify(tool.inputSchema)}`,
     )
     .join('\n')
+}
+
+export function agyToolNote(tools: AgentToolDef[]): string {
+  if (!tools.length) return ''
+  const list = agyToolList(tools)
   return (
     'Use only the GenOffice host tools listed below. Do not invoke Antigravity CLI tools such as run_command, Generic, MCP, search_web, or file tools; do not request permission or wait for approval. ' +
     'To use a listed GenOffice tool, output one or more plain-text blocks of the exact form ' +
@@ -34,7 +41,7 @@ export function agyToolNote(tools: AgentToolDef[]): string {
   )
 }
 
-function callId(index: number): string {
+export function agyCallId(index: number): string {
   return `agy-${Date.now().toString(36)}-${index}`
 }
 
@@ -79,7 +86,7 @@ function parseOne(raw: string, known: ReadonlySet<string>, index: number): Agent
   const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(body)
   if (fence) body = fence[1]!
   const call = readToolCallBody(body, known)
-  return call ? { id: callId(index), name: call.name, input: call.input } : null
+  return call ? { id: agyCallId(index), name: call.name, input: call.input } : null
 }
 
 export function renderAgyToolCalls(calls: AgentToolCall[]): string {
