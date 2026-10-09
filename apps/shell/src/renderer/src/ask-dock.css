@@ -189,7 +189,8 @@
 .ask-hit-main {
   flex: 1;
 }
-.ask-hit-main img {
+.ask-hit-main img,
+.ask-hit-main .hc-ft {
   flex: none;
 }
 .ask-hit-name {

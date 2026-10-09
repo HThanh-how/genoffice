@@ -4,7 +4,14 @@
 export interface HomeChatSource {
   /** 0 for a file found by name only; then `path` is what opens it */
   documentId: number
+  /** where the file was when it was found (shown to the user, copied, revealed; never typed by the model) */
   path?: string
+  /** epoch ms: the file's last change when known, else when it was last read into the index */
+  modifiedAt?: number
+  /** id the answer's `[[file:ID]]` markers refer to; stable within its conversation */
+  ref?: number
+  /** retrieved but not cited by the answer: offered as a related file */
+  related?: boolean
   name: string
   location: string
   /** the file changed on disk since it was indexed */

@@ -4,6 +4,8 @@ import { nameWords, normalizeDocumentText } from '../../../main/document-memory/
 export interface NamedFile {
   path: string
   name: string
+  /** last modified, when the list it came from knows it */
+  mtimeMs?: number
 }
 
 interface ScoredFile extends NamedFile {
@@ -86,16 +88,18 @@ export async function findFilesByName(
   api: HomeApi,
   query: string,
   limit = 6,
+  /** how many the folder index is asked for before scoring (a name shared by dozens of files needs more than `limit`) */
+  fetchLimit = limit,
 ): Promise<NamedFile[]> {
   const words = nameWords(query)
   if (words.length === 0) return []
   const need = words.length <= 2 ? words.length : Math.ceil(words.length * 0.6)
   const [recent, found] = await Promise.allSettled([
     api.recents({ limit: 300 }),
-    api.searchFiles({ q: words.join(' '), limit }),
+    api.searchFiles({ q: words.join(' '), limit: Math.max(limit, fetchLimit) }),
   ])
   const byPath = new Map<string, ScoredFile>()
-  const add = (file: { path: string; name: string }) => {
+  const add = (file: { path: string; name: string; mtimeMs?: number }) => {
     const score = nameScore(file.name, file.path, words, need)
     if (score <= 0) return
     const previous = byPath.get(file.path)
@@ -110,5 +114,9 @@ export async function findFilesByName(
   return [...byPath.values()]
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
-    .map(({ path, name }) => ({ path, name }))
+    .map(({ path, name, mtimeMs }) => ({
+      path,
+      name,
+      ...(typeof mtimeMs === 'number' ? { mtimeMs } : {}),
+    }))
 }

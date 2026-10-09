@@ -4,7 +4,7 @@ import type { Lang } from '@genoffice/i18n'
 import type { HomeApi } from '../../../shared/home-api'
 import type { IndexedFileHit } from '../../../shared/fork/document-index-api'
 import { requestChatPrefill } from '../chat-events'
-import { iconFor } from '../file-icons'
+import { FileTypeIcon } from './FileTypeIcon'
 import { activityCopy } from '../indexing-activity-copy'
 import { OPEN_INDEX_EVENT } from '../IndexingActivity'
 import { langFor, parseIndexCommand, runIndexCommand } from '../fork/index-assistant'
@@ -422,7 +422,7 @@ export function AskDock({
                           : api.openPath(hit.path))
                       }
                     >
-                      <img src={iconFor(hit.name)} alt="" width="16" height="16" />
+                      <FileTypeIcon name={hit.name} size={20} />
                       <span className="ask-hit-name">{hit.name}</span>
                       <span className={`ask-tag${problem ? ' is-bad' : unread ? ' is-warn' : ''}`}>
                         {tag}
@@ -465,7 +465,7 @@ export function AskDock({
                       title={file.path}
                       onClick={() => void api.openPath(file.path)}
                     >
-                      <img src={iconFor(file.name)} alt="" width="16" height="16" />
+                      <FileTypeIcon name={file.name} size={20} />
                       <span className="ask-hit-name">{file.name}</span>
                       <span className="ask-tag is-warn">{w.notIndexed}</span>
                     </button>

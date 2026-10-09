@@ -3,7 +3,6 @@ import {
   composeSkills,
   createDocumentMemorySkill,
   createIpcTransport,
-  type DocumentMemoryHit,
   type IpcStreamChunk,
 } from '@genoffice/agent-core'
 import { agyErrorText, createGeminiRouter } from '@genoffice/ai-provider/browser'
@@ -55,13 +54,21 @@ import {
   agySystemSuffix,
   buildRetrievalContext,
   buildRetrievalQuery,
-  hitsToSources,
+  namedFilesBlock,
   type RetrievalContext,
 } from './home-chat/agy-retrieval'
+import {
+  FILE_CITATION_RULES_TOOLS,
+  FileRefTable,
+  pickSources,
+  refBridge,
+  type PickedSources,
+} from './home-chat/file-refs'
 import { translateChat, type ChatKey } from './home-chat/translate'
 import {
   WINDOW_PAGE,
   createFrameBatcher,
+  fileNameVariants,
   fileNamesIn,
   isNearBottom,
   toSeedMessages,
@@ -214,6 +221,13 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   if (!launcherCtlRef.current) launcherCtlRef.current = createLauncherController(setLauncherState)
   const launcherCtl = launcherCtlRef.current
   const settingsRef = useRef<Awaited<ReturnType<HomeApi['getAiSettings']>> | null>(null)
+  /** the files the model has been given ids for; per turn for agy, per conversation otherwise */
+  const toolTableRef = useRef<FileRefTable | null>(null)
+  if (!toolTableRef.current) toolTableRef.current = new FileRefTable()
+  /** the table of the running (or last) turn: the conversation's for tool providers, a fresh one for agy */
+  const fileTableRef = useRef<FileRefTable>(toolTableRef.current)
+  /** first id handed out in the running turn: only these are offered as "related" */
+  const turnStartRef = useRef(1)
   /** retrieval-first context for the current turn when the provider cannot call tools (agy) */
   const agyContextRef = useRef<RetrievalContext | null>(null)
   const tRef = useRef<(key: ChatKey, params?: Params) => string>(() => '')
@@ -233,8 +247,18 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
       chat: {
         loading: tr('homeChatLoading'),
         retry: tr('homeChatRetry'),
-        sources: tr('homeChatSources'),
+        locale: i18n.dateLocale,
+        filesInAnswer: (n) => tr('homeChatFilesInAnswer', { n }),
+        relatedFiles: (n) => tr('homeChatRelatedFiles', { n }),
+        open: tr('homeChatOpen'),
         openSource: (name) => tr('homeChatOpenSource', { name }),
+        searchDetails: tr('homeChatSearchDetails'),
+        statusOk: tr('homeChatStatusOk'),
+        nameOnly: tr('homeChatNameOnly'),
+        showInFolder: tr('homeChatShowInFolder'),
+        copyPath: tr('homeChatCopyPath'),
+        pathCopied: tr('homeChatPathCopied'),
+        fileActions: (name) => tr('homeChatFileActions', { name }),
         sourceMissing: tr('homeChatSourceMissing'),
         sourceStale: tr('homeChatSourceStale'),
         sourceMissingHint: tr('homeChatSourceMissingHint'),
@@ -344,29 +368,44 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     })
   }
 
-  /** Files an answer names (`report.pdf`) become source chips, so the file itself can be opened. */
-  const attachMentionedFiles = async (answer: string, run: number) => {
-    const found: HomeChatSource[] = []
-    for (const name of fileNamesIn(answer)) {
-      const wanted = name.toLowerCase()
-      const matches = await findFilesByName(api, name, 6).catch(() => [])
-      const file = matches.find((match) => match.name.toLowerCase() === wanted)
-      if (file) found.push({ documentId: 0, path: file.path, name: file.name, location: file.path })
-    }
-    if (found.length === 0 || !mountedRef.current || run !== runGenerationRef.current) return
-    updateLastAssistant((last) => {
-      const have = new Set(
-        (last.sources ?? []).flatMap((source) => [
-          source.name.toLowerCase(),
-          (source.path ?? '').toLowerCase(),
-        ]),
-      )
-      const added = found.filter(
-        (source) =>
-          !have.has(source.name.toLowerCase()) && !have.has((source.path ?? '').toLowerCase()),
-      )
-      return added.length ? { ...last, sources: [...(last.sources ?? []), ...added] } : last
+  /**
+   * The files a finished answer relies on, offered under it: the ones it cites by id or by name
+   * (in order of citation); only when it cites none, the files retrieved for this turn as related.
+   * Never invents a file: everything comes from the table or from the file index.
+   */
+  const settleFiles = (text: string, fallback: boolean): PickedSources => {
+    const table = fileTableRef.current
+    const all = table.list()
+    return pickSources(text, all, {
+      fallback,
+      pool: all.filter((source) => (source.ref ?? 0) >= turnStartRef.current),
     })
+  }
+
+  /** Names the answer wrote that are not in the table: looked up (exact name) in recents / the file index. */
+  const resolveUnlistedNames = async (answer: string, itemId: number, run: number) => {
+    const table = fileTableRef.current
+    const known = new Set(table.list().map((source) => source.name.normalize('NFC').toLowerCase()))
+    const unlisted = fileNamesIn(answer).filter(
+      (name) => !known.has(name.normalize('NFC').toLowerCase()),
+    )
+    for (const name of unlisted.slice(0, 6)) {
+      for (const variant of fileNameVariants(name)) {
+        const wanted = variant.normalize('NFC').toLowerCase()
+        const matches = await findFilesByName(api, variant, 12, 60).catch(() => [])
+        const file = matches.find((match) => match.name.normalize('NFC').toLowerCase() === wanted)
+        if (!file) continue
+        table.addFile(file)
+        break
+      }
+      if (!mountedRef.current || run !== runGenerationRef.current) return
+    }
+    const picked = settleFiles(answer, true)
+    updateLastAssistant((last) =>
+      last.id !== itemId
+        ? last
+        : { ...last, ...(picked.sources.length > 0 ? { sources: picked.sources } : {}) },
+    )
   }
 
   if (!loopRef.current) {
@@ -392,58 +431,44 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
       activeRunRef.current !== 0 && activeRunRef.current === runGenerationRef.current
     loopRef.current = new AgentLoop({
       transport,
-      skill: composeSkills('home+remembered-documents', '', [createDocumentMemorySkill(api)]),
+      skill: composeSkills('home+remembered-documents', '', [
+        createDocumentMemorySkill(refBridge(api, () => toolTableRef.current!)),
+      ]),
       maxTurns: 12,
       systemSuffix: () =>
         agyContextRef.current
           ? agySystemSuffix(LANGUAGE_NAMES[langRef.current] ?? 'English', agyContextRef.current)
-          : `Reply in ${LANGUAGE_NAMES[langRef.current] ?? 'English'}. This is a home assistant: answer questions and help find files the user has opened before. Use remembered-document tools when relevant. Never guess document contents or source identifiers.`,
+          : `Reply in ${LANGUAGE_NAMES[langRef.current] ?? 'English'}. This is a home assistant: answer questions and help find files the user has opened before. Use remembered-document tools when relevant. Never guess document contents or source identifiers. ${FILE_CITATION_RULES_TOOLS}`,
       events: {
         onText: (text) => {
           if (live()) batcherRef.current?.push(text)
         },
-        onToolExecuted: ({ call, execution }) => {
+        onToolExecuted: ({ call }) => {
           if (!live() || call.name !== 'search_remembered_documents') return
-          try {
-            const data = JSON.parse(execution.output) as { hits?: DocumentMemoryHit[] }
-            const hits = Array.isArray(data.hits)
-              ? data.hits.filter(
-                  (hit) => Number.isSafeInteger(hit.documentId) && hit.documentId > 0,
-                )
-              : []
-            updateLastAssistant((last) => {
-              const existing = new Map(
-                (last.sources ?? []).map((source) => [source.documentId, source]),
-              )
-              for (const hit of hits) {
-                // stale / missing are optional flags added by the document-memory backend
-                const flags = hit as { stale?: boolean; missing?: boolean; skeletonIndex?: boolean }
-                const source: HomeChatSource = {
-                  documentId: hit.documentId,
-                  name: hit.name,
-                  location: hit.location,
-                }
-                if (flags.stale === true) source.stale = true
-                if (flags.missing === true) source.missing = true
-                if (flags.skeletonIndex === true) source.skeletonIndex = true
-                existing.set(hit.documentId, source)
-              }
-              return { ...last, sources: [...existing.values()] }
-            })
-          } catch {
-            // The model still receives the tool output; malformed UI-only citations are ignored.
-          }
+          // the hits were numbered while the tool ran (refBridge): make them resolvable at once
+          updateLastAssistant((last) => ({ ...last, candidates: fileTableRef.current.list() }))
         },
         onDone: ({ text, cancelled }) => {
           if (!live()) return
           batcherRef.current?.cancel()
+          const finalText = text || itemsRef.current.at(-1)?.text || ''
+          const names = cancelled ? [] : fileNamesIn(finalText)
+          const known = new Set(
+            fileTableRef.current.list().map((source) => source.name.normalize('NFC').toLowerCase()),
+          )
+          const unlisted = names.some((name) => !known.has(name.normalize('NFC').toLowerCase()))
+          // with names still to look up, wait before falling back to "related" files
+          const picked = settleFiles(finalText, !cancelled && !unlisted)
+          const itemId = itemsRef.current.at(-1)?.id ?? 0
           updateLastAssistant((last) => {
-            const finalText = text || last.text
+            const answer = text || last.text
+            const { candidates: _candidates, ...rest } = last
             return {
-              ...last,
-              text: finalText,
+              ...rest,
+              text: answer,
               streaming: false,
-              error: finalText
+              ...(picked.sources.length > 0 ? { sources: picked.sources } : {}),
+              error: answer
                 ? undefined
                 : cancelled
                   ? tRef.current('homeChatStopped')
@@ -451,9 +476,9 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
             }
           })
           setBusy(false)
-          // files the answer names are offered as files to open, not only as words
-          const answered = text || ''
-          if (!cancelled && answered) void attachMentionedFiles(answered, runGenerationRef.current)
+          // names the answer wrote without an id become files to open, not only words
+          if (unlisted && finalText)
+            void resolveUnlistedNames(finalText, itemId, runGenerationRef.current)
         },
         onError: (error) => {
           if (!live()) return
@@ -679,15 +704,17 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   // ---- conversation lifecycle --------------------------------------------
 
   const stopStreamingItems = (previous: ChatItem[]): ChatItem[] =>
-    previous.map((item, index) =>
-      index === previous.length - 1 && item.role === 'assistant' && item.streaming
-        ? {
-            ...item,
-            streaming: false,
-            error: item.text ? undefined : tRef.current('homeChatStopped'),
-          }
-        : item,
-    )
+    previous.map((item, index) => {
+      if (index !== previous.length - 1 || item.role !== 'assistant' || !item.streaming) return item
+      const { candidates: _candidates, ...rest } = item
+      const picked = item.text ? settleFiles(item.text, false) : null
+      return {
+        ...rest,
+        streaming: false,
+        ...(picked && picked.sources.length > 0 ? { sources: picked.sources } : {}),
+        error: item.text ? undefined : tRef.current('homeChatStopped'),
+      }
+    })
 
   /** Ends any in-flight run and keeps what has streamed so far. */
   const detachCurrent = () => {
@@ -932,6 +959,8 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
         // New conversation, restored chat or a stopped run: rebuild the model context
         // from the visible text turns (no tool-call blocks are ever persisted).
         loop.reset()
+        // the model's memory of earlier ids is gone with its history: start numbering again
+        toolTableRef.current = new FileRefTable()
         loop.restore(toSeedMessages(toMessages(base)))
         needsSeedRef.current = false
       }
@@ -962,6 +991,8 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
         return
       }
       agyContextRef.current = null
+      fileTableRef.current = toolTableRef.current!
+      turnStartRef.current = fileTableRef.current.peekNext()
       try {
         if (settingsRef.current?.provider === 'agy') {
           // agy cannot call GenOffice tools: search remembered documents first and inject the hits.
@@ -973,7 +1004,10 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
             // search is best-effort; the answer then says nothing matched
           }
           if (generation !== runGenerationRef.current || !mountedRef.current) return
-          const context = buildRetrievalContext(hits)
+          const table = new FileRefTable()
+          fileTableRef.current = table
+          turnStartRef.current = 1
+          const context = buildRetrievalContext(hits, { table })
           if (mentionsIndex(message)) {
             // Live index facts and the means to act on the index (the model cannot call tools here).
             const facts = await indexFacts(api, langFor(message, langRef.current)).catch(() => '')
@@ -982,24 +1016,16 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
               context.block = `${context.block}\n\n<<<INDEX\n${facts}\nINDEX>>>\n${INDEX_DIRECTIVE_PROMPT}`
           }
           // Files recently opened, or in the folder index, that match by name: their content is
-          // not part of the search above, so they are offered as candidates by name.
+          // not part of the search above, so they are offered as candidates by name (same id table).
           const named = (await findFilesByName(api, message, 4).catch(() => [])).filter(
-            (file) => !context.used.some((hit) => hit.path === file.path),
+            (file) => table.refForPath(file.path) === undefined,
           )
           if (generation !== runGenerationRef.current || !mountedRef.current) return
-          if (named.length > 0)
-            context.block = `${context.block}\n\n<<<FILES_BY_NAME\nThese files match the question by name only. Their content was not searched or read: offer them as likely candidates and say so.\n${named.map((file, i) => `[${i + 1}] file: ${file.name} | path: ${file.path}`).join('\n')}\nFILES_BY_NAME>>>`
+          const byName = namedFilesBlock(named, table)
+          if (byName.block) context.block = `${context.block}\n\n${byName.block}`
           agyContextRef.current = context
-          const sources = [
-            ...hitsToSources(context.used),
-            ...named.map((file) => ({
-              documentId: 0,
-              path: file.path,
-              name: file.name,
-              location: file.path,
-            })),
-          ]
-          if (sources.length > 0) updateLastAssistant((last) => ({ ...last, sources }))
+          // not shown as chips yet: the answer decides which of these files it relies on
+          updateLastAssistant((last) => ({ ...last, candidates: table.list() }))
         }
         await loop.run(message)
         if (generation !== runGenerationRef.current || !mountedRef.current) return
@@ -1056,16 +1082,43 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     void submitRef.current(current[at]!.text, current.slice(0, at))
   }, [])
 
+  /**
+   * Opens a cited file. An indexed document opens by its id (the main process resolves the path);
+   * a file found by name opens by the path it was found at, in its GenOffice app or, for other
+   * types, the system default app. The path is only ever one the search itself handed out.
+   */
   const openSource = useCallback(
     async (source: HomeChatSource) => {
       setNotice('')
       try {
-        if (!source.documentId && source.path) {
-          await api.openPath(source.path)
+        if (source.documentId > 0) {
+          const result = await api.documentMemoryOpen(source.documentId)
+          if (!result.ok) setNotice(tRef.current('homeChatOpenFailed'))
           return
         }
-        const result = await api.documentMemoryOpen(source.documentId)
-        if (!result.ok) setNotice(tRef.current('homeChatOpenFailed'))
+        if (!source.path) {
+          setNotice(tRef.current('homeChatOpenFailed'))
+          return
+        }
+        const offered = await api.documentMemoryOpen(0, source.path)
+        if (!offered.ok) await api.openPath(source.path)
+      } catch {
+        setNotice(tRef.current('homeChatOpenFailed'))
+      }
+    },
+    [api],
+  )
+
+  const revealSource = useCallback(
+    async (source: HomeChatSource) => {
+      setNotice('')
+      try {
+        if (source.documentId > 0) {
+          const result = await api.revealDocumentIndexFile(source.documentId)
+          if (result.ok) return
+        }
+        if (source.path) await api.revealPath(source.path)
+        else setNotice(tRef.current('homeChatOpenFailed'))
       } catch {
         setNotice(tRef.current('homeChatOpenFailed'))
       }
@@ -1304,6 +1357,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
                         labels={labels.chat}
                         canRetry={!busy && item.id === items[lastIndex]?.id}
                         onOpenSource={openSource}
+                        onRevealSource={revealSource}
                         onRetry={retry}
                       />
                     ))}

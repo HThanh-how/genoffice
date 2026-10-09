@@ -46,6 +46,16 @@ const zh = {
   homeChatErrorChip: '出错了，点击查看',
   homeChatStopChip: '停止',
   homeChatElapsed: '{n} 秒',
+  homeChatFilesInAnswer: '回答涉及的文件 · {n}',
+  homeChatRelatedFiles: '相关文件 · {n}',
+  homeChatOpen: '打开',
+  homeChatShowInFolder: '在文件夹中显示',
+  homeChatCopyPath: '复制路径',
+  homeChatPathCopied: '路径已复制',
+  homeChatFileActions: '{name} 的操作',
+  homeChatSearchDetails: '搜索详情',
+  homeChatStatusOk: '正常',
+  homeChatNameOnly: '仅按名称匹配（未读取内容）',
 }
 
 type Dict = Record<keyof typeof zh, string>
@@ -90,6 +100,16 @@ const en = {
   homeChatErrorChip: 'Something went wrong — click to view',
   homeChatStopChip: 'Stop',
   homeChatElapsed: '{n}s',
+  homeChatFilesInAnswer: 'Files in this answer · {n}',
+  homeChatRelatedFiles: 'Related files · {n}',
+  homeChatOpen: 'Open',
+  homeChatShowInFolder: 'Show in folder',
+  homeChatCopyPath: 'Copy path',
+  homeChatPathCopied: 'Path copied',
+  homeChatFileActions: 'Actions for {name}',
+  homeChatSearchDetails: 'Search details',
+  homeChatStatusOk: 'OK',
+  homeChatNameOnly: 'Matched by name only (content not read)',
 } satisfies Dict
 
 const vi = {
@@ -132,6 +152,16 @@ const vi = {
   homeChatErrorChip: 'Có lỗi — bấm để xem',
   homeChatStopChip: 'Dừng',
   homeChatElapsed: '{n} giây',
+  homeChatFilesInAnswer: 'Tệp trong câu trả lời · {n}',
+  homeChatRelatedFiles: 'Tệp liên quan · {n}',
+  homeChatOpen: 'Mở',
+  homeChatShowInFolder: 'Hiện trong thư mục',
+  homeChatCopyPath: 'Sao chép đường dẫn',
+  homeChatPathCopied: 'Đã sao chép đường dẫn',
+  homeChatFileActions: 'Thao tác với {name}',
+  homeChatSearchDetails: 'Chi tiết tìm kiếm',
+  homeChatStatusOk: 'Bình thường',
+  homeChatNameOnly: 'Chỉ khớp theo tên (chưa đọc nội dung)',
 } satisfies Dict
 
 const ja = {
@@ -174,6 +204,16 @@ const ja = {
   homeChatErrorChip: 'エラーが発生しました。クリックして確認',
   homeChatStopChip: '停止',
   homeChatElapsed: '{n} 秒',
+  homeChatFilesInAnswer: 'この回答のファイル · {n}',
+  homeChatRelatedFiles: '関連ファイル · {n}',
+  homeChatOpen: '開く',
+  homeChatShowInFolder: 'フォルダーで表示',
+  homeChatCopyPath: 'パスをコピー',
+  homeChatPathCopied: 'パスをコピーしました',
+  homeChatFileActions: '{name} の操作',
+  homeChatSearchDetails: '検索の詳細',
+  homeChatStatusOk: '正常',
+  homeChatNameOnly: '名前のみ一致（内容は未読）',
 } satisfies Dict
 
 const ko = {
@@ -216,6 +256,16 @@ const ko = {
   homeChatErrorChip: '오류가 발생했습니다. 눌러서 확인',
   homeChatStopChip: '중지',
   homeChatElapsed: '{n}초',
+  homeChatFilesInAnswer: '이 답변의 파일 · {n}',
+  homeChatRelatedFiles: '관련 파일 · {n}',
+  homeChatOpen: '열기',
+  homeChatShowInFolder: '폴더에서 보기',
+  homeChatCopyPath: '경로 복사',
+  homeChatPathCopied: '경로를 복사했습니다',
+  homeChatFileActions: '{name} 작업',
+  homeChatSearchDetails: '검색 세부 정보',
+  homeChatStatusOk: '정상',
+  homeChatNameOnly: '이름만 일치(내용 미확인)',
 } satisfies Dict
 
 const zhTW = {
@@ -258,6 +308,16 @@ const zhTW = {
   homeChatErrorChip: '發生錯誤，點擊查看',
   homeChatStopChip: '停止',
   homeChatElapsed: '{n} 秒',
+  homeChatFilesInAnswer: '回答涉及的檔案 · {n}',
+  homeChatRelatedFiles: '相關檔案 · {n}',
+  homeChatOpen: '開啟',
+  homeChatShowInFolder: '在資料夾中顯示',
+  homeChatCopyPath: '複製路徑',
+  homeChatPathCopied: '已複製路徑',
+  homeChatFileActions: '{name} 的操作',
+  homeChatSearchDetails: '搜尋詳細資料',
+  homeChatStatusOk: '正常',
+  homeChatNameOnly: '僅依名稱相符（尚未讀取內容）',
 } satisfies Dict
 
 const dicts: LangDicts<Dict> = {
