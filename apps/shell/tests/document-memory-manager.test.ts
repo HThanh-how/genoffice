@@ -449,8 +449,10 @@ describe('DocumentMemoryManager', () => {
     const id = view.documentByPath(path)!.id
     view.close()
     expect(instance.retryDocument(id)).toEqual({ ok: true })
+    // 157 chunks in batches with a 50 ms fake delay each: ~3 s on an idle machine, so give it room under load
     await until(
       () => instance.status().vectors === instance.status().chunks && instance.status().chunks > 0,
+      15_000,
     )
     expect(fake.extractionCalls.filter((item) => item === path)).toHaveLength(1)
   })

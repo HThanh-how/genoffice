@@ -3,7 +3,7 @@ import {
   EMBEDDING_PROFILES,
   assertEmbeddingManifest,
   embeddingProfile,
-  recommendEmbeddingProfile,
+  suggestBiggestProfile,
 } from '../src/main/document-memory/embedding-profiles'
 
 describe('embedding profiles', () => {
@@ -52,26 +52,26 @@ describe('embedding profiles', () => {
   })
 })
 
-describe('recommendEmbeddingProfile', () => {
+describe('suggestBiggestProfile', () => {
   const pc = { arch: 'x64', platform: 'win32', ortVersion: '1.23.2' }
   it('advises base for an old i3 with 4 threads only when RAM is also small; 16 GB / 4 threads is mid', () => {
-    expect(recommendEmbeddingProfile({ ...pc, totalMemGiB: 15.9, logicalCores: 4 })).toEqual({
+    expect(suggestBiggestProfile({ ...pc, totalMemGiB: 15.9, logicalCores: 4 })).toEqual({
       profile: 'mid',
       limit: 'memory',
     })
   })
   it('advises balanced for a Ryzen 7 laptop with 8 GB', () => {
-    expect(recommendEmbeddingProfile({ ...pc, totalMemGiB: 7.4, logicalCores: 8 })).toEqual({
+    expect(suggestBiggestProfile({ ...pc, totalMemGiB: 7.4, logicalCores: 8 })).toEqual({
       profile: 'balanced',
       limit: 'memory',
     })
   })
   it('advises mid on a 16 GB machine and plus from 32 GB, on Apple Silicon as well', () => {
-    expect(recommendEmbeddingProfile({ ...pc, totalMemGiB: 15.9, logicalCores: 12 }).profile).toBe('mid')
+    expect(suggestBiggestProfile({ ...pc, totalMemGiB: 15.9, logicalCores: 12 }).profile).toBe('mid')
     expect(
-      recommendEmbeddingProfile({ arch: 'arm64', platform: 'darwin', totalMemGiB: 16, logicalCores: 10, ortVersion: '1.23.2' })
+      suggestBiggestProfile({ arch: 'arm64', platform: 'darwin', totalMemGiB: 16, logicalCores: 10, ortVersion: '1.23.2' })
         .profile,
     ).toBe('mid')
-    expect(recommendEmbeddingProfile({ ...pc, totalMemGiB: 32, logicalCores: 8 })).toEqual({ profile: 'plus' })
+    expect(suggestBiggestProfile({ ...pc, totalMemGiB: 32, logicalCores: 8 })).toEqual({ profile: 'plus' })
   })
 })

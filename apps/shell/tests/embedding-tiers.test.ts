@@ -7,7 +7,7 @@ import {
   assertEmbeddingManifest,
   embeddingProfile,
   isEmbeddingProfileId,
-  recommendEmbeddingProfile,
+  suggestBiggestProfile,
   type EmbeddingProfile,
 } from '../src/main/document-memory/embedding-profiles'
 import {
@@ -168,9 +168,9 @@ describe('tiered embedding profiles', () => {
   })
 })
 
-describe('recommendEmbeddingProfile (tiers)', () => {
-  const m = (totalMemGiB: number, logicalCores: number, extra: Partial<Parameters<typeof recommendEmbeddingProfile>[0]> = {}) =>
-    recommendEmbeddingProfile({ arch: 'x64', platform: 'linux', totalMemGiB, logicalCores, ortVersion: ORT_OK, ...extra })
+describe('suggestBiggestProfile (tiers)', () => {
+  const m = (totalMemGiB: number, logicalCores: number, extra: Partial<Parameters<typeof suggestBiggestProfile>[0]> = {}) =>
+    suggestBiggestProfile({ arch: 'x64', platform: 'linux', totalMemGiB, logicalCores, ortVersion: ORT_OK, ...extra })
 
   it('maps RAM and cores to base / balanced / mid / plus', () => {
     expect(m(4, 2).profile).toBe('base')
@@ -231,7 +231,7 @@ describe('chooseInitialEmbeddingProfile', () => {
   })
 
   it('recommends a tier on a fresh install (and ignores an unreadable saved value)', () => {
-    expect(chooseInitialEmbeddingProfile({ saved: undefined, hasExistingIndex: false, spec })).toEqual({ profile: 'plus', source: 'recommended' })
+    expect(chooseInitialEmbeddingProfile({ saved: undefined, hasExistingIndex: false, spec })).toEqual({ profile: 'base', source: 'recommended' })
     expect(chooseInitialEmbeddingProfile({ saved: 'garbage', hasExistingIndex: false, spec: { ...spec, totalMemGiB: 4 } }).profile).toBe('base')
   })
 })
@@ -261,12 +261,12 @@ describe('resolveStartupEmbeddingProfile (real files)', () => {
   it('persists the recommendation once for a fresh install, then leaves later choices alone', () =>
     withDir((dir) => {
       const dbPath = join(dir, 'document-memory.db')
-      expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath, spec })).toEqual({ profile: 'mid', source: 'recommended' })
-      expect(readEmbeddingProfileId(dir)).toBe('mid')
+      expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath, spec })).toEqual({ profile: 'base', source: 'recommended' })
+      expect(readEmbeddingProfileId(dir)).toBe('base')
       // the user picks something else; a bigger machine later must not change it
-      writeActiveEmbeddingConfig(dir, 'base')
+      writeActiveEmbeddingConfig(dir, 'mid')
       expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath, spec: { ...spec, totalMemGiB: 64 } })).toEqual({
-        profile: 'base',
+        profile: 'mid',
         source: 'saved',
       })
     }))

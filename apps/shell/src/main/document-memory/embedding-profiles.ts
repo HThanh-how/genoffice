@@ -427,12 +427,13 @@ export const BALANCED_PROFILE_MAX_MEM_GIB = 12
 export const MID_PROFILE_MAX_MEM_GIB = 24
 
 /**
- * Maps a machine to a tier: <= 6 GB or <= 2 cores -> base, <= 12 GB -> balanced,
- * <= 24 GB -> mid, otherwise plus. A tier whose minFreeMemoryMB does not fit in the memory
+ * The largest tier this machine could comfortably run: <= 6 GB or <= 2 cores -> base,
+ * <= 12 GB -> balanced, <= 24 GB -> mid, otherwise plus. This is only a hint for the settings
+ * UI ("your machine can run a better model"); it is NOT the default, see recommendEmbeddingProfile. A tier whose minFreeMemoryMB does not fit in the memory
  * that is available is skipped (the next smaller one is used). Only fresh installs call this;
  * a saved choice is never replaced (see embedding/initial-profile.ts).
  */
-export function recommendEmbeddingProfile(spec: MachineSpec): EmbeddingRecommendation {
+export function suggestBiggestProfile(spec: MachineSpec): EmbeddingRecommendation {
   const cpuBound = spec.logicalCores <= BASE_PROFILE_MAX_CORES
   let index: number
   if (spec.totalMemGiB <= BASE_PROFILE_MAX_MEM_GIB || cpuBound) index = 0
@@ -458,4 +459,16 @@ export function recommendEmbeddingProfile(spec: MachineSpec): EmbeddingRecommend
   if (index === TIERED_PROFILE_IDS.length - 1) return { profile }
   const memoryAllowsMore = spec.totalMemGiB > BASE_PROFILE_MAX_MEM_GIB
   return { profile, limit: memoryDowngrade || !(cpuBound && memoryAllowsMore) ? 'memory' : 'cpu' }
+}
+
+/**
+ * Default tier for a fresh install: the fastest one (Bekko a8m) on every machine, so the first
+ * index finishes quickly everywhere (it is ~3x faster than balanced and ~10x faster than mid for
+ * ~0.01 nDCG less in the hybrid search, see the embedding benchmark). Bigger tiers are an explicit
+ * user choice; suggestBiggestProfile tells the UI what the machine could run. Only fresh installs
+ * call this; a saved choice is never replaced (see embedding/initial-profile.ts).
+ */
+export function recommendEmbeddingProfile(spec: MachineSpec): EmbeddingRecommendation {
+  void spec // every machine gets the fastest tier; the spec only matters to suggestBiggestProfile
+  return { profile: 'base' }
 }

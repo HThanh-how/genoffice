@@ -61,25 +61,25 @@ describe('startup embedding profile (fresh install vs existing index)', () => {
     return m
   }
 
-  it('a fresh install starts on the tier that fits the machine and remembers it', () => {
+  it('a fresh install starts on the fastest tier (base) even on a big machine and remembers it', () => {
     const m = createManager(machine(32, 10))
-    expect(m.embeddingSettings().profile).toBe('plus')
-    expect(readEmbeddingProfileId(dir)).toBe('plus')
+    expect(m.embeddingSettings().profile).toBe('base')
+    expect(readEmbeddingProfileId(dir)).toBe('base')
     expect(existsSync(join(dir, EMBEDDING_SETTINGS_FILENAME))).toBe(true)
   })
 
   it.each([
     [4, 8, 'base'],
-    [8, 8, 'balanced'],
-    [16, 8, 'mid'],
+    [8, 8, 'base'],
+    [16, 8, 'base'],
     [32, 2, 'base'],
   ] as const)('%i GB / %i cores -> %s', (gib, cores, expected) => {
     expect(createManager(machine(gib, cores)).embeddingSettings().profile).toBe(expected)
   })
 
-  it('a bundled runtime that cannot load the mid model caps the recommendation at balanced', () => {
+  it('the default does not depend on whether the bundled runtime can load the bigger models', () => {
     overrideInstalledOrtVersion('1.21.0')
-    expect(createManager(machine(32, 10)).embeddingSettings().profile).toBe('balanced')
+    expect(createManager(machine(32, 10)).embeddingSettings().profile).toBe('base')
   })
 
   it('the indexing worker is started with the recommended profile', async () => {
@@ -89,7 +89,7 @@ describe('startup embedding profile (fresh install vs existing index)', () => {
     m.remember(file)
     const started = Date.now()
     while (!workerEnv.length && Date.now() - started < 3000) await new Promise((r) => setTimeout(r, 10))
-    expect(workerEnv[0]?.embeddingProfile).toBe('plus')
+    expect(workerEnv[0]?.embeddingProfile).toBe('base')
   })
 
   it('the recommendation is made once: a restart on another machine keeps the first answer', () => {

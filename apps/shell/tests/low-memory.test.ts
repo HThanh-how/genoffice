@@ -4,7 +4,7 @@ import {
   getMemoryLimits,
 } from '../src/main/document-memory/memory-tier'
 import {
-  recommendEmbeddingProfile,
+  suggestBiggestProfile,
   type MachineSpec,
 } from '../src/main/document-memory/embedding-profiles'
 import { canRunHeavyEmbedding } from '../src/main/document-memory/cpu-budget'
@@ -50,7 +50,7 @@ describe('Low Memory Tier & 4GB / 8GB Machine Profiles', () => {
         platform: 'win32',
         arch: 'x64',
       }
-      const rec = recommendEmbeddingProfile(spec4GB)
+      const rec = suggestBiggestProfile(spec4GB)
       expect(rec.profile).toBe('base')
       expect(rec.limit).toBe('memory')
     })
@@ -62,7 +62,7 @@ describe('Low Memory Tier & 4GB / 8GB Machine Profiles', () => {
         platform: 'win32',
         arch: 'x64',
       }
-      const rec = recommendEmbeddingProfile(spec8GB)
+      const rec = suggestBiggestProfile(spec8GB)
       // Even with 8 cores, 8 GB machines stay on the 384d Bekko a25m: it fits well inside 20% of RAM
       expect(rec.profile).toBe('balanced')
     })
@@ -75,9 +75,9 @@ describe('Low Memory Tier & 4GB / 8GB Machine Profiles', () => {
         arch: 'x64',
         ortVersion: '1.23.2',
       }
-      expect(recommendEmbeddingProfile(spec16GB).profile).toBe('mid')
+      expect(suggestBiggestProfile(spec16GB).profile).toBe('mid')
       // an older bundled onnxruntime-node cannot load the Gemma export: stay on the Bekko tier
-      expect(recommendEmbeddingProfile({ ...spec16GB, ortVersion: '1.21.0' }).profile).toBe('balanced')
+      expect(suggestBiggestProfile({ ...spec16GB, ortVersion: '1.21.0' }).profile).toBe('balanced')
     })
   })
 
