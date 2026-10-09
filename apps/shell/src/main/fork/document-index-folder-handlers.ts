@@ -60,7 +60,7 @@ export function registerFolderAndModelHandlers(
     const memory = getDocumentMemory()
     if (!scan) return []
     return scan.folders().map((folder) => {
-      const counts = memory?.getFolderIndexCounts(folder.root)
+      const counts = memory?.aggregates ? memory.aggregates.folder(folder.root) : memory?.getFolderIndexCounts(folder.root)
       return {
         ...folder,
         unavailable: false,

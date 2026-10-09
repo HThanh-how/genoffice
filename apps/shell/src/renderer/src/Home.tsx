@@ -1514,11 +1514,14 @@ export function Home() {
       }
       const seq = ++searchSeq.current
       const ext = filter === 'all' ? undefined : filter
+      const startedAt = performance.now()
       void window.aiOffice.searchFiles({ q, ext, limit: 100 }).then((page) => {
         if (seq !== searchSeq.current) return
         setSearchPage(page)
-        // results grow while the background index catches up
-        if (page.index.pending > 0 || page.index.scanning) timer = window.setTimeout(run, 1500)
+        // results grow while the background index catches up; a slow query is asked again less often, so
+        // the poll never keeps the search thread busy back to back
+        if (page.index.pending > 0 || page.index.scanning)
+          timer = window.setTimeout(run, Math.max(1500, 4 * (performance.now() - startedAt)))
       })
     }
     timer = window.setTimeout(run, 150)

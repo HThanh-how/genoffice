@@ -144,7 +144,10 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
   const now = Date.now()
   const documentMemory = ctx.getDocumentMemory()
   const folder = ctx.getFolderScan()?.status() ?? null
-  const memoryStatus: DocumentMemoryStatus = typeof documentMemory?.status === 'function' ? documentMemory.status() : {
+  // The aggregates are full passes over the documents table: they come from the reader thread, never from this one.
+  const aggregates = documentMemory?.aggregates
+  const stats = aggregates?.stats()
+  const memoryStatus: DocumentMemoryStatus = typeof documentMemory?.status === 'function' ? documentMemory.status(undefined, stats) : {
     enabled: false,
     modelState: 'not-loaded',
     documents: 0,
@@ -155,13 +158,15 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
     dbPath: ctx.dbPath(),
     files: [],
   }
-  const actMem = documentMemory?.indexingActivityStatus?.()
+  const actMem = documentMemory?.indexingActivityStatus?.(undefined, stats)
   const extractingPath = actMem?.activity?.extracting?.[0]?.path
   const modelError =
     extractingPath && documentMemory?.lastIndexError ? shortCause(documentMemory.lastIndexError) : ''
-  const counts = documentMemory && typeof documentMemory.getLibraryIndexCounts === 'function'
-    ? ctx.getFolderCounts().get(ALL_FOLDERS, () => documentMemory.getLibraryIndexCounts())
-    : null
+  const counts = aggregates
+    ? aggregates.folder()
+    : documentMemory && typeof documentMemory.getLibraryIndexCounts === 'function'
+      ? ctx.getFolderCounts().get(ALL_FOLDERS, () => documentMemory.getLibraryIndexCounts())
+      : null
   const policy = currentIndexingPolicy()
   const cpuMode: 'gentle' | undefined =
     !policy || (!policy.paused && policy.cpuShare < 1) ? 'gentle' : undefined
@@ -184,7 +189,7 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
 
   let issues: IndexIssueSummary = { total: 0, groups: [] }
   try {
-    issues = ctx.getIssueReader().summary('*')
+    issues = aggregates ? aggregates.issues('*') : ctx.getIssueReader().summary('*')
   } catch {
     // ignore
   }

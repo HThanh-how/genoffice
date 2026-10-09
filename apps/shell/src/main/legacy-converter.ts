@@ -15,7 +15,7 @@ const EXTENSIONS: Record<Exclude<LegacyConvertMode, 'off'>, readonly string[]> =
 interface Deps {
   mode(): LegacyConvertMode
   /** indexed files with these extensions that are still in the old format */
-  list(extensions: readonly string[], limit: number): string[]
+  list(extensions: readonly string[], limit: number): string[] | Promise<string[]>
   convert(path: string): Promise<LegacyConvertOutcome>
   /** battery, sleep or a locked screen: wait without converting */
   paused(): boolean
@@ -93,6 +93,19 @@ export class LegacyConverter {
     )
   }
 
+  private refill: Promise<void> | null = null
+
+  private async fillQueue(): Promise<void> {
+    // The index keeps listing a file for a while after it was converted and moved, so the
+    // newest rows can all be files already done: ask for enough rows to get past them.
+    const limit =
+      BATCH + this.handled.size + this.failed.size + this.skipped.size + this.inFlight.size
+    const todo = (await this.deps.list(EXTENSIONS.all, limit)).filter((path) => !this.isDone(path))
+    this.pending = todo.length + this.inFlight.size
+    this.publish()
+    if (todo.length > 0) this.queue = todo
+  }
+
   /** The next file for a worker, or null when there is nothing left to do. */
   private async next(): Promise<string | null> {
     for (;;) {
@@ -103,16 +116,13 @@ export class LegacyConverter {
         continue
       }
       if (this.queue.length === 0) {
-        // no await between looking at the queue and filling it, so two workers never both refill
-        // The index keeps listing a file for a while after it was converted and moved, so the
-        // newest rows can all be files already done: ask for enough rows to get past them.
-        const limit =
-          BATCH + this.handled.size + this.failed.size + this.skipped.size + this.inFlight.size
-        const todo = this.deps.list(EXTENSIONS[mode], limit).filter((path) => !this.isDone(path))
-        this.pending = todo.length + this.inFlight.size
-        this.publish()
-        if (todo.length === 0) return null
-        this.queue = todo
+        // single flight: the workers that find the queue empty while one refill is running wait for that same refill
+        this.refill ??= this.fillQueue().finally(() => {
+          this.refill = null
+        })
+        await this.refill
+        if (this.queue.length === 0) return null
+        continue
       }
       if (this.deps.paused()) {
         await this.deps.wait(PAUSE_MS)

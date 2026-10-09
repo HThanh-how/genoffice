@@ -32,6 +32,7 @@ parentPort?.on('message', (req) => {
       }
     }
     walk(req.root)
+    if (req.root.includes('incomplete')) complete = false // a walk that could not read part of the tree
     parentPort.postMessage({ id: req.id, type: 'scan', files, complete })
     return
   }

@@ -9,6 +9,7 @@ import {
 } from '../fork/indexing-policy-bus'
 import type { Extracted } from './extract'
 import type { WorkerRequest, WorkerResponse } from './extract-worker'
+import type { WriterRequest } from './worker-ops'
 import { isSupportedIndexFile } from './scan'
 import type { ScannedFile } from './scan'
 import type { FileIndexStore } from './store'
@@ -29,6 +30,8 @@ export interface IndexerSources {
 }
 
 const RESCAN_DEBOUNCE_MS = 1500
+/** New names per write request to the worker: ~20 ms of insertion there, no message large enough to stall this thread. */
+const PENDING_BATCH = 500
 /**
  * a worker request left unanswered this long means a wedged parse or a stalled
  * walk: the request fails as an extraction error and the worker is recycled,
@@ -92,6 +95,8 @@ export class FileIndexer {
   private worker: Worker | null = null
   private nextId = 1
   private readonly waiting = new Map<number, (r: WorkerResponse) => void>()
+  /** slices of a scan arrive before its final answer (see `scan-part`) */
+  private readonly partSinks = new Map<number, (files: ScannedFile[]) => void>()
   private readonly queue: ScannedFile[] = []
   private readonly queued = new Set<string>()
   private readonly preserveCachedBody = new Set<string>()
@@ -109,6 +114,12 @@ export class FileIndexer {
     private readonly sources: IndexerSources,
     private readonly requestTimeoutMs = WORKER_REQUEST_TIMEOUT_MS,
     private readonly workerHeapLimitMb = WORKER_HEAP_LIMIT_MB,
+    /**
+     * The database file the worker thread writes to. When set, every index write (names of new files, parsed text,
+     * removals) happens in the worker and the main thread only reads; when unset the writes stay in-process
+     * (tests, and callers whose worker cannot reach the database).
+     */
+    private readonly workerWritesDb?: string,
   ) {
     this.stopPolicyWatch = subscribeIndexingPolicy((policy) => {
       if (!policy.paused) void this.drain()
@@ -118,7 +129,11 @@ export class FileIndexer {
   }
 
   progress(): IndexProgress {
-    return { indexed: this.store.count(), pending: this.queue.length, scanning: this.scanning }
+    return {
+      indexed: this.store.countCached(),
+      pending: this.queue.length,
+      scanning: this.scanning,
+    }
   }
 
   /** schedule a scan soon; repeated calls within the debounce window fold into one */
@@ -148,7 +163,9 @@ export class FileIndexer {
       const roots = [...this.sources.roots()]
       const completeRoots: string[] = []
       for (const root of roots) {
-        const res = await this.ask({ id: 0, type: 'scan', root })
+        const res = await this.ask({ id: 0, type: 'scan', root }, (files) => {
+          for (const f of files) seen.set(f.path, f)
+        })
         // a crashed worker answers with an extract error; dropping the index on that would empty search
         if (res.type === 'scan') {
           for (const f of res.files) seen.set(f.path, f)
@@ -181,10 +198,12 @@ export class FileIndexer {
       const st = await asyncFileStat(p)
       if (st.kind === 'file') seen.set(p, st.file)
     }
-    const known = this.store.listAll()
+    const known = await this.store.listAllSliced(yieldIfNeeded)
     const gone: string[] = []
     const reachableRoots = new Map<string, boolean>()
     for (const path of known.keys()) {
+      // every iteration may yield (an unchanged path is a `continue`, and a million of those are one long task otherwise)
+      await yieldIfNeeded()
       if (seen.has(path)) continue
       // An offline root or a partial walk says nothing about the files omitted from it.
       const configuredRoot = roots
@@ -207,16 +226,24 @@ export class FileIndexer {
         }
         if (reachableRoots.get(root)) gone.push(path)
       }
-      await yieldIfNeeded()
     }
     for (let offset = 0; offset < gone.length; offset += 100) {
       if (this.stopped) return
-      this.store.remove(gone.slice(offset, offset + 100))
-      for (const path of gone.slice(offset, offset + 100)) this.preserveCachedBody.delete(path)
+      const batch = gone.slice(offset, offset + 100)
+      await this.removeRows(batch)
+      for (const path of batch) this.preserveCachedBody.delete(path)
       await yieldIfNeeded()
+    }
+    const fresh: ScannedFile[] = []
+    const flushFresh = async (): Promise<void> => {
+      if (fresh.length === 0) return
+      const batch = fresh.splice(0, fresh.length)
+      await this.writePending(batch)
+      for (const f of batch) this.enqueue(f)
     }
     for (const f of seen.values()) {
       if (this.stopped) return
+      await yieldIfNeeded()
       const k = known.get(f.path)
       // An unchanged file that already failed is not retried: a parse that kills the
       // worker would otherwise be re-run on every scan. Pending rows always resume.
@@ -227,12 +254,30 @@ export class FileIndexer {
       // persisted so an interrupted first pass resumes its content work on the next scan.
       // A refresh must not erase the last searchable body before parsing succeeds. Keeping
       // the old metadata also ensures an interrupted refresh is retried after reconnecting.
-      if (!k) this.store.upsert(f, null, 'pending')
       if (k?.status === 'ok') this.preserveCachedBody.add(f.path)
-      this.enqueue(f)
-      await yieldIfNeeded()
+      if (this.workerWritesDb) {
+        // new names are written in batches by the worker; files already in the index are queued as they are
+        if (!k) {
+          fresh.push(f)
+          if (fresh.length >= PENDING_BATCH) await flushFresh()
+        } else this.enqueue(f)
+      } else {
+        if (!k) this.store.upsert(f, null, 'pending')
+        this.enqueue(f)
+      }
     }
+    await flushFresh()
     this.lastScanAt = Date.now()
+  }
+
+  private async removeRows(paths: string[]): Promise<void> {
+    if (this.workerWritesDb) await this.ask({ id: 0, type: 'remove', paths })
+    else this.store.remove(paths)
+  }
+
+  private async writePending(files: ScannedFile[]): Promise<void> {
+    if (this.workerWritesDb) await this.ask({ id: 0, type: 'pending', files })
+    else for (const f of files) this.store.upsert(f, null, 'pending')
   }
 
   private enqueue(f: ScannedFile): void {
@@ -259,6 +304,10 @@ export class FileIndexer {
           continue
         }
         const st = state.file
+        if (this.workerWritesDb) {
+          await this.indexInWorker(st)
+          continue
+        }
         const res = await this.ask({ id: 0, type: 'extract', path: st.path })
         if (res.type !== 'extract') continue
         this.apply(st, res.result)
@@ -266,6 +315,21 @@ export class FileIndexer {
     } finally {
       this.draining = false
     }
+  }
+
+  /** Parse and write in the worker; the main thread hears only the outcome. A timeout or crash is recorded like any failed parse. */
+  private async indexInWorker(f: ScannedFile): Promise<void> {
+    const preserve = this.preserveCachedBody.has(f.path)
+    const res = await this.ask({ id: 0, type: 'index', file: f, preserve })
+    if (res.type === 'written' && res.status !== undefined) {
+      if (res.status !== 'error') this.preserveCachedBody.delete(f.path)
+      return
+    }
+    const error =
+      res.type === 'extract' && res.result.kind === 'error'
+        ? res.result.error
+        : 'index write failed'
+    await this.ask({ id: 0, type: 'index-error', file: f, preserve, error })
   }
 
   private apply(f: ScannedFile, r: Extracted): void {
@@ -282,14 +346,19 @@ export class FileIndexer {
     }
   }
 
-  private ask(req: WorkerRequest): Promise<WorkerResponse> {
+  private ask(
+    req: WorkerRequest | WriterRequest,
+    onPart?: (files: ScannedFile[]) => void,
+  ): Promise<WorkerResponse> {
     const id = this.nextId++
+    if (onPart) this.partSinks.set(id, onPart)
     return new Promise((resolve) => {
       const timer = setTimeout(() => {
         // a wedged worker never answers: fail this request the way a crashed
         // worker's requests fail, and retire the worker so later requests get a
         // fresh one instead of hanging too
         this.waiting.delete(id)
+        this.partSinks.delete(id)
         this.recycleWorker()
         resolve({
           id,
@@ -299,6 +368,7 @@ export class FileIndexer {
       }, this.requestTimeoutMs)
       this.waiting.set(id, (r: WorkerResponse) => {
         clearTimeout(timer)
+        this.partSinks.delete(id)
         resolve(r)
       })
       try {
@@ -308,6 +378,7 @@ export class FileIndexer {
         // extraction error, exactly like the drop handler does for a crash
         clearTimeout(timer)
         this.waiting.delete(id)
+        this.partSinks.delete(id)
         resolve({
           id,
           type: 'extract',
@@ -329,6 +400,7 @@ export class FileIndexer {
   private failPending(error: string): void {
     const waiting = [...this.waiting]
     this.waiting.clear()
+    this.partSinks.clear()
     for (const [id, callback] of waiting)
       callback({ id, type: 'extract', result: { kind: 'error', error } })
   }
@@ -337,9 +409,14 @@ export class FileIndexer {
     if (this.worker) return this.worker
     const w = new Worker(this.workerPath, {
       resourceLimits: { maxOldGenerationSizeMb: this.workerHeapLimitMb },
+      ...(this.workerWritesDb ? { workerData: { dbPath: this.workerWritesDb } } : {}),
     })
     w.on('message', (msg: WorkerResponse) => {
       if (this.worker !== w) return
+      if (msg.type === 'scan-part') {
+        this.partSinks.get(msg.id)?.(msg.files)
+        return
+      }
       const cb = this.waiting.get(msg.id)
       if (!cb) return
       this.waiting.delete(msg.id)

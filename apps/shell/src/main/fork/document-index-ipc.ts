@@ -104,7 +104,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     if (typeof query !== 'string' || query.length > 200) return []
     const memory = getDocumentMemory()
     if (!memory) return []
-    const indexed = reader().search(query)
+    const indexed = memory.aggregates ? await memory.aggregates.searchIndexed(query) : reader().search(query)
     const known = new Set(indexed.map((hit) => samePath(hit.path)))
     const elsewhere = (await memory.searchExternal(query, 8))
       .filter((file) => !known.has(samePath(file.path)))
@@ -123,7 +123,9 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexIssueSummary, (_event, root: unknown) => {
     if (!getDocumentMemory()) return { total: 0, groups: [] }
-    return reader().summary(activeRoot(root))
+    const scope = activeRoot(root)
+    const memory = getDocumentMemory()
+    return memory?.aggregates ? memory.aggregates.issues(scope) : reader().summary(scope)
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, (_event, root: unknown, reason?: unknown) => {
@@ -132,7 +134,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     const memory = getDocumentMemory()
     if (!memory) return { ok: false, retried: 0, error: 'unavailable' }
     if (only === 'model') {
-      const isEnabled = memory.indexingActivityStatus ? memory.indexingActivityStatus().enabled : memory.isEnabled?.()
+      const isEnabled = memory.isEnabled?.() ?? memory.indexingActivityStatus?.().enabled
       if (isEnabled === false) return { ok: false, retried: 0, error: 'paused' }
       if (typeof memory.recycleEmbeddingWorker === 'function') {
         memory.recycleEmbeddingWorker('Model retry requested from diagnostics')

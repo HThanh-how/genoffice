@@ -57,6 +57,7 @@ let workerConfigVersion: number | null =
 
 export const MAX_INDEX_TEXT_CHARS = DEFAULT_STORAGE_BUDGET.maxExtractedCharactersPerFile
 import { DocumentMemoryStore } from './store'
+import { runJunkPurgeStep } from './runtime/junk-purge'
 import { embedTexts } from './embeddings'
 import { renderPdfPagesForOcr, type OcrRenderRequest } from './agy-ocr-render'
 import { ocrChunksFromPages, ocrDocumentHash, type OcrLookup } from './ocr-sidecar'
@@ -417,6 +418,8 @@ onIndexRequest(
             getWorkerStore().runIncrementalVacuum({ maxPages: 256, batchPages: 256 }),
           )
           result = { vacuumResult, durationMs: Date.now() - started }
+        } else if (request.type === 'junk-purge-step') {
+          result = await withBackgroundBudget(async () => runJunkPurgeStep(getWorkerStore()))
         } else if (request.type === 'set-storage-budget') {
           const targetBudget = request.budget
           const targetVersion = request.configVersion

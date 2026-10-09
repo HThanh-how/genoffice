@@ -206,3 +206,37 @@ describe('converting several files at the same time', () => {
     expect(converter.state()).toMatchObject({ converted: 700, failed: 0, running: false })
   })
 })
+
+describe('an asynchronous index listing (a reader thread, not the main thread)', () => {
+  it('converts every file once with several workers sharing one listing request at a time', async () => {
+    const files = ['/a/1.xls', '/a/2.doc', '/a/3.ppt', '/a/4.xls', '/a/5.doc']
+    let inFlight = 0
+    let peakListing = 0
+    let listings = 0
+    const converted: string[] = []
+    const converter = new LegacyConverter({
+      mode: () => 'all',
+      concurrency: 4,
+      list: async (extensions, limit) => {
+        listings++
+        inFlight++
+        peakListing = Math.max(peakListing, inFlight)
+        await new Promise((resolve) => setTimeout(resolve, 5))
+        inFlight--
+        return files.filter((p) => extensions.some((e) => p.endsWith(e))).slice(0, limit)
+      },
+      convert: async (path) => {
+        converted.push(path)
+        return 'converted'
+      },
+      paused: () => false,
+      wait: async () => undefined,
+    })
+    converter.kick()
+    await settle(converter)
+    expect(converted.sort()).toEqual([...files].sort())
+    // four workers found the queue empty together: one of them asked, the others waited for that answer
+    expect(peakListing).toBe(1)
+    expect(listings).toBeLessThan(6)
+  })
+})

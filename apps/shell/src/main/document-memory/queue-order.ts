@@ -23,12 +23,18 @@ export interface QueueInfo {
 }
 
 /** Where a file stands: 0 asked for now, 0.5 recent near the quota, 1-3 by weight, 4 pushed back. */
-export function rankOf(path: string, info: QueueInfo): number {
+export function rankOf(path: string, info: QueueInfo, askPrioritize = true): number {
   if (info.urgent.has(path)) return 0
   if (info.deferred.has(path)) return 4
-  if (info.prioritize?.(path)) return 0.5
+  if (askPrioritize && info.prioritize?.(path)) return 0.5
   return weightOf(info.bytes.get(path) ?? 0)
 }
+
+/**
+ * `prioritize` is a database lookup per path, so it is only asked for the front of the line: the line is ordered
+ * newest-opened first, and an order over 100k waiting files used to cost 100k queries on every pick and every status poll.
+ */
+export const PRIORITIZE_LOOKAHEAD = 256
 
 /**
  * The reading order of the waiting line: what was asked for now, then light files, then medium,
@@ -36,8 +42,28 @@ export function rankOf(path: string, info: QueueInfo): number {
  * first) is kept. A single very large file therefore never holds up the many small ones.
  */
 export function orderQueue(queue: readonly string[], info: QueueInfo): string[] {
-  return queue
-    .map((path, index) => ({ path, index, rank: rankOf(path, info) }))
-    .sort((a, b) => a.rank - b.rank || a.index - b.index)
-    .map((entry) => entry.path)
+  // ranks take a handful of values: one pass into buckets keeps the line's own order inside each, without an O(n log n) sort
+  const buckets = new Map<number, string[]>()
+  for (let index = 0; index < queue.length; index++) {
+    const rank = rankOf(queue[index]!, info, index < PRIORITIZE_LOOKAHEAD)
+    const bucket = buckets.get(rank)
+    if (bucket) bucket.push(queue[index]!)
+    else buckets.set(rank, [queue[index]!])
+  }
+  return [...buckets.keys()].sort((a, b) => a - b).flatMap((rank) => buckets.get(rank)!)
+}
+
+/** The head of `orderQueue(queue, info)` without sorting or copying the line: one pass, the earliest of the best rank. */
+export function nextInOrder(queue: readonly string[], info: QueueInfo): string | undefined {
+  let best: string | undefined
+  let bestRank = Infinity
+  for (let index = 0; index < queue.length; index++) {
+    const rank = rankOf(queue[index]!, info, index < PRIORITIZE_LOOKAHEAD)
+    if (rank < bestRank) {
+      best = queue[index]
+      bestRank = rank
+      if (rank === 0) break
+    }
+  }
+  return best
 }
