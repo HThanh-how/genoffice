@@ -2,6 +2,7 @@ import { readdir, readFile, realpath, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join, posix, win32 } from 'node:path'
 import { AGY_DEFAULT_MODEL, runAgy } from './agy-cli'
+import { agyTruncatedError } from './agy-errors'
 import type { AgyRunOptions, AgyRunResult, AgyStagedFile } from './agy-cli'
 import type { GenerateImageInput, MediaBlob } from './media-protocols'
 import type { AiMediaProviderConfig } from './types'
@@ -328,9 +329,17 @@ export async function generateImageWithAgy(
     files,
     signal,
     timeoutMs: AGY_IMAGE_TIMEOUT_MS,
+    task: 'image',
+    // A run cut off by --print-timeout may still have saved the picture: look for it, and only
+    // report the time-out when nothing usable is there (the file itself is validated below).
+    allowPartial: true,
   })
   const conversationId = result.conversationId
-  if (!isAgyConversationId(conversationId)) throw new Error(agyImageFailureMessage(result))
+  if (!isAgyConversationId(conversationId)) {
+    throw result.truncated
+      ? agyTruncatedError(result.text)
+      : new Error(agyImageFailureMessage(result))
+  }
   const path = flavor(location.platform)
   const conversationDir = path.join(agyBrainRoot(location.home, location.platform), conversationId)
 
@@ -373,5 +382,7 @@ export async function generateImageWithAgy(
       /* try the next newest */
     }
   }
-  throw new Error(agyImageFailureMessage(result))
+  throw result.truncated
+    ? agyTruncatedError(result.text)
+    : new Error(agyImageFailureMessage(result))
 }

@@ -83,9 +83,7 @@ import { parseFileToText } from '@genoffice/file-parse'
 import { convertHtmlToDocx } from '../../../../packages/html2docx/src'
 import { ElectronBrowserDriver } from '../../../../packages/html2docx/src/drivers/electron'
 import {
-  AiCreditsError,
-  AiTimeoutError,
-  isAiNetworkError,
+  classifyAiStreamError,
   isAiOverloadedError,
   listGeminiModels,
   chatForProvider,
@@ -126,6 +124,7 @@ import {
   testSearchProvider,
   gskLoginInfo,
   hasGskAuth,
+  createSearchAbortRegistry,
   webSearchTool,
   imageSearchTool,
   analyzeMediaTool,
@@ -3780,6 +3779,8 @@ function broadcastAiSettingsChanged(): void {
  * register them exactly once for all window types (docs, sheets, home) —
  * sheets' standalone AI handlers use the same channel names.
  */
+const webSearchAborts = createSearchAbortRegistry()
+
 export function registerAiIpc(): void {
   app.once('before-quit', shutdownCodexAppServers)
   // Which defaults apply (agy or the old ones) depends on whether Antigravity is usable: find out
@@ -3925,15 +3926,7 @@ export function registerAiIpc(): void {
           requestId,
           type: 'error',
           error: err instanceof Error ? err.message : String(err),
-          ...(err instanceof AiTimeoutError
-            ? { errorCode: 'timeout' as const }
-            : err instanceof AiCreditsError
-              ? { errorCode: 'credits' as const }
-              : isAiNetworkError(err)
-                ? { errorCode: 'network' as const }
-                : isAiOverloadedError(err)
-                  ? { errorCode: 'overloaded' as const }
-                  : {}),
+          ...classifyAiStreamError(err),
         })
       }
     } finally {
@@ -3942,20 +3935,26 @@ export function registerAiIpc(): void {
     }
   })
 
-  ipcMain.handle('ai:stream-cancel', (_event, requestId: string) => {
+  ipcMain.handle('ai:stream-cancel', (event, requestId: string) => {
     activeAiStreams.get(requestId)?.abort()
+    // Stop also ends an Antigravity web search that is still running for this window
+    webSearchAborts.cancel(event.sender.id)
   })
 
   // shared search tools (content + images): Serper with DuckDuckGo fallback (same source as slides/sheets)
-  ipcMain.handle('ai:web-search', async (_event, query: string, maxResults?: number) => {
+  ipcMain.handle('ai:web-search', async (event, query: string, maxResults?: number) => {
+    const search = webSearchAborts.begin(event.sender.id)
     try {
       return await webSearchTool(
         SETTINGS_PATH(),
         String(query),
         typeof maxResults === 'number' ? maxResults : 6,
+        search.signal,
       )
     } catch (err) {
       return { results: [], method: 'error', error: String(err) }
+    } finally {
+      search.end()
     }
   })
   ipcMain.handle('ai:image-search', async (_event, query: string, maxResults?: number) => {

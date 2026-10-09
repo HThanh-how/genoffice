@@ -18,6 +18,10 @@ import type { StreamCallbacks } from './protocols/shared'
 import type { AiChatResponse, AiProviderConfig, AiTokenUsage, CodexModelCatalog } from './types'
 import { AiTimeoutError } from './watchdog'
 import { publishAgyActivity, type AgyActivity } from './agy-activity'
+import { agyTruncatedError, classifyAgyFailure, hasAgyPrintTimeoutWarning } from './agy-errors'
+import { resolveAgyEffort, type AgyEffort, type AgyTask } from './agy-effort'
+import { readAgyCapabilities, type AgyCapabilities } from './agy-capabilities'
+import { agyMachineSemaphore, type AgyMachineSemaphore } from './agy-lock'
 
 /**
  * "Antigravity CLI" provider (`agy`). Unlike the HTTP providers this drives the
@@ -302,6 +306,10 @@ export interface AgyArgsInput {
   model: string
   stagingDir: string
   timeoutMs: number
+  /** `--effort`: only ever set after the installed agy was found to support it */
+  effort?: AgyEffort | undefined
+  /** `--json-schema <file>`: absolute path of a schema file whose root is an object */
+  jsonSchemaPath?: string | undefined
 }
 
 /**
@@ -326,6 +334,8 @@ export function buildAgyArgs(input: AgyArgsInput): string[] {
     '--disable-slash-commands',
     '--print-timeout',
     `${printTimeoutS}s`,
+    ...(input.effort ? ['--effort', input.effort] : []),
+    ...(input.jsonSchemaPath ? ['--json-schema', input.jsonSchemaPath] : []),
     '--add-dir',
     input.stagingDir,
   ]
@@ -389,6 +399,8 @@ export type AgyEvent =
       usage?: AgyUsage
       conversationId?: string
       deniedActions?: AgyDeniedAction[]
+      /** `result.structured_output`: the validated object when `--json-schema` was given */
+      structured?: unknown
     }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -478,6 +490,9 @@ export function parseAgyStreamLine(line: string): AgyEvent | null {
         : {}),
       ...(parseDeniedActions(result.denied_actions)
         ? { deniedActions: parseDeniedActions(result.denied_actions)! }
+        : {}),
+      ...(result.structured_output !== undefined && result.structured_output !== null
+        ? { structured: result.structured_output }
         : {}),
     }
   }
@@ -690,6 +705,13 @@ export interface AgyRunDeps extends AgyFsDeps {
   makeStagingDir(): Promise<string>
   removeDir(dir: string): Promise<void>
   writeFile(path: string, bytes: Uint8Array): Promise<void>
+  /**
+   * Machine-wide concurrency cap shared with every other GenOffice process (see agy-lock.ts).
+   * Absent in tests, which then run without it.
+   */
+  machineSemaphore?: AgyMachineSemaphore
+  /** Optional flags of the installed agy (`agy --help`, read once). Absent: none are assumed. */
+  capabilities?(cliPath: string): Promise<AgyCapabilities>
 }
 
 /** SIGKILL escalation delay after the polite SIGTERM on POSIX */
@@ -759,6 +781,8 @@ const realRunDeps: AgyRunDeps = {
   },
   removeDir: (dir) => rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }),
   writeFile: (path, bytes) => writeFile(path, bytes),
+  machineSemaphore: agyMachineSemaphore,
+  capabilities: (cliPath) => readAgyCapabilities(cliPath),
 }
 
 function abortError(): Error {
@@ -822,6 +846,22 @@ export interface AgyRunOptions {
   /** the first piece of answer text arrived */
   onFirstText?: () => void
   limiter?: Limiter
+  /** what the run is for: picks the default `--effort` (see agy-effort.ts) */
+  task?: AgyTask | undefined
+  /** explicit `--effort` for this run; ignored for models that carry their effort in the id */
+  effort?: AgyEffort | undefined
+  /**
+   * JSON schema (root must be `type: "object"`) the final answer has to satisfy. Passed as
+   * `--json-schema` when the installed agy supports it; the validated object comes back as
+   * `structured`. Without support the schema is dropped and `text` carries the model's own JSON.
+   */
+  jsonSchema?: Record<string, unknown> | undefined
+  /**
+   * `--print-timeout` expiry makes agy return what it has and exit 0. That is a failure by
+   * default (a cut-off answer is never presented as complete); set this to receive the partial
+   * text with `truncated: true` instead.
+   */
+  allowPartial?: boolean | undefined
 }
 
 export interface AgyRunResult {
@@ -831,6 +871,20 @@ export interface AgyRunResult {
   conversationId?: string
   /** sandbox refusals reported with the result, if any */
   deniedActions?: AgyDeniedAction[]
+  /** `result.structured_output` when a schema was enforced */
+  structured?: unknown
+  /** only with `allowPartial`: the run hit its time limit and `text` is incomplete */
+  truncated?: boolean
+}
+
+/** Largest schema passed to `--json-schema`; a schema is a few lines, never a document. */
+const MAX_SCHEMA_CHARS = 32_000
+
+function schemaText(schema: Record<string, unknown>): string {
+  if (schema.type !== 'object') throw new Error('The JSON schema root must be "type": "object"')
+  const text = JSON.stringify(schema)
+  if (text.length > MAX_SCHEMA_CHARS) throw new Error('The JSON schema is too large')
+  return text
 }
 
 /**
@@ -853,19 +907,44 @@ export async function runAgy(
     totalBytes += file.bytes.byteLength
   }
   if (totalBytes > AGY_MAX_TOTAL_BYTES) throw new Error('Attachments are too large')
+  const schema = options.jsonSchema ? schemaText(options.jsonSchema) : undefined
   const cliPath = await resolveAgyCliPath(options.cliPath, deps)
   const limiter = options.limiter ?? requestLimiter
   const release = await limiter.acquire(options.signal)
+  let releaseMachine: (() => Promise<void>) | undefined
   let stagingDir: string | undefined
   try {
     if (options.signal?.aborted) throw abortError()
+    if (deps.machineSemaphore) {
+      releaseMachine = await deps.machineSemaphore.acquire(timeoutMs, options.signal)
+    }
+    if (options.signal?.aborted) throw abortError()
+    const wantsFlags = !!(options.task || options.effort || schema)
+    const capabilities =
+      wantsFlags && deps.capabilities ? await deps.capabilities(cliPath) : undefined
+    const effort = capabilities?.effort
+      ? resolveAgyEffort({
+          task: options.task,
+          effort: options.effort,
+          model: options.model,
+          env: deps.env.GENOFFICE_AGY_EFFORT,
+        })
+      : undefined
     stagingDir = await deps.makeStagingDir()
-    for (const file of files)
-      await deps.writeFile(
-        (deps.platform === 'win32' ? win32.join : posix.join)(stagingDir, file.name),
-        file.bytes,
-      )
-    const args = buildAgyArgs({ model: options.model, stagingDir, timeoutMs })
+    const pathJoin = deps.platform === 'win32' ? win32.join : posix.join
+    for (const file of files) await deps.writeFile(pathJoin(stagingDir, file.name), file.bytes)
+    let jsonSchemaPath: string | undefined
+    if (schema && capabilities?.jsonSchema) {
+      jsonSchemaPath = pathJoin(stagingDir, 'agy-response-schema.json')
+      await deps.writeFile(jsonSchemaPath, new TextEncoder().encode(schema))
+    }
+    const args = buildAgyArgs({
+      model: options.model,
+      stagingDir,
+      timeoutMs,
+      effort,
+      jsonSchemaPath,
+    })
     return await new Promise<AgyRunResult>((resolve, reject) => {
       const child = deps.spawn(cliPath, args, { cwd: stagingDir!, env: { ...deps.env } })
       let settled = false
@@ -935,9 +1014,9 @@ export async function runAgy(
         if (pending.length > MAX_LINE_CHARS) pending = ''
       }
       child.stdout.on('data', feed)
+      // keep the TAIL: the AGY_ERROR line and the print-timeout warning come last
       child.stderr.on('data', (chunk: Buffer) => {
-        if (stderr.length < MAX_STDERR_CHARS)
-          stderr += chunk.toString('utf8').slice(0, MAX_STDERR_CHARS)
+        stderr = (stderr + chunk.toString('utf8')).slice(-MAX_STDERR_CHARS)
       })
       child.stdin.on('error', () => undefined)
       child.on('error', (error) =>
@@ -947,7 +1026,16 @@ export async function runAgy(
         finish(() => {
           pending += decoder.end()
           if (pending.trim()) handleLine(pending)
-          if (resultSeen?.ok) {
+          const partial = text || resultSeen?.response || ''
+          // --print-timeout expiry: agy returns what it has, reports SUCCESS and exits 0, with
+          // only a stderr warning to tell the two apart
+          const truncated = hasAgyPrintTimeoutWarning(stderr)
+          if (truncated && !options.allowPartial) {
+            reject(agyTruncatedError(partial, code))
+            return
+          }
+          // exit code 3 = the model or agent failed (possibly after streaming part of an answer)
+          if (resultSeen?.ok && code !== 3) {
             // some turns carry the text only in the final result
             const full = text || resultSeen.response
             if (!text && resultSeen.response) options.onText?.(resultSeen.response)
@@ -956,21 +1044,25 @@ export async function runAgy(
               ...(usage ? { usage } : {}),
               ...(conversationId ? { conversationId } : {}),
               ...(resultSeen.deniedActions ? { deniedActions: resultSeen.deniedActions } : {}),
+              ...(resultSeen.structured !== undefined ? { structured: resultSeen.structured } : {}),
+              ...(truncated ? { truncated: true } : {}),
             })
             return
           }
-          const detail = resultSeen?.error ?? stderr.trim().split(/\r?\n/).pop() ?? ''
           reject(
-            new Error(
-              cleanAgyError(detail) ||
-                `Antigravity CLI exited with code ${code ?? 'unknown'} without a result`,
-            ),
+            classifyAgyFailure({
+              resultError: resultSeen?.error,
+              stderr,
+              exitCode: code,
+              partialText: partial,
+            }),
           )
         }),
       )
       child.stdin.end(buildAgyStdin(options.prompt))
     })
   } finally {
+    await releaseMachine?.().catch(() => undefined)
     release()
     if (stagingDir) await deps.removeDir(stagingDir).catch(() => undefined)
   }
@@ -1062,6 +1154,7 @@ async function streamAgyTurn(
         files: prompt.files,
         signal: cb.signal,
         timeoutMs,
+        task: 'chat',
         ...(tools.length ? {} : { onText: cb.onDelta }),
         ...(cb.onUsage ? { onUsage: cb.onUsage } : {}),
         ...(cb.onActivity ? { onActivity: cb.onActivity } : {}),
@@ -1210,6 +1303,7 @@ export async function chatAgy(
         model: config.model?.trim() || AGY_DEFAULT_MODEL,
         prompt: plan.prompt,
         signal,
+        task: 'chat',
       },
       deps,
     )
@@ -1241,6 +1335,7 @@ export async function analyzeImagesWithAgy(
       prompt: plan.prompt,
       files: plan.files,
       signal: input.signal,
+      task: 'media',
     },
     deps,
   )

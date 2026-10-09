@@ -20,7 +20,12 @@ import {
   type AgyOcrSettings,
   type AgyOcrStatus,
 } from '../../shared/fork/agy-ocr'
-import { AgyOcrJob, evaluateOcrGate, type OcrPolicyView, type OcrRecognizeInput } from '../document-memory/agy-ocr-job'
+import {
+  AgyOcrJob,
+  evaluateOcrGate,
+  type OcrPolicyView,
+  type OcrRecognizeInput,
+} from '../document-memory/agy-ocr-job'
 import { OcrStateStore } from '../document-memory/agy-ocr-state'
 import type { DocumentMemoryManager } from '../document-memory/manager'
 import { currentIndexingPolicy } from './indexing-policy-bus'
@@ -54,6 +59,7 @@ async function recognizeWithAgy(input: OcrRecognizeInput) {
     prompt: plan.prompt,
     files: plan.files,
     signal: input.signal,
+    task: 'ocr',
   })
   return {
     text: result.text,

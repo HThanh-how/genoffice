@@ -6,6 +6,7 @@
 
 import {
   activeSearchProvider,
+  testMediaProvider,
   type AiSearchProviderId,
   type AiSettings,
 } from '@genoffice/ai-provider'
@@ -28,15 +29,29 @@ export function searchOptionsFromSettings(settings: AiSettings): SearchOptions {
     : { useGsk: false, serperKey: key, prefer: 'serper' }
 }
 
-export function webSearchTool(settingsPath: string, query: string, maxResults = 6) {
+/**
+ * `signal` stops an Antigravity search in flight (the agy process tree is killed and its
+ * concurrency slot freed). The keyed HTTP providers are quick and ignore it.
+ */
+export function webSearchTool(
+  settingsPath: string,
+  query: string,
+  maxResults = 6,
+  signal?: AbortSignal,
+) {
   const settings = readAiSettingsFile(settingsPath)
   if (activeSearchProvider(settings) === 'agy') {
     const searchConfig = settings.search?.providers.agy
     const chatConfig = settings.providers.agy
-    return agyWebSearch(query, maxResults, {
-      cliPath: searchConfig?.cliPath?.trim() || chatConfig?.cliPath?.trim(),
-      model: searchConfig?.model?.trim() || chatConfig?.model?.trim(),
-    })
+    return agyWebSearch(
+      query,
+      maxResults,
+      {
+        cliPath: searchConfig?.cliPath?.trim() || chatConfig?.cliPath?.trim(),
+        model: searchConfig?.model?.trim() || chatConfig?.model?.trim(),
+      },
+      { signal },
+    )
   }
   return webSearch(query, maxResults, searchOptionsFromSettings(settings))
 }
@@ -53,10 +68,14 @@ export async function testSearchProvider(
 ): Promise<{ ok: boolean; error?: string }> {
   if (provider === 'genspark') return { ok: false, error: 'Genspark search is disabled' }
   if (provider === 'agy') {
-    const r = await agyWebSearch('GenOffice', 1, config)
-    return r.method === 'agy'
-      ? { ok: true }
-      : { ok: false, error: r.error ?? 'Antigravity search failed' }
+    // `agy models` answers only when the CLI is installed and signed in, and costs no model call
+    // (a real search is ~30k tokens of the account's quota).
+    return testMediaProvider('agy', {
+      apiKey: '',
+      imageModel: '',
+      analysisModel: '',
+      ...(config?.cliPath?.trim() ? { cliPath: config.cliPath.trim() } : {}),
+    })
   }
   apiKey = apiKey.trim()
   if (!apiKey && provider !== 'parallel') return { ok: false, error: 'API key is empty' }

@@ -16,10 +16,7 @@ import {
 } from 'node:fs'
 import { join } from 'node:path'
 import {
-  AiCreditsError,
-  AiTimeoutError,
-  isAiNetworkError,
-  isAiOverloadedError,
+  classifyAiStreamError,
   listGeminiModels,
   defaultAiSettings,
   activeProvider,
@@ -47,6 +44,7 @@ import {
   writeJsonAtomic,
 } from '@genoffice/electron-utils'
 import {
+  createSearchAbortRegistry,
   webSearchTool,
   imageSearchTool,
   ensureGenofficeLogin,
@@ -117,6 +115,8 @@ function appendRunFailure(entry: AiRunFailure): void {
     /* Diagnostics must never break a run */
   }
 }
+
+const webSearchAborts = createSearchAbortRegistry()
 
 export function registerAiIpc(): void {
   app.once('before-quit', shutdownCodexAppServers)
@@ -254,15 +254,7 @@ export function registerAiIpc(): void {
           requestId,
           type: 'error',
           error: msg,
-          ...(err instanceof AiTimeoutError
-            ? { errorCode: 'timeout' as const }
-            : err instanceof AiCreditsError
-              ? { errorCode: 'credits' as const }
-              : isAiNetworkError(err)
-                ? { errorCode: 'network' as const }
-                : isAiOverloadedError(err)
-                  ? { errorCode: 'overloaded' as const }
-                  : {}),
+          ...classifyAiStreamError(err),
         })
       }
     } finally {
@@ -271,20 +263,26 @@ export function registerAiIpc(): void {
     }
   })
 
-  ipcMain.handle('ai:stream-cancel', (_event, requestId: string) => {
+  ipcMain.handle('ai:stream-cancel', (event, requestId: string) => {
     activeAiStreams.get(requestId)?.abort()
+    // Stop also ends an Antigravity web search that is still running for this window
+    webSearchAborts.cancel(event.sender.id)
   })
 
   // Search tools (content + images), Serper with DuckDuckGo fallback
-  ipcMain.handle('ai:web-search', async (_event, query: string, maxResults?: number) => {
+  ipcMain.handle('ai:web-search', async (event, query: string, maxResults?: number) => {
+    const search = webSearchAborts.begin(event.sender.id)
     try {
       return await webSearchTool(
         AI_SETTINGS_PATH(),
         String(query),
         typeof maxResults === 'number' ? maxResults : 6,
+        search.signal,
       )
     } catch (err) {
       return { results: [], method: 'error', error: String(err) }
+    } finally {
+      search.end()
     }
   })
 

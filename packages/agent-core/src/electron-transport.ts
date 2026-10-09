@@ -19,8 +19,10 @@ export interface IpcStreamChunk {
   text?: string
   toolCall?: AgentToolCall
   error?: string
-  /** machine-readable error cause; maps to the localized timeout/credits/network/overloaded message */
-  errorCode?: 'timeout' | 'credits' | 'network' | 'overloaded'
+  /** machine-readable error cause; maps to the localized timeout/credits/network/overloaded/quota/auth message */
+  errorCode?: 'timeout' | 'credits' | 'network' | 'overloaded' | 'quota' | 'auth'
+  /** with errorCode 'quota': epoch ms when the exhausted quota is expected back, when known */
+  errorResetAt?: number
   /** normalized stop reason on 'done' ('max_tokens' = cut off by the token limit) */
   stopReason?: string
   usage?: {
@@ -109,6 +111,10 @@ export interface IpcTransportOptions<S> {
   networkErrorText?(): string
   /** localized message for capacity/rate-limit failures (errorCode 'overloaded') */
   overloadedErrorText?(): string
+  /** localized message for an exhausted account quota (errorCode 'quota'); `resetAt` = epoch ms it comes back, if known */
+  quotaErrorText?(resetAt?: number): string
+  /** localized message for a signed-out / expired CLI session (errorCode 'auth') */
+  authErrorText?(): string
 }
 
 /**
@@ -163,7 +169,11 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         finish()
         cb.onError(error)
       }
-      const errorText = (error: string, errorCode?: IpcStreamChunk['errorCode']) =>
+      const errorText = (
+        error: string,
+        errorCode?: IpcStreamChunk['errorCode'],
+        errorResetAt?: number,
+      ) =>
         errorCode === 'timeout'
           ? timeoutText()
           : errorCode === 'credits'
@@ -172,11 +182,17 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
               ? (options.networkErrorText?.() ?? (error || options.unknownErrorText()))
               : errorCode === 'overloaded'
                 ? (options.overloadedErrorText?.() ?? (error || options.unknownErrorText()))
-                : error || options.unknownErrorText()
+                : errorCode === 'quota'
+                  ? (options.quotaErrorText?.(errorResetAt) ??
+                    (error || options.unknownErrorText()))
+                  : errorCode === 'auth'
+                    ? (options.authErrorText?.() ?? (error || options.unknownErrorText()))
+                    : error || options.unknownErrorText()
       const handleError = (
         error: string,
         emitted: boolean,
         errorCode?: IpcStreamChunk['errorCode'],
+        errorResetAt?: number,
       ) => {
         if (cancelled || settled || finished) return
         route?.onResult?.(settings, requestId, { status: 'error', error, errorCode })
@@ -221,7 +237,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
           attempt()
           return
         }
-        fail(errorText(error, errorCode))
+        fail(errorText(error, errorCode, errorResetAt))
       }
       if (route?.maxDurationMs) {
         deadlineTimer = setTimeout(() => {
@@ -301,7 +317,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
             if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason)
             cb.onDone()
           } else if (chunk.type === 'error') {
-            handleError(chunk.error ?? '', emitted, chunk.errorCode)
+            handleError(chunk.error ?? '', emitted, chunk.errorCode, chunk.errorResetAt)
           } else {
             // A chunk kind this build predates must not kill the run; traffic proves it is alive.
             armSilence()

@@ -109,3 +109,9 @@ export {
   setAgyUsable,
 } from './agy-default'
 export { agyUsableForDefaults, probeAgyUsable } from './agy-detect'
+export { classifyAiStreamError } from './stream-error'
+export type { AiStreamErrorFields } from './stream-error'
+export { AgyError, agyErrorKindOf, isAgyError } from './agy-errors'
+export type { AgyErrorKind } from './agy-errors'
+export { agyChoice } from './agy-choice'
+export type { AgyChoice } from './agy-choice'

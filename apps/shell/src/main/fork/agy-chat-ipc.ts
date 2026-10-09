@@ -4,6 +4,12 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 import { subscribeAgyActivity } from '@genoffice/ai-provider/agy-activity'
 import { listAgyModels } from '@genoffice/ai-provider/agy-cli'
+import {
+  agyChoice,
+  agyDefaultsUsable,
+  agyUsabilityKnown,
+  probeAgyUsable,
+} from '@genoffice/ai-provider'
 import { AgyInstaller } from '@genoffice/ai-provider/agy-install'
 import { AgyLogin } from '@genoffice/ai-provider/agy-login'
 import {
@@ -240,11 +246,41 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   })
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.installStart, () => installer.start())
 
-  // One check each time the app starts; the chat box then shows it (and tucks it away again).
+  // One check each time the app starts, but only for people who use Antigravity: a person who
+  // never chose it must not have `agy` started behind their back (it boots a language server and
+  // calls Google). Features the settings file does not decide follow the agy-first default, which
+  // is decided by the cheap `agy models` probe.
   void app.whenReady().then(() => {
     const timer = setTimeout(() => {
-      void usage.refresh()
+      void shouldReadAgyUsageAtLaunch(aiSettings(), probeUsableOnce).then((yes) => {
+        if (yes) void usage.refresh()
+      })
     }, STARTUP_CHECK_DELAY_MS)
     timer.unref?.()
   })
+}
+
+/** The answer the startup probe already has, else one `agy models` run (joined if one is under way). */
+function probeUsableOnce(cliPath: string | undefined): Promise<boolean> {
+  return agyUsabilityKnown() ? Promise.resolve(agyDefaultsUsable()) : probeAgyUsable(cliPath)
+}
+
+/**
+ * Whether the launch-time usage read is worth doing: Antigravity is chosen for some feature in the
+ * stored settings, or (for features left undecided) it is the usable default. The probe runs only
+ * when the answer depends on it.
+ */
+export async function shouldReadAgyUsageAtLaunch(
+  settings: AiSettingsFile,
+  probe: (cliPath: string | undefined) => Promise<boolean>,
+): Promise<boolean> {
+  try {
+    const first = agyChoice(settings, null)
+    if (first !== 'unknown') return first === 'yes'
+    const cliPath = settings.providers?.agy?.cliPath
+    const usable = await probe(typeof cliPath === 'string' && cliPath.trim() ? cliPath : undefined)
+    return agyChoice(settings, usable) === 'yes'
+  } catch {
+    return false
+  }
 }

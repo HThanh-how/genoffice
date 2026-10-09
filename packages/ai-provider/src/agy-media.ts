@@ -106,6 +106,7 @@ export async function analyzeMediaWithAgy(
     prompt: plan.prompt,
     files: plan.files,
     signal,
+    task: 'media',
   })
   if (!result.text.trim()) throw new Error('Antigravity CLI returned no content')
   return result.text

@@ -6,7 +6,7 @@ import {
   type DocumentMemoryHit,
   type IpcStreamChunk,
 } from '@genoffice/agent-core'
-import { createGeminiRouter } from '@genoffice/ai-provider/browser'
+import { agyErrorText, createGeminiRouter } from '@genoffice/ai-provider/browser'
 import { createPortal } from 'react-dom'
 import type { Params } from '@genoffice/i18n'
 import {
@@ -384,6 +384,8 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
       creditsErrorText: () => tRef.current('homeChatCredits'),
       networkErrorText: () => tRef.current('homeChatNetwork'),
       overloadedErrorText: () => tRef.current('homeChatBusy'),
+      quotaErrorText: (resetAt) => agyErrorText(langRef.current, 'quota', { resetAt }),
+      authErrorText: () => agyErrorText(langRef.current, 'auth'),
     })
     // Events from a run that was stopped or replaced (conversation switch) are ignored.
     const live = () =>

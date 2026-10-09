@@ -63,9 +63,7 @@ import { createI18n, getUiLang, type Lang, normalizeLang, setUiLang } from '@gen
 import { ProjectStore } from '@genoffice/project-store'
 
 import {
-  AiCreditsError,
-  AiTimeoutError,
-  isAiNetworkError,
+  classifyAiStreamError,
   isAiOverloadedError,
   listGeminiModels,
   chatForProvider,
@@ -98,6 +96,7 @@ import {
   gskLoginInfo,
   hasGskAuth,
   setGskProxyUrl,
+  createSearchAbortRegistry,
   webSearchTool,
   imageSearchTool,
   generateImageTool,
@@ -2079,6 +2078,7 @@ function readJson<T>(path: string, fallback: T): T {
 }
 
 const SETTINGS_PATH = () => userDataPath('ai-settings.json')
+const webSearchAborts = createSearchAbortRegistry()
 
 // Dev-only automation hooks: a fixed CDP port for driving the app from test
 // scripts, and a workbook path that bypasses the native file dialog.
@@ -3785,15 +3785,7 @@ export function registerSheetsAiIpc(): void {
           requestId,
           type: 'error',
           error: err instanceof Error ? err.message : String(err),
-          ...(err instanceof AiTimeoutError
-            ? { errorCode: 'timeout' as const }
-            : err instanceof AiCreditsError
-              ? { errorCode: 'credits' as const }
-              : isAiNetworkError(err)
-                ? { errorCode: 'network' as const }
-                : isAiOverloadedError(err)
-                  ? { errorCode: 'overloaded' as const }
-                  : {}),
+          ...classifyAiStreamError(err),
         })
       }
     } finally {
@@ -3805,19 +3797,25 @@ export function registerSheetsAiIpc(): void {
   ipcMain.handle(IPC_CHANNELS.aiStreamCancel, (event, requestId: unknown) => {
     const entry = sessionFor(event)
     entry.aiStreams.get(z.string().min(1).parse(requestId))?.abort()
+    // Stop also ends an Antigravity web search that is still running for this window
+    webSearchAborts.cancel(event.sender.id)
   })
 
   // Shared search tools (content + images): Serper with DuckDuckGo fallback
   // (same source as slides/docs)
-  ipcMain.handle('ai:web-search', async (_event, query: unknown, maxResults?: unknown) => {
+  ipcMain.handle('ai:web-search', async (event, query: unknown, maxResults?: unknown) => {
+    const search = webSearchAborts.begin(event.sender.id)
     try {
       return await webSearchTool(
         SETTINGS_PATH(),
         z.string().parse(query),
         typeof maxResults === 'number' ? maxResults : 6,
+        search.signal,
       )
     } catch (err) {
       return { results: [], method: 'error', error: String(err) }
+    } finally {
+      search.end()
     }
   })
   ipcMain.handle('ai:image-search', async (_event, query: unknown, maxResults?: unknown) => {
