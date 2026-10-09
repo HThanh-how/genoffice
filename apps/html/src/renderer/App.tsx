@@ -18,7 +18,12 @@ import {
 } from '@genoffice/electron-utils/headless-export'
 import { useI18n } from './i18n/locale'
 import { parseDocText, serializeDocText, type Envelope } from './document/envelope'
-import { SourceEditor, type CursorInfo, type SourceEditorHandle } from './source/SourceEditor'
+import {
+  SourceEditor,
+  type CursorInfo,
+  type SourceRange,
+  type SourceEditorHandle,
+} from './source/SourceEditor'
 import { PreviewFrame, type PreviewFrameHandle } from './preview/PreviewFrame'
 import { instrumentForPreview } from './preview/instrument'
 import type { ComputedSnapshot, ElementRect, FromInspector } from './preview/inspector-protocol'
@@ -28,10 +33,10 @@ import { AiAskPopover, type AnchorRect, type AskMode } from './components/AiAskP
 import {
   EDIT_QUEUE_MAX,
   buildSelectionInstruction,
-  excerptOf,
   resolveQueueItem,
   type EditQueueItem,
 } from './ai/edit-queue'
+import { buildProjection } from './ai/redact'
 import { Breadcrumb, type NodeState } from './components/Breadcrumb'
 import {
   Ribbon,
@@ -42,6 +47,8 @@ import {
 } from './components/Ribbon'
 import { CropDialog, CutoutDialog, type ImageDialogLabels } from '@genoffice/ui'
 import { FloatToolbar } from './components/FloatToolbar'
+import { RedactDialog } from './components/RedactDialog'
+import { redactClearPlan, redactMarkPlan, type RedactPlan } from './document/redact-edit'
 import {
   insertOp,
   insertPresetHtml,
@@ -49,6 +56,8 @@ import {
   TEXT_INSERT_KINDS,
   type InsertKind,
 } from './document/insert-presets'
+import { isDocEmpty } from './document/blank'
+import { documentSkeleton } from './document/skeleton'
 import { moveTarget } from './document/move-target'
 import { StylePanel } from './components/StylePanel'
 import { floatPosition, parseDeclarations } from './document/float-position'
@@ -196,6 +205,8 @@ export default function App() {
     src: string
     image: string
   } | null>(null)
+  /** the range awaiting a label, with the selection text it was opened on */
+  const [redactDialog, setRedactDialog] = useState<(SourceRange & { seed: string }) | null>(null)
 
   const editorRef = useRef<SourceEditorHandle>(null)
   const previewRef = useRef<PreviewFrameHandle>(null)
@@ -525,6 +536,72 @@ export default function App() {
     [applyOps, getMap, flushPending, pushPreview],
   )
 
+  /**
+   * Land a redaction plan. The marks the op vocabulary can express go through
+   * `runManual`, so they are validated, journaled and undoable like any toolbar
+   * edit; the one insertion that no op can address (the comment in front of a
+   * `<script>` literal) is spliced through the same patch primitive and the same
+   * commit path, one step earlier in the pipeline.
+   */
+  const applyRedaction = useCallback(
+    (plan: RedactPlan | null): boolean => {
+      if (!plan) return false
+      if (plan.ops.length > 0) return runManual(plan.ops, 'keep')
+      if (plan.patches.length === 0) return false
+      // pending style pokes land first: they move the offsets the plan was built on
+      flushPending()
+      const base = textRef.current
+      editorRef.current?.applyPatches(plan.patches, false)
+      commitText(applyPatches(base, plan.patches), true)
+      return true
+    },
+    [commitText, flushPending, runManual],
+  )
+
+  /**
+   * The source pane's "hide this from the model" command.
+   *
+   * An already-marked region is taken off rather than labelled again, which is
+   * what makes coming back to a mark undo it. The seed is collapsed to one line
+   * because a selection can cross lines and the label goes into a single-line
+   * field — and because a label is meant to name the span, not quote it. The raw
+   * selection is kept alongside it: a mark may only be written over the exact text
+   * the reader was looking at when they opened the dialog.
+   */
+  const onRedactSelection = useCallback(
+    (range: SourceRange) => {
+      flushPending()
+      const base = textRef.current
+      const clear = redactClearPlan(base, getMap(), range.from, range.to)
+      if (clear) {
+        applyRedaction(clear)
+        return
+      }
+      setRedactDialog({ ...range, seed: range.text.replace(/\s+/g, ' ').trim() })
+    },
+    [applyRedaction, flushPending, getMap],
+  )
+
+  /** the label is in: write the mark, unless the range moved out from under the dialog */
+  const confirmRedaction = useCallback(
+    (label: string) => {
+      const range = redactDialog
+      setRedactDialog(null)
+      if (!range) return
+      flushPending()
+      const base = textRef.current
+      if (base.slice(range.from, range.to) !== range.text) return
+      applyRedaction(redactMarkPlan(base, getMap(), range.from, range.to, label))
+      editorRef.current?.focus()
+    },
+    [applyRedaction, flushPending, getMap, redactDialog],
+  )
+
+  const cancelRedaction = useCallback(() => {
+    setRedactDialog(null)
+    editorRef.current?.focus()
+  }, [])
+
   // ── selection model: one current element shared by the preview, the source pane, the toolbar and the AI ──
 
   const selectSidRef = useRef<
@@ -567,7 +644,7 @@ export default function App() {
     // one pin per element; several queued edits on the same element share it and list their ordinals
     const bySid = new Map<number, string[]>()
     items.forEach((item, i) => {
-      const target = map && resolveQueueItem(src, map, item).target
+      const target = map && resolveQueueItem(buildProjection(src, map), map, item).target
       if (target) bySid.set(target.sid, [...(bySid.get(target.sid) ?? []), String(i + 1)])
     })
     const marks = [...bySid].map(([sid, ordinals]) => ({ sid, label: ordinals.join('·') }))
@@ -598,7 +675,11 @@ export default function App() {
           const map = getMap()
           // a shared pin opens the most recent edit on that element; the others stay reachable from the queue card
           const item = editQueueRef.current
-            .filter((q) => resolveQueueItem(textRef.current, map, q).target?.sid === msg.sid)
+            .filter(
+              (q) =>
+                resolveQueueItem(buildProjection(textRef.current, map), map, q).target?.sid ===
+                msg.sid,
+            )
             .at(-1)
           if (!item) return
           selectSid(item.sid, { reveal: true })
@@ -799,6 +880,14 @@ export default function App() {
     if (rel && selectedSidRef.current === sid)
       runManual([{ op: 'set_attr', sid, name: 'src', value: rel }])
   }
+  /** ribbon Insert > Insert skeleton: a standards-mode page in the UI language, for a still-blank document */
+  const insertSkeleton = useCallback(() => {
+    // the menu is disabled once the page has content, and re-checked here so
+    // the action cannot fire from a stale render (a keyboard path, a queued click)
+    if (!isDocEmpty(textRef.current)) return
+    replaceAll(documentSkeleton(lang), false)
+  }, [lang, replaceAll])
+
   /** ribbon Insert menu: a starter element after the selection (or at the end of the body), then straight into editing */
   const insertElement = async (kind: InsertKind, opts: InsertOptions = {}) => {
     let imageSrc: string | undefined
@@ -905,7 +994,8 @@ export default function App() {
     return {
       sid: selectedEntry.sid,
       tag: selectedEntry.tag,
-      excerpt: excerptOf(text, selectedEntry),
+      // user-facing popover: the raw source text, unlike the queue's model-facing excerpt
+      excerpt: sourceText(text, selectedEntry).trim() || `<${selectedEntry.tag}>`,
       start: selectedEntry.range[0],
     }
   }, [selectedEntry, text])
@@ -931,7 +1021,7 @@ export default function App() {
     setEditQueue((prev) => prev.filter((q) => !qids.includes(q.qid)))
   const queueFocus = (qid: string) => {
     const item = editQueue.find((q) => q.qid === qid)
-    const target = item && resolveQueueItem(text, getMap(), item).target
+    const target = item && resolveQueueItem(buildProjection(text, getMap()), getMap(), item).target
     if (target) selectSid(target.sid, { reveal: true })
   }
   const askSendNow = (instruction: string) => {
@@ -1197,15 +1287,12 @@ export default function App() {
   }, [])
 
   const printingRef = useRef(false)
-  /** Shell menu Print. The gate lives in runGuardedPrint; this owns the flag and
-   * the notice, so a failure reaches the user instead of being swallowed. */
   const runPrint = useCallback(async () => {
     if (statusRef.current !== 'ready') return false
     return runGuardedPrint(
       printingRef,
       async () => {
-        // Serialize inside the gate: a throw here is a failure the user needs to
-        // see, and it must still release the flag.
+        // serialize inside the gate so a throw still releases the flag
         flushPending()
         return window.htmlApi.printHtml({
           html: serializeDocText({ text: textRef.current, envelope: envelopeRef.current }),
@@ -1305,7 +1392,8 @@ export default function App() {
         event.preventDefault()
         openFind(false)
       } else if (key === 'h' && !event.shiftKey) {
-        // Word's replace shortcut; macOS Cmd+H is the system hide role and never reaches here
+        // Word's replace shortcut: Ctrl+H on Windows/Linux, Control+H on macOS —
+        // its ⌘H belongs to the system Hide role, so the menu keeps that key
         event.preventDefault()
         openFind(true)
       } else if (key === '=' || key === '+') {
@@ -1340,7 +1428,7 @@ export default function App() {
       offTheme()
       window.removeEventListener('keydown', onKeyDown, true)
     }
-  }, [doSave, runExport, cycleView, zoomIn, zoomOut, flushPending, openFind])
+  }, [doSave, runExport, runPrint, cycleView, zoomIn, zoomOut, flushPending, openFind])
 
   // pinch / ctrl+wheel over the stage chrome around the frame; wheel inside the frame arrives as gx:zoom
   useEffect(() => {
@@ -1489,6 +1577,8 @@ export default function App() {
         onToggleAi={() => setAiOpen((v) => !v)}
         canInsert={canvasMode === 'edit'}
         onInsert={(kind, opts) => void insertElement(kind, opts)}
+        onInsertSkeleton={insertSkeleton}
+        canInsertSkeleton={canvasMode === 'edit' && isDocEmpty(textRef.current)}
         onAiPreset={(text) => {
           flushPending()
           setAiOpen(true)
@@ -1643,6 +1733,7 @@ export default function App() {
                 onChange={onEditorChange}
                 onCursor={onCursor}
                 onBeforeReplace={flushPending}
+                onRedact={onRedactSelection}
               />
             </div>
           </div>
@@ -1730,6 +1821,13 @@ export default function App() {
           onSendNow={askSendNow}
           onRemove={() => askMode.kind === 'edit' && queueRemove(askMode.qid)}
           queueFull={editQueue.length >= EDIT_QUEUE_MAX}
+        />
+      )}
+      {redactDialog && (
+        <RedactDialog
+          seed={redactDialog.seed}
+          onSubmit={confirmRedaction}
+          onCancel={cancelRedaction}
         />
       )}
       {pictureDialog?.kind === 'cutout' && (

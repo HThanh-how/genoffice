@@ -128,6 +128,9 @@ export type SaveHtmlResult =
 /** AI channels are app-wide shared ipcMain handlers (shell registers via docs-main registerAiIpc); pass-through only */
 export const AI_CHANNELS = {
   getSettings: 'ai:get-settings',
+  setSettings: 'ai:set-settings',
+  settingsChanged: 'ai:settings-changed',
+  openModelSettings: 'ai:open-model-settings',
   gskStatus: 'ai:gsk-status',
   stream: 'ai:stream',
   streamChunk: 'ai:stream-chunk',
@@ -325,6 +328,11 @@ export interface HtmlApi {
   onChromePressed(handler: () => void): () => void
   getAiSettings(): Promise<AiSettings>
   getGeminiModels(): Promise<GeminiModelInfo[]>
+  setAiSettings(settings: AiSettings): Promise<void>
+  /** ai-settings.json was rewritten by any renderer; re-read it */
+  onAiSettingsChanged(handler: () => void): () => void
+  /** shell only: switch to Home and open Settings › AI Model (rejects in standalone) */
+  openAiModelSettings(): Promise<void>
   /** Genspark login state (shell-registered ai:gsk-status) — gates generate_image with the cloud-tools toggle */
   aiGskStatus(): Promise<GenSparkAccountStatus>
   aiStream(request: AiStreamRequest): Promise<void>

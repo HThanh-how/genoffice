@@ -29,13 +29,8 @@ const APP_TYPE = 'genoffice'
 const KEY_NAME = 'genoffice'
 const HTTP_TIMEOUT_MS = 30_000
 
-/** The only URL the login flow may ask the OS to open: https, on the
- *  endpoint's registrable domain — host == or a `.`-suffix of the endpoint
- *  host minus a leading "www." — so the auth service may serve its login
- *  pages from any of its own hosts (apex, www, auth.*, a staging tree).
- *  IP literals and single-label hosts (localhost) have no subdomain tree and
- *  must match exactly: `evil.127.0.0.1` is a public DNS name that resolves
- *  elsewhere, not a sibling of 127.0.0.1. Exported for the allowlist tests. */
+/** https on the endpoint's registrable domain only; IP literals and single-label
+ *  hosts have no subdomain tree (`evil.127.0.0.1` is a public DNS name). */
 export function isAllowedAuthUrl(raw: string, origin: string): URL | null {
   try {
     const url = new URL(raw)
@@ -43,9 +38,7 @@ export function isAllowedAuthUrl(raw: string, origin: string): URL | null {
     const endpointHost = new URL(origin).hostname
     const registrable = endpointHost.replace(/^www\./, '')
     const flatHost =
-      endpointHost.startsWith('[') /* IPv6 literal */ ||
-      /^[\d.]+$/.test(endpointHost) /* IPv4 literal */ ||
-      !registrable.includes('.') /* localhost & co */
+      endpointHost.startsWith('[') || /^[\d.]+$/.test(endpointHost) || !registrable.includes('.')
     if (flatHost) return url.hostname === endpointHost ? url : null
     if (url.hostname !== registrable && !url.hostname.endsWith(`.${registrable}`)) return null
     return url
@@ -275,6 +268,18 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
 
 // ── Device-code login ────────────────────────────────────────────────
 
+// the endpoint picks both values; a hostile answer must not stretch a login
+// for years or poll at a crawl. 1h sits above every provider's real lifetime
+// (RFC 8628 example 1800s), so the clamp never truncates a valid code.
+const MAX_POLL_INTERVAL_MS = 10_000
+const MAX_LOGIN_SEC = 3600
+
+function clampLoginValue(value: unknown, fallback: number, max: number): number {
+  const n = Number(value)
+  if (!Number.isFinite(n) || n <= 0) return fallback
+  return Math.min(n, max)
+}
+
 async function revokeKey(cookie: string, keyId: string, signal: AbortSignal): Promise<void> {
   await resolveFetch()(`${baseUrl()}/api/api_tokens/revoke`, {
     method: 'POST',
@@ -307,15 +312,11 @@ async function runDeviceLogin(
   const code = String(json.device_code ?? '')
   const authUrl = String(json.auth_url ?? '')
   if (!resp.ok || !code || !authUrl) throw new LoginFlowError('network')
-  // The server (or a repointed GSK_BASE_URL) decides this URL and every caller
-  // hands it to the OS opener: only https on the endpoint's registrable domain
-  // passes, so a compromised endpoint cannot turn the login flow into "open
-  // arbitrary protocol handler / phishing URL". Distinct from 'network' so the
-  // shell can log/show a policy rejection instead of an outage.
+  // the endpoint decides this URL and callers hand it to the OS opener
   const allowed = isAllowedAuthUrl(authUrl, baseUrl())
   if (!allowed) throw new LoginFlowError('auth_url_rejected')
-  const expiresInSec = Number(json.expires_in) > 0 ? Number(json.expires_in) : 600
-  const pollMs = Number(json.poll_interval) > 0 ? Number(json.poll_interval) * 1000 : 2000
+  const expiresInSec = clampLoginValue(json.expires_in, 600, MAX_LOGIN_SEC)
+  const pollMs = clampLoginValue(Number(json.poll_interval) * 1000, 2000, MAX_POLL_INTERVAL_MS)
   emit({ phase: 'url', url: allowed.href, expiresInSec })
 
   const deadline = Date.now() + expiresInSec * 1000

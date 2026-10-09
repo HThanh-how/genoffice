@@ -1,4 +1,10 @@
-import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@genoffice/ui'
+import {
+  aiPanelWidthAtPointer,
+  AiPanelSideButton,
+  AiModelPicker,
+  GeminiModelPicker,
+  type AiModelPickerBridge,
+} from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement, ReactNode } from 'react'
 import {
@@ -133,6 +139,14 @@ export interface MarkdownAiDeps {
   restoreSnapshot(snapshot: DocSnapshot): void
   /** fired when a run with at least one mutation finishes (auto-save hook) */
   onRunDone(mutated: boolean): void
+}
+
+const MODEL_BRIDGE: AiModelPickerBridge = {
+  getSettings: () => window.markdownApi.getAiSettings(),
+  setSettings: (settings) => window.markdownApi.setAiSettings(settings),
+  onSettingsChanged: (handler) => window.markdownApi.onAiSettingsChanged(handler),
+  gskLoggedIn: () => window.markdownApi.aiGskStatus().then((s) => !!s?.loggedIn),
+  openModelSettings: () => window.markdownApi.openAiModelSettings().catch(() => {}),
 }
 
 export function AiPanel({
@@ -1047,6 +1061,7 @@ export function AiPanel({
           sendLabel={t('aiSend')}
           stopLabel={t('aiStop')}
           iconOnly
+          footerStart={<AiModelPicker bridge={MODEL_BRIDGE} lang={lang} />}
           sendIconEnabled={<img src={sendEnterOn} alt="" aria-hidden />}
           sendIconDisabled={<img src={sendEnterOff} alt="" aria-hidden />}
           stopIcon={<img src={sendStop} alt="" aria-hidden />}

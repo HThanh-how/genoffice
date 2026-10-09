@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, parse } from 'node:path'
+import { join, parse, relative } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   createFolder,
@@ -96,6 +96,25 @@ describe('listFolder', () => {
       files: [],
       missing: true,
     })
+  })
+
+  /**
+   * The Home tree only lists what the shell can open, and TREE_FILE_EXTENSIONS
+   * is kept to mirror the open-dialog filter. A .txt left out of it is invisible
+   * on Home, so a file the open dialog happily offers cannot be clicked into
+   * from the folder pane — the same drift, one list further along.
+   */
+  it('lists the text app extensions alongside markdown', () => {
+    touch('notes.md')
+    touch('notes.txt')
+    touch('data.json')
+    touch('photo.png')
+
+    expect(
+      listFolder(root, new Set())
+        .files.map((f) => f.name)
+        .sort(),
+    ).toEqual(['data.json', 'notes.md', 'notes.txt'])
   })
 })
 
@@ -347,15 +366,27 @@ describe('helpers', () => {
 })
 
 describe('a drive or filesystem root (it already ends with a separator)', () => {
-  const root = parse(tmpdir()).root // `/` here, `C:\` or `D:\` on Windows
+  const fsRoot = parse(tmpdir()).root // `/` here, `C:\` or `D:\` on Windows
 
   it('contains the folders below it', () => {
-    expect(isInsideRoot(root, tmpdir())).toBe(true)
-    expect(isInsideRoot(root, root)).toBe(true)
+    expect(isInsideRoot(fsRoot, tmpdir())).toBe(true)
+    expect(isInsideRoot(fsRoot, fsRoot)).toBe(true)
   })
 
   it('has paths under it and folders that move into it', () => {
-    expect(pathsUnder(root, [tmpdir()])).toEqual([tmpdir()])
-    expect(isSelfOrDescendant(root, tmpdir())).toBe(true)
+    expect(pathsUnder(fsRoot, [tmpdir()])).toEqual([tmpdir()])
+    expect(isSelfOrDescendant(fsRoot, tmpdir())).toBe(true)
+  })
+
+  it('does not list the root itself as a path under it', () => {
+    expect(pathsUnder(fsRoot, [fsRoot, tmpdir()])).toEqual([tmpdir()])
+  })
+
+  it('rebases descendants from a filesystem root without doubling the separator', () => {
+    const destination = join(root, 'rebased')
+
+    expect(rebasePath(tmpdir(), fsRoot, destination)).toBe(
+      join(destination, relative(fsRoot, tmpdir())),
+    )
   })
 })

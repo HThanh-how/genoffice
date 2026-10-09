@@ -18,7 +18,7 @@ import type {
 } from '@genoffice/ai-provider'
 import type { DocumentMemoryReadResult, DocumentMemorySearchResult } from '@genoffice/agent-core'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'
-import type { UpdateChannel } from './update-api'
+import type { UpdateChannel, UpdateUiState } from './update-api'
 import type { UpdateSource } from './update-source'
 import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 import type { ForkHomeApi } from './fork/fork-home-api'
@@ -30,6 +30,7 @@ export type {
 } from './fork/document-index-api'
 
 /** UI language; kept self-contained here (mirrors Lang in @genoffice/i18n) */
+
 export type UiLanguage =
   | 'zh'
   | 'en'
@@ -89,6 +90,13 @@ export interface LegacyRecoveryEntry {
   expiresAt: number
 }
 
+/**
+ * Document page theme preference (genoffice#1811): what the editors' canvas/paper does
+ * relative to the UI theme. 'follow' reproduces the previous single-theme
+ * behavior; 'light'/'dark' pin the paper regardless of the UI theme.
+ */
+export type DocTheme = 'follow' | 'light' | 'dark'
+
 /** shell-wide AutoSave default for every editor; updatedAt is 0 until first set */
 export interface AutoSaveDefault {
   on: boolean
@@ -124,6 +132,9 @@ export interface RecentEntry {
   sizeBytes: number
   /** whether the user starred this file */
   starred: boolean
+  /** the starred group this file belongs to (absent when ungrouped); only
+      populated by the starred() query — the other list queries omit it */
+  group?: string
   /** the path failed to stat (disconnected drive, moved, deleted) — kept
       listed like Word's recents instead of silently dropped (r158) */
   missing?: boolean
@@ -137,6 +148,8 @@ export interface RecentQuery {
   limit?: number
   /** restrict to one extension ('docx' | 'xlsx' | 'pptx'); omit for all */
   ext?: string
+  /** starred() only: restrict to one starred group; omit for all */
+  group?: string
 }
 
 export interface RecentPage {
@@ -168,18 +181,34 @@ export interface FileSearchHit extends RecentEntry {
   needles: string[]
 }
 
-export type JevEndpoint = 'openrouter' | 'direct'
+/**
+ * Endpoints the search reranker can judge against. The hosted Jev routes are
+ * OpenRouter and TypeSafe's own API; Perplexity and Cloudflare host their own
+ * decision models; Kev and Rizzo Flow are local /v1/systemone servers;
+ * `custom` points at any other /v1/systemone-compatible server.
+ */
+export type DecisionEndpoint =
+  'openrouter' | 'direct' | 'perplexity' | 'cloudflare' | 'kev' | 'rizzo' | 'custom'
 
 /** home search options persisted in app-settings.json under `fileSearch` */
 export interface FileSearchSettings {
-  /** send the top local hits to TypeSafe's Jev model for reranking; default off */
+  /** send the top local hits to a decision model for reranking; default off */
   rerank: boolean
-  jevEndpoint: JevEndpoint
-  jevKeys: Record<JevEndpoint, string>
+  endpoint: DecisionEndpoint
+  /** one API key per endpoint; local endpoints (kev/rizzo/custom) may stay empty */
+  keys: Record<DecisionEndpoint, string>
+  /** `custom` endpoint only: base URL of a /v1/systemone-compatible server */
+  customBaseUrl: string
+  /** `custom` endpoint only: model id the server expects */
+  customModel: string
+  /** `cloudflare` endpoint only: Workers AI account id */
+  cloudflareAccountId: string
+  /** `cloudflare` endpoint only: Workers AI model path, e.g. @cf/cloudflare/clef */
+  cloudflareModel: string
 }
 
 export interface FileSearchRerank {
-  /** paths in Jev's order, most relevant first; paths not judged keep their local order after these */
+  /** paths in the decision model's order, most relevant first; paths not judged keep their local order after these */
   order: string[]
   /** calibrated 0–2 relevance per judged path */
   scores: Record<string, number>
@@ -256,22 +285,24 @@ export interface HomeApi extends ForkHomeApi {
   recents(query?: RecentQuery): Promise<RecentPage>
   /** search indexed files by name, folder and content */
   searchFiles(query: FileSearchQuery): Promise<FileSearchPage>
-  /** Jev order for the hits currently shown (≤ 20 paths); null when reranking is off or unavailable */
+  /** decision-model order for the hits currently shown (≤ 20 paths); null when reranking is off or unavailable */
   rerankSearch(query: { q: string; paths: string[] }): Promise<FileSearchRerank | null>
   getFileSearchSettings(): Promise<FileSearchSettings>
   setFileSearchSettings(patch: Partial<FileSearchSettings>): Promise<FileSearchSettings>
-  /** one two-document Jev judgement against a (possibly unsaved) key */
-  testFileSearchRerank(input: {
-    endpoint: JevEndpoint
-    apiKey: string
-  }): Promise<{ ok: boolean; error?: string }>
+  /** one two-document judgement against the (possibly unsaved) settings */
+  testFileSearchRerank(settings: FileSearchSettings): Promise<{ ok: boolean; error?: string }>
   /** starred files (independent of the recent list), newest first (paged) */
   starred(query?: RecentQuery): Promise<RecentPage>
+  /** starred group names that currently have at least one file, in creation order */
+  starredGroups(): Promise<string[]>
+  /** put each starred path into `group` (null = remove from its group) */
+  setStarredGroup(paths: string[], group: string | null): Promise<void>
   /** stat a specific set of paths (project view); unstat-able files come back flagged `missing` */
   statPaths(paths: string[]): Promise<RecentEntry[]>
   /** star / unstar a file */
   toggleStar(path: string): Promise<void>
   /** open an existing file, routing to the right module by extension */
+  openHelp(): Promise<void>
   openPath(path: string): Promise<void>
   /** file picker accepting every supported extension, then routes */
   browse(): Promise<void>
@@ -289,6 +320,8 @@ export interface HomeApi extends ForkHomeApi {
   newPdf(opts?: NewFileOpts): Promise<void>
   /** drop entries from the recent list (does not touch the files) */
   removeRecent(paths: string[]): Promise<void>
+  /** unstar files in bulk (Starred view selection bar); the recents list and the files are untouched */
+  unstarPaths(paths: string[]): Promise<void>
   /** reveal the file in Finder / Explorer */
   revealPath(path: string): Promise<void>
   /** rename the file on disk (same directory) and update the recent list */
@@ -338,12 +371,19 @@ export interface HomeApi extends ForkHomeApi {
   accountLogin(): Promise<boolean>
   /** progress events for the login started via accountLogin; returns an unsubscribe */
   onAccountLogin(handler: (ev: AccountLoginEvent) => void): () => void
+  /** a tab asked for the settings modal (composer model chip → AI Model section) */
+  onOpenSettings(handler: (target: { section: string }) => void): () => void
   /** re-open the pending login auth URL in the default browser (rescue when auto-open failed) */
   openLoginUrl(): Promise<void>
   /** log out (clears the saved API key; the login state is shared globally with the gsk CLI) */
   accountLogout(): Promise<void>
   /** app version (from package.json / electron app.getVersion) */
   getAppVersion(): Promise<string>
+  /** live updater state (null until an update was first seen); Settings → About */
+  getUpdateState(): Promise<UpdateUiState | null>
+  /** re-open the (minimized) update dialog; a not-yet-started download also starts */
+  openUpdateDialog(): Promise<boolean>
+  onUpdateStateChanged(handler: (state: UpdateUiState) => void): () => void
   /** whether the first-run onboarding has been completed or skipped (persisted in userData/app-settings.json) */
   onboardingSeen(): Promise<boolean>
   /** mark onboarding done; analytics remains enabled unless separately opted out */
@@ -371,6 +411,10 @@ export interface HomeApi extends ForkHomeApi {
   listLegacyRecovery(): Promise<LegacyRecoveryEntry[]>
   /** Restore without overwriting a file at the original path. */
   restoreLegacyDoc(id: string): Promise<string>
+  /** current document page theme preference (genoffice#1811, persisted in userData/app-settings.json) */
+  getDocumentTheme(): Promise<DocTheme>
+  /** switch + persist the document page theme; broadcasts 'app:document-theme-changed' to all web contents */
+  setDocumentTheme(theme: DocTheme): Promise<void>
   /** AutoSave default applied by every editor window (persisted in userData/app-settings.json) */
   getAutoSaveDefault(): Promise<AutoSaveDefault>
   /** persist the AutoSave default; broadcasts 'app:auto-save-default-changed' to all web contents */
@@ -437,6 +481,8 @@ export interface HomeApi extends ForkHomeApi {
   setDefaultApp(): Promise<DefaultAppStatus>
   /** theme switched anywhere (broadcast from the main process) */
   onThemeChanged(handler: (theme: UiTheme) => void): () => void
+  /** document page theme switched anywhere (broadcast from the main process) */
+  onDocumentThemeChanged(handler: (theme: DocTheme) => void): () => void
   /** open the GenTeam community page in the default browser */
   openGenTeam(): Promise<void>
   /** open the Genspark credit-usage page in the default browser */
@@ -464,8 +510,10 @@ export interface HomeApi extends ForkHomeApi {
   aiStreamCancel(requestId: string): Promise<void>
   /** Subscribe to AI stream chunks; returns an unsubscribe function. */
   onAiStream(handler: (chunk: AiStreamChunk) => void): () => void
-  /** persist AI settings; open editors pick the change up on their next settings read */
+  /** persist AI settings; every renderer gets ai:settings-changed and re-reads */
   setAiSettings(settings: AiSettings): Promise<void>
+  /** ai-settings.json was rewritten by any renderer (composer model chip, another window) */
+  onAiSettingsChanged(handler: () => void): () => void
   /** provider catalog with each fixed endpoint's default base URL (empty for genspark/custom) */
   getAiProviders(): AiCatalogEntry[]
   /** live Codex model catalog discovered through the current or overridden app-server */
@@ -629,6 +677,7 @@ export interface MoveResult {
 }
 
 export const HOME_CHANNELS = {
+  openHelp: 'home:open-help',
   recents: 'home:recents',
   searchFiles: 'home:search-files',
   rerankSearch: 'home:rerank-search',
@@ -638,6 +687,9 @@ export const HOME_CHANNELS = {
   starred: 'home:starred',
   statPaths: 'home:stat-paths',
   toggleStar: 'home:toggle-star',
+  unstarPaths: 'home:unstar-paths',
+  starredGroups: 'home:starred-groups',
+  setStarredGroup: 'home:set-starred-group',
   openPath: 'home:open-path',
   browse: 'home:browse',
   newDoc: 'home:new-doc',
@@ -672,6 +724,7 @@ export const HOME_CHANNELS = {
   accountStatus: 'home:account-status',
   accountLogin: 'home:account-login',
   accountLoginEvent: 'home:account-login-event',
+  openSettings: 'home:open-settings',
   accountLoginOpenUrl: 'home:account-login-open-url',
   accountLogout: 'home:account-logout',
   getAppVersion: 'home:get-app-version',
@@ -690,6 +743,8 @@ export const HOME_CHANNELS = {
   setLegacyDocSettings: 'home:set-legacy-doc-settings',
   listLegacyRecovery: 'home:list-legacy-recovery',
   restoreLegacyDoc: 'home:restore-legacy-doc',
+  getDocumentTheme: 'home:get-document-theme',
+  setDocumentTheme: 'home:set-document-theme',
   getAutoSaveDefault: 'home:get-auto-save-default',
   setAutoSaveDefault: 'home:set-auto-save-default',
   getMcpStatus: 'home:get-mcp-status',

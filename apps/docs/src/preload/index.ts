@@ -14,6 +14,7 @@ import type {
   AutoSaveDefault,
   ContextMenuRequest,
   ClipboardHistoryEntry,
+  DocTheme,
   UiTheme,
   ZoteroRendererRequest,
 } from '../shared/ipc'
@@ -76,6 +77,15 @@ const api: DesktopApi = {
     infoToastHandlers.add(handler)
     while (pendingInfoToasts.length) handler(pendingInfoToasts.shift()!)
     return () => infoToastHandlers.delete(handler)
+  },
+  getDocumentTheme: async () => {
+    const result: unknown = await ipcRenderer.invoke('app:get-document-theme')
+    return result === 'dark' || result === 'light' ? result : 'follow'
+  },
+  onDocumentThemeChanged: (handler) => {
+    const listener = (_event: IpcRendererEvent, theme: DocTheme) => handler(theme)
+    ipcRenderer.on('app:document-theme-changed', listener)
+    return () => ipcRenderer.removeListener('app:document-theme-changed', listener)
   },
   getAutoSaveDefault: () => ipcRenderer.invoke('app:get-auto-save-default'),
   onAutoSaveDefaultChanged: (handler) => {
@@ -230,6 +240,12 @@ const api: DesktopApi = {
   getAiSettings: () => ipcRenderer.invoke('ai:get-settings'),
   getGeminiModels: () => ipcRenderer.invoke('ai:gemini-chat-models'),
   setAiSettings: (settings: AiSettings) => ipcRenderer.invoke('ai:set-settings', settings),
+  onAiSettingsChanged: (handler) => {
+    const listener = () => handler()
+    ipcRenderer.on('ai:settings-changed', listener)
+    return () => ipcRenderer.removeListener('ai:settings-changed', listener)
+  },
+  openAiModelSettings: () => ipcRenderer.invoke('ai:open-model-settings'),
   aiChat: (request: AiChatRequest) => ipcRenderer.invoke('ai:chat', request),
   aiStream: (request: AiStreamRequest) => ipcRenderer.invoke('ai:stream', request),
   aiStreamCancel: (requestId: string) => ipcRenderer.invoke('ai:stream-cancel', requestId),

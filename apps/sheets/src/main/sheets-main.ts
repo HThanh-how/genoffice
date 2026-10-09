@@ -11,6 +11,7 @@ import {
 } from 'node:fs'
 import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
+import { userInfo } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 
 import {
@@ -25,6 +26,7 @@ import {
   session as electronSession,
   shell,
   systemPreferences,
+  webContents,
   WebContentsView,
 } from 'electron'
 import type {
@@ -36,6 +38,7 @@ import type {
 } from 'electron'
 import { z } from 'zod'
 import {
+  abortOnDestroyed,
   appMenuLabels,
   buildPrintableHtml,
   configuredDefaultSaveDir,
@@ -43,6 +46,7 @@ import {
   fetchRemoteImage,
   installContextMenu,
   installNavigationGuard,
+  isHeadlessMode,
   printHtmlToPdf,
   safeExternalUrl,
   showOpenDialogWithMemory,
@@ -95,6 +99,7 @@ import {
   webSearchTool,
   imageSearchTool,
   generateImageTool,
+  localMediaRoots,
 } from '@genoffice/ai-search'
 import { parseFileToText } from '@genoffice/file-parse'
 import type { CellEdit, SheetStructuralOps } from '@genoffice/xlsx-gateway/gateway/xlsx-gateway'
@@ -118,7 +123,10 @@ import {
   aiStreamRequestSchema,
   workbookFileSchema,
   workbookFormulaCellsRequestSchema,
+  workbookRowOutlineResultSchema,
   workbookFormulaCellsResultSchema,
+  workbookFindCellsRequestSchema,
+  workbookFindCellsResultSchema,
   workbookRecalcRequestSchema,
   workbookRecalcResultSchema,
   workbookMediaRequestSchema,
@@ -133,6 +141,7 @@ import {
   workbookCreateDocumentRequestSchema,
   workbookExportCsvRequestSchema,
   workbookExportPdfRequestSchema,
+  printerInfoSchema,
   workbookRangeRequestSchema,
   workbookRangeResultSchema,
   workbookSaveEditsAbortSchema,
@@ -1548,6 +1557,9 @@ export function configureSheetsRuntime(config: SheetsRuntimeConfig): void {
  * (shell) or reveal it in the folder (standalone). Tab-opening failure must
  * not report the write itself as failed — the file is already persisted. */
 function openGeneratedFile(path: string): void {
+  // Headless export must stay silent: no tab, no file-manager window
+  // (same guard as markdown-main's openExportedPdf, genoffice#1815).
+  if (isHeadlessMode()) return
   try {
     if (runtime.openGeneratedPath?.(path)) return
   } catch (err) {
@@ -1665,6 +1677,19 @@ function sessionFor(event: IpcMainInvokeEvent): SheetsTabSession {
   return entry
 }
 
+/**
+ * Local media roots for a sheets renderer: the directories of the workbooks its
+ * tab has open, plus the directory sheets stages pasted images in. A tab can
+ * hold several workbook sessions, so every open one contributes its directory —
+ * a tool call naming a file the user put next to the workbook they are editing
+ * is the legitimate case, and nothing else is readable.
+ */
+function sheetsMediaRoots(wcId: number): string[] {
+  const tab = sheetsTabs.get(wcId)
+  const workbookDirs = tab ? [...tab.sessions.values()].map((s) => dirname(s.path)) : []
+  return localMediaRoots(...workbookDirs, join(app.getPath('temp'), 'genoffice-pasted'))
+}
+
 /// A save request referencing a chunked edit transfer gets the accumulated
 /// edits spliced back in; the transfer is consumed either way.
 function resolveTransferredEdits(
@@ -1696,9 +1721,35 @@ async function saveFileDialog(event: IpcMainInvokeEvent, options: SaveDialogOpti
   )
 }
 
+/** Workbook file extensions the open pipeline accepts. Single source for the
+ *  picker filters, the merge-source check, and the crash re-open check. */
+const WORKBOOK_EXTS = new Set(['xlsx', 'xlsm', 'xls', 'csv', 'tsv'])
+
 /** register a tab's webContents/client pair and wire up cleanup on teardown */
+/** Clients whose process-death notification is already wired. A sidecar client
+ *  is shared by every tab (the `sidecar ?? new XlsxSidecarClient(...)` reuse),
+ *  so the wiring is per client and the crash is broadcast to the tabs using
+ *  it — not attached once per tab, which would notify N times over. */
+const crashNotifiedClients = new WeakSet<XlsxSidecarClient>()
+
+/** Tell every live tab that the sidecar died, so it can re-open its workbook
+ *  and adopt a live session. Positive signal: a workbook the app closed on
+ *  purpose (closeWorkbook) or swapped during Save never reaches the client,
+ *  because those only send a `close` command down the live pipe. */
+function broadcastSidecarCrash(client: XlsxSidecarClient): void {
+  for (const entry of sheetsTabs.values()) {
+    if (entry.client !== client) continue
+    if (entry.webContents.isDestroyed()) continue
+    entry.webContents.send(IPC_CHANNELS.sidecarCrashed)
+  }
+}
+
 function registerSheetsSession(webContents: WebContents, client: XlsxSidecarClient): void {
   startPastedTempCleanup()
+  if (!crashNotifiedClients.has(client)) {
+    crashNotifiedClients.add(client)
+    client.onProcessExit(() => broadcastSidecarCrash(client))
+  }
   sheetsTabs.set(webContents.id, {
     webContents,
     client,
@@ -2523,16 +2574,29 @@ export function registerSheetsIpc(): void {
   if (coreIpcRegistered) return
   coreIpcRegistered = true
 
+  ipcMain.handle(IPC_CHANNELS.userDisplayName, (event): string => {
+    sessionFor(event)
+    try {
+      return userInfo().username
+    } catch {
+      return ''
+    }
+  })
+
   // Registered here (not in registerSheetsAiIpc, skipped in shell mode):
   // slides' ai:generate-image only exists once a slides view opens, so sheets
   // owns its channel the way pdf does.
   ipcMain.handle(
     IPC_CHANNELS.aiGenerateImage,
-    (_event, op: { prompt?: unknown; aspectRatio?: unknown }) =>
-      generateImageTool(SETTINGS_PATH(), {
-        prompt: String(op?.prompt ?? ''),
-        ...(op?.aspectRatio ? { aspectRatio: String(op.aspectRatio) } : {}),
-      }),
+    (event, op: { prompt?: unknown; aspectRatio?: unknown }) =>
+      generateImageTool(
+        SETTINGS_PATH(),
+        {
+          prompt: String(op?.prompt ?? ''),
+          ...(op?.aspectRatio ? { aspectRatio: String(op.aspectRatio) } : {}),
+        },
+        { mediaRoots: sheetsMediaRoots(event.sender.id) },
+      ),
   )
 
   ipcMain.on(IPC_CHANNELS.recoveryPromptReply, (event, restore: unknown) => {
@@ -2602,9 +2666,14 @@ export function registerSheetsIpc(): void {
     })
   })
 
-  const openSelectedWorkbook = async (event: IpcMainInvokeEvent) => {
+  /// `explicitPath` re-opens a known file without the picker or the shell
+  /// queue — the crash-recovery entry point. It runs the SAME pipeline
+  /// (prepareWorkbookForOpen + openWorkbookSession + the opened hook) as a
+  /// user-picked or shell-queued open, so a recovered workbook is a normal
+  /// session rather than a merge source.
+  const openSelectedWorkbook = async (event: IpcMainInvokeEvent, explicitPath?: string) => {
     const entry = sessionFor(event)
-    let path = queuedWorkbookPaths.get(event.sender.id) ?? forcedWorkbookPath
+    let path = explicitPath ?? queuedWorkbookPaths.get(event.sender.id) ?? forcedWorkbookPath
     // consume immediately (before the slow session open) so the shell's
     // retry loop stops re-sending 'open' for the same file
     queuedWorkbookPaths.delete(event.sender.id)
@@ -2674,6 +2743,17 @@ export function registerSheetsIpc(): void {
       failHeadlessExport(event.sender.id, `the input workbook did not open (${String(err)})`)
       throw err
     }
+  })
+
+  ipcMain.handle(IPC_CHANNELS.reopenWorkbook, async (event, path: unknown) => {
+    const validated = z.string().min(1).parse(path)
+    // A crash re-open targets the file the user already has open, so a
+    // missing/deleted file is a real failure rather than a reason to pop the
+    // picker at someone who did not ask to open anything.
+    if (!existsSync(validated)) throw new Error('Workbook file not found.')
+    const ext = validated.slice(validated.lastIndexOf('.') + 1).toLowerCase()
+    if (!WORKBOOK_EXTS.has(ext)) throw new Error(`Unsupported workbook: ${ext}`)
+    return openSelectedWorkbook(event, validated)
   })
 
   // Merge sources: same open pipeline as selectWorkbook, but multi-select,
@@ -2750,7 +2830,7 @@ export function registerSheetsIpc(): void {
     return openMergeSources(event, selection.filePaths)
   })
 
-  const MERGE_SOURCE_EXTS = new Set(['xlsx', 'xlsm', 'xls', 'csv', 'tsv'])
+  const MERGE_SOURCE_EXTS = WORKBOOK_EXTS
   ipcMain.handle(IPC_CHANNELS.openWorkbooksForMerge, async (event, input: unknown) => {
     const paths = z.array(z.string().min(1)).min(1).max(20).parse(input)
     for (const path of paths) {
@@ -2775,6 +2855,22 @@ export function registerSheetsIpc(): void {
     if (!entry.sessions.has(request.sessionId)) throw new Error('Unknown workbook session.')
     const result = await entry.client.readFormulaCells(request)
     return workbookFormulaCellsResultSchema.parse(result)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.findWorkbookCells, async (event, input: unknown) => {
+    const entry = sessionFor(event)
+    const request = workbookFindCellsRequestSchema.parse(input)
+    if (!entry.sessions.has(request.sessionId)) throw new Error('Unknown workbook session.')
+    const result = await entry.client.findCells(request)
+    return workbookFindCellsResultSchema.parse(result)
+  })
+
+  ipcMain.handle(IPC_CHANNELS.readWorkbookRowOutline, async (event, input: unknown) => {
+    const entry = sessionFor(event)
+    const request = workbookFormulaCellsRequestSchema.parse(input)
+    if (!entry.sessions.has(request.sessionId)) throw new Error('Unknown workbook session.')
+    const result = await entry.client.readRowOutline(request)
+    return workbookRowOutlineResultSchema.parse(result)
   })
 
   // IronCalc recalculation: sheet ids resolve through the session's file
@@ -2987,6 +3083,17 @@ export function registerSheetsIpc(): void {
   ipcMain.handle(IPC_CHANNELS.printWorkbook, async (event, input: unknown) => {
     sessionFor(event)
     return printWorkbook(event, workbookExportPdfRequestSchema.parse(input))
+  })
+
+  ipcMain.handle(IPC_CHANNELS.listPrinters, async (event) => {
+    sessionFor(event)
+    const printers = await event.sender.getPrintersAsync()
+    return printers.map((printer) =>
+      printerInfoSchema.parse({
+        name: printer.name,
+        displayName: printer.displayName || printer.name,
+      }),
+    )
   })
 
   ipcMain.handle(IPC_CHANNELS.exportCsv, async (event, input: unknown) => {
@@ -3572,6 +3679,8 @@ export function registerSheetsAiIpc(): void {
     sessionFor(event)
     const settings = aiSettingsInputSchema.parse(input)
     writeJsonAtomic(SETTINGS_PATH(), settings)
+    for (const wc of webContents.getAllWebContents())
+      if (!wc.isDestroyed()) wc.send(IPC_CHANNELS.aiSettingsChanged)
   })
 
   ipcMain.handle(IPC_CHANNELS.aiChat, async (event, input: unknown) => {
@@ -3632,6 +3741,7 @@ export function registerSheetsAiIpc(): void {
     }
     const controller = new AbortController()
     entry.aiStreams.set(requestId, controller)
+    const unwatchSender = abortOnDestroyed(event.sender, controller)
     // wire-activity keepalive: lets the renderer's silence watchdog tell a slow turn from a dead one
     let lastPing = 0
     const ping = () => {
@@ -3682,6 +3792,7 @@ export function registerSheetsAiIpc(): void {
         })
       }
     } finally {
+      unwatchSender()
       entry.aiStreams.delete(requestId)
     }
   })
@@ -3900,6 +4011,7 @@ async function writeWorkbookTo(
   const renames: { sheetName: string; newName: string }[] = []
   const removals: string[] = []
   const hiddenChanges: { sheetName: string; hidden: boolean }[] = []
+  const tabColorStates: { sheetName: string; color: string | null }[] = []
   let orderChanged = false
   for (const op of request.sheetOps) {
     if (op.kind === 'add-sheet') {
@@ -3924,6 +4036,8 @@ async function writeWorkbookTo(
     if (op.kind === 'rename-sheet') renames.push({ sheetName, newName: op.newName })
     else if (op.kind === 'set-sheet-hidden') {
       hiddenChanges.push({ sheetName, hidden: op.hidden })
+    } else if (op.kind === 'set-sheet-tab-color') {
+      tabColorStates.push({ sheetName, color: op.color })
     } else removals.push(sheetName)
   }
   const renameByOriginal = new Map(renames.map((rename) => [rename.sheetName, rename.newName]))
@@ -3933,7 +4047,7 @@ async function writeWorkbookTo(
     return sheetName
   }
   let sheetPlan: SheetEditPlan | undefined
-  if (request.sheetOps.length > 0) {
+  if (request.sheetOps.some((op) => op.kind !== 'set-sheet-tab-color')) {
     sheetPlan = {
       renames,
       additions: [...addedSheetNames].map(([sheetId, name]) => ({
@@ -3982,6 +4096,12 @@ async function writeWorkbookTo(
         level: op.level,
         ...(op.collapsed === undefined ? {} : { collapsed: op.collapsed }),
       })
+    } else if ('summaryBelow' in op) {
+      sheetOps.push({
+        kind: op.kind,
+        summaryBelow: op.summaryBelow,
+        summaryRight: op.summaryRight,
+      })
     } else if ('hidden' in op) {
       sheetOps.push({ kind: op.kind, start: op.start, end: op.end, hidden: op.hidden })
     } else if ('style' in op) {
@@ -4022,9 +4142,9 @@ async function writeWorkbookTo(
     sheetName: resolveSheetName(state.sheetId),
     rules: state.rules,
   }))
-  const sheetProtections = request.sheetProtections.map((state) => ({
-    sheetName: resolveSheetName(state.sheetId),
-    protected: state.protected,
+  const sheetProtections = request.sheetProtections.map(({ sheetId, ...state }) => ({
+    sheetName: resolveSheetName(sheetId),
+    ...state,
   }))
   const protectedRangeStates = request.protectedRangeStates.map((state) => ({
     sheetName: resolveSheetName(state.sheetId),
@@ -4052,6 +4172,18 @@ async function writeWorkbookTo(
     columnNames: table.columnNames,
     style: table.style,
     bandedRows: table.bandedRows,
+    options: {
+      headerRow: table.headerRow,
+      totalsRow: table.totalsRow,
+      firstColumn: table.firstColumn,
+      lastColumn: table.lastColumn,
+      bandedColumns: table.bandedColumns,
+      filterButton: table.filterButton,
+    },
+  }))
+  const tableEdits = (request.tableEdits ?? []).map(({ sheetId, ...edit }) => ({
+    ...edit,
+    sheetName: resolveSheetName(sheetId),
   }))
   const pivotAdditions = request.pivotAdditions.map((pivot) => ({
     sheetName: resolveSheetName(pivot.sheetId),
@@ -4063,6 +4195,8 @@ async function writeWorkbookTo(
     rowFieldIndices: pivot.rowFieldIndices,
     columnFieldIndex: pivot.columnFieldIndex,
     pageFieldIndices: pivot.pageFieldIndices,
+    pageLevelItems: pivot.pageLevelItems,
+    pageItems: pivot.pageItems,
     rowItems: pivot.rowItems,
     rowLevelItems: pivot.rowLevelItems,
     rowLines: pivot.rowLines,
@@ -4115,6 +4249,7 @@ async function writeWorkbookTo(
     cfStates,
     dvStates,
     sheetProtections,
+    tabColorStates,
     definedNamesState: request.definedNamesState,
     themeState: request.themeState,
     workbookProtectionState: request.workbookProtectionState,
@@ -4123,6 +4258,7 @@ async function writeWorkbookTo(
     pageSetupStates,
     noteStates,
     tableAdditions,
+    tableEdits,
     pivotAdditions,
     sparklineAdditions,
     formulaValues,

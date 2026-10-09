@@ -2,7 +2,9 @@ import {
   aiPanelWidthAtPointer,
   AgyChatBar,
   AiPanelSideButton,
+  AiModelPicker,
   GeminiModelPicker,
+  type AiModelPickerBridge,
 } from '@genoffice/ui'
 import React, { useEffect, useRef, useState, useCallback } from 'react'
 import {
@@ -44,8 +46,10 @@ import {
   isQcEnabled,
   isUnsupportedImageInputError,
   mergeQcPages,
+  NO_SCREENSHOT_NOTE,
   qcSlidePage,
   QC_MAX_PAGES,
+  screenshotAllowed,
   settingsSupportVision,
 } from './slide-qc'
 import { useI18n, t as tGlobal, aiLangDirective, type TFunc } from '../i18n/locale'
@@ -352,6 +356,14 @@ function clampPanelWidth(w: number): number {
   // shell lays it out), so never let the ceiling drop below the minimum
   const max = Math.max(PANEL_WIDTH_MIN, Math.min(720, Math.round(window.innerWidth * 0.6)))
   return Math.min(Math.max(w, PANEL_WIDTH_MIN), max)
+}
+
+const MODEL_BRIDGE: AiModelPickerBridge = {
+  getSettings: () => window.slidesApi.getAiSettings(),
+  setSettings: (settings) => window.slidesApi.setAiSettings(settings),
+  onSettingsChanged: (handler) => window.slidesApi.onAiSettingsChanged(handler),
+  gskLoggedIn: () => window.slidesApi.aiGskStatus().then((s) => !!s?.loggedIn),
+  openModelSettings: () => window.slidesApi.openAiModelSettings().catch(() => {}),
 }
 
 export function AiPanel({
@@ -1056,6 +1068,8 @@ export function AiPanel({
           '\n' +
           '## Visuals and assets\n' +
           '- Photos may only use URLs from the "available images" list, at most as many image elements as URLs. With no available images, fill with typography/color blocks/shapes — never fake photos.\n' +
+          "- Use a photo only when it genuinely matches this page's content and improves it — an irrelevant or generic stock photo is worse than none. When in doubt, skip the image and compose with typography/color blocks/shapes instead.\n" +
+          '- At most 3 image elements on one page; one strong, relevant image beats several weak ones.\n' +
           '- Icon-like decoration uses the allowed shapes only (at most 4-5 per page, strongly content-related). **Never use emoji**.\n' +
           '- Data visuals: compose bars/rings/timelines from rect/donut/line shapes with sizes proportional to the real values from the brief.\n' +
           '- Solid colors only (alpha allowed) — no gradients. **No placeholders of any kind**: all copy comes from the brief’s real content.\n' +
@@ -1071,12 +1085,13 @@ export function AiPanel({
         const ctxBlock = args.context
           ? `\n\nReference material (all real names/figures/facts come from here; do not invent):\n${args.context.slice(0, 4000)}`
           : ''
+        const skeletonBlock = args.skeleton ? `\n\n${args.skeleton}` : ''
         const userMsg =
           `This is the deck's unified style (this page must follow it strictly to stay consistent across pages):\n${args.style}\n\n` +
           (args.topic ? `Deck topic: ${args.topic}\n` : '') +
           `Deck-wide narrative Core Hook: ${args.coreHook}\n\n` +
           `Now design page ${args.pageIndex}/${args.totalPages}.\n` +
-          `Title: ${args.title}\nLayout: ${args.layout}\nContent brief (use real data/facts): ${args.brief}${imgBlock}${ctxBlock}\n\n` +
+          `Title: ${args.title}\nLayout: ${args.layout}\nContent brief (use real data/facts): ${args.brief}${imgBlock}${ctxBlock}${skeletonBlock}\n\n` +
           "Return only this page's spec JSON."
         // One repair round: feed the exact validation error back so the model can fix its JSON
         let lastErr = ''
@@ -1105,6 +1120,8 @@ export function AiPanel({
       // Cloud single-page generation (gsk slide_generate): the cloud service owns HTML writing +
       // pptx conversion; the deck-level style/outline stay local.
       generatePageCloud: async (args) => {
+        // a stop that already fired must not start (and bill) another page
+        if (args.signal?.aborted) return { ok: false, error: tGlobal('aiErrStopped') }
         // Forward the panel's stop signal: the main process aborts the in-flight
         // cloud request instead of letting it run (and bill) to completion
         const cancelCloud = () => void window.slidesApi.cloudPageCancel().catch(() => {})
@@ -1116,10 +1133,13 @@ export function AiPanel({
             briefParts.push(
               `Reference material (all real names/figures/facts come from here; do not invent):\n${args.context.slice(0, 4000)}`,
             )
+          // The cloud service owns its own page prompt; the template chrome rides
+          // in as part of the style so its pages pin the same geometry
+          const styleSkill = args.skeleton ? `${args.style}\n\n${args.skeleton}` : args.style
           const res = await window.slidesApi.cloudGeneratePage({
             brief: briefParts.join('\n\n'),
             title: args.title,
-            styleSkill: args.style,
+            styleSkill,
             deckContext: {
               ...(args.topic ? { topic: args.topic } : {}),
               core_hook: args.coreHook,
@@ -1575,9 +1595,19 @@ export function AiPanel({
   }
 
   /** Current slide rendered at pixelRatio 1 (vision-friendly size); null when rendering fails */
+  /**
+   * A rendered picture of the slide, when sending one is safe.
+   *
+   * A screenshot is the one outbound path that no text projection can reach:
+   * the renderer tints a withheld run, it does not replace it, so the words are
+   * in the bitmap. There is no mask to put over them — a picture has no spans.
+   * So a slide that withholds anything gets no picture, and the caller says so,
+   * rather than the model receiving an image it was never shown the text of.
+   */
   const captureSlideShot = async (pageIndex: number): Promise<AgentImage | null> => {
     const slide = slidesRef.current[pageIndex]
     if (!slide) return null
+    if (!screenshotAllowed(slide)) return null
     try {
       const [png] = await renderSlidesToPngBase64([slide], imagesRef.current, 1)
       return png ? { base64: png, mime: 'image/png' } : null
@@ -1664,6 +1694,10 @@ export function AiPanel({
           if (shot) {
             images.push(shot)
             modelInstruction += `\n\n(Attached image: the current rendering of this slide, slideIndex ${currentRef.current}. Use it to spot visual issues the element inventory can't show.)`
+          } else {
+            // said rather than omitted: a model told nothing assumes it has the
+            // rendering and reasons about text it cannot see
+            modelInstruction += `\n\n(${NO_SCREENSHOT_NOTE})`
           }
         }
         // Clear the flag before run: loop.run sets running synchronously, leaving no re-entry window
@@ -2411,6 +2445,7 @@ export function AiPanel({
               rows={1}
             />
             <div className="ai-input-footer">
+              <AiModelPicker bridge={MODEL_BRIDGE} lang={lang} />
               <button
                 className="ai-attach-btn"
                 onClick={pickAttachments}

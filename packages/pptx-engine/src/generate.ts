@@ -27,6 +27,7 @@ import type {
   PPrDirty,
 } from './types'
 import { escapeXmlText, escapeXmlAttr } from './xml-utils'
+import { hasRedactExtIn, redactExtXml, syncRedactExt } from './redaction-xml'
 
 type BulletModel = NonNullable<Paragraph['bullet']>
 /** buSzPts wins over buSzPct (both never round-trip together). */
@@ -306,8 +307,10 @@ export function szAttr(pt: number): string {
 export function clampInt(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.round(Number.isFinite(v) ? v : min)))
 }
-/** ST_Coordinate / ST_PositiveCoordinate ceiling (EMU). */
-const COORD_MAX = 27273042316900
+/** ST_Coordinate / ST_PositiveCoordinate ceiling (EMU). Exported so the read path
+ *  (parse.ts) can bound a group's child-to-parent scale by the same range the write
+ *  path emits coordinates in. */
+export const COORD_MAX = 27273042316900
 // The numeric clamps are exported so the insert builders size their grids from
 // the same bounds their a:off/a:ext attributes are written with.
 export const clampEmu = (v: number): number => clampInt(v, -COORD_MAX, COORD_MAX)
@@ -413,6 +416,15 @@ function patchRunProps(runXml: string, run: TextRun): string {
       runXml = patchRunFont(runXml, run.fontFamily)
     }
     runXml = patchRunHlink(runXml, run)
+    // "Withheld from the model" is not one of the attributes patched above, so an
+    // existing mark would be left alone here — which is right for an untouched
+    // run. Apply or clear it when the model disagrees, otherwise clearing a mark
+    // in the editor would silently keep withholding the words on disk.
+    if (run.redact) {
+      if (!hasRedactExtIn(runXml)) runXml = syncRedactExt(runXml, 'a:rPr', run.redact)
+    } else if (hasRedactExtIn(runXml)) {
+      runXml = syncRedactExt(runXml, 'a:rPr')
+    }
   } else {
     // No rPr: inject a minimal rPr after <a:r> (no font slots injected when the font is untouched,
     // so inheritance applies)
@@ -912,12 +924,18 @@ function generateRunXml(r: TextRun): string {
         : ''
   // Run-level hyperlink: rId written back (allocated by ensureRunLinkRels for links set this session)
   const hlink = hlinkXml(r)
+  // "Withheld from the model" rides in the OOXML extension list, which the schema
+  // requires to be the last child. rebuildTxBody regenerates rPr from the model
+  // alone, so this is the only place the mark can come back on that path.
+  const redact = r.redact ? redactExtXml(r.redact) : ''
   const rprInner = ln + color + highlight + font + hlink
-  const rPr = rprInner
-    ? `<a:rPr${attrs}>${rprInner}</a:rPr>`
-    : attrs
-      ? `<a:rPr${attrs}/>`
-      : '<a:rPr/>'
+  const rPr = redact
+    ? `<a:rPr${attrs}>${rprInner}<a:extLst>${redact}</a:extLst></a:rPr>`
+    : rprInner
+      ? `<a:rPr${attrs}>${rprInner}</a:rPr>`
+      : attrs
+        ? `<a:rPr${attrs}/>`
+        : '<a:rPr/>'
   // Dynamic fields (slide number/date): <a:fld> has the same structure as <a:r>, text is the cached value, refreshed when PowerPoint opens
   if (r.field) {
     return (

@@ -64,7 +64,29 @@ function makeFakeView(): FakeView {
   }
 }
 
-vi.mock('electron', () => ({ BrowserWindow: class {} }))
+vi.mock('electron', () => ({
+  BrowserWindow: class {},
+  // the manual's view is constructed inline in tab-manager (createHelpView),
+  // unlike the editor views which arrive through mocked module factories, so
+  // the electron mock itself must construct one. Self-contained: no outside
+  // references (vi.mock factories run before the module body). The large id
+  // stays clear of makeFakeView's counter.
+  WebContentsView: class {
+    webContents = {
+      id: 900001,
+      setWindowOpenHandler: () => ({ action: 'deny' as const }),
+      loadURL: () => Promise.resolve(),
+      focus: () => {},
+      on: () => {},
+      once: () => {},
+      close: () => {},
+      reload: () => {},
+      isDestroyed: () => false,
+    }
+    setBounds = () => {}
+    setVisible = () => {}
+  },
+}))
 
 const createDocsView = vi.fn(() => makeFakeView())
 const docsQueryDirty = vi.fn(() => Promise.resolve(false))
@@ -147,6 +169,7 @@ vi.mock('../../html/src/main/html-main', () => ({
 }))
 
 import { TabManager } from '../src/main/tab-manager'
+import type { TabKind } from '../src/shared/tabs-api'
 
 const TAB_STRIP_HEIGHT = 40
 const WINDOW_WIDTH = 800
@@ -211,6 +234,36 @@ describe('initial state', () => {
 })
 
 describe('opening tabs', () => {
+  it('focuses the help tab already open instead of opening a second one', () => {
+    // F1 is a toggle-shaped key in practice: press it, read something, press it
+    // again. The help tab is closable (only Home is not), so a second copy is
+    // never what the reader meant.
+    const first = manager.openHelpTab()
+    expect(manager.list()).toHaveLength(2)
+    const second = manager.openHelpTab()
+    expect(second).toBe(first)
+    expect(manager.list()).toHaveLength(2)
+    expect(manager.list()[1]).toMatchObject({ id: first, kind: 'help', active: true })
+    expect(shellWindow.contentView.addChildView).toHaveBeenCalledTimes(1)
+  })
+
+  it('reactivates the help tab when another tab took over', () => {
+    const helpId = manager.openHelpTab()
+    const docsId = manager.openDocsTab()
+    expect(manager.list().find((t) => t.id === docsId)?.active).toBe(true)
+    manager.openHelpTab()
+    expect(manager.list().find((t) => t.id === helpId)?.active).toBe(true)
+    expect(manager.list().find((t) => t.id === docsId)?.active).toBe(false)
+  })
+
+  it('opens a fresh help tab once the previous one was closed', () => {
+    const first = manager.openHelpTab()
+    manager.closeTabWithoutPrompt(first)
+    const second = manager.openHelpTab()
+    expect(second).not.toBe(first)
+    expect(manager.list().filter((t) => t.kind === 'help')).toHaveLength(1)
+  })
+
   it('opens a docs tab, activates it, and attaches its view to the window', () => {
     const id = manager.openDocsTab()
     const tabs = manager.list()
@@ -651,6 +704,125 @@ describe('file path bookkeeping', () => {
     onChanged.mockClear()
     expect(manager.renameTabFile('/tmp/none.docx', '/tmp/new.docx')).toEqual([])
     expect(onChanged).not.toHaveBeenCalled()
+  })
+
+  /**
+   * One case per TabKind a file can live in. The shell dispatches a rename to a
+   * per-app hook on the kind renameTabFile reports, so a kind with no case here
+   * is a kind whose editor would silently keep saving to the old path. `home`
+   * carries no file, so it gets the negative case below instead of a positive
+   * one.
+   */
+  const RENAMABLE: {
+    kind: Exclude<TabKind, 'home'>
+    file: string
+    renamed: string
+    open: () => FakeView
+  }[] = [
+    {
+      kind: 'docs',
+      file: '/tmp/one.docx',
+      renamed: '/tmp/two.docx',
+      open: () => {
+        manager.openDocsTab('/tmp/one.docx')
+        return lastCreatedView(createDocsView)
+      },
+    },
+    {
+      kind: 'sheets',
+      file: '/tmp/one.xlsx',
+      renamed: '/tmp/two.xlsx',
+      open: () => {
+        manager.openSheetsTab('/tmp/one.xlsx')
+        return lastCreatedView(createSheetsView)
+      },
+    },
+    {
+      kind: 'slides',
+      file: '/tmp/one.pptx',
+      renamed: '/tmp/two.pptx',
+      open: () => {
+        manager.openSlidesTab('/tmp/one.pptx')
+        return lastCreatedView(createSlidesView)
+      },
+    },
+    {
+      kind: 'pdf',
+      file: '/tmp/one.pdf',
+      renamed: '/tmp/two.pdf',
+      open: () => {
+        manager.openPdfTab('/tmp/one.pdf')
+        return lastCreatedView(createPdfView)
+      },
+    },
+    {
+      kind: 'markdown',
+      file: '/tmp/one.md',
+      renamed: '/tmp/two.md',
+      open: () => {
+        manager.openMarkdownTab('/tmp/one.md')
+        return lastCreatedView(createMarkdownView)
+      },
+    },
+    {
+      kind: 'html',
+      file: '/tmp/one.html',
+      renamed: '/tmp/two.html',
+      open: () => {
+        manager.openHtmlTab('/tmp/one.html')
+        return lastCreatedView(createHtmlView)
+      },
+    },
+  ]
+
+  it.each(RENAMABLE)('a rename reports the $kind view', (c) => {
+    const view = c.open()
+    expect(manager.renameTabFile(c.file, c.renamed)).toEqual([
+      { kind: c.kind, webContents: view.webContents },
+    ])
+  })
+
+  it.each(RENAMABLE)('a rename retitles and repaths the $kind tab', (c) => {
+    c.open()
+    manager.renameTabFile(c.file, c.renamed)
+    const tab = manager.list().find((t) => t.id === 't1')
+    expect(tab?.filePath).toBe(c.renamed)
+    expect(tab?.title).toBe('two' + c.file.slice(c.file.lastIndexOf('.')))
+  })
+
+  it('never claims the home tab, which has no file on disk', () => {
+    const before = manager.list().map((t) => ({ id: t.id, title: t.title, filePath: t.filePath }))
+    expect(before.some((t) => t.id === 'home')).toBe(true)
+    expect(manager.renameTabFile('/tmp/one.docx', '/tmp/two.docx')).toEqual([])
+    expect(manager.list().map((t) => ({ id: t.id, title: t.title, filePath: t.filePath }))).toEqual(
+      before,
+    )
+  })
+
+  it('covers every kind the manager can open', () => {
+    // The table is checked against what the manager can actually produce rather
+    // than a hand-written list, so a new open*Tab method cannot ship without a
+    // rename case. A Record<TabKind, true> would read better, but apps/shell
+    // tsconfig includes src/** only, so nothing under tests/ ever reaches the
+    // typecheck CI runs.
+    const openers = Object.getOwnPropertyNames(TabManager.prototype).filter((name) =>
+      /^open[A-Z]\w*Tab$/.test(name),
+    )
+    expect(openers.length).toBeGreaterThanOrEqual(7)
+    const opened: string[] = []
+    for (const name of openers) {
+      const before = manager.list().length
+      const opener = (manager as unknown as Record<string, (arg?: unknown) => unknown>)[name]
+      opener?.call(manager, '/tmp/probe.probe')
+      const after = manager.list()
+      if (after.length > before) opened.push(after[after.length - 1]!.kind)
+    }
+    // file-less tabs (the in-app manual) have no path to rename, so they are
+    // opened by the enumeration but must not demand a RENAMABLE case
+    const fileless = new Set(['help'])
+    expect([...new Set(opened.filter((k) => !fileless.has(k)))].sort()).toEqual(
+      RENAMABLE.map((c) => c.kind).sort(),
+    )
   })
 
   it('finds tabs by kind and path', () => {

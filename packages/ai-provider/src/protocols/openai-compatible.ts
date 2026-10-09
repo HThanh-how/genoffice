@@ -12,7 +12,7 @@ import {
   parseToolInput,
   readCappedResponseText,
   sseErrorText,
-  sseLines,
+  sseDataEvents,
   throwIfCreditsNotice,
   throwIfToolCountOverBudget,
   throwIfToolJsonOverBudget,
@@ -237,37 +237,30 @@ async function openAiCompatibleTurn(
     }
     pendingTools.clear()
   }
-  for await (const line of sseLines(response.body, onBytes)) {
-    if (!line.startsWith('data:')) continue
-    const payload = line.slice(5).trim()
-    if (!payload) continue
-    if (payload === '[DONE]') {
+  for await (const sse of sseDataEvents(response.body, onBytes)) {
+    if (sse.raw === '[DONE]') {
       sawDone = true
       break
     }
-    // A truncated frame or a non-JSON keep-alive from a proxy should skip
-    // that event, not kill the entire AI turn with a parser error.
-    let event
-    try {
-      event = JSON.parse(payload) as {
-        choices?: Array<{
-          delta?: {
-            content?: unknown
-            /** DeepSeek/MiniMax native and LiteLLM-normalized thinking stream; OpenRouter uses `reasoning` */
-            reasoning_content?: string
-            reasoning?: string
-            tool_calls?: Array<{
-              index: number
-              id?: string
-              function?: { name?: string; arguments?: string }
-            }>
-          }
-          finish_reason?: string | null
-        }>
-        error?: { message?: string } | string
-      }
-    } catch {
-      continue
+    // A truncated frame or a non-JSON keep-alive from a proxy skips that event
+    // rather than killing the turn.
+    if (sse.json === undefined) continue
+    const event = sse.json as {
+      choices?: Array<{
+        delta?: {
+          content?: unknown
+          /** DeepSeek/MiniMax native and LiteLLM-normalized thinking stream; OpenRouter uses `reasoning` */
+          reasoning_content?: string
+          reasoning?: string
+          tool_calls?: Array<{
+            index: number
+            id?: string
+            function?: { name?: string; arguments?: string }
+          }>
+        }
+        finish_reason?: string | null
+      }>
+      error?: { message?: string } | string
     }
     if (event.error) throw new Error(sseErrorText(event.error, 'Model stream error'))
     const choice = event.choices?.[0]

@@ -156,6 +156,75 @@ export async function* sseLines(
  */
 export const MAX_TOOL_JSON_CHARS = 512_000
 
+export interface SseDataEvent {
+  raw: string
+  /** Parsed JSON body, undefined for a non-JSON payload such as `[DONE]` or a keep-alive. */
+  json: unknown
+}
+
+/**
+ * Frames the `data:` payloads of an SSE stream into whole events.
+ *
+ * A server may split one JSON body across several `data:` lines (one event, joined
+ * with a newline), or close every event with a single newline and no blank line at
+ * all. So a value that already parses as JSON is dispatched on its own and only
+ * fragments are held back and joined. The parsed body rides along so callers do
+ * not parse twice. `[DONE]` counts as whole: holding it back as a fragment left a
+ * newline-only stream that keeps its socket open waiting forever.
+ */
+export async function* sseDataEvents(
+  body: NodeJS.ReadableStream | ReadableStream<Uint8Array>,
+  onBytes?: () => void,
+): AsyncGenerator<SseDataEvent> {
+  let parts: string[] = []
+  const flush = (): SseDataEvent | undefined => {
+    if (!parts.length) return undefined
+    const raw = parts.join('\n')
+    parts = []
+    return { raw, json: parseJson(raw) }
+  }
+  for await (const line of sseLines(body, onBytes)) {
+    if (!line.startsWith('data:')) {
+      const held = flush()
+      if (held) yield held
+      continue
+    }
+    const raw = line.slice(5).trim()
+    if (!raw) continue
+    const json = parseJson(raw)
+    if (raw === '[DONE]' || json !== undefined) {
+      const held = flush()
+      if (held) yield held
+      yield { raw, json }
+      continue
+    }
+    // Only a JSON opener starts a fragment; anything else alone is a keep-alive.
+    if (!parts.length && !/^[[{]/.test(raw)) {
+      yield { raw, json }
+      continue
+    }
+    parts.push(raw)
+    // Dispatch as soon as the joined fragments form a body, so a later keep-alive
+    // is not glued onto it.
+    const joined = parts.join('\n')
+    const whole = parseJson(joined)
+    if (whole !== undefined) {
+      parts = []
+      yield { raw: joined, json: whole }
+    }
+  }
+  const held = flush()
+  if (held) yield held
+}
+
+function parseJson(value: string): unknown {
+  try {
+    return JSON.parse(value) as unknown
+  } catch {
+    return undefined
+  }
+}
+
 export function throwIfToolJsonOverBudget(jsonLength: number, provider: string): void {
   if (jsonLength > MAX_TOOL_JSON_CHARS) {
     throw new Error(

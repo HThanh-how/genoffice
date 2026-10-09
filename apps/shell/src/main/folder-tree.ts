@@ -39,6 +39,8 @@ export const TREE_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
   'pdf',
   'md',
   'markdown',
+  'txt',
+  'json',
   'html',
   'htm',
 ])
@@ -87,14 +89,14 @@ function realOrResolved(path: string): string {
   }
 }
 
+/** `dir` with exactly one trailing separator (a drive root such as `D:\\` already has it). */
+const withTrailingSep = (dir: string): string => (dir.endsWith(sep) ? dir : dir + sep)
+
 /**
  * True when `path` is the root or lives under it. Existing paths compare by
  * real path (so a symlink pointing outside is rejected); a not-yet-existing
  * target compares by its nearest existing ancestor.
  */
-/** `dir` with exactly one trailing separator (a drive root such as `D:\\` already has it). */
-const withTrailingSep = (dir: string): string => (dir.endsWith(sep) ? dir : dir + sep)
-
 export function isInsideRoot(root: string, path: string): boolean {
   const realRoot = realOrResolved(root)
   let probe = resolve(path)
@@ -164,9 +166,15 @@ export function listFolder(dir: string, starredPaths: ReadonlySet<string>): Fold
 
 /** the candidates below `dir` at any depth; bookkeeping filters tracked paths instead of walking the disk */
 export function pathsUnder(dir: string, candidates: Iterable<string>): string[] {
-  const prefix = withTrailingSep(resolve(dir))
+  const base = resolve(dir)
+  const prefix = withTrailingSep(base)
   const out = new Set<string>()
-  for (const path of candidates) if (resolve(path).startsWith(prefix)) out.add(path)
+  for (const path of candidates) {
+    const resolved = resolve(path)
+    if (resolved !== base && resolved.startsWith(prefix)) {
+      out.add(path)
+    }
+  }
   return [...out]
 }
 

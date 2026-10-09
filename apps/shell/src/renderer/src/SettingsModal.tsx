@@ -14,12 +14,13 @@ import {
 } from '@genoffice/ui'
 import type { AiFontSize, AiPanelPrefs, AiPanelSide } from '@genoffice/ui'
 import type {
+  DecisionEndpoint,
   DefaultAppStatus,
   FileSearchSettings,
-  JevEndpoint,
   LegacyDocSettings,
   LegacyRecoveryEntry,
 } from '../../shared/home-api'
+import type { UpdateUiState } from '../../shared/update-api'
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
   MAX_MAX_OUTPUT_TOKENS,
@@ -36,7 +37,7 @@ import type {
 } from '@genoffice/ai-provider'
 import { useI18n } from './locale'
 import type { StringKey, TFunc } from './locale'
-import type { AiCatalogEntry, UiTheme } from '../../shared/home-api'
+import type { AiCatalogEntry, DocTheme, UiTheme } from '../../shared/home-api'
 import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import { DocumentMemorySettings } from './DocumentMemorySettings'
@@ -205,6 +206,14 @@ const THEME_OPTIONS = [
   { value: 'light', labelKey: 'themeLight' },
   { value: 'dark', labelKey: 'themeDark' },
 ] as const satisfies readonly { value: UiTheme; labelKey: StringKey }[]
+
+// Document page theme (genoffice#1811): the canvas/paper preference the editors follow;
+// 'follow' keeps the pre-existing behavior of riding the UI theme
+const DOC_THEME_OPTIONS = [
+  { value: 'follow', labelKey: 'docThemeFollowApp' },
+  { value: 'light', labelKey: 'themeLight' },
+  { value: 'dark', labelKey: 'themeDark' },
+] as const satisfies readonly { value: DocTheme; labelKey: StringKey }[]
 
 const AI_FONT_SIZE_OPTIONS = [
   { value: 'default', labelKey: 'aiFontSizeDefault' },
@@ -432,26 +441,43 @@ function AiModelPane({ t }: { t: TFunc }) {
     )
   }, [])
 
+  // Re-read on every outside write (composer model chip) while the form has no
+  // unsaved edits; a dirty form keeps the user's draft and saves it as is.
+  const dirtyRef = useRef(dirty)
+  dirtyRef.current = dirty
+  /** bumped on every outside reload so a connection test that was still running reports nothing */
+  const testSeqRef = useRef(0)
   useEffect(() => {
     let alive = true
-    void window.aiOffice.getAiSettings?.().then((s) => {
-      if (!alive || !s) return
-      // The switch is disabled with genspark, so never present it stranded
-      // off. Display-only: s.provider may be the activeProvider fallback for
-      // a half-configured BYOK selection, so writing anything back here would
-      // clobber the stored choice — the main process heals a genuine legacy
-      // genspark+off file itself, judged on the raw stored provider.
-      if (s.provider === 'genspark' && s.gskToolsEnabled === false) {
-        s = { ...s, gskToolsEnabled: true }
-      }
-      setSettings(s)
-      const codex = s.providers.codex
-      if (codex) {
-        void refreshCodexModels(codex.cliPath ?? '', codex.model).catch(() => undefined)
-      }
+    const load = () => {
+      void window.aiOffice.getAiSettings?.().then((s) => {
+        if (!alive || !s) return
+        testSeqRef.current += 1
+        setTesting(false)
+        setTestResult(null)
+        setSaved(false)
+        // The switch is disabled with genspark, so never present it stranded
+        // off. Display-only: s.provider may be the activeProvider fallback for
+        // a half-configured BYOK selection, so writing anything back here would
+        // clobber the stored choice — the main process heals a genuine legacy
+        // genspark+off file itself, judged on the raw stored provider.
+        if (s.provider === 'genspark' && s.gskToolsEnabled === false) {
+          s = { ...s, gskToolsEnabled: true }
+        }
+        setSettings(s)
+        const codex = s.providers.codex
+        if (codex) {
+          void refreshCodexModels(codex.cliPath ?? '', codex.model).catch(() => undefined)
+        }
+      })
+    }
+    load()
+    const off = window.aiOffice.onAiSettingsChanged?.(() => {
+      if (!dirtyRef.current) load()
     })
     return () => {
       alive = false
+      off?.()
     }
   }, [refreshCodexModels])
 
@@ -611,19 +637,24 @@ function AiModelPane({ t }: { t: TFunc }) {
       })
   }
   const test = () => {
+    const seq = ++testSeqRef.current
     setTesting(true)
     setTestResult(null)
     testAiSettingsFor(settings, t('setAiTestFail'))
       ?.then((r) => {
+        if (seq !== testSeqRef.current) return
         setTestResult(r ?? { ok: false })
         if (r?.ok && isCodex) {
           void refreshCodexModels(config.cliPath ?? '', config.model).catch(() => undefined)
         }
       })
-      .catch((error) =>
-        setTestResult({ ok: false, error: error instanceof Error ? error.message : String(error) }),
-      )
-      .finally(() => setTesting(false))
+      .catch((error) => {
+        if (seq !== testSeqRef.current) return
+        setTestResult({ ok: false, error: error instanceof Error ? error.message : String(error) })
+      })
+      .finally(() => {
+        if (seq === testSeqRef.current) setTesting(false)
+      })
   }
 
   return (
@@ -831,18 +862,24 @@ function AiModelPane({ t }: { t: TFunc }) {
 }
 
 type Capability = 'image' | 'analysis' | 'video' | 'search'
-/** a tested block: the four capabilities plus the Jev reranker of the local file search */
+/** a tested block: the four capabilities plus the decision-model reranker of the local file search */
 type TestedBlock = Capability | 'rerank'
-/** where an outside entry point (e.g. the home list's Jev button) lands when it opens the modal */
+/** where an outside entry point (e.g. the home list's rerank button) lands when it opens the modal */
 export interface SettingsTarget {
   section: SectionId
   block?: TestedBlock
 }
 type TestResult = { ok: boolean; error?: string }
 
-const JEV_ENDPOINTS: { value: JevEndpoint; label: string }[] = [
-  { value: 'openrouter', label: 'OpenRouter' },
-  { value: 'direct', label: 'TypeSafe' },
+/** Jev routes first (OpenRouter is the default), then the other decision-model servers */
+const DECISION_ENDPOINTS: { value: DecisionEndpoint; label: string }[] = [
+  { value: 'openrouter', label: 'Jev (OpenRouter)' },
+  { value: 'direct', label: 'Jev (TypeSafe API)' },
+  { value: 'perplexity', label: 'Perplexity' },
+  { value: 'cloudflare', label: 'Cloudflare' },
+  { value: 'kev', label: 'Kev (local)' },
+  { value: 'rizzo', label: 'Rizzo Flow (local)' },
+  { value: 'custom', label: 'Custom (/v1/systemone)' },
 ]
 
 /**
@@ -883,16 +920,32 @@ function AiMediaPane({
     el.scrollIntoView({ block: 'start' })
   }
 
+  const dirtyRef = useRef(dirty)
+  dirtyRef.current = dirty
+  const testSeqRef = useRef(0)
   useEffect(() => {
     let alive = true
-    void window.aiOffice.getAiSettings?.().then((s) => {
-      if (alive && s) setSettings(s)
-    })
+    const load = () => {
+      void window.aiOffice.getAiSettings?.().then((s) => {
+        if (!alive || !s) return
+        testSeqRef.current += 1
+        setTesting(false)
+        setTestResults(null)
+        setSaved(false)
+        setSettings(s)
+      })
+    }
+    load()
     void window.aiOffice.getFileSearchSettings?.().then((v) => {
       if (alive && v) setFileSearchState(v)
     })
+    // this pane saves the whole file too: follow chip switches while clean
+    const off = window.aiOffice.onAiSettingsChanged?.(() => {
+      if (!dirtyRef.current) load()
+    })
     return () => {
       alive = false
+      off?.()
     }
   }, [])
 
@@ -952,6 +1005,7 @@ function AiMediaPane({
   }
   // every block reports its own verdict; blocks sharing a vendor share that vendor's one check
   const test = async () => {
+    const seq = ++testSeqRef.current
     setTesting(true)
     setTestResults(null)
     const results: Partial<Record<TestedBlock, TestResult>> = {}
@@ -991,11 +1045,7 @@ function AiMediaPane({
     if (fileSearch?.rerank) {
       blocks.push([
         'rerank',
-        () =>
-          window.aiOffice.testFileSearchRerank?.({
-            endpoint: fileSearch.jevEndpoint,
-            apiKey: fileSearch.jevKeys[fileSearch.jevEndpoint],
-          }) ?? Promise.resolve(fallback),
+        () => window.aiOffice.testFileSearchRerank?.(fileSearch) ?? Promise.resolve(fallback),
       ])
     }
     await Promise.all(
@@ -1010,6 +1060,7 @@ function AiMediaPane({
         }
       }),
     )
+    if (seq !== testSeqRef.current) return
     setTestResults(results)
     setTesting(false)
   }
@@ -1026,7 +1077,7 @@ function AiMediaPane({
             : t('setAiCapFileSearch')
   const blockProvider = (block: TestedBlock) => {
     if (block === 'rerank')
-      return JEV_ENDPOINTS.find((e) => e.value === fileSearch?.jevEndpoint)?.label ?? ''
+      return DECISION_ENDPOINTS.find((e) => e.value === fileSearch?.endpoint)?.label ?? ''
     if (block === 'search')
       return searchCatalog.find((m) => m.id === search.provider)?.label ?? search.provider
     const id =
@@ -1150,6 +1201,35 @@ function AiMediaPane({
         id={id}
         className="set-input"
         type="password"
+        value={value}
+        placeholder={placeholder}
+        spellCheck={false}
+        autoComplete="off"
+        onChange={(e) => onChange(e.target.value.trim())}
+      />
+    </div>
+  )
+
+  /** a plain text row with an i18n label; used for the decision-endpoint extra fields */
+  const textRow = (
+    id: string,
+    labelKey: StringKey,
+    value: string,
+    placeholder: string,
+    onChange: (v: string) => void,
+  ) => (
+    <div className="set-field">
+      <div className="set-field-text">
+        <div className="set-field-stack">
+          <label className="set-field-label" htmlFor={id}>
+            {t(labelKey)}
+          </label>
+        </div>
+      </div>
+      <input
+        id={id}
+        className="set-input"
+        type="text"
         value={value}
         placeholder={placeholder}
         spellCheck={false}
@@ -1332,26 +1412,57 @@ function AiMediaPane({
                 </div>
                 <Dropdown
                   className="set-dd"
-                  value={fileSearch.jevEndpoint}
+                  value={fileSearch.endpoint}
                   ariaLabel={t('setSearchRerankEndpoint')}
-                  options={JEV_ENDPOINTS}
-                  onPick={(v) =>
-                    setFileSearch({
-                      ...fileSearch,
-                      jevEndpoint: v === 'direct' ? 'direct' : 'openrouter',
-                    })
-                  }
+                  options={DECISION_ENDPOINTS}
+                  onPick={(v) => setFileSearch({ ...fileSearch, endpoint: v as DecisionEndpoint })}
                 />
               </div>
               {keyRow(
                 'set-search-jev-key',
-                fileSearch.jevKeys[fileSearch.jevEndpoint],
-                fileSearch.jevEndpoint === 'openrouter' ? 'sk-or-…' : 'API Key',
+                fileSearch.keys[fileSearch.endpoint],
+                fileSearch.endpoint === 'openrouter' ? 'sk-or-…' : 'API Key',
                 (v) =>
                   setFileSearch({
                     ...fileSearch,
-                    jevKeys: { ...fileSearch.jevKeys, [fileSearch.jevEndpoint]: v },
+                    keys: { ...fileSearch.keys, [fileSearch.endpoint]: v },
                   }),
+              )}
+              {fileSearch.endpoint === 'custom' && (
+                <>
+                  {textRow(
+                    'set-search-jev-url',
+                    'setSearchRerankCustomUrl',
+                    fileSearch.customBaseUrl,
+                    'http://127.0.0.1:8009/v1/systemone',
+                    (v) => setFileSearch({ ...fileSearch, customBaseUrl: v }),
+                  )}
+                  {textRow(
+                    'set-search-jev-model',
+                    'setSearchRerankCustomModel',
+                    fileSearch.customModel,
+                    'kev-latest',
+                    (v) => setFileSearch({ ...fileSearch, customModel: v }),
+                  )}
+                </>
+              )}
+              {fileSearch.endpoint === 'cloudflare' && (
+                <>
+                  {textRow(
+                    'set-search-jev-account',
+                    'setSearchRerankAccount',
+                    fileSearch.cloudflareAccountId,
+                    '',
+                    (v) => setFileSearch({ ...fileSearch, cloudflareAccountId: v }),
+                  )}
+                  {textRow(
+                    'set-search-jev-cf-model',
+                    'setSearchRerankCustomModel',
+                    fileSearch.cloudflareModel,
+                    '@cf/cloudflare/clef',
+                    (v) => setFileSearch({ ...fileSearch, cloudflareModel: v }),
+                  )}
+                </>
               )}
             </>
           )}
@@ -1419,7 +1530,7 @@ function AiStatusPill({ status }: { status: AiStatus | null }) {
 
 export interface SettingsModalProps {
   onClose: () => void
-  /** the Jev search settings were saved; the home search re-judges or drops its current order */
+  /** the decision-model search settings were saved; the home search re-judges or drops its current order */
   onFileSearchChange?: () => void
   /** an installed skill is older than the bundled one: dot on the Integrations entry */
   skillUpdateDue?: boolean
@@ -1437,7 +1548,11 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const { lang, setLang, t } = useI18n()
   const [section, setSection] = useState<SectionId>(target?.section ?? 'general')
+  useEffect(() => {
+    if (target) setSection(target.section)
+  }, [target])
   const [theme, setTheme] = useState<UiTheme>('system')
+  const [docTheme, setDocTheme] = useState<DocTheme>('follow')
   const [saveDir, setSaveDir] = useState('')
   const [analyticsOn, setAnalyticsOn] = useState(true)
   const [analyticsSaving, setAnalyticsSaving] = useState(false)
@@ -1466,11 +1581,15 @@ export function SettingsModal({
   const [legacyRecoveryError, setLegacyRecoveryError] = useState('')
   const [appVersion, setAppVersion] = useState('')
   const [githubStars, setGithubStars] = useState<number | null>(null)
+  const [updateState, setUpdateState] = useState<UpdateUiState | null>(null)
 
   useEffect(() => {
     let alive = true
     void window.aiOffice.getTheme?.().then((th) => {
       if (alive) setTheme(th)
+    })
+    void window.aiOffice.getDocumentTheme?.().then((th) => {
+      if (alive) setDocTheme(th)
     })
     void window.aiOffice.getDefaultSaveDir?.().then((dir) => {
       if (alive && dir) setSaveDir(dir)
@@ -1513,12 +1632,27 @@ export function SettingsModal({
     void window.aiOffice.getAppVersion?.().then((v) => {
       if (alive && v) setAppVersion(v)
     })
+    // a rejected invoke (main process not ready, a shell whose preload does
+    // not expose the channel) must not surface as an unhandled rejection;
+    // without a known state the About row simply stays hidden
+    void window.aiOffice
+      .getUpdateState?.()
+      .then((s) => {
+        if (alive) setUpdateState(s)
+      })
+      .catch(() => undefined)
     void window.aiOffice.githubStars?.().then((n) => {
       if (alive && n !== null) setGithubStars(n)
     })
     return () => {
       alive = false
     }
+  }, [])
+
+  // live update state: the About row offers the update as soon as one is known
+  useEffect(() => {
+    const off = window.aiOffice.onUpdateStateChanged?.((s) => setUpdateState(s))
+    return () => off?.()
   }, [])
 
   useEffect(() => {
@@ -1558,6 +1692,11 @@ export function SettingsModal({
         )
       })
       .finally(() => setLegacyRecoveryBusy(null))
+  }
+
+  const applyDocumentTheme = (next: DocTheme) => {
+    setDocTheme(next)
+    void window.aiOffice.setDocumentTheme(next)
   }
 
   const updateAiPrefs = (patch: Partial<AiPanelPrefs>) => {
@@ -1683,6 +1822,21 @@ export function SettingsModal({
                         label: t(opt.labelKey),
                       }))}
                       onPick={(v) => applyTheme(v as UiTheme)}
+                    />
+                  </div>
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <label className="set-field-label">{t('documentTheme')}</label>
+                    </div>
+                    <Dropdown
+                      className="set-dd"
+                      value={docTheme}
+                      ariaLabel={t('documentTheme')}
+                      options={DOC_THEME_OPTIONS.map((opt) => ({
+                        value: opt.value,
+                        label: t(opt.labelKey),
+                      }))}
+                      onPick={(v) => applyDocumentTheme(v as DocTheme)}
                     />
                   </div>
                   <div className="set-field">
@@ -2077,6 +2231,26 @@ export function SettingsModal({
                       </button>
                     }
                   />
+                  {updateState && (
+                    <div className="set-field">
+                      <div className="set-field-text">
+                        <label className="set-field-label">{t('setUpdateAvailableLabel')}</label>
+                      </div>
+                      <button
+                        type="button"
+                        className="set-update-btn"
+                        onClick={() => void window.aiOffice.openUpdateDialog?.()}
+                      >
+                        {updateState.phase === 'downloading'
+                          ? t('setUpdateDownloading', {
+                              percent: Math.round(updateState.percent),
+                            })
+                          : updateState.phase === 'downloaded'
+                            ? t('setUpdateRestart')
+                            : t('setUpdateTo', { version: updateState.version })}
+                      </button>
+                    </div>
+                  )}
                   <div className="set-field">
                     <label className="set-field-label">{t('updateSourceLabel')}</label>
                     <Dropdown

@@ -197,6 +197,13 @@ describe('offsetFormulaRefs', () => {
   it('shifts lowercase cell refs and whole-column spans on fill', () => {
     expect(offsetFormulaRefs('=sum(a1:b2)+sum($b:d)', 0, 1)).toBe('=sum(B1:C2)+sum($B:E)')
   })
+
+  it('shifts external-workbook references instead of skipping their bracket prefix', () => {
+    expect(offsetFormulaRefs("='[1]Sheet 1'!A3+A3", 1, 0)).toBe("='[1]Sheet 1'!A4+A4")
+    expect(offsetFormulaRefs('=[Book.xlsx]Sheet1!A3+Table1[@Q1]', 1, 0)).toBe(
+      '=[Book.xlsx]Sheet1!A4+Table1[@Q1]',
+    )
+  })
 })
 
 describe('shiftFormulaRefs cross-sheet', () => {
@@ -250,6 +257,44 @@ describe('shiftFormulaRefs literals and names', () => {
   it('returns the input unchanged for sheet-level ops', () => {
     const result = shiftFormulaRefs('=A1', { op: 'add_sheet', name: 'New' }, true, SHEET)
     expect(result).toEqual({ formula: '=A1', changed: false, hasRefError: false })
+  })
+})
+
+describe('shiftFormulaRefs structured references', () => {
+  // A structured reference names a COLUMN, not a cell: Table1[Q1] is the Q1 column
+  // and must not move when rows are inserted, while a real ref in the same formula
+  // still shifts.
+  it('leaves a bracketed column name alone but still shifts the real refs', () => {
+    const result = shiftFormulaRefs('=SUM(Table1[Q1],A3)', insertRows(2, 1), true, SHEET)
+    expect(result.formula).toBe('=SUM(Table1[Q1],A4)')
+  })
+
+  it('leaves the this-row form alone', () => {
+    const result = shiftFormulaRefs('=SUM(Table1[@Q1],A3)', insertRows(2, 1), true, SHEET)
+    expect(result.formula).toBe('=SUM(Table1[@Q1],A4)')
+  })
+
+  it('leaves a padded column name alone', () => {
+    const result = shiftFormulaRefs('=SUM(Table1[ Q1 ],A3)', insertRows(2, 1), true, SHEET)
+    expect(result.formula).toBe('=SUM(Table1[ Q1 ],A4)')
+  })
+
+  it('leaves a nested header reference alone', () => {
+    const result = shiftFormulaRefs(
+      '=SUM(Table1[[#Headers],[Q1]],A3)',
+      insertRows(2, 1),
+      true,
+      SHEET,
+    )
+    expect(result.formula).toBe('=SUM(Table1[[#Headers],[Q1]],A4)')
+  })
+
+  it('handles several references and a column insert', () => {
+    const result = shiftFormulaRefs('=SUM(Table1[Q1],B3)', insertRows(2, 1), true, SHEET)
+    expect(result.formula).toBe('=SUM(Table1[Q1],B4)')
+
+    const colInsert = shiftFormulaRefs('=SUM(Table1[Q1],B3)', insertCols('B', 1), true, SHEET)
+    expect(colInsert.formula).toBe('=SUM(Table1[Q1],C3)')
   })
 })
 

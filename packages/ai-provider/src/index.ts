@@ -80,7 +80,7 @@ export type {
   ProviderCapabilities,
   ResolvedEndpoint,
 } from './registry'
-export { sanitizeAiSettings, validCliPath } from './ai-settings-guard'
+export { sanitizeAiSettings, sanitizeCliPath, validCliPath } from './ai-settings-guard'
 export { chatForProvider } from './chat'
 export { listGeminiModels } from './gemini-models'
 export type { GeminiModelInfo } from './gemini-models'

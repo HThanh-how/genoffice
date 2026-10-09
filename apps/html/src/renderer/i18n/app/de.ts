@@ -1,6 +1,15 @@
 import type { zh } from './zh'
 
 export const de = {
+  redactMenuLabel: 'Auswahl vor der KI verbergen',
+  redactDialogDesc:
+    'Die Wörter bleiben im Dokument und in der Datei; das Modell sieht nur den Platzhalter. Geben Sie ihm einen Namen.',
+  redactDialogScope:
+    'Das Verbergen gilt nur für die KI dieser App. CLI, MCP-Tools und der Headless-Export lesen die Datei direkt und sehen diese Wörter weiterhin.',
+  redactDialogPlaceholder: 'Name des Platzhalters, z. B. Telefonnummer des Kunden',
+  redactCancel: 'Abbrechen',
+  redactInsert: 'Verbergen',
+
   loading: 'Wird geladen…',
   loadFailed: 'Datei konnte nicht geöffnet werden',
   untitled: 'Unbenannt',
@@ -122,6 +131,7 @@ export const de = {
   insertImageUrl: 'Bild von URL…',
   insertConfirm: 'Einfügen',
   insertMore: 'Mehr',
+  insertSkeleton: 'Grundgerüst einfügen',
   insertTableSize: '{r}×{c} Tabelle',
   insertTablePickSize: 'Tabellengröße auswählen',
   insertPlaceholderTableHeader: 'Kopfzeile {n}',

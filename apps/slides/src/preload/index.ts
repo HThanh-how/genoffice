@@ -393,6 +393,12 @@ const api: SlidesApi = {
   getAiSettings: () => ipcRenderer.invoke('ai:get-settings'),
   getGeminiModels: () => ipcRenderer.invoke('ai:gemini-chat-models'),
   setAiSettings: (settings: AiSettings) => ipcRenderer.invoke('ai:set-settings', settings),
+  onAiSettingsChanged: (handler: () => void) => {
+    const listener = () => handler()
+    ipcRenderer.on('ai:settings-changed', listener)
+    return () => ipcRenderer.removeListener('ai:settings-changed', listener)
+  },
+  openAiModelSettings: () => ipcRenderer.invoke('ai:open-model-settings'),
   aiStream: (request: AiStreamRequest) => ipcRenderer.invoke('ai:stream', request),
   aiStreamCancel: (requestId: string) => ipcRenderer.invoke('ai:stream-cancel', requestId),
   aiGskStatus: (withEmail?: boolean) => ipcRenderer.invoke('ai:gsk-status', withEmail),
@@ -443,7 +449,7 @@ const api: SlidesApi = {
     ipcRenderer.invoke('ai:save-sidecar', data),
   saveStyleTemplate: (
     name: string,
-    data: { topic: string; styleSkill: string; createdAt: string },
+    data: { topic: string; styleSkill: string; createdAt: string; layout?: unknown },
   ) => ipcRenderer.invoke('ai:save-style-template', name, data),
   listStyleTemplates: () => ipcRenderer.invoke('ai:list-style-templates'),
   loadStyleTemplate: (name: string) => ipcRenderer.invoke('ai:load-style-template', name),

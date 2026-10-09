@@ -300,8 +300,11 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
             finish()
             if (chunk.stopReason) cb.onStopReason?.(chunk.stopReason)
             cb.onDone()
-          } else {
+          } else if (chunk.type === 'error') {
             handleError(chunk.error ?? '', emitted, chunk.errorCode)
+          } else {
+            // A chunk kind this build predates must not kill the run; traffic proves it is alive.
+            armSilence()
           }
         })
         armSilence()

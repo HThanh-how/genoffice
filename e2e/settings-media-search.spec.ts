@@ -35,14 +35,14 @@ test('Jev reranking lives in the AI Media & Search pane, saves with it, and repo
     await expect(toggle).toHaveAttribute('aria-checked', 'false')
     await toggle.click()
     await block.getByRole('button', { name: 'Jev endpoint', exact: true }).click()
-    await page.getByRole('option', { name: 'TypeSafe', exact: true }).click()
+    await page.getByRole('option', { name: 'Jev (TypeSafe API)', exact: true }).click()
 
     // the block reports its own verdict: no key entered, nothing leaves the machine
     await page.getByRole('button', { name: 'Test connection', exact: true }).click()
     await expect(block.locator('.set-ai-status.err')).toHaveText('Enter an API key')
     // The footer names the failing local file search block and provider.
     await expect(page.locator('.set-pane-actions .set-ai-status.err')).toHaveText(
-      /^Local file search · TypeSafe: .+/,
+      /^Local file search · Jev \(TypeSafe API\): .+/,
     )
     await page.screenshot({ path: screenshotPath('settings-media-search-test') })
 
@@ -56,8 +56,20 @@ test('Jev reranking lives in the AI Media & Search pane, saves with it, and repo
       })
       .toEqual({
         rerank: true,
-        jevEndpoint: 'direct',
-        jevKeys: { openrouter: '', direct: 'ts-key' },
+        endpoint: 'direct',
+        keys: {
+          openrouter: '',
+          direct: 'ts-key',
+          perplexity: '',
+          cloudflare: '',
+          kev: '',
+          rizzo: '',
+          custom: '',
+        },
+        customBaseUrl: '',
+        customModel: '',
+        cloudflareAccountId: '',
+        cloudflareModel: '@cf/cloudflare/clef',
       })
   } finally {
     await closeAndSaveVideo(launched, 'settings-media-search')

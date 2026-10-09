@@ -135,10 +135,7 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
   {
     id: 'kimi',
     label: 'Kimi',
-    // K2.8 Preview (2026-09-11) sits between the code-tuned K2.7 and the K3
-    // flagship: 1M context and image/video input, closed weights, thinking
-    // effort low/high/max with max the default
-    models: ['kimi-k3', 'kimi-k2.8-preview'],
+    models: ['kimi-k3'],
     defaultModel: 'kimi-k3',
     keyPlaceholder: 'sk-...',
   },
@@ -197,6 +194,38 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     models: ['hy4-preview', 'hy3'],
     defaultModel: 'hy4-preview',
     keyPlaceholder: 'sk-...',
+  },
+  {
+    id: 'ling',
+    label: 'Ling',
+    // Ids as listed by developer.ant-ling.com (Ring = reasoning line); only
+    // Ling-3.0-flash-VL takes images, see modelLacksVision()
+    models: [
+      'Ling-3.0-flash',
+      'Ling-3.0-flash-VL',
+      'Ling-3.0-tiny',
+      'Ling-2.6-1T',
+      'Ring-2.6-1T',
+      'Ling-2.6-flash',
+    ],
+    defaultModel: 'Ling-3.0-flash',
+    keyPlaceholder: 'API Key',
+  },
+  {
+    id: 'spark',
+    label: 'Spark',
+    // iFlytek MaaS: lower-case model id and ak- key prefix are the vendor's own spelling
+    models: ['spark-x2.5'],
+    defaultModel: 'spark-x2.5',
+    keyPlaceholder: 'ak-...',
+  },
+  {
+    id: 'longcat',
+    label: 'LongCat',
+    // 2.5-Preview is the multimodal tier; 2.0 stays default so a fresh config avoids a preview
+    models: ['LongCat-2.5-Preview', 'LongCat-2.0'],
+    defaultModel: 'LongCat-2.0',
+    keyPlaceholder: 'API Key',
   },
   {
     id: 'minimax',
@@ -292,6 +321,31 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     models: ['gpt-5.4-mini', 'gpt-5.4', 'claude-sonnet-5', 'gemini-3.1-pro'],
     defaultModel: 'gpt-5.4-mini',
     keyPlaceholder: 'ci_live_...',
+  },
+  {
+    id: 'atlascloud',
+    label: 'Atlas Cloud',
+    // Lab-namespaced ids exactly as GET api.atlascloud.ai/v1/models lists them
+    // (2026-10-08, public endpoint, no key needed); the rest of the 117-model
+    // catalog works as-is when typed in. Chat, temperature and — for the
+    // multimodal ids — data-URI image input are live-verified. The text-only
+    // ids (deepseek-v4-*, glm-5.3, both MiniMax) are listed in
+    // modelLacksVision(); Atlas Cloud serves MiniMax M3 text-only even though
+    // MiniMax's own API takes images.
+    models: [
+      'deepseek-ai/deepseek-v4-pro',
+      'deepseek-ai/deepseek-v4-flash',
+      'moonshotai/kimi-k3',
+      'moonshotai/kimi-k2.6',
+      'zai-org/glm-5.3',
+      'zai-org/glm-5.3-flash',
+      'qwen/qwen3.8-max',
+      'qwen/qwen3.5-flash',
+      'minimaxai/minimax-m3',
+      'minimaxai/minimax-m2.5',
+    ],
+    defaultModel: 'deepseek-ai/deepseek-v4-pro',
+    keyPlaceholder: 'apikey-...',
   },
   {
     id: 'opencode-zen',
@@ -420,6 +474,8 @@ const RETIRED_MODELS: Partial<Record<AiProviderId, Record<string, string>>> = {
   // proxy stopped serving bare gpt-5.6 (400) and removed the gemini route
   // entirely (405), verified 2026-08-31; gemini selections fall back to the
   // provider default since no gemini id is served at all
+  // 5-Turbo left the Z.ai price card late 2026-08; 5.3 Flash is the cheap tier now
+  glm: { 'glm-5-turbo': 'glm-5.3-flash' },
   genspark: {
     'gpt-5.6': 'gpt-5.6-terra',
     'gemini-3.1-pro-preview': 'claude-opus-4-7',

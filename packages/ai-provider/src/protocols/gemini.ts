@@ -11,7 +11,7 @@ import {
   jsonBodyInsteadOfSse,
   readCappedResponseText,
   sseErrorText,
-  sseLines,
+  sseDataEvents,
   throwIfCreditsNotice,
   throwIfToolCountOverBudget,
   type StreamCallbacks,
@@ -276,25 +276,18 @@ async function geminiTurn(
   let sawFinish = false
   let emitted = false
   let toolCallCount = 0
-  for await (const line of sseLines(response.body, onBytes)) {
-    if (!line.startsWith('data:')) continue
-    const payload = line.slice(5).trim()
-    if (!payload) continue
-    // A truncated frame or a non-JSON keep-alive from a proxy should skip
-    // that event, not kill the entire AI turn with a parser error.
-    let event
-    try {
-      event = JSON.parse(payload) as {
-        candidates?: Array<{
-          content?: { parts?: GeminiPart[] }
-          finishReason?: string
-        }>
-        promptFeedback?: { blockReason?: string }
-        error?: { message?: string } | string
-        usageMetadata?: unknown
-      }
-    } catch {
-      continue
+  for await (const sse of sseDataEvents(response.body, onBytes)) {
+    // A truncated frame or a non-JSON keep-alive from a proxy skips that event
+    // rather than killing the turn.
+    if (sse.json === undefined) continue
+    const event = sse.json as {
+      candidates?: Array<{
+        content?: { parts?: GeminiPart[] }
+        finishReason?: string
+      }>
+      promptFeedback?: { blockReason?: string }
+      error?: { message?: string } | string
+      usageMetadata?: unknown
     }
     emitUsageMetadata(event.usageMetadata, cb)
     if (event.error) throw new Error(geminiErrorText(event.error, 'Gemini stream error'))

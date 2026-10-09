@@ -23,7 +23,7 @@ it('indexes plain-text names and skips generated folders consistently with conte
       writeFileSync(join(root, ...parts), 'test')
     }
     const found = scanFiles(root)
-      .map((file) => file.path)
+      .files.map((file) => file.path)
       .sort()
     expect(found).toEqual(
       files

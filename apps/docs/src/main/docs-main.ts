@@ -40,6 +40,7 @@ import {
   webContents,
 } from 'electron'
 import {
+  abortOnDestroyed,
   appMenuLabels,
   buildPrintableHtml,
   configuredDefaultSaveDir,
@@ -97,7 +98,7 @@ import {
   resolveAiSettings,
   maxOutputTokensOf,
   sanitizeAiSettings,
-  validCliPath,
+  sanitizeCliPath,
   setAiUserAgent,
   setRescueFetch,
   streamForProvider,
@@ -125,6 +126,7 @@ import {
   webSearchTool,
   imageSearchTool,
   analyzeMediaTool,
+  documentMediaRoots,
 } from '@genoffice/ai-search'
 import type {
   AiDocContent,
@@ -177,6 +179,16 @@ import {
 import { isExternallyModified, type DiskFileState } from './external-change'
 import { copyImageDisplaySize, validCopyImageDataUrl } from './copy-image-guard'
 import { printScaleOption, validPrintGeometry } from './print-args'
+import {
+  assignStarredGroup,
+  dropStarredItems,
+  readStarredItems,
+  renameStarredItem,
+  starredGroupMap,
+  starredGroupNames,
+  toggleStarredItem,
+  writeStarredItems,
+} from './starred-files'
 import { initDocsAutoUpdater } from './updater'
 import { registerZoteroIpc, teardownZoteroIpc } from './zotero-ipc'
 
@@ -318,7 +330,6 @@ const tMain = createI18n({
     menuWindow: '窗口',
     menuHelp: '帮助',
     menuShortcuts: '键盘快捷键',
-    menuDocsHelp: 'GenOffice Docs 帮助',
   },
   en: {
     dlgOpenDoc: 'Open Document',
@@ -450,7 +461,6 @@ const tMain = createI18n({
     menuWindow: 'Window',
     menuHelp: 'Help',
     menuShortcuts: 'Keyboard Shortcuts',
-    menuDocsHelp: 'GenOffice Docs Help',
   },
   vi: {
     dlgOpenDoc: 'Mở tài liệu',
@@ -583,7 +593,6 @@ const tMain = createI18n({
     menuWindow: 'Cửa sổ',
     menuHelp: 'Trợ giúp',
     menuShortcuts: 'Phím tắt bàn phím',
-    menuDocsHelp: 'Trợ giúp GenOffice Docs',
   },
   ja: {
     dlgOpenDoc: '文書を開く',
@@ -715,7 +724,6 @@ const tMain = createI18n({
     menuWindow: 'ウィンドウ',
     menuHelp: 'ヘルプ',
     menuShortcuts: 'キーボードショートカット',
-    menuDocsHelp: 'GenOffice Docs ヘルプ',
   },
   ko: {
     dlgOpenDoc: '문서 열기',
@@ -848,7 +856,6 @@ const tMain = createI18n({
     menuWindow: '창',
     menuHelp: '도움말',
     menuShortcuts: '키보드 바로 가기',
-    menuDocsHelp: 'GenOffice Docs 도움말',
   },
   fr: {
     dlgOpenDoc: 'Ouvrir un document',
@@ -982,7 +989,6 @@ const tMain = createI18n({
     menuWindow: 'Fenêtre',
     menuHelp: 'Aide',
     menuShortcuts: 'Raccourcis clavier',
-    menuDocsHelp: 'Aide GenOffice Docs',
   },
   de: {
     dlgOpenDoc: 'Dokument öffnen',
@@ -1116,7 +1122,6 @@ const tMain = createI18n({
     menuWindow: 'Fenster',
     menuHelp: 'Hilfe',
     menuShortcuts: 'Tastenkombinationen',
-    menuDocsHelp: 'GenOffice Docs-Hilfe',
   },
   es: {
     dlgOpenDoc: 'Abrir documento',
@@ -1250,7 +1255,6 @@ const tMain = createI18n({
     menuWindow: 'Ventana',
     menuHelp: 'Ayuda',
     menuShortcuts: 'Atajos de teclado',
-    menuDocsHelp: 'Ayuda de GenOffice Docs',
   },
   th: {
     dlgOpenDoc: 'เปิดเอกสาร',
@@ -1382,7 +1386,6 @@ const tMain = createI18n({
     menuWindow: 'หน้าต่าง',
     menuHelp: 'วิธีใช้',
     menuShortcuts: 'แป้นพิมพ์ลัด',
-    menuDocsHelp: 'วิธีใช้ GenOffice Docs',
   },
   id: {
     dlgOpenDoc: 'Buka Dokumen',
@@ -1514,7 +1517,6 @@ const tMain = createI18n({
     menuWindow: 'Jendela',
     menuHelp: 'Bantuan',
     menuShortcuts: 'Pintasan Papan Ketik',
-    menuDocsHelp: 'Bantuan GenOffice Docs',
   },
   ru: {
     dlgOpenDoc: 'Открыть документ',
@@ -1647,7 +1649,6 @@ const tMain = createI18n({
     menuWindow: 'Окно',
     menuHelp: 'Справка',
     menuShortcuts: 'Сочетания клавиш',
-    menuDocsHelp: 'Справка GenOffice Docs',
   },
   ar: {
     dlgOpenDoc: 'فتح مستند',
@@ -1780,7 +1781,6 @@ const tMain = createI18n({
     menuWindow: 'نافذة',
     menuHelp: 'تعليمات',
     menuShortcuts: 'اختصارات لوحة المفاتيح',
-    menuDocsHelp: 'تعليمات GenOffice Docs',
   },
   pt: {
     dlgOpenDoc: 'Abrir Documento',
@@ -1913,7 +1913,6 @@ const tMain = createI18n({
     menuWindow: 'Janela',
     menuHelp: 'Ajuda',
     menuShortcuts: 'Atalhos de Teclado',
-    menuDocsHelp: 'Ajuda do GenOffice Docs',
   },
   it: {
     dlgOpenDoc: 'Apri documento',
@@ -2046,7 +2045,6 @@ const tMain = createI18n({
     menuWindow: 'Finestra',
     menuHelp: 'Aiuto',
     menuShortcuts: 'Scelte rapide da tastiera',
-    menuDocsHelp: 'Guida di GenOffice Docs',
   },
   pl: {
     dlgOpenDoc: 'Otwórz dokument',
@@ -2179,7 +2177,6 @@ const tMain = createI18n({
     menuWindow: 'Okno',
     menuHelp: 'Pomoc',
     menuShortcuts: 'Skróty klawiaturowe',
-    menuDocsHelp: 'Pomoc GenOffice Docs',
   },
   cs: {
     dlgOpenDoc: 'Otevřít dokument',
@@ -2312,7 +2309,6 @@ const tMain = createI18n({
     menuWindow: 'Okno',
     menuHelp: 'Nápověda',
     menuShortcuts: 'Klávesové zkratky',
-    menuDocsHelp: 'Nápověda GenOffice Docs',
   },
   nl: {
     dlgOpenDoc: 'Document openen',
@@ -2445,7 +2441,6 @@ const tMain = createI18n({
     menuWindow: 'Venster',
     menuHelp: 'Help',
     menuShortcuts: 'Sneltoetsen',
-    menuDocsHelp: 'GenOffice Docs Help',
   },
   ms: {
     dlgOpenDoc: 'Buka Dokumen',
@@ -2578,7 +2573,6 @@ const tMain = createI18n({
     menuWindow: 'Tetingkap',
     menuHelp: 'Bantuan',
     menuShortcuts: 'Pintasan Papan Kekunci',
-    menuDocsHelp: 'Bantuan GenOffice Docs',
   },
   he: {
     dlgOpenDoc: 'פתיחת מסמך',
@@ -2709,7 +2703,6 @@ const tMain = createI18n({
     menuWindow: 'חלון',
     menuHelp: 'עזרה',
     menuShortcuts: 'קיצורי מקלדת',
-    menuDocsHelp: 'עזרה של GenOffice Docs',
   },
   hi: {
     dlgOpenDoc: 'दस्तावेज़ खोलें',
@@ -2842,7 +2835,6 @@ const tMain = createI18n({
     menuWindow: 'विंडो',
     menuHelp: 'सहायता',
     menuShortcuts: 'कीबोर्ड शॉर्टकट',
-    menuDocsHelp: 'GenOffice Docs सहायता',
   },
   'zh-TW': {
     dlgOpenDoc: '開啟文件',
@@ -2972,7 +2964,6 @@ const tMain = createI18n({
     menuWindow: '視窗',
     menuHelp: '說明',
     menuShortcuts: '鍵盤快速鍵',
-    menuDocsHelp: 'GenOffice Docs 說明',
   },
 })
 const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[2]) =>
@@ -3195,6 +3186,7 @@ export function docsFileRenamed(wc: WebContents, oldPath: string, newPath: strin
   // keep the save allowlist in sync so docs:save accepts the renamed path
   docWritablePaths.get(wc.id)?.delete(oldPath)
   allowDocWrite(wc.id, newPath)
+  rememberOpenDoc(wc.id, newPath)
   const states = docDiskStates.get(wc.id)
   const recorded = states?.get(oldPath)
   if (states && recorded) {
@@ -3215,17 +3207,14 @@ export function replaceRecentFile(oldPath: string, newPath: string): void {
     RECENT_PATH(),
     recent.map((p) => (p === oldPath ? newPath : p)),
   )
-  const starred = readJson<string[]>(STARRED_PATH(), [])
-  if (starred.includes(oldPath)) {
-    writeJsonAtomic(
-      STARRED_PATH(),
-      starred.map((p) => (p === oldPath ? newPath : p)),
-    )
-  }
+  const renamed = renameStarredItem(readStarredItems(STARRED_PATH()), oldPath, newPath)
+  if (renamed) writeStarredItems(STARRED_PATH(), renamed)
   buildDocsMenu()
 }
 
 // ---- starred files (home screen favorites) ----
+// the store lives in starred-files.ts (pure, unit-tested); legacy flat
+// string[] files migrate to the versioned shape on the first write
 
 const STARRED_PATH = () => userDataPath('starred.json')
 
@@ -3233,25 +3222,37 @@ const STARRED_PATH = () => userDataPath('starred.json')
  *  unavailable starred file must keep its star and its Starred-view row —
  *  filtering here also desynced the star state shown on recents rows (r158) */
 export function readStarredFiles(): string[] {
-  return readJson<string[]>(STARRED_PATH(), [])
+  return readStarredItems(STARRED_PATH()).map((item) => item.path)
 }
 
 export function toggleStarredFile(filePath: string): void {
-  const starred = readJson<string[]>(STARRED_PATH(), [])
-  const next = starred.includes(filePath)
-    ? starred.filter((p) => p !== filePath)
-    : [...starred, filePath]
-  writeJsonAtomic(STARRED_PATH(), next)
+  writeStarredItems(STARRED_PATH(), toggleStarredItem(readStarredItems(STARRED_PATH()), filePath))
 }
 
-/** Bulk unstar (in-app delete, or removing an unavailable entry from the
- *  recents list): the star must not outlive the row it pointed at (r158) */
+/** Bulk unstar (in-app delete, bulk unfollow from the Starred view, or
+ *  removing an unavailable entry from the recents list): the star must not
+ *  outlive the row it pointed at (r158) */
 export function removeStarredFiles(filePaths: string[]): void {
-  const drop = new Set(filePaths)
-  if (drop.size === 0) return
-  const starred = readJson<string[]>(STARRED_PATH(), [])
-  const next = starred.filter((p) => !drop.has(p))
-  if (next.length !== starred.length) writeJsonAtomic(STARRED_PATH(), next)
+  const next = dropStarredItems(readStarredItems(STARRED_PATH()), filePaths)
+  if (next) writeStarredItems(STARRED_PATH(), next)
+}
+
+/** put each starred path into `group` (null = back to ungrouped). Groups have
+ *  no separate list: a group exists while an entry carries its name, so
+ *  creating one is assigning its first file and emptying one is implicit. */
+export function setStarredGroup(filePaths: string[], group: string | null): void {
+  const next = assignStarredGroup(readStarredItems(STARRED_PATH()), filePaths, group)
+  if (next) writeStarredItems(STARRED_PATH(), next)
+}
+
+/** group names that currently have at least one starred file, first-seen order */
+export function readStarredGroups(): string[] {
+  return starredGroupNames(readStarredItems(STARRED_PATH()))
+}
+
+/** starred path → its group (ungrouped paths absent); feeds the home IPC entries */
+export function readStarredGroupMap(): Map<string, string> {
+  return starredGroupMap(readStarredItems(STARRED_PATH()))
 }
 
 // ---- original archive (pass-through base: original file archived by content hash) ----
@@ -3306,6 +3307,17 @@ const docWritablePaths = new Map<number, Set<string>>()
 /** per-renderer PDF export targets authorized via the export save dialog */
 const pdfWritablePaths = new Map<number, Set<string>>()
 const tornDownWcIds = new Set<number>()
+
+// per renderer, kept current on open/save/save-as/rename; only the local-media allowlist reads it
+const openDocByWc = new Map<number, string>()
+
+function rememberOpenDoc(wcId: number, filePath: string): void {
+  openDocByWc.set(wcId, filePath)
+}
+
+function docsMediaRoots(wcId: number): string[] {
+  return documentMediaRoots(openDocByWc.get(wcId), join(app.getPath('temp'), 'genoffice-pasted'))
+}
 
 function allowDocWrite(wcId: number, filePath: string): void {
   const set = docWritablePaths.get(wcId) ?? new Set<string>()
@@ -3371,6 +3383,7 @@ function dropDocWriter(wcId: number): void {
   releaseSpellIgnores(wcId)
   docWritablePaths.delete(wcId)
   pdfWritablePaths.delete(wcId)
+  openDocByWc.delete(wcId)
   for (const p of imageExportTemps.get(wcId) ?? []) void rm(p, { force: true })
   imageExportTemps.delete(wcId)
   imageExportDirs.delete(wcId)
@@ -3563,6 +3576,7 @@ async function loadDocx(
   if (recovered) await adoptLazyMediaHashes(bytes, filePath, wcId)
   pushRecent(filePath)
   allowDocWrite(wcId, filePath)
+  rememberOpenDoc(wcId, filePath)
   if (fileOpenedHook) fileOpenedHook(wcId, filePath)
   markDiskEncrypted(wcId, filePath, encrypted)
   // record the on-disk file, not the recovery copy: what matters is what save would overwrite
@@ -3751,6 +3765,13 @@ const SETTINGS_PATH = () => userDataPath('ai-settings.json')
 
 const activeAiStreams = new Map<string, AbortController>()
 
+/** every renderer (tabs, home) re-reads ai-settings.json — the composer chip and
+ *  the settings page edit the same file from different windows */
+function broadcastAiSettingsChanged(): void {
+  for (const wc of webContents.getAllWebContents())
+    if (!wc.isDestroyed()) wc.send('ai:settings-changed')
+}
+
 /**
  * AI settings + chat/stream proxy handlers. Split out so the shell can
  * register them exactly once for all window types (docs, sheets, home) —
@@ -3800,12 +3821,13 @@ export function registerAiIpc(): void {
       return
     }
     writeJsonAtomic(SETTINGS_PATH(), sanitized)
+    broadcastAiSettingsChanged()
   })
 
   ipcMain.handle('ai:codex-models', async (_event, cliPath: unknown) => {
     // the probe spawns the path directly, so it gets the same metacharacter and
     // existence check as the stored setting (anything else: auto-detect)
-    return listCodexModels(validCliPath(cliPath) ? cliPath.trim() : undefined)
+    return listCodexModels(sanitizeCliPath(cliPath))
   })
 
   ipcMain.handle('ai:custom-models', (_event, input: unknown) => listCustomModelsForIpc(input))
@@ -3861,6 +3883,7 @@ export function registerAiIpc(): void {
     }
     const controller = new AbortController()
     activeAiStreams.set(requestId, controller)
+    const unwatchSender = abortOnDestroyed(event.sender, controller)
     // wire-activity keepalive: lets the renderer's silence watchdog tell a slow turn from a dead one
     let lastPing = 0
     const ping = () => {
@@ -3905,6 +3928,7 @@ export function registerAiIpc(): void {
         })
       }
     } finally {
+      unwatchSender()
       activeAiStreams.delete(requestId)
     }
   })
@@ -3942,7 +3966,7 @@ export function registerAiIpc(): void {
   // docs-prefixed: slides registers its own ai:analyze-media in the same shell process.
   ipcMain.handle(
     'docs:analyze-media',
-    async (_event, op: { mediaUrls: string[]; requirements: string }) => {
+    async (event, op: { mediaUrls: string[]; requirements: string }) => {
       const mediaUrls = (op.mediaUrls ?? []).map(String).filter(Boolean)
       // a picture opened lazily from a large docx is only addressable by its main-process
       // store; hand its bytes over as a data URL so the loader can read them like any other
@@ -3951,10 +3975,14 @@ export function registerAiIpc(): void {
         const lazy = await readLazyMedia(url).catch(() => null)
         resolved.push(lazy ? `data:${lazy.mime};base64,${lazy.body.toString('base64')}` : url)
       }
-      return analyzeMediaTool(SETTINGS_PATH(), {
-        mediaUrls: resolved,
-        requirements: String(op.requirements ?? ''),
-      })
+      return analyzeMediaTool(
+        SETTINGS_PATH(),
+        {
+          mediaUrls: resolved,
+          requirements: String(op.requirements ?? ''),
+        },
+        { mediaRoots: docsMediaRoots(event.sender.id) },
+      )
     },
   )
 
@@ -3987,11 +4015,15 @@ export function registerAiIpc(): void {
   // registered once a slides view exists, so docs needs its own channel
   ipcMain.handle(
     'docs:ai-generate-image',
-    (_event, op: { prompt?: unknown; aspectRatio?: unknown }) =>
-      generateImageTool(SETTINGS_PATH(), {
-        prompt: String(op?.prompt ?? ''),
-        aspectRatio: op?.aspectRatio ? String(op.aspectRatio) : undefined,
-      }),
+    (event, op: { prompt?: unknown; aspectRatio?: unknown }) =>
+      generateImageTool(
+        SETTINGS_PATH(),
+        {
+          prompt: String(op?.prompt ?? ''),
+          aspectRatio: op?.aspectRatio ? String(op.aspectRatio) : undefined,
+        },
+        { mediaRoots: docsMediaRoots(event.sender.id) },
+      ),
   )
 
   ipcMain.handle('ai:search-test', (_event, input: unknown) => {
@@ -4699,6 +4731,7 @@ export function registerDocsIpc(): void {
         await atomicWriteFile(result.filePath, bytes)
         if (tornDownWcIds.has(event.sender.id)) return { ok: false }
         allowDocWrite(event.sender.id, result.filePath)
+        rememberOpenDoc(event.sender.id, result.filePath)
         await rememberDiskState(event.sender.id, result.filePath, sha256Hex(bytes))
         pointLazyMediaAt(
           hashes,
@@ -4745,6 +4778,7 @@ export function registerDocsIpc(): void {
         return { ok: false }
       }
       allowDocWrite(event.sender.id, filePath)
+      rememberOpenDoc(event.sender.id, filePath)
       await rememberDiskState(event.sender.id, filePath, sha256Hex(bytes))
       pointLazyMediaAt(
         hashes,
@@ -4828,6 +4862,7 @@ export function registerDocsIpc(): void {
           filePath,
         )
         pushRecent(filePath)
+        rememberOpenDoc(event.sender.id, filePath)
         notifyFileSaved(event.sender, filePath)
         return {
           ok: true,
@@ -5709,8 +5744,6 @@ export function buildDocsMenu(): void {
           accelerator: 'CmdOrCtrl+/',
           click: () => sendCommand('shortcuts'),
         },
-        { type: 'separator' },
-        { label: tm('menuDocsHelp'), enabled: false },
         { type: 'separator' },
         checkUpdatesMenuItem(appMenuLabels(getUiLang())),
         aboutMenuItem(appMenuLabels(getUiLang())),

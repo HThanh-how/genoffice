@@ -164,7 +164,7 @@ export function patchImageParagraphXml(xml: string, patch: ImagePatch): string {
 }
 
 const WRAP_ELEMENT_RE =
-  /<wp:wrapNone\s*\/>|<wp:wrapSquare[^>]*\/>|<wp:wrapSquare[\s\S]*?<\/wp:wrapSquare>|<wp:wrapTight[\s\S]*?<\/wp:wrapTight>|<wp:wrapThrough[\s\S]*?<\/wp:wrapThrough>|<wp:wrapTopAndBottom\s*\/>|<wp:wrapTopAndBottom[\s\S]*?<\/wp:wrapTopAndBottom>/g
+  /<wp:wrapNone\s*\/>|<wp:wrapSquare[^>]*\/>|<wp:wrapTight[^>]*\/>|<wp:wrapThrough[^>]*\/>|<wp:wrapTopAndBottom\s*\/>|<wp:wrapSquare[\s\S]*?<\/wp:wrapSquare>|<wp:wrapTight[\s\S]*?<\/wp:wrapTight>|<wp:wrapThrough[\s\S]*?<\/wp:wrapThrough>|<wp:wrapTopAndBottom[\s\S]*?<\/wp:wrapTopAndBottom>/g
 
 /**
  * Re-encode ONLY the stacking rank of an existing wp:anchor as Word's
@@ -261,6 +261,109 @@ export function applyImageWrap(
   // wrap element sits between extent/effectExtent and docPr in CT_Anchor order
   if (/<wp:docPr/.test(out)) return out.replace(/<wp:docPr/, `${wrapElement}<wp:docPr`)
   return out.replace(/<a:graphic[\s>]/, (m) => `${wrapElement}${m}`)
+}
+
+/** The box drawings (wps shapes/textboxes) in a paragraph, in document order — same walk patchShapeStyles uses. */
+function boxDrawingSegments(paragraphXml: string): Array<{ start: number; end: number }> {
+  return xmlSegments(paragraphXml, 'w:drawing', 0, paragraphXml.length).filter((seg) =>
+    isBoxDrawing(paragraphXml.slice(seg.start, seg.end)),
+  )
+}
+
+/** How a caller addresses one shape drawing: by its wps:cNvPr id when known, else by box ordinal. */
+export interface ShapeDrawingLocation {
+  /** wps:cNvPr id of the owning shape (parsed boxes carry it) */
+  shapeId?: string
+  /** fallback ordinal among box drawings (generated shapes have no id) */
+  boxIndex: number
+}
+
+function shapeDrawingSegment(
+  paragraphXml: string,
+  location: ShapeDrawingLocation,
+): { start: number; end: number } | null {
+  if (location.shapeId) {
+    // an id was given: never fall back to a different drawing
+    const found = xmlSegments(paragraphXml, 'w:drawing', 0, paragraphXml.length).find(
+      (seg) =>
+        /<wps:cNvPr\b[^>]*\bid="([^"]+)"/.exec(paragraphXml.slice(seg.start, seg.end))?.[1] ===
+        location.shapeId,
+    )
+    return found ?? null
+  }
+  return boxDrawingSegments(paragraphXml)[location.boxIndex] ?? null
+}
+
+/** Re-encode the rank of the drawing's own wp:anchor tag, never a nested drawing's. */
+function setAnchorRank(drawingXml: string, zOrder: number): string {
+  return drawingXml.replace(/<wp:anchor[^>]*>/, (tag) =>
+    tag.replace(/relativeHeight="\d+"/, `relativeHeight="${251658240 + zOrder}"`),
+  )
+}
+
+/**
+ * Re-encode ONLY the stacking rank of one shape drawing as Word's base + rank
+ * relativeHeight. Everything else keeps its bytes, like applyImageZOrder.
+ */
+export function applyShapeZOrderAt(
+  paragraphXml: string,
+  location: ShapeDrawingLocation,
+  zOrder: number,
+): string {
+  const seg = shapeDrawingSegment(paragraphXml, location)
+  if (!seg) return paragraphXml
+  const next = setAnchorRank(paragraphXml.slice(seg.start, seg.end), zOrder)
+  return paragraphXml.slice(0, seg.start) + next + paragraphXml.slice(seg.end)
+}
+
+/**
+ * Switch one shape drawing's wrap mode in place, preserving its positionH/V
+ * bytes: only the anchor attributes, the wrap element and (when given)
+ * relativeHeight change. `wrap === null` converts the anchor to inline.
+ */
+export function applyShapeWrapAt(
+  paragraphXml: string,
+  location: ShapeDrawingLocation,
+  wrap: ImageWrap | null,
+  zOrder?: number,
+): string {
+  const seg = shapeDrawingSegment(paragraphXml, location)
+  if (!seg) return paragraphXml
+  const drawing = paragraphXml.slice(seg.start, seg.end)
+  const hasAnchor = /<wp:anchor[\s>]/.test(drawing)
+  let next: string
+  if (wrap === null) {
+    if (!hasAnchor) return paragraphXml
+    next = drawing
+      .replace(/<wp:simplePos[^>]*\/>/, '')
+      .replace(/<wp:positionH[\s\S]*?<\/wp:positionH>/, '')
+      .replace(/<wp:positionV[\s\S]*?<\/wp:positionV>/, '')
+      .replace(WRAP_ELEMENT_RE, '')
+      .replace(/<wp:anchor[^>]*>/, '<wp:inline distT="0" distB="0" distL="0" distR="0">')
+      .replace(/<\/wp:anchor>/, '</wp:inline>')
+  } else if (!hasAnchor) {
+    next = applyImageWrap(drawing, wrap, undefined, undefined, zOrder)
+  } else {
+    const behind = wrap === 'behind' ? '1' : '0'
+    const wrapElement =
+      wrap === 'front' || wrap === 'behind'
+        ? '<wp:wrapNone/>'
+        : wrap === 'topBottom'
+          ? '<wp:wrapTopAndBottom/>'
+          : '<wp:wrapSquare wrapText="bothSides"/>'
+    next = drawing
+      .replace(WRAP_ELEMENT_RE, '')
+      .replace(/<wp:anchor[^>]*>/, (tag) =>
+        tag.includes('behindDoc=')
+          ? tag.replace(/behindDoc="[^"]*"/, `behindDoc="${behind}"`)
+          : tag.replace(/<wp:anchor/, `<wp:anchor behindDoc="${behind}"`),
+      )
+    if (zOrder !== undefined) next = setAnchorRank(next, zOrder)
+    next = /<wp:docPr/.test(next)
+      ? next.replace(/<wp:docPr/, `${wrapElement}<wp:docPr`)
+      : next.replace(/<a:graphic[\s>]/, (m) => `${wrapElement}${m}`)
+  }
+  return paragraphXml.slice(0, seg.start) + next + paragraphXml.slice(seg.end)
 }
 
 // ---- protected field / formula token patching ----
@@ -1275,6 +1378,11 @@ function formatPPrChildren(format: ParaFormat | undefined): PPrChild[] {
   // explicit w:left="0" must be written back: it cancels a numbering-level indent
   if (format.indentLeft !== undefined) indAttrs.push(`w:left="${Math.round(format.indentLeft)}"`)
   if (format.indentRight !== undefined) indAttrs.push(`w:right="${Math.round(format.indentRight)}"`)
+  // a character-unit special indent rides along its twips twin (Word writes
+  // both; the *Chars attribute wins and rescales with the first run's size —
+  // CJK "first line: 2 characters", issue #1892)
+  if (format.charIndents?.firstLine)
+    indAttrs.push(`w:firstLineChars="${Math.round(format.charIndents.firstLine)}"`)
   if (format.indentFirstLine !== undefined) {
     if (format.indentFirstLine >= 0)
       indAttrs.push(`w:firstLine="${Math.round(format.indentFirstLine)}"`)
@@ -1548,19 +1656,24 @@ function sameIndent(a: ParaFormat, b: ParaFormat): boolean {
 
 /**
  * Cancel attributes for the character-unit indents a paragraph was laid out
- * with. A rebuilt w:ind carries twips only, and Word keeps preferring a
- * `*Chars` from the style chain over a twips twin (probed) — so an indent edit
- * on a paragraph in a CJK "first line 2 characters" style must write the
- * explicit `w:firstLineChars="0"` Word itself writes for pt indents, or the
- * style's character indent supersedes the edit on reload.
+ * with but the new format no longer carries. A rebuilt w:ind carries twips,
+ * and Word keeps preferring a `*Chars` from the style chain over a twips twin
+ * (probed) — so dropping a character indent must write the explicit
+ * `w:firstLineChars="0"` Word itself writes for pt indents, or the style's
+ * character indent supersedes the edit on reload. Components the new format
+ * still carries are re-emitted in the rebuilt w:ind (the character unit edits
+ * in place) and must NOT be cancelled.
  */
-function charIndentCancelAttrs(chars: CharIndents | undefined): string[] {
-  if (!chars) return []
+function charIndentCancelAttrs(original: CharIndents, format: ParaFormat | undefined): string[] {
+  const kept = format?.charIndents
   const out: string[] = []
-  if (chars.left) out.push('w:leftChars="0"')
-  if (chars.right) out.push('w:rightChars="0"')
-  if (chars.hanging) out.push('w:hangingChars="0"')
-  else if (chars.firstLine) out.push('w:firstLineChars="0"')
+  if (original.left && !kept?.left) out.push('w:leftChars="0"')
+  if (original.right && !kept?.right) out.push('w:rightChars="0"')
+  // firstLineChars and hangingChars are one component (the special indent):
+  // a new character special replaces the old one outright — no cancel
+  if ((original.hanging || original.firstLine) && !kept?.hanging && !kept?.firstLine) {
+    out.push(original.hanging ? 'w:hangingChars="0"' : 'w:firstLineChars="0"')
+  }
   return out
 }
 
@@ -1649,17 +1762,21 @@ export function mergePPrFormat(
   const open = /^<w:pPr(?: [^>]*)?>/.exec(rawPPr)?.[0]
   const fresh = formatPPrChildren(format)
   // an indent edit on a paragraph laid out with character-unit indents: the
-  // twips-only rebuild also cancels them (`w:firstLineChars="0"`…), or Word — and
-  // this parser — would keep resolving the character indent over the new value
+  // twips-only rebuild also cancels the components the edit drops
+  // (`w:firstLineChars="0"`…), or Word — and this parser — would keep
+  // resolving the character indent over the new value; components the new
+  // format still carries are re-emitted (with their *Chars attribute) instead
   if (original?.charIndents && !sameIndent(original, format ?? {})) {
-    const cancel = charIndentCancelAttrs(original.charIndents)
-    const at = fresh.findIndex((c) => c.name === 'w:ind')
-    const xml =
-      at === -1
-        ? `<w:ind ${cancel.join(' ')}/>`
-        : fresh[at].xml.replace(/\/>$/, ` ${cancel.join(' ')}/>`)
-    if (at === -1) fresh.push({ name: 'w:ind', xml })
-    else fresh[at] = { name: 'w:ind', xml }
+    const cancel = charIndentCancelAttrs(original.charIndents, format)
+    if (cancel.length > 0) {
+      const at = fresh.findIndex((c) => c.name === 'w:ind')
+      const xml =
+        at === -1
+          ? `<w:ind ${cancel.join(' ')}/>`
+          : fresh[at].xml.replace(/\/>$/, ` ${cancel.join(' ')}/>`)
+      if (at === -1) fresh.push({ name: 'w:ind', xml })
+      else fresh[at] = { name: 'w:ind', xml }
+    }
   }
   if (!open) {
     // '<w:pPr/>' or unrecognized: rebuild from the format model alone, in schema order
@@ -3434,6 +3551,7 @@ export function buildShapeParagraphXml(opts: {
 
   const wsp =
     `<wps:wsp xmlns:wps="http://schemas.microsoft.com/office/word/2010/wordprocessingShape">` +
+    `<wps:cNvPr id="${id}" name="${opts.prst} ${id}"/>` +
     `<wps:cNvSpPr/>` +
     spPr +
     style +

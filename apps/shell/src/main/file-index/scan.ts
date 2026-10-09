@@ -1,7 +1,11 @@
 import { readdirSync, statSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { isHiddenEntry } from '../folder-tree'
-import { SUPPORTED_EXTENSIONS, isJunkFileName, shouldSkipDirectory } from '../document-memory/scan-policy'
+import {
+  SUPPORTED_EXTENSIONS,
+  isJunkFileName,
+  shouldSkipDirectory,
+} from '../document-memory/scan-policy'
 
 /** Name and content indexes admit the same document formats. */
 export function isSupportedIndexFile(name: string): boolean {
@@ -19,26 +23,57 @@ export interface FileScanSnapshot {
   complete: boolean
 }
 
-/** every supported, visible file under `root` with the stat fields the index keys on */
-export function scanFiles(root: string): ScannedFile[] {
-  return scanFileSnapshot(root).files
+export interface ScanResult {
+  files: ScannedFile[]
+  /** the walk hit a budget, so `files` is not the full set under the root */
+  truncated: boolean
 }
 
-export function scanFileSnapshot(root: string): FileScanSnapshot {
+export const SCAN_MAX_DEPTH = 32
+export const SCAN_MAX_FILES = 200_000
+
+interface ScanLimits {
+  maxDepth?: number
+  maxFiles?: number
+}
+
+/**
+ * Every supported, visible file under `root` with the stat fields the index keys
+ * on. Symlinked directories are not followed (a Dirent reports them as
+ * symlinks, not directories), and the walk is bounded by depth and file count.
+ * `unreadable` is set when a directory or file could not be read, `truncated`
+ * when a budget stopped the walk; either way the file list is not the full set.
+ */
+function walkSupportedFiles(
+  root: string,
+  limits: ScanLimits,
+): { files: ScannedFile[]; truncated: boolean; unreadable: boolean } {
+  const maxDepth = limits.maxDepth ?? SCAN_MAX_DEPTH
+  const maxFiles = limits.maxFiles ?? SCAN_MAX_FILES
   const out: ScannedFile[] = []
-  let complete = true
-  const walk = (dir: string) => {
+  let truncated = false
+  let unreadable = false
+  const walk = (dir: string, depth: number) => {
+    if (depth > maxDepth) {
+      truncated = true
+      return
+    }
     let dirents: import('node:fs').Dirent[]
     try {
       dirents = readdirSync(dir, { withFileTypes: true })
     } catch {
-      complete = false
+      unreadable = true
       return
     }
     for (const ent of dirents) {
+      if (out.length >= maxFiles) {
+        truncated = true
+        return
+      }
       const path = join(dir, ent.name)
       if (ent.isDirectory()) {
-        if (!shouldSkipDirectory(ent.name) && !isHiddenEntry(dir, ent.name, true)) walk(path)
+        if (!shouldSkipDirectory(ent.name) && !isHiddenEntry(dir, ent.name, true))
+          walk(path, depth + 1)
       } else if (
         ent.isFile() &&
         isSupportedIndexFile(ent.name) &&
@@ -46,12 +81,23 @@ export function scanFileSnapshot(root: string): FileScanSnapshot {
       ) {
         const st = statOrNull(path)
         if (st) out.push(st)
-        else complete = false
+        else unreadable = true
       }
     }
   }
-  walk(root)
-  return { files: out, complete }
+  walk(root, 0)
+  return { files: out, truncated, unreadable }
+}
+
+export function scanFiles(root: string, limits: ScanLimits = {}): ScanResult {
+  const { files, truncated } = walkSupportedFiles(root, limits)
+  return { files, truncated }
+}
+
+/** Like scanFiles, but `complete` is false for a budget stop or any unreadable entry. */
+export function scanFileSnapshot(root: string, limits: ScanLimits = {}): FileScanSnapshot {
+  const { files, truncated, unreadable } = walkSupportedFiles(root, limits)
+  return { files, complete: !truncated && !unreadable }
 }
 
 export function statOrNull(path: string): ScannedFile | null {

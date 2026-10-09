@@ -6,6 +6,7 @@ import {
   modelHasFixedSampling,
   modelLacksVision,
 } from '../src/registry'
+import { endpointUrl } from '../src/protocols/shared'
 import { AI_PROVIDERS, GENSPARK_LLM_BASE_URLS } from '../src/providers'
 import type { AiProviderConfig, AiProviderId } from '../src/types'
 
@@ -49,18 +50,14 @@ describe('provider registry', () => {
       baseUrl: 'https://generativelanguage.googleapis.com/v1beta',
       omitTemperature: true,
     })
-    // thinking stays off: once tools are in play DeepSeek 400s any turn that
-    // does not echo back the reasoning_content our transcript cannot carry
     expect(AI_PROVIDER_ADAPTERS.deepseek.resolveEndpoint(config('deepseek-v4-pro'))).toEqual({
       protocol: 'openai-compatible',
       baseUrl: 'https://api.deepseek.com/v1',
-      bodyExtras: { thinking: { type: 'disabled' } },
     })
     // the listed V4.1 Flash name is the pool spelling; the vendor only serves `deepseek-flash`
     expect(AI_PROVIDER_ADAPTERS.deepseek.resolveEndpoint(config('deep-seek-v4.1-flash'))).toEqual({
       protocol: 'openai-compatible',
       baseUrl: 'https://api.deepseek.com/v1',
-      bodyExtras: { thinking: { type: 'disabled' } },
       model: 'deepseek-flash',
     })
     expect(AI_PROVIDER_ADAPTERS.openai.resolveEndpoint(config('gpt-4.1-mini'))).toEqual({
@@ -120,8 +117,17 @@ describe('provider registry', () => {
       ['doubao', 'doubao-seed-2-1-pro-260628', 'https://ark.cn-beijing.volces.com/api/v3'],
       ['mimo', 'mimo-v2.6-pro', 'https://api.xiaomimimo.com/v1'],
       ['mimo', 'mimo-v2.6-flash', 'https://api.xiaomimimo.com/v1'],
-      ['hunyuan', 'hy3', 'https://tokenhub.tencentmaas.com/v1'],
-      ['hunyuan', 'hy4-preview', 'https://tokenhub.tencentmaas.com/v1'],
+      ['hunyuan', 'hy3', 'https://tokenhub.tencentcloudmaas.com/v1'],
+      ['hunyuan', 'hy4-preview', 'https://tokenhub.tencentcloudmaas.com/v1'],
+      ['ling', 'Ling-3.0-flash', 'https://api.ant-ling.com/v1'],
+      ['ling', 'Ling-3.0-flash-VL', 'https://api.ant-ling.com/v1'],
+      ['ling', 'Ling-3.0-tiny', 'https://api.ant-ling.com/v1'],
+      ['ling', 'Ling-2.6-1T', 'https://api.ant-ling.com/v1'],
+      ['ling', 'Ring-2.6-1T', 'https://api.ant-ling.com/v1'],
+      ['ling', 'Ling-2.6-flash', 'https://api.ant-ling.com/v1'],
+      ['spark', 'spark-x2.5', 'https://maas-api.cn-huabei-1.xf-yun.com/v2'],
+      ['longcat', 'LongCat-2.5-Preview', 'https://api.longcat.chat/openai/v1'],
+      ['longcat', 'LongCat-2.0', 'https://api.longcat.chat/openai/v1'],
       ['minimax', 'MiniMax-M3', 'https://api.minimax.io/v1'],
       ['xai', 'grok-4.6', 'https://api.x.ai/v1'],
       ['mistral', 'mistral-large-latest', 'https://api.mistral.ai/v1'],
@@ -129,6 +135,7 @@ describe('provider registry', () => {
       ['requesty', 'claude-sonnet-5', 'https://router.requesty.ai/v1'],
       ['opper', 'claude-sonnet-4-6', 'https://api.opper.ai/v3/compat'],
       ['cheaperinference', 'claude-sonnet-5', 'https://api.cheaperinference.com/v1'],
+      ['atlascloud', 'deepseek-ai/deepseek-v4-pro', 'https://api.atlascloud.ai/v1'],
     ]
     for (const [id, model, baseUrl] of cases) {
       expect(AI_PROVIDER_ADAPTERS[id].resolveEndpoint(config(model))).toEqual({
@@ -136,6 +143,42 @@ describe('provider registry', () => {
         baseUrl,
       })
     }
+  })
+
+  it('pins the Spark host, model id and key prefix to the iFlytek product guide', () => {
+    const spark = AI_PROVIDERS.find((p) => p.id === 'spark')!
+    expect(spark.models).toEqual(['spark-x2.5'])
+    expect(spark.defaultModel).toBe('spark-x2.5')
+    expect(spark.keyPlaceholder).toBe('ak-...')
+    const endpoint = AI_PROVIDER_ADAPTERS.spark.resolveEndpoint(config('spark-x2.5'))
+    expect(endpoint.baseUrl).toBe('https://maas-api.cn-huabei-1.xf-yun.com/v2')
+    expect(endpointUrl(endpoint.baseUrl, 'chat/completions')).toBe(
+      'https://maas-api.cn-huabei-1.xf-yun.com/v2/chat/completions',
+    )
+    for (const wrong of ['Spark-X2.5', 'spark-api-open.xf-yun.com']) {
+      expect(spark.models.join(' ')).not.toContain(wrong)
+      expect(spark.defaultModel).not.toContain(wrong)
+      expect(endpoint.baseUrl).not.toContain(wrong)
+    }
+  })
+
+  it('pins the LongCat model ids to the official pricing pages', () => {
+    const longcat = AI_PROVIDERS.find((p) => p.id === 'longcat')!
+    expect(longcat.models).toEqual(['LongCat-2.5-Preview', 'LongCat-2.0'])
+    for (const model of longcat.models) {
+      expect(AI_PROVIDER_ADAPTERS.longcat.resolveEndpoint(config(model))).toEqual({
+        protocol: 'openai-compatible',
+        baseUrl: 'https://api.longcat.chat/openai/v1',
+      })
+    }
+    expect(longcat.models).not.toContain('longcat-2.0')
+    expect(longcat.models).not.toContain('longcat-2.5-preview')
+  })
+
+  it('keeps Ling-3.1-flash off the first-party endpoint and lists the VL member', () => {
+    const ling = AI_PROVIDERS.find((p) => p.id === 'ling')!
+    expect(ling.models).not.toContain('Ling-3.1-flash')
+    expect(ling.models).toContain('Ling-3.0-flash-VL')
   })
 
   it('marks Kimi as fixed-sampling (K3 rejects any temperature but 1)', () => {
@@ -420,10 +463,58 @@ describe('modelLacksVision', () => {
     expect(modelLacksVision('claude-opus-4-7')).toBe(false)
   })
 
+  it('holds back the text-only Atlas Cloud ids but not its multimodal ones', () => {
+    expect(modelLacksVision('zai-org/glm-5.3')).toBe(true)
+    expect(modelLacksVision('minimaxai/minimax-m3')).toBe(true)
+    expect(modelLacksVision('minimaxai/minimax-m2.5')).toBe(true)
+    expect(modelLacksVision('deepseek-ai/deepseek-v4-pro')).toBe(true)
+    expect(modelLacksVision('deepseek-ai/deepseek-v4-flash')).toBe(true)
+    expect(modelLacksVision('zai-org/glm-5.3-flash')).toBe(false)
+    expect(modelLacksVision('moonshotai/kimi-k3')).toBe(false)
+    expect(modelLacksVision('moonshotai/kimi-k2.6')).toBe(false)
+    expect(modelLacksVision('qwen/qwen3.8-max')).toBe(false)
+    expect(modelLacksVision('qwen/qwen3.5-flash')).toBe(false)
+  })
+
+  it('leaves the direct GLM and MiniMax providers untouched by the Atlas Cloud rule', () => {
+    expect(modelLacksVision('glm-5.3')).toBe(false)
+    expect(modelLacksVision('MiniMax-M3')).toBe(false)
+  })
+
   it('matches case-insensitively like its sibling matchers', () => {
     expect(modelLacksVision('DeepSeek-V4-Pro')).toBe(true)
     expect(modelLacksVision('DEEPSEEK-V4-FLASH')).toBe(true)
     expect(modelLacksVision('DeepSeek-V4-Flash-Vision-Exp')).toBe(false)
+  })
+
+  it('holds back the text-only Ling ids but not the VL branch', () => {
+    for (const model of [
+      'Ling-3.0-flash',
+      'Ling-3.0-tiny',
+      'Ling-2.6-1T',
+      'Ring-2.6-1T',
+      'Ling-2.6-flash',
+      'ling-3.0-flash',
+      'LING-2.6-1T',
+    ]) {
+      expect(modelLacksVision(model)).toBe(true)
+    }
+    expect(modelLacksVision('Ling-3.0-flash-VL')).toBe(false)
+    expect(modelLacksVision('ling-3.0-flash-vl')).toBe(false)
+  })
+
+  it('flags LongCat-2.0 but not the multimodal 2.5 preview', () => {
+    expect(modelLacksVision('LongCat-2.0')).toBe(true)
+    expect(modelLacksVision('longcat-2.0')).toBe(true)
+    expect(modelLacksVision('LongCat-2.5-Preview')).toBe(false)
+    expect(modelLacksVision('longcat-2.5-preview-free')).toBe(false)
+  })
+
+  it('splits vision per model on the two providers that carry one multimodal id', () => {
+    for (const id of ['ling', 'longcat'] as const) {
+      expect(AI_PROVIDER_ADAPTERS[id].capabilities.vision).toBe(true)
+    }
+    expect(AI_PROVIDER_ADAPTERS.spark.capabilities.vision).toBe(false)
   })
 })
 

@@ -48,6 +48,18 @@ function PdfIcon() {
   )
 }
 
+function HelpIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 240 240" fill="none" aria-hidden="true">
+      <rect width="240" height="240" rx="48" fill="#7C5CE0" />
+      <path
+        d="M120 176c-6.6 0-12-5.2-12-11.6 0-6.5 5.4-11.7 12-11.7s12 5.2 12 11.7c0 6.4-5.4 11.6-12 11.6zm-9.6-34.9c0-16.2 19.2-19.1 19.2-30.4 0-5.6-4.4-9.3-10.6-9.3-6.5 0-11 3.4-13.3 8.7-1.5 3.5-5.1 5.4-8.9 4.6l-8.7-1.8c-4.7-1-7.6-5.7-6.2-10.2C86.5 88.7 99.6 79 119.6 79c20.7 0 34.3 12.3 34.3 29.6 0 23.7-24.4 26.6-24.4 39.4 0 2.5-2.1 4.4-4.7 4.4h-10.1c-2.6 0-4.7-1.9-4.7-4.4z"
+        fill="#fff"
+      />
+    </svg>
+  )
+}
+
 const IS_MAC = navigator.platform.toLowerCase().includes('mac')
 
 function HomeIcon() {
@@ -127,6 +139,7 @@ const KIND_ICON: Record<TabSummary['kind'], ReactElement> = {
   pdf: <PdfIcon />,
   markdown: <MarkdownIcon />,
   html: <HtmlIcon />,
+  help: <HelpIcon />,
 }
 
 /**
@@ -139,6 +152,18 @@ export function fileExtension(filePath: string): string {
   const name = filePath.slice(Math.max(filePath.lastIndexOf('\\'), filePath.lastIndexOf('/')) + 1)
   const dot = name.lastIndexOf('.')
   return dot > -1 ? name.slice(dot + 1) : ''
+}
+
+// a trailing dot counts: "note." must reach the shell's own rejection, not become "note..md"
+function hasExtension(name: string): boolean {
+  return name.lastIndexOf('.') > -1
+}
+
+/** An extensionless name keeps the current extension; a typed one is taken verbatim (note.md -> note.txt). */
+export function renamedFileName(currentPath: string, typedName: string): string {
+  if (hasExtension(typedName)) return typedName
+  const ext = fileExtension(currentPath)
+  return ext ? `${typedName}.${ext}` : typedName
 }
 
 export function TabBar() {
@@ -158,12 +183,8 @@ export function TabBar() {
   /** open the inline rename box on a file tab (double-click, or "Rename" in the tab menu) */
   const beginRename = (tab: TabSummary) => {
     if (tab.id === 'home' || !tab.filePath) return
-    const ext = fileExtension(tab.filePath)
-    const base =
-      ext && tab.title.toLowerCase().endsWith(`.${ext.toLowerCase()}`)
-        ? tab.title.slice(0, -(ext.length + 1))
-        : tab.title
-    setRenaming({ id: tab.id, value: base })
+    // whole name, extension included: only the shell may change an extension
+    setRenaming({ id: tab.id, value: tab.title })
   }
   const beginRenameRef = useRef(beginRename)
   beginRenameRef.current = beginRename
@@ -183,8 +204,7 @@ export function TabBar() {
     const tab = tabsRef.current.find((tb) => tb.id === r.id)
     const value = r.value.trim()
     if (!tab?.filePath || !value) return
-    const ext = fileExtension(tab.filePath)
-    const newName = ext ? `${value}.${ext}` : value
+    const newName = renamedFileName(tab.filePath, value)
     if (newName === tab.title) return
     void window.aiOffice.renameFile(tab.filePath, newName).then((result) => {
       if (!result.ok) appNotify(result.error ?? t('renameFailed'), 'error')

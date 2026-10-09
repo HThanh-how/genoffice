@@ -161,16 +161,17 @@ import {
   buildDocsMenu,
   configureDocsRuntime,
   docsFileRenamed,
-  docsQueryDirty,
-  requestDocsClose,
   readRecentFiles,
   readStarredFiles,
+  readStarredGroupMap,
+  readStarredGroups,
   recordRecentFile as recordDocsRecentFile,
   removeRecentFiles,
   removeStarredFiles,
   replaceRecentFile,
   registerAiIpc,
   registerProjectIpc,
+  setStarredGroup,
   toggleStarredFile,
   registerDocsIpc,
   exportDocsHeadless,
@@ -215,8 +216,6 @@ import {
   hasActiveQueuedWorkbook,
   installSheetsMenu,
   markSheetsShuttingDown,
-  resetSheetsShuttingDown,
-  requestSheetsClose,
   resolveSheetsSessionPath,
   markSheetsUnsavedNew,
   markSheetsUntitledPath,
@@ -241,7 +240,6 @@ import {
   installSlidesMenu,
   readSlidesRecentFiles,
   replaceSlidesRecentFile,
-  requestSlidesClose,
   setSlidesCloseTabHook,
   setSlidesExtraFileMenuItems,
   setSlidesOpenedHook,
@@ -257,7 +255,6 @@ import {
   markPdfUntitledPath,
   pdfFileRenamed,
   pdfIsDirty,
-  requestPdfClose,
   requestPdfSaveAs,
   sendPdfPrintRequest,
   setPdfRenamedHook,
@@ -276,7 +273,6 @@ import {
   markdownFileRenamed,
   markdownReadText,
   markdownSaveToPath,
-  requestMarkdownClose,
   requestMarkdownSave,
   sendMarkdownExportRequest,
   sendMarkdownPrintRequest,
@@ -291,7 +287,6 @@ import {
   htmlReadText,
   htmlSaveToPath,
   registerPrivilegedSchemes,
-  requestHtmlClose,
   requestHtmlSave,
   sendHtmlExportRequest,
   sendHtmlPrintRequest,
@@ -312,6 +307,7 @@ import type {
   RecentEntry,
   RecentPage,
   RenameResult,
+  DocTheme,
   StarPromptShow,
   UiTheme,
   FileSearchPage,
@@ -363,6 +359,15 @@ import {
 } from './recent-files'
 import { isMoveSource, isUserVisibleFile, type FileTargetSources } from './file-targets'
 import { trashUserFiles } from './delete-files'
+import {
+  DOCX_RE,
+  HTML_RE,
+  PDF_RE,
+  PPTX_RE,
+  TEXT_RE,
+  XLSX_RE,
+  renameStaysInApp,
+} from './app-routing'
 import { isSameFile, pdfSaveAsTarget, isValidRawRenameName } from './rename-validation'
 import {
   FolderWatcher,
@@ -389,14 +394,10 @@ import {
 import extractWorkerPath from './file-index/extract-worker?modulePath'
 import { FileIndexer } from './file-index/indexer'
 import { FileIndexStore } from './file-index/store'
-import {
-  jevEndpointOf,
-  normalizeFileSearchSettings,
-  probeJev,
-  SearchReranker,
-} from './file-index/rerank'
+import { normalizeFileSearchSettings, probeDecision, SearchReranker } from './file-index/rerank'
 import { runHeadlessExport, type HeadlessExporters } from './headless-export'
 import { TabManager } from './tab-manager'
+import { installShellCloseGuard } from './window-close-guard'
 import {
   activateDetached,
   closeDetachedWithoutPrompt,
@@ -665,6 +666,15 @@ function currentTheme(): UiTheme {
 }
 setFeedbackThemeGetter(currentTheme)
 
+let cachedDocTheme: DocTheme | null = null
+
+function currentDocTheme(): DocTheme {
+  if (cachedDocTheme) return cachedDocTheme
+  const saved = readAppSettings(APP_SETTINGS_PATH()).documentTheme
+  cachedDocTheme = saved === 'light' || saved === 'dark' ? saved : 'follow'
+  return cachedDocTheme
+}
+
 let cachedAutoSaveDefault: AutoSaveDefault | null = null
 
 function currentAutoSaveDefault(): AutoSaveDefault {
@@ -876,11 +886,12 @@ const tMain = createI18n({
     filterWord: 'Word 文档',
     filterExcel: 'Excel 工作簿',
     filterPpt: 'PowerPoint 演示文稿',
-    filterMarkdown: 'Markdown 文档',
+    filterMarkdown: '文本文件 (Markdown, TXT, JSON)',
     filterHtml: 'HTML 文档',
     filterPdf: 'PDF 文档',
     errBadArgs: '参数无效',
     errBadName: '文件名不合法',
+    errBadExtension: '这个扩展名不受支持，改了文件就打不开了',
     errMissing: '文件不存在',
     errExists: '同名文件已存在',
     errRenameFailed: '重命名失败',
@@ -890,6 +901,7 @@ const tMain = createI18n({
     errUnsupportedExt: '暂不支持 .{ext} 类型',
     copySuffix: '副本',
     menuHelp: '帮助',
+    menuUserGuide: '使用手册',
     thirdPartyNotices: '第三方软件声明',
     menuExportDocx: '导出为 Word…',
     btnCancel: '取消',
@@ -968,11 +980,12 @@ const tMain = createI18n({
     filterWord: 'Word Documents',
     filterExcel: 'Excel Workbooks',
     filterPpt: 'PowerPoint Presentations',
-    filterMarkdown: 'Markdown Documents',
+    filterMarkdown: 'Text Files (Markdown, TXT, JSON)',
     filterHtml: 'HTML Documents',
     filterPdf: 'PDF Documents',
     errBadArgs: 'Invalid arguments',
     errBadName: 'Invalid file name',
+    errBadExtension: 'That extension is not supported, and the file would no longer open',
     errMissing: 'File not found',
     errExists: 'A file with that name already exists',
     errRenameFailed: 'Rename failed',
@@ -982,6 +995,7 @@ const tMain = createI18n({
     errUnsupportedExt: '.{ext} files are not supported',
     copySuffix: 'copy',
     menuHelp: 'Help',
+    menuUserGuide: 'User Guide',
     thirdPartyNotices: 'Third-Party Notices',
     menuExportDocx: 'Export as Word…',
     btnCancel: 'Cancel',
@@ -1068,11 +1082,12 @@ const tMain = createI18n({
     filterWord: 'Tài liệu Word',
     filterExcel: 'Sổ làm việc Excel',
     filterPpt: 'Bản trình bày PowerPoint',
-    filterMarkdown: 'Tài liệu Markdown',
+    filterMarkdown: 'Tệp văn bản (Markdown, TXT, JSON)',
     filterHtml: 'Tài liệu HTML',
     filterPdf: 'Tài liệu PDF',
     errBadArgs: 'Đối số không hợp lệ',
     errBadName: 'Tên tệp không hợp lệ',
+    errBadExtension: 'Phần mở rộng đó không được hỗ trợ và tệp sẽ không còn mở được',
     errMissing: 'Không tìm thấy tệp',
     errExists: 'Một tệp có tên đó đã tồn tại',
     errRenameFailed: 'Đổi tên thất bại',
@@ -1082,6 +1097,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'Tệp .{ext} không được hỗ trợ',
     copySuffix: 'bản sao',
     menuHelp: 'Trợ giúp',
+    menuUserGuide: 'Hướng dẫn sử dụng',
     thirdPartyNotices: 'Thông báo của bên thứ ba',
     menuExportDocx: 'Xuất dưới dạng Word…',
     btnCancel: 'Hủy',
@@ -1168,11 +1184,12 @@ const tMain = createI18n({
     filterWord: 'Word 文書',
     filterExcel: 'Excel ブック',
     filterPpt: 'PowerPoint プレゼンテーション',
-    filterMarkdown: 'Markdown ドキュメント',
+    filterMarkdown: 'テキストファイル (Markdown, TXT, JSON)',
     filterHtml: 'HTML ドキュメント',
     filterPdf: 'PDF ドキュメント',
     errBadArgs: '引数が無効です',
     errBadName: 'ファイル名が無効です',
+    errBadExtension: 'その拡張子はサポートされていないため、ファイルを開けなくなります',
     errMissing: 'ファイルが見つかりません',
     errExists: '同名のファイルが既に存在します',
     errRenameFailed: '名前の変更に失敗しました',
@@ -1182,6 +1199,7 @@ const tMain = createI18n({
     errUnsupportedExt: '.{ext} 形式には対応していません',
     copySuffix: 'コピー',
     menuHelp: 'ヘルプ',
+    menuUserGuide: 'ユーザーガイド',
     thirdPartyNotices: 'サードパーティソフトウェアに関する通知',
     menuExportDocx: 'Word として書き出す…',
     btnCancel: 'キャンセル',
@@ -1268,11 +1286,12 @@ const tMain = createI18n({
     filterWord: 'Word 문서',
     filterExcel: 'Excel 통합 문서',
     filterPpt: 'PowerPoint 프레젠테이션',
-    filterMarkdown: 'Markdown 문서',
+    filterMarkdown: '텍스트 파일 (Markdown, TXT, JSON)',
     filterHtml: 'HTML 문서',
     filterPdf: 'PDF 문서',
     errBadArgs: '잘못된 인수입니다',
     errBadName: '파일 이름이 잘못되었습니다',
+    errBadExtension: '지원하지 않는 확장자이며 파일을 열 수 없게 됩니다',
     errMissing: '파일을 찾을 수 없습니다',
     errExists: '같은 이름의 파일이 이미 있습니다',
     errRenameFailed: '이름 바꾸기에 실패했습니다',
@@ -1282,6 +1301,7 @@ const tMain = createI18n({
     errUnsupportedExt: '.{ext} 형식은 지원되지 않습니다',
     copySuffix: '복사본',
     menuHelp: '도움말',
+    menuUserGuide: '사용자 가이드',
     thirdPartyNotices: '타사 소프트웨어 고지',
     menuExportDocx: 'Word로 내보내기…',
     btnCancel: '취소',
@@ -1367,11 +1387,12 @@ const tMain = createI18n({
     filterWord: 'Documents Word',
     filterExcel: 'Classeurs Excel',
     filterPpt: 'Présentations PowerPoint',
-    filterMarkdown: 'Documents Markdown',
+    filterMarkdown: 'Fichiers texte (Markdown, TXT, JSON)',
     filterHtml: 'Documents HTML',
     filterPdf: 'Documents PDF',
     errBadArgs: 'Arguments non valides',
     errBadName: 'Nom de fichier non valide',
+    errBadExtension: 'Cette extension n’est pas prise en charge et le fichier ne s’ouvrirait plus',
     errMissing: 'Fichier introuvable',
     errExists: 'Un fichier du même nom existe déjà',
     errRenameFailed: 'Échec du renommage',
@@ -1381,6 +1402,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'les fichiers .{ext} ne sont pas pris en charge',
     copySuffix: 'copie',
     menuHelp: 'Aide',
+    menuUserGuide: "Guide de l'utilisateur",
     thirdPartyNotices: 'Mentions relatives aux logiciels tiers',
     menuExportDocx: 'Exporter en Word…',
     btnCancel: 'Annuler',
@@ -1468,11 +1490,13 @@ const tMain = createI18n({
     filterWord: 'Word-Dokumente',
     filterExcel: 'Excel-Arbeitsmappen',
     filterPpt: 'PowerPoint-Präsentationen',
-    filterMarkdown: 'Markdown-Dokumente',
+    filterMarkdown: 'Textdateien (Markdown, TXT, JSON)',
     filterHtml: 'HTML-Dokumente',
     filterPdf: 'PDF-Dokumente',
     errBadArgs: 'Ungültige Argumente',
     errBadName: 'Ungültiger Dateiname',
+    errBadExtension:
+      'Diese Erweiterung wird nicht unterstützt, die Datei ließe sich nicht mehr öffnen',
     errMissing: 'Datei nicht gefunden',
     errExists: 'Eine Datei mit diesem Namen existiert bereits',
     errRenameFailed: 'Umbenennen fehlgeschlagen',
@@ -1482,6 +1506,7 @@ const tMain = createI18n({
     errUnsupportedExt: '.{ext}-Dateien werden nicht unterstützt',
     copySuffix: 'Kopie',
     menuHelp: 'Hilfe',
+    menuUserGuide: 'Benutzerhandbuch',
     thirdPartyNotices: 'Hinweise zu Drittanbietersoftware',
     menuExportDocx: 'Als Word exportieren…',
     btnCancel: 'Abbrechen',
@@ -1569,11 +1594,12 @@ const tMain = createI18n({
     filterWord: 'Documentos de Word',
     filterExcel: 'Libros de Excel',
     filterPpt: 'Presentaciones de PowerPoint',
-    filterMarkdown: 'Documentos Markdown',
+    filterMarkdown: 'Archivos de texto (Markdown, TXT, JSON)',
     filterHtml: 'Documentos HTML',
     filterPdf: 'Documentos PDF',
     errBadArgs: 'Argumentos no válidos',
     errBadName: 'Nombre de archivo no válido',
+    errBadExtension: 'Esa extensión no es compatible y el archivo dejaría de abrirse',
     errMissing: 'Archivo no encontrado',
     errExists: 'Ya existe un archivo con ese nombre',
     errRenameFailed: 'No se pudo cambiar el nombre',
@@ -1583,6 +1609,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'los archivos .{ext} no son compatibles',
     copySuffix: 'copia',
     menuHelp: 'Ayuda',
+    menuUserGuide: 'Guía del usuario',
     thirdPartyNotices: 'Avisos de software de terceros',
     menuExportDocx: 'Exportar como Word…',
     btnCancel: 'Cancelar',
@@ -1670,11 +1697,12 @@ const tMain = createI18n({
     filterWord: 'เอกสาร Word',
     filterExcel: 'เวิร์กบุ๊ก Excel',
     filterPpt: 'งานนำเสนอ PowerPoint',
-    filterMarkdown: 'เอกสาร Markdown',
+    filterMarkdown: 'ไฟล์ข้อความ (Markdown, TXT, JSON)',
     filterHtml: 'เอกสาร HTML',
     filterPdf: 'เอกสาร PDF',
     errBadArgs: 'อาร์กิวเมนต์ไม่ถูกต้อง',
     errBadName: 'ชื่อไฟล์ไม่ถูกต้อง',
+    errBadExtension: 'ไม่รองรับส่วนขยายนี้ ไฟล์จะเปิดไม่ได้',
     errMissing: 'ไม่พบไฟล์',
     errExists: 'มีไฟล์ชื่อเดียวกันอยู่แล้ว',
     errRenameFailed: 'เปลี่ยนชื่อไม่สำเร็จ',
@@ -1684,6 +1712,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'ไม่รองรับไฟล์ .{ext}',
     copySuffix: 'สำเนา',
     menuHelp: 'วิธีใช้',
+    menuUserGuide: 'คู่มือผู้ใช้',
     thirdPartyNotices: 'ประกาศเกี่ยวกับซอฟต์แวร์ของบุคคลที่สาม',
     menuExportDocx: 'ส่งออกเป็น Word…',
     btnCancel: 'ยกเลิก',
@@ -1767,11 +1796,12 @@ const tMain = createI18n({
     filterWord: 'Dokumen Word',
     filterExcel: 'Buku Kerja Excel',
     filterPpt: 'Presentasi PowerPoint',
-    filterMarkdown: 'Dokumen Markdown',
+    filterMarkdown: 'File teks (Markdown, TXT, JSON)',
     filterHtml: 'Dokumen HTML',
     filterPdf: 'Dokumen PDF',
     errBadArgs: 'Argumen tidak valid',
     errBadName: 'Nama file tidak valid',
+    errBadExtension: 'Ekstensi itu tidak didukung dan berkas tidak akan bisa dibuka',
     errMissing: 'File tidak ditemukan',
     errExists: 'File dengan nama tersebut sudah ada',
     errRenameFailed: 'Gagal mengganti nama',
@@ -1781,6 +1811,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'file .{ext} tidak didukung',
     copySuffix: 'salinan',
     menuHelp: 'Bantuan',
+    menuUserGuide: 'Panduan Pengguna',
     thirdPartyNotices: 'Pemberitahuan Perangkat Lunak Pihak Ketiga',
     menuExportDocx: 'Ekspor sebagai Word…',
     btnCancel: 'Batal',
@@ -1868,11 +1899,12 @@ const tMain = createI18n({
     filterWord: 'Документы Word',
     filterExcel: 'Книги Excel',
     filterPpt: 'Презентации PowerPoint',
-    filterMarkdown: 'Документы Markdown',
+    filterMarkdown: 'Текстовые файлы (Markdown, TXT, JSON)',
     filterHtml: 'Документы HTML',
     filterPdf: 'Документы PDF',
     errBadArgs: 'Недопустимые аргументы',
     errBadName: 'Недопустимое имя файла',
+    errBadExtension: 'Это расширение не поддерживается, и файл больше не откроется',
     errMissing: 'Файл не найден',
     errExists: 'Файл с таким именем уже существует',
     errRenameFailed: 'Не удалось переименовать',
@@ -1882,6 +1914,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'файлы .{ext} не поддерживаются',
     copySuffix: 'копия',
     menuHelp: 'Справка',
+    menuUserGuide: 'Руководство пользователя',
     thirdPartyNotices: 'Уведомления о стороннем ПО',
     menuExportDocx: 'Экспортировать в Word…',
     btnCancel: 'Отмена',
@@ -1969,11 +2002,12 @@ const tMain = createI18n({
     filterWord: 'مستندات Word',
     filterExcel: 'مصنفات Excel',
     filterPpt: 'عروض PowerPoint التقديمية',
-    filterMarkdown: 'مستندات Markdown',
+    filterMarkdown: 'ملفات نصية (Markdown, TXT, JSON)',
     filterHtml: 'مستندات HTML',
     filterPdf: 'مستندات PDF',
     errBadArgs: 'وسيطات غير صالحة',
     errBadName: 'اسم ملف غير صالح',
+    errBadExtension: 'هذه الامتداد غير مدعوم وسيصبح الملف غير قابل للفتح',
     errMissing: 'الملف غير موجود',
     errExists: 'يوجد ملف بالاسم نفسه بالفعل',
     errRenameFailed: 'فشلت إعادة التسمية',
@@ -1983,6 +2017,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'ملفات .{ext} غير مدعومة',
     copySuffix: 'نسخة',
     menuHelp: 'تعليمات',
+    menuUserGuide: 'دليل المستخدم',
     thirdPartyNotices: 'إشعارات برامج الجهات الخارجية',
     menuExportDocx: 'تصدير كملف Word…',
     btnCancel: 'إلغاء',
@@ -2066,11 +2101,12 @@ const tMain = createI18n({
     filterWord: 'Documentos do Word',
     filterExcel: 'Pastas de trabalho do Excel',
     filterPpt: 'Apresentações do PowerPoint',
-    filterMarkdown: 'Documentos Markdown',
+    filterMarkdown: 'Arquivos de texto (Markdown, TXT, JSON)',
     filterHtml: 'Documentos HTML',
     filterPdf: 'Documentos PDF',
     errBadArgs: 'Argumentos inválidos',
     errBadName: 'Nome de arquivo inválido',
+    errBadExtension: 'Essa extensão não é suportada e o arquivo deixaria de abrir',
     errMissing: 'Arquivo não encontrado',
     errExists: 'Já existe um arquivo com esse nome',
     errRenameFailed: 'Falha ao renomear',
@@ -2080,6 +2116,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'arquivos .{ext} não são suportados',
     copySuffix: 'cópia',
     menuHelp: 'Ajuda',
+    menuUserGuide: 'Guia do Usuário',
     thirdPartyNotices: 'Avisos de software de terceiros',
     menuExportDocx: 'Exportar como Word…',
     btnCancel: 'Cancelar',
@@ -2167,11 +2204,12 @@ const tMain = createI18n({
     filterWord: 'Documenti Word',
     filterExcel: 'Cartelle di lavoro Excel',
     filterPpt: 'Presentazioni PowerPoint',
-    filterMarkdown: 'Documenti Markdown',
+    filterMarkdown: 'File di testo (Markdown, TXT, JSON)',
     filterHtml: 'Documenti HTML',
     filterPdf: 'Documenti PDF',
     errBadArgs: 'Argomenti non validi',
     errBadName: 'Nome file non valido',
+    errBadExtension: 'Questa estensione non è supportata e il file non si aprirebbe più',
     errMissing: 'File non trovato',
     errExists: 'Esiste già un file con questo nome',
     errRenameFailed: 'Impossibile rinominare',
@@ -2181,6 +2219,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'i file .{ext} non sono supportati',
     copySuffix: 'copia',
     menuHelp: 'Aiuto',
+    menuUserGuide: "Guida dell'utente",
     thirdPartyNotices: 'Note sul software di terze parti',
     menuExportDocx: 'Esporta come Word…',
     btnCancel: 'Annulla',
@@ -2268,11 +2307,12 @@ const tMain = createI18n({
     filterWord: 'Dokumenty programu Word',
     filterExcel: 'Skoroszyty programu Excel',
     filterPpt: 'Prezentacje programu PowerPoint',
-    filterMarkdown: 'Dokumenty Markdown',
+    filterMarkdown: 'Pliki tekstowe (Markdown, TXT, JSON)',
     filterHtml: 'Dokumenty HTML',
     filterPdf: 'Dokumenty PDF',
     errBadArgs: 'Nieprawidłowe argumenty',
     errBadName: 'Nieprawidłowa nazwa pliku',
+    errBadExtension: 'To rozszerzenie nie jest obsługiwane i plik przestałby się otwierać',
     errMissing: 'Nie znaleziono pliku',
     errExists: 'Plik o tej nazwie już istnieje',
     errRenameFailed: 'Nie udało się zmienić nazwy',
@@ -2282,6 +2322,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'pliki .{ext} nie są obsługiwane',
     copySuffix: 'kopia',
     menuHelp: 'Pomoc',
+    menuUserGuide: 'Podręcznik użytkownika',
     thirdPartyNotices: 'Informacje o oprogramowaniu innych firm',
     menuExportDocx: 'Eksportuj jako Word…',
     btnCancel: 'Anuluj',
@@ -2369,11 +2410,12 @@ const tMain = createI18n({
     filterWord: 'Dokumenty Word',
     filterExcel: 'Sešity Excel',
     filterPpt: 'Prezentace PowerPoint',
-    filterMarkdown: 'Dokumenty Markdown',
+    filterMarkdown: 'Textové soubory (Markdown, TXT, JSON)',
     filterHtml: 'Dokumenty HTML',
     filterPdf: 'Dokumenty PDF',
     errBadArgs: 'Neplatné argumenty',
     errBadName: 'Neplatný název souboru',
+    errBadExtension: 'Toto rozšíření není podporováno a soubor by se neotevíral',
     errMissing: 'Soubor nebyl nalezen',
     errExists: 'Soubor s tímto názvem už existuje',
     errRenameFailed: 'Přejmenování se nezdařilo',
@@ -2383,6 +2425,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'Soubory .{ext} nejsou podporovány',
     copySuffix: 'kopie',
     menuHelp: 'Nápověda',
+    menuUserGuide: 'Uživatelská příručka',
     thirdPartyNotices: 'Informace o softwaru třetích stran',
     menuExportDocx: 'Exportovat jako Word…',
     btnCancel: 'Zrušit',
@@ -2468,11 +2511,12 @@ const tMain = createI18n({
     filterWord: 'Word-documenten',
     filterExcel: 'Excel-werkmappen',
     filterPpt: 'PowerPoint-presentaties',
-    filterMarkdown: 'Markdown-documenten',
+    filterMarkdown: 'Tekstbestanden (Markdown, TXT, JSON)',
     filterHtml: 'HTML-documenten',
     filterPdf: 'PDF-documenten',
     errBadArgs: 'Ongeldige argumenten',
     errBadName: 'Ongeldige bestandsnaam',
+    errBadExtension: 'Die extensie wordt niet ondersteund en het bestand zou niet meer openen',
     errMissing: 'Bestand niet gevonden',
     errExists: 'Er bestaat al een bestand met die naam',
     errRenameFailed: 'Naam wijzigen mislukt',
@@ -2482,6 +2526,7 @@ const tMain = createI18n({
     errUnsupportedExt: '.{ext}-bestanden worden niet ondersteund',
     copySuffix: 'kopie',
     menuHelp: 'Help',
+    menuUserGuide: 'Gebruikershandleiding',
     thirdPartyNotices: 'Kennisgevingen over software van derden',
     menuExportDocx: 'Exporteren als Word…',
     btnCancel: 'Annuleren',
@@ -2569,11 +2614,12 @@ const tMain = createI18n({
     filterWord: 'Dokumen Word',
     filterExcel: 'Buku Kerja Excel',
     filterPpt: 'Persembahan PowerPoint',
-    filterMarkdown: 'Dokumen Markdown',
+    filterMarkdown: 'Fail teks (Markdown, TXT, JSON)',
     filterHtml: 'Dokumen HTML',
     filterPdf: 'Dokumen PDF',
     errBadArgs: 'Argumen tidak sah',
     errBadName: 'Nama fail tidak sah',
+    errBadExtension: 'Sambungan itu tidak disokong dan fail tidak akan dibuka',
     errMissing: 'Fail tidak ditemui',
     errExists: 'Fail dengan nama yang sama sudah wujud',
     errRenameFailed: 'Gagal menamakan semula',
@@ -2583,6 +2629,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'fail .{ext} tidak disokong',
     copySuffix: 'salinan',
     menuHelp: 'Bantuan',
+    menuUserGuide: 'Panduan Pengguna',
     thirdPartyNotices: 'Notis Perisian Pihak Ketiga',
     menuExportDocx: 'Eksport sebagai Word…',
     btnCancel: 'Batal',
@@ -2669,11 +2716,12 @@ const tMain = createI18n({
     filterWord: 'מסמכי Word',
     filterExcel: 'חוברות עבודה של Excel',
     filterPpt: 'מצגות PowerPoint',
-    filterMarkdown: 'מסמכי Markdown',
+    filterMarkdown: 'קובצי טקסט (Markdown, TXT, JSON)',
     filterHtml: 'מסמכי HTML',
     filterPdf: 'מסמכי PDF',
     errBadArgs: 'ארגומנטים לא חוקיים',
     errBadName: 'שם קובץ לא חוקי',
+    errBadExtension: 'הסיומת אינה נתמכת והקובץ לא ייפתח יותר',
     errMissing: 'הקובץ לא נמצא',
     errExists: 'כבר קיים קובץ באותו שם',
     errRenameFailed: 'שינוי השם נכשל',
@@ -2683,6 +2731,7 @@ const tMain = createI18n({
     errUnsupportedExt: 'קובצי .{ext} אינם נתמכים',
     copySuffix: 'עותק',
     menuHelp: 'עזרה',
+    menuUserGuide: 'מדריך למשתמש',
     thirdPartyNotices: 'הודעות על תוכנות צד שלישי',
     menuExportDocx: 'ייצוא כ-Word…',
     btnCancel: 'ביטול',
@@ -2767,11 +2816,12 @@ const tMain = createI18n({
     filterWord: 'Word दस्तावेज़',
     filterExcel: 'Excel वर्कबुक',
     filterPpt: 'PowerPoint प्रस्तुतियाँ',
-    filterMarkdown: 'Markdown दस्तावेज़',
+    filterMarkdown: 'पाठ फ़ाइलें (Markdown, TXT, JSON)',
     filterHtml: 'HTML दस्तावेज़',
     filterPdf: 'PDF दस्तावेज़',
     errBadArgs: 'अमान्य आर्ग्युमेंट',
     errBadName: 'अमान्य फ़ाइल नाम',
+    errBadExtension: 'वह एक्सटेंशन समर्थित नहीं है और फ़ाइल फिर नहीं खुलेगी',
     errMissing: 'फ़ाइल नहीं मिली',
     errExists: 'इस नाम की फ़ाइल पहले से मौजूद है',
     errRenameFailed: 'नाम बदलने में विफल',
@@ -2781,6 +2831,7 @@ const tMain = createI18n({
     errUnsupportedExt: '.{ext} फ़ाइलें समर्थित नहीं हैं',
     copySuffix: 'प्रतिलिपि',
     menuHelp: 'सहायता',
+    menuUserGuide: 'उपयोगकर्ता गाइड',
     thirdPartyNotices: 'तृतीय-पक्ष सॉफ़्टवेयर सूचनाएँ',
     menuExportDocx: 'Word के रूप में निर्यात करें…',
     btnCancel: 'रद्द करें',
@@ -2868,11 +2919,12 @@ const tMain = createI18n({
     filterWord: 'Word 文件',
     filterExcel: 'Excel 活頁簿',
     filterPpt: 'PowerPoint 簡報',
-    filterMarkdown: 'Markdown 文件',
+    filterMarkdown: '文字檔 (Markdown, TXT, JSON)',
     filterHtml: 'HTML 文件',
     filterPdf: 'PDF 文件',
     errBadArgs: '參數無效',
     errBadName: '檔案名稱不合法',
+    errBadExtension: '這個副檔名不受支援，改了檔案就打不開了',
     errMissing: '檔案不存在',
     errExists: '同名檔案已存在',
     errRenameFailed: '重新命名失敗',
@@ -2882,6 +2934,7 @@ const tMain = createI18n({
     errUnsupportedExt: '暫不支援 .{ext} 類型',
     copySuffix: '副本',
     menuHelp: '說明',
+    menuUserGuide: '使用手冊',
     thirdPartyNotices: '第三方軟體聲明',
     menuExportDocx: '匯出為 Word…',
     btnCancel: '取消',
@@ -3087,7 +3140,6 @@ function trackedFilesUnder(dir: string): string[] {
   ])
 }
 
-/** stat that tolerates races: the answer is only advisory for the delete gate */
 function statMaybeFile(path: string): { isFile: () => boolean } | null {
   try {
     return statSync(path)
@@ -3096,7 +3148,6 @@ function statMaybeFile(path: string): { isFile: () => boolean } | null {
   }
 }
 
-/** the union trackedFilesUnder uses, as a membership check for the file IPCs */
 function fileTargetSources(): FileTargetSources {
   return {
     insideAnyRoot: (p) => insideAnyRoot(p),
@@ -3149,7 +3200,7 @@ const SEARCH_EXT_FAMILY: Record<string, readonly string[]> = {
   docx: ['docx', 'doc'],
   xlsx: ['xlsx', 'xlsm', 'xls', 'csv', 'tsv'],
   pptx: ['pptx', 'ppt'],
-  md: ['md', 'markdown'],
+  md: ['md', 'markdown', 'txt', 'json'],
   html: ['html', 'htm'],
 }
 
@@ -3171,6 +3222,55 @@ function ensureFolderWatchers(): void {
     })
     folderWatchers.set(root, watcher)
   }
+}
+
+/**
+ * Put the manual in whatever menu is currently installed.
+ *
+ * Every tab kind builds its own application menu, which is how File and Edit
+ * stay tab-shaped — and which is also why an item added to one builder is
+ * missing from the other six. F1 worked from Home and nowhere else, and the
+ * manual's own shortcut table was wrong for six of the seven tab kinds.
+ *
+ * Injecting after the builder has run is the one place that cannot be
+ * forgotten: a new tab kind gets the manual for free, and a builder that
+ * already has it is left alone rather than getting a second copy.
+ */
+function withUserGuide(): void {
+  const menu = Menu.getApplicationMenu()
+  if (!menu) return
+  const userGuide = {
+    label: tm('menuUserGuide'),
+    accelerator: 'F1',
+    click: () => tabManager?.openHelpTab(),
+  }
+  const help = menu.items.find((item) => item.role === 'help')
+  // Slides and Sheets build a File/Edit/View template with no Help menu at
+  // all, so there is nothing to insert into — one is created instead. Without
+  // this the manual would be reachable from four of the seven tab kinds.
+  if (!help) {
+    menu.append(
+      Menu.buildFromTemplate([{ role: 'help', label: tm('menuHelp'), submenu: [userGuide] }])
+        .items[0]!,
+    )
+    return
+  }
+  const submenu = help.submenu
+  if (!submenu || submenu.items.some((i) => i.accelerator === 'F1')) return
+  // A separator survives a template only *between* two real items — Electron
+  // drops one at either end, so `[userGuide, separator]` builds a single item
+  // and the destructure below used to hand `undefined` to `insert`, which threw
+  // "Invalid item" and took the main process down on the next tab switch. The
+  // third entry is filler, discarded; the type check is what stops this from
+  // silently regressing if Electron's rule ever changes again.
+  const [item, separator] = Menu.buildFromTemplate([
+    userGuide,
+    { type: 'separator' },
+    { role: 'undo' },
+  ]).items
+  if (!item) return
+  submenu.insert(0, item)
+  if (separator?.type === 'separator') submenu.insert(1, separator)
 }
 
 function applyMenuFor(kind: TabKind): void {
@@ -3196,6 +3296,7 @@ function applyMenuFor(kind: TabKind): void {
     default:
       buildHomeMenu()
   }
+  withUserGuide()
 }
 
 function refreshTitleBarOverlay(): void {
@@ -3225,7 +3326,7 @@ function splashAppForPath(
   if (/\.(xlsx?|xlsm|csv|tsv)$/i.test(filePath)) return 'sheets'
   if (/\.pptx?$/i.test(filePath)) return 'slides'
   if (PDF_RE.test(filePath)) return 'pdf'
-  if (MD_RE.test(filePath)) return 'markdown'
+  if (TEXT_RE.test(filePath)) return 'markdown'
   if (HTML_RE.test(filePath)) return 'html'
   return 'docs'
 }
@@ -3346,15 +3447,17 @@ function createShellWindow(): void {
     // no extension: these tabs have no file on disk yet; the title becomes the
     // real filename (the localized untitled default + .docx etc.) once the first save lands
     (kind) =>
-      kind === 'docs'
-        ? tm('untitledDoc')
-        : kind === 'slides'
-          ? tm('untitledDeck')
-          : kind === 'markdown'
-            ? tm('untitledMarkdown')
-            : kind === 'html'
-              ? tm('untitledHtml')
-              : tm('untitledSheet'),
+      kind === 'help'
+        ? tm('menuUserGuide')
+        : kind === 'docs'
+          ? tm('untitledDoc')
+          : kind === 'slides'
+            ? tm('untitledDeck')
+            : kind === 'markdown'
+              ? tm('untitledMarkdown')
+              : kind === 'html'
+                ? tm('untitledHtml')
+                : tm('untitledSheet'),
     electronOverlayDeps(
       () => (win.isDestroyed() ? null : win),
       () => currentLang(),
@@ -3538,66 +3641,9 @@ function createShellWindow(): void {
   })
 
   // Closing the whole window walks every dirty sheets/pdf/slides/docs tab through
-  // the same save/don't-save/cancel prompt; any cancel aborts the close.
-  // docs dirtiness lives renderer-side, so any live docs tab forces the async path
-  // and gets queried there (clean tabs pass through without activation).
-  let closeConfirmed = false
-  win.on('close', (event) => {
-    if (closeConfirmed) return
-    const dirtySheets = manager.dirtySheetsTabs()
-    const dirtyPdf = manager.dirtyPdfTabs()
-    const dirtyMarkdown = manager.dirtyMarkdownTabs()
-    const dirtyHtml = manager.dirtyHtmlTabs()
-    const dirtySlides = manager.dirtySlidesTabs()
-    const docsTabs = manager.docsTabs()
-    if (
-      dirtySheets.length === 0 &&
-      dirtyPdf.length === 0 &&
-      dirtyMarkdown.length === 0 &&
-      dirtyHtml.length === 0 &&
-      dirtySlides.length === 0 &&
-      docsTabs.length === 0
-    )
-      return
-    event.preventDefault()
-    void (async () => {
-      const denied = await (async () => {
-        for (const tab of dirtySheets) {
-          manager.activateTab(tab.id)
-          if (!(await requestSheetsClose(tab.webContents, win))) return true
-        }
-        for (const tab of dirtyPdf) {
-          manager.activateTab(tab.id)
-          if (!(await requestPdfClose(tab.webContents, win))) return true
-        }
-        for (const tab of dirtyMarkdown) {
-          manager.activateTab(tab.id)
-          if (!(await requestMarkdownClose(tab.webContents, win))) return true
-        }
-        for (const tab of dirtyHtml) {
-          manager.activateTab(tab.id)
-          if (!(await requestHtmlClose(tab.webContents, win))) return true
-        }
-        for (const tab of dirtySlides) {
-          manager.activateTab(tab.id)
-          if (!(await requestSlidesClose(tab.webContents, win))) return true
-        }
-        for (const tab of docsTabs) {
-          if (!(await docsQueryDirty(tab.webContents))) continue
-          manager.activateTab(tab.id)
-          if (!(await requestDocsClose(tab.webContents, win))) return true
-        }
-        return false
-      })()
-      // a denied close vetoes any quit that was in flight: the sheets close
-      // guard must prompt again on later closes instead of silently proceeding
-      if (denied) resetSheetsShuttingDown()
-      else {
-        closeConfirmed = true
-        if (!win.isDestroyed()) win.close()
-      }
-    })()
-  })
+  // the same save/don't-save/cancel prompt; any cancel aborts the close. An
+  // all-clean close is left untouched, so ⌘Q keeps quitting the app.
+  installShellCloseGuard(win, manager)
 
   win.on('closed', () => {
     if (shellWindow === win) shellWindow = null
@@ -3617,15 +3663,9 @@ function createShellWindow(): void {
 
 // ---- routing: one dispatch function for every open path ----
 
-const DOCX_RE = /\.docx$/i
 const DOC_RE = /\.doc$/i
 const PPT_RE = /\.ppt$/i
-const XLSX_RE = /\.(xlsx|xlsm|xls|csv|tsv)$/i
 const XLS_RE = /\.xls$/i
-const PPTX_RE = /\.pptx$/i
-const PDF_RE = /\.pdf$/i
-const MD_RE = /\.(md|markdown)$/i
-const HTML_RE = /\.html?$/i
 
 /**
  * Single source of truth for the open-dialog filter. Includes the
@@ -3644,6 +3684,8 @@ const OPEN_DIALOG_EXTENSIONS = [
   'pdf',
   'md',
   'markdown',
+  'txt',
+  'json',
   'html',
   'htm',
 ]
@@ -4170,7 +4212,7 @@ function routeDocumentPath(filePath: string): boolean {
     else tabManager.openPdfTab(filePath)
     return true
   }
-  if (MD_RE.test(filePath)) {
+  if (TEXT_RE.test(filePath)) {
     recordRecentFile(filePath)
     const existing = tabManager.findMarkdownTabByPath(filePath)
     if (existing) tabManager.activateTab(existing)
@@ -4736,31 +4778,45 @@ function registerHomeIpc(): void {
       const next = normalizeFileSearchSettings({
         ...current,
         ...p,
-        jevKeys: { ...current.jevKeys, ...(p.jevKeys ?? {}) },
+        keys: { ...current.keys, ...(p.keys ?? {}) },
       })
       writeAppSetting(APP_SETTINGS_PATH(), 'fileSearch', next)
       return next
     },
   )
 
-  ipcMain.handle(HOME_CHANNELS.testFileSearchRerank, (_event, input: unknown) => {
-    const { endpoint, apiKey } = (input && typeof input === 'object' ? input : {}) as {
-      endpoint?: unknown
-      apiKey?: unknown
-    }
-    return probeJev(jevEndpointOf(endpoint), typeof apiKey === 'string' ? apiKey : '')
-  })
+  ipcMain.handle(HOME_CHANNELS.testFileSearchRerank, (_event, input: unknown) =>
+    probeDecision(normalizeFileSearchSettings(input)),
+  )
 
   // Starred files sort by mtime, which requires stat-ing them all first; they are hand-picked and few, so this is fine
   ipcMain.handle(HOME_CHANNELS.starred, (_event, query: unknown): RecentPage => {
     const { offset, limit, ext } = normalizeRecentQuery(query)
-    const all = statEntries(readStarredFiles()).sort((a, b) => b.mtimeMs - a.mtimeMs)
+    // the Starred view's group pills scope the whole query (totals included)
+    const raw = (query && typeof query === 'object' ? query : {}) as { group?: unknown }
+    const group = typeof raw.group === 'string' && raw.group ? raw.group : undefined
+    const groupOf = readStarredGroupMap()
+    const scoped = group
+      ? readStarredFiles().filter((p) => groupOf.get(p) === group)
+      : readStarredFiles()
+    const all = statEntries(scoped)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)
+      .map((entry) => {
+        const g = groupOf.get(entry.path)
+        return g ? { ...entry, group: g } : entry
+      })
     const filtered = ext ? all.filter((entry) => matchesExtFamily(entry.ext, ext)) : all
     return {
       entries: limit === 0 ? [] : filtered.slice(offset, offset + limit),
       total: filtered.length,
       totalAll: all.length,
     }
+  })
+
+  ipcMain.handle(HOME_CHANNELS.starredGroups, (): string[] => readStarredGroups())
+
+  ipcMain.handle(HOME_CHANNELS.setStarredGroup, (_event, paths: unknown, group: unknown) => {
+    setStarredGroup(stringPaths(paths), typeof group === 'string' && group ? group : null)
   })
 
   ipcMain.handle(HOME_CHANNELS.statPaths, (_event, paths: unknown): RecentEntry[] =>
@@ -4788,7 +4844,7 @@ function registerHomeIpc(): void {
         { name: tm('filterExcel'), extensions: ['xlsx', 'xlsm', 'xls', 'csv', 'tsv'] },
         { name: tm('filterPpt'), extensions: ['pptx', 'ppt'] },
         { name: tm('filterPdf'), extensions: ['pdf'] },
-        { name: tm('filterMarkdown'), extensions: ['md', 'markdown'] },
+        { name: tm('filterMarkdown'), extensions: ['md', 'markdown', 'txt', 'json'] },
         { name: tm('filterHtml'), extensions: ['html', 'htm'] },
       ],
       properties: ['openFile', 'multiSelections'],
@@ -4834,6 +4890,14 @@ function registerHomeIpc(): void {
     removeStarredFiles(list.filter((p) => !existsSync(p)))
   })
 
+  // Bulk unstar from the Starred view: every row there is a favorite, so the
+  // selection action is "unstar", not "remove from recents" — removeRecent
+  // keeps existing files' stars on purpose, which made the Starred view's
+  // bulk removal a no-op for anything still on disk
+  ipcMain.handle(HOME_CHANNELS.unstarPaths, (_event, paths: unknown) => {
+    removeStarredFiles(stringPaths(paths))
+  })
+
   ipcMain.handle(HOME_CHANNELS.revealPath, (_event, path: unknown) => {
     if (typeof path === 'string' && existsSync(path)) shell.showItemInFolder(path)
   })
@@ -4849,8 +4913,8 @@ function registerHomeIpc(): void {
       // with the localized gate instead of renaming to a different
       // name than requested.
       if (!isValidRawRenameName(newName)) return { ok: false, error: tm('errBadName') }
-      // only paths the UI could have shown: a compromised renderer must not
-      // rename arbitrary files outside every tracked source
+      if (!renameStaysInApp(path, newName.trim()))
+        return { ok: false, error: tm('errBadExtension') }
       if (!isUserVisibleFile(path, fileTargetSources()))
         return { ok: false, error: tm('errBadArgs') }
       const name = newName.trim()
@@ -4895,7 +4959,16 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.deleteFiles, async (_event, paths: unknown) => {
     const targets = fileTargetSources()
     const indexed = new Set(documentMemory?.listPaths() ?? [])
-    return trashUserFiles(stringPaths(paths), {
+    const requested = stringPaths(paths)
+    // a missing path is not a trash failure worth keeping: its ghost recent/star entry is cleaned up
+    const ghosts = requested.filter(
+      (p) => isUserVisibleFile(p, targets) && statMaybeFile(p) === null,
+    )
+    if (ghosts.length) {
+      removeRecentFiles(ghosts)
+      removeStarredFiles(ghosts)
+    }
+    return trashUserFiles(requested, {
       // Indexed files can be legitimate targets even after their recent entry disappeared.
       // The existing visibility gate still limits all other paths to user-visible locations.
       isAllowed: (path) => isUserVisibleFile(path, targets) || indexed.has(path),
@@ -4919,6 +4992,9 @@ function registerHomeIpc(): void {
     }
   })
 
+  ipcMain.handle(HOME_CHANNELS.openHelp, () => {
+    tabManager?.openHelpTab()
+  })
   ipcMain.handle(HOME_CHANNELS.getLanguage, (): Lang => currentLang())
 
   ipcMain.handle(HOME_CHANNELS.setLanguage, (_event, lang: unknown) => {
@@ -5071,6 +5147,19 @@ function registerHomeIpc(): void {
     nativeTheme.themeSource = theme
     refreshTitleBarOverlay()
     for (const wc of webContents.getAllWebContents()) wc.send('app:theme-changed', theme)
+  })
+
+  ipcMain.handle(HOME_CHANNELS.getDocumentTheme, (): DocTheme => currentDocTheme())
+  // editor tabs ask via the app-wide channel (symmetric with app:get-theme)
+  ipcMain.handle('app:get-document-theme', (): DocTheme => currentDocTheme())
+
+  ipcMain.handle(HOME_CHANNELS.setDocumentTheme, (_event, theme: unknown) => {
+    if (theme !== 'light' && theme !== 'dark' && theme !== 'follow') return
+    if (theme === currentDocTheme()) return
+    cachedDocTheme = theme
+    writeAppSetting(APP_SETTINGS_PATH(), 'documentTheme', theme)
+    // the native theme is untouched — only the editors' canvas/paper follows this
+    for (const wc of webContents.getAllWebContents()) wc.send('app:document-theme-changed', theme)
   })
 
   ipcMain.handle(HOME_CHANNELS.getAutoSaveDefault, (): AutoSaveDefault => currentAutoSaveDefault())
@@ -5528,6 +5617,7 @@ const TAB_MENU_ICON: Record<TabKind, keyof MenuIconSet> = {
   pdf: 'pdf',
   markdown: 'md',
   html: 'html',
+  help: 'home',
 }
 
 // tab views see neither DOM events nor a focus change when the user clicks the
@@ -5870,6 +5960,8 @@ function buildHomeMenu(): void {
       role: 'help',
       label: tm('menuHelp'),
       submenu: [
+        { label: tm('menuUserGuide'), accelerator: 'F1', click: () => tabManager?.openHelpTab() },
+        { type: 'separator' },
         { label: tm('thirdPartyNotices'), click: () => void openThirdPartyNotices() },
         { type: 'separator' },
         checkUpdatesMenuItem(appMenuLabels(currentLang())),
@@ -6702,6 +6794,16 @@ app.on('second-instance', (_event, argv, _cwd, additionalData) => {
 installNavigationGuard(app)
 installContextMenu(app, () => contextMenuLabels(currentLang()))
 registerAiIpc()
+ipcMain.handle('ai:open-model-settings', () => {
+  const win = shellWindow
+  if (!win || win.isDestroyed()) return
+  // the request may come from a detached window or while the shell is minimized
+  if (win.isMinimized()) win.restore()
+  win.show()
+  win.focus()
+  tabManager?.openHomeTab()
+  win.webContents.send(HOME_CHANNELS.openSettings, { section: 'aiModel' })
+})
 registerProjectIpc()
 registerDocsIpc()
 registerHomeIpc()
@@ -6778,6 +6880,8 @@ app.whenReady().then(async () => {
     pdf: join(PDF_OUT, 'renderer'),
     markdown: join(MARKDOWN_OUT, 'renderer'),
     html: join(HTML_OUT, 'renderer'),
+    // the manual shares the shell's own renderer bundle (help mode)
+    help: join(__dirname, '../renderer'),
   })
   if (headlessArgv.kind !== 'none') {
     await runHeadlessExportEntry(headlessArgv)
@@ -7091,7 +7195,9 @@ app.whenReady().then(async () => {
         ?.runBackupRetentionMaintenance()
         .then((res) => {
           if (res && res.purgedCount > 0) {
-            console.info(`[document-memory] Background backup retention purged ${res.purgedCount} backups`)
+            console.info(
+              `[document-memory] Background backup retention purged ${res.purgedCount} backups`,
+            )
           }
         })
         .catch((err) => {

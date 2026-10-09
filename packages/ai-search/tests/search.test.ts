@@ -92,6 +92,22 @@ describe('webSearch (Serper)', () => {
     expect(tavily.results.map((r) => r.title)).toEqual(['ok'])
   })
 
+  it('treats an unknown prefer as the default instead of throwing', async () => {
+    process.env.SERPER_API_KEY = 'serper-key'
+    mockFetch((url) => {
+      if (url === 'https://google.serper.dev/search') {
+        return {
+          ok: true,
+          json: { organic: [{ title: 'ok', link: 'https://ok.com/t', snippet: 'c' }] },
+        }
+      }
+      return { ok: false, status: 500, json: {} }
+    })
+
+    const r = await webSearch('q', 5, { useGsk: false, prefer: 'bogus' as never })
+    expect(r.method).toBe('serper')
+  })
+
   it('falls back to DuckDuckGo when no key and the free Parallel MCP is down', async () => {
     const urls: string[] = []
     mockFetch((url) => {

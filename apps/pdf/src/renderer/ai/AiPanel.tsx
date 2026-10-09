@@ -1,4 +1,10 @@
-import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@genoffice/ui'
+import {
+  aiPanelWidthAtPointer,
+  AiPanelSideButton,
+  AiModelPicker,
+  GeminiModelPicker,
+  type AiModelPickerBridge,
+} from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react'
 import { AgentLoop, composeSkills, createDocumentMemorySkill } from '@genoffice/agent-core'
@@ -70,6 +76,14 @@ type Phase = 'thinking' | 'replying' | 'working'
 interface PendingConfirm {
   req: FileOpConfirm
   settle: (ok: boolean) => void
+}
+
+const MODEL_BRIDGE: AiModelPickerBridge = {
+  getSettings: () => window.pdfApi.getAiSettings(),
+  setSettings: (settings) => window.pdfApi.setAiSettings(settings),
+  onSettingsChanged: (handler) => window.pdfApi.onAiSettingsChanged(handler),
+  gskLoggedIn: () => window.pdfApi.gskStatus().then((s) => !!s?.loggedIn),
+  openModelSettings: () => window.pdfApi.openAiModelSettings().catch(() => {}),
 }
 
 export function AiPanel({
@@ -816,6 +830,7 @@ export function AiPanel({
           sendLabel={t('aiSend')}
           stopLabel={t('aiStop')}
           iconOnly
+          footerStart={<AiModelPicker bridge={MODEL_BRIDGE} lang={lang} />}
           sendIconEnabled={<img src={sendEnterOn} alt="" aria-hidden />}
           sendIconDisabled={<img src={sendEnterOff} alt="" aria-hidden />}
           stopIcon={<img src={sendStop} alt="" aria-hidden />}

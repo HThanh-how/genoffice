@@ -63,9 +63,25 @@ export function modelHasFixedSampling(model: string): boolean {
  * Model ids that reject image input even under a vision-capable provider.
  * DeepSeek V4 Pro and V4 Flash are text-only; V4.1 Flash and the -vision*
  * branches take images, so they fall through and receive screenshots.
+ * Ling and LongCat are the same shape: only `Ling-3.0-flash-VL` and
+ * `LongCat-2.5-Preview` take images; a text-only id added to either provider
+ * must be added here too.
  */
 export function modelLacksVision(model: string): boolean {
-  return /(^|\/)deep-?seek-v4-(?:pro(?:$|-)|flash(?!-vision))/i.test(model)
+  // MiniMax-M2.7 remains text-only when MiniMax-M3 enables provider vision.
+  if (/(^|\/)minimax-m2\.7($|-)/i.test(model)) return true
+  // Atlas Cloud serves these text-only (GET api.atlascloud.ai/v1/models gives
+  // them input_modalities ["text"]), including MiniMax M3, which takes images
+  // on MiniMax's own API. Matched on the full namespaced id so the direct
+  // GLM and MiniMax providers keep their own behaviour. Its Kimi, Qwen and
+  // GLM-5.3-Flash ids do take images and fall through.
+  if (/^(?:zai-org\/glm-5\.3|minimaxai\/minimax-m(?:3|2\.5))$/i.test(model)) return true
+  return (
+    /(^|\/)deep-?seek-v4-(?:pro(?:$|-)|flash(?!-vision))/i.test(model) ||
+    /(^|\/)(?:ling-(?:3\.0-flash(?!-vl)|3\.0-tiny|2\.6-1t|2\.6-flash)|ring-2\.6-1t|longcat-2\.0(?:$|-))/i.test(
+      model,
+    )
+  )
 }
 
 /**
@@ -79,16 +95,6 @@ export function modelLacksVision(model: string): boolean {
 export function modelEchoesReasoning(model: string): boolean {
   return /(^|\/)(minimax-m|deep-?seek-(v4|flash)|hy-?[34]([^\w]|$))/i.test(model)
 }
-
-/**
- * DeepSeek V4 thinks by default, and once a request carries `tools` the API
- * rejects (400) every later turn whose assistant messages don't echo back the
- * `reasoning_content` it produced. Our OpenAI-compatible transcript has no
- * field to carry that, so the agent loop would die right after its first tool
- * call. Pin the models to non-thinking mode — what the retired deepseek-chat
- * alias did — until the transcript can round-trip reasoning.
- */
-const DEEPSEEK_NON_THINKING = { thinking: { type: 'disabled' } }
 
 /**
  * The direct API 400s on the versioned pool spelling we list (verified
@@ -242,10 +248,9 @@ export const AI_PROVIDER_ADAPTERS: Record<AiProviderId, ProviderAdapter> = {
     capabilities: { auth: 'api-key', vision: true },
     resolveEndpoint(config) {
       const wire = DEEPSEEK_WIRE_IDS[config.model]
+      // thinking stays on (vendor default); the transcript echoes reasoning_content for tool turns
       return {
-        ...fixedEndpoint('openai-compatible', 'https://api.deepseek.com/v1', {
-          bodyExtras: DEEPSEEK_NON_THINKING,
-        })(config),
+        ...fixedEndpoint('openai-compatible', 'https://api.deepseek.com/v1')(config),
         ...(wire ? { model: wire } : {}),
       }
     },
@@ -295,14 +300,32 @@ export const AI_PROVIDER_ADAPTERS: Record<AiProviderId, ProviderAdapter> = {
     // conservative: the chat models are documented for text first, so we do not
     // hand them screenshots until a model card says otherwise
     capabilities: { auth: 'api-key', vision: false },
-    // the mainland TokenHub host; the international one differs only by the
-    // `intl` label (tokenhub-intl.tencentcloudmaas.com), reachable by storing
-    // a base URL on this provider
-    resolveEndpoint: fixedEndpoint('openai-compatible', 'https://tokenhub.tencentmaas.com/v1'),
+    // mainland TokenHub host; the intl one (tokenhub-intl.tencentcloudmaas.com)
+    // is reachable by storing a base URL on this provider
+    resolveEndpoint: fixedEndpoint('openai-compatible', 'https://tokenhub.tencentcloudmaas.com/v1'),
+  },
+  ling: {
+    meta: metaOf('ling'),
+    capabilities: { auth: 'api-key', vision: true },
+    resolveEndpoint: fixedEndpoint('openai-compatible', 'https://api.ant-ling.com/v1'),
+  },
+  spark: {
+    meta: metaOf('spark'),
+    capabilities: { auth: 'api-key', vision: false },
+    // endpointUrl() appends chat/completions to this documented /v2 base
+    resolveEndpoint: fixedEndpoint(
+      'openai-compatible',
+      'https://maas-api.cn-huabei-1.xf-yun.com/v2',
+    ),
+  },
+  longcat: {
+    meta: metaOf('longcat'),
+    capabilities: { auth: 'api-key', vision: true },
+    resolveEndpoint: fixedEndpoint('openai-compatible', 'https://api.longcat.chat/openai/v1'),
   },
   minimax: {
     meta: metaOf('minimax'),
-    capabilities: { auth: 'api-key', vision: false },
+    capabilities: { auth: 'api-key', vision: true },
     resolveEndpoint: fixedEndpoint('openai-compatible', 'https://api.minimax.io/v1'),
   },
   xai: {
@@ -337,6 +360,12 @@ export const AI_PROVIDER_ADAPTERS: Record<AiProviderId, ProviderAdapter> = {
     capabilities: { auth: 'api-key', vision: true },
     // one chat-completions endpoint for every model; the model id picks the lab
     resolveEndpoint: fixedEndpoint('openai-compatible', 'https://api.cheaperinference.com/v1'),
+  },
+  atlascloud: {
+    meta: metaOf('atlascloud'),
+    capabilities: { auth: 'api-key', vision: true },
+    // one chat-completions endpoint for every lab; the namespaced model id picks it
+    resolveEndpoint: fixedEndpoint('openai-compatible', 'https://api.atlascloud.ai/v1'),
   },
   'opencode-zen': {
     meta: metaOf('opencode-zen'),

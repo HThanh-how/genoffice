@@ -124,6 +124,13 @@ const api: HtmlApi = {
   },
   getAiSettings: () => ipcRenderer.invoke(AI_CHANNELS.getSettings),
   getGeminiModels: () => ipcRenderer.invoke('ai:gemini-chat-models'),
+  setAiSettings: (settings) => ipcRenderer.invoke(AI_CHANNELS.setSettings, settings),
+  onAiSettingsChanged: (handler) => {
+    const listener = () => handler()
+    ipcRenderer.on(AI_CHANNELS.settingsChanged, listener)
+    return () => ipcRenderer.removeListener(AI_CHANNELS.settingsChanged, listener)
+  },
+  openAiModelSettings: () => ipcRenderer.invoke(AI_CHANNELS.openModelSettings),
   aiGskStatus: () => ipcRenderer.invoke(AI_CHANNELS.gskStatus),
   aiStream: (request) => ipcRenderer.invoke(AI_CHANNELS.stream, request),
   aiStreamCancel: (requestId) => ipcRenderer.invoke(AI_CHANNELS.streamCancel, requestId),

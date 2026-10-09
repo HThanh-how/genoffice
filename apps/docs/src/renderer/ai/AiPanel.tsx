@@ -1,4 +1,10 @@
-import { aiPanelWidthAtPointer, AiPanelSideButton, GeminiModelPicker } from '@genoffice/ui'
+import {
+  aiPanelWidthAtPointer,
+  AiPanelSideButton,
+  AiModelPicker,
+  GeminiModelPicker,
+  type AiModelPickerBridge,
+} from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@genoffice/docx-engine'
@@ -323,6 +329,14 @@ interface AiPanelProps {
   docExtras?: AiDocExtras
   /** footnote / endnote lists for insert_footnote, insert_endnote, delete_note, read_notes */
   notesAccess?: AiNotesAccess
+}
+
+const MODEL_BRIDGE: AiModelPickerBridge = {
+  getSettings: () => window.desktop.getAiSettings(),
+  setSettings: (settings) => window.desktop.setAiSettings(settings),
+  onSettingsChanged: (handler) => window.desktop.onAiSettingsChanged(handler),
+  gskLoggedIn: () => window.desktop.aiGskStatus().then((s) => !!s?.loggedIn),
+  openModelSettings: () => window.desktop.openAiModelSettings().catch(() => {}),
 }
 
 export function AiPanel({
@@ -1659,6 +1673,7 @@ export function AiPanel({
           onPasteFiles={(files) => void onPasteFiles(files)}
           footerStart={
             <>
+              <AiModelPicker bridge={MODEL_BRIDGE} lang={lang} />
               <button
                 className="ai-attach-btn"
                 onClick={pickAttachments}

@@ -35,6 +35,12 @@ const RESCAN_DEBOUNCE_MS = 1500
  * so one bad file cannot stall indexing (and search with it) for good
  */
 const WORKER_REQUEST_TIMEOUT_MS = 120_000
+/**
+ * heap cap for the extraction worker: without resourceLimits a parse that
+ * exhausts V8's heap is a process-wide fatal OOM and takes the whole app down
+ * with it; with one, only the worker dies and the file is recorded as an error
+ */
+const WORKER_HEAP_LIMIT_MB = 1024
 
 /** Slow disks and network paths must never hold Electron's UI thread in statSync. */
 type FileStatResult = { kind: 'file'; file: ScannedFile } | { kind: 'missing' | 'unavailable' }
@@ -102,6 +108,7 @@ export class FileIndexer {
     private readonly workerPath: string,
     private readonly sources: IndexerSources,
     private readonly requestTimeoutMs = WORKER_REQUEST_TIMEOUT_MS,
+    private readonly workerHeapLimitMb = WORKER_HEAP_LIMIT_MB,
   ) {
     this.stopPolicyWatch = subscribeIndexingPolicy((policy) => {
       if (!policy.paused) void this.drain()
@@ -145,7 +152,7 @@ export class FileIndexer {
         // a crashed worker answers with an extract error; dropping the index on that would empty search
         if (res.type === 'scan') {
           for (const f of res.files) seen.set(f.path, f)
-          if (res.complete === true) completeRoots.push(root)
+          if (res.complete === true && !res.truncated) completeRoots.push(root)
         }
       }
       await this.diff(seen, roots, completeRoots)
@@ -211,13 +218,9 @@ export class FileIndexer {
     for (const f of seen.values()) {
       if (this.stopped) return
       const k = known.get(f.path)
-      if (
-        k &&
-        k.status !== 'error' &&
-        k.status !== 'pending' &&
-        k.mtimeMs === f.mtimeMs &&
-        k.sizeBytes === f.sizeBytes
-      ) {
+      // An unchanged file that already failed is not retried: a parse that kills the
+      // worker would otherwise be re-run on every scan. Pending rows always resume.
+      if (k && k.status !== 'pending' && k.mtimeMs === f.mtimeMs && k.sizeBytes === f.sizeBytes) {
         continue
       }
       // Names and paths become searchable before any parser/model is started. Pending is
@@ -332,7 +335,9 @@ export class FileIndexer {
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker
-    const w = new Worker(this.workerPath)
+    const w = new Worker(this.workerPath, {
+      resourceLimits: { maxOldGenerationSizeMb: this.workerHeapLimitMb },
+    })
     w.on('message', (msg: WorkerResponse) => {
       if (this.worker !== w) return
       const cb = this.waiting.get(msg.id)
