@@ -1,4 +1,5 @@
 import type { AgentToolCall, AgentToolDef, AgentToolResult } from '@genoffice/agent-core'
+import { readToolCallBody } from './agy-tool-repair'
 
 /**
  * Text tool protocol for the Antigravity CLI. agy cannot receive function schemas, so the host
@@ -77,15 +78,8 @@ function parseOne(raw: string, known: ReadonlySet<string>, index: number): Agent
   let body = raw.trim()
   const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(body)
   if (fence) body = fence[1]!
-  try {
-    const value = JSON.parse(body) as { name?: unknown; arguments?: unknown; input?: unknown }
-    if (typeof value.name !== 'string' || !known.has(value.name)) return null
-    const args = value.arguments ?? value.input ?? {}
-    if (typeof args !== 'object' || args === null || Array.isArray(args)) return null
-    return { id: callId(index), name: value.name, input: args as Record<string, unknown> }
-  } catch {
-    return null
-  }
+  const call = readToolCallBody(body, known)
+  return call ? { id: callId(index), name: call.name, input: call.input } : null
 }
 
 export function renderAgyToolCalls(calls: AgentToolCall[]): string {
