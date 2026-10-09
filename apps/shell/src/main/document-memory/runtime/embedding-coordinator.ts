@@ -89,6 +89,12 @@ export interface EmbeddingCoordinatorOptions {
   isWriteReady?: () => boolean
   getFreeDiskBytes?: () => Promise<number | null>
   headroomBytes?: number
+  /**
+   * Admission feedback: `true` once a drain pass stopped on a TRANSIENT admission gate (accounting not fresh, free disk
+   * unverifiable, quota refusal), `false` after a batch was committed. When set, the owner re-measures and re-drives the
+   * queue with its own bounded backoff instead of the fixed retry delay.
+   */
+  onAdmission?: (blocked: boolean, accountingRelated?: boolean) => void
 }
 
 function safeError(error: unknown): string {
@@ -285,6 +291,7 @@ export class EmbeddingCoordinator {
     if (this.embedding || this.options.isStoppedOrPaused?.()) return
     this.embedding = true
     let blockedByBudget = false
+    let blockedOnAccounting = false
     try {
       this.releaseGraceDeferred()
       while (
@@ -293,7 +300,7 @@ export class EmbeddingCoordinator {
         Date.now() >= this.embeddingRetryAt
       ) {
         if (this.options.canAcceptExpensiveWork && !this.options.canAcceptExpensiveWork()) {
-          blockedByBudget = true
+          blockedByBudget = true; blockedOnAccounting = true
           break
         }
         if (this.options.isWriteReady && !this.options.isWriteReady()) {
@@ -363,7 +370,7 @@ export class EmbeddingCoordinator {
 
             // Do NOT fallback to DB-only or 0 if unknown or degraded
             if (!snap || snap.measurementStatus === 'unknown' || snap.isDegraded === true) {
-              blockedByBudget = true
+              blockedByBudget = true; blockedOnAccounting = true
               const reason = snap?.isDegraded ? 'accounting-degraded' : 'accounting-unknown'
               this.options.onError?.(`Storage accounting degraded or unknown (${reason})`)
               this.deferEmbeddingRetry()
@@ -380,7 +387,7 @@ export class EmbeddingCoordinator {
             }
 
             if (freeDiskBytes === null) {
-              blockedByBudget = true
+              blockedByBudget = true; blockedOnAccounting = true
               this.options.onError?.('Free disk space could not be verified (statfs unreadable or unsafe)')
               this.deferEmbeddingRetry()
               this.embeds.push(job)
@@ -507,7 +514,7 @@ export class EmbeddingCoordinator {
             }
 
             if (!freshSnap || freshSnap.measurementStatus === 'unknown' || freshSnap.isDegraded === true) {
-              blockedByBudget = true
+              blockedByBudget = true; blockedOnAccounting = true
               this.options.onError?.('Storage accounting unknown or degraded before embedding commit')
               this.deferEmbeddingRetry()
               this.embeds.push(job)
@@ -523,7 +530,7 @@ export class EmbeddingCoordinator {
             }
 
             if (freshFreeDisk === null) {
-              blockedByBudget = true
+              blockedByBudget = true; blockedOnAccounting = true
               this.options.onError?.('Free disk space check failed before embedding commit')
               this.deferEmbeddingRetry()
               this.embeds.push(job)
@@ -574,8 +581,10 @@ export class EmbeddingCoordinator {
           )
           onBatchComplete?.(vectors.length)
 
-          // Remeasure physical accounting postpersist before release
-          if (this.options.refreshUsage) {
+          this.options.onAdmission?.(false)
+          // Post-persist remeasure: with a lease the terminal `finally` below measures (and releases) right after this
+          // point, so measuring here too would only double the worker-thread scans per batch.
+          if (this.options.refreshUsage && !hasLocalReservation) {
             try {
               await this.options.refreshUsage()
             } catch {}
@@ -606,7 +615,12 @@ export class EmbeddingCoordinator {
       }
     } finally {
       this.embedding = false
-      if (!blockedByBudget && !this.options.isStoppedOrPaused?.()) {
+      if (blockedByBudget && this.options.onAdmission && !this.options.isStoppedOrPaused?.()) {
+        // The owner's backoff (re-measure, then drain) replaces the fixed 15 s retry armed at the refusal site.
+        this.embeddingRetryAt = 0
+        if (this.retryTimer) { clearTimeout(this.retryTimer); this.retryTimer = null }
+        this.options.onAdmission(true, blockedOnAccounting)
+      } else if (!blockedByBudget && !this.options.isStoppedOrPaused?.()) {
         this.options.onDrainNeeded?.()
       }
     }

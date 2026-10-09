@@ -12,7 +12,7 @@ import { ChunkUpgradeCoordinator, type DocumentNeedingUpgrade } from './chunk-up
 import { SearchService, type FreshDocumentMemoryHit } from './runtime/search-service'; import { FreshnessCoordinator } from './runtime/freshness-coordinator'; import type { PendingMetadataIntake } from './runtime/pending-metadata-intake'; import { createPendingIntake } from './runtime/pending-intake-wiring'; import { createCompactionWiring } from './runtime/compaction-wiring'
 import { ExtractionCoordinator, statMeta, isPartialExtract, isExtractResult, readOutcome, READ_NOW_ATTEMPTS, INTERRUPTED_FOR_USER, MAX_PENDING_EMBED_DOCUMENTS, PDF_SLICE_MS } from './runtime/extraction-coordinator'
 import { EmbeddingCoordinator } from './runtime/embedding-coordinator'; import { reserveExtractionLease } from './runtime/extraction-lease'
-import { MaintenanceScheduler, INITIAL_MAINTENANCE_DELAY_MS } from './runtime/maintenance-scheduler'; import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'
+import { MaintenanceScheduler, INITIAL_MAINTENANCE_DELAY_MS } from './runtime/maintenance-scheduler'; import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'; import { AdmissionRetry } from './runtime/admission-retry'
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'; import { StorageAdmissionController } from './runtime/storage-admission'; import { AnnHostAdmissionCoordinator } from './runtime/ann-host-admission'; import { SyncMetadataAdmissionCoordinator } from './runtime/sync-metadata-admission'
 import { StorageBudgetCoordinator } from './runtime/storage-budget-coordinator'; import type { StorageBudgetConfig, StorageBudgetPreset } from './storage/storage-settings'
 import { createStorageBudget, type DocumentIndexStorageBudget, type StorageBudgetSnapshot } from './storage-budget'
@@ -50,6 +50,7 @@ export class DocumentMemoryManager {
   private readonly counterBackfill: Promise<void>; private migrationTimer: NodeJS.Timeout | null = null; private pollTimer: NodeJS.Timeout | null = null
   private readonly stopPolicyWatch: () => void; private readonly stabilityGate: FileStabilityGate; private readonly backgroundGate: BackgroundWorkGate
   private readonly chunkUpgrade: ChunkUpgradeCoordinator; private readonly embeddingMigration: EmbeddingMigration
+  private readonly admissionRetry = new AdmissionRetry({ refresh: async () => { const s = await this.maintScheduler.refreshAccountingAsync(); return s.measurementStatus === 'fresh' && !s.isDegraded }, resume: () => void this.poll(), isActive: () => this.enabled && !this.stopped && !isIndexingPaused() })
   private async runCounterBackfill(): Promise<void> {
     try { await new Promise<void>((r) => setImmediate(r)); while (!this.stopped && this.store.backfillCounters()) { await new Promise<void>((r) => setImmediate(r)) } } catch { /* ignore */ }
   }
@@ -104,6 +105,7 @@ export class DocumentMemoryManager {
       getCurrentUsage: () => { const s = this.maintScheduler.checkStorageBudget(); return s.totalManagedBytes ?? s.databaseBytes },
       isDegraded: () => Boolean(this.maintScheduler.checkStorageBudget().isDegraded), refreshUsage: () => this.maintScheduler.refreshAccountingAsync(), isWriteReady: () => this.budgetCoord.isWriteReady(),
       getFreeDiskBytes: () => getValidatedFreeDiskBytes(dirname(this.dbPath)), invalidateAccounting: (reason) => { this.maintScheduler.invalidateAccounting(reason) },
+      onAdmission: (blocked, accounting) => { if (blocked) this.admissionRetry.request(accounting); else this.admissionRetry.succeeded() },
     })
     this.searchService = new SearchService({
       store: this.store, externalNames: options.externalNames, onSkeletonOpened: (id) => { this.retryDocument(id) },
@@ -323,7 +325,7 @@ export class DocumentMemoryManager {
   close(): void {
     if (this.stopped) return
     this.stopped = true; this.stopPolicyWatch(); this.epoch++
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }
+    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose()
     if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
     this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
     this.queue.length = 0; this.queued.clear(); this.urgent.clear(); this.deferred.clear()
@@ -349,6 +351,11 @@ export class DocumentMemoryManager {
       this.deferred.add(path); this.invalidatePath(path); this.enqueue(path, false, this.activeBytes.get(path)); this.recycleWorker('Made way for lighter documents')
     }
   }
+  /** Gives a taken path's active slot back; `requeue` puts it at the head again (the queue must not lose work to a refusal). */
+  private releaseSlot(path: string, requeue = false): void {
+    if (requeue) { this.queue.unshift(path); this.queued.add(path) }
+    this.activeExtractions.delete(path); this.activeSince.delete(path); this.activeGeneration.delete(path); this.pendingCount--
+  }
   private drain(): void {
     if (this.stopped || !this.enabled || isIndexingPaused()) return
     if (!this.budgetCoord.isWriteReady()) {
@@ -360,7 +367,7 @@ export class DocumentMemoryManager {
   }
   private async drainExtractions(): Promise<void> {
     if (this.extracting || this.stopped) return
-    this.extracting = true
+    this.extracting = true; let refused = false
     try {
       while (!this.stopped && this.enabled && !isIndexingPaused() && this.budgetCoord.isWriteReady() && this.queue.length > 0 && this.embeddingCoord.getQueueLength() < MAX_PENDING_EMBED_DOCUMENTS) {
         const path = this.takeNext(); this.queued.delete(path); this.activeExtractions.add(path)
@@ -371,19 +378,21 @@ export class DocumentMemoryManager {
         if (existingDoc?.status === 'text-only' && !this.maintScheduler.canAcceptExpensiveWork()) {
           const meta = await statMeta(path)
           if (meta && existingDoc.mtimeMs === meta.mtimeMs && existingDoc.sizeBytes === meta.sizeBytes) {
-            this.activeExtractions.delete(path); this.activeSince.delete(path); this.activeGeneration.delete(path); this.pendingCount--; continue
+            this.releaseSlot(path); this.admissionRetry.request(); continue
           }
         }
-        if (!this.budgetCoord.isWriteReady()) { this.queue.unshift(path); this.queued.add(path); this.activeExtractions.delete(path); this.activeSince.delete(path); this.activeGeneration.delete(path); this.pendingCount--; break }
+        if (!this.budgetCoord.isWriteReady()) { this.releaseSlot(path, true); break }
         const reserveId = `extract:${path}`; const extractToken = `drain:${path}:${Date.now()}:${Math.random().toString(36).slice(2)}`
         const estBytes = Math.max(32 * 1024, Math.min(this.activeBytes.get(path) ?? 64 * 1024, 2 * 1024 * 1024))
         const dec = await reserveExtractionLease({ admission: this.admission, maintScheduler: this.maintScheduler, reserveId, estBytes, extractToken, isAlive: () => !this.stopped, importance: this.store.getImportance(path)?.effective })
         if (!dec.admitted) {
-          this.deferred.add(path); this.activeExtractions.delete(path); this.activeSince.delete(path); this.activeGeneration.delete(path); this.pendingCount--; break
+          // Transient refusal: keep the file queued (quota refusals let lighter ones go first) and retry with backoff after a re-measure, not at the next poll.
+          const unmeasured = dec.reason === 'accounting-unknown'; if (!unmeasured) this.deferred.add(path); this.releaseSlot(path, true); refused = true; this.admissionRetry.request(unmeasured); break
         }
+        this.admissionRetry.succeeded()
         if (!this.budgetCoord.isWriteReady()) {
           const cur = this.admission.listReservations().find((r) => r.id === reserveId); if (cur && (!cur.ownerId || cur.ownerId === extractToken)) this.admission.release(reserveId)
-          this.queue.unshift(path); this.queued.add(path); this.activeExtractions.delete(path); this.activeSince.delete(path); this.activeGeneration.delete(path); this.pendingCount--; break
+          this.releaseSlot(path, true); break
         }
         const heavyWatch = setTimeout(() => this.makeWayForLightFiles(path, generation), this.autoDeferAfterMs)
         try {
@@ -400,7 +409,7 @@ export class DocumentMemoryManager {
         }
       }
     } finally {
-      this.extracting = false; if (!this.stopped && this.enabled) this.drain()
+      this.extracting = false; if (!this.stopped && this.enabled && !refused) this.drain()
     }
   }
   private async applyExtractReply(path: string, reply: WorkerReply | null, generation: number, epoch: number): Promise<void> {
@@ -424,10 +433,8 @@ export class DocumentMemoryManager {
       })
       if (!res.written) {
         if (this.stopped || !this.isCurrent(path, generation, epoch)) return
-        if (res.error) {
-          this.lastError = res.error
-          if (!res.deferred) await this.recordTransientSafe(path, res.error, generation, epoch)
-        }
+        if (res.error) { this.lastError = res.error; if (res.reason === 'accounting-unknown') this.admissionRetry.request(); else if (!res.deferred) await this.recordTransientSafe(path, res.error, generation, epoch) } // an unmeasured quota is not the file's fault: it stays pending and is retried after a re-measure
+        else if (res.deferred) this.admissionRetry.request()
         return
       }
       if (!this.stopped) { this.extractionCoord.recordScanInfo(path, ext as any); this.maintScheduler.scheduleFtsMaintenance() }

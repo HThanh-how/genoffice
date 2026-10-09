@@ -530,6 +530,9 @@ export async function writeExtractedContentSliced(params: {
   const createdFallbackLease = !hadExistingReservation
 
   const totalRemainingBytes = estimateTotalChunksBytes(ext.chunks)
+  // True while the latest event is a fresh, healthy measurement taken right after a commit (no write since): the terminal
+  // re-measurement in `finally` would repeat it, and every measurement is a worker-thread scan.
+  let settledFresh = false
 
   try {
     const displaced = { value: false }
@@ -582,6 +585,7 @@ export async function writeExtractedContentSliced(params: {
       shouldContinue: () => isCurrent() && budgetCoord.isWriteReady(),
       beforeBatch: async (info: BatchSliceInfo): Promise<BatchHookDecision> => {
         // Recheck write readiness and lifecycle before awaiting
+        settledFresh = false
         if (!isCurrent()) return { proceed: false, reason: 'generation-changed' }
         if (!budgetCoord.isWriteReady()) return { proceed: false, reason: 'write-gate-closed' }
 
@@ -618,6 +622,7 @@ export async function writeExtractedContentSliced(params: {
           return
         }
 
+        settledFresh = true
         // 2. Only after fresh physical measurement is valid, reconcile remaining reservation
         const targetLeaseBytes =
           info.remainingChunks > 0 ? Math.max(info.remainingBytes, BASE_METADATA_WRITE_BYTES) : 0
@@ -671,15 +676,17 @@ export async function writeExtractedContentSliced(params: {
     }
   } finally {
     // Fresh accounting after write commits before lease is released
-    try {
-      const snap = await maintScheduler.refreshAccountingAsync()
-      if (!snap || snap.measurementStatus !== 'fresh' || snap.isDegraded) {
-        maintScheduler.invalidateAccounting(
-          `content-write-terminal: measurement ${snap?.measurementStatus ?? 'unknown'}`,
-        )
+    if (!settledFresh) {
+      try {
+        const snap = await maintScheduler.refreshAccountingAsync()
+        if (!snap || snap.measurementStatus !== 'fresh' || snap.isDegraded) {
+          maintScheduler.invalidateAccounting(
+            `content-write-terminal: measurement ${snap?.measurementStatus ?? 'unknown'}`,
+          )
+        }
+      } catch (err) {
+        maintScheduler.invalidateAccounting(`content-write-terminal: ${safeError(err)}`)
       }
-    } catch (err) {
-      maintScheduler.invalidateAccounting(`content-write-terminal: ${safeError(err)}`)
     }
     // Only release lease if created locally as fallback, preserving caller's lease ownership
     // Exact lease owner release: ownerToken MUST be present and match cur.ownerId

@@ -31,6 +31,8 @@ import {
   type OfflineCompactionOptions,
 } from './runtime/offline-compaction'
 import { readOfflineCompactionSetting } from './storage/offline-compaction-setting'
+import { recoverStaleMigrationArtifacts } from './storage/migration/stale-artifacts'
+import { appendBootstrapLog } from './bootstrap-log'
 
 export interface BootstrapResult {
   ready: boolean
@@ -48,6 +50,8 @@ export interface StorageBootstrapOptions {
    * also overrides the thresholds of runOfflineCompaction (tests; the defaults skip small / unfragmented databases).
    */
   offlineCompaction?: boolean | Omit<OfflineCompactionOptions, 'enabled'>
+  /** Where `document-memory.log` is written (default `<settingsDir ?? dbDir>/logs`). */
+  logDir?: string
 }
 
 /**
@@ -144,6 +148,24 @@ export async function ensureDocumentMemoryStorageReady(
   dbDir: string,
   options: StorageBootstrapOptions = {},
 ): Promise<BootstrapResult> {
+  const logDir = options.logDir ?? join(options.settingsDir ?? dbDir, 'logs')
+  try {
+    const result = await bootstrapStorage(dbDir, options, logDir)
+    if (!result.ready) {
+      const why = result.report?.reasons?.length ? ` [schema: ${result.report.reasons.join('; ')}]` : ''
+      appendBootstrapLog(logDir, 'error', `Document memory is unavailable (fail-closed): ${result.error ?? 'unknown reason'}${why}`)
+    } else if (result.migrated) {
+      const m = result.migrationResult
+      appendBootstrapLog(logDir, 'info', `V2->V3 migration completed: ${m?.documentsCopied ?? 0} documents, ${m?.chunksCopied ?? 0} chunks, ${m?.durationMs ?? 0} ms`)
+    }
+    return result
+  } catch (err) {
+    appendBootstrapLog(logDir, 'error', `Storage bootstrap threw: ${(err as Error)?.stack ?? String(err)}`)
+    throw err
+  }
+}
+
+async function bootstrapStorage(dbDir: string, options: StorageBootstrapOptions, logDir: string): Promise<BootstrapResult> {
   const dbPath = join(dbDir, 'document-memory.db')
 
   // An offline compaction killed mid-swap is rolled back to the previous verified database (separate manifest from the
@@ -183,6 +205,21 @@ export async function ensureDocumentMemoryStorageReady(
       migrated: false,
       error: errorMsg,
     }
+  }
+
+  // A V2->V3 migration that died before its cutover (killed, crashed, power loss) left only scratch files: the V2 source is
+  // untouched until the cutover manifest exists. Remove them so the next attempt starts clean instead of staying fail-closed.
+  const stale = recoverStaleMigrationArtifacts(dbDir, 'document-memory.db')
+  if (stale.removed.length > 0) {
+    console.warn('[document-memory-bootstrap] Removed leftovers of an interrupted V2->V3 migration:', stale.removed)
+    appendBootstrapLog(logDir, 'warn', `Removed leftovers of an interrupted V2->V3 migration: ${stale.removed.join(', ')}`)
+  }
+  if (stale.blockedByPid !== undefined || stale.error) {
+    const errorMsg = stale.blockedByPid !== undefined
+      ? `Another process (pid ${stale.blockedByPid}) is migrating the document index; it will be retried on the next start.`
+      : `Interrupted migration cleanup failed: ${stale.error}. It will be retried on the next start.`
+    console.error('[document-memory-bootstrap]', errorMsg)
+    return { ready: false, migrated: false, error: errorMsg }
   }
 
   // Any unexpected temporary migration artifacts on disk indicate an interrupted/ambiguous state

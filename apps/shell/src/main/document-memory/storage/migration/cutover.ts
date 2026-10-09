@@ -77,14 +77,18 @@ export interface CutoverOptions {
   onRollback?: () => void
 }
 
-function safeRenameWithRetry(oldPath: string, newPath: string, maxAttempts = 5): void {
+/**
+ * Windows refuses to rename a database another process still has open (a read-only tool, an antivirus scan): wait for
+ * such a handle for up to ~6 s (50 ms .. 750 ms steps) before giving up, instead of rolling a whole migration back.
+ */
+function safeRenameWithRetry(oldPath: string, newPath: string, maxAttempts = 16): void {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       renameSync(oldPath, newPath)
       return
     } catch (err: any) {
       if ((err?.code === 'EBUSY' || err?.code === 'EPERM') && attempt < maxAttempts) {
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * attempt)
+        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(50 * attempt, 750))
         continue
       }
       throw err

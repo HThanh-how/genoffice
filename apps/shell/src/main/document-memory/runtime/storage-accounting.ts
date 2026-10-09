@@ -165,7 +165,8 @@ function measureFile(
   }
 
   try {
-    const st = statSync(realPath)
+    // bigint: a 64-bit NTFS file index does not fit a double, and rounded ids make neighbouring files (db / -wal / -shm) look like hard links of each other
+    const st = statSync(realPath, { bigint: true })
     if (st.isFile()) {
       if (visitedIdentities) {
         if (visitedIdentities.size >= maxVisitedEntries) {
@@ -186,7 +187,7 @@ function measureFile(
       }
       visited.add(resolved)
       visited.add(realPath)
-      return { path: resolved, size: st.size, measured: true }
+      return { path: resolved, size: Number(st.size), measured: true }
     }
     visited.add(resolved)
     visited.add(realPath)
