@@ -102,6 +102,10 @@ const worksheetMetadataSchema = z
     /// Cells with a value, formula or style (rowCount x columnCount is only
     /// the bounding box). Optional for compatibility with an older sidecar.
     storedCellCount: z.number().int().nonnegative().optional(),
+    /// Stored cells with a value or formula, and the box they span.
+    valueCellCount: z.number().int().nonnegative().optional(),
+    valueRowCount: z.number().int().nonnegative().optional(),
+    valueColumnCount: z.number().int().nonnegative().optional(),
     columnWidths: z.array(
       z
         .object({
@@ -2503,10 +2507,23 @@ const aiMediaProviderConfigSchema = z
   })
   .strict()
 
+const aiCustomEndpointSchema = z
+  .object({
+    id: z.string().min(1),
+    name: z.string(),
+    baseUrl: z.string(),
+    apiKey: z.string(),
+    model: z.string(),
+    models: z.array(z.string()).optional(),
+  })
+  .strict()
+
 export const aiSettingsInputSchema = z
   .object({
     provider: z.string().min(1),
     providers: z.record(z.string(), aiProviderConfigSchema),
+    customEndpoints: z.array(aiCustomEndpointSchema).optional(),
+    customEndpoint: z.string().optional(),
     gskToolsEnabled: z.boolean().optional(),
     media: z
       .object({

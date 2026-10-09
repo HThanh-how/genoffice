@@ -135,6 +135,7 @@ export type MenuCommand =
   | 'zoom-set'
   | 'zoom-page-width'
   | 'zoom-whole-page'
+  | 'zoom-multi-page'
   | 'toggle-ai'
   | 'toggle-dark'
   | 'insert-table'

@@ -1021,6 +1021,12 @@ function parseWorkbookFile(input: unknown): WorkbookFile {
       ...(isNonnegativeInteger(sheet.storedCellCount)
         ? { storedCellCount: sheet.storedCellCount }
         : {}),
+      ...(isNonnegativeInteger(sheet.valueCellCount)
+        ? { valueCellCount: sheet.valueCellCount }
+        : {}),
+      ...(isNonnegativeInteger(sheet.valueRowCount) && isNonnegativeInteger(sheet.valueColumnCount)
+        ? { valueRowCount: sheet.valueRowCount, valueColumnCount: sheet.valueColumnCount }
+        : {}),
       columnWidths,
       // Degrade instead of rejecting the workbook: 0 / malformed defaults
       // mean "use the built-in size".

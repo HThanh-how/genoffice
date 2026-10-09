@@ -1,5 +1,6 @@
 import { agyDefaultsUsable } from './agy-default'
 import { AGY_PROVIDER_META } from './agy-meta'
+import { resolveCustomEndpoints } from './custom-endpoints'
 import { defaultAiMediaSettings, resolveAiMediaSettings } from './media'
 import { defaultAiSearchSettings, resolveAiSearchSettings } from './search-settings'
 import type { AiProviderId, AiProviderMeta, AiSettings, LegacyAiSettings } from './types'
@@ -52,17 +53,18 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     // bare gpt-5.6 and the gemini family dropped off it (verified 2026-08-31).
     // DeepSeek goes by the proxy's hyphenated pool id; V4.1 Flash takes images
     // (live-verified 2026-09-15). gpt-6-astra: chat, tool call and image
-    // input all live-verified through the proxy 2026-09-17
+    // input all live-verified through the proxy 2026-09-17; claude-opus-5-5,
+    // gpt-6-sol and gpt-6-luna the same way 2026-09-24. Opus 4.7/4.8 dropped
+    // 2026-10-09: 5.5 is cheaper and supersedes both.
     models: [
-      'claude-opus-4-7',
-      'claude-opus-4-8',
+      'claude-opus-5-5',
       'claude-sonnet-4-6',
       'gpt-6-astra',
       'gpt-5.6-terra',
       'gpt-5.6-luna',
       DEEPSEEK_V41_FLASH,
     ],
-    defaultModel: 'claude-opus-4-7',
+    defaultModel: 'claude-opus-5-5',
     keyPlaceholder: 'Not required - sign in to Genspark',
   },
   {
@@ -79,15 +81,15 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
   {
     id: 'anthropic',
     label: 'Claude',
-    // current-generation ids per platform.claude.com models overview (2026-08)
+    // current-generation ids per platform.claude.com models overview (2026-10-09).
+    // Fable needs data retention enabled on the org, otherwise the API answers
+    // model_not_available; every other id is served to any key.
     models: [
       'claude-opus-5',
       'claude-sonnet-5',
       'claude-fable-5',
-      'claude-opus-4-8',
-      'claude-opus-4-7',
       'claude-sonnet-4-6',
-      'claude-haiku-4-5-20251001',
+      'claude-haiku-5-5',
     ],
     defaultModel: 'claude-sonnet-5',
     keyPlaceholder: 'sk-ant-api03-...',
@@ -352,14 +354,14 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
     id: 'opencode-zen',
     label: 'OpenCode Zen',
     // Pay-as-you-go gateway (opencode.ai/docs/zen); ids exactly as GET
-    // /zen/v1/models lists them (2026-09-03). GPT-5.x, Grok and Muse Spark
+    // /zen/v1/models lists them (2026-10-09). GPT-5.x/6, Grok and Muse Spark
     // are served only through the Responses API, which has no protocol here,
     // so they stay out until one exists.
     models: [
       'claude-sonnet-5',
       'claude-opus-5',
       'claude-fable-5-1',
-      'claude-haiku-4-5',
+      'claude-haiku-5-5',
       'gemini-3.7-flash',
       'gemini-3.1-pro',
       'kimi-k3',
@@ -481,9 +483,11 @@ const RETIRED_MODELS: Partial<Record<AiProviderId, Record<string, string>>> = {
   glm: { 'glm-5-turbo': 'glm-5.3-flash' },
   genspark: {
     'gpt-5.6': 'gpt-5.6-terra',
-    'gemini-3.1-pro-preview': 'claude-opus-4-7',
-    'gemini-3-flash-preview': 'claude-opus-4-7',
-    'gemini-3.7-flash': 'claude-opus-4-7',
+    'gemini-3.1-pro-preview': 'claude-opus-5-5',
+    'gemini-3-flash-preview': 'claude-opus-5-5',
+    'gemini-3.7-flash': 'claude-opus-5-5',
+    'claude-opus-4-7': 'claude-opus-5-5',
+    'claude-opus-4-8': 'claude-opus-5-5',
   },
 }
 
@@ -575,13 +579,15 @@ export function resolveAiSettings(stored: unknown, defaults: AiSettings): AiSett
         baseUrl: str(settings.baseUrl) || 'https://api.openai.com/v1',
       }
     }
-    return defaults
+    return resolveCustomEndpoints(defaults)
   }
-  return {
+  return resolveCustomEndpoints({
     provider:
       settings.provider === 'genspark'
         ? defaults.provider
         : (settings.provider ?? defaults.provider),
+    customEndpoints: settings.customEndpoints,
+    customEndpoint: settings.customEndpoint,
     // Trim before migrating: a pasted " deepseek-reasoner " must still hit
     // the retired-id remap instead of being sent to the API verbatim.
     providers: migrateRetiredModels(
@@ -599,5 +605,5 @@ export function resolveAiSettings(stored: unknown, defaults: AiSettings): AiSett
           ),
         }
       : {}),
-  }
+  })
 }

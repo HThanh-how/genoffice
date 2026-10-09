@@ -319,7 +319,7 @@ interface RibbonProps {
   zoom: number
   onZoom: (zoom: number) => void
   /** compute zoom from the current window size (Word: page width / whole page) */
-  onZoomFit: (mode: 'width' | 'page') => void
+  onZoomFit: (mode: 'width' | 'page' | 'multi') => void
   onZoomDialog: () => void
   darkPage: boolean
   onDarkPage: (v: boolean) => void
@@ -4187,8 +4187,6 @@ function RibbonInner({
             onZoom={onZoom}
             onZoomFit={onZoomFit}
             onZoomDialog={onZoomDialog}
-            showAi={showAi}
-            onToggleAi={onToggleAi}
             darkPage={darkPage}
             onDarkPage={onDarkPage}
             showRuler={showRuler}

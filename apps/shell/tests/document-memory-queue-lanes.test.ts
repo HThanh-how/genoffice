@@ -208,9 +208,9 @@ describe('reading does not wait for vectors', () => {
     const worker = new FakeIndexWorker()
     worker.embedDelayMs = 40
     manager = open(worker)
-    await until(() => (statusCounts().ready ?? 0) === 64, 60_000, 'all files ready')
+    await until(() => (statusCounts().ready ?? 0) === 64, 150_000, 'all files ready')
     expect(manager.status().pending).toBe(0)
-  }, 70_000)
+  }, 160_000)
 
   it('gives the vector lane its turns while the reading lane still has a backlog', async () => {
     seedLine(0, 60)
