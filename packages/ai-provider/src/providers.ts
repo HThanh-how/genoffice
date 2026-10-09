@@ -1,3 +1,4 @@
+import { agyDefaultsUsable } from './agy-default'
 import { AGY_PROVIDER_META } from './agy-meta'
 import { defaultAiMediaSettings, resolveAiMediaSettings } from './media'
 import { defaultAiSearchSettings, resolveAiSearchSettings } from './search-settings'
@@ -422,6 +423,7 @@ export const AI_PROVIDERS: AiProviderMeta[] = [
  */
 export function defaultAiSettings(
   defaultApiKeys?: Partial<Record<AiProviderId, string>>,
+  agyUsable: boolean = agyDefaultsUsable(),
 ): AiSettings {
   const providers = {} as AiSettings['providers']
   for (const meta of AI_PROVIDERS) {
@@ -433,11 +435,12 @@ export function defaultAiSettings(
     }
   }
   return {
-    provider: 'gemini',
+    // agy-first: the Antigravity CLI when it is installed and signed in, otherwise the old default
+    provider: agyUsable ? 'agy' : 'gemini',
     providers,
     gskToolsEnabled: false,
-    media: defaultAiMediaSettings(),
-    search: defaultAiSearchSettings(),
+    media: defaultAiMediaSettings(agyUsable),
+    search: defaultAiSearchSettings(agyUsable),
   }
 }
 

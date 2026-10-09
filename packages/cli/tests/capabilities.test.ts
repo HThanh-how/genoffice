@@ -1,18 +1,24 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { setAgyUsable } from '@genoffice/ai-provider'
 import * as aiSearch from '@genoffice/ai-search'
 import { run, tempDir } from './helpers'
 
 // hasGskAuth reads process.env, not the command context: isolate the login state per test
 const saved: Record<string, string | undefined> = {}
 beforeEach(() => {
-  for (const k of ['GENOFFICE_AUTH_DIR', 'AI_SEARCH_DISABLE_GSK']) saved[k] = process.env[k]
+  for (const k of ['GENOFFICE_AUTH_DIR', 'AI_SEARCH_DISABLE_GSK', 'GENOFFICE_AGY_DETECT'])
+    saved[k] = process.env[k]
   process.env.GENOFFICE_AUTH_DIR = join(tempDir(), 'no-auth')
   process.env.AI_SEARCH_DISABLE_GSK = '1'
+  // never run the real `agy models` probe from a test; each test sets the answer itself
+  process.env.GENOFFICE_AGY_DETECT = '0'
+  setAgyUsable(false)
 })
 afterEach(() => {
   vi.restoreAllMocks()
+  setAgyUsable(null)
   for (const [k, v] of Object.entries(saved)) {
     if (v === undefined) delete process.env[k]
     else process.env[k] = v
@@ -42,6 +48,22 @@ describe('genoffice capabilities', () => {
     expect(d.image_search.available).toBe(false)
     expect(d.image_generation.available).toBe(false)
     expect(d.media_analysis.available).toBe(false)
+  })
+
+  it('defaults every feature to Antigravity when it is usable and nothing is configured', async () => {
+    setAgyUsable(true)
+    const r = await run(['capabilities', '--json'], {
+      env: {
+        ...process.env,
+        GENOFFICE_AI_SETTINGS: join(tempDir(), 'missing.json'),
+        GENOFFICE_APP_BIN: '',
+      },
+    })
+    expect(r.code).toBe(0)
+    const d = r.json().detail
+    expect(d.search).toEqual({ available: true, via: 'agy' })
+    expect(d.image_generation).toEqual({ available: true, via: 'agy' })
+    expect(d.media_analysis).toEqual({ available: true, via: 'agy' })
   })
 
   it('counts a Serper key as search + image search and a BYOK image model as generation', async () => {

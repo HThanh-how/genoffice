@@ -1,3 +1,4 @@
+import { agyDefaultsUsable } from './agy-default'
 import type {
   AiSearchProviderId,
   AiSearchProviderMeta,
@@ -16,9 +17,12 @@ export const AI_SEARCH_PROVIDERS: AiSearchProviderMeta[] = [
   { id: 'firecrawl', label: 'Firecrawl', keyPlaceholder: 'fc-...', imageSearch: false },
 ]
 
-export function defaultAiSearchSettings(): AiSearchSettings {
+export function defaultAiSearchSettings(
+  agyUsable: boolean = agyDefaultsUsable(),
+): AiSearchSettings {
   return {
-    provider: 'parallel',
+    // agy-first: Antigravity search when it is usable, otherwise keyless Parallel as before
+    provider: agyUsable ? 'agy' : 'parallel',
     providers: {
       serper: { apiKey: '' },
       serply: { apiKey: '' },

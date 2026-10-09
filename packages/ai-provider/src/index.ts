@@ -102,3 +102,10 @@ export type { StreamWatchdog } from './watchdog'
 export { setAiErrorLogger } from './stream'
 export type { AiErrorDiagnostic } from './stream'
 export { setSystemAddendum, withSystemAddendum } from './system-addendum'
+export {
+  agyDefaultsUsable,
+  agyUsabilityKnown,
+  onAgyUsableChange,
+  setAgyUsable,
+} from './agy-default'
+export { agyUsableForDefaults, probeAgyUsable } from './agy-detect'

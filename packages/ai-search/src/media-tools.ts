@@ -11,6 +11,7 @@ import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, extname, sep } from 'node:path'
 import {
   activeMediaConfig,
+  agyUsableForDefaults,
   analyzeMediaWithProvider,
   cloudToolsEnabled,
   defaultAiSettings,
@@ -113,6 +114,34 @@ export function readAiSettingsFile(path: string): AiSettings {
     /* corrupted settings file: defaults */
   }
   return resolveAiSettings(stored, defaultAiSettings())
+}
+
+/**
+ * Out-of-app callers (the CLI) have no startup probe: find out whether Antigravity is usable so
+ * the agy-first defaults can apply. Skipped when the file already makes every choice, so a fully
+ * configured setup never pays for the `agy models` check.
+ */
+export async function primeAgyDefaults(path: string): Promise<void> {
+  let raw: unknown = {}
+  try {
+    if (existsSync(path)) raw = JSON.parse(readFileSync(path, 'utf-8'))
+  } catch {
+    /* corrupted settings file: defaults apply */
+  }
+  const obj = (v: unknown): v is Record<string, unknown> =>
+    v !== null && typeof v === 'object' && !Array.isArray(v)
+  const file = obj(raw) ? raw : {}
+  const media = obj(file.media) ? file.media : {}
+  const search = obj(file.search) ? file.search : {}
+  const decided =
+    typeof file.provider === 'string' &&
+    obj(file.providers) &&
+    typeof media.imageProvider === 'string' &&
+    typeof media.analysisProvider === 'string' &&
+    typeof search.provider === 'string'
+  if (decided) return
+  const agy = obj(file.providers) && obj(file.providers.agy) ? file.providers.agy : {}
+  await agyUsableForDefaults(typeof agy.cliPath === 'string' ? agy.cliPath : undefined)
 }
 
 type Gate = { error: string } | null

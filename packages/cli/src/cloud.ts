@@ -1,6 +1,6 @@
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { setGskProxyUrl } from '@genoffice/ai-search'
+import { primeAgyDefaults, setGskProxyUrl } from '@genoffice/ai-search'
 import { genofficeUserDataDir } from './gui'
 import { packagedResourcesDir } from './resources'
 
@@ -33,6 +33,8 @@ let prepared = false
 
 /** Once per process: proxy for fetch and the gsk children, and the packaged gsk CLI location. */
 export async function prepareCloud(env: NodeJS.ProcessEnv): Promise<void> {
+  // agy-first defaults need to know whether Antigravity is usable; GENOFFICE_AGY_DETECT=0 skips the check
+  if (env.GENOFFICE_AGY_DETECT !== '0') await primeAgyDefaults(aiSettingsPath(env))
   if (prepared) return
   prepared = true
   const proxy = proxyUrlFromEnv(env)

@@ -71,6 +71,8 @@ import {
   chatForProvider,
   defaultAiSettings,
   activeProvider,
+  agyUsableForDefaults,
+  probeAgyUsable,
   maxOutputTokensOf,
   resolveAiSettings,
   setAiUserAgent,
@@ -3636,14 +3638,17 @@ export function registerSheetsAiIpc(): void {
   if (aiIpcRegistered) return
   aiIpcRegistered = true
   app.once('before-quit', shutdownCodexAppServers)
+  void app.whenReady().then(() => probeAgyUsable())
 
   // Node fetch (undici) direct connections get reset under VPN/tun setups; retry over Chromium's stack
   setRescueFetch((url, init) => net.fetch(url, init))
   setAiUserAgent(`GenOffice/${app.getVersion()}`)
 
-  ipcMain.handle(IPC_CHANNELS.aiGetSettings, (event): AiSettings => {
+  ipcMain.handle(IPC_CHANNELS.aiGetSettings, async (event): Promise<AiSettings> => {
     sessionFor(event)
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
+    // agy-first defaults: only fills what the user never chose (see agyUsableForDefaults)
+    await agyUsableForDefaults(stored.providers?.agy?.cliPath)
     const settings = resolveAiSettings(stored, defaultAiSettings())
     // a stored BYOK provider is honored when usable; half-filled configs fall back to genspark
     settings.provider = activeProvider(settings)

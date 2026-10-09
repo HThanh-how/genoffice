@@ -5,6 +5,7 @@ import type {
   AiMediaSettings,
   AiSettings,
 } from './types'
+import { agyDefaultsUsable } from './agy-default'
 import { AGY_DEFAULT_MODEL, isCliProvider } from './agy-meta'
 
 export const OPENAI_IMAGES_BASE_URL = 'https://api.openai.com/v1'
@@ -234,7 +235,11 @@ export function providerHasCapability(
   return !!meta.analysisProtocol
 }
 
-export function defaultAiMediaSettings(): AiMediaSettings {
+/**
+ * Defaults for the media block. Image generation, image analysis and video analysis all start on
+ * Antigravity when it is usable; otherwise on Gemini as before.
+ */
+export function defaultAiMediaSettings(agyUsable: boolean = agyDefaultsUsable()): AiMediaSettings {
   const providers = {} as AiMediaSettings['providers']
   for (const meta of AI_MEDIA_PROVIDERS) {
     providers[meta.id] = {
@@ -244,10 +249,11 @@ export function defaultAiMediaSettings(): AiMediaSettings {
       baseUrl: meta.needsBaseUrl ? '' : undefined,
     }
   }
+  const preferred: AiMediaProviderId = agyUsable ? 'agy' : 'gemini'
   return {
-    imageProvider: 'gemini',
-    analysisProvider: 'gemini',
-    videoAnalysisProvider: 'gemini',
+    imageProvider: preferred,
+    analysisProvider: preferred,
+    videoAnalysisProvider: preferred,
     providers,
   }
 }

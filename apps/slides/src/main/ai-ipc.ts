@@ -23,6 +23,8 @@ import {
   listGeminiModels,
   defaultAiSettings,
   activeProvider,
+  agyUsableForDefaults,
+  probeAgyUsable,
   maxOutputTokensOf,
   resolveAiSettings,
   sanitizeAiSettings,
@@ -122,8 +124,12 @@ export function registerAiIpc(): void {
   setRescueFetch((url, init) => net.fetch(url, init))
   setAiUserAgent(`GenOffice/${app.getVersion()}`)
 
-  ipcMain.handle('ai:get-settings', (): AiSettings => {
+  void app.whenReady().then(() => probeAgyUsable())
+
+  ipcMain.handle('ai:get-settings', async (): Promise<AiSettings> => {
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(AI_SETTINGS_PATH(), {})
+    // agy-first defaults: only fills what the user never chose (see agyUsableForDefaults)
+    await agyUsableForDefaults(stored.providers?.agy?.cliPath)
     const settings = resolveAiSettings(stored, defaultAiSettings())
     // a stored BYOK provider is honored when usable; half-filled configs fall back to genspark
     settings.provider = activeProvider(settings)

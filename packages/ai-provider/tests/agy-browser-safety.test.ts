@@ -11,6 +11,7 @@ const RENDERER_REACHABLE = [
   'registry.ts',
   'providers.ts',
   'agy-meta.ts',
+  'agy-default.ts',
   'media.ts',
   'types.ts',
   'browser.ts',
@@ -27,7 +28,7 @@ describe('Antigravity provider browser safety', () => {
   }
 
   it('agy-meta.ts, media.ts, types.ts and browser.ts have no Node built-in imports', () => {
-    for (const file of ['agy-meta.ts', 'media.ts', 'types.ts', 'browser.ts']) {
+    for (const file of ['agy-meta.ts', 'agy-default.ts', 'media.ts', 'types.ts', 'browser.ts']) {
       expect(src(file)).not.toMatch(/from\s+['"]node:/)
     }
   })

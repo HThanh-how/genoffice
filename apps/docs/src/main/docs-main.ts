@@ -91,6 +91,9 @@ import {
   chatForProvider,
   defaultAiSettings,
   activeProvider,
+  agyUsableForDefaults,
+  onAgyUsableChange,
+  probeAgyUsable,
   testMediaProvider,
   type AiMediaProviderConfig,
   type AiMediaProviderId,
@@ -3779,6 +3782,10 @@ function broadcastAiSettingsChanged(): void {
  */
 export function registerAiIpc(): void {
   app.once('before-quit', shutdownCodexAppServers)
+  // Which defaults apply (agy or the old ones) depends on whether Antigravity is usable: find out
+  // once the app is up, and tell every window when the answer changes.
+  onAgyUsableChange(broadcastAiSettingsChanged)
+  void app.whenReady().then(() => probeAgyUsable())
   ipcMain.handle('ai:get-settings', async (): Promise<AiSettings> => {
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
     // pre-lock legacy file: genspark selected with cloud tools opted out. The
@@ -3790,6 +3797,8 @@ export function registerAiIpc(): void {
       stored.gskToolsEnabled = true
       writeJsonAtomic(SETTINGS_PATH(), stored)
     }
+    // agy-first defaults: only fills what the user never chose (see agyUsableForDefaults)
+    await agyUsableForDefaults(stored.providers?.agy?.cliPath)
     const settings = resolveAiSettings(stored, defaultAiSettings())
     // a stored BYOK provider is honored when usable; half-filled configs fall back to genspark
     settings.provider = activeProvider(settings)
