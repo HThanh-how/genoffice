@@ -11,6 +11,8 @@ export interface IndexProcessData {
   cacheDir: string
   dbPath: string
   embeddingProfile?: EmbeddingProfileId
+  storageBudget?: import('./storage-budget').DocumentIndexStorageBudget
+  configVersion?: number
 }
 
 /** A separate, lower-priority process keeps model CPU and memory away from the UI. */

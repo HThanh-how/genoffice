@@ -22,14 +22,13 @@ export function openDatabase(dbPath: string, options: DatabaseOpenOptions = {}):
   db.exec(`PRAGMA cache_size = -${cacheKiB};`)
   
   applyCanonicalSchemaV3(db)
-  try { db.exec('ALTER TABLE documents ADD COLUMN truncated_reason TEXT;') } catch { /* ignore */ }
-  try { db.exec('ALTER TABLE documents ADD COLUMN priority_at INTEGER NOT NULL DEFAULT 0;') } catch { /* ignore */ }
   OcrSidecar.ensureSchema(db)
 
   try {
     chmodSync(resolve(dbPath), 0o600)
-  } catch {
+  } catch (err: unknown) {
     // Some filesystems or test environments do not support chmod.
+    console.debug('[database] chmod not supported on filesystem:', err)
   }
 
   return db
@@ -47,8 +46,9 @@ export function runTransaction<T>(db: DatabaseSync, fn: () => T): T {
   } catch (err) {
     try {
       db.exec('ROLLBACK')
-    } catch {
+    } catch (rollbackErr: unknown) {
       // Ignore rollback failure if already terminated.
+      console.debug('[database] rollback terminated or superseded:', rollbackErr)
     }
     throw err
   }

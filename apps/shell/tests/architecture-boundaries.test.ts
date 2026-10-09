@@ -1,54 +1,24 @@
-import { spawnSync } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
-import { resolve } from 'node:path'
-import { afterAll, afterEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { createArchitectureFixture, type ArchitectureFixture } from './helpers/architecture-fixture'
 
 describe('Document Search V3 Architecture Boundaries & Mutation Suite', () => {
-  const rootDir = resolve(__dirname, '../../..')
-  const scriptPath = resolve(rootDir, 'tools/check-document-memory-architecture.mjs')
-  const originalFiles = new Map<string, string>()
+  let fixture: ArchitectureFixture
+
+  beforeEach(() => {
+    fixture = createArchitectureFixture()
+  })
+
+  afterEach(() => {
+    fixture.cleanup()
+  })
 
   function runChecker(): { status: number | null; stdout: string; stderr: string; output: string } {
-    const res = spawnSync(process.execPath, [scriptPath], {
-      cwd: rootDir,
-      encoding: 'utf8',
-    })
-    const output = (res.stdout ?? '') + (res.stderr ?? '')
-    return {
-      status: res.status,
-      stdout: res.stdout ?? '',
-      stderr: res.stderr ?? '',
-      output,
-    }
+    return fixture.runChecker()
   }
 
   function mutateFile(relPath: string, mutator: (content: string) => string): () => void {
-    const fullPath = resolve(rootDir, relPath)
-    if (!originalFiles.has(fullPath)) {
-      originalFiles.set(fullPath, readFileSync(fullPath, 'utf8'))
-    }
-    const current = originalFiles.get(fullPath)!
-    const mutated = mutator(current)
-    writeFileSync(fullPath, mutated, 'utf8')
-    return () => {
-      writeFileSync(fullPath, current, 'utf8')
-      originalFiles.delete(fullPath)
-    }
+    return fixture.mutateFile(relPath, mutator)
   }
-
-  afterEach(() => {
-    for (const [path, content] of originalFiles.entries()) {
-      writeFileSync(path, content, 'utf8')
-    }
-    originalFiles.clear()
-  })
-
-  afterAll(() => {
-    for (const [path, content] of originalFiles.entries()) {
-      writeFileSync(path, content, 'utf8')
-    }
-    originalFiles.clear()
-  })
 
   it('verifies baseline passes cleanly with all architecture boundaries satisfied', () => {
     const res = runChecker()

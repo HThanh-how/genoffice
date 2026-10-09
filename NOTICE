@@ -31,3 +31,26 @@ Part 4, Transitional) XML Schema files for PresentationML and DrawingML, as
 distributed in the python-docx repository (ref/xsd), with one marked local
 amendment (see tools/ooxml-validate/README.md). They are used only by tests
 and development tooling and are not shipped in the application.
+
+Search models (downloaded on first use, not bundled)
+
+Semantic search downloads one embedding model from Hugging Face, pinned to a
+fixed revision and verified by SHA-256 (apps/shell/src/main/document-memory/
+embedding-profiles.ts and embedding/model-specs.ts). The model weights are not
+part of this repository or of the installer.
+
+- Bekko-Embedding-v1 a8m and a25m, hotchpotch/bekko-embedding-v1-a8m and
+  -a25m. Copyright the model authors. MIT License.
+- EmbeddingGemma-2 (270M text tower), google/embeddinggemma-2, used through the
+  community ONNX int8 export onnx-community/embeddinggemma-2-ONNX. Copyright
+  Google LLC / Google DeepMind. The model card states the Apache License 2.0;
+  use of the weights is also subject to the Gemma Prohibited Use Policy
+  (https://ai.google.dev/gemma/prohibited_use_policy), which GenOffice users
+  must follow when they choose the Mid or Plus search model. To drop that
+  dependency, change MID_MODEL in embedding-profiles.ts to HARRIER_270M.
+- Harrier-OSS-v1 270M, microsoft/harrier-oss-v1-270m, community ONNX export
+  onnx-community/harrier-oss-v1-270m-ONNX. Copyright Microsoft. MIT License.
+  Optional MIT-licensed substitute for EmbeddingGemma-2; not used by default.
+- F2LLM-v2-80M (CodeFuse AI, Apache License 2.0) and Qwen3-Embedding-0.6B
+  (Alibaba Cloud, Apache License 2.0): the original Standard and High search
+  models, kept for existing installations.

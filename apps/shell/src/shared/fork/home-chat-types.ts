@@ -13,6 +13,8 @@ export interface HomeChatSource {
   missing?: boolean
   /** the source file cannot currently be verified */
   unverified?: boolean
+  /** only the outline of this document is kept (repeated body compacted); opening it re-reads the full text */
+  skeletonIndex?: boolean
 }
 
 export interface HomeChatMessage {

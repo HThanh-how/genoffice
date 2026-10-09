@@ -18,6 +18,8 @@ export interface ExtractResult {
   totalPages?: number
   scanned?: number[] | boolean
   scan?: PdfScanInfo
+  /** an image read from its stored OCR text: with no text it stays a finished `ready` media row */
+  media?: true
 }
 
 export type ExtractResultPayload = ExtractResult
@@ -31,7 +33,7 @@ export async function statMeta(p: string): Promise<{ mtimeMs: number; sizeBytes:
   try { const s = await stat(p); return { mtimeMs: s.mtimeMs, sizeBytes: s.size } } catch { return null }
 }
 export function extractedStatus(r: ExtractResult): 'text-only' | 'empty' | 'ready' {
-  if (!r.chunks.length) return 'empty'
+  if (!r.chunks.length) return r.media ? 'ready' : 'empty'
   return r.skipEmbeddings ? 'ready' : 'text-only'
 }
 export function isPartialExtract(v: unknown): v is { partial: true; pagesDone: number; totalPages: number } {
@@ -44,6 +46,7 @@ export function isExtractResult(v: unknown): v is ExtractResult {
   return typeof r.hash === 'string' && typeof r.mtimeMs === 'number' && Array.isArray(r.chunks)
 }
 export function readOutcome(doc: StoredDocument | null | undefined): { ok: boolean; error?: string; empty?: boolean } {
+  if (doc?.error) return { ok: false, error: doc.error }
   if (doc?.status === 'error') return { ok: false, error: doc.error ?? 'Could not be read' }
   if (doc?.status === 'empty') return { ok: true, empty: true }
   return doc?.status === 'pending' ? { ok: false, error: 'not finished' } : { ok: true }

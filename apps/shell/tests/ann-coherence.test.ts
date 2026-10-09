@@ -2,9 +2,10 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ANN_MIN_VECTORS } from '../src/main/document-memory/ann-index'
+import { ANN_MIN_VECTORS, type AnnRebuildOptions } from '../src/main/document-memory/ann-index'
 import { USearchIndex } from '../src/main/document-memory/usearch-index'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import { AnnAdmissionTestFixture } from './helpers/ann-admission-fixture'
 
 function floatBlob(vector: number[]): Uint8Array {
   const buf = new Float32Array(vector)
@@ -13,14 +14,17 @@ function floatBlob(vector: number[]): Uint8Array {
 
 describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 12)', () => {
   let directory: string
+  let fixture: AnnAdmissionTestFixture
   const activeStores: DocumentMemoryStore[] = []
 
   beforeEach(() => {
     directory = mkdtempSync(join(tmpdir(), 'genoffice-coherence-'))
+    fixture = new AnnAdmissionTestFixture({ directory })
   })
 
   afterEach(() => {
     vi.restoreAllMocks()
+    fixture.cleanup()
     while (activeStores.length > 0) {
       const store = activeStores.pop()
       try {
@@ -111,7 +115,21 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
         initialVectors.push([i * 0.05, 0.1, 0.2, 0.3])
       }
 
+      const permitAdd1 = await fixture.acquireSavePermit({
+        indexPath,
+        vectorCount: 20,
+        dimensions: 4,
+      })
+      index1.preauthorizeSave(permitAdd1)
       index1.addSync(initialChunkIds, initialVectors)
+
+      const permitSave1 = await fixture.acquireSavePermit({
+        indexPath,
+        vectorCount: 20,
+        dimensions: 4,
+        generation: 1,
+      })
+      index1.preauthorizeSave(permitSave1)
       index1.saveAtomic(1)
 
       expect(index1.getLoadedGeneration()).toBe(1)
@@ -132,7 +150,21 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
         [0.0, 0.0, 0.0, 0.9],
         [0.5, 0.5, 0.5, 0.5],
       ]
+      const permitAdd2 = await fixture.acquireSavePermit({
+        indexPath,
+        vectorCount: 25,
+        dimensions: 4,
+      })
+      process2.preauthorizeSave(permitAdd2)
       process2.addSync(newChunkIds, newVectors)
+
+      const permitSave2 = await fixture.acquireSavePermit({
+        indexPath,
+        vectorCount: 25,
+        dimensions: 4,
+        generation: 2,
+      })
+      process2.preauthorizeSave(permitSave2)
       process2.saveAtomic(2)
 
       expect(process2.getLoadedGeneration()).toBe(2)
@@ -163,7 +195,21 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
       const index = new USearchIndex(4, indexPath)
       await index.open()
 
+      const permitAdd = await fixture.acquireSavePermit({
+        indexPath,
+        vectorCount: 1,
+        dimensions: 4,
+      })
+      index.preauthorizeSave(permitAdd)
       index.addSync([1], [[0.1, 0.2, 0.3, 0.4]])
+
+      const permitSave = await fixture.acquireSavePermit({
+        indexPath,
+        vectorCount: 1,
+        dimensions: 4,
+        generation: 1,
+      })
+      index.preauthorizeSave(permitSave)
       index.saveAtomic(1)
       expect(index.isHealthy()).toBe(true)
 
@@ -175,6 +221,20 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
       expect(reloadSuccess).toBe(false)
       expect(index.getState()).toBe('dirty')
       expect(index.isHealthy()).toBe(false)
+
+      await index.close()
+    })
+
+    it('denies unpermitted saveAtomic fail-closed and transitions to dirty state', async () => {
+      const indexPath = join(directory, 'denied-no-permit.usearch')
+      const index = new USearchIndex(4, indexPath)
+      await index.open()
+
+      // Strict contract: write without preauthorized permit must fail closed to dirty
+      index.saveAtomic(1)
+      expect(index.getState()).toBe('dirty')
+      expect(index.isHealthy()).toBe(false)
+      expect(existsSync(indexPath)).toBe(false)
 
       await index.close()
     })
@@ -256,12 +316,26 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
       expect(results[0]?.chunkId).toBe(1)
     })
 
-    it('queries ANN index when state is ready, count matches, and index is healthy', () => {
+    it('queries ANN index when state is ready, count matches, and index is healthy', async () => {
       const { store } = createStoreWith20kEmbeddings()
 
       const ann = store.getAnnIndex(spaceId, 2)
-      // Populate the ANN index with chunk 1 and 2
+      // Populate the ANN index with chunk 1 and 2 with valid permits
+      const permitAdd = await fixture.acquireSavePermit({
+        indexPath: ann.indexPath,
+        vectorCount: 2,
+        dimensions: 2,
+      })
+      ann.preauthorizeSave(permitAdd)
       ann.addSync([1, 2], [[1, 0], [0.8, 0.6]])
+
+      const permitSave = await fixture.acquireSavePermit({
+        indexPath: ann.indexPath,
+        vectorCount: 2,
+        dimensions: 2,
+        generation: 1,
+      })
+      ann.preauthorizeSave(permitSave)
       ann.saveAtomic(1)
       expect(ann.isHealthy()).toBe(true)
 
@@ -285,7 +359,21 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
       const index = new USearchIndex(2, indexPath)
       await index.open()
 
+      const permitAdd = await fixture.acquireSavePermit({
+        indexPath,
+        vectorCount: 1,
+        dimensions: 2,
+      })
+      index.preauthorizeSave(permitAdd)
       index.addSync([1], [[1, 0]])
+
+      const permitSave = await fixture.acquireSavePermit({
+        indexPath,
+        vectorCount: 1,
+        dimensions: 2,
+        generation: 1,
+      })
+      index.preauthorizeSave(permitSave)
       index.saveAtomic(1)
       expect(index.isHealthy()).toBe(true)
       expect(index.getState()).toBe('ready')
@@ -309,7 +397,7 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
       await index.close()
     })
 
-    it('recovers safely in store.search when ANN search fails and falls back without crashing', () => {
+    it('recovers safely in store.search when ANN search fails and falls back without crashing', async () => {
       const spaceId = 'space-failure-recovery'
       const dbPath = join(directory, 'failure-recovery.sqlite')
       const store = new DocumentMemoryStore(dbPath)
@@ -358,7 +446,21 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
         .run(spaceId, `ann-${spaceId}.usearch`, ANN_MIN_VECTORS)
 
       const ann = store.getAnnIndex(spaceId, 2)
+      const permitAdd = await fixture.acquireSavePermit({
+        indexPath: ann.indexPath,
+        vectorCount: 1,
+        dimensions: 2,
+      })
+      ann.preauthorizeSave(permitAdd)
       ann.addSync([1], [[1, 0]])
+
+      const permitSave = await fixture.acquireSavePermit({
+        indexPath: ann.indexPath,
+        vectorCount: 1,
+        dimensions: 2,
+        generation: 1,
+      })
+      ann.preauthorizeSave(permitSave)
       ann.saveAtomic(1)
       expect(ann.isHealthy()).toBe(true)
 
@@ -396,7 +498,7 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
   // 4. Cross-Process Auto-Reload in DocumentMemoryStore
   // =========================================================================
   describe('4. Cross-Process Auto-Reload in store.search', () => {
-    it('automatically reloads in-memory ANN index when SQLite generation advances', () => {
+    it('automatically reloads in-memory ANN index when SQLite generation advances', async () => {
       const spaceId = 'space-cross-reload'
       const dbPath = join(directory, 'cross-reload.sqlite')
       const store = new DocumentMemoryStore(dbPath)
@@ -445,16 +547,45 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
 
       // Initial store ANN index is generation 1
       const residentAnn = store.getAnnIndex(spaceId, 2)
+      const permitResAdd = await fixture.acquireSavePermit({
+        indexPath: residentAnn.indexPath,
+        vectorCount: 1,
+        dimensions: 2,
+      })
+      residentAnn.preauthorizeSave(permitResAdd)
       residentAnn.addSync([1], [[0.6, 0.8]])
+
+      const permitResSave = await fixture.acquireSavePermit({
+        indexPath: residentAnn.indexPath,
+        vectorCount: 1,
+        dimensions: 2,
+        generation: 1,
+      })
+      residentAnn.preauthorizeSave(permitResSave)
       residentAnn.saveAtomic(1)
       expect(residentAnn.getLoadedGeneration()).toBe(1)
 
       // Another process (e.g. Worker process) updates the index file to generation 2
-      const workerAnn = new USearchIndex(2, (residentAnn as unknown as { indexPath: string }).indexPath)
-      workerAnn.openSync()
+      const workerAnn = new USearchIndex(2, residentAnn.indexPath)
+      await workerAnn.open()
+      const permitWorkerAdd = await fixture.acquireSavePermit({
+        indexPath: residentAnn.indexPath,
+        vectorCount: 2,
+        dimensions: 2,
+      })
+      workerAnn.preauthorizeSave(permitWorkerAdd)
       workerAnn.addSync([2], [[1, 0]]) // Worker added delta chunk 2: [1, 0]
+
+      const permitWorkerSave = await fixture.acquireSavePermit({
+        indexPath: residentAnn.indexPath,
+        vectorCount: 2,
+        dimensions: 2,
+        generation: 2,
+      })
+      workerAnn.preauthorizeSave(permitWorkerSave)
       workerAnn.saveAtomic(2)
       expect(workerAnn.getLoadedGeneration()).toBe(2)
+      await workerAnn.close()
 
       // Worker updates SQLite ann_indexes to generation = 2, desired_generation = 2
       store.rawDb
@@ -487,17 +618,29 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
       const ann = store.getAnnIndex(spaceId, 2)
       expect(ann).toBeDefined()
 
+      // Supply live config version/budget and generation tied canonical desired_generation
+      const canonicalMeta = store.getAnnCanonicalMeta(spaceId)
+      const hostPermit = await fixture.acquireHostPermit(spaceId, {
+        dimensions: 2,
+        vectorCount: canonicalMeta.canonicalCount,
+        targetGeneration: canonicalMeta.desiredGeneration,
+        budgetBytes: fixture.defaultBudget.maxDatabaseBytes,
+        configVersion: fixture.configVersion,
+        indexPath: ann.indexPath,
+      })
+
       // Spy on rebuildAtomic: simulate main process mutating data and calling markAnnDirty during rebuild
+      // Forward options unchanged to original so pre-save/pre-rename callbacks and permit are preserved
       const originalRebuildAtomic = ann.rebuildAtomic.bind(ann)
-      vi.spyOn(ann, 'rebuildAtomic').mockImplementation(async (ids, vecs, gen) => {
+      vi.spyOn(ann, 'rebuildAtomic').mockImplementation(async (ids, vecs, gen, options?: AnnRebuildOptions) => {
         // Main process triggers mutation during rebuild of the old snapshot:
         // Calling markAnnDirty increments desired_generation from 1 to 2 and sets state to dirty
         store.markAnnDirty(spaceId)
-        return originalRebuildAtomic(ids, vecs, gen)
+        return originalRebuildAtomic(ids, vecs, gen, options)
       })
 
-      // Execute rebuildAnnIndex: started with desired_generation = 1
-      const rebuildResult = await store.rebuildAnnIndex(spaceId)
+      // Execute rebuildAnnIndex: started with canonical targetGeneration = canonicalMeta.desiredGeneration
+      const rebuildResult = await store.rebuildAnnIndex(spaceId, hostPermit)
 
       // Strict contract: info.changes === 0 because desired_generation advanced to 2
       // Must NOT set state to 'ready', must return { ok: false, count: 0 }
@@ -523,4 +666,3 @@ describe('ANN Cache Coherence & Cross-Process Tests (Audit P0 / Mục 2, 3, 4, 1
     })
   })
 })
-

@@ -1,6 +1,7 @@
 import { showAppMessageBox, setFeedbackThemeGetter } from './app-message-box'
 import { DocumentMemoryManager } from './document-memory/manager'
 import { ensureDocumentMemoryStorageReady } from './document-memory/storage-bootstrap'
+import { currentMachineSpec } from './document-memory/embedding/initial-profile'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { rotatingFileWriter } from './fork/renderer-diagnostics'
 import {
@@ -6846,6 +6847,7 @@ app.whenReady().then(async () => {
       } else {
         documentMemory = new DocumentMemoryManager(userDataDir, {
           dbDir: indexDbDir,
+          machineSpec: currentMachineSpec(),
           externalNames: (query, limit) => everything!.search.search(query, limit),
         })
       }

@@ -31,6 +31,27 @@ import {
 
 export const AGY_OCR_SETTINGS_KEY = 'agyOcr'
 
+/** Which local engine reads pages first; 'auto' = Apple Vision on macOS, Tesseract elsewhere. */
+export type LocalOcrEngineChoice = 'auto' | 'apple-vision' | 'tesseract-vie'
+
+/**
+ * On-device "light index" OCR that runs BEFORE the cloud reader: the first `lightPages` pages of each
+ * scanned PDF / image are read locally (enough to find the file), and only pages the local engine
+ * is unsure about are offered to Antigravity. Identity papers and `sensitive` files stay local.
+ */
+export interface LocalOcrSettings {
+  enabled: boolean
+  /** leading pages of each file read locally (1..5) */
+  lightPages: number
+  engine: LocalOcrEngineChoice
+}
+
+export const DEFAULT_LOCAL_OCR_SETTINGS: LocalOcrSettings = {
+  enabled: true,
+  lightPages: 2,
+  engine: 'auto',
+}
+
 export interface AgyOcrSettings {
   /** Automatic OCR allowance in percentage points; manual OCR does not use this budget. */
   autoWeeklyDailyBudgetPercent?: number
@@ -52,6 +73,8 @@ export interface AgyOcrSettings {
   ignoreFiveHour: boolean
   onlyOnAC: boolean
   onlyWhenIdle: boolean
+  /** local OCR pass; missing in settings saved before it existed (defaults apply) */
+  localOcr?: LocalOcrSettings
 }
 
 export const DEFAULT_AGY_OCR_SETTINGS: AgyOcrSettings = {
@@ -71,6 +94,22 @@ export const DEFAULT_AGY_OCR_SETTINGS: AgyOcrSettings = {
   ignoreFiveHour: false,
   onlyOnAC: true,
   onlyWhenIdle: true,
+  localOcr: DEFAULT_LOCAL_OCR_SETTINGS,
+}
+
+const LOCAL_ENGINES: readonly LocalOcrEngineChoice[] = ['auto', 'apple-vision', 'tesseract-vie']
+
+/** The local OCR settings with defaults filled in; every field validated (stored input is untrusted). */
+export function mergeLocalOcrSettings(base: LocalOcrSettings | undefined, patch: unknown): LocalOcrSettings {
+  const from = base ?? DEFAULT_LOCAL_OCR_SETTINGS
+  const p = (patch && typeof patch === 'object' ? patch : {}) as Record<string, unknown>
+  return {
+    enabled: typeof p.enabled === 'boolean' ? p.enabled : from.enabled,
+    lightPages: int(p.lightPages, 1, 5, from.lightPages),
+    engine: LOCAL_ENGINES.includes(p.engine as LocalOcrEngineChoice)
+      ? (p.engine as LocalOcrEngineChoice)
+      : from.engine,
+  }
 }
 
 // same shape agy-cli accepts (isSafeAgyModelId); duplicated here because agy-cli is Node-only
@@ -116,6 +155,7 @@ export function mergeAgyOcrSettings(base: AgyOcrSettings, patch: unknown): AgyOc
     ignoreFiveHour: typeof p.ignoreFiveHour === 'boolean' ? p.ignoreFiveHour : base.ignoreFiveHour,
     onlyOnAC: typeof p.onlyOnAC === 'boolean' ? p.onlyOnAC : base.onlyOnAC,
     onlyWhenIdle: typeof p.onlyWhenIdle === 'boolean' ? p.onlyWhenIdle : base.onlyWhenIdle,
+    localOcr: mergeLocalOcrSettings(base.localOcr, p.localOcr),
   }
 }
 

@@ -5,12 +5,16 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
-import type { WorkerRequest, WorkerReply } from '../src/main/document-memory/worker-types'
+import type {
+  WorkerRequest,
+  WorkerReply,
+  StorageBudgetWorkerRequest,
+  StorageBudgetWorkerResult,
+} from '../src/main/document-memory/worker-types'
 import type { DocumentIndexStorageDiagnostics } from '../src/shared/fork/document-index-api'
 
 describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () => {
   let tempDir: string
-  let dbPath: string
   let activeManagers: DocumentMemoryManager[] = []
   let activeStores: DocumentMemoryStore[] = []
 
@@ -30,7 +34,6 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'genoffice-qa10-worker-diag-'))
-    dbPath = join(tempDir, 'document-memory.db')
     activeManagers = []
     activeStores = []
   })
@@ -66,7 +69,17 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
     const mockWorker = Object.assign(new EventEmitter(), {
       postMessage: vi.fn((msg: WorkerRequest & { id: number }) => {
         receivedRequests.push(msg)
-        if (msg.type === 'storage-diagnostics') {
+        if (msg.type === 'set-storage-budget') {
+          mockWorker.emit('message', {
+            id: msg.id,
+            result: {
+              ok: true,
+              appliedVersion: msg.configVersion,
+              desiredVersion: msg.configVersion,
+              appliedBudgetBytes: msg.budget.maxDatabaseBytes,
+            } satisfies StorageBudgetWorkerResult,
+          } satisfies WorkerReply)
+        } else if (msg.type === 'storage-diagnostics') {
           mockWorker.emit('message', {
             id: msg.id,
             result: sampleDiagnostics,
@@ -76,9 +89,11 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
       terminate: vi.fn(() => Promise.resolve(0)),
     })
 
+    const workerFactorySpy = vi.fn(() => mockWorker as any)
+
     const manager = new DocumentMemoryManager(tempDir, {
       dbDir: tempDir,
-      workerFactory: () => mockWorker as any,
+      workerFactory: workerFactorySpy,
       initialEnabled: false,
     })
     activeManagers.push(manager)
@@ -88,11 +103,35 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
 
     const result = await manager.getStorageDiagnosticsAsync(targetBackup)
 
-    // Verify postMessage received request
-    expect(mockWorker.postMessage).toHaveBeenCalledTimes(1)
-    expect(receivedRequests.length).toBe(1)
+    // Separate requests by contract type
+    const diagRequests = receivedRequests.filter(
+      (r): r is Extract<WorkerRequest, { type: 'storage-diagnostics' }> & { id: number } =>
+        r.type === 'storage-diagnostics',
+    )
+    const handshakeRequests = receivedRequests.filter(
+      (r): r is StorageBudgetWorkerRequest & { id: number } =>
+        r.type === 'set-storage-budget',
+    )
 
-    const req = receivedRequests[0]
+    // Verify worker factory invoked exactly once
+    expect(workerFactorySpy).toHaveBeenCalledTimes(1)
+
+    // Verify total postMessage calls: 1 startup handshake + 1 diagnostics request
+    expect(mockWorker.postMessage).toHaveBeenCalledTimes(2)
+
+    // Assert handshake count and version separately
+    expect(handshakeRequests.length).toBe(1)
+    const handshakeReq = handshakeRequests[0]
+    expect(handshakeReq).toBeDefined()
+    expect(handshakeReq.type).toBe('set-storage-budget')
+    expect(typeof handshakeReq.configVersion).toBe('number')
+    expect(handshakeReq.configVersion).toBe(manager.getStorageBudgetConfig().version)
+    expect(handshakeReq.budget).toBeDefined()
+    expect(typeof handshakeReq.budget.maxDatabaseBytes).toBe('number')
+
+    // Diagnostics call count expectations
+    expect(diagRequests.length).toBe(1)
+    const req = diagRequests[0]
     expect(req).toBeDefined()
     expect(req.type).toBe('storage-diagnostics')
     expect(typeof req.id).toBe('number')
@@ -109,7 +148,17 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
   it('WORKERDIAG-02 worker error propagated', async () => {
     const mockWorker = Object.assign(new EventEmitter(), {
       postMessage: vi.fn((msg: WorkerRequest & { id: number }) => {
-        if (msg.type === 'storage-diagnostics') {
+        if (msg.type === 'set-storage-budget') {
+          mockWorker.emit('message', {
+            id: msg.id,
+            result: {
+              ok: true,
+              appliedVersion: msg.configVersion,
+              desiredVersion: msg.configVersion,
+              appliedBudgetBytes: msg.budget.maxDatabaseBytes,
+            } satisfies StorageBudgetWorkerResult,
+          } satisfies WorkerReply)
+        } else if (msg.type === 'storage-diagnostics') {
           // Worker reports failure / error reply
           mockWorker.emit('message', {
             id: msg.id,
@@ -185,7 +234,17 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
   it('WORKERDIAG-04 main adapter doesn\'t directly call repository', async () => {
     const mockWorker = Object.assign(new EventEmitter(), {
       postMessage: vi.fn((msg: WorkerRequest & { id: number }) => {
-        if (msg.type === 'storage-diagnostics') {
+        if (msg.type === 'set-storage-budget') {
+          mockWorker.emit('message', {
+            id: msg.id,
+            result: {
+              ok: true,
+              appliedVersion: msg.configVersion,
+              desiredVersion: msg.configVersion,
+              appliedBudgetBytes: msg.budget.maxDatabaseBytes,
+            } satisfies StorageBudgetWorkerResult,
+          } satisfies WorkerReply)
+        } else if (msg.type === 'storage-diagnostics') {
           mockWorker.emit('message', {
             id: msg.id,
             result: sampleDiagnostics,
@@ -224,10 +283,22 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
   // =========================================================================
   it('WORKERDIAG-05 repeated calls don\'t spawn workers', async () => {
     let workerSpawnCount = 0
+    const receivedRequests: Array<WorkerRequest & { id: number }> = []
 
     const mockWorker = Object.assign(new EventEmitter(), {
       postMessage: vi.fn((msg: WorkerRequest & { id: number }) => {
-        if (msg.type === 'storage-diagnostics') {
+        receivedRequests.push(msg)
+        if (msg.type === 'set-storage-budget') {
+          mockWorker.emit('message', {
+            id: msg.id,
+            result: {
+              ok: true,
+              appliedVersion: msg.configVersion,
+              desiredVersion: msg.configVersion,
+              appliedBudgetBytes: msg.budget.maxDatabaseBytes,
+            } satisfies StorageBudgetWorkerResult,
+          } satisfies WorkerReply)
+        } else if (msg.type === 'storage-diagnostics') {
           mockWorker.emit('message', {
             id: msg.id,
             result: sampleDiagnostics,
@@ -271,7 +342,30 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
     expect(workerSpawnCount).toBe(1)
     expect(workerFactorySpy).toHaveBeenCalledTimes(1)
 
-    // All 4 requests were serviced by the same worker instance
-    expect(mockWorker.postMessage).toHaveBeenCalledTimes(4)
+    // Separate requests by contract type
+    const diagRequests = receivedRequests.filter(
+      (req): req is Extract<WorkerRequest, { type: 'storage-diagnostics' }> & { id: number } =>
+        req.type === 'storage-diagnostics',
+    )
+    const handshakeRequests = receivedRequests.filter(
+      (req): req is StorageBudgetWorkerRequest & { id: number } =>
+        req.type === 'set-storage-budget',
+    )
+
+    // Assert handshake count and version separately
+    expect(handshakeRequests.length).toBe(1)
+    const handshakeReq = handshakeRequests[0]
+    expect(handshakeReq).toBeDefined()
+    expect(handshakeReq.type).toBe('set-storage-budget')
+    expect(typeof handshakeReq.configVersion).toBe('number')
+    expect(handshakeReq.configVersion).toBe(manager.getStorageBudgetConfig().version)
+    expect(handshakeReq.budget).toBeDefined()
+    expect(typeof handshakeReq.budget.maxDatabaseBytes).toBe('number')
+
+    // All 4 diagnostics requests were serviced by the same worker instance
+    expect(diagRequests.length).toBe(4)
+
+    // Total postMessage invocations: 1 startup handshake + 4 diagnostics requests
+    expect(mockWorker.postMessage).toHaveBeenCalledTimes(5)
   })
 })

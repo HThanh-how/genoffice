@@ -13,7 +13,6 @@
 import { existsSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
@@ -21,7 +20,6 @@ import {
   SOFT_LIMIT_RATIO,
   HARD_LIMIT_RATIO,
   type DocumentIndexStorageBudget,
-  type StorageBudgetSnapshot,
   calculateStorageLimitState,
   createStorageBudgetSnapshot,
   checkFileSafetyBudget,
@@ -226,12 +224,16 @@ describe('Document Search V3 - Storage Budget & User-visible Limits Suite (PAIR 
     expect(canAcceptSemanticWork('warning')).toBe(true)
     expect(canAcceptExpensiveWork('warning')).toBe(true)
 
-    // At exact 100% hard limit: limitState is 'full'
-    expect(calculateStorageLimitState(100_000_000, budgetBytes)).toBe('full')
+    // At exact 100% (soft quota) the GRACE zone starts: still 'warning', semantic work stays accepted.
+    // 'full' (hard stop) moved to the 110% hard cap (owner requirement: embeddings always keep working,
+    // index may bloat <= 10% over the quota).
+    expect(calculateStorageLimitState(100_000_000, budgetBytes)).toBe('warning')
+    expect(calculateStorageLimitState(109_999_999, budgetBytes)).toBe('warning')
+    expect(calculateStorageLimitState(110_000_000, budgetBytes)).toBe('full')
     expect(canAcceptSemanticWork('full')).toBe(false)
     expect(canAcceptExpensiveWork('full')).toBe(false)
 
-    // Above 100% hard limit (e.g. 120%)
+    // Above the hard cap (e.g. 120%)
     expect(calculateStorageLimitState(120_000_000, budgetBytes)).toBe('full')
     expect(canAcceptSemanticWork('full')).toBe(false)
     expect(canAcceptExpensiveWork('full')).toBe(false)
@@ -362,7 +364,10 @@ describe('Document Search V3 - Storage Budget & User-visible Limits Suite (PAIR 
     // Values verification
     expect(snapshot.databaseBytes).toBeGreaterThan(0)
     expect(snapshot.budgetBytes).toBe(50 * 1024 * 1024)
-    expect(snapshot.usageRatio).toBeCloseTo(snapshot.databaseBytes / snapshot.budgetBytes, 4)
+    // Quota decisions are governed by totalManagedBytes (DB + WAL + SHM + ANN + OCR + temp + backups);
+    // databaseBytes stays the physical SQLite diagnostic.
+    expect(snapshot.totalManagedBytes).toBeGreaterThanOrEqual(snapshot.databaseBytes)
+    expect(snapshot.usageRatio).toBeCloseTo((snapshot.totalManagedBytes ?? 0) / snapshot.budgetBytes, 4)
     expect(snapshot.backupBytes).toBe(2048)
     expect(['ok', 'warning', 'full']).toContain(snapshot.limitState)
 
@@ -461,8 +466,11 @@ describe('Document Search V3 - Storage Budget & User-visible Limits Suite (PAIR 
     expect(calculateStorageLimitState(7_999, b)).toBe('ok')
     expect(calculateStorageLimitState(8_000, b)).toBe('warning')
     expect(calculateStorageLimitState(9_999, b)).toBe('warning')
-    expect(calculateStorageLimitState(10_000, b)).toBe('full')
-    expect(calculateStorageLimitState(10_001, b)).toBe('full')
+    // soft quota reached = grace zone (still 'warning'); hard stop at the 110% hard cap
+    expect(calculateStorageLimitState(10_000, b)).toBe('warning')
+    expect(calculateStorageLimitState(10_999, b)).toBe('warning')
+    expect(calculateStorageLimitState(11_000, b)).toBe('full')
+    expect(calculateStorageLimitState(11_001, b)).toBe('full')
 
     // Edge Case 3: Missing file for safeGetFileSize returns 0 without throwing
     const nonExistentPath = join(tempDir, 'does-not-exist.tmp')

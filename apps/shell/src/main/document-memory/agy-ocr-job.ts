@@ -116,15 +116,29 @@ export function quotaRulesOf(settings: AgyOcrSettings): QuotaRules {
 
 // ---- dependencies ---------------------------------------------------------------------------
 
+export interface OcrSavePagesResult {
+  ok: boolean
+  savedCount?: number
+  error?: string
+}
+
 export interface OcrJobHost {
   /** document memory is switched on (nothing is read while it is off) */
   isEnabled(): boolean
-  candidates(maxPagesPerFile: number): OcrDocRow[]
+  /**
+   * `manual`: the person asked for this file, so pages the local pass accepted are not skipped
+   * and nothing waits for the local pass (automatic runs only ever see escalated pages).
+   */
+  candidates(maxPagesPerFile: number, options?: { manual?: boolean }): OcrDocRow[]
   documentById(id: number): { id: number; path: string } | null
   pagesDone(path: string, mtimeMs: number, sizeBytes: number): number[]
   /** null = the index process did not answer in time */
   render(path: string, request: OcrRenderRequest): Promise<OcrRenderResult | null>
-  savePages(path: string, meta: OcrFileMeta, pages: readonly OcrPageText[]): void
+  savePages(
+    path: string,
+    meta: OcrFileMeta,
+    pages: readonly OcrPageText[],
+  ): Promise<OcrSavePagesResult | void> | OcrSavePagesResult | void
   /** queue the document for re-extraction so the new OCR text becomes chunks and vectors */
   reindex(path: string): void
   /**
@@ -157,6 +171,11 @@ export interface OcrJobDeps {
   readUsage(): Promise<AgyUsageReading | null>
   policy(): OcrPolicyView | null
   idleSeconds(): number | null
+  /**
+   * The local "light index" pass (local-ocr/). Started from every scheduler tick and when it is switched
+   * on, independently of the cloud reader's own switch; it is single-flight and applies its own gates.
+   */
+  localPass?(): Promise<unknown>
   now(): number
   timezoneOffset: TimezoneOffset
   /** repeating timer; returns the cancel function */
@@ -318,6 +337,7 @@ export class AgyOcrJob {
         }
       })
     if (previous?.enabled && !now.enabled) this.abort?.abort()
+    if (!previous?.localOcr?.enabled && now.localOcr?.enabled) this.startLocalPass()
   }
 
   // ---- scheduler ----
@@ -328,6 +348,7 @@ export class AgyOcrJob {
       const settings = this.workingSettings()
       if (this.stopped || this.running) return
       if (!this.deps.host.isEnabled()) return
+      this.startLocalPass()
       this.recoverReindex()
       if (this.queuedIds.size) {
         await this.drainQueue()
@@ -344,6 +365,14 @@ export class AgyOcrJob {
       if (!settings.autoUnlimited && pdfCapReached(settings.maxPdfsPerDay, today)) return
       if (!this.gateOpen(settings)) return
       await this.runScheduled(settings)
+    } catch (error) {
+      this.recordError(errorText(error))
+    }
+  }
+
+  private startLocalPass(): void {
+    try {
+      void this.deps.localPass?.().catch((error: unknown) => this.recordError(errorText(error)))
     } catch (error) {
       this.recordError(errorText(error))
     }
@@ -698,10 +727,7 @@ export class AgyOcrJob {
           .filter((n) => parsed.pages.has(n))
           .map((n) => ({ page: n, text: parsed.pages.get(n) ?? '' }))
         if (got.length) {
-          state.update((data) => {
-            data.pendingReindexPaths = [...new Set([...(data.pendingReindexPaths ?? []), path])]
-          })
-          host.savePages(
+          const saveRes = await host.savePages(
             path,
             {
               hash: rendered.hash,
@@ -712,6 +738,22 @@ export class AgyOcrJob {
             },
             got,
           )
+          const saveOk =
+            saveRes === undefined ||
+            (typeof saveRes === 'object' && saveRes !== null && (saveRes as any).ok !== false)
+
+          if (!saveOk) {
+            const err =
+              typeof saveRes === 'object' && saveRes !== null && typeof (saveRes as any).error === 'string'
+                ? (saveRes as any).error
+                : 'OCR storage quota denied persistence'
+            this.failFile(path, err, false)
+            return { pages: charged, stop: true }
+          }
+
+          state.update((data) => {
+            data.pendingReindexPaths = [...new Set([...(data.pendingReindexPaths ?? []), path])]
+          })
           options.touched.add(path)
           this.currentProgress = {
             done: Math.min(total, this.currentProgress.done + got.length),
@@ -1050,7 +1092,7 @@ export class AgyOcrJob {
     if (!document || !/\.pdf$/i.test(document.path)) return { ok: false, error: 'not-pdf' }
     const settings = this.workingSettings()
     const row = this.deps.host
-      .candidates(settings.maxPagesPerFile)
+      .candidates(settings.maxPagesPerFile, { manual: true })
       .find((candidate) => candidate.path === document.path)
     if (!row) {
       // Every page has been read already, but the file may never have taken the text in (the

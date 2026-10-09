@@ -239,6 +239,8 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
         sourceStale: tr('homeChatSourceStale'),
         sourceMissingHint: tr('homeChatSourceMissingHint'),
         sourceStaleHint: tr('homeChatSourceStaleHint'),
+        sourceSkeleton: tr('homeChatSourceSkeleton'),
+        sourceSkeletonHint: tr('homeChatSourceSkeletonHint'),
         copy: tr('homeChatCopy'),
         copied: tr('homeChatCopied'),
       },
@@ -413,7 +415,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
               )
               for (const hit of hits) {
                 // stale / missing are optional flags added by the document-memory backend
-                const flags = hit as { stale?: boolean; missing?: boolean }
+                const flags = hit as { stale?: boolean; missing?: boolean; skeletonIndex?: boolean }
                 const source: HomeChatSource = {
                   documentId: hit.documentId,
                   name: hit.name,
@@ -421,6 +423,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
                 }
                 if (flags.stale === true) source.stale = true
                 if (flags.missing === true) source.missing = true
+                if (flags.skeletonIndex === true) source.skeletonIndex = true
                 existing.set(hit.documentId, source)
               }
               return { ...last, sources: [...existing.values()] }

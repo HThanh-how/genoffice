@@ -7,6 +7,7 @@ import { useI18n } from '../locale'
 import { activityCopy } from '../indexing-activity-copy'
 import { needsAction } from './IndexProblems'
 import { RecentFiles } from './RecentFiles'
+import { ReleasedChip } from './ReleasedChip'
 import type { IndexTabId } from './IndexNav'
 
 export interface IndexOverviewProps {
@@ -145,6 +146,8 @@ export function IndexOverview({
                 {isVi ? 'tệp còn lại' : 'files remaining'}
               </span>
 
+              <ReleasedChip count={progress?.releasedFiles} />
+
               {currentFileName && (
                 <span className="idx-status-current" title={currentFilePath}>
                   {isVi ? 'Đang đọc:' : 'Reading:'} <code>{currentFileName}</code>
@@ -168,6 +171,7 @@ export function IndexOverview({
                   ? `Sẵn sàng tìm kiếm - ${readyFiles.toLocaleString(dateLocale)} tệp có thể tìm kiếm`
                   : `Ready for search - ${readyFiles.toLocaleString(dateLocale)} searchable files`}
               </h3>
+              <ReleasedChip count={progress?.releasedFiles} />
             </div>
             {paused && (
               <button

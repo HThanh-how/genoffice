@@ -7,6 +7,7 @@ import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
+import type { StorageBudgetWorkerResult, WorkerReply } from '../src/main/document-memory/worker-types'
 
 let dir: string
 let manager: DocumentMemoryManager | undefined
@@ -23,18 +24,52 @@ afterEach(() => {
 class SlowWorker extends EventEmitter {
   terminated = false
   requests = 0
+  handshakeRequests = 0
   paths: string[] = []
+  acks: StorageBudgetWorkerResult[] = []
   private last: { id: number; path: string } | undefined
-  postMessage(message: { id: number; path: string }): void {
-    this.requests++
-    this.paths.push(message.path)
-    this.last = message
+  postMessage(message: {
+    id: number
+    type?: string
+    path?: string
+    configVersion?: number
+    budget?: { maxDatabaseBytes: number }
+  }): void {
+    if (message.type === 'set-storage-budget') {
+      this.handshakeRequests++
+      const replyResult: StorageBudgetWorkerResult = {
+        ok: true,
+        appliedVersion: message.configVersion ?? 0,
+        desiredVersion: message.configVersion ?? 0,
+        appliedBudgetBytes: message.budget?.maxDatabaseBytes,
+      }
+      this.acks.push(replyResult)
+      const reply: WorkerReply = {
+        id: message.id,
+        result: replyResult,
+      }
+      this.emit('message', reply)
+      return
+    }
+    if (message.type === 'extract' || message.path) {
+      this.requests++
+      if (message.path) {
+        this.paths.push(message.path)
+      }
+      this.last = { id: message.id, path: message.path! }
+    }
+  }
+  hasValidAck(): boolean {
+    return (
+      this.acks.length > 0 &&
+      this.acks.every((a) => a.ok && a.appliedVersion === a.desiredVersion)
+    )
   }
   /** the long read finally finishes */
   finish(): void {
     const { id, path } = this.last!
     const bytes = readFileSync(path)
-    this.emit('message', {
+    const reply: WorkerReply = {
       id,
       result: {
         hash: createHash('sha256').update(bytes).digest('hex'),
@@ -44,7 +79,8 @@ class SlowWorker extends EventEmitter {
         status: 'text-only',
         skipEmbeddings: true,
       },
-    })
+    }
+    this.emit('message', reply)
   }
   terminate(): Promise<number> {
     this.terminated = true
@@ -60,7 +96,7 @@ async function until(check: () => boolean, ms = 5000): Promise<void> {
   }
 }
 
-function setup(): { worker: SlowWorker; file: string; id: () => number } {
+async function setup(): Promise<{ worker: SlowWorker; file: string; id: () => number }> {
   const worker = new SlowWorker()
   manager = new DocumentMemoryManager(join(dir, 'user'), {
     workerFactory: () => worker as unknown as Worker,
@@ -73,12 +109,13 @@ function setup(): { worker: SlowWorker; file: string; id: () => number } {
   const store = (
     manager as unknown as { store: { documentByPath(p: string): { id: number } | undefined } }
   ).store
+  await until(() => store.documentByPath(file) !== undefined)
   return { worker, file, id: () => store.documentByPath(file)!.id }
 }
 
 describe('retry and stop on a file that is being read', () => {
   it('retry leaves the running read alone instead of restarting it', async () => {
-    const { worker, file, id } = setup()
+    const { worker, file, id } = await setup()
     await until(() =>
       manager!.nowStatus().extracting.some((entry) => entry.path.endsWith('scan.txt')),
     )
@@ -88,6 +125,8 @@ describe('retry and stop on a file that is being read', () => {
 
     expect(worker.requests).toBe(1)
     expect(worker.terminated).toBe(false)
+    expect(worker.handshakeRequests).toBeGreaterThanOrEqual(1)
+    expect(worker.hasValidAck()).toBe(true)
     expect(manager!.nowStatus().extracting[0]!.since).toBe(since)
 
     // the read that was already running is the one that counts: it is kept, not read again
@@ -97,20 +136,24 @@ describe('retry and stop on a file that is being read', () => {
   })
 
   it('stop cancels the read and leaves the file as a problem to retry', async () => {
-    const { worker, file, id } = setup()
+    const { worker, file, id } = await setup()
     await until(() => manager!.nowStatus().extracting.length > 0)
 
     expect(await manager!.stopDocument(id())).toEqual({ ok: true })
 
     expect(worker.terminated).toBe(true)
+    expect(worker.handshakeRequests).toBeGreaterThanOrEqual(1)
+    expect(worker.hasValidAck()).toBe(true)
     await until(() => manager!.nowStatus().extracting.length === 0)
     expect(manager!.getDocumentIndexProgress(file).state).toBe('error')
     expect(manager!.nowStatus().positions[file]).toBeUndefined()
   })
 
   it('stop refuses a file that is already indexed', async () => {
-    const { id } = setup()
+    const { worker, id } = await setup()
     await until(() => manager!.nowStatus().extracting.length > 0)
+    expect(worker.handshakeRequests).toBeGreaterThanOrEqual(1)
+    expect(worker.hasValidAck()).toBe(true)
     await manager!.stopDocument(id())
     // an errored file is not waiting any more, so a second stop has nothing to do
     expect(await manager!.stopDocument(id())).toEqual({ ok: false, error: 'unavailable' })
@@ -147,6 +190,10 @@ describe('retry and stop on a file that is being read', () => {
     await until(() => workers.length === 2 && workers[1]!.paths.length > 0)
     expect(workers[0]!.terminated).toBe(true)
     expect(workers[1]!.paths[0]).toMatch(/chosen\.txt$/)
+    expect(workers[0]!.handshakeRequests).toBeGreaterThanOrEqual(1)
+    expect(workers[1]!.handshakeRequests).toBeGreaterThanOrEqual(1)
+    expect(workers[0]!.hasValidAck()).toBe(true)
+    expect(workers[1]!.hasValidAck()).toBe(true)
     // the interrupted file is not lost: it is back in the line right behind
     expect(manager.nowStatus().positions[busy]).toBe(1)
   })

@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -12,7 +12,6 @@ import {
   canAcceptSemanticWork,
   canAcceptExpensiveWork,
   shouldTriggerStorageMaintenance,
-  safeGetFileSize,
   type DocumentIndexStorageBudget,
   type StorageBudgetSnapshot,
 } from '../src/main/document-memory/storage-budget'
@@ -73,9 +72,18 @@ describe('Storage Budget Engine & User Limits Suite (DEV-16)', () => {
       expect(calculateStorageLimitState(800, budgetBytes)).toBe('warning')
       expect(calculateStorageLimitState(999, budgetBytes)).toBe('warning')
 
-      // At or above 100%: full (HARD LIMIT)
-      expect(calculateStorageLimitState(1000, budgetBytes)).toBe('full')
+      // GRACE ZONE: 100%..110% of the soft quota is still 'warning' (writes/embeddings admitted,
+      // compaction urgent). 'full' now means the HARD STOP at hardCapBytes = 110% (owner requirement:
+      // "embedding must always keep working; the index may bloat at most 10% over the quota").
+      expect(calculateStorageLimitState(1000, budgetBytes)).toBe('warning')
+      expect(calculateStorageLimitState(1099, budgetBytes)).toBe('warning')
+
+      // At or above the hard cap (110%): full (HARD STOP)
+      expect(calculateStorageLimitState(1100, budgetBytes)).toBe('full')
       expect(calculateStorageLimitState(1200, budgetBytes)).toBe('full')
+
+      // overshootRatio 0 restores the legacy "full at 100%" contract
+      expect(calculateStorageLimitState(1000, budgetBytes, 0)).toBe('full')
 
       // Negative or zero handled gracefully
       expect(calculateStorageLimitState(-10, budgetBytes)).toBe('ok')
@@ -171,9 +179,9 @@ describe('Storage Budget Engine & User Limits Suite (DEV-16)', () => {
       expect(shouldTriggerStorageMaintenance(snapshot.limitState)).toBe(true)
     })
 
-    it('triggers hard limit full and halts expensive semantic work when databaseBytes reaches 100%', () => {
+    it('triggers hard stop full and halts expensive semantic work when databaseBytes reaches the 110% hard cap', () => {
       const snapshot = createStorageBudgetSnapshot({
-        activeDbSizeBytes: 4.1 * 1024 * 1024 * 1024, // 4.1 GB / 4 GB > 100%
+        activeDbSizeBytes: 4.5 * 1024 * 1024 * 1024, // 4.5 GB / 4 GB = 112% >= hard cap (110%)
         walSizeBytes: 20 * 1024 * 1024,
         budgetBytes: DEFAULT_STORAGE_BUDGET.maxDatabaseBytes,
       })
@@ -300,9 +308,9 @@ describe('Storage Budget Engine & User Limits Suite (DEV-16)', () => {
     })
 
     it('registers getDocumentIndexStorageBudget IPC channel exposing budget snapshot', async () => {
-      const handlers = new Map<string, Function>()
+      const handlers = new Map<string, (...args: any[]) => any>()
       const fakeIpcMain = {
-        handle: (channel: string, handler: Function) => {
+        handle: (channel: string, handler: (...args: any[]) => any) => {
           handlers.set(channel, handler)
         },
       }

@@ -23,8 +23,6 @@ import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { FreshnessCoordinator } from '../src/main/document-memory/runtime/freshness-coordinator'
 import {
   migrateStorageV2ToV3,
-  verifyDatabaseIntegrity,
-  verifyLogicalConsistency,
 } from '../src/main/document-memory/storage-migration'
 import {
   getManifestPath,
@@ -54,7 +52,8 @@ import {
   resetIndexingPolicyBus,
 } from '../src/main/fork/indexing-policy-bus'
 import { MaintenanceScheduler } from '../src/main/document-memory/runtime/maintenance-scheduler'
-import type { WorkerRequest, WorkerReply } from '../src/main/document-memory/worker-types'
+import type { WorkerRequest } from '../src/main/document-memory/worker-types'
+import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
 
 function floatBlob(vector: number[]): Uint8Array {
   const f32 = new Float32Array(vector)
@@ -67,6 +66,11 @@ class TestWorker extends EventEmitter {
   private pending: (WorkerRequest & { id: number; path?: string }) | undefined
 
   postMessage(message: WorkerRequest & { id: number; path?: string; interactive?: boolean }): void {
+    const ack = storageBudgetAckReply(message)
+    if (ack) {
+      this.emit('message', ack)
+      return
+    }
     this.requests.push(message)
     this.pending = message
   }
@@ -253,6 +257,8 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
           return w as unknown as Worker
         },
       })
+      // The startup worker exists only for the storage-budget handshake; metadata writes are refused until it ACKs.
+      await waitForManagerWriteReady(manager)
 
       const docsDir = join(userDataDir, 'docs')
       mkdirSync(docsDir, { recursive: true })
@@ -266,15 +272,18 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
       manager.indexDiscoveredFile(normalFile, { mtimeMs: st.mtimeMs, sizeBytes: st.size })
 
       // Under pause, background queue should not send requests to worker automatically
+      // (the startup worker only ever saw the storage-budget handshake, which the fake ACKs without recording)
       await new Promise((r) => setTimeout(r, 60))
-      expect(workers.length).toBe(0)
+      expect(workers.flatMap((w) => w.requests)).toEqual([])
 
       // Interactive readNowDocument must trigger immediately even under pause!
       const readPromise = manager.readNowDocument(normalFile)
-      await vi.waitFor(() => expect(workers.length).toBeGreaterThanOrEqual(1))
-      expect(workers[0]!.requests.some((r) => r.path === normalFile && r.interactive)).toBe(true)
+      await vi.waitFor(() =>
+        expect(workers.some((w) => w.requests.some((r) => r.path === normalFile && r.interactive))).toBe(true),
+      )
+      const readWorker = workers.find((w) => w.requests.some((r) => r.path === normalFile && r.interactive))!
 
-      workers[0]!.finish(true)
+      readWorker.finish(true)
       const readResult = await readPromise
       expect(readResult).toEqual({ ok: true })
 
@@ -286,9 +295,11 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
       const heavySt = statSync(heavyFile)
 
       manager.indexDiscoveredFile(heavyFile, { mtimeMs: heavySt.mtimeMs, sizeBytes: heavySt.size })
-      await vi.waitFor(() => expect(workers.length).toBeGreaterThanOrEqual(1))
+      await vi.waitFor(() =>
+        expect(workers.some((w) => w.requests.some((r) => r.path === heavyFile))).toBe(true),
+      )
 
-      const activeWorker = workers[workers.length - 1]!
+      const activeWorker = workers.find((w) => w.requests.some((r) => r.path === heavyFile))!
       // Now a user demands reading another file
       const userFile = join(docsDir, 'user-choice.docx')
       writeFileSync(userFile, 'User clicked this file.')

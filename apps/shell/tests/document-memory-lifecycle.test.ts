@@ -18,6 +18,7 @@ import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 let dir: string
 let managers: DocumentMemoryManager[]
@@ -49,6 +50,11 @@ class FakeWorker extends EventEmitter {
   }) {
     setTimeout(() => {
       try {
+        const ack = storageBudgetAckReply(message)
+        if (ack) {
+          this.emit('message', ack)
+          return
+        }
         if (message.type === 'extract') {
           this.extractionCalls.push(message.path!)
           const bytes = readFileSync(message.path!)
@@ -155,6 +161,13 @@ describe('query-time freshness', () => {
     expect(second.hits[0]).toMatchObject({ path, stale: true, missing: false })
     await until(() => ctx.fake.extractionCalls.length > calls)
     await until(() => ctx.read((store) => store.documentByPath(path)?.status === 'ready'))
+    // The doc keeps its old 'ready' status while the re-index is in flight, so wait for the new
+    // content to be committed and the extraction to finish before asserting freshness.
+    await until(
+      () =>
+        ctx.read((store) => store.search('rejected', null).length > 0) &&
+        ctx.instance.getDocumentIndexProgress(path).state === 'ready',
+    )
     const third = await ctx.instance.search('rejected')
     expect(third.hits[0]).toMatchObject({ path, stale: false })
   })
@@ -285,6 +298,9 @@ describe('cost control', () => {
     await until(() => ctx.read((store) => store.documentByPath(path)?.status === 'ready'))
     expect(ctx.fake.embeddingCalls).toHaveLength(0)
     expect(ctx.read((store) => store.documentByPath(path)?.truncated)).toBe(true)
+    // The stored row turns 'ready' before the manager clears its in-flight extraction marker, and
+    // progress deliberately reports 'extracting' until then (maintenance-scheduler isExtracting).
+    await until(() => ctx.instance.getDocumentIndexProgress(path).state === 'ready')
     expect(ctx.instance.getDocumentIndexProgress(path)).toMatchObject({
       state: 'ready',
       truncated: true,

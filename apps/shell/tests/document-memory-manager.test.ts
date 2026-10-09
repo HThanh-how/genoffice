@@ -10,6 +10,7 @@ import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
+import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
 
 const mockVector320 = () => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)
 
@@ -46,6 +47,11 @@ class FakeWorker extends EventEmitter {
   }) {
     setTimeout(() => {
       try {
+        const ack = storageBudgetAckReply(message)
+        if (ack) {
+          this.emit('message', ack)
+          return
+        }
         if (message.type === 'extract') {
           this.extractionCalls.push(message.path!)
           const bytes = readFileSync(message.path!)
@@ -106,9 +112,9 @@ async function until(check: () => boolean, timeout = 3000) {
   }
 }
 
-function manager(fake: FakeWorker) {
+function manager(fake: FakeWorker, pollIntervalMs = 60_000) {
   const instance = new DocumentMemoryManager(dir, {
-    pollIntervalMs: 60_000,
+    pollIntervalMs,
     workerFactory: (_path, data) => {
       // Assert the worker and index share one SQLite database and a private cache folder.
       expect(data.dbPath).toBe(join(dir, 'document-memory.db'))
@@ -117,6 +123,13 @@ function manager(fake: FakeWorker) {
     },
   })
   managers.push(instance)
+  return instance
+}
+
+/** Manager whose startup storage-budget handshake has been ACKed, so metadata writes are admitted. */
+async function readyManager(fake: FakeWorker, pollIntervalMs?: number) {
+  const instance = manager(fake, pollIntervalMs)
+  await waitForManagerWriteReady(instance)
   return instance
 }
 
@@ -164,7 +177,7 @@ describe('DocumentMemoryManager', () => {
   })
   it('does not show old completed counters while a changed snapshot is paused, then completes', async () => {
     const fake = new FakeWorker(join(dir, 'document-memory.db'))
-    const instance = manager(fake)
+    const instance = await readyManager(fake)
     const path = join(dir, 'changed.txt')
     writeFileSync(path, 'new document content')
     const store = new DocumentMemoryStore(join(dir, 'document-memory.db'))
@@ -284,7 +297,7 @@ describe('DocumentMemoryManager', () => {
     const path = join(dir, 'folder-file.txt')
     writeFileSync(path, 'discovered content that gets embedded')
     const fake = new FakeWorker(join(dir, 'document-memory.db'))
-    const instance = manager(fake)
+    const instance = await readyManager(fake)
 
     expect(instance.indexDiscoveredFile(path)).toBe(true)
     await until(() => instance.status().vectors > 0 && instance.status().pending === 0)
@@ -300,13 +313,17 @@ describe('DocumentMemoryManager', () => {
     const recentPath = join(dir, 'recent-pending.txt')
     writeFileSync(oldPath, 'older queued content')
     writeFileSync(recentPath, 'newer queued content')
-    const fake = new FakeWorker(join(dir, 'document-memory.db'))
-    const instance = manager(fake)
-    instance.setEnabled(false)
-    instance.remember(oldPath)
+    // Seed the pending queue through a plain store: a disabled manager defers `remember` into its
+    // in-memory intake (no durable priority timestamp), so recency can only be asserted on stored rows.
+    const seed = new DocumentMemoryStore(join(dir, 'document-memory.db'))
+    expect(seed.remember(oldPath)).toBe(true)
     await new Promise((resolve) => setTimeout(resolve, 5))
-    instance.remember(recentPath)
-    instance.setEnabled(true)
+    expect(seed.remember(recentPath)).toBe(true)
+    seed.close()
+    const fake = new FakeWorker(join(dir, 'document-memory.db'))
+    // Startup resume: the first drain at write-ready is denied `accounting-unknown` and deferred to
+    // the next poll, so use a short poll interval instead of the 60s production default.
+    await readyManager(fake, 50)
     await until(() => fake.extractionCalls.length >= 2)
     expect(fake.extractionCalls[0]).toBe(recentPath)
   })
@@ -322,7 +339,7 @@ describe('DocumentMemoryManager', () => {
     writeFileSync(secondPath, text)
     const interrupted = new FakeWorker(join(dir, 'document-memory.db'))
     interrupted.stopAfterBatches = 1
-    const first = manager(interrupted)
+    const first = await readyManager(interrupted)
     first.remember(path)
     first.remember(secondPath)
     await until(() => first.status().vectors === 8)
@@ -331,7 +348,7 @@ describe('DocumentMemoryManager', () => {
     checkpoint.close()
     first.close()
     const resumedWorker = new FakeWorker(join(dir, 'document-memory.db'))
-    const reopened = manager(resumedWorker)
+    const reopened = await readyManager(resumedWorker, 50)
     await until(
       () => reopened.status().vectors === chunks.length * 2 && reopened.status().pending === 0,
     )
@@ -349,12 +366,12 @@ describe('DocumentMemoryManager', () => {
   it('restarts pending extraction when shutdown happened before text was committed', async () => {
     const path = join(dir, 'not-extracted.txt')
     writeFileSync(path, 'Pending content after reopening')
-    const first = manager(new FakeWorker(join(dir, 'document-memory.db')))
+    const first = await readyManager(new FakeWorker(join(dir, 'document-memory.db')))
     first.setEnabled(false)
     first.remember(path)
     first.setEnabled(true)
     first.close()
-    const reopened = manager(new FakeWorker(join(dir, 'document-memory.db')))
+    const reopened = await readyManager(new FakeWorker(join(dir, 'document-memory.db')), 50)
     await until(() => reopened.status().vectors === 1)
     expect((await reopened.search('Pending content')).hits[0]?.path).toBe(path)
   })

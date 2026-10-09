@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { activateSet, retireOldSets } from '../../chunk-sets'
+import { retireOldSets } from '../../chunk-sets'
 import { documentIndexFields } from '../../normalization'
 import { measureSqlite } from '../../sqlite-timing'
 import { isOcrLocation } from '../../ocr-sidecar'
@@ -193,7 +193,11 @@ export class ChunkRepository {
     const list = this.db.prepare('SELECT id FROM chunks WHERE document_id = ? LIMIT 64')
     for (;;) {
       const ids = list.all(documentId) as Array<{ id: number }>
-      if (!ids.length) return true
+      if (!ids.length) {
+        this.db.prepare('DELETE FROM document_embedding_counts WHERE document_id = ?').run(documentId)
+        this.db.prepare('UPDATE documents SET chunk_done = 0 WHERE id = ?').run(documentId)
+        return true
+      }
       for (const { id } of ids) {
         delFts.run(id)
         delChunk.run(id)

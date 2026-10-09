@@ -228,16 +228,23 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
   const liveActiveBytes = safeGetFileSize(liveDbPath)
   const liveWalBytes = safeGetFileSize(`${liveDbPath}-wal`)
 
-  const storageBudget = createStorageBudgetSnapshot({
+  const liveBudgetSnapshot = typeof (documentMemory as any)?.getStorageBudgetSnapshot === 'function'
+    ? (documentMemory as any).getStorageBudgetSnapshot()
+    : null
+
+  const storageBudget = liveBudgetSnapshot ?? createStorageBudgetSnapshot({
     activeDbSizeBytes: liveActiveBytes > 0 ? liveActiveBytes : storage.activeDbSizeBytes,
     walSizeBytes: liveWalBytes > 0 ? liveWalBytes : storage.walSizeBytes,
-    budgetBytes: storage.budgetBytes,
+    budgetBytes: (documentMemory as any)?.getStorageBudget?.()?.maxDatabaseBytes ?? storage.budgetBytes,
     chunksBytes: storage.breakdown?.chunksBytes ?? storage.chunksBytes,
     embeddingsBytes: storage.breakdown?.embeddingsBytes ?? storage.embeddingsBytes,
     ftsBytes: storage.breakdown?.ftsBytes ?? storage.ftsBytes,
     ocrBytes: storage.breakdown?.ocrBytes ?? storage.ocrBytes,
     backupBytes: storage.v2BackupSizeBytes ?? storage.backupBytes,
     reclaimableBytes: storage.estimatedReclaimableBytes ?? storage.reclaimableBytes,
+    isDegraded: true,
+    measurementStatus: 'degraded',
+    measurementError: 'Live storage measurement not yet available; using conservative fallback',
   })
 
   const modeState = getSnapshotMode(ctx)

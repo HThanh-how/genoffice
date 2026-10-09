@@ -8,19 +8,53 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
+import type { StorageBudgetWorkerResult, WorkerReply } from '../src/main/document-memory/worker-types'
 
 class HandWorker extends EventEmitter {
   terminated = false
   requests: Array<{ path: string; interactive?: boolean }> = []
+  handshakeRequests = 0
+  acks: StorageBudgetWorkerResult[] = []
   private pending: { id: number; path: string } | undefined
-  postMessage(message: { id: number; path: string; interactive?: boolean }): void {
-    this.requests.push({ path: message.path, interactive: message.interactive })
-    this.pending = message
+  postMessage(message: {
+    id: number
+    type?: string
+    path?: string
+    interactive?: boolean
+    configVersion?: number
+    budget?: { maxDatabaseBytes: number }
+  }): void {
+    if (message.type === 'set-storage-budget') {
+      this.handshakeRequests++
+      const replyResult: StorageBudgetWorkerResult = {
+        ok: true,
+        appliedVersion: message.configVersion ?? 0,
+        desiredVersion: message.configVersion ?? 0,
+        appliedBudgetBytes: message.budget?.maxDatabaseBytes,
+      }
+      this.acks.push(replyResult)
+      const reply: WorkerReply = {
+        id: message.id,
+        result: replyResult,
+      }
+      this.emit('message', reply)
+      return
+    }
+    if (message.type === 'extract' || message.path) {
+      this.requests.push({ path: message.path!, interactive: message.interactive })
+      this.pending = { id: message.id, path: message.path! }
+    }
+  }
+  hasValidAck(): boolean {
+    return (
+      this.acks.length > 0 &&
+      this.acks.every((a) => a.ok && a.appliedVersion === a.desiredVersion)
+    )
   }
   finish(skipEmbeddings = true): void {
     const { id, path } = this.pending!
     const bytes = readFileSync(path)
-    this.emit('message', {
+    const reply: WorkerReply = {
       id,
       result: {
         hash: createHash('sha256').update(bytes).digest('hex'),
@@ -30,10 +64,12 @@ class HandWorker extends EventEmitter {
         status: 'text-only',
         ...(skipEmbeddings ? { skipEmbeddings: true } : {}),
       },
-    })
+    }
+    this.emit('message', reply)
   }
   fail(message: string): void {
-    this.emit('message', { id: this.pending!.id, error: message })
+    const reply: WorkerReply = { id: this.pending!.id, error: message }
+    this.emit('message', reply)
   }
   terminate(): Promise<number> {
     this.terminated = true
@@ -95,14 +131,23 @@ const enrol = (path: string): void => {
 }
 const asked = (): Array<{ path: string; interactive?: boolean }> =>
   workers.flatMap((worker) => worker.requests)
-const idOf = (path: string): number =>
-  (
+const idOf = async (path: string): Promise<number> => {
+  await until(() => {
+    const doc = (
+      manager as unknown as { store: { documentByPath(p: string): { id: number } | undefined } }
+    ).store.documentByPath(path)
+    return doc !== undefined && doc !== null
+  })
+  return (
     manager as unknown as { store: { documentByPath(p: string): { id: number } } }
   ).store.documentByPath(path).id
+}
 const statusOf = (path: string): string | undefined =>
   (
     manager as unknown as { store: { documentByPath(p: string): { status: string } | undefined } }
   ).store.documentByPath(path)?.status
+const validAckExists = (): boolean =>
+  workers.length > 0 && workers.every((worker) => worker.hasValidAck())
 
 describe('"read this one" reads at once', () => {
   it('even when the indexing policy has paused the background work', async () => {
@@ -112,10 +157,12 @@ describe('"read this one" reads at once', () => {
     await new Promise((resolve) => setTimeout(resolve, 50))
     expect(asked()).toHaveLength(0) // the line really is held
 
-    const reading = manager.readNowDocument(idOf(path))
+    const docId = await idOf(path)
+    const reading = manager.readNowDocument(docId)
     await until(() => asked().length === 1)
     expect(asked()[0]).toMatchObject({ path, interactive: true })
     expect(manager.nowStatus().extracting.map((entry) => entry.path)).toEqual([path])
+    expect(validAckExists()).toBe(true)
     workers.at(-1)!.finish()
 
     expect(await reading).toEqual({ ok: true })
@@ -127,8 +174,10 @@ describe('"read this one" reads at once', () => {
   it('reads a file whose row already carries the same hash (text stored again, not skipped)', async () => {
     const path = make('3032-cv_0001_signed_signed.pdf')
     enrol(path)
-    const first = manager.readNowDocument(idOf(path))
+    const docId = await idOf(path)
+    const first = manager.readNowDocument(docId)
     await until(() => asked().length === 1)
+    expect(validAckExists()).toBe(true)
     const worker = workers.at(-1)!
     worker.finish(false) // a normal result: its vectors are still to be made
     await first
@@ -138,10 +187,10 @@ describe('"read this one" reads at once', () => {
         store: { db: { prepare(sql: string): { run(...args: unknown[]): unknown } } }
       }
     ).store
-    store.db.prepare(`UPDATE documents SET status = 'pending' WHERE id = ?`).run(idOf(path))
+    store.db.prepare(`UPDATE documents SET status = 'pending' WHERE id = ?`).run(docId)
     expect(statusOf(path)).toBe('pending')
 
-    const again = manager.readNowDocument(idOf(path))
+    const again = manager.readNowDocument(docId)
     await until(() => asked().filter((request) => request.path === path).length === 2)
     workers.at(-1)!.finish(false)
     expect(await again).toEqual({ ok: true })
@@ -151,8 +200,10 @@ describe('"read this one" reads at once', () => {
   it('says why a file cannot be read instead of leaving it waiting', async () => {
     const path = make('on-the-missing-drive.pdf')
     enrol(path)
-    const reading = manager.readNowDocument(idOf(path))
+    const docId = await idOf(path)
+    const reading = manager.readNowDocument(docId)
     await until(() => asked().length === 1)
+    expect(validAckExists()).toBe(true)
     workers.at(-1)!.fail('ENOENT: no such file or directory, open G:\\Mr Quốc\\x.pdf')
 
     expect(await reading).toEqual({
@@ -167,8 +218,10 @@ describe('"read this one" reads at once', () => {
     enrol(path)
     await until(() => asked().length === 1)
     expect(asked()[0]!.interactive).toBeUndefined()
+    expect(validAckExists()).toBe(true)
 
-    const pressed = manager.readNowDocument(idOf(path))
+    const docId = await idOf(path)
+    const pressed = manager.readNowDocument(docId)
     await new Promise((resolve) => setTimeout(resolve, 150))
     let settled = false
     void pressed.then(() => (settled = true))
@@ -183,6 +236,7 @@ describe('"read this one" reads at once', () => {
     const path = make('touched.pdf')
     enrol(path)
     await until(() => asked().length === 1)
+    expect(validAckExists()).toBe(true)
 
     // the scanner finds the same (still unread) file again while it is being read
     enrol(path)
@@ -199,8 +253,10 @@ describe('"read this one" reads at once', () => {
     const path = make('pressed.pdf')
     publishIndexingPolicy(PAUSED)
     enrol(path)
-    const reading = manager.readNowDocument(idOf(path))
+    const docId = await idOf(path)
+    const reading = manager.readNowDocument(docId)
     await until(() => asked().length === 1)
+    expect(validAckExists()).toBe(true)
     enrol(path) // a refresh in the middle of the read
     workers.at(-1)!.finish()
     expect(await reading).toEqual({ ok: true })
@@ -212,7 +268,9 @@ describe('"read this one" reads at once', () => {
     const path = make('overtaken.pdf')
     enrol(path)
     await until(() => asked().length === 1)
-    const pressed = manager.readNowDocument(idOf(path))
+    expect(validAckExists()).toBe(true)
+    const docId = await idOf(path)
+    const pressed = manager.readNowDocument(docId)
     // the background read comes back as an error-free, but outdated, answer: the file changed
     ;(manager as unknown as { invalidatePath(p: string): void }).invalidatePath(path)
     workers.at(-1)!.finish()
@@ -226,8 +284,9 @@ describe('"read this one" reads at once', () => {
   it('refuses only when indexing has been switched off by the person', async () => {
     const path = make('a.pdf')
     enrol(path)
+    const docId = await idOf(path)
     manager.setEnabled(false)
-    expect(await manager.readNowDocument(idOf(path))).toEqual({ ok: false, error: 'paused' })
+    expect(await manager.readNowDocument(docId)).toEqual({ ok: false, error: 'paused' })
   })
 
   it('steps a very large file that cannot be read in turns aside for it', async () => {
@@ -235,9 +294,11 @@ describe('"read this one" reads at once', () => {
     const wanted = make('wanted.txt')
     enrol(heavy)
     await until(() => asked().length === 1)
+    expect(validAckExists()).toBe(true)
     enrol(wanted)
+    const wantedId = await idOf(wanted)
 
-    const reading = manager.readNowDocument(idOf(wanted))
+    const reading = manager.readNowDocument(wantedId)
     await until(() => asked().some((request) => request.path === wanted && request.interactive))
     expect(workers[0]!.terminated).toBe(true)
     workers.at(-1)!.finish()

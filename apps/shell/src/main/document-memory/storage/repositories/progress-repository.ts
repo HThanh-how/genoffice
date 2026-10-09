@@ -3,6 +3,8 @@ import { resolve } from 'node:path'
 import { issueReason, type IndexIssue } from '../../issues'
 import { measureSqlite } from '../../sqlite-timing'
 import { toDocument, type DocRow, type StoredDocument } from './document-repository'
+import { hasContentEvictedColumn } from '../migration/cache-retention'
+import { hasVectorEvictionTable } from '../vector-eviction-marker'
 
 export interface DocumentChunkProgress {
   document: StoredDocument | null
@@ -13,9 +15,23 @@ export interface DocumentChunkProgress {
 export interface FolderChunkProgress {
   totalFiles: number
   readyFiles: number
+  /**
+   * Files that truly still wait for extraction / embedding. Excludes `releasedFiles`.
+   * Invariant (excluded = 0 rows): waitingFiles + releasedFiles + readyFiles + errorFiles = totalFiles.
+   */
   pendingFiles: number
+  /** Same as pendingFiles; only set together with releasedFiles (absent = nothing released). */
+  waitingFiles?: number
+  /**
+   * Files whose vectors/content were released by cache retention (or compacted): still searchable by
+   * name/text, reloaded when opened, intentionally NOT re-embedded. Their chunks are left out of
+   * totalChunks / completedChunks / semanticCoverage.
+   */
+  releasedFiles?: number
   errorFiles: number
   emptyFiles?: number
+  /** Images/videos (name + metadata only). They are 'ready' rows, so already inside totalFiles / readyFiles. */
+  mediaFiles?: number
   completedChunks: number
   totalChunks: number
   partialFileProgress: number
@@ -26,11 +42,42 @@ export interface FolderChunkProgress {
 
 export interface DocumentMemoryStats {
   docs: number
+  /** documents whose vectors were released (see FolderChunkProgress.releasedFiles) */
+  releasedDocs?: number
   chunks: number
   vectors: number
   errors: number
   semanticCoverage?: number
   activeEmbeddingSpace?: string
+}
+
+/**
+ * Released = a document that would otherwise be incomplete work (pending / text-only) but is deliberately
+ * not re-embedded: content_evicted, or a durable `document_vector_evictions` marker that still applies
+ * (same hash, not opened since). Mirrors DocumentRepository.incompletePaths(), so waiting == incompletePaths.
+ * The marker row is read defensively: only presence / hash / evicted_at are used, any extra column or state
+ * (e.g. a 'skeleton' compaction state) counts as released. SQL expression over alias `d`.
+ */
+export function releasedDocumentSql(db: DatabaseSync, alias = 'd'): string {
+  const parts: string[] = []
+  if (hasContentEvictedColumn(db)) parts.push(`${alias}.content_evicted = 1`)
+  if (hasVectorEvictionTable(db)) {
+    let strict: boolean
+    try {
+      const cols = new Set(
+        (db.prepare('PRAGMA table_info(document_vector_evictions)').all() as Array<{ name: string }>).map((c) => c.name),
+      )
+      strict = cols.has('hash') && cols.has('evicted_at')
+    } catch {
+      strict = false
+    }
+    parts.push(
+      `EXISTS (SELECT 1 FROM document_vector_evictions m WHERE m.document_id = ${alias}.id` +
+        (strict ? ` AND m.hash IS ${alias}.hash AND ${alias}.last_opened_at <= m.evicted_at` : '') +
+        ')',
+    )
+  }
+  return parts.length ? `(${alias}.status IN ('pending', 'text-only') AND (${parts.join(' OR ')}))` : '0'
 }
 
 export class ProgressRepository {
@@ -133,23 +180,28 @@ export class ProgressRepository {
             ? normalized
             : `${normalized}${normalized.includes('\\') ? '\\' : '/'}`
       const targetSpace = activeSpaceId ?? null
+      const released = releasedDocumentSql(this.db)
 
       const row = this.db
         .prepare(
           `SELECT count(*) AS total_files,
             sum(CASE WHEN status IN ('ready', 'empty') THEN 1 ELSE 0 END) AS ready_files,
-            sum(CASE WHEN status IN ('pending', 'text-only') THEN 1 ELSE 0 END) AS pending_files,
+            sum(CASE WHEN status IN ('pending', 'text-only') AND released = 0 THEN 1 ELSE 0 END) AS pending_files,
+            sum(released) AS released_files,
             sum(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS error_files,
             sum(CASE WHEN status = 'empty' THEN 1 ELSE 0 END) AS empty_files,
+            coalesce(sum(is_media), 0) AS media_files,
             coalesce(sum(truncated), 0) AS truncated_files,
-            coalesce(sum(done_chunks), 0) AS completed_chunks,
-            coalesce(sum(total_chunks), 0) AS total_chunks,
-            coalesce(sum(CASE WHEN status IN ('ready','empty') THEN 1.0
+            coalesce(sum(CASE WHEN released = 1 THEN 0 ELSE done_chunks END), 0) AS completed_chunks,
+            coalesce(sum(CASE WHEN released = 1 THEN 0 ELSE total_chunks END), 0) AS total_chunks,
+            coalesce(sum(CASE WHEN status IN ('ready','empty') OR released = 1 THEN 1.0
               WHEN status = 'text-only' AND total_chunks > 0
                 THEN min(1.0, max(0.0, done_chunks * 1.0 / total_chunks))
               ELSE 0.0 END), 0.0) AS partial_file_progress
           FROM (
             SELECT d.status, d.truncated,
+              CASE WHEN EXISTS (SELECT 1 FROM document_media dm WHERE dm.document_id = d.id) THEN 1 ELSE 0 END AS is_media,
+              CASE WHEN ${released} THEN 1 ELSE 0 END AS released,
               CASE WHEN d.chunk_counted = 1 THEN d.chunk_total
                 ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END AS total_chunks,
               min(
@@ -175,8 +227,10 @@ export class ProgressRepository {
             total_files: number
             ready_files: number
             pending_files: number
+            released_files: number | null
             error_files: number
             empty_files: number
+            media_files: number
             truncated_files: number
             completed_chunks: number
             total_chunks: number
@@ -196,8 +250,13 @@ export class ProgressRepository {
         totalFiles: row?.total_files ?? 0,
         readyFiles: row?.ready_files ?? 0,
         pendingFiles: row?.pending_files ?? 0,
+        // only present when something was released, so the payload of libraries without released files is unchanged
+        ...(row?.released_files
+          ? { waitingFiles: row.pending_files ?? 0, releasedFiles: row.released_files }
+          : {}),
         errorFiles: row?.error_files ?? 0,
         emptyFiles: row?.empty_files ?? 0,
+        ...(row?.media_files ? { mediaFiles: row.media_files } : {}),
         completedChunks,
         totalChunks,
         partialFileProgress: row?.partial_file_progress ?? 0,
@@ -243,10 +302,13 @@ export class ProgressRepository {
   stats(activeEmbeddingSpace?: string): DocumentMemoryStats {
     return measureSqlite('stats', () => {
       const targetSpace = activeEmbeddingSpace ?? null
+      const released = releasedDocumentSql(this.db)
       const row = this.db
         .prepare(
           `SELECT count(*) AS docs,
+            coalesce(sum(CASE WHEN ${released} THEN 1 ELSE 0 END), 0) AS released_docs,
             coalesce(sum(CASE WHEN d.chunk_counted = 1 THEN d.chunk_total ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END), 0) AS chunks,
+            coalesce(sum(CASE WHEN ${released} THEN 0 WHEN d.chunk_counted = 1 THEN d.chunk_total ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END), 0) AS wanted_chunks,
             coalesce(sum(
               min(
                 CASE WHEN d.chunk_counted = 1 THEN d.chunk_total ELSE (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) END,
@@ -262,7 +324,9 @@ export class ProgressRepository {
         )
         .get(targetSpace, targetSpace, targetSpace) as {
           docs: number
+          released_docs: number
           chunks: number
+          wanted_chunks: number
           vectors: number
           errors: number
         }
@@ -270,14 +334,17 @@ export class ProgressRepository {
       const chunks = Math.max(0, row?.chunks ?? 0)
       const vectors = Math.min(Math.max(0, row?.vectors ?? 0), chunks)
       let semanticCoverage: number | undefined
-      if (activeEmbeddingSpace && chunks > 0) {
-        semanticCoverage = Math.min(1, Math.max(0, vectors) / chunks)
-      } else if (activeEmbeddingSpace && chunks === 0) {
+      // Coverage is measured over the chunks we still intend to embed (released documents are left out).
+      const wanted = Math.min(chunks, Math.max(0, row?.wanted_chunks ?? chunks))
+      if (activeEmbeddingSpace && wanted > 0) {
+        semanticCoverage = Math.min(1, Math.max(0, vectors) / wanted)
+      } else if (activeEmbeddingSpace && wanted === 0) {
         semanticCoverage = 1
       }
 
       return {
         docs: row?.docs ?? 0,
+        ...(row?.released_docs ? { releasedDocs: row.released_docs } : {}),
         chunks,
         vectors,
         errors: row?.errors ?? 0,

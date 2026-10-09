@@ -23,6 +23,8 @@ export type ChatLabels = {
   sourceStale: string
   sourceMissingHint: string
   sourceStaleHint: string
+  sourceSkeleton: string
+  sourceSkeletonHint: string
   copy: string
   copied: string
 }
@@ -121,11 +123,14 @@ function SourceChip({
   onOpen: (source: HomeChatSource) => void
 }) {
   const state = source.missing ? 'missing' : source.stale ? 'stale' : ''
+  const skeleton = !state && source.skeletonIndex === true
   const hint = source.missing
     ? labels.sourceMissingHint
     : source.stale
       ? labels.sourceStaleHint
-      : ''
+      : skeleton
+        ? labels.sourceSkeletonHint
+        : ''
   return (
     <button
       type="button"
@@ -154,6 +159,7 @@ function SourceChip({
           {state === 'missing' ? labels.sourceMissing : labels.sourceStale}
         </span>
       )}
+      {skeleton && <span className="hc-source-flag hc-source-skeleton">{labels.sourceSkeleton}</span>}
     </button>
   )
 }

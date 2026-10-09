@@ -34,7 +34,19 @@ describe('settings defaults', () => {
       ignoreFiveHour: false,
       onlyOnAC: true,
       onlyWhenIdle: true,
+      localOcr: { enabled: true, lightPages: 2, engine: 'auto' },
     })
+  })
+
+  it('validates the local OCR block field by field', () => {
+    const merged = agyOcrSettingsFrom({
+      [AGY_OCR_SETTINGS_KEY]: { localOcr: { enabled: false, lightPages: 99, engine: 'nope' } },
+    })
+    expect(merged.localOcr).toEqual({ enabled: false, lightPages: 5, engine: 'auto' })
+    expect(
+      agyOcrSettingsFrom({ [AGY_OCR_SETTINGS_KEY]: { localOcr: { engine: 'tesseract-vie', lightPages: 1 } } })
+        .localOcr,
+    ).toEqual({ enabled: true, lightPages: 1, engine: 'tesseract-vie' })
   })
 
   it('a missing, empty or corrupt stored value reads as the defaults (ON)', () => {

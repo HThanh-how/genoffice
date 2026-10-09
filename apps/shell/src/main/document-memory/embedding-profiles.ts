@@ -1,15 +1,32 @@
+import {
+  BEKKO_A8M,
+  BEKKO_A25M,
+  EMBEDDING_GEMMA_2,
+  buildEmbeddingId,
+  type ModelArtifactSpec,
+} from './embedding/model-specs'
+import { ORT_WITH_GATHER_BLOCK_QUANTIZED_BITS, ortSupports } from './embedding/ort-support'
+import type { VectorQuantisation } from './embedding/vector-codec'
+
 /**
- * standard = F2LLM-v2-80M
- * high = Qwen3-Embedding-0.6B
+ * Legacy profiles (existing installs keep working, nothing is re-embedded):
+ *   standard = F2LLM-v2-80M, 320d, fp32 vectors
+ *   high     = Qwen3-Embedding-0.6B, 512d, fp32 vectors
  *
- * standard:
- * low-memory / default
+ * Tiered profiles (fresh installs get the one recommendEmbeddingProfile() picks):
+ *   base     = Bekko-v1 a8m,  384d int8   (<= 6 GB RAM or <= 2 cores)
+ *   balanced = Bekko-v1 a25m, 384d int8   (8 GB; the benchmark's "DEFAULT" tier)
+ *   mid      = EmbeddingGemma-2 270M, 512d (MRL) int8   (16 GB)
+ *   plus     = same model and the SAME 512d space as mid (32 GB / 8 cores): upgrading RAM never
+ *              forces a re-embed; it only gets more threads, parallel runs and a longer input.
  *
- * high:
- * quality mode
+ * The id 'balanced' (not 'default') avoids a profile literally named 'default' next to the
+ * DEFAULT_EMBEDDING_PROFILE constant, which for installs without a saved choice is still 'standard'.
  */
 
-export type EmbeddingProfileId = 'standard' | 'high'
+export type EmbeddingProfileId = 'standard' | 'high' | 'base' | 'balanced' | 'mid' | 'plus'
+
+export type EmbeddingTier = 'legacy' | 'base' | 'default' | 'mid' | 'high'
 
 export interface EmbeddingProfileFile {
   /** path inside the model repository */
@@ -28,6 +45,9 @@ export interface EmbeddingProfile {
   revision: string
 
   files: EmbeddingProfileFile[]
+
+  /** hardware tier this profile is meant for ('legacy' for the two original profiles) */
+  tier: EmbeddingTier
 
   modelFile: string
   tokenizerFile: string
@@ -57,8 +77,32 @@ export interface EmbeddingProfile {
   queryPrefix: string
   passagePrefix: string
 
+  /**
+   * How vectors of this space are stored. 'int8' = per-vector symmetric scale (see
+   * embedding/vector-codec.ts); 'fp32' = Float32 as before. Part of the embeddingId.
+   */
+  vectorQuantisation: VectorQuantisation
+
+  /** Extra empty float inputs a multimodal ONNX export needs for text-only use. */
+  emptyInputs?: Array<{ name: string; dims: number[] }>
+
   /** Maximum tokens GenOffice itself permits. */
   maxInputTokens: number
+
+  /** Upper bound of ONNX intra-op threads (the indexing policy may use fewer). */
+  maxThreads: number
+  /** Embeddings computed in parallel on one session while indexing. */
+  concurrency: number
+  /** Subject to the "allowHeavyEmbedding" (low RAM / battery) gate. */
+  heavy: boolean
+  /** The session may be re-created with another thread count between batches. */
+  resizableSession: boolean
+
+  /** Licence label for docs and the NOTICE file. */
+  license: string
+
+  /** Oldest onnxruntime-node that can load this model's ONNX files (absent = any). */
+  minOrtVersion?: string
 
   downloadMB: number
 
@@ -107,7 +151,7 @@ function selectModelArtifact(profile: 'standard' | 'high'): {
 const standardArtifact = selectModelArtifact('standard')
 const highArtifact = selectModelArtifact('high')
 
-export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = {
+const LEGACY_PROFILES: Record<'standard' | 'high', EmbeddingProfile> = {
   standard: {
     id: 'standard',
 
@@ -121,6 +165,8 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
       { path: 'tokenizer_config.json', sha256: '3c0884a30471f4f542dc89630f62a380bb70a341fafda826136a7be921fec7ea' },
       { path: standardArtifact.modelFile, sha256: standardArtifact.sha256 },
     ],
+
+    tier: 'legacy',
 
     modelFile: standardArtifact.modelFile,
     tokenizerFile: 'tokenizer.json',
@@ -139,7 +185,13 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
     queryPrefix: '',
     passagePrefix: '',
 
+    vectorQuantisation: 'fp32',
     maxInputTokens: 512,
+    maxThreads: 16,
+    concurrency: 1,
+    heavy: false,
+    resizableSession: true,
+    license: 'Apache-2.0',
 
     downloadMB: 95,
     memoryMB: 180,
@@ -158,6 +210,8 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
       { path: 'tokenizer_config.json' },
       { path: highArtifact.modelFile, sha256: highArtifact.sha256 },
     ],
+
+    tier: 'legacy',
 
     modelFile: highArtifact.modelFile,
     tokenizerFile: 'tokenizer.json',
@@ -178,7 +232,13 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
     queryPrefix: '',
     passagePrefix: '',
 
+    vectorQuantisation: 'fp32',
     maxInputTokens: 1024,
+    maxThreads: 16,
+    concurrency: 1,
+    heavy: true,
+    resizableSession: false,
+    license: 'Apache-2.0',
 
     downloadMB: 600,
     memoryMB: 900,
@@ -186,27 +246,156 @@ export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = 
   },
 }
 
+/**
+ * The model behind MID and PLUS. One line swaps in the MIT-licensed fallback (HARRIER_270M, 640d)
+ * if the Gemma terms are ever a problem; the swap changes the embeddingId, i.e. a new vector space.
+ */
+const MID_MODEL: ModelArtifactSpec = EMBEDDING_GEMMA_2
+
+function totalDownloadMB(spec: ModelArtifactSpec): number {
+  return Math.ceil(spec.files.reduce((sum, file) => sum + (file.bytes ?? 0), 0) / 1e6)
+}
+
+export function tieredProfile(
+  id: 'base' | 'balanced' | 'mid' | 'plus',
+  tier: EmbeddingTier,
+  spec: ModelArtifactSpec,
+  extra: Pick<
+    EmbeddingProfile,
+    | 'maxInputTokens'
+    | 'maxThreads'
+    | 'concurrency'
+    | 'heavy'
+    | 'resizableSession'
+    | 'memoryMB'
+    | 'minFreeMemoryMB'
+  > & { minOrtVersion?: string },
+): EmbeddingProfile {
+  const vectorQuantisation = 'int8'
+  return {
+    id,
+    repo: spec.repo,
+    revision: spec.revision,
+    files: spec.files.map((file) => ({ ...file })),
+    tier,
+    modelFile: spec.modelFile,
+    tokenizerFile: spec.tokenizerFile,
+    tokenizerConfigFile: spec.tokenizerConfigFile,
+    embeddingId: buildEmbeddingId(spec, spec.storedDimensions, vectorQuantisation),
+    nativeDimensions: spec.nativeDimensions,
+    dimensions: spec.storedDimensions,
+    pooling: spec.pooling,
+    queryInstruction: spec.queryInstruction,
+    queryPrefix: spec.queryPrefix,
+    passagePrefix: spec.passagePrefix,
+    vectorQuantisation,
+    ...(spec.emptyInputs ? { emptyInputs: spec.emptyInputs.map((input) => ({ ...input })) } : {}),
+    license: spec.license,
+    downloadMB: totalDownloadMB(spec),
+    ...extra,
+  }
+}
+
+/**
+ * Sizing. memoryMB is the whole indexing-process RSS measured in Node (macOS arm64, 1 intra-op
+ * thread, batch 1, after short AND near-limit 450-token chunks; tests/embedding-parity.test.ts):
+ * base 757, balanced 921 (+ the 34 MB, 262k-vocab JS tokenizer, which dominates), mid 564
+ * (the Gemma weights are memory-mapped), rounded up. plus adds head-room for 8 threads, three
+ * parallel runs and 1024-token inputs. Each stays within 15-20% of its tier's RAM floor
+ * (4 / 8 / 16 / 32 GB). minFreeMemoryMB = memoryMB + 25%, what must be free before loading.
+ */
+export const EMBEDDING_PROFILES: Record<EmbeddingProfileId, EmbeddingProfile> = {
+  ...LEGACY_PROFILES,
+  base: tieredProfile('base', 'base', BEKKO_A8M, {
+    maxInputTokens: 512,
+    maxThreads: 1,
+    concurrency: 1,
+    heavy: false,
+    resizableSession: true,
+    memoryMB: 800,
+    minFreeMemoryMB: 1000,
+  }),
+  balanced: tieredProfile('balanced', 'default', BEKKO_A25M, {
+    maxInputTokens: 512,
+    maxThreads: 2,
+    concurrency: 1,
+    heavy: false,
+    resizableSession: true,
+    memoryMB: 960,
+    minFreeMemoryMB: 1200,
+  }),
+  mid: tieredProfile('mid', 'mid', MID_MODEL, {
+    maxInputTokens: 512,
+    maxThreads: 4,
+    concurrency: 2,
+    heavy: true,
+    resizableSession: true,
+    memoryMB: 700,
+    minFreeMemoryMB: 896,
+    minOrtVersion: ORT_WITH_GATHER_BLOCK_QUANTIZED_BITS,
+  }),
+  plus: tieredProfile('plus', 'high', MID_MODEL, {
+    maxInputTokens: 1024,
+    maxThreads: 8,
+    concurrency: 3,
+    heavy: true,
+    resizableSession: true,
+    memoryMB: 1000,
+    minFreeMemoryMB: 1280,
+    minOrtVersion: ORT_WITH_GATHER_BLOCK_QUANTIZED_BITS,
+  }),
+}
+
+export const EMBEDDING_PROFILE_IDS = Object.keys(EMBEDDING_PROFILES) as EmbeddingProfileId[]
+
+/** Profile ids a fresh install can be given, smallest first. */
+export const TIERED_PROFILE_IDS = ['base', 'balanced', 'mid', 'plus'] as const
+
 export function assertEmbeddingManifest(profile: EmbeddingProfile): void {
   for (const file of profile.files) {
     if (file.sha256 && !/^[a-f0-9]{64}$/i.test(file.sha256)) {
       throw new Error(`Invalid SHA-256 for ${profile.id}:${file.path}`)
     }
+    if (file.bytes !== undefined && !(Number.isSafeInteger(file.bytes) && file.bytes > 0)) {
+      throw new Error(`Invalid size for ${profile.id}:${file.path}`)
+    }
+  }
+  if (!/^[a-f0-9]{40}$/.test(profile.revision)) {
+    throw new Error(`Revision of ${profile.id} must be a full commit SHA`)
+  }
+  const paths = new Set(profile.files.map((file) => file.path))
+  for (const required of [profile.modelFile, profile.tokenizerFile, profile.tokenizerConfigFile]) {
+    if (!paths.has(required)) throw new Error(`Missing manifest entry for ${profile.id}:${required}`)
+  }
+  if (profile.tier !== 'legacy') {
+    for (const file of profile.files) {
+      if (!file.sha256 || !file.bytes) {
+        throw new Error(`Tiered profile ${profile.id} must pin sha256 and size of ${file.path}`)
+      }
+    }
+  }
+  if (profile.dimensions > profile.nativeDimensions) {
+    throw new Error(`Stored dimensions of ${profile.id} exceed the native dimensions`)
   }
 }
 
-assertEmbeddingManifest(EMBEDDING_PROFILES.standard)
-assertEmbeddingManifest(EMBEDDING_PROFILES.high)
+for (const profile of Object.values(EMBEDDING_PROFILES)) assertEmbeddingManifest(profile)
 
+/**
+ * What an install with no saved choice has always run, and therefore what an existing index
+ * without a settings file keeps using. Fresh installs are advised by recommendEmbeddingProfile.
+ */
 export const DEFAULT_EMBEDDING_PROFILE: EmbeddingProfileId = 'standard'
 
 export function isEmbeddingProfileId(value: unknown): value is EmbeddingProfileId {
-  return value === 'standard' || value === 'high'
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(EMBEDDING_PROFILES, value)
 }
 
 export function embeddingProfile(id: unknown): EmbeddingProfile {
   if (isEmbeddingProfileId(id)) return EMBEDDING_PROFILES[id]
-  if (id === EMBEDDING_PROFILES.standard.embeddingId) return EMBEDDING_PROFILES.standard
-  if (id === EMBEDDING_PROFILES.high.embeddingId) return EMBEDDING_PROFILES.high
+  // mid and plus share one vector space; the smaller profile answers for the id.
+  const bySpace = Object.values(EMBEDDING_PROFILES).find((profile) => profile.embeddingId === id)
+  if (bySpace) return bySpace
   return EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE]
 }
 
@@ -217,43 +406,56 @@ export interface MachineSpec {
   logicalCores: number
   arch: string
   platform: string
+  /** RAM that can be used right now, in MB; when absent the total is the upper bound */
+  freeMemMB?: number
+  /**
+   * Version of the bundled onnxruntime-node; tiers whose models need a newer one are skipped.
+   * Defaults to the installed version (see embedding/ort-support.ts), unknown = no restriction.
+   */
+  ortVersion?: string
 }
 
 export interface EmbeddingRecommendation {
   profile: EmbeddingProfileId
-  /** why "high" is not recommended (absent when it is) */
+  /** why a bigger tier is not recommended (absent for the top tier) */
   limit?: 'memory' | 'cpu'
 }
 
-export const HIGH_PROFILE_MIN_MEM_GIB = 7
-export const HIGH_PROFILE_MIN_CORES = 4
+export const BASE_PROFILE_MAX_MEM_GIB = 6
+export const BASE_PROFILE_MAX_CORES = 2
+export const BALANCED_PROFILE_MAX_MEM_GIB = 12
+export const MID_PROFILE_MAX_MEM_GIB = 24
 
+/**
+ * Maps a machine to a tier: <= 6 GB or <= 2 cores -> base, <= 12 GB -> balanced,
+ * <= 24 GB -> mid, otherwise plus. A tier whose minFreeMemoryMB does not fit in the memory
+ * that is available is skipped (the next smaller one is used). Only fresh installs call this;
+ * a saved choice is never replaced (see embedding/initial-profile.ts).
+ */
 export function recommendEmbeddingProfile(spec: MachineSpec): EmbeddingRecommendation {
-  if (spec.totalMemGiB < 6) {
-    return {
-      profile: 'standard',
-      limit: 'memory',
-    }
+  const cpuBound = spec.logicalCores <= BASE_PROFILE_MAX_CORES
+  let index: number
+  if (spec.totalMemGiB <= BASE_PROFILE_MAX_MEM_GIB || cpuBound) index = 0
+  else if (spec.totalMemGiB <= BALANCED_PROFILE_MAX_MEM_GIB) index = 1
+  else if (spec.totalMemGiB <= MID_PROFILE_MAX_MEM_GIB) index = 2
+  else index = 3
+
+  const availableMB = spec.freeMemMB ?? spec.totalMemGiB * 1024
+  let memoryDowngrade = false
+  const unusable = (id: EmbeddingProfileId): boolean => {
+    const candidate = EMBEDDING_PROFILES[id]
+    return (
+      candidate.minFreeMemoryMB > availableMB ||
+      !ortSupports(candidate.minOrtVersion, spec.ortVersion)
+    )
+  }
+  while (index > 0 && unusable(TIERED_PROFILE_IDS[index]!)) {
+    index--
+    memoryDowngrade = true
   }
 
-  // F2 remains the safe default even on an 8 GB machine.
-  if (spec.totalMemGiB < 12) {
-    return {
-      profile: 'standard',
-      limit: 'memory',
-    }
-  }
-
-  const appleSilicon = spec.platform === 'darwin' && spec.arch === 'arm64'
-
-  if (!appleSilicon && spec.logicalCores < 6) {
-    return {
-      profile: 'standard',
-      limit: 'cpu',
-    }
-  }
-
-  return {
-    profile: 'high',
-  }
+  const profile = TIERED_PROFILE_IDS[index]!
+  if (index === TIERED_PROFILE_IDS.length - 1) return { profile }
+  const memoryAllowsMore = spec.totalMemGiB > BASE_PROFILE_MAX_MEM_GIB
+  return { profile, limit: memoryDowngrade || !(cpuBound && memoryAllowsMore) ? 'memory' : 'cpu' }
 }

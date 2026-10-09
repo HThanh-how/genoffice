@@ -309,8 +309,9 @@ function renderPage(m: OcrPdfium, doc: number, index: number): OcrRenderedPage |
     const embedded = embeddedScanJpeg(m, page, widthPt, heightPt)
     if (embedded) return { page: index + 1, ...embedded, source: 'embedded' }
     const scale = ocrRenderScale(widthPt, heightPt)
-    const width = Math.max(1, Math.round(widthPt * scale))
-    const height = Math.max(1, Math.round(heightPt * scale))
+    const width = Math.max(1, Math.min(6000, Math.round(widthPt * scale)))
+    const height = Math.max(1, Math.min(6000, Math.round(heightPt * scale)))
+    if (width * height > 16_000_000) return null
     const bitmap = m._FPDFBitmap_Create(width, height, 0)
     if (!bitmap) return null
     try {
@@ -400,6 +401,15 @@ export async function renderPdfPagesForOcr(
   } catch (error) {
     return { ok: false, code: 'render', message: errorText(error) }
   }
+  let currentStat: { size: number; mtimeMs: number }
+  try {
+    currentStat = await deps.stat(path)
+  } catch (error) {
+    return { ok: false, code: 'missing', message: errorText(error) }
+  }
+  if (currentStat.size !== before.size || currentStat.mtimeMs !== before.mtimeMs) {
+    return { ok: false, code: 'corrupt', message: 'PDF file changed during render preparation' }
+  }
   const ptr = m._malloc(bytes.length)
   if (!ptr) return { ok: false, code: 'render', message: 'Not enough memory to open the PDF' }
   try {
@@ -421,21 +431,35 @@ export async function renderPdfPagesForOcr(
     try {
       const totalPages = m._FPDF_GetPageCount(doc)
       if (!(totalPages > 0)) return { ok: false, code: 'corrupt', message: 'The PDF has no pages' }
+      const safeCount =
+        typeof request.count === 'number' && Number.isSafeInteger(request.count) && request.count > 0
+          ? Math.min(request.count, 50)
+          : 1
+      const safeMaxPages =
+        typeof request.maxPages === 'number' && Number.isSafeInteger(request.maxPages) && request.maxPages > 0
+          ? request.maxPages
+          : 1000
       const wanted = planOcrBatch({
         totalPages,
-        done: new Set(request.done),
-        maxPagesPerFile: request.maxPages,
-        pagesPerCall: request.count,
-        budget: request.count,
+        done: new Set(Array.isArray(request.done) ? request.done : []),
+        maxPagesPerFile: safeMaxPages,
+        pagesPerCall: safeCount,
+        budget: safeCount,
       })
       const pages: OcrRenderedPage[] = []
+      let totalBatchBytes = 0
+      const maxBatchBytes = OCR_MAX_IMAGE_BYTES * safeCount
       for (const page of wanted) {
+        if (pages.length >= safeCount || totalBatchBytes >= maxBatchBytes) break
         const rendered = renderPage(m, doc, page - 1)
-        if (rendered) pages.push(rendered)
+        if (rendered) {
+          totalBatchBytes += rendered.jpeg.byteLength
+          pages.push(rendered)
+        }
       }
       if (wanted.length > 0 && pages.length === 0)
         return { ok: false, code: 'render', message: 'No page of the PDF could be rendered' }
-      return { ok: true, hash, mtimeMs: before.mtimeMs, sizeBytes: before.size, totalPages, pages }
+      return { ok: true, hash, mtimeMs: currentStat.mtimeMs, sizeBytes: currentStat.size, totalPages, pages }
     } finally {
       m._FPDF_CloseDocument(doc)
     }

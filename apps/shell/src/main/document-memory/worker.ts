@@ -6,7 +6,10 @@ export type {
   DocumentMemoryWorkerReply,
 } from './worker-types'
 import { indexingWorkerData, postIndexMessage, onIndexRequest } from './runtime'
-import { interruptBackgroundSleep, withBackgroundBudget } from './cpu-budget'
+import { backgroundCoolDown, interruptBackgroundSleep, withBackgroundBudget } from './cpu-budget'
+import { performance } from 'node:perf_hooks'
+import { handleCompactionRequest } from './runtime/worker-compaction'
+import { isCompactionRequest, type CompactionWorkerRequest } from './runtime/worker-compaction-types'
 import { readFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { extname } from 'node:path'
@@ -20,13 +23,46 @@ import {
   DEFAULT_PDF_PAGES,
   type TruncatedReason,
 } from './chunks'
-import { DEFAULT_STORAGE_BUDGET } from './storage-budget'
+import { DEFAULT_STORAGE_BUDGET, normalizeOvershootRatio, type DocumentIndexStorageBudget } from './storage-budget'
+
+function isValidWorkerBudget(budget: unknown): budget is DocumentIndexStorageBudget {
+  if (!budget || typeof budget !== 'object') return false
+  const b = budget as Partial<DocumentIndexStorageBudget>
+  return (
+    typeof b.maxDatabaseBytes === 'number' &&
+    Number.isFinite(b.maxDatabaseBytes) &&
+    Number.isSafeInteger(b.maxDatabaseBytes) &&
+    b.maxDatabaseBytes >= 500 * 1_000_000 &&
+    b.maxDatabaseBytes <= 100 * 1_000_000_000
+  )
+}
+
+function isValidWorkerVersion(version: unknown): version is number {
+  return (
+    typeof version === 'number' &&
+    Number.isFinite(version) &&
+    Number.isSafeInteger(version) &&
+    version >= 0
+  )
+}
+
+let workerStorageBudget: DocumentIndexStorageBudget =
+  isValidWorkerBudget((indexingWorkerData as any)?.storageBudget)
+    ? (indexingWorkerData as any).storageBudget
+    : DEFAULT_STORAGE_BUDGET
+let workerConfigVersion: number | null =
+  isValidWorkerVersion((indexingWorkerData as any)?.configVersion)
+    ? (indexingWorkerData as any).configVersion
+    : null
 
 export const MAX_INDEX_TEXT_CHARS = DEFAULT_STORAGE_BUDGET.maxExtractedCharactersPerFile
 import { DocumentMemoryStore } from './store'
 import { embedTexts } from './embeddings'
 import { renderPdfPagesForOcr, type OcrRenderRequest } from './agy-ocr-render'
 import { ocrChunksFromPages, ocrDocumentHash, type OcrLookup } from './ocr-sidecar'
+import { extractImageOcrText } from './image-ocr-extract'
+import { mediaKindOfPath } from './media/media-kinds'
+import { prepareForTesseract } from './local-ocr/tesseract-prepare'
 /** `ocr` finds text the scanned-PDF reader stored for a PDF that has no text layer of its own. */
 /** A page with fewer characters than this has no usable text layer. */
 const MIN_PAGE_TEXT_CHARS = 20
@@ -66,6 +102,8 @@ export async function extractDocumentSliced(
 ) {
   const before = await stat(path)
   if (before.size > DEFAULT_STORAGE_BUDGET.maxFileBytes) throw new Error('Document exceeds the 128 MB indexing limit')
+  // images: only the text the local OCR pass stored for them (media rows stay lean without it)
+  if (mediaKindOfPath(path) === 'image') return extractImageOcrText(path, before, ocr)
   const kept = partialPdfs.get(path)
   const resumable = !!kept && kept.mtimeMs === before.mtimeMs && kept.sizeBytes === before.size
   const bytes = resumable ? kept.bytes : await readFile(path)
@@ -257,6 +295,44 @@ function schedule(task: QueuedTask, interactive: boolean): void {
   void pump()
 }
 let searchStore: DocumentMemoryStore | undefined
+function getWorkerStore(): DocumentMemoryStore {
+  return (searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!, {
+    role: 'worker',
+    getStorageBudget: () => workerStorageBudget,
+    getConfigVersion: () => workerConfigVersion,
+  }))
+}
+
+/**
+ * Cooperative yield of the compaction lane between batches. Urgent (grace zone) runs only hand the event loop to
+ * pending requests; background runs also honour the indexing duty cycle (cool-down proportional to active time).
+ */
+let lastCompactionYield = performance.now()
+async function compactionYield(urgent: boolean): Promise<void> {
+  const activeMs = Math.max(0, performance.now() - lastCompactionYield)
+  if (urgent) await new Promise<void>((resolve) => setImmediate(resolve))
+  else await backgroundCoolDown(activeMs)
+  lastCompactionYield = performance.now()
+}
+
+/** Storage-compaction lane: its own single-flight, outside the extraction/embedding queue and its 150 s timeout. */
+function runCompactionLane(request: CompactionWorkerRequest & { id: number }): void {
+  lastCompactionYield = performance.now()
+  void handleCompactionRequest(
+    {
+      store: getWorkerStore(),
+      getBudget: () => workerStorageBudget,
+      getConfigVersion: () => workerConfigVersion,
+      yieldNow: compactionYield,
+    },
+    request,
+  )
+    .then((result) => postIndexMessage({ id: request.id, result }))
+    .catch((error) =>
+      postIndexMessage({ id: request.id, error: error instanceof Error ? error.message : 'Compaction failed' }),
+    )
+}
+
 onIndexRequest(
   (request: {
     id: number
@@ -269,18 +345,26 @@ onIndexRequest(
     limit: number
     embeddingModel: string
     embeddingSpaceId?: string
+    spaceId?: string
+    hostPermit?: any
     interactive?: boolean
     sliceMs?: number
     maxPdfPages?: number
     ocr?: OcrRenderRequest
+    bytes?: Uint8Array
+    dpi?: number
     backupPath?: string
     dbPath?: string
+    budget?: DocumentIndexStorageBudget
+    configVersion?: number
   }) => {
+    if (isCompactionRequest(request)) {
+      runCompactionLane(request as CompactionWorkerRequest & { id: number })
+      return
+    }
     const execute = async () => {
       try {
         let result: unknown
-        const getWorkerStore = () =>
-          (searchStore ??= new DocumentMemoryStore(indexingWorkerData.dbPath!, { role: 'worker' }))
         const lookup: OcrLookup = (path, hash) => getWorkerStore().ocr.pages(path, hash)
         if (request.type === 'extract')
           result = request.interactive
@@ -290,8 +374,14 @@ onIndexRequest(
               )
         else if (request.type === 'ocr-render')
           result = await withBackgroundBudget(() =>
-            renderPdfPagesForOcr(request.path, request.ocr!),
+            renderPdfPagesForOcr(
+              request.path,
+              request.ocr ?? { count: 1, maxPages: 1000, done: [] },
+            ),
           )
+        else if (request.type === 'ocr-prepare')
+          // CPU-bound decode / shrink / flatten of an image for the Tesseract engine (kept off the main thread)
+          result = await withBackgroundBudget(async () => prepareForTesseract(request.bytes!, request.dpi ?? 150))
         else if (request.type === 'search') {
           result = getWorkerStore().search(
             request.query,
@@ -308,8 +398,10 @@ onIndexRequest(
             request.embeddingSpaceId ?? request.embeddingModel,
           )
         } else if (request.type === 'ann-rebuild' || request.type === 'ann-sync') {
+          const targetSpace = request.spaceId ?? request.embeddingSpaceId ?? request.embeddingModel
           result = await getWorkerStore().rebuildAnnIndex(
-            request.embeddingSpaceId ?? request.embeddingModel,
+            targetSpace,
+            request.hostPermit,
           )
         } else if (request.type === 'fts-maintenance-step') {
           const started = Date.now()
@@ -325,9 +417,54 @@ onIndexRequest(
             getWorkerStore().runIncrementalVacuum({ maxPages: 256, batchPages: 256 }),
           )
           result = { vacuumResult, durationMs: Date.now() - started }
+        } else if (request.type === 'set-storage-budget') {
+          const targetBudget = request.budget
+          const targetVersion = request.configVersion
+
+          if (!isValidWorkerBudget(targetBudget)) {
+            result = {
+              ok: false,
+              appliedVersion: workerConfigVersion,
+              desiredVersion: isValidWorkerVersion(targetVersion) ? targetVersion : -1,
+              appliedBudgetBytes: workerStorageBudget.maxDatabaseBytes,
+              error: 'Invalid storage budget: maxDatabaseBytes must be a safe integer between 500 MB and 100 GB',
+            }
+          } else if (!isValidWorkerVersion(targetVersion)) {
+            result = {
+              ok: false,
+              appliedVersion: workerConfigVersion,
+              desiredVersion: -1,
+              appliedBudgetBytes: workerStorageBudget.maxDatabaseBytes,
+              error: 'Invalid configVersion: must be a non-negative safe integer',
+            }
+          } else if (workerConfigVersion !== null && targetVersion < workerConfigVersion) {
+            // Stale version rejected monotonically: reply truthfully with current applied version
+            result = {
+              ok: false,
+              appliedVersion: workerConfigVersion,
+              desiredVersion: targetVersion,
+              appliedBudgetBytes: workerStorageBudget.maxDatabaseBytes,
+              error: `Stale configVersion ${targetVersion} is less than currently applied ${workerConfigVersion}`,
+            }
+          } else {
+            // Monotonic valid version application
+            workerStorageBudget = targetBudget
+            workerConfigVersion = targetVersion
+            if (searchStore) {
+              searchStore.setStorageBudget(workerStorageBudget)
+            }
+            result = {
+              ok: true,
+              appliedVersion: workerConfigVersion,
+              desiredVersion: targetVersion,
+              appliedBudgetBytes: workerStorageBudget.maxDatabaseBytes,
+              appliedOvershootRatio: normalizeOvershootRatio(workerStorageBudget.overshootRatio),
+            }
+          }
         } else if (request.type === 'storage-diagnostics') {
           // Off-main storage diagnostics isolating heavy SQL and file inspection from UI thread
-          result = getWorkerStore().getStorageDiagnostics(request.backupPath)
+          const budget = (request as any).budget ?? workerStorageBudget
+          result = getWorkerStore().getStorageDiagnostics(request.backupPath, budget)
         } else result = await embedTexts(request.texts, request.kind)
         postIndexMessage({ id: request.id, result })
       } catch (error) {
@@ -341,7 +478,8 @@ onIndexRequest(
       request.type === 'search' ||
       request.type === 'search-lexical' ||
       request.type === 'search-semantic' ||
-      request.type === 'storage-diagnostics'
+      request.type === 'storage-diagnostics' ||
+      request.type === 'set-storage-budget'
     )
       void execute()
     else

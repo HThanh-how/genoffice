@@ -7,6 +7,7 @@ import { AgyOcrSettings } from './AgyOcrSettings'
 import { EmbeddingModelSettings } from './EmbeddingModelSettings'
 import { EverythingSettings } from './EverythingSettings'
 import { DbLocationSettings } from './DbLocationSettings'
+import { IndexStorageSettings } from './IndexStorageSettings'
 import { PdfPagesSettings } from './PdfPagesSettings'
 import { IndexDiagnostics } from './IndexDiagnostics'
 import './index-settings.css'
@@ -191,6 +192,7 @@ export function IndexSettingsTab({ api, focus }: { api: HomeApi; focus?: 'ocr' }
       <EverythingSettings api={api} />
       <Section title={d.storage} hint={d.storageHint} icon="data" open>
         <DbLocationSettings api={api} />
+        <IndexStorageSettings api={api} />
       </Section>
       <section className="ixs-danger" aria-label={d.clearTitle}>
         <div>

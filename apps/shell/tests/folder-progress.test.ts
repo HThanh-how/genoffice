@@ -159,22 +159,29 @@ describe('Folder & Library Index Progress Scoped to Active Space Suite (QA-10)',
   })
 
   it('FOLDPROG-04: Manager getFolderIndexCounts and getLibraryIndexCounts default to active embedding profile', () => {
+    const docsFolder = join(tempDir, 'my-docs')
+    const filePath = join(docsFolder, 'note.txt')
+
+    // A disabled manager correctly refuses metadata writes through its guarded store,
+    // so seed the shared database through a plain store before the manager opens it.
+    const seedStore = new DocumentMemoryStore(dbPath)
+    try {
+      seedStore.replaceDocument(filePath, {
+        hash: 'hn',
+        mtimeMs: 500,
+        sizeBytes: 500,
+        status: 'ready',
+        chunks: [{ text: 'chunk note', location: 'p1' }],
+      })
+    } finally {
+      seedStore.close()
+    }
+
     const manager = new DocumentMemoryManager(tempDir, {
       dbDir: tempDir,
       initialEnabled: false,
     })
     activeManagers.push(manager)
-
-    const docsFolder = join(tempDir, 'my-docs')
-    const filePath = join(docsFolder, 'note.txt')
-
-    manager.store.replaceDocument(filePath, {
-      hash: 'hn',
-      mtimeMs: 500,
-      sizeBytes: 500,
-      status: 'ready',
-      chunks: [{ text: 'chunk note', location: 'p1' }],
-    })
 
     const counts = manager.getFolderIndexCounts(docsFolder)
     expect(counts.totalFiles).toBe(1)

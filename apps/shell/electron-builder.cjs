@@ -92,6 +92,9 @@ function assertExtraResourceSources() {
     '../../node_modules/electron/dist/LICENSES.chromium.html',
     '../../node_modules/@embedpdf/pdfium/dist/pdfium.wasm',
     '../pdf/node_modules/harfbuzzjs/hb-subset.wasm',
+    // local OCR (Tesseract): the Vietnamese model and the one core variant family the engine loads
+    'resources/ocr/tessdata/vie.traineddata',
+    '../../node_modules/tesseract.js-core/tesseract-core-lstm.wasm',
   ]) {
     if (!existsSync(join(__dirname, rel))) {
       throw new Error(
@@ -312,8 +315,24 @@ const config = {
   directories: {
     output: process.env.BUILD_DIR || 'release',
   },
-  files: ['out/**'],
-  asarUnpack: ['node_modules/onnxruntime-node/**'],
+  files: [
+    'out/**',
+    // tesseract.js-core ships six builds x (wasm + wasm.js); the local OCR engine runs LSTM only, in Node,
+    // which reads the plain .wasm next to the .js (never the base64 .wasm.js browser twin).
+    '!node_modules/tesseract.js-core/*.wasm.js',
+    '!node_modules/tesseract.js-core/tesseract-core{,-simd,-relaxedsimd}.{js,wasm}',
+  ],
+  asarUnpack: [
+    'node_modules/onnxruntime-node/**',
+    // Tesseract.js recognises in a worker thread started from a script FILE, which must be a real file
+    // (resolved as app.asar.unpacked by local-ocr/resources.ts), with every package that script requires.
+    'node_modules/tesseract.js/**',
+    'node_modules/tesseract.js-core/**',
+    'node_modules/regenerator-runtime/**',
+    'node_modules/is-url/**',
+    'node_modules/bmp-js/**',
+    'node_modules/wasm-feature-detect/**',
+  ],
   extraResources: [
     {
       from: 'build/THIRD-PARTY-NOTICES.txt',
@@ -367,6 +386,12 @@ const config = {
     {
       from: '../../packages/pdf2docx/ocr-helper/win-ocr.exe',
       to: 'ocr/win-ocr.exe',
+    },
+    // local OCR language model (tessdata_fast `vie`, Apache-2.0 with its LICENSE): read from
+    // <Resources>/ocr/tessdata by local-ocr/resources.ts; nothing is ever downloaded
+    {
+      from: 'resources/ocr/tessdata',
+      to: 'ocr/tessdata',
     },
     {
       from: '../../node_modules/@genspark/cli',

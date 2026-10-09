@@ -10,7 +10,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import type { HomeApi } from '../../../shared/home-api'
-import type { IndexFileDetail, IndexingNow } from '../../../shared/fork/document-index-api'
+import type { IndexFileDetail, IndexingNow, FileImportanceOverride } from '../../../shared/fork/document-index-api'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
 import { useI18n } from '../locale'
 import { activityCopy, fill } from '../indexing-activity-copy'
@@ -167,6 +167,13 @@ const EN = {
   copyFailed: 'Could not copy. Allow clipboard access and try again.',
   waitingLocal: 'Queued · waiting to be read',
   waitingVectors: 'Waiting for search vectors · {d}/{n}',
+  importance: 'Importance for retention',
+  importanceAuto: 'Auto',
+  importanceImportant: 'Important',
+  importanceLow: 'Low',
+  importanceSuggestion: 'Suggestion: {s}',
+  importanceReason: 'Reason: {r}',
+  actionFailedWithReason: 'Could not change importance: {r}',
 }
 export type FileWords = typeof EN
 const VI: FileWords = {
@@ -236,6 +243,13 @@ const VI: FileWords = {
   copyFailed: 'Chưa sao chép được. Cho phép truy cập bộ nhớ tạm rồi thử lại.',
   waitingLocal: 'Trong hàng chờ · chờ đọc nội dung',
   waitingVectors: 'Chờ lập vector tìm kiếm · {d}/{n}',
+  importance: 'Mức quan trọng lưu trữ',
+  importanceAuto: 'Tự động',
+  importanceImportant: 'Quan trọng',
+  importanceLow: 'Thấp',
+  importanceSuggestion: 'Gợi ý: {s}',
+  importanceReason: 'Lý do: {r}',
+  actionFailedWithReason: 'Không đổi được mức quan trọng: {r}',
 }
 export const fileWords = (lang: string): FileWords => (lang === 'vi' ? VI : EN)
 
@@ -619,6 +633,23 @@ export function useFileActions(
       }
       await settle(item)
     })
+  const setImportance = (item: FileItem, level: FileImportanceOverride) =>
+    withBusy(item.id, async () => {
+      if (!api.setIndexFileImportance) {
+        say(w.actionFailed)
+        return
+      }
+      try {
+        const result = await runIndexMutation(() => api.setIndexFileImportance!(item.id, level))
+        if (!result.ok) {
+          say(result.error ? fill(w.actionFailedWithReason, { r: result.error }) : w.actionFailed)
+          return
+        }
+        await detailOf(item.id, true)
+      } catch (error) {
+        say(error instanceof IndexMutationTimeout ? w.unknownOutcome : w.actionFailed)
+      }
+    })
   return {
     open,
     toggle,
@@ -631,6 +662,7 @@ export function useFileActions(
     feedback,
     acknowledge,
     refreshDetail: (id: number) => detailOf(id, true),
+    setImportance,
     copyLog,
     copyPath,
     copyName,
@@ -1334,6 +1366,33 @@ export function FileRow({
                 <div>
                   <dt>{lw.updated}</dt>
                   <dd>{new Date(detail.updatedAt).toLocaleString(dateLocale)}</dd>
+                </div>
+                <div>
+                  <dt>{w.importance}</dt>
+                  <dd>
+                    <select
+                      className="idx-select ixp-importance-select"
+                      value={detail.importance?.override ?? 'auto'}
+                      disabled={actions.busy.has(item.id)}
+                      onChange={(e) => void actions.setImportance(item, e.target.value as FileImportanceOverride)}
+                    >
+                      <option value="auto">{w.importanceAuto}</option>
+                      <option value="important">{w.importanceImportant}</option>
+                      <option value="low">{w.importanceLow}</option>
+                    </select>
+                    {detail.importance?.suggestion && detail.importance.suggestion !== 'unknown' && (
+                      <div className="ixp-importance-suggestion" style={{ fontSize: '0.85em', opacity: 0.8, marginTop: '2px' }}>
+                        <span>
+                          {detail.importance.suggestion === 'important' ? w.importanceImportant : w.importanceAuto}
+                        </span>
+                        {detail.importance.reason && (
+                          <span style={{ display: 'block', fontStyle: 'italic' }}>
+                            {detail.importance.reason}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </dd>
                 </div>
               </dl>
               {detail.error && <code className="ixp-raw">{detail.error}</code>}

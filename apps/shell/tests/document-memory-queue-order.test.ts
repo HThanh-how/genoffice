@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { HEAVY_BYTES, orderQueue, weightOf } from '../src/main/document-memory/queue-order'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 describe('orderQueue', () => {
   const none = new Set<string>()
@@ -48,6 +49,11 @@ class HandWorker extends EventEmitter {
   paths: string[] = []
   private pending: { id: number; path: string } | undefined
   postMessage(message: { id: number; type: string; path: string }): void {
+    const ack = storageBudgetAckReply(message)
+    if (ack) {
+      this.emit('message', ack)
+      return
+    }
     this.paths.push(message.path)
     this.pending = message
   }

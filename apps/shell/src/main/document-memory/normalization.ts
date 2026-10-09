@@ -10,8 +10,8 @@ export function normalizeDocumentText(input: string): string {
   return text
     .normalize('NFD')
     .replace(/\p{M}/gu, '')
-    .replace(/đ/g, 'd')
-    .replace(/[^\p{L}\p{N}\p{M}]+/gu, ' ')
+    .replace(/[đĐÐð]/gu, 'd')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
     .replace(/\s+/gu, ' ')
     .trim()
 }
@@ -108,38 +108,119 @@ export function matchedNameWords(words: readonly string[], text: string): number
   const folded = normalizeDocumentText(text)
   const have = new Set(folded.split(' '))
   const joined = folded.replace(/ /g, '')
-  const found = words.map((word) => have.has(word) || (word.length >= 4 && joined.includes(word)))
+  // Invoice-style codes ("HD433" vs "HD0433") match when only their leading zeros differ.
+  const haveCodes = new Set<string>()
+  for (const token of have) {
+    const code = canonicalIdentifier(token)
+    if (code !== token) haveCodes.add(code)
+  }
+  const found = words.map(
+    (word) =>
+      have.has(word) ||
+      (haveCodes.size > 0 && (haveCodes.has(word) || haveCodes.has(canonicalIdentifier(word)))) ||
+      (word.length >= 3 && joined.includes(word)),
+  )
   for (let i = 0; i + 1 < words.length; i++) {
     if (joined.includes(words[i]! + words[i + 1]!)) found[i] = found[i + 1] = true
   }
+
+  // Controlled narrow alias: "ra vien" <-> "xuat vien"
+  // Does not inflate denominator (words.length); satisfies the typed term if alternative is present
+  if (words.includes('vien') || have.has('vien') || joined.includes('vien')) {
+    if ((have.has('xuat') || joined.includes('xuatvien')) && words.includes('ra')) {
+      const idx = words.indexOf('ra')
+      if (idx >= 0) found[idx] = true
+    } else if ((have.has('ra') || joined.includes('ravien')) && words.includes('xuat')) {
+      const idx = words.indexOf('xuat')
+      if (idx >= 0) found[idx] = true
+    }
+  }
+
   return found.filter(Boolean).length
 }
 
-/** The words of a question that could appear in a file name, accents and case ignored. */
-export function nameWords(input: string): string[] {
-  const typed = input
+/**
+ * Returns alternative word queries for controlled narrow aliases (e.g. 'ra viện' <-> 'xuất viện').
+ * Returned as alternative query variants so they are not forced into the typed denominator.
+ */
+export function getNameQueryAliases(words: readonly string[]): string[][] {
+  const aliases: string[][] = []
+  if (words.includes('vien')) {
+    if (words.includes('ra') && !words.includes('xuat')) {
+      aliases.push(words.map((w) => (w === 'ra' ? 'xuat' : w)))
+    } else if (words.includes('xuat') && !words.includes('ra')) {
+      aliases.push(words.map((w) => (w === 'xuat' ? 'ra' : w)))
+    }
+  }
+  return aliases
+}
+
+function typedNameTokens(input: string): string[] {
+  return input
     .normalize('NFC')
     .toLocaleLowerCase('vi')
     .replace(FILLER_PHRASES, ' ')
     .split(/[^\p{L}\p{N}]+/u)
     .filter(Boolean)
+}
+
+/** The words of a question that could appear in a file name, accents and case ignored. */
+export function nameWords(input: string): string[] {
   const words = new Set<string>()
-  for (const token of typed) {
+  for (const token of typedNameTokens(input)) {
     const folded = normalizeDocumentText(token)
     if (!folded) continue
     const plain = folded === token
     if (FILLER_ACCENTED.has(token) || (plain && FILLER_PLAIN.has(token))) continue
     for (const part of folded.split(' ')) if (part) words.add(part)
   }
-  const list = [...words]
-  // "xuất viện" and "ra viện" name the same paper
-  if (list.includes('vien')) {
-    if (list.includes('xuat') && !list.includes('ra')) list.push('ra')
-    else if (list.includes('ra') && !list.includes('xuat')) list.push('xuat')
+  return [...words]
+}
+
+/**
+ * Like {@link nameWords} but keeps filler words. Used as a fallback when dropping them leaves
+ * nothing usable: "cái bè" (a place) would otherwise shrink to the single two-letter word "be".
+ */
+export function nameWordsKeepingFillers(input: string): string[] {
+  const words = new Set<string>()
+  for (const token of typedNameTokens(input)) {
+    for (const part of normalizeDocumentText(token).split(' ')) if (part) words.add(part)
   }
-  return list
+  return [...words]
+}
+
+/** True when the text carries Vietnamese diacritics ("bè", "mỹ", "đỏ") that the folded form loses. */
+export function hasDiacritics(input: string): boolean {
+  return /[\u0300-\u036f\u0111\u0110]/u.test(input.normalize('NFD'))
+}
+
+/** Letters + digits code ("HD0433") reduced to its zero-stripped form ("hd433"); other tokens unchanged. */
+export function canonicalIdentifier(token: string): string {
+  const m = /^([a-z]+)(\d+)$/.exec(token)
+  if (!m) return token
+  return m[1]! + m[2]!.replace(/^0+(?=\d)/, '')
+}
+
+/** Query-time spellings of a code that differ only in leading zeros ("hd433" -> hd433, hd0433, hd00433, hd000433). */
+export function identifierVariants(token: string): string[] {
+  const m = /^([a-z]+)(\d+)$/.exec(token)
+  if (!m) return [token]
+  const digits = m[2]!.replace(/^0+(?=\d)/, '')
+  const out = new Set<string>([token, m[1]! + digits])
+  for (let zeros = 1; zeros <= 3; zeros++) out.add(m[1]! + '0'.repeat(zeros) + digits)
+  return [...out]
+}
+
+/**
+ * Ordered, non-deduplicated query tokens without generic words. When the generic-word filter
+ * would leave nothing, the original tokens are kept so the query is never dropped to nothing.
+ */
+export function queryTokenSequence(input: string): string[] {
+  const all = documentSearchTokens(input)
+  const kept = all.filter((token) => !GENERIC_WORDS.has(token))
+  return kept.length ? kept : all
 }
 
 export function queryTokens(input: string): string[] {
-  return [...new Set(documentSearchTokens(input).filter((token) => !GENERIC_WORDS.has(token)))]
+  return [...new Set(queryTokenSequence(input))]
 }

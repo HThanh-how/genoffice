@@ -1,14 +1,22 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { queryTokens } from '../../normalization'
+import { lexicalMatchPlan } from '../../lexical-query'
 import { measureSqlite } from '../../sqlite-timing'
 import { topVectors } from '../../top-vectors'
-import { fuseHybridResults } from '../../hybrid-ranker'
+import { fuseHybridResults, isStrictLexicalStage } from '../../hybrid-ranker'
+import { embeddingProfile } from '../../embedding-profiles'
 import { isOcrLocation } from '../../ocr-sidecar'
 import { ANN_MIN_VECTORS } from '../../ann-index'
 import type { HotMetadataSearch } from '../../hot-metadata-search'
+import {
+  backfillNameProjectionBatch,
+  hasNameProjection,
+  type NameProjectionBackfillResult,
+} from '../../name-search-projection'
 import { blobVector, cosine } from './embedding-repository'
 import type { MaintenanceRepository } from './maintenance-repository'
 import type { DocumentMemoryHit, StoredDocument, TruncatedReason } from './document-repository'
+
+export type { NameProjectionBackfillResult }
 
 interface HitRow {
   document_id: number
@@ -20,13 +28,10 @@ interface HitRow {
   updated_at: number | null
   truncated: number
   truncated_reason?: string | null
+  content_evicted?: number
   chunk_id: number
   text: string
   location: string
-}
-
-function quoteFtsToken(token: string): string {
-  return `"${token.replace(/"/g, '""')}"`
 }
 
 function indexedAt(updatedAtSeconds: number | null): number | null {
@@ -48,38 +53,60 @@ export class SearchRepository {
     return this.hotMetadataSearch.recent(limit)
   }
 
+  hasNameProjection(): boolean {
+    return hasNameProjection(this.db)
+  }
+
+  backfillNameProjectionBatch(batchSize = 100): NameProjectionBackfillResult {
+    return backfillNameProjectionBatch(this.db, batchSize)
+  }
+
   searchLexical(
     query: string,
     limit = 200,
-  ): Array<{ chunkId: number; rank: number; score: number; documentId: number }> {
+  ): Array<{ chunkId: number; rank: number; score: number; documentId: number; strict?: boolean }> {
     return measureSqlite('searchLexical', () => {
-      const tokens = queryTokens(query)
-      if (!tokens.length) return []
-      const match = tokens.map(quoteFtsToken).join(' OR ')
-      const rows = this.db
-        .prepare(
-          `SELECT f.rowid AS chunk_id, bm25(chunk_fts) AS rank, c.document_id
-           FROM chunk_fts f
-           JOIN chunks c ON c.id = f.rowid
-           JOIN documents d ON d.id = c.document_id
-           WHERE chunk_fts MATCH ? AND d.excluded = 0
-             AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
-           ORDER BY rank LIMIT ?`,
-        )
-        .all(match, limit) as Array<{ chunk_id: number; rank: number; document_id: number }>
+      const plan = lexicalMatchPlan(query)
+      if (!plan.length) return []
+      const stmt = this.db.prepare(
+        `SELECT f.rowid AS chunk_id, bm25(chunk_fts) AS rank, c.document_id
+         FROM chunk_fts f
+         JOIN chunks c ON c.id = f.rowid
+         JOIN documents d ON d.id = c.document_id
+         WHERE chunk_fts MATCH ? AND d.excluded = 0
+           AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+         ORDER BY rank LIMIT ?`,
+      )
+      // Strongest stage first (phrase, then all words, then any word); a later stage only
+      // fills the slots the earlier ones left, so exact phrase hits are never outranked.
+      const rows: Array<{ chunk_id: number; rank: number; document_id: number; stage: number }> = []
+      const seen = new Set<number>()
+      for (let stage = 0; stage < plan.length && rows.length < limit; stage++) {
+        const found = stmt.all(plan[stage]!, limit + rows.length) as Array<{
+          chunk_id: number
+          rank: number
+          document_id: number
+        }>
+        for (const row of found) {
+          if (seen.has(row.chunk_id) || rows.length >= limit) continue
+          seen.add(row.chunk_id)
+          rows.push({ ...row, stage })
+        }
+      }
 
-      const results: Array<{ chunkId: number; rank: number; score: number; documentId: number }> = []
+      const results: Array<{ chunkId: number; rank: number; score: number; documentId: number; strict?: boolean }> = []
       let rank = 0
-      let previousRank: number | undefined
+      let previous: { rank: number; stage: number } | undefined
       rows.forEach((row, index) => {
-        if (previousRank !== row.rank) rank = index + 1
+        if (previous?.rank !== row.rank || previous.stage !== row.stage) rank = index + 1
         results.push({
           chunkId: row.chunk_id,
           rank,
           score: row.rank,
           documentId: row.document_id,
+          strict: isStrictLexicalStage(row.stage, plan.length),
         })
-        previousRank = row.rank
+        previous = row
       })
       return results
     })
@@ -96,7 +123,7 @@ export class SearchRepository {
         .prepare(
           `SELECT
              c.id, c.text, c.location, c.document_id,
-             d.path, d.name, d.status, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, d.truncated_reason
+             d.path, d.name, d.status, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, d.truncated_reason, d.content_evicted
            FROM chunks c
            JOIN documents d ON d.id = c.document_id
            WHERE c.id IN (${placeholders})
@@ -117,6 +144,7 @@ export class SearchRepository {
         updated_at: number
         truncated: number
         truncated_reason: string | null
+        content_evicted?: number
       }>
 
       const rowMap = new Map<number, (typeof rows)[number]>()
@@ -142,6 +170,7 @@ export class SearchRepository {
           indexedAt: indexedAt(row.updated_at),
           truncated: row.truncated === 1,
           truncatedReason: (row.truncated_reason as TruncatedReason | undefined) ?? null,
+          ...(row.content_evicted === 1 ? { contentUnread: true } : {}),
         })
       }
       return result
@@ -220,7 +249,8 @@ export class SearchRepository {
             if (hits.length > 0) return hits
           }
         }
-      } catch {
+      } catch (err: unknown) {
+        void err
         // fallback to exact scan
       }
     }
@@ -326,9 +356,10 @@ export class SearchRepository {
     }
 
     const fusedHits = fuseHybridResults(
-      lexicalHits.map((h) => ({ chunkId: h.chunkId, rank: h.rank, documentId: h.documentId })),
+      lexicalHits.map((h) => ({ chunkId: h.chunkId, rank: h.rank, documentId: h.documentId, strict: h.strict })),
       semanticHits.map((h) => ({ chunkId: h.chunkId, rank: h.rank, documentId: h.documentId })),
       {
+        query: { text: query, tier: embeddingProfile(embeddingModel).tier },
         limit,
         maxChunksPerDocument: 2,
         chunkToDocument: chunkToDoc,
@@ -338,7 +369,7 @@ export class SearchRepository {
 
     if (!fusedHits.length) return []
     const get = this.db
-      .prepare(`SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, d.truncated_reason, c.id AS chunk_id, c.text, c.location
+      .prepare(`SELECT d.id AS document_id, d.path, d.name, d.hash, d.mtime_ms, d.size_bytes, d.updated_at, d.truncated, d.truncated_reason, d.content_evicted, c.id AS chunk_id, c.text, c.location
       FROM chunks c JOIN documents d ON d.id = c.document_id
       WHERE c.id = ? AND d.excluded = 0
         AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`)
@@ -361,6 +392,7 @@ export class SearchRepository {
               indexedAt: indexedAt(row.updated_at),
               truncated: !!row.truncated,
               truncatedReason: (row.truncated_reason as TruncatedReason | undefined) ?? null,
+              ...(row.content_evicted === 1 ? { contentUnread: true } : {}),
               ...(isOcrLocation(row.location) ? { ocr: true } : {}),
             },
           ]

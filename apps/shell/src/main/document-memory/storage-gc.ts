@@ -131,14 +131,16 @@ export function garbageCollectObsoleteStorage(db: DatabaseSync): GarbageCollecti
     obsoleteEmbeddingsDeleted += Number(delOrphanEmbs.changes)
 
     // 4. Resync and recount document_embedding_counts & documents counters (BEH-19)
+    // NOTE: CROSS JOIN pins the join order (chunks by document_id index, then the chunk_embeddings PK probe).
+    // The planner otherwise scans chunk_embeddings_space(space_id=?) per count row: O(docs x vectors).
     db.exec(`
       DELETE FROM document_embedding_counts WHERE document_id NOT IN (SELECT id FROM documents);
       DELETE FROM document_embedding_counts WHERE space_id NOT IN (SELECT id FROM embedding_spaces);
 
       DELETE FROM document_embedding_counts
       WHERE NOT EXISTS (
-        SELECT 1 FROM chunk_embeddings ce
-        JOIN chunks c ON c.id = ce.chunk_id
+        SELECT 1 FROM chunks c
+        CROSS JOIN chunk_embeddings ce ON ce.chunk_id = c.id
         WHERE c.document_id = document_embedding_counts.document_id
           AND ce.space_id = document_embedding_counts.space_id
       );
@@ -146,8 +148,8 @@ export function garbageCollectObsoleteStorage(db: DatabaseSync): GarbageCollecti
       UPDATE document_embedding_counts
       SET completed_chunks = (
         SELECT count(ce.chunk_id)
-        FROM chunk_embeddings ce
-        JOIN chunks c ON c.id = ce.chunk_id
+        FROM chunks c
+        CROSS JOIN chunk_embeddings ce ON ce.chunk_id = c.id
         WHERE c.document_id = document_embedding_counts.document_id
           AND ce.space_id = document_embedding_counts.space_id
       );

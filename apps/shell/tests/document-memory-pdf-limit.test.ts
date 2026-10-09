@@ -11,6 +11,8 @@ import {
   LARGE_PDF_PAGES,
 } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
+import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 describe('the PDF page limit', () => {
   it('is 30 by default, can be changed, and never goes past 400 or below 1', () => {
@@ -24,7 +26,22 @@ describe('the PDF page limit', () => {
 
 class SpyWorker extends EventEmitter {
   requests: Array<{ path: string; maxPdfPages?: number; interactive?: boolean }> = []
-  postMessage(message: { path: string; maxPdfPages?: number; interactive?: boolean }): void {
+  postMessage(message: {
+    id?: number
+    type?: string
+    path: string
+    maxPdfPages?: number
+    interactive?: boolean
+    configVersion?: number
+    budget?: { maxDatabaseBytes?: number }
+  }): void {
+    // The startup storage-budget handshake is answered (so metadata writes are admitted) and is
+    // not an extraction request, so it is not recorded.
+    const ack = storageBudgetAckReply(message)
+    if (ack) {
+      setTimeout(() => this.emit('message', ack), 0)
+      return
+    }
     this.requests.push(message)
   }
   terminate(): Promise<number> {
@@ -90,10 +107,12 @@ describe('the PDF page limit in the index', () => {
     const cut = join(dir, 'book.pdf')
     const whole = join(dir, 'short.pdf')
     const other = join(dir, 'long.docx')
+    // Seed through a plain store on the manager's database file: the manager's own store is
+    // write-gated until the worker acknowledges the storage budget, which this test is not about.
+    const seeder = new DocumentMemoryStore(join(dir, 'user', 'document-memory.db'))
     const store = (
       manager as unknown as {
         store: {
-          replaceDocument(path: string, doc: Record<string, unknown>): void
           documentByPath(path: string): { status: string } | undefined
         }
       }
@@ -104,7 +123,7 @@ describe('the PDF page limit in the index', () => {
       [other, true],
     ] as const) {
       writeFileSync(path, 'x')
-      store.replaceDocument(path, {
+      seeder.replaceDocument(path, {
         hash: 'h',
         mtimeMs: 1,
         sizeBytes: 1,
@@ -114,6 +133,7 @@ describe('the PDF page limit in the index', () => {
         truncated,
       })
     }
+    seeder.close()
 
     expect(manager.setPdfMaxPages(10).requeued).toBe(0)
     expect(store.documentByPath(cut)!.status).toBe('text-only')

@@ -68,6 +68,7 @@ export function IndexDiagnostics({ api }: IndexDiagnosticsProps) {
       : `F2LLM-v2-80M (${dimensions}D)`
 
   const storage = snapshot?.storage
+  const storageBudget = snapshot?.storageBudget
   const performance = snapshot?.performance
   const topOffenders = storage?.topOffendersByChunks?.slice(0, 10) ?? []
 
@@ -183,6 +184,28 @@ export function IndexDiagnostics({ api }: IndexDiagnosticsProps) {
                 <dt>{isVi ? 'Chi tiết: Chunks / Vectors / FTS' : 'Breakdown: Chunks / Vectors / FTS'}</dt>
                 <dd>
                   {formatBytes(storage.breakdown.chunksBytes)} / {formatBytes(storage.breakdown.embeddingsBytes)} / {formatBytes(storage.breakdown.ftsBytes)}
+                </dd>
+              </div>
+            )}
+            {storageBudget?.totalManagedBytes != null && (
+              <div>
+                <dt>{isVi ? 'Tổng lưu trữ quản lý (V3 Quota)' : 'Total Managed Storage (V3 Quota)'}</dt>
+                <dd>
+                  <strong>{formatBytes(storageBudget.totalManagedBytes)}</strong>
+                  {(storageBudget.isDegraded || storageBudget.measurementStatus === 'degraded') && (
+                    <span style={{ marginLeft: '6px', fontSize: '11px', color: '#b26a00' }}>
+                      ({isVi ? 'Ước tính an toàn / degraded' : 'Safe fallback / degraded'})
+                    </span>
+                  )}
+                </dd>
+              </div>
+            )}
+            {storageBudget?.modelBytes != null && storageBudget.modelBytes > 0 && (
+              <div>
+                <dt>{isVi ? 'Trọng số mô hình (riêng)' : 'Model Weights (Separate)'}</dt>
+                <dd>
+                  {formatBytes(storageBudget.modelBytes)}{' '}
+                  <span className="idx-muted">({isVi ? 'ngoài quota' : 'not counted in quota'})</span>
                 </dd>
               </div>
             )}

@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { extractDocument, extractDocumentSliced } from '../src/main/document-memory/worker'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 const FIXTURE = join(__dirname, 'fixtures', 'mixed-scan.pdf')
 
@@ -62,6 +63,11 @@ class TurnWorker extends EventEmitter {
   requests: Array<{ path: string; sliceMs?: number }> = []
   private pending: { id: number; path: string } | undefined
   postMessage(message: { id: number; type: string; path: string; sliceMs?: number }): void {
+    const ack = storageBudgetAckReply(message)
+    if (ack) {
+      this.emit('message', ack)
+      return
+    }
     this.requests.push({ path: message.path, sliceMs: message.sliceMs })
     this.pending = message
   }

@@ -10,6 +10,7 @@ import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { ChunkUpgradeCoordinator } from '../src/main/document-memory/chunk-upgrade'
 import { extractDocument, MAX_INDEX_TEXT_CHARS } from '../src/main/document-memory/worker'
 import { resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
+import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
 
 const PDF_FIXTURE = join(__dirname, 'fixtures', 'mixed-scan.pdf')
 
@@ -30,6 +31,11 @@ class InProcessWorker extends EventEmitter {
   }): void {
     setTimeout(async () => {
       try {
+        const ack = storageBudgetAckReply(message)
+        if (ack) {
+          this.emit('message', ack)
+          return
+        }
         if (message.type === 'extract' && message.path) {
           const norm = resolve(message.path)
           if (this.failPaths.has(norm)) {
@@ -92,11 +98,11 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     rmSync(tempDir, { recursive: true, force: true })
   })
 
-  function createTestManager(): {
+  async function createTestManager(): Promise<{
     manager: DocumentMemoryManager
     store: DocumentMemoryStore
     rawDb: DatabaseSync
-  } {
+  }> {
     const dbPath = join(tempDir, 'document-memory.db')
     const manager = new DocumentMemoryManager(tempDir, {
       workerFactory: () => new InProcessWorker(dbPath, failPaths) as unknown as Worker,
@@ -104,11 +110,12 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     })
     managers.push(manager)
     const store = (manager as unknown as { store: DocumentMemoryStore }).store
+    await waitForManagerWriteReady(manager)
     return { manager, store, rawDb: store.rawDb }
   }
 
   it('TRUNC-01 content-limit persists', async () => {
-    const { manager, store, rawDb } = createTestManager()
+    const { manager, store, rawDb } = await createTestManager()
 
     // 1. Create a document exceeding MAX_INDEX_TEXT_CHARS (8MB text)
     expect(MAX_INDEX_TEXT_CHARS).toBe(8 * 1024 * 1024)
@@ -145,7 +152,7 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
   })
 
   it('TRUNC-02 chunk-limit persists', async () => {
-    const { manager, store, rawDb } = createTestManager()
+    const { manager, store, rawDb } = await createTestManager()
 
     // Non-tabular file exceeding 4096 chunks while keeping total characters under MAX_INDEX_TEXT_CHARS (8MB).
     // Each paragraph is 1250 characters (> TARGET_CHARS 1200, candidate > MAX_CHARS_V2 1800),
@@ -185,7 +192,7 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
   })
 
   it('TRUNC-03 pdf-page-limit persists', async () => {
-    const { manager, store, rawDb } = createTestManager()
+    const { manager, store, rawDb } = await createTestManager()
 
     // Fixture mixed-scan.pdf has 3 pages
     const pdfPath = join(tempDir, 'three-page.pdf')
@@ -221,7 +228,7 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
   })
 
   it('TRUNC-04 legacy migration persists', async () => {
-    const { manager, store, rawDb } = createTestManager()
+    const { manager, store, rawDb } = await createTestManager()
 
     // 1. Create a tabular document with 4000 rows (triggers tabular-sampling)
     const csvPath = join(tempDir, 'legacy-tabular.csv')
@@ -286,7 +293,7 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
   })
 
   it('TRUNC-05 successful retry updates old reason', async () => {
-    const { manager, store, rawDb } = createTestManager()
+    const { manager, store, rawDb } = await createTestManager()
 
     // 1. Initial indexing with tabular-sampling truncation
     const docPath = join(tempDir, 'dynamic-doc.csv')
@@ -346,7 +353,7 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
   })
 
   it('TRUNC-06 error clears stale reason', async () => {
-    const { manager, store, rawDb } = createTestManager()
+    const { manager, store, rawDb } = await createTestManager()
 
     // 1. Establish a document with truncated state
     const docPath = join(tempDir, 'error-test-doc.txt')
@@ -378,15 +385,17 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     expect(errorOutcome.ok).toBe(false)
     expect(errorOutcome.error).toContain('Extraction error')
 
-    // Verify stored document transitions to error and stale truncation is completely cleared
+    // Production contract (document-repository.ts recordTransientError): a transient extraction failure on a
+    // document that still has active cached content (`hash` set / status ready|text-only) keeps that content
+    // searchable -- `const newStatus = hasActiveCachedContent ? 'pending' : 'error'` -- so the doc is requeued as
+    // pending with the error recorded, and the retained (still truncated) chunks keep their truncation metadata.
     const errorDoc = store.documentByPath(docPath)
     expect(errorDoc).not.toBeNull()
-    expect(errorDoc!.status).toBe('error')
+    expect(errorDoc!.status).toBe('pending')
     expect(errorDoc!.error).toContain('Extraction error')
-    expect(errorDoc!.truncated).toBe(false)
-    expect(errorDoc!.truncatedReason).toBeNull()
+    expect(errorDoc!.truncated).toBe(true)
+    expect(errorDoc!.truncatedReason).toBe('content-limit')
 
-    // Verify direct SQLite row: truncated = 0, truncated_reason IS NULL
     const errorRow = rawDb
       .prepare('SELECT status, error, truncated, truncated_reason FROM documents WHERE path = ?')
       .get(resolve(docPath)) as {
@@ -395,10 +404,24 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
       truncated: number
       truncated_reason: string | null
     }
-    expect(errorRow.status).toBe('error')
+    expect(errorRow.status).toBe('pending')
     expect(errorRow.error).toContain('Extraction error')
-    expect(errorRow.truncated).toBe(0)
-    expect(errorRow.truncated_reason).toBeNull()
+    expect(errorRow.truncated).toBe(1)
+    expect(errorRow.truncated_reason).toBe('content-limit')
+
+    // A document with no cached content transitions to a hard error and has no stale truncation.
+    const coldPath = join(tempDir, 'cold-error-doc.txt')
+    writeFileSync(coldPath, 'Never extracted successfully.', 'utf8')
+    failPaths.add(resolve(coldPath))
+    const coldOutcome = await manager.readNowDocument(coldPath)
+    expect(coldOutcome.ok).toBe(false)
+    const coldRow = rawDb
+      .prepare('SELECT status, error, truncated, truncated_reason FROM documents WHERE path = ?')
+      .get(resolve(coldPath)) as { status: string; error: string | null; truncated: number; truncated_reason: string | null }
+    expect(coldRow.status).toBe('error')
+    expect(coldRow.error).toContain('Extraction error')
+    expect(coldRow.truncated).toBe(0)
+    expect(coldRow.truncated_reason).toBeNull()
 
     // 3. Additionally verify store.markError directly clears stale truncation
     const directDocPath = join(tempDir, 'direct-error-doc.txt')

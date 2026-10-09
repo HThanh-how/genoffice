@@ -2,8 +2,18 @@ import { statSync } from 'node:fs'
 import type { DocumentMemoryStore, DocumentMemoryHit } from '../store'
 import { QueryEmbeddingCache } from '../query-embedding-cache'
 import { fuseHybridResults } from '../hybrid-ranker'
+import { embeddingProfile } from '../embedding-profiles'
+import { capChunksPerDocument, promoteNameMatches } from './result-order'
+import { annotateSkeletonHits, skeletonDocumentIds } from '../storage/repositories/skeleton-repository'
 
-export type FreshDocumentMemoryHit = DocumentMemoryHit & { stale?: boolean; missing?: boolean; unverified?: boolean }
+export type FreshDocumentMemoryHit = DocumentMemoryHit & {
+  stale?: boolean
+  missing?: boolean
+  unverified?: boolean
+  /** Only the outline of this document is kept (its repeated body was compacted); opening it re-reads the original. */
+  skeletonIndex?: true
+  skeletonNotice?: string
+}
 
 export interface SearchServiceOptions {
   store: DocumentMemoryStore
@@ -11,6 +21,12 @@ export interface SearchServiceOptions {
   askEmbed?: (text: string) => Promise<number[] | null>
   askSemantic?: (vector: number[], limit: number, spaceId: string) => Promise<Array<{ chunkId: number; rank: number; score: number; documentId: number }> | null>
   annotateFreshness?: (hits: DocumentMemoryHit[]) => Promise<FreshDocumentMemoryHit[]>
+  /**
+   * Opening a document whose body was compacted to a skeleton asks for the full re-read of the ORIGINAL file.
+   * The manager wires its retry/read-now queue here; without it the document is only marked pending and the
+   * periodic poll re-reads it (store.retryDocument is the same first step of both).
+   */
+  onSkeletonOpened?: (documentId: number) => void
 }
 
 function normalizeSearchPath(filePath: string): string {
@@ -51,18 +67,22 @@ export class SearchService {
 
     // 1. Lexical and name matches
     const namedRaw = this.store.searchNames(query, 5)
-    const seenNames = new Set(namedRaw.map((h) => h.documentId))
     const lexicalCandidates = this.store.searchLexical(query, 200)
-    const lexicalRaw = this.store
-      .hydrateChunkHits(lexicalCandidates.slice(0, limit))
-    const annotate = this.options.annotateFreshness ?? (async (hits) => hits.map((h) => ({ ...h, stale: false, missing: false })))
+    // Without semantic vectors the list is lexical only: at most 2 chunks per document, so one
+    // long document cannot fill every slot while other matching documents are pushed out.
+    const lexicalRaw = this.store.hydrateChunkHits(capChunksPerDocument(lexicalCandidates, limit))
+    const annotateFresh = this.options.annotateFreshness ?? (async (hits) => hits.map((h) => ({ ...h, stale: false, missing: false })))
+    // One extra indexed query per result list (never per hit); ranking and hit order are untouched.
+    const annotate = async (hits: DocumentMemoryHit[]): Promise<FreshDocumentMemoryHit[]> => this.flagSkeletons(await annotateFresh(hits))
     let externalHits: DocumentMemoryHit[] = []
     if (this.options.externalNames) {
       const indexedPaths = new Set([...namedRaw, ...lexicalRaw].map((h) => normalizeSearchPath(h.path)))
       const externalFiles = await this.searchExternal(query, 5, indexedPaths)
       externalHits = externalFiles.slice(0, 3).map((f) => this.externalHit(f))
     }
-    const lexicalHits = await annotate([...namedRaw.slice(0, 3), ...externalHits, ...lexicalRaw])
+    // Documents named like the query come first, even when their content also matches.
+    const lexicalOrder = promoteNameMatches(namedRaw, lexicalRaw)
+    const lexicalHits = await annotate([...lexicalOrder.head, ...externalHits, ...lexicalOrder.tail])
 
     if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
     callbacks?.onLexical?.(lexicalHits)
@@ -93,14 +113,16 @@ export class SearchService {
           if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
           let finalChunkHits: DocumentMemoryHit[] = []
           if (semanticCandidates.length > 0) {
-            const fused = fuseHybridResults(lexicalCandidates, semanticCandidates, { limit })
+            const fused = fuseHybridResults(lexicalCandidates, semanticCandidates, {
+              limit,
+              query: { text: query, tier: embeddingProfile(spaceId).tier },
+            })
             finalChunkHits = this.store.hydrateChunkHits(fused)
           } else {
             finalChunkHits = lexicalRaw
           }
-          const seen = new Set(finalChunkHits.map((h) => h.documentId))
-          const namedForHybrid = namedRaw.filter((h) => !seen.has(h.documentId))
-          finalHits = await annotate([...namedForHybrid.slice(0, 3), ...externalHits, ...finalChunkHits])
+          const hybridOrder = promoteNameMatches(namedRaw, finalChunkHits)
+          finalHits = await annotate([...hybridOrder.head, ...externalHits, ...hybridOrder.tail])
           if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
           const stalePaths = new Set(lexicalHits.filter((h) => h.stale).map((h) => normalizeSearchPath(h.path)))
           const missingPaths = new Set(lexicalHits.filter((h) => h.missing).map((h) => normalizeSearchPath(h.path)))
@@ -123,6 +145,15 @@ export class SearchService {
     if (callbacks?.isCancelled?.() || (queryToken !== undefined && this.querySequence !== queryToken)) return []
     callbacks?.onFinal?.(finalHits)
     return finalHits
+  }
+
+  /** Flags documents whose body was compacted to a skeleton; a store without the table or a closed db just returns the hits. */
+  private flagSkeletons(hits: FreshDocumentMemoryHit[]): FreshDocumentMemoryHit[] {
+    try {
+      return annotateSkeletonHits(this.options.store.rawDb, hits)
+    } catch {
+      return hits
+    }
   }
 
   async searchExternal(
@@ -184,9 +215,22 @@ export class SearchService {
     const document = this.store.documentById(documentId)
     if (!document || document.status === 'excluded') return null
     try {
-      return statSync(document.path).isFile() ? document.path : null
+      if (!statSync(document.path).isFile()) return null
     } catch {
       return null
+    }
+    this.rehydrateIfSkeleton(documentId)
+    return document.path
+  }
+
+  /** The original is on disk (checked by the caller): a skeleton document gets its full text back, never the reverse. */
+  private rehydrateIfSkeleton(documentId: number): void {
+    try {
+      if (skeletonDocumentIds(this.store.rawDb, [documentId]).size === 0) return
+      if (this.options.onSkeletonOpened) this.options.onSkeletonOpened(documentId)
+      else this.store.retryDocument(documentId)
+    } catch {
+      // opening the file must never fail because the index could not be refreshed
     }
   }
 }

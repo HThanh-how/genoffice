@@ -1,30 +1,5 @@
-import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads'
-import { enforceBackupRetentionPolicy } from '../storage/migration/backup-retention'
-
-// If running inside dedicated worker thread, execute retention policy and report back
-if (!isMainThread && parentPort) {
-  const executeRetention = (dbPath: string) => {
-    try {
-      const purgedCount = enforceBackupRetentionPolicy(dbPath)
-      parentPort?.postMessage({ purgedCount })
-    } catch (error) {
-      parentPort?.postMessage({
-        purgedCount: 0,
-        error: error instanceof Error ? error.message : String(error),
-      })
-    }
-  }
-
-  if (workerData?.dbPath) {
-    executeRetention(workerData.dbPath)
-  }
-
-  parentPort.on('message', (msg: any) => {
-    if (msg?.type === 'run' && msg.dbPath) {
-      executeRetention(msg.dbPath)
-    }
-  })
-}
+import { Worker } from 'node:worker_threads'
+import retentionWorkerPath from './backup-retention-worker?modulePath'
 
 export interface BackupRetentionWorkerLike {
   postMessage?(message: any): void
@@ -54,6 +29,7 @@ export const DEFAULT_RETENTION_TIMEOUT_MS = 60_000
  */
 export class BackupRetentionRunner {
   private inFlightPromise: Promise<{ purgedCount: number }> | null = null
+  private settleInFlight: ((result: { purgedCount: number }) => void) | null = null
   private activeWorker: BackupRetentionWorkerLike | null = null
   private readonly workerPath: string | undefined
   private readonly workerFactory: BackupRetentionWorkerFactory
@@ -61,16 +37,17 @@ export class BackupRetentionRunner {
   private disposed = false
 
   constructor(options: BackupRetentionRunnerOptions = {}) {
-    this.workerPath =
-      options.workerPath ??
-      (typeof import.meta !== 'undefined' ? (import.meta as any).filename : undefined)
+    this.workerPath = options.workerPath ?? retentionWorkerPath
     this.workerFactory =
       options.workerFactory ??
       ((scriptPath, data) => {
         if (!scriptPath) {
           throw new Error('No worker script path configured for backup retention runner')
         }
-        return new Worker(scriptPath, { workerData: data })
+        return new Worker(scriptPath, {
+          workerData: data,
+          execArgv: process.execArgv,
+        })
       })
     this.timeoutMs = options.timeoutMs ?? DEFAULT_RETENTION_TIMEOUT_MS
   }
@@ -103,13 +80,29 @@ export class BackupRetentionRunner {
     return new Promise((resolve) => {
       let settled = false
       let timer: NodeJS.Timeout | null = null
+      let worker: BackupRetentionWorkerLike | null = null
 
       const cleanup = () => {
+        if (this.settleInFlight === settle) {
+          this.settleInFlight = null
+        }
         if (timer) {
           clearTimeout(timer)
           timer = null
         }
-        this.activeWorker = null
+        if (worker) {
+          try {
+            const p = worker.terminate()
+            if (p && typeof (p as any).catch === 'function') {
+              ;(p as any).catch(() => {})
+            }
+          } catch {
+            // ignore termination error
+          }
+        }
+        if (this.activeWorker === worker) {
+          this.activeWorker = null
+        }
       }
 
       const settle = (result: { purgedCount: number }) => {
@@ -119,7 +112,8 @@ export class BackupRetentionRunner {
         resolve(result)
       }
 
-      let worker: BackupRetentionWorkerLike
+      this.settleInFlight = settle
+
       try {
         worker = this.workerFactory(this.workerPath, { dbPath })
         this.activeWorker = worker
@@ -129,12 +123,6 @@ export class BackupRetentionRunner {
       }
 
       timer = setTimeout(() => {
-        // Timeout guard: terminate dedicated process/worker to prevent orphan disk scanning
-        try {
-          void worker.terminate()
-        } catch {
-          // ignore termination error
-        }
         settle({ purgedCount: 0 })
       }, this.timeoutMs)
       timer.unref?.()
@@ -154,22 +142,22 @@ export class BackupRetentionRunner {
       worker.on('exit', () => {
         settle({ purgedCount: 0 })
       })
-
-      if (typeof worker.postMessage === 'function') {
-        try {
-          worker.postMessage({ type: 'run', dbPath })
-        } catch {
-          settle({ purgedCount: 0 })
-        }
-      }
     })
   }
 
   dispose(): void {
     this.disposed = true
+    if (this.settleInFlight) {
+      const settle = this.settleInFlight
+      this.settleInFlight = null
+      settle({ purgedCount: 0 })
+    }
     if (this.activeWorker) {
       try {
-        void this.activeWorker.terminate()
+        const p = this.activeWorker.terminate()
+        if (p && typeof (p as any).catch === 'function') {
+          ;(p as any).catch(() => {})
+        }
       } catch {
         // ignore
       }

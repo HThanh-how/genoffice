@@ -11,6 +11,7 @@ import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 import { extractDocument } from '../src/main/document-memory/worker'
 import { buildScannedPdf, testPattern } from './helpers/scanned-pdf'
+import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
 
 let dir: string
 let manager: DocumentMemoryManager | undefined
@@ -35,6 +36,11 @@ class InProcessWorker extends EventEmitter {
   postMessage(message: { id: number; type: string; path?: string; texts?: string[]; ocr?: never }) {
     setTimeout(async () => {
       try {
+        const ack = storageBudgetAckReply(message)
+        if (ack) {
+          this.emit('message', ack)
+          return
+        }
         if (message.type === 'extract') {
           const store = new DocumentMemoryStore(this.dbPath)
           try {
@@ -81,16 +87,26 @@ describe('scanned PDF through the real manager (in-process index worker)', () =>
   it('replaces a worker after a stalled native step and ignores its late model messages', async () => {
     class StalledWorker extends EventEmitter {
       terminated = false
-      postMessage(message: { id: number }) {
-        setTimeout(
-          () =>
-            this.emit('message', {
-              id: message.id,
-              error: 'Native step stalled',
-              restartRequired: true,
-            }),
-          0,
-        )
+      postMessage(message: { id: number; type?: string }) {
+        setTimeout(() => {
+          // Only the native render step stalls. The startup budget handshake is answered like a real
+          // worker does (otherwise the manager refuses OCR work as "pending worker confirmation"), and
+          // other requests are served normally.
+          const ack = storageBudgetAckReply(message)
+          if (ack) {
+            this.emit('message', ack)
+            return
+          }
+          if (message.type !== 'ocr-render') {
+            this.emit('message', { id: message.id, result: [] })
+            return
+          }
+          this.emit('message', {
+            id: message.id,
+            error: 'Native step stalled',
+            restartRequired: true,
+          })
+        }, 0)
       }
       async terminate() {
         this.terminated = true
@@ -106,6 +122,7 @@ describe('scanned PDF through the real manager (in-process index worker)', () =>
         return worker as unknown as Worker
       },
     })
+    await waitForManagerWriteReady(manager)
     const result = await manager
       .ocrHost()
       .render(join(dir, 'scan.pdf'), { done: [], maxPages: 1, count: 1 })
@@ -113,8 +130,18 @@ describe('scanned PDF through the real manager (in-process index worker)', () =>
     expect(workers[0]!.terminated).toBe(true)
     workers[0]!.emit('message', { type: 'model', state: 'downloading' })
     expect(manager.indexingActivityStatus().modelState).not.toBe('downloading')
-    await manager.ocrHost().render(join(dir, 'scan.pdf'), { done: [], maxPages: 1, count: 1 })
+    // The recycled worker closes the budget write gate until its replacement ACKs the budget, and an
+    // OCR render in that window is refused (`executeOcrRenderGated`: "Storage quota config pending
+    // worker confirmation") without spawning anything. The replacement is spawned by the manager's
+    // next contact with the index process, e.g. a search.
+    await manager.search('anything')
+    await waitForManagerWriteReady(manager)
     expect(workers).toHaveLength(2)
+    const second = await manager
+      .ocrHost()
+      .render(join(dir, 'scan.pdf'), { done: [], maxPages: 1, count: 1 })
+    expect(second).toMatchObject({ ok: false, message: 'Native step stalled' })
+    expect(workers[1]!.terminated).toBe(true)
   })
 
   it('OCR text re-enters the index as OCR chunks, gets embedded, and keeps the counters exact', async () => {
@@ -130,6 +157,7 @@ describe('scanned PDF through the real manager (in-process index worker)', () =>
       workerFactory: () => worker as unknown as Worker,
     })
     reader = new DocumentMemoryStore(dbPath)
+    await waitForManagerWriteReady(manager)
 
     // the normal pipeline finds no text: the file lands in the "no text" state the OCR job looks for
     manager.indexDiscoveredFile(path)
@@ -146,7 +174,7 @@ describe('scanned PDF through the real manager (in-process index worker)', () =>
     expect(rendered.pages.map((p) => p.page)).toEqual([1, 2])
 
     // the job stores the transcription and asks for a re-index
-    host.savePages(
+    const saved = await host.savePages(
       path,
       {
         hash: rendered.hash,
@@ -160,6 +188,8 @@ describe('scanned PDF through the real manager (in-process index worker)', () =>
         { page: 2, text: 'Tổng cộng 4.919.750 đồng' },
       ],
     )
+    // persistence is admission-gated and async: the job awaits it before asking for the re-index
+    expect(saved).toMatchObject({ ok: true })
     host.reindex(path)
     await until(() => reader!.documentByPath(path)?.status === 'ready')
 
@@ -192,8 +222,12 @@ describe('scanned PDF through the real manager (in-process index worker)', () =>
       workerFactory: () => new InProcessWorker(dbPath) as unknown as Worker,
     })
     reader = new DocumentMemoryStore(dbPath)
+    await waitForManagerWriteReady(manager)
     manager.indexDiscoveredFile(path)
     await until(() => reader!.documentByPath(path)?.status === 'empty')
+    // the 'empty' row is committed before the extraction bookkeeping (scan info) finishes; let the
+    // read finish so the test does not close the manager underneath it
+    await until(() => manager!.nowStatus().extracting.length === 0)
     const host = manager.ocrHost()
     manager.exclude(path)
     expect(host.documentById(reader.documentByPath(path)!.id)).toBeNull()

@@ -89,6 +89,9 @@ export function createDocumentIndexPreloadApi(
     async getIndexFileDetail(documentId) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getIndexFileDetail, documentId)
     },
+    async setIndexFileImportance(documentId, importance) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setIndexFileImportance, documentId, importance)
+    },
     async retryDocumentIndexGroup(root, reason) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, root, reason)
     },
@@ -115,6 +118,15 @@ export function createDocumentIndexPreloadApi(
     },
     async setKnownSearchSource(id, enabled) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setKnownSearchSource, id, enabled)
+    },
+    async getDocumentIndexStorageBudget() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getDocumentIndexStorageBudget)
+    },
+    async getStorageBudgetSettings() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getStorageBudgetSettings)
+    },
+    async setStorageBudgetSettings(settings) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.setStorageBudgetSettings, settings)
     },
   }
 }

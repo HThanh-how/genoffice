@@ -15,12 +15,18 @@ export interface QueueInfo {
   deferred: ReadonlySet<string>
   /** size of each waiting file; an unknown one counts as light */
   bytes: ReadonlyMap<string, number>
+  /**
+   * Near the storage quota: files modified/opened recently go right after the asked-for ones, ahead of the old
+   * backlog and whatever their weight (a fresh file must not wait behind a year of untouched ones for room).
+   */
+  prioritize?: (path: string) => boolean
 }
 
-/** Where a file stands: 0 asked for now, 1-3 by weight, 4 pushed back. */
+/** Where a file stands: 0 asked for now, 0.5 recent near the quota, 1-3 by weight, 4 pushed back. */
 export function rankOf(path: string, info: QueueInfo): number {
   if (info.urgent.has(path)) return 0
   if (info.deferred.has(path)) return 4
+  if (info.prioritize?.(path)) return 0.5
   return weightOf(info.bytes.get(path) ?? 0)
 }
 

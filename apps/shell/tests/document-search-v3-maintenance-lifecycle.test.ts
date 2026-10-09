@@ -10,7 +10,14 @@ import {
   PERIODIC_MAINTENANCE_INTERVAL_MS,
 } from '../src/main/document-memory/runtime/maintenance-scheduler'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import {
+  StorageAccountingRunner,
+  type StorageAccountingWorkerLike,
+} from '../src/main/document-memory/runtime/storage-accounting-runner'
+import { BackupRetentionRunner } from '../src/main/document-memory/runtime/backup-retention-runner'
+import { collectStorageAccounting } from '../src/main/document-memory/runtime/storage-accounting'
 import type { WorkerRequest } from '../src/main/document-memory/worker-types'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 class MockMaintenanceWorker extends EventEmitter {
   public receivedRequests: WorkerRequest[] = []
@@ -22,6 +29,11 @@ class MockMaintenanceWorker extends EventEmitter {
   postMessage(message: { id: number; type: string }): void {
     this.receivedRequests.push(message as WorkerRequest)
     queueMicrotask(() => {
+      const ack = storageBudgetAckReply(message)
+      if (ack) {
+        this.emit('message', ack)
+        return
+      }
       if (message.type === 'fts-maintenance-step') {
         this.emit('message', { id: message.id, result: { more: false, durationMs: 10 } })
       } else if (message.type === 'gc-step') {
@@ -37,6 +49,58 @@ class MockMaintenanceWorker extends EventEmitter {
   terminate(): Promise<number> {
     return Promise.resolve(0)
   }
+}
+
+/**
+ * Production measures storage accounting in a real worker thread, whose completion is real I/O that
+ * fake timers cannot advance. This runner keeps the production StorageAccountingRunner (spawn,
+ * message protocol, settle) but hosts the real `collectStorageAccounting` measurement in an in-process
+ * worker stand-in that replies on a microtask, so periodic maintenance stays deterministic under
+ * fake timers.
+ */
+function createInlineAccountingRunner(): StorageAccountingRunner {
+  return new StorageAccountingRunner({
+    workerPath: 'inline-accounting-worker',
+    workerFactory: (_path, data) => {
+      const worker = new EventEmitter() as EventEmitter & StorageAccountingWorkerLike
+      worker.terminate = () => Promise.resolve(0)
+      queueMicrotask(() => {
+        try {
+          worker.emit('message', { ok: true, report: collectStorageAccounting(data) })
+        } catch (err) {
+          worker.emit('message', { ok: false, error: err instanceof Error ? err.message : String(err) })
+        }
+      })
+      return worker
+    },
+  })
+}
+
+/** Same idea for backup retention: production runner and protocol, in-process worker stand-in. */
+function createInlineBackupRetentionRunner(): BackupRetentionRunner {
+  return new BackupRetentionRunner({
+    workerPath: 'inline-retention-worker',
+    workerFactory: () => {
+      const worker = new EventEmitter() as EventEmitter & {
+        terminate: () => Promise<number>
+      }
+      worker.terminate = () => Promise.resolve(0)
+      queueMicrotask(() => worker.emit('message', { purgedCount: 0 }))
+      return worker as any
+    },
+  })
+}
+
+/**
+ * A periodic run re-arms its timer only when it finishes. The tail of a run (name-projection backfill
+ * free-disk probe) performs real filesystem I/O that fake timers cannot advance, so wait for the run
+ * to actually finish before asserting the re-arm.
+ */
+async function waitForPeriodicRunToFinishAndRearm(scheduler: MaintenanceScheduler): Promise<void> {
+  await vi.waitFor(() => {
+    expect(scheduler.isPeriodicMaintenanceRunning()).toBe(false)
+    expect(scheduler.isPeriodicMaintenanceArmed()).toBe(true)
+  })
 }
 
 describe('Document Search V3 - Periodic Maintenance Lifecycle Suite (PAIR 18)', () => {
@@ -67,8 +131,10 @@ describe('Document Search V3 - Periodic Maintenance Lifecycle Suite (PAIR 18)', 
     const manager = new DocumentMemoryManager(tempDir, {
       workerFactory: () => worker as any,
       pollIntervalMs: 600_000, // prevent interference
-    })
+      backupRetentionRunner: createInlineBackupRetentionRunner(),
+    } as any)
     managers.push(manager)
+    ;(manager as any).maintScheduler.storageAccountingRunner = createInlineAccountingRunner()
     return { manager, worker }
   }
 
@@ -108,18 +174,23 @@ describe('Document Search V3 - Periodic Maintenance Lifecycle Suite (PAIR 18)', 
 
     // Run first maintenance
     await vi.advanceTimersByTimeAsync(INITIAL_MAINTENANCE_DELAY_MS)
-    const countAfterFirst = worker.receivedRequests.length
+    // The startup `set-storage-budget` handshake is not maintenance work; count maintenance steps only.
+    const maintenanceCount = () =>
+      worker.receivedRequests.filter((r) => r.type !== 'set-storage-budget').length
+    const countAfterFirst = maintenanceCount()
     expect(countAfterFirst).toBeGreaterThanOrEqual(3)
 
     // Verify timer is re-armed for next period
+    await waitForPeriodicRunToFinishAndRearm(scheduler)
     expect(scheduler.isPeriodicMaintenanceArmed()).toBe(true)
 
     // Advance full periodic interval (60,000ms)
     await vi.advanceTimersByTimeAsync(PERIODIC_MAINTENANCE_INTERVAL_MS)
-    const countAfterSecond = worker.receivedRequests.length
+    const countAfterSecond = maintenanceCount()
     expect(countAfterSecond).toBeGreaterThan(countAfterFirst)
 
     // And re-armed yet again
+    await waitForPeriodicRunToFinishAndRearm(scheduler)
     expect(scheduler.isPeriodicMaintenanceArmed()).toBe(true)
   })
 
@@ -129,12 +200,14 @@ describe('Document Search V3 - Periodic Maintenance Lifecycle Suite (PAIR 18)', 
   it('MAINT-04: paused state blocks execution of heavy maintenance steps', async () => {
     const dbPath = join(tempDir, 'document-memory.db')
     const store = new DocumentMemoryStore(dbPath)
-    let paused = true
+    const paused = true
     const requests: WorkerRequest[] = []
 
     const scheduler = new MaintenanceScheduler({
       store,
       isPaused: () => paused,
+      storageAccountingRunner: createInlineAccountingRunner(),
+      backupRetentionRunner: createInlineBackupRetentionRunner(),
       askWorker: async (req) => {
         requests.push(req)
         return null
@@ -163,6 +236,8 @@ describe('Document Search V3 - Periodic Maintenance Lifecycle Suite (PAIR 18)', 
     const scheduler = new MaintenanceScheduler({
       store,
       isPaused: () => paused,
+      storageAccountingRunner: createInlineAccountingRunner(),
+      backupRetentionRunner: createInlineBackupRetentionRunner(),
       askWorker: async (req) => {
         requests.push(req)
         return null
@@ -219,8 +294,12 @@ describe('Document Search V3 - Periodic Maintenance Lifecycle Suite (PAIR 18)', 
 
     const scheduler = new MaintenanceScheduler({
       store,
-      askWorker: async () => {
-        runs++
+      storageAccountingRunner: createInlineAccountingRunner(),
+      backupRetentionRunner: createInlineBackupRetentionRunner(),
+      askWorker: async (req) => {
+        // Compaction-lane messages (run-retention / optimize-fts / cancel-compaction) are not the maintenance
+        // steps this test counts; they run in the worker now and are covered by worker-compaction tests.
+        if (['fts-maintenance-step', 'gc-step', 'vacuum-step'].includes(req.type)) runs++
         return null
       },
     })
@@ -253,6 +332,8 @@ describe('Document Search V3 - Periodic Maintenance Lifecycle Suite (PAIR 18)', 
 
     const scheduler = new MaintenanceScheduler({
       store,
+      storageAccountingRunner: createInlineAccountingRunner(),
+      backupRetentionRunner: createInlineBackupRetentionRunner(),
       askWorker: async () => {
         activeRuns++
         maxConcurrent = Math.max(maxConcurrent, activeRuns)

@@ -6,13 +6,17 @@ import { verifyDatabaseIntegrity } from './logical-verifier'
 import { MIN_VERIFIED_BACKUPS, MIN_BACKUP_AGE_HOURS } from './retention-policy'
 import {
   type V3RetentionState,
+  type BackupDiagnosticError,
+  type BackupScanOptions,
   readV3RetentionState,
+  readV3RetentionStateDetailed,
   writeV3RetentionState,
   initV3RetentionState,
   recordV3VerifiedLaunch,
   clearV3RetentionState,
   getV3RetentionStatePath,
   findAllV2Backups,
+  findAllV2BackupsDetailed,
   findMostRecentV2Backup,
   extractBackupTimestamp,
   getBackupCreationTime,
@@ -20,13 +24,17 @@ import {
 
 export {
   type V3RetentionState,
+  type BackupDiagnosticError,
+  type BackupScanOptions,
   readV3RetentionState,
+  readV3RetentionStateDetailed,
   writeV3RetentionState,
   initV3RetentionState,
   recordV3VerifiedLaunch,
   clearV3RetentionState,
   getV3RetentionStatePath,
   findAllV2Backups,
+  findAllV2BackupsDetailed,
   findMostRecentV2Backup,
   extractBackupTimestamp,
   getBackupCreationTime,
@@ -158,7 +166,13 @@ export function enforceBackupRetentionPolicy(
     }
   }
 
-  let state = readV3RetentionState(dbPath)
+  const diagErrors: BackupDiagnosticError[] = []
+  let state = readV3RetentionState(dbPath, diagErrors)
+
+  // Fail-closed invariant: retention must NEVER purge unknown, corrupt, or unreadable protected state
+  if (diagErrors.some((e) => e.code === 'ECORRUPT' || e.code === 'EACCES' || e.code === 'EPERM' || e.code === 'EIO')) {
+    return 0
+  }
 
   if (state && !existsSync(state.backupPath)) {
     clearV3RetentionState(dbPath)
@@ -166,7 +180,11 @@ export function enforceBackupRetentionPolicy(
   }
 
   const dbBase = basename(dbPath)
-  const candidateFiles = findAllV2Backups(dir, dbBase, state)
+  const candidateFiles = findAllV2Backups(dir, dbBase, state, diagErrors)
+
+  if (diagErrors.some((e) => e.code === 'ECORRUPT' || e.code === 'EACCES' || e.code === 'EPERM' || e.code === 'EIO' || e.code === 'EQUOTA')) {
+    return 0
+  }
 
   if (candidateFiles.length === 0) {
     return 0

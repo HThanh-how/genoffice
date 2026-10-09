@@ -1,7 +1,8 @@
 import { existsSync, renameSync, unlinkSync, mkdirSync, statSync, openSync, readSync, closeSync } from 'node:fs'
 import { dirname } from 'node:path'
-import type { AnnHit, AnnIndex } from './ann-index'
+import type { AnnHit, AnnIndex, AnnPreauthorizedPermit, AnnRebuildOptions } from './ann-index'
 import { ExactVectorIndex } from './exact-vector-index'
+import { estimateAnnIndexBytes } from './runtime/ann-write-budget'
 
 function isValidUsearchHeader(filePath: string): boolean {
   try {
@@ -82,12 +83,26 @@ function getUsearchModule(): USearchModule | null {
   return cachedUsearch
 }
 
+export interface USearchIndexOptions {
+  writePolicy?: 'fail-closed' | 'permissive'
+  failClosed?: boolean
+  allowUnpermittedWrites?: boolean
+  rebuildAdmissionHook?: (
+    indexPath: string,
+    vectorCount: number,
+    dimensions: number,
+  ) => Promise<{ admitted: boolean; reason?: string }>
+}
+
 export class USearchIndex implements AnnIndex {
   private nativeIndex: USearchNativeIndex | null = null
   private fallbackExact: ExactVectorIndex | null = null
   private state: 'ready' | 'dirty' = 'ready'
   private loadedGeneration = 0
   private isOpen = false
+  private activePermit: AnnPreauthorizedPermit | null = null
+  private writePolicy: 'fail-closed' | 'permissive'
+  private readonly options?: USearchIndexOptions
 
   readonly dimensions: number
   readonly indexPath: string
@@ -95,9 +110,38 @@ export class USearchIndex implements AnnIndex {
   constructor(
     dimensions: number,
     indexPath: string,
+    options?: USearchIndexOptions,
   ) {
     this.dimensions = dimensions
     this.indexPath = indexPath
+    this.options = options
+
+    if (options?.allowUnpermittedWrites === true || options?.writePolicy === 'permissive') {
+      this.writePolicy = 'permissive'
+    } else {
+      this.writePolicy = 'fail-closed'
+    }
+  }
+
+  private validatePermit(
+    permit: unknown,
+    expectedDimensions?: number,
+    expectedPath?: string,
+    expectedCount?: number,
+    expectedGeneration?: number,
+  ): permit is AnnPreauthorizedPermit {
+    if (!permit || typeof permit !== 'object') return false
+    const p = permit as Partial<AnnPreauthorizedPermit>
+    if (typeof p.id !== 'string' || p.id.trim().length === 0) return false
+    if (typeof p.reservedBytes !== 'number' || !Number.isSafeInteger(p.reservedBytes) || p.reservedBytes <= 0) return false
+    if (typeof p.budgetBytes !== 'number' || !Number.isSafeInteger(p.budgetBytes) || p.budgetBytes <= 0) return false
+    if (p.measurementValid !== true) return false
+    if (typeof p.expiresAt !== 'number' || !Number.isSafeInteger(p.expiresAt) || Date.now() >= p.expiresAt) return false
+    if (expectedDimensions !== undefined && p.dimensions !== undefined && p.dimensions !== expectedDimensions) return false
+    if (expectedPath !== undefined && p.indexPath !== undefined && p.indexPath !== expectedPath) return false
+    if (expectedCount !== undefined && p.vectorCount !== undefined && p.vectorCount !== expectedCount) return false
+    if (expectedGeneration !== undefined && p.generation !== undefined && p.generation !== expectedGeneration) return false
+    return true
   }
 
   async open(): Promise<void> {
@@ -360,8 +404,41 @@ export class USearchIndex implements AnnIndex {
     }
   }
 
-  async rebuildAtomic(chunkIds: number[], vectors: number[][], generation?: number): Promise<boolean> {
+  preauthorizeSave(permit: AnnPreauthorizedPermit): void {
+    this.activePermit = permit
+  }
+
+  consumeSavePermit(): AnnPreauthorizedPermit | null {
+    const p = this.activePermit
+    this.activePermit = null
+    return p
+  }
+
+  clearSavePermit(): void {
+    this.activePermit = null
+  }
+
+  setWritePolicy(policy: 'fail-closed' | 'permissive'): void {
+    this.writePolicy = policy
+  }
+
+  getWritePolicy(): 'fail-closed' | 'permissive' {
+    return this.writePolicy
+  }
+
+  async rebuildAtomic(
+    chunkIds: number[],
+    vectors: number[][],
+    generation?: number,
+    options?: AnnRebuildOptions,
+  ): Promise<boolean> {
     if (!this.isOpen) await this.open()
+    if (!this.isOpen) {
+      this.state = 'dirty'
+      this.activePermit = null
+      return false
+    }
+
     const mod = getUsearchModule()
     if (!mod) {
       if (this.fallbackExact) {
@@ -370,7 +447,46 @@ export class USearchIndex implements AnnIndex {
       }
       this.loadedGeneration = generation !== undefined ? generation : this.loadedGeneration + 1
       this.state = 'ready'
+      this.activePermit = null
       return true
+    }
+
+    let permit: AnnPreauthorizedPermit | null = null
+    if (this.writePolicy === 'fail-closed') {
+      permit = options?.permit ?? this.activePermit
+      this.activePermit = null
+
+      if (!permit || !this.validatePermit(permit, this.dimensions, this.indexPath, chunkIds.length, generation)) {
+        this.state = 'dirty'
+        return false
+      }
+
+      const estBytes = estimateAnnIndexBytes(chunkIds.length, this.dimensions)
+      if (estBytes <= 0 || (permit.reservedBytes ?? 0) < estBytes) {
+        this.state = 'dirty'
+        return false
+      }
+    } else {
+      this.activePermit = null
+    }
+
+    // Rebuild admission hook if provided and not prechecked by caller
+    if (this.options?.rebuildAdmissionHook && !options?.precheckedAdmission) {
+      const admission = await this.options.rebuildAdmissionHook(
+        this.indexPath,
+        chunkIds.length,
+        this.dimensions,
+      )
+      if (!admission.admitted) {
+        this.state = 'dirty'
+        return false
+      }
+    }
+
+    // Recheck lifecycle after potential awaits
+    if (!this.isOpen) {
+      this.state = 'dirty'
+      return false
     }
 
     const tempPath = `${this.indexPath}.rebuild.tmp`
@@ -391,7 +507,66 @@ export class USearchIndex implements AnnIndex {
           nextIndex.add(id, new Float32Array(vec))
         }
       }
+
+      // Recheck lifecycle and beforeSaveHook before native.save
+      if (!this.isOpen) {
+        this.state = 'dirty'
+        return false
+      }
+
+      if (options?.beforeSaveHook && permit) {
+        const ok = await options.beforeSaveHook(tempPath, permit)
+        if (!ok || !this.isOpen) {
+          this.state = 'dirty'
+          return false
+        }
+      }
+
       nextIndex.save(tempPath)
+
+      if (!existsSync(tempPath)) {
+        this.state = 'dirty'
+        return false
+      }
+
+      const actualSize = statSync(tempPath).size
+      if (actualSize === 0) {
+        try {
+          unlinkSync(tempPath)
+        } catch {}
+        this.state = 'dirty'
+        return false
+      }
+
+      // Check serialized footprint against preauthorized reservation: if exceeds, preserve old index
+      if (permit && actualSize > (permit.reservedBytes ?? 0)) {
+        try {
+          unlinkSync(tempPath)
+        } catch {}
+        this.state = 'dirty'
+        return false
+      }
+
+      // Recheck lifecycle and beforeRenameHook before atomic rename
+      if (!this.isOpen) {
+        try {
+          if (existsSync(tempPath)) unlinkSync(tempPath)
+        } catch {}
+        this.state = 'dirty'
+        return false
+      }
+
+      if (options?.beforeRenameHook && permit) {
+        const ok = await options.beforeRenameHook(tempPath, permit, actualSize)
+        if (!ok || !this.isOpen) {
+          try {
+            if (existsSync(tempPath)) unlinkSync(tempPath)
+          } catch {}
+          this.state = 'dirty'
+          return false
+        }
+      }
+
       renameSync(tempPath, this.indexPath)
       this.nativeIndex = nextIndex
       this.loadedGeneration = generation !== undefined ? generation : this.loadedGeneration + 1
@@ -402,11 +577,11 @@ export class USearchIndex implements AnnIndex {
         if (existsSync(tempPath)) {
           unlinkSync(tempPath)
         }
-      } catch {
-        // ignore cleanup error
-      }
+      } catch {}
       this.state = 'dirty'
       return false
+    } finally {
+      this.activePermit = null
     }
   }
 
@@ -416,6 +591,7 @@ export class USearchIndex implements AnnIndex {
       this.fallbackExact = null
     }
     this.nativeIndex = null
+    this.activePermit = null
     this.isOpen = false
     this.state = 'ready'
   }
@@ -431,7 +607,31 @@ export class USearchIndex implements AnnIndex {
   }
 
   saveAtomic(generation?: number): void {
-    if (!this.indexPath || !this.nativeIndex) return
+    if (!this.indexPath || !this.nativeIndex) {
+      this.activePermit = null
+      return
+    }
+    if (!this.isOpen) {
+      this.state = 'dirty'
+      this.activePermit = null
+      return
+    }
+
+    let permit: AnnPreauthorizedPermit | null = null
+    // Fail closed unless explicit permissive policy or valid preauthorized reservation permit
+    if (this.writePolicy === 'fail-closed') {
+      permit = this.activePermit
+      this.activePermit = null
+
+      if (!permit || !this.validatePermit(permit, this.dimensions, this.indexPath, undefined, generation)) {
+        // Deny unadmitted physical write, transition to dirty, defer to async authorized rebuild
+        this.state = 'dirty'
+        return
+      }
+    } else {
+      this.activePermit = null
+    }
+
     const tempPath = `${this.indexPath}.tmp`
     try {
       const dir = dirname(this.indexPath)
@@ -439,15 +639,35 @@ export class USearchIndex implements AnnIndex {
         mkdirSync(dir, { recursive: true })
       }
       this.nativeIndex.save(tempPath)
+      if (!existsSync(tempPath)) {
+        this.state = 'dirty'
+        return
+      }
+      const actualSize = statSync(tempPath).size
+      if (actualSize === 0) {
+        try {
+          unlinkSync(tempPath)
+        } catch {}
+        this.state = 'dirty'
+        return
+      }
+      // Check serialized footprint against preauthorized reservation: if exceeds, preserve old index
+      if (permit && actualSize > (permit.reservedBytes ?? 0)) {
+        try {
+          unlinkSync(tempPath)
+        } catch {}
+        this.state = 'dirty'
+        return
+      }
       renameSync(tempPath, this.indexPath)
       if (generation !== undefined) this.loadedGeneration = generation
     } catch {
       this.state = 'dirty'
       try {
         if (existsSync(tempPath)) unlinkSync(tempPath)
-      } catch {
-        // ignore cleanup error
-      }
+      } catch {}
+    } finally {
+      this.activePermit = null
     }
   }
 }

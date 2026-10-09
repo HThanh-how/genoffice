@@ -1,15 +1,28 @@
 import { EventEmitter } from 'node:events'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
+import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 class QuietWorker extends EventEmitter {
-  postMessage(message: { id: number; type: string; texts?: string[] }): void {
+  postMessage(message: {
+    id: number
+    type: string
+    texts?: string[]
+    configVersion?: number
+    budget?: { maxDatabaseBytes?: number }
+  }): void {
     setTimeout(() => {
+      const ack = storageBudgetAckReply(message)
+      if (ack) {
+        this.emit('message', ack)
+        return
+      }
       this.emit('message', { type: 'model', state: 'ready' })
       this.emit('message', {
         id: message.id,
@@ -51,6 +64,14 @@ const names = (hits: Array<{ path: string }>): string[] =>
 
 describe("finding a person's paper by its kind and the person's name", () => {
   const seed = (): void => {
+    const writer = new DocumentMemoryStore(join(dir, 'user', 'document-memory.db'))
+    try {
+      enrollAll(writer)
+    } finally {
+      writer.close()
+    }
+  }
+  const enrollAll = (writer: DocumentMemoryStore): void => {
     for (const path of [
       file('huucong', 'giay ra vien.pdf'),
       file('other', 'pham huu cong.pdf'),
@@ -58,8 +79,12 @@ describe("finding a person's paper by its kind and the person's name", () => {
       file('ho so', 'giay ra vien nguyen van a.pdf'),
       file('ho so', 'giay ra vien pham van b.pdf'),
       file('ho so', 'cong van so 12.pdf'),
-    ])
-      manager.indexDiscoveredFile(path)
+    ]) {
+      // A disabled manager refuses metadata writes by design, so the held-back (pending) rows
+      // are enrolled through a plain store on the manager's own database file.
+      const stat = statSync(path)
+      writer.enrollDiscovered(path, stat.mtimeMs, stat.size)
+    }
   }
 
   it('puts the discharge paper in the folder named after the person first', async () => {

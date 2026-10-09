@@ -32,12 +32,12 @@ import {
   type PublishedPolicy,
 } from '../src/main/fork/indexing-policy-bus'
 import {
-  getDocumentIndexSnapshot,
   snapshotCache,
   diagnosticsCache,
 } from '../src/main/fork/document-index-snapshot-service'
 import { IndexIssueReader } from '../src/main/document-memory/issue-reader'
 import { blobVector, floatBlob } from '../src/main/document-memory/storage/repositories/embedding-repository'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 const F2_SPACE_ID = 'test-f2-dim4:v1'
 const QWEN_SPACE_ID = 'test-qwen-dim4:v1'
@@ -436,6 +436,11 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
 
       postMessage(message: { id: number; type: string; path?: string; texts?: string[] }) {
         setTimeout(() => {
+          const ack = storageBudgetAckReply(message)
+          if (ack) {
+            this.emit('message', ack)
+            return
+          }
           if (message.type === 'extract') {
             this.extractions.push(message.path!)
             // Trigger pause right after first extraction completes

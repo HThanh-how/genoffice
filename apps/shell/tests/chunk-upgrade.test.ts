@@ -9,10 +9,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { ChunkUpgradeCoordinator } from '../src/main/document-memory/chunk-upgrade'
 import { EmbeddingMigration } from '../src/main/document-memory/embedding-migration'
+import { waitForManagerWriteReady } from './helpers/storage-budget-ack'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { capChunks, chunkDocumentTextV2 } from '../src/main/document-memory/chunks'
 import { createBuildingSet } from '../src/main/document-memory/chunk-sets'
 import { resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 class FakeWorker extends EventEmitter {
   onBeforeExtractReply?: (message: { id: number; type: string; path?: string }) => void
@@ -33,6 +35,11 @@ class FakeWorker extends EventEmitter {
   }) {
     setTimeout(() => {
       try {
+        const ack = storageBudgetAckReply(message)
+        if (ack) {
+          this.emit('message', ack)
+          return
+        }
         if (message.type === 'extract' && message.path) {
           const bytes = readFileSync(message.path)
           const text = bytes.toString('utf8')
@@ -89,12 +96,12 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
-  function createManager(customWorker?: FakeWorker): {
+  async function createManager(customWorker?: FakeWorker): Promise<{
     manager: DocumentMemoryManager
     db: DatabaseSync
     store: DocumentMemoryStore
     worker: FakeWorker
-  } {
+  }> {
     const worker = customWorker ?? new FakeWorker()
     const manager = new DocumentMemoryManager(directory, {
       dbDir: directory,
@@ -104,6 +111,7 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     managers.push(manager)
     const store = (manager as unknown as { store: DocumentMemoryStore }).store
     const db = store.rawDb
+    await waitForManagerWriteReady(manager)
     return { manager, db, store, worker }
   }
 
@@ -154,7 +162,7 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     writeFileSync(filePath, sourceContent, 'utf8')
     const fileStat = statSync(filePath)
 
-    const { manager, db, store } = createManager()
+    const { manager, db, store } = await createManager()
 
     // 2. Seed database with legacy V1 overlapping chunks:
     // Chunk 1 has Paragraph A + B
@@ -235,7 +243,7 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     writeFileSync(filePath, content, 'utf8')
     const fileStat = statSync(filePath)
 
-    const { manager, db, store } = createManager()
+    const { manager, db, store } = await createManager()
 
     insertLegacyV1Document(
       db,
@@ -296,7 +304,7 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
   })
 
   it('skips migration and retains legacy chunks when source file is unavailable / offline', async () => {
-    const { manager, db, store } = createManager()
+    const { manager, db, store } = await createManager()
 
     // File does NOT exist on disk
     const missingPath = join(directory, 'offline-drive', 'report.pdf')
@@ -336,7 +344,7 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     const filePath = resolve(join(directory, 'modified-file.txt'))
     writeFileSync(filePath, 'New content modified on disk.', 'utf8')
 
-    const { manager, db } = createManager()
+    const { manager, db } = await createManager()
 
     // Stored metadata has old mtime and size
     insertLegacyV1Document(
@@ -364,8 +372,8 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     expect(enqueueSpy).toHaveBeenCalledWith(candidate.path, true)
   })
 
-  it('prioritizes documents strictly by priority_at DESC and size_bytes ASC (MIG-4)', () => {
-    const { db } = createManager()
+  it('prioritizes documents strictly by priority_at DESC and size_bytes ASC (MIG-4)', async () => {
+    const { db } = await createManager()
 
     // Doc 1: Low priority, large
     insertLegacyV1Document(db, 1, join(directory, 'doc1.txt'), 'doc1.txt', [{ text: 'Content 1', location: 'C1' }], {
@@ -394,8 +402,8 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     expect(queue.map((d) => d.id)).toEqual([3, 2, 1, 4])
   })
 
-  it('recovers from crash/interruption by discarding dangling building sets and resuming cleanly (MIG-14)', () => {
-    const { db } = createManager()
+  it('recovers from crash/interruption by discarding dangling building sets and resuming cleanly (MIG-14)', async () => {
+    const { db } = await createManager()
 
     insertLegacyV1Document(db, 1, join(directory, 'crash-doc.txt'), 'crash-doc.txt', [
       { text: 'Stable legacy content before crash', location: 'C1' },
@@ -435,8 +443,8 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     expect(coordinator.getDocumentsNeedingUpgrade()).toHaveLength(1)
   })
 
-  it('supports pause and resume during chunk upgrade', () => {
-    const { db } = createManager()
+  it('supports pause and resume during chunk upgrade', async () => {
+    const { db } = await createManager()
 
     insertLegacyV1Document(db, 1, join(directory, 'pause1.txt'), 'pause1.txt', [{ text: 'Pausable 1', location: 'C1' }])
     insertLegacyV1Document(db, 2, join(directory, 'pause2.txt'), 'pause2.txt', [{ text: 'Pausable 2', location: 'C1' }])
@@ -456,8 +464,8 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     expect(resumedNeeding).toHaveLength(2)
   })
 
-  it('ensures embedding-migration ignores V1 chunks and only embeds V2 active chunks (MIG-9)', () => {
-    const { db, store } = createManager()
+  it('ensures embedding-migration ignores V1 chunks and only embeds V2 active chunks (MIG-9)', async () => {
+    const { db, store } = await createManager()
 
     // 1. Doc 1 has legacy V1 chunks (active_chunk_set_id IS NULL)
     insertLegacyV1Document(db, 1, join(directory, 'doc-v1.txt'), 'doc-v1.txt', [
@@ -493,7 +501,7 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     writeFileSync(filePath, initialContent, 'utf8')
     const initialStat = statSync(filePath)
 
-    const { manager, db, store, worker } = createManager()
+    const { manager, db, store, worker } = await createManager()
 
     insertLegacyV1Document(
       db,
@@ -561,7 +569,7 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
   })
 
   it('resumes migration automatically when offline source reappears during safety poll without restart (MIG-2)', async () => {
-    const { manager, db, store } = createManager()
+    const { manager, db, store } = await createManager()
 
     // 1. Legacy file is on an offline drive / USB
     const usbDriveFolder = join(directory, 'usb-drive')
@@ -645,7 +653,7 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
   })
 
   it('guarantees zero-downtime lexical searchability across multiple slices during replaceDocumentSliced (Multi-Slice Zero-Downtime)', async () => {
-    const { db, store } = createManager()
+    const { db, store } = await createManager()
 
     const filePath = resolve(join(directory, 'multi-slice-manual.txt'))
     const oldTerm = 'AlphaLegacyKeyword'
@@ -722,7 +730,7 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
         status: 'ready',
       },
       {
-        budgetMs: 0, // Force slice yield on each chunk insertion
+        budgetMs: 0.001, // Tiny positive budget forces a slice yield on each chunk (budgetMs <= 0 is normalised to the default)
         yield: yieldHook,
       },
     )
@@ -779,7 +787,7 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     writeFileSync(filePath, initialContent, 'utf8')
     const initialStat = statSync(filePath)
 
-    const { manager, db, store } = createManager()
+    const { manager, db, store } = await createManager()
 
     insertLegacyV1Document(
       db,

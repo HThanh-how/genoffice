@@ -21,6 +21,36 @@ export interface StorageBudgetSnapshot {
   backupBytes: number
   reclaimableBytes: number
   limitState: 'ok' | 'warning' | 'full'
+  totalManagedBytes?: number
+  protectedBytes?: number
+  reusableFreelistBytes?: number
+  breakdown?: {
+    activeDbBytes: number
+    walBytes: number
+    shmBytes: number
+    annBytes: number
+    ocrExternalBytes: number
+    tempBytes: number
+    backupBytes: number
+    protectedBackupBytes: number
+    reusableFreelistBytes: number
+    modelWeightsBytes: number
+  }
+  modelBytes?: number
+  configVersion?: number
+  measurementStatus?: 'unknown' | 'measuring' | 'fresh' | 'stale' | 'degraded'
+  isDegraded?: boolean
+  measuredAt?: number
+  lastAttemptAt?: number
+  measurementError?: string
+  /** True while soft quota <= used < hardCapBytes: writes still admitted, compaction urgent. */
+  graceActive?: boolean
+  /** Bytes above the soft quota (0 when under it). */
+  overQuotaBytes?: number
+  /** Physical hard stop: the soft quota plus the grace overshoot (10%). */
+  hardCapBytes?: number
+  /** The user-facing soft quota (same value as budgetBytes). */
+  softBudgetBytes?: number
 }
 
 /** Storage diagnostics breakdown and high-level database metrics. */
@@ -54,6 +84,11 @@ export interface DocumentIndexStorageDiagnostics {
   backupBytes?: number | null
   reclaimableBytes?: number
   limitState?: 'ok' | 'warning' | 'full'
+  /**
+   * Last storage compaction run by the indexing worker (JSON: status, bytes before/after, the retention report with
+   * its redundancy tiers and age buckets, released vectors/skeletons). Null/absent until a run happened.
+   */
+  lastCompaction?: Record<string, unknown> | null
 }
 
 /** Performance diagnostics: event-loop lag and SQLite latency profiling. */
@@ -141,7 +176,23 @@ export const DOCUMENT_INDEX_CHANNELS = {
   restartForDbMove: 'home:restart-for-db-move',
   setEverything: 'home:set-everything',
   chooseEverythingExecutable: 'home:choose-everything-executable',
+  setIndexFileImportance: 'home:set-index-file-importance',
+  getStorageBudgetSettings: 'home:get-storage-budget-settings',
+  setStorageBudgetSettings: 'home:set-storage-budget-settings',
 } as const
+
+export type StorageBudgetPreset = '1gb' | '3gb' | '5gb' | 'custom'
+export type StorageBudgetStatus = 'applied' | 'pending' | 'error'
+
+export interface StorageBudgetConfig {
+  maxDatabaseBytes: number
+  preset: StorageBudgetPreset
+  version?: number
+  appliedVersion?: number | null
+  status?: StorageBudgetStatus
+  error?: string
+  appliedBudgetBytes?: number | null
+}
 
 /** Everything (voidtools) as an optional, instant file-name search next to the document index. */
 export interface EverythingState {
@@ -172,15 +223,18 @@ export interface PasteFilesResult {
   error?: string
 }
 
-export type EmbeddingProfileChoice = 'standard' | 'high'
+/** standard/high are the original models (kept for existing installs); base..plus are the hardware tiers. */
+export type EmbeddingProfileChoice = 'standard' | 'high' | 'base' | 'balanced' | 'mid' | 'plus'
 
 /** The search-model setting, with what this computer can run. */
 export interface EmbeddingModelState {
   profile: EmbeddingProfileChoice
   /** the model that suits this computer */
   recommended: EmbeddingProfileChoice
-  /** why "high" is not advised here (absent when it is) */
+  /** why a bigger model is not advised here (absent for the top tier) */
   limit?: 'memory' | 'cpu'
+  /** whether the model files of the profile in use are already on this computer (absent = unknown) */
+  modelCached?: boolean
   machine: { totalMemGiB: number; logicalCores: number }
   profiles: Record<
     EmbeddingProfileChoice,
@@ -254,6 +308,19 @@ export interface IndexFileDetail {
     ocrChars: number
     ocrModel?: string
   }
+  importance?: FileImportanceInfo
+}
+
+export type FileImportanceOverride = 'auto' | 'important' | 'low'
+export type FileImportanceSuggestion = 'unknown' | 'normal' | 'important'
+export type FileImportanceEffective = 'important' | 'normal' | 'low'
+
+export interface FileImportanceInfo {
+  override: FileImportanceOverride
+  suggestion: FileImportanceSuggestion
+  reason: string | null
+  effective: FileImportanceEffective
+  updatedAt: number
 }
 
 /** One finished scan or refresh of a folder. */
@@ -284,6 +351,9 @@ export interface IndexedFolder {
   totalFiles: number
   readyFiles: number
   pendingFiles: number
+  waitingFiles?: number
+  /** vectors released to save space: still searchable, reloaded when opened */
+  releasedFiles?: number
   errorFiles: number
   emptyFiles?: number
   completedChunks?: number
@@ -355,6 +425,8 @@ export interface DocumentIndexApi {
   stopIndexFile(documentId: number): Promise<{ ok: boolean; error?: string }>
   /** How far one file got: found, read, OCR, embedded. Null when the file is not in the index. */
   getIndexFileDetail(documentId: number): Promise<IndexFileDetail | null>
+  /** Set file importance override (auto | important | low). */
+  setIndexFileImportance?(documentId: number, importance: FileImportanceOverride): Promise<{ ok: boolean; error?: string }>
   getEmbeddingModel(): Promise<EmbeddingModelState>
   /** Switch the search model; documents are read again with it in the background. */
   setEmbeddingModel(profile: EmbeddingProfileChoice): Promise<{ ok: boolean; requeued: number }>
@@ -362,4 +434,10 @@ export interface DocumentIndexApi {
   getDocumentIndexSnapshot(forceRefresh?: boolean): Promise<DocumentIndexSnapshot>
   /** Storage budget snapshot and user-visible limits. */
   getDocumentIndexStorageBudget?(): Promise<StorageBudgetSnapshot>
+  /** Storage budget configuration (presets: 1GB, 3GB, 5GB, custom). */
+  getStorageBudgetSettings?(): Promise<StorageBudgetConfig>
+  /** Update storage budget configuration. */
+  setStorageBudgetSettings?(
+    settings: { maxDatabaseBytes?: number; preset?: StorageBudgetPreset; version?: number } | number,
+  ): Promise<{ ok: boolean; settings?: StorageBudgetConfig; error?: string }>
 }

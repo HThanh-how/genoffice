@@ -9,6 +9,7 @@ import type {
 import type { HomeApi } from '../../../shared/home-api'
 import { useI18n } from '../locale'
 import { readIndexRequest } from './index-request'
+import { ReleasedChip } from './ReleasedChip'
 
 export interface IndexedFoldersProps {
   api?: HomeApi
@@ -613,12 +614,18 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
                 ? ` · ${fill(dict.waiting, { n: folder.pendingFiles })}`
                 : ''}
               {folder.errorFiles > 0 ? ` · ${fill(dict.errors, { n: folder.errorFiles })}` : ''}
+              {!!folder.releasedFiles && (
+                <>
+                  {' · '}
+                  <ReleasedChip count={folder.releasedFiles} />
+                </>
+              )}
             </div>
             {folder.totalFiles > 0 && (
               <progress
                 style={{ width: '100%', height: 6, margin: '10px 0' }}
                 max={folder.totalFiles}
-                value={folder.readyFiles + folder.errorFiles}
+                value={folder.readyFiles + folder.errorFiles + (folder.releasedFiles ?? 0)}
                 aria-label={lang === 'vi' ? 'Tiến độ tệp' : 'File progress'}
               />
             )}

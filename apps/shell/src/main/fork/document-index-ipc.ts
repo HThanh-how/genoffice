@@ -19,6 +19,7 @@ import {
   getDocumentIndexDiagnostics,
 } from './document-index-snapshot-service'
 import { registerFolderAndModelHandlers } from './document-index-folder-handlers'
+import { registerDocumentIndexImportanceHandlers } from './document-index-importance-handlers'; import { registerDocumentIndexStorageHandlers } from './document-index-storage-handlers'
 
 export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
@@ -59,6 +60,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   }
 
   registerFolderAndModelHandlers(deps, () => folderCounts.invalidate())
+  registerDocumentIndexImportanceHandlers(deps); registerDocumentIndexStorageHandlers(deps)
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, (_event, ids: unknown) => {
     if (!Array.isArray(ids) || ids.length > 200 || ids.some((id) => !Number.isSafeInteger(id) || id < 1)) {

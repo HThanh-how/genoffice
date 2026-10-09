@@ -48,7 +48,10 @@ export class DiagnosticsRepository {
     return this.getSchemaPhysicalState()
   }
 
-  getStorageDiagnostics(backupPath?: string): DocumentIndexStorageDiagnostics {
+  getStorageDiagnostics(
+    backupPath?: string,
+    budget?: DocumentIndexStorageBudget,
+  ): DocumentIndexStorageDiagnostics {
     let activeDbSizeBytes = 0
     let walSizeBytes = 0
     let v2BackupSizeBytes: number | null = null
@@ -230,7 +233,7 @@ export class DiagnosticsRepository {
     }
 
     const databaseBytes = activeDbSizeBytes + walSizeBytes
-    const budgetBytes = DEFAULT_STORAGE_BUDGET.maxDatabaseBytes
+    const budgetBytes = budget?.maxDatabaseBytes ?? DEFAULT_STORAGE_BUDGET.maxDatabaseBytes
     const usageRatio = budgetBytes > 0 ? Number((databaseBytes / budgetBytes).toFixed(4)) : 0
     const limitState = calculateStorageLimitState(databaseBytes, budgetBytes)
     const chunksBytes = breakdown?.chunksBytes ?? 0
@@ -266,7 +269,7 @@ export class DiagnosticsRepository {
   }
 
   getStorageBudgetSnapshot(budget?: DocumentIndexStorageBudget, backupPath?: string): StorageBudgetSnapshot {
-    const diag = this.getStorageDiagnostics(backupPath)
+    const diag = this.getStorageDiagnostics(backupPath, budget)
     const effBudget = budget?.maxDatabaseBytes ?? DEFAULT_STORAGE_BUDGET.maxDatabaseBytes
     return createStorageBudgetSnapshot({
       activeDbSizeBytes: diag.activeDbSizeBytes,

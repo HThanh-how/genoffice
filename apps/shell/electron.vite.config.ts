@@ -9,7 +9,7 @@ export default defineConfig({
   main: {
     // node:sqlite is a Node 22+ builtin the bundler's builtin list may predate
     build: {
-      rollupOptions: { external: ['node:sqlite', 'onnxruntime-node', '@huggingface/tokenizers'] },
+      rollupOptions: { external: ['node:sqlite', 'onnxruntime-node', '@huggingface/tokenizers', 'tesseract.js'] },
     },
   },
   preload: {

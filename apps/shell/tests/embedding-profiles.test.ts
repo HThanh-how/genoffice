@@ -53,30 +53,25 @@ describe('embedding profiles', () => {
 })
 
 describe('recommendEmbeddingProfile', () => {
-  const pc = { arch: 'x64', platform: 'win32' }
-  it('advises standard for an old i3 (16 GB but only 4 threads)', () => {
+  const pc = { arch: 'x64', platform: 'win32', ortVersion: '1.23.2' }
+  it('advises base for an old i3 with 4 threads only when RAM is also small; 16 GB / 4 threads is mid', () => {
     expect(recommendEmbeddingProfile({ ...pc, totalMemGiB: 15.9, logicalCores: 4 })).toEqual({
-      profile: 'standard',
-      limit: 'cpu',
-    })
-  })
-  it('advises standard for a Ryzen 7 laptop with 8 GB (enough threads, too little memory)', () => {
-    expect(recommendEmbeddingProfile({ ...pc, totalMemGiB: 7.4, logicalCores: 8 })).toEqual({
-      profile: 'standard',
+      profile: 'mid',
       limit: 'memory',
     })
   })
-  it('allows high on a 16 GB machine with 8+ threads and on Apple Silicon', () => {
-    expect(recommendEmbeddingProfile({ ...pc, totalMemGiB: 15.9, logicalCores: 12 }).profile).toBe(
-      'high',
-    )
+  it('advises balanced for a Ryzen 7 laptop with 8 GB', () => {
+    expect(recommendEmbeddingProfile({ ...pc, totalMemGiB: 7.4, logicalCores: 8 })).toEqual({
+      profile: 'balanced',
+      limit: 'memory',
+    })
+  })
+  it('advises mid on a 16 GB machine and plus from 32 GB, on Apple Silicon as well', () => {
+    expect(recommendEmbeddingProfile({ ...pc, totalMemGiB: 15.9, logicalCores: 12 }).profile).toBe('mid')
     expect(
-      recommendEmbeddingProfile({
-        arch: 'arm64',
-        platform: 'darwin',
-        totalMemGiB: 16,
-        logicalCores: 10,
-      }).profile,
-    ).toBe('high')
+      recommendEmbeddingProfile({ arch: 'arm64', platform: 'darwin', totalMemGiB: 16, logicalCores: 10, ortVersion: '1.23.2' })
+        .profile,
+    ).toBe('mid')
+    expect(recommendEmbeddingProfile({ ...pc, totalMemGiB: 32, logicalCores: 8 })).toEqual({ profile: 'plus' })
   })
 })

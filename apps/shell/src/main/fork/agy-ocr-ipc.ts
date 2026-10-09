@@ -12,6 +12,7 @@ import { readAppSettings, writeAppSettingThen } from '../app-settings'
 import {
   AGY_OCR_CHANNELS,
   AGY_OCR_SETTINGS_KEY,
+  DEFAULT_LOCAL_OCR_SETTINGS,
   agyOcrSettingsFrom,
   mergeAgyOcrSettings,
   type AgyOcrModelList,
@@ -19,7 +20,7 @@ import {
   type AgyOcrSettings,
   type AgyOcrStatus,
 } from '../../shared/fork/agy-ocr'
-import { AgyOcrJob, type OcrRecognizeInput } from '../document-memory/agy-ocr-job'
+import { AgyOcrJob, evaluateOcrGate, type OcrPolicyView, type OcrRecognizeInput } from '../document-memory/agy-ocr-job'
 import { OcrStateStore } from '../document-memory/agy-ocr-state'
 import type { DocumentMemoryManager } from '../document-memory/manager'
 import { currentIndexingPolicy } from './indexing-policy-bus'
@@ -90,10 +91,36 @@ export function registerAgyOcr(deps: AgyOcrDeps): void {
     if (job && jobFor === manager) return job
     job?.stop()
     jobFor = manager
+    const policy = (): OcrPolicyView | null => {
+      const published = currentIndexingPolicy()
+      return published
+        ? {
+            paused: published.paused,
+            onBattery: published.onBattery,
+            ...(published.batteryBand ? { batteryBand: published.batteryBand } : {}),
+          }
+        : null
+    }
+    const idleSeconds = (): number | null => {
+      try {
+        const idle = powerMonitor.getSystemIdleTime()
+        return Number.isFinite(idle) ? idle : null
+      } catch {
+        return null
+      }
+    }
+    // the local pass obeys the same idle / AC / pause switches as the cloud reader
+    const local = manager.localOcr(
+      () => settings.localOcr ?? DEFAULT_LOCAL_OCR_SETTINGS,
+      () => {
+        const gate = evaluateOcrGate({ settings, policy: policy(), idleSeconds: idleSeconds() })
+        return gate.ok ? { ok: true } : { ok: false, reason: gate.reason }
+      },
+    )
     job = new AgyOcrJob({
       settings: () => settings,
       pdfPageLimit: () => manager.getPdfMaxPages(),
-      host: manager.ocrHost(),
+      host: local.host,
       state: new OcrStateStore(
         join(deps.userDataPath(), 'agy-ocr-state.json'),
         Date.now,
@@ -101,24 +128,9 @@ export function registerAgyOcr(deps: AgyOcrDeps): void {
       ),
       recognize: recognizeWithAgy,
       readUsage: () => readAgyUsage(),
-      policy: () => {
-        const policy = currentIndexingPolicy()
-        return policy
-          ? {
-              paused: policy.paused,
-              onBattery: policy.onBattery,
-              ...(policy.batteryBand ? { batteryBand: policy.batteryBand } : {}),
-            }
-          : null
-      },
-      idleSeconds: () => {
-        try {
-          const idle = powerMonitor.getSystemIdleTime()
-          return Number.isFinite(idle) ? idle : null
-        } catch {
-          return null
-        }
-      },
+      policy,
+      idleSeconds,
+      localPass: () => local.runner.tick(),
       now: Date.now,
       timezoneOffset: systemTimezoneOffset,
       every: (callback, ms) => {

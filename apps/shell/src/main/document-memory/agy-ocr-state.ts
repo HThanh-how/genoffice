@@ -266,14 +266,22 @@ export class OcrStateStore {
 
   private prune(): void {
     const entries = Object.entries(this.data.files)
-    if (entries.length <= MAX_FILE_RECORDS) return
-    // keep every non-retryable record (they stop wasted retries); drop the oldest others
-    const keep = entries
-      .filter(([, f]) => f.nonRetryable)
-      .concat(
-        entries.filter(([, f]) => !f.nonRetryable).sort((a, b) => b[1].updatedAt - a[1].updatedAt),
-      )
-      .slice(0, MAX_FILE_RECORDS)
-    this.data.files = Object.fromEntries(keep)
+    if (entries.length > MAX_FILE_RECORDS) {
+      // Prioritize non-retryable records, then retryable records, strictly capped at MAX_FILE_RECORDS
+      const nonRetryable = entries
+        .filter(([, f]) => f.nonRetryable)
+        .sort((a, b) => (b[1].updatedAt ?? 0) - (a[1].updatedAt ?? 0))
+      const others = entries
+        .filter(([, f]) => !f.nonRetryable)
+        .sort((a, b) => (b[1].updatedAt ?? 0) - (a[1].updatedAt ?? 0))
+      const keep = nonRetryable.concat(others).slice(0, MAX_FILE_RECORDS)
+      this.data.files = Object.fromEntries(keep)
+    }
+    if (Array.isArray(this.data.pendingReindexPaths) && this.data.pendingReindexPaths.length > 4000) {
+      this.data.pendingReindexPaths = this.data.pendingReindexPaths.slice(-4000)
+    }
+    if (Array.isArray(this.data.manualQueue) && this.data.manualQueue.length > 2000) {
+      this.data.manualQueue = this.data.manualQueue.slice(0, 2000)
+    }
   }
 }

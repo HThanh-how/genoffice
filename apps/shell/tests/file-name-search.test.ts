@@ -119,10 +119,14 @@ describe('chat sources found by name', () => {
 
 describe('nameWords', () => {
   it('keeps name words that look like English filler once the accents are gone', async () => {
-    const { nameWords } = await import('../src/main/document-memory/normalization')
+    const { nameWords, getNameQueryAliases } = await import('../src/main/document-memory/normalization')
     expect(nameWords('mỹ lệ')).toEqual(['my', 'le'])
     expect(nameWords('mẹ tôi')).toEqual(['me'])
-    expect(nameWords('có cái nào là giấy ra viện không?')).toEqual(['giay', 'ra', 'vien', 'xuat'])
+    // "xuất viện" and "ra viện" name the same paper: the alias is an alternative query variant
+    // (getNameQueryAliases) and is honoured by matchedNameWords, not a forced extra typed word.
+    expect(nameWords('có cái nào là giấy ra viện không?')).toEqual(['giay', 'ra', 'vien'])
+    expect(getNameQueryAliases(['giay', 'ra', 'vien'])).toEqual([['giay', 'xuat', 'vien']])
+    expect(getNameQueryAliases(['giay', 'xuat', 'vien'])).toEqual([['giay', 'ra', 'vien']])
     expect(nameWords('tìm tài liệu về Lê Hữu Tài')).toEqual(['le', 'huu', 'tai'])
     expect(nameWords('co cai nao khong')).toEqual([])
   })

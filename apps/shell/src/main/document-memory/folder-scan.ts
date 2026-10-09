@@ -1,9 +1,18 @@
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises'
 import { opendir, stat } from 'node:fs/promises'
 import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { dirname, extname, isAbsolute, parse, relative, resolve } from 'node:path'
+import { dirname, extname, isAbsolute, parse, relative, resolve, sep } from 'node:path'
 import { FolderWatchManager } from './folder-watch-manager'
-import { SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
+import {
+  DEFAULT_MAX_MEDIA_PER_FOLDER,
+  MIN_IMAGE_BYTES,
+  SUPPORTED_EXTENSIONS,
+  isJunkFileName,
+  mediaKindOfExtension,
+  mediaKindOfPath,
+  mediaRejection,
+  shouldSkipDirectory,
+} from './scan-policy'
 import { isGeneratedArtifactPath } from './artifact-policy'
 export { IGNORED_DIRECTORIES, SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
 export { isGeneratedArtifactPath } from './artifact-policy'
@@ -13,12 +22,9 @@ const MAX_ROOT_LENGTH = 32_768
 const MAX_MANIFEST_BYTES = 4 * 1024 * 1024
 /** Progress counters are persisted at most this often while a scan runs (state changes save at once). */
 const MANIFEST_SAVE_INTERVAL_MS = 2_000
-/** Office/editor lock files and partial downloads never hold indexable content. */
-const TEMPORARY_FILE = /\.(tmp|temp|crdownload|partial|part|lock|lck|swp|bak)$/i
-
-/** Hidden files plus lock/temp artifacts (`~$doc.docx`, `x.crdownload`, `.~lock.x#`). */
+/** Hidden files plus lock/temp/backup/partial-download artifacts and OS junk (policy lives in scan-policy.ts). */
 export function isIgnoredFileName(name: string): boolean {
-  return name.startsWith('.') || name.startsWith('~$') || TEMPORARY_FILE.test(name)
+  return isJunkFileName(name)
 }
 
 /** Whether a path below a scanned root is one the scanner would index. */
@@ -30,8 +36,42 @@ export function isIndexablePath(root: string, path: string): boolean {
   const name = relative.pop()
   if (!name || isIgnoredFileName(name)) return false
   if (relative.some(shouldSkipDirectory)) return false
-  if (!SUPPORTED_EXTENSIONS.has(extname(name).toLowerCase())) return false
+  const ext = extname(name).toLowerCase()
+  const media = mediaKindOfExtension(ext)
+  // Size is unknown here: the size floor / folder cap are applied where the file is stat'ed.
+  if (media ? mediaRejection(media, relative) !== null : !SUPPORTED_EXTENSIONS.has(ext)) return false
   if (isGeneratedArtifactPath(path)) return false
+  return true
+}
+
+/** Per-folder allowance of media files (a scan, a refresh or a subtree refresh each start from zero). */
+export interface MediaBudget {
+  max: number
+  taken: number
+  skipped: number
+  truncated: boolean
+}
+
+export function newMediaBudget(max: number): MediaBudget {
+  return { max, taken: 0, skipped: 0, truncated: false }
+}
+
+/**
+ * Whether a stat'ed file should be listed. Documents: up to MAX_DOCUMENT_BYTES (they are read). Media is
+ * only listed and header-probed: no size cap, but images below the noise floor are dropped and at most
+ * `budget.max` media files are taken per folder; the rest is counted and flagged `truncated`, never
+ * silently lost.
+ */
+export function isListableSize(path: string, sizeBytes: number, budget: MediaBudget): boolean {
+  const kind = mediaKindOfPath(path)
+  if (!kind) return sizeBytes <= MAX_DOCUMENT_BYTES
+  if (kind === 'image' && sizeBytes < MIN_IMAGE_BYTES) return false
+  if (budget.taken >= budget.max) {
+    budget.truncated = true
+    budget.skipped++
+    return false
+  }
+  budget.taken++
   return true
 }
 
@@ -90,6 +130,18 @@ export function isValidFolderOwner(value: unknown): value is FolderOwner {
   )
 }
 
+function recordMediaBudget(job: ScanJob, budget: MediaBudget): void {
+  job.media = budget.taken
+  if (budget.skipped) job.mediaSkipped = budget.skipped
+  if (budget.truncated) job.mediaTruncated = true
+}
+
+function resetMediaCounters(job: ScanJob): void {
+  delete job.media
+  delete job.mediaSkipped
+  delete job.mediaTruncated
+}
+
 function ownersOf(job: ScanJob): FolderOwner[] {
   return Array.isArray(job.owners) && job.owners.length > 0 ? job.owners : ['manual']
 }
@@ -118,6 +170,12 @@ export interface ScanJob {
   priority?: boolean
   /** The most recent scans and refreshes, newest first. */
   history?: ScanRun[]
+  /** Images/videos listed in this folder by the last scan (name + metadata only). */
+  media?: number
+  /** Media files left out because the per-folder cap was reached. */
+  mediaSkipped?: number
+  /** True when media was left out (cap): the folder's photos/videos are not all indexed. */
+  mediaTruncated?: boolean
 }
 
 export interface ScanRun {
@@ -147,6 +205,9 @@ export interface FolderSummary {
   lastError?: string
   unavailable?: boolean
   history: ScanRun[]
+  media?: number
+  mediaSkipped?: number
+  mediaTruncated?: boolean
 }
 
 const MAX_RUN_HISTORY = 12
@@ -176,7 +237,14 @@ export class FolderScanManager {
   private saveTimer: NodeJS.Timeout | null = null
   private saveDirty = false
 
-  constructor(userData: string, memory: DiscoveredDocumentIndexer) {
+  private readonly maxMediaPerFolder: number
+
+  constructor(
+    userData: string,
+    memory: DiscoveredDocumentIndexer,
+    options: { maxMediaPerFolder?: number } = {},
+  ) {
+    this.maxMediaPerFolder = options.maxMediaPerFolder ?? DEFAULT_MAX_MEDIA_PER_FOLDER
     mkdirSync(userData, { recursive: true })
     this.manifestPath = resolve(userData, 'document-memory-folders.json')
     this.memory = memory
@@ -190,6 +258,7 @@ export class FolderScanManager {
       interrupted.enrolled = 0
       interrupted.skipped = 0
       interrupted.errors = 0
+      resetMediaCounters(interrupted)
       delete interrupted.lastError
       delete interrupted.unavailable
       if (hasManualOwner(interrupted)) {
@@ -254,6 +323,7 @@ export class FolderScanManager {
         return { ok: false, reason: 'unavailable' }
       }
       const files = new Map<string, { mtimeMs: number; sizeBytes: number }>()
+      const budget = newMediaBudget(this.maxMediaPerFolder)
       let unavailable = false
       const completed = await this.traverse(
         job.root,
@@ -265,7 +335,7 @@ export class FolderScanManager {
           onFile: async (path) => {
             try {
               const fileStat = await stat(path)
-              if (fileStat.isFile() && fileStat.size <= MAX_DOCUMENT_BYTES)
+              if (fileStat.isFile() && isListableSize(path, fileStat.size, budget))
                 files.set(path, { mtimeMs: fileStat.mtimeMs, sizeBytes: fileStat.size })
             } catch {
               // A disconnect midway through traversal is not a complete deletion inventory.
@@ -279,6 +349,7 @@ export class FolderScanManager {
       if (!completed) return { ok: false, reason: 'interrupted' }
       if (unavailable) return { ok: false, reason: 'unavailable' }
       await this.memory.reconcileFolder(job.root, files)
+      recordMediaBudget(job, budget)
       job.reconciledAt = Date.now()
       this.recordRun(job, 'refresh', 'complete', { discovered: files.size })
       if (job.priority) this.memory.prioritizeFolder?.(job.root)
@@ -351,6 +422,7 @@ export class FolderScanManager {
       }
 
       const files = new Map<string, { mtimeMs: number; sizeBytes: number }>()
+      const budget = newMediaBudget(this.maxMediaPerFolder)
       let unavailable = false
       const completed = await this.traverse(
         normalizedSubtree,
@@ -362,7 +434,7 @@ export class FolderScanManager {
           onFile: async (path) => {
             try {
               const fileStat = await stat(path)
-              if (fileStat.isFile() && fileStat.size <= MAX_DOCUMENT_BYTES)
+              if (fileStat.isFile() && isListableSize(path, fileStat.size, budget))
                 files.set(path, { mtimeMs: fileStat.mtimeMs, sizeBytes: fileStat.size })
             } catch {
               unavailable = true
@@ -371,6 +443,7 @@ export class FolderScanManager {
           },
         },
         () => this.closed,
+        job.root,
       )
       if (!completed) return { ok: false, reason: 'interrupted' }
       if (unavailable) return { ok: false, reason: 'unavailable' }
@@ -381,6 +454,7 @@ export class FolderScanManager {
         await this.memory.reconcileFolder(normalizedSubtree, files)
       }
 
+      if (budget.truncated) job.mediaTruncated = true
       job.reconciledAt = Date.now()
       this.recordRun(job, 'refresh', 'complete', { discovered: files.size })
       if (job.priority) this.memory.prioritizeFolder?.(job.root)
@@ -480,6 +554,7 @@ export class FolderScanManager {
       job.enrolled = 0
       job.skipped = 0
       job.errors = 0
+      resetMediaCounters(job)
       delete job.lastError
       delete job.unavailable
     }
@@ -521,6 +596,7 @@ export class FolderScanManager {
     job.enrolled = 0
     job.skipped = 0
     job.errors = 0
+    resetMediaCounters(job)
     delete job.lastError
 
     this.save()
@@ -719,6 +795,7 @@ export class FolderScanManager {
   }
 
   private async walk(job: ScanJob): Promise<void> {
+    const budget = newMediaBudget(this.maxMediaPerFolder)
     const completed = await this.traverse(
       job.root,
       {
@@ -733,8 +810,9 @@ export class FolderScanManager {
             if (this.closed || this.stopRequested) return false
             if (!fileStat.isFile()) {
               job.skipped++
-            } else if (fileStat.size > MAX_DOCUMENT_BYTES) {
+            } else if (!isListableSize(path, fileStat.size, budget)) {
               job.skipped++
+              recordMediaBudget(job, budget)
             } else if (
               this.memory.indexDiscoveredFile(path, {
                 mtimeMs: fileStat.mtimeMs,
@@ -743,6 +821,7 @@ export class FolderScanManager {
             ) {
               job.enrolled++
             }
+            if (mediaKindOfPath(path)) recordMediaBudget(job, budget)
           } catch (error) {
             this.recordError(job, error)
           }
@@ -767,6 +846,8 @@ export class FolderScanManager {
     root: string,
     handlers: TraverseHandlers,
     shouldStop: () => boolean,
+    /** Media noise folders are judged below this folder (the scanned root), not below a refreshed subtree. */
+    judgeFrom: string = root,
   ): Promise<boolean> {
     const pending = [root]
     const visitedDirectories = new Set<string>()
@@ -775,6 +856,7 @@ export class FolderScanManager {
       const canonical = resolve(directory)
       if (visitedDirectories.has(canonical)) continue
       visitedDirectories.add(canonical)
+      const dirsBelowRoot = relative(judgeFrom, canonical).split(sep).filter(Boolean)
       let handle
       try {
         handle = await opendir(canonical)
@@ -802,9 +884,14 @@ export class FolderScanManager {
             handlers.onSkipped()
             continue
           }
-          if (!SUPPORTED_EXTENSIONS.has(extname(entry.name).toLowerCase())) {
-            handlers.onSkipped()
-            continue
+          const extension = extname(entry.name).toLowerCase()
+          if (!SUPPORTED_EXTENSIONS.has(extension)) {
+            const media = mediaKindOfExtension(extension)
+            // Media outside noise folders (thumbnails, caches, app resources ...); size is judged after stat.
+            if (!media || mediaRejection(media, dirsBelowRoot) !== null) {
+              handlers.onSkipped()
+              continue
+            }
           }
           if (isGeneratedArtifactPath(path)) {
             handlers.onSkipped()
@@ -860,6 +947,9 @@ export class FolderScanManager {
         ...(job.lastError ? { lastError: job.lastError } : {}),
         ...(job.unavailable ? { unavailable: true } : {}),
         history: job.history ?? [],
+        ...(job.media ? { media: job.media } : {}),
+        ...(job.mediaSkipped ? { mediaSkipped: job.mediaSkipped } : {}),
+        ...(job.mediaTruncated ? { mediaTruncated: true } : {}),
       }))
       .sort((a, b) => (b.completedAt ?? b.startedAt ?? 0) - (a.completedAt ?? a.startedAt ?? 0))
   }

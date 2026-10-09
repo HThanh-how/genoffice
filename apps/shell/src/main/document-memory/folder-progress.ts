@@ -4,7 +4,11 @@ import type { FolderChunkProgress } from './store'
 export interface FolderIndexProgress {
   totalFiles: number
   readyFiles: number
+  /** Files that truly wait for extraction / embedding (released files are not included). */
   pendingFiles: number
+  waitingFiles?: number
+  /** Vectors/content released to save space: searchable by name/text, reloaded when opened. */
+  releasedFiles?: number
   errorFiles: number
   emptyFiles?: number
   /** Files indexed only in part (chunk cap or sampled rows). */
@@ -35,6 +39,8 @@ export function foldFolderProgress(
     totalFiles: counts.totalFiles,
     readyFiles: counts.readyFiles,
     pendingFiles: counts.pendingFiles,
+    waitingFiles: counts.waitingFiles ?? counts.pendingFiles,
+    releasedFiles: counts.releasedFiles ?? 0,
     errorFiles: counts.errorFiles,
     emptyFiles: counts.emptyFiles ?? 0,
     truncatedFiles: counts.truncatedFiles,

@@ -26,6 +26,8 @@ export interface DocumentMemoryHit {
   ocr?: boolean
   /** Matched by file name only: its content has not been read (e.g. a scanned PDF waiting for OCR). */
   contentUnread?: boolean
+  /** Only the outline of this document is indexed (its repeated body was compacted); opening the file re-reads it in full. */
+  skeletonIndex?: boolean
 }
 
 export interface DocumentMemorySearchResult {

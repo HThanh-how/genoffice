@@ -1,4 +1,3 @@
-import type { IpcMain } from 'electron'
 import { availableParallelism, totalmem } from 'node:os'
 import { dirname, join } from 'node:path'
 import {
@@ -68,6 +67,8 @@ export function registerFolderAndModelHandlers(
         totalFiles: counts?.totalFiles ?? 0,
         readyFiles: counts?.readyFiles ?? 0,
         pendingFiles: counts?.pendingFiles ?? 0,
+        waitingFiles: counts?.waitingFiles ?? counts?.pendingFiles ?? 0,
+        releasedFiles: counts?.releasedFiles ?? 0,
         errorFiles: counts?.errorFiles ?? 0,
         emptyFiles: counts?.emptyFiles ?? 0,
         completedChunks: counts?.completedChunks ?? 0,
@@ -116,12 +117,16 @@ export function registerFolderAndModelHandlers(
       const p = EMBEDDING_PROFILES[id]
       return { name: p.repo, embeddingId: p.embeddingId, dimensions: p.dimensions, downloadMB: p.downloadMB, memoryMB: p.memoryMB }
     }
+    const memory = getDocumentMemory()
     return {
-      profile: getDocumentMemory()?.embeddingSettings().profile ?? 'standard',
+      profile: memory?.embeddingSettings().profile ?? 'standard',
       recommended: advice.profile,
       ...(advice.limit ? { limit: advice.limit } : {}),
+      ...(typeof memory?.embeddingModelCached === 'function' ? { modelCached: memory.embeddingModelCached() } : {}),
       machine,
-      profiles: { standard: info('standard'), high: info('high') },
+      profiles: Object.fromEntries(
+        (Object.keys(EMBEDDING_PROFILES) as EmbeddingProfileId[]).map((id) => [id, info(id)]),
+      ) as EmbeddingModelState['profiles'],
     }
   })
 

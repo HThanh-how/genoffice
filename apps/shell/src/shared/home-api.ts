@@ -238,7 +238,11 @@ export interface HomeIndexingActivity {
   folderProgress: {
     totalFiles: number
     readyFiles: number
+    /** files that truly wait to be read / embedded (released files excluded) */
     pendingFiles: number
+    waitingFiles?: number
+    /** vectors released to save space: still searchable, reloaded when opened */
+    releasedFiles?: number
     errorFiles: number
     emptyFiles?: number
     completedChunks: number

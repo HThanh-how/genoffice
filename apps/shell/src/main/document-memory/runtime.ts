@@ -7,6 +7,8 @@ export const indexingWorkerData: {
   dbPath?: string
   /** `standard` or `high` (see embedding-profiles.ts) */
   embeddingProfile?: EmbeddingProfileId
+  storageBudget?: import('./storage-budget').DocumentIndexStorageBudget
+  configVersion?: number
 } = workerData ?? JSON.parse(process.env.GENOFFICE_INDEX_WORKER_DATA ?? '{}')
 
 export function postIndexMessage(message: unknown): void {

@@ -13,7 +13,10 @@ import {
 } from '../src/main/document-memory/ocr-sidecar'
 import { extractDocument } from '../src/main/document-memory/worker'
 import { encodeGrayJpeg } from '../src/main/document-memory/jpeg-gray'
+import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 import { buildScannedPdf, testPattern } from './helpers/scanned-pdf'
+
+const mockVector320 = () => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)
 
 let dir: string
 let dbPath: string
@@ -22,6 +25,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-ocr-store-'))
   dbPath = join(dir, 'memory.sqlite')
   store = new DocumentMemoryStore(dbPath)
+  store.ensureEmbeddingSpace(EMBEDDING_PROFILES.standard)
 })
 afterEach(() => {
   try {
@@ -33,7 +37,7 @@ afterEach(() => {
 })
 
 const NO_TEXT = 'No readable text; scanned documents need OCR'
-const MODEL = 'test-v1'
+const MODEL = EMBEDDING_PROFILES.standard.embeddingId
 
 function scannedPdf(
   name: string,
@@ -74,7 +78,7 @@ function mismatches(): unknown[] {
       .prepare(
         `SELECT d.id, d.chunk_total, d.chunk_done,
           (SELECT count(*) FROM chunks c WHERE c.document_id = d.id) AS real_total,
-          (SELECT count(*) FROM chunks c WHERE c.document_id = d.id AND c.vector IS NOT NULL) AS real_done
+          (SELECT count(e.chunk_id) FROM chunks c JOIN chunk_embeddings e ON e.chunk_id = c.id WHERE c.document_id = d.id) AS real_done
         FROM documents d WHERE d.chunk_total <> real_total OR d.chunk_done <> real_done`,
       )
       .all()
@@ -88,7 +92,7 @@ function scanStats() {
     return db
       .prepare(
         `SELECT (SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.excluded = 0) AS chunks,
-          (SELECT count(*) FROM chunks c JOIN documents d ON d.id = c.document_id WHERE d.excluded = 0 AND c.vector IS NOT NULL) AS vectors`,
+          (SELECT count(e.chunk_id) FROM chunk_embeddings e JOIN chunks c ON c.id = e.chunk_id JOIN documents d ON d.id = c.document_id WHERE d.excluded = 0) AS vectors`,
       )
       .get() as unknown as { chunks: number; vectors: number }
   } finally {
@@ -274,8 +278,8 @@ describe('OCR text becomes chunks through the normal pipeline', () => {
       extracted.hash,
       0,
       [
-        [1, 0],
-        [0, 1],
+        mockVector320(),
+        mockVector320(),
       ],
       MODEL,
       true,
@@ -289,7 +293,7 @@ describe('OCR text becomes chunks through the normal pipeline', () => {
       completedChunks: 2,
     })
 
-    const hits = store.search('Nguyễn Phúc 0042467', [1, 0], 5, MODEL)
+    const hits = store.search('Nguyễn Phúc 0042467', mockVector320(), 5, MODEL)
     expect(hits.length).toBeGreaterThan(0)
     expect(hits[0]!.ocr).toBe(true)
     expect(hits[0]!.location).toBe('OCR page 1')

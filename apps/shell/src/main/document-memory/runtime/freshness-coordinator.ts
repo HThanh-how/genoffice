@@ -1,14 +1,17 @@
 import { statSync, createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
-import { resolve, extname } from 'node:path'
+import { resolve, extname, basename } from 'node:path'
 import { createHash } from 'node:crypto'
 import type { DocumentMemoryStore, DocumentMemoryHit, StoredDocument } from '../store'
 import type { FreshDocumentMemoryHit } from './search-service'
 import type { FileStabilityGate } from '../file-stability'
 import { volumeRootOf } from '../volume-root'
 import { discoveredPathAdmission } from '../artifact-policy'
-import { SUPPORTED_EXTENSIONS } from '../scan-policy'
+import { isIndexableExtension, isJunkFileName } from '../scan-policy'
+import { mediaKindOfPath } from '../media/media-kinds'
+import { MediaMetadataFiller } from '../media/media-filler'
 import { MAX_DOCUMENT_BYTES } from '../folder-scan'
+import type { PendingMetadataIntakeAdapter } from './pending-metadata-intake'
 
 export type StatOutcome =
   | { kind: 'file'; mtimeMs: number; sizeBytes: number }
@@ -30,6 +33,8 @@ export interface FreshnessCoordinatorOptions {
   onInvalidatePath?: (path: string) => void
   isStopped?: () => boolean
   isEnabled?: () => boolean
+  stabilityRetryScheduleMs?: number[]
+  intakeAdapter?: PendingMetadataIntakeAdapter
 }
 
 const RENAME_HASH_MAX_BYTES = 64 * 1024 * 1024
@@ -47,6 +52,11 @@ function safeStat(path: string): { mtimeMs: number; sizeBytes: number } | null {
   } catch {
     return null
   }
+}
+
+/** Documents are read (and capped); media is only listed and header-probed, so no size cap applies. */
+function withinSizeLimit(path: string, sizeBytes: number): boolean {
+  return mediaKindOfPath(path) !== null || sizeBytes <= MAX_DOCUMENT_BYTES
 }
 
 function addCandidate(map: Map<number, MissingCandidate[]>, c: MissingCandidate): void {
@@ -81,15 +91,42 @@ export class FreshnessCoordinator {
     { candidate: MissingCandidate | null; timer: NodeJS.Timeout }
   >()
   private readonly stabilityRetries = new Map<string, { timer: NodeJS.Timeout }>()
-  private readonly stabilityRetryScheduleMs = [15_000, 30_000, 60_000]
+  private readonly stabilityRetryScheduleMs: number[]
   private readonly tombstoneGraceMs: number
 
   constructor(private readonly options: FreshnessCoordinatorOptions) {
     this.tombstoneGraceMs = options.tombstoneGraceMs ?? 300_000
+    this.stabilityRetryScheduleMs = options.stabilityRetryScheduleMs ?? [15_000, 30_000, 60_000]
   }
 
   get store(): DocumentMemoryStore {
     return this.options.store
+  }
+
+  private mediaFiller: MediaMetadataFiller | null = null
+  private mediaStarted = false
+
+  private filler(): MediaMetadataFiller {
+    return (this.mediaFiller ??= new MediaMetadataFiller(this.store.rawDb, {
+      shouldRun: () => !this.options.isStopped?.() && (this.options.isEnabled?.() ?? true),
+    }))
+  }
+
+  /** Read every pending image/video header now (the background filler does this by itself, a few files at a time). */
+  drainMediaMetadata(): Promise<number> {
+    return this.filler().drain()
+  }
+
+  /** Images/videos: name + metadata row, no extraction queue. True when a row was created or its file changed. */
+  private indexMedia(path: string, current: { mtimeMs: number; sizeBytes: number }): boolean {
+    const { outcome } = this.store.enrollMedia(path, current.mtimeMs, current.sizeBytes)
+    if (outcome === 'skipped' || outcome === 'excluded' || outcome === 'refused') return false
+    // Unchanged rows have nothing to read; the first call also resumes headers left over from a previous session.
+    if (outcome !== 'unchanged' || !this.mediaStarted) {
+      this.mediaStarted = true
+      this.filler().kick()
+    }
+    return outcome === 'created' || outcome === 'updated'
   }
 
   indexDiscoveredFile(
@@ -102,9 +139,22 @@ export class FreshnessCoordinator {
     if (!admission.allowed) return false
     const current = metadata ?? safeStat(p)
     if (!current) return false
+    if (this.options.isEnabled && !this.options.isEnabled()) {
+      this.options.intakeAdapter?.onDiscovered(p, current)
+      return false
+    }
+    if (mediaKindOfPath(p)) return this.indexMedia(p, current)
     const needsIndex = this.store.enrollDiscovered(p, current.mtimeMs, current.sizeBytes)
     const document = this.store.documentByPath(p)
-    if (!document || document.status === 'excluded') return false
+    if (!document || document.status === 'excluded') {
+      if (!document) {
+        this.options.intakeAdapter?.onDiscovered(p, current)
+      }
+      return false
+    }
+    if (!needsIndex && (document.mtimeMs !== current.mtimeMs || document.sizeBytes !== current.sizeBytes)) {
+      this.options.intakeAdapter?.onDiscovered(p, current)
+    }
     if (needsIndex && document.status !== 'pending' && document.status !== 'text-only') {
       try {
         this.store.rawDb
@@ -194,6 +244,8 @@ export class FreshnessCoordinator {
     meta: { mtimeMs: number; sizeBytes: number },
     candidates: Map<number, MissingCandidate[]>,
   ): Promise<'moved' | 'indexed' | 'skipped'> {
+    // Photos and videos are never hashed for rename detection (that would read every file in full).
+    if (mediaKindOfPath(path)) return this.indexDiscoveredFile(path, meta) ? 'indexed' : 'skipped'
     let fileSha: string | null | undefined
     const list = candidates.get(meta.sizeBytes)
     if (list?.length && meta.sizeBytes <= RENAME_HASH_MAX_BYTES) {
@@ -231,6 +283,7 @@ export class FreshnessCoordinator {
   ): boolean {
     if (this.options.isStopped?.()) return false
     this.options.onInvalidatePath?.(oldPath)
+    this.options.intakeAdapter?.onMoved?.(oldPath, newPath)
     const oldKey = pathKey(oldPath)
     const pending = this.missing.get(oldKey)
     if (pending) {
@@ -252,6 +305,7 @@ export class FreshnessCoordinator {
   }
 
   async tombstone(path: string): Promise<void> {
+    this.options.intakeAdapter?.onCanceled?.(path)
     if (this.options.onTombstone) {
       await this.options.onTombstone(path)
     } else {
@@ -334,8 +388,8 @@ export class FreshnessCoordinator {
           if (this.store.documentByPath(path)) this.markMissing(path)
         } else if (
           outcome.kind === 'stable' &&
-          SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase()) &&
-          outcome.file.sizeBytes <= MAX_DOCUMENT_BYTES
+          isIndexableExtension(extname(path)) && !isJunkFileName(basename(path)) &&
+          withinSizeLimit(path, outcome.file.sizeBytes)
         ) {
           this.clearStabilityRetry(path)
           present.push({
@@ -365,7 +419,7 @@ export class FreshnessCoordinator {
 
   private scheduleStabilityRetry(path: string, attempt: number, stabilityGate: FileStabilityGate): void {
     if (this.options.isStopped?.()) return
-    if (!SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase())) return
+    if (!isIndexableExtension(extname(path)) || isJunkFileName(basename(path))) return
     const doc = this.store.documentByPath(path)
     if (doc?.status === 'excluded') {
       this.clearStabilityRetry(path)
@@ -395,10 +449,7 @@ export class FreshnessCoordinator {
     if (this.options.isStopped?.()) return
     if (outcome.kind === 'stable') {
       this.clearStabilityRetry(path)
-      if (
-        SUPPORTED_EXTENSIONS.has(extname(path).toLowerCase()) &&
-        outcome.file.sizeBytes <= MAX_DOCUMENT_BYTES
-      ) {
+      if (isIndexableExtension(extname(path)) && !isJunkFileName(basename(path)) && withinSizeLimit(path, outcome.file.sizeBytes)) {
         const meta = { mtimeMs: outcome.file.mtimeMs, sizeBytes: outcome.file.sizeBytes }
         if (this.store.documentByPath(path)) {
           this.indexDiscoveredFile(path, meta)

@@ -43,7 +43,7 @@ describe('Low Memory Tier & 4GB / 8GB Machine Profiles', () => {
   })
 
   describe('Model Recommendations based on System Specs', () => {
-    it('recommends standard (F2LLM) for 4 GB RAM machines with memory limit flag', () => {
+    it('recommends the base tier (Bekko a8m) for 4 GB RAM machines with memory limit flag', () => {
       const spec4GB: MachineSpec = {
         totalMemGiB: 4,
         logicalCores: 4,
@@ -51,11 +51,11 @@ describe('Low Memory Tier & 4GB / 8GB Machine Profiles', () => {
         arch: 'x64',
       }
       const rec = recommendEmbeddingProfile(spec4GB)
-      expect(rec.profile).toBe('standard')
+      expect(rec.profile).toBe('base')
       expect(rec.limit).toBe('memory')
     })
 
-    it('defaults to standard (F2LLM) for 8 GB RAM machines to guarantee zero OOM', () => {
+    it('recommends the balanced tier (Bekko a25m, ~1 GB resident) for 8 GB RAM machines', () => {
       const spec8GB: MachineSpec = {
         totalMemGiB: 8,
         logicalCores: 8,
@@ -63,19 +63,21 @@ describe('Low Memory Tier & 4GB / 8GB Machine Profiles', () => {
         arch: 'x64',
       }
       const rec = recommendEmbeddingProfile(spec8GB)
-      // Even with 8 cores, 8 GB machines safely default to standard/F2LLM
-      expect(rec.profile).toBe('standard')
+      // Even with 8 cores, 8 GB machines stay on the 384d Bekko a25m: it fits well inside 20% of RAM
+      expect(rec.profile).toBe('balanced')
     })
 
-    it('recommends high profile (Qwen) on >= 12 GB RAM with sufficient CPU cores', () => {
+    it('recommends the mid tier (EmbeddingGemma-2) on 16 GB RAM once ONNX Runtime can load it', () => {
       const spec16GB: MachineSpec = {
         totalMemGiB: 16,
         logicalCores: 8,
         platform: 'win32',
         arch: 'x64',
+        ortVersion: '1.23.2',
       }
-      const rec = recommendEmbeddingProfile(spec16GB)
-      expect(rec.profile).toBe('high')
+      expect(recommendEmbeddingProfile(spec16GB).profile).toBe('mid')
+      // an older bundled onnxruntime-node cannot load the Gemma export: stay on the Bekko tier
+      expect(recommendEmbeddingProfile({ ...spec16GB, ortVersion: '1.21.0' }).profile).toBe('balanced')
     })
   })
 

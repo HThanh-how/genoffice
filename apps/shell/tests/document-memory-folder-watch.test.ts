@@ -123,7 +123,7 @@ describe('FolderWatchManager', () => {
     first!.emit('~$report.docx')
     first!.emit('download.pdf.crdownload')
     first!.emit('scratch.tmp')
-    first!.emit('photo.png')
+    first!.emit('archive.zip')
     first!.emit(join('node_modules', 'pkg', 'readme.md'))
     first!.emit(join('.git', 'config.txt'))
     await wait(120)

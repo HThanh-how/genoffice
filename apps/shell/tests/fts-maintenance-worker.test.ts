@@ -6,6 +6,7 @@ import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 import {
   publishIndexingPolicy,
   resetIndexingPolicyBus,
@@ -47,6 +48,11 @@ class MockFtsWorker extends EventEmitter {
   }
 
   postMessage(message: { id: number; type: string }): void {
+    const ack = storageBudgetAckReply(message)
+    if (ack) {
+      this.emit('message', ack)
+      return
+    }
     this.sentRequests.push({ id: message.id, type: message.type })
     if (message.type === 'fts-maintenance-step') {
       const more = this.moreQueue.length > 0 ? this.moreQueue.shift()! : false

@@ -1,5 +1,5 @@
 import { appConfirm } from '../ui-feedback'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState } from 'react'
 import type {
   EmbeddingModelState,
   EmbeddingProfileChoice,
@@ -18,16 +18,27 @@ const EN = {
   highDesc:
     'Finds the right Vietnamese passage noticeably more often (about 10 points better on a legal-search test) but is about 6 times slower and needs about {download} MB of download and {memory} MB of memory.',
   machine: 'This computer: {mem} GB memory, {cores} processor threads.',
+  base: 'Light',
+  baseDesc:
+    'Fastest and smallest, made for computers with about 4 GB of memory (about {download} MB download, {memory} MB of memory).',
+  balanced: 'Balanced',
+  balancedDesc:
+    'Better Vietnamese search for computers with about 8 GB of memory (about {download} MB download, {memory} MB of memory).',
+  mid: 'High quality',
+  midDesc:
+    'The best quality for its speed, made for computers with 16 GB of memory (about {download} MB download, {memory} MB of memory).',
+  plus: 'Maximum',
+  plusDesc:
+    'The same model and the same index as High quality, with more parallel work and longer passages for 32 GB computers. Switching between the two does not re-read your files.',
   recommended: 'Recommended here',
-  limitMemory:
-    'High quality needs at least 16 GB of memory; this computer has less, so Standard is advised.',
-  limitCpu: 'High quality would be very slow with this few processor threads; Standard is advised.',
-  confirmHigh:
-    'Switch to the high-quality model?\n\nIt downloads about {download} MB and re-reads all indexed files, which can take hours on this computer. Search keeps working meanwhile.',
-  confirmHighWeak:
-    'Switch to the high-quality model?\n\nThis computer is below what it needs ({reason}). Indexing will be slow and may use a lot of memory.\n\nIt downloads about {download} MB and re-reads all indexed files.',
-  confirmStandard:
-    'Switch back to the standard model?\n\nAll indexed files are re-read with it in the background. Search keeps working meanwhile.',
+  legacyMissing:
+    'The Standard search model is not downloaded on this computer and its download source is no longer available, so semantic search is off. Switch to "{name}" (recommended here) to turn it on; text search keeps working.',
+  limitMemory: 'This computer has less memory than the larger models need, so a smaller one is advised.',
+  limitCpu: 'The larger models would be very slow with this few processor threads; a smaller one is advised.',
+  confirmSwitch:
+    'Switch to this search model?\n\nIt downloads about {download} MB and re-reads all indexed files in the background. Search keeps working meanwhile.',
+  confirmHeavy:
+    'Switch to this search model?\n\nThis computer is below what it needs ({reason}). Indexing will be slow and may use a lot of memory.\n\nIt downloads about {download} MB and re-reads all indexed files.',
   switching: 'Switching…',
   switched: 'Switched. {n} files are being re-read.',
   active: 'In use',
@@ -48,15 +59,27 @@ const VI: typeof EN = {
   highDesc:
     'Tìm đúng đoạn tiếng Việt chính xác hơn rõ rệt (hơn khoảng 10 điểm trong bài thử tìm văn bản pháp luật) nhưng chậm hơn khoảng 6 lần, cần tải khoảng {download} MB và dùng khoảng {memory} MB bộ nhớ.',
   machine: 'Máy này: {mem} GB RAM, {cores} luồng xử lý.',
+  base: 'Nhẹ',
+  baseDesc:
+    'Nhanh và nhỏ nhất, dành cho máy khoảng 4 GB RAM (tải khoảng {download} MB, dùng khoảng {memory} MB bộ nhớ).',
+  balanced: 'Cân bằng',
+  balancedDesc:
+    'Tìm tiếng Việt tốt hơn cho máy khoảng 8 GB RAM (tải khoảng {download} MB, dùng khoảng {memory} MB bộ nhớ).',
+  mid: 'Chất lượng cao',
+  midDesc:
+    'Chất lượng tốt nhất so với tốc độ, dành cho máy 16 GB RAM (tải khoảng {download} MB, dùng khoảng {memory} MB bộ nhớ).',
+  plus: 'Tối đa',
+  plusDesc:
+    'Cùng mô hình và cùng chỉ mục với Chất lượng cao, nhưng chạy song song nhiều hơn và đọc đoạn dài hơn cho máy 32 GB RAM. Chuyển qua lại giữa hai bản không phải đọc lại tệp.',
   recommended: 'Phù hợp với máy này',
-  limitMemory: 'Chất lượng cao cần ít nhất 16 GB RAM; máy này ít hơn nên nên dùng Tiêu chuẩn.',
-  limitCpu: 'Máy có quá ít luồng xử lý nên bản chất lượng cao sẽ rất chậm; nên dùng Tiêu chuẩn.',
-  confirmHigh:
-    'Chuyển sang mô hình chất lượng cao?\n\nCần tải khoảng {download} MB và đọc lại toàn bộ tệp đã lập chỉ mục, có thể mất vài giờ trên máy này. Tìm kiếm vẫn dùng được trong lúc đó.',
-  confirmHighWeak:
-    'Chuyển sang mô hình chất lượng cao?\n\nMáy này chưa đạt yêu cầu ({reason}). Việc lập chỉ mục sẽ chậm và có thể tốn nhiều bộ nhớ.\n\nCần tải khoảng {download} MB và đọc lại toàn bộ tệp đã lập chỉ mục.',
-  confirmStandard:
-    'Quay về mô hình tiêu chuẩn?\n\nToàn bộ tệp đã lập chỉ mục sẽ được đọc lại ở chế độ nền. Tìm kiếm vẫn dùng được trong lúc đó.',
+  legacyMissing:
+    'Mô hình Tiêu chuẩn chưa được tải về máy này và nguồn tải không còn khả dụng nên tìm theo ngữ nghĩa đang tắt. Hãy chuyển sang "{name}" (phù hợp với máy này) để bật lại; tìm theo từ khóa vẫn dùng được.',
+  limitMemory: 'Máy này có ít RAM hơn mức các mô hình lớn cần nên nên dùng bản nhỏ hơn.',
+  limitCpu: 'Máy có quá ít luồng xử lý nên các mô hình lớn sẽ rất chậm; nên dùng bản nhỏ hơn.',
+  confirmSwitch:
+    'Chuyển sang mô hình tìm kiếm này?\n\nCần tải khoảng {download} MB và đọc lại toàn bộ tệp đã lập chỉ mục ở chế độ nền. Tìm kiếm vẫn dùng được trong lúc đó.',
+  confirmHeavy:
+    'Chuyển sang mô hình tìm kiếm này?\n\nMáy này chưa đạt yêu cầu ({reason}). Việc lập chỉ mục sẽ chậm và có thể tốn nhiều bộ nhớ.\n\nCần tải khoảng {download} MB và đọc lại toàn bộ tệp đã lập chỉ mục.',
   switching: 'Đang chuyển…',
   switched: 'Đã chuyển. {n} tệp đang được đọc lại.',
   active: 'Đang dùng',
@@ -76,14 +99,24 @@ const ZH: typeof EN = {
   highDesc:
     '明显更常找到正确的越南语段落（在法律检索测试中约高 10 分），但慢约 6 倍，需要下载约 {download} MB，占用约 {memory} MB 内存。',
   machine: '本机：{mem} GB 内存，{cores} 个处理线程。',
+  base: '轻量',
+  baseDesc: '最快最小，适合约 4 GB 内存的电脑（下载约 {download} MB，占用约 {memory} MB 内存）。',
+  balanced: '均衡',
+  balancedDesc: '为约 8 GB 内存的电脑提供更好的越南语搜索（下载约 {download} MB，占用约 {memory} MB 内存）。',
+  mid: '高质量',
+  midDesc: '同等速度下质量最好，适合 16 GB 内存的电脑（下载约 {download} MB，占用约 {memory} MB 内存）。',
+  plus: '最高',
+  plusDesc:
+    '与“高质量”使用相同的模型和相同的索引，为 32 GB 内存的电脑提供更多并行处理和更长的段落。两者之间切换不需要重新读取文件。',
   recommended: '适合本机',
-  limitMemory: '高质量至少需要 16 GB 内存；本机内存较少，建议使用标准。',
-  limitCpu: '处理线程太少，高质量会非常慢；建议使用标准。',
-  confirmHigh:
-    '切换到高质量模型？\n\n需要下载约 {download} MB，并重新读取所有已索引文件，在这台电脑上可能需要数小时。期间搜索仍可使用。',
-  confirmHighWeak:
-    '切换到高质量模型？\n\n本机未达到要求（{reason}）。索引会很慢，并可能占用大量内存。\n\n需要下载约 {download} MB，并重新读取所有已索引文件。',
-  confirmStandard: '切换回标准模型？\n\n所有已索引的文件会在后台重新读取。期间搜索仍可使用。',
+  legacyMissing:
+    '本机未下载“标准”搜索模型，且其下载来源已不可用，因此语义搜索处于关闭状态。请切换到“{name}”（适合本机）以启用；文本搜索仍可使用。',
+  limitMemory: '本机内存少于较大模型的需求，建议使用较小的模型。',
+  limitCpu: '处理线程太少，较大的模型会非常慢；建议使用较小的模型。',
+  confirmSwitch:
+    '切换到此搜索模型？\n\n需要下载约 {download} MB，并在后台重新读取所有已索引文件。期间搜索仍可使用。',
+  confirmHeavy:
+    '切换到此搜索模型？\n\n本机未达到要求（{reason}）。索引会很慢，并可能占用大量内存。\n\n需要下载约 {download} MB，并重新读取所有已索引文件。',
   switching: '正在切换…',
   switched: '已切换。正在重新读取 {n} 个文件。',
   active: '使用中',
@@ -95,17 +128,23 @@ const ZH: typeof EN = {
 }
 const DICTS: Record<string, typeof EN> = { en: EN, vi: VI, zh: ZH }
 
+const CHOICES: readonly EmbeddingProfileChoice[] = ['base', 'balanced', 'mid', 'plus', 'standard', 'high']
+/** Bigger = heavier; used to warn when a model is above what this computer is advised to run. */
+const RANK: Record<EmbeddingProfileChoice, number> = { base: 0, standard: 0, balanced: 1, mid: 2, high: 2, plus: 3 }
+const isChoice = (value: unknown): value is EmbeddingProfileChoice =>
+  typeof value === 'string' && (CHOICES as readonly string[]).includes(value)
+
 function isEmbeddingModelState(value: unknown): value is EmbeddingModelState {
   if (!value || typeof value !== 'object') return false
   const v = value as Partial<EmbeddingModelState>
   return (
-    (v.profile === 'standard' || v.profile === 'high') &&
-    (v.recommended === 'standard' || v.recommended === 'high') &&
+    isChoice(v.profile) &&
+    isChoice(v.recommended) &&
     !!v.machine &&
     Number.isFinite(v.machine.totalMemGiB) &&
     Number.isFinite(v.machine.logicalCores) &&
     !!v.profiles &&
-    ['standard', 'high'].every((id) => {
+    [v.profile, v.recommended].every((id) => {
       const profile = v.profiles?.[id as EmbeddingProfileChoice]
       return (
         !!profile &&
@@ -165,21 +204,18 @@ export function EmbeddingModelSettings() {
 
   const choose = async (choice: EmbeddingProfileChoice) => {
     if (choicePending.current || busy || choice === state.profile) return
-    const info = state.profiles.high
-    const values = { download: info.downloadMB, reason: '' }
-    let message = d.confirmStandard
-    if (choice === 'high') {
-      message =
-        state.recommended === 'high'
-          ? fill(d.confirmHigh, values)
-          : fill(d.confirmHighWeak, {
-              ...values,
-              reason:
-                state.limit === 'memory'
-                  ? `${state.machine.totalMemGiB} GB RAM`
-                  : `${state.machine.logicalCores} threads`,
-            })
-    }
+    const info = state.profiles[choice]
+    const values = { download: info?.downloadMB ?? '', reason: '' }
+    const tooHeavy = RANK[choice] > RANK[state.recommended]
+    const message = tooHeavy
+      ? fill(d.confirmHeavy, {
+          ...values,
+          reason:
+            state.limit === 'cpu'
+              ? `${state.machine.logicalCores} threads`
+              : `${state.machine.totalMemGiB} GB RAM`,
+        })
+      : fill(d.confirmSwitch, values)
     choicePending.current = true
     setBusy(true)
     try {
@@ -198,6 +234,7 @@ export function EmbeddingModelSettings() {
 
   const option = (id: EmbeddingProfileChoice, title: string, desc: string) => {
     const info = state.profiles[id]
+    if (!info) return null
     const selected = state.profile === id
     return (
       <button
@@ -245,9 +282,18 @@ export function EmbeddingModelSettings() {
             ? ` ${d.limitCpu}`
             : ''}
       </p>
+      {state.profile === 'standard' && state.modelCached === false && state.recommended !== 'standard' && (
+        <p className="set-field-desc" role="status">
+          {fill(d.legacyMissing, { name: d[state.recommended as 'base' | 'balanced' | 'mid' | 'plus'] ?? state.profiles[state.recommended]?.name ?? '' })}
+        </p>
+      )}
       <div className="set-model-options" role="radiogroup" aria-label={d.title}>
-        {option('standard', d.standard, d.standardDesc)}
-        {option('high', d.high, d.highDesc)}
+        {(['base', 'balanced', 'mid', 'plus'] as const).map((id) => (
+          <Fragment key={id}>{option(id, d[id], d[`${id}Desc`])}</Fragment>
+        ))}
+        {/* the two original models only stay listed for installs that still use them */}
+        {state.profile === 'standard' && option('standard', d.standard, d.standardDesc)}
+        {state.profile === 'high' && option('high', d.high, d.highDesc)}
       </div>
       {note && (
         <p className="set-field-desc" role="status">

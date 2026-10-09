@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 let dir: string
 let manager: DocumentMemoryManager | undefined
@@ -20,10 +21,16 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-/** A worker that accepts requests and never answers, like a parser stuck in a native call. */
+/**
+ * A worker that accepts requests and never answers them, like a parser stuck in a native call.
+ * It still answers the startup storage-budget handshake so the manager is write-ready.
+ */
 class StuckWorker extends EventEmitter {
   terminated = false
-  postMessage(): void {}
+  postMessage(message: { id?: number; type?: string }): void {
+    const ack = storageBudgetAckReply(message)
+    if (ack) this.emit('message', ack)
+  }
   terminate(): Promise<number> {
     this.terminated = true
     return Promise.resolve(0)
@@ -33,6 +40,11 @@ class StuckWorker extends EventEmitter {
 class HealthyWorker extends EventEmitter {
   postMessage(message: { id: number; type: string; path?: string; texts?: string[] }): void {
     setTimeout(() => {
+      const ack = storageBudgetAckReply(message)
+      if (ack) {
+        this.emit('message', ack)
+        return
+      }
       if (message.type === 'extract') {
         const bytes = readFileSync(message.path!)
         const stat = statSync(message.path!)

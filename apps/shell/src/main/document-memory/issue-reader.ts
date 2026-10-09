@@ -8,6 +8,12 @@ import {
   type IndexIssueReason,
   type IssueGroupCount,
 } from './issues'
+import {
+  computeEffectiveImportance,
+  type FileImportanceOverride,
+  type FileImportanceSuggestion,
+  type FileImportanceInfo,
+} from './document-importance'
 
 export const ISSUE_PAGE_SIZE = 10
 /** Above this many distinct (status, error) pairs a reason filter is applied in memory. */
@@ -117,7 +123,9 @@ export class IndexIssueReader {
     const row = db
       .prepare(
         `SELECT id, path, name, status, error, size_bytes, mtime_ms, updated_at, embedding_model,
-          truncated, chunk_total, chunk_done FROM documents WHERE id = ?`,
+          truncated, chunk_total, chunk_done,
+          importance_override, importance_suggestion, importance_reason, importance_updated_at
+         FROM documents WHERE id = ?`,
       )
       .get(id) as
       | {
@@ -133,9 +141,23 @@ export class IndexIssueReader {
           truncated: number
           chunk_total: number
           chunk_done: number
+          importance_override?: string | null
+          importance_suggestion?: string | null
+          importance_reason?: string | null
+          importance_updated_at?: number | null
         }
       | undefined
     if (!row) return null
+    const override = (row.importance_override ?? 'auto') as FileImportanceOverride
+    const suggestion = (row.importance_suggestion ?? 'unknown') as FileImportanceSuggestion
+    const effective = computeEffectiveImportance(override, suggestion)
+    const importance: FileImportanceInfo = {
+      override,
+      suggestion,
+      reason: row.importance_reason ?? null,
+      effective,
+      updatedAt: (row.importance_updated_at ?? 0) * 1000,
+    }
     const detail: Omit<IndexFileDetail, 'exists'> = {
       id: row.id,
       path: row.path,
@@ -149,6 +171,7 @@ export class IndexIssueReader {
       truncated: row.truncated === 1,
       chunkTotal: row.chunk_total,
       chunkDone: row.chunk_done,
+      importance,
     }
     if (/\.pdf$/i.test(row.path)) {
       const scan = db

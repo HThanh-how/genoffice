@@ -28,6 +28,18 @@ export const EN = {
   statusFailed: 'Could not refresh the index. Check the connection and try again.',
   refresh: 'Refresh',
   dismissNote: 'Dismiss message',
+  storageBudget: {
+    title: 'Storage budget',
+    hint: 'Maximum database size before auto-maintenance and pausing heavy indexing',
+    preset1gb: '1 GB (Light)',
+    preset3gb: '3 GB (Standard)',
+    preset5gb: '5 GB (Large)',
+    presetCustom: 'Custom',
+    customLabel: 'Custom limit (MB)',
+    save: 'Save limit',
+    saved: 'Storage budget updated',
+    invalid: 'Limit must be between 500 MB and 100 GB',
+  },
 }
 
 export const VI: typeof EN = {
@@ -60,6 +72,18 @@ export const VI: typeof EN = {
   statusFailed: 'Chưa cập nhật được chỉ mục. Kiểm tra kết nối và thử lại.',
   refresh: 'Tải lại',
   dismissNote: 'Đóng thông báo',
+  storageBudget: {
+    title: 'Giới hạn dung lượng',
+    hint: 'Dung lượng tối đa trước khi tự động dọn dẹp và dừng việc ghi tốn tài nguyên',
+    preset1gb: '1 GB (Nhẹ)',
+    preset3gb: '3 GB (Tiêu chuẩn)',
+    preset5gb: '5 GB (Lớn)',
+    presetCustom: 'Tuỳ chỉnh',
+    customLabel: 'Giới hạn tuỳ chỉnh (MB)',
+    save: 'Lưu giới hạn',
+    saved: 'Đã cập nhật giới hạn dung lượng',
+    invalid: 'Dung lượng phải từ 500 MB đến 100 GB',
+  },
 }
 
 export const TEXT: Record<string, typeof EN> = { en: EN, vi: VI }

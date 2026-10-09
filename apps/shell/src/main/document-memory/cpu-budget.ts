@@ -39,18 +39,22 @@ export async function withBackgroundBudget<T>(work: () => Promise<T>): Promise<T
   try {
     return await work()
   } finally {
-    const activeMs = Math.max(0, performance.now() - started)
-    const wait = coolDownMs(activeMs, workerPolicy.cpuShare)
-    if (wait > 0) {
-      const controller = new AbortController()
-      sleeper = controller
-      try {
-        await sleep(wait, undefined, { signal: controller.signal })
-      } catch {
-        // Interrupted by interactive work.
-      } finally {
-        if (sleeper === controller) sleeper = null
-      }
+    await backgroundCoolDown(Math.max(0, performance.now() - started))
+  }
+}
+
+/** The cool-down half of withBackgroundBudget, for loops that account their own active time between yields. */
+export async function backgroundCoolDown(activeMs: number): Promise<void> {
+  const wait = coolDownMs(activeMs, workerPolicy.cpuShare)
+  if (wait > 0) {
+    const controller = new AbortController()
+    sleeper = controller
+    try {
+      await sleep(wait, undefined, { signal: controller.signal })
+    } catch {
+      // Interrupted by interactive work.
+    } finally {
+      if (sleeper === controller) sleeper = null
     }
   }
 }

@@ -9,7 +9,11 @@ import {
   type TruncatedReason,
   type StoredDocument,
   type ReplacementDocument,
-  type SliceOptions,
+  type SliceOptions, type BatchSliceInfo, type BatchCommitInfo, type BatchHookDecision,
+  type FileImportanceOverride,
+  type FileImportanceSuggestion,
+  type FileImportanceEffective,
+  type FileImportanceInfo,
   WRITE_SLICE_MS,
 } from './storage/repositories/document-repository'
 import { ChunkRepository } from './storage/repositories/chunk-repository'
@@ -18,19 +22,20 @@ import {
   type RepairInvalidCanonicalEmbeddingsResult,
 } from './storage/repositories/embedding-repository'
 import { SearchRepository } from './storage/repositories/search-repository'
+import { backfillNameProjectionBatch, setDbProjectionSyncGuard, clearDbProjectionSyncGuard, type NameProjectionBackfillBounds, type NameProjectionBackfillResult } from './name-search-projection'
+import type { SyncMetadataGuard } from './runtime/sync-metadata-admission'
 import {
   ProgressRepository,
   type DocumentChunkProgress,
   type FolderChunkProgress,
   type DocumentMemoryStats,
 } from './storage/repositories/progress-repository'
-import {
-  MaintenanceRepository,
-  FTS_MERGE_PAGES,
-} from './storage/repositories/maintenance-repository'
+import { MaintenanceRepository, FTS_MERGE_PAGES } from './storage/repositories/maintenance-repository'
 import { DiagnosticsRepository } from './storage/repositories/diagnostics-repository'
+import type { DocumentIndexStorageBudget } from './storage-budget'
 import type { EmbeddingProfile } from './embedding-profiles'
 import type { USearchIndex } from './usearch-index'
+import type { AnnPreauthorizedPermit } from './ann-index'
 import type {
   GarbageCollectionStats,
   StorageFreelistStats,
@@ -39,19 +44,13 @@ import type {
 } from './storage-gc'
 
 export type {
-  DocumentStatus,
-  TruncatedReason,
-  StoredDocument,
-  ReplacementDocument,
-  DocumentChunkProgress,
-  FolderChunkProgress,
-  DocumentMemoryStats,
-  GarbageCollectionStats,
-  StorageFreelistStats,
-  IncrementalVacuumOptions,
-  VacuumResult,
-  SliceOptions,
-  RepairInvalidCanonicalEmbeddingsResult,
+  DocumentStatus, TruncatedReason, StoredDocument, ReplacementDocument,
+  DocumentChunkProgress, FolderChunkProgress, DocumentMemoryStats,
+  GarbageCollectionStats, StorageFreelistStats, IncrementalVacuumOptions, VacuumResult,
+  SliceOptions, BatchSliceInfo, BatchCommitInfo, BatchHookDecision,
+  RepairInvalidCanonicalEmbeddingsResult, FileImportanceOverride,
+  FileImportanceSuggestion, FileImportanceEffective, FileImportanceInfo,
+  NameProjectionBackfillResult,
 }
 
 export interface DocumentMemoryHit {
@@ -70,6 +69,7 @@ export interface DocumentMemoryHit {
   truncatedReason?: TruncatedReason | null
   ocr?: boolean
   contentUnread?: boolean
+  media?: import('./media/media-types').MediaHitInfo // images/videos: kind, dimensions, duration, ocrCandidate, sensitive
 }
 
 export const COUNTER_BACKFILL_SLICE = 200
@@ -91,6 +91,9 @@ export interface DocumentMemorySearchOptions {
   semanticWideDocuments?: number
   role?: 'search' | 'worker'
   cacheKiB?: number
+  getStorageBudget?: () => DocumentIndexStorageBudget
+  getConfigVersion?: () => number | null
+  syncAdmission?: SyncMetadataGuard
 }
 
 /** Durable memory facade for document indexing. Fully backward-compatible. */
@@ -124,10 +127,14 @@ export class DocumentMemoryStore {
     this.chunkRepo = new ChunkRepository(this.db)
     this.embRepo = new EmbeddingRepository(this.db)
     this.maintRepo = new MaintenanceRepository(this.db, dbPath, this.role)
+    if (options.getStorageBudget) {
+      this.maintRepo.setStorageBudgetProvider(options.getStorageBudget, options.getConfigVersion)
+    }
     this.searchRepo = new SearchRepository(this.db, hotMeta, this.maintRepo)
     this.progressRepo = new ProgressRepository(this.db)
     this.diagRepo = new DiagnosticsRepository(this.db, dbPath)
 
+    if (options.syncAdmission) setDbProjectionSyncGuard(this.db, options.syncAdmission)
     this.docRepo = new DocumentRepository(
       this.db,
       this.chunkRepo,
@@ -135,6 +142,7 @@ export class DocumentMemoryStore {
       () => this.ocr,
       (spaceId, ids, vecs) => this.maintRepo.onAnnVectorsAdded(spaceId, ids, vecs),
       (ids) => this.maintRepo.onAnnVectorsRemoved(ids),
+      options.syncAdmission,
     )
 
     this.ensureNameFtsV1()
@@ -154,7 +162,8 @@ export class DocumentMemoryStore {
             )
             .run()
         })
-      } catch {
+      } catch (err: unknown) {
+        void err
         // Retry next startup
       }
     }
@@ -174,12 +183,13 @@ export class DocumentMemoryStore {
   hasUncountedDocuments(): boolean {
     return this.progressRepo.hasUncountedDocuments()
   }
-  remember(path: string): void {
-    this.docRepo.remember(path)
+  remember(path: string): boolean {
+    return this.docRepo.remember(path)
   }
   enrollDiscovered(path: string, mtimeMs: number, sizeBytes: number): boolean {
     return this.docRepo.enrollDiscovered(path, mtimeMs, sizeBytes)
   }
+  enrollMedia(path: string, mtimeMs: number, sizeBytes: number) { return this.docRepo.enrollMedia(path, mtimeMs, sizeBytes) }
   listDocuments(): StoredDocument[] {
     return this.docRepo.listDocuments()
   }
@@ -249,8 +259,9 @@ export class DocumentMemoryStore {
   requeueTruncatedPdfs(): number {
     return this.docRepo.requeueTruncatedPdfs()
   }
-  markError(path: string, error: string, metadata?: { mtimeMs: number; sizeBytes: number } | null): void {
-    this.docRepo.markError(path, error, metadata)
+  markError(path: string, error: string, metadata?: { mtimeMs: number; sizeBytes: number } | null): void { this.docRepo.markError(path, error, metadata) }
+  recordTransientError(path: string, error: string, metadata?: { mtimeMs: number; sizeBytes: number } | null): boolean {
+    return this.docRepo.recordTransientError(path, error, metadata)
   }
   async markErrorSliced(path: string, error: string, metadata?: { mtimeMs: number; sizeBytes: number } | null, options: SliceOptions = {}): Promise<boolean> {
     return this.docRepo.markErrorSliced(path, error, metadata, options)
@@ -271,14 +282,7 @@ export class DocumentMemoryStore {
     return this.embRepo.resumeEmbeddingOffset(path, hash, model)
   }
   move(oldPath: string, newPath: string): void {
-    runTransaction(this.db, () => {
-      const doc = this.docRepo.documentByPath(oldPath)
-      if (!doc) return
-      this.db
-        .prepare('UPDATE documents SET path = ?, name = ?, updated_at = unixepoch() WHERE id = ?')
-        .run(newPath, newPath.split(/[\\/]/).pop() ?? newPath, doc.id)
-      this.ocr.rename(oldPath, newPath)
-    })
+    this.docRepo.move(oldPath, newPath)
   }
   tombstone(path: string): boolean {
     return this.docRepo.tombstone(path)
@@ -305,29 +309,10 @@ export class DocumentMemoryStore {
     return this.docRepo.openedPaths(limit)
   }
   exclude(path: string): void {
-    runTransaction(this.db, () => {
-      const doc = this.docRepo.documentByPath(path)
-      if (!doc) return
-      this.chunkRepo.deleteChunks(doc.id, (ids) => this.maintRepo.onAnnVectorsRemoved(ids))
-      this.ocr.remove(path)
-      this.db
-        .prepare(
-          `UPDATE documents SET excluded = 1, status = 'excluded', hash = NULL, embedding_model = NULL,
-        error = NULL, updated_at = unixepoch() WHERE id = ?`,
-        )
-        .run(doc.id)
-    })
+    this.docRepo.exclude(path)
   }
   clear(): void {
-    runTransaction(this.db, () => {
-      this.db.prepare('DELETE FROM chunk_fts').run()
-      this.db.prepare('DELETE FROM chunks').run()
-      this.db.prepare('DELETE FROM documents WHERE excluded = 0').run()
-      this.ocr.clearAll()
-      this.db.exec(
-        'UPDATE documents SET chunk_total = 0, chunk_done = 0 WHERE chunk_total <> 0 OR chunk_done <> 0',
-      )
-    })
+    this.docRepo.clear()
   }
   searchNames(query: string, limit = 5): DocumentMemoryHit[] {
     return this.searchRepo.searchNames(query, limit)
@@ -353,26 +338,40 @@ export class DocumentMemoryStore {
   stats(activeEmbeddingSpace?: string): DocumentMemoryStats {
     return this.progressRepo.stats(activeEmbeddingSpace)
   }
-  getEmbeddingSpaces() {
-    return this.embRepo.getEmbeddingSpaces()
+  getEmbeddingSpaces() { return this.embRepo.getEmbeddingSpaces() }
+  getAnnIndex(spaceId: string, dimensions: number): USearchIndex { return this.maintRepo.getAnnIndex(spaceId, dimensions) }
+  markAnnDirty(spaceId: string): void { this.maintRepo.markAnnDirty(spaceId) }
+  rebuildAnnIndex(spaceId: string, hostPermit?: AnnPreauthorizedPermit) { return this.maintRepo.rebuildAnnIndex(spaceId, hostPermit) }
+  syncAnnIndex(spaceId: string, hostPermit?: AnnPreauthorizedPermit) { return this.maintRepo.syncAnnIndex(spaceId, hostPermit) }
+  invalidateAnnInMemory(spaceId: string): void { this.maintRepo.invalidateAnnInMemory(spaceId) }
+  getAnnCanonicalMeta(spaceId: string) { return this.maintRepo.getAnnCanonicalMeta(spaceId) }
+  getImportance(pathOrId: string | number) { return this.docRepo.getImportance(pathOrId) }
+  setImportanceOverride(pathOrId: string | number, override: FileImportanceOverride) { return this.docRepo.setImportanceOverride(pathOrId, override) }
+  setImportanceSuggestion(pathOrId: string | number, suggestion: FileImportanceSuggestion, reason: string | null) { return this.docRepo.setImportanceSuggestion(pathOrId, suggestion, reason) }
+  hasNameProjection(): boolean {
+    return this.searchRepo.hasNameProjection()
   }
-  getAnnIndex(spaceId: string, dimensions: number): USearchIndex {
-    return this.maintRepo.getAnnIndex(spaceId, dimensions)
+  backfillNameProjectionBatch(batchSize = 100, bounds?: NameProjectionBackfillBounds): NameProjectionBackfillResult {
+    return backfillNameProjectionBatch(this.db, batchSize, bounds)
   }
-  markAnnDirty(spaceId: string): void {
-    this.maintRepo.markAnnDirty(spaceId)
-  }
-  rebuildAnnIndex(spaceId: string) {
-    return this.maintRepo.rebuildAnnIndex(spaceId)
-  }
-  syncAnnIndex(spaceId: string) {
-    return this.maintRepo.syncAnnIndex(spaceId)
-  }
-  repairInvalidCanonicalEmbeddings(targetSpaceId?: string): RepairInvalidCanonicalEmbeddingsResult {
-    return this.embRepo.repairInvalidCanonicalEmbeddings(
-      (spaceId) => this.maintRepo.markAnnDirty(spaceId),
-      targetSpaceId,
-    )
+  repairInvalidCanonicalEmbeddings(
+    targetSpaceIdOrOnDirty?: string | ((spaceId: string) => void) | { spaceId?: string; onSpaceDirty?: (spaceId: string) => void },
+    targetSpaceIdArg?: string,
+  ): RepairInvalidCanonicalEmbeddingsResult {
+    const cb =
+      typeof targetSpaceIdOrOnDirty === 'function'
+        ? targetSpaceIdOrOnDirty
+        : typeof targetSpaceIdOrOnDirty === 'object' && targetSpaceIdOrOnDirty !== null && 'onSpaceDirty' in targetSpaceIdOrOnDirty
+          ? targetSpaceIdOrOnDirty.onSpaceDirty
+          : undefined
+    const target =
+      typeof targetSpaceIdOrOnDirty === 'string'
+        ? targetSpaceIdOrOnDirty
+        : targetSpaceIdArg ??
+          (typeof targetSpaceIdOrOnDirty === 'object' && targetSpaceIdOrOnDirty !== null && 'spaceId' in targetSpaceIdOrOnDirty
+            ? targetSpaceIdOrOnDirty.spaceId
+            : undefined)
+    return this.embRepo.repairInvalidCanonicalEmbeddings(cb, target)
   }
   errorCount(): number {
     return this.docRepo.errorCount()
@@ -386,10 +385,15 @@ export class DocumentMemoryStore {
   runIncrementalVacuum(options?: IncrementalVacuumOptions): VacuumResult {
     return this.maintRepo.runIncrementalVacuum(options)
   }
+  setStorageBudget(budget: DocumentIndexStorageBudget): void { this.maintRepo.setStorageBudget(budget) }
+  getStorageBudget(): DocumentIndexStorageBudget { return this.maintRepo.getStorageBudget() }
   close(): void {
-    this.db.close()
+    clearDbProjectionSyncGuard(this.db); this.maintRepo.close(); this.db.close()
   }
-  getStorageDiagnostics(backupPath?: string): DocumentIndexStorageDiagnostics {
-    return this.diagRepo.getStorageDiagnostics(backupPath)
+  getStorageDiagnostics(
+    backupPath?: string,
+    budget?: DocumentIndexStorageBudget,
+  ): DocumentIndexStorageDiagnostics {
+    return this.diagRepo.getStorageDiagnostics(backupPath, budget)
   }
 }

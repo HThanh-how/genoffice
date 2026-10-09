@@ -326,6 +326,12 @@ export function performAtomicCutover(options: CutoverOptions): void {
   cleanWalFiles(resolvedSource)
   cleanWalFiles(tempPath)
 
+  if (existsSync(backupPath)) {
+    throw new Error(
+      `Backup destination collision: destination backup already exists at "${backupPath}". Cannot overwrite existing backup.`,
+    )
+  }
+
   const backupCreatedAt = Date.now()
   let backupCreated = false
   try {
@@ -420,6 +426,7 @@ export function performAtomicCutover(options: CutoverOptions): void {
   } catch (error) {
     onRollback?.()
 
+    let rollbackRestored = false
     // Automatic safe rollback
     if (backupCreated && existsSync(backupPath)) {
       if (existsSync(resolvedSource)) {
@@ -430,7 +437,14 @@ export function performAtomicCutover(options: CutoverOptions): void {
           // ignore
         }
       }
-      safeRenameWithRetry(backupPath, resolvedSource)
+      try {
+        safeRenameWithRetry(backupPath, resolvedSource)
+        rollbackRestored = existsSync(resolvedSource)
+      } catch {
+        rollbackRestored = false
+      }
+    } else if (existsSync(resolvedSource)) {
+      rollbackRestored = true
     }
 
     if (existsSync(tempPath)) {
@@ -442,7 +456,11 @@ export function performAtomicCutover(options: CutoverOptions): void {
       }
     }
 
-    removeManifest(manifestPath)
+    // Diskfull/error temporary cleanup preserves original and recovery manifest;
+    // only remove manifest if rollback successfully restored the source database
+    if (rollbackRestored) {
+      removeManifest(manifestPath)
+    }
 
     throw new Error(
       `V2 to V3 migration failed and was safely rolled back. Reason: ${(error as Error).message}`,

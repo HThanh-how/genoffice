@@ -11,6 +11,7 @@ import {
 } from '../src/main/document-memory/file-stability'
 import { FolderScanManager, reconcileSubtree } from '../src/main/document-memory/folder-scan'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
+import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 let testDir: string
 let gates: FileStabilityGate[]
@@ -478,6 +479,11 @@ describe('FolderScanManager reconcileSubtree', () => {
     }
     const extractedPaths: string[] = []
     fakeWorker.postMessage = (msg: { id: number; type: string; path?: string }) => {
+      const ack = storageBudgetAckReply(msg)
+      if (ack) {
+        fakeWorker.emit('message', ack)
+        return
+      }
       if (msg.type === 'extract') {
         extractedPaths.push(msg.path!)
         setTimeout(() => {

@@ -7,6 +7,7 @@ import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
 import { resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
+import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
 
 const mockVector320 = () => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)
 
@@ -24,9 +25,16 @@ class FakeSearchWorker extends EventEmitter {
     limit?: number
     embeddingSpaceId?: string
     texts?: string[]
+    configVersion?: number
+    budget?: { maxDatabaseBytes?: number }
   }) {
     this.sentMessages.push(message)
     setTimeout(() => {
+      const ack = storageBudgetAckReply(message)
+      if (ack) {
+        this.emit('message', ack)
+        return
+      }
       if (message.type === 'embed') {
         this.emit('message', {
           id: message.id,
@@ -77,6 +85,7 @@ describe('Progressive Search: No Double Lexical FTS Query', () => {
       },
     })
     managers.push(mgr)
+    await waitForManagerWriteReady(mgr)
 
     // Seed test documents
     mgr.store.replaceDocument(join(dir, 'annual_report_2026.docx'), {

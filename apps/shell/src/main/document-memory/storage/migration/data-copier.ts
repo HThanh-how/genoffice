@@ -29,7 +29,10 @@ export function prepareMigrationStatements(sourceDb: DatabaseSync, tempDb: Datab
     updateDocStatusAndModel: tempDb.prepare('UPDATE documents SET status = ?, embedding_model = ?, chunk_done = ? WHERE id = ?'),
     updateDocChunkDone: tempDb.prepare('UPDATE documents SET chunk_done = ? WHERE id = ?'),
     selectChunkEmbedding: sTables.includes('chunk_embeddings') ? sourceDb.prepare('SELECT vector, vector_dim FROM chunk_embeddings WHERE chunk_id = ? AND space_id = ?') : null,
-    insertOcrPage: sTables.includes('ocr_pages') ? tempDb.prepare('INSERT OR REPLACE INTO ocr_pages (path, page, hash, mtime_ms, size_bytes, total_pages, text, model, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)') : null,
+    // engine / quality / tier / escalate carry the local-OCR verdict: dropping them would turn a local row into a cloud one
+    insertOcrPage: sTables.includes('ocr_pages') ? tempDb.prepare('INSERT OR REPLACE INTO ocr_pages (path, page, hash, mtime_ms, size_bytes, total_pages, text, model, created_at, engine, quality, tier, escalate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)') : null,
+    insertLocalFailure: sTables.includes('ocr_local_failures') ? tempDb.prepare('INSERT OR REPLACE INTO ocr_local_failures (path, mtime_ms, size_bytes, attempts, code, updated_at) VALUES (?, ?, ?, ?, ?, ?)') : null,
+    insertMedia: sTables.includes('document_media') ? tempDb.prepare('INSERT OR REPLACE INTO document_media (document_id, kind, container, width, height, duration_ms, taken_ms, ts_ms, meta_state, sensitive, ocr_candidate, ocr_state) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)') : null,
     insertPdfScan: sTables.includes('pdf_scan_info') ? tempDb.prepare('INSERT OR REPLACE INTO pdf_scan_info (path, mtime_ms, size_bytes, total_pages, scanned) VALUES (?, ?, ?, ?, ?)') : null,
   }
 }
@@ -42,7 +45,7 @@ export function copyDocumentActiveChunks(
   activeSpaceId: string,
   activeDimensions: number,
 ): { chunks: number; embeddings: number } {
-  let chunks: any[] = []
+  let chunks: any[]
   const hasChunkSets = stmts.sTables.includes('chunk_sets')
   if (!stmts.sTables.includes('chunks')) return { chunks: 0, embeddings: 0 }
 
@@ -110,13 +113,26 @@ export function copyDocumentActiveChunks(
 export function copyOcrData(sourceDb: DatabaseSync, path: string, stmts: ReturnType<typeof prepareMigrationStatements>): void {
   if (stmts.insertOcrPage) {
     for (const o of sourceDb.prepare('SELECT * FROM ocr_pages WHERE path = ?').all(path) as any[]) {
-      stmts.insertOcrPage.run(o.path, o.page, o.hash, o.mtime_ms, o.size_bytes, o.total_pages, o.text, o.model ?? null, o.created_at)
+      stmts.insertOcrPage.run(o.path, o.page, o.hash, o.mtime_ms, o.size_bytes, o.total_pages, o.text, o.model ?? null, o.created_at, o.engine ?? null, o.quality ?? null, o.tier ?? null, o.escalate ?? 0)
+    }
+  }
+  if (stmts.insertLocalFailure) {
+    for (const f of sourceDb.prepare('SELECT * FROM ocr_local_failures WHERE path = ?').all(path) as any[]) {
+      stmts.insertLocalFailure.run(f.path, f.mtime_ms, f.size_bytes, f.attempts, f.code, f.updated_at ?? Math.floor(Date.now() / 1000))
     }
   }
   if (stmts.insertPdfScan) {
     for (const p of sourceDb.prepare('SELECT * FROM pdf_scan_info WHERE path = ?').all(path) as any[]) {
       stmts.insertPdfScan.run(p.path, p.mtime_ms, p.size_bytes, p.total_pages, p.scanned)
     }
+  }
+}
+
+/** The media side row (kind, header facts, sensitive marker, OCR candidate / state) of a copied image or video. */
+export function copyMediaRow(sourceDb: DatabaseSync, documentId: number, stmts: ReturnType<typeof prepareMigrationStatements>): void {
+  if (!stmts.insertMedia) return
+  for (const m of sourceDb.prepare('SELECT * FROM document_media WHERE document_id = ?').all(documentId) as any[]) {
+    stmts.insertMedia.run(m.document_id, m.kind, m.container ?? null, m.width ?? null, m.height ?? null, m.duration_ms ?? null, m.taken_ms ?? null, m.ts_ms ?? 0, m.meta_state ?? 0, m.sensitive ?? 0, m.ocr_candidate ?? 0, m.ocr_state ?? 0)
   }
 }
 

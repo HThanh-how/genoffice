@@ -1,11 +1,11 @@
 import { readdirSync, statSync } from 'node:fs'
-import { extname, join } from 'node:path'
+import { basename, extname, join } from 'node:path'
 import { isHiddenEntry } from '../folder-tree'
-import { SUPPORTED_EXTENSIONS, shouldSkipDirectory } from '../document-memory/scan-policy'
+import { SUPPORTED_EXTENSIONS, isJunkFileName, shouldSkipDirectory } from '../document-memory/scan-policy'
 
 /** Name and content indexes admit the same document formats. */
 export function isSupportedIndexFile(name: string): boolean {
-  return SUPPORTED_EXTENSIONS.has(extname(name).toLowerCase())
+  return SUPPORTED_EXTENSIONS.has(extname(name).toLowerCase()) && !isJunkFileName(basename(name))
 }
 
 export interface ScannedFile {

@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { resolve } from 'node:path'
 import { EMBEDDING_PROFILES, type EmbeddingProfile } from '../../embedding-profiles'
+import { runTransaction } from '../database'
 
 export function getCanonicalProfile(id: unknown): EmbeddingProfile | null {
   if (id === 'standard' || id === EMBEDDING_PROFILES.standard.embeddingId) {
@@ -231,7 +232,7 @@ export class EmbeddingRepository {
 
     const normalizedPath = resolve(path)
 
-    let chunkIdsForAnn: number[] = []
+    let chunkIdsForAnn: number[]
 
     this.db.exec('BEGIN IMMEDIATE')
     try {
@@ -430,6 +431,22 @@ export class EmbeddingRepository {
       notifyDirty = onSpaceDirty.onSpaceDirty
     }
 
+    const hasEmbeddingSpaces = Boolean(
+      this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'embedding_spaces'")
+        .get(),
+    )
+    if (!hasEmbeddingSpaces) {
+      return {
+        ok: true,
+        repairedSpaces: [],
+        deletedEmbeddings: 0,
+        deletedCount: 0,
+        affectedDocuments: 0,
+        requeuedDocuments: 0,
+      }
+    }
+
     const canonicalSpecs: Array<{ spaceId: string; dimensions: number; profile: EmbeddingProfile }> = [
       {
         spaceId: EMBEDDING_PROFILES.standard.embeddingId,
@@ -459,13 +476,13 @@ export class EmbeddingRepository {
         .all() as Array<{ id: string; dimensions: number; model_repo: string }>
       for (const dbs of dbSpaces) {
         if (!canonicalSpecs.some((c) => c.spaceId === dbs.id)) {
-          if (dbs.model_repo === EMBEDDING_PROFILES.standard.repo || dbs.id.includes('f2llm-v2-80m')) {
+          if (dbs.id === EMBEDDING_PROFILES.standard.embeddingId) {
             canonicalSpecs.push({
               spaceId: dbs.id,
               dimensions: EMBEDDING_PROFILES.standard.dimensions,
               profile: EMBEDDING_PROFILES.standard,
             })
-          } else if (dbs.model_repo === EMBEDDING_PROFILES.high.repo || dbs.id.includes('qwen3-embedding-0.6b')) {
+          } else if (dbs.id === EMBEDDING_PROFILES.high.embeddingId) {
             canonicalSpecs.push({
               spaceId: dbs.id,
               dimensions: EMBEDDING_PROFILES.high.dimensions,
@@ -482,74 +499,74 @@ export class EmbeddingRepository {
       ? canonicalSpecs.filter((s) => s.spaceId === spaceFilter || s.profile.id === spaceFilter)
       : canonicalSpecs
 
-    const invalidRows: Array<{
-      chunk_id: number
-      space_id: string
-      document_id: number
-      vector_dim: number
-      byte_len: number
-    }> = []
-
-    const findInvalidStmt = this.db.prepare(`
-      SELECT e.chunk_id, e.space_id, coalesce(c.document_id, 0) AS document_id, e.vector_dim, length(e.vector) AS byte_len
-      FROM chunk_embeddings e
-      LEFT JOIN chunks c ON c.id = e.chunk_id
-      WHERE e.space_id = ? AND (e.vector_dim != ? OR length(e.vector) != ?)
-    `)
-
-    for (const spec of specsToInspect) {
-      const rows = findInvalidStmt.all(
-        spec.spaceId,
-        spec.dimensions,
-        spec.dimensions * 4,
-      ) as Array<{
-        chunk_id: number
-        space_id: string
-        document_id: number
-        vector_dim: number
-        byte_len: number
-      }>
-      invalidRows.push(...rows)
+    if (specsToInspect.length === 0) {
+      return {
+        ok: true,
+        repairedSpaces: [],
+        deletedEmbeddings: 0,
+        deletedCount: 0,
+        affectedDocuments: 0,
+        requeuedDocuments: 0,
+      }
     }
 
-    const repairedSpacesSet = new Set<string>()
+    const hasChunkEmbeddings = Boolean(
+      this.db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunk_embeddings'")
+        .get(),
+    )
+    if (!hasChunkEmbeddings) {
+      return {
+        ok: true,
+        repairedSpaces: [],
+        deletedEmbeddings: 0,
+        deletedCount: 0,
+        affectedDocuments: 0,
+        requeuedDocuments: 0,
+      }
+    }
 
-    for (const spec of specsToInspect) {
-      const existing = this.db
-        .prepare('SELECT id, dimensions, model_repo, model_revision, pooling, quantization FROM embedding_spaces WHERE id = ?')
-        .get(spec.spaceId) as
-        | {
-            id: string
-            dimensions: number
-            model_repo: string
-            model_revision: string
-            pooling: string
-            quantization: string
-          }
-        | undefined
-      if (existing) {
-        if (
-          existing.dimensions !== spec.dimensions ||
-          existing.model_repo !== spec.profile.repo ||
-          existing.model_revision !== spec.profile.revision ||
-          existing.pooling !== spec.profile.pooling ||
-          existing.quantization !== 'q8'
-        ) {
-          this.db
-            .prepare(
-              `UPDATE embedding_spaces
-               SET model_repo = ?, model_revision = ?, pooling = ?, dimensions = ?, quantization = 'q8'
-               WHERE id = ?`,
-            )
-            .run(
-              spec.profile.repo,
-              spec.profile.revision,
-              spec.profile.pooling,
-              spec.dimensions,
-              spec.spaceId,
-            )
-          repairedSpacesSet.add(spec.spaceId)
-          try {
+    const spacesNeedingNotification = new Set<string>()
+
+    const result = runTransaction(this.db, () => {
+      const repairedSpacesSet = new Set<string>()
+
+      // 1. Repair embedding_spaces metadata
+      for (const spec of specsToInspect) {
+        const existing = this.db
+          .prepare('SELECT id, dimensions, model_repo, model_revision, pooling, quantization FROM embedding_spaces WHERE id = ?')
+          .get(spec.spaceId) as
+          | {
+              id: string
+              dimensions: number
+              model_repo: string
+              model_revision: string
+              pooling: string
+              quantization: string
+            }
+          | undefined
+        if (existing) {
+          if (
+            existing.dimensions !== spec.dimensions ||
+            existing.model_repo !== spec.profile.repo ||
+            existing.model_revision !== spec.profile.revision ||
+            existing.pooling !== spec.profile.pooling ||
+            existing.quantization !== 'q8'
+          ) {
+            this.db
+              .prepare(
+                `UPDATE embedding_spaces
+                 SET model_repo = ?, model_revision = ?, pooling = ?, dimensions = ?, quantization = 'q8'
+                 WHERE id = ?`,
+              )
+              .run(
+                spec.profile.repo,
+                spec.profile.revision,
+                spec.profile.pooling,
+                spec.dimensions,
+                spec.spaceId,
+              )
+            repairedSpacesSet.add(spec.spaceId)
             this.db
               .prepare(
                 `INSERT INTO ann_indexes (space_id, generation, desired_generation, indexed_count, state, updated_at)
@@ -561,41 +578,71 @@ export class EmbeddingRepository {
                    updated_at = unixepoch()`,
               )
               .run(spec.spaceId)
-          } catch {}
-          if (notifyDirty) notifyDirty(spec.spaceId)
+            spacesNeedingNotification.add(spec.spaceId)
+          }
         }
       }
-    }
 
-    if (invalidRows.length === 0) {
-      return {
-        ok: true,
-        repairedSpaces: Array.from(repairedSpacesSet),
-        deletedEmbeddings: 0,
-        deletedCount: 0,
-        affectedDocuments: 0,
-        requeuedDocuments: 0,
+      // 2. Find invalid vector rows in chunk_embeddings
+      const invalidRows: Array<{
+        chunk_id: number
+        space_id: string
+        document_id: number
+        vector_dim: number
+        byte_len: number
+      }> = []
+
+      const findInvalidStmt = this.db.prepare(`
+        SELECT e.chunk_id, e.space_id, coalesce(c.document_id, 0) AS document_id, e.vector_dim, length(e.vector) AS byte_len
+        FROM chunk_embeddings e
+        LEFT JOIN chunks c ON c.id = e.chunk_id
+        WHERE e.space_id = ? AND (e.vector_dim != ? OR length(e.vector) != ?)
+      `)
+
+      for (const spec of specsToInspect) {
+        const rows = findInvalidStmt.all(
+          spec.spaceId,
+          spec.dimensions,
+          spec.dimensions * 4,
+        ) as Array<{
+          chunk_id: number
+          space_id: string
+          document_id: number
+          vector_dim: number
+          byte_len: number
+        }>
+        invalidRows.push(...rows)
       }
-    }
 
-    const affectedDocIds = new Set<number>()
-    const affectedSpaceIds = new Set<string>()
+      if (invalidRows.length === 0) {
+        return {
+          ok: true,
+          repairedSpaces: Array.from(repairedSpacesSet),
+          deletedEmbeddings: 0,
+          deletedCount: 0,
+          affectedDocuments: 0,
+          requeuedDocuments: 0,
+        }
+      }
 
-    for (const r of invalidRows) {
-      if (r.document_id > 0) affectedDocIds.add(r.document_id)
-      affectedSpaceIds.add(r.space_id)
-      repairedSpacesSet.add(r.space_id)
-    }
+      // 3. Delete invalid chunk_embeddings and requeue documents
+      const affectedDocIds = new Set<number>()
+      const affectedSpaceIds = new Set<string>()
 
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      // 1. Delete ONLY the invalid rows from chunk_embeddings
+      for (const r of invalidRows) {
+        if (r.document_id > 0) affectedDocIds.add(r.document_id)
+        affectedSpaceIds.add(r.space_id)
+        repairedSpacesSet.add(r.space_id)
+        spacesNeedingNotification.add(r.space_id)
+      }
+
+      // 3a. Delete ONLY the invalid rows from chunk_embeddings
       const deleteStmt = this.db.prepare('DELETE FROM chunk_embeddings WHERE chunk_id = ? AND space_id = ?')
       for (const r of invalidRows) {
         deleteStmt.run(r.chunk_id, r.space_id)
       }
 
-      // 2. Ensure canonical space metadata in embedding_spaces is correct
+      // 3b. Ensure canonical space metadata in embedding_spaces is correct for affected spaces
       for (const spec of specsToInspect) {
         if (affectedSpaceIds.has(spec.spaceId)) {
           this.db
@@ -614,7 +661,7 @@ export class EmbeddingRepository {
         }
       }
 
-      // 3. Recompute document_embedding_counts for affected documents and spaces
+      // 3c. Recompute document_embedding_counts for affected documents and spaces
       for (const docId of affectedDocIds) {
         for (const spaceId of affectedSpaceIds) {
           const remainingRow = this.db
@@ -646,7 +693,7 @@ export class EmbeddingRepository {
         }
       }
 
-      // 4. Update documents status and chunk_done, requeueing affected documents
+      // 3d. Update documents status and chunk_done, requeueing affected documents
       let requeuedCount = 0
       for (const docId of affectedDocIds) {
         const doc = this.db
@@ -719,29 +766,19 @@ export class EmbeddingRepository {
         }
       }
 
-      // 5. Mark ANN index dirty for affected spaces
+      // 3e. Mark ANN index dirty for affected spaces
       for (const spaceId of affectedSpaceIds) {
-        try {
-          this.db
-            .prepare(
-              `INSERT INTO ann_indexes (space_id, generation, desired_generation, indexed_count, state, updated_at)
-               VALUES (?, 0, 1, 0, 'dirty', unixepoch())
-               ON CONFLICT(space_id)
-               DO UPDATE SET
-                 desired_generation = desired_generation + 1,
-                 state = 'dirty',
-                 updated_at = unixepoch()`,
-            )
-            .run(spaceId)
-        } catch {}
-      }
-
-      this.db.exec('COMMIT')
-
-      if (notifyDirty) {
-        for (const spaceId of affectedSpaceIds) {
-          notifyDirty(spaceId)
-        }
+        this.db
+          .prepare(
+            `INSERT INTO ann_indexes (space_id, generation, desired_generation, indexed_count, state, updated_at)
+             VALUES (?, 0, 1, 0, 'dirty', unixepoch())
+             ON CONFLICT(space_id)
+             DO UPDATE SET
+               desired_generation = desired_generation + 1,
+               state = 'dirty',
+               updated_at = unixepoch()`,
+          )
+          .run(spaceId)
       }
 
       return {
@@ -752,9 +789,167 @@ export class EmbeddingRepository {
         affectedDocuments: affectedDocIds.size,
         requeuedDocuments: requeuedCount,
       }
-    } catch (err) {
-      this.db.exec('ROLLBACK')
-      throw err
+    })
+
+    if (notifyDirty) {
+      for (const spaceId of spacesNeedingNotification) {
+        notifyDirty(spaceId)
+      }
+    }
+
+    return result
+  }
+
+  /**
+   * Recomputes exact completed chunks for a document in a space from active chunks.
+   * Returns the updated count.
+   */
+  recomputeDocumentEmbeddingCounts(documentId: number, spaceId?: string): number {
+    const spaces = spaceId
+      ? [spaceId]
+      : (
+          this.db
+            .prepare('SELECT DISTINCT space_id FROM document_embedding_counts WHERE document_id = ?')
+            .all(documentId) as Array<{ space_id: string }>
+        ).map((r) => r.space_id)
+
+    let total = 0
+    for (const s of spaces) {
+      const row = this.db
+        .prepare(`
+          SELECT count(e.chunk_id) AS c
+          FROM chunks c
+          JOIN documents d ON d.id = c.document_id
+          JOIN chunk_embeddings e ON e.chunk_id = c.id AND e.space_id = ?
+          WHERE c.document_id = ?
+            AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+        `)
+        .get(s, documentId) as { c: number } | undefined
+      const count = row?.c ?? 0
+      total += count
+
+      if (count > 0) {
+        this.db
+          .prepare(`
+            INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks)
+            VALUES (?, ?, ?)
+            ON CONFLICT (document_id, space_id)
+            DO UPDATE SET completed_chunks = excluded.completed_chunks
+          `)
+          .run(documentId, s, count)
+      } else {
+        this.db
+          .prepare('DELETE FROM document_embedding_counts WHERE document_id = ? AND space_id = ?')
+          .run(documentId, s)
+      }
+    }
+
+    return total
+  }
+
+  /**
+   * Evicts canonical embeddings for a document from chunk_embeddings in affected spaces.
+   * Synchronizes document_embedding_counts to exact remaining active vectors and updates document status.
+   * Returns affected spaces and counts (dirty markers on ann_indexes should be committed atomically).
+   */
+  evictDocumentEmbeddings(
+    documentId: number,
+    targetSpaceId?: string,
+  ): {
+    documentId: number
+    deletedEmbeddings: number
+    remainingVectors: number
+    affectedSpaceIds: string[]
+  } {
+    const spaceRows = this.db
+      .prepare(`
+        SELECT DISTINCT e.space_id
+        FROM chunk_embeddings e
+        JOIN chunks c ON c.id = e.chunk_id
+        WHERE c.document_id = ?
+          AND (? IS NULL OR e.space_id = ?)
+      `)
+      .all(documentId, targetSpaceId ?? null, targetSpaceId ?? null) as Array<{ space_id: string }>
+
+    const affectedSpaceIds = spaceRows.map((r) => r.space_id)
+
+    if (affectedSpaceIds.length === 0) {
+      return {
+        documentId,
+        deletedEmbeddings: 0,
+        remainingVectors: this.getEmbeddingCounts(documentId, targetSpaceId),
+        affectedSpaceIds: [],
+      }
+    }
+
+    const delResult = this.db
+      .prepare(`
+        DELETE FROM chunk_embeddings
+        WHERE chunk_id IN (
+          SELECT c.id FROM chunks c
+          WHERE c.document_id = ?
+        )
+        AND (? IS NULL OR space_id = ?)
+      `)
+      .run(documentId, targetSpaceId ?? null, targetSpaceId ?? null)
+
+    const deletedEmbeddings = Number(delResult.changes)
+
+    // Resynchronize document_embedding_counts for affected spaces
+    let remainingVectors = 0
+    for (const spaceId of affectedSpaceIds) {
+      const remainingRow = this.db
+        .prepare(`
+          SELECT count(e.chunk_id) AS c
+          FROM chunks c
+          JOIN documents d ON d.id = c.document_id
+          JOIN chunk_embeddings e ON e.chunk_id = c.id AND e.space_id = ?
+          WHERE c.document_id = ?
+            AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
+        `)
+        .get(spaceId, documentId) as { c: number } | undefined
+      const count = remainingRow?.c ?? 0
+      remainingVectors += count
+
+      if (count > 0) {
+        this.db
+          .prepare(`
+            INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks)
+            VALUES (?, ?, ?)
+            ON CONFLICT (document_id, space_id)
+            DO UPDATE SET completed_chunks = excluded.completed_chunks
+          `)
+          .run(documentId, spaceId, count)
+      } else {
+        this.db
+          .prepare('DELETE FROM document_embedding_counts WHERE document_id = ? AND space_id = ?')
+          .run(documentId, spaceId)
+      }
+    }
+
+    // Update document chunk_done and status
+    this.db
+      .prepare(`
+        UPDATE documents
+        SET chunk_done = coalesce(
+              (SELECT completed_chunks FROM document_embedding_counts WHERE document_id = ? AND space_id = documents.embedding_model),
+              0
+            ),
+            status = CASE
+              WHEN (SELECT count(*) FROM chunks c WHERE c.document_id = documents.id AND (c.chunk_set_id IS NULL OR c.chunk_set_id = documents.active_chunk_set_id)) = 0 THEN 'empty'
+              WHEN coalesce((SELECT completed_chunks FROM document_embedding_counts WHERE document_id = ? AND space_id = documents.embedding_model), 0) > 0 THEN status
+              ELSE 'text-only'
+            END,
+            updated_at = unixepoch()
+        WHERE id = ?
+      `)
+      .run(documentId, documentId, documentId)
+
+    return {
+      documentId,
+      deletedEmbeddings,
+      remainingVectors,
+      affectedSpaceIds,
     }
   }
 }

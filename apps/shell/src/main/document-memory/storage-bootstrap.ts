@@ -1,7 +1,11 @@
 import { existsSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { inspectDatabaseVersion, type StorageVersionReport } from './storage/schema-inspector'
 import { migrateStorageV2ToV3, type StorageMigrationResult } from './storage-migration'
+import { DocumentMemoryStore } from './store'
+import { migrateCacheRetentionSchema } from './storage/migration/cache-retention'
+import { migrateNameSearchProjection } from './storage/migration/name-search-projection'
 import { recoverInterruptedCutover, getManifestPath } from './storage/migration/cutover'
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'
 import { verifyDatabaseStartupHealth } from './storage/migration/logical-verifier'
@@ -13,6 +17,20 @@ import {
   recordV3VerifiedLaunch,
   type V3RetentionState,
 } from './storage/migration/v3-retention-state'
+import {
+  getEffectiveStorageBudget,
+  estimateMigrationGrowthBytes,
+  checkMigrationAdmission,
+  getValidatedFreeDiskBytesSync,
+} from './runtime/backup-write-budget'
+import { collectStorageAccounting } from './runtime/storage-accounting'
+import {
+  cleanupCompactionBackups,
+  recoverInterruptedCompaction,
+  runOfflineCompaction,
+  type OfflineCompactionOptions,
+} from './runtime/offline-compaction'
+import { readOfflineCompactionSetting } from './storage/offline-compaction-setting'
 
 export interface BootstrapResult {
   ready: boolean
@@ -25,6 +43,11 @@ export interface BootstrapResult {
 
 export interface StorageBootstrapOptions {
   settingsDir?: string
+  /**
+   * Run the offline full compaction (opt-in; default: the `document-memory-compaction.json` setting, off). An object
+   * also overrides the thresholds of runOfflineCompaction (tests; the defaults skip small / unfragmented databases).
+   */
+  offlineCompaction?: boolean | Omit<OfflineCompactionOptions, 'enabled'>
 }
 
 /**
@@ -47,7 +70,8 @@ export function findUnexpectedTempArtifacts(dbDir: string, dbBase = 'document-me
         found.push(join(dbDir, name))
       }
     }
-  } catch {
+  } catch (err: unknown) {
+    console.debug('[storage-bootstrap] readdirSync failed, trying direct candidates:', err)
     const directCandidates = [
       join(dbDir, `${dbBase}.v3.tmp`),
       join(dbDir, `${dbBase}.v3.tmp.db`),
@@ -92,8 +116,8 @@ export function findAnyBackupArtifacts(dbDir: string, dbBase = 'document-memory.
         }
       }
     }
-  } catch {
-    // ignore
+  } catch (err: unknown) {
+    console.debug('[storage-bootstrap] backup scan readdir failed:', err)
   }
 
   return backups
@@ -105,12 +129,33 @@ export function findAnyBackupArtifacts(dbDir: string, dbBase = 'document-memory.
  * Fails closed on any recovery error, corruption, or ambiguous temporary artifacts.
  * 
  * Must be executed before `new DocumentMemoryManager()` or any worker startup.
+ * 
+ * ARCHITECTURAL LIMITATION & THREADING MODEL:
+ * This method is an async function executed on the UI main process thread during startup.
+ * The underlying migration runner (`migrateStorageV2ToV3`) runs SYNCHRONOUSLY on this thread.
+ * It does NOT execute off-main thread (no fake setImmediate or background workers here).
+ * This synchronous execution on the caller thread is intentional in this scope to guarantee
+ * exclusive single-writer access and complete schema verification before any runtime stores,
+ * indexers, or background workers initialize. The parent runtime / orchestrator is responsible
+ * for blocking application launch or providing user-facing startup splash until complete,
+ * or scheduling off-main migration when a dedicated worker architecture is implemented.
  */
 export async function ensureDocumentMemoryStorageReady(
   dbDir: string,
   options: StorageBootstrapOptions = {},
 ): Promise<BootstrapResult> {
   const dbPath = join(dbDir, 'document-memory.db')
+
+  // An offline compaction killed mid-swap is rolled back to the previous verified database (separate manifest from the
+  // cutover); expired `.compact-prev` backups are removed. Neither step may fail startup on its own.
+  try {
+    const compaction = recoverInterruptedCompaction(dbPath)
+    if (compaction.recovered) console.info(`[document-memory-bootstrap] Recovered interrupted compaction (${compaction.action}).`)
+    if (compaction.error) console.warn('[document-memory-bootstrap] Compaction recovery error:', compaction.error)
+    cleanupCompactionBackups(dbPath)
+  } catch (compactionErr) {
+    console.warn('[document-memory-bootstrap] Compaction recovery failed:', compactionErr)
+  }
 
   // Check and recover from any interrupted cutover state first (BEH-16 / INV-01 fail-closed)
   try {
@@ -227,6 +272,42 @@ export async function ensureDocumentMemoryStorageReady(
             `fkErrors=${integrity.foreignKeyErrors.length}`,
         }
       }
+      const offline = options.offlineCompaction ?? readOfflineCompactionSetting(options.settingsDir)
+      if (offline) {
+        // Exclusive, before any connection of this process exists; every failure keeps the previous database.
+        try {
+          const compacted = runOfflineCompaction(dbPath, { ...(typeof offline === 'object' ? offline : {}), enabled: true })
+          if (compacted.status === 'compacted') console.info(`[document-memory-bootstrap] Offline compaction saved ${compacted.bytesSaved} bytes.`)
+          else if (compacted.status === 'failed' || compacted.status === 'rolled-back') console.warn('[document-memory-bootstrap] Offline compaction not applied:', compacted.error ?? compacted.status)
+        } catch (compactErr) {
+          console.warn('[document-memory-bootstrap] Offline compaction failed:', compactErr)
+        }
+      }
+      try {
+        const store = new DocumentMemoryStore(dbPath, { role: 'search' })
+        try {
+          const cacheRes = migrateCacheRetentionSchema(store.rawDb)
+          if (cacheRes.error) {
+            throw new Error(`Cache retention migration failed: ${cacheRes.error}`)
+          }
+          const projRes = migrateNameSearchProjection(store.rawDb)
+          if (projRes.error) {
+            throw new Error(`Name search projection migration failed: ${projRes.error}`)
+          }
+          store.repairInvalidCanonicalEmbeddings()
+        } finally {
+          store.close()
+        }
+      } catch (repairErr) {
+        const errorMsg = `Existing V3 database schema migration or repair failed: ${(repairErr as Error).message}`
+        console.error('[document-memory-bootstrap]', errorMsg)
+        return {
+          ready: false,
+          migrated: false,
+          report,
+          error: errorMsg,
+        }
+      }
       let retentionState: V3RetentionState | undefined
       const recorded = recordV3VerifiedLaunch(dbDir)
       if (recorded) {
@@ -240,19 +321,117 @@ export async function ensureDocumentMemoryStorageReady(
       }
     }
 
-    // Read active embedding configuration independently before database access (BEH-14)
+    // 1. Read persisted UI storage budget before migration opens new files (Requirement 1)
     const settingsDir = options.settingsDir ?? dbDir
+    const effectiveBudget = getEffectiveStorageBudget(settingsDir)
+    if (!effectiveBudget.valid) {
+      const errorMsg = `Storage budget configuration invalid or corrupted: ${effectiveBudget.error}`
+      console.error('[document-memory-bootstrap]', errorMsg)
+      return {
+        ready: false,
+        migrated: false,
+        report,
+        error: errorMsg,
+      }
+    }
+    const budgetBytes = effectiveBudget.budgetBytes
+
+    // 2. Probe for concurrent writers before starting migration (fail-closed if active writer detected).
+    // Note: BEGIN IMMEDIATE; COMMIT is only an initial probe at bootstrap time.
+    // Full exclusive protection during migration is durably maintained by migrateStorageV2ToV3
+    // via an atomic operation guard file (.migrating) and a persistent BEGIN IMMEDIATE write fence held across the copy.
+    try {
+      const lockCheckDb = new DatabaseSync(dbPath)
+      try {
+        lockCheckDb.exec('PRAGMA busy_timeout = 1000;')
+        lockCheckDb.exec('BEGIN IMMEDIATE; COMMIT;')
+      } finally {
+        lockCheckDb.close()
+      }
+    } catch (writerErr: any) {
+      const errorMsg = `Concurrent writer detected during bootstrap: ${(writerErr as Error).message}`
+      console.error('[document-memory-bootstrap]', errorMsg)
+      return {
+        ready: false,
+        migrated: false,
+        report,
+        error: errorMsg,
+      }
+    }
+
+    // 3. Quota preflight: physical DB + WAL + SHM + old ANN + OCR + sidecars + ALL existing protected backups
+    const preAccounting = collectStorageAccounting({ dbPath })
+    if (preAccounting.isDegraded) {
+      const errorMsg = 'Storage accounting is degraded due to I/O or permission errors before migration'
+      console.error('[document-memory-bootstrap]', errorMsg)
+      return {
+        ready: false,
+        migrated: false,
+        report,
+        error: errorMsg,
+      }
+    }
+
+    // Read active embedding configuration independently before database access (BEH-14)
     const activeConfig = readActiveEmbeddingConfig(settingsDir)
+
+    // Estimate conservative migration growth of new temp DB & WAL
+    let estimatedGrowthBytes = 0
+    try {
+      const statDb = new DatabaseSync(dbPath)
+      try {
+        estimatedGrowthBytes = estimateMigrationGrowthBytes(statDb, activeConfig.activeSpaceId, activeConfig.activeDimensions)
+      } finally {
+        statDb.close()
+      }
+    } catch (statErr: any) {
+      const errorMsg = `Failed to estimate migration growth: ${(statErr as Error).message}`
+      console.error('[document-memory-bootstrap]', errorMsg)
+      return {
+        ready: false,
+        migrated: false,
+        report,
+        error: errorMsg,
+      }
+    }
+
+    const freeDiskBytes = getValidatedFreeDiskBytesSync(dbDir)
+
+    const preAdmission = checkMigrationAdmission({
+      sourceDbPath: dbPath,
+      currentUsageBytes: preAccounting.totalManagedBytes,
+      budgetBytes,
+      estimatedGrowthBytes,
+      freeDiskBytes,
+      accountingDegraded: preAccounting.isDegraded,
+    })
+
+    if (!preAdmission.admitted) {
+      const errorMsg = `Storage budget admission blocked: ${preAdmission.error || preAdmission.reason}`
+      console.error('[document-memory-bootstrap]', errorMsg)
+      return {
+        ready: false,
+        migrated: false,
+        report,
+        error: errorMsg,
+      }
+    }
 
     console.info('[document-memory-bootstrap] V2 storage detected. Starting verified V2->V3 migration...', {
       reasons: report.reasons,
       autoVacuum: report.autoVacuum,
       activeSpaceId: activeConfig.activeSpaceId,
+      budgetBytes,
+      currentUsageBytes: preAccounting.totalManagedBytes,
+      estimatedGrowthBytes,
     })
 
     const migrationResult = migrateStorageV2ToV3(dbPath, {
       activeSpaceId: activeConfig.activeSpaceId,
       activeDimensions: activeConfig.activeDimensions,
+      budgetBytes,
+      settingsDir,
+      freeDiskBytes,
     })
     console.info('[document-memory-bootstrap] V2->V3 storage migration completed successfully.', {
       documentsCopied: migrationResult.documentsCopied,
@@ -260,6 +439,32 @@ export async function ensureDocumentMemoryStorageReady(
       embeddingsCopied: migrationResult.embeddingsCopied,
       durationMs: migrationResult.durationMs,
     })
+
+    try {
+      const store = new DocumentMemoryStore(dbPath, { role: 'search' })
+      try {
+        const cacheRes = migrateCacheRetentionSchema(store.rawDb)
+        if (cacheRes.error) {
+          throw new Error(`Cache retention migration failed: ${cacheRes.error}`)
+        }
+        const projRes = migrateNameSearchProjection(store.rawDb)
+        if (projRes.error) {
+          throw new Error(`Name search projection migration failed: ${projRes.error}`)
+        }
+        store.repairInvalidCanonicalEmbeddings()
+      } finally {
+        store.close()
+      }
+    } catch (repairErr) {
+      const errorMsg = `Post-migration schema repair failed: ${(repairErr as Error).message}`
+      console.error('[document-memory-bootstrap]', errorMsg)
+      return {
+        ready: false,
+        migrated: false,
+        report,
+        error: errorMsg,
+      }
+    }
 
     // Sau migration: verifiedLaunches = 0
     let retentionState: V3RetentionState | undefined

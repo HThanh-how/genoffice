@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
+import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
 import {
   isIndexingPaused,
   publishIndexingPolicy,
@@ -43,6 +44,11 @@ class FakeWorker extends EventEmitter {
     super()
   }
   postMessage(message: { id: number; type: string; path?: string; texts?: string[] }) {
+    const ack = storageBudgetAckReply(message)
+    if (ack) {
+      this.emit('message', ack)
+      return
+    }
     this.onRequest(message.type)
     setTimeout(() => {
       if (message.type === 'extract') {
@@ -95,11 +101,12 @@ async function until(check: () => boolean, timeout = 4000) {
     await sleep(10)
   }
 }
-function create(fake: FakeWorker) {
+async function create(fake: FakeWorker) {
   manager = new DocumentMemoryManager(dir, {
     pollIntervalMs: 60_000,
     workerFactory: () => fake as unknown as Worker,
   })
+  await waitForManagerWriteReady(manager)
   return manager
 }
 
@@ -110,7 +117,7 @@ describe('document index pause', () => {
     publishIndexingPolicy(paused)
     expect(isIndexingPaused()).toBe(true)
     const fake = new FakeWorker(0)
-    const instance = create(fake)
+    const instance = await create(fake)
     expect(instance.indexDiscoveredFile(file)).toBe(true)
     await sleep(150)
     expect(fake.extractions).toEqual([])
@@ -132,7 +139,7 @@ describe('document index pause', () => {
     const fake = new FakeWorker(80, (type) => {
       if (type === 'extract' && ++requests === 1) publishIndexingPolicy(paused)
     })
-    const instance = create(fake)
+    const instance = await create(fake)
     instance.indexDiscoveredFile(first)
     instance.indexDiscoveredFile(second)
     await sleep(500)
@@ -147,7 +154,7 @@ describe('document index pause', () => {
   })
 
   it('does not subscribe after close', async () => {
-    const instance = create(new FakeWorker(0))
+    const instance = await create(new FakeWorker(0))
     instance.close()
     expect(() => publishIndexingPolicy(running)).not.toThrow()
   })

@@ -395,7 +395,7 @@ describe('Migration Target Space Must Be Explicit (QA-02 Suite)', () => {
       migrateStorageV2ToV3(dbPath, {
         activeDimensions: 320,
       } as any)
-    }).toThrowError(/activeSpaceId and activeDimensions are required/)
+    }).toThrowError(/Migration target embedding space must be explicitly specified/)
 
     // Empty string activeSpaceId
     expect(() => {
@@ -403,7 +403,7 @@ describe('Migration Target Space Must Be Explicit (QA-02 Suite)', () => {
         activeSpaceId: '',
         activeDimensions: 320,
       } as any)
-    }).toThrowError(/activeSpaceId and activeDimensions are required/)
+    }).toThrowError(/Migration target embedding space must be explicitly specified/)
 
     // Undefined activeSpaceId
     expect(() => {
@@ -411,7 +411,7 @@ describe('Migration Target Space Must Be Explicit (QA-02 Suite)', () => {
         activeSpaceId: undefined,
         activeDimensions: 320,
       } as any)
-    }).toThrowError(/activeSpaceId and activeDimensions are required/)
+    }).toThrowError(/Migration target embedding space must be explicitly specified/)
   })
 
   it('MIGSPACE-05: cannot start without activeDimensions (throw validation error nếu thiếu activeDimensions)', () => {
@@ -422,7 +422,7 @@ describe('Migration Target Space Must Be Explicit (QA-02 Suite)', () => {
       migrateStorageV2ToV3(dbPath, {
         activeSpaceId: 'f2-320',
       } as any)
-    }).toThrowError(/activeSpaceId and activeDimensions are required/)
+    }).toThrowError(/Migration target embedding space must be explicitly specified/)
 
     // Undefined activeDimensions
     expect(() => {
@@ -430,7 +430,7 @@ describe('Migration Target Space Must Be Explicit (QA-02 Suite)', () => {
         activeSpaceId: 'f2-320',
         activeDimensions: undefined,
       } as any)
-    }).toThrowError(/activeSpaceId and activeDimensions are required/)
+    }).toThrowError(/Migration target embedding space must be explicitly specified/)
 
     // Non-number activeDimensions (e.g. string)
     expect(() => {
@@ -438,6 +438,6 @@ describe('Migration Target Space Must Be Explicit (QA-02 Suite)', () => {
         activeSpaceId: 'f2-320',
         activeDimensions: '320' as any,
       })
-    }).toThrowError(/activeSpaceId and activeDimensions are required/)
+    }).toThrowError(/Migration target embedding space must be explicitly specified/)
   })
 })
