@@ -6,7 +6,11 @@ import { readFile } from 'node:fs/promises'
 import { Tokenizer } from '@huggingface/tokenizers'
 import type { InferenceSession } from 'onnxruntime-node'
 import { EMBEDDING_PROFILES, embeddingProfile, type EmbeddingProfile, type EmbeddingProfileId } from './embedding-profiles'
-import { EmbeddingModelDownloadError, ensureModelFiles } from './embedding/model-files'
+import {
+  EmbeddingModelDownloadError,
+  ensureModelFiles,
+  type ModelDownloadProgress,
+} from './embedding/model-files'
 import {
   buildFeeds,
   finishVector,
@@ -30,6 +34,31 @@ type Loaded = {
   keeper: SessionKeeper<InferenceSession>
 }
 
+// The worker runs embedding requests in one queue with a 150 s task timeout, and the host recycles
+// the process when an extraction waits behind a long task. A multi-minute model download must
+// therefore never hold a request: it continues in the background (resuming after any failure)
+// and requests answer "still downloading" after this wait.
+const MODEL_WAIT_MS = 20_000
+let modelWaitMs = MODEL_WAIT_MS
+export function overrideModelWaitMs(ms: number | undefined): void {
+  modelWaitMs = ms ?? MODEL_WAIT_MS
+}
+
+async function loadedWithin(pending: Promise<Loaded>): Promise<Loaded> {
+  let timer: NodeJS.Timeout | undefined
+  const early = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error('The search model is still being prepared; semantic indexing continues when it is ready.')),
+      modelWaitMs,
+    )
+  })
+  try {
+    return await Promise.race([pending, early])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 let loaded:
   | {
       profileId: EmbeddingProfileId
@@ -37,8 +66,26 @@ let loaded:
     }
   | undefined
 
+/**
+ * Reports download progress to the host as a whole percent (the status field the settings screen
+ * already shows) when the integer changes or another source takes over. 1 is skipped: the
+ * assistant reads values up to 1 as a fraction.
+ */
+function progressReporter(): (progress: ModelDownloadProgress) => void {
+  let lastPercent = -1
+  let lastHost = ''
+  return ({ doneBytes, totalBytes, host }) => {
+    if (totalBytes <= 0) return
+    const percent = Math.min(99, Math.floor((doneBytes / totalBytes) * 100))
+    if ((percent === lastPercent && host === lastHost) || percent === 1) return
+    lastPercent = percent
+    lastHost = host
+    postIndexMessage({ type: 'model', state: 'downloading', progress: percent, source: host, doneBytes, totalBytes })
+  }
+}
+
 async function loadEmbeddingModel(cacheDir: string, profile: EmbeddingProfile): Promise<Loaded> {
-  const paths = await ensureModelFiles(cacheDir, profile)
+  const paths = await ensureModelFiles(cacheDir, profile, undefined, { onProgress: progressReporter() })
   const tokenizer = new Tokenizer(
     JSON.parse(await readFile(paths.get(profile.tokenizerFile)!, 'utf8')),
     JSON.parse(await readFile(paths.get(profile.tokenizerConfigFile)!, 'utf8')),
@@ -134,10 +181,12 @@ export async function embedTexts(
         })
         throw err
       })
+    // a failure while no request is waiting was already reported through the model message
+    pending.catch(() => {})
     loaded = { profileId: profile.id, value: pending }
   }
 
-  const { tokenizer, keeper } = await pending
+  const { tokenizer, keeper } = await loadedWithin(pending)
   if (kind === 'passage') await keeper.align()
   const session = keeper.current()
 

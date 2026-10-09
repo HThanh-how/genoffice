@@ -105,7 +105,12 @@ export type WorkerReply =
   | {
       type: 'model'
       state: 'downloading' | 'ready' | 'blocked' | 'error'
+      /** whole percent of the model download while state is 'downloading' */
       progress?: number
+      /** host the download is coming from, and its byte counts */
+      source?: string
+      doneBytes?: number
+      totalBytes?: number
       error?: string
     }
 
