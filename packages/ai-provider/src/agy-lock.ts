@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, open, readFile, rename, rm, stat } from 'node:fs/promises'
 import { rmSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { posix, win32 } from 'node:path'
 
 /**
  * Machine-wide cap on concurrent `agy` processes. The in-process limiter in agy-cli.ts only counts
@@ -112,6 +112,8 @@ export function agyLockDir(
   home: string = homedir(),
 ): string {
   if (env.GENOFFICE_AGY_LOCK_DIR?.trim()) return env.GENOFFICE_AGY_LOCK_DIR.trim()
+  // the separator follows the target platform, not the machine running this code
+  const join = platform === 'win32' ? win32.join : posix.join
   const base =
     env.GENOFFICE_USER_DATA?.trim() ||
     join(
@@ -193,7 +195,9 @@ export function createAgyMachineSemaphore(
   const deps: AgyMachineLockDeps = { ...realDeps, ...options.deps }
   const usingRealFs = deps.fs === realFs
   const maxWaitMs = options.maxWaitMs ?? AGY_LOCK_MAX_WAIT_MS
-  const slotPath = (dir: string, index: number) => join(dir, `slot-${index}.lock`)
+  // keep the separator style of the directory we were given (a Windows path stays backslashed)
+  const slotPath = (dir: string, index: number) =>
+    `${dir.replace(/[\\/]+$/, '')}${dir.includes('\\') ? '\\' : '/'}slot-${index}.lock`
 
   /** True when the slot file may be removed (its holder is gone, expired or never finished writing). */
   async function isStale(file: string): Promise<boolean> {
