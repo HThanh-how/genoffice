@@ -6,8 +6,8 @@ import {
   DEFAULT_RESERVATION_TTL_MS,
 } from './storage-admission'
 import {
-  CACHE_RETENTION_HIGH_WATERMARK,
   hardCapBytes,
+  nameMetadataReserveBytes,
   type DocumentIndexStorageBudget,
   type StorageBudgetSnapshot,
 } from '../storage-budget'
@@ -27,6 +27,7 @@ export type SyncMetadataRejectionReason =
   | 'not-ready'
   | 'stopped'
   | 'min-metadata-unfit'
+  | 'name-metadata-full'
   | 'reservation-exceeded'
 
 export interface SyncMetadataAdmissionDecision {
@@ -39,11 +40,7 @@ export interface SyncMetadataAdmissionDecision {
 }
 
 export interface SyncMetadataGuard extends NameProjectionSyncGuard {
-  /**
-   * `lowPriority` (images/videos) is admitted only below the cache-retention high watermark (90% of the soft
-   * quota), so media can never push the index into compaction of document content nor into the grace zone;
-   * documents are admitted up to the hard cap.
-   */
+  /** All file identities use the protected name pool; low priority applies to heavy content, not discoverability. */
   canAdmitNewDocument(
     doc: { name: string; path: string; lowPriority?: boolean },
     estimatedBytes: number,
@@ -140,13 +137,31 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
   }
 
   private notifyQuotaPressure(neededBytes: number, reason: SyncMetadataRejectionReason, doc?: { name: string; path: string }): void {
-    // low-priority rows (images / videos) are deliberately admitted only below 90%: they never displace content
-    if (!this.onQuotaPressureOption || this.stopped || (doc as { lowPriority?: boolean } | undefined)?.lowPriority) return
+    // Pressure never deletes source files; the owner compacts regenerable indexes and retries intake.
+    if (!this.onQuotaPressureOption || this.stopped) return
     try {
       this.onQuotaPressureOption({ neededBytes: Math.max(1, Math.ceil(neededBytes)), reason, ...(doc ? { doc } : {}) })
     } catch {
       // displacement is an optimisation of admission; the refusal below stands either way
     }
+  }
+
+  private metadataFits(snapshot: StorageBudgetSnapshot, estimatedBytes: number): boolean {
+    const measured = snapshot.nameMetadataBytes
+    if (measured === undefined || !Number.isSafeInteger(measured) || measured < 0) {
+      this.lastRejectionReason = 'Name/path storage measurement is unknown; retry after accounting refresh'
+      return false
+    }
+    // Include unsettled commits until a fresh measurement covers them, just as the global guard does.
+    let debt = 0
+    for (const reservation of this.activeOwned.values()) debt += reservation.bytes
+    const cap = nameMetadataReserveBytes(this.getStorageBudget())
+    if (measured + debt + estimatedBytes > cap) {
+      this.lastRejectionReason = `Name/path storage full: ${measured + debt + estimatedBytes} exceeds reserved ${cap} bytes; compact or select fewer folders`
+      this.notifyQuotaPressure(measured + debt + estimatedBytes - cap, 'name-metadata-full')
+      return false
+    }
+    return true
   }
 
   canWriteProjection(
@@ -168,6 +183,7 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
       }
       // Grace zone: the lease was admitted against the hard cap; a hard stop reached since then refuses
       if ((snap.totalManagedBytes ?? snap.databaseBytes) >= hardCapBytes(budget)) return false
+      if (!this.metadataFits(snap, 0)) return false
       // Recheck exact central lease owner in admission controller
       const central = this.admission.listReservations().find((r) => r.id === resId)
       if (!central || central.ownerId !== owned.ownerToken) {
@@ -187,6 +203,7 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
       return false
     }
     const currentUsage = (snap.totalManagedBytes ?? snap.databaseBytes)
+    if (!this.metadataFits(snap, estimatedBytes)) return false
     if (!Number.isFinite(currentUsage) || currentUsage < 0) return false
     const reservedBytes = this.admission.getReservedBytes()
     // Grace zone: projection updates are admitted up to the HARD cap (soft quota + overshoot), never beyond
@@ -257,6 +274,15 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
       return { admitted: false, reason: 'accounting-unknown', estimatedBytes, error: this.lastRejectionReason }
     }
 
+    if (!this.metadataFits(snap, estimatedBytes)) {
+      return {
+        admitted: false,
+        reason: !Number.isSafeInteger(snap.nameMetadataBytes) || (snap.nameMetadataBytes ?? -1) < 0 ? 'accounting-unknown' : 'name-metadata-full',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
+    }
+
     if (snap.limitState === 'full') {
       this.lastRejectionReason = 'Storage limit state is full'
       const usedAtStop = snap.totalManagedBytes ?? snap.databaseBytes
@@ -272,9 +298,8 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
 
     // Grace zone: soft quota <= usage < hard cap still admits the lightweight name/identity row (every new file
     // stays findable); the projection and the reservation are checked against the HARD cap, never the soft quota.
-    const maxDbBytes = doc.lowPriority
-      ? Math.floor(budget.maxDatabaseBytes * CACHE_RETENTION_HIGH_WATERMARK)
-      : hardCapBytes(budget)
+    // Media identities get the same protected name budget; only their heavy content is low priority.
+    const maxDbBytes = hardCapBytes(budget)
     if (currentUsage >= maxDbBytes) {
       this.lastRejectionReason = 'Storage limit state is full'
       this.notifyQuotaPressure(currentUsage + this.admission.getReservedBytes() + estimatedBytes - maxDbBytes, 'budget-full', doc)

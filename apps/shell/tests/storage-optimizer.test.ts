@@ -80,7 +80,7 @@ describe('optimizeFts', () => {
     // once converged, another pass is a near no-op
     const again = await optimizeFts(db, { maxPages: 100_000 })
     expect(again.stoppedReason).toBe('converged')
-    expect(again.steps).toBeLessThanOrEqual(2)
+    expect(again.steps).toBeLessThanOrEqual(3) // one converged pass for each of the three FTS tables
   })
 
   it('is bounded and resumable: a tiny page budget stops early and `pending` finishes the job', async () => {

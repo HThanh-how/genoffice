@@ -1,5 +1,6 @@
 import {
   compactionTarget,
+  contentWriteCapBytes,
   type CompactionUrgency,
   type DocumentIndexStorageBudget,
   type StorageBudgetSnapshot,
@@ -66,10 +67,12 @@ export interface CompactionCycleOutcome {
 }
 
 export interface MakeRoomRequest {
+  /** A real admission refusal includes concurrent leases and disk headroom, not just measured usage. */
+  admissionDenied?: boolean
   /** Bytes that must become free for the incoming document / vectors. */
   neededBytes: number
   importance?: ImportanceClass
-  reason: 'content' | 'metadata' | 'embedding'
+  reason: 'content' | 'metadata' | 'embedding' | 'name-metadata'
 }
 
 export interface MakeRoomOutcome {
@@ -326,7 +329,7 @@ export class CompactionDriver {
     const budget = this.options.getBudget()
     if (snap.isDegraded || snap.measurementStatus === 'unknown') return no('accounting-unknown')
     const used = snap.totalManagedBytes ?? snap.databaseBytes
-    if (!(used >= budget.maxDatabaseBytes)) return no('below-soft-quota')
+    if (!request.admissionDenied && request.reason !== 'name-metadata' && used + request.neededBytes < contentWriteCapBytes(budget)) return no('below-content-cap')
     if (this.now() < this.makeRoomCooldownUntil) return no('cooldown')
     const flight = this.doMakeRoom(request).finally(() => {
       if (this.makeRoomInflight === flight) this.makeRoomInflight = null
@@ -357,6 +360,26 @@ export class CompactionDriver {
       snap = await this.options.refreshAccounting()
     } catch {
       // use the last snapshot
+    }
+    if (request.reason === 'name-metadata') {
+      const before = snap.nameMetadataBytes
+      const runId = `names:${epoch}:${++this.runSeq}:${this.now()}`
+      const reply = await askWorker({
+        type: 'optimize-fts', runId, epoch,
+        ...(budget.version !== undefined ? { configVersion: budget.version } : {}),
+        maxPages: 512, budgetMs: 5_000,
+      }, 60_000)
+      const result = resultOf<OptimizeFtsWorkerResult>(reply, 'optimize-fts')
+      if (this.stopped || epoch !== this.options.getEpoch() || result?.runId !== runId || result.status !== 'completed') {
+        this.makeRoomCooldownUntil = this.now() + MAKE_ROOM_COOLDOWN_MS
+        return { attempted: true, retry: false, freedBytes: 0, reason: 'name-compaction-incomplete' }
+      }
+      const after = await this.options.refreshAccounting()
+      const freed = before !== undefined && after.nameMetadataBytes !== undefined && !after.isDegraded
+        ? Math.max(0, before - after.nameMetadataBytes) : 0
+      const retry = freed >= request.neededBytes
+      if (!retry) this.makeRoomCooldownUntil = this.now() + MAKE_ROOM_COOLDOWN_MS
+      return { attempted: true, retry, freedBytes: freed, ...(retry ? {} : { reason: 'name-metadata-full' }) }
     }
     const freedMeanwhile = Math.max(0, usedAtStart - usedNow(snap))
     if (freedMeanwhile >= request.neededBytes) return { attempted: false, retry: true, freedBytes: freedMeanwhile, reason: 'freed-by-retention' }

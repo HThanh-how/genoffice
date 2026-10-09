@@ -7,7 +7,7 @@ import {
 } from './storage-admission'
 import type { MaintenanceScheduler } from './maintenance-scheduler'
 import type { StorageBudgetCoordinator } from './storage-budget-coordinator'
-import { hardCapBytes, type StorageBudgetSnapshot } from '../storage-budget'
+import { hardCapBytes, contentWriteCapBytes, type StorageBudgetSnapshot } from '../storage-budget'
 import type { ExtractResult } from './extraction-coordinator'
 import type {
   SliceOptions,
@@ -267,7 +267,7 @@ export async function resizeExtractionLease(
       newBytes: remainingBytes,
       currentBytes: 0,
       reservedBytes: admission.getReservedBytes(),
-      budgetBytes: hardCapBytes(maintScheduler.budget),
+      budgetBytes: contentWriteCapBytes(maintScheduler.budget),
       projectedBytes: 0,
       projectedUsageRatio: 1.0,
       error: 'Task is no longer current (cancelled or superseded)',
@@ -284,7 +284,7 @@ export async function resizeExtractionLease(
       newBytes: remainingBytes,
       currentBytes: 0,
       reservedBytes: admission.getReservedBytes(),
-      budgetBytes: hardCapBytes(maintScheduler.budget),
+      budgetBytes: contentWriteCapBytes(maintScheduler.budget),
       projectedBytes: 0,
       projectedUsageRatio: 1.0,
       error: 'Write gate closed pending quota confirmation',
@@ -303,7 +303,7 @@ export async function resizeExtractionLease(
       newBytes: remainingBytes,
       currentBytes: 0,
       reservedBytes: admission.getReservedBytes(),
-      budgetBytes: hardCapBytes(maintScheduler.budget),
+      budgetBytes: contentWriteCapBytes(maintScheduler.budget),
       projectedBytes: 0,
       projectedUsageRatio: 1.0,
       error: 'Task is no longer current after accounting refresh',
@@ -320,7 +320,7 @@ export async function resizeExtractionLease(
       newBytes: remainingBytes,
       currentBytes: 0,
       reservedBytes: admission.getReservedBytes(),
-      budgetBytes: hardCapBytes(maintScheduler.budget),
+      budgetBytes: contentWriteCapBytes(maintScheduler.budget),
       projectedBytes: 0,
       projectedUsageRatio: 1.0,
       error: 'Write gate closed after accounting refresh',
@@ -337,7 +337,7 @@ export async function resizeExtractionLease(
       newBytes: remainingBytes,
       currentBytes: 0,
       reservedBytes: admission.getReservedBytes(),
-      budgetBytes: hardCapBytes(maintScheduler.budget),
+      budgetBytes: contentWriteCapBytes(maintScheduler.budget),
       projectedBytes: 0,
       projectedUsageRatio: 1.0,
       error: accounting.error ?? 'Storage accounting is unknown or degraded',
@@ -357,7 +357,7 @@ export async function resizeExtractionLease(
       newBytes: remainingBytes,
       currentBytes: 0,
       reservedBytes: admission.getReservedBytes(),
-      budgetBytes: hardCapBytes(maintScheduler.budget),
+      budgetBytes: contentWriteCapBytes(maintScheduler.budget),
       projectedBytes: 0,
       projectedUsageRatio: 1.0,
       error: 'Task is no longer current after disk check',
@@ -374,7 +374,7 @@ export async function resizeExtractionLease(
       newBytes: remainingBytes,
       currentBytes: 0,
       reservedBytes: admission.getReservedBytes(),
-      budgetBytes: hardCapBytes(maintScheduler.budget),
+      budgetBytes: contentWriteCapBytes(maintScheduler.budget),
       projectedBytes: 0,
       projectedUsageRatio: 1.0,
       error: 'Write gate closed after disk check',
@@ -382,7 +382,7 @@ export async function resizeExtractionLease(
   }
 
   // Live budget captured strictly after all asynchronous checks
-  const budgetBytes = hardCapBytes(maintScheduler.budget)
+  const budgetBytes = contentWriteCapBytes(maintScheduler.budget)
   const currentUsageBytes = snap.totalManagedBytes ?? snap.databaseBytes
 
   // Fail-closed if disk space could not be verified
@@ -466,7 +466,7 @@ function incomingImportance(store: DocumentMemoryStore, path: string): Importanc
 /**
  * Admission by displacement for the content path: when the lease is refused for quota, ask the scheduler to free the
  * shortfall from the lowest value content (in the worker), then retry the SAME admission once. Never loops, never
- * exceeds the hard cap (the retry is the normal admission against hardCapBytes), refuses only if still impossible.
+ * exceeds the hard cap (the retry is the normal admission against contentWriteCapBytes), refuses only if still impossible.
  */
 async function resizeWithDisplacement(
   attempt: () => Promise<ResizeDecision>,
@@ -480,7 +480,7 @@ async function resizeWithDisplacement(
   if (typeof maintScheduler.makeRoom !== 'function') return decision
   alreadyDisplaced.value = true
   const shortfall = Math.max(1, Math.ceil(decision.projectedBytes - decision.budgetBytes))
-  const room = await maintScheduler.makeRoom({ neededBytes: shortfall, importance, reason: 'content' })
+  const room = await maintScheduler.makeRoom({ admissionDenied: true, neededBytes: shortfall, importance, reason: 'content' })
   if (room.retry && isCurrent()) decision = await attempt()
   return decision
 }

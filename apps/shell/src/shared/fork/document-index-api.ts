@@ -48,6 +48,9 @@ export interface StorageBudgetSnapshot {
   /** Bytes above the soft quota (0 when under it). */
   overQuotaBytes?: number
   /** Physical hard stop: the soft quota plus the grace overshoot (10%). */
+  nameMetadataBytes?: number
+  nameMetadataReserveBytes?: number
+  contentWriteCapBytes?: number
   hardCapBytes?: number
   /** The user-facing soft quota (same value as budgetBytes). */
   softBudgetBytes?: number

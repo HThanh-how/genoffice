@@ -43,6 +43,7 @@ function createDeferred<T>(): Deferred<T> {
 function createFreshSnapshot(overrides: Partial<StorageBudgetSnapshot> = {}): StorageBudgetSnapshot {
   return {
     databaseBytes: 100_000,
+    nameMetadataBytes: 0,
     budgetBytes: 1_000_000,
     usageRatio: 0.1,
     chunksBytes: 50_000,

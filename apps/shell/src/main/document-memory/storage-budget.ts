@@ -36,6 +36,24 @@ export interface DocumentIndexStorageBudget {
 /** Maximum (and default) grace overshoot above the soft quota: the index may bloat at most 10% over it. */
 export const OVERSHOOT_RATIO = 0.10
 
+/** Protected capacity within the selected quota, never extra storage outside it. */
+export const NAME_METADATA_RESERVE_BYTES = 100 * 1024 * 1024
+
+export function nameMetadataReserveBytes(budget: { maxDatabaseBytes: number } | number): number {
+  const bytes = typeof budget === 'number' ? budget : budget.maxDatabaseBytes
+  if (!Number.isSafeInteger(bytes) || bytes <= 0) return 0
+  // Small internal/test budgets must still leave room for content.
+  return Math.min(NAME_METADATA_RESERVE_BYTES, Math.floor(bytes / 5))
+}
+
+/** All regenerable content writers leave protected headroom for file identities. */
+export function contentWriteCapBytes(
+  budget: { maxDatabaseBytes: number; overshootRatio?: number } | number,
+  overshootRatio?: number,
+): number {
+  return Math.max(0, hardCapBytes(budget, overshootRatio) - nameMetadataReserveBytes(budget))
+}
+
 /**
  * Normalizes an untrusted/optional overshoot ratio: missing or non-numeric -> OVERSHOOT_RATIO (default),
  * otherwise clamped to [0, OVERSHOOT_RATIO]. 0 disables the grace zone (legacy "full at 100%").
@@ -123,7 +141,7 @@ export function createStorageBudget(
  *   compaction) - writes and embeddings are still admitted. 'full' (hard stop) is reached at
  *   hardCapBytes(budget) = max x (1 + overshootRatio), i.e. 110% by default.
  * Admission controllers compare projected usage against HARD_LIMIT_RATIO x <budgetBytes they are given>;
- * callers that protect physical growth must pass hardCapBytes(budget), not maxDatabaseBytes.
+ * Heavy writers pass contentWriteCapBytes(budget); identities use hardCapBytes plus their own pool limit.
  *
  * Zones by physical managed bytes:  <80% ok | 80-100% warning | 100-110% grace (limitState 'warning',
  * graceActive) | >=110% hard stop (limitState 'full').
@@ -154,6 +172,10 @@ export type StorageMeasurementStatus =
 
 /** User-visible and IPC-exposed storage snapshot. */
 export interface StorageBudgetSnapshot {
+  /** SQLite pages occupied by identities, name projections and their indexes; already in databaseBytes. */
+  nameMetadataBytes?: number
+  nameMetadataReserveBytes?: number
+  contentWriteCapBytes?: number
   databaseBytes: number
   budgetBytes: number
   usageRatio: number
@@ -269,6 +291,7 @@ export function compactionTarget(snapshot: UrgencyInput): CompactionTarget {
  * - model weights are reported separately and never counted toward managed index quota.
  */
 export function createStorageBudgetSnapshot(params: {
+  nameMetadataBytes?: number
   activeDbSizeBytes: number
   walSizeBytes?: number
   budgetBytes?: number
@@ -346,6 +369,9 @@ export function createStorageBudgetSnapshot(params: {
   return {
     databaseBytes,
     budgetBytes,
+    nameMetadataBytes: params.nameMetadataBytes,
+    nameMetadataReserveBytes: nameMetadataReserveBytes(budgetBytes),
+    contentWriteCapBytes: contentWriteCapBytes(budgetBytes, overshootRatio),
     usageRatio,
     chunksBytes: Math.max(0, params.chunksBytes ?? 0),
     embeddingsBytes: Math.max(0, params.embeddingsBytes ?? 0),

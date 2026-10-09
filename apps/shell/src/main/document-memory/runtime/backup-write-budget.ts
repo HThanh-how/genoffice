@@ -2,7 +2,7 @@ import { readFileSync, statSync, statfsSync } from 'node:fs'
 import { statfs } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
-import { HARD_LIMIT_RATIO, DEFAULT_STORAGE_BUDGET } from '../storage-budget'
+import { HARD_LIMIT_RATIO, DEFAULT_STORAGE_BUDGET, contentWriteCapBytes } from '../storage-budget'
 import {
   STORAGE_SETTINGS_FILENAME,
   STORAGE_PRESET_BYTES,
@@ -499,7 +499,8 @@ export function checkMigrationAdmission(params: MigrationAdmissionParams): Migra
     }
   }
 
-  const projectedUsageRatio = projectedBytes / budgetBytes
+  const contentCap = contentWriteCapBytes(budgetBytes, 0)
+  const projectedUsageRatio = projectedBytes / contentCap
   if (projectedUsageRatio > HARD_LIMIT_RATIO) {
     return {
       admitted: false,
@@ -628,7 +629,7 @@ export class MigrationBudgetContract {
       return { admitted: false, reason: 'Projected total storage overflowed safe integer limit' }
     }
 
-    if (projectedTotal / this.budgetBytes > HARD_LIMIT_RATIO) {
+    if (projectedTotal > contentWriteCapBytes(this.budgetBytes, 0)) {
       return {
         admitted: false,
         reason: `Storage budget exceeded during batch admission: projected ${projectedTotal} bytes exceeds budget ${this.budgetBytes} bytes`,

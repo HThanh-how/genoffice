@@ -1,6 +1,7 @@
 import { opendirSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { measureNameMetadataBytes } from './name-metadata-accounting'
 import { getStorageFreelistStats } from '../storage-gc'
 import {
   readV3RetentionState,
@@ -52,6 +53,7 @@ export interface StorageAccountingBreakdown {
 }
 
 export interface StorageAccountingReport {
+  nameMetadataBytes?: number
   databaseBytes: number
   dbSizeBytes: number
   walSizeBytes: number
@@ -529,6 +531,18 @@ export function collectStorageAccounting(options: StorageAccountingOptions): Sto
         code: err?.code,
       })
     }
+  }
+
+  let nameMetadataBytes: number | undefined
+  if (dbFileAccessible || options.db) {
+    try {
+      nameMetadataBytes = measureNameMetadataBytes(dbPath, options.db)
+    } catch (err) {
+      measurementErrors.push({ path: dbPath, error: `Name metadata accounting failed: ${String(err)}`, code: 'ESQLITE' })
+    }
+  } else {
+    // A not-yet-created database has no identity pages.
+    nameMetadataBytes = 0
   }
 
   // 2. ANN Vector Index Storage (.usearch files)
@@ -1040,6 +1054,7 @@ export function collectStorageAccounting(options: StorageAccountingOptions): Sto
 
   return {
     databaseBytes,
+    nameMetadataBytes,
     dbSizeBytes,
     walSizeBytes,
     shmSizeBytes,

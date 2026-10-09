@@ -2,7 +2,7 @@ import { dirname } from 'node:path'
 import type { StorageAdmissionController } from './storage-admission'
 import type { MaintenanceScheduler } from './maintenance-scheduler'
 import type { StorageBudgetCoordinator } from './storage-budget-coordinator'
-import { type StorageBudgetSnapshot, hardCapBytes, safeGetFileSize } from '../storage-budget'
+import { type StorageBudgetSnapshot, contentWriteCapBytes, safeGetFileSize } from '../storage-budget'
 import type { WorkerRequest, WorkerReply, AnnRebuildWorkerResult } from '../worker-types'
 import { estimateAnnIndexBytes, getValidatedFreeDiskBytes } from './ann-write-budget'
 import type { AnnPreauthorizedPermit } from '../ann-index'
@@ -158,7 +158,7 @@ export class AnnHostAdmissionCoordinator {
       'ann-build',
       estBytes,
       snapshot.totalManagedBytes ?? snapshot.databaseBytes,
-      hardCapBytes(maintScheduler.budget), // grace zone: ANN builds reserve against the HARD cap
+      contentWriteCapBytes(maintScheduler.budget), // grace zone: ANN builds reserve against the HARD cap
       ttlMs,
       {
         isAlive,
@@ -321,7 +321,7 @@ export class AnnHostAdmissionCoordinator {
       expiresAt: permit.expiresAt,
       reservedBytes: permit.reservedBytes,
       measurementValid: true,
-      budgetBytes: hardCapBytes(maintScheduler.budget), // permit.budgetBytes = HARD cap (matches rebuildAnnIndex)
+      budgetBytes: contentWriteCapBytes(maintScheduler.budget), // permit.budgetBytes = HARD cap (matches rebuildAnnIndex)
       dimensions,
       vectorCount,
       generation: targetGeneration,

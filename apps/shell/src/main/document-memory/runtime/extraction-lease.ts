@@ -1,4 +1,4 @@
-import { hardCapBytes } from '../storage-budget'
+import { contentWriteCapBytes } from '../storage-budget'
 import type { AdmissionDecision, StorageAdmissionController } from './storage-admission'
 import type { MaintenanceScheduler } from './maintenance-scheduler'
 import type { ImportanceClass } from './value-density'
@@ -26,7 +26,7 @@ export async function reserveExtractionLease(params: {
       'extract',
       estBytes,
       snap.totalManagedBytes ?? snap.databaseBytes,
-      hardCapBytes(maintScheduler.budget),
+      contentWriteCapBytes(maintScheduler.budget),
       60_000,
       { isAlive, holdUntilJobEnds: true, accountingDegraded: snap.isDegraded, ownerId: extractToken },
     )
@@ -35,6 +35,6 @@ export async function reserveExtractionLease(params: {
   if (first.admitted || (first.reason !== 'quota-exhausted' && first.reason !== 'hard-limit-exceeded')) return first
   if (typeof maintScheduler.makeRoom !== 'function') return first
   const shortfall = Math.max(1, Math.ceil(first.projectedBytes - first.budgetBytes))
-  const room = await maintScheduler.makeRoom({ neededBytes: shortfall, importance, reason: 'content' })
+  const room = await maintScheduler.makeRoom({ admissionDenied: true, neededBytes: shortfall, importance, reason: 'content' })
   return room.retry && isAlive() ? attempt() : first
 }

@@ -5,7 +5,7 @@ import { getValidatedFreeDiskBytes } from './content-write-budget'
 import type { StorageAdmissionController } from './storage-admission'
 import type { MaintenanceScheduler } from './maintenance-scheduler'
 import type { StorageBudgetCoordinator } from './storage-budget-coordinator'
-import { hardCapBytes, type StorageBudgetSnapshot } from '../storage-budget'
+import { contentWriteCapBytes, type StorageBudgetSnapshot } from '../storage-budget'
 import type { DocumentMemoryStore } from '../store'
 import type { OcrFileMeta, OcrPageText } from '../ocr-sidecar'
 import type { OcrRenderRequest, OcrRenderResult } from '../agy-ocr-render'
@@ -254,7 +254,7 @@ export async function persistOcrPagesGated(
   const reservationId = `ocr-save:${path}:${ownerToken}`
   const currentUsageBytes = snap.totalManagedBytes ?? snap.databaseBytes
   // Grace zone: OCR text is content; it is admitted up to the HARD cap, never beyond
-  const budgetBytes = hardCapBytes(maintScheduler.budget)
+  const budgetBytes = contentWriteCapBytes(maintScheduler.budget)
 
   const decision = admission.reserve({
     reservationId,
@@ -338,7 +338,7 @@ export async function executeOcrRenderGated(
 
   const snap = maintScheduler.checkStorageBudget()
   const currentUsage = snap.totalManagedBytes ?? snap.databaseBytes
-  const budgetBytes = hardCapBytes(maintScheduler.budget)
+  const budgetBytes = contentWriteCapBytes(maintScheduler.budget)
   const ownerToken = randomUUID()
   const resId = `ocr-render:${path}:${ownerToken}`
 

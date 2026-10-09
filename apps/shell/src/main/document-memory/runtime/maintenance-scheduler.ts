@@ -262,6 +262,7 @@ export class MaintenanceScheduler {
       reusableFreelistBytes: report?.reusableFreelistBytes ?? freelistBytes,
       breakdown: report?.breakdown,
       modelBytes: report?.modelWeightsBytes,
+      nameMetadataBytes: report?.nameMetadataBytes,
       configVersion: this.budget.version,
       measurementStatus,
       isDegraded,

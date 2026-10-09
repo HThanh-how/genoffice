@@ -22,7 +22,7 @@ export interface CompactionWiringDeps {
 export interface CompactionWiring {
   onReleased: () => void
   onAnnRebuildRequests: (requests: AnnRebuildRequest[]) => Promise<void>
-  onSyncQuotaPressure: (info: { neededBytes: number; doc?: { name: string; path: string } }) => void
+  onSyncQuotaPressure: (info: { neededBytes: number; reason?: string; doc?: { name: string; path: string } }) => void
   embeddingMakeRoom: (neededBytes: number, path: string) => Promise<boolean>
 }
 
@@ -43,7 +43,7 @@ export function createCompactionWiring(d: CompactionWiringDeps): CompactionWirin
         }
       }
     },
-    onSyncQuotaPressure: ({ neededBytes, doc }) => {
+    onSyncQuotaPressure: ({ neededBytes, reason, doc }) => {
       const scheduler = d.getScheduler()
       if (!scheduler || !d.isActive()) return
       // a document that is not in the index yet is rated like indexing will rate it (name / path inference)
@@ -51,7 +51,7 @@ export function createCompactionWiring(d: CompactionWiringDeps): CompactionWirin
         ? (d.importanceOf(doc.path) ?? (inferDocumentImportance({ name: doc.name, path: doc.path }).suggestion === 'important' ? 'important' : 'normal'))
         : 'normal'
       void scheduler
-        .makeRoom({ neededBytes, importance, reason: 'metadata' })
+        .makeRoom({ admissionDenied: true, neededBytes, importance, reason: reason === 'name-metadata-full' ? 'name-metadata' : 'metadata' })
         .then((out) => {
           if (out.retry && d.isActive()) void d.replayIntake()
         })
@@ -60,7 +60,7 @@ export function createCompactionWiring(d: CompactionWiringDeps): CompactionWirin
     embeddingMakeRoom: async (neededBytes, path) => {
       const scheduler = d.getScheduler()
       if (!scheduler || !d.isActive()) return false
-      const out = await scheduler.makeRoom({ neededBytes, importance: d.importanceOf(path), reason: 'embedding' })
+      const out = await scheduler.makeRoom({ admissionDenied: true, neededBytes, importance: d.importanceOf(path), reason: 'embedding' })
       return out.retry
     },
   }

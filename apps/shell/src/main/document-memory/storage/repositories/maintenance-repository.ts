@@ -18,7 +18,7 @@ import {
   type StorageBudgetSnapshot,
   DEFAULT_STORAGE_BUDGET,
   createStorageBudgetSnapshot,
-  hardCapBytes,
+  contentWriteCapBytes,
 } from '../../storage-budget'
 import {
   collectStorageAccounting,
@@ -170,7 +170,7 @@ export class MaintenanceRepository {
       dimensions,
       currentUsageBytes: report.totalManagedBytes,
       // Grace zone: the ANN rebuild may use the overshoot room but never exceeds the HARD cap
-      budgetBytes: hardCapBytes(budget),
+      budgetBytes: contentWriteCapBytes(budget),
       freeDiskBytes,
       accountingDegraded: effectiveDegraded,
       otherReservedBytes: this.annAdmissionGuard.getTotalReservedBytes(spaceId),
@@ -339,7 +339,7 @@ export class MaintenanceRepository {
         undefined,
         targetGeneration,
         liveConfigVersion,
-        hardCapBytes(liveBudget), // permit.budgetBytes protects physical growth: the HARD cap
+        contentWriteCapBytes(liveBudget), // permit.budgetBytes protects physical growth: the HARD cap
       )
       if (!isValid) {
         this.markAnnDirty(spaceId)
@@ -484,7 +484,7 @@ export class MaintenanceRepository {
       vectorCount: rows.length,
       dimensions: dim,
       currentUsageBytes: report.totalManagedBytes,
-      budgetBytes: hardCapBytes(liveBudget),
+      budgetBytes: contentWriteCapBytes(liveBudget),
       freeDiskBytes,
       accountingDegraded: effectiveDegraded,
       ownerToken: hostPermit?.ownerToken,
@@ -550,7 +550,7 @@ export class MaintenanceRepository {
           return false
         }
 
-        if (!this.annAdmissionGuard.recheckPermit(spaceId, hardCapBytes(currentLiveBudget), freshReport.totalManagedBytes)) {
+        if (!this.annAdmissionGuard.recheckPermit(spaceId, contentWriteCapBytes(currentLiveBudget), freshReport.totalManagedBytes)) {
           return false
         }
 
@@ -590,7 +590,7 @@ export class MaintenanceRepository {
         }
 
         // Own new temp already measured in freshReport.totalManagedBytes (via tempSizeBytes); do not add actualBytes twice
-        if (freshReport.totalManagedBytes > hardCapBytes(currentLiveBudget)) {
+        if (freshReport.totalManagedBytes > contentWriteCapBytes(currentLiveBudget)) {
           return false
         }
 

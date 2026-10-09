@@ -457,14 +457,14 @@ describe('storage admission', () => {
   })
 })
 
-describe('hard-cap guard: media waits below the compaction watermark, documents may use the grace zone', () => {
+describe('protected identity guard: media and documents retain name admission', () => {
   function coordinator(usageRatio: number) {
     const budget = createStorageBudget(10_000_000)
     const used = Math.floor(10_000_000 * usageRatio)
     const snapshot = {
       databaseBytes: used, budgetBytes: 10_000_000, usageRatio, chunksBytes: 0, embeddingsBytes: 0, ftsBytes: 0, ocrBytes: 0,
       backupBytes: 0, reclaimableBytes: 0, limitState: usageRatio >= 1.1 ? 'full' : usageRatio >= 0.8 ? 'warning' : 'ok',
-      totalManagedBytes: used, measurementStatus: 'fresh', isDegraded: false,
+      totalManagedBytes: used, nameMetadataBytes: 0, measurementStatus: 'fresh', isDegraded: false,
     } as StorageBudgetSnapshot
     return new SyncMetadataAdmissionCoordinator({
       admission: new StorageAdmissionController(),
@@ -477,7 +477,7 @@ describe('hard-cap guard: media waits below the compaction watermark, documents 
     })
   }
 
-  it('admits media below 90% of the soft quota, refuses it from there, and still admits documents up to the hard cap', async () => {
+  it('admits media and document identities through the reserved name pool until the total hard cap', async () => {
     const results: Record<string, [boolean, boolean]> = {}
     for (const ratio of [0.5, 0.85, 0.95, 1.05, 1.15]) {
       const guard = coordinator(ratio)
@@ -487,7 +487,7 @@ describe('hard-cap guard: media waits below the compaction watermark, documents 
       results[String(ratio)] = [media.admitted, doc.admitted]
       guard.close()
     }
-    expect(results).toEqual({ '0.5': [true, true], '0.85': [true, true], '0.95': [false, true], '1.05': [false, true], '1.15': [false, false] })
+    expect(results).toEqual({ '0.5': [true, true], '0.85': [true, true], '0.95': [true, true], '1.05': [true, true], '1.15': [false, false] })
   })
 })
 

@@ -16,7 +16,7 @@ import {
   type StorageAdmissionController,
 } from './storage-admission'
 import {
-  hardCapBytes,
+  contentWriteCapBytes,
   CACHE_RETENTION_HIGH_WATERMARK,
   type DocumentIndexStorageBudget,
   type StorageBudgetSnapshot,
@@ -390,7 +390,7 @@ export class EmbeddingCoordinator {
             const currentBytes = snap.totalManagedBytes ?? snap.databaseBytes
             // Grace zone: reserve against the HARD cap (soft quota + overshoot), never the soft quota
             const liveBudget = this.options.getStorageBudget?.()
-            const budgetBytes = liveBudget ? hardCapBytes(liveBudget) : 0
+            const budgetBytes = liveBudget ? contentWriteCapBytes(liveBudget) : 0
 
             const tryReserve = (usageBytes: number) =>
               this.options.admission!.reserve(
@@ -532,7 +532,7 @@ export class EmbeddingCoordinator {
 
             const currentUsage = freshSnap.totalManagedBytes ?? freshSnap.databaseBytes
             const liveBudget = this.options.getStorageBudget?.()
-            const budgetBytes = liveBudget ? hardCapBytes(liveBudget) : 0
+            const budgetBytes = liveBudget ? contentWriteCapBytes(liveBudget) : 0
 
             const resizeDec = this.options.admission.checkedResize({
               reservationId: localReserveId,

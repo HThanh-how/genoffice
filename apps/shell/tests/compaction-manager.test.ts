@@ -76,7 +76,10 @@ describe('admission by displacement (real manager)', () => {
     writeFileSync(file, 'Căn cước công dân Nguyễn Văn A zeppelinquartz sổ hộ khẩu giấy tờ quan trọng.', 'utf8')
     manager.remember(file)
     expect(await waitFor(() => manager.store.documentByPath(file)?.status === 'ready' || manager.store.documentByPath(file)?.status === 'text-only')).toBe(true)
-    expect(asked).toBe(1)
+    // Identity/extraction, extraction lease, and content commit each retry admission once.
+    // The protected name headroom makes all three real reservations hit the cap in this fixture.
+    expect(asked).toBe(3)
+    expect(worker.of('free-space').every((r) => r.neededBytes > 0)).toBe(true)
     const req = worker.of('free-space')[0]
     expect(req.incomingImportance).toBe('important')
     expect(req.neededBytes).toBeGreaterThan(0)

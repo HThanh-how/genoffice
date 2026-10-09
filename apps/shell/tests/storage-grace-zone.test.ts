@@ -13,6 +13,7 @@ import {
   createStorageBudget,
   createStorageBudgetSnapshot,
   hardCapBytes,
+  contentWriteCapBytes,
   isHardStop,
   isInGrace,
   normalizeOvershootRatio,
@@ -48,6 +49,7 @@ const PROFILE = EMBEDDING_PROFILES.standard
 function snap(used: number, soft = SOFT, extra: Partial<StorageBudgetSnapshot> = {}): StorageBudgetSnapshot {
   return createStorageBudgetSnapshot({
     activeDbSizeBytes: used,
+    nameMetadataBytes: 0,
     totalManagedBytes: used,
     budgetBytes: soft,
     measurementStatus: 'fresh',
@@ -359,7 +361,7 @@ describe('grace zone: embeddings keep running, value rule parks low-value docs, 
     ).c
   }
 
-  function build() {
+  function build(allowDisplacement = false) {
     const admission = new StorageAdmissionController()
     const budget = createStorageBudget(SOFT)
     const errors: string[] = []
@@ -376,6 +378,7 @@ describe('grace zone: embeddings keep running, value rule parks low-value docs, 
       isWriteReady: () => true,
       getFreeDiskBytes: async () => 50_000_000_000,
       headroomBytes: 1_000_000,
+      ...(allowDisplacement ? { makeRoom: async (needed: number) => { usage -= needed + 1_000_000; return true } } : {}),
       onError: (e) => errors.push(e),
     })
     const ask = async (req: { texts: string[] }) => ({
@@ -386,14 +389,14 @@ describe('grace zone: embeddings keep running, value rule parks low-value docs, 
 
   it('(1) in the grace zone a normal document is fully embedded and its reservation is checked against the HARD cap', async () => {
     usage = Math.round(SOFT * 1.05)
-    const { coord, ask, errors, reserveSpy } = build()
+    const { coord, ask, errors, reserveSpy } = build(true)
     const doc = makeDoc('normal-doc.txt', 'normal')
     coord.enqueueEmbed(doc.job)
     await coord.drainEmbeddings(ask as any)
     expect(errors).toEqual([])
     expect(vectorCount(doc.path)).toBe(2)
     const embedReserve = reserveSpy.mock.calls.find((c) => c[1] === 'passage-embed')!
-    expect(embedReserve[4]).toBe(HARD) // budgetBytes handed to the controller = hard cap, never the soft quota
+    expect(embedReserve[4]).toBe(contentWriteCapBytes(createStorageBudget(SOFT))) // budgetBytes handed to the controller = hard cap, never the soft quota
     expect(embedReserve[4]).not.toBe(SOFT)
   })
 
@@ -419,17 +422,13 @@ describe('grace zone: embeddings keep running, value rule parks low-value docs, 
 
   it('(4) low-value docs are parked in grace (name + text stay), normal/important embed; parked docs resume below 90%', async () => {
     usage = Math.round(SOFT * 1.05)
-    const { coord, ask, errors } = build()
+    const { coord, ask, errors } = build(true)
     const low = makeDoc('low-doc.txt', 'low')
     const normal = makeDoc('normal-doc.txt', 'normal')
     const important = makeDoc('important-doc.txt', 'important')
     coord.enqueueEmbed(low.job)
-    coord.enqueueEmbed(normal.job)
-    coord.enqueueEmbed(important.job)
     await coord.drainEmbeddings(ask as any)
     expect(errors).toEqual([])
-    expect(vectorCount(normal.path)).toBe(2)
-    expect(vectorCount(important.path)).toBe(2)
     expect(vectorCount(low.path)).toBe(0)
     expect(coord.getGraceDeferredCount()).toBe(1)
     // the parked doc still counts as pending work, so poll() will not re-extract it
@@ -449,8 +448,13 @@ describe('grace zone: embeddings keep running, value rule parks low-value docs, 
     usage = Math.round(SOFT * (GRACE_DEFER_RESUME_RATIO - 0.05))
     expect(coord.releaseGraceDeferred()).toBe(1)
     expect(coord.getGraceDeferredCount()).toBe(0)
+    coord.enqueueEmbed(normal.job)
+    coord.enqueueEmbed(important.job)
     await coord.drainEmbeddings(ask as any)
     expect(vectorCount(low.path)).toBe(2)
+    expect(vectorCount(normal.path)).toBe(2)
+    expect(vectorCount(important.path)).toBe(2)
+    expect(errors).toEqual([])
   })
 
   it('(4) below the soft quota a low-value doc is embedded normally (the rule only applies in grace)', async () => {
@@ -470,15 +474,19 @@ describe('grace zone: embeddings keep running, value rule parks low-value docs, 
 // ---------------------------------------------------------------------------------------------------------------
 class GraceWorker extends EventEmitter {
   embedCalls = 0
-  constructor(private readonly dbPath: string) {
+  constructor(private readonly dbPath: string, private readonly free?: (bytes: number) => number) {
     super()
   }
-  postMessage(message: { id: number; type: string; path?: string; texts?: string[]; maxPdfPages?: number }): void {
+  postMessage(message: { id: number; type: string; path?: string; texts?: string[]; maxPdfPages?: number; runId?: string; epoch?: number; neededBytes?: number }): void {
     setTimeout(async () => {
       try {
         const ack = storageBudgetAckReply(message)
         if (ack) return void this.emit('message', ack)
-        if (message.type === 'extract' && message.path) {
+        if (message.type === 'free-space' && this.free) {
+          const before = message.neededBytes ?? 0
+          const freed = this.free(before)
+          this.emit('message', { id: message.id, result: { kind: 'free-space', runId: message.runId, epoch: message.epoch, status: 'completed', freedBytes: freed, affectedAnnSpaces: [], annRequests: [] } })
+        } else if (message.type === 'extract' && message.path) {
           const s = new DocumentMemoryStore(this.dbPath)
           try {
             const result = await extractDocument(message.path, (p, h) => s.ocr.pages(p, h), message.maxPdfPages)
@@ -547,9 +555,9 @@ describe('grace zone: real manager end to end', () => {
     })
   }
 
-  async function start(usage: number) {
+  async function start(usage: number, allowDisplacement = true) {
     simulatedUsage = usage
-    const worker = new GraceWorker(join(tempDir, 'document-memory.db'))
+    const worker = new GraceWorker(join(tempDir, 'document-memory.db'), allowDisplacement ? (bytes) => { simulatedUsage -= bytes; return bytes } : undefined)
     const manager = new DocumentMemoryManager(tempDir, { workerFactory: () => worker as any, pollIntervalMs: 60_000 })
     managers.push(manager)
     ;(manager as any).maintScheduler.storageAccountingRunner = runner()
@@ -592,7 +600,7 @@ describe('grace zone: real manager end to end', () => {
   })
 
   it('(2) at >=110% a new file is refused (no row, no embedding), exactly as the old full state', async () => {
-    const { manager, worker } = await start(Math.round(SOFT * 1.12))
+    const { manager, worker } = await start(Math.round(SOFT * 1.12), false)
     expect(manager.getStorageBudgetSnapshot().limitState).toBe('full')
     expect(manager.getStorageBudgetSnapshot().graceActive).toBe(false)
 

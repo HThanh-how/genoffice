@@ -331,11 +331,11 @@ describe('admission by displacement (driver.makeRoom)', () => {
     affectedAnnSpaces: [], annRequests: [], ...over,
   })
 
-  it('only runs while usage is at/over the soft quota; frees shortfall + margin in the worker; asks the caller to retry once', async () => {
-    usage = Math.round(SOFT * 0.97)
+  it('runs when the protected content cap is reached; frees shortfall + margin in the worker; asks the caller to retry once', async () => {
+    usage = Math.round(SOFT * 0.85)
     const { s, of } = build({ free: (req) => freeResult(req) })
     await s.refreshAccountingAsync()
-    expect(await s.makeRoom({ neededBytes: 1000, reason: 'content' })).toMatchObject({ attempted: false, reason: 'below-soft-quota' })
+    expect(await s.makeRoom({ neededBytes: 1000, reason: 'content' })).toMatchObject({ attempted: false, reason: 'below-content-cap' })
     expect(of('free-space')).toHaveLength(0)
 
     usage = Math.round(SOFT * 1.09)

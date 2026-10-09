@@ -13,7 +13,7 @@ import { compactAfterRetentionBatch } from './retention-compaction'
  * Nothing in here is wired into the scheduler yet; see the integration note in the final report.
  */
 
-export const FTS_TABLES = ['chunk_fts', 'document_name_fts'] as const
+export const FTS_TABLES = ['chunk_fts', 'document_name_fts', 'document_name_projection_fts'] as const
 export type FtsTable = (typeof FTS_TABLES)[number]
 export type FtsLayout = 'regular' | 'external-content' | 'contentless' | 'contentless-delete' | 'missing'
 

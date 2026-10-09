@@ -210,6 +210,10 @@ export function IndexStorageSettings({ api }: { api: HomeApi }) {
         </p>
         <p>{q('estimateNote')}</p>
         <p>{q('grace')}</p>
+        {snapshot?.nameMetadataReserveBytes !== undefined && (
+          <p>{q('nameReserve', { used: snapshot.nameMetadataBytes === undefined ? '—' : formatQuotaBytes(snapshot.nameMetadataBytes, dateLocale), quota: formatQuotaBytes(snapshot.nameMetadataReserveBytes, dateLocale) })}</p>
+        )}
+        {snapshot?.nameMetadataBytes !== undefined && snapshot.nameMetadataReserveBytes !== undefined && snapshot.nameMetadataBytes >= snapshot.nameMetadataReserveBytes && <p className="ixq-alert full" role="alert">{q('nameFull')}</p>}
         <p>{q('lowerNote')}</p>
         {full && (
           <p className="ixq-alert full" role="alert">

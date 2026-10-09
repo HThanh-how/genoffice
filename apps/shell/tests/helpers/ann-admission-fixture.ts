@@ -12,7 +12,7 @@ import {
 import { StorageAdmissionController } from '../../src/main/document-memory/runtime/storage-admission'
 import {
   DEFAULT_STORAGE_BUDGET,
-  hardCapBytes,
+  contentWriteCapBytes,
   type DocumentIndexStorageBudget,
 } from '../../src/main/document-memory/storage-budget'
 
@@ -128,7 +128,7 @@ export class AnnAdmissionTestFixture {
     const ownerToken = params.ownerToken ?? `owner-${now}-${Math.random().toString(36).slice(2)}`
     const reservationId = `ann-res:${ownerToken}:${now}`
     // permit.budgetBytes protects physical growth = the HARD cap (soft quota + grace overshoot), as the real host builds it
-    const budgetBytes = params.budgetBytes ?? hardCapBytes(this.defaultBudget)
+    const budgetBytes = params.budgetBytes ?? contentWriteCapBytes(this.defaultBudget)
     const configVersion = params.configVersion ?? this.configVersion
 
     const estBytes = estimateAnnIndexBytes(params.vectorCount, params.dimensions)
@@ -223,7 +223,7 @@ export class AnnAdmissionTestFixture {
     const ownerToken = params.ownerToken ?? `ann-host:${spaceId}:${now}:${Math.random().toString(36).slice(2)}`
     const reservationId = `ann:${spaceId}:${ownerToken}`
     // permit.budgetBytes protects physical growth = the HARD cap (soft quota + grace overshoot), as the real host builds it
-    const budgetBytes = params.budgetBytes ?? hardCapBytes(this.defaultBudget)
+    const budgetBytes = params.budgetBytes ?? contentWriteCapBytes(this.defaultBudget)
     const configVersion = params.configVersion ?? this.configVersion
     const targetGeneration = params.targetGeneration ?? 1
 
