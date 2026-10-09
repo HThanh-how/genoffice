@@ -103,11 +103,12 @@ describe('startup embedding profile (fresh install vs existing index)', () => {
     expect(createManager(machine(4, 2)).embeddingSettings().profile).toBe('high')
   })
 
-  it('an existing index without a settings file stays on the legacy default and nothing is written', () => {
+  it('an existing index without a settings file moves to the base tier and the choice is saved', () => {
     const store = new DocumentMemoryStore(join(dir, 'document-memory.db'))
     store.close()
-    expect(createManager(machine(32, 10)).embeddingSettings().profile).toBe('standard')
-    expect(existsSync(join(dir, EMBEDDING_SETTINGS_FILENAME))).toBe(false)
+    expect(createManager(machine(32, 10)).embeddingSettings().profile).toBe('base')
+    expect(readEmbeddingProfileId(dir)).toBe('base')
+    expect(existsSync(join(dir, EMBEDDING_SETTINGS_FILENAME))).toBe(true)
   })
 
   it('without a machine spec the manager keeps the legacy default (tests and tools)', () => {

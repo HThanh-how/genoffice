@@ -223,9 +223,9 @@ describe('chooseInitialEmbeddingProfile', () => {
     expect(chooseInitialEmbeddingProfile({ saved: 'standard', hasExistingIndex: false, spec }).profile).toBe('standard')
   })
 
-  it('keeps an existing index without a settings file on the legacy default', () => {
+  it('moves an existing index without a settings file to the base tier (the legacy repository is gone)', () => {
     expect(chooseInitialEmbeddingProfile({ saved: undefined, hasExistingIndex: true, spec })).toEqual({
-      profile: 'standard',
+      profile: 'base',
       source: 'existing-index',
     })
   })
@@ -271,12 +271,12 @@ describe('resolveStartupEmbeddingProfile (real files)', () => {
       })
     }))
 
-  it('keeps an existing index on the legacy default and does not write a settings file', () =>
+  it('moves an existing index to the base tier and remembers it', () =>
     withDir((dir) => {
       const dbPath = join(dir, 'document-memory.db')
       writeFileSync(dbPath, 'sqlite')
-      expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath, spec })).toEqual({ profile: 'standard', source: 'existing-index' })
-      expect(readEmbeddingProfileId(dir)).toBe('standard')
+      expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath, spec })).toEqual({ profile: 'base', source: 'existing-index' })
+      expect(readEmbeddingProfileId(dir)).toBe('base')
     }))
 
   it('honours a saved legacy choice in the legacy file name and in the parent directory', () =>

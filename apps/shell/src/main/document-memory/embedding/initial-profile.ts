@@ -8,12 +8,19 @@ import {
   writeActiveEmbeddingConfig,
 } from '../storage/embedding-settings'
 import {
-  DEFAULT_EMBEDDING_PROFILE,
   isEmbeddingProfileId,
   recommendEmbeddingProfile,
   type EmbeddingProfileId,
   type MachineSpec,
 } from '../embedding-profiles'
+
+/**
+ * Profile of an install that has an index but never saved a choice. The legacy default
+ * (genoffice/F2LLM-v2-80M-ONNX) is no longer downloadable (HTTP 401), so such an install could
+ * never embed; the base tier is public, pinned and the fastest. Its old vectors, if any, belong to
+ * another space and are re-embedded by the normal pipeline.
+ */
+export const EXISTING_INDEX_PROFILE: EmbeddingProfileId = 'base'
 
 /** The machine this process runs on, as recommendEmbeddingProfile wants it. */
 export function currentMachineSpec(): MachineSpec {
@@ -29,7 +36,8 @@ export interface InitialProfileChoice {
   profile: EmbeddingProfileId
   /**
    * saved:          the user's (or a previous run's) stored choice, returned untouched
-   * existing-index: no stored choice but an index already exists, so it was built with the legacy default
+   * existing-index: no stored choice but an index already exists; it moves to the base tier because the
+   *                 legacy default's model repository now answers HTTP 401, so it can never be fetched
    * recommended:    a fresh install, matched to the machine
    */
   source: 'saved' | 'existing-index' | 'recommended'
@@ -37,10 +45,9 @@ export interface InitialProfileChoice {
 
 /**
  * Which profile an install should start with. A saved profile always wins, and an index that
- * already exists without a settings file stays on the legacy default (its vectors live in that
- * space; nothing is re-embedded behind the user's back). Only a fresh install is advised by
- * the machine, and the caller persists the answer once (writeActiveEmbeddingConfig) so the
- * recommendation is never re-evaluated or applied over a later choice.
+ * already exists without a settings file moves to the base tier (see EXISTING_INDEX_PROFILE). Only a
+ * fresh install is advised by the machine. Either answer is persisted once
+ * (writeActiveEmbeddingConfig) so it is never re-evaluated or applied over a later choice.
  */
 export function chooseInitialEmbeddingProfile(input: {
   saved: unknown
@@ -48,7 +55,7 @@ export function chooseInitialEmbeddingProfile(input: {
   spec: MachineSpec
 }): InitialProfileChoice {
   if (isEmbeddingProfileId(input.saved)) return { profile: input.saved, source: 'saved' }
-  if (input.hasExistingIndex) return { profile: DEFAULT_EMBEDDING_PROFILE, source: 'existing-index' }
+  if (input.hasExistingIndex) return { profile: EXISTING_INDEX_PROFILE, source: 'existing-index' }
   return { profile: recommendEmbeddingProfile(input.spec).profile, source: 'recommended' }
 }
 
@@ -83,6 +90,7 @@ export function resolveStartupEmbeddingProfile(input: {
     hasExistingIndex,
     spec: input.spec,
   })
-  if (choice.source === 'recommended') writeActiveEmbeddingConfig(input.settingsDir, choice.profile)
+  if (choice.source === 'recommended' || choice.source === 'existing-index')
+    writeActiveEmbeddingConfig(input.settingsDir, choice.profile)
   return choice
 }
