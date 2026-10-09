@@ -182,7 +182,31 @@ export const DOCUMENT_INDEX_CHANNELS = {
   setIndexFileImportance: 'home:set-index-file-importance',
   getStorageBudgetSettings: 'home:get-storage-budget-settings',
   setStorageBudgetSettings: 'home:set-storage-budget-settings',
+  getDocumentIndexBackup: 'home:get-document-index-backup',
+  deleteDocumentIndexBackup: 'home:delete-document-index-backup',
 } as const
+
+/** The previous (V2) index kept next to the live one after an upgrade. Not counted in the index size. */
+export interface DocumentIndexBackupInfo {
+  exists: boolean
+  /** Bytes the "delete" action would free (backup files including their -wal/-shm). */
+  totalBytes: number
+  files: number
+  /** Newest backup creation time (epoch ms), 0 when unknown. */
+  createdAt: number
+  /** Days the automatic retention policy keeps it at least. */
+  retentionDays: number
+  /** False while an upgrade is still in progress or the live index is not usable: deleting is then refused. */
+  deletable: boolean
+}
+
+export interface DocumentIndexBackupDeleteResult {
+  ok: boolean
+  freedBytes: number
+  deleted: number
+  /** 'migration-in-flight' | 'live-index-missing' | 'live-index-not-v3' | 'nothing-to-delete' | an error message. */
+  error?: string
+}
 
 export type StorageBudgetPreset = '1gb' | '3gb' | '5gb' | 'custom'
 export type StorageBudgetStatus = 'applied' | 'pending' | 'error'
@@ -443,4 +467,8 @@ export interface DocumentIndexApi {
   setStorageBudgetSettings?(
     settings: { maxDatabaseBytes?: number; preset?: StorageBudgetPreset; version?: number } | number,
   ): Promise<{ ok: boolean; settings?: StorageBudgetConfig; error?: string }>
+  /** The old index backup kept after an upgrade (size, age, whether it can be deleted now). */
+  getDocumentIndexBackup?(): Promise<DocumentIndexBackupInfo>
+  /** Deletes the old index backup. Only the backup files next to the live index; never the user's documents. */
+  deleteDocumentIndexBackup?(): Promise<DocumentIndexBackupDeleteResult>
 }

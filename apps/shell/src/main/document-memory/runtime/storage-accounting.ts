@@ -1,4 +1,4 @@
-import { opendirSync, realpathSync, statSync } from 'node:fs'
+import { lstatSync, opendirSync, realpathSync, statSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { measureNameMetadataBytes } from './name-metadata-accounting'
@@ -8,14 +8,9 @@ import {
   findAllV2Backups,
   getBackupCreationTime,
 } from '../storage/migration/v3-retention-state'
-import {
-  isBackupVerified,
-  getCanonicalBackupPath,
-} from '../storage/migration/backup-retention'
-import {
-  MIN_BACKUP_AGE_HOURS,
-  MIN_VERIFIED_BACKUPS,
-} from '../storage/migration/retention-policy'
+import { getCanonicalBackupPath } from '../storage/migration/backup-retention'
+import { V2_BACKUP_COMPANION_SUFFIXES } from '../storage/migration/v2-backup-files'
+import { readBackupRetentionDays } from '../storage/migration/backup-retention-settings'
 
 export interface StorageAccountingOptions {
   dbPath: string
@@ -76,6 +71,11 @@ export interface StorageAccountingReport {
   ocrFiles: string[]
   sidecarFiles?: string[]
   measurementErrors: StorageAccountingError[]
+  /**
+   * Problems while looking for migration backups (unreadable retention state, scan limits, ...). Informational only:
+   * backups are not part of the quota, so they must never make the quota measurement degraded / fail admission closed.
+   */
+  backupScanErrors?: StorageAccountingError[]
   isDegraded: boolean
   timestamp: number
   lastAttemptTimestamp?: number
@@ -488,7 +488,11 @@ function measureDirFilesMatching(
  * - Temp rebuild files (*.tmp, *.tmp.*, *.usearch.tmp.*, migration temporary files).
  * - OCR external cache files (in-DB OCR is counted inside active DB, external files only counted if on disk; nested support).
  * - Sidecar storage: Owned index sidecar files counted managed once in cap.
- * - Backups discovered via retention state & helpers (with protected backup calculation; no delete / writeDB).
+ * - V2->V3 migration backups (and their -wal/-shm) are discovered and REPORTED (backupSizeBytes / backupFiles /
+ *   protectedBytes) but are NOT part of totalManagedBytes: they are the user's rollback copy of the previous derived
+ *   index, not storage the live index owns. Charging them put a 4 GB-quota user with a 5.2 GB backup permanently over the
+ *   hard cap, which kept compaction evicting the live index to make room for a file it can never shrink. Reading only;
+ *   no delete / writeDB (removal lives in storage/migration/v2-backup-files.ts and backup-retention.ts).
  * - Deduplication across canonical resolved paths and file identities (st.dev:st.ino).
  * - Degradation detection: EACCES/I/O errors are tracked and flag isDegraded=true (no silent 0 fake).
  * - DB Freelist reported as reusable space, not physical reclaimed bytes.
@@ -848,27 +852,21 @@ export function collectStorageAccounting(options: StorageAccountingOptions): Sto
   tempSizeBytes += baseTempRes.size
   tempFiles.push(...baseTempRes.files)
 
-  // 6. Backup accounting via retention state and helpers (preserving protected rules, no delete / writeDB)
+  // 6. V2->V3 migration backups: measured and reported, deliberately NOT charged to the index quota (see header).
+  // Their discovery problems go to backupScanErrors, never to measurementErrors: a number that no decision uses cannot
+  // make the quota "unmeasurable".
   const backupFiles: string[] = []
   let backupSizeBytes = 0
   let protectedBytes = 0
+  const backupScanErrors: StorageAccountingError[] = []
 
-  const retentionDiagErrors: StorageAccountingError[] = []
-  const retentionState = readV3RetentionState(dbPath, retentionDiagErrors)
-  if (retentionDiagErrors.length > 0) {
-    measurementErrors.push(...retentionDiagErrors)
-  }
-
-  const backupDiagErrors: StorageAccountingError[] = []
+  const retentionState = readV3RetentionState(dbPath, backupScanErrors)
   const candidateBackups = findAllV2Backups(baseDir, dbFileName, retentionState, {
-    errorCollector: backupDiagErrors,
+    errorCollector: backupScanErrors,
     maxEntries: maxFileInventory,
   })
-  if (backupDiagErrors.length > 0) {
-    measurementErrors.push(...backupDiagErrors)
-  }
   const now = Date.now()
-  const minAgeMs = MIN_BACKUP_AGE_HOURS * 60 * 60 * 1000
+  const minAgeMs = readBackupRetentionDays(baseDir) * 24 * 60 * 60 * 1000
 
   // Ensure canonical backup path and tracked rollback backup are checked
   const canonicalBackup = getCanonicalBackupPath(dbPath)
@@ -890,51 +888,57 @@ export function collectStorageAccounting(options: StorageAccountingOptions): Sto
     })
   }
 
-  let verifiedBackupCount = 0
+  const backupErrors: StorageAccountingError[] = []
+  const canonicalBaseDir = (() => {
+    try {
+      return realpathSync(baseDir)
+    } catch {
+      return baseDir
+    }
+  })()
   for (const item of allBackupCandidates.values()) {
     // Avoid counting temporary backup in-progress files as completed backups
     if (isTempFile(basename(item.path))) {
       continue
     }
-
-    const measured = measureFile(item.path, visitedPaths, measurementErrors, visitedIdentities, maxVisitedEntries)
-    if (measured.measured) {
-      backupSizeBytes += measured.size
-      backupFiles.push(measured.path)
-
-      const effectiveCreatedAt = getBackupCreationTime(item.path, retentionState)
-      const ageMs = now - effectiveCreatedAt
-      const isYoung = ageMs < minAgeMs
-
-      const isTrackedRollback =
-        retentionState?.backupPath &&
-        resolve(item.path) === resolve(retentionState.backupPath)
-
-      const needsLaunchProtection =
-        Boolean(isTrackedRollback) && (retentionState?.verifiedLaunches ?? 0) < 3
-
-      let isProtected = false
-      if (isYoung || needsLaunchProtection) {
-        isProtected = true
-      } else {
-        const verified = isBackupVerified(item.path)
-        if (verified) {
-          if (verifiedBackupCount < MIN_VERIFIED_BACKUPS) {
-            isProtected = true
-            verifiedBackupCount++
-          }
-        } else if (verifiedBackupCount < MIN_VERIFIED_BACKUPS) {
-          isProtected = true
-        }
+    // Only a real file inside the data folder is ever sized: a link out of it is not followed.
+    try {
+      if (!lstatSync(item.path).isFile()) continue
+      const real = realpathSync(item.path)
+      const fold = (p: string): string => (process.platform === 'win32' ? resolve(p).toLowerCase() : resolve(p))
+      if (fold(dirname(real)) !== fold(canonicalBaseDir)) continue
+    } catch (err: any) {
+      if (err?.code !== 'ENOENT') {
+        backupScanErrors.push({ path: item.path, error: err?.message || String(err), code: err?.code })
       }
+      continue
+    }
 
-      if (isProtected) {
-        protectedBytes += measured.size
+    const measured = measureFile(item.path, visitedPaths, backupErrors, visitedIdentities, maxVisitedEntries)
+    if (!measured.measured) continue
+    let itemBytes = measured.size
+    backupFiles.push(measured.path)
+    for (const suffix of V2_BACKUP_COMPANION_SUFFIXES) {
+      const companion = measureFile(`${item.path}${suffix}`, visitedPaths, backupErrors, visitedIdentities, maxVisitedEntries)
+      if (companion.measured) {
+        itemBytes += companion.size
+        backupFiles.push(companion.path)
       }
     }
-  }
+    backupSizeBytes += itemBytes
 
-  // Owned backup manifest and retention state JSON files: count totalManagedBytes, not hidden bytes
+    // "Protected" = the retention policy would still refuse to retire it. Decided from age and launches alone: this runs
+    // on every accounting pass, so it must not run an integrity check over a multi-GB backup.
+    const ageMs = now - getBackupCreationTime(item.path, retentionState)
+    const isTrackedRollback =
+      retentionState?.backupPath && resolve(item.path) === resolve(retentionState.backupPath)
+    if (ageMs < minAgeMs || (isTrackedRollback && (retentionState?.verifiedLaunches ?? 0) < 3)) {
+      protectedBytes += itemBytes
+    }
+  }
+  backupScanErrors.push(...backupErrors)
+
+  // Owned manifest and retention-state JSON files are index-owned metadata (a few hundred bytes): counted as sidecars.
   const ownedMetadataFiles = [
     join(baseDir, 'document-memory.migration-state.json'),
     join(baseDir, 'document-memory.migration-state.json.tmp'),
@@ -950,8 +954,8 @@ export function collectStorageAccounting(options: StorageAccountingOptions): Sto
       maxVisitedEntries,
     )
     if (measuredMeta.measured) {
-      backupSizeBytes += measuredMeta.size
-      backupFiles.push(measuredMeta.path)
+      sidecarSizeBytes += measuredMeta.size
+      sidecarFiles.push(measuredMeta.path)
     }
   }
 
@@ -1031,10 +1035,10 @@ export function collectStorageAccounting(options: StorageAccountingOptions): Sto
     }
   }
 
-  // Total managed physical bytes across all document-index components.
-  // Owned index sidecars are counted managed once in cap!
+  // Total managed physical bytes across all document-index components. Owned index sidecars are counted once in cap.
+  // Migration backups are not a component (see header): they are reported through backupSizeBytes only.
   const totalManagedBytes =
-    databaseBytes + annSizeBytes + ocrSizeBytes + sidecarSizeBytes + tempSizeBytes + backupSizeBytes
+    databaseBytes + annSizeBytes + ocrSizeBytes + sidecarSizeBytes + tempSizeBytes
 
   // Total tracked bytes includes total managed bytes (model weights remain separate)
   const totalTrackedBytes = totalManagedBytes
@@ -1077,6 +1081,7 @@ export function collectStorageAccounting(options: StorageAccountingOptions): Sto
     ocrFiles,
     sidecarFiles,
     measurementErrors,
+    ...(backupScanErrors.length > 0 ? { backupScanErrors } : {}),
     isDegraded: measurementErrors.length > 0,
     timestamp: Date.now(),
     lastAttemptTimestamp: Date.now(),

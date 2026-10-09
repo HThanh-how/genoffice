@@ -476,7 +476,7 @@ async function bootstrapStorage(
       }
     }
 
-    // 3. Quota preflight: physical DB + WAL + SHM + old ANN + OCR + sidecars + ALL existing protected backups
+    // 3. Quota preflight: physical DB + WAL + SHM + old ANN + OCR + sidecars (earlier migration backups are not part of the quota)
     const preAccounting = collectStorageAccounting({ dbPath })
     if (preAccounting.isDegraded) {
       const errorMsg =

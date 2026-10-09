@@ -12,10 +12,12 @@ import {
   isValidStoragePreset,
 } from '../document-memory/storage/storage-settings'
 import { snapshotCache, diagnosticsCache } from './document-index-snapshot-service'
+import { registerDocumentIndexBackupHandlers } from './document-index-backup-handlers'
 import type { DocumentIndexIpcDeps } from './document-index-ipc'
 
 export function registerDocumentIndexStorageHandlers(deps: DocumentIndexIpcDeps): void {
   const { ipcMain, getDocumentMemory, dbPath, settingsPath } = deps
+  registerDocumentIndexBackupHandlers(deps)
 
   const getSettingsDir = (): string => {
     if (settingsPath) {

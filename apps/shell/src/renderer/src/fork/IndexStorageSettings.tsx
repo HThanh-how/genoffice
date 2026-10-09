@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import type {
+  DocumentIndexBackupInfo,
   StorageBudgetConfig,
   StorageBudgetPreset,
   StorageBudgetSnapshot,
@@ -16,6 +17,7 @@ import {
   type QuotaPresetKey,
 } from '../../../shared/fork/storage-estimate'
 import { useI18n } from '../locale'
+import { appConfirm } from '../ui-feedback'
 import { runIndexMutation } from './index-mutation'
 import { quotaString, type QuotaStringKey } from './storage-quota-i18n'
 
@@ -44,6 +46,9 @@ export function IndexStorageSettings({ api }: { api: HomeApi }) {
   const [saving, setSaving] = useState(false)
   const [note, setNote] = useState<QuotaStringKey | null>(null)
   const [errorText, setErrorText] = useState('')
+  const [backup, setBackup] = useState<DocumentIndexBackupInfo | null>(null)
+  const [backupBusy, setBackupBusy] = useState(false)
+  const [backupMessage, setBackupMessage] = useState<{ text: string; error: boolean } | null>(null)
 
   const refreshSnapshot = useCallback(async () => {
     if (typeof api.getDocumentIndexStorageBudget === 'function') {
@@ -60,6 +65,7 @@ export function IndexStorageSettings({ api }: { api: HomeApi }) {
         setCustomMb(mb(loaded.maxDatabaseBytes))
       }
       await refreshSnapshot()
+      if (typeof api.getDocumentIndexBackup === 'function') setBackup(await api.getDocumentIndexBackup())
       if (typeof api.getEmbeddingModel === 'function') {
         const model = await api.getEmbeddingModel()
         setDimensions(model.profiles?.[model.profile]?.dimensions ?? null)
@@ -104,6 +110,29 @@ export function IndexStorageSettings({ api }: { api: HomeApi }) {
       setErrorText(err instanceof Error ? err.message : q('invalid'))
     } finally {
       setSaving(false)
+    }
+  }
+
+  const deleteBackup = async () => {
+    if (!backup || typeof api.deleteDocumentIndexBackup !== 'function') return
+    const size = formatQuotaBytes(backup.totalBytes, dateLocale)
+    if (!(await appConfirm(q('backupConfirm', { size }), { confirmLabel: q('backupConfirmLabel'), tone: 'danger' }))) return
+    setBackupBusy(true)
+    setBackupMessage(null)
+    try {
+      const result = await api.deleteDocumentIndexBackup()
+      if (result.ok) {
+        setBackupMessage({ text: q('backupDeleted', { size: formatQuotaBytes(result.freedBytes, dateLocale) }), error: false })
+      } else {
+        const blocked = result.error === 'migration-in-flight' || result.error === 'live-index-missing' || result.error === 'live-index-not-v3'
+        setBackupMessage({ text: blocked ? q('backupBlocked') : q('backupFailed', { error: result.error ?? '' }), error: true })
+      }
+      if (typeof api.getDocumentIndexBackup === 'function') setBackup(await api.getDocumentIndexBackup())
+      await refreshSnapshot()
+    } catch (err) {
+      setBackupMessage({ text: q('backupFailed', { error: err instanceof Error ? err.message : '' }), error: true })
+    } finally {
+      setBackupBusy(false)
     }
   }
 
@@ -226,6 +255,35 @@ export function IndexStorageSettings({ api }: { api: HomeApi }) {
           </p>
         )}
       </div>
+
+      {(backup?.exists || backupMessage) && (
+        <div className="ixq-box ixq-backup" data-testid="index-backup">
+          {backup?.exists && (
+            <>
+              <strong>{q('backupTitle')}</strong>
+              <p>{q('backupText', { size: formatQuotaBytes(backup.totalBytes, dateLocale), days: backup.retentionDays })}</p>
+              <button
+                type="button"
+                className="idx-btn"
+                disabled={backupBusy || !backup.deletable}
+                onClick={() => void deleteBackup()}
+              >
+                {q('backupDelete', { size: formatQuotaBytes(backup.totalBytes, dateLocale) })}
+              </button>
+              {!backup.deletable && <p className="idx-muted">{q('backupBlocked')}</p>}
+            </>
+          )}
+          {backupMessage && (
+            <p
+              className={backupMessage.error ? 'ixs-error' : 'idx-muted'}
+              role={backupMessage.error ? 'alert' : 'status'}
+              style={{ margin: '8px 0 0', fontSize: '12px' }}
+            >
+              {backupMessage.text}
+            </p>
+          )}
+        </div>
+      )}
 
       {(note || errorText) && (
         <p

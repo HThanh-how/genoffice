@@ -29,7 +29,7 @@ describe('Checkpoint 3: Storage Accounting, Admission & Tiered Retention', () =>
     }
   })
 
-  it('ACCOUNT-01: collectStorageAccounting tracks DB, WAL, ANN, OCR, temp, and backups', () => {
+  it('ACCOUNT-01: collectStorageAccounting tracks DB, WAL, ANN, OCR, temp (quota) and reports backups separately', () => {
     const dbPath = join(tempDir, 'document-memory.db')
     writeFileSync(dbPath, Buffer.alloc(100_000)) // 100 KB
     writeFileSync(`${dbPath}-wal`, Buffer.alloc(20_000)) // 20 KB
@@ -64,7 +64,9 @@ describe('Checkpoint 3: Storage Accounting, Admission & Tiered Retention', () =>
     expect(report.ocrSizeBytes).toBe(30_000)
     expect(report.tempSizeBytes).toBe(10_000)
     expect(report.backupSizeBytes).toBe(200_000)
-    expect(report.totalTrackedBytes).toBe(410_000)
+    // The backup is reported but not charged to the index quota: 120 KB DB+WAL + 50 KB ANN + 30 KB OCR + 10 KB temp.
+    expect(report.totalTrackedBytes).toBe(210_000)
+    expect(report.totalManagedBytes).toBe(210_000)
   })
 
   it('ADMIT-01: StorageAdmissionController admits within budget and blocks at hard limit', () => {
