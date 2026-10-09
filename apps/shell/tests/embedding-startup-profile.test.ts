@@ -88,7 +88,8 @@ describe('startup embedding profile (fresh install vs existing index)', () => {
     writeFileSync(file, 'hello recommended tier')
     m.remember(file)
     const started = Date.now()
-    while (!workerEnv.length && Date.now() - started < 3000) await new Promise((r) => setTimeout(r, 10))
+    while (!workerEnv.length && Date.now() - started < 3000)
+      await new Promise((r) => setTimeout(r, 10))
     expect(workerEnv[0]?.embeddingProfile).toBe('base')
   })
 

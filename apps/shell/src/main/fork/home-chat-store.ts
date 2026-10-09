@@ -140,6 +140,16 @@ function parseSession(raw: unknown, expectedId: string): HomeChatSession | null 
   }
 }
 
+async function unlinkIfPresent(path: string): Promise<void> {
+  try {
+    await unlink(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw error
+    }
+  }
+}
+
 /**
  * One JSON file per conversation plus a small index cache. The index is
  * rebuilt from the session files whenever it is missing or unreadable, and a
@@ -228,7 +238,13 @@ export class HomeChatStore {
       const session = parseSession(raw, id.toLowerCase())
       if (session) return session
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return null
+      }
+
+      if (!(error instanceof SyntaxError)) {
+        throw error
+      }
     }
     // unreadable or malformed: quarantine it so it cannot break the list again while preserving data
     const corruptPath = `${this.file(id)}.corrupt-${Date.now()}`
@@ -293,8 +309,8 @@ export class HomeChatStore {
     while (index.length > HOME_CHAT_LIMITS.maxSessions) {
       const victim = index[index.length - 1]!
       if (victim.id === keepId) break
+      await unlinkIfPresent(this.file(victim.id))
       index.pop()
-      await unlink(this.file(victim.id)).catch(() => {})
     }
   }
 
@@ -317,33 +333,74 @@ export class HomeChatStore {
   }
 
   delete(id: unknown): Promise<boolean> {
-    if (!isChatSessionId(id)) return Promise.resolve(false)
+    if (!isChatSessionId(id)) {
+      return Promise.resolve(false)
+    }
+
     return this.run(async () => {
-      await unlink(this.file(id)).catch(() => {})
+      await unlinkIfPresent(this.file(id))
+
       const index = await this.load()
       const at = index.findIndex((entry) => entry.id === id.toLowerCase())
-      if (at >= 0) index.splice(at, 1)
+
+      if (at >= 0) {
+        index.splice(at, 1)
+      }
+
       await this.persistIndex()
+
       return at >= 0
     })
   }
 
   clear(): Promise<number> {
     return this.run(async () => {
-      const index = await this.load()
-      const count = index.length
-      let names: string[] = []
+      const count = (await this.load()).length
+
+      let names: string[]
+
       try {
         names = await readdir(this.dir)
-      } catch {
-        // directory not created yet
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+          throw error
+        }
+
+        names = []
       }
+
+      const failures: Error[] = []
+
       for (const name of names) {
         const id = name.endsWith('.json') ? name.slice(0, -5) : ''
-        if (isChatSessionId(id)) await unlink(join(this.dir, name)).catch(() => {})
+
+        if (!isChatSessionId(id)) {
+          continue
+        }
+
+        try {
+          await unlinkIfPresent(join(this.dir, name))
+        } catch (error) {
+          failures.push(error instanceof Error ? error : new Error(String(error)))
+        }
       }
-      this.index = []
-      await this.persistIndex().catch(() => {})
+
+      // Rebuild the index from files that actually remain on disk.
+      this.index = null
+
+      await this.rebuild()
+
+      // Unlike rebuild()'s best-effort cache write,
+      // clear() must not report success if index persistence fails.
+      await this.persistIndex()
+
+      if (failures.length > 0) {
+        throw new AggregateError(
+          failures,
+          `Failed to delete ${failures.length} chat session file(s)`,
+        )
+      }
+
       return count
     })
   }
