@@ -107,4 +107,6 @@ export const cs = {
   aiScopeRangeTip:
     'AI chápe „tento sloupec / tyto řádky / vybranou část“ jako tuto oblast, která po odeslání zůstává pro celý běh pevná',
   aiScopeClearTitle: 'Zrušit omezení na oblast a pracovat s celým listem',
+  aiProviderNotConfigured:
+    'Poskytovatel AI není nakonfigurován. Vyberte poskytovatele nebo se přihlaste a zkuste to znovu.',
 } satisfies Record<keyof typeof zh, string>

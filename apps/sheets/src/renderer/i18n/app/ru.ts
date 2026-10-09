@@ -536,6 +536,8 @@ export const ru = {
   appPdfRendering: 'Отрисовка PDF…',
   appPdfCanceled: 'Экспорт в PDF отменён.',
   appPdfExported: 'Экспортировано: {path}.',
+  appPdfDestinationBusy:
+    'Другой процесс экспорта в PDF уже записывает в этот файл. Подождите, пока он завершится, или выберите другое место.',
   appPdfExportFailed: 'Не удаётся экспортировать PDF.',
   appPrintPreparing: 'Подготовка к печати…',
   appPrintSent: 'Отправлено на принтер.',
@@ -543,6 +545,12 @@ export const ru = {
   appPrintFailed: 'Не удалось напечатать.',
   appPrintNeedsFullLoad:
     'Для печати книга должна быть полностью загружена — дождитесь окончания загрузки.',
+  appPrintLoadingWorkbook: 'Загрузка книги для печати…',
+  appPrintWorkbookTooLarge: 'Книга слишком велика для полной загрузки перед печатью.',
+  appPrintLoadTimedOut: 'Превышено время ожидания загрузки книги для печати.',
+  appPdfLoadingWorkbook: 'Загрузка книги для экспорта в PDF…',
+  appPdfWorkbookTooLarge: 'Книга слишком велика для полной загрузки перед экспортом в PDF.',
+  appPdfLoadTimedOut: 'Превышено время ожидания загрузки книги для экспорта в PDF.',
   appCsvExportNeedsFullLoad:
     'Экспорт в CSV требует полностью загруженной книги — дождитесь завершения загрузки.',
   appCsvExportTooLarge: 'Лист слишком большой для экспорта в CSV.',

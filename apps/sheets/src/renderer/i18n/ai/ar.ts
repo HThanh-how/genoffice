@@ -106,4 +106,6 @@ export const ar = {
   aiScopeRangeTip:
     'يفهم الذكاء الاصطناعي "هذا العمود / هذه الصفوف / الجزء المحدد" على أنه هذا النطاق، ويُثبَّت طوال التشغيل بعد الإرسال',
   aiScopeClearTitle: 'إلغاء نطاق التحديد واستهداف الورقة بأكملها',
+  aiProviderNotConfigured:
+    'لم يتم تكوين موفر الذكاء الاصطناعي. اختر موفرًا أو سجّل الدخول ثم أعد المحاولة.',
 } satisfies Record<keyof typeof zh, string>

@@ -5,7 +5,7 @@
  * preview plan; runDeterministicPlan does the same for the regex planner.
  * Extracted from App.tsx; App-scope state comes in through PlanContext.
  */
-import { planPrompt } from '../ai/deterministic-planner'
+import { planPrompt, UnsupportedPromptError } from '../ai/deterministic-planner'
 import {
   columnIndex,
   columnLabel,
@@ -871,7 +871,7 @@ export function proposeOperations(
 export function runDeterministicPlan(
   ctx: PlanContext,
   instruction: string,
-): { text: string; isError?: boolean } {
+): { text: string; isError?: boolean | undefined; unsupported?: boolean | undefined } {
   const state = ctx.lazyWorkbookRef.current
   if (state) {
     const runtime = ctx.univerRef.current
@@ -916,6 +916,13 @@ export function runDeterministicPlan(
       void ctx.autoApplySafePlan(plan)
       return { text: t('appPreviewCreated') }
     } catch (error: unknown) {
+      if (error instanceof UnsupportedPromptError) {
+        return {
+          text: error.message,
+          isError: true,
+          unsupported: true,
+        }
+      }
       return {
         text: error instanceof Error ? error.message : t('appPreviewFailed'),
         isError: true,
@@ -938,6 +945,13 @@ export function runDeterministicPlan(
     void ctx.autoApplySafePlan(plan)
     return { text: t('appPreviewCreatedDemo') }
   } catch (error: unknown) {
+    if (error instanceof UnsupportedPromptError) {
+      return {
+        text: error.message,
+        isError: true,
+        unsupported: true,
+      }
+    }
     return {
       text: error instanceof Error ? error.message : t('appPreviewFailed'),
       isError: true,

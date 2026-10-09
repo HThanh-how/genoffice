@@ -521,6 +521,8 @@ export const hi = {
   appPdfRendering: 'PDF रेंडर हो रहा है…',
   appPdfCanceled: 'PDF निर्यात रद्द किया गया।',
   appPdfExported: '{path} निर्यात किया गया।',
+  appPdfDestinationBusy:
+    'एक अन्य PDF निर्यात पहले से ही इस फ़ाइल में लिख रहा है। इसके समाप्त होने की प्रतीक्षा करें या कोई अन्य गंतव्य चुनें।',
   appPdfExportFailed: 'PDF निर्यात नहीं किया जा सका।',
   appPrintPreparing: 'प्रिंट की तैयारी हो रही है…',
   appPrintSent: 'प्रिंटर को भेज दिया गया।',
@@ -528,6 +530,12 @@ export const hi = {
   appPrintFailed: 'प्रिंट नहीं किया जा सका।',
   appPrintNeedsFullLoad:
     'प्रिंट करने के लिए कार्यपुस्तिका पूरी लोड होनी चाहिए — लोडिंग पूरी होने तक प्रतीक्षा करें।',
+  appPrintLoadingWorkbook: 'प्रिंटिंग के लिए वर्कबुक लोड हो रही है…',
+  appPrintWorkbookTooLarge: 'प्रिंटिंग के लिए वर्कबुक पूरी तरह लोड करने हेतु बहुत बड़ी है।',
+  appPrintLoadTimedOut: 'प्रिंटिंग के लिए वर्कबुक लोड करने का समय समाप्त हो गया।',
+  appPdfLoadingWorkbook: 'PDF निर्यात के लिए वर्कबुक लोड हो रही है…',
+  appPdfWorkbookTooLarge: 'PDF निर्यात के लिए वर्कबुक पूरी तरह लोड करने हेतु बहुत बड़ी है।',
+  appPdfLoadTimedOut: 'PDF निर्यात के लिए वर्कबुक लोड करने का समय समाप्त हो गया।',
   appCsvExportNeedsFullLoad:
     'CSV निर्यात के लिए पूरी तरह लोड की गई कार्यपुस्तिका चाहिए — लोडिंग पूरी होने तक प्रतीक्षा करें।',
   appCsvExportTooLarge: 'शीट बहुत बड़ी है, CSV के रूप में निर्यात नहीं की जा सकती।',

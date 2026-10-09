@@ -546,6 +546,8 @@ export const pl = {
   appPdfRendering: 'Renderowanie pliku PDF…',
   appPdfCanceled: 'Anulowano eksport do PDF.',
   appPdfExported: 'Wyeksportowano {path}.',
+  appPdfDestinationBusy:
+    'Inny eksport do formatu PDF zapisuje już dane do tego pliku. Poczekaj na jego zakończenie lub wybierz inne miejsce docelowe.',
   appPdfExportFailed: 'Nie można wyeksportować pliku PDF.',
   appPrintPreparing: 'Przygotowywanie wydruku…',
   appPrintSent: 'Wysłano do drukarki.',
@@ -553,6 +555,13 @@ export const pl = {
   appPrintFailed: 'Nie można wydrukować.',
   appPrintNeedsFullLoad:
     'Drukowanie wymaga pełnego wczytania skoroszytu — poczekaj na zakończenie wczytywania.',
+  appPrintLoadingWorkbook: 'Ładowanie skoroszytu do drukowania…',
+  appPrintWorkbookTooLarge: 'Skoroszyt jest zbyt duży, aby załadować go w całości do drukowania.',
+  appPrintLoadTimedOut: 'Przekroczono limit czasu ładowania skoroszytu do drukowania.',
+  appPdfLoadingWorkbook: 'Ładowanie skoroszytu do eksportu do formatu PDF…',
+  appPdfWorkbookTooLarge:
+    'Skoroszyt jest zbyt duży, aby załadować go w całości do eksportu do formatu PDF.',
+  appPdfLoadTimedOut: 'Przekroczono limit czasu ładowania skoroszytu do eksportu do formatu PDF.',
   appCsvExportNeedsFullLoad:
     'Eksport do CSV wymaga w pełni załadowanego skoroszytu — poczekaj na zakończenie ładowania.',
   appCsvExportTooLarge: 'Arkusz jest za duży, aby wyeksportować go do CSV.',

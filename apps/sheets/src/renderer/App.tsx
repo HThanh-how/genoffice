@@ -179,6 +179,7 @@ import { createMergeSkill } from './ai/merge-skill'
 import { mergeAttachedWorkbooks } from './merge-workbooks'
 import { createSearchSkill } from './ai/search-skill'
 import { createImageSkill } from './ai/image-skill'
+import { routePrompt } from './ai/prompt-routing'
 import { ATTACHMENT_IMAGE_EXTS } from '../shared/desktop-api'
 import type {
   AttachmentAddResult,
@@ -943,7 +944,11 @@ export function App({
     return proposeOperationsImpl(planContext(), operations, summary)
   }
 
-  function runDeterministicPlan(instruction: string): { text: string; isError?: boolean } {
+  function runDeterministicPlan(instruction: string): {
+    text: string
+    isError?: boolean | undefined
+    unsupported?: boolean | undefined
+  } {
     return runDeterministicPlanImpl(planContext(), instruction)
   }
 
@@ -952,6 +957,17 @@ export function App({
   const [aiSettings, setAiSettingsState] = useState<AiSettings | null>(null)
   const aiSettingsRef = useRef<AiSettings | null>(null)
   aiSettingsRef.current = aiSettings
+
+  async function getFreshAiSettings(): Promise<AiSettings | null> {
+    try {
+      const settings = await window.desktopApi.getAiSettings()
+      aiSettingsRef.current = settings
+      setAiSettingsState(settings)
+      return settings
+    } catch {
+      return aiSettingsRef.current
+    }
+  }
 
   /** gsk login state for the cloud-tools gate (refreshed on mount and window focus) */
   const gskLoggedInRef = useRef(false)
@@ -997,6 +1013,8 @@ export function App({
   /** Synchronous re-entrancy guard between runAgent trigger and loop.run
    * (loop.busy is still false while attachment images load asynchronously) */
   const runStartingRef = useRef(false)
+  /** Synchronous lock preventing concurrent handleSend invocations while routing/settings refresh is in flight */
+  const aiSendRoutingRef = useRef(false)
   /** The shell can repeat its queued-open nudge while the renderer starts.
    * Only one picker/open request may own the workbook session at a time. */
   const workbookOpeningRef = useRef(false)
@@ -1405,17 +1423,6 @@ export function App({
         },
       },
     })
-  }
-
-  function isAgentConfigured(): boolean {
-    const settings = aiSettingsRef.current
-    if (!settings) return false
-    const config = settings.providers[settings.provider]
-    if (!config?.model) return false
-    // Genspark's key never lands in the settings file; the main process injects
-    // it from the gsk login state. When logged out, requests return an error
-    // guiding sign-in — not intercepted here.
-    return settings.provider === 'genspark' || !!config.apiKey
   }
 
   /** Image attachments read as base64 and sent multimodal with this user message
@@ -3059,66 +3066,97 @@ export function App({
     crossHighlightRef.current?.setVisible(crossHighlightVisible)
   }, [crossHighlightVisible])
 
-  function handleSend(
+  async function handleSend(
     overrideInstruction?: string,
     overrideAttachments?: readonly AttachmentMeta[],
     retryIndex?: number,
-  ): void {
+  ): Promise<void> {
     const instruction = (overrideInstruction ?? prompt).trim()
-    if (!instruction || aiBusy) return
-    runToolsRef.current = []
-    // The message consumes the composer attachments: they ride along (echoed on the
-    // bubble, images multimodal, files via the files skill) and the composer clears.
-    // Retry passes the failed message's original set instead.
-    const sentAtts = overrideAttachments ?? attachmentsRef.current
-    const agentConfigured = isAgentConfigured()
-    // Retry re-sends in place: drop the failed bubble and its error reply instead
-    // of stacking a "Not sent" duplicate above the resent copy.
-    const alreadyPersisted = retryIndex !== undefined && chat[retryIndex]?.persisted === true
-    if (retryIndex !== undefined) {
-      setChat((previous) => pruneFailedExchange(previous, retryIndex))
+    if (!instruction || aiBusy || runStartingRef.current || aiSendRoutingRef.current) return
+    aiSendRoutingRef.current = true
+    try {
+      runToolsRef.current = []
+      // The message consumes the composer attachments: they ride along (echoed on the
+      // bubble, images multimodal, files via the files skill) and the composer clears.
+      // Retry passes the failed message's original set instead.
+      const sentAtts = overrideAttachments ?? attachmentsRef.current
+      // Retry re-sends in place: drop the failed bubble and its error reply instead
+      // of stacking a "Not sent" duplicate above the resent copy.
+      const alreadyPersisted = retryIndex !== undefined && chat[retryIndex]?.persisted === true
+      if (retryIndex !== undefined) {
+        setChat((previous) => pruneFailedExchange(previous, retryIndex))
+      }
+      // A retried message was usually persisted by its original send — but that
+      // write is skipped while the chat refs are still resolving, so re-issue it
+      // then instead of dropping the question from the stored transcript.
+      // a retry quotes what the failed message quoted; a fresh send the live scope runAgent freezes for the run
+      const scope =
+        retryIndex !== undefined
+          ? chat[retryIndex]?.scope
+          : aiScope && !aiScopeDismissed
+            ? { label: scopeLabel(aiScope.a1, aiScope.columns ?? null, t) }
+            : undefined
+      const persisted =
+        alreadyPersisted || persistChatMessage('user', instruction, undefined, sentAtts, scope)
+      appendChat({
+        role: 'user',
+        text: instruction,
+        tools: [],
+        persisted,
+        ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}),
+        ...(scope ? { scope } : {}),
+      })
+      if (!overrideInstruction) setPrompt('')
+      // the deterministic path consumes the composer too — the bubble already echoes the set
+      if (!overrideAttachments && sentAtts.length > 0) {
+        const seen = new Set(sentAttachmentsRef.current.map((a) => a.path))
+        sentAttachmentsRef.current = [
+          ...sentAttachmentsRef.current,
+          ...sentAtts.filter((a) => !seen.has(a.path)),
+        ]
+        setAttachments([])
+      }
+      // real LLM configured → let the agent read context and propose operations;
+      // otherwise fall back to the local, deterministic regex planner
+      // (kept for offline use and for the fixed micro-DSL it still supports).
+      try {
+        const outcome = await routePrompt({
+          instruction,
+          sentAtts,
+          currentSettings: aiSettingsRef.current,
+          getFreshSettings: getFreshAiSettings,
+          runAgent,
+          runDeterministicPlan,
+        })
+        if (outcome.action === 'agent') return
+
+        const responseText =
+          outcome.action === 'unconfigured' ? t('aiProviderNotConfigured') : outcome.message
+
+        if (responseText) {
+          setMessage(responseText)
+          appendChat({
+            role: 'assistant',
+            text: responseText,
+            tools: [],
+            isError: outcome.isError,
+          })
+          persistChatMessage('assistant', responseText)
+        }
+      } catch (err) {
+        const errorText = err instanceof Error ? err.message : String(err)
+        setMessage(errorText)
+        appendChat({
+          role: 'assistant',
+          text: errorText,
+          tools: [],
+          isError: true,
+        })
+        persistChatMessage('assistant', errorText)
+      }
+    } finally {
+      aiSendRoutingRef.current = false
     }
-    // A retried message was usually persisted by its original send — but that
-    // write is skipped while the chat refs are still resolving, so re-issue it
-    // then instead of dropping the question from the stored transcript.
-    // a retry quotes what the failed message quoted; a fresh send the live scope runAgent freezes for the run
-    const scope =
-      retryIndex !== undefined
-        ? chat[retryIndex]?.scope
-        : aiScope && !aiScopeDismissed
-          ? { label: scopeLabel(aiScope.a1, aiScope.columns ?? null, t) }
-          : undefined
-    const persisted =
-      alreadyPersisted || persistChatMessage('user', instruction, undefined, sentAtts, scope)
-    appendChat({
-      role: 'user',
-      text: instruction,
-      tools: [],
-      persisted,
-      ...(sentAtts.length > 0 ? { attachments: sentAtts } : {}),
-      ...(scope ? { scope } : {}),
-    })
-    if (!overrideInstruction) setPrompt('')
-    // the deterministic path consumes the composer too — the bubble already echoes the set
-    if (!overrideAttachments && sentAtts.length > 0) {
-      const seen = new Set(sentAttachmentsRef.current.map((a) => a.path))
-      sentAttachmentsRef.current = [
-        ...sentAttachmentsRef.current,
-        ...sentAtts.filter((a) => !seen.has(a.path)),
-      ]
-      setAttachments([])
-    }
-    // real LLM configured → let the agent read context and propose operations;
-    // otherwise fall back to the local, deterministic regex planner
-    // (kept for offline use and for the fixed micro-DSL it still supports).
-    if (agentConfigured) {
-      runAgent(instruction, sentAtts)
-      return
-    }
-    const outcome = runDeterministicPlan(instruction)
-    setMessage(outcome.text)
-    appendChat({ role: 'assistant', text: outcome.text, tools: [], isError: outcome.isError })
-    persistChatMessage('assistant', outcome.text)
   }
 
   /// AI edits on imported workbooks preview against the live sheet, then

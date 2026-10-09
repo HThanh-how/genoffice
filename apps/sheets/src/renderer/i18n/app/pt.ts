@@ -559,6 +559,8 @@ export const pt = {
   appPdfRendering: 'Renderizando o PDF…',
   appPdfCanceled: 'Exportação de PDF cancelada.',
   appPdfExported: '{path} exportado.',
+  appPdfDestinationBusy:
+    'Outra exportação de PDF já está gravando neste arquivo. Aguarde o término ou escolha um destino diferente.',
   appPdfExportFailed: 'Não foi possível exportar o PDF.',
   appPrintPreparing: 'Preparando a impressão…',
   appPrintSent: 'Enviado para a impressora.',
@@ -566,6 +568,15 @@ export const pt = {
   appPrintFailed: 'Não foi possível imprimir.',
   appPrintNeedsFullLoad:
     'A impressão requer que a pasta de trabalho esteja totalmente carregada; aguarde o fim do carregamento.',
+  appPrintLoadingWorkbook: 'Carregando pasta de trabalho para impressão…',
+  appPrintWorkbookTooLarge:
+    'A pasta de trabalho é muito grande para carregar totalmente para impressão.',
+  appPrintLoadTimedOut: 'Tempo limite esgotado ao carregar a pasta de trabalho para impressão.',
+  appPdfLoadingWorkbook: 'Carregando pasta de trabalho para exportação em PDF…',
+  appPdfWorkbookTooLarge:
+    'A pasta de trabalho é muito grande para carregar totalmente para exportação em PDF.',
+  appPdfLoadTimedOut:
+    'Tempo limite esgotado ao carregar a pasta de trabalho para exportação em PDF.',
   appCsvExportNeedsFullLoad:
     'A exportação de CSV requer a pasta de trabalho totalmente carregada — aguarde o carregamento terminar.',
   appCsvExportTooLarge: 'A planilha é grande demais para exportar como CSV.',

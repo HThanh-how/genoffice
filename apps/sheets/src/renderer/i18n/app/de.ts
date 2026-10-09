@@ -564,6 +564,8 @@ export const de = {
   appPdfRendering: 'PDF wird gerendert…',
   appPdfCanceled: 'PDF-Export abgebrochen.',
   appPdfExported: '{path} exportiert.',
+  appPdfDestinationBusy:
+    'Ein anderer PDF-Export schreibt bereits in diese Datei. Warten Sie, bis er abgeschlossen ist, oder wählen Sie ein anderes Ziel.',
   appPdfExportFailed: 'PDF kann nicht exportiert werden.',
   appPrintPreparing: 'Druck wird vorbereitet…',
   appPrintSent: 'An den Drucker gesendet.',
@@ -571,6 +573,14 @@ export const de = {
   appPrintFailed: 'Drucken nicht möglich.',
   appPrintNeedsFullLoad:
     'Zum Drucken muss die Arbeitsmappe vollständig geladen sein – bitte warten Sie, bis der Ladevorgang abgeschlossen ist.',
+  appPrintLoadingWorkbook: 'Arbeitsmappe wird zum Drucken geladen…',
+  appPrintWorkbookTooLarge:
+    'Die Arbeitsmappe ist zu groß, um zum Drucken vollständig geladen zu werden.',
+  appPrintLoadTimedOut: 'Zeitüberschreitung beim Laden der Arbeitsmappe zum Drucken.',
+  appPdfLoadingWorkbook: 'Arbeitsmappe wird für den PDF-Export geladen…',
+  appPdfWorkbookTooLarge:
+    'Die Arbeitsmappe ist zu groß, um für den PDF-Export vollständig geladen zu werden.',
+  appPdfLoadTimedOut: 'Zeitüberschreitung beim Laden der Arbeitsmappe für den PDF-Export.',
   appCsvExportNeedsFullLoad:
     'Der CSV-Export erfordert die vollständig geladene Arbeitsmappe — warten Sie, bis das Laden abgeschlossen ist.',
   appCsvExportTooLarge: 'Das Blatt ist zu groß für den CSV-Export.',

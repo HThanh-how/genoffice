@@ -522,6 +522,8 @@ export const id = {
   appPdfRendering: 'Merender PDF…',
   appPdfCanceled: 'Ekspor PDF dibatalkan.',
   appPdfExported: '{path} diekspor.',
+  appPdfDestinationBusy:
+    'Ekspor PDF lain sedang menulis ke file ini. Tunggu hingga selesai atau pilih tujuan lain.',
   appPdfExportFailed: 'Tidak dapat mengekspor PDF.',
   appPrintPreparing: 'Menyiapkan pencetakan…',
   appPrintSent: 'Dikirim ke printer.',
@@ -529,6 +531,12 @@ export const id = {
   appPrintFailed: 'Tidak dapat mencetak.',
   appPrintNeedsFullLoad:
     'Pencetakan memerlukan buku kerja termuat sepenuhnya — tunggu hingga pemuatan selesai.',
+  appPrintLoadingWorkbook: 'Memuat buku kerja untuk mencetak…',
+  appPrintWorkbookTooLarge: 'Buku kerja terlalu besar untuk dimuat sepenuhnya untuk pencetakan.',
+  appPrintLoadTimedOut: 'Waktu pemuatan buku kerja untuk mencetak habis.',
+  appPdfLoadingWorkbook: 'Memuat buku kerja untuk ekspor PDF…',
+  appPdfWorkbookTooLarge: 'Buku kerja terlalu besar untuk dimuat sepenuhnya untuk ekspor PDF.',
+  appPdfLoadTimedOut: 'Waktu pemuatan buku kerja untuk ekspor PDF habis.',
   appCsvExportNeedsFullLoad:
     'Ekspor CSV memerlukan buku kerja termuat penuh — tunggu pemuatan selesai.',
   appCsvExportTooLarge: 'Lembar terlalu besar untuk diekspor sebagai CSV.',

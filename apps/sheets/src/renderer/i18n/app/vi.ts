@@ -515,6 +515,8 @@ export const vi = {
   appPdfRendering: 'Đang kết xuất PDF…',
   appPdfCanceled: 'Đã hủy xuất PDF.',
   appPdfExported: 'Đã xuất {path}.',
+  appPdfDestinationBusy:
+    'Một tác vụ xuất PDF khác đang ghi vào tệp này. Hãy đợi tác vụ đó hoàn tất hoặc chọn vị trí khác.',
   appPdfExportFailed: 'Không thể xuất PDF.',
   appPrintPreparing: 'Đang chuẩn bị in…',
   appPrintSent: 'Đã gửi tới máy in.',
@@ -522,6 +524,12 @@ export const vi = {
   appPrintFailed: 'Không thể in.',
   appPrintNeedsFullLoad:
     'In ấn cần toàn bộ sổ làm việc được tải — vui lòng đợi quá trình tải hoàn tất.',
+  appPrintLoadingWorkbook: 'Đang tải sổ làm việc để in…',
+  appPrintWorkbookTooLarge: 'Sổ làm việc quá lớn để tải đầy đủ cho việc in.',
+  appPrintLoadTimedOut: 'Quá thời gian tải sổ làm việc để in.',
+  appPdfLoadingWorkbook: 'Đang tải sổ làm việc để xuất PDF…',
+  appPdfWorkbookTooLarge: 'Sổ làm việc quá lớn để tải đầy đủ cho việc xuất PDF.',
+  appPdfLoadTimedOut: 'Quá thời gian tải sổ làm việc để xuất PDF.',
   appCsvExportNeedsFullLoad: 'Xuất CSV cần sổ làm việc được tải đầy đủ — vui lòng đợi tải xong.',
   appCsvExportTooLarge: 'Trang tính quá lớn để xuất dưới dạng CSV.',
   appCsvExportCanceled: 'Đã hủy xuất CSV.',
