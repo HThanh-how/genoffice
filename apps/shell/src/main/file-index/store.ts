@@ -130,8 +130,15 @@ CREATE VIRTUAL TABLE IF NOT EXISTS file_fts USING fts5(
 export class FileIndexStore {
   private readonly db: DatabaseSync
 
-  constructor(dbPath: string) {
+  /** `readOnly`: a reader's connection (the search thread); it neither creates nor migrates anything. */
+  constructor(dbPath: string, options: { readOnly?: boolean } = {}) {
+    if (options.readOnly) {
+      this.db = new DatabaseSync(dbPath, { readOnly: true })
+      this.db.exec('PRAGMA busy_timeout = 5000')
+      return
+    }
     this.db = new DatabaseSync(dbPath)
+    this.db.exec('PRAGMA busy_timeout = 5000')
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec(SCHEMA)
     if (this.meta('tokenizer') !== String(TOKENIZER_VERSION)) {
@@ -170,12 +177,85 @@ export class FileIndexStore {
     return out
   }
 
+  /**
+   * Same result as `listAll`, read in key-ordered pages with `yieldNow` between them: one statement over a
+   * million-row index is a single piece of synchronous work, a stall for every window of the app.
+   */
+  async listAllSliced(
+    yieldNow: () => Promise<void>,
+    pageSize = 2_000,
+  ): Promise<Map<string, IndexedFile>> {
+    const page = this.db.prepare(
+      'SELECT id, path, mtime_ms, size_bytes, status FROM files WHERE id > ? ORDER BY id LIMIT ?',
+    )
+    const out = new Map<string, IndexedFile>()
+    let after = 0
+    for (;;) {
+      const rows = page.all(after, pageSize) as Array<{
+        id: number
+        path: string
+        mtime_ms: number
+        size_bytes: number
+        status: IndexStatus
+      }>
+      if (rows.length === 0) return out
+      for (const r of rows)
+        out.set(r.path, {
+          path: r.path,
+          mtimeMs: r.mtime_ms,
+          sizeBytes: r.size_bytes,
+          status: r.status,
+        })
+      after = rows[rows.length - 1]!.id
+      await yieldNow()
+    }
+  }
+
   count(): number {
     return (this.db.prepare('SELECT count(*) AS n FROM files').get() as { n: number }).n
   }
 
+  private countCache: { n: number; at: number } | null = null
+
+  /** `count()` at most once per `maxAgeMs`: counting a million rows is a pass over the whole index. */
+  countCached(maxAgeMs = 5_000): number {
+    const now = Date.now()
+    if (!this.countCache || now - this.countCache.at > maxAgeMs)
+      this.countCache = { n: this.count(), at: now }
+    return this.countCache.n
+  }
+
   /** insert or replace one file; `text` null indexes the name and folder only */
   upsert(
+    meta: { path: string; mtimeMs: number; sizeBytes: number },
+    text: string | null,
+    status: IndexStatus,
+  ): void {
+    this.inTransaction(() => this.writeRow(meta, text, status))
+  }
+
+  /** Name-only rows for files not seen before, in one transaction (the content follows when the file is parsed). */
+  upsertPendingBatch(
+    files: ReadonlyArray<{ path: string; mtimeMs: number; sizeBytes: number }>,
+  ): void {
+    if (files.length === 0) return
+    this.inTransaction(() => {
+      for (const f of files) this.writeRow(f, null, 'pending')
+    })
+  }
+
+  private inTransaction(run: () => void): void {
+    this.db.exec('BEGIN')
+    try {
+      run()
+      this.db.exec('COMMIT')
+    } catch (e) {
+      this.db.exec('ROLLBACK')
+      throw e
+    }
+  }
+
+  private writeRow(
     meta: { path: string; mtimeMs: number; sizeBytes: number },
     text: string | null,
     status: IndexStatus,
@@ -186,37 +266,30 @@ export class FileIndexStore {
     const nameTok = tokenize(name)
     const pathTok = tokenize(dirname(meta.path))
     const bodyTok = body ? tokenize(body) : { bi: [], uni: [] }
-    this.db.exec('BEGIN')
-    try {
-      const existing = this.db.prepare('SELECT id FROM files WHERE path = ?').get(meta.path) as
-        { id: number } | undefined
-      if (existing) {
-        this.db.prepare('DELETE FROM file_fts WHERE rowid = ?').run(existing.id)
-        this.db.prepare('DELETE FROM files WHERE id = ?').run(existing.id)
-      }
-      const inserted = this.db
-        .prepare(
-          'INSERT INTO files(path, name, ext, mtime_ms, size_bytes, status, body) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        )
-        .run(meta.path, name, ext, meta.mtimeMs, meta.sizeBytes, status, body)
-      this.db
-        .prepare(
-          'INSERT INTO file_fts(rowid, name, path, body, name_u, path_u, body_u) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        )
-        .run(
-          inserted.lastInsertRowid,
-          toIndexText(nameTok.bi),
-          toIndexText(pathTok.bi),
-          toIndexText(bodyTok.bi),
-          toIndexText(nameTok.uni),
-          toIndexText(pathTok.uni),
-          toIndexText(bodyTok.uni),
-        )
-      this.db.exec('COMMIT')
-    } catch (e) {
-      this.db.exec('ROLLBACK')
-      throw e
+    const existing = this.db.prepare('SELECT id FROM files WHERE path = ?').get(meta.path) as
+      { id: number } | undefined
+    if (existing) {
+      this.db.prepare('DELETE FROM file_fts WHERE rowid = ?').run(existing.id)
+      this.db.prepare('DELETE FROM files WHERE id = ?').run(existing.id)
     }
+    const inserted = this.db
+      .prepare(
+        'INSERT INTO files(path, name, ext, mtime_ms, size_bytes, status, body) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(meta.path, name, ext, meta.mtimeMs, meta.sizeBytes, status, body)
+    this.db
+      .prepare(
+        'INSERT INTO file_fts(rowid, name, path, body, name_u, path_u, body_u) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      )
+      .run(
+        inserted.lastInsertRowid,
+        toIndexText(nameTok.bi),
+        toIndexText(pathTok.bi),
+        toIndexText(bodyTok.bi),
+        toIndexText(nameTok.uni),
+        toIndexText(pathTok.uni),
+        toIndexText(bodyTok.uni),
+      )
   }
 
   remove(paths: readonly string[]): void {
@@ -224,19 +297,14 @@ export class FileIndexStore {
     const select = this.db.prepare('SELECT id FROM files WHERE path = ?')
     const delFts = this.db.prepare('DELETE FROM file_fts WHERE rowid = ?')
     const delFile = this.db.prepare('DELETE FROM files WHERE id = ?')
-    this.db.exec('BEGIN')
-    try {
+    this.inTransaction(() => {
       for (const p of paths) {
         const row = select.get(p) as { id: number } | undefined
         if (!row) continue
         delFts.run(row.id)
         delFile.run(row.id)
       }
-      this.db.exec('COMMIT')
-    } catch (e) {
-      this.db.exec('ROLLBACK')
-      throw e
-    }
+    })
   }
 
   /**

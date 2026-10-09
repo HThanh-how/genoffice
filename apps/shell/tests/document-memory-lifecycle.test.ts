@@ -13,7 +13,7 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { Worker } from 'node:worker_threads'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
@@ -285,6 +285,57 @@ describe('reconcileFolder', () => {
     await until(() => ctx.read((store) => store.documentByPath(added)?.status === 'ready'))
     // Only the genuinely new file was extracted; the unchanged and moved ones were not.
     expect(ctx.fake.extractionCalls.length).toBe(extractCalls + 1)
+  })
+})
+
+describe('reconcileFolder cost on a big index', () => {
+  it('neither hashes nor scans the table for a new file whose size no other document has', async () => {
+    const ctx = setup()
+    const root = join(dir, 'root')
+    await indexed(ctx, 'known.txt', 'known text of some length', root)
+    const prepared: string[] = []
+    const rawDb = ctx.instance.store.rawDb
+    const prepare = rawDb.prepare.bind(rawDb)
+    vi.spyOn(rawDb, 'prepare').mockImplementation((sql: string) => {
+      prepared.push(sql)
+      return prepare(sql)
+    })
+    const added = join(root, 'brand-new.txt')
+    writeFileSync(added, 'x'.repeat(777)) // a size nothing else has
+    const stat = statSync(added)
+    const result = await ctx.instance.reconcileFolder(
+      root,
+      new Map([[added, { mtimeMs: stat.mtimeMs, sizeBytes: stat.size }]]),
+    )
+    expect(result.added).toBe(1)
+    // the old code ran `WHERE hash = ? AND size_bytes = ?` (a scan of every document) for every new file
+    expect(prepared.some((sql) => sql.includes('hash = ?'))).toBe(false)
+    expect(prepared.some((sql) => sql.includes('WHERE size_bytes = ?'))).toBe(true)
+  })
+
+  it('still compares content when another document has the same size (renames are found)', async () => {
+    const ctx = setup()
+    const root = join(dir, 'root')
+    const original = await indexed(ctx, 'original.txt', 'same size body', root)
+    const copy = join(root, 'other.txt')
+    writeFileSync(copy, 'SAME SIZE BODY') // same length, different content
+    const stat = statSync(copy)
+    const prepared: string[] = []
+    const rawDb = ctx.instance.store.rawDb
+    const prepare = rawDb.prepare.bind(rawDb)
+    vi.spyOn(rawDb, 'prepare').mockImplementation((sql: string) => {
+      prepared.push(sql)
+      return prepare(sql)
+    })
+    const result = await ctx.instance.reconcileFolder(
+      root,
+      new Map([
+        [copy, { mtimeMs: stat.mtimeMs, sizeBytes: stat.size }],
+        [original, { mtimeMs: statSync(original).mtimeMs, sizeBytes: statSync(original).size }],
+      ]),
+    )
+    expect(result.added).toBe(1)
+    expect(prepared.some((sql) => sql.includes('hash = ?'))).toBe(true)
   })
 })
 

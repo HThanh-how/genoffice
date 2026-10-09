@@ -1288,6 +1288,65 @@ export class DocumentRepository {
     return removed
   }
 
+  /**
+   * One bounded slice of the junk purge: walks the never-opened rows by id from a persisted cursor, deletes the ones whose
+   * name `isIgnored`, and stops after `maxMs` (a transaction per page, so a writer on another connection waits for a
+   * few milliseconds, not for the whole purge). Safe to interrupt at any point: the cursor moves in the transaction
+   * that deleted the rows before it, and the one-time flag is set only when the walk reaches the end.
+   */
+  purgeDiscoveredByNameStep(
+    isIgnored: (name: string) => boolean,
+    options: { maxMs: number; pageSize?: number; flagKey: string },
+  ): { removed: number; scanned: number; done: boolean } {
+    const cursorKey = `${options.flagKey}_cursor`
+    const readMeta = this.db.prepare('SELECT value FROM document_memory_meta WHERE key = ?')
+    const writeMeta = this.db.prepare('INSERT OR REPLACE INTO document_memory_meta(key, value) VALUES(?, ?)')
+    let cursor = Number((readMeta.get(cursorKey) as { value: string } | undefined)?.value ?? 0) || 0
+    const page = this.db.prepare(
+      'SELECT id, name FROM documents WHERE id > ? AND last_opened_at = 0 ORDER BY id LIMIT ?',
+    )
+    const started = performance.now()
+    let removed = 0
+    let scanned = 0
+    for (;;) {
+      const rows = page.all(cursor, options.pageSize ?? 200) as Array<{ id: number; name: string }>
+      if (rows.length === 0) {
+        this.db.exec('BEGIN IMMEDIATE')
+        try {
+          writeMeta.run(options.flagKey, String(Date.now()))
+          this.db.prepare('DELETE FROM document_memory_meta WHERE key = ?').run(cursorKey)
+          this.db.exec('COMMIT')
+        } catch (err) {
+          this.db.exec('ROLLBACK')
+          throw err
+        }
+        return { removed, scanned, done: true }
+      }
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        let last = cursor
+        for (const row of rows) {
+          if (isIgnored(row.name)) {
+            this.chunkRepo!.deleteChunks(row.id, (ids) => this.onAnnVectorsRemoved?.(ids))
+            this.db.prepare('DELETE FROM documents WHERE id = ?').run(row.id)
+            syncProjectionDelete(this.db, row.id)
+            removed++
+          }
+          last = row.id
+          scanned++
+          if (performance.now() - started >= options.maxMs) break
+        }
+        cursor = last
+        writeMeta.run(cursorKey, String(cursor))
+        this.db.exec('COMMIT')
+      } catch (err) {
+        this.db.exec('ROLLBACK')
+        throw err
+      }
+      if (performance.now() - started >= options.maxMs) return { removed, scanned, done: false }
+    }
+  }
+
   purgeDiscoveredByName(isIgnored: (name: string) => boolean): number {
     let removed = 0
     this.db.exec('BEGIN IMMEDIATE')

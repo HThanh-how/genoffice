@@ -343,6 +343,7 @@ import { registerAiInstructions } from './fork/ai-instructions-ipc'
 import { registerAgyOcr } from './fork/agy-ocr-ipc'
 import { registerAgyChat } from './fork/agy-chat-ipc'
 import { startLoopMonitor } from './fork/loop-monitor'
+import { startLoopWatchdogToFile } from './fork/loop-watchdog'
 import {
   normalizeAiPanelPrefs,
   sameAiPanelPrefs,
@@ -394,6 +395,8 @@ import {
   withoutExtraRoot,
 } from './folder-roots'
 import extractWorkerPath from './file-index/extract-worker?modulePath'
+import searchWorkerPath from './file-index/search-worker?modulePath'
+import { FileIndexSearchClient } from './file-index/search-client'
 import { FileIndexer } from './file-index/indexer'
 import { FileIndexStore } from './file-index/store'
 import { normalizeFileSearchSettings, probeDecision, SearchReranker } from './file-index/rerank'
@@ -3132,7 +3135,8 @@ function afterFileMoved(oldPath: string, newPath: string): void {
 
 function trackedFilesUnder(dir: string): string[] {
   return pathsUnder(dir, [
-    ...(documentMemory?.listPaths() ?? []),
+    // only the indexed files below `dir`: listing every indexed path is a pass over the whole table
+    ...(documentMemory?.store.documentsUnder(dir).map((doc) => doc.path) ?? []),
     ...readRecentFiles(),
     ...readStarredFiles(),
     ...projectFilePaths(),
@@ -3176,6 +3180,8 @@ const folderWatchers = new Map<string, FolderWatcher>()
 
 let fileIndexStore: FileIndexStore | null = null
 let fileIndexer: FileIndexer | null = null
+/** file-index queries run in a worker thread: a common word ranks 100k files, seconds of synchronous work */
+let fileSearch: FileIndexSearchClient | null = null
 let searchReranker: SearchReranker | null = null
 
 function readFileSearchSettings(): FileSearchSettings {
@@ -3191,10 +3197,22 @@ function ensureFileIndexer(): FileIndexer | null {
     console.warn('[file-index] unavailable:', e instanceof Error ? e.message : e)
     return null
   }
-  fileIndexer = new FileIndexer(fileIndexStore, extractWorkerPath, {
-    roots: () => folderRootPaths(),
-    extraPaths: () => [...readRecentFiles(), ...readStarredFiles()],
-  })
+  fileIndexer = new FileIndexer(
+    fileIndexStore,
+    extractWorkerPath,
+    {
+      roots: () => folderRootPaths(),
+      extraPaths: () => [...readRecentFiles(), ...readStarredFiles()],
+    },
+    undefined,
+    undefined,
+    // the worker thread writes the index (tokenizing and storing a large document is a stall on this thread)
+    join(app.getPath('userData'), 'file-index.db'),
+  )
+  fileSearch = FileIndexSearchClient.forDatabase(
+    join(app.getPath('userData'), 'file-index.db'),
+    searchWorkerPath,
+  )
   return fileIndexer
 }
 
@@ -4038,7 +4056,7 @@ function startLegacyConverter(): void {
   if (!memory) return
   legacyConverter = new LegacyConverter({
     mode: (): LegacyConvertMode => legacyDocSettings().convertInIndex,
-    list: (extensions, limit) => memory.legacyPaths(extensions, limit),
+    list: (extensions, limit) => memory.aggregates.legacyPaths(extensions, limit),
     convert: convertLegacyForIndex,
     paused: isIndexingPaused,
     wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
@@ -4675,7 +4693,9 @@ function registerHomeIpc(): void {
     if (result.canceled || !result.filePaths[0]) return null
     return folderScan?.start(result.filePaths[0]) ?? null
   })
-  ipcMain.handle(HOME_CHANNELS.getDocumentMemoryStatus, () => documentMemory?.status())
+  ipcMain.handle(HOME_CHANNELS.getDocumentMemoryStatus, () =>
+    documentMemory?.status(undefined, documentMemory.aggregates.stats()),
+  )
   ipcMain.handle(HOME_CHANNELS.revealDocumentIndexFile, async (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid document id')
@@ -4706,7 +4726,8 @@ function registerHomeIpc(): void {
     return documentMemory?.setEnabled(enabled)
   })
   ipcMain.handle(HOME_CHANNELS.excludeDocumentMemory, (_event, path: unknown) => {
-    if (typeof path !== 'string' || !documentMemory?.listPaths().includes(path))
+    const doc = typeof path === 'string' ? documentMemory?.store.documentByPath(path) : null
+    if (typeof path !== 'string' || !documentMemory || !doc || doc.status === 'excluded')
       throw new Error('Unknown document')
     documentMemory.exclude(path)
   })
@@ -4798,27 +4819,33 @@ function registerHomeIpc(): void {
     pageRecentPaths(readRecentFiles(), query, new Set(readStarredFiles())),
   )
 
-  ipcMain.handle(HOME_CHANNELS.searchFiles, (_event, raw: unknown): FileSearchPage => {
-    const query = (raw && typeof raw === 'object' ? raw : {}) as Partial<FileSearchQuery>
-    const indexer = ensureFileIndexer()
-    if (!indexer || !fileIndexStore) {
-      return { hits: [], total: 0, index: { indexed: 0, pending: 0, scanning: false } }
-    }
-    // an open search box is the moment a stale index shows; rescan at most once a minute
-    indexer.refreshIfStale(60_000)
-    const q = typeof query.q === 'string' ? query.q.trim().slice(0, 200) : ''
-    const filter = typeof query.ext === 'string' ? query.ext : ''
-    const exts = filter && filter !== 'all' ? (SEARCH_EXT_FAMILY[filter] ?? [filter]) : undefined
-    const offset = Number.isFinite(query.offset) ? Math.max(0, Math.floor(query.offset!)) : 0
-    const limit = Number.isFinite(query.limit) ? Math.max(0, Math.floor(query.limit!)) : 50
-    const starred = new Set(readStarredFiles())
-    const result = q ? fileIndexStore.search(q, { exts, offset, limit }) : { hits: [], total: 0 }
-    return {
-      hits: result.hits.map((h) => ({ ...h, starred: starred.has(h.path) })),
-      total: result.total,
-      index: indexer.progress(),
-    }
-  })
+  ipcMain.handle(
+    HOME_CHANNELS.searchFiles,
+    async (_event, raw: unknown): Promise<FileSearchPage> => {
+      const query = (raw && typeof raw === 'object' ? raw : {}) as Partial<FileSearchQuery>
+      const indexer = ensureFileIndexer()
+      if (!indexer || !fileIndexStore) {
+        return { hits: [], total: 0, index: { indexed: 0, pending: 0, scanning: false } }
+      }
+      // an open search box is the moment a stale index shows; rescan at most once a minute
+      indexer.refreshIfStale(60_000)
+      const q = typeof query.q === 'string' ? query.q.trim().slice(0, 200) : ''
+      const filter = typeof query.ext === 'string' ? query.ext : ''
+      const exts = filter && filter !== 'all' ? (SEARCH_EXT_FAMILY[filter] ?? [filter]) : undefined
+      const offset = Number.isFinite(query.offset) ? Math.max(0, Math.floor(query.offset!)) : 0
+      const limit = Number.isFinite(query.limit) ? Math.max(0, Math.floor(query.limit!)) : 50
+      const starred = new Set(readStarredFiles())
+      const result =
+        q && fileSearch
+          ? await fileSearch.search(q, { exts, offset, limit })
+          : { hits: [], total: 0 }
+      return {
+        hits: result.hits.map((h) => ({ ...h, starred: starred.has(h.path) })),
+        total: result.total,
+        index: indexer.progress(),
+      }
+    },
+  )
 
   ipcMain.handle(
     HOME_CHANNELS.rerankSearch,
@@ -5028,7 +5055,6 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.deleteFiles, async (_event, paths: unknown) => {
     const targets = fileTargetSources()
-    const indexed = new Set(documentMemory?.listPaths() ?? [])
     const requested = stringPaths(paths)
     // a missing path is not a trash failure worth keeping: its ghost recent/star entry is cleaned up
     const ghosts = requested.filter(
@@ -5041,7 +5067,9 @@ function registerHomeIpc(): void {
     return trashUserFiles(requested, {
       // Indexed files can be legitimate targets even after their recent entry disappeared.
       // The existing visibility gate still limits all other paths to user-visible locations.
-      isAllowed: (path) => isUserVisibleFile(path, targets) || indexed.has(path),
+      isAllowed: (path) =>
+        isUserVisibleFile(path, targets) ||
+        (documentMemory?.store.documentByPath(path)?.status ?? 'excluded') !== 'excluded',
       isFile: (path) => statMaybeFile(path)?.isFile() === true,
       trash: (path) => shell.trashItem(path),
       afterTrashed: (removed) => {
@@ -6993,6 +7021,7 @@ app.whenReady().then(async () => {
   }
   startLoopMonitor() // dev diagnostic; no-op unless GENOFFICE_DEBUG_LOOP=1
   const userDataDir = app.getPath('userData')
+  startLoopWatchdogToFile(join(userDataDir, 'logs', 'main-lag.log')) // local log, only written when the main thread stalls > 200 ms
   // a move of the index to another folder, chosen in the settings, happens here: nothing has the
   // database open yet
   const dbMove = await applyPendingDbMove(userDataDir)
@@ -7292,6 +7321,7 @@ app.on('will-quit', () => {
   knownSources?.close()
   documentMemory?.close()
   fileIndexer?.stop()
+  fileSearch?.close()
   fileIndexStore?.close()
   stopAuthWatch?.()
   for (const watcher of folderWatchers.values()) watcher.close()

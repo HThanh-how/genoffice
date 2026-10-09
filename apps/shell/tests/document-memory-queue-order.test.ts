@@ -7,7 +7,13 @@ import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
-import { HEAVY_BYTES, orderQueue, weightOf } from '../src/main/document-memory/queue-order'
+import {
+  HEAVY_BYTES,
+  PRIORITIZE_LOOKAHEAD,
+  nextInOrder,
+  orderQueue,
+  weightOf,
+} from '../src/main/document-memory/queue-order'
 import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 describe('orderQueue', () => {
@@ -36,6 +42,48 @@ describe('orderQueue', () => {
     expect(
       orderQueue(line, { urgent: new Set(['big']), deferred: new Set(['small-a']), bytes }),
     ).toEqual(['big', 'small-b', 'mid', 'small-a'])
+  })
+
+  it('picks the head of the order without sorting, and agrees with orderQueue on every mix', () => {
+    let seed = 7
+    const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 2 ** 32
+    for (let round = 0; round < 50; round++) {
+      const line = Array.from({ length: 40 }, (_, i) => `f${i}`)
+      const sizes = new Map(
+        line.map((p) => [p, [0, 1000, 10 * 1024 * 1024, HEAVY_BYTES + 1][Math.floor(rnd() * 4)]!]),
+      )
+      const urgent = new Set(line.filter(() => rnd() < 0.05))
+      const deferred = new Set(line.filter(() => rnd() < 0.2))
+      const recent = new Set(line.filter(() => rnd() < 0.1))
+      const info = { urgent, deferred, bytes: sizes, prioritize: (p: string) => recent.has(p) }
+      expect(nextInOrder(line, info)).toBe(orderQueue(line, info)[0])
+    }
+  })
+
+  it('asks the database-backed prioritizer only for the front of a long line', () => {
+    const line = Array.from({ length: 50_000 }, (_, i) => `f${i}`)
+    let asked = 0
+    const info = {
+      urgent: none,
+      deferred: none,
+      bytes: new Map<string, number>(),
+      prioritize: () => (asked++, false),
+    }
+    orderQueue(line, info)
+    expect(asked).toBe(PRIORITIZE_LOOKAHEAD)
+    asked = 0
+    nextInOrder(line, info)
+    expect(asked).toBe(PRIORITIZE_LOOKAHEAD)
+  })
+
+  it('orders a very long line quickly (no sort over every waiting file on each status poll)', () => {
+    const line = Array.from({ length: 300_000 }, (_, i) => `f${i}`)
+    const bytes = new Map(line.map((p, i) => [p, i % 3 === 0 ? 1000 : 10 * 1024 * 1024] as const))
+    const started = performance.now()
+    const ordered = orderQueue(line, { urgent: none, deferred: none, bytes })
+    expect(ordered).toHaveLength(300_000)
+    expect(ordered[0]).toBe('f0')
+    expect(performance.now() - started).toBeLessThan(400)
   })
 
   it('calls a file heavy from 25 MB', () => {

@@ -290,9 +290,8 @@ export class DocumentMemoryStore {
   async tombstoneSliced(path: string, options: SliceOptions = {}): Promise<boolean> {
     return this.docRepo.tombstoneSliced(path, options)
   }
-  purgeDiscoveredByName(isIgnored: (name: string) => boolean): number {
-    return this.docRepo.purgeDiscoveredByName(isIgnored)
-  }
+  purgeDiscoveredByName(isIgnored: (name: string) => boolean): number { return this.docRepo.purgeDiscoveredByName(isIgnored) }
+  purgeDiscoveredByNameStep(isIgnored: (name: string) => boolean, options: { maxMs: number; pageSize?: number; flagKey: string }) { return this.docRepo.purgeDiscoveredByNameStep(isIgnored, options) }
   touchMetadata(path: string, mtimeMs: number, sizeBytes: number): void {
     this.docRepo.touchMetadata(path, mtimeMs, sizeBytes)
   }

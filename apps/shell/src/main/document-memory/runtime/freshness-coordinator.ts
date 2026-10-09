@@ -256,7 +256,8 @@ export class FreshnessCoordinator {
         return 'moved'
       }
     }
-    if (meta.sizeBytes <= RENAME_HASH_MAX_BYTES) {
+    if (meta.sizeBytes <= RENAME_HASH_MAX_BYTES && this.hasOtherDocumentOfSize(path, meta.sizeBytes)) {
+      // A moved file keeps its size, so a file no other document matches in size is new and is never read or hashed.
       if (fileSha === undefined) fileSha = await hashFile(path).catch(() => null)
       if (fileSha) {
         try {
@@ -274,6 +275,17 @@ export class FreshnessCoordinator {
       }
     }
     return this.indexDiscoveredFile(path, meta) ? 'indexed' : 'skipped'
+  }
+
+  /** Indexed probe (documents_size_bytes): a full table scan per new file made a folder scan of a big index saturate the main thread. */
+  private hasOtherDocumentOfSize(path: string, sizeBytes: number): boolean {
+    try {
+      return !!this.store.rawDb
+        .prepare('SELECT 1 FROM documents WHERE size_bytes = ? AND path != ? AND excluded = 0 LIMIT 1')
+        .get(sizeBytes, path)
+    } catch {
+      return true
+    }
   }
 
   moveIndexed(

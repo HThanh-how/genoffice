@@ -259,7 +259,7 @@ describe('Active-Space Progress Invariants Suite (QA-08)', () => {
     expect(restoredDoc.percent).toBe(100)
   })
 
-  it('PROG-05 snapshot uses active profile: telemetry snapshot truthfully reflects active embedding profile', () => {
+  it('PROG-05 snapshot uses active profile: telemetry snapshot truthfully reflects active embedding profile', async () => {
     snapshotCache.clear()
     diagnosticsCache.clear()
 
@@ -289,8 +289,15 @@ describe('Active-Space Progress Invariants Suite (QA-08)', () => {
     }
 
     // 1. Snapshot with default F2 active profile
+    // the aggregates come from the reader thread: the first snapshot starts them, the next one reads them
+    getDocumentIndexSnapshot(snapshotCtx, true)
+    await manager.aggregates.settled()
+    manager.aggregates.invalidate()
     snapshotCache.clear()
     folderCounts.invalidate()
+    getDocumentIndexSnapshot(snapshotCtx, true)
+    await manager.aggregates.settled()
+    snapshotCache.clear()
     const snapF2 = getDocumentIndexSnapshot(snapshotCtx, true)
     expect(snapF2.activity.folderProgress).not.toBeNull()
     expect(snapF2.activity.folderProgress?.completedChunks).toBe(100)
@@ -301,7 +308,9 @@ describe('Active-Space Progress Invariants Suite (QA-08)', () => {
     manager.setEmbeddingProfile('high')
     snapshotCache.clear()
     folderCounts.invalidate()
-
+    getDocumentIndexSnapshot(snapshotCtx, true)
+    await manager.aggregates.settled()
+    snapshotCache.clear()
     const snapQwen = getDocumentIndexSnapshot(snapshotCtx, true)
     expect(snapQwen.activity.folderProgress).not.toBeNull()
     expect(snapQwen.activity.folderProgress?.completedChunks).toBe(40)

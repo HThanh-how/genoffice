@@ -9,6 +9,9 @@ const TARGET_WORKER_NAMES = new Set([
   'storage-accounting-worker',
   'backup-retention-worker',
   'storage-bootstrap-worker',
+  'index-status-worker',
+  'search-worker',
+  'file-index-writer-worker',
 ])
 
 const nodeBuiltinExternals = [

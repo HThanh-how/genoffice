@@ -1,11 +1,11 @@
-import { purgeJunkOnce } from './runtime/junk-purge'
+import { startJunkPurge } from './runtime/junk-purge'; import { enqueueIncompleteSliced, POLL_BACKLOG_LIMIT } from './runtime/poll-intake'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { writeExtractedContentSliced, getValidatedFreeDiskBytes } from './runtime/content-write-budget'
 import type { Worker } from 'node:worker_threads'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'; import type { FolderIndexProgress } from './folder-progress'
 import type { DocumentIndexStorageDiagnostics, DocumentIndexMigrationDiagnostics, IndexingNow } from '../../shared/fork/document-index-api'
-import type { DocumentMemoryStatus } from '../../shared/home-api'; import { DocumentMemoryStore, type FolderChunkProgress } from './store'
+import type { DocumentMemoryStatus } from '../../shared/home-api'; import { DocumentMemoryStore, type FolderChunkProgress, type DocumentMemoryStats } from './store'; import { StatusAggregates, createThreadFetcher } from './runtime/status-aggregates'
 import type { EmbeddingProfileId, MachineSpec } from './embedding-profiles'; import { resolveStartupEmbeddingProfile } from './embedding/initial-profile'; import { modelFilesCached } from './embedding/model-files'; import { createOcrHost, type OcrHostInput } from './ocr-host'; import type { OcrJobHost } from './agy-ocr-job'; import { createLocalOcrWiring, type LocalOcrWiring, type LocalOcrWiringDeps } from './runtime/local-ocr-wiring'; import type { LocalOcrGate } from './local-ocr/local-ocr-job'; import type { LocalOcrSettings } from '../../shared/fork/agy-ocr'
 import { FileStabilityGate, type FileStabilityGateOptions } from './file-stability'; import { BackgroundWorkGate, isIndexingPaused, onIndexingPolicyChange } from './background-work-gate'
 import { ChunkUpgradeCoordinator, type DocumentNeedingUpgrade } from './chunk-upgrade'; import { EmbeddingMigration } from './embedding-migration'
@@ -17,12 +17,12 @@ import { readActiveEmbeddingConfig } from './storage/embedding-settings'; import
 import { StorageBudgetCoordinator } from './runtime/storage-budget-coordinator'; import type { StorageBudgetConfig, StorageBudgetPreset } from './storage/storage-settings'
 import { createStorageBudget, type DocumentIndexStorageBudget, type StorageBudgetSnapshot } from './storage-budget'
 import { createIndexProcess } from './process-worker'; import workerPath from './worker?modulePath'
-import { safeError } from './issues'; import { orderQueue, weightOf } from './queue-order'; import type { WorkerRequest, WorkerReply } from './worker-types'
+import { safeError } from './issues'; import { orderQueue, nextInOrder, weightOf } from './queue-order'; import type { WorkerRequest, WorkerReply } from './worker-types'
 export type { FreshDocumentMemoryHit }
 function readEnabled(p: string): boolean { try { return JSON.parse(readFileSync(p, 'utf8'))?.enabled !== false } catch { return true } }
 function saveEnabled(p: string, enabled: boolean): void { try { writeFileSync(p, JSON.stringify({ enabled }), { mode: 0o600 }) } catch {} }
 export interface DocumentMemoryManagerOptions {
-  pathToWorker?: string; workerPath?: string; workerFactory?: (script: string, env: Record<string, string>) => Worker
+  pathToWorker?: string; junkPurgeDelayMs?: number /* delay before the one-time junk purge starts asking the worker (default 8 s) */; workerPath?: string; workerFactory?: (script: string, env: Record<string, string>) => Worker
   workerTimeoutMs?: number; dbDir?: string; cacheDir?: string; settingsDir?: string; budget?: DocumentIndexStorageBudget
   tombstoneGraceMs?: number; pollIntervalMs?: number; autoDeferAfterMs?: number; initialEnabled?: boolean; externalNames?: (query: string, limit: number) => Promise<Array<{ path: string; name: string }>>; backupRetentionRunner?: any
   stabilityRetryScheduleMs?: number[]; stabilityGateOptions?: FileStabilityGateOptions
@@ -40,7 +40,7 @@ export class DocumentMemoryManager {
   private readonly cacheDir: string; private readonly settingsDir: string; private readonly enabledSettingsPath: string
   readonly dbPath: string; private worker: Worker | null = null; private nextRequestId = 1; private readonly budgetCoord: StorageBudgetCoordinator
   private readonly waiting = new Map<number, { resolve: (reply: WorkerReply | null) => void; timer: NodeJS.Timeout }>()
-  private stopped = false; private enabled = true; private localOcrWiring?: LocalOcrWiring
+  private stopped = false; private stopJunkPurge: (() => void) | null = null; private statusAgg: StatusAggregates | null = null; private enabled = true; private localOcrWiring?: LocalOcrWiring
   private modelState: 'not-loaded' | 'downloading' | 'ready' | 'blocked' | 'error' = 'not-loaded'; private modelProgress?: number; private lastError: string | undefined
   private pendingCount = 0; private epoch = 0; private extracting = false; private readonly queue: string[] = []
   private readonly queued = new Set<string>(); private readonly urgent = new Set<string>(); private readonly deferred = new Set<string>(); private readonly slicing = new Set<string>()
@@ -138,7 +138,7 @@ export class DocumentMemoryManager {
     })
     const pollInterval = options.pollIntervalMs ?? 60_000; this.pollTimer = setInterval(() => void this.poll(), pollInterval); this.pollTimer.unref?.()
     if (this.enabled) { void this.poll(); this.ensureWorker() }; this.maintScheduler.schedulePeriodicMaintenance(INITIAL_MAINTENANCE_DELAY_MS)
-    setTimeout(() => { if (!this.stopped) try { purgeJunkOnce(this.store) } catch { /* retried next start */ } }, 8000).unref?.()
+    setTimeout(() => { if (!this.stopped) this.stopJunkPurge = startJunkPurge({ store: this.store, ask: (r, t) => this.ask(r, t), isActive: () => this.enabled && !this.stopped, onRemoved: () => this.store.invalidateAnnInMemory(this.embeddingCoord.currentProfile.embeddingId) }) }, options.junkPurgeDelayMs ?? 8000).unref?.()
   }
   onEnabledChange(l: () => void): () => void { this.enabledListeners.add(l); return () => this.enabledListeners.delete(l) }
   onCleared(l: () => void): () => void { this.clearedListeners.add(l); return () => this.clearedListeners.delete(l) }
@@ -208,12 +208,14 @@ export class DocumentMemoryManager {
   getFolderIndexCounts(f?: string, s = this.embeddingCoord.currentProfile.embeddingId): FolderChunkProgress { return this.maintScheduler.getFolderIndexCounts(f, s) }; getLibraryIndexCounts(s = this.embeddingCoord.currentProfile.embeddingId): FolderChunkProgress { return this.maintScheduler.getLibraryIndexCounts(s) }; prioritizeFolder(folder: string): number { return this.freshnessCoord.prioritizeFolder(folder) }
   runFtsMaintenance(): Promise<void> { return this.maintScheduler.runFtsMaintenance() }; scheduleFtsMaintenance(delayMs?: number): void { this.maintScheduler.scheduleFtsMaintenance(delayMs) }
   runGcStep(): Promise<void> { return this.maintScheduler.runGcStep() }; runVacuumStep(): Promise<void> { return this.maintScheduler.runVacuumStep() }; runPeriodicMaintenance(): Promise<void> { return this.maintScheduler.runPeriodicMaintenance() }; runNameProjectionBackfill(b?: number, m?: number): Promise<void> { return this.maintScheduler.runNameProjectionBackfill(b, m) }; statOutcome(p: string, t?: number) { return this.freshnessCoord.statOutcome(p, t) }; finalizeMissing(p: string) { return this.freshnessCoord.finalizeMissing(p) }
-  status(activeSpaceId = this.embeddingCoord.currentProfile.embeddingId): DocumentMemoryStatus {
-    const stats = this.store.stats(activeSpaceId); const files = this.store.recentDocuments(20).map(({ id, path, name, status }) => ({ id, path, name, status }))
+  /** Dashboard aggregates computed in a reader thread (stale-while-revalidate): what IPC pollers read; `status()` and `indexingActivityStatus()` stay exact and synchronous for callers that need that. */
+  get aggregates(): StatusAggregates { return (this.statusAgg ??= new StatusAggregates(createThreadFetcher(this.dbPath), { activeSpace: () => this.embeddingCoord.currentProfile.embeddingId })) }
+  status(activeSpaceId = this.embeddingCoord.currentProfile.embeddingId, stats: DocumentMemoryStats = this.store.stats(activeSpaceId)): DocumentMemoryStatus {
+    const files = this.store.recentDocuments(20).map(({ id, path, name, status }) => ({ id, path, name, status }))
     return { enabled: this.enabled, modelState: this.modelState, documents: stats.docs, chunks: stats.chunks, vectors: Math.min(stats.vectors, stats.chunks), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength() + this.pendingIntake.size, errors: stats.errors, dbPath: this.dbPath, ...(this.lastError ? { lastError: this.lastError } : {}), files }
   }
-  indexingActivityStatus(activeSpaceId = this.embeddingCoord.currentProfile.embeddingId) {
-    const act = this.nowStatus(); const stats = this.store.stats(activeSpaceId); const migration = this.embeddingMigration.progress()
+  indexingActivityStatus(activeSpaceId = this.embeddingCoord.currentProfile.embeddingId, stats: DocumentMemoryStats = this.store.stats(activeSpaceId)) {
+    const act = this.nowStatus(); const migration = this.embeddingMigration.progress()
     return { enabled: this.enabled, modelState: this.modelState, ...(this.modelProgress === undefined ? {} : { modelProgress: this.modelProgress }), pending: this.pendingCount + this.queue.length + this.embeddingCoord.getQueueLength(), errors: stats.errors, mode: 'balanced', activity: act, activeEmbeddingSpace: activeSpaceId, semanticCoverage: stats.semanticCoverage, migrationState: migration.state }
   }
   embeddingSettings() { return this.embeddingCoord.getEmbeddingSettings() }; embeddingModelCached(): boolean { return modelFilesCached(this.cacheDir, this.embeddingCoord.currentProfile) }; recycleEmbeddingWorker(reason = 'Recycle worker requested'): void { this.recycleWorker(reason) }
@@ -324,7 +326,7 @@ export class DocumentMemoryManager {
   }
   close(): void {
     if (this.stopped) return
-    this.stopped = true; this.stopPolicyWatch(); this.epoch++
+    this.stopped = true; this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
     if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose()
     if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
     this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
@@ -342,8 +344,7 @@ export class DocumentMemoryManager {
     if (prioritize) this.queue.unshift(p); else this.queue.push(p); void this.drain()
   }
   private takeNext(): string {
-    const ordered = orderQueue(this.queue, { urgent: this.urgent, deferred: this.deferred, bytes: this.activeBytes, prioritize: (p) => this.maintScheduler.isRecentUnderQuotaPressure(p) })
-    const path = ordered[0]!; const idx = this.queue.indexOf(path); if (idx >= 0) this.queue.splice(idx, 1); this.urgent.delete(path); return path
+    const path = nextInOrder(this.queue, { urgent: this.urgent, deferred: this.deferred, bytes: this.activeBytes, prioritize: (p) => this.maintScheduler.isRecentUnderQuotaPressure(p) })!; const idx = this.queue.indexOf(path); if (idx >= 0) this.queue.splice(idx, 1); this.urgent.delete(path); return path
   }
   private makeWayForLightFiles(path: string, generation: number): void {
     if (this.stopped || !this.enabled || !this.activeExtractions.has(path) || this.activeGeneration.get(path) !== generation) return
@@ -449,9 +450,11 @@ export class DocumentMemoryManager {
     const idx = this.queue.indexOf(path); if (idx >= 0) this.queue.splice(idx, 1)
     this.embeddingCoord.removePath(path)
   }
+  private polling = false
   private async poll(): Promise<void> {
-    if (this.stopped || !this.enabled || isIndexingPaused()) return
-    for (const p of this.store.incompletePaths()) { if (!this.activeExtractions.has(p) && !this.embeddingCoord.isEmbeddingPath(p) && !this.embeddingCoord.embedsQueue.some((j) => j.path === p)) this.enqueue(p) }
+    if (this.stopped || !this.enabled || isIndexingPaused() || this.polling) return
+    this.polling = true
+    try { await enqueueIncompleteSliced(this.queue.length >= POLL_BACKLOG_LIMIT ? [] : this.store.incompletePaths(), (p) => this.activeExtractions.has(p) || this.embeddingCoord.isEmbeddingPath(p) || this.embeddingCoord.embedsQueue.some((j) => j.path === p), (p) => this.enqueue(p), () => this.stopped || !this.enabled) } finally { this.polling = false }
     this.skippedMigrationDocs.clear(); this.scheduleMigrationStep(1000); this.drain()
   }
   private releaseWorkerReservations(): void {

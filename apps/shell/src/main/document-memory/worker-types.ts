@@ -64,6 +64,10 @@ export type WorkerRequest =
       type: 'vacuum-step'
     }
   | {
+      /** One bounded slice of the one-time junk purge (see runtime/junk-purge.ts) */
+      type: 'junk-purge-step'
+    }
+  | {
       /** Execute storage diagnostics off the main thread inside the indexing worker */
       type: 'storage-diagnostics'
       backupPath?: string

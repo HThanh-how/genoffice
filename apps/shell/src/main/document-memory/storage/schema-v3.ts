@@ -130,6 +130,13 @@ CREATE INDEX IF NOT EXISTS chunk_embeddings_space ON chunk_embeddings(space_id, 
 CREATE INDEX IF NOT EXISTS chunks_document_id ON chunks(document_id);
 CREATE INDEX IF NOT EXISTS documents_excluded_status ON documents(excluded, status);
 CREATE INDEX IF NOT EXISTS documents_priority ON documents(excluded, priority_at DESC);
+-- Foreign-key children: without an index SQLite scans the whole child table for every parent row it deletes
+-- (chunk_sets for a document, chunks for a chunk set), which made deleting one document cost milliseconds per
+-- 100k rows and a purge of thousands of them minutes.
+CREATE INDEX IF NOT EXISTS chunk_sets_document_id ON chunk_sets(document_id);
+CREATE INDEX IF NOT EXISTS chunks_chunk_set_id ON chunks(chunk_set_id);
+-- Rename detection looks up other documents of the same size before it hashes a new file.
+CREATE INDEX IF NOT EXISTS documents_size_bytes ON documents(size_bytes);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 
