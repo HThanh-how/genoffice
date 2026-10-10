@@ -112,7 +112,7 @@ export function searchMediaIntent(
           ' UNION SELECT rowid FROM document_name_projection_fts WHERE document_name_projection_fts MATCH ?'
         params.push(intent.nameDateMatch)
       }
-      from = `(${ids}) ids JOIN document_media m ON m.document_id = ids.id JOIN documents d ON d.id = ids.id`
+      from = `(${ids}) ids CROSS JOIN document_media m ON m.document_id = ids.id CROSS JOIN documents d ON d.id = ids.id`
     }
     if (intent.kind) {
       where.push('m.kind = ?')
@@ -124,7 +124,7 @@ export function searchMediaIntent(
     }
     const fts = ftsQuery(intent.words)
     if (fts) {
-      from += ' JOIN document_name_fts fts ON fts.rowid = d.id'
+      from += ' CROSS JOIN document_name_fts fts ON fts.rowid = d.id'
       where.push('document_name_fts MATCH ?')
       params.push(fts)
     }

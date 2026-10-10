@@ -1,4 +1,4 @@
-import type { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import { normalizeDocumentText, identifierVariants } from './normalization'
 import { mediaKindOfPath } from './media/media-kinds'
 
@@ -546,17 +546,25 @@ export function buildProjectionCandidateFtsQuery(words: readonly string[]): stri
   return andQuery
 }
 
+const projectionTableExistsCache = new WeakMap<DatabaseSync, boolean>()
+
 /**
  * Checks whether the projection table exists and is ready in SQLite.
  */
 export function hasNameProjection(db: DatabaseSync): boolean {
+  const cached = projectionTableExistsCache.get(db)
+  if (cached === true) return true
   try {
     const row = db
       .prepare(
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_name_projection'",
       )
       .get()
-    return Boolean(row)
+    const exists = Boolean(row)
+    if (exists) {
+      projectionTableExistsCache.set(db, true)
+    }
+    return exists
   } catch (err: unknown) {
     void err
     return false
@@ -758,9 +766,16 @@ export function syncProjectionMove(
   syncProjectionInsert(db, { id: docId, path: newPath, name: newName }, guard)
 }
 
+const projectionDeleteStmtCache = new WeakMap<DatabaseSync, StatementSync>()
+
 export function syncProjectionDelete(db: DatabaseSync, docId: number): void {
   if (!hasNameProjection(db)) return
-  db.prepare('DELETE FROM document_name_projection WHERE document_id = ?').run(docId)
+  let stmt = projectionDeleteStmtCache.get(db)
+  if (!stmt) {
+    stmt = db.prepare('DELETE FROM document_name_projection WHERE document_id = ?')
+    projectionDeleteStmtCache.set(db, stmt)
+  }
+  stmt.run(docId)
 }
 
 export function syncProjectionExclude(db: DatabaseSync, docId: number): void {

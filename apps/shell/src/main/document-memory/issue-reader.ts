@@ -65,6 +65,9 @@ export class IndexIssueReader {
   private hasProjection: boolean | null = null
   private searchProjectionStmt: StatementSync | null = null
   private searchNameStmt: StatementSync | null = null
+  private detailStmt: StatementSync | null = null
+  private pdfScanStmt: StatementSync | null = null
+  private ocrStmt: StatementSync | null = null
 
   constructor(private readonly dbPath: string) {}
 
@@ -93,7 +96,7 @@ export class IndexIssueReader {
         this.searchProjectionStmt = this.connection().prepare(`
           SELECT d.id, d.path, d.name, d.status, d.error
           FROM document_name_projection_fts f
-          JOIN documents d ON d.id = f.rowid
+          CROSS JOIN documents d ON d.id = f.rowid
           WHERE document_name_projection_fts MATCH ? AND d.excluded = 0
           ORDER BY (d.status = 'ready') ASC, d.id ASC
           LIMIT ?
@@ -111,7 +114,7 @@ export class IndexIssueReader {
         this.searchNameStmt = this.connection().prepare(`
           SELECT d.id, d.path, d.name, d.status, d.error
           FROM document_name_fts f
-          JOIN documents d ON d.id = f.rowid
+          CROSS JOIN documents d ON d.id = f.rowid
           WHERE document_name_fts MATCH ? AND d.excluded = 0
           ORDER BY (d.status = 'ready') ASC, d.id ASC
           LIMIT ?
@@ -133,6 +136,9 @@ export class IndexIssueReader {
     this.hasProjection = null
     this.searchProjectionStmt = null
     this.searchNameStmt = null
+    this.detailStmt = null
+    this.pdfScanStmt = null
+    this.ocrStmt = null
   }
 
   private scope(root: string): { where: string; args: string[] } {
@@ -251,10 +257,9 @@ export class IndexIssueReader {
       }
     }
 
-    // 4. Bounded parameterized LIKE query fallback (only if 0 hits, no projection, or sub-trigram tokens < 3 chars)
+    // 4. Bounded parameterized LIKE query fallback (only if no projection ready, or sub-trigram tokens < 3 chars)
     const needsLikeFallback =
-      hits.length < limit &&
-      (hits.length === 0 || !this.hasNameProjectionReady() || words.some((w) => w.length < 3))
+      hits.length < limit && (!this.hasNameProjectionReady() || words.some((w) => w.length < 3))
 
     if (needsLikeFallback) {
       try {
@@ -319,14 +324,13 @@ export class IndexIssueReader {
   /** Everything the file's detail view shows, read in a few cheap queries by document id. */
   detail(id: number): Omit<IndexFileDetail, 'exists'> | null {
     const db = this.connection()
-    const row = db
-      .prepare(
-        `SELECT id, path, name, status, error, size_bytes, mtime_ms, updated_at, embedding_model,
-          truncated, chunk_total, chunk_done,
-          importance_override, importance_suggestion, importance_reason, importance_updated_at
-         FROM documents WHERE id = ?`,
-      )
-      .get(id) as
+    const stmt = (this.detailStmt ??= db.prepare(
+      `SELECT id, path, name, status, error, size_bytes, mtime_ms, updated_at, embedding_model,
+        truncated, chunk_total, chunk_done,
+        importance_override, importance_suggestion, importance_reason, importance_updated_at
+       FROM documents WHERE id = ?`,
+    ))
+    const row = stmt.get(id) as
       | {
           id: number
           path: string
@@ -373,14 +377,14 @@ export class IndexIssueReader {
       importance,
     }
     if (/\.pdf$/i.test(row.path)) {
-      const scan = db
-        .prepare('SELECT total_pages, scanned FROM pdf_scan_info WHERE path = ?')
-        .get(row.path) as { total_pages: number; scanned: string } | undefined
-      const ocr = db
-        .prepare(
-          'SELECT count(*) AS pages, coalesce(sum(length(text)), 0) AS chars, max(model) AS model, max(total_pages) AS total FROM ocr_pages WHERE path = ?',
-        )
-        .get(row.path) as {
+      const scanStmt = (this.pdfScanStmt ??= db.prepare(
+        'SELECT total_pages, scanned FROM pdf_scan_info WHERE path = ?',
+      ))
+      const scan = scanStmt.get(row.path) as { total_pages: number; scanned: string } | undefined
+      const ocrStmt = (this.ocrStmt ??= db.prepare(
+        'SELECT count(*) AS pages, coalesce(sum(length(text)), 0) AS chars, max(model) AS model, max(total_pages) AS total FROM ocr_pages WHERE path = ?',
+      ))
+      const ocr = ocrStmt.get(row.path) as {
         pages: number
         chars: number
         model: string | null

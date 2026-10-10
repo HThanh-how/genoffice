@@ -1447,7 +1447,7 @@ export class DocumentRepository {
         this.db.exec('ROLLBACK')
         throw err
       }
-      if (performance.now() - started >= options.maxMs) return { removed, scanned, done: false }
+      return { removed, scanned, done: false }
     }
   }
 

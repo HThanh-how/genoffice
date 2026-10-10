@@ -13,15 +13,9 @@ import {
   createStorageBudgetSnapshot,
   safeGetFileSize,
 } from '../storage-budget'
-import {
-  BackupRetentionRunner,
-} from './backup-retention-runner'
-import {
-  StorageAccountingRunner,
-} from './storage-accounting-runner'
-import {
-  type StorageAccountingReport,
-} from './storage-accounting'
+import { BackupRetentionRunner } from './backup-retention-runner'
+import { StorageAccountingRunner } from './storage-accounting-runner'
+import { type StorageAccountingReport } from './storage-accounting'
 import { safeError } from '../issues'
 import type { StorageAdmissionController } from './storage-admission'
 import {
@@ -86,7 +80,7 @@ export class MaintenanceScheduler {
   private disposed = false
   private epoch = 0
 
-  private lastBudgetState: StorageLimitState = 'ok'
+  private lastBudgetState: StorageLimitState | null = null
   private lastBudgetSnapshot: StorageBudgetSnapshot | null = null
   private lastAccountingReport: StorageAccountingReport | null = null
 
@@ -95,10 +89,8 @@ export class MaintenanceScheduler {
   private readonly compaction: CompactionDriver
 
   constructor(private readonly options: MaintenanceSchedulerOptions) {
-    this.backupRetentionRunner =
-      options.backupRetentionRunner ?? new BackupRetentionRunner()
-    this.storageAccountingRunner =
-      options.storageAccountingRunner ?? new StorageAccountingRunner()
+    this.backupRetentionRunner = options.backupRetentionRunner ?? new BackupRetentionRunner()
+    this.storageAccountingRunner = options.storageAccountingRunner ?? new StorageAccountingRunner()
     this.currentBudget = options.budget ?? DEFAULT_STORAGE_BUDGET
     this.compaction = new CompactionDriver({
       askWorker: options.askWorker,
@@ -247,7 +239,11 @@ export class MaintenanceScheduler {
 
     const isDegraded = report ? report.isDegraded : true
     const measurementStatus = report
-      ? (report.isDegraded ? 'degraded' : (Date.now() - report.timestamp > 5 * 60_000 ? 'stale' : 'fresh'))
+      ? report.isDegraded
+        ? 'degraded'
+        : Date.now() - report.timestamp > 5 * 60_000
+          ? 'stale'
+          : 'fresh'
       : 'unknown'
 
     const snapshot = createStorageBudgetSnapshot({
@@ -284,7 +280,11 @@ export class MaintenanceScheduler {
       this.scheduleVacuumStep(100)
     }
 
-    if (prevState !== snapshot.limitState && this.options.onBudgetStateChange && !this.isStopped()) {
+    if (
+      (prevState === null || prevState !== snapshot.limitState) &&
+      this.options.onBudgetStateChange &&
+      !this.isStopped()
+    ) {
       this.options.onBudgetStateChange(snapshot.limitState, snapshot)
     }
     // >= 90%: ask the worker to compact (urgent in the grace zone); a no-op below that or without a worker
@@ -300,12 +300,7 @@ export class MaintenanceScheduler {
       this.lastAccountingReport !== null &&
       this.lastAccountingReport.isDegraded === false &&
       Date.now() - this.lastAccountingReport.timestamp <= 5 * 60_000
-    return (
-      !this.isStopped() &&
-      writeReady &&
-      isFresh &&
-      snap.limitState !== 'full'
-    )
+    return !this.isStopped() && writeReady && isFresh && snap.limitState !== 'full'
   }
 
   async refreshAccountingAsync(): Promise<StorageBudgetSnapshot> {
@@ -366,7 +361,10 @@ export class MaintenanceScheduler {
   async runFtsMaintenance(): Promise<void> {
     if (this.isStopped() || this.ftsRunning) return
     if (this.isPaused()) return
-    if (this.options.backgroundGate && !this.options.backgroundGate.canRun('fts-maintenance-step')) {
+    if (
+      this.options.backgroundGate &&
+      !this.options.backgroundGate.canRun('fts-maintenance-step')
+    ) {
       return
     }
 
@@ -556,16 +554,15 @@ export class MaintenanceScheduler {
 
         const availableQuota = liveBudget - (currentUsage + headroomBytes)
         const availableDisk = freeDiskBytes - headroomBytes
-        if (availableQuota < BASE_PROJECTION_METADATA_BYTES || availableDisk < BASE_PROJECTION_METADATA_BYTES) {
+        if (
+          availableQuota < BASE_PROJECTION_METADATA_BYTES ||
+          availableDisk < BASE_PROJECTION_METADATA_BYTES
+        ) {
           // Min metadata can't fit: honest paused, cursor/completedversion does not advance
           break
         }
 
-        const maxBatchBytes = Math.min(
-          MAX_PROJECTION_BATCH_BYTES,
-          availableQuota,
-          availableDisk,
-        )
+        const maxBatchBytes = Math.min(MAX_PROJECTION_BATCH_BYTES, availableQuota, availableDisk)
 
         // 4. Reserve growth with central admission controller
         const token = `name-proj:${Date.now()}:${Math.random().toString(36).slice(2)}`
@@ -619,7 +616,12 @@ export class MaintenanceScheduler {
         }
 
         batchesRun++
-        if (!backfillResult || backfillResult.done || backfillResult.remaining === 0 || backfillResult.processed === 0) {
+        if (
+          !backfillResult ||
+          backfillResult.done ||
+          backfillResult.remaining === 0 ||
+          backfillResult.processed === 0
+        ) {
           break
         }
 
@@ -871,7 +873,8 @@ export class MaintenanceScheduler {
     const snap = this.lastBudgetSnapshot
     if (!snap || this.isStopped()) return false
     const used = snap.totalManagedBytes ?? snap.databaseBytes
-    if (!(used >= (snap.softBudgetBytes ?? snap.budgetBytes) * CACHE_RETENTION_HIGH_WATERMARK)) return false
+    if (!(used >= (snap.softBudgetBytes ?? snap.budgetBytes) * CACHE_RETENTION_HIGH_WATERMARK))
+      return false
     const cutoff = Date.now() - resolveAgePolicy(this.budget).freshWindowDays * 86_400_000
     try {
       const mtime = this.store.documentByPath(path)?.mtimeMs
@@ -891,7 +894,9 @@ export class MaintenanceScheduler {
   }
 
   /** Runs one compaction decision now (tests / manual); skips when another run is in flight. */
-  runCompactionCycle(reason: CompactionCycleOutcome['reason'] = 'manual'): Promise<CompactionCycleOutcome> {
+  runCompactionCycle(
+    reason: CompactionCycleOutcome['reason'] = 'manual',
+  ): Promise<CompactionCycleOutcome> {
     return this.compaction.runCycle(this.checkStorageBudget(), reason)
   }
 
@@ -921,21 +926,23 @@ export class MaintenanceScheduler {
       totalChunks,
       truncated: doc.truncated,
     }
-    const pct = totalChunks > 0 ? Math.min(100, Math.floor((completedChunks / totalChunks) * 100)) : null
+    const pct =
+      totalChunks > 0 ? Math.min(100, Math.floor((completedChunks / totalChunks) * 100)) : null
     const paused = this.isPaused()
 
     if (doc.status === 'excluded') return { ...base, state: 'excluded', percent: null }
 
     const awaitingSnapshot = { ...base, completedChunks: 0, totalChunks: 0, percent: null }
     if (this.options.isExtracting?.(doc.path)) return { ...awaitingSnapshot, state: 'extracting' }
-    if (this.options.isQueued?.(doc.path)) return { ...awaitingSnapshot, state: paused ? 'paused' : 'queued' }
+    if (this.options.isQueued?.(doc.path))
+      return { ...awaitingSnapshot, state: paused ? 'paused' : 'queued' }
 
     if (doc.status === 'empty') return { ...base, state: 'empty', percent: 100 }
     if (doc.status === 'ready') {
       const isComplete = totalChunks === 0 || completedChunks >= totalChunks
       return {
         ...base,
-        state: isComplete ? 'ready' : (paused ? 'paused' : 'indexing'),
+        state: isComplete ? 'ready' : paused ? 'paused' : 'indexing',
         percent: isComplete ? 100 : pct,
       }
     }
@@ -951,7 +958,7 @@ export class MaintenanceScheduler {
       const isComplete = totalChunks > 0 && completedChunks >= totalChunks
       return {
         ...base,
-        state: isComplete ? 'ready' : (paused ? 'paused' : 'indexing'),
+        state: isComplete ? 'ready' : paused ? 'paused' : 'indexing',
         percent: pct,
       }
     }
@@ -965,7 +972,20 @@ export class MaintenanceScheduler {
     activeSpaceId?: string,
   ): FolderIndexProgress {
     if (this.isStopped()) {
-      return foldFolderProgress({ totalFiles: 0, readyFiles: 0, pendingFiles: 0, errorFiles: 0, totalChunks: 0, completedChunks: 0, partialFileProgress: 0, truncatedFiles: 0 }, true, 0)
+      return foldFolderProgress(
+        {
+          totalFiles: 0,
+          readyFiles: 0,
+          pendingFiles: 0,
+          errorFiles: 0,
+          totalChunks: 0,
+          completedChunks: 0,
+          partialFileProgress: 0,
+          truncatedFiles: 0,
+        },
+        true,
+        0,
+      )
     }
     let discoveryComplete = true
     let scanErrors = 0
@@ -990,14 +1010,32 @@ export class MaintenanceScheduler {
 
   getFolderIndexCounts(folder?: string, activeEmbeddingSpace?: string): FolderChunkProgress {
     if (this.isStopped()) {
-      return { totalFiles: 0, readyFiles: 0, pendingFiles: 0, errorFiles: 0, totalChunks: 0, completedChunks: 0, partialFileProgress: 0, truncatedFiles: 0 }
+      return {
+        totalFiles: 0,
+        readyFiles: 0,
+        pendingFiles: 0,
+        errorFiles: 0,
+        totalChunks: 0,
+        completedChunks: 0,
+        partialFileProgress: 0,
+        truncatedFiles: 0,
+      }
     }
     return this.store.folderChunkProgress(folder, activeEmbeddingSpace)
   }
 
   getLibraryIndexCounts(activeEmbeddingSpace?: string): FolderChunkProgress {
     if (this.isStopped()) {
-      return { totalFiles: 0, readyFiles: 0, pendingFiles: 0, errorFiles: 0, totalChunks: 0, completedChunks: 0, partialFileProgress: 0, truncatedFiles: 0 }
+      return {
+        totalFiles: 0,
+        readyFiles: 0,
+        pendingFiles: 0,
+        errorFiles: 0,
+        totalChunks: 0,
+        completedChunks: 0,
+        partialFileProgress: 0,
+        truncatedFiles: 0,
+      }
     }
     return this.store.folderChunkProgress(undefined, activeEmbeddingSpace)
   }

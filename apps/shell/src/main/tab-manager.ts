@@ -561,14 +561,11 @@ export class TabManager {
    *  (background opens must not steal OS focus); the window's `focus`
    *  handler re-runs it. */
   focusActiveView(): void {
-    if (this.shellWindow.isDestroyed()) return
+    if (this.shellWindow.isDestroyed() || !this.shellWindow.isFocused()) return
     const target = this.tabs.find((t) => t.id === this.activeId)
     if (!target) return
-    if (target.view) {
-      target.view.webContents.focus()
-    } else if (this.shellWindow.isFocused()) {
-      this.shellWindow.webContents.focus()
-    }
+    if (target.view) target.view.webContents.focus()
+    else this.shellWindow.webContents.focus()
   }
 
   /** Re-point the process-global active-editor targets and the app menu at this

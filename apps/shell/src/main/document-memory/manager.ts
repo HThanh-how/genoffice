@@ -249,7 +249,7 @@ export class DocumentMemoryManager {
   }
   exclude(path: string): void { this.pendingIntake.remove(resolve(path)); this.store.exclude(path) }
   clear(): void {
-    this.store.clear(); this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear(); this.embeddingCoord.clearQueue(); this.pendingIntake.clear()
+    this.store.clear(); this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear(); this.embeddingCoord.clearQueue(); this.pendingIntake.clear(); this.statusAgg?.reset()
     for (const fn of this.clearedListeners) try { fn() } catch {}
   }
   async search(query: string, limit = 8): Promise<{ hits: FreshDocumentMemoryHit[]; pending: number; errors: number; modelState: string }> {

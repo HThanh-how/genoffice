@@ -69,7 +69,7 @@ export class HotMetadataSearch {
         d.content_evicted,
         bm25(document_name_fts, 5.0, 1.0) AS name_rank
       FROM document_name_fts
-      JOIN documents d ON d.id = document_name_fts.rowid
+      CROSS JOIN documents d ON d.id = document_name_fts.rowid
       WHERE document_name_fts MATCH ? AND d.excluded = 0
       ORDER BY name_rank
       LIMIT ?;
@@ -105,7 +105,7 @@ export class HotMetadataSearch {
               d.content_evicted,
               bm25(document_name_projection_fts, 5.0, 2.0, 1.0) AS name_rank
             FROM document_name_projection_fts
-            JOIN documents d ON d.id = document_name_projection_fts.rowid
+            CROSS JOIN documents d ON d.id = document_name_projection_fts.rowid
             WHERE document_name_projection_fts MATCH ? AND d.excluded = 0
             ORDER BY name_rank
             LIMIT ?;
@@ -203,11 +203,14 @@ export class HotMetadataSearch {
         // 3. Relaxed multi-word fallback when fewer than limit candidates matched strict conjunctive queries
         if (rows.length < limit && words.length > 2) {
           const selectiveRelaxedWords = targetWords.filter((w) => w.length >= 3 && isNaN(Number(w)))
-          const relaxedTokens = selectiveRelaxedWords.flatMap((w) =>
-            identifierVariants(w.replace(/["*]/g, '')).map((v) => `"${v}"*`),
-          )
-          if (relaxedTokens.length > 0) {
-            const relaxedQuery = relaxedTokens.join(' OR ')
+          if (selectiveRelaxedWords.length >= need) {
+            const relaxedClauses = selectiveRelaxedWords.map((w) => {
+              const variants = identifierVariants(w.replace(/["*]/g, ''))
+              return variants.length === 1
+                ? `"${variants[0]}"*`
+                : `(${variants.map((v) => `"${v}"*`).join(' OR ')})`
+            })
+            const relaxedQuery = relaxedClauses.join(' AND ')
             const relaxedRows = this.searchNameStatement.all(
               relaxedQuery,
               candidateLimit - rows.length,
