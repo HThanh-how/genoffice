@@ -6,6 +6,7 @@ import {
   readFileSync,
   statSync,
   statfsSync,
+  unlinkSync,
   writeFileSync,
 } from 'node:fs'
 import { copyFile, rename, rm, stat } from 'node:fs/promises'
@@ -111,7 +112,7 @@ export function planDbMove(
     mkdirSync(next, { recursive: true })
     const probe = join(next, `.genoffice-write-test-${process.pid}`)
     writeFileSync(probe, '')
-    void rm(probe, { force: true })
+    unlinkSync(probe)
   } catch {
     return { ok: false, error: 'unwritable' }
   }

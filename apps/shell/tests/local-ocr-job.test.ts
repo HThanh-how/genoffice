@@ -16,7 +16,10 @@ import {
   type LocalOcrJobDeps,
 } from '../src/main/document-memory/local-ocr/local-ocr-job'
 import { LocalOcrEngineRegistry } from '../src/main/document-memory/local-ocr/registry'
-import { IMAGE_OCR_STATE, selectImageOcrCandidates } from '../src/main/document-memory/media/media-ocr-gate'
+import {
+  IMAGE_OCR_STATE,
+  selectImageOcrCandidates,
+} from '../src/main/document-memory/media/media-ocr-gate'
 import { OcrSidecar, LOCAL_OCR_MAX_ATTEMPTS } from '../src/main/document-memory/ocr-sidecar'
 import {
   LocalOcrUnavailableError,
@@ -37,22 +40,33 @@ const NO_TEXT = 'No readable text; scanned documents need OCR'
 const GOOD_TEXT =
   'HÓA ĐƠN GIÁ TRỊ GIA TĂNG\nSố: 0433 Ngày 15 tháng 09 năm 2025\nĐơn vị bán hàng: Công ty TNHH Viettel Tiền Giang\nMã số thuế: 0101234567'
 const BAD_TEXT = 'xcvb ttirrn qwrty hhhh lllii vnmz kkkp wwwq zzzx'
-const ID_TEXT = 'CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM CĂN CƯỚC CÔNG DÂN Số định danh cá nhân Họ và tên'
+const ID_TEXT =
+  'CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM CĂN CƯỚC CÔNG DÂN Số định danh cá nhân Họ và tên'
 
 type Script = 'good' | 'bad' | 'id' | 'blank'
 
 function recognition(kind: Script): LocalOcrRecognition {
-  const text = kind === 'good' ? GOOD_TEXT : kind === 'bad' ? BAD_TEXT : kind === 'id' ? ID_TEXT : ''
+  const text =
+    kind === 'good' ? GOOD_TEXT : kind === 'bad' ? BAD_TEXT : kind === 'id' ? ID_TEXT : ''
   const confidence = kind === 'good' ? 0.95 : kind === 'blank' ? 0 : 0.9
-  const tokens: LocalOcrToken[] = text ? text.split(/\s+/).map((word) => ({ text: word, confidence })) : []
+  const tokens: LocalOcrToken[] = text
+    ? text.split(/\s+/).map((word) => ({ text: word, confidence }))
+    : []
   return { text, meanConfidence: confidence, tokens, ms: 7 }
 }
 
 class ScriptedEngine implements LocalOcrEngine {
   readonly id = 'apple-vision' // judged with Vision's 0.73 threshold
   readonly descriptor = {
-    id: 'apple-vision', name: 'double', platforms: 'all' as const, minFreeRamMB: 1, dpi: 100,
-    escalationThreshold: 0.73, license: 'test', available: true, notes: '',
+    id: 'apple-vision',
+    name: 'double',
+    platforms: 'all' as const,
+    minFreeRamMB: 1,
+    dpi: 100,
+    escalationThreshold: 0.73,
+    license: 'test',
+    available: true,
+    notes: '',
   }
   calls = 0
   disposed = 0
@@ -106,7 +120,11 @@ function invoicePdf(name: string, pages = 3): string {
   const jpeg = encodeGrayJpeg(gray.data, gray.width, gray.height, 85)
   const other = encodeGrayJpeg(testPattern(gray.width, gray.height, 3), gray.width, gray.height, 70)
   const bytes = buildScannedPdf(
-    Array.from({ length: pages }, (_, i) => ({ jpeg: i === 0 ? jpeg : other, width: gray.width, height: gray.height })),
+    Array.from({ length: pages }, (_, i) => ({
+      jpeg: i === 0 ? jpeg : other,
+      width: gray.width,
+      height: gray.height,
+    })),
   )
   const path = join(dir, name)
   writeFileSync(path, bytes)
@@ -149,7 +167,10 @@ async function reindexNow(path: string): Promise<void> {
   })
 }
 
-function makeJob(engine: LocalOcrEngine | null, overrides: Partial<LocalOcrJobDeps> & { light?: number; ramMB?: number } = {}) {
+function makeJob(
+  engine: LocalOcrEngine | null,
+  overrides: Partial<LocalOcrJobDeps> & { light?: number; ramMB?: number } = {},
+) {
   const { light = 2, ramMB = 16_000, ...rest } = overrides
   const deps: LocalOcrJobDeps = {
     db: store.rawDb,
@@ -183,31 +204,60 @@ describe('quality tier on ocr_pages', () => {
     db.exec(`CREATE TABLE ocr_pages (path TEXT NOT NULL, page INTEGER NOT NULL, hash TEXT NOT NULL, mtime_ms REAL NOT NULL,
       size_bytes INTEGER NOT NULL, total_pages INTEGER NOT NULL, text TEXT NOT NULL, model TEXT,
       created_at INTEGER NOT NULL DEFAULT (unixepoch()), PRIMARY KEY (path, page)) WITHOUT ROWID`)
-    db.prepare("INSERT INTO ocr_pages(path, page, hash, mtime_ms, size_bytes, total_pages, text) VALUES ('/a.pdf', 1, 'h', 1, 2, 3, 'old')").run()
+    db.prepare(
+      "INSERT INTO ocr_pages(path, page, hash, mtime_ms, size_bytes, total_pages, text) VALUES ('/a.pdf', 1, 'h', 1, 2, 3, 'old')",
+    ).run()
     OcrSidecar.ensureSchema(db)
     OcrSidecar.ensureSchema(db) // idempotent
     const sidecar = new OcrSidecar(db)
-    expect(sidecar.pageTier('/a.pdf', 1)).toEqual({ tier: 'cloud', engine: null, quality: null, escalate: false })
+    expect(sidecar.pageTier('/a.pdf', 1)).toEqual({
+      tier: 'cloud',
+      engine: null,
+      quality: null,
+      escalate: false,
+    })
     expect(sidecar.pagesDone('/a.pdf', 1, 2)).toEqual([1])
   })
 
   it('a local row is done unless it was escalated; cloud text replaces local text and local never replaces cloud', () => {
     const path = join(dir, 'x.pdf')
     const meta = { hash: 'h', mtimeMs: 1, sizeBytes: 2, totalPages: 4 }
-    store.ocr.savePages(path, { ...meta, tier: 'local', engine: 'e', quality: 0.9, escalate: false, model: 'local:e' }, [{ page: 1, text: 'good local' }])
-    store.ocr.savePages(path, { ...meta, tier: 'local', engine: 'e', quality: 0.2, escalate: true, model: 'local:e' }, [{ page: 2, text: 'bad local' }])
+    store.ocr.savePages(
+      path,
+      { ...meta, tier: 'local', engine: 'e', quality: 0.9, escalate: false, model: 'local:e' },
+      [{ page: 1, text: 'good local' }],
+    )
+    store.ocr.savePages(
+      path,
+      { ...meta, tier: 'local', engine: 'e', quality: 0.2, escalate: true, model: 'local:e' },
+      [{ page: 2, text: 'bad local' }],
+    )
     expect(store.ocr.pagesDone(path, 1, 2)).toEqual([1])
     expect(store.ocr.pagesPresent(path, 1, 2)).toEqual([1, 2])
     expect(store.ocr.escalatedPages(path, 1, 2)).toEqual([2])
-    expect(store.ocr.pageTier(path, 2)).toEqual({ tier: 'local', engine: 'e', quality: 0.2, escalate: true })
+    expect(store.ocr.pageTier(path, 2)).toEqual({
+      tier: 'local',
+      engine: 'e',
+      quality: 0.2,
+      escalate: true,
+    })
 
     store.ocr.savePages(path, { ...meta, model: 'gemini' }, [{ page: 2, text: 'cloud text' }])
-    expect(store.ocr.pageTier(path, 2)).toEqual({ tier: 'cloud', engine: null, quality: null, escalate: false })
+    expect(store.ocr.pageTier(path, 2)).toEqual({
+      tier: 'cloud',
+      engine: null,
+      quality: null,
+      escalate: false,
+    })
     expect(store.ocr.pagesDone(path, 1, 2)).toEqual([1, 2])
     expect(store.ocr.pages(path, 'h')!.pages.find((p) => p.page === 2)!.text).toBe('cloud text')
 
     // a later local pass over the same page must not overwrite what the cloud read
-    store.ocr.savePages(path, { ...meta, tier: 'local', engine: 'e', quality: 0.1, escalate: true }, [{ page: 2, text: 'worse local' }])
+    store.ocr.savePages(
+      path,
+      { ...meta, tier: 'local', engine: 'e', quality: 0.1, escalate: true },
+      [{ page: 2, text: 'worse local' }],
+    )
     expect(store.ocr.pages(path, 'h')!.pages.find((p) => p.page === 2)!.text).toBe('cloud text')
     expect(store.ocr.pageTier(path, 2)!.tier).toBe('cloud')
   })
@@ -224,7 +274,11 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
     expect(engine.disposed).toBe(1)
     const { mtimeMs, sizeBytes } = stat(path)
     expect(store.ocr.pagesPresent(path, mtimeMs, sizeBytes)).toEqual([1, 2])
-    expect(store.ocr.pageTier(path, 1)).toMatchObject({ tier: 'local', engine: 'apple-vision', escalate: false })
+    expect(store.ocr.pageTier(path, 1)).toMatchObject({
+      tier: 'local',
+      engine: 'apple-vision',
+      escalate: false,
+    })
     expect(store.ocr.pageTier(path, 1)!.quality!).toBeGreaterThan(0.73)
     expect(reindexed).toEqual([path])
     expect(coolDowns).toHaveLength(2) // the duty-cycle hook runs after every page
@@ -251,18 +305,30 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
     expect(store.ocr.pagesDone(path, mtimeMs, sizeBytes)).toEqual([1])
     expect(store.ocr.escalatedPages(path, mtimeMs, sizeBytes)).toEqual([2])
 
-    const host = createOcrHost({ store, isEnabled: () => true, reindex: () => undefined, renderInWorker: async () => null })
+    const host = createOcrHost({
+      store,
+      isEnabled: () => true,
+      reindex: () => undefined,
+      renderInWorker: async () => null,
+    })
     const rows = host.candidates(40)
     expect(rows).toHaveLength(1)
     expect(rows[0]).toMatchObject({ path, totalPages: 5, skipPages: [1, 3, 4, 5] })
     // what the cloud job feeds its batch planner (agy-ocr-job.ts processFile): exactly page 2
-    const done = new Set([...host.pagesDone(path, mtimeMs, sizeBytes), ...(rows[0]!.skipPages ?? [])])
-    expect(planOcrBatch({ totalPages: 5, done, maxPagesPerFile: 40, pagesPerCall: 5, budget: 5 })).toEqual([2])
+    const done = new Set([
+      ...host.pagesDone(path, mtimeMs, sizeBytes),
+      ...(rows[0]!.skipPages ?? []),
+    ])
+    expect(
+      planOcrBatch({ totalPages: 5, done, maxPagesPerFile: 40, pagesPerCall: 5, budget: 5 }),
+    ).toEqual([2])
 
     // the cloud reads it: the row becomes cloud, the file leaves the list
-    store.ocr.savePages(path, { hash: hashOf(path), mtimeMs, sizeBytes, totalPages: 5, model: 'gemini' }, [
-      { page: 2, text: 'Tổng cộng 4.919.750 đồng' },
-    ])
+    store.ocr.savePages(
+      path,
+      { hash: hashOf(path), mtimeMs, sizeBytes, totalPages: 5, model: 'gemini' },
+      [{ page: 2, text: 'Tổng cộng 4.919.750 đồng' }],
+    )
     expect(store.ocr.pageTier(path, 2)).toMatchObject({ tier: 'cloud', escalate: false })
     expect(host.candidates(40)).toEqual([])
   })
@@ -289,14 +355,19 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
     const summary = await makeJob(new ScriptedEngine(['id', 'bad', 'bad', 'bad'])).runOnce()
     expect(summary.files).toBe(2)
     expect(summary.pages).toBe(4)
-    for (const path of [named, neutral]) expect(store.ocr.pagesPresent(path, stat(path).mtimeMs, stat(path).sizeBytes)).toEqual([1, 2])
+    for (const path of [named, neutral])
+      expect(store.ocr.pagesPresent(path, stat(path).mtimeMs, stat(path).sizeBytes)).toEqual([1, 2])
     // named sensitive file: nothing escalated even though every score is terrible
     expect(store.ocr.escalatedPages(named, stat(named).mtimeMs, stat(named).sizeBytes)).toEqual([])
     // neutral name, ID text on page 1: page 1 never escalates, junk page 2 does
-    expect(store.ocr.escalatedPages(neutral, stat(neutral).mtimeMs, stat(neutral).sizeBytes)).toEqual([2])
+    expect(
+      store.ocr.escalatedPages(neutral, stat(neutral).mtimeMs, stat(neutral).sizeBytes),
+    ).toEqual([2])
     const cloud = store.ocr.candidates(40).map((row) => row.path)
     expect(cloud).not.toContain(named)
-    expect(store.ocr.candidates(40, { includeSensitive: false }).map((r) => r.path)).not.toContain(named)
+    expect(store.ocr.candidates(40, { includeSensitive: false }).map((r) => r.path)).not.toContain(
+      named,
+    )
     expect(store.ocr.candidates(40, { mode: 'cloud-all' }).map((r) => r.path)).not.toContain(named)
   })
 
@@ -307,7 +378,13 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
     const summary = await makeJob(engine).runOnce()
     expect(summary).toMatchObject({ files: 2, pages: 2 })
     const states = Object.fromEntries(
-      (store.rawDb.prepare('SELECT d.path AS path, m.ocr_state AS state FROM document_media m JOIN documents d ON d.id = m.document_id').all() as unknown as Array<{ path: string; state: number }>).map((r) => [r.path, r.state]),
+      (
+        store.rawDb
+          .prepare(
+            'SELECT d.path AS path, m.ocr_state AS state FROM document_media m JOIN documents d ON d.id = m.document_id',
+          )
+          .all() as unknown as Array<{ path: string; state: number }>
+      ).map((r) => [r.path, r.state]),
     )
     expect(states[receipt]).toBe(IMAGE_OCR_STATE.done)
     expect(states[passport]).toBe(IMAGE_OCR_STATE.done)
@@ -372,7 +449,9 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
     enrollEmpty(path)
     const engine = new ScriptedEngine(['good'])
     let gateCalls = 0
-    const job = makeJob(engine, { gate: () => (++gateCalls <= 2 ? { ok: true } : { ok: false, reason: 'on-battery' }) })
+    const job = makeJob(engine, {
+      gate: () => (++gateCalls <= 2 ? { ok: true } : { ok: false, reason: 'on-battery' }),
+    })
     const first = await job.runOnce()
     expect(first.stoppedBecause).toBe('gate:on-battery')
     expect(first.pages).toBe(1)
@@ -440,14 +519,17 @@ describe('LocalOcrJob on scanned PDFs (real SQLite, real PDFium render, engine d
   it('does nothing when switched off, and logs carry no text or file names', async () => {
     const path = invoicePdf('Công ty ABC secret name.pdf', 2)
     enrollEmpty(path)
-    const off = makeJob(new ScriptedEngine(['good']), { settings: () => ({ enabled: false, lightPages: 2, engine: 'auto' }) })
+    const off = makeJob(new ScriptedEngine(['good']), {
+      settings: () => ({ enabled: false, lightPages: 2, engine: 'auto' }),
+    })
     expect((await off.runOnce()).stoppedBecause).toBe('disabled')
     const engine = new ScriptedEngine(['good', 'bad'])
     engine.fail = 'none'
     await makeJob(engine).runOnce()
     const logged = JSON.stringify(events)
     expect(events.filter((e) => e.kind === 'page')).toHaveLength(2)
-    for (const secret of ['Viettel', '0433', 'Công ty', 'secret name', dir, 'xcvb']) expect(logged).not.toContain(secret)
+    for (const secret of ['Viettel', '0433', 'Công ty', 'secret name', dir, 'xcvb'])
+      expect(logged).not.toContain(secret)
     // a failing engine whose message contains a name: the event still carries only a code
     const flaky = invoicePdf('another secret.pdf', 1)
     enrollEmpty(flaky)
@@ -515,7 +597,9 @@ describe('OCR Pipeline Repair Round 2: PDF fallback and persistence regression',
     const summary = await makeJob(engine).runOnce()
     expect(summary).toMatchObject({ files: 1, pages: 1, failed: 0 })
     expect(calls).toBe(2)
-    expect(events.some((e) => e.kind === 'file-failed' && e.code === 'embedded-decode-error')).toBe(true)
+    expect(events.some((e) => e.kind === 'file-failed' && e.code === 'embedded-decode-error')).toBe(
+      true,
+    )
 
     const text = store.ocr.pageTier(path, 1)
     expect(text).not.toBeNull()
@@ -645,7 +729,9 @@ describe('OCR Pipeline Repair Round 2: PDF fallback and persistence regression',
     expect(events.some((e) => e.kind === 'file-skipped' && e.code === 'file-modified')).toBe(true)
 
     const states = store.rawDb
-      .prepare('SELECT ocr_state AS state FROM document_media WHERE document_id = (SELECT id FROM documents WHERE path = ?)')
+      .prepare(
+        'SELECT ocr_state AS state FROM document_media WHERE document_id = (SELECT id FROM documents WHERE path = ?)',
+      )
       .get(imgPath) as { state: number } | undefined
     expect(states?.state).not.toBe(IMAGE_OCR_STATE.failed)
   })
@@ -688,10 +774,14 @@ describe('OCR Pipeline Repair Round 2: PDF fallback and persistence regression',
     const summary = await makeJob(engine).runOnce()
     expect(engineCalled).toBe(false)
     expect(summary.failed).toBe(1)
-    expect(events.some((e) => e.kind === 'file-failed' && e.code === 'unsupported-image-format')).toBe(true)
+    expect(
+      events.some((e) => e.kind === 'file-failed' && e.code === 'unsupported-image-format'),
+    ).toBe(true)
 
     const states = store.rawDb
-      .prepare('SELECT ocr_state AS state FROM document_media WHERE document_id = (SELECT id FROM documents WHERE path = ?)')
+      .prepare(
+        'SELECT ocr_state AS state FROM document_media WHERE document_id = (SELECT id FROM documents WHERE path = ?)',
+      )
       .get(heicPath) as { state: number } | undefined
     expect(states?.state).toBe(IMAGE_OCR_STATE.skipped)
   })
@@ -716,6 +806,35 @@ describe('OCR Pipeline Repair Round 2: PDF fallback and persistence regression',
       const hits = reopenedStore.searchLexical('Viettel')
       expect(hits.length).toBeGreaterThan(0)
       expect(reopenedStore.documentById(hits[0]!.documentId)?.path).toBe(imgPath)
+    } finally {
+      reopenedStore.close()
+    }
+  }, 60_000)
+
+  it('OCR-E2E-REAL: Scanned PDF rendered via PDFium -> real Tesseract recognition -> SQLite persistence -> FTS search -> restart -> search', async () => {
+    const pdfPath = invoicePdf('e2e-scanned-real.pdf', 1)
+    enrollEmpty(pdfPath)
+    const registry = new LocalOcrEngineRegistry({ platform: 'linux', freeRamMB: () => 8000 })
+
+    const summary = await makeJob(null, { registry }).runOnce()
+    await registry.disposeAll()
+    expect(summary.files).toBe(1)
+    expect(summary.failed).toBe(0)
+    expect(summary.pages).toBe(1)
+
+    await reindexNow(pdfPath)
+    const hits = store.searchLexical('Viettel')
+    expect(hits.length).toBeGreaterThan(0)
+    expect(store.documentById(hits[0]!.documentId)?.path).toBe(pdfPath)
+
+    const dbPath = join(dir, 'memory.sqlite')
+    store.close()
+
+    const reopenedStore = new DocumentMemoryStore(dbPath)
+    try {
+      const reopenedHits = reopenedStore.searchLexical('Viettel')
+      expect(reopenedHits.length).toBeGreaterThan(0)
+      expect(reopenedStore.documentById(reopenedHits[0]!.documentId)?.path).toBe(pdfPath)
     } finally {
       reopenedStore.close()
     }

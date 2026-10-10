@@ -54,11 +54,17 @@ export class WorkerHost {
   }
 
   /** Stops the process for good (the manager is closing). */
-  terminate(): void {
+  async terminate(): Promise<void> {
     const worker = this.worker
     this.worker = null
-    if (worker && typeof (worker as { terminate?: unknown }).terminate === 'function')
-      void worker.terminate()
+    this.failWaiting('worker terminated')
+    if (worker && typeof (worker as { terminate?: unknown }).terminate === 'function') {
+      try {
+        await (worker as { terminate: () => unknown }).terminate()
+      } catch {
+        // ignore termination errors
+      }
+    }
   }
 
   recycle(reason: string): void {

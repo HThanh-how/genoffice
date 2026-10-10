@@ -392,5 +392,151 @@ describe('HomeChatStore', () => {
       expect(files).toContain(`${id}.json`)
       expect(files.some((f) => f.startsWith(`${id}.json.corrupt-`))).toBe(false)
     })
+
+    // =========================================================================
+    // Phase E: Fault injection scenarios (1 to 10)
+    // =========================================================================
+    it('Phase E-2: index write failure after session deletion does not forget remaining durable files', async () => {
+      const s1 = await store.save({ messages: convo('session-e2-1') })
+      const s2 = await store.save({ messages: convo('session-e2-2') })
+      expect(s1).not.toBeNull()
+      expect(s2).not.toBeNull()
+
+      // Inject failure on index write
+      const writeErr = Object.assign(new Error('index write disk full'), { code: 'ENOSPC' })
+      const failingStore = new HomeChatStore(dir, async (path, data) => {
+        if (path.endsWith('index.json')) throw writeErr
+        return actualFs.writeFile(path, data)
+      })
+
+      // Deleting s1 unlinks s1.json then attempts index persist
+      await expect(failingStore.delete(s1!.id)).rejects.toThrow(writeErr)
+
+      // Restarting store reads durable disk files
+      const restarted = new HomeChatStore(dir)
+      const list = await restarted.list()
+      expect(list.map((s) => s.id)).toEqual([s2!.id])
+      expect(await restarted.get(s2!.id)).not.toBeNull()
+    })
+
+    it('Phase E-3: session write succeeds but eviction failure propagates while keeping saved session durable', async () => {
+      const storeWithMock = new HomeChatStore(dir, async (path, data) => {
+        return actualFs.writeFile(path, data)
+      })
+
+      // Create maxSessions
+      const createdIds: string[] = []
+      for (let i = 0; i < HOME_CHAT_LIMITS.maxSessions; i++) {
+        const s = await storeWithMock.save({ messages: convo(`session-limit-${i}`) })
+        createdIds.push(s!.id)
+      }
+
+      // Inject unlink failure for eviction
+      const evictErr = Object.assign(new Error('eviction lock'), { code: 'EBUSY' })
+      mockedUnlink.mockImplementationOnce(async () => {
+        throw evictErr
+      })
+
+      // Saving one more triggers eviction which fails
+      await expect(storeWithMock.save({ messages: convo('overflow-session') })).rejects.toThrow(
+        evictErr,
+      )
+
+      // The new session was written to disk and is durable
+      const diskFiles = await readdir(dir)
+      const sessionFiles = diskFiles.filter((f) => f.endsWith('.json') && f !== 'index.json')
+      expect(sessionFiles.length).toBe(HOME_CHAT_LIMITS.maxSessions + 1)
+    })
+
+    it('Phase E-5: restart after partial clear restores clean consistent view of remaining files', async () => {
+      const s1 = await store.save({ messages: convo('clear-1') })
+      const s2 = await store.save({ messages: convo('clear-2') })
+      expect(s1).not.toBeNull()
+      expect(s2).not.toBeNull()
+
+      mockedUnlink.mockImplementation(async (path: any, ...args: any[]) => {
+        if (String(path).includes(s2!.id)) {
+          throw Object.assign(new Error('file locked'), { code: 'EBUSY' })
+        }
+        return (actualFs.unlink as any)(path, ...args)
+      })
+
+      await expect(store.clear()).rejects.toThrow(AggregateError)
+
+      // Restart with fresh store instance
+      const restartedStore = new HomeChatStore(dir)
+      const items = await restartedStore.list()
+      expect(items.map((i) => i.id)).toEqual([s2!.id])
+      const session = await restartedStore.get(s2!.id)
+      expect(session).not.toBeNull()
+      expect(session!.id).toBe(s2!.id)
+    })
+
+    it('Phase E-6: corrupted index.json is automatically rebuilt from session files on restart', async () => {
+      const s1 = await store.save({ messages: convo('durable-1') })
+      const s2 = await store.save({ messages: convo('durable-2') })
+      expect(s1).not.toBeNull()
+      expect(s2).not.toBeNull()
+
+      // Corrupt index.json
+      await actualFs.writeFile(join(dir, 'index.json'), '{"corrupted": garbage json[')
+
+      // Restart store
+      const restarted = new HomeChatStore(dir)
+      const list = await restarted.list()
+      expect(list.length).toBe(2)
+      expect(list.map((s) => s.id).sort()).toEqual([s1!.id, s2!.id].sort())
+    })
+
+    it('Phase E-8: permission error on write fails cleanly without creating corrupt sessions', async () => {
+      const permErr = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      const permStore = new HomeChatStore(dir, async () => {
+        throw permErr
+      })
+
+      await expect(permStore.save({ messages: convo('failed-perm') })).rejects.toThrow(permErr)
+      expect(await store.list()).toEqual([])
+    })
+
+    it('Phase E-9: I/O error during rebuild propagates and does not corrupt store state', async () => {
+      await store.save({ messages: convo('rebuild-1') })
+      // Delete index to force rebuild
+      await actualFs.unlink(join(dir, 'index.json'))
+
+      const readErr = Object.assign(new Error('read failure'), { code: 'EIO' })
+      mockedReadFile.mockImplementation(async (path: any, ...args: any[]) => {
+        if (String(path).endsWith('.json') && !String(path).includes('index.json')) throw readErr
+        return (actualFs.readFile as any)(path, ...args)
+      })
+
+      const newStore = new HomeChatStore(dir)
+      await expect(newStore.list()).rejects.toThrow(readErr)
+    })
+
+    it('Phase E-10: concurrent queued operations complete in consistent order without data loss', async () => {
+      const ops = Array.from({ length: 10 }, (_, i) =>
+        store.save({ messages: convo(`concurrent-${i}`) }),
+      )
+      const results = await Promise.all(ops)
+      expect(results.every((r) => r !== null)).toBe(true)
+
+      const list = await store.list()
+      expect(list.length).toBe(10)
+
+      // Concurrent rename and delete
+      const toRename = results[0]!.id
+      const toDelete = results[1]!.id
+
+      await Promise.all([
+        store.rename(toRename, 'Renamed concurrent title'),
+        store.delete(toDelete),
+      ])
+
+      const updatedList = await store.list()
+      expect(updatedList.length).toBe(9)
+      expect(updatedList.some((s) => s.id === toDelete)).toBe(false)
+      const renamedSession = await store.get(toRename)
+      expect(renamedSession?.title).toBe('Renamed concurrent title')
+    })
   })
 })

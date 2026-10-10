@@ -24,7 +24,7 @@ import {
   type LocalOcrToken,
 } from '../runtime/local-ocr-engine'
 import { TESSERACT_ESCALATION_THRESHOLD } from './escalation'
-import { prepareForTesseract, TESSERACT_MAX_EDGE_PX } from './tesseract-prepare'
+import { detectImageFormat, prepareForTesseract, TESSERACT_MAX_EDGE_PX } from './tesseract-prepare'
 import { findTessdataDir, findTesseractWorkerScript, tesseractCoresPresent } from './resources'
 
 export const TESSERACT_ENGINE_ID = 'tesseract-vie'
@@ -241,8 +241,43 @@ export class TesseractEngine implements LocalOcrEngine {
     // Worker is initialized or acquired first
     const worker = await this.getWorker()
     // decode -> shrink -> flatten the background (off this thread in the app)
-    // Any explicit validation rejection (bad format, corrupted data, unsupported format) propagates
-    const image = (await this.prepare(bytes, input.dpi || 150)) ?? bytes
+    let prepared: Uint8Array | null
+    try {
+      prepared = await this.prepare(bytes, input.dpi || 150)
+    } catch (prepareError) {
+      // Preprocessing worker temporarily unavailable (timed out, crashed, or worker IPC error).
+      // Distinguish whether the input itself is invalid/unsupported before assuming worker fault.
+      const localValidated = prepareForTesseract(bytes, input.dpi || 150)
+      if (localValidated === null) {
+        throw new Error(
+          'Error attempting to read image: unsupported format or invalid image data',
+          {
+            cause: prepareError,
+          },
+        )
+      }
+      // If the image is a valid passthrough format that requires no heavy preprocessing,
+      // use the validated image; otherwise, fail with LocalOcrUnavailableError so the established
+      // queue policy retries rather than performing heavy CPU work on the main thread.
+      const fmt = detectImageFormat(bytes)
+      if (fmt !== 'jpeg' && fmt !== 'png') {
+        prepared = localValidated
+      } else {
+        throw new LocalOcrUnavailableError(
+          this.id,
+          `Image preprocessing unavailable: ${prepareError instanceof Error ? prepareError.message : String(prepareError)}`,
+          { cause: prepareError },
+        )
+      }
+    }
+
+    if (prepared === null) {
+      // Preparation explicitly rejected the image (corrupt, unknown, or unsupported like HEIC)
+      // NEVER fallback to raw unvalidated bytes!
+      throw new Error('Error attempting to read image: invalid or rejected image data')
+    }
+
+    const image = prepared
     let timer: NodeJS.Timeout | undefined
     try {
       const result = await Promise.race([

@@ -1,4 +1,3 @@
-import { EventEmitter } from 'node:events'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -118,20 +117,26 @@ function setupV2DatabaseFixture(dbPath: string): void {
   )
 
   // Document 1
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO documents (id, path, name, status, last_opened_at, active_chunk_set_id, embedding_model, chunk_total, chunk_done)
     VALUES (1, 'D:/test-docs/financial-report.docx', 'financial-report.docx', 'ready', 1700000000, 1, ?, 1, 1)
-  `).run(EMBEDDING_PROFILES.standard.embeddingId)
+  `,
+  ).run(EMBEDDING_PROFILES.standard.embeddingId)
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO chunk_sets (id, document_id, chunker_version, state)
     VALUES (1, 1, 1, 'active')
-  `).run()
+  `,
+  ).run()
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO chunks (id, document_id, chunk_set_id, ordinal, text, normalized, location)
     VALUES (101, 1, 1, 0, 'Quarterly financial report summary passage', 'quarterly financial report summary passage', 'page 1')
-  `).run()
+  `,
+  ).run()
 
   const standardVec = floatBlob(new Array(320).fill(0.123))
   const highVec = floatBlob(new Array(512).fill(0.456))
@@ -155,7 +160,9 @@ function getDatabaseTargetSpace(dbPath: string): {
   try {
     const docRow = db.prepare('SELECT embedding_model FROM documents WHERE id = 1').get() as any
     const chunkRow = db.prepare('SELECT space_id FROM chunk_embeddings LIMIT 1').get() as any
-    const countRow = db.prepare('SELECT space_id FROM document_embedding_counts LIMIT 1').get() as any
+    const countRow = db
+      .prepare('SELECT space_id FROM document_embedding_counts LIMIT 1')
+      .get() as any
     return {
       embeddingModel: docRow?.embedding_model ?? null,
       chunkEmbeddingSpace: chunkRow?.space_id ?? null,
@@ -195,7 +202,10 @@ describe('Settings Location Consistency Test Suite (QA-SETTINGS)', () => {
     rmSync(rootDir, { recursive: true, force: true })
   })
 
-  function createManager(optionsUserDataDir = settingsDir, optionsDbDir = dbDir): DocumentMemoryManager {
+  function createManager(
+    optionsUserDataDir = settingsDir,
+    optionsDbDir = dbDir,
+  ): DocumentMemoryManager {
     const m = new DocumentMemoryManager(optionsUserDataDir, {
       dbDir: optionsDbDir,
       initialEnabled: false,
@@ -244,7 +254,9 @@ describe('Settings Location Consistency Test Suite (QA-SETTINGS)', () => {
     // 4. Manager instance started with same userDataDir and custom dbDir
     const mgr = createManager()
     expect(mgr.embeddingSettings().profile).toBe('high')
-    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(EMBEDDING_PROFILES.high.embeddingId)
+    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES.high.embeddingId,
+    )
   })
 
   it('SETLOC-03 Standard → bootstrap + manager both Standard', async () => {
@@ -271,7 +283,9 @@ describe('Settings Location Consistency Test Suite (QA-SETTINGS)', () => {
     // 5. Manager instance also resolves to Standard
     const mgr = createManager()
     expect(mgr.embeddingSettings().profile).toBe('standard')
-    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(EMBEDDING_PROFILES.standard.embeddingId)
+    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES.standard.embeddingId,
+    )
   })
 
   it('SETLOC-04 no profile → both same default', async () => {
@@ -290,13 +304,17 @@ describe('Settings Location Consistency Test Suite (QA-SETTINGS)', () => {
     // 4. Both should fallback to DEFAULT_EMBEDDING_PROFILE (standard)
     const target = getDatabaseTargetSpace(dbPath)
     expect(target.embeddingModel).toBe(EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE].embeddingId)
-    expect(target.chunkEmbeddingSpace).toBe(EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE].embeddingId)
+    expect(target.chunkEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE].embeddingId,
+    )
     expect(target.countsSpace).toBe(EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE].embeddingId)
 
     // 5. Manager instance also defaults to standard
     const mgr = createManager()
     expect(mgr.embeddingSettings().profile).toBe(DEFAULT_EMBEDDING_PROFILE)
-    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE].embeddingId)
+    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE].embeddingId,
+    )
   })
 
   it('SETLOC-05 custom DB parent contains conflicting file → MUST NOT override userData setting', async () => {
@@ -332,6 +350,8 @@ describe('Settings Location Consistency Test Suite (QA-SETTINGS)', () => {
     // 5. Manager instance also MUST NOT be overridden by DB parent file: Manager remains High
     const mgr = createManager(settingsDir, nestedDbDir)
     expect(mgr.embeddingSettings().profile).toBe('high')
-    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(EMBEDDING_PROFILES.high.embeddingId)
+    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES.high.embeddingId,
+    )
   })
 })

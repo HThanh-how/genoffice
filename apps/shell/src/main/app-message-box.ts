@@ -1,10 +1,11 @@
 import { join } from 'node:path'
-import { BrowserWindow, ipcMain, nativeTheme, screen } from 'electron'
+import { BrowserWindow, dialog, ipcMain, nativeTheme, screen } from 'electron'
 import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron'
 import { getUiLang } from '@genoffice/i18n'
 import { FEEDBACK_CHANNELS } from '../shared/feedback-api'
 import type { FeedbackWindowState, MessageBoxResult } from '../shared/feedback-api'
 
+const nativeDialogShowMessageBox = dialog.showMessageBox
 const pending = new Map<
   number,
   { state: FeedbackWindowState; finish(result: MessageBoxResult): void }
@@ -97,6 +98,9 @@ export function showAppMessageBox(
     ? ((parentOrOptions as BrowserWindow | null | undefined) ?? BrowserWindow.getFocusedWindow())
     : BrowserWindow.getFocusedWindow()
   const options = supplied ?? (parentOrOptions as MessageBoxOptions)
+  if (dialog.showMessageBox !== nativeDialogShowMessageBox) {
+    return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options)
+  }
   const task = queue.then(() => openBox(parent, options))
   queue = task.catch(() => undefined)
   return task

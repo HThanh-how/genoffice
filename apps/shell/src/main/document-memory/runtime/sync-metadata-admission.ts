@@ -69,7 +69,11 @@ export interface SyncMetadataAdmissionCoordinatorOptions {
    * room for it. The owner may free space (admission by displacement) and replay the parked intake afterwards.
    * `neededBytes` is the exact shortfall.
    */
-  onQuotaPressure?: (info: { neededBytes: number; reason: SyncMetadataRejectionReason; doc?: { name: string; path: string } }) => void
+  onQuotaPressure?: (info: {
+    neededBytes: number
+    reason: SyncMetadataRejectionReason
+    doc?: { name: string; path: string }
+  }) => void
 }
 
 interface ActiveOwnedReservation {
@@ -90,7 +94,11 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
   private readonly maxInflight: number
   private readonly headroomBytes: number
   private readonly freeDiskTtlMs: number
-  private readonly onQuotaPressureOption?: (info: { neededBytes: number; reason: SyncMetadataRejectionReason; doc?: { name: string; path: string } }) => void
+  private readonly onQuotaPressureOption?: (info: {
+    neededBytes: number
+    reason: SyncMetadataRejectionReason
+    doc?: { name: string; path: string }
+  }) => void
 
   private stopped = false
   private lastRejectionReason: string | undefined
@@ -127,8 +135,15 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
     if (this.stopped || (this.isStoppedOption && this.isStoppedOption())) return false
     if (!this.isWriteReadyOption()) return false
     if (this.lastAccountingFailed) return false
+    if (
+      !this.cachedFreeDisk ||
+      !Number.isFinite(this.cachedFreeDisk.bytes) ||
+      this.cachedFreeDisk.bytes <= 0
+    )
+      return false
     const snap = this.getStorageBudgetSnapshotOption?.()
-    if (!snap || snap.isDegraded || (snap.measurementStatus && snap.measurementStatus !== 'fresh')) return false
+    if (!snap || snap.isDegraded || (snap.measurementStatus && snap.measurementStatus !== 'fresh'))
+      return false
     return true
   }
 
@@ -136,11 +151,19 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
     return this.lastRejectionReason
   }
 
-  private notifyQuotaPressure(neededBytes: number, reason: SyncMetadataRejectionReason, doc?: { name: string; path: string }): void {
+  private notifyQuotaPressure(
+    neededBytes: number,
+    reason: SyncMetadataRejectionReason,
+    doc?: { name: string; path: string },
+  ): void {
     // Pressure never deletes source files; the owner compacts regenerable indexes and retries intake.
     if (!this.onQuotaPressureOption || this.stopped) return
     try {
-      this.onQuotaPressureOption({ neededBytes: Math.max(1, Math.ceil(neededBytes)), reason, ...(doc ? { doc } : {}) })
+      this.onQuotaPressureOption({
+        neededBytes: Math.max(1, Math.ceil(neededBytes)),
+        reason,
+        ...(doc ? { doc } : {}),
+      })
     } catch {
       // displacement is an optimisation of admission; the refusal below stands either way
     }
@@ -149,7 +172,8 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
   private metadataFits(snapshot: StorageBudgetSnapshot, estimatedBytes: number): boolean {
     const measured = snapshot.nameMetadataBytes
     if (measured === undefined || !Number.isSafeInteger(measured) || measured < 0) {
-      this.lastRejectionReason = 'Name/path storage measurement is unknown; retry after accounting refresh'
+      this.lastRejectionReason =
+        'Name/path storage measurement is unknown; retry after accounting refresh'
       return false
     }
     // Include unsettled commits until a fresh measurement covers them, just as the global guard does.
@@ -178,7 +202,12 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
       const budget = this.getStorageBudget()
       if (!Number.isFinite(budget.maxDatabaseBytes) || budget.maxDatabaseBytes <= 0) return false
       const snap = this.getStorageBudgetSnapshotOption?.()
-      if (!snap || snap.isDegraded || (snap.measurementStatus && snap.measurementStatus !== 'fresh') || snap.limitState === 'full') {
+      if (
+        !snap ||
+        snap.isDegraded ||
+        (snap.measurementStatus && snap.measurementStatus !== 'fresh') ||
+        snap.limitState === 'full'
+      ) {
         return false
       }
       // Grace zone: the lease was admitted against the hard cap; a hard stop reached since then refuses
@@ -199,10 +228,15 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
     const budget = this.getStorageBudget()
     if (!Number.isFinite(budget.maxDatabaseBytes) || budget.maxDatabaseBytes <= 0) return false
     const snap = this.getStorageBudgetSnapshotOption?.()
-    if (!snap || snap.isDegraded || (snap.measurementStatus && snap.measurementStatus !== 'fresh') || snap.limitState === 'full') {
+    if (
+      !snap ||
+      snap.isDegraded ||
+      (snap.measurementStatus && snap.measurementStatus !== 'fresh') ||
+      snap.limitState === 'full'
+    ) {
       return false
     }
-    const currentUsage = (snap.totalManagedBytes ?? snap.databaseBytes)
+    const currentUsage = snap.totalManagedBytes ?? snap.databaseBytes
     if (!this.metadataFits(snap, estimatedBytes)) return false
     if (!Number.isFinite(currentUsage) || currentUsage < 0) return false
     const reservedBytes = this.admission.getReservedBytes()
@@ -217,12 +251,13 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
       !this.cachedFreeDisk ||
       !Number.isFinite(this.cachedFreeDisk.bytes) ||
       this.cachedFreeDisk.bytes <= 0 ||
-      (now - this.cachedFreeDisk.timestamp) > this.freeDiskTtlMs
+      now - this.cachedFreeDisk.timestamp > this.freeDiskTtlMs
     ) {
       this.triggerFreeDiskRefreshIfNeeded()
       return false
     }
-    if (this.cachedFreeDisk.bytes < this.headroomBytes + reservedBytes + estimatedBytes) return false
+    if (this.cachedFreeDisk.bytes < this.headroomBytes + reservedBytes + estimatedBytes)
+      return false
     return true
   }
 
@@ -232,7 +267,12 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
   ): SyncMetadataAdmissionDecision {
     if (!Number.isSafeInteger(estimatedBytes) || estimatedBytes <= 0) {
       this.lastRejectionReason = 'Invalid estimatedBytes: must be a positive safe integer'
-      return { admitted: false, reason: 'min-metadata-unfit', estimatedBytes, error: this.lastRejectionReason }
+      return {
+        admitted: false,
+        reason: 'min-metadata-unfit',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     if (this.stopped || (this.isStoppedOption && this.isStoppedOption())) {
@@ -242,42 +282,75 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
 
     if (!this.isWriteReadyOption()) {
       this.lastRejectionReason = 'Write budget coordinator not ready or awaiting initial handshake'
-      return { admitted: false, reason: 'not-ready', estimatedBytes, error: this.lastRejectionReason }
+      return {
+        admitted: false,
+        reason: 'not-ready',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     // maxInflight counts all owned entries, not only committed
     if (this.activeOwned.size >= this.maxInflight) {
       this.lastRejectionReason = `Inflight sync metadata reservations bounded limit reached (${this.activeOwned.size}/${this.maxInflight})`
-      return { admitted: false, reason: 'reservation-exceeded', estimatedBytes, error: this.lastRejectionReason }
+      return {
+        admitted: false,
+        reason: 'reservation-exceeded',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     if (this.lastAccountingFailed) {
       this.lastRejectionReason = 'Storage accounting measurement failed or is unverified'
-      return { admitted: false, reason: 'accounting-unknown', estimatedBytes, error: this.lastRejectionReason }
+      return {
+        admitted: false,
+        reason: 'accounting-unknown',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     const budget = this.getStorageBudget()
     if (!Number.isFinite(budget.maxDatabaseBytes) || budget.maxDatabaseBytes <= 0) {
       this.lastRejectionReason = 'Live storage budget is zero or invalid'
-      return { admitted: false, reason: 'budget-full', estimatedBytes, error: this.lastRejectionReason }
+      return {
+        admitted: false,
+        reason: 'budget-full',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     // Snapshot fresh / non-degraded; missing snapshot must not count as usage 0
     const snap = this.getStorageBudgetSnapshotOption?.()
     if (!snap) {
       this.lastRejectionReason = 'Storage accounting snapshot missing or uninitialized'
-      return { admitted: false, reason: 'accounting-unknown', estimatedBytes, error: this.lastRejectionReason }
+      return {
+        admitted: false,
+        reason: 'accounting-unknown',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     if (snap.isDegraded || (snap.measurementStatus && snap.measurementStatus !== 'fresh')) {
       this.lastRejectionReason = 'Storage accounting measurement is degraded, stale, or unverified'
-      return { admitted: false, reason: 'accounting-unknown', estimatedBytes, error: this.lastRejectionReason }
+      return {
+        admitted: false,
+        reason: 'accounting-unknown',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     if (!this.metadataFits(snap, estimatedBytes)) {
       return {
         admitted: false,
-        reason: !Number.isSafeInteger(snap.nameMetadataBytes) || (snap.nameMetadataBytes ?? -1) < 0 ? 'accounting-unknown' : 'name-metadata-full',
+        reason:
+          !Number.isSafeInteger(snap.nameMetadataBytes) || (snap.nameMetadataBytes ?? -1) < 0
+            ? 'accounting-unknown'
+            : 'name-metadata-full',
         estimatedBytes,
         error: this.lastRejectionReason,
       }
@@ -286,14 +359,28 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
     if (snap.limitState === 'full') {
       this.lastRejectionReason = 'Storage limit state is full'
       const usedAtStop = snap.totalManagedBytes ?? snap.databaseBytes
-      this.notifyQuotaPressure(usedAtStop + this.admission.getReservedBytes() + estimatedBytes - hardCapBytes(budget), 'budget-full', doc)
-      return { admitted: false, reason: 'budget-full', estimatedBytes, error: this.lastRejectionReason }
+      this.notifyQuotaPressure(
+        usedAtStop + this.admission.getReservedBytes() + estimatedBytes - hardCapBytes(budget),
+        'budget-full',
+        doc,
+      )
+      return {
+        admitted: false,
+        reason: 'budget-full',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
-    const currentUsage = (snap.totalManagedBytes ?? snap.databaseBytes)
+    const currentUsage = snap.totalManagedBytes ?? snap.databaseBytes
     if (!Number.isFinite(currentUsage) || currentUsage < 0) {
       this.lastRejectionReason = 'Storage usage measurement invalid'
-      return { admitted: false, reason: 'accounting-unknown', estimatedBytes, error: this.lastRejectionReason }
+      return {
+        admitted: false,
+        reason: 'accounting-unknown',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     // Grace zone: soft quota <= usage < hard cap still admits the lightweight name/identity row (every new file
@@ -302,8 +389,17 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
     const maxDbBytes = hardCapBytes(budget)
     if (currentUsage >= maxDbBytes) {
       this.lastRejectionReason = 'Storage limit state is full'
-      this.notifyQuotaPressure(currentUsage + this.admission.getReservedBytes() + estimatedBytes - maxDbBytes, 'budget-full', doc)
-      return { admitted: false, reason: 'budget-full', estimatedBytes, error: this.lastRejectionReason }
+      this.notifyQuotaPressure(
+        currentUsage + this.admission.getReservedBytes() + estimatedBytes - maxDbBytes,
+        'budget-full',
+        doc,
+      )
+      return {
+        admitted: false,
+        reason: 'budget-full',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     const reservedBytes = this.admission.getReservedBytes()
@@ -312,14 +408,28 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
     if (prospectiveTotal > maxDbBytes) {
       this.lastRejectionReason = `Storage budget full: projected ${prospectiveTotal} exceeds hard cap ${maxDbBytes}`
       this.notifyQuotaPressure(prospectiveTotal - maxDbBytes, 'budget-full', doc)
-      return { admitted: false, reason: 'budget-full', estimatedBytes, error: this.lastRejectionReason }
+      return {
+        admitted: false,
+        reason: 'budget-full',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     const availableHeadroom = maxDbBytes - (currentUsage + reservedBytes)
     if (availableHeadroom < BASE_PROJECTION_METADATA_BYTES || availableHeadroom < estimatedBytes) {
       this.lastRejectionReason = `Minimum metadata unable to fit: available ${availableHeadroom} < required ${Math.max(BASE_PROJECTION_METADATA_BYTES, estimatedBytes)}`
-      this.notifyQuotaPressure(Math.max(BASE_PROJECTION_METADATA_BYTES, estimatedBytes) - availableHeadroom, 'min-metadata-unfit', doc)
-      return { admitted: false, reason: 'min-metadata-unfit', estimatedBytes, error: this.lastRejectionReason }
+      this.notifyQuotaPressure(
+        Math.max(BASE_PROJECTION_METADATA_BYTES, estimatedBytes) - availableHeadroom,
+        'min-metadata-unfit',
+        doc,
+      )
+      return {
+        admitted: false,
+        reason: 'min-metadata-unfit',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     // Cached free disk TTL: trigger refresh but old cache must not be accepted when expired
@@ -329,18 +439,29 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
       !this.cachedFreeDisk ||
       !Number.isFinite(this.cachedFreeDisk.bytes) ||
       this.cachedFreeDisk.bytes <= 0 ||
-      (now - this.cachedFreeDisk.timestamp) > this.freeDiskTtlMs
+      now - this.cachedFreeDisk.timestamp > this.freeDiskTtlMs
 
     if (isDiskStaleOrMissing || !this.cachedFreeDisk) {
-      this.lastRejectionReason = 'Free disk space measurement unknown, stale or pending async verification'
-      return { admitted: false, reason: 'disk-space-insufficient', estimatedBytes, error: this.lastRejectionReason }
+      this.lastRejectionReason =
+        'Free disk space measurement unknown, stale or pending async verification'
+      return {
+        admitted: false,
+        reason: 'disk-space-insufficient',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     // Compare disk headroom against cumulative reserved bytes + proposed bytes, not only one write
     const requiredDiskBytes = this.headroomBytes + reservedBytes + estimatedBytes
     if (this.cachedFreeDisk.bytes < requiredDiskBytes) {
       this.lastRejectionReason = `Insufficient free disk space: available ${this.cachedFreeDisk.bytes} < required ${requiredDiskBytes} (headroom ${this.headroomBytes} + reserved ${reservedBytes} + proposed ${estimatedBytes})`
-      return { admitted: false, reason: 'disk-space-insufficient', estimatedBytes, error: this.lastRejectionReason }
+      return {
+        admitted: false,
+        reason: 'disk-space-insufficient',
+        estimatedBytes,
+        error: this.lastRejectionReason,
+      }
     }
 
     const reservationId = `meta:${doc.path}`
@@ -480,9 +601,7 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
     }
 
     const isFreshAndHealthy = Boolean(
-      snap &&
-      !snap.isDegraded &&
-      snap.measurementStatus === 'fresh',
+      snap && !snap.isDegraded && snap.measurementStatus === 'fresh',
     )
 
     if (isFreshAndHealthy) {
@@ -497,7 +616,8 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
           safeReleaseExactOwnerReservation(this.admission, resId, token)
           this.activeOwned.delete(resId)
         }
-        if (this.committedReservations.get(resId) === token) this.committedReservations.delete(resId)
+        if (this.committedReservations.get(resId) === token)
+          this.committedReservations.delete(resId)
       }
     } else {
       // Unknown/failure retain debt, fail-close subsequent admission, bounded retry (not infinite timers)
@@ -521,22 +641,30 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
     this.refreshInFlight = false
 
     // On later successful fresh measurement release only covered snapshot, queue subsequent debt safely
-    if (isFreshAndHealthy && this.committedReservations.size > 0 && !this.refreshScheduled && !this.stopped) {
+    if (
+      isFreshAndHealthy &&
+      this.committedReservations.size > 0 &&
+      !this.refreshScheduled &&
+      !this.stopped
+    ) {
       this.scheduleAccountingRefresh()
     }
   }
 
   private triggerFreeDiskRefreshIfNeeded(): void {
-    if (this.stopped || (this.isStoppedOption && this.isStoppedOption()) || this.freeDiskRefreshing) return
+    if (this.stopped || (this.isStoppedOption && this.isStoppedOption()) || this.freeDiskRefreshing)
+      return
     const now = Date.now()
     if (this.cachedFreeDisk && now - this.cachedFreeDisk.timestamp < this.freeDiskTtlMs) {
       return
     }
     this.freeDiskRefreshing = true
-    const getter = this.getFreeDiskBytesOption ?? (() => {
-      const dir = this.dbPath ? dirname(this.dbPath) : process.cwd()
-      return getValidatedFreeDiskBytes(dir)
-    })
+    const getter =
+      this.getFreeDiskBytesOption ??
+      (() => {
+        const dir = this.dbPath ? dirname(this.dbPath) : process.cwd()
+        return getValidatedFreeDiskBytes(dir)
+      })
     getter()
       .then((bytes) => {
         if (this.stopped || (this.isStoppedOption && this.isStoppedOption())) return

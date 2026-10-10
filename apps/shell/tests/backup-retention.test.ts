@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -9,7 +9,6 @@ import {
   isBackupVerified,
 } from '../src/main/document-memory/storage/migration/backup-retention'
 import {
-  clearV3RetentionState,
   initV3RetentionState,
   readV3RetentionState,
   writeV3RetentionState,

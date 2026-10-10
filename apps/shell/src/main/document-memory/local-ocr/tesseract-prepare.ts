@@ -16,14 +16,7 @@ import { decodeGray, encodeGrayPng, flattenIllumination, limitLongEdge } from '.
 export const TESSERACT_MAX_EDGE_PX = 2000
 
 export type DetectedImageFormat =
-  | 'png'
-  | 'jpeg'
-  | 'bmp'
-  | 'gif'
-  | 'webp'
-  | 'tiff'
-  | 'heic'
-  | 'unknown'
+  'png' | 'jpeg' | 'bmp' | 'gif' | 'webp' | 'tiff' | 'heic' | 'unknown'
 
 export function isCompleteJpeg(bytes: Uint8Array): boolean {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
@@ -101,6 +94,73 @@ export function isCompletePng(bytes: Uint8Array): boolean {
     }
   }
   return false
+}
+
+export function isCompleteBmp(bytes: Uint8Array): boolean {
+  if (bytes.length < 54) return false
+  if (bytes[0] !== 0x42 || bytes[1] !== 0x4d) return false
+  const fileSize = bytes[2]! | (bytes[3]! << 8) | (bytes[4]! << 16) | ((bytes[5]! << 24) >>> 0)
+  if (fileSize > 0 && bytes.length < fileSize) return false
+  const offset = bytes[10]! | (bytes[11]! << 8) | (bytes[12]! << 16) | ((bytes[13]! << 24) >>> 0)
+  if (offset < 54 || offset > bytes.length) return false
+  const dibHeaderSize =
+    bytes[14]! | (bytes[15]! << 8) | (bytes[16]! << 16) | ((bytes[17]! << 24) >>> 0)
+  return dibHeaderSize >= 40
+}
+
+export function isCompleteGif(bytes: Uint8Array): boolean {
+  if (bytes.length < 14) return false
+  if (
+    bytes[0] !== 0x47 ||
+    bytes[1] !== 0x49 ||
+    bytes[2] !== 0x46 ||
+    bytes[3] !== 0x38 ||
+    (bytes[4] !== 0x37 && bytes[4] !== 0x39) ||
+    bytes[5] !== 0x61
+  ) {
+    return false
+  }
+  let end = bytes.length - 1
+  while (
+    end > 6 &&
+    (bytes[end] === 0x00 || bytes[end] === 0x0a || bytes[end] === 0x0d || bytes[end] === 0x20)
+  ) {
+    end--
+  }
+  return bytes[end] === 0x3b
+}
+
+export function isCompleteWebp(bytes: Uint8Array): boolean {
+  if (bytes.length < 12) return false
+  if (
+    bytes[0] !== 0x52 ||
+    bytes[1] !== 0x49 ||
+    bytes[2] !== 0x46 ||
+    bytes[3] !== 0x46 ||
+    bytes[8] !== 0x57 ||
+    bytes[9] !== 0x45 ||
+    bytes[10] !== 0x42 ||
+    bytes[11] !== 0x50
+  ) {
+    return false
+  }
+  const riffLen = bytes[4]! | (bytes[5]! << 8) | (bytes[6]! << 16) | ((bytes[7]! << 24) >>> 0)
+  return bytes.length >= riffLen + 8
+}
+
+export function isCompleteTiff(bytes: Uint8Array): boolean {
+  if (bytes.length < 8) return false
+  const isLE = bytes[0] === 0x49 && bytes[1] === 0x49 && bytes[2] === 0x2a && bytes[3] === 0x00
+  const isBE = bytes[0] === 0x4d && bytes[1] === 0x4d && bytes[2] === 0x00 && bytes[3] === 0x2a
+  if (!isLE && !isBE) return false
+  const ifdOffset = isLE
+    ? bytes[4]! | (bytes[5]! << 8) | (bytes[6]! << 16) | ((bytes[7]! << 24) >>> 0)
+    : ((bytes[4]! << 24) >>> 0) | (bytes[5]! << 16) | (bytes[6]! << 8) | bytes[7]!
+  if (ifdOffset < 8 || ifdOffset + 2 > bytes.length) return false
+  const numEntries = isLE
+    ? bytes[ifdOffset]! | (bytes[ifdOffset + 1]! << 8)
+    : (bytes[ifdOffset]! << 8) | bytes[ifdOffset + 1]!
+  return ifdOffset + 2 + numEntries * 12 <= bytes.length
 }
 
 export function detectImageFormat(bytes: Uint8Array): DetectedImageFormat {
@@ -224,8 +284,20 @@ export function prepareForTesseract(bytes: Uint8Array, dpi: number): Uint8Array 
     return null
   }
 
-  if (format === 'bmp' || format === 'gif' || format === 'webp' || format === 'tiff') {
-    return bytes
+  if (format === 'bmp') {
+    return isCompleteBmp(bytes) ? bytes : null
+  }
+
+  if (format === 'gif') {
+    return isCompleteGif(bytes) ? bytes : null
+  }
+
+  if (format === 'webp') {
+    return isCompleteWebp(bytes) ? bytes : null
+  }
+
+  if (format === 'tiff') {
+    return isCompleteTiff(bytes) ? bytes : null
   }
 
   return null

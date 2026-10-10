@@ -147,12 +147,26 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     }
     let retried = 0
     const ids = reader().ids(scope, only)
-    for (const id of only === 'waiting' ? ids.slice(0, 100) : ids) {
-      const result = memory.retryDocument(id)
-      if (result.ok) retried++
+    if (ids.length <= 50) {
+      for (const id of ids) {
+        const result = memory.retryDocument(id)
+        if (result.ok) retried++
+      }
+      folderCounts.invalidate()
+      return { ok: true, retried }
     }
-    folderCounts.invalidate()
-    return { ok: true, retried }
+    return (async () => {
+      const BATCH_SIZE = 50
+      for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+        for (const id of ids.slice(i, i + BATCH_SIZE)) {
+          const result = memory.retryDocument(id)
+          if (result.ok) retried++
+        }
+        if (i + BATCH_SIZE < ids.length) await new Promise((resolve) => setImmediate(resolve))
+      }
+      folderCounts.invalidate()
+      return { ok: true, retried }
+    })()
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.deferIndexFile, (_event, id: unknown) => {

@@ -360,7 +360,7 @@ describe('OCR crash prevention and error handling (JOB OCR-WIN-01)', () => {
         },
       }),
     })
-    await engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' })
+    await engine.recognizePage({ bytes: FIXTURE, dpi: 150, lang: 'vie' })
     expect(capturedOptions).not.toBeNull()
     expect(typeof capturedOptions!.errorHandler).toBe('function')
     await engine.dispose()
@@ -382,7 +382,7 @@ describe('OCR crash prevention and error handling (JOB OCR-WIN-01)', () => {
         },
       }),
     })
-    await engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' })
+    await engine.recognizePage({ bytes: FIXTURE, dpi: 150, lang: 'vie' })
     expect(capturedHandler).not.toBeNull()
     expect(() => capturedHandler!(new Error('Error attempting to read image.'))).not.toThrow()
     expect(() => capturedHandler!('Error attempting to read image.')).not.toThrow()
@@ -406,9 +406,9 @@ describe('OCR crash prevention and error handling (JOB OCR-WIN-01)', () => {
         createWorker: async () => fakeWorker,
       }),
     })
-    await expect(
-      engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' }),
-    ).rejects.toThrow('Error attempting to read image.')
+    await expect(engine.recognizePage({ bytes: FIXTURE, dpi: 150, lang: 'vie' })).rejects.toThrow(
+      'Error attempting to read image.',
+    )
     await engine.dispose()
   })
 
@@ -523,7 +523,7 @@ describe('OCR crash prevention and error handling (JOB OCR-WIN-01)', () => {
     // Timeout triggers disposal of worker
     await expect(
       engine.recognizePage({
-        bytes: new Uint8Array([1, 2, 3]),
+        bytes: FIXTURE,
         dpi: 150,
         lang: 'vie',
         timeoutMs: 50,
@@ -640,9 +640,9 @@ describe('Tesseract worker lifecycle and bounded initialization (JOB OCR2-04)', 
       }),
     })
 
-    await expect(
-      engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' }),
-    ).rejects.toThrow('Tesseract worker initialization timed out')
+    await expect(engine.recognizePage({ bytes: FIXTURE, dpi: 150, lang: 'vie' })).rejects.toThrow(
+      'Tesseract worker initialization timed out',
+    )
 
     expect(terminateCalls).toBe(0)
     // Worker resolves late after timeout has already rejected
@@ -671,9 +671,9 @@ describe('Tesseract worker lifecycle and bounded initialization (JOB OCR2-04)', 
       }),
     })
 
-    await expect(
-      engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' }),
-    ).rejects.toThrow('Tesseract worker initialization timed out')
+    await expect(engine.recognizePage({ bytes: FIXTURE, dpi: 150, lang: 'vie' })).rejects.toThrow(
+      'Tesseract worker initialization timed out',
+    )
 
     expect(terminateCalls).toBe(1)
     await engine.dispose()
@@ -705,7 +705,7 @@ describe('Tesseract worker lifecycle and bounded initialization (JOB OCR2-04)', 
       }),
     })
 
-    const runPromise = engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' })
+    const runPromise = engine.recognizePage({ bytes: FIXTURE, dpi: 150, lang: 'vie' })
     while (!createWorkerCalled) await new Promise((r) => setTimeout(r, 5))
     // dispose while initialization is still pending
     await engine.dispose()
@@ -741,19 +741,123 @@ describe('Tesseract worker lifecycle and bounded initialization (JOB OCR2-04)', 
       }),
     })
 
-    await expect(
-      engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' }),
-    ).rejects.toThrow('Init failed attempt 1')
+    await expect(engine.recognizePage({ bytes: FIXTURE, dpi: 150, lang: 'vie' })).rejects.toThrow(
+      'Init failed attempt 1',
+    )
 
-    await expect(
-      engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' }),
-    ).rejects.toThrow('Init failed attempt 2')
+    await expect(engine.recognizePage({ bytes: FIXTURE, dpi: 150, lang: 'vie' })).rejects.toThrow(
+      'Init failed attempt 2',
+    )
 
     // 3rd attempt succeeds cleanly
-    const result = await engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' })
+    const result = await engine.recognizePage({ bytes: FIXTURE, dpi: 150, lang: 'vie' })
     expect(result.text).toBe('success')
 
     await engine.dispose()
     expect(terminateCalls).toBe(1)
+  })
+
+  it('OCR-REJECT-01: A rejected image is never passed to worker.recognize()', async () => {
+    let recognizeCalled = false
+    const fakeWorker = {
+      setParameters: async () => {},
+      recognize: async () => {
+        recognizeCalled = true
+        return { data: { text: 'should not be called', tsv: '' } }
+      },
+      terminate: async () => {},
+    }
+
+    const engine = new TesseractEngine({
+      langPath: '/mock/lang',
+      loadModule: async () => ({
+        createWorker: async () => fakeWorker,
+      }),
+    })
+
+    // Corrupt bytes (length < 8)
+    await expect(
+      engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' }),
+    ).rejects.toThrow(/invalid or rejected image data/)
+    expect(recognizeCalled).toBe(false)
+
+    // Truncated PNG signature without IEND
+    const truncatedPng = new Uint8Array([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00,
+    ])
+    await expect(
+      engine.recognizePage({ bytes: truncatedPng, dpi: 150, lang: 'vie' }),
+    ).rejects.toThrow(/invalid or rejected image data/)
+    expect(recognizeCalled).toBe(false)
+
+    // HEIC signature
+    const heicBytes = new Uint8Array([
+      0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0,
+    ])
+    await expect(engine.recognizePage({ bytes: heicBytes, dpi: 150, lang: 'vie' })).rejects.toThrow(
+      /invalid or rejected image data/,
+    )
+    expect(recognizeCalled).toBe(false)
+
+    await engine.dispose()
+  })
+
+  it('OCR-PASSTHROUGH-01: Valid progressive JPEG and supported passthrough formats remain recognized', async () => {
+    let passedBytes: Uint8Array | null = null
+    const fakeWorker = {
+      setParameters: async () => {},
+      recognize: async (img: Uint8Array) => {
+        passedBytes = img
+        return { data: { text: 'passthrough recognized', tsv: '' } }
+      },
+      terminate: async () => {},
+    }
+
+    const engine = new TesseractEngine({
+      langPath: '/mock/lang',
+      loadModule: async () => ({
+        createWorker: async () => fakeWorker,
+      }),
+    })
+
+    // Synthetic complete progressive JPEG: SOI, SOF2 (0xc2), SOS (0xda), EOI (0xd9)
+    const progJpeg = new Uint8Array([
+      0xff,
+      0xd8, // SOI
+      0xff,
+      0xc2,
+      0x00,
+      0x0b,
+      0x08,
+      0x00,
+      0x64,
+      0x00,
+      0x64,
+      0x01,
+      0x01,
+      0x11,
+      0x00, // SOF2
+      0xff,
+      0xda,
+      0x00,
+      0x08,
+      0x01,
+      0x01,
+      0x00,
+      0x00,
+      0x3f,
+      0x00, // SOS
+      0x12,
+      0x34, // scan data
+      0xff,
+      0xd9, // EOI
+    ])
+
+    const res = await engine.recognizePage({ bytes: progJpeg, dpi: 150, lang: 'vie' })
+    expect(res.text).toBe('passthrough recognized')
+    expect(passedBytes).not.toBeNull()
+    expect(passedBytes).toBe(progJpeg) // Preserves original validated bytes for passthrough!
+
+    await engine.dispose()
   })
 })

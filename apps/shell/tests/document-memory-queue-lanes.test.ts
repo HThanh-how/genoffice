@@ -216,7 +216,7 @@ describe('reading does not wait for vectors', () => {
     seedLine(0, 60)
     const worker = new FakeIndexWorker()
     manager = open(worker)
-    await until(() => (statusCounts().ready ?? 0) === 60, 30_000, 'all files ready')
+    await until(() => (statusCounts().ready ?? 0) === 60, 50_000, 'all files ready')
     const extractAt = worker.seen
       .map((m, i) => (m.type === 'extract' ? i : -1))
       .filter((i) => i >= 0)

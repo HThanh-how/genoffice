@@ -91,11 +91,51 @@ export class IndexIssueReader {
   search(query: string, limit = 40): IndexedFileHit[] {
     const words = fold(query).split(' ').filter(Boolean)
     if (words.length === 0) return []
-    const rows = this.connection()
-      .prepare('SELECT id, path, name, status, error FROM documents WHERE excluded = 0')
-      .all() as unknown as IssueRow[]
+    const candidateLimit = Math.max(limit * 4, 100)
+    let candidateRows: IssueRow[] = []
+    const ftsTokens = fold(query).match(/[\p{L}\p{N}]+/gu) ?? []
+    const matchQuery = ftsTokens.length ? ftsTokens.map((t) => `"${t}"*`).join(' AND ') : ''
+
+    if (matchQuery) {
+      try {
+        candidateRows = this.connection()
+          .prepare(
+            `
+            SELECT d.id, d.path, d.name, d.status, d.error
+            FROM document_name_fts f
+            JOIN documents d ON d.id = f.rowid
+            WHERE document_name_fts MATCH ? AND d.excluded = 0
+            LIMIT ?
+          `,
+          )
+          .all(matchQuery, candidateLimit) as unknown as IssueRow[]
+      } catch {
+        candidateRows = []
+      }
+    }
+
+    if (candidateRows.length === 0) {
+      // Fallback: bounded parameterized SQL query (avoids unbounded table dump)
+      try {
+        const likeClauses = words.map(() => '(d.name LIKE ? OR d.path LIKE ?)').join(' AND ')
+        const likeParams = words.flatMap((w) => [`%${w}%`, `%${w}%`])
+        candidateRows = this.connection()
+          .prepare(
+            `
+            SELECT d.id, d.path, d.name, d.status, d.error
+            FROM documents d
+            WHERE d.excluded = 0 AND ${likeClauses}
+            LIMIT ?
+          `,
+          )
+          .all(...likeParams, candidateLimit) as unknown as IssueRow[]
+      } catch {
+        candidateRows = []
+      }
+    }
+
     const hits: IssueRow[] = []
-    for (const row of rows) {
+    for (const row of candidateRows) {
       const haystack = fold(`${row.name} ${row.path}`)
       if (words.every((word) => haystack.includes(word))) hits.push(row)
     }

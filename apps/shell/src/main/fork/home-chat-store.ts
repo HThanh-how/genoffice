@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { chmod, mkdir, readdir, readFile, rename, unlink } from 'node:fs/promises'
+import { chmod, mkdir, readdir, readFile, rename, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   HOME_CHAT_LIMITS,
@@ -160,7 +160,10 @@ export class HomeChatStore {
   private queue: Promise<unknown> = Promise.resolve()
   private index: HomeChatSessionSummary[] | null = null
 
-  constructor(private readonly dir: string) {}
+  constructor(
+    private readonly dir: string,
+    private readonly writeFn?: (path: string, data: Uint8Array) => Promise<void>,
+  ) {}
 
   private run<T>(task: () => Promise<T>): Promise<T> {
     const next = this.queue.then(task, task)
@@ -175,7 +178,7 @@ export class HomeChatStore {
 
   private async write(path: string, value: unknown): Promise<void> {
     await mkdir(this.dir, { recursive: true })
-    await atomicWriteFile(path, Buffer.from(JSON.stringify(value)))
+    await (this.writeFn ?? atomicWriteFile)(path, Buffer.from(JSON.stringify(value)))
     // owner-only; best effort (a no-op on Windows)
     await chmod(path, 0o600).catch(() => {})
   }
@@ -187,8 +190,15 @@ export class HomeChatStore {
       const raw = JSON.parse(await readFile(join(this.dir, INDEX_FILE), 'utf8')) as unknown
       if (isObject(raw) && Array.isArray(raw.sessions)) {
         loaded = []
+        let pruned = false
         for (const entry of raw.sessions) {
           if (!isObject(entry) || !isChatSessionId(entry.id)) continue
+          try {
+            await stat(this.file(entry.id))
+          } catch {
+            pruned = true
+            continue
+          }
           loaded.push({
             id: entry.id.toLowerCase(),
             title: cleanChatTitle(entry.title),
@@ -199,6 +209,10 @@ export class HomeChatStore {
                 ? Math.floor(entry.messageCount)
                 : 0,
           })
+        }
+        if (pruned) {
+          this.index = loaded
+          await this.persistIndex().catch(() => {})
         }
       }
     } catch {

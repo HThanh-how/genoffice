@@ -344,6 +344,7 @@ export class DocumentMemoryManager {
     void this.localOcrWiring?.dispose().catch(() => undefined)
     this.store.close()
   }
+  async closeAsync(): Promise<void> { this.close(); await this.host.terminate(); await this.localOcrWiring?.dispose().catch(() => undefined) }
   private enqueue(path: string, prioritize = false, bytes?: number): void {
     if (this.stopped || !this.enabled) return; const p = resolve(path); if (this.activeGeneration.get(p) === this.currentGeneration(p)) return
     if (this.queued.has(p)) { if (prioritize) { const idx = this.queue.indexOf(p); if (idx > 0) { this.queue.splice(idx, 1); this.queue.unshift(p) } }; return }

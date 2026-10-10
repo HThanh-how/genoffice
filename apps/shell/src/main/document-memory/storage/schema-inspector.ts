@@ -3,12 +3,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
 export type SchemaPhysicalState =
-  | 'v2'
-  | 'v3'
-  | 'migration-needed'
-  | 'migration-in-progress'
-  | 'unknown'
-  | 'corrupt'
+  'v2' | 'v3' | 'migration-needed' | 'migration-in-progress' | 'unknown' | 'corrupt'
 
 export type SchemaState = SchemaPhysicalState
 
@@ -73,11 +68,14 @@ function inspectDatabaseHandle(db: DatabaseSync, dbPath?: string): InspectHandle
   }
 
   try {
-    const quickCheckRow = db.prepare('PRAGMA quick_check').get() as { quick_check?: string } | undefined
+    const quickCheckRow = db.prepare('PRAGMA quick_check').get() as
+      { quick_check?: string } | undefined
     if (quickCheckRow?.quick_check !== 'ok') {
       return {
         state: 'corrupt',
-        reasons: [`Database corrupted: quick_check returned ${quickCheckRow?.quick_check ?? 'failed'}`],
+        reasons: [
+          `Database corrupted: quick_check returned ${quickCheckRow?.quick_check ?? 'failed'}`,
+        ],
         tableNames: [],
         hasObsoleteChunkColumns: false,
         hasDocumentEmbeddingCounts: false,
@@ -95,7 +93,7 @@ function inspectDatabaseHandle(db: DatabaseSync, dbPath?: string): InspectHandle
     }
   }
 
-  let tables: string[] = []
+  let tables: string[]
   try {
     tables = (
       db.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{
@@ -158,7 +156,8 @@ function inspectDatabaseHandle(db: DatabaseSync, dbPath?: string): InspectHandle
     reasons.push('chunk_embeddings table is missing (V2 vector storage layout)')
   }
 
-  const autoVacuumRow = db.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number } | undefined
+  const autoVacuumRow = db.prepare('PRAGMA auto_vacuum').get() as
+    { auto_vacuum: number } | undefined
   const autoVacuum = autoVacuumRow?.auto_vacuum ?? 0
   if (autoVacuum !== 2) {
     reasons.push(`PRAGMA auto_vacuum is ${autoVacuum} (expected 2 for INCREMENTAL)`)
