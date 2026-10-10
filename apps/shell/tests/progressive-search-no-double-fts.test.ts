@@ -69,8 +69,8 @@ describe('Progressive Search: No Double Lexical FTS Query', () => {
     managers = []
   })
 
-  afterEach(() => {
-    for (const m of managers) m.close()
+  afterEach(async () => {
+    for (const m of managers) await m.closeAsync()
     resetIndexingPolicyBus()
     rmSync(dir, { recursive: true, force: true })
   })
@@ -93,7 +93,11 @@ describe('Progressive Search: No Double Lexical FTS Query', () => {
       mtimeMs: 1000,
       sizeBytes: 200,
       chunks: [
-        { text: 'Financial summary and revenue for annual report', location: 'Page 1', vector: mockVector320() },
+        {
+          text: 'Financial summary and revenue for annual report',
+          location: 'Page 1',
+          vector: mockVector320(),
+        },
       ],
       status: 'ready',
       embeddingModel: EMBEDDING_PROFILES.standard.embeddingId,

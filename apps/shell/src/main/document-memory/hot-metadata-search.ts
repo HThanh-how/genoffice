@@ -178,22 +178,10 @@ export class HotMetadataSearch {
             : `(${variants.map((v) => `"${v}"*`).join(' OR ')})`
         })
         const ftsQuery = wordClauses.join(' AND ')
-        let ftsRows = this.searchNameStatement.all(
+        const ftsRows = this.searchNameStatement.all(
           ftsQuery,
           candidateLimit - rows.length,
         ) as unknown as CandidateRow[]
-        if (ftsRows.length === 0 && targetWords.length > 1) {
-          const fallbackQuery = targetWords
-            .filter((w) => w.length >= 3 && isNaN(Number(w)))
-            .map((w) => `"${w.replace(/["*]/g, '')}"*`)
-            .join(' OR ')
-          if (fallbackQuery) {
-            ftsRows = this.searchNameStatement.all(
-              fallbackQuery,
-              candidateLimit - rows.length,
-            ) as unknown as CandidateRow[]
-          }
-        }
         for (const r of ftsRows) {
           if (!seenIds.has(r.id)) {
             seenIds.add(r.id)

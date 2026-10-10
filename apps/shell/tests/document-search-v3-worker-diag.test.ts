@@ -38,10 +38,10 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
     activeStores = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const m of activeManagers) {
       try {
-        m.close()
+        await m.closeAsync()
       } catch {
         // ignore
       }
@@ -109,8 +109,7 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
         r.type === 'storage-diagnostics',
     )
     const handshakeRequests = receivedRequests.filter(
-      (r): r is StorageBudgetWorkerRequest & { id: number } =>
-        r.type === 'set-storage-budget',
+      (r): r is StorageBudgetWorkerRequest & { id: number } => r.type === 'set-storage-budget',
     )
 
     // Verify worker factory invoked exactly once
@@ -183,7 +182,10 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
     // Test catastrophic worker error event propagation
     const catastrophicWorker = Object.assign(new EventEmitter(), {
       postMessage: vi.fn((_msg: WorkerRequest & { id: number }) => {
-        catastrophicWorker.emit('error', new Error('Segmentation fault inside worker sqlite runtime'))
+        catastrophicWorker.emit(
+          'error',
+          new Error('Segmentation fault inside worker sqlite runtime'),
+        )
       }),
       terminate: vi.fn(() => Promise.resolve(0)),
     })
@@ -231,7 +233,7 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
   // =========================================================================
   // WORKERDIAG-04: main adapter doesn't directly call repository
   // =========================================================================
-  it('WORKERDIAG-04 main adapter doesn\'t directly call repository', async () => {
+  it("WORKERDIAG-04 main adapter doesn't directly call repository", async () => {
     const mockWorker = Object.assign(new EventEmitter(), {
       postMessage: vi.fn((msg: WorkerRequest & { id: number }) => {
         if (msg.type === 'set-storage-budget') {
@@ -281,7 +283,7 @@ describe('Pair 10: Diagnostics Worker Isolation Invariants Suite (QA-10)', () =>
   // =========================================================================
   // WORKERDIAG-05: repeated calls don't spawn workers
   // =========================================================================
-  it('WORKERDIAG-05 repeated calls don\'t spawn workers', async () => {
+  it("WORKERDIAG-05 repeated calls don't spawn workers", async () => {
     let workerSpawnCount = 0
     const receivedRequests: Array<WorkerRequest & { id: number }> = []
 

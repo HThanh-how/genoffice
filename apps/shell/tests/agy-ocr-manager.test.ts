@@ -19,8 +19,8 @@ let reader: DocumentMemoryStore | undefined
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-ocr-manager-'))
 })
-afterEach(() => {
-  manager?.close()
+afterEach(async () => {
+  await manager?.closeAsync()
   reader?.close()
   manager = undefined
   reader = undefined
@@ -57,7 +57,9 @@ class InProcessWorker extends EventEmitter {
           this.emit('message', { type: 'model', state: 'ready' })
           this.emit('message', {
             id: message.id,
-            result: (message.texts ?? []).map(() => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)),
+            result: (message.texts ?? []).map(() =>
+              new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1),
+            ),
           })
         } else {
           this.emit('message', { id: message.id, result: [] })

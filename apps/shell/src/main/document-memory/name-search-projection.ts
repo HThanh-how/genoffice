@@ -493,7 +493,7 @@ export function buildProjectionCandidateFtsQuery(words: readonly string[]): stri
 
   // 1. Exact / prefix tokens for each word
   for (const w of safeWords) {
-    if (safeWords.length >= 2 && (w.length < 2 || !isNaN(Number(w)))) continue
+    if (safeWords.length >= 2 && w.length < 2) continue
     // Codes like HD433 also match HD0433 (leading zeros differ), so every spelling is a candidate.
     for (const variant of identifierVariants(w)) {
       nameClauses.push(`"${variant}"*`)

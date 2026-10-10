@@ -22,10 +22,10 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
     managers = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const m of managers) {
       try {
-        m.close()
+        await m.closeAsync()
       } catch {
         // ignore errors during teardown
       }

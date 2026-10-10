@@ -20,8 +20,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-memory-manager-'))
   managers = []
 })
-afterEach(() => {
-  for (const manager of managers) manager.close()
+afterEach(async () => {
+  for (const manager of managers) await manager.closeAsync()
   resetIndexingPolicyBus()
   rmSync(dir, { recursive: true, force: true })
 })

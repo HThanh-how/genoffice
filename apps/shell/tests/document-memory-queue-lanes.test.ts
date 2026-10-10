@@ -40,8 +40,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-lanes-'))
   mkdirSync(join(dir, 'files'))
 })
-afterEach(() => {
-  manager?.close()
+afterEach(async () => {
+  await manager?.closeAsync()
   manager = undefined
   rmSync(dir, { recursive: true, force: true })
 })

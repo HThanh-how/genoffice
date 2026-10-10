@@ -102,8 +102,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-turns-'))
   workers = []
 })
-afterEach(() => {
-  manager?.close()
+afterEach(async () => {
+  await manager?.closeAsync()
   manager = undefined
   rmSync(dir, { recursive: true, force: true })
 })

@@ -41,8 +41,8 @@ describe('startup embedding profile (fresh install vs existing index)', () => {
     workerEnv = []
     overrideInstalledOrtVersion('1.23.2')
   })
-  afterEach(() => {
-    for (const m of managers) m.close()
+  afterEach(async () => {
+    for (const m of managers) await m.closeAsync()
     overrideInstalledOrtVersion(undefined)
     rmSync(dir, { recursive: true, force: true })
   })
