@@ -203,14 +203,11 @@ export class HotMetadataSearch {
         // 3. Relaxed multi-word fallback when fewer than limit candidates matched strict conjunctive queries
         if (rows.length < limit && words.length > 2) {
           const selectiveRelaxedWords = targetWords.filter((w) => w.length >= 3 && isNaN(Number(w)))
-          if (selectiveRelaxedWords.length >= need) {
-            const relaxedClauses = selectiveRelaxedWords.map((w) => {
-              const variants = identifierVariants(w.replace(/["*]/g, ''))
-              return variants.length === 1
-                ? `"${variants[0]}"*`
-                : `(${variants.map((v) => `"${v}"*`).join(' OR ')})`
-            })
-            const relaxedQuery = relaxedClauses.join(' AND ')
+          const relaxedTokens = selectiveRelaxedWords.flatMap((w) =>
+            identifierVariants(w.replace(/["*]/g, '')).map((v) => `"${v}"*`),
+          )
+          if (relaxedTokens.length > 0) {
+            const relaxedQuery = relaxedTokens.join(' OR ')
             const relaxedRows = this.searchNameStatement.all(
               relaxedQuery,
               candidateLimit - rows.length,

@@ -342,13 +342,13 @@ function buildMediaProjection(name: string, path: string): DocumentProjectionTok
   const stemWords = normalizeDocumentText(name.replace(/\.[^/.]+$/, ''))
     .split(' ')
     .filter(Boolean)
-  const nameTokens = new Set(stemWords.filter((w) => w.length <= MAX_COMPONENT_LENGTH).slice(0, 16))
-  const joined = stemWords.slice(0, 6).join('')
+  const nameTokens = new Set(stemWords.filter((w) => w.length <= MAX_COMPONENT_LENGTH).slice(0, 8))
+  const joined = stemWords.slice(0, 4).join('')
   if (stemWords.length >= 2 && joined.length <= MAX_COMPONENT_LENGTH) nameTokens.add(joined)
   const pathTokens = new Set<string>()
-  for (const dir of extractMeaningfulPathSegments(path, 3)) {
+  for (const dir of extractMeaningfulPathSegments(path, 3).reverse()) {
     for (const word of normalizeDocumentText(dir).split(' ')) {
-      if (word && word.length <= MAX_COMPONENT_LENGTH && pathTokens.size < 12) pathTokens.add(word)
+      if (word && word.length <= MAX_COMPONENT_LENGTH && pathTokens.size < 8) pathTokens.add(word)
     }
   }
   return {

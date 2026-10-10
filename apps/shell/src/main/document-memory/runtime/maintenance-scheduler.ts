@@ -662,19 +662,11 @@ export class MaintenanceScheduler {
     }
 
     let annIndexesMeta: Array<{ space_id: string; file_path: string | null }> | undefined
-    let reusableFreelistBytes: number | undefined
     try {
       if (!this.isStopped() && this.store.rawDb) {
         annIndexesMeta = this.store.rawDb
           .prepare('SELECT space_id, file_path FROM ann_indexes')
           .all() as Array<{ space_id: string; file_path: string | null }>
-      }
-    } catch {
-      // non-blocking
-    }
-    try {
-      if (!this.isStopped() && this.store.rawDb) {
-        reusableFreelistBytes = this.store.getStorageFreelistStats().reclaimableBytes
       }
     } catch {
       // non-blocking
@@ -685,7 +677,6 @@ export class MaintenanceScheduler {
         {
           dbPath: this.store.dbPath,
           annIndexesMeta,
-          reusableFreelistBytes,
         },
         this.lastAccountingReport,
       )

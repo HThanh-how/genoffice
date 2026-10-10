@@ -1413,7 +1413,7 @@ export class DocumentRepository {
     let removed = 0
     let scanned = 0
     for (;;) {
-      const rows = page.all(cursor, options.pageSize ?? 200) as Array<{ id: number; name: string }>
+      const rows = page.all(cursor, options.pageSize ?? 50) as Array<{ id: number; name: string }>
       if (rows.length === 0) {
         this.db.exec('BEGIN IMMEDIATE')
         try {
