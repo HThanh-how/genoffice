@@ -53,19 +53,9 @@ beforeEach(() => {
 })
 afterEach(async () => {
   for (const m of managers) {
-    try {
-      m.close()
-    } catch {}
+    await m.closeAsync()
   }
-  await new Promise((r) => setTimeout(r, 50))
-  try {
-    rmSync(dir, { recursive: true, force: true })
-  } catch {
-    await new Promise((r) => setTimeout(r, 100))
-    try {
-      rmSync(dir, { recursive: true, force: true })
-    } catch {}
-  }
+  rmSync(dir, { recursive: true, force: true })
 })
 
 async function start(
