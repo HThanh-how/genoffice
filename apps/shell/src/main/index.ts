@@ -333,7 +333,7 @@ import { pasteFiles } from './fork/folder-paste'
 import { isInsidePath, outermostPaths } from '../shared/path-nesting'
 import { tabMenuTemplate, tabMenuWords, type TabMenuActions } from './fork/tab-menu'
 import { isProgramFile } from './everything/junk'
-import { applyPendingDbMove, resolveDbDir } from './document-memory/db-location'
+import { applyPendingDbMove, isDbDirAccessible, resolveDbDir } from './document-memory/db-location'
 import { registerDbLocationIpc } from './fork/db-location-ipc'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
 import { initClipboardHistory, registerClipboardHistory } from './fork/clipboard-history-ipc'
@@ -7032,10 +7032,10 @@ app.whenReady().then(async () => {
   // migration take minutes on a multi-gigabyte index, so they run in a worker thread while the window opens: the
   // index stays closed (documentMemory === null) until attachDocumentMemory() runs with the verified result.
   let storageBootstrap: Promise<BootstrapResult> | null = null
-  if (dbMove.error) {
+  if (dbMove.error || !isDbDirAccessible(indexDbDir)) {
     console.error(
-      '[document-memory] Critical: Index move failed, entering fail-closed mode:',
-      dbMove.error,
+      '[document-memory] Critical: Index move failed or storage directory inaccessible, entering fail-closed mode:',
+      dbMove.error ?? 'inaccessible',
     )
     documentMemory = null
     storageStartup.set('unavailable')
