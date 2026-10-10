@@ -170,6 +170,7 @@ export class HotMetadataSearch {
     if (rows.length < limit) {
       try {
         const selectiveWords = words.filter((w) => w.length >= 2 || isNaN(Number(w)))
+        const targetWords = selectiveWords.length > 0 ? selectiveWords : words
         const wordClauses = targetWords.map((w) => {
           const variants = identifierVariants(w.replace(/["*]/g, ''))
           return variants.length === 1
