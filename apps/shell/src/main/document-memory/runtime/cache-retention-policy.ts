@@ -722,9 +722,7 @@ export async function executeCacheRetentionPolicy(
     }
 
     report.bytesAfter = currentPhysical
-    report.targetReached =
-      report.bytesAfter <= targetFloor ||
-      (report.bytesAfter - targetFloor <= 64 * 1024 && report.bytesAfter <= report.budgetBytes)
+    report.targetReached = report.bytesAfter <= targetFloor
 
     if (report.targetReached) {
       report.stoppedReason = 'target-reached'
