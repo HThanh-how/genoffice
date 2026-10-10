@@ -170,15 +170,29 @@ export class HotMetadataSearch {
     if (rows.length < limit) {
       try {
         const selectiveWords = words.filter((w) => w.length >= 2 || isNaN(Number(w)))
-        const targetWords = selectiveWords.length > 0 ? selectiveWords : words
-        const ftsTokens = targetWords.flatMap((w) =>
-          identifierVariants(w.replace(/["*]/g, '')).map((variant) => `"${variant}"*`),
-        )
-        const ftsQuery = ftsTokens.join(' OR ')
-        const ftsRows = this.searchNameStatement.all(
+        const wordClauses = targetWords.map((w) => {
+          const variants = identifierVariants(w.replace(/["*]/g, ''))
+          return variants.length === 1
+            ? `"${variants[0]}"*`
+            : `(${variants.map((v) => `"${v}"*`).join(' OR ')})`
+        })
+        const ftsQuery = wordClauses.join(' AND ')
+        let ftsRows = this.searchNameStatement.all(
           ftsQuery,
           candidateLimit - rows.length,
         ) as unknown as CandidateRow[]
+        if (ftsRows.length === 0 && targetWords.length > 1) {
+          const fallbackQuery = targetWords
+            .filter((w) => w.length >= 3 && isNaN(Number(w)))
+            .map((w) => `"${w.replace(/["*]/g, '')}"*`)
+            .join(' OR ')
+          if (fallbackQuery) {
+            ftsRows = this.searchNameStatement.all(
+              fallbackQuery,
+              candidateLimit - rows.length,
+            ) as unknown as CandidateRow[]
+          }
+        }
         for (const r of ftsRows) {
           if (!seenIds.has(r.id)) {
             seenIds.add(r.id)

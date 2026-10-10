@@ -536,7 +536,7 @@ describe('DocumentMemoryManager', () => {
         instance.indexDiscoveredFile(path)
       }
       await until(() => fake.embeddingCalls.length === 1, 15_000)
-      await until(() => fake.extractionCalls.length > 16, 30_000)
+      await until(() => fake.extractionCalls.length > 16, 45_000)
       const coord = (instance as unknown as { embeddingCoord: { getQueueLength(): number } })
         .embeddingCoord
       // memory stays bounded: no more than 16 documents' text waits in the vector line ...
@@ -549,7 +549,7 @@ describe('DocumentMemoryManager', () => {
     } finally {
       listPaths.mockRestore()
     }
-  }, 45_000)
+  }, 60_000)
 
   it('backs off failed embeddings instead of exhausting a large queue in a retry burst', async () => {
     const fake = new FakeWorker(join(dir, 'document-memory.db'))

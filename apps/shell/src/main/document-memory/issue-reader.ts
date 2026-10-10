@@ -62,7 +62,14 @@ export class IndexIssueReader {
   constructor(private readonly dbPath: string) {}
 
   private connection(): DatabaseSync {
-    this.db ??= new DatabaseSync(this.dbPath, { readOnly: true })
+    if (!this.db) {
+      this.db = new DatabaseSync(this.dbPath, { readOnly: true })
+      try {
+        this.db.exec(
+          'PRAGMA busy_timeout = 5000; PRAGMA cache_size = -16384; PRAGMA mmap_size = 67108864;',
+        )
+      } catch {}
+    }
     return this.db
   }
 
@@ -185,12 +192,16 @@ export class IndexIssueReader {
     // 3. Unprojected documents check (only if projection table exists and unprojected docs exist)
     if (hits.length < limit && hasNameProjection(db)) {
       try {
-        const hasUnprojected = db
-          .prepare(
-            'SELECT 1 FROM documents d LEFT JOIN document_name_projection p ON p.document_id = d.id WHERE d.excluded = 0 AND p.document_id IS NULL LIMIT 1',
-          )
-          .get()
-        if (hasUnprojected) {
+        const docCount =
+          (
+            db.prepare('SELECT count(*) AS c FROM documents WHERE excluded = 0').get() as {
+              c?: number
+            }
+          )?.c ?? 0
+        const projCount =
+          (db.prepare('SELECT count(*) AS c FROM document_name_projection').get() as { c?: number })
+            ?.c ?? 0
+        if (docCount > projCount) {
           const unprojected = db
             .prepare(
               `

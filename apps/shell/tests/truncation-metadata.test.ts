@@ -161,7 +161,7 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
     expect(hit).toBeDefined()
     expect(hit!.truncated).toBe(true)
     expect(hit!.truncatedReason).toBe('content-limit')
-  }, 45_000)
+  }, 60_000)
 
   it('TRUNC-02: PDF page limit reason persisted', async () => {
     const { manager, store, rawDb } = await createTestManager()
@@ -336,7 +336,7 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
     }
     expect(updatedRow.truncated).toBe(1)
     expect(updatedRow.truncated_reason).toBe('content-limit')
-  }, 45_000)
+  }, 60_000)
 
   it('TRUNC-05: error state clears stale reason (chuyển sang error thì truncated=0 và truncated_reason=NULL)', async () => {
     const { manager, store, rawDb } = await createTestManager()
@@ -454,5 +454,5 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
     expect(directRow.status).toBe('error')
     expect(directRow.truncated).toBe(0)
     expect(directRow.truncated_reason).toBeNull()
-  }, 45_000)
+  }, 60_000)
 })

@@ -26,5 +26,6 @@ packages/html2docx/src/browser/
 # ISO/IEC 29500 schemas: keep byte-identical to the published files (one marked amendment).
 tools/ooxml-validate/schemas/
 
-# Condensed architecture boundary file with strict LOC limit (< 500 LOC).
+# Condensed architecture boundary files with strict LOC limits (< 500 LOC, <= 400 LOC).
 apps/shell/src/main/document-memory/manager.ts
+apps/shell/src/main/document-memory/store.ts
