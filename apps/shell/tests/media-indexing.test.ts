@@ -583,15 +583,13 @@ describe('privacy: sensitive marker and the OCR gates', () => {
     const receipt = local.find((c) => c.path.endsWith('receipt.jpg'))!
     markImageOcr(store.rawDb, receipt.documentId, IMAGE_OCR_STATE.done)
     expect(
-      selectImageOcrCandidates(store.rawDb, { engine: 'local' }).map((c) =>
-        c.path.split('/').pop(),
-      ),
+      selectImageOcrCandidates(store.rawDb, { engine: 'local' }).map((c) => basename(c.path)),
     ).toEqual(['passport.jpg'])
     writeSparse(receipt.path, jpeg(1100, 700), PHOTO_BYTES + 10)
     await scan(root())
     expect(
       selectImageOcrCandidates(store.rawDb, { engine: 'local' })
-        .map((c) => c.path.split('/').pop())
+        .map((c) => basename(c.path))
         .sort(),
     ).toEqual(['passport.jpg', 'receipt.jpg'])
   })

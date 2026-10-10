@@ -30,7 +30,11 @@ import {
 } from '../../name-search-projection'
 import type { SyncMetadataGuard } from '../../runtime/sync-metadata-admission'
 import { hasContentEvictedColumn } from '../migration/cache-retention'
-import { clearVectorEvictions, hasVectorEvictionTable, VECTOR_EVICTION_APPLIES_SQL } from '../vector-eviction-marker'
+import {
+  clearVectorEvictions,
+  hasVectorEvictionTable,
+  VECTOR_EVICTION_APPLIES_SQL,
+} from '../vector-eviction-marker'
 import { mediaKindOfPath } from '../../media/media-kinds'
 import { enrollMediaRow, type MediaEnrollResult } from '../../media/media-enrollment'
 import { isMediaDocument } from '../../media/media-repository'
@@ -44,10 +48,7 @@ export type {
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
 export type TruncatedReason =
-  | 'chunk-limit'
-  | 'content-limit'
-  | 'pdf-page-limit'
-  | 'tabular-sampling'
+  'chunk-limit' | 'content-limit' | 'pdf-page-limit' | 'tabular-sampling'
 
 export interface StoredDocument {
   id: number
@@ -128,7 +129,9 @@ export interface SliceOptions {
   budgetMs?: number
   maxBatchBytes?: number
   maxBatchChunks?: number
-  beforeBatch?: (info: BatchSliceInfo) => Promise<boolean | BatchHookDecision> | boolean | BatchHookDecision
+  beforeBatch?: (
+    info: BatchSliceInfo,
+  ) => Promise<boolean | BatchHookDecision> | boolean | BatchHookDecision
   postCommit?: (info: BatchCommitInfo) => Promise<void> | void
   estimateChunkBytes?: (chunk: ReplacementDocument['chunks'][number]) => number
 }
@@ -139,7 +142,11 @@ export const CONTENT_BATCH_DEFAULT_MAX_CHUNKS = 50
 export const MAX_SINGLE_CHUNK_TEXT_CHARS = 32_768
 export const BASE_METADATA_WRITE_BYTES = 1024
 
-function defaultEstimateChunkBytes(chunk: { text: string; location?: string; vector?: number[] }): number {
+function defaultEstimateChunkBytes(chunk: {
+  text: string
+  location?: string
+  vector?: number[]
+}): number {
   const textBytes = Buffer.byteLength(chunk.text || '', 'utf8')
   const locBytes = Buffer.byteLength(chunk.location || '', 'utf8')
   const vectorBytes = chunk.vector && Array.isArray(chunk.vector) ? chunk.vector.length * 4 + 64 : 0
@@ -238,8 +245,14 @@ export class DocumentRepository {
     return this.lastAdmissionError ?? this.getEffectiveSyncGuard()?.getLastRejectionReason()
   }
 
-  private ensureDocumentInternal(norm: string): { admitted: boolean; reservationId?: string; ownerToken?: string; isNew?: boolean } {
-    const existing = this.db.prepare('SELECT id FROM documents WHERE path = ?').get(norm) as { id: number } | undefined
+  private ensureDocumentInternal(norm: string): {
+    admitted: boolean
+    reservationId?: string
+    ownerToken?: string
+    isNew?: boolean
+  } {
+    const existing = this.db.prepare('SELECT id FROM documents WHERE path = ?').get(norm) as
+      { id: number } | undefined
     const name = basename(norm)
     const guard = this.getEffectiveSyncGuard()
 
@@ -261,7 +274,9 @@ export class DocumentRepository {
         ownerToken = decision.ownerToken
       }
       try {
-        if (!syncProjectionInsert(this.db, { id: existing.id, path: norm, name }, guard ?? undefined)) {
+        if (
+          !syncProjectionInsert(this.db, { id: existing.id, path: norm, name }, guard ?? undefined)
+        ) {
           throw new Error('Storage admission rejected projection write')
         }
         return { admitted: true, isNew: false, reservationId, ownerToken }
@@ -289,7 +304,8 @@ export class DocumentRepository {
           `INSERT INTO documents(path, name, status, chunk_counted) VALUES (?, ?, 'pending', 1) ON CONFLICT(path) DO NOTHING`,
         )
         .run(norm, name)
-      const row = this.db.prepare('SELECT id FROM documents WHERE path = ?').get(norm) as { id: number } | undefined
+      const row = this.db.prepare('SELECT id FROM documents WHERE path = ?').get(norm) as
+        { id: number } | undefined
       if (row) {
         syncProjectionInsert(this.db, { id: row.id, path: norm, name }, guard ?? undefined)
       }
@@ -306,7 +322,9 @@ export class DocumentRepository {
     const norm = resolve(path)
     const guard = this.getEffectiveSyncGuard()
     this.db.exec('SAVEPOINT ensure_doc')
-    let res: { admitted: boolean; reservationId?: string; ownerToken?: string; isNew?: boolean } | undefined
+    let res:
+      | { admitted: boolean; reservationId?: string; ownerToken?: string; isNew?: boolean }
+      | undefined
     try {
       res = this.ensureDocumentInternal(norm)
       if (!res.admitted) {
@@ -369,7 +387,9 @@ export class DocumentRepository {
     if (mediaKindOfPath(normalizedPath)) {
       try {
         const file = statSync(normalizedPath)
-        const outcome = file.isFile() ? this.enrollMedia(normalizedPath, file.mtimeMs, file.size).outcome : 'skipped'
+        const outcome = file.isFile()
+          ? this.enrollMedia(normalizedPath, file.mtimeMs, file.size).outcome
+          : 'skipped'
         return outcome !== 'refused' && outcome !== 'skipped' && outcome !== 'excluded'
       } catch {
         return false
@@ -382,7 +402,9 @@ export class DocumentRepository {
     let ownerToken: string | undefined
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const existing = this.db.prepare('SELECT id FROM documents WHERE path = ?').get(normalizedPath) as { id: number } | undefined
+      const existing = this.db
+        .prepare('SELECT id FROM documents WHERE path = ?')
+        .get(normalizedPath) as { id: number } | undefined
       const proj = buildDocumentProjection(fileName, normalizedPath)
       const isUpToDate = existing ? isProjectionUpToDate(this.db, existing.id, proj) : false
 
@@ -419,9 +441,14 @@ export class DocumentRepository {
           priority_at = CASE WHEN documents.excluded = 0 THEN max(excluded.priority_at, coalesce(documents.mtime_ms, 0)) ELSE documents.priority_at END`,
         )
         .run(normalizedPath, fileName, openedAt, openedAt)
-      const row = this.db.prepare('SELECT id FROM documents WHERE path = ?').get(normalizedPath) as { id: number } | undefined
+      const row = this.db.prepare('SELECT id FROM documents WHERE path = ?').get(normalizedPath) as
+        { id: number } | undefined
       if (row && (!existing || !isUpToDate)) {
-        syncProjectionInsert(this.db, { id: row.id, path: normalizedPath, name: fileName }, guard ?? undefined)
+        syncProjectionInsert(
+          this.db,
+          { id: row.id, path: normalizedPath, name: fileName },
+          guard ?? undefined,
+        )
       }
       this.db.exec('COMMIT')
       if (guard && reservationId && ownerToken) {
@@ -451,7 +478,11 @@ export class DocumentRepository {
     let ownerToken: string | undefined
     this.db.exec('BEGIN IMMEDIATE')
     try {
-      const existing = this.db.prepare('SELECT id, mtime_ms, size_bytes, status FROM documents WHERE path = ?').get(normalizedPath) as { id: number; mtime_ms: number | null; size_bytes: number | null; status: string } | undefined
+      const existing = this.db
+        .prepare('SELECT id, mtime_ms, size_bytes, status FROM documents WHERE path = ?')
+        .get(normalizedPath) as
+        | { id: number; mtime_ms: number | null; size_bytes: number | null; status: string }
+        | undefined
       const proj = buildDocumentProjection(fileName, normalizedPath)
       const isUpToDate = existing ? isProjectionUpToDate(this.db, existing.id, proj) : false
 
@@ -495,7 +526,11 @@ export class DocumentRepository {
         return false
       }
       if (!existing || !isUpToDate) {
-        syncProjectionInsert(this.db, { id: document.id, path: normalizedPath, name: fileName }, guard ?? undefined)
+        syncProjectionInsert(
+          this.db,
+          { id: document.id, path: normalizedPath, name: fileName },
+          guard ?? undefined,
+        )
       }
       this.db.exec('COMMIT')
       if (guard && reservationId && ownerToken) {
@@ -632,7 +667,9 @@ export class DocumentRepository {
         return false
       }
       const hasActiveCachedContent =
-        (doc.hash !== null && doc.hash.length > 0) || doc.status === 'ready' || doc.status === 'text-only'
+        (doc.hash !== null && doc.hash.length > 0) ||
+        doc.status === 'ready' ||
+        doc.status === 'text-only'
       const newStatus = hasActiveCachedContent ? 'pending' : 'error'
       const shouldUpdateMeta = !hasActiveCachedContent && metadata !== undefined
       const newMtime = shouldUpdateMeta ? (metadata?.mtimeMs ?? null) : doc.mtimeMs
@@ -651,7 +688,11 @@ export class DocumentRepository {
     }
   }
 
-  lockDocumentForReplace(normalizedPath: string): { id: number; reservationId?: string; ownerToken?: string } {
+  lockDocumentForReplace(normalizedPath: string): {
+    id: number
+    reservationId?: string
+    ownerToken?: string
+  } {
     const res = this.ensureDocumentInternal(normalizedPath)
     const row = this.db
       .prepare('SELECT id, excluded FROM documents WHERE path = ?')
@@ -699,9 +740,16 @@ export class DocumentRepository {
       )
     const proj = buildDocumentProjection(fileName, normalizedPath)
     if (!isProjectionUpToDate(this.db, id, proj)) {
-      syncProjectionUpdate(this.db, { id, path: normalizedPath, name: fileName }, this.getEffectiveSyncGuard() ?? undefined)
+      syncProjectionUpdate(
+        this.db,
+        { id, path: normalizedPath, name: fileName },
+        this.getEffectiveSyncGuard() ?? undefined,
+      )
     }
-    const textSample = replacement.chunks.slice(0, 5).map((c) => c.text).join(' ')
+    const textSample = replacement.chunks
+      .slice(0, 5)
+      .map((c) => c.text)
+      .join(' ')
     const inference = inferDocumentImportance({
       name: basename(normalizedPath),
       path: normalizedPath,
@@ -843,14 +891,16 @@ export class DocumentRepository {
       (hasVectorEvictionTable(this.db) ? ` AND NOT ${VECTOR_EVICTION_APPLIES_SQL}` : '')
     const cursor = after ? ' AND (priority_at < ? OR (priority_at = ? AND id < ?))' : ''
     const args: Array<number> = after ? [after.priorityAt, after.priorityAt, after.id] : []
-    return (
-      this.db
-        .prepare(
-          `SELECT path, priority_at AS priorityAt, id FROM documents WHERE excluded = 0 AND status IN ('pending', 'text-only')${evictedClause}${cursor}
+    return this.db
+      .prepare(
+        `SELECT path, priority_at AS priorityAt, id FROM documents WHERE excluded = 0 AND status IN ('pending', 'text-only')${evictedClause}${cursor}
           ORDER BY priority_at DESC, id DESC LIMIT ?`,
-        )
-        .all(...args, Math.max(1, Math.floor(limit))) as unknown as Array<{ path: string; priorityAt: number; id: number }>
-    )
+      )
+      .all(...args, Math.max(1, Math.floor(limit))) as unknown as Array<{
+      path: string
+      priorityAt: number
+      id: number
+    }>
   }
 
   documentsUnderPage(root: string, afterId: number, limit: number): StoredDocument[] {
@@ -937,13 +987,15 @@ export class DocumentRepository {
     const guard = this.getEffectiveSyncGuard()
 
     const rawMaxBytes = options.maxBatchBytes ?? CONTENT_BATCH_DEFAULT_MAX_BYTES
-    const maxBatchBytes = Number.isFinite(rawMaxBytes) && Math.floor(rawMaxBytes) >= 512
-      ? Math.floor(rawMaxBytes)
-      : CONTENT_BATCH_DEFAULT_MAX_BYTES
+    const maxBatchBytes =
+      Number.isFinite(rawMaxBytes) && Math.floor(rawMaxBytes) >= 512
+        ? Math.floor(rawMaxBytes)
+        : CONTENT_BATCH_DEFAULT_MAX_BYTES
     const rawMaxChunks = options.maxBatchChunks ?? CONTENT_BATCH_DEFAULT_MAX_CHUNKS
-    const maxBatchChunks = Number.isFinite(rawMaxChunks) && Math.floor(rawMaxChunks) >= 1
-      ? Math.floor(rawMaxChunks)
-      : CONTENT_BATCH_DEFAULT_MAX_CHUNKS
+    const maxBatchChunks =
+      Number.isFinite(rawMaxChunks) && Math.floor(rawMaxChunks) >= 1
+        ? Math.floor(rawMaxChunks)
+        : CONTENT_BATCH_DEFAULT_MAX_CHUNKS
     const rawBudgetMs = options.budgetMs ?? WRITE_SLICE_MS
     const budgetMs = Number.isFinite(rawBudgetMs) && rawBudgetMs > 0 ? rawBudgetMs : WRITE_SLICE_MS
 
@@ -1083,10 +1135,12 @@ export class DocumentRepository {
       while (scanIdx < N) {
         const cBytes = chunkBytes[scanIdx]!
         const willBeFinal = scanIdx + 1 >= N
-        const candidateMeta = (first ? BASE_METADATA_WRITE_BYTES : 0) + (willBeFinal ? BASE_METADATA_WRITE_BYTES : 0)
+        const candidateMeta =
+          (first ? BASE_METADATA_WRITE_BYTES : 0) + (willBeFinal ? BASE_METADATA_WRITE_BYTES : 0)
         if (
           batchChunkCount > 0 &&
-          (batchChunkCount >= maxBatchChunks || batchEstimatedBytes + cBytes + candidateMeta > maxBatchBytes)
+          (batchChunkCount >= maxBatchChunks ||
+            batchEstimatedBytes + cBytes + candidateMeta > maxBatchBytes)
         ) {
           break
         }
@@ -1096,7 +1150,8 @@ export class DocumentRepository {
       }
 
       const isFinalBatch = scanIdx >= N
-      const batchMetadataBytes = (first ? BASE_METADATA_WRITE_BYTES : 0) + (isFinalBatch ? BASE_METADATA_WRITE_BYTES : 0)
+      const batchMetadataBytes =
+        (first ? BASE_METADATA_WRITE_BYTES : 0) + (isFinalBatch ? BASE_METADATA_WRITE_BYTES : 0)
       const totalRemainingBytes = suffixRemaining[next] + BASE_METADATA_WRITE_BYTES
 
       if (options.beforeBatch) {
@@ -1136,7 +1191,9 @@ export class DocumentRepository {
           chunkSetId = createBuildingSet(this.db, documentId, 2)
           first = false
         } else {
-          const row = this.db.prepare('SELECT id, excluded FROM documents WHERE id = ?').get(documentId) as { id: number; excluded: number } | undefined
+          const row = this.db
+            .prepare('SELECT id, excluded FROM documents WHERE id = ?')
+            .get(documentId) as { id: number; excluded: number } | undefined
           if (!row || row.excluded) {
             this.db.exec('ROLLBACK')
             return false
@@ -1161,7 +1218,9 @@ export class DocumentRepository {
           if (batchCommittedChunks > 0) {
             const timeOver = performance.now() - started >= budgetMs
             const willBeFinal = next + 1 >= N
-            const curMeta = (wasFirst && batchCommittedChunks === 0 ? BASE_METADATA_WRITE_BYTES : 0) + (willBeFinal ? BASE_METADATA_WRITE_BYTES : 0)
+            const curMeta =
+              (wasFirst && batchCommittedChunks === 0 ? BASE_METADATA_WRITE_BYTES : 0) +
+              (willBeFinal ? BASE_METADATA_WRITE_BYTES : 0)
             const bytesOver = batchCommittedBytes + cBytes + curMeta > maxBatchBytes
             const chunksOver = batchCommittedChunks >= maxBatchChunks
             if (timeOver || bytesOver || chunksOver) {
@@ -1204,7 +1263,10 @@ export class DocumentRepository {
         await options.postCommit({
           batchIndex,
           committedChunks: batchCommittedChunks,
-          committedBytes: batchCommittedBytes + (wasFirst ? BASE_METADATA_WRITE_BYTES : 0) + (next >= N ? BASE_METADATA_WRITE_BYTES : 0),
+          committedBytes:
+            batchCommittedBytes +
+            (wasFirst ? BASE_METADATA_WRITE_BYTES : 0) +
+            (next >= N ? BASE_METADATA_WRITE_BYTES : 0),
           remainingChunks: N - next,
           remainingBytes: remainingBytesAfter,
           documentId,
@@ -1224,7 +1286,11 @@ export class DocumentRepository {
     return true
   }
 
-  markError(path: string, error: string, metadata?: { mtimeMs: number; sizeBytes: number } | null): void {
+  markError(
+    path: string,
+    error: string,
+    metadata?: { mtimeMs: number; sizeBytes: number } | null,
+  ): void {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       this.ensureDocument(path)
@@ -1260,7 +1326,11 @@ export class DocumentRepository {
         const doc = documentId ? this.documentById(documentId) : this.documentByPath(path)
         if (!doc || doc.status === 'excluded') return 'abort'
         documentId = doc.id
-        if (!this.chunkRepo!.deleteChunksBudgeted(documentId, outOfBudget, (id) => this.onAnnVectorsRemoved?.([id]))) {
+        if (
+          !this.chunkRepo!.deleteChunksBudgeted(documentId, outOfBudget, (id) =>
+            this.onAnnVectorsRemoved?.([id]),
+          )
+        ) {
           return 'more'
         }
         this.applyError(documentId, error, metadata)
@@ -1299,7 +1369,11 @@ export class DocumentRepository {
       (outOfBudget) => {
         const doc = this.documentByPath(path)
         if (!doc || doc.status === 'excluded') return 'done'
-        if (!this.chunkRepo!.deleteChunksBudgeted(doc.id, outOfBudget, (id) => this.onAnnVectorsRemoved?.([id]))) {
+        if (
+          !this.chunkRepo!.deleteChunksBudgeted(doc.id, outOfBudget, (id) =>
+            this.onAnnVectorsRemoved?.([id]),
+          )
+        ) {
           return 'more'
         }
         this.db.prepare('DELETE FROM documents WHERE id = ?').run(doc.id)
@@ -1326,11 +1400,15 @@ export class DocumentRepository {
   ): { removed: number; scanned: number; done: boolean } {
     const cursorKey = `${options.flagKey}_cursor`
     const readMeta = this.db.prepare('SELECT value FROM document_memory_meta WHERE key = ?')
-    const writeMeta = this.db.prepare('INSERT OR REPLACE INTO document_memory_meta(key, value) VALUES(?, ?)')
+    const writeMeta = this.db.prepare(
+      'INSERT OR REPLACE INTO document_memory_meta(key, value) VALUES(?, ?)',
+    )
     let cursor = Number((readMeta.get(cursorKey) as { value: string } | undefined)?.value ?? 0) || 0
     const page = this.db.prepare(
       'SELECT id, name FROM documents WHERE id > ? AND last_opened_at = 0 ORDER BY id LIMIT ?',
     )
+    const deleteDoc = this.db.prepare('DELETE FROM documents WHERE id = ?')
+    const deleteMeta = this.db.prepare('DELETE FROM document_memory_meta WHERE key = ?')
     const started = performance.now()
     let removed = 0
     let scanned = 0
@@ -1340,7 +1418,7 @@ export class DocumentRepository {
         this.db.exec('BEGIN IMMEDIATE')
         try {
           writeMeta.run(options.flagKey, String(Date.now()))
-          this.db.prepare('DELETE FROM document_memory_meta WHERE key = ?').run(cursorKey)
+          deleteMeta.run(cursorKey)
           this.db.exec('COMMIT')
         } catch (err) {
           this.db.exec('ROLLBACK')
@@ -1354,7 +1432,7 @@ export class DocumentRepository {
         for (const row of rows) {
           if (isIgnored(row.name)) {
             this.chunkRepo!.deleteChunks(row.id, (ids) => this.onAnnVectorsRemoved?.(ids))
-            this.db.prepare('DELETE FROM documents WHERE id = ?').run(row.id)
+            deleteDoc.run(row.id)
             syncProjectionDelete(this.db, row.id)
             removed++
           }
@@ -1469,7 +1547,11 @@ export class DocumentRepository {
       this.db.prepare('DELETE FROM chunks').run()
       this.db.prepare('DELETE FROM documents WHERE excluded = 0').run()
       try {
-        this.db.prepare('DELETE FROM document_name_projection WHERE document_id NOT IN (SELECT id FROM documents)').run()
+        this.db
+          .prepare(
+            'DELETE FROM document_name_projection WHERE document_id NOT IN (SELECT id FROM documents)',
+          )
+          .run()
       } catch (err: unknown) {
         void err
       }

@@ -1,5 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync, utimesSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  utimesSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -31,10 +40,16 @@ describe('offline VACUUM INTO compaction', () => {
     const store = new DocumentMemoryStore(dbPath, { role: 'worker' })
     seed = seedCorpus(store, dir, { targetLogicalMb: 2, chunksPerDoc: 10 })
     const db = store.rawDb
-    const ids = (db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: number }>).map((r) => r.id)
+    const ids = (
+      db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: number }>
+    ).map((r) => r.id)
     for (const id of ids.filter((_, i) => i % 10 < 7)) {
-      db.prepare('DELETE FROM chunk_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?)').run(id)
-      db.prepare('DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)').run(id)
+      db.prepare(
+        'DELETE FROM chunk_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?)',
+      ).run(id)
+      db.prepare(
+        'DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)',
+      ).run(id)
       db.prepare('DELETE FROM chunks WHERE document_id = ?').run(id)
       db.prepare('DELETE FROM documents WHERE id = ?').run(id)
     }
@@ -51,10 +66,19 @@ describe('offline VACUUM INTO compaction', () => {
       const rows = (sql: string, ...a: Array<string | number>) => db.prepare(sql).all(...a)
       return {
         chunks: rows('SELECT id, document_id, ordinal, text FROM chunks ORDER BY id'),
-        emb: rows('SELECT chunk_id, space_id, length(vector) l FROM chunk_embeddings ORDER BY chunk_id'),
+        emb: rows(
+          'SELECT chunk_id, space_id, length(vector) l FROM chunk_embeddings ORDER BY chunk_id',
+        ),
         docs: rows('SELECT id, path, name FROM documents ORDER BY id'),
-        fts: seed.queryWords.map((w) => rows('SELECT rowid, bm25(chunk_fts) r FROM chunk_fts WHERE chunk_fts MATCH ? ORDER BY r, rowid', `"${w}"`)),
-        name: rows("SELECT rowid FROM document_name_fts WHERE document_name_fts MATCH 'doc*' ORDER BY rowid"),
+        fts: seed.queryWords.map((w) =>
+          rows(
+            'SELECT rowid, bm25(chunk_fts) r FROM chunk_fts WHERE chunk_fts MATCH ? ORDER BY r, rowid',
+            `"${w}"`,
+          ),
+        ),
+        name: rows(
+          "SELECT rowid FROM document_name_fts WHERE document_name_fts MATCH 'doc*' ORDER BY rowid",
+        ),
         av: (db.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum,
         seq: rows('SELECT name, seq FROM sqlite_sequence ORDER BY name'),
       }
@@ -63,7 +87,8 @@ describe('offline VACUUM INTO compaction', () => {
     }
   }
   const leftovers = (): string[] => readdirSync(dir).filter((n) => /compact-(wip|manifest)/.test(n))
-  const backups = (): string[] => readdirSync(dir).filter((n) => /\.compact-prev\.\d+\.bak$/.test(n))
+  const backups = (): string[] =>
+    readdirSync(dir).filter((n) => /\.compact-prev\.\d+\.bak$/.test(n))
 
   it('is opt-in: disabled by default, dry-run only plans and creates nothing', () => {
     const before = readdirSync(dir).sort()
@@ -77,7 +102,8 @@ describe('offline VACUUM INTO compaction', () => {
   it('plan reads the real header: page counts, freelist and thresholds', () => {
     const plan = planOfflineCompaction(dbPath, OPTS)
     const db = new DatabaseSync(dbPath)
-    const pragma = (n: string): number => Number(Object.values(db.prepare(`PRAGMA ${n}`).get() as Record<string, number>)[0])
+    const pragma = (n: string): number =>
+      Number(Object.values(db.prepare(`PRAGMA ${n}`).get() as Record<string, number>)[0])
     expect(plan.pageSize).toBe(pragma('page_size'))
     expect(plan.pageCount).toBe(pragma('page_count'))
     expect(plan.freelistPages).toBe(pragma('freelist_count'))
@@ -102,7 +128,13 @@ describe('offline VACUUM INTO compaction', () => {
     expect(res.status, res.error).toBe('compacted')
     expect(res.bytesAfter).toBeLessThan(sizeBefore * 0.6)
     expect(res.bytesSaved).toBe(res.bytesBefore - res.bytesAfter)
-    expect(res.verification).toMatchObject({ integrityCheck: 'ok', quickCheck: 'ok', foreignKeyErrors: 0, schemaEqual: true, pragmasEqual: true })
+    expect(res.verification).toMatchObject({
+      integrityCheck: 'ok',
+      quickCheck: 'ok',
+      foreignKeyErrors: 0,
+      schemaEqual: true,
+      pragmasEqual: true,
+    })
     expect(res.verification!.ftsIntegrity.chunk_fts).toBe(true)
     expect(res.verification!.ftsIntegrity.document_name_fts).toBe(true)
     expect(res.verification!.ftsSamples).toBeGreaterThan(0)
@@ -117,7 +149,9 @@ describe('offline VACUUM INTO compaction', () => {
     // the app can open the result like any database
     const store = new DocumentMemoryStore(dbPath, { role: 'search' })
     expect(store.searchLexical(`${seed.queryWords[0]}`, 5).length).toBeGreaterThan(0)
-    expect((store.rawDb.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum).toBe(2)
+    expect(
+      (store.rawDb.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum,
+    ).toBe(2)
     store.close()
   })
 
@@ -150,10 +184,12 @@ describe('offline VACUUM INTO compaction', () => {
     const db = new DatabaseSync(legacy)
     db.exec('PRAGMA journal_mode = WAL')
     db.exec('CREATE TABLE t(id INTEGER PRIMARY KEY, v TEXT); CREATE VIRTUAL TABLE f USING fts5(x)')
+    db.exec('BEGIN TRANSACTION')
     for (let i = 1; i <= 2000; i++) {
       db.prepare('INSERT INTO t(id, v) VALUES (?, ?)').run(i, 'x'.repeat(500))
       db.prepare('INSERT INTO f(rowid, x) VALUES (?, ?)').run(i, `alpha beta gamma${i % 7}`)
     }
+    db.exec('COMMIT')
     db.exec('DELETE FROM t WHERE id % 4 != 0; DELETE FROM f WHERE rowid % 4 != 0')
     expect((db.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum).toBe(0)
     db.close()
@@ -161,9 +197,13 @@ describe('offline VACUUM INTO compaction', () => {
     const res = runOfflineCompaction(legacy, { enabled: true })
     expect(res.status, res.error).toBe('compacted')
     const after = new DatabaseSync(legacy)
-    expect((after.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum).toBe(2)
+    expect((after.prepare('PRAGMA auto_vacuum').get() as { auto_vacuum: number }).auto_vacuum).toBe(
+      2,
+    )
     expect((after.prepare('SELECT count(*) n FROM t').get() as { n: number }).n).toBe(500)
-    expect((after.prepare("SELECT count(*) n FROM f WHERE f MATCH 'alpha'").get() as { n: number }).n).toBe(500)
+    expect(
+      (after.prepare("SELECT count(*) n FROM f WHERE f MATCH 'alpha'").get() as { n: number }).n,
+    ).toBe(500)
     after.close()
     expect(statSync(legacy).size).toBeLessThan(sizeBefore * 0.5)
   })
@@ -176,7 +216,9 @@ describe('offline VACUUM INTO compaction', () => {
       onPhase: (phase) => {
         if (phase !== 'vacuumed') return
         const copy = new DatabaseSync(p.tmp)
-        copy.exec('DELETE FROM chunk_embeddings WHERE rowid IN (SELECT rowid FROM chunk_embeddings LIMIT 3)')
+        copy.exec(
+          'DELETE FROM chunk_embeddings WHERE rowid IN (SELECT rowid FROM chunk_embeddings LIMIT 3)',
+        )
         copy.close()
       },
     })
@@ -187,7 +229,12 @@ describe('offline VACUUM INTO compaction', () => {
     expect(backups()).toEqual([])
   })
 
-  for (const phase of ['prepared', 'source-backed-up', 'installed', 'post-verified'] as CompactionPhase[]) {
+  for (const phase of [
+    'prepared',
+    'source-backed-up',
+    'installed',
+    'post-verified',
+  ] as CompactionPhase[]) {
     it(`rolls back to the original database when a step fails after "${phase}"`, () => {
       const before = snapshot()
       const res = runOfflineCompaction(dbPath, {
@@ -222,7 +269,10 @@ describe('offline VACUUM INTO compaction', () => {
       const before = snapshot()
       crashAt('verified')
       expect(existsSync(compactionPaths(dbPath).tmp)).toBe(true)
-      expect(recoverInterruptedCompaction(dbPath)).toMatchObject({ recovered: true, action: 'removed-unfinished-copy' })
+      expect(recoverInterruptedCompaction(dbPath)).toMatchObject({
+        recovered: true,
+        action: 'removed-unfinished-copy',
+      })
       expect(snapshot()).toEqual(before)
       expect(leftovers()).toEqual([])
     })
@@ -239,7 +289,10 @@ describe('offline VACUUM INTO compaction', () => {
       const before = snapshot()
       crashAt('source-backed-up')
       expect(existsSync(dbPath)).toBe(false)
-      expect(recoverInterruptedCompaction(dbPath)).toMatchObject({ recovered: true, action: 'restored-previous-database' })
+      expect(recoverInterruptedCompaction(dbPath)).toMatchObject({
+        recovered: true,
+        action: 'restored-previous-database',
+      })
       expect(snapshot()).toEqual(before)
       expect(leftovers()).toEqual([])
       expect(backups()).toEqual([])
@@ -249,7 +302,10 @@ describe('offline VACUUM INTO compaction', () => {
       const before = snapshot()
       const size = statSync(dbPath).size
       crashAt('installed')
-      expect(recoverInterruptedCompaction(dbPath)).toMatchObject({ recovered: true, action: 'finalized-installed-database' })
+      expect(recoverInterruptedCompaction(dbPath)).toMatchObject({
+        recovered: true,
+        action: 'finalized-installed-database',
+      })
       expect(snapshot()).toEqual(before)
       expect(statSync(dbPath).size).toBeLessThan(size)
       expect(leftovers()).toEqual([])

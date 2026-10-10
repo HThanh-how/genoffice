@@ -112,9 +112,10 @@ async function until(check: () => boolean, timeout = 3000) {
   }
 }
 
-function manager(fake: FakeWorker, pollIntervalMs = 60_000) {
+function manager(fake: FakeWorker, pollIntervalMs = 60_000, workerTimeoutMs?: number) {
   const instance = new DocumentMemoryManager(dir, {
     pollIntervalMs,
+    ...(workerTimeoutMs ? { workerTimeoutMs } : {}),
     workerFactory: (_path, data) => {
       // Assert the worker and index share one SQLite database and a private cache folder.
       expect(data.dbPath).toBe(join(dir, 'document-memory.db'))
@@ -127,8 +128,8 @@ function manager(fake: FakeWorker, pollIntervalMs = 60_000) {
 }
 
 /** Manager whose startup storage-budget handshake has been ACKed, so metadata writes are admitted. */
-async function readyManager(fake: FakeWorker, pollIntervalMs?: number) {
-  const instance = manager(fake, pollIntervalMs)
+async function readyManager(fake: FakeWorker, pollIntervalMs?: number, workerTimeoutMs?: number) {
+  const instance = manager(fake, pollIntervalMs, workerTimeoutMs)
   await waitForManagerWriteReady(instance)
   return instance
 }
@@ -527,7 +528,7 @@ describe('DocumentMemoryManager', () => {
   it('bounds the documents held for embedding while embedding stalls, keeps reading the files behind them, and avoids rescanning all paths for priority', async () => {
     const fake = new FakeWorker(join(dir, 'document-memory.db'))
     fake.stopAfterBatches = 0
-    const instance = await readyManager(fake)
+    const instance = await readyManager(fake, undefined, 3_000)
     const listPaths = vi.spyOn(DocumentMemoryStore.prototype, 'listPaths')
     try {
       for (let i = 0; i < 64; i++) {

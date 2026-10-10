@@ -346,8 +346,12 @@ describe('crash-safety & fault-injection relocation protocol (P0-01)', () => {
 
   it('Scenario 10: Target volume unavailable during relocation fails closed without data loss', async () => {
     seedRealDatabase(userData, 3)
-    // Directory is unwritable because parent does not exist
-    const plan = planDbMove(userData, join('/non-existent-drive-root-xyz', 'sub'))
+    // Directory is unwritable because volume/parent does not exist
+    const nonExistent =
+      process.platform === 'win32'
+        ? 'Z:\\non-existent-drive-root-xyz\\sub'
+        : join('/non-existent-drive-root-xyz', 'sub')
+    const plan = planDbMove(userData, nonExistent)
     expect(plan.ok).toBe(false)
     expect(getDatabaseDocCount(userData)).toBe(3)
   })

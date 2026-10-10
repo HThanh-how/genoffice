@@ -220,6 +220,7 @@ describe('IndexIssueReader search correctness & performance against reference', 
       insertProj.run(i, proj.nameNorm, proj.pathNorm, proj.compactNgrams)
     }
     db.exec('COMMIT')
+    db.exec('PRAGMA wal_checkpoint(PASSIVE)')
 
     // Cold query test
     const coldStart = performance.now()
