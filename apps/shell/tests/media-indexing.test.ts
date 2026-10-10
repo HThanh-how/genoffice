@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, unlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { SearchService } from '../src/main/document-memory/runtime/search-service'
@@ -375,11 +375,11 @@ describe('privacy: sensitive marker and the OCR gates', () => {
     file('s/clip.mp4', mp4({ width: 10, height: 10, seconds: 1, mdatBytes: 100 }), 5_000)
     await scan(root())
     const local = selectImageOcrCandidates(store.rawDb, { engine: 'local' })
-    expect(local.map((c) => c.path.split('/').pop()).sort()).toEqual(['passport.jpg', 'receipt.jpg'])
+    expect(local.map((c) => basename(c.path)).sort()).toEqual(['passport.jpg', 'receipt.jpg'])
     expect(local.find((c) => c.path.endsWith('passport.jpg'))!.sensitive).toBe(true)
     expect(selectImageOcrCandidates(store.rawDb, { engine: 'cloud' })).toEqual([])
     expect(selectImageOcrCandidates(store.rawDb, { engine: 'cloud', cloudOptIn: false })).toEqual([])
-    expect(selectImageOcrCandidates(store.rawDb, { engine: 'cloud', cloudOptIn: true }).map((c) => c.path.split('/').pop())).toEqual(['receipt.jpg'])
+    expect(selectImageOcrCandidates(store.rawDb, { engine: 'cloud', cloudOptIn: true }).map((c) => basename(c.path))).toEqual(['receipt.jpg'])
     // the local package marks what it has read; a changed file becomes a candidate again
     const receipt = local.find((c) => c.path.endsWith('receipt.jpg'))!
     markImageOcr(store.rawDb, receipt.documentId, IMAGE_OCR_STATE.done)
@@ -500,7 +500,7 @@ describe('legacy behaviour that must not change', () => {
     file('mix/e.zip', Buffer.from('PK'), PHOTO_BYTES)
     file('mix/f.gif', gif(10, 10))
     await scan(root())
-    const all = store.listDocuments().map((doc) => doc.path.split('/').pop()).sort()
+    const all = store.listDocuments().map((doc) => basename(doc.path)).sort()
     expect(all).toEqual(['a.docx', 'b.pdf', 'f.gif'])
   })
 })

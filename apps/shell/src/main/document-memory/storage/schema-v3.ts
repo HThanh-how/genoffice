@@ -146,7 +146,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS document_name_fts USING fts5(
   content='documents',
   content_rowid='id',
   tokenize='unicode61 remove_diacritics 2',
-  prefix='3 4'
+  prefix='3'
 );
 
 CREATE TRIGGER IF NOT EXISTS documents_name_ai AFTER INSERT ON documents BEGIN

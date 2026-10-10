@@ -55,7 +55,7 @@ export class DocumentMemoryManager {
   private readonly activeBytes = new Map<string, number>(); private readonly activeExtractions = new Set<string>(); private readonly activeSince = new Map<string, number>()
   private readonly activeGeneration = new Map<string, number>(); private readonly pathGeneration = new Map<string, number>(); private readonly readProgress = new Map<string, { done: number; total: number }>()
   private readonly skippedMigrationDocs = new Set<number>(); private readonly enabledListeners = new Set<() => void>(); private readonly clearedListeners = new Set<() => void>()
-  private readonly counterBackfill: Promise<void>; private migrationTimer: NodeJS.Timeout | null = null; private pollTimer: NodeJS.Timeout | null = null
+  private readonly counterBackfill: Promise<void>; private migrationTimer: NodeJS.Timeout | null = null; private pollTimer: NodeJS.Timeout | null = null; private shutdownPromise: Promise<void> | null = null
   private readonly stopPolicyWatch: () => void; private readonly stabilityGate: FileStabilityGate; private readonly backgroundGate: BackgroundWorkGate
   private readonly chunkUpgrade: ChunkUpgradeCoordinator; private readonly embeddingMigration: EmbeddingMigration
   private readonly admissionRetry = new AdmissionRetry({ refresh: async () => { const s = await this.maintScheduler.refreshAccountingAsync(); return s.measurementStatus === 'fresh' && !s.isDegraded }, resume: () => void this.poll(), isActive: () => this.enabled && !this.stopped && !isIndexingPaused() })
@@ -333,18 +333,20 @@ export class DocumentMemoryManager {
     const needing = this.chunkUpgrade.getDocumentsNeedingUpgrade(1, this.skippedMigrationDocs)
     if (needing.length > 0) { await this.migrateLegacyDocument(needing[0]!); this.scheduleMigrationStep(500) }
   }
-  close(): void {
-    if (this.stopped) return
+  close(): void { void this.closeAsync() }; closeAsync(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise
     this.stopped = true; this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
     if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose()
     if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
     this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
     this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear()
-    this.host.terminate()
-    void this.localOcrWiring?.dispose().catch(() => undefined)
-    this.store.close()
+    this.shutdownPromise = (async () => {
+      try {
+        await this.localOcrWiring?.dispose().catch(() => undefined); await this.host.terminate()
+      } finally { this.store.close() }
+    })()
+    return this.shutdownPromise
   }
-  async closeAsync(): Promise<void> { this.close(); await this.host.terminate(); await this.localOcrWiring?.dispose().catch(() => undefined) }
   private enqueue(path: string, prioritize = false, bytes?: number): void {
     if (this.stopped || !this.enabled) return; const p = resolve(path); if (this.activeGeneration.get(p) === this.currentGeneration(p)) return
     if (this.queued.has(p)) { if (prioritize) { const idx = this.queue.indexOf(p); if (idx > 0) { this.queue.splice(idx, 1); this.queue.unshift(p) } }; return }
@@ -382,7 +384,7 @@ export class DocumentMemoryManager {
   }
   private async runEmbedPass(): Promise<void> {
     const startedAt = Date.now()
-    try { await this.embeddingCoord.drainEmbeddings((req, timeout) => this.ask(req, timeout, true) as any, () => { this.progressTicks++ }, EMBED_SLICE_MS) } finally { this.lanes.add('embed', Date.now() - startedAt) }
+    try { await this.embeddingCoord.drainEmbeddings((req, timeout) => this.ask(req, timeout, true) as any, () => { this.progressTicks++ }, EMBED_SLICE_MS) } finally { this.lanes.add('embed', Date.now() - startedAt); if (!this.stopped && this.enabled) this.drain() }
   }
   private async drainExtractions(): Promise<void> {
     if (this.extracting || this.stopped) return

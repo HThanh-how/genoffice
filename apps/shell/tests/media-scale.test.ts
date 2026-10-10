@@ -18,7 +18,11 @@ const MAX_BYTES_PER_ROW = 1024
 
 const dirs: string[] = []
 afterAll(() => {
-  for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
+  for (const dir of dirs) {
+    try {
+      rmSync(dir, { recursive: true, force: true })
+    } catch {}
+  }
 })
 
 function dbBytes(store: DocumentMemoryStore): number {
@@ -137,46 +141,48 @@ describe(`media rows at scale (${FILES} files)`, () => {
       const hits = store.searchNames(query, 5)
       return { ms: performance.now() - started, hits: hits.length }
     }
-    const queries = Object.fromEntries(
-      ['video', 'ảnh tháng 3 2017', 'ảnh 16/03/2017', 'IMG_20170316', 'chuyến đi 7'].map((q) => {
-        const { ms, hits } = timed(q)
-        return [q, { ms: +ms.toFixed(1), hits }]
-      }),
-    )
-    console.log(`[media-scale] search ${JSON.stringify(queries)}`)
-    const latencyBudget = process.env.CI ? 3000 : 250
-    for (const result of Object.values(queries)) expect(result.ms).toBeLessThan(latencyBudget)
-    expect(queries['video']!.hits).toBeGreaterThan(0)
-    expect(queries['ảnh tháng 3 2017']!.hits).toBeGreaterThan(0)
+    try {
+      const queries = Object.fromEntries(
+        ['video', 'ảnh tháng 3 2017', 'ảnh 16/03/2017', 'IMG_20170316', 'chuyến đi 7'].map((q) => {
+          const { ms, hits } = timed(q)
+          return [q, { ms: +ms.toFixed(1), hits }]
+        }),
+      )
+      console.log(`[media-scale] search ${JSON.stringify(queries)}`)
+      const latencyBudget = 250
+      for (const result of Object.values(queries)) expect(result.ms).toBeLessThan(latencyBudget)
+      expect(queries['video']!.hits).toBeGreaterThan(0)
+      expect(queries['ảnh tháng 3 2017']!.hits).toBeGreaterThan(0)
 
-    expect(rows).toBe(FILES)
-    expect(filled).toBe(FILES)
-    expect(mediaCounts(store.rawDb)).toMatchObject({ pendingMetadata: 0 })
-    expect(store.incompletePaths()).toEqual([])
-    expect(store.folderChunkProgress(root)).toMatchObject({
-      totalFiles: FILES,
-      readyFiles: FILES,
-      pendingFiles: 0,
-      mediaFiles: FILES,
-    })
-    expect(report.bytesPerRow).toBeLessThan(MAX_BYTES_PER_ROW)
-    expect(report.worstEventLoopLagMs).toBeLessThan(250)
-    expect(statSync(root).isDirectory()).toBe(true)
+      expect(rows).toBe(FILES)
+      expect(filled).toBe(FILES)
+      expect(mediaCounts(store.rawDb)).toMatchObject({ pendingMetadata: 0 })
+      expect(store.incompletePaths()).toEqual([])
+      expect(store.folderChunkProgress(root)).toMatchObject({
+        totalFiles: FILES,
+        readyFiles: FILES,
+        pendingFiles: 0,
+        mediaFiles: FILES,
+      })
+      expect(report.bytesPerRow).toBeLessThan(MAX_BYTES_PER_ROW)
+      expect(report.worstEventLoopLagMs).toBeLessThan(250)
+      expect(statSync(root).isDirectory()).toBe(true)
 
-    // The whole tree again: nothing changed, nothing is rewritten and nothing is queued.
-    const before = store.rawDb
-      .prepare('SELECT max(updated_at) AS u, count(*) AS n FROM documents')
-      .get()
-    const walked = await freshness.reconcileFolder(root, new Map())
-    expect(walked.removed).toBe(0)
-    scanner.rescanExisting(root)
-    while (scanner.status().running) await new Promise((resolve) => setTimeout(resolve, 10))
-    expect(
-      store.rawDb.prepare('SELECT max(updated_at) AS u, count(*) AS n FROM documents').get(),
-    ).toEqual(before)
-    expect(await freshness.drainMediaMetadata()).toBe(0)
-
-    scanner.close()
-    store.close()
+      // The whole tree again: nothing changed, nothing is rewritten and nothing is queued.
+      const before = store.rawDb
+        .prepare('SELECT max(updated_at) AS u, count(*) AS n FROM documents')
+        .get()
+      const walked = await freshness.reconcileFolder(root, new Map())
+      expect(walked.removed).toBe(0)
+      scanner.rescanExisting(root)
+      while (scanner.status().running) await new Promise((resolve) => setTimeout(resolve, 10))
+      expect(
+        store.rawDb.prepare('SELECT max(updated_at) AS u, count(*) AS n FROM documents').get(),
+      ).toEqual(before)
+      expect(await freshness.drainMediaMetadata()).toBe(0)
+    } finally {
+      scanner.close()
+      store.close()
+    }
   }, 280_000)
 })

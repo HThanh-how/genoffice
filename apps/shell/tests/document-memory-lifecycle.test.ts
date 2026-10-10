@@ -18,7 +18,7 @@ import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
-import { storageBudgetAckReply } from './helpers/storage-budget-ack'
+import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
 
 let dir: string
 let managers: DocumentMemoryManager[]
@@ -111,7 +111,7 @@ async function until(check: () => boolean, timeout = 3000) {
   }
 }
 
-function setup(graceMs = 20) {
+async function setup(graceMs = 20) {
   const dbPath = join(dir, 'document-memory.db')
   const fake = new FakeWorker(dbPath)
   const instance = new DocumentMemoryManager(dir, {
@@ -120,6 +120,7 @@ function setup(graceMs = 20) {
     workerFactory: () => fake as unknown as Worker,
   })
   managers.push(instance)
+  await waitForManagerWriteReady(instance)
   const read = <T>(work: (store: DocumentMemoryStore) => T): T => {
     const store = new DocumentMemoryStore(dbPath)
     try {
@@ -132,7 +133,7 @@ function setup(graceMs = 20) {
 }
 
 async function indexed(
-  ctx: ReturnType<typeof setup>,
+  ctx: Awaited<ReturnType<typeof setup>>,
   name: string,
   text: string,
   folder = dir,
@@ -147,7 +148,7 @@ async function indexed(
 
 describe('query-time freshness', () => {
   it('flags a hit stale after its file changed and queues a prioritized re-index', async () => {
-    const ctx = setup()
+    const ctx = await setup()
     const path = await indexed(ctx, 'fresh.txt', 'quarterly budget approved by finance')
     const first = await ctx.instance.search('quarterly budget')
     expect(first.hits[0]).toMatchObject({ path, stale: false, missing: false, truncated: false })
@@ -173,7 +174,7 @@ describe('query-time freshness', () => {
   })
 
   it('flags a hit missing when its file was deleted, without hashing', async () => {
-    const ctx = setup(60_000)
+    const ctx = await setup(60_000)
     const path = await indexed(ctx, 'gone.txt', 'unique zebra migration schedule')
     rmSync(path)
     const result = await ctx.instance.search('zebra migration')
@@ -183,7 +184,7 @@ describe('query-time freshness', () => {
 
 describe('tombstones and move detection', () => {
   it('deletes chunks, FTS rows and vectors once a file is gone but keeps exclusions', async () => {
-    const ctx = setup()
+    const ctx = await setup()
     const doomed = await indexed(ctx, 'doomed.txt', 'ephemeral aardvark ledger')
     const excluded = await indexed(ctx, 'excluded.txt', 'excluded narwhal ledger')
     ctx.instance.exclude(excluded)
@@ -197,7 +198,7 @@ describe('tombstones and move detection', () => {
   })
 
   it('keeps the index when the file reappears within the grace period', async () => {
-    const ctx = setup(80)
+    const ctx = await setup(80)
     const path = await indexed(ctx, 'flicker.txt', 'flickering pelican notes')
     rmSync(path)
     await ctx.instance.handleFileEvents([path])
@@ -207,7 +208,7 @@ describe('tombstones and move detection', () => {
   })
 
   it('treats a rename with identical size and hash as a move without re-embedding', async () => {
-    const ctx = setup(60_000)
+    const ctx = await setup(60_000)
     const oldPath = await indexed(ctx, 'before.txt', 'moved heron planning document')
     const before = ctx.read((store) => store.search('heron', null)[0]!)
     const embedCalls = ctx.fake.embeddingCalls.length
@@ -237,7 +238,7 @@ describe('tombstones and move detection', () => {
       present = false
     }
     if (present) return
-    const ctx = setup(10)
+    const ctx = await setup(10)
     const path = `${drive}unplugged\\report.txt`
     ctx.read((store) =>
       store.replaceDocument(path, {
@@ -257,7 +258,7 @@ describe('tombstones and move detection', () => {
 
 describe('reconcileFolder', () => {
   it('enrolls new files, detects moves and forgets deleted files from a metadata listing', async () => {
-    const ctx = setup()
+    const ctx = await setup()
     const root = join(dir, 'root')
     const kept = await indexed(ctx, 'kept.txt', 'kept flamingo text', root)
     const removed = await indexed(ctx, 'removed.txt', 'removed gecko text', root)
@@ -290,7 +291,7 @@ describe('reconcileFolder', () => {
 
 describe('reconcileFolder cost on a big index', () => {
   it('neither hashes nor scans the table for a new file whose size no other document has', async () => {
-    const ctx = setup()
+    const ctx = await setup()
     const root = join(dir, 'root')
     await indexed(ctx, 'known.txt', 'known text of some length', root)
     const prepared: string[] = []
@@ -314,7 +315,7 @@ describe('reconcileFolder cost on a big index', () => {
   })
 
   it('still compares content when another document has the same size (renames are found)', async () => {
-    const ctx = setup()
+    const ctx = await setup()
     const root = join(dir, 'root')
     const original = await indexed(ctx, 'original.txt', 'same size body', root)
     const copy = join(root, 'other.txt')
@@ -341,7 +342,7 @@ describe('reconcileFolder cost on a big index', () => {
 
 describe('cost control', () => {
   it('stores numeric tables lexically without embedding them and records truncation', async () => {
-    const ctx = setup()
+    const ctx = await setup()
     const path = join(dir, 'numbers.csv')
     writeFileSync(path, 'name,count\nlynx,2\nocelot,4')
     ctx.fake.skipEmbeddings = true
