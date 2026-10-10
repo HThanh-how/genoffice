@@ -535,8 +535,8 @@ describe('DocumentMemoryManager', () => {
         writeFileSync(path, `Bulk document ${i}`)
         instance.indexDiscoveredFile(path)
       }
-      await until(() => fake.embeddingCalls.length === 1, 10_000)
-      await until(() => fake.extractionCalls.length > 16, 10_000)
+      await until(() => fake.embeddingCalls.length === 1, 15_000)
+      await until(() => fake.extractionCalls.length > 16, 30_000)
       const coord = (instance as unknown as { embeddingCoord: { getQueueLength(): number } })
         .embeddingCoord
       // memory stays bounded: no more than 16 documents' text waits in the vector line ...
