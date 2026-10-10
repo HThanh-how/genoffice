@@ -388,7 +388,7 @@ export class DocumentMemoryStore {
   setStorageBudget(budget: DocumentIndexStorageBudget): void { this.maintRepo.setStorageBudget(budget) }
   getStorageBudget(): DocumentIndexStorageBudget { return this.maintRepo.getStorageBudget() }
   close(): void {
-    clearDbProjectionSyncGuard(this.db); this.maintRepo.close(); try { this.db.close() } catch {}
+    clearDbProjectionSyncGuard(this.db); this.maintRepo.close(); this.db.close()
   }
   getStorageDiagnostics(
     backupPath?: string,

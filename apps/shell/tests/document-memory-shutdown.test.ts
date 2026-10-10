@@ -74,7 +74,7 @@ class ControlledWorker extends EventEmitter {
     this.terminateCallCount++
     this.terminated = true
     this.activeRequests.clear()
-    return Promise.resolve(0)
+    return new Promise((resolve) => setTimeout(() => resolve(0), 50))
   }
 }
 
@@ -186,5 +186,54 @@ describe('Asynchronous Worker Shutdown (Job P0-03)', () => {
       await instance.closeAsync()
       expect(worker.terminateCallCount).toBe(1)
     }
+  })
+
+  it('P0-03.8: SQLite store remains open while worker termination is in-flight and only closes after termination finishes', async () => {
+    let workerTerminating = false
+    let storeOpenDuringTermination: boolean | undefined
+
+    const dbPath = join(dir, 'document-memory.db')
+    const worker = new ControlledWorker(dbPath)
+    worker.terminate = () => {
+      worker.terminateCallCount++
+      worker.terminated = true
+      worker.activeRequests.clear()
+      workerTerminating = true
+      return new Promise<number>((resolve) => {
+        setTimeout(() => {
+          try {
+            instance.store.stats()
+            storeOpenDuringTermination = true
+          } catch {
+            storeOpenDuringTermination = false
+          }
+          workerTerminating = false
+          resolve(0)
+        }, 60)
+      })
+    }
+
+    const instance = new DocumentMemoryManager(dir, {
+      pollIntervalMs: 60_000,
+      workerFactory: () => worker as unknown as Worker,
+    })
+    managers.push(instance)
+    await waitForManagerWriteReady(instance)
+
+    const shutdownPromise = instance.closeAsync()
+    await new Promise((r) => setTimeout(r, 10))
+    expect(workerTerminating).toBe(true)
+
+    // During worker termination, store must still be open
+    expect(() => instance.store.stats()).not.toThrow()
+
+    await shutdownPromise
+    expect(storeOpenDuringTermination).toBe(true)
+
+    // Only after shutdown completes, store is closed
+    expect(() => instance.store.stats()).toThrow()
+
+    // Immediate reopen and unlink work without lock errors
+    expect(() => unlinkSync(dbPath)).not.toThrow()
   })
 })

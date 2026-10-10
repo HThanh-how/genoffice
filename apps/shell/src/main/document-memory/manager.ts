@@ -334,13 +334,16 @@ export class DocumentMemoryManager {
     if (needing.length > 0) { await this.migrateLegacyDocument(needing[0]!); this.scheduleMigrationStep(500) }
   }
   close(): void {
-    if (this.stopped) return; this.stopped = true; this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose(); if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
-    this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
-    this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear(); this.host.terminate(); void this.localOcrWiring?.dispose().catch(() => undefined); this.store.close()
+    void this.closeAsync()
   }
   closeAsync(): Promise<void> {
-    if (this.shutdownPromise) return this.shutdownPromise; this.close()
+    if (this.shutdownPromise) return this.shutdownPromise
+    if (!this.stopped) {
+      this.stopped = true; this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
+      if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose(); if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
+      this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
+      this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear()
+    }
     return (this.shutdownPromise = (async () => {
       try { await this.localOcrWiring?.dispose().catch(() => undefined); await this.host.terminate() } finally { this.store.close() }
     })())
