@@ -68,7 +68,10 @@ function createInlineAccountingRunner(): StorageAccountingRunner {
         try {
           worker.emit('message', { ok: true, report: collectStorageAccounting(data) })
         } catch (err) {
-          worker.emit('message', { ok: false, error: err instanceof Error ? err.message : String(err) })
+          worker.emit('message', {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          })
         }
       })
       return worker
@@ -113,10 +116,10 @@ describe('Document Search V3 - Periodic Maintenance Lifecycle Suite (PAIR 18)', 
     managers = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const manager of managers) {
       try {
-        manager.close()
+        await manager.closeAsync()
       } catch {}
     }
     vi.clearAllTimers()
@@ -270,7 +273,7 @@ describe('Document Search V3 - Periodic Maintenance Lifecycle Suite (PAIR 18)', 
     const scheduler: MaintenanceScheduler = (manager as any).maintScheduler
     expect(scheduler.isPeriodicMaintenanceArmed()).toBe(true)
 
-    manager.close()
+    await manager.closeAsync()
 
     expect(scheduler.isPeriodicMaintenanceArmed()).toBe(false)
     const countBefore = worker.receivedRequests.length

@@ -96,6 +96,11 @@ export function createIndexProcess(
         }
 
         try {
+          if (child.connected) child.disconnect()
+        } catch {
+          // Ignore disconnect error if already disconnected
+        }
+        try {
           child.kill('SIGTERM')
         } catch {
           // If the initial kill signal fails, wait for the exit event or timeout.

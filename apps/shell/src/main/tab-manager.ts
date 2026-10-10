@@ -294,7 +294,10 @@ export class TabManager {
   /** A document renderer said its file is loaded and on screen. */
   tabReady(webContentsId: number): void {
     const tab = this.tabs.find((t) => t.view?.webContents.id === webContentsId)
-    if (tab) this.markReady(tab.id)
+    if (tab) {
+      this.markReady(tab.id)
+      if (tab.id === this.activeId) this.focusActiveView()
+    }
   }
 
   /** files open in any tab, for the open-documents registry */
@@ -541,6 +544,11 @@ export class TabManager {
     else this.discardSpareSheetsView()
     this.refreshActiveTargets()
     this.focusActiveView()
+    setImmediate(() => {
+      if (!this.shellWindow.isDestroyed() && this.activeId === id) {
+        this.focusActiveView()
+      }
+    })
     this.onChanged()
   }
 

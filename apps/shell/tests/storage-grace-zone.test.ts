@@ -21,14 +21,23 @@ import {
 } from '../src/main/document-memory/storage-budget'
 import { StorageAdmissionController } from '../src/main/document-memory/runtime/storage-admission'
 import { SyncMetadataAdmissionCoordinator } from '../src/main/document-memory/runtime/sync-metadata-admission'
-import { checkAnnWriteAdmission, estimateAnnIndexBytes } from '../src/main/document-memory/runtime/ann-write-budget'
+import {
+  checkAnnWriteAdmission,
+  estimateAnnIndexBytes,
+} from '../src/main/document-memory/runtime/ann-write-budget'
 import { StorageBudgetCoordinator } from '../src/main/document-memory/runtime/storage-budget-coordinator'
-import { EmbeddingCoordinator, GRACE_DEFER_RESUME_RATIO } from '../src/main/document-memory/runtime/embedding-coordinator'
+import {
+  EmbeddingCoordinator,
+  GRACE_DEFER_RESUME_RATIO,
+} from '../src/main/document-memory/runtime/embedding-coordinator'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { extractDocument } from '../src/main/document-memory/worker'
 import { EMBEDDING_PROFILES } from '../src/main/document-memory/embedding-profiles'
-import { MIN_STORAGE_BUDGET_BYTES, writeStorageSettings } from '../src/main/document-memory/storage/storage-settings'
+import {
+  MIN_STORAGE_BUDGET_BYTES,
+  writeStorageSettings,
+} from '../src/main/document-memory/storage/storage-settings'
 import {
   StorageAccountingRunner,
   type StorageAccountingWorkerLike,
@@ -46,7 +55,11 @@ const SOFT = MIN_STORAGE_BUDGET_BYTES // 500 MB
 const HARD = hardCapBytes(SOFT)
 const PROFILE = EMBEDDING_PROFILES.standard
 
-function snap(used: number, soft = SOFT, extra: Partial<StorageBudgetSnapshot> = {}): StorageBudgetSnapshot {
+function snap(
+  used: number,
+  soft = SOFT,
+  extra: Partial<StorageBudgetSnapshot> = {},
+): StorageBudgetSnapshot {
   return createStorageBudgetSnapshot({
     activeDbSizeBytes: used,
     nameMetadataBytes: 0,
@@ -71,10 +84,16 @@ describe('grace zone: pure budget math', () => {
     expect(HARD).toBe(550_000_000)
     expect(hardCapBytes({ maxDatabaseBytes: 4 * 1024 ** 3 })).toBe(Math.floor(4 * 1024 ** 3 * 1.1)) // no field = 0.10
     expect(hardCapBytes({ maxDatabaseBytes: 1_000_000_000, overshootRatio: 0 })).toBe(1_000_000_000)
-    expect(hardCapBytes({ maxDatabaseBytes: 1_000_000_000, overshootRatio: 0.5 })).toBe(1_100_000_000)
+    expect(hardCapBytes({ maxDatabaseBytes: 1_000_000_000, overshootRatio: 0.5 })).toBe(
+      1_100_000_000,
+    )
     expect(createStorageBudget(SOFT).overshootRatio).toBe(0.1)
-    expect(createStorageBudget({ maxDatabaseBytes: SOFT, overshootRatio: 9 }).overshootRatio).toBe(0.1)
-    expect(createStorageBudget({ maxDatabaseBytes: SOFT, overshootRatio: 0 }).overshootRatio).toBe(0)
+    expect(createStorageBudget({ maxDatabaseBytes: SOFT, overshootRatio: 9 }).overshootRatio).toBe(
+      0.1,
+    )
+    expect(createStorageBudget({ maxDatabaseBytes: SOFT, overshootRatio: 0 }).overshootRatio).toBe(
+      0,
+    )
   })
 
   it('zones by physical bytes: ok / warning / grace / hard stop, never a new StorageLimitState member', () => {
@@ -111,7 +130,9 @@ describe('grace zone: pure budget math', () => {
     const t = (r: number) => compactionTarget(snap(Math.round(SOFT * r)))
     expect(compactionUrgency(snap(Math.round(SOFT * 0.85)))).toBe('none')
     expect(t(0.85).reclaimToFloorBytes).toBe(0)
-    expect(compactionUrgency(snap(Math.round(SOFT * CACHE_RETENTION_HIGH_WATERMARK)))).toBe('normal')
+    expect(compactionUrgency(snap(Math.round(SOFT * CACHE_RETENTION_HIGH_WATERMARK)))).toBe(
+      'normal',
+    )
     expect(t(0.95)).toEqual({
       urgency: 'normal',
       reclaimToFloorBytes: Math.ceil(SOFT * 0.95 - SOFT * 0.8),
@@ -123,7 +144,9 @@ describe('grace zone: pure budget math', () => {
     expect(urgent.reclaimToFloorBytes).toBe(Math.ceil(SOFT * 1.05 - SOFT * 0.8))
     expect(compactionUrgency(snap(Math.round(SOFT * 1.2)))).toBe('urgent') // hard stop is urgent too
     // unknown/degraded accounting: nothing trustworthy to act on
-    expect(compactionUrgency(snap(Math.round(SOFT * 1.05), SOFT, { isDegraded: true }))).toBe('none')
+    expect(compactionUrgency(snap(Math.round(SOFT * 1.05), SOFT, { isDegraded: true }))).toBe(
+      'none',
+    )
   })
 })
 
@@ -132,15 +155,21 @@ describe('grace zone: admission controller and metadata guard (real controller, 
     const admission = new StorageAdmissionController()
     const used = HARD - 30_000_000 // 30 MB below the hard cap, 20 MB above the soft quota
     const want = 15_000_000
-    const a = admission.reserve('r-a', 'extract', want, used, HARD, 60_000, { headroomBytes: 5_000_000 })
-    const b = admission.reserve('r-b', 'extract', want, used, HARD, 60_000, { headroomBytes: 5_000_000 })
+    const a = admission.reserve('r-a', 'extract', want, used, HARD, 60_000, {
+      headroomBytes: 5_000_000,
+    })
+    const b = admission.reserve('r-b', 'extract', want, used, HARD, 60_000, {
+      headroomBytes: 5_000_000,
+    })
     expect(a.admitted).toBe(true)
     expect(b.admitted).toBe(false)
     expect(b.reason).toBe('quota-exhausted')
     expect(admission.getReservedBytes()).toBe(want)
     expect(used + admission.getReservedBytes()).toBeLessThanOrEqual(HARD)
     // embeddings keep the same reason code as before
-    const e = admission.reserve('r-e', 'passage-embed', 20_000_000, used, HARD, 60_000, { headroomBytes: 5_000_000 })
+    const e = admission.reserve('r-e', 'passage-embed', 20_000_000, used, HARD, 60_000, {
+      headroomBytes: 5_000_000,
+    })
     expect(e.admitted).toBe(false)
     expect(e.reason).toBe('hard-limit-exceeded')
   })
@@ -169,9 +198,9 @@ describe('grace zone: admission controller and metadata guard (real controller, 
     expect(ok.admitted, ok.error).toBe(true)
     // the reservation is charged against the hard cap, not the soft quota
     expect(grace.admission.listReservations()).toHaveLength(1)
-    expect(
-      grace.guard.canWriteProjection({ id: 1, name: 'x.docx', path: '/d/x.docx' }, 2048),
-    ).toBe(true)
+    expect(grace.guard.canWriteProjection({ id: 1, name: 'x.docx', path: '/d/x.docx' }, 2048)).toBe(
+      true,
+    )
     grace.guard.close()
 
     const stop = coordinatorAt(HARD)
@@ -181,7 +210,9 @@ describe('grace zone: admission controller and metadata guard (real controller, 
     expect(refused.admitted).toBe(false)
     expect(refused.reason).toBe('budget-full')
     expect(stop.guard.getLastRejectionReason()).toBe('Storage limit state is full')
-    expect(stop.guard.canWriteProjection({ id: 1, name: 'x.docx', path: '/d/x.docx' }, 2048)).toBe(false)
+    expect(stop.guard.canWriteProjection({ id: 1, name: 'x.docx', path: '/d/x.docx' }, 2048)).toBe(
+      false,
+    )
     stop.guard.close()
   })
 
@@ -241,10 +272,23 @@ describe('grace zone: admission controller and metadata guard (real controller, 
     const vectors = 2_000
     const dims = 320
     const est = estimateAnnIndexBytes(vectors, dims)
-    const base = { spaceId: 's', vectorCount: vectors, dimensions: dims, freeDiskBytes: 50_000_000_000 }
-    const inGrace = checkAnnWriteAdmission({ ...base, currentUsageBytes: SOFT + 1_000_000, budgetBytes: HARD })
+    const base = {
+      spaceId: 's',
+      vectorCount: vectors,
+      dimensions: dims,
+      freeDiskBytes: 50_000_000_000,
+    }
+    const inGrace = checkAnnWriteAdmission({
+      ...base,
+      currentUsageBytes: SOFT + 1_000_000,
+      budgetBytes: HARD,
+    })
     expect(inGrace.admitted, inGrace.error).toBe(true)
-    const beyond = checkAnnWriteAdmission({ ...base, currentUsageBytes: HARD - est / 2, budgetBytes: HARD })
+    const beyond = checkAnnWriteAdmission({
+      ...base,
+      currentUsageBytes: HARD - est / 2,
+      budgetBytes: HARD,
+    })
     expect(beyond.admitted).toBe(false)
     expect(beyond.reason).toBe('quota-exhausted')
   })
@@ -279,7 +323,10 @@ describe('grace zone: worker <-> main budget handshake carries overshootRatio', 
   it('sends the normalized overshootRatio and accepts the exact ack (version + overshoot)', async () => {
     const { coord, sent, getBudget } = make((req) => ({
       id: 1,
-      result: { ...storageBudgetAckReply(req)!.result, appliedOvershootRatio: req.budget.overshootRatio },
+      result: {
+        ...storageBudgetAckReply(req)!.result,
+        appliedOvershootRatio: req.budget.overshootRatio,
+      },
     }))
     expect(await coord.onWorkerSpawned()).toBe(true)
     expect(sent[0].type).toBe('set-storage-budget')
@@ -335,7 +382,10 @@ describe('grace zone: embeddings keep running, value rule parks low-value docs, 
     const path = join(dir, name)
     writeFileSync(path, `content of ${name}`)
     const st = statSync(path)
-    const chunks = [0, 1].map((i) => ({ text: `${name} body paragraph ${i} lorem ipsum`, location: `Chunk ${i + 1}` }))
+    const chunks = [0, 1].map((i) => ({
+      text: `${name} body paragraph ${i} lorem ipsum`,
+      location: `Chunk ${i + 1}`,
+    }))
     store.replaceDocument(path, {
       hash: `h-${name}`,
       mtimeMs: st.mtimeMs,
@@ -347,7 +397,16 @@ describe('grace zone: embeddings keep running, value rule parks low-value docs, 
     if (importance !== 'normal') store.setImportanceOverride(path, importance)
     return {
       path,
-      job: { path, generation: 1, epoch: 1, hash: `h-${name}`, mtimeMs: st.mtimeMs, sizeBytes: st.size, chunks, startOffset: 0 },
+      job: {
+        path,
+        generation: 1,
+        epoch: 1,
+        hash: `h-${name}`,
+        mtimeMs: st.mtimeMs,
+        sizeBytes: st.size,
+        chunks,
+        startOffset: 0,
+      },
     }
   }
 
@@ -378,11 +437,20 @@ describe('grace zone: embeddings keep running, value rule parks low-value docs, 
       isWriteReady: () => true,
       getFreeDiskBytes: async () => 50_000_000_000,
       headroomBytes: 1_000_000,
-      ...(allowDisplacement ? { makeRoom: async (needed: number) => { usage -= needed + 1_000_000; return true } } : {}),
+      ...(allowDisplacement
+        ? {
+            makeRoom: async (needed: number) => {
+              usage -= needed + 1_000_000
+              return true
+            },
+          }
+        : {}),
       onError: (e) => errors.push(e),
     })
     const ask = async (req: { texts: string[] }) => ({
-      result: req.texts.map((_, i) => Array.from({ length: PROFILE.dimensions }, (_v, d) => ((d + i) % 7) / 7 + 0.01)),
+      result: req.texts.map((_, i) =>
+        Array.from({ length: PROFILE.dimensions }, (_v, d) => ((d + i) % 7) / 7 + 0.01),
+      ),
     })
     return { coord, ask, errors, reserveSpy, admission }
   }
@@ -474,10 +542,22 @@ describe('grace zone: embeddings keep running, value rule parks low-value docs, 
 // ---------------------------------------------------------------------------------------------------------------
 class GraceWorker extends EventEmitter {
   embedCalls = 0
-  constructor(private readonly dbPath: string, private readonly free?: (bytes: number) => number) {
+  constructor(
+    private readonly dbPath: string,
+    private readonly free?: (bytes: number) => number,
+  ) {
     super()
   }
-  postMessage(message: { id: number; type: string; path?: string; texts?: string[]; maxPdfPages?: number; runId?: string; epoch?: number; neededBytes?: number }): void {
+  postMessage(message: {
+    id: number
+    type: string
+    path?: string
+    texts?: string[]
+    maxPdfPages?: number
+    runId?: string
+    epoch?: number
+    neededBytes?: number
+  }): void {
     setTimeout(async () => {
       try {
         const ack = storageBudgetAckReply(message)
@@ -485,11 +565,26 @@ class GraceWorker extends EventEmitter {
         if (message.type === 'free-space' && this.free) {
           const before = message.neededBytes ?? 0
           const freed = this.free(before)
-          this.emit('message', { id: message.id, result: { kind: 'free-space', runId: message.runId, epoch: message.epoch, status: 'completed', freedBytes: freed, affectedAnnSpaces: [], annRequests: [] } })
+          this.emit('message', {
+            id: message.id,
+            result: {
+              kind: 'free-space',
+              runId: message.runId,
+              epoch: message.epoch,
+              status: 'completed',
+              freedBytes: freed,
+              affectedAnnSpaces: [],
+              annRequests: [],
+            },
+          })
         } else if (message.type === 'extract' && message.path) {
           const s = new DocumentMemoryStore(this.dbPath)
           try {
-            const result = await extractDocument(message.path, (p, h) => s.ocr.pages(p, h), message.maxPdfPages)
+            const result = await extractDocument(
+              message.path,
+              (p, h) => s.ocr.pages(p, h),
+              message.maxPdfPages,
+            )
             this.emit('message', { id: message.id, result })
           } finally {
             s.close()
@@ -505,7 +600,10 @@ class GraceWorker extends EventEmitter {
           this.emit('message', { id: message.id, result: [] })
         }
       } catch (err) {
-        this.emit('message', { id: message.id, error: err instanceof Error ? err.message : String(err) })
+        this.emit('message', {
+          id: message.id,
+          error: err instanceof Error ? err.message : String(err),
+        })
       }
     }, 0)
   }
@@ -525,10 +623,10 @@ describe('grace zone: real manager end to end', () => {
     managers = []
     writeStorageSettings(tempDir, { maxDatabaseBytes: SOFT, preset: 'custom', version: 1 })
   })
-  afterEach(() => {
+  afterEach(async () => {
     for (const m of managers) {
       try {
-        m.close()
+        await m.closeAsync()
       } catch {}
     }
     rmSync(tempDir, { recursive: true, force: true })
@@ -547,7 +645,10 @@ describe('grace zone: real manager end to end', () => {
             report.totalTrackedBytes = simulatedUsage
             worker.emit('message', { ok: true, report })
           } catch (err) {
-            worker.emit('message', { ok: false, error: err instanceof Error ? err.message : String(err) })
+            worker.emit('message', {
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            })
           }
         })
         return worker
@@ -557,8 +658,19 @@ describe('grace zone: real manager end to end', () => {
 
   async function start(usage: number, allowDisplacement = true) {
     simulatedUsage = usage
-    const worker = new GraceWorker(join(tempDir, 'document-memory.db'), allowDisplacement ? (bytes) => { simulatedUsage -= bytes; return bytes } : undefined)
-    const manager = new DocumentMemoryManager(tempDir, { workerFactory: () => worker as any, pollIntervalMs: 60_000 })
+    const worker = new GraceWorker(
+      join(tempDir, 'document-memory.db'),
+      allowDisplacement
+        ? (bytes) => {
+            simulatedUsage -= bytes
+            return bytes
+          }
+        : undefined,
+    )
+    const manager = new DocumentMemoryManager(tempDir, {
+      workerFactory: () => worker as any,
+      pollIntervalMs: 60_000,
+    })
     managers.push(manager)
     ;(manager as any).maintScheduler.storageAccountingRunner = runner()
     await waitForManagerWriteReady(manager)
@@ -582,7 +694,11 @@ describe('grace zone: real manager end to end', () => {
     expect(s.graceActive).toBe(true)
 
     const file = join(tempDir, 'files', 'gracenewcomer-ledger.txt')
-    writeFileSync(file, 'Quarterly xylophonic zeppelin reconciliation notes for the harbour project.', 'utf8')
+    writeFileSync(
+      file,
+      'Quarterly xylophonic zeppelin reconciliation notes for the harbour project.',
+      'utf8',
+    )
     manager.remember(file)
 
     expect(await waitFor(() => manager.store.documentByPath(file)?.status === 'ready')).toBe(true)

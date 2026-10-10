@@ -39,7 +39,8 @@ export function isIndexablePath(root: string, path: string): boolean {
   const ext = extname(name).toLowerCase()
   const media = mediaKindOfExtension(ext)
   // Size is unknown here: the size floor / folder cap are applied where the file is stat'ed.
-  if (media ? mediaRejection(media, relative) !== null : !SUPPORTED_EXTENSIONS.has(ext)) return false
+  if (media ? mediaRejection(media, relative) !== null : !SUPPORTED_EXTENSIONS.has(ext))
+    return false
   if (isGeneratedArtifactPath(path)) return false
   return true
 }
@@ -90,6 +91,8 @@ export interface FolderScanStatus {
 
 export interface DiscoveredDocumentIndexer {
   indexDiscoveredFile(path: string, metadata?: { mtimeMs: number; sizeBytes: number }): boolean
+  isWriteReady?(): boolean
+  waitForWriteReady?(timeoutMs?: number): Promise<boolean>
   /** Reconcile a root against a fresh metadata-only listing (adds, changes, moves, deletions). */
   reconcileFolder?(
     root: string,
@@ -541,7 +544,10 @@ export class FolderScanManager {
     }
 
     if (this.activeRoot) {
-      if (this.activeRoot !== normalizedRoot && !this.waiting.some((w) => resolve(w) === normalizedRoot))
+      if (
+        this.activeRoot !== normalizedRoot &&
+        !this.waiting.some((w) => resolve(w) === normalizedRoot)
+      )
         this.waiting.push(normalizedRoot)
       this.save()
       return this.status()
@@ -583,7 +589,10 @@ export class FolderScanManager {
     this.pendingRestartRoots.delete(normalizedRoot)
 
     if (this.activeRoot) {
-      if (this.activeRoot !== normalizedRoot && !this.waiting.some((w) => resolve(w) === normalizedRoot)) {
+      if (
+        this.activeRoot !== normalizedRoot &&
+        !this.waiting.some((w) => resolve(w) === normalizedRoot)
+      ) {
         this.waiting.push(normalizedRoot)
       }
       this.save()
@@ -795,6 +804,9 @@ export class FolderScanManager {
   }
 
   private async walk(job: ScanJob): Promise<void> {
+    if (this.memory.waitForWriteReady) {
+      await this.memory.waitForWriteReady(10_000)
+    }
     const budget = newMediaBudget(this.maxMediaPerFolder)
     const completed = await this.traverse(
       job.root,
@@ -813,13 +825,27 @@ export class FolderScanManager {
             } else if (!isListableSize(path, fileStat.size, budget)) {
               job.skipped++
               recordMediaBudget(job, budget)
-            } else if (
-              this.memory.indexDiscoveredFile(path, {
+            } else {
+              if (this.memory.isWriteReady && !this.memory.isWriteReady()) {
+                await this.memory.waitForWriteReady?.(5_000)
+              }
+              const enrolled = this.memory.indexDiscoveredFile(path, {
                 mtimeMs: fileStat.mtimeMs,
                 sizeBytes: fileStat.size,
               })
-            ) {
-              job.enrolled++
+              if (enrolled) {
+                job.enrolled++
+              } else if (this.memory.isWriteReady && !this.memory.isWriteReady()) {
+                await this.memory.waitForWriteReady?.(5_000)
+                if (
+                  this.memory.indexDiscoveredFile(path, {
+                    mtimeMs: fileStat.mtimeMs,
+                    sizeBytes: fileStat.size,
+                  })
+                ) {
+                  job.enrolled++
+                }
+              }
             }
             if (mediaKindOfPath(path)) recordMediaBudget(job, budget)
           } catch (error) {
@@ -876,7 +902,8 @@ export class FolderScanManager {
             continue
           }
           if (entry.isDirectory()) {
-            if (shouldSkipDirectory(entry.name) || isGeneratedArtifactPath(path)) handlers.onSkipped()
+            if (shouldSkipDirectory(entry.name) || isGeneratedArtifactPath(path))
+              handlers.onSkipped()
             else pending.push(path)
             continue
           }
@@ -934,7 +961,8 @@ export class FolderScanManager {
     return this.manifest.jobs
       .map((job) => ({
         root: job.root,
-        owners: job.owners && job.owners.length > 0 ? [...job.owners] : (['manual'] as FolderOwner[]),
+        owners:
+          job.owners && job.owners.length > 0 ? [...job.owners] : (['manual'] as FolderOwner[]),
         state: job.state,
         priority: job.priority === true,
         ...(job.startedAt === undefined ? {} : { startedAt: job.startedAt }),
@@ -1011,7 +1039,9 @@ export class FolderScanManager {
 
     if (job.owners.length > 0) {
       if (this.pendingRestartRoots.has(normalized)) {
-        const remaining = (this.pendingRestartRoots.get(normalized) ?? []).filter((o) => o !== owner)
+        const remaining = (this.pendingRestartRoots.get(normalized) ?? []).filter(
+          (o) => o !== owner,
+        )
         if (remaining.length > 0) {
           this.pendingRestartRoots.set(normalized, remaining)
         } else {
@@ -1057,7 +1087,9 @@ export class FolderScanManager {
 
     if (job.owners.length > 0) {
       if (this.pendingRestartRoots.has(normalized)) {
-        const remaining = (this.pendingRestartRoots.get(normalized) ?? []).filter((o) => o !== owner)
+        const remaining = (this.pendingRestartRoots.get(normalized) ?? []).filter(
+          (o) => o !== owner,
+        )
         if (remaining.length > 0) {
           this.pendingRestartRoots.set(normalized, remaining)
         } else {
@@ -1234,4 +1266,3 @@ export async function reconcileSubtree(
 ): Promise<{ ok: boolean; reason?: string; files?: number }> {
   return scanner.reconcileSubtree(root, subtree)
 }
-

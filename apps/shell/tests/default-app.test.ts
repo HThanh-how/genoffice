@@ -134,7 +134,7 @@ describe('createDefaultAppService', () => {
       platform: 'linux',
       run,
       readFile: (p) => {
-        if (p.endsWith('/usr/share/applications/wps-office-et.desktop'))
+        if (p.replace(/\\/g, '/').endsWith('/usr/share/applications/wps-office-et.desktop'))
           return '[Desktop Entry]\nName=WPS Spreadsheets\n'
         throw new Error('ENOENT')
       },

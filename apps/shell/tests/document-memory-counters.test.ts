@@ -303,7 +303,9 @@ describe('per-document chunk counters', () => {
     expect(perDocumentMismatches(dbPath)).toEqual([])
     const db = new DatabaseSync(dbPath, { readOnly: true })
     const triggers = db
-      .prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'chunks_counter_%'")
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'chunks_counter_%'",
+      )
       .all()
     db.close()
     expect(triggers).toHaveLength(2)
@@ -348,7 +350,9 @@ function createLegacy(path: string): void {
     CREATE INDEX chunks_vector_lookup ON chunks(vector_dim, document_id) WHERE vector IS NOT NULL;
     CREATE INDEX documents_excluded_status ON documents(excluded, status);
   `)
-  const addDoc = db.prepare('INSERT INTO documents(path, name, status, embedding_model) VALUES (?, ?, ?, ?)')
+  const addDoc = db.prepare(
+    'INSERT INTO documents(path, name, status, embedding_model) VALUES (?, ?, ?, ?)',
+  )
   const addChunk = db.prepare(
     'INSERT INTO chunks(document_id, ordinal, text, location, vector, vector_dim) VALUES (?, ?, ?, ?, ?, ?)',
   )
@@ -356,7 +360,8 @@ function createLegacy(path: string): void {
   for (let d = 0; d < 25; d++) {
     const status = d % 5 === 0 ? 'pending' : d % 2 ? 'ready' : 'text-only'
     const id = Number(
-      addDoc.run(join(root(), `legacy-${d}.docx`), `legacy-${d}.docx`, status, MODEL).lastInsertRowid,
+      addDoc.run(join(root(), `legacy-${d}.docx`), `legacy-${d}.docx`, status, MODEL)
+        .lastInsertRowid,
     )
     const total = d % 5 === 0 ? 0 : (d % 4) + 1
     for (let o = 0; o < total; o++) {
@@ -658,7 +663,7 @@ describe('manager backfill', () => {
       )
       expect(perDocumentMismatches(join(dir, 'document-memory.db'))).toEqual([])
     } finally {
-      manager.close()
+      await manager.closeAsync()
     }
   })
 })

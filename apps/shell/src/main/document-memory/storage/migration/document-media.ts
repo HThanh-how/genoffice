@@ -32,15 +32,16 @@ CREATE TABLE IF NOT EXISTS document_media (
   ocr_state INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS document_media_kind_ts ON document_media(kind, ts_ms);
+CREATE INDEX IF NOT EXISTS document_media_ts ON document_media(ts_ms);
 CREATE INDEX IF NOT EXISTS document_media_pending ON document_media(document_id) WHERE meta_state = 0;
 `
 
 export function ensureDocumentMediaSchema(db: DatabaseSync): void {
   db.exec(DOCUMENT_MEDIA_SCHEMA_SQL)
   try {
-    db.prepare('INSERT INTO schema_migrations (id, applied_at) VALUES (?, unixepoch()) ON CONFLICT(id) DO NOTHING').run(
-      DOCUMENT_MEDIA_MIGRATION_ID,
-    )
+    db.prepare(
+      'INSERT INTO schema_migrations (id, applied_at) VALUES (?, unixepoch()) ON CONFLICT(id) DO NOTHING',
+    ).run(DOCUMENT_MEDIA_MIGRATION_ID)
   } catch {
     // schema_migrations is bookkeeping only
   }

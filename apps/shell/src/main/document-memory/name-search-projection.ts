@@ -1,5 +1,5 @@
-import type { DatabaseSync } from 'node:sqlite'
-import { normalizeDocumentText, getNameQueryAliases, identifierVariants } from './normalization'
+import type { DatabaseSync, StatementSync } from 'node:sqlite'
+import { normalizeDocumentText, identifierVariants } from './normalization'
 import { mediaKindOfPath } from './media/media-kinds'
 
 export const SYSTEM_ROOT_NAMES = new Set([
@@ -94,7 +94,11 @@ END;
 export function hasMetaTable(db: DatabaseSync): boolean {
   try {
     return Boolean(
-      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_memory_meta'").get(),
+      db
+        .prepare(
+          "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_memory_meta'",
+        )
+        .get(),
     )
   } catch {
     return false
@@ -106,9 +110,9 @@ export function hasMetaTable(db: DatabaseSync): boolean {
  */
 export function hasRowVersionColumn(db: DatabaseSync): boolean {
   try {
-    const columns = db
-      .prepare("PRAGMA table_info('document_name_projection')")
-      .all() as Array<{ name: string }>
+    const columns = db.prepare("PRAGMA table_info('document_name_projection')").all() as Array<{
+      name: string
+    }>
     return columns.some((c) => c.name === 'row_version')
   } catch {
     return false
@@ -122,8 +126,7 @@ export function getMetaValue(db: DatabaseSync, key: string): string | undefined 
   if (!hasMetaTable(db)) return undefined
   try {
     const row = db.prepare('SELECT value FROM document_memory_meta WHERE key = ?').get(key) as
-      | { value: string }
-      | undefined
+      { value: string } | undefined
     return row?.value
   } catch {
     return undefined
@@ -135,11 +138,13 @@ export function getMetaValue(db: DatabaseSync, key: string): string | undefined 
  */
 export function setMetaValue(db: DatabaseSync, key: string, value: string): void {
   if (!hasMetaTable(db)) return
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO document_memory_meta (key, value)
     VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value;
-  `).run(key, value)
+  `,
+  ).run(key, value)
 }
 
 export interface NameProjectionMetaState {
@@ -165,7 +170,8 @@ export function getNameProjectionMetaState(db: DatabaseSync): NameProjectionMeta
 
   try {
     const rows = db
-      .prepare(`
+      .prepare(
+        `
         SELECT key, value FROM document_memory_meta
         WHERE key IN (
           '${NAME_PROJECTION_VERSION_KEY}',
@@ -174,7 +180,8 @@ export function getNameProjectionMetaState(db: DatabaseSync): NameProjectionMeta
           '${NAME_PROJECTION_STATUS_KEY}',
           '${NAME_PROJECTION_LAST_DOC_ID_KEY}'
         )
-      `)
+      `,
+      )
       .all() as Array<{ key: string; value: string }>
 
     const map = new Map(rows.map((r) => [r.key, r.value]))
@@ -244,7 +251,11 @@ function initializeNameProjectionMetaState(db: DatabaseSync): void {
 
   // 1. If completedVersion already matches or exceeds CURRENT, ensure status is completed
   if (meta.completedVersion >= CURRENT_NAME_PROJECTION_ALGORITHM_VERSION) {
-    setMetaValue(db, NAME_PROJECTION_TARGET_VERSION_KEY, String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION))
+    setMetaValue(
+      db,
+      NAME_PROJECTION_TARGET_VERSION_KEY,
+      String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION),
+    )
     setMetaValue(db, NAME_PROJECTION_STATUS_KEY, 'completed')
     return
   }
@@ -260,7 +271,11 @@ function initializeNameProjectionMetaState(db: DatabaseSync): void {
 
   // 3. First time entering upgrade for CURRENT_NAME_PROJECTION_ALGORITHM_VERSION:
   // Set target version to CURRENT, set pending status, and reset cursor exactly once.
-  setMetaValue(db, NAME_PROJECTION_TARGET_VERSION_KEY, String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION))
+  setMetaValue(
+    db,
+    NAME_PROJECTION_TARGET_VERSION_KEY,
+    String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION),
+  )
   setMetaValue(db, NAME_PROJECTION_STATUS_KEY, 'pending')
   setMetaValue(db, NAME_PROJECTION_LAST_DOC_ID_KEY, '0')
 
@@ -324,17 +339,23 @@ export interface DocumentProjectionTokens {
  * checker and backfill goes through buildDocumentProjection, so they all agree on this shape.
  */
 function buildMediaProjection(name: string, path: string): DocumentProjectionTokens {
-  const stemWords = normalizeDocumentText(name.replace(/\.[^/.]+$/, '')).split(' ').filter(Boolean)
-  const nameTokens = new Set(stemWords.filter((w) => w.length <= MAX_COMPONENT_LENGTH).slice(0, 16))
-  const joined = stemWords.slice(0, 6).join('')
+  const stemWords = normalizeDocumentText(name.replace(/\.[^/.]+$/, ''))
+    .split(' ')
+    .filter(Boolean)
+  const nameTokens = new Set(stemWords.filter((w) => w.length <= MAX_COMPONENT_LENGTH).slice(0, 8))
+  const joined = stemWords.slice(0, 4).join('')
   if (stemWords.length >= 2 && joined.length <= MAX_COMPONENT_LENGTH) nameTokens.add(joined)
   const pathTokens = new Set<string>()
-  for (const dir of extractMeaningfulPathSegments(path, 3)) {
+  for (const dir of extractMeaningfulPathSegments(path, 3).reverse()) {
     for (const word of normalizeDocumentText(dir).split(' ')) {
-      if (word && word.length <= MAX_COMPONENT_LENGTH && pathTokens.size < 12) pathTokens.add(word)
+      if (word && word.length <= MAX_COMPONENT_LENGTH && pathTokens.size < 8) pathTokens.add(word)
     }
   }
-  return { nameNorm: [...nameTokens].join(' '), pathNorm: [...pathTokens].join(' '), compactNgrams: '' }
+  return {
+    nameNorm: [...nameTokens].join(' '),
+    pathNorm: [...pathTokens].join(' '),
+    compactNgrams: '',
+  }
 }
 
 export function buildDocumentProjection(name: string, path: string): DocumentProjectionTokens {
@@ -393,7 +414,11 @@ export function buildDocumentProjection(name: string, path: string): DocumentPro
     const dirNorm = normalizeDocumentText(dir)
     const dirWords = dirNorm.split(' ').filter(Boolean)
     for (const dw of dirWords) {
-      if (dw.length > 0 && dw.length <= MAX_COMPONENT_LENGTH && pathTokens.size < MAX_TOKENS_PER_DOC) {
+      if (
+        dw.length > 0 &&
+        dw.length <= MAX_COMPONENT_LENGTH &&
+        pathTokens.size < MAX_TOKENS_PER_DOC
+      ) {
         pathTokens.add(dw)
       }
       if (dw.length >= MIN_NGRAM_LENGTH) {
@@ -404,7 +429,11 @@ export function buildDocumentProjection(name: string, path: string): DocumentPro
     }
     if (dirWords.length >= 2) {
       const dirJoined = dirWords.join('')
-      if (dirJoined.length > 0 && dirJoined.length <= MAX_COMPONENT_LENGTH && pathTokens.size < MAX_TOKENS_PER_DOC) {
+      if (
+        dirJoined.length > 0 &&
+        dirJoined.length <= MAX_COMPONENT_LENGTH &&
+        pathTokens.size < MAX_TOKENS_PER_DOC
+      ) {
         pathTokens.add(dirJoined)
       }
       for (const tri of generateTrigrams(dirJoined, 30)) {
@@ -449,10 +478,6 @@ export function buildDocumentProjection(name: string, path: string): DocumentPro
 export function buildProjectionCandidateFtsQuery(words: readonly string[]): string | null {
   if (!words.length) return null
 
-  const nameClauses: string[] = []
-  const pathClauses: string[] = []
-  const ngramClauses: string[] = []
-
   // Clean words for FTS
   const safeWords = words
     .filter((w) => w.length > 0)
@@ -462,108 +487,84 @@ export function buildProjectionCandidateFtsQuery(words: readonly string[]): stri
 
   if (!safeWords.length) return null
 
-  // 1. Exact / prefix tokens for each word
-  for (const w of safeWords) {
-    // Codes like HD433 also match HD0433 (leading zeros differ), so every spelling is a candidate.
-    for (const variant of identifierVariants(w)) {
-      nameClauses.push(`"${variant}"*`)
-      pathClauses.push(`"${variant}"*`)
-    }
-  }
-
-  // 2. Concatenated query variant (if multi-word)
-  if (safeWords.length >= 2) {
-    const joined = safeWords.join('')
-    if (joined.length <= MAX_COMPONENT_LENGTH) {
-      nameClauses.push(`"${joined}"*`)
-      pathClauses.push(`"${joined}"*`)
-    }
-    // Adjacent pairs
-    for (let i = 0; i < safeWords.length - 1 && nameClauses.length < 12; i++) {
-      const pair = safeWords[i]! + safeWords[i + 1]!
-      if (pair.length <= MAX_COMPONENT_LENGTH) {
-        nameClauses.push(`"${pair}"*`)
-        pathClauses.push(`"${pair}"*`)
+  // Single-word query
+  if (safeWords.length === 1) {
+    const w = safeWords[0]!
+    const variants = identifierVariants(w)
+    const nameClauses = variants.map((v) => `"${v}"*`).join(' OR ')
+    const pathClauses = variants.map((v) => `"${v}"*`).join(' OR ')
+    const parts: string[] = [`name_norm: (${nameClauses})`, `path_norm: (${pathClauses})`]
+    if (w.length >= MIN_NGRAM_LENGTH) {
+      const tris = generateTrigrams(w, 4)
+      if (tris.length >= 2) {
+        parts.push(
+          `compact_ngrams: (${tris
+            .slice(0, 4)
+            .map((t) => `"${t}"`)
+            .join(' ')})`,
+        )
+      } else if (tris.length === 1) {
+        parts.push(`compact_ngrams: "${tris[0]}"`)
       }
     }
+    return parts.join(' OR ')
   }
 
-  // 3. Narrow alias alternatives (e.g. ra viện <-> xuất viện)
-  const aliases = getNameQueryAliases(safeWords)
-  for (const aliasWords of aliases) {
-    for (const aw of aliasWords) {
-      if (!safeWords.includes(aw)) {
-        const cleanAw = aw.replace(/["*]/g, '')
-        nameClauses.push(`"${cleanAw}"*`)
-        pathClauses.push(`"${cleanAw}"*`)
-      }
+  // Multi-word query: Build conjunctive per-term clauses
+  const termClauses: string[] = []
+  for (let i = 0; i < safeWords.length; i++) {
+    const w = safeWords[i]!
+    const variants = new Set(identifierVariants(w))
+    if (i > 0) {
+      const prevCompound = safeWords[i - 1]! + w
+      if (prevCompound.length <= MAX_COMPONENT_LENGTH) variants.add(prevCompound)
     }
-    if (aliasWords.length >= 2) {
-      const aliasJoined = aliasWords.join('')
-      if (aliasJoined.length <= MAX_COMPONENT_LENGTH) {
-        const cleanJoined = aliasJoined.replace(/["*]/g, '')
-        nameClauses.push(`"${cleanJoined}"*`)
-        pathClauses.push(`"${cleanJoined}"*`)
-      }
+    if (i < safeWords.length - 1) {
+      const nextCompound = w + safeWords[i + 1]!
+      if (nextCompound.length <= MAX_COMPONENT_LENGTH) variants.add(nextCompound)
     }
+    // Narrow aliases (e.g. ra <-> xuat)
+    if (w === 'ra') variants.add('xuat')
+    else if (w === 'xuat') variants.add('ra')
+
+    const vList = [...variants]
+    const vOr = vList.map((v) => (/^\d+$/.test(v) ? `"${v}"` : `"${v}"*`)).join(' OR ')
+    termClauses.push(`(name_norm: (${vOr}) OR path_norm: (${vOr}))`)
   }
 
-  // 4. Trigram conjunctions for compact components
-  if (safeWords.length >= 2) {
-    // 4a. Word-level conjunction: require trigrams from distinct words
-    const wordTris: string[] = []
-    for (const w of safeWords) {
-      if (w.length >= MIN_NGRAM_LENGTH) {
-        const tris = generateTrigrams(w, 2)
-        if (tris[0] && !wordTris.includes(tris[0]) && wordTris.length < MAX_QUERY_NGRAMS) {
-          wordTris.push(tris[0])
-        }
-      }
-    }
-    if (wordTris.length >= 2) {
-      ngramClauses.push(`(${wordTris.map((t) => `"${t}"`).join(' ')})`)
-    }
-
-    // 4b. Joined query trigrams (for components where words were concatenated in directory or filename)
-    const joinedTris = generateTrigrams(safeWords.join(''), 4)
-    if (joinedTris.length >= 2) {
-      ngramClauses.push(`(${joinedTris.slice(0, 4).map((t) => `"${t}"`).join(' ')})`)
-    } else if (joinedTris.length === 1) {
-      ngramClauses.push(`"${joinedTris[0]}"`)
-    }
-  } else if (safeWords.length === 1 && safeWords[0]!.length >= MIN_NGRAM_LENGTH) {
-    const singleTris = generateTrigrams(safeWords[0]!, 4)
-    if (singleTris.length >= 2) {
-      ngramClauses.push(`(${singleTris.slice(0, 4).map((t) => `"${t}"`).join(' ')})`)
-    } else if (singleTris.length === 1) {
-      ngramClauses.push(`"${singleTris[0]}"`)
-    }
+  const andQuery = termClauses.join(' AND ')
+  const joined = safeWords.join('')
+  const extraParts: string[] = []
+  if (joined.length <= MAX_COMPONENT_LENGTH) {
+    const joinedFts = /^\d+$/.test(joined) ? `"${joined}"` : `"${joined}"*`
+    extraParts.push(`name_norm: ${joinedFts}`, `path_norm: ${joinedFts}`)
   }
 
-  // Assemble FTS query
-  const parts: string[] = []
-  if (nameClauses.length > 0) {
-    parts.push(`name_norm: (${nameClauses.join(' OR ')})`)
+  if (extraParts.length > 0) {
+    return `(${andQuery}) OR (${extraParts.join(' OR ')})`
   }
-  if (pathClauses.length > 0) {
-    parts.push(`path_norm: (${pathClauses.join(' OR ')})`)
-  }
-  if (ngramClauses.length > 0) {
-    parts.push(`compact_ngrams: (${ngramClauses.join(' OR ')})`)
-  }
-
-  return parts.length > 0 ? parts.join(' OR ') : null
+  return andQuery
 }
+
+const projectionTableExistsCache = new WeakMap<DatabaseSync, boolean>()
 
 /**
  * Checks whether the projection table exists and is ready in SQLite.
  */
 export function hasNameProjection(db: DatabaseSync): boolean {
+  const cached = projectionTableExistsCache.get(db)
+  if (cached === true) return true
   try {
     const row = db
-      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_name_projection'")
+      .prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_name_projection'",
+      )
       .get()
-    return Boolean(row)
+    const exists = Boolean(row)
+    if (exists) {
+      projectionTableExistsCache.set(db, true)
+    }
+    return exists
   } catch (err: unknown) {
     void err
     return false
@@ -611,13 +612,19 @@ export function estimateNewDocumentMetadataBytes(name: string, path: string): nu
 }
 
 export interface NameProjectionSyncGuard {
-  canWriteProjection(doc: { id: number; name: string; path: string }, estimatedBytes: number): boolean
+  canWriteProjection(
+    doc: { id: number; name: string; path: string },
+    estimatedBytes: number,
+  ): boolean
 }
 
 const dbSyncGuards = new WeakMap<DatabaseSync, NameProjectionSyncGuard>()
 let globalSyncGuard: NameProjectionSyncGuard | null = null
 
-export function setDbProjectionSyncGuard(db: DatabaseSync, guard: NameProjectionSyncGuard | null): void {
+export function setDbProjectionSyncGuard(
+  db: DatabaseSync,
+  guard: NameProjectionSyncGuard | null,
+): void {
   if (guard) {
     dbSyncGuards.set(db, guard)
   } else {
@@ -662,12 +669,14 @@ export function isProjectionUpToDate(
     const sql = hasRowVer
       ? 'SELECT name_norm, path_norm, compact_ngrams, row_version FROM document_name_projection WHERE document_id = ?'
       : 'SELECT name_norm, path_norm, compact_ngrams FROM document_name_projection WHERE document_id = ?'
-    const row = db.prepare(sql).get(docId) as {
-      name_norm: string
-      path_norm: string
-      compact_ngrams: string
-      row_version?: number
-    } | undefined
+    const row = db.prepare(sql).get(docId) as
+      | {
+          name_norm: string
+          path_norm: string
+          compact_ngrams: string
+          row_version?: number
+        }
+      | undefined
     if (!row) return false
     if (row.name_norm !== proj.nameNorm) return false
     if (row.path_norm !== proj.pathNorm) return false
@@ -705,7 +714,8 @@ export function syncProjectionInsert(
     }
   }
   if (hasRowVersionColumn(db)) {
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO document_name_projection (document_id, name_norm, path_norm, compact_ngrams, updated_at, row_version)
       VALUES (?, ?, ?, ?, unixepoch(), ?)
       ON CONFLICT(document_id) DO UPDATE SET
@@ -714,9 +724,17 @@ export function syncProjectionInsert(
         compact_ngrams = excluded.compact_ngrams,
         updated_at = unixepoch(),
         row_version = excluded.row_version;
-    `).run(doc.id, proj.nameNorm, proj.pathNorm, proj.compactNgrams, CURRENT_NAME_PROJECTION_ALGORITHM_VERSION)
+    `,
+    ).run(
+      doc.id,
+      proj.nameNorm,
+      proj.pathNorm,
+      proj.compactNgrams,
+      CURRENT_NAME_PROJECTION_ALGORITHM_VERSION,
+    )
   } else {
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO document_name_projection (document_id, name_norm, path_norm, compact_ngrams, updated_at)
       VALUES (?, ?, ?, ?, unixepoch())
       ON CONFLICT(document_id) DO UPDATE SET
@@ -724,7 +742,8 @@ export function syncProjectionInsert(
         path_norm = excluded.path_norm,
         compact_ngrams = excluded.compact_ngrams,
         updated_at = unixepoch();
-    `).run(doc.id, proj.nameNorm, proj.pathNorm, proj.compactNgrams)
+    `,
+    ).run(doc.id, proj.nameNorm, proj.pathNorm, proj.compactNgrams)
   }
   return true
 }
@@ -747,9 +766,16 @@ export function syncProjectionMove(
   syncProjectionInsert(db, { id: docId, path: newPath, name: newName }, guard)
 }
 
+const projectionDeleteStmtCache = new WeakMap<DatabaseSync, StatementSync>()
+
 export function syncProjectionDelete(db: DatabaseSync, docId: number): void {
   if (!hasNameProjection(db)) return
-  db.prepare('DELETE FROM document_name_projection WHERE document_id = ?').run(docId)
+  let stmt = projectionDeleteStmtCache.get(db)
+  if (!stmt) {
+    stmt = db.prepare('DELETE FROM document_name_projection WHERE document_id = ?')
+    projectionDeleteStmtCache.set(db, stmt)
+  }
+  stmt.run(docId)
 }
 
 export function syncProjectionExclude(db: DatabaseSync, docId: number): void {
@@ -794,32 +820,35 @@ export function backfillNameProjectionBatch(
     return { processed: 0, remaining: 0, done: false, lastDocId: 0 }
   }
 
-  const effectiveBatchSize = Number.isSafeInteger(bounds?.maxBatchRows) && (bounds?.maxBatchRows ?? 0) > 0
-    ? Math.max(1, Math.min(200, bounds!.maxBatchRows!))
-    : Number.isSafeInteger(batchSize)
-      ? Math.max(1, Math.min(200, batchSize))
-      : 100
-  const maxBatchBytes = Number.isSafeInteger(bounds?.maxBatchBytes) && (bounds?.maxBatchBytes ?? 0) > 0
-    ? bounds!.maxBatchBytes!
-    : MAX_PROJECTION_BATCH_BYTES
+  const effectiveBatchSize =
+    Number.isSafeInteger(bounds?.maxBatchRows) && (bounds?.maxBatchRows ?? 0) > 0
+      ? Math.max(1, Math.min(200, bounds!.maxBatchRows!))
+      : Number.isSafeInteger(batchSize)
+        ? Math.max(1, Math.min(200, batchSize))
+        : 100
+  const maxBatchBytes =
+    Number.isSafeInteger(bounds?.maxBatchBytes) && (bounds?.maxBatchBytes ?? 0) > 0
+      ? bounds!.maxBatchBytes!
+      : MAX_PROJECTION_BATCH_BYTES
 
   const meta = getNameProjectionMetaState(db)
   let lastDocId = meta.lastDocId
 
   const isRebuild =
-    meta.completedVersion < CURRENT_NAME_PROJECTION_ALGORITHM_VERSION ||
-    meta.status === 'pending'
+    meta.completedVersion < CURRENT_NAME_PROJECTION_ALGORITHM_VERSION || meta.status === 'pending'
 
   if (isRebuild) {
     // Mode 1: Algorithm rebuild / upgrade across existing and missing rows by id keyset
     const candidateDocs = db
-      .prepare(`
+      .prepare(
+        `
         SELECT d.id, d.name, d.path
         FROM documents d
         WHERE d.excluded = 0 AND d.id > ?
         ORDER BY d.id ASC
         LIMIT ?;
-      `)
+      `,
+      )
       .all(lastDocId, effectiveBatchSize) as Array<{ id: number; name: string; path: string }>
 
     if (candidateDocs.length === 0) {
@@ -833,10 +862,22 @@ export function backfillNameProjectionBatch(
         // Rebuild scan completed across all active documents
         db.exec('BEGIN IMMEDIATE')
         try {
-          setMetaValue(db, NAME_PROJECTION_COMPLETED_VERSION_KEY, String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION))
-          setMetaValue(db, NAME_PROJECTION_VERSION_KEY, String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION))
+          setMetaValue(
+            db,
+            NAME_PROJECTION_COMPLETED_VERSION_KEY,
+            String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION),
+          )
+          setMetaValue(
+            db,
+            NAME_PROJECTION_VERSION_KEY,
+            String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION),
+          )
           setMetaValue(db, NAME_PROJECTION_STATUS_KEY, 'completed')
-          setMetaValue(db, NAME_PROJECTION_TARGET_VERSION_KEY, String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION))
+          setMetaValue(
+            db,
+            NAME_PROJECTION_TARGET_VERSION_KEY,
+            String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION),
+          )
           setMetaValue(db, NAME_PROJECTION_LAST_DOC_ID_KEY, '0')
           db.exec('COMMIT')
         } catch (err) {
@@ -845,12 +886,14 @@ export function backfillNameProjectionBatch(
         }
 
         const missingRow = db
-          .prepare(`
+          .prepare(
+            `
             SELECT count(*) AS remaining
             FROM documents d
             LEFT JOIN document_name_projection p ON p.document_id = d.id
             WHERE d.excluded = 0 AND p.document_id IS NULL;
-          `)
+          `,
+          )
           .get() as { remaining: number } | undefined
         const remaining = missingRow?.remaining ?? 0
         return { processed: 0, remaining, done: remaining === 0, lastDocId: 0 }
@@ -880,12 +923,14 @@ export function backfillNameProjectionBatch(
     if (docs.length === 0) {
       // Min metadata or single row cannot fit: honest paused, cursor does not advance
       const missingRow = db
-        .prepare(`
+        .prepare(
+          `
           SELECT count(*) AS remaining
           FROM documents d
           LEFT JOIN document_name_projection p ON p.document_id = d.id
           WHERE d.excluded = 0 AND p.document_id IS NULL;
-        `)
+        `,
+        )
         .get() as { remaining: number } | undefined
       return { processed: 0, remaining: missingRow?.remaining ?? 0, done: false, lastDocId }
     }
@@ -922,7 +967,13 @@ export function backfillNameProjectionBatch(
       for (const doc of docs) {
         const proj = buildDocumentProjection(doc.name, doc.path)
         if (hasRowVer) {
-          upsertStmt.run(doc.id, proj.nameNorm, proj.pathNorm, proj.compactNgrams, CURRENT_NAME_PROJECTION_ALGORITHM_VERSION)
+          upsertStmt.run(
+            doc.id,
+            proj.nameNorm,
+            proj.pathNorm,
+            proj.compactNgrams,
+            CURRENT_NAME_PROJECTION_ALGORITHM_VERSION,
+          )
         } else {
           upsertStmt.run(doc.id, proj.nameNorm, proj.pathNorm, proj.compactNgrams)
         }
@@ -932,10 +983,22 @@ export function backfillNameProjectionBatch(
         setMetaValue(db, NAME_PROJECTION_LAST_DOC_ID_KEY, String(newLastDocId))
       } else {
         // Rebuild scan completed: atomically mark completed within the same transaction
-        setMetaValue(db, NAME_PROJECTION_COMPLETED_VERSION_KEY, String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION))
-        setMetaValue(db, NAME_PROJECTION_VERSION_KEY, String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION))
+        setMetaValue(
+          db,
+          NAME_PROJECTION_COMPLETED_VERSION_KEY,
+          String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION),
+        )
+        setMetaValue(
+          db,
+          NAME_PROJECTION_VERSION_KEY,
+          String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION),
+        )
         setMetaValue(db, NAME_PROJECTION_STATUS_KEY, 'completed')
-        setMetaValue(db, NAME_PROJECTION_TARGET_VERSION_KEY, String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION))
+        setMetaValue(
+          db,
+          NAME_PROJECTION_TARGET_VERSION_KEY,
+          String(CURRENT_NAME_PROJECTION_ALGORITHM_VERSION),
+        )
         setMetaValue(db, NAME_PROJECTION_LAST_DOC_ID_KEY, '0')
       }
 
@@ -959,12 +1022,14 @@ export function backfillNameProjectionBatch(
       }
     } else {
       const missingRow = db
-        .prepare(`
+        .prepare(
+          `
           SELECT count(*) AS remaining
           FROM documents d
           LEFT JOIN document_name_projection p ON p.document_id = d.id
           WHERE d.excluded = 0 AND p.document_id IS NULL;
-        `)
+        `,
+        )
         .get() as { remaining: number } | undefined
       const remaining = missingRow?.remaining ?? 0
       return {
@@ -978,37 +1043,43 @@ export function backfillNameProjectionBatch(
 
   // Mode 2: Steady-state backfill for newly inserted unprojected rows
   let unprojected = db
-    .prepare(`
+    .prepare(
+      `
       SELECT d.id, d.name, d.path
       FROM documents d
       LEFT JOIN document_name_projection p ON p.document_id = d.id
       WHERE d.excluded = 0 AND p.document_id IS NULL AND d.id > ?
       ORDER BY d.id ASC
       LIMIT ?;
-    `)
+    `,
+    )
     .all(lastDocId, effectiveBatchSize) as Array<{ id: number; name: string; path: string }>
 
   if (unprojected.length === 0 && lastDocId > 0) {
     unprojected = db
-      .prepare(`
+      .prepare(
+        `
         SELECT d.id, d.name, d.path
         FROM documents d
         LEFT JOIN document_name_projection p ON p.document_id = d.id
         WHERE d.excluded = 0 AND p.document_id IS NULL
         ORDER BY d.id ASC
         LIMIT ?;
-      `)
+      `,
+      )
       .all(effectiveBatchSize) as Array<{ id: number; name: string; path: string }>
   }
 
   if (unprojected.length === 0) {
     const totalRemainingRow = db
-      .prepare(`
+      .prepare(
+        `
         SELECT count(*) AS remaining
         FROM documents d
         LEFT JOIN document_name_projection p ON p.document_id = d.id
         WHERE d.excluded = 0 AND p.document_id IS NULL;
-      `)
+      `,
+      )
       .get() as { remaining: number } | undefined
     const totalRemaining = totalRemainingRow?.remaining ?? 0
     if (totalRemaining === 0 && lastDocId > 0) {
@@ -1040,12 +1111,14 @@ export function backfillNameProjectionBatch(
   if (docs.length === 0) {
     // Honest paused, cursor does not advance
     const countRow = db
-      .prepare(`
+      .prepare(
+        `
         SELECT count(*) AS remaining
         FROM documents d
         LEFT JOIN document_name_projection p ON p.document_id = d.id
         WHERE d.excluded = 0 AND p.document_id IS NULL;
-      `)
+      `,
+      )
       .get() as { remaining: number } | undefined
     return { processed: 0, remaining: countRow?.remaining ?? 0, done: false, lastDocId }
   }
@@ -1079,7 +1152,13 @@ export function backfillNameProjectionBatch(
     for (const doc of docs) {
       const proj = buildDocumentProjection(doc.name, doc.path)
       if (hasRowVer) {
-        insertStmt.run(doc.id, proj.nameNorm, proj.pathNorm, proj.compactNgrams, CURRENT_NAME_PROJECTION_ALGORITHM_VERSION)
+        insertStmt.run(
+          doc.id,
+          proj.nameNorm,
+          proj.pathNorm,
+          proj.compactNgrams,
+          CURRENT_NAME_PROJECTION_ALGORITHM_VERSION,
+        )
       } else {
         insertStmt.run(doc.id, proj.nameNorm, proj.pathNorm, proj.compactNgrams)
       }
@@ -1094,12 +1173,14 @@ export function backfillNameProjectionBatch(
   }
 
   const countRow = db
-    .prepare(`
+    .prepare(
+      `
       SELECT count(*) AS remaining
       FROM documents d
       LEFT JOIN document_name_projection p ON p.document_id = d.id
       WHERE d.excluded = 0 AND p.document_id IS NULL;
-    `)
+    `,
+    )
     .get() as { remaining: number } | undefined
 
   const remaining = countRow?.remaining ?? 0

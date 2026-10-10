@@ -1,10 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import { garbageCollectObsoleteStorage, getStorageFreelistStats } from '../storage-gc'
 import { compactAfterRetentionBatch } from './retention-compaction'
-import {
-  CACHE_RETENTION_HIGH_WATERMARK,
-  CACHE_RETENTION_LOW_WATERMARK,
-} from '../storage-budget'
+import { CACHE_RETENTION_HIGH_WATERMARK, CACHE_RETENTION_LOW_WATERMARK } from '../storage-budget'
 import {
   CacheRetentionRepository,
   type AgeEvictionCutoffs,
@@ -57,7 +54,9 @@ export interface CacheRetentionOptions {
    * Redundancy-aware tiers T-A / T-B (drop vectors, then template text, of redundant document families while
    * keeping a searchable skeleton). On by default; pass `false` to run only the classic tiers.
    */
-  redundancy?: false | Pick<RedundancyCompactionOptions, 'params' | 'batchDocuments' | 'skipAnalysis' | 'tiers'>
+  redundancy?:
+    | false
+    | Pick<RedundancyCompactionOptions, 'params' | 'batchDocuments' | 'skipAnalysis' | 'tiers'>
   /**
    * AGE POLICY ("recent matters", off unless given; the worker always passes it). Adds the archive stages (vectors,
    * then identity-only content of documents neither opened nor modified for 12 months, ahead of the LRU tiers),
@@ -89,7 +88,6 @@ export interface CacheRetentionOptions {
    */
   settleFtsDeletes?: () => void | Promise<void>
 }
-
 
 export interface CacheRetentionAgeReport {
   buckets: AgeBucketReport
@@ -166,7 +164,6 @@ export async function executeCacheRetentionPolicy(
   budgetBytes: number,
   options?: CacheRetentionOptions,
 ): Promise<CacheRetentionReport> {
-
   const measurePhysicalBytes = async (): Promise<number> => {
     if (options?.measurePhysicalBytes) {
       const value = await options.measurePhysicalBytes()
@@ -174,8 +171,11 @@ export async function executeCacheRetentionPolicy(
       return value
     }
     const accounting = await collectStorageAccountingAsync({
-      dbPath, db, vectorsDir: options?.vectorsDir,
-      ocrDir: options?.ocrDir, tempDir: options?.tempDir,
+      dbPath,
+      db,
+      vectorsDir: options?.vectorsDir,
+      ocrDir: options?.ocrDir,
+      tempDir: options?.tempDir,
     })
     if (accounting.isDegraded) throw new Error('Storage accounting is degraded; retention stopped')
     return accounting.totalManagedBytes
@@ -227,16 +227,21 @@ export async function executeCacheRetentionPolicy(
       return report
     }
     triggered =
-      options?.force === true || options?.ignoreTrigger === true || shouldTriggerCacheRetention(bytesBefore, budgetBytes)
+      options?.force === true ||
+      options?.ignoreTrigger === true ||
+      shouldTriggerCacheRetention(bytesBefore, budgetBytes)
     targetBytesToReclaim = Math.max(0, bytesBefore - targetFloor)
     protectedDocsCount = new CacheRetentionRepository(db).countProtectedDocuments()
     Object.assign(report, {
-      triggered, targetBytesToReclaim, protectedFloor: protectedDocsCount,
+      triggered,
+      targetBytesToReclaim,
+      protectedFloor: protectedDocsCount,
       tier4ProtectedDocsCount: protectedDocsCount,
       stoppedReason: triggered ? 'exhausted-candidates' : 'not-triggered',
     })
   } catch (error) {
-    report.stoppedReason = options?.shouldContinue && !options.shouldContinue() ? 'cancelled' : 'error'
+    report.stoppedReason =
+      options?.shouldContinue && !options.shouldContinue() ? 'cancelled' : 'error'
     report.error = error instanceof Error ? error.message : String(error)
     return report
   }
@@ -276,9 +281,7 @@ export async function executeCacheRetentionPolicy(
     try {
       const gcStats = garbageCollectObsoleteStorage(db)
       report.tier1OrphansFreed =
-        gcStats.orphanChunksDeleted +
-        gcStats.obsoleteEmbeddingsDeleted +
-        gcStats.retiredSetsDeleted
+        gcStats.orphanChunksDeleted + gcStats.obsoleteEmbeddingsDeleted + gcStats.retiredSetsDeleted
       report.estimatedBytesReclaimed += report.tier1OrphansFreed * 1500
     } catch (err: any) {
       report.stoppedReason = 'error'
@@ -326,7 +329,9 @@ export async function executeCacheRetentionPolicy(
     const textBytesOf = (ids: number[]): number => {
       try {
         const row = db
-          .prepare(`SELECT coalesce(sum(length(text)), 0) AS b FROM chunks WHERE document_id IN (${ids.map(() => '?').join(',')})`)
+          .prepare(
+            `SELECT coalesce(sum(length(text)), 0) AS b FROM chunks WHERE document_id IN (${ids.map(() => '?').join(',')})`,
+          )
           .get(...ids) as { b: number }
         return Number(row.b)
       } catch {
@@ -383,7 +388,11 @@ export async function executeCacheRetentionPolicy(
         currentPhysical = await measurePhysicalBytes()
         lastKnownPhysical = currentPhysical
         if (options?.shouldContinue && !options.shouldContinue()) return 'cancelled'
-        if (settleFts && unsettledTextBytes > 0 && currentPhysical - FTS_SETTLE_FACTOR * unsettledTextBytes <= targetFloor) {
+        if (
+          settleFts &&
+          unsettledTextBytes > 0 &&
+          currentPhysical - FTS_SETTLE_FACTOR * unsettledTextBytes <= targetFloor
+        ) {
           unsettledTextBytes = 0
           await settle()
           if (options?.shouldContinue && !options.shouldContinue()) return 'cancelled'
@@ -473,7 +482,14 @@ export async function executeCacheRetentionPolicy(
     // eviction follows Tier 2, still ahead of the LRU vector tier of the 'recent' documents.
     // -------------------------------------------------------------
     if (agePolicy) {
-      if (endIf(await ageStage('archive', 'vectors', (n) => { if (report.age) report.age.archiveVectorDocsPruned += n }))) return report
+      if (
+        endIf(
+          await ageStage('archive', 'vectors', (n) => {
+            if (report.age) report.age.archiveVectorDocsPruned += n
+          }),
+        )
+      )
+        return report
     }
 
     // -------------------------------------------------------------
@@ -529,7 +545,14 @@ export async function executeCacheRetentionPolicy(
     }
 
     if (agePolicy) {
-      if (endIf(await ageStage('archive', 'content', (n) => { if (report.age) report.age.archiveContentDocsPruned += n }))) return report
+      if (
+        endIf(
+          await ageStage('archive', 'content', (n) => {
+            if (report.age) report.age.archiveContentDocsPruned += n
+          }),
+        )
+      )
+        return report
     }
 
     // -------------------------------------------------------------
@@ -615,7 +638,14 @@ export async function executeCacheRetentionPolicy(
     // LAST RESORT (age policy, opt-in): vectors only of 'fresh' normal documents, oldest first.
     // -------------------------------------------------------------
     if (agePolicy && options?.allowFreshVectorEviction && currentPhysical > targetFloor) {
-      if (endIf(await ageStage('normal-fresh', 'vectors', (n) => { if (report.age) report.age.freshVectorDocsPruned += n }))) return report
+      if (
+        endIf(
+          await ageStage('normal-fresh', 'vectors', (n) => {
+            if (report.age) report.age.freshVectorDocsPruned += n
+          }),
+        )
+      )
+        return report
     }
 
     // -------------------------------------------------------------
@@ -707,7 +737,8 @@ export async function executeCacheRetentionPolicy(
     finalizeReport(report, db, dirtySpacesMap, options)
     return report
   } catch (err: any) {
-    report.stoppedReason = options?.shouldContinue && !options.shouldContinue() ? 'cancelled' : 'error'
+    report.stoppedReason =
+      options?.shouldContinue && !options.shouldContinue() ? 'cancelled' : 'error'
     report.error = err?.message || String(err)
     report.bytesAfter = lastKnownPhysical > 0 ? lastKnownPhysical : bytesBefore
     report.targetReached = false

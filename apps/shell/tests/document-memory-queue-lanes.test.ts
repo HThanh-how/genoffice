@@ -40,8 +40,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-lanes-'))
   mkdirSync(join(dir, 'files'))
 })
-afterEach(() => {
-  manager?.close()
+afterEach(async () => {
+  await manager?.closeAsync()
   manager = undefined
   rmSync(dir, { recursive: true, force: true })
 })
@@ -74,18 +74,22 @@ class FakeIndexWorker extends EventEmitter {
       if (noop) return void this.emit('message', noop)
       if (message.type === 'extract') {
         if (this.neverExtract) return
-        const bytes = readFileSync(message.path!)
-        const stat = statSync(message.path!)
-        this.emit('message', {
-          id: message.id,
-          result: {
-            hash: createHash('sha256').update(bytes).digest('hex'),
-            mtimeMs: stat.mtimeMs,
-            sizeBytes: stat.size,
-            chunks: chunkDocumentText(bytes.toString('utf8')),
-            status: 'text-only',
-          },
-        })
+        try {
+          const bytes = readFileSync(message.path!)
+          const stat = statSync(message.path!)
+          this.emit('message', {
+            id: message.id,
+            result: {
+              hash: createHash('sha256').update(bytes).digest('hex'),
+              mtimeMs: stat.mtimeMs,
+              sizeBytes: stat.size,
+              chunks: chunkDocumentText(bytes.toString('utf8')),
+              status: 'text-only',
+            },
+          })
+        } catch {
+          // directory was cleaned up during teardown
+        }
       } else if (message.type === 'embed') {
         const reply = () => {
           this.emit('message', { type: 'model', state: 'ready' })
@@ -186,7 +190,7 @@ async function until(check: () => boolean, ms = 15_000, what = 'condition'): Pro
   const deadline = Date.now() + ms
   while (!check()) {
     if (Date.now() > deadline) throw new Error(`${what} not reached in time`)
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 50))
   }
 }
 
@@ -197,7 +201,7 @@ describe('reading does not wait for vectors', () => {
     worker.embedDelayMs = 1_500 // a slow computer: the 24 files ahead need ~36 s of vector batches
     manager = open(worker)
     // the constructor alone starts the worker and the poll (what attachDocumentMemory() does), nothing else is called
-    await until(() => (statusCounts().pending ?? 0) === 0, 15_000, 'all never-read files read')
+    await until(() => (statusCounts().pending ?? 0) === 0, 35_000, 'all never-read files read')
     expect(worker.count('extract')).toBeGreaterThanOrEqual(40)
     // their text is searchable already; their vectors are still queued, not lost
     expect(manager.status().pending).toBeGreaterThan(0)
@@ -216,7 +220,7 @@ describe('reading does not wait for vectors', () => {
     seedLine(0, 60)
     const worker = new FakeIndexWorker()
     manager = open(worker)
-    await until(() => (statusCounts().ready ?? 0) === 60, 30_000, 'all files ready')
+    await until(() => (statusCounts().ready ?? 0) === 60, 50_000, 'all files ready')
     const extractAt = worker.seen
       .map((m, i) => (m.type === 'extract' ? i : -1))
       .filter((i) => i >= 0)

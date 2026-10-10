@@ -78,7 +78,9 @@ export function resolveStartupEmbeddingProfile(input: {
   spec: MachineSpec
 }): InitialProfileChoice {
   const parent = dirname(resolve(input.settingsDir))
-  const hasSaved = hasSettingsFile(input.settingsDir) || (parent !== resolve(input.settingsDir) && hasSettingsFile(parent))
+  const hasSaved =
+    hasSettingsFile(input.settingsDir) ||
+    (parent !== resolve(input.settingsDir) && hasSettingsFile(parent))
   let hasExistingIndex = false
   try {
     hasExistingIndex = statSync(input.dbPath).size > 0

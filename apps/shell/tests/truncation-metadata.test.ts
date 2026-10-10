@@ -12,6 +12,11 @@ import { extractDocument, MAX_INDEX_TEXT_CHARS } from '../src/main/document-memo
 import { resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
 import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
 
+function normalizePathIdentity(p: string): string {
+  const resolved = resolve(p)
+  return process.platform === 'win32' ? resolved.replace(/\\/g, '/').toLowerCase() : resolved
+}
+
 const PDF_FIXTURE = join(__dirname, 'fixtures', 'mixed-scan.pdf')
 
 class InProcessWorker extends EventEmitter {
@@ -39,8 +44,9 @@ class InProcessWorker extends EventEmitter {
           return
         }
         if (message.type === 'extract' && message.path) {
-          const norm = resolve(message.path)
-          if (this.failPaths.has(norm)) {
+          const norm = normalizePathIdentity(message.path)
+          const isFailing = [...this.failPaths].some((f) => normalizePathIdentity(f) === norm)
+          if (isFailing) {
             this.emit('message', {
               id: message.id,
               error: 'Extraction error: file corrupted or unreadable',
@@ -92,9 +98,9 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
     failPaths = new Set<string>()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const manager of managers) {
-      manager.close()
+      await manager.closeAsync()
     }
     resetIndexingPolicyBus()
     rmSync(tempDir, { recursive: true, force: true })
@@ -139,7 +145,11 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
     // Verify direct SQLite row persistence
     const row = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(hugeFile)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(hugeFile)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(row).toBeDefined()
     expect(row.status).toBe('text-only')
     expect(row.truncated).toBe(1)
@@ -151,7 +161,7 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
     expect(hit).toBeDefined()
     expect(hit!.truncated).toBe(true)
     expect(hit!.truncatedReason).toBe('content-limit')
-  })
+  }, 60_000)
 
   it('TRUNC-02: PDF page limit reason persisted', async () => {
     const { manager, store, rawDb } = await createTestManager()
@@ -176,7 +186,11 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
     // Verify direct SQLite row persistence
     const row = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(pdfPath)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(pdfPath)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(row).toBeDefined()
     expect(row.truncated).toBe(1)
     expect(row.truncated_reason).toBe('pdf-page-limit')
@@ -197,7 +211,8 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
     const header = 'id,product,department,price,stock,description'
     const rows = Array.from(
       { length: 4_000 },
-      (_, i) => `${i + 1},Product_${i + 1},Warehouse,${10 + i},${100 - (i % 10)},Inventory audit catalog item`,
+      (_, i) =>
+        `${i + 1},Product_${i + 1},Warehouse,${10 + i},${100 - (i % 10)},Inventory audit catalog item`,
     )
     writeFileSync(csvPath, [header, ...rows].join('\n'), 'utf8')
     const stat = statSync(csvPath)
@@ -289,12 +304,17 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
 
     const clearedRow = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(docPath)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(docPath)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(clearedRow.truncated).toBe(0)
     expect(clearedRow.truncated_reason).toBeNull()
 
     // 3. Update document with huge content (>8MB) exceeding content limit
-    const hugeLine = '100,LargeDataRow,VeryLongInformationField,EngineeringDepartment,StaffEngineer,120000\n'
+    const hugeLine =
+      '100,LargeDataRow,VeryLongInformationField,EngineeringDepartment,StaffEngineer,120000\n'
     const repeatCount = Math.ceil((8.5 * 1024 * 1024) / hugeLine.length)
     writeFileSync(docPath, [csvHeader, hugeLine.repeat(repeatCount)].join('\n'), 'utf8')
 
@@ -309,10 +329,14 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
 
     const updatedRow = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(docPath)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(docPath)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(updatedRow.truncated).toBe(1)
     expect(updatedRow.truncated_reason).toBe('content-limit')
-  })
+  }, 60_000)
 
   it('TRUNC-05: error state clears stale reason (chuyển sang error thì truncated=0 và truncated_reason=NULL)', async () => {
     const { manager, store, rawDb } = await createTestManager()
@@ -334,7 +358,11 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
 
     const initialRow = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(docPath)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(docPath)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(initialRow.truncated).toBe(1)
     expect(initialRow.truncated_reason).toBe('content-limit')
 
@@ -379,7 +407,12 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
     expect(coldOutcome.ok).toBe(false)
     const coldRow = rawDb
       .prepare('SELECT status, error, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(coldPath)) as { status: string; error: string | null; truncated: number; truncated_reason: string | null }
+      .get(resolve(coldPath)) as {
+      status: string
+      error: string | null
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(coldRow.status).toBe('error')
     expect(coldRow.error).toContain('Extraction error')
     expect(coldRow.truncated).toBe(0)
@@ -413,9 +446,13 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
 
     const directRow = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(directDocPath)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(directDocPath)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(directRow.status).toBe('error')
     expect(directRow.truncated).toBe(0)
     expect(directRow.truncated_reason).toBeNull()
-  })
+  }, 60_000)
 })

@@ -4,14 +4,33 @@ import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
-import { MIN_STORAGE_BUDGET_BYTES, writeStorageSettings } from '../src/main/document-memory/storage/storage-settings'
+import {
+  MIN_STORAGE_BUDGET_BYTES,
+  writeStorageSettings,
+} from '../src/main/document-memory/storage/storage-settings'
 import { createStorageBudget, hardCapBytes } from '../src/main/document-memory/storage-budget'
-import { handleCompactionRequest, resetCompactionLaneForTests } from '../src/main/document-memory/runtime/worker-compaction'
-import type { FreeSpaceWorkerResult, RetentionWorkerResult } from '../src/main/document-memory/runtime/worker-compaction-types'
+import {
+  handleCompactionRequest,
+  resetCompactionLaneForTests,
+} from '../src/main/document-memory/runtime/worker-compaction'
+import type {
+  FreeSpaceWorkerResult,
+  RetentionWorkerResult,
+} from '../src/main/document-memory/runtime/worker-compaction-types'
 import { orderQueue } from '../src/main/document-memory/queue-order'
 import { waitForManagerWriteReady } from './helpers/storage-budget-ack'
-import { ScriptedWorker, simulatedAccountingRunner, waitFor } from './helpers/compaction-worker-harness'
-import { budgetForRatio, chunkCount, laneContext, seedDocuments, vectorCount } from './helpers/compaction-fixtures'
+import {
+  ScriptedWorker,
+  simulatedAccountingRunner,
+  waitFor,
+} from './helpers/compaction-worker-harness'
+import {
+  budgetForRatio,
+  chunkCount,
+  laneContext,
+  seedDocuments,
+  vectorCount,
+} from './helpers/compaction-fixtures'
 
 /**
  * Real manager + real SQLite + real indexing pipeline; only the accounting total is test-controlled (the usual way the
@@ -32,19 +51,23 @@ beforeEach(() => {
   usage = 0
   writeStorageSettings(dir, { maxDatabaseBytes: SOFT, preset: 'custom', version: 1 })
 })
-afterEach(() => {
+afterEach(async () => {
   for (const m of managers) {
-    try {
-      m.close()
-    } catch {}
+    await m.closeAsync()
   }
   rmSync(dir, { recursive: true, force: true })
 })
 
-async function start(handlers: ConstructorParameters<typeof ScriptedWorker>[1] = {}, startUsage = 0) {
+async function start(
+  handlers: ConstructorParameters<typeof ScriptedWorker>[1] = {},
+  startUsage = 0,
+) {
   usage = startUsage
   const worker = new ScriptedWorker(join(dir, 'document-memory.db'), handlers)
-  const manager = new DocumentMemoryManager(dir, { workerFactory: () => worker as any, pollIntervalMs: 3_600_000 })
+  const manager = new DocumentMemoryManager(dir, {
+    workerFactory: () => worker as any,
+    pollIntervalMs: 3_600_000,
+  })
   managers.push(manager)
   const sched = (manager as any).maintScheduler
   sched.storageAccountingRunner = simulatedAccountingRunner(() => usage)
@@ -54,9 +77,20 @@ async function start(handlers: ConstructorParameters<typeof ScriptedWorker>[1] =
 }
 
 const freeResult = (req: any, freed: number): FreeSpaceWorkerResult => ({
-  kind: 'free-space', runId: req.runId, epoch: req.epoch, status: 'completed', durationMs: 2, displacement: null, agedStage: null,
-  neededBytes: req.neededBytes, freedBytes: freed, usedBefore: usage, usedAfter: usage - freed, fitsHardCap: freed >= req.neededBytes,
-  affectedAnnSpaces: [], annRequests: [],
+  kind: 'free-space',
+  runId: req.runId,
+  epoch: req.epoch,
+  status: 'completed',
+  durationMs: 2,
+  displacement: null,
+  agedStage: null,
+  neededBytes: req.neededBytes,
+  freedBytes: freed,
+  usedBefore: usage,
+  usedAfter: usage - freed,
+  fitsHardCap: freed >= req.neededBytes,
+  affectedAnnSpaces: [],
+  annRequests: [],
 })
 
 describe('admission by displacement (real manager)', () => {
@@ -73,9 +107,19 @@ describe('admission by displacement (real manager)', () => {
       Math.round(SOFT * 1.085),
     )
     const file = join(dir, 'files', 'cccd-nguyen-van-a.txt')
-    writeFileSync(file, 'Căn cước công dân Nguyễn Văn A zeppelinquartz sổ hộ khẩu giấy tờ quan trọng.', 'utf8')
+    writeFileSync(
+      file,
+      'Căn cước công dân Nguyễn Văn A zeppelinquartz sổ hộ khẩu giấy tờ quan trọng.',
+      'utf8',
+    )
     manager.remember(file)
-    expect(await waitFor(() => manager.store.documentByPath(file)?.status === 'ready' || manager.store.documentByPath(file)?.status === 'text-only')).toBe(true)
+    expect(
+      await waitFor(
+        () =>
+          manager.store.documentByPath(file)?.status === 'ready' ||
+          manager.store.documentByPath(file)?.status === 'text-only',
+      ),
+    ).toBe(true)
     // Identity/extraction, extraction lease, and content commit each retry admission once.
     // The protected name headroom makes all three real reservations hit the cap in this fixture.
     expect(asked).toBe(3)
@@ -90,7 +134,10 @@ describe('admission by displacement (real manager)', () => {
   })
 
   it('(d) refused only when nothing can be freed: content refused at the cap, identity kept; at the hard stop no row, one displacement attempt then cooldown', async () => {
-    const { manager, worker } = await start({ 'free-space': (req) => freeResult(req, 0) }, Math.round(SOFT * 1.085))
+    const { manager, worker } = await start(
+      { 'free-space': (req) => freeResult(req, 0) },
+      Math.round(SOFT * 1.085),
+    )
     const a = join(dir, 'files', 'a-note.txt')
     writeFileSync(a, 'plain note about gardening quokkaberry', 'utf8')
     manager.remember(a)
@@ -120,12 +167,15 @@ describe('admission by displacement (real manager)', () => {
   })
 
   it('at the hard stop a displacement that frees enough lets the parked intent through (intake replay)', async () => {
-    const { manager } = await start({
-      'free-space': (req) => {
-        usage = Math.round(SOFT * 0.97)
-        return freeResult(req, req.neededBytes)
+    const { manager } = await start(
+      {
+        'free-space': (req) => {
+          usage = Math.round(SOFT * 0.97)
+          return freeResult(req, req.neededBytes)
+        },
       },
-    }, Math.round(SOFT * 1.12))
+      Math.round(SOFT * 1.12),
+    )
     const file = join(dir, 'files', 'late-arrival.txt')
     writeFileSync(file, 'late arrival pomelogranite', 'utf8')
     manager.remember(file)
@@ -144,7 +194,10 @@ describe('no evict -> re-embed thrash, revive on touch (real manager)', () => {
     for (const d of docs) writeFileSync(d.path, `real file ${d.name}`, 'utf8')
     const tight = budgetForRatio(seed, 0.91)
     const evicted = (await handleCompactionRequest(laneContext(seed, tight), {
-      type: 'run-retention', runId: 'seed', configVersion: 1, urgency: 'normal',
+      type: 'run-retention',
+      runId: 'seed',
+      configVersion: 1,
+      urgency: 'normal',
     })) as RetentionWorkerResult
     expect(evicted.report?.age?.archiveVectorDocsPruned).toBeGreaterThan(0)
     expect(vectorCount(seed, docs[0]!.path)).toBe(0)
@@ -179,11 +232,15 @@ describe('no evict -> re-embed thrash, revive on touch (real manager)', () => {
   it('a content-evicted (identity-only) archive document is re-extracted on read-now', async () => {
     const dbPath = join(dir, 'document-memory.db')
     const seed = new DocumentMemoryStore(dbPath, { role: 'worker' })
-    const docs = seedDocuments(seed, join(dir, 'files'), [{ name: 'ancient.txt', ageDays: 500 }, { name: 'other.txt', ageDays: 500 }])
+    const docs = seedDocuments(seed, join(dir, 'files'), [
+      { name: 'ancient.txt', ageDays: 500 },
+      { name: 'other.txt', ageDays: 500 },
+    ])
     for (const d of docs) writeFileSync(d.path, `ancient report ${d.name} nectarinequartz`, 'utf8')
     // identity-only: what the archive content stage leaves behind
     seed.rawDb.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-    const { CacheRetentionRepository } = await import('../src/main/document-memory/storage/repositories/cache-retention-repository')
+    const { CacheRetentionRepository } =
+      await import('../src/main/document-memory/storage/repositories/cache-retention-repository')
     const ids = docs.map((d) => seed.documentByPath(d.path)!.id)
     new CacheRetentionRepository(seed.rawDb).evictCacheContentBatch(ids)
     expect(chunkCount(seed, docs[0]!.path)).toBe(0)
@@ -194,7 +251,13 @@ describe('no evict -> re-embed thrash, revive on touch (real manager)', () => {
     const res = await manager.readNowDocument(id)
     expect(res.ok).toBe(true)
     expect(chunkCount(manager.store, docs[0]!.path)).toBeGreaterThan(0)
-    expect((manager.store.rawDb.prepare('SELECT content_evicted AS e FROM documents WHERE id = ?').get(id) as { e: number }).e).toBe(0)
+    expect(
+      (
+        manager.store.rawDb
+          .prepare('SELECT content_evicted AS e FROM documents WHERE id = ?')
+          .get(id) as { e: number }
+      ).e,
+    ).toBe(0)
   })
 })
 
@@ -209,10 +272,33 @@ describe('manager wiring', () => {
           const before = usage
           usage = Math.round(SOFT * 0.78)
           return {
-            kind: 'run-retention', runId: req.runId, epoch: req.epoch, status: 'completed', durationMs: 4, urgency: req.urgency,
-            report: { triggered: true, targetReached: true, redundancy: { ran: true } }, bytesBefore: before, bytesAfter: usage, belowSoftQuota: true,
-            release: { vectorDocuments: 0, vectorChunks: 0, skeletonDocuments: 0, skeletonEstimatedBytes: 0 },
-            affectedAnnSpaces: [], annRequests: [{ spaceId: 'sp-1', dimensions: 4, vectorCount: 50, targetGeneration: 2, estimatedBytes: 500, clearsStaleIndex: false }],
+            kind: 'run-retention',
+            runId: req.runId,
+            epoch: req.epoch,
+            status: 'completed',
+            durationMs: 4,
+            urgency: req.urgency,
+            report: { triggered: true, targetReached: true, redundancy: { ran: true } },
+            bytesBefore: before,
+            bytesAfter: usage,
+            belowSoftQuota: true,
+            release: {
+              vectorDocuments: 0,
+              vectorChunks: 0,
+              skeletonDocuments: 0,
+              skeletonEstimatedBytes: 0,
+            },
+            affectedAnnSpaces: [],
+            annRequests: [
+              {
+                spaceId: 'sp-1',
+                dimensions: 4,
+                vectorCount: 50,
+                targetGeneration: 2,
+                estimatedBytes: 500,
+                clearsStaleIndex: false,
+              },
+            ],
           }
         },
       },
@@ -238,12 +324,39 @@ describe('manager wiring', () => {
       {
         'run-retention': (req) => {
           started = true
-          return new Promise((r) => (finish = () => r({
-            kind: 'run-retention', runId: req.runId, epoch: req.epoch, status: 'completed', durationMs: 1, urgency: 'normal', report: null,
-            bytesBefore: 1, bytesAfter: 1, belowSoftQuota: false,
-            release: { vectorDocuments: 1, vectorChunks: 1, skeletonDocuments: 0, skeletonEstimatedBytes: 0 }, affectedAnnSpaces: [],
-            annRequests: [{ spaceId: 'late', dimensions: 4, vectorCount: 50, targetGeneration: 2, estimatedBytes: 500, clearsStaleIndex: false }],
-          })))
+          return new Promise(
+            (r) =>
+              (finish = () =>
+                r({
+                  kind: 'run-retention',
+                  runId: req.runId,
+                  epoch: req.epoch,
+                  status: 'completed',
+                  durationMs: 1,
+                  urgency: 'normal',
+                  report: null,
+                  bytesBefore: 1,
+                  bytesAfter: 1,
+                  belowSoftQuota: false,
+                  release: {
+                    vectorDocuments: 1,
+                    vectorChunks: 1,
+                    skeletonDocuments: 0,
+                    skeletonEstimatedBytes: 0,
+                  },
+                  affectedAnnSpaces: [],
+                  annRequests: [
+                    {
+                      spaceId: 'late',
+                      dimensions: 4,
+                      vectorCount: 50,
+                      targetGeneration: 2,
+                      estimatedBytes: 500,
+                      clearsStaleIndex: false,
+                    },
+                  ],
+                })),
+          )
         },
       },
       Math.round(SOFT * 0.95),
@@ -266,9 +379,25 @@ describe('extraction queue near the quota', () => {
     const recent = new Set(['new-c', 'new-d'])
     const bytes = new Map<string, number>()
     expect(orderQueue(line, { urgent: none, deferred: none, bytes })).toEqual(line)
-    expect(orderQueue(line, { urgent: none, deferred: none, bytes, prioritize: (p) => recent.has(p) })).toEqual(['new-c', 'new-d', 'old-a', 'old-b'])
-    expect(orderQueue(line, { urgent: new Set(['old-b']), deferred: none, bytes, prioritize: (p) => recent.has(p) })).toEqual(['old-b', 'new-c', 'new-d', 'old-a'])
-    expect(orderQueue(line, { urgent: none, deferred: new Set(['new-c']), bytes, prioritize: (p) => recent.has(p) })).toEqual(['new-d', 'old-a', 'old-b', 'new-c'])
+    expect(
+      orderQueue(line, { urgent: none, deferred: none, bytes, prioritize: (p) => recent.has(p) }),
+    ).toEqual(['new-c', 'new-d', 'old-a', 'old-b'])
+    expect(
+      orderQueue(line, {
+        urgent: new Set(['old-b']),
+        deferred: none,
+        bytes,
+        prioritize: (p) => recent.has(p),
+      }),
+    ).toEqual(['old-b', 'new-c', 'new-d', 'old-a'])
+    expect(
+      orderQueue(line, {
+        urgent: none,
+        deferred: new Set(['new-c']),
+        bytes,
+        prioritize: (p) => recent.has(p),
+      }),
+    ).toEqual(['new-d', 'old-a', 'old-b', 'new-c'])
   })
 
   it('MaintenanceScheduler.isRecentUnderQuotaPressure: only near the quota and only for fresh files', async () => {
@@ -276,11 +405,15 @@ describe('extraction queue near the quota', () => {
     const fresh = join(dir, 'files', 'fresh.txt')
     writeFileSync(fresh, 'fresh text')
     manager.store.remember(fresh)
-    manager.store.rawDb.prepare('UPDATE documents SET mtime_ms = ? WHERE path = ?').run(Date.now() - 2 * 86_400_000, resolve(fresh))
+    manager.store.rawDb
+      .prepare('UPDATE documents SET mtime_ms = ? WHERE path = ?')
+      .run(Date.now() - 2 * 86_400_000, resolve(fresh))
     const stale = join(dir, 'files', 'stale.txt')
     writeFileSync(stale, 'stale text')
     manager.store.remember(stale)
-    manager.store.rawDb.prepare('UPDATE documents SET mtime_ms = ? WHERE path = ?').run(Date.now() - 200 * 86_400_000, resolve(stale))
+    manager.store.rawDb
+      .prepare('UPDATE documents SET mtime_ms = ? WHERE path = ?')
+      .run(Date.now() - 200 * 86_400_000, resolve(stale))
     expect(sched.isRecentUnderQuotaPressure(resolve(fresh))).toBe(false) // 50%: no pressure, no database access
     usage = Math.round(SOFT * 0.93)
     await sched.refreshAccountingAsync()

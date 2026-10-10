@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { resolve } from 'node:path'
 import type { IndexFileDetail, IndexedFileHit } from '../../shared/fork/document-index-api'
 import {
@@ -14,6 +14,11 @@ import {
   type FileImportanceSuggestion,
   type FileImportanceInfo,
 } from './document-importance'
+import {
+  hasNameProjection,
+  getMetaValue,
+  NAME_PROJECTION_STATUS_KEY,
+} from './name-search-projection'
 
 export const ISSUE_PAGE_SIZE = 10
 /** Above this many distinct (status, error) pairs a reason filter is applied in memory. */
@@ -57,12 +62,68 @@ function fold(text: string): string {
 
 export class IndexIssueReader {
   private db: DatabaseSync | null = null
+  private hasProjection: boolean | null = null
+  private searchProjectionStmt: StatementSync | null = null
+  private searchNameStmt: StatementSync | null = null
+  private detailStmt: StatementSync | null = null
+  private pdfScanStmt: StatementSync | null = null
+  private ocrStmt: StatementSync | null = null
 
   constructor(private readonly dbPath: string) {}
 
   private connection(): DatabaseSync {
-    this.db ??= new DatabaseSync(this.dbPath, { readOnly: true })
+    if (!this.db) {
+      this.db = new DatabaseSync(this.dbPath, { readOnly: true })
+      try {
+        this.db.exec(
+          'PRAGMA busy_timeout = 5000; PRAGMA cache_size = -16384; PRAGMA mmap_size = 67108864;',
+        )
+      } catch {}
+    }
     return this.db
+  }
+
+  private hasNameProjectionReady(): boolean {
+    if (this.hasProjection === null) {
+      this.hasProjection = hasNameProjection(this.connection())
+    }
+    return this.hasProjection
+  }
+
+  private getSearchProjectionStmt(): StatementSync | null {
+    if (!this.searchProjectionStmt && this.hasNameProjectionReady()) {
+      try {
+        this.searchProjectionStmt = this.connection().prepare(`
+          SELECT d.id, d.path, d.name, d.status, d.error
+          FROM document_name_projection_fts f
+          CROSS JOIN documents d ON d.id = f.rowid
+          WHERE document_name_projection_fts MATCH ? AND d.excluded = 0
+          ORDER BY (d.status = 'ready') ASC, d.id ASC
+          LIMIT ?
+        `)
+      } catch {
+        this.searchProjectionStmt = null
+      }
+    }
+    return this.searchProjectionStmt
+  }
+
+  private getSearchNameStmt(): StatementSync | null {
+    if (!this.searchNameStmt) {
+      try {
+        this.searchNameStmt = this.connection().prepare(`
+          SELECT d.id, d.path, d.name, d.status, d.error
+          FROM document_name_fts f
+          CROSS JOIN documents d ON d.id = f.rowid
+          WHERE document_name_fts MATCH ? AND d.excluded = 0
+          ORDER BY (d.status = 'ready') ASC, d.id ASC
+          LIMIT ?
+        `)
+      } catch {
+        this.searchNameStmt = null
+      }
+    }
+    return this.searchNameStmt
   }
 
   close(): void {
@@ -72,6 +133,12 @@ export class IndexIssueReader {
       // already closed
     }
     this.db = null
+    this.hasProjection = null
+    this.searchProjectionStmt = null
+    this.searchNameStmt = null
+    this.detailStmt = null
+    this.pdfScanStmt = null
+    this.ocrStmt = null
   }
 
   private scope(root: string): { where: string; args: string[] } {
@@ -91,16 +158,153 @@ export class IndexIssueReader {
   search(query: string, limit = 40): IndexedFileHit[] {
     const words = fold(query).split(' ').filter(Boolean)
     if (words.length === 0) return []
-    const rows = this.connection()
-      .prepare('SELECT id, path, name, status, error FROM documents WHERE excluded = 0')
-      .all() as unknown as IssueRow[]
+
     const hits: IssueRow[] = []
-    for (const row of rows) {
+    const seenIds = new Set<number>()
+
+    const testAndAddRow = (row: IssueRow): boolean => {
+      if (seenIds.has(row.id)) return false
+      seenIds.add(row.id)
       const haystack = fold(`${row.name} ${row.path}`)
-      if (words.every((word) => haystack.includes(word))) hits.push(row)
+      if (words.every((word) => haystack.includes(word))) {
+        hits.push(row)
+        return true
+      }
+      return false
     }
-    // problem files first, then by name: the ones the person is usually hunting for
-    hits.sort((a, b) => Number(a.status === 'ready') - Number(b.status === 'ready'))
+
+    const candidateLimit = Math.max(limit * 4, 100)
+    const db = this.connection()
+
+    // 1. Primary candidate retrieval: Dedicated normalized projection FTS
+    const projStmt = this.getSearchProjectionStmt()
+    if (projStmt) {
+      const clauses = words
+        .map((w) => {
+          const clean = w.replace(/["*()^]/g, '')
+          if (!clean) return null
+          const parts = clean.split(/[_/\\-]+/).filter(Boolean)
+          if (parts.length > 1) {
+            const joined = parts.join('')
+            const spaced = parts.join(' ')
+            return `("${spaced}" OR "${joined}"*)`
+          }
+          if (clean.length === 3) {
+            return /^\d+$/.test(clean)
+              ? `"${clean}"`
+              : `("${clean}"* OR compact_ngrams: "${clean}")`
+          }
+          return /^\d+$/.test(clean) ? `"${clean}"` : `"${clean}"*`
+        })
+        .filter(Boolean)
+
+      if (clauses.length > 0) {
+        const matchQuery = clauses.join(' AND ')
+        try {
+          const rows = projStmt.all(matchQuery, candidateLimit) as unknown as IssueRow[]
+          for (const row of rows) testAndAddRow(row)
+        } catch {
+          // ignore FTS syntax errors and proceed to fallback
+        }
+      }
+    }
+
+    // 2. Secondary candidate retrieval: document_name_fts with Vietnamese d/đ variants (if primary found nothing or no projection)
+    if (hits.length === 0 || !this.hasNameProjectionReady()) {
+      try {
+        const ftsTokens = words.flatMap((w) => {
+          const clean = w.replace(/["*()^]/g, '')
+          if (!clean) return []
+          const variants = [clean]
+          if (clean.includes('d')) variants.push(clean.replace(/d/g, 'đ'))
+          return variants.map((v) => `"${v}"*`)
+        })
+        if (ftsTokens.length > 0) {
+          const matchQuery = ftsTokens.join(' OR ')
+          const nameStmt = this.getSearchNameStmt()
+          if (nameStmt) {
+            const rows = nameStmt.all(matchQuery, candidateLimit) as unknown as IssueRow[]
+            for (const row of rows) testAndAddRow(row)
+          }
+        }
+      } catch {
+        // ignore FTS error and proceed
+      }
+    }
+
+    // 3. Unprojected documents check (only if 0 hits, projection table exists, and backfill not yet completed)
+    if (
+      hits.length === 0 &&
+      this.hasNameProjectionReady() &&
+      getMetaValue(db, NAME_PROJECTION_STATUS_KEY) !== 'completed'
+    ) {
+      try {
+        const unprojected = db
+          .prepare(
+            `
+            SELECT d.id, d.path, d.name, d.status, d.error
+            FROM documents d
+            LEFT JOIN document_name_projection p ON p.document_id = d.id
+            WHERE d.excluded = 0 AND p.document_id IS NULL
+            ORDER BY (d.status = 'ready') ASC, d.id ASC
+            LIMIT 100
+          `,
+          )
+          .all() as unknown as IssueRow[]
+        for (const row of unprojected) testAndAddRow(row)
+      } catch {
+        // ignore
+      }
+    }
+
+    // 4. Bounded parameterized LIKE query fallback (only if no projection ready, or sub-trigram tokens < 3 chars)
+    const needsLikeFallback =
+      hits.length < limit && (!this.hasNameProjectionReady() || words.some((w) => w.length < 3))
+
+    if (needsLikeFallback) {
+      try {
+        if (this.hasNameProjectionReady()) {
+          const likeClauses = words
+            .map(() => '(p.name_norm LIKE ? OR p.path_norm LIKE ?)')
+            .join(' AND ')
+          const likeParams = words.flatMap((w) => [`%${w}%`, `%${w}%`])
+          const rows = db
+            .prepare(
+              `
+              SELECT d.id, d.path, d.name, d.status, d.error
+              FROM document_name_projection p
+              JOIN documents d ON d.id = p.document_id
+              WHERE d.excluded = 0 AND ${likeClauses}
+              ORDER BY (d.status = 'ready') ASC, d.id ASC
+              LIMIT ?
+            `,
+            )
+            .all(...likeParams, candidateLimit) as unknown as IssueRow[]
+          for (const row of rows) testAndAddRow(row)
+        } else {
+          const likeClauses = words.map(() => '(d.name LIKE ? OR d.path LIKE ?)').join(' AND ')
+          const likeParams = words.flatMap((w) => [`%${w}%`, `%${w}%`])
+          const rows = db
+            .prepare(
+              `
+              SELECT d.id, d.path, d.name, d.status, d.error
+              FROM documents d
+              WHERE d.excluded = 0 AND ${likeClauses}
+              ORDER BY (d.status = 'ready') ASC, d.id ASC
+              LIMIT ?
+            `,
+            )
+            .all(...likeParams, candidateLimit) as unknown as IssueRow[]
+          for (const row of rows) testAndAddRow(row)
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Problem files first, then ready, with deterministic id ordering
+    hits.sort((a, b) => Number(a.status === 'ready') - Number(b.status === 'ready') || a.id - b.id)
+
     return hits.slice(0, limit).map((row) => {
       const problem = row.status === 'error' || row.status === 'empty' || row.status === 'pending'
       const base = this.toIssue(row)
@@ -120,14 +324,13 @@ export class IndexIssueReader {
   /** Everything the file's detail view shows, read in a few cheap queries by document id. */
   detail(id: number): Omit<IndexFileDetail, 'exists'> | null {
     const db = this.connection()
-    const row = db
-      .prepare(
-        `SELECT id, path, name, status, error, size_bytes, mtime_ms, updated_at, embedding_model,
-          truncated, chunk_total, chunk_done,
-          importance_override, importance_suggestion, importance_reason, importance_updated_at
-         FROM documents WHERE id = ?`,
-      )
-      .get(id) as
+    const stmt = (this.detailStmt ??= db.prepare(
+      `SELECT id, path, name, status, error, size_bytes, mtime_ms, updated_at, embedding_model,
+        truncated, chunk_total, chunk_done,
+        importance_override, importance_suggestion, importance_reason, importance_updated_at
+       FROM documents WHERE id = ?`,
+    ))
+    const row = stmt.get(id) as
       | {
           id: number
           path: string
@@ -174,14 +377,14 @@ export class IndexIssueReader {
       importance,
     }
     if (/\.pdf$/i.test(row.path)) {
-      const scan = db
-        .prepare('SELECT total_pages, scanned FROM pdf_scan_info WHERE path = ?')
-        .get(row.path) as { total_pages: number; scanned: string } | undefined
-      const ocr = db
-        .prepare(
-          'SELECT count(*) AS pages, coalesce(sum(length(text)), 0) AS chars, max(model) AS model, max(total_pages) AS total FROM ocr_pages WHERE path = ?',
-        )
-        .get(row.path) as {
+      const scanStmt = (this.pdfScanStmt ??= db.prepare(
+        'SELECT total_pages, scanned FROM pdf_scan_info WHERE path = ?',
+      ))
+      const scan = scanStmt.get(row.path) as { total_pages: number; scanned: string } | undefined
+      const ocrStmt = (this.ocrStmt ??= db.prepare(
+        'SELECT count(*) AS pages, coalesce(sum(length(text)), 0) AS chars, max(model) AS model, max(total_pages) AS total FROM ocr_pages WHERE path = ?',
+      ))
+      const ocr = ocrStmt.get(row.path) as {
         pages: number
         chars: number
         model: string | null

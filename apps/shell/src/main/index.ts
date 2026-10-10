@@ -333,7 +333,7 @@ import { pasteFiles } from './fork/folder-paste'
 import { isInsidePath, outermostPaths } from '../shared/path-nesting'
 import { tabMenuTemplate, tabMenuWords, type TabMenuActions } from './fork/tab-menu'
 import { isProgramFile } from './everything/junk'
-import { applyPendingDbMove, resolveDbDir } from './document-memory/db-location'
+import { applyPendingDbMove, isDbDirAccessible, resolveDbDir } from './document-memory/db-location'
 import { registerDbLocationIpc } from './fork/db-location-ipc'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
 import { initClipboardHistory, registerClipboardHistory } from './fork/clipboard-history-ipc'
@@ -7032,10 +7032,10 @@ app.whenReady().then(async () => {
   // migration take minutes on a multi-gigabyte index, so they run in a worker thread while the window opens: the
   // index stays closed (documentMemory === null) until attachDocumentMemory() runs with the verified result.
   let storageBootstrap: Promise<BootstrapResult> | null = null
-  if (dbMove.error) {
+  if (dbMove.error || !isDbDirAccessible(indexDbDir)) {
     console.error(
-      '[document-memory] Critical: Index move failed, entering fail-closed mode:',
-      dbMove.error,
+      '[document-memory] Critical: Index move failed or storage directory inaccessible, entering fail-closed mode:',
+      dbMove.error ?? 'inaccessible',
     )
     documentMemory = null
     storageStartup.set('unavailable')
@@ -7314,11 +7314,16 @@ app.on('before-quit', () => {
   stopMcpSync()
 })
 
+let appShutdownState: 'idle' | 'shutting-down' | 'done' = 'idle'
 // after every window has closed, so the shell window's own 'closed' republish cannot revive the file
-app.on('will-quit', () => {
+app.on('will-quit', (event) => {
+  if (appShutdownState === 'done') return
+  event.preventDefault()
+  if (appShutdownState === 'shutting-down') return
+  appShutdownState = 'shutting-down'
+
   folderScan?.close()
   knownSources?.close()
-  documentMemory?.close()
   fileIndexer?.stop()
   fileSearch?.close()
   fileIndexStore?.close()
@@ -7327,4 +7332,24 @@ app.on('will-quit', () => {
   controlServer?.close()
   // a second instance that lost the lock quits too; it must not delete the running editor's list
   if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
+
+  const memoryClosePromise = (async () => {
+    if (!documentMemory) return
+    const deadline = setTimeout(() => {
+      console.warn('[app-shutdown] Document memory closeAsync exceeded 15s deadline; forcing exit')
+    }, 15_000)
+    deadline.unref?.()
+    try {
+      await documentMemory.closeAsync()
+    } catch (err) {
+      console.error('[app-shutdown] Error during document memory closeAsync:', err)
+    } finally {
+      clearTimeout(deadline)
+    }
+  })()
+
+  void memoryClosePromise.finally(() => {
+    appShutdownState = 'done'
+    app.quit()
+  })
 })

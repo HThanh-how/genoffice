@@ -41,8 +41,8 @@ describe('startup embedding profile (fresh install vs existing index)', () => {
     workerEnv = []
     overrideInstalledOrtVersion('1.23.2')
   })
-  afterEach(() => {
-    for (const m of managers) m.close()
+  afterEach(async () => {
+    for (const m of managers) await m.closeAsync()
     overrideInstalledOrtVersion(undefined)
     rmSync(dir, { recursive: true, force: true })
   })
@@ -88,7 +88,8 @@ describe('startup embedding profile (fresh install vs existing index)', () => {
     writeFileSync(file, 'hello recommended tier')
     m.remember(file)
     const started = Date.now()
-    while (!workerEnv.length && Date.now() - started < 3000) await new Promise((r) => setTimeout(r, 10))
+    while (!workerEnv.length && Date.now() - started < 3000)
+      await new Promise((r) => setTimeout(r, 10))
     expect(workerEnv[0]?.embeddingProfile).toBe('base')
   })
 

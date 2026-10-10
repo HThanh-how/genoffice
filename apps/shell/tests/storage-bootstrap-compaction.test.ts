@@ -1,4 +1,12 @@
-import { existsSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -9,7 +17,10 @@ import {
   compactionPaths,
   runOfflineCompaction,
 } from '../src/main/document-memory/runtime/offline-compaction'
-import { COMPACTION_SETTINGS_FILENAME, readOfflineCompactionSetting } from '../src/main/document-memory/storage/offline-compaction-setting'
+import {
+  COMPACTION_SETTINGS_FILENAME,
+  readOfflineCompactionSetting,
+} from '../src/main/document-memory/storage/offline-compaction-setting'
 import { seedCorpus } from './helpers/storage-optimizer-seed'
 
 /**
@@ -26,18 +37,27 @@ describe('storage bootstrap: offline compaction wiring', () => {
     const store = new DocumentMemoryStore(dbPath, { role: 'worker' })
     seedCorpus(store, dir, { targetLogicalMb: 2, chunksPerDoc: 10 })
     const db = store.rawDb
-    const ids = (db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: number }>).map((r) => r.id)
+    const ids = (
+      db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: number }>
+    ).map((r) => r.id)
+    db.exec('BEGIN')
     for (const id of ids.filter((_, i) => i % 10 < 7)) {
-      db.prepare('DELETE FROM chunk_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?)').run(id)
-      db.prepare('DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)').run(id)
+      db.prepare(
+        'DELETE FROM chunk_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?)',
+      ).run(id)
+      db.prepare(
+        'DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)',
+      ).run(id)
       db.prepare('DELETE FROM chunks WHERE document_id = ?').run(id)
       db.prepare('DELETE FROM documents WHERE id = ?').run(id)
     }
+    db.exec('COMMIT')
     store.close()
   })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
-  const backups = (): string[] => readdirSync(dir).filter((n) => /\.compact-prev\.\d+\.bak$/.test(n))
+  const backups = (): string[] =>
+    readdirSync(dir).filter((n) => /\.compact-prev\.\d+\.bak$/.test(n))
 
   it('is OFF by default: startup does not compact', async () => {
     const size = statSync(dbPath).size
@@ -51,23 +71,35 @@ describe('storage bootstrap: offline compaction wiring', () => {
 
   it('runs when opted in through the option or the settings file, before any connection exists', async () => {
     const size = statSync(dbPath).size
-    writeFileSync(join(dir, COMPACTION_SETTINGS_FILENAME), JSON.stringify({ offlineCompaction: true }))
+    writeFileSync(
+      join(dir, COMPACTION_SETTINGS_FILENAME),
+      JSON.stringify({ offlineCompaction: true }),
+    )
     expect(readOfflineCompactionSetting(dir)).toBe(true)
     // the setting only opts in: the default thresholds (16 MB reclaimable) skip this tiny database
     expect((await ensureDocumentMemoryStorageReady(dir, { settingsDir: dir })).ready).toBe(true)
     expect(statSync(dbPath).size).toBeGreaterThanOrEqual(size * 0.9)
     expect(backups()).toEqual([])
     // thresholds lowered through the option object: it compacts
-    const res = await ensureDocumentMemoryStorageReady(dir, { settingsDir: dir, offlineCompaction: { minReclaimBytes: 1, minFreelistRatio: 0.05 } })
+    const res = await ensureDocumentMemoryStorageReady(dir, {
+      settingsDir: dir,
+      offlineCompaction: { minReclaimBytes: 1, minFreelistRatio: 0.05 },
+    })
     expect(res.ready).toBe(true)
     expect(statSync(dbPath).size).toBeLessThan(size * 0.7)
     expect(backups()).toHaveLength(1)
     // an explicit option wins over the file
-    const again = await ensureDocumentMemoryStorageReady(dir, { settingsDir: dir, offlineCompaction: false })
+    const again = await ensureDocumentMemoryStorageReady(dir, {
+      settingsDir: dir,
+      offlineCompaction: false,
+    })
     expect(again.ready).toBe(true)
     // the database is intact and usable afterwards
     const store = new DocumentMemoryStore(dbPath, { role: 'search' })
-    expect((store.rawDb.prepare('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check).toBe('ok')
+    expect(
+      (store.rawDb.prepare('PRAGMA integrity_check').get() as { integrity_check: string })
+        .integrity_check,
+    ).toBe('ok')
     store.close()
   })
 
@@ -96,7 +128,10 @@ describe('storage bootstrap: offline compaction wiring', () => {
     expect(existsSync(compactionPaths(dbPath).manifest)).toBe(false)
     expect(statSync(dbPath).size).toBeGreaterThanOrEqual(before * 0.9) // the previous database is back
     const store = new DocumentMemoryStore(dbPath, { role: 'search' })
-    expect((store.rawDb.prepare('PRAGMA integrity_check').get() as { integrity_check: string }).integrity_check).toBe('ok')
+    expect(
+      (store.rawDb.prepare('PRAGMA integrity_check').get() as { integrity_check: string })
+        .integrity_check,
+    ).toBe('ok')
     store.close()
   })
 

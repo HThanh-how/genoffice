@@ -10,4 +10,3 @@ export default defineConfig({
     setupFiles: ['tests/helpers/model-download-env.ts'],
   },
 })
-

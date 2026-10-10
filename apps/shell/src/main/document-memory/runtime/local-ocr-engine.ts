@@ -289,8 +289,8 @@ export class LocalOcrUnavailableError extends Error {
   readonly engineId: string
   readonly reason: string
 
-  constructor(engineId: string, reason: string) {
-    super(`Local OCR engine "${engineId}" is unavailable: ${reason}`)
+  constructor(engineId: string, reason: string, options?: ErrorOptions) {
+    super(`Local OCR engine "${engineId}" is unavailable: ${reason}`, options)
     this.name = 'LocalOcrUnavailableError'
     this.engineId = engineId
     this.reason = reason
@@ -304,15 +304,17 @@ export class LocalOcrUnavailableError extends Error {
  */
 export function postProcessVietnameseOcrText(text: string): string {
   if (!text) return ''
-  return text
-    .normalize('NFC')
-    // Fix detached diacritics
-    .replace(/([a-zA-Z])\s*([̣̀́̃̉])/g, '$1$2')
-    // Normalize spaces around punctuation
-    .replace(/\s+([.,;:!?])/g, '$1')
-    .replace(/([.,;:!?])(?=[a-zA-Z0-9])/g, '$1 ')
-    .replace(/[ \t]+/g, ' ')
-    .trim()
+  return (
+    text
+      .normalize('NFC')
+      // Fix detached diacritics
+      .replace(/([a-zA-Z])\s*([̣̀́̃̉])/g, '$1$2')
+      // Normalize spaces around punctuation
+      .replace(/\s+([.,;:!?])/g, '$1')
+      .replace(/([.,;:!?])(?=[a-zA-Z0-9])/g, '$1 ')
+      .replace(/[ \t]+/g, ' ')
+      .trim()
+  )
 }
 
 // ---- the engine abstraction ---------------------------------------------------------------------

@@ -10,7 +10,10 @@ export const SHOW_DEFAULT_FOLDER_KEY = 'showDefaultFolder'
 
 /** off until the person turns it on: the tree shows the folders they added, not the app's own */
 export function showDefaultFolderFrom(settings: Record<string, unknown>): boolean {
-  return settings[SHOW_DEFAULT_FOLDER_KEY] === true
+  if (typeof settings[SHOW_DEFAULT_FOLDER_KEY] === 'boolean') {
+    return settings[SHOW_DEFAULT_FOLDER_KEY]
+  }
+  return typeof settings['defaultSaveDir'] === 'string' && settings['defaultSaveDir'].length > 0
 }
 
 export function readExtraRoots(settings: Record<string, unknown>, defaultDir: string): string[] {

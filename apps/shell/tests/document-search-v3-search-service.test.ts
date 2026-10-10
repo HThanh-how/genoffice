@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { SearchService } from '../src/main/document-memory/runtime/search-service'
 import { FreshnessCoordinator } from '../src/main/document-memory/runtime/freshness-coordinator'
@@ -116,7 +116,12 @@ describe('Pair 14: Document Search V3 Search Service Parity Suite (QA-14)', () =
       mtimeMs: 1000,
       sizeBytes: 100,
       chunks: [
-        { id: 3, ordinal: 0, text: 'strict cryptographic encryption at rest standards', location: 'section 4' },
+        {
+          id: 3,
+          ordinal: 0,
+          text: 'strict cryptographic encryption at rest standards',
+          location: 'section 4',
+        },
       ],
       embeddingModel: null,
       status: 'ready',
@@ -134,7 +139,15 @@ describe('Pair 14: Document Search V3 Search Service Parity Suite (QA-14)', () =
       hash: 'hash-04',
       mtimeMs: 1000,
       sizeBytes: 100,
-      chunks: [{ id: 4, ordinal: 0, text: 'automobile vehicle engine specs', location: 'p.1', vector: [1, 0, 0] }],
+      chunks: [
+        {
+          id: 4,
+          ordinal: 0,
+          text: 'automobile vehicle engine specs',
+          location: 'p.1',
+          vector: [1, 0, 0],
+        },
+      ],
       embeddingModel: 'space-test',
       status: 'ready',
     })
@@ -158,7 +171,15 @@ describe('Pair 14: Document Search V3 Search Service Parity Suite (QA-14)', () =
       hash: 'h-a',
       mtimeMs: 1000,
       sizeBytes: 10,
-      chunks: [{ id: 10, ordinal: 0, text: 'distributed consensus protocol blockchain', location: 'p.1', vector: [0.1, 0.9, 0] }],
+      chunks: [
+        {
+          id: 10,
+          ordinal: 0,
+          text: 'distributed consensus protocol blockchain',
+          location: 'p.1',
+          vector: [0.1, 0.9, 0],
+        },
+      ],
       embeddingModel: 'space-test',
       status: 'ready',
     })
@@ -166,7 +187,15 @@ describe('Pair 14: Document Search V3 Search Service Parity Suite (QA-14)', () =
       hash: 'h-b',
       mtimeMs: 1000,
       sizeBytes: 10,
-      chunks: [{ id: 20, ordinal: 0, text: 'distributed consensus protocol raft paxos', location: 'p.1', vector: [0.9, 0.1, 0] }],
+      chunks: [
+        {
+          id: 20,
+          ordinal: 0,
+          text: 'distributed consensus protocol raft paxos',
+          location: 'p.1',
+          vector: [0.9, 0.1, 0],
+        },
+      ],
       embeddingModel: 'space-test',
       status: 'ready',
     })
@@ -262,7 +291,9 @@ describe('Pair 14: Document Search V3 Search Service Parity Suite (QA-14)', () =
       hash: 'h-race',
       mtimeMs: 1000,
       sizeBytes: 7,
-      chunks: [{ id: 60, ordinal: 0, text: 'asynchronous query race condition test', location: 'p.1' }],
+      chunks: [
+        { id: 60, ordinal: 0, text: 'asynchronous query race condition test', location: 'p.1' },
+      ],
       embeddingModel: null,
       status: 'ready',
     })
@@ -353,7 +384,15 @@ describe('Pair 14: Document Search V3 Search Service Parity Suite (QA-14)', () =
       hash: 'h-multi',
       mtimeMs: 1000,
       sizeBytes: 7,
-      chunks: [{ id: 70, ordinal: 0, text: 'multilingual embedding representation', location: 'p.1', vector: [1, 0] }],
+      chunks: [
+        {
+          id: 70,
+          ordinal: 0,
+          text: 'multilingual embedding representation',
+          location: 'p.1',
+          vector: [1, 0],
+        },
+      ],
       embeddingModel: 'space-f2',
       status: 'ready',
     })
@@ -382,7 +421,14 @@ describe('Pair 14: Document Search V3 Search Service Parity Suite (QA-14)', () =
       hash: 'h-ocr',
       mtimeMs: 1000,
       sizeBytes: 8,
-      chunks: [{ id: 80, ordinal: 0, text: 'optical character recognition extracted text from scan', location: 'page 4' }],
+      chunks: [
+        {
+          id: 80,
+          ordinal: 0,
+          text: 'optical character recognition extracted text from scan',
+          location: 'page 4',
+        },
+      ],
       embeddingModel: null,
       status: 'ready',
     })

@@ -97,5 +97,9 @@ describe("the app's own folder in the tree", () => {
     expect(showDefaultFolderFrom({})).toBe(false)
     expect(showDefaultFolderFrom({ showDefaultFolder: 'true' })).toBe(false)
     expect(showDefaultFolderFrom({ showDefaultFolder: true })).toBe(true)
+    expect(showDefaultFolderFrom({ defaultSaveDir: '/some/dir' })).toBe(true)
+    expect(showDefaultFolderFrom({ defaultSaveDir: '/some/dir', showDefaultFolder: false })).toBe(
+      false,
+    )
   })
 })

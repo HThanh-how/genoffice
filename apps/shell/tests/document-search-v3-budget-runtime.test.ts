@@ -108,13 +108,18 @@ function createIndexedUsageRunner(getStore: () => DocumentMemoryStore): StorageA
       queueMicrotask(() => {
         try {
           const report = collectStorageAccounting(data)
-          const row = getStore().rawDb.prepare('SELECT COUNT(*) AS c FROM chunks').get() as { c: number }
+          const row = getStore().rawDb.prepare('SELECT COUNT(*) AS c FROM chunks').get() as {
+            c: number
+          }
           const managed = row.c > 0 ? INDEXED_USAGE_BYTES : 0
           report.totalManagedBytes = managed
           report.totalTrackedBytes = managed
           worker.emit('message', { ok: true, report })
         } catch (err) {
-          worker.emit('message', { ok: false, error: err instanceof Error ? err.message : String(err) })
+          worker.emit('message', {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          })
         }
       })
       return worker
@@ -131,10 +136,10 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
     managers = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const manager of managers) {
       try {
-        manager.close()
+        await manager.closeAsync()
       } catch {}
     }
     try {
@@ -142,9 +147,21 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
     } catch {}
   })
 
+  async function waitForCondition(cond: () => boolean, timeoutMs = 8000): Promise<void> {
+    const started = Date.now()
+    while (!cond()) {
+      if (Date.now() - started > timeoutMs) throw new Error('Condition timed out in budget test')
+      await new Promise((r) => setTimeout(r, 20))
+    }
+  }
+
   /** Persists the smallest legal budget (the desired config the worker ACKs) before a manager starts. */
   function persistTightBudget(): void {
-    writeStorageSettings(tempDir, { maxDatabaseBytes: MIN_STORAGE_BUDGET_BYTES, preset: 'custom', version: 1 })
+    writeStorageSettings(tempDir, {
+      maxDatabaseBytes: MIN_STORAGE_BUDGET_BYTES,
+      preset: 'custom',
+      version: 1,
+    })
   }
 
   async function startManager(worker: MockBudgetWorker) {
@@ -153,7 +170,9 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
       pollIntervalMs: 60_000,
     })
     managers.push(manager)
-    ;(manager as any).maintScheduler.storageAccountingRunner = createIndexedUsageRunner(() => manager.store)
+    ;(manager as any).maintScheduler.storageAccountingRunner = createIndexedUsageRunner(
+      () => manager.store,
+    )
     await waitForManagerWriteReady(manager)
     // Measure once so the budget snapshot is fresh before any work is admitted.
     await (manager as any).maintScheduler.refreshAccountingAsync()
@@ -181,14 +200,21 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
   // =========================================================================
   it('BUDGET-RUNTIME-01: extract when budget=full preserves chunks and FTS with non-error text-only status', async () => {
     const sampleFile = join(tempDir, 'enterprise-doc.txt')
-    writeFileSync(sampleFile, 'Enterprise quarterly financial audit report for deep text analysis.', 'utf8')
+    writeFileSync(
+      sampleFile,
+      'Enterprise quarterly financial audit report for deep text analysis.',
+      'utf8',
+    )
 
     // Hard limit: persisted minimum budget; committing this document's text takes usage over it
 
     const { manager } = await createTestManager()
     manager.remember(sampleFile)
 
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await waitForCondition(() => {
+      const doc = manager.store.documentByPath(sampleFile)
+      return doc?.status === 'text-only' && manager.getStorageBudgetSnapshot().limitState === 'full'
+    })
 
     expect(manager.getStorageBudgetSnapshot().limitState).toBe('full')
     const doc = manager.store.documentByPath(sampleFile)
@@ -211,13 +237,19 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
   // =========================================================================
   it('BUDGET-RUNTIME-02: embed worker calls remain zero when budget is full', async () => {
     const sampleFile = join(tempDir, 'budget-freeze.txt')
-    writeFileSync(sampleFile, 'Sensitive operational budget documents with strict hard limit constraints.', 'utf8')
-
+    writeFileSync(
+      sampleFile,
+      'Sensitive operational budget documents with strict hard limit constraints.',
+      'utf8',
+    )
 
     const { manager, worker } = await createTestManager()
     manager.remember(sampleFile)
 
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await waitForCondition(() => {
+      const doc = manager.store.documentByPath(sampleFile)
+      return doc?.status === 'text-only' && manager.getStorageBudgetSnapshot().limitState === 'full'
+    })
 
     // embed worker must NOT be called when budget is full
     expect(manager.getStorageBudgetSnapshot().limitState).toBe('full')
@@ -229,13 +261,19 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
   // =========================================================================
   it('BUDGET-RUNTIME-03: lexical search returns document even when hard-limit prevented semantic embedding', async () => {
     const sampleFile = join(tempDir, 'contract-agreement.txt')
-    writeFileSync(sampleFile, 'Confidential Master Services Agreement and SLA terms for client.', 'utf8')
-
+    writeFileSync(
+      sampleFile,
+      'Confidential Master Services Agreement and SLA terms for client.',
+      'utf8',
+    )
 
     const { manager } = await createTestManager()
     manager.remember(sampleFile)
 
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await waitForCondition(() => {
+      const doc = manager.store.documentByPath(sampleFile)
+      return doc?.status === 'text-only'
+    })
 
     const searchResult = await manager.search('Master Services Agreement')
     expect(searchResult.hits.length).toBeGreaterThan(0)
@@ -250,18 +288,20 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
     const sampleFile = join(tempDir, 'spec-v3.txt')
     writeFileSync(sampleFile, 'Technical architecture specification for document indexing.', 'utf8')
 
-
     const { manager, worker } = await createTestManager()
     manager.remember(sampleFile)
 
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await waitForCondition(() => {
+      const doc = manager.store.documentByPath(sampleFile)
+      return doc?.status === 'text-only' && worker.extractCalls >= 1
+    })
     const initialExtractCalls = worker.extractCalls
     expect(initialExtractCalls).toBeGreaterThanOrEqual(1)
 
     // Trigger multiple poll cycles while storage remains full
     for (let i = 0; i < 3; i++) {
       await (manager as any).poll()
-      await new Promise((resolve) => setTimeout(resolve, 100))
+      await new Promise((resolve) => setTimeout(resolve, 50))
     }
 
     // Extraction call count must NOT increase because document is unchanged and budget remains full
@@ -273,15 +313,20 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
   // =========================================================================
   it('BUDGET-RUNTIME-05: when budget recovers from full, semantic continuation resumes and completes', async () => {
     const sampleFile = join(tempDir, 'knowledge-base.txt')
-    writeFileSync(sampleFile, 'Knowledge base article discussing distributed vector store resilience.', 'utf8')
-
+    writeFileSync(
+      sampleFile,
+      'Knowledge base article discussing distributed vector store resilience.',
+      'utf8',
+    )
 
     const { manager, worker } = await createTestManager()
     manager.remember(sampleFile)
 
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await waitForCondition(() => {
+      const doc = manager.store.documentByPath(sampleFile)
+      return doc?.status === 'text-only' && manager.getStorageBudgetSnapshot().limitState === 'full'
+    })
 
-    expect(manager.getStorageBudgetSnapshot().limitState).toBe('full')
     let doc = manager.store.documentByPath(sampleFile)
     expect(doc!.status).toBe('text-only')
     expect(worker.embedCalls).toBe(0)
@@ -293,7 +338,10 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
     await (manager as any).poll()
 
     // Wait for embedding worker to process
-    await new Promise((resolve) => setTimeout(resolve, 400))
+    await waitForCondition(() => {
+      const d = manager.store.documentByPath(sampleFile)
+      return d?.status === 'ready' && worker.embedCalls > 0
+    })
 
     expect(worker.embedCalls).toBeGreaterThan(0)
     doc = manager.store.documentByPath(sampleFile)
@@ -308,17 +356,23 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
   // =========================================================================
   it('BUDGET-RUNTIME-06: restart while document is semantic-deferred keeps lexical search and resumes on recovery', async () => {
     const sampleFile = join(tempDir, 'persistent-memo.txt')
-    writeFileSync(sampleFile, 'Strategic executive memo regarding fourth quarter performance.', 'utf8')
-
+    writeFileSync(
+      sampleFile,
+      'Strategic executive memo regarding fourth quarter performance.',
+      'utf8',
+    )
 
     const { manager: m1 } = await createTestManager()
     m1.remember(sampleFile)
 
-    await new Promise((resolve) => setTimeout(resolve, 300))
+    await waitForCondition(() => {
+      const doc = m1.store.documentByPath(sampleFile)
+      return doc?.status === 'text-only'
+    })
     expect(m1.store.documentByPath(sampleFile)!.status).toBe('text-only')
 
     // Close manager to simulate application shutdown/restart
-    m1.close()
+    await m1.closeAsync()
 
     // Reopen with new manager instance on same DB directory
     const worker2 = new MockBudgetWorker(join(tempDir, 'document-memory.db'))
@@ -334,7 +388,10 @@ describe('Document Search V3 - Hard-Limit Runtime Preservation Suite (PAIR 17)',
     ;(m2 as any).maintScheduler.checkStorageBudget()
     await (m2 as any).poll()
 
-    await new Promise((resolve) => setTimeout(resolve, 400))
+    await waitForCondition(() => {
+      const d = m2.store.documentByPath(sampleFile)
+      return d?.status === 'ready'
+    })
     const docAfterRecovery = m2.store.documentByPath(sampleFile)
     expect(docAfterRecovery!.status).toBe('ready')
     const progressAfter = m2.store.chunkProgress(sampleFile)

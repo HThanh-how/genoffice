@@ -21,10 +21,10 @@ describe('Off-Main Process Storage Diagnostics Suite (QA-12)', () => {
     activeStores = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const m of activeManagers) {
       try {
-        m.close()
+        await m.closeAsync()
       } catch {}
     }
     for (const s of activeStores) {
@@ -114,7 +114,10 @@ describe('Off-Main Process Storage Diagnostics Suite (QA-12)', () => {
     const mockWorker = Object.assign(new EventEmitter(), {
       postMessage(msg: WorkerRequest & { id: number }) {
         if (msg.type === 'storage-diagnostics') {
-          mockWorker.emit('message', { id: msg.id, error: 'Worker sqlite query failed' } satisfies WorkerReply)
+          mockWorker.emit('message', {
+            id: msg.id,
+            error: 'Worker sqlite query failed',
+          } satisfies WorkerReply)
         }
       },
       terminate() {

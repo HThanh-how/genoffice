@@ -1,15 +1,15 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createArchitectureFixture, type ArchitectureFixture } from './helpers/architecture-fixture'
 
 describe('Document Search V3 Architecture Gate Mutation Sensitivity', () => {
   let fixture: ArchitectureFixture
 
-  beforeEach(() => {
+  beforeAll(() => {
     fixture = createArchitectureFixture()
-  })
+  }, 60_000)
 
-  afterEach(() => {
-    fixture.cleanup()
+  afterAll(() => {
+    fixture?.cleanup()
   })
 
   function runChecker(): { status: number | null; stdout: string; stderr: string; output: string } {
@@ -34,7 +34,10 @@ describe('Document Search V3 Architecture Gate Mutation Sensitivity', () => {
   it('ARCH-01 inject DatabaseSync into manager → checker FAIL', () => {
     // Mutate in-line to avoid exceeding manager.ts LOC limit (<= 500)
     const revert = mutateFile('apps/shell/src/main/document-memory/manager.ts', (content) => {
-      return content.replace('export class DocumentMemoryManager', '/* DatabaseSync */ export class DocumentMemoryManager')
+      return content.replace(
+        'export class DocumentMemoryManager',
+        '/* DatabaseSync */ export class DocumentMemoryManager',
+      )
     })
 
     try {
@@ -51,7 +54,10 @@ describe('Document Search V3 Architecture Gate Mutation Sensitivity', () => {
   it('ARCH-02 inject SELECT into manager → FAIL', () => {
     // Mutate in-line to avoid exceeding manager.ts LOC limit (<= 500)
     const revert = mutateFile('apps/shell/src/main/document-memory/manager.ts', (content) => {
-      return content.replace('export class DocumentMemoryManager', '/* SELECT * FROM documents */ export class DocumentMemoryManager')
+      return content.replace(
+        'export class DocumentMemoryManager',
+        '/* SELECT * FROM documents */ export class DocumentMemoryManager',
+      )
     })
 
     try {
@@ -66,17 +72,22 @@ describe('Document Search V3 Architecture Gate Mutation Sensitivity', () => {
   })
 
   it('ARCH-03 add vector to chunks → FAIL', () => {
-    const revert = mutateFile('apps/shell/src/main/document-memory/storage/schema-v3.ts', (content) => {
-      return content.replace(
-        'ordinal INTEGER NOT NULL,',
-        'ordinal INTEGER NOT NULL,\n  vector BLOB,',
-      )
-    })
+    const revert = mutateFile(
+      'apps/shell/src/main/document-memory/storage/schema-v3.ts',
+      (content) => {
+        return content.replace(
+          'ordinal INTEGER NOT NULL,',
+          'ordinal INTEGER NOT NULL,\n  vector BLOB,',
+        )
+      },
+    )
 
     try {
       const res = runChecker()
       expect(res.status).not.toBe(0)
-      expect(res.output).toContain('[FAIL] Invariant INV-03 violated: chunks table contains "vector" column!')
+      expect(res.output).toContain(
+        '[FAIL] Invariant INV-03 violated: chunks table contains "vector" column!',
+      )
       expect(res.output).toContain('Architecture check FAILED.')
     } finally {
       revert()
@@ -108,7 +119,9 @@ describe('Document Search V3 Architecture Gate Mutation Sensitivity', () => {
       const res = runChecker()
       expect(res.status).not.toBe(0)
       expect(res.output).toContain('[FAIL] Renderer boundary violated')
-      expect(res.output).toContain('forbidden storage/repository import "../storage/repositories/search-repository"')
+      expect(res.output).toContain(
+        'forbidden storage/repository import "../storage/repositories/search-repository"',
+      )
       expect(res.output).toContain('Architecture check FAILED.')
     } finally {
       revert()

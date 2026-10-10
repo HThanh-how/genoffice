@@ -221,7 +221,7 @@ describe('DocumentMemoryManager does not purge on the main thread', () => {
         ).n,
       ).toBe(20)
     } finally {
-      manager?.close()
+      await manager?.closeAsync()
       rmSync(managerDir, { recursive: true, force: true })
     }
   })

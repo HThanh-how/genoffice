@@ -27,12 +27,7 @@ class FakeWorker extends EventEmitter {
     return Promise.resolve(0)
   }
 
-  postMessage(message: {
-    id: number
-    type: string
-    path?: string
-    texts?: string[]
-  }) {
+  postMessage(message: { id: number; type: string; path?: string; texts?: string[] }) {
     setTimeout(() => {
       try {
         const ack = storageBudgetAckReply(message)
@@ -88,9 +83,9 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     managers = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const m of managers) {
-      m.close()
+      await m.closeAsync()
     }
     resetIndexingPolicyBus()
     rmSync(directory, { recursive: true, force: true })
@@ -121,16 +116,24 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     path: string,
     name: string,
     chunks: Array<{ text: string; location: string }>,
-    options?: { priorityAt?: number; sizeBytes?: number; mtimeMs?: number; status?: string; embeddingModel?: string },
+    options?: {
+      priorityAt?: number
+      sizeBytes?: number
+      mtimeMs?: number
+      status?: string
+      embeddingModel?: string
+    },
   ): void {
     const normalizedPath = resolve(path)
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO documents (
         id, path, name, status, embedding_model, active_chunk_set_id,
         priority_at, size_bytes, mtime_ms, chunk_total, chunk_done, chunk_counted
       )
       VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, 0, 0)
-    `).run(
+    `,
+    ).run(
       docId,
       normalizedPath,
       name,
@@ -195,7 +198,9 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     expect(needing[0]?.id).toBe(1)
 
     // 4. Run migration step through DocumentMemoryManager (reads from pristine source file via Worker)
-    const ok = await (manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }).migrateLegacyDocument(needing[0]!)
+    const ok = await (
+      manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }
+    ).migrateLegacyDocument(needing[0]!)
     expect(ok).toBe(true)
 
     // 5. Verification:
@@ -212,14 +217,16 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
 
     // b. Old V1 chunks purged
     const oldV1Count = db
-      .prepare('SELECT count(*) AS count FROM chunks WHERE document_id = 1 AND chunk_set_id IS NULL')
+      .prepare(
+        'SELECT count(*) AS count FROM chunks WHERE document_id = 1 AND chunk_set_id IS NULL',
+      )
       .get() as { count: number }
     expect(oldV1Count.count).toBe(0)
 
     // c. TEXT OVERLAP CHECK: Paragraph B. MUST NOT BE DUPLICATED!
-    const v2Chunks = db
-      .prepare('SELECT text FROM chunks WHERE document_id = 1')
-      .all() as Array<{ text: string }>
+    const v2Chunks = db.prepare('SELECT text FROM chunks WHERE document_id = 1').all() as Array<{
+      text: string
+    }>
     const fullMigratedText = v2Chunks.map((c) => c.text).join('\n\n')
 
     // Count occurrences of "Paragraph B." in migrated text
@@ -239,7 +246,8 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
 
   it('preserves continuous lexical searchability during migration (Zero-Downtime Cutover)', async () => {
     const filePath = join(directory, 'security-audit.txt')
-    const content = 'Báo cáo kiểm toán bảo mật hạ tầng thông tin và đánh giá rủi ro an toàn mạng năm 2026.'
+    const content =
+      'Báo cáo kiểm toán bảo mật hạ tầng thông tin và đánh giá rủi ro an toàn mạng năm 2026.'
     writeFileSync(filePath, content, 'utf8')
     const fileStat = statSync(filePath)
 
@@ -283,7 +291,9 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     // Building set must NOT leak into active search results (search still reads active/legacy chunks)
     const hitsDuringBuilding = store.searchLexical('bảo mật', 10)
     expect(hitsDuringBuilding).toHaveLength(1)
-    expect(store.readChunk(hitsDuringBuilding[0]!.chunkId)?.text).toContain('Báo cáo kiểm toán bảo mật')
+    expect(store.readChunk(hitsDuringBuilding[0]!.chunkId)?.text).toContain(
+      'Báo cáo kiểm toán bảo mật',
+    )
 
     // Clean up temporary building set
     db.prepare('DELETE FROM chunk_fts WHERE rowid = ?').run(res.lastInsertRowid)
@@ -293,7 +303,9 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     // 3. Migrate document 10
     const coordinator = new ChunkUpgradeCoordinator(db)
     const candidate = coordinator.getDocumentsNeedingUpgrade()[0]!
-    const ok = await (manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }).migrateLegacyDocument(candidate)
+    const ok = await (
+      manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }
+    ).migrateLegacyDocument(candidate)
     expect(ok).toBe(true)
 
     // 4. Lexical search immediately serves the new V2 chunk without any missing interval
@@ -309,23 +321,23 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     // File does NOT exist on disk
     const missingPath = join(directory, 'offline-drive', 'report.pdf')
 
-    insertLegacyV1Document(
-      db,
-      20,
-      missingPath,
-      'report.pdf',
-      [{ text: 'Important offline data that must not be deleted.', location: 'Chunk 1' }],
-    )
+    insertLegacyV1Document(db, 20, missingPath, 'report.pdf', [
+      { text: 'Important offline data that must not be deleted.', location: 'Chunk 1' },
+    ])
 
     const coordinator = new ChunkUpgradeCoordinator(db)
     const candidate = coordinator.getDocumentsNeedingUpgrade()[0]!
 
     // Attempt migration
-    const ok = await (manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }).migrateLegacyDocument(candidate)
+    const ok = await (
+      manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }
+    ).migrateLegacyDocument(candidate)
     expect(ok).toBe(false)
 
     // Legacy chunks must be strictly preserved!
-    const chunkCount = db.prepare('SELECT count(*) AS count FROM chunks WHERE document_id = 20').get() as {
+    const chunkCount = db
+      .prepare('SELECT count(*) AS count FROM chunks WHERE document_id = 20')
+      .get() as {
       count: number
     }
     expect(chunkCount.count).toBe(1)
@@ -365,7 +377,9 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     const enqueueSpy = vi.spyOn(manager as any, 'enqueue')
 
     // Attempt migration
-    const ok = await (manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }).migrateLegacyDocument(candidate)
+    const ok = await (
+      manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }
+    ).migrateLegacyDocument(candidate)
     expect(ok).toBe(false)
 
     // File was diverted to P1 queue with prioritize = true
@@ -376,25 +390,53 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     const { db } = await createManager()
 
     // Doc 1: Low priority, large
-    insertLegacyV1Document(db, 1, join(directory, 'doc1.txt'), 'doc1.txt', [{ text: 'Content 1', location: 'C1' }], {
-      priorityAt: 100,
-      sizeBytes: 5000,
-    })
+    insertLegacyV1Document(
+      db,
+      1,
+      join(directory, 'doc1.txt'),
+      'doc1.txt',
+      [{ text: 'Content 1', location: 'C1' }],
+      {
+        priorityAt: 100,
+        sizeBytes: 5000,
+      },
+    )
     // Doc 2: High priority (recently opened), medium size
-    insertLegacyV1Document(db, 2, join(directory, 'doc2.txt'), 'doc2.txt', [{ text: 'Content 2', location: 'C1' }], {
-      priorityAt: 500,
-      sizeBytes: 2000,
-    })
+    insertLegacyV1Document(
+      db,
+      2,
+      join(directory, 'doc2.txt'),
+      'doc2.txt',
+      [{ text: 'Content 2', location: 'C1' }],
+      {
+        priorityAt: 500,
+        sizeBytes: 2000,
+      },
+    )
     // Doc 3: High priority (recently opened), small size (should come before Doc 2)
-    insertLegacyV1Document(db, 3, join(directory, 'doc3.txt'), 'doc3.txt', [{ text: 'Content 3', location: 'C1' }], {
-      priorityAt: 500,
-      sizeBytes: 500,
-    })
+    insertLegacyV1Document(
+      db,
+      3,
+      join(directory, 'doc3.txt'),
+      'doc3.txt',
+      [{ text: 'Content 3', location: 'C1' }],
+      {
+        priorityAt: 500,
+        sizeBytes: 500,
+      },
+    )
     // Doc 4: Lowest priority
-    insertLegacyV1Document(db, 4, join(directory, 'doc4.txt'), 'doc4.txt', [{ text: 'Content 4', location: 'C1' }], {
-      priorityAt: 10,
-      sizeBytes: 100,
-    })
+    insertLegacyV1Document(
+      db,
+      4,
+      join(directory, 'doc4.txt'),
+      'doc4.txt',
+      [{ text: 'Content 4', location: 'C1' }],
+      {
+        priorityAt: 10,
+        sizeBytes: 100,
+      },
+    )
 
     const coordinator = new ChunkUpgradeCoordinator(db)
     const queue = coordinator.getDocumentsNeedingUpgrade()
@@ -420,7 +462,9 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     insertFts.run(res.lastInsertRowid, 'dangling text chunk')
 
     // Verify dangling state exists
-    const beforeDangling = db.prepare("SELECT count(*) AS count FROM chunk_sets WHERE state = 'building'").get() as {
+    const beforeDangling = db
+      .prepare("SELECT count(*) AS count FROM chunk_sets WHERE state = 'building'")
+      .get() as {
       count: number
     }
     expect(beforeDangling.count).toBe(1)
@@ -428,13 +472,17 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     // Coordinator instance starts up: autoRecover purges dangling sets (MIG-14)
     const coordinator = new ChunkUpgradeCoordinator(db)
 
-    const afterDangling = db.prepare("SELECT count(*) AS count FROM chunk_sets WHERE state = 'building'").get() as {
+    const afterDangling = db
+      .prepare("SELECT count(*) AS count FROM chunk_sets WHERE state = 'building'")
+      .get() as {
       count: number
     }
     expect(afterDangling.count).toBe(0)
 
     // Orphaned chunks of building set are removed
-    const orphanChunks = db.prepare('SELECT count(*) AS count FROM chunks WHERE chunk_set_id = ?').get(danglingSetId) as {
+    const orphanChunks = db
+      .prepare('SELECT count(*) AS count FROM chunks WHERE chunk_set_id = ?')
+      .get(danglingSetId) as {
       count: number
     }
     expect(orphanChunks.count).toBe(0)
@@ -446,8 +494,12 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
   it('supports pause and resume during chunk upgrade', async () => {
     const { db } = await createManager()
 
-    insertLegacyV1Document(db, 1, join(directory, 'pause1.txt'), 'pause1.txt', [{ text: 'Pausable 1', location: 'C1' }])
-    insertLegacyV1Document(db, 2, join(directory, 'pause2.txt'), 'pause2.txt', [{ text: 'Pausable 2', location: 'C1' }])
+    insertLegacyV1Document(db, 1, join(directory, 'pause1.txt'), 'pause1.txt', [
+      { text: 'Pausable 1', location: 'C1' },
+    ])
+    insertLegacyV1Document(db, 2, join(directory, 'pause2.txt'), 'pause2.txt', [
+      { text: 'Pausable 2', location: 'C1' },
+    ])
 
     const coordinator = new ChunkUpgradeCoordinator(db)
     coordinator.pause()
@@ -535,7 +587,9 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     }
 
     // Attempt migration
-    const ok = await (manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }).migrateLegacyDocument(candidate)
+    const ok = await (
+      manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }
+    ).migrateLegacyDocument(candidate)
 
     // Verification:
     // 1. migrateLegacyDocument rejected the stale commit because generation no longer matched or metadata drifted
@@ -563,8 +617,8 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     expect((manager as any).currentGeneration(filePath)).toBeGreaterThan(0)
     expect(
       (manager as any).activeExtractions.has(filePath) ||
-      (manager as any).queued.has(filePath) ||
-      (manager as any).queue.includes(filePath)
+        (manager as any).queued.has(filePath) ||
+        (manager as any).queue.includes(filePath),
     ).toBe(true)
   })
 
@@ -577,15 +631,13 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     const fileContent = 'Thỏa thuận hợp đồng dịch vụ công nghệ thông tin năm 2026.'
 
     // Initially, file does not exist on disk and sourceUnavailable returns true
-    const sourceUnavailableSpy = vi.spyOn(manager as any, 'sourceUnavailable').mockResolvedValue(true)
+    const sourceUnavailableSpy = vi
+      .spyOn(manager as any, 'sourceUnavailable')
+      .mockResolvedValue(true)
 
-    insertLegacyV1Document(
-      db,
-      202,
-      usbFilePath,
-      'contract.txt',
-      [{ text: 'Bản lưu tạm hợp đồng cũ trên USB.', location: 'Chunk 1' }],
-    )
+    insertLegacyV1Document(db, 202, usbFilePath, 'contract.txt', [
+      { text: 'Bản lưu tạm hợp đồng cũ trên USB.', location: 'Chunk 1' },
+    ])
 
     const coordinator = new ChunkUpgradeCoordinator(db)
     const candidates = coordinator.getDocumentsNeedingUpgrade()
@@ -594,12 +646,17 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     expect(candidate.id).toBe(202)
 
     // 2. Migration attempts to process offline document -> skips and adds to skippedMigrationDocs
-    const firstAttempt = await (manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }).migrateLegacyDocument(candidate)
+    const firstAttempt = await (
+      manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }
+    ).migrateLegacyDocument(candidate)
     expect(firstAttempt).toBe(false)
     expect((manager as any).skippedMigrationDocs.has(202)).toBe(true)
 
     // Subsequent upgrade query skips this document
-    const skippedNeeding = coordinator.getDocumentsNeedingUpgrade(1, (manager as any).skippedMigrationDocs)
+    const skippedNeeding = coordinator.getDocumentsNeedingUpgrade(
+      1,
+      (manager as any).skippedMigrationDocs,
+    )
     expect(skippedNeeding).toHaveLength(0)
 
     // Old chunks are still searchable
@@ -626,11 +683,16 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     expect(scheduleMigrationStepSpy).toHaveBeenCalledWith(1000)
 
     // 5. Migration resumes automatically and upgrades the document to V2 without restarting manager
-    const needingAfterPoll = coordinator.getDocumentsNeedingUpgrade(1, (manager as any).skippedMigrationDocs)
+    const needingAfterPoll = coordinator.getDocumentsNeedingUpgrade(
+      1,
+      (manager as any).skippedMigrationDocs,
+    )
     expect(needingAfterPoll).toHaveLength(1)
     expect(needingAfterPoll[0]?.id).toBe(202)
 
-    const secondAttempt = await (manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }).migrateLegacyDocument(needingAfterPoll[0]!)
+    const secondAttempt = await (
+      manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }
+    ).migrateLegacyDocument(needingAfterPoll[0]!)
     expect(secondAttempt).toBe(true)
 
     // 6. Verify cutover succeeded
@@ -701,14 +763,17 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
 
     const yieldHook = async () => {
       sliceYieldCount++
-      const docRow = db.prepare('SELECT status, active_chunk_set_id FROM documents WHERE id = 303').get() as {
+      const docRow = db
+        .prepare('SELECT status, active_chunk_set_id FROM documents WHERE id = 303')
+        .get() as {
         status: string
         active_chunk_set_id: number | null
       }
 
       const currentOldHits = store.searchLexical(oldTerm, 10)
       const currentNewHits = store.searchLexical(newTerm, 10)
-      const oldText = currentOldHits.length > 0 ? store.readChunk(currentOldHits[0]!.chunkId)?.text : undefined
+      const oldText =
+        currentOldHits.length > 0 ? store.readChunk(currentOldHits[0]!.chunkId)?.text : undefined
 
       intermediateStates.push({
         slice: sliceYieldCount,
@@ -752,7 +817,9 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     }
 
     // 5. Verification of final cutover:
-    const docRowAfter = db.prepare('SELECT status, active_chunk_set_id FROM documents WHERE id = 303').get() as {
+    const docRowAfter = db
+      .prepare('SELECT status, active_chunk_set_id FROM documents WHERE id = 303')
+      .get() as {
       status: string
       active_chunk_set_id: number
     }
@@ -776,7 +843,9 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
 
     // Legacy V1 chunks (chunk_set_id IS NULL) are purged
     const orphanedV1Count = db
-      .prepare('SELECT count(*) AS count FROM chunks WHERE document_id = 303 AND chunk_set_id IS NULL')
+      .prepare(
+        'SELECT count(*) AS count FROM chunks WHERE document_id = 303 AND chunk_set_id IS NULL',
+      )
       .get() as { count: number }
     expect(orphanedV1Count.count).toBe(0)
   })
@@ -811,14 +880,22 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
 
     // Intercept replaceDocumentSliced: immediately alter file on disk after cutover write succeeds
     const originalReplaceSliced = store.replaceDocumentSliced.bind(store)
-    vi.spyOn(store, 'replaceDocumentSliced').mockImplementationOnce(async (targetPath, doc, options) => {
-      const res = await originalReplaceSliced(targetPath, doc, options)
-      // File modified immediately post-cutover
-      writeFileSync(filePath, 'Modified content post-cutover with different size and mtime.', 'utf8')
-      return res
-    })
+    vi.spyOn(store, 'replaceDocumentSliced').mockImplementationOnce(
+      async (targetPath, doc, options) => {
+        const res = await originalReplaceSliced(targetPath, doc, options)
+        // File modified immediately post-cutover
+        writeFileSync(
+          filePath,
+          'Modified content post-cutover with different size and mtime.',
+          'utf8',
+        )
+        return res
+      },
+    )
 
-    const ok = await (manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }).migrateLegacyDocument(candidate)
+    const ok = await (
+      manager as unknown as { migrateLegacyDocument: (doc: unknown) => Promise<boolean> }
+    ).migrateLegacyDocument(candidate)
 
     // Migration returns false due to post-cutover mismatch
     expect(ok).toBe(false)
@@ -830,11 +907,12 @@ describe('Document Search V2 - Existing Data Chunk Migration Engine', () => {
     expect(coordinator.getProgress().completedDocuments).toBe(0)
 
     // Active chunk set V2 remains intact without rollback corruption
-    const docRow = db.prepare('SELECT active_chunk_set_id, status FROM documents WHERE id = 404').get() as {
+    const docRow = db
+      .prepare('SELECT active_chunk_set_id, status FROM documents WHERE id = 404')
+      .get() as {
       active_chunk_set_id: number | null
       status: string
     }
     expect(docRow.active_chunk_set_id).toBeGreaterThan(0)
   })
 })
-

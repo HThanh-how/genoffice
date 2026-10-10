@@ -227,7 +227,7 @@ describe('BackupRetentionRunner - Dedicated Process Isolation Suite (JOB-05-RET1
     expect(res).toEqual({ purgedCount: 1 })
     expect(mockRetentionWorker.terminateCalls).toBe(1)
 
-    manager.close()
+    await manager.closeAsync()
   })
 
   it('instantiates BackupRetentionRunner with default workerPath imported via ?modulePath', () => {

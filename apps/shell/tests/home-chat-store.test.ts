@@ -1,7 +1,36 @@
 import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+const mockedUnlink = vi.hoisted(() => vi.fn())
+const mockedReadFile = vi.hoisted(() => vi.fn())
+const mockedStat = vi.hoisted(() => vi.fn())
+const mockedReaddir = vi.hoisted(() => vi.fn())
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  mockedUnlink.mockImplementation((...args: Parameters<typeof actual.unlink>) =>
+    actual.unlink(...args),
+  )
+  mockedReadFile.mockImplementation((...args: Parameters<typeof actual.readFile>) =>
+    actual.readFile(...args),
+  )
+  mockedStat.mockImplementation((...args: Parameters<typeof actual.stat>) => actual.stat(...args))
+  mockedReaddir.mockImplementation((...args: Parameters<typeof actual.readdir>) =>
+    actual.readdir(...args),
+  )
+  return {
+    ...actual,
+    unlink: mockedUnlink,
+    readFile: mockedReadFile,
+    stat: mockedStat,
+    readdir: mockedReaddir,
+  }
+})
+
+const actualFs = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+
 import {
   HomeChatStore,
   cleanChatTitle,
@@ -16,6 +45,14 @@ let dir: string
 let store: HomeChatStore
 
 beforeEach(async () => {
+  mockedUnlink.mockReset()
+  mockedUnlink.mockImplementation((...args: any[]) => (actualFs.unlink as any)(...args))
+  mockedReadFile.mockReset()
+  mockedReadFile.mockImplementation((...args: any[]) => (actualFs.readFile as any)(...args))
+  mockedStat.mockReset()
+  mockedStat.mockImplementation((...args: any[]) => (actualFs.stat as any)(...args))
+  mockedReaddir.mockReset()
+  mockedReaddir.mockImplementation((...args: any[]) => (actualFs.readdir as any)(...args))
   dir = await mkdtemp(join(tmpdir(), 'home-chat-'))
   store = new HomeChatStore(dir)
 })
@@ -257,5 +294,350 @@ describe('HomeChatStore', () => {
     if (process.platform === 'win32') return
     const mode = (await stat(join(dir, `${saved!.id}.json`))).mode & 0o777
     expect(mode).toBe(0o600)
+  })
+
+  describe('filesystem error handling regressions (Job 04)', () => {
+    it('TEST A: a valid session can be deleted normally', async () => {
+      const saved = await store.save({ messages: convo('session-a') })
+      expect(saved).not.toBeNull()
+      const id = saved!.id
+      expect(await store.delete(id)).toBe(true)
+      expect(await store.get(id)).toBeNull()
+      expect(await store.list()).toEqual([])
+      const files = await readdir(dir)
+      expect(files).not.toContain(`${id}.json`)
+    })
+
+    it('TEST B: deleting a session whose file is already absent does not throw an ENOENT exception', async () => {
+      const saved = await store.save({ messages: convo('session-b') })
+      expect(saved).not.toBeNull()
+      const id = saved!.id
+      await actualFs.unlink(join(dir, `${id}.json`))
+      await expect(store.delete(id)).resolves.toBe(true)
+      expect(await store.list()).toEqual([])
+    })
+
+    it('TEST C: a real unlink failure propagates', async () => {
+      const saved = await store.save({ messages: convo('session-c') })
+      expect(saved).not.toBeNull()
+      const id = saved!.id
+      const err = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      mockedUnlink.mockImplementationOnce(async () => {
+        throw err
+      })
+      await expect(store.delete(id)).rejects.toThrow(err)
+    })
+
+    it('TEST D: a failed deletion must not be reported as success', async () => {
+      const saved = await store.save({ messages: convo('session-d') })
+      expect(saved).not.toBeNull()
+      const id = saved!.id
+      const err = Object.assign(new Error('resource busy'), { code: 'EBUSY' })
+      mockedUnlink.mockImplementationOnce(async () => {
+        throw err
+      })
+      await expect(store.delete(id)).rejects.toThrow(err)
+      const list = await store.list()
+      expect(list.some((s) => s.id === id)).toBe(true)
+      const files = await readdir(dir)
+      expect(files).toContain(`${id}.json`)
+    })
+
+    it('TEST E: a successful clear removes all session files', async () => {
+      await store.save({ messages: convo('s1') })
+      await store.save({ messages: convo('s2') })
+      await store.save({ messages: convo('s3') })
+      expect(await store.list()).toHaveLength(3)
+      const cleared = await store.clear()
+      expect(cleared).toBe(3)
+      expect(await store.list()).toHaveLength(0)
+      const files = await readdir(dir)
+      expect(files.filter((name) => name !== 'index.json')).toEqual([])
+    })
+
+    it('TEST F: a partial clear failure leaves the remaining files discoverable', async () => {
+      const s1 = await store.save({ messages: convo('s1') })
+      const s2 = await store.save({ messages: convo('s2') })
+      expect(s1).not.toBeNull()
+      expect(s2).not.toBeNull()
+      const err = Object.assign(new Error('unlink blocked'), { code: 'EBUSY' })
+      mockedUnlink.mockImplementation(async (path: any, ...args: any[]) => {
+        if (String(path).includes(s2!.id)) {
+          throw err
+        }
+        return (actualFs.unlink as any)(path, ...args)
+      })
+      await expect(store.clear()).rejects.toThrow(AggregateError)
+      const remaining = await store.list()
+      expect(remaining.map((s) => s.id)).toEqual([s2!.id])
+      const loaded = await store.get(s2!.id)
+      expect(loaded).not.toBeNull()
+      expect(loaded!.id).toBe(s2!.id)
+    })
+
+    it('TEST G: malformed JSON is quarantined', async () => {
+      const badId = '12345678-1234-4234-8234-123456789abc'
+      const badFile = join(dir, `${badId}.json`)
+      await writeFile(badFile, '{"broken": json')
+      const result = await store.get(badId)
+      expect(result).toBeNull()
+      const files = await readdir(dir)
+      expect(files).not.toContain(`${badId}.json`)
+      const quarantined = files.find((f) => f.startsWith(`${badId}.json.corrupt-`))
+      expect(quarantined).toBeDefined()
+      expect(await readFile(join(dir, quarantined!), 'utf8')).toBe('{"broken": json')
+    })
+
+    it('TEST H: an I/O read error is not treated as malformed JSON', async () => {
+      const saved = await store.save({ messages: convo('session-h') })
+      expect(saved).not.toBeNull()
+      const id = saved!.id
+      const ioError = Object.assign(new Error('disk read failed'), { code: 'EIO' })
+      mockedReadFile.mockImplementation(async (path: any, ...args: any[]) => {
+        if (String(path).includes(id)) {
+          throw ioError
+        }
+        return (actualFs.readFile as any)(path, ...args)
+      })
+      await expect(store.get(id)).rejects.toThrow(ioError)
+      const files = await readdir(dir)
+      expect(files).toContain(`${id}.json`)
+      expect(files.some((f) => f.startsWith(`${id}.json.corrupt-`))).toBe(false)
+    })
+
+    // =========================================================================
+    // Phase E: Fault injection scenarios (1 to 10)
+    // =========================================================================
+    it('Phase E-2: index write failure after session deletion does not forget remaining durable files', async () => {
+      const s1 = await store.save({ messages: convo('session-e2-1') })
+      const s2 = await store.save({ messages: convo('session-e2-2') })
+      expect(s1).not.toBeNull()
+      expect(s2).not.toBeNull()
+
+      // Inject failure on index write
+      const writeErr = Object.assign(new Error('index write disk full'), { code: 'ENOSPC' })
+      const failingStore = new HomeChatStore(dir, async (path, data) => {
+        if (path.endsWith('index.json')) throw writeErr
+        return actualFs.writeFile(path, data)
+      })
+
+      // Deleting s1 unlinks s1.json then attempts index persist
+      await expect(failingStore.delete(s1!.id)).rejects.toThrow(writeErr)
+
+      // Restarting store reads durable disk files
+      const restarted = new HomeChatStore(dir)
+      const list = await restarted.list()
+      expect(list.map((s) => s.id)).toEqual([s2!.id])
+      expect(await restarted.get(s2!.id)).not.toBeNull()
+    })
+
+    it('Phase E-3: session write succeeds but eviction failure propagates while keeping saved session durable', async () => {
+      const storeWithMock = new HomeChatStore(dir, async (path, data) => {
+        return actualFs.writeFile(path, data)
+      })
+
+      // Create maxSessions
+      const createdIds: string[] = []
+      for (let i = 0; i < HOME_CHAT_LIMITS.maxSessions; i++) {
+        const s = await storeWithMock.save({ messages: convo(`session-limit-${i}`) })
+        createdIds.push(s!.id)
+      }
+
+      // Inject unlink failure for eviction
+      const evictErr = Object.assign(new Error('eviction lock'), { code: 'EBUSY' })
+      mockedUnlink.mockImplementationOnce(async () => {
+        throw evictErr
+      })
+
+      // Saving one more triggers eviction which fails
+      await expect(storeWithMock.save({ messages: convo('overflow-session') })).rejects.toThrow(
+        evictErr,
+      )
+
+      // The new session was written to disk and is durable
+      const diskFiles = await readdir(dir)
+      const sessionFiles = diskFiles.filter((f) => f.endsWith('.json') && f !== 'index.json')
+      expect(sessionFiles.length).toBe(HOME_CHAT_LIMITS.maxSessions + 1)
+    })
+
+    it('Phase E-5: restart after partial clear restores clean consistent view of remaining files', async () => {
+      const s1 = await store.save({ messages: convo('clear-1') })
+      const s2 = await store.save({ messages: convo('clear-2') })
+      expect(s1).not.toBeNull()
+      expect(s2).not.toBeNull()
+
+      mockedUnlink.mockImplementation(async (path: any, ...args: any[]) => {
+        if (String(path).includes(s2!.id)) {
+          throw Object.assign(new Error('file locked'), { code: 'EBUSY' })
+        }
+        return (actualFs.unlink as any)(path, ...args)
+      })
+
+      await expect(store.clear()).rejects.toThrow(AggregateError)
+
+      // Restart with fresh store instance
+      const restartedStore = new HomeChatStore(dir)
+      const items = await restartedStore.list()
+      expect(items.map((i) => i.id)).toEqual([s2!.id])
+      const session = await restartedStore.get(s2!.id)
+      expect(session).not.toBeNull()
+      expect(session!.id).toBe(s2!.id)
+    })
+
+    it('Phase E-6: corrupted index.json is automatically rebuilt from session files on restart', async () => {
+      const s1 = await store.save({ messages: convo('durable-1') })
+      const s2 = await store.save({ messages: convo('durable-2') })
+      expect(s1).not.toBeNull()
+      expect(s2).not.toBeNull()
+
+      // Corrupt index.json
+      await actualFs.writeFile(join(dir, 'index.json'), '{"corrupted": garbage json[')
+
+      // Restart store
+      const restarted = new HomeChatStore(dir)
+      const list = await restarted.list()
+      expect(list.length).toBe(2)
+      expect(list.map((s) => s.id).sort()).toEqual([s1!.id, s2!.id].sort())
+    })
+
+    it('Phase E-8: permission error on write fails cleanly without creating corrupt sessions', async () => {
+      const permErr = Object.assign(new Error('permission denied'), { code: 'EACCES' })
+      const permStore = new HomeChatStore(dir, async () => {
+        throw permErr
+      })
+
+      await expect(permStore.save({ messages: convo('failed-perm') })).rejects.toThrow(permErr)
+      expect(await store.list()).toEqual([])
+    })
+
+    it('Phase E-9: I/O error during rebuild propagates and does not corrupt store state', async () => {
+      await store.save({ messages: convo('rebuild-1') })
+      // Delete index to force rebuild
+      await actualFs.unlink(join(dir, 'index.json'))
+
+      const readErr = Object.assign(new Error('read failure'), { code: 'EIO' })
+      mockedReadFile.mockImplementation(async (path: any, ...args: any[]) => {
+        if (String(path).endsWith('.json') && !String(path).includes('index.json')) throw readErr
+        return (actualFs.readFile as any)(path, ...args)
+      })
+
+      const newStore = new HomeChatStore(dir)
+      await expect(newStore.list()).rejects.toThrow(readErr)
+    })
+
+    it('Phase E-10: concurrent queued operations complete in consistent order without data loss', async () => {
+      const ops = Array.from({ length: 10 }, (_, i) =>
+        store.save({ messages: convo(`concurrent-${i}`) }),
+      )
+      const results = await Promise.all(ops)
+      expect(results.every((r) => r !== null)).toBe(true)
+
+      const list = await store.list()
+      expect(list.length).toBe(10)
+
+      // Concurrent rename and delete
+      const toRename = results[0]!.id
+      const toDelete = results[1]!.id
+
+      await Promise.all([
+        store.rename(toRename, 'Renamed concurrent title'),
+        store.delete(toDelete),
+      ])
+
+      const updatedList = await store.list()
+      expect(updatedList.length).toBe(9)
+      expect(updatedList.some((s) => s.id === toDelete)).toBe(false)
+      const renamedSession = await store.get(toRename)
+      expect(renamedSession?.title).toBe('Renamed concurrent title')
+    })
+
+    it('P0-02: stat() throwing EACCES during load propagates without pruning sessions', async () => {
+      const saved = await store.save({ messages: convo('perm-test') })
+      expect(saved).not.toBeNull()
+
+      // Reset store instance so load() will execute
+      const freshStore = new HomeChatStore(dir)
+
+      const eacces = Object.assign(new Error('Permission denied on stat'), { code: 'EACCES' })
+      mockedStat.mockImplementationOnce(async (path: any, ...args: any[]) => {
+        if (String(path).includes(saved!.id)) {
+          throw eacces
+        }
+        return (actualFs.stat as any)(path, ...args)
+      })
+
+      // Must propagate EACCES rather than silently pruning the session
+      await expect(freshStore.list()).rejects.toThrow(eacces)
+
+      // Verify the session remains in index.json on disk untouched
+      const indexRaw = JSON.parse(await actualFs.readFile(join(dir, 'index.json'), 'utf8'))
+      expect(indexRaw.sessions.some((s: any) => s.id === saved!.id)).toBe(true)
+    })
+
+    it('P0-02: stat() throwing EIO during load propagates without pruning sessions', async () => {
+      const saved = await store.save({ messages: convo('io-test') })
+      expect(saved).not.toBeNull()
+
+      const freshStore = new HomeChatStore(dir)
+      const eio = Object.assign(new Error('I/O error on stat'), { code: 'EIO' })
+      mockedStat.mockImplementationOnce(async (path: any, ...args: any[]) => {
+        if (String(path).includes(saved!.id)) {
+          throw eio
+        }
+        return (actualFs.stat as any)(path, ...args)
+      })
+
+      await expect(freshStore.list()).rejects.toThrow(eio)
+      const indexRaw = JSON.parse(await actualFs.readFile(join(dir, 'index.json'), 'utf8'))
+      expect(indexRaw.sessions.some((s: any) => s.id === saved!.id)).toBe(true)
+    })
+
+    it('P0-02: readdir() throwing ENOENT returns empty list for uncreated directory', async () => {
+      const emptyDir = join(dir, 'uncreated-subdir')
+      const emptyStore = new HomeChatStore(emptyDir)
+      const items = await emptyStore.list()
+      expect(items).toEqual([])
+    })
+
+    it('P0-02: readdir() throwing EACCES during rebuild propagates and does not assume empty store', async () => {
+      await store.save({ messages: convo('rebuild-perm') })
+      // Delete index to force rebuild()
+      await actualFs.unlink(join(dir, 'index.json'))
+
+      const freshStore = new HomeChatStore(dir)
+      const eacces = Object.assign(new Error('Directory permission denied'), { code: 'EACCES' })
+      mockedReaddir.mockImplementationOnce(async () => {
+        throw eacces
+      })
+
+      // Must throw, never return []
+      await expect(freshStore.list()).rejects.toThrow(eacces)
+    })
+
+    it('P0-02: session save succeeds on disk but index write fails; session remains durable on restart', async () => {
+      const writeErr = Object.assign(new Error('index write failed'), { code: 'EIO' })
+      const failingStore = new HomeChatStore(dir, async (path, data) => {
+        if (path.endsWith('index.json')) throw writeErr
+        return actualFs.writeFile(path, data)
+      })
+
+      await expect(failingStore.save({ messages: convo('save-with-index-fail') })).rejects.toThrow(
+        writeErr,
+      )
+
+      // Find the session file that was written to disk before index persistence failed
+      const files = await actualFs.readdir(dir)
+      const sessionFile = files.find((f) => f.endsWith('.json') && f !== 'index.json')
+      expect(sessionFile).toBeDefined()
+      const savedId = sessionFile!.replace('.json', '')
+
+      // On restart with fresh store, session must be discovered and readable
+      const restarted = new HomeChatStore(dir)
+      const list = await restarted.list()
+      expect(list.some((s) => s.id === savedId)).toBe(true)
+      const session = await restarted.get(savedId)
+      expect(session).not.toBeNull()
+      expect(session!.id).toBe(savedId)
+    })
   })
 })
