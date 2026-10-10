@@ -18,7 +18,12 @@ import { currentIndexingPolicy } from '../../fork/indexing-policy-bus'
 import type { OcrJobHost } from '../agy-ocr-job'
 import { isIndexingPaused, onIndexingPolicyChange } from '../background-work-gate'
 import { coolDownMs } from '../cpu-budget'
-import { LocalOcrJob, type LocalOcrEvent, type LocalOcrGate, type LocalOcrRunSummary } from '../local-ocr/local-ocr-job'
+import {
+  LocalOcrJob,
+  type LocalOcrEvent,
+  type LocalOcrGate,
+  type LocalOcrRunSummary,
+} from '../local-ocr/local-ocr-job'
 import { LocalOcrEngineRegistry } from '../local-ocr/registry'
 import { TesseractEngine, TESSERACT_ENGINE_ID } from '../local-ocr/tesseract-engine'
 import { createOcrHost, type OcrHostInput } from '../ocr-host'
@@ -29,7 +34,10 @@ export const LOCAL_OCR_MAX_BATCHES_PER_TICK = 40
 /** How long the index worker may take to prepare one image before the engine falls back to the original bytes. */
 const PREPARE_TIMEOUT_MS = 60_000
 
-type WorkerAsk = (request: { type: 'ocr-prepare'; bytes: Uint8Array; dpi: number }, timeoutMs?: number) => Promise<unknown>
+type WorkerAsk = (
+  request: { type: 'ocr-prepare'; bytes: Uint8Array; dpi: number },
+  timeoutMs?: number,
+) => Promise<unknown>
 
 export interface LocalOcrWiringDeps {
   /** the cloud host's inputs (store, admission, scheduler, budget, worker `ask`, reindex ...) */
@@ -81,7 +89,8 @@ export class LocalOcrRunner {
   tick(): Promise<LocalOcrRunSummary | null> {
     if (this.running) return Promise.resolve(null)
     const settings = this.deps.settings()
-    if (!settings.enabled || !this.deps.isActive() || isIndexingPaused()) return Promise.resolve(null)
+    if (!settings.enabled || !this.deps.isActive() || isIndexingPaused())
+      return Promise.resolve(null)
     // no engine fits the free RAM / has its resources: do not even look at the queue, try again next tick
     if (!this.registry.select(settings.engine)) return Promise.resolve(null)
     const run = this.run().finally(() => {
@@ -102,7 +111,10 @@ export class LocalOcrRunner {
     try {
       for (let batch = 0; batch < LOCAL_OCR_MAX_BATCHES_PER_TICK; batch++) {
         if (abort.signal.aborted || !this.deps.isActive() || this.deps.epoch() !== epoch) break
-        const summary = await this.job(epoch, abort.signal).runOnce({ maxFiles: LOCAL_OCR_BATCH_FILES, signal: abort.signal })
+        const summary = await this.job(epoch, abort.signal).runOnce({
+          maxFiles: LOCAL_OCR_BATCH_FILES,
+          signal: abort.signal,
+        })
         total.files += summary.files
         total.pages += summary.pages
         total.escalated += summary.escalated
@@ -138,7 +150,8 @@ export class LocalOcrRunner {
         if (!d.canWork()) return { ok: false, reason: 'storage-busy' }
         return d.gate()
       },
-      coolDown: (activeMs) => (d.coolDown ? d.coolDown(activeMs, signal) : policyCoolDown(activeMs, signal)),
+      coolDown: (activeMs) =>
+        d.coolDown ? d.coolDown(activeMs, signal) : policyCoolDown(activeMs, signal),
       isStopped: () => !d.isActive() || d.epoch() !== epoch,
       ...(d.totalRamMB ? { totalRamMB: d.totalRamMB } : {}),
       ...(d.log ? { log: d.log } : {}),
@@ -170,9 +183,10 @@ export function createLocalOcrWiring(deps: LocalOcrWiringDeps): LocalOcrWiring {
           new TesseractEngine({
             // decode / shrink / flatten run in the index worker, not on the UI thread
             prepare: async (bytes, dpi) => {
-              const reply = (await deps.ask({ type: 'ocr-prepare', bytes, dpi }, PREPARE_TIMEOUT_MS)) as
-                | { result?: unknown; error?: string }
-                | null
+              const reply = (await deps.ask(
+                { type: 'ocr-prepare', bytes, dpi },
+                PREPARE_TIMEOUT_MS,
+              )) as { result?: unknown; error?: string } | null
               if (reply && typeof reply === 'object' && 'error' in reply && reply.error) {
                 throw new Error(reply.error)
               }

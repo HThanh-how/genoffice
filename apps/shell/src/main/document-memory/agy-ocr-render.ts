@@ -237,7 +237,10 @@ export function isCompleteJpeg(bytes: Uint8Array): boolean {
   if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return false
 
   let end = bytes.length - 1
-  while (end > 1 && (bytes[end] === 0x00 || bytes[end] === 0x0a || bytes[end] === 0x0d || bytes[end] === 0x20)) {
+  while (
+    end > 1 &&
+    (bytes[end] === 0x00 || bytes[end] === 0x0a || bytes[end] === 0x0d || bytes[end] === 0x20)
+  ) {
     end--
   }
   if (end < 3 || bytes[end - 1] !== 0xff || bytes[end] !== 0xd9) {
@@ -490,11 +493,15 @@ export async function renderPdfPagesForOcr(
       const totalPages = m._FPDF_GetPageCount(doc)
       if (!(totalPages > 0)) return { ok: false, code: 'corrupt', message: 'The PDF has no pages' }
       const safeCount =
-        typeof request.count === 'number' && Number.isSafeInteger(request.count) && request.count > 0
+        typeof request.count === 'number' &&
+        Number.isSafeInteger(request.count) &&
+        request.count > 0
           ? Math.min(request.count, 50)
           : 1
       const safeMaxPages =
-        typeof request.maxPages === 'number' && Number.isSafeInteger(request.maxPages) && request.maxPages > 0
+        typeof request.maxPages === 'number' &&
+        Number.isSafeInteger(request.maxPages) &&
+        request.maxPages > 0
           ? request.maxPages
           : 1000
 
@@ -541,7 +548,14 @@ export async function renderPdfPagesForOcr(
       }
       if (wanted.length > 0 && pages.length === 0)
         return { ok: false, code: 'render', message: 'No page of the PDF could be rendered' }
-      return { ok: true, hash, mtimeMs: currentStat.mtimeMs, sizeBytes: currentStat.size, totalPages, pages }
+      return {
+        ok: true,
+        hash,
+        mtimeMs: currentStat.mtimeMs,
+        sizeBytes: currentStat.size,
+        totalPages,
+        pages,
+      }
     } finally {
       m._FPDF_CloseDocument(doc)
     }

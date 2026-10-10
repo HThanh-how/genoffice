@@ -24,7 +24,12 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { LocalOcrSettings } from '../../../shared/fork/agy-ocr'
 import { backgroundCoolDown } from '../cpu-budget'
 import type { OcrRenderRequest, OcrRenderResult } from '../agy-ocr-render'
-import { IMAGE_OCR_STATE, markImageOcr, selectImageOcrCandidates, type ImageOcrCandidate } from '../media/media-ocr-gate'
+import {
+  IMAGE_OCR_STATE,
+  markImageOcr,
+  selectImageOcrCandidates,
+  type ImageOcrCandidate,
+} from '../media/media-ocr-gate'
 import { MAX_OCR_IMAGE_BYTES } from '../media/media-kinds'
 import { isSensitiveName } from '../media/sensitive-names'
 import { OcrSidecar, type OcrDocRow, type OcrFileMeta, type OcrPageText } from '../ocr-sidecar'
@@ -59,7 +64,15 @@ export type LocalOcrGate = { ok: true } | { ok: false; reason: string }
 
 /** Events carry counts and scores only: never file names or recognised text. */
 export type LocalOcrEvent =
-  | { kind: 'page'; engine: string; ms: number; S: number; escalate: boolean; reason: EscalationReason; chars: number }
+  | {
+      kind: 'page'
+      engine: string
+      ms: number
+      S: number
+      escalate: boolean
+      reason: EscalationReason
+      chars: number
+    }
   | { kind: 'file-failed'; code: string }
   | { kind: 'file-skipped'; code: string }
   | { kind: 'stopped'; reason: string }
@@ -99,7 +112,13 @@ export interface LocalOcrRunSummary {
   stoppedBecause?: string
 }
 
-const PERMANENT_RENDER_CODES = new Set(['password', 'corrupt', 'unsupported', 'too-large', 'missing'])
+const PERMANENT_RENDER_CODES = new Set([
+  'password',
+  'corrupt',
+  'unsupported',
+  'too-large',
+  'missing',
+])
 
 function cleanText(text: string): string {
   return text
@@ -127,7 +146,9 @@ export class LocalOcrJob {
   }
 
   /** Read the next batch of files; safe to call repeatedly (done pages and images are never redone). */
-  async runOnce(options: { maxFiles?: number; signal?: AbortSignal } = {}): Promise<LocalOcrRunSummary> {
+  async runOnce(
+    options: { maxFiles?: number; signal?: AbortSignal } = {},
+  ): Promise<LocalOcrRunSummary> {
     const summary: LocalOcrRunSummary = { files: 0, pages: 0, escalated: 0, failed: 0, skipped: 0 }
     const settings = this.deps.settings()
     const stop = (reason: string): LocalOcrRunSummary => {
@@ -219,12 +240,22 @@ export class LocalOcrJob {
       return null
     }
     if (!rendered.ok) {
-      this.ocr.recordLocalFailure(row.path, file, rendered.code, PERMANENT_RENDER_CODES.has(rendered.code))
+      this.ocr.recordLocalFailure(
+        row.path,
+        file,
+        rendered.code,
+        PERMANENT_RENDER_CODES.has(rendered.code),
+      )
       summary.failed++
       this.deps.log?.({ kind: 'file-failed', code: rendered.code })
       return null
     }
-    const meta = { hash: rendered.hash, mtimeMs: rendered.mtimeMs, sizeBytes: rendered.sizeBytes, totalPages: rendered.totalPages }
+    const meta = {
+      hash: rendered.hash,
+      mtimeMs: rendered.mtimeMs,
+      sizeBytes: rendered.sizeBytes,
+      totalPages: rendered.totalPages,
+    }
     let touched = false
     let stopReason: string | null = null
     let first = true
@@ -318,8 +349,10 @@ export class LocalOcrJob {
   ): Promise<string | null> {
     const { db } = this.deps
     const tooSmall =
-      image.width !== null && image.height !== null &&
-      image.width < LOCAL_OCR_MIN_IMAGE_EDGE_PX && image.height < LOCAL_OCR_MIN_IMAGE_EDGE_PX
+      image.width !== null &&
+      image.height !== null &&
+      image.width < LOCAL_OCR_MIN_IMAGE_EDGE_PX &&
+      image.height < LOCAL_OCR_MIN_IMAGE_EDGE_PX
     if (tooSmall || image.sizeBytes > (this.deps.maxImageBytes ?? LOCAL_OCR_MAX_IMAGE_BYTES)) {
       markImageOcr(db, image.documentId, IMAGE_OCR_STATE.skipped)
       summary.skipped++
@@ -361,13 +394,29 @@ export class LocalOcrJob {
     }
     let saved: 'saved' | 'denied'
     try {
-      saved = await this.recognizeAndSave(image.path, 1, loaded.bytes, engine.descriptor.dpi, engine, meta, summary)
+      saved = await this.recognizeAndSave(
+        image.path,
+        1,
+        loaded.bytes,
+        engine.descriptor.dpi,
+        engine,
+        meta,
+        summary,
+      )
     } catch (error) {
       if (error instanceof LocalOcrUnavailableError) return 'no-engine'
-      const isUnsupported = error instanceof Error && error.message.includes('unsupported-image-format')
-      markImageOcr(db, image.documentId, isUnsupported ? IMAGE_OCR_STATE.skipped : IMAGE_OCR_STATE.failed)
+      const isUnsupported =
+        error instanceof Error && error.message.includes('unsupported-image-format')
+      markImageOcr(
+        db,
+        image.documentId,
+        isUnsupported ? IMAGE_OCR_STATE.skipped : IMAGE_OCR_STATE.failed,
+      )
       summary.failed++
-      this.deps.log?.({ kind: 'file-failed', code: isUnsupported ? 'unsupported-image-format' : 'engine-error' })
+      this.deps.log?.({
+        kind: 'file-failed',
+        code: isUnsupported ? 'unsupported-image-format' : 'engine-error',
+      })
       return null
     }
     if (saved === 'denied') return 'storage-denied'
@@ -379,7 +428,10 @@ export class LocalOcrJob {
   }
 
   private hasChunks(documentId: number): boolean {
-    return this.deps.db.prepare('SELECT 1 FROM chunks WHERE document_id = ? LIMIT 1').get(documentId) !== undefined
+    return (
+      this.deps.db.prepare('SELECT 1 FROM chunks WHERE document_id = ? LIMIT 1').get(documentId) !==
+      undefined
+    )
   }
 
   // ---- shared --------------------------------------------------------------------------
@@ -441,14 +493,22 @@ export class FileChangedDuringReadError extends Error {
 export function isImageDecodeError(error: unknown): boolean {
   if (!error) return false
   const msg = error instanceof Error ? error.message : String(error)
-  return /read image|cannot be read|unknown format|corrupt|truncated|decode|unsupported image/i.test(msg)
+  return /read image|cannot be read|unknown format|corrupt|truncated|decode|unsupported image/i.test(
+    msg,
+  )
 }
 
-export async function readImageFile(path: string): Promise<{ bytes: Uint8Array; mtimeMs: number; sizeBytes: number }> {
+export async function readImageFile(
+  path: string,
+): Promise<{ bytes: Uint8Array; mtimeMs: number; sizeBytes: number }> {
   const before = await stat(path)
   const bytes = await readFile(path)
   const after = await stat(path)
-  if (before.mtimeMs !== after.mtimeMs || before.size !== after.size || bytes.byteLength !== after.size) {
+  if (
+    before.mtimeMs !== after.mtimeMs ||
+    before.size !== after.size ||
+    bytes.byteLength !== after.size
+  ) {
     throw new FileChangedDuringReadError(path)
   }
   return { bytes, mtimeMs: after.mtimeMs, sizeBytes: after.size }
