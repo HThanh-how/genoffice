@@ -33,7 +33,13 @@ function referenceSearch(
   if (words.length === 0) return []
   const rows = db
     .prepare('SELECT id, path, name, status, error FROM documents WHERE excluded = 0')
-    .all() as unknown as Array<{ id: number; path: string; name: string; status: string; error: string | null }>
+    .all() as unknown as Array<{
+    id: number
+    path: string
+    name: string
+    status: string
+    error: string | null
+  }>
   const hits: typeof rows = []
   for (const row of rows) {
     const haystack = fold(`${row.name} ${row.path}`)
@@ -79,13 +85,39 @@ describe('IndexIssueReader search correctness & performance against reference', 
 
     const fixtures = [
       { id: 1, name: 'BỆNH VIỆN 30-4.pdf', path: '/home/Ba/BỆNH VIỆN 30-4.pdf', status: 'empty' },
-      { id: 2, name: 'bệnh viện ghi chú.docx', path: '/home/Ba/bệnh viện ghi chú.docx', status: 'ready' },
-      { id: 3, name: 'Hóa đơn tiền điện tháng 10.pdf', path: '/home/Bills/Hóa đơn tiền điện tháng 10.pdf', status: 'error' },
+      {
+        id: 2,
+        name: 'bệnh viện ghi chú.docx',
+        path: '/home/Ba/bệnh viện ghi chú.docx',
+        status: 'ready',
+      },
+      {
+        id: 3,
+        name: 'Hóa đơn tiền điện tháng 10.pdf',
+        path: '/home/Bills/Hóa đơn tiền điện tháng 10.pdf',
+        status: 'error',
+      },
       { id: 4, name: 'hoa_don_nuoc.pdf', path: '/home/Bills/hoa_don_nuoc.pdf', status: 'ready' },
-      { id: 5, name: 'Chuyến đi Đà Nẵng 2024.xlsx', path: '/home/Travel/Chuyến đi Đà Nẵng 2024.xlsx', status: 'ready' },
-      { id: 6, name: 'Bản vẽ xây dựng nhà xưởng.dwg', path: '/home/Projects/Bản vẽ xây dựng nhà xưởng.dwg', status: 'ready' },
+      {
+        id: 5,
+        name: 'Chuyến đi Đà Nẵng 2024.xlsx',
+        path: '/home/Travel/Chuyến đi Đà Nẵng 2024.xlsx',
+        status: 'ready',
+      },
+      {
+        id: 6,
+        name: 'Bản vẽ xây dựng nhà xưởng.dwg',
+        path: '/home/Projects/Bản vẽ xây dựng nhà xưởng.dwg',
+        status: 'ready',
+      },
       { id: 7, name: 'Hóa đơn.pdf', path: '/home/Archive/Hóa đơn.pdf', status: 'ready' }, // duplicate name in diff folder
-      { id: 8, name: 'Excluded secret.pdf', path: '/home/Vault/Excluded secret.pdf', status: 'ready', excluded: 1 },
+      {
+        id: 8,
+        name: 'Excluded secret.pdf',
+        path: '/home/Vault/Excluded secret.pdf',
+        status: 'ready',
+        excluded: 1,
+      },
     ]
 
     for (const f of fixtures) {
@@ -224,8 +256,8 @@ describe('IndexIssueReader search correctness & performance against reference', 
 
     const avgLatency = latencies.reduce((a, b) => a + b, 0) / latencies.length
     const maxLatency = Math.max(...latencies)
-    // console.log(`[P1-01 Benchmark] 10k docs -> avg: ${avgLatency.toFixed(2)}ms, max: ${maxLatency.toFixed(2)}ms, cold: ${coldDuration.toFixed(2)}ms`)
 
+    expect(avgLatency).toBeLessThan(100)
     expect(maxLatency).toBeLessThan(100) // Consistently well below 250ms
   })
 })

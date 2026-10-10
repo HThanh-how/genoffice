@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { copyFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve, basename } from 'node:path'
+import { join, resolve } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -14,9 +14,7 @@ import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/stora
 
 function normalizePathIdentity(p: string): string {
   const resolved = resolve(p)
-  return process.platform === 'win32'
-    ? resolved.replace(/\\/g, '/').toLowerCase()
-    : resolved
+  return process.platform === 'win32' ? resolved.replace(/\\/g, '/').toLowerCase() : resolved
 }
 
 const PDF_FIXTURE = join(__dirname, 'fixtures', 'mixed-scan.pdf')
@@ -45,9 +43,7 @@ class InProcessWorker extends EventEmitter {
         }
         if (message.type === 'extract' && message.path) {
           const norm = normalizePathIdentity(message.path)
-          const isFailing = [...this.failPaths].some(
-            (f) => normalizePathIdentity(f) === norm,
-          )
+          const isFailing = [...this.failPaths].some((f) => normalizePathIdentity(f) === norm)
           if (isFailing) {
             this.emit('message', {
               id: message.id,
