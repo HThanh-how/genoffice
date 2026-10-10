@@ -96,7 +96,9 @@ export class TesseractEngine implements LocalOcrEngine {
   private readonly loadModule: () => Promise<TesseractModule>
   private readonly prepare: (bytes: Uint8Array, dpi: number) => Promise<Uint8Array | null>
   private readonly initTimeoutMs: number
-  private worker: Promise<TesseractWorker> | null = null
+  private workerPromise: Promise<TesseractWorker> | null = null
+  private activeWorker: TesseractWorker | null = null
+  private initEpoch = 0
   private chain: Promise<unknown> = Promise.resolve()
 
   constructor(options: TesseractEngineOptions = {}) {
@@ -121,11 +123,26 @@ export class TesseractEngine implements LocalOcrEngine {
   }
 
   private async getWorker(): Promise<TesseractWorker> {
-    if (!this.langPath)
+    if (this.activeWorker) {
+      return this.activeWorker
+    }
+    if (this.workerPromise) {
+      return this.workerPromise
+    }
+    if (!this.langPath) {
       throw new LocalOcrUnavailableError(this.id, 'the vie language model is not bundled')
+    }
+
+    const epoch = ++this.initEpoch
+    let active = true
     const langPath = this.langPath
-    this.worker ??= (async () => {
+
+    const initPromise = (async () => {
       const { createWorker } = await this.loadModule()
+
+      if (!active || this.initEpoch !== epoch) {
+        throw new Error('Tesseract worker initialization cancelled')
+      }
 
       let initReject: ((reason: unknown) => void) | null = null
       const initErrorPromise = new Promise<never>((_, reject) => {
@@ -160,13 +177,35 @@ export class TesseractEngine implements LocalOcrEngine {
           },
         })
 
+        // Terminate worker if it resolves late after timeout, cancellation, or error
+        createWorkerPromise
+          .then(async (spawned) => {
+            if (!active || this.initEpoch !== epoch) {
+              await spawned.terminate().catch(() => undefined)
+            }
+          })
+          .catch(() => undefined)
+
         worker = await Promise.race([createWorkerPromise, initErrorPromise, timeoutPromise])
         initReject = null
+
+        // Parameter setting bounded by remaining initialization time
+        await Promise.race([
+          worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' }),
+          timeoutPromise,
+        ])
+
         clearTimeout(initTimer)
 
-        await worker.setParameters({ tessedit_pageseg_mode: '6', preserve_interword_spaces: '1' })
+        if (!active || this.initEpoch !== epoch) {
+          await worker.terminate().catch(() => undefined)
+          throw new Error('Tesseract worker initialization cancelled')
+        }
+
+        this.activeWorker = worker
         return worker
       } catch (error) {
+        active = false
         initReject = null
         clearTimeout(initTimer)
         if (worker) {
@@ -174,20 +213,36 @@ export class TesseractEngine implements LocalOcrEngine {
         }
         throw error
       }
-    })().catch((error: unknown) => {
-      this.worker = null
-      throw error
-    })
-    return this.worker
+    })()
+
+    this.workerPromise = initPromise
+
+    initPromise
+      .then((w) => {
+        if (this.workerPromise === initPromise) {
+          this.activeWorker = w
+          this.workerPromise = null
+        }
+      })
+      .catch(() => {
+        if (this.workerPromise === initPromise) {
+          this.workerPromise = null
+          this.activeWorker = null
+        }
+      })
+
+    return initPromise
   }
 
   private async recognizeNow(input: LocalOcrRecognizeInput): Promise<LocalOcrRecognition> {
     const bytes = input.bytes ?? (input.imagePath ? await readFile(input.imagePath) : null)
     if (!bytes) throw new Error('recognizePage needs bytes or imagePath')
     const started = performance.now()
-    // decode -> shrink -> flatten the background (off this thread in the app); undecodable formats go in unprocessed
-    const image = (await this.prepare(bytes, input.dpi || 150).catch(() => null)) ?? bytes
+    // Worker is initialized or acquired first
     const worker = await this.getWorker()
+    // decode -> shrink -> flatten the background (off this thread in the app)
+    // Any explicit validation rejection (bad format, corrupted data, unsupported format) propagates
+    const image = (await this.prepare(bytes, input.dpi || 150)) ?? bytes
     let timer: NodeJS.Timeout | undefined
     try {
       const result = await Promise.race([
@@ -214,7 +269,9 @@ export class TesseractEngine implements LocalOcrEngine {
       }
     } catch (error) {
       // a stuck or crashed WASM worker is thrown away; the next page starts a fresh one
-      if (error instanceof Error && error.message === 'Tesseract timed out') await this.dispose()
+      if (error instanceof Error && error.message === 'Tesseract timed out') {
+        await this.dispose()
+      }
       throw error instanceof Error ? error : new Error(String(error))
     } finally {
       clearTimeout(timer)
@@ -222,13 +279,27 @@ export class TesseractEngine implements LocalOcrEngine {
   }
 
   async dispose(): Promise<void> {
-    const pending = this.worker
-    this.worker = null
-    if (!pending) return
-    try {
-      await (await pending).terminate()
-    } catch {
-      // already gone
+    this.initEpoch++
+    const workerToTerminate = this.activeWorker
+    const pendingPromise = this.workerPromise
+    this.activeWorker = null
+    this.workerPromise = null
+
+    if (workerToTerminate) {
+      await workerToTerminate.terminate().catch(() => undefined)
+    }
+    if (pendingPromise) {
+      try {
+        const worker = await Promise.race([
+          pendingPromise,
+          new Promise<null>((r) => setTimeout(() => r(null), 1000)),
+        ])
+        if (worker && worker !== workerToTerminate) {
+          await worker.terminate().catch(() => undefined)
+        }
+      } catch {
+        // initialization failed or was cancelled
+      }
     }
   }
 }
