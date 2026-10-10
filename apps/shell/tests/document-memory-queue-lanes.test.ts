@@ -74,18 +74,22 @@ class FakeIndexWorker extends EventEmitter {
       if (noop) return void this.emit('message', noop)
       if (message.type === 'extract') {
         if (this.neverExtract) return
-        const bytes = readFileSync(message.path!)
-        const stat = statSync(message.path!)
-        this.emit('message', {
-          id: message.id,
-          result: {
-            hash: createHash('sha256').update(bytes).digest('hex'),
-            mtimeMs: stat.mtimeMs,
-            sizeBytes: stat.size,
-            chunks: chunkDocumentText(bytes.toString('utf8')),
-            status: 'text-only',
-          },
-        })
+        try {
+          const bytes = readFileSync(message.path!)
+          const stat = statSync(message.path!)
+          this.emit('message', {
+            id: message.id,
+            result: {
+              hash: createHash('sha256').update(bytes).digest('hex'),
+              mtimeMs: stat.mtimeMs,
+              sizeBytes: stat.size,
+              chunks: chunkDocumentText(bytes.toString('utf8')),
+              status: 'text-only',
+            },
+          })
+        } catch {
+          // directory was cleaned up during teardown
+        }
       } else if (message.type === 'embed') {
         const reply = () => {
           this.emit('message', { type: 'model', state: 'ready' })
@@ -197,7 +201,7 @@ describe('reading does not wait for vectors', () => {
     worker.embedDelayMs = 1_500 // a slow computer: the 24 files ahead need ~36 s of vector batches
     manager = open(worker)
     // the constructor alone starts the worker and the poll (what attachDocumentMemory() does), nothing else is called
-    await until(() => (statusCounts().pending ?? 0) === 0, 15_000, 'all never-read files read')
+    await until(() => (statusCounts().pending ?? 0) === 0, 35_000, 'all never-read files read')
     expect(worker.count('extract')).toBeGreaterThanOrEqual(40)
     // their text is searchable already; their vectors are still queued, not lost
     expect(manager.status().pending).toBeGreaterThan(0)

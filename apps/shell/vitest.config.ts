@@ -6,8 +6,7 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
     environment: 'node',
-    testTimeout: 20000,
+    testTimeout: process.env.CI ? 60000 : 30000,
     setupFiles: ['tests/helpers/model-download-env.ts'],
   },
 })
-

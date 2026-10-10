@@ -1,7 +1,7 @@
 import { EventEmitter } from 'node:events'
 import { copyFileSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { join, resolve, basename } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -38,7 +38,17 @@ class InProcessWorker extends EventEmitter {
         }
         if (message.type === 'extract' && message.path) {
           const norm = resolve(message.path)
-          if (this.failPaths.has(norm)) {
+          const isFailing =
+            this.failPaths.has(norm) ||
+            this.failPaths.has(message.path) ||
+            [...this.failPaths].some(
+              (f) =>
+                norm === resolve(f) ||
+                norm.endsWith(f) ||
+                f.endsWith(norm) ||
+                norm.endsWith(basename(f)),
+            )
+          if (isFailing) {
             this.emit('message', {
               id: message.id,
               error: 'Extraction error: file corrupted or unreadable',
@@ -137,7 +147,11 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     // 4. Verify direct SQLite row persistence
     const row = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(hugeFile)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(hugeFile)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(row).toBeDefined()
     expect(row.status).toBe('text-only')
     expect(row.truncated).toBe(1)
@@ -161,7 +175,8 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     const chunkLimitFile = join(tempDir, 'chunk-limit-document.txt')
     const paragraphs = Array.from(
       { length: 4_200 },
-      (_, i) => `Section ${i} provides enterprise architectural details for scaling indexed storage capacity. ${'Data '.repeat(220)}`,
+      (_, i) =>
+        `Section ${i} provides enterprise architectural details for scaling indexed storage capacity. ${'Data '.repeat(220)}`,
     )
     writeFileSync(chunkLimitFile, paragraphs.join('\n\n'), 'utf8')
 
@@ -177,7 +192,11 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     // Verify direct SQLite row persistence
     const row = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(chunkLimitFile)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(chunkLimitFile)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(row).toBeDefined()
     expect(row.status).toBe('text-only')
     expect(row.truncated).toBe(1)
@@ -214,7 +233,11 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     // Verify direct SQLite row persistence
     const row = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(pdfPath)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(pdfPath)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(row).toBeDefined()
     expect(row.truncated).toBe(1)
     expect(row.truncated_reason).toBe('pdf-page-limit')
@@ -235,7 +258,8 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     const header = 'id,product,department,price,stock,description'
     const rows = Array.from(
       { length: 4_000 },
-      (_, i) => `${i + 1},Product_${i + 1},Warehouse,${10 + i},${100 - (i % 10)},Inventory audit catalog item`,
+      (_, i) =>
+        `${i + 1},Product_${i + 1},Warehouse,${10 + i},${100 - (i % 10)},Inventory audit catalog item`,
     )
     writeFileSync(csvPath, [header, ...rows].join('\n'), 'utf8')
     const stat = statSync(csvPath)
@@ -327,12 +351,17 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
 
     const clearedRow = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(docPath)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(docPath)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(clearedRow.truncated).toBe(0)
     expect(clearedRow.truncated_reason).toBeNull()
 
     // 3. Update document with huge content (>8MB) exceeding content limit
-    const hugeLine = '100,LargeDataRow,VeryLongInformationField,EngineeringDepartment,StaffEngineer,120000\n'
+    const hugeLine =
+      '100,LargeDataRow,VeryLongInformationField,EngineeringDepartment,StaffEngineer,120000\n'
     const repeatCount = Math.ceil((8.5 * 1024 * 1024) / hugeLine.length)
     writeFileSync(docPath, [csvHeader, hugeLine.repeat(repeatCount)].join('\n'), 'utf8')
 
@@ -347,7 +376,11 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
 
     const updatedRow = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(docPath)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(docPath)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(updatedRow.truncated).toBe(1)
     expect(updatedRow.truncated_reason).toBe('content-limit')
   })
@@ -372,7 +405,11 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
 
     const initialRow = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(docPath)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(docPath)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(initialRow.truncated).toBe(1)
     expect(initialRow.truncated_reason).toBe('content-limit')
 
@@ -417,7 +454,12 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     expect(coldOutcome.ok).toBe(false)
     const coldRow = rawDb
       .prepare('SELECT status, error, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(coldPath)) as { status: string; error: string | null; truncated: number; truncated_reason: string | null }
+      .get(resolve(coldPath)) as {
+      status: string
+      error: string | null
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(coldRow.status).toBe('error')
     expect(coldRow.error).toContain('Extraction error')
     expect(coldRow.truncated).toBe(0)
@@ -451,7 +493,11 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
 
     const directRow = rawDb
       .prepare('SELECT status, truncated, truncated_reason FROM documents WHERE path = ?')
-      .get(resolve(directDocPath)) as { status: string; truncated: number; truncated_reason: string | null }
+      .get(resolve(directDocPath)) as {
+      status: string
+      truncated: number
+      truncated_reason: string | null
+    }
     expect(directRow.status).toBe('error')
     expect(directRow.truncated).toBe(0)
     expect(directRow.truncated_reason).toBeNull()

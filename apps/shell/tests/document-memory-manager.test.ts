@@ -536,8 +536,9 @@ describe('DocumentMemoryManager', () => {
         instance.indexDiscoveredFile(path)
       }
       await until(() => fake.embeddingCalls.length === 1)
-      await new Promise((resolve) => setTimeout(resolve, 100))
-      const coord = (instance as unknown as { embeddingCoord: { getQueueLength(): number } }).embeddingCoord
+      await until(() => fake.extractionCalls.length > 16, 10_000)
+      const coord = (instance as unknown as { embeddingCoord: { getQueueLength(): number } })
+        .embeddingCoord
       // memory stays bounded: no more than 16 documents' text waits in the vector line ...
       expect(coord.getQueueLength()).toBeLessThanOrEqual(16)
       // ... yet reading went on past that bound (the old line stopped at 16 read files until the vectors caught up)
