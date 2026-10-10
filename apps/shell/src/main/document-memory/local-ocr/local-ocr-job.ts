@@ -234,8 +234,9 @@ export class LocalOcrJob {
         break
       }
       const started = performance.now()
+      let saved: 'saved' | 'denied' | undefined
       try {
-        const saved = await this.recognizeAndSave(
+        saved = await this.recognizeAndSave(
           row.path,
           page.page,
           page.jpeg,
@@ -244,21 +245,60 @@ export class LocalOcrJob {
           meta,
           summary,
         )
-        if (saved === 'denied') {
-          stopReason = 'storage-denied'
-          break
-        }
-        touched = touched || saved === 'saved'
       } catch (error) {
         if (error instanceof LocalOcrUnavailableError) {
           stopReason = 'no-engine'
           break
         }
-        this.ocr.recordLocalFailure(row.path, file, 'engine-error')
-        summary.failed++
-        this.deps.log?.({ kind: 'file-failed', code: 'engine-error' })
+        // If an embedded JPEG failed due to genuine image-decoding error, attempt PDFium rasterization fallback once
+        if (page.source === 'embedded' && isImageDecodeError(error)) {
+          this.deps.log?.({ kind: 'file-failed', code: 'embedded-decode-error' })
+          const fallback = await this.deps.render(row.path, {
+            done: [...present, ...skip],
+            maxPages: light,
+            count: 1,
+            retryRenderedPage: page.page,
+          })
+          if (fallback?.ok && fallback.pages.length === 1 && fallback.hash === meta.hash) {
+            const fallbackPage = fallback.pages[0]!
+            try {
+              saved = await this.recognizeAndSave(
+                row.path,
+                page.page,
+                fallbackPage.jpeg,
+                RENDERED_PAGE_DPI,
+                engine,
+                meta,
+                summary,
+              )
+            } catch (fallbackError) {
+              if (fallbackError instanceof LocalOcrUnavailableError) {
+                stopReason = 'no-engine'
+                break
+              }
+              this.ocr.recordLocalFailure(row.path, file, 'engine-error')
+              summary.failed++
+              this.deps.log?.({ kind: 'file-failed', code: 'engine-error' })
+              break
+            }
+          } else {
+            this.ocr.recordLocalFailure(row.path, file, 'engine-error')
+            summary.failed++
+            this.deps.log?.({ kind: 'file-failed', code: 'engine-error' })
+            break
+          }
+        } else {
+          this.ocr.recordLocalFailure(row.path, file, 'engine-error')
+          summary.failed++
+          this.deps.log?.({ kind: 'file-failed', code: 'engine-error' })
+          break
+        }
+      }
+      if (saved === 'denied') {
+        stopReason = 'storage-denied'
         break
       }
+      touched = touched || saved === 'saved
       await this.cool((first ? renderMs : 0) + (performance.now() - started))
       first = false
     }
@@ -375,6 +415,12 @@ export class LocalOcrJob {
     })
     return 'saved'
   }
+}
+
+export function isImageDecodeError(error: unknown): boolean {
+  if (!error) return false
+  const msg = error instanceof Error ? error.message : String(error)
+  return /read image|cannot be read|unknown format|corrupt|truncated|decode|unsupported image/i.test(msg)
 }
 
 async function readImageFile(path: string): Promise<{ bytes: Uint8Array; mtimeMs: number; sizeBytes: number }> {
