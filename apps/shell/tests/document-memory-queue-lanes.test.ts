@@ -190,7 +190,7 @@ async function until(check: () => boolean, ms = 15_000, what = 'condition'): Pro
   const deadline = Date.now() + ms
   while (!check()) {
     if (Date.now() > deadline) throw new Error(`${what} not reached in time`)
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 50))
   }
 }
 

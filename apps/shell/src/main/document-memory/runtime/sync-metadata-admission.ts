@@ -124,7 +124,7 @@ export class SyncMetadataAdmissionCoordinator implements SyncMetadataGuard {
     this.dbPath = options.dbPath
     this.maxInflight = options.maxInflightReservations ?? 500
     this.headroomBytes = options.freeDiskHeadroomBytes ?? 10 * 1024 * 1024
-    this.freeDiskTtlMs = options.freeDiskTtlMs ?? 10_000
+    this.freeDiskTtlMs = options.freeDiskTtlMs ?? 60_000
     this.onQuotaPressureOption = options.onQuotaPressure
 
     // Eagerly warm up free disk cache off-main without blocking
