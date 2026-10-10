@@ -59,6 +59,7 @@ describe('IndexIssueReader search correctness & performance against reference', 
     tempDir = mkdtempSync(join(tmpdir(), 'issue-reader-parity-'))
     dbPath = join(tempDir, 'memory.db')
     db = new DatabaseSync(dbPath)
+    db.exec('PRAGMA journal_mode = WAL')
     db.exec(CANONICAL_SCHEMA_V3)
     db.exec(CREATE_NAME_SEARCH_PROJECTION_SQL)
     reader = new IndexIssueReader(dbPath)

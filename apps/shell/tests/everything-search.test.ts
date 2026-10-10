@@ -211,7 +211,9 @@ class QuietWorker extends EventEmitter {
       this.emit('message', { type: 'model', state: 'ready' })
       this.emit('message', {
         id: message.id,
-        result: (message.texts ?? []).map(() => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)),
+        result: (message.texts ?? []).map(() =>
+          new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1),
+        ),
       })
     }, 0)
   }
@@ -226,8 +228,8 @@ describe('document search with an outside file-name source', () => {
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'genoffice-ext-'))
   })
-  afterEach(() => {
-    manager?.close()
+  afterEach(async () => {
+    await manager?.closeAsync()
     manager = undefined
     rmSync(dir, { recursive: true, force: true })
   })

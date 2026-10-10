@@ -200,7 +200,8 @@ export class HotMetadataSearch {
 
         // 3. Relaxed multi-word fallback when fewer than limit candidates matched strict conjunctive queries
         if (rows.length < limit && words.length > 2) {
-          const relaxedTokens = targetWords.flatMap((w) =>
+          const selectiveRelaxedWords = targetWords.filter((w) => w.length >= 3 && isNaN(Number(w)))
+          const relaxedTokens = selectiveRelaxedWords.flatMap((w) =>
             identifierVariants(w.replace(/["*]/g, '')).map((v) => `"${v}"*`),
           )
           if (relaxedTokens.length > 0) {

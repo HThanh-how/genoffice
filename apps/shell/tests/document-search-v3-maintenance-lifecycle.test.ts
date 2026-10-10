@@ -273,7 +273,7 @@ describe('Document Search V3 - Periodic Maintenance Lifecycle Suite (PAIR 18)', 
     const scheduler: MaintenanceScheduler = (manager as any).maintScheduler
     expect(scheduler.isPeriodicMaintenanceArmed()).toBe(true)
 
-    manager.close()
+    await manager.closeAsync()
 
     expect(scheduler.isPeriodicMaintenanceArmed()).toBe(false)
     const countBefore = worker.receivedRequests.length

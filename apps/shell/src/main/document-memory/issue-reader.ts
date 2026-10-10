@@ -1,4 +1,4 @@
-import { DatabaseSync } from 'node:sqlite'
+import { DatabaseSync, type StatementSync } from 'node:sqlite'
 import { resolve } from 'node:path'
 import type { IndexFileDetail, IndexedFileHit } from '../../shared/fork/document-index-api'
 import {
@@ -62,6 +62,9 @@ function fold(text: string): string {
 
 export class IndexIssueReader {
   private db: DatabaseSync | null = null
+  private hasProjection: boolean | null = null
+  private searchProjectionStmt: StatementSync | null = null
+  private searchNameStmt: StatementSync | null = null
 
   constructor(private readonly dbPath: string) {}
 
@@ -77,6 +80,49 @@ export class IndexIssueReader {
     return this.db
   }
 
+  private hasNameProjectionReady(): boolean {
+    if (this.hasProjection === null) {
+      this.hasProjection = hasNameProjection(this.connection())
+    }
+    return this.hasProjection
+  }
+
+  private getSearchProjectionStmt(): StatementSync | null {
+    if (!this.searchProjectionStmt && this.hasNameProjectionReady()) {
+      try {
+        this.searchProjectionStmt = this.connection().prepare(`
+          SELECT d.id, d.path, d.name, d.status, d.error
+          FROM document_name_projection_fts f
+          JOIN documents d ON d.id = f.rowid
+          WHERE document_name_projection_fts MATCH ? AND d.excluded = 0
+          ORDER BY (d.status = 'ready') ASC, d.id ASC
+          LIMIT ?
+        `)
+      } catch {
+        this.searchProjectionStmt = null
+      }
+    }
+    return this.searchProjectionStmt
+  }
+
+  private getSearchNameStmt(): StatementSync | null {
+    if (!this.searchNameStmt) {
+      try {
+        this.searchNameStmt = this.connection().prepare(`
+          SELECT d.id, d.path, d.name, d.status, d.error
+          FROM document_name_fts f
+          JOIN documents d ON d.id = f.rowid
+          WHERE document_name_fts MATCH ? AND d.excluded = 0
+          ORDER BY (d.status = 'ready') ASC, d.id ASC
+          LIMIT ?
+        `)
+      } catch {
+        this.searchNameStmt = null
+      }
+    }
+    return this.searchNameStmt
+  }
+
   close(): void {
     try {
       this.db?.close()
@@ -84,6 +130,9 @@ export class IndexIssueReader {
       // already closed
     }
     this.db = null
+    this.hasProjection = null
+    this.searchProjectionStmt = null
+    this.searchNameStmt = null
   }
 
   private scope(root: string): { where: string; args: string[] } {
@@ -122,7 +171,8 @@ export class IndexIssueReader {
     const db = this.connection()
 
     // 1. Primary candidate retrieval: Dedicated normalized projection FTS
-    if (hasNameProjection(db)) {
+    const projStmt = this.getSearchProjectionStmt()
+    if (projStmt) {
       const clauses = words
         .map((w) => {
           const clean = w.replace(/["*()^]/g, '')
@@ -143,18 +193,7 @@ export class IndexIssueReader {
       if (clauses.length > 0) {
         const matchQuery = clauses.join(' AND ')
         try {
-          const rows = db
-            .prepare(
-              `
-              SELECT d.id, d.path, d.name, d.status, d.error
-              FROM document_name_projection_fts f
-              JOIN documents d ON d.id = f.rowid
-              WHERE document_name_projection_fts MATCH ? AND d.excluded = 0
-              ORDER BY (d.status = 'ready') ASC, d.id ASC
-              LIMIT ?
-            `,
-            )
-            .all(matchQuery, candidateLimit) as unknown as IssueRow[]
+          const rows = projStmt.all(matchQuery, candidateLimit) as unknown as IssueRow[]
           for (const row of rows) testAndAddRow(row)
         } catch {
           // ignore FTS syntax errors and proceed to fallback
@@ -163,7 +202,7 @@ export class IndexIssueReader {
     }
 
     // 2. Secondary candidate retrieval: document_name_fts with Vietnamese d/đ variants (if primary found nothing or no projection)
-    if (hits.length === 0 || !hasNameProjection(db)) {
+    if (hits.length === 0 || !this.hasNameProjectionReady()) {
       try {
         const ftsTokens = words.flatMap((w) => {
           const clean = w.replace(/["*()^]/g, '')
@@ -174,19 +213,11 @@ export class IndexIssueReader {
         })
         if (ftsTokens.length > 0) {
           const matchQuery = ftsTokens.join(' OR ')
-          const rows = db
-            .prepare(
-              `
-              SELECT d.id, d.path, d.name, d.status, d.error
-              FROM document_name_fts f
-              JOIN documents d ON d.id = f.rowid
-              WHERE document_name_fts MATCH ? AND d.excluded = 0
-              ORDER BY (d.status = 'ready') ASC, d.id ASC
-              LIMIT ?
-            `,
-            )
-            .all(matchQuery, candidateLimit) as unknown as IssueRow[]
-          for (const row of rows) testAndAddRow(row)
+          const nameStmt = this.getSearchNameStmt()
+          if (nameStmt) {
+            const rows = nameStmt.all(matchQuery, candidateLimit) as unknown as IssueRow[]
+            for (const row of rows) testAndAddRow(row)
+          }
         }
       } catch {
         // ignore FTS error and proceed
@@ -196,7 +227,7 @@ export class IndexIssueReader {
     // 3. Unprojected documents check (only if 0 hits, projection table exists, and backfill not yet completed)
     if (
       hits.length === 0 &&
-      hasNameProjection(db) &&
+      this.hasNameProjectionReady() &&
       getMetaValue(db, NAME_PROJECTION_STATUS_KEY) !== 'completed'
     ) {
       try {
@@ -221,11 +252,11 @@ export class IndexIssueReader {
     // 4. Bounded parameterized LIKE query fallback (only if 0 hits, no projection, or sub-trigram tokens < 3 chars)
     const needsLikeFallback =
       hits.length < limit &&
-      (hits.length === 0 || !hasNameProjection(db) || words.some((w) => w.length < 3))
+      (hits.length === 0 || !this.hasNameProjectionReady() || words.some((w) => w.length < 3))
 
     if (needsLikeFallback) {
       try {
-        if (hasNameProjection(db)) {
+        if (this.hasNameProjectionReady()) {
           const likeClauses = words
             .map(() => '(p.name_norm LIKE ? OR p.path_norm LIKE ?)')
             .join(' AND ')

@@ -70,7 +70,9 @@ class FakeWorker extends EventEmitter {
         this.emit('message', { type: 'model', state: 'ready' })
         this.emit('message', {
           id: message.id,
-          result: (message.texts ?? []).map(() => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)),
+          result: (message.texts ?? []).map(() =>
+            new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1),
+          ),
         })
       }
     }, this.delay)
@@ -87,8 +89,8 @@ beforeEach(() => {
   manager = null
   resetIndexingPolicyBus()
 })
-afterEach(() => {
-  manager?.close()
+afterEach(async () => {
+  await manager?.closeAsync()
   rmSync(dir, { recursive: true, force: true })
   resetIndexingPolicyBus()
 })

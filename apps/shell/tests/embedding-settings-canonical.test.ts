@@ -47,7 +47,7 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
     expect(mgr1.embeddingSettings().profile).toBe('high')
 
     // Close first manager before simulating application restart
-    mgr1.close()
+    await mgr1.closeAsync()
 
     // 2. Restart: new manager instance pointing to the same directory
     const mgr2 = createManager()
@@ -68,7 +68,7 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
     expect(mgr1.embeddingSettings().profile).toBe('standard')
 
     // Close first manager before restart
-    mgr1.close()
+    await mgr1.closeAsync()
 
     // 2. Restart: new manager instance pointing to the same directory
     const mgr2 = createManager()
@@ -105,7 +105,7 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
 
     // 5. Verify symmetry when profile switches to 'standard'
     mgr.setEmbeddingProfile('standard')
-    mgr.close()
+    await mgr.closeAsync()
 
     const nextBootstrapConfig = readActiveEmbeddingConfig(dir)
     const nextMgr = createManager()
@@ -134,7 +134,7 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
     expect(mgrA.indexingActivityStatus().activeEmbeddingSpace).toBe(
       EMBEDDING_PROFILES.high.embeddingId,
     )
-    mgrA.close()
+    await mgrA.closeAsync()
 
     // Verify canonical content was not modified/overwritten by legacy
     const canonicalContentA = JSON.parse(readFileSync(canonicalPath, 'utf8'))
@@ -153,7 +153,7 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
     expect(mgrB.indexingActivityStatus().activeEmbeddingSpace).toBe(
       EMBEDDING_PROFILES.standard.embeddingId,
     )
-    mgrB.close()
+    await mgrB.closeAsync()
   })
 
   it('PROFILE-05: legacy-only migrates once (chỉ có file legacy -> đọc legacy và ghi sang canonical)', async () => {
@@ -195,7 +195,7 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
       expect(existsSync(sepCanonical)).toBe(true)
       const sepData = JSON.parse(readFileSync(sepCanonical, 'utf8'))
       expect(sepData.profile).toBe('high')
-      mgr.close()
+      await mgr.closeAsync()
     } finally {
       rmSync(separateDir, { recursive: true, force: true })
     }

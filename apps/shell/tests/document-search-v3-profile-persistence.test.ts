@@ -63,7 +63,7 @@ describe('Pair 01: Document Search V3 Embedding Profile Persistence (QA-01)', ()
     )
 
     // 3. Gracefully close manager 1 before simulating application restart
-    mgr1.close()
+    await mgr1.closeAsync()
 
     // 4. Restart manager: new instance pointing to the exact same directory
     const mgr2 = createManager()
@@ -151,7 +151,7 @@ describe('Pair 01: Document Search V3 Embedding Profile Persistence (QA-01)', ()
     expect(mgrA.indexingActivityStatus().activeEmbeddingSpace).toBe(
       EMBEDDING_PROFILES.high.embeddingId,
     )
-    mgrA.close()
+    await mgrA.closeAsync()
 
     // Canonical file must remain 'high' and not be overridden by legacy
     const diskA = JSON.parse(readFileSync(canonicalPath, 'utf8'))
@@ -173,7 +173,7 @@ describe('Pair 01: Document Search V3 Embedding Profile Persistence (QA-01)', ()
     expect(mgrB.indexingActivityStatus().activeEmbeddingSpace).toBe(
       EMBEDDING_PROFILES.standard.embeddingId,
     )
-    mgrB.close()
+    await mgrB.closeAsync()
 
     // Canonical file must remain 'standard'
     const diskB = JSON.parse(readFileSync(canonicalPath, 'utf8'))
@@ -195,7 +195,7 @@ describe('Pair 01: Document Search V3 Embedding Profile Persistence (QA-01)', ()
     expect(mgr1.indexingActivityStatus().activeEmbeddingSpace).toBe(
       bootstrapConfigHigh.activeSpaceId,
     )
-    mgr1.close()
+    await mgr1.closeAsync()
 
     // Restart manager and verify runtime embeddingId after restart == bootstrap activeSpaceId
     const mgrRestartHigh = createManager()
@@ -208,7 +208,7 @@ describe('Pair 01: Document Search V3 Embedding Profile Persistence (QA-01)', ()
     expect(mgrRestartHigh.getMigrationDiagnostics().activeEmbeddingSpace).toBe(
       bootstrapConfigHigh.activeSpaceId,
     )
-    mgrRestartHigh.close()
+    await mgrRestartHigh.closeAsync()
 
     // 2. Second scenario: switch to Standard profile and verify restart invariance
     const separateDir = mkdtempSync(join(tmpdir(), 'genoffice-profile-p5-std-'))
@@ -223,7 +223,7 @@ describe('Pair 01: Document Search V3 Embedding Profile Persistence (QA-01)', ()
       expect(mgrStd1.indexingActivityStatus().activeEmbeddingSpace).toBe(
         bootstrapConfigStd.activeSpaceId,
       )
-      mgrStd1.close()
+      await mgrStd1.closeAsync()
 
       // Restart manager in standard directory
       const mgrRestartStd = createManager(separateDir)
@@ -236,7 +236,7 @@ describe('Pair 01: Document Search V3 Embedding Profile Persistence (QA-01)', ()
       expect(mgrRestartStd.getMigrationDiagnostics().activeEmbeddingSpace).toBe(
         bootstrapConfigStd.activeSpaceId,
       )
-      mgrRestartStd.close()
+      await mgrRestartStd.closeAsync()
     } finally {
       rmSync(separateDir, { recursive: true, force: true })
     }
@@ -246,7 +246,7 @@ describe('Pair 01: Document Search V3 Embedding Profile Persistence (QA-01)', ()
     try {
       const mgrDyn = createManager(dynamicDir)
       mgrDyn.setEmbeddingProfile('high')
-      mgrDyn.close()
+      await mgrDyn.closeAsync()
 
       // Independent bootstrap config read
       const bootstrapDynamic = readActiveEmbeddingConfig(dynamicDir)
@@ -264,7 +264,7 @@ describe('Pair 01: Document Search V3 Embedding Profile Persistence (QA-01)', ()
       expect(mgrDynRestart.getMigrationDiagnostics().activeEmbeddingSpace).toBe(
         bootstrapDynamic.activeSpaceId,
       )
-      mgrDynRestart.close()
+      await mgrDynRestart.closeAsync()
     } finally {
       rmSync(dynamicDir, { recursive: true, force: true })
     }

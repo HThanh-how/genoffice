@@ -539,20 +539,6 @@ export function buildProjectionCandidateFtsQuery(words: readonly string[]): stri
     extraParts.push(`name_norm: "${joined}"*`, `path_norm: "${joined}"*`)
   }
 
-  // Word-level trigram conjunction
-  const wordTris: string[] = []
-  for (const w of safeWords) {
-    if (w.length >= MIN_NGRAM_LENGTH) {
-      const tris = generateTrigrams(w, 2)
-      if (tris[0] && !wordTris.includes(tris[0]) && wordTris.length < MAX_QUERY_NGRAMS) {
-        wordTris.push(tris[0])
-      }
-    }
-  }
-  if (wordTris.length >= 2) {
-    extraParts.push(`compact_ngrams: (${wordTris.map((t) => `"${t}"`).join(' ')})`)
-  }
-
   if (extraParts.length > 0) {
     return `(${andQuery}) OR (${extraParts.join(' OR ')})`
   }

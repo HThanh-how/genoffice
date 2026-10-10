@@ -31,7 +31,10 @@ export function simulatedAccountingRunner(usage: () => number): StorageAccountin
           report.databaseBytes = Math.min(report.databaseBytes, total)
           worker.emit('message', { ok: true, report })
         } catch (err) {
-          worker.emit('message', { ok: false, error: err instanceof Error ? err.message : String(err) })
+          worker.emit('message', {
+            ok: false,
+            error: err instanceof Error ? err.message : String(err),
+          })
         }
       })
       return worker
@@ -49,6 +52,9 @@ export class ScriptedWorker extends EventEmitter {
   received: any[] = []
   embedCalls = 0
   extractPaths: string[] = []
+  private pendingTimers = new Set<NodeJS.Timeout>()
+  private inFlight = new Set<Promise<unknown>>()
+
   constructor(
     private readonly dbPath: string,
     private readonly handlers: Partial<Record<string, Handler>> = {},
@@ -61,40 +67,56 @@ export class ScriptedWorker extends EventEmitter {
   }
   postMessage(message: any): void {
     this.received.push(message)
-    setTimeout(async () => {
-      try {
-        const ack = storageBudgetAckReply(message)
-        if (ack) return void this.emit('message', ack)
-        const handler = this.handlers[message.type]
-        if (handler) {
-          const result = await handler(message)
-          return void this.emit('message', { id: message.id, result })
-        }
-        if (message.type === 'extract' && message.path && this.options.extract !== false) {
-          this.extractPaths.push(message.path)
-          const s = new DocumentMemoryStore(this.dbPath)
-          try {
-            const result = await extractDocument(message.path, (p, h) => s.ocr.pages(p, h), message.maxPdfPages)
-            this.emit('message', { id: message.id, result })
-          } finally {
-            s.close()
+    const timer = setTimeout(() => {
+      this.pendingTimers.delete(timer)
+      const task = (async () => {
+        try {
+          const ack = storageBudgetAckReply(message)
+          if (ack) return void this.emit('message', ack)
+          const handler = this.handlers[message.type]
+          if (handler) {
+            const result = await handler(message)
+            return void this.emit('message', { id: message.id, result })
           }
-        } else if (message.type === 'embed') {
-          this.embedCalls++
-          this.emit('message', { type: 'model', state: 'ready' })
+          if (message.type === 'extract' && message.path && this.options.extract !== false) {
+            this.extractPaths.push(message.path)
+            const s = new DocumentMemoryStore(this.dbPath)
+            try {
+              const result = await extractDocument(
+                message.path,
+                (p, h) => s.ocr.pages(p, h),
+                message.maxPdfPages,
+              )
+              this.emit('message', { id: message.id, result })
+            } finally {
+              s.close()
+            }
+          } else if (message.type === 'embed') {
+            this.embedCalls++
+            this.emit('message', { type: 'model', state: 'ready' })
+            this.emit('message', {
+              id: message.id,
+              result: (message.texts ?? []).map(() => new Array(PROFILE.dimensions).fill(0.01)),
+            })
+          } else {
+            this.emit('message', { id: message.id, result: null })
+          }
+        } catch (err) {
           this.emit('message', {
             id: message.id,
-            result: (message.texts ?? []).map(() => new Array(PROFILE.dimensions).fill(0.01)),
+            error: err instanceof Error ? err.message : String(err),
           })
-        } else {
-          this.emit('message', { id: message.id, result: null })
         }
-      } catch (err) {
-        this.emit('message', { id: message.id, error: err instanceof Error ? err.message : String(err) })
-      }
+      })()
+      this.inFlight.add(task)
+      task.finally(() => this.inFlight.delete(task))
     }, this.options.delayMs ?? 0)
+    this.pendingTimers.add(timer)
   }
   terminate(): Promise<number> {
+    for (const t of this.pendingTimers) clearTimeout(t)
+    this.pendingTimers.clear()
+    this.inFlight.clear()
     return Promise.resolve(0)
   }
 }
