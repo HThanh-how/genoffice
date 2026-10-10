@@ -98,9 +98,9 @@ describe('Document Search V3 - Truncation Metadata Persistence', () => {
     failPaths = new Set<string>()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const manager of managers) {
-      manager.close()
+      await manager.closeAsync()
     }
     resetIndexingPolicyBus()
     rmSync(tempDir, { recursive: true, force: true })

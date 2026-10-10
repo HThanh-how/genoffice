@@ -1,5 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
-import { normalizeDocumentText, getNameQueryAliases, identifierVariants } from './normalization'
+import { normalizeDocumentText, identifierVariants } from './normalization'
 import { mediaKindOfPath } from './media/media-kinds'
 
 export const SYSTEM_ROOT_NAMES = new Set([
@@ -478,10 +478,6 @@ export function buildDocumentProjection(name: string, path: string): DocumentPro
 export function buildProjectionCandidateFtsQuery(words: readonly string[]): string | null {
   if (!words.length) return null
 
-  const nameClauses: string[] = []
-  const pathClauses: string[] = []
-  const ngramClauses: string[] = []
-
   // Clean words for FTS
   const safeWords = words
     .filter((w) => w.length > 0)
@@ -491,116 +487,76 @@ export function buildProjectionCandidateFtsQuery(words: readonly string[]): stri
 
   if (!safeWords.length) return null
 
-  // 1. Exact / prefix tokens for each word
+  // Single-word query
+  if (safeWords.length === 1) {
+    const w = safeWords[0]!
+    const variants = identifierVariants(w)
+    const nameClauses = variants.map((v) => `"${v}"*`).join(' OR ')
+    const pathClauses = variants.map((v) => `"${v}"*`).join(' OR ')
+    const parts: string[] = [`name_norm: (${nameClauses})`, `path_norm: (${pathClauses})`]
+    if (w.length >= MIN_NGRAM_LENGTH) {
+      const tris = generateTrigrams(w, 4)
+      if (tris.length >= 2) {
+        parts.push(
+          `compact_ngrams: (${tris
+            .slice(0, 4)
+            .map((t) => `"${t}"`)
+            .join(' ')})`,
+        )
+      } else if (tris.length === 1) {
+        parts.push(`compact_ngrams: "${tris[0]}"`)
+      }
+    }
+    return parts.join(' OR ')
+  }
+
+  // Multi-word query: Build conjunctive per-term clauses
+  const termClauses: string[] = []
+  for (let i = 0; i < safeWords.length; i++) {
+    const w = safeWords[i]!
+    const variants = new Set(identifierVariants(w))
+    if (i > 0) {
+      const prevCompound = safeWords[i - 1]! + w
+      if (prevCompound.length <= MAX_COMPONENT_LENGTH) variants.add(prevCompound)
+    }
+    if (i < safeWords.length - 1) {
+      const nextCompound = w + safeWords[i + 1]!
+      if (nextCompound.length <= MAX_COMPONENT_LENGTH) variants.add(nextCompound)
+    }
+    // Narrow aliases (e.g. ra <-> xuat)
+    if (w === 'ra') variants.add('xuat')
+    else if (w === 'xuat') variants.add('ra')
+
+    const vList = [...variants]
+    const vOr = vList.map((v) => `"${v}"*`).join(' OR ')
+    termClauses.push(`(name_norm: (${vOr}) OR path_norm: (${vOr}))`)
+  }
+
+  const andQuery = termClauses.join(' AND ')
+  const joined = safeWords.join('')
+  const extraParts: string[] = []
+  if (joined.length <= MAX_COMPONENT_LENGTH) {
+    extraParts.push(`name_norm: "${joined}"*`, `path_norm: "${joined}"*`)
+  }
+
+  // Word-level trigram conjunction
+  const wordTris: string[] = []
   for (const w of safeWords) {
-    if (safeWords.length >= 2 && w.length < 2) continue
-    // Codes like HD433 also match HD0433 (leading zeros differ), so every spelling is a candidate.
-    for (const variant of identifierVariants(w)) {
-      nameClauses.push(`"${variant}"*`)
-      pathClauses.push(`"${variant}"*`)
-    }
-  }
-  if (nameClauses.length === 0) {
-    for (const w of safeWords) {
-      for (const variant of identifierVariants(w)) {
-        nameClauses.push(`"${variant}"*`)
-        pathClauses.push(`"${variant}"*`)
+    if (w.length >= MIN_NGRAM_LENGTH) {
+      const tris = generateTrigrams(w, 2)
+      if (tris[0] && !wordTris.includes(tris[0]) && wordTris.length < MAX_QUERY_NGRAMS) {
+        wordTris.push(tris[0])
       }
     }
   }
-
-  // 2. Concatenated query variant (if multi-word)
-  if (safeWords.length >= 2) {
-    const joined = safeWords.join('')
-    if (joined.length <= MAX_COMPONENT_LENGTH) {
-      nameClauses.push(`"${joined}"*`)
-      pathClauses.push(`"${joined}"*`)
-    }
-    // Adjacent pairs
-    for (let i = 0; i < safeWords.length - 1 && nameClauses.length < 12; i++) {
-      const pair = safeWords[i]! + safeWords[i + 1]!
-      if (pair.length <= MAX_COMPONENT_LENGTH) {
-        nameClauses.push(`"${pair}"*`)
-        pathClauses.push(`"${pair}"*`)
-      }
-    }
+  if (wordTris.length >= 2) {
+    extraParts.push(`compact_ngrams: (${wordTris.map((t) => `"${t}"`).join(' ')})`)
   }
 
-  // 3. Narrow alias alternatives (e.g. ra viện <-> xuất viện)
-  const aliases = getNameQueryAliases(safeWords)
-  for (const aliasWords of aliases) {
-    for (const aw of aliasWords) {
-      if (!safeWords.includes(aw)) {
-        const cleanAw = aw.replace(/["*]/g, '')
-        nameClauses.push(`"${cleanAw}"*`)
-        pathClauses.push(`"${cleanAw}"*`)
-      }
-    }
-    if (aliasWords.length >= 2) {
-      const aliasJoined = aliasWords.join('')
-      if (aliasJoined.length <= MAX_COMPONENT_LENGTH) {
-        const cleanJoined = aliasJoined.replace(/["*]/g, '')
-        nameClauses.push(`"${cleanJoined}"*`)
-        pathClauses.push(`"${cleanJoined}"*`)
-      }
-    }
+  if (extraParts.length > 0) {
+    return `(${andQuery}) OR (${extraParts.join(' OR ')})`
   }
-
-  // 4. Trigram conjunctions for compact components
-  if (safeWords.length >= 2) {
-    // 4a. Word-level conjunction: require trigrams from distinct words
-    const wordTris: string[] = []
-    for (const w of safeWords) {
-      if (w.length >= MIN_NGRAM_LENGTH) {
-        const tris = generateTrigrams(w, 2)
-        if (tris[0] && !wordTris.includes(tris[0]) && wordTris.length < MAX_QUERY_NGRAMS) {
-          wordTris.push(tris[0])
-        }
-      }
-    }
-    if (wordTris.length >= 2) {
-      ngramClauses.push(`(${wordTris.map((t) => `"${t}"`).join(' ')})`)
-    }
-
-    // 4b. Joined query trigrams (for components where words were concatenated in directory or filename)
-    const joinedTris = generateTrigrams(safeWords.join(''), 4)
-    if (joinedTris.length >= 2) {
-      ngramClauses.push(
-        `(${joinedTris
-          .slice(0, 4)
-          .map((t) => `"${t}"`)
-          .join(' ')})`,
-      )
-    } else if (joinedTris.length === 1) {
-      ngramClauses.push(`"${joinedTris[0]}"`)
-    }
-  } else if (safeWords.length === 1 && safeWords[0]!.length >= MIN_NGRAM_LENGTH) {
-    const singleTris = generateTrigrams(safeWords[0]!, 4)
-    if (singleTris.length >= 2) {
-      ngramClauses.push(
-        `(${singleTris
-          .slice(0, 4)
-          .map((t) => `"${t}"`)
-          .join(' ')})`,
-      )
-    } else if (singleTris.length === 1) {
-      ngramClauses.push(`"${singleTris[0]}"`)
-    }
-  }
-
-  // Assemble FTS query
-  const parts: string[] = []
-  if (nameClauses.length > 0) {
-    parts.push(`name_norm: (${nameClauses.join(' OR ')})`)
-  }
-  if (pathClauses.length > 0) {
-    parts.push(`path_norm: (${pathClauses.join(' OR ')})`)
-  }
-  if (ngramClauses.length > 0) {
-    parts.push(`compact_ngrams: (${ngramClauses.join(' OR ')})`)
-  }
-
-  return parts.length > 0 ? parts.join(' OR ') : null
+  return andQuery
 }
 
 /**

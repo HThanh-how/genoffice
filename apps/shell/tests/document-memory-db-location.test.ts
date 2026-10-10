@@ -153,7 +153,7 @@ describe('moving the index to another folder (basic lifecycle)', () => {
     expect(dbLocationState(userData).pending).toBeUndefined()
   })
 
-  it('opens the index in the chosen folder', () => {
+  it('opens the index in the chosen folder', async () => {
     const manager = new DocumentMemoryManager(userData, {
       dbDir: target,
       pollIntervalMs: 3_600_000,
@@ -163,7 +163,7 @@ describe('moving the index to another folder (basic lifecycle)', () => {
       expect(existsSync(join(target, 'document-memory.db'))).toBe(true)
       expect(existsSync(join(userData, 'document-memory.db'))).toBe(false)
     } finally {
-      manager.close()
+      await manager.closeAsync()
     }
   })
 })

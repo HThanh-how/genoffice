@@ -171,11 +171,20 @@ export class HotMetadataSearch {
       try {
         const selectiveWords = words.filter((w) => w.length >= 2 || isNaN(Number(w)))
         const targetWords = selectiveWords.length > 0 ? selectiveWords : words
-        const wordClauses = targetWords.map((w) => {
-          const variants = identifierVariants(w.replace(/["*]/g, ''))
-          return variants.length === 1
-            ? `"${variants[0]}"*`
-            : `(${variants.map((v) => `"${v}"*`).join(' OR ')})`
+        const wordClauses = targetWords.map((w, idx) => {
+          const variants = new Set(identifierVariants(w.replace(/["*]/g, '')))
+          if (idx > 0) {
+            const prevCompound = (targetWords[idx - 1]! + w).replace(/["*]/g, '')
+            if (prevCompound.length <= 40) variants.add(prevCompound)
+          }
+          if (idx < targetWords.length - 1) {
+            const nextCompound = (w + targetWords[idx + 1]!).replace(/["*]/g, '')
+            if (nextCompound.length <= 40) variants.add(nextCompound)
+          }
+          const list = [...variants]
+          return list.length === 1
+            ? `"${list[0]}"*`
+            : `(${list.map((v) => `"${v}"*`).join(' OR ')})`
         })
         const ftsQuery = wordClauses.join(' AND ')
         const ftsRows = this.searchNameStatement.all(
@@ -186,6 +195,26 @@ export class HotMetadataSearch {
           if (!seenIds.has(r.id)) {
             seenIds.add(r.id)
             rows.push(r)
+          }
+        }
+
+        // 3. Relaxed multi-word fallback when fewer than limit candidates matched strict conjunctive queries
+        if (rows.length < limit && words.length > 2) {
+          const relaxedTokens = targetWords.flatMap((w) =>
+            identifierVariants(w.replace(/["*]/g, '')).map((v) => `"${v}"*`),
+          )
+          if (relaxedTokens.length > 0) {
+            const relaxedQuery = relaxedTokens.join(' OR ')
+            const relaxedRows = this.searchNameStatement.all(
+              relaxedQuery,
+              candidateLimit - rows.length,
+            ) as unknown as CandidateRow[]
+            for (const r of relaxedRows) {
+              if (!seenIds.has(r.id)) {
+                seenIds.add(r.id)
+                rows.push(r)
+              }
+            }
           }
         }
       } catch (err: unknown) {

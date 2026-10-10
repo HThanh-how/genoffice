@@ -116,8 +116,8 @@ describe('the dashboard snapshot does not read the documents table on the callin
     dir = mkdtempSync(join(tmpdir(), 'genoffice-snapshot-thread-'))
     snapshotCache.clear()
   })
-  afterEach(() => {
-    manager?.close()
+  afterEach(async () => {
+    await manager?.closeAsync()
     reader?.close()
     rmSync(dir, { recursive: true, force: true })
   })

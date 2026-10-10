@@ -48,9 +48,9 @@ let reader: DocumentMemoryStore | undefined
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-local-ocr-wiring-'))
 })
-afterEach(() => {
+afterEach(async () => {
   resetIndexingPolicyBus()
-  manager?.close()
+  await manager?.closeAsync()
   reader?.close()
   manager = undefined
   reader = undefined

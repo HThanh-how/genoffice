@@ -7314,11 +7314,15 @@ app.on('before-quit', () => {
   stopMcpSync()
 })
 
+let willQuitCompleted = false
 // after every window has closed, so the shell window's own 'closed' republish cannot revive the file
-app.on('will-quit', () => {
+app.on('will-quit', (event) => {
+  if (willQuitCompleted) return
+  event.preventDefault()
+  willQuitCompleted = true
+
   folderScan?.close()
   knownSources?.close()
-  documentMemory?.close()
   fileIndexer?.stop()
   fileSearch?.close()
   fileIndexStore?.close()
@@ -7327,4 +7331,12 @@ app.on('will-quit', () => {
   controlServer?.close()
   // a second instance that lost the lock quits too; it must not delete the running editor's list
   if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
+
+  const memoryClosePromise = documentMemory?.closeAsync() ?? Promise.resolve()
+  const fallbackTimer = new Promise<void>((resolve) => setTimeout(resolve, 5000))
+  void Promise.race([memoryClosePromise, fallbackTimer])
+    .catch(() => undefined)
+    .finally(() => {
+      app.quit()
+    })
 })

@@ -191,10 +191,10 @@ describe('Settings Location Consistency Test Suite (QA-SETTINGS)', () => {
     managers = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const m of managers) {
       try {
-        m.close()
+        await m.closeAsync()
       } catch {
         // ignore errors during teardown
       }
