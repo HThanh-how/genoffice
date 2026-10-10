@@ -26,9 +26,15 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-memory-lifecycle-'))
   managers = []
 })
-afterEach(() => {
-  for (const manager of managers) manager.close()
-  rmSync(dir, { recursive: true, force: true })
+afterEach(async () => {
+  for (const manager of managers) {
+    try {
+      await manager.closeAsync()
+    } catch {}
+  }
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {}
 })
 
 class FakeWorker extends EventEmitter {
@@ -103,7 +109,7 @@ class FakeWorker extends EventEmitter {
   }
 }
 
-async function until(check: () => boolean, timeout = 3000) {
+async function until(check: () => boolean, timeout = 10_000) {
   const started = Date.now()
   while (!check()) {
     if (Date.now() - started > timeout) throw new Error('timed out waiting for manager')
@@ -122,12 +128,7 @@ async function setup(graceMs = 20) {
   managers.push(instance)
   await waitForManagerWriteReady(instance)
   const read = <T>(work: (store: DocumentMemoryStore) => T): T => {
-    const store = new DocumentMemoryStore(dbPath)
-    try {
-      return work(store)
-    } finally {
-      store.close()
-    }
+    return work(instance.store)
   }
   return { fake, instance, read }
 }

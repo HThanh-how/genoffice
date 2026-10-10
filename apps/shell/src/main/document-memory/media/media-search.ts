@@ -124,7 +124,8 @@ export function searchMediaIntent(
     }
     const fts = ftsQuery(intent.words)
     if (fts) {
-      where.push('d.id IN (SELECT rowid FROM document_name_fts WHERE document_name_fts MATCH ?)')
+      from += ' JOIN document_name_fts fts ON fts.rowid = d.id'
+      where.push('fts MATCH ?')
       params.push(fts)
     }
     return db

@@ -14,7 +14,11 @@ import {
   type FileImportanceSuggestion,
   type FileImportanceInfo,
 } from './document-importance'
-import { hasNameProjection } from './name-search-projection'
+import {
+  hasNameProjection,
+  getMetaValue,
+  NAME_PROJECTION_STATUS_KEY,
+} from './name-search-projection'
 
 export const ISSUE_PAGE_SIZE = 10
 /** Above this many distinct (status, error) pairs a reason filter is applied in memory. */
@@ -189,33 +193,26 @@ export class IndexIssueReader {
       }
     }
 
-    // 3. Unprojected documents check (only if projection table exists and unprojected docs exist)
-    if (hits.length < limit && hasNameProjection(db)) {
+    // 3. Unprojected documents check (only if 0 hits, projection table exists, and backfill not yet completed)
+    if (
+      hits.length === 0 &&
+      hasNameProjection(db) &&
+      getMetaValue(db, NAME_PROJECTION_STATUS_KEY) !== 'completed'
+    ) {
       try {
-        const docCount =
-          (
-            db.prepare('SELECT count(*) AS c FROM documents WHERE excluded = 0').get() as {
-              c?: number
-            }
-          )?.c ?? 0
-        const projCount =
-          (db.prepare('SELECT count(*) AS c FROM document_name_projection').get() as { c?: number })
-            ?.c ?? 0
-        if (docCount > projCount) {
-          const unprojected = db
-            .prepare(
-              `
-              SELECT d.id, d.path, d.name, d.status, d.error
-              FROM documents d
-              LEFT JOIN document_name_projection p ON p.document_id = d.id
-              WHERE d.excluded = 0 AND p.document_id IS NULL
-              ORDER BY (d.status = 'ready') ASC, d.id ASC
-              LIMIT 100
-            `,
-            )
-            .all() as unknown as IssueRow[]
-          for (const row of unprojected) testAndAddRow(row)
-        }
+        const unprojected = db
+          .prepare(
+            `
+            SELECT d.id, d.path, d.name, d.status, d.error
+            FROM documents d
+            LEFT JOIN document_name_projection p ON p.document_id = d.id
+            WHERE d.excluded = 0 AND p.document_id IS NULL
+            ORDER BY (d.status = 'ready') ASC, d.id ASC
+            LIMIT 100
+          `,
+          )
+          .all() as unknown as IssueRow[]
+        for (const row of unprojected) testAndAddRow(row)
       } catch {
         // ignore
       }
