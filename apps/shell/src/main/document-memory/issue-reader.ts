@@ -14,6 +14,7 @@ import {
   type FileImportanceSuggestion,
   type FileImportanceInfo,
 } from './document-importance'
+import { hasNameProjection } from './name-search-projection'
 
 export const ISSUE_PAGE_SIZE = 10
 /** Above this many distinct (status, error) pairs a reason filter is applied in memory. */
@@ -91,56 +92,136 @@ export class IndexIssueReader {
   search(query: string, limit = 40): IndexedFileHit[] {
     const words = fold(query).split(' ').filter(Boolean)
     if (words.length === 0) return []
-    const candidateLimit = Math.max(limit * 4, 100)
-    let candidateRows: IssueRow[] = []
-    const ftsTokens = fold(query).match(/[\p{L}\p{N}]+/gu) ?? []
-    const matchQuery = ftsTokens.length ? ftsTokens.map((t) => `"${t}"*`).join(' AND ') : ''
-
-    if (matchQuery) {
-      try {
-        candidateRows = this.connection()
-          .prepare(
-            `
-            SELECT d.id, d.path, d.name, d.status, d.error
-            FROM document_name_fts f
-            JOIN documents d ON d.id = f.rowid
-            WHERE document_name_fts MATCH ? AND d.excluded = 0
-            LIMIT ?
-          `,
-          )
-          .all(matchQuery, candidateLimit) as unknown as IssueRow[]
-      } catch {
-        candidateRows = []
-      }
-    }
-
-    if (candidateRows.length === 0) {
-      // Fallback: bounded parameterized SQL query (avoids unbounded table dump)
-      try {
-        const likeClauses = words.map(() => '(d.name LIKE ? OR d.path LIKE ?)').join(' AND ')
-        const likeParams = words.flatMap((w) => [`%${w}%`, `%${w}%`])
-        candidateRows = this.connection()
-          .prepare(
-            `
-            SELECT d.id, d.path, d.name, d.status, d.error
-            FROM documents d
-            WHERE d.excluded = 0 AND ${likeClauses}
-            LIMIT ?
-          `,
-          )
-          .all(...likeParams, candidateLimit) as unknown as IssueRow[]
-      } catch {
-        candidateRows = []
-      }
-    }
 
     const hits: IssueRow[] = []
-    for (const row of candidateRows) {
+    const seenIds = new Set<number>()
+
+    const testAndAddRow = (row: IssueRow): boolean => {
+      if (seenIds.has(row.id)) return false
+      seenIds.add(row.id)
       const haystack = fold(`${row.name} ${row.path}`)
-      if (words.every((word) => haystack.includes(word))) hits.push(row)
+      if (words.every((word) => haystack.includes(word))) {
+        hits.push(row)
+        return true
+      }
+      return false
     }
-    // problem files first, then by name: the ones the person is usually hunting for
-    hits.sort((a, b) => Number(a.status === 'ready') - Number(b.status === 'ready'))
+
+    const candidateLimit = Math.max(limit * 4, 100)
+    const db = this.connection()
+
+    // 1. Primary candidate retrieval: Dedicated normalized projection FTS
+    if (hasNameProjection(db)) {
+      const ftsTokens = words.map((w) => w.replace(/["*()^]/g, '')).filter(Boolean)
+      if (ftsTokens.length > 0) {
+        const matchQuery = ftsTokens
+          .map((t) => (t.length >= 3 ? `("${t}"* OR compact_ngrams: "${t.slice(0, 3)}")` : `"${t}"*`))
+          .join(' AND ')
+        try {
+          const rows = db
+            .prepare(`
+              SELECT d.id, d.path, d.name, d.status, d.error
+              FROM document_name_projection_fts f
+              JOIN documents d ON d.id = f.rowid
+              WHERE document_name_projection_fts MATCH ? AND d.excluded = 0
+              ORDER BY (d.status = 'ready') ASC, d.id ASC
+              LIMIT ?
+            `)
+            .all(matchQuery, candidateLimit) as unknown as IssueRow[]
+          for (const row of rows) testAndAddRow(row)
+        } catch {
+          // ignore FTS syntax errors and proceed to fallback
+        }
+      }
+    }
+
+    // 2. Secondary candidate retrieval: document_name_fts with Vietnamese d/đ variants
+    if (hits.length < limit) {
+      try {
+        const ftsTokens = words.flatMap((w) => {
+          const clean = w.replace(/["*()^]/g, '')
+          if (!clean) return []
+          const variants = [clean]
+          if (clean.includes('d')) variants.push(clean.replace(/d/g, 'đ'))
+          return variants.map((v) => `"${v}"*`)
+        })
+        if (ftsTokens.length > 0) {
+          const matchQuery = ftsTokens.join(' OR ')
+          const rows = db
+            .prepare(`
+              SELECT d.id, d.path, d.name, d.status, d.error
+              FROM document_name_fts f
+              JOIN documents d ON d.id = f.rowid
+              WHERE document_name_fts MATCH ? AND d.excluded = 0
+              ORDER BY (d.status = 'ready') ASC, d.id ASC
+              LIMIT ?
+            `)
+            .all(matchQuery, candidateLimit) as unknown as IssueRow[]
+          for (const row of rows) testAndAddRow(row)
+        }
+      } catch {
+        // ignore FTS error and proceed
+      }
+    }
+
+    // 3. Unprojected documents check (if projection table exists)
+    if (hits.length < limit && hasNameProjection(db)) {
+      try {
+        const unprojected = db
+          .prepare(`
+            SELECT d.id, d.path, d.name, d.status, d.error
+            FROM documents d
+            LEFT JOIN document_name_projection p ON p.document_id = d.id
+            WHERE d.excluded = 0 AND p.document_id IS NULL
+            ORDER BY (d.status = 'ready') ASC, d.id ASC
+            LIMIT 100
+          `)
+          .all() as unknown as IssueRow[]
+        for (const row of unprojected) testAndAddRow(row)
+      } catch {
+        // ignore
+      }
+    }
+
+    // 4. Bounded parameterized LIKE query fallback
+    if (hits.length < limit) {
+      try {
+        if (hasNameProjection(db)) {
+          const likeClauses = words.map(() => '(p.name_norm LIKE ? OR p.path_norm LIKE ?)').join(' AND ')
+          const likeParams = words.flatMap((w) => [`%${w}%`, `%${w}%`])
+          const rows = db
+            .prepare(`
+              SELECT d.id, d.path, d.name, d.status, d.error
+              FROM document_name_projection p
+              JOIN documents d ON d.id = p.document_id
+              WHERE d.excluded = 0 AND ${likeClauses}
+              ORDER BY (d.status = 'ready') ASC, d.id ASC
+              LIMIT ?
+            `)
+            .all(...likeParams, candidateLimit) as unknown as IssueRow[]
+          for (const row of rows) testAndAddRow(row)
+        } else {
+          const likeClauses = words.map(() => '(d.name LIKE ? OR d.path LIKE ?)').join(' AND ')
+          const likeParams = words.flatMap((w) => [`%${w}%`, `%${w}%`])
+          const rows = db
+            .prepare(`
+              SELECT d.id, d.path, d.name, d.status, d.error
+              FROM documents d
+              WHERE d.excluded = 0 AND ${likeClauses}
+              ORDER BY (d.status = 'ready') ASC, d.id ASC
+              LIMIT ?
+            `)
+            .all(...likeParams, candidateLimit) as unknown as IssueRow[]
+          for (const row of rows) testAndAddRow(row)
+        }
+      } catch {
+        // ignore
+      }
+    }
+
+    // Problem files first, then ready, with deterministic id ordering
+    hits.sort((a, b) => (Number(a.status === 'ready') - Number(b.status === 'ready')) || (a.id - b.id))
+
     return hits.slice(0, limit).map((row) => {
       const problem = row.status === 'error' || row.status === 'empty' || row.status === 'pending'
       const base = this.toIssue(row)
