@@ -171,8 +171,11 @@ export function createLocalOcrWiring(deps: LocalOcrWiringDeps): LocalOcrWiring {
             // decode / shrink / flatten run in the index worker, not on the UI thread
             prepare: async (bytes, dpi) => {
               const reply = (await deps.ask({ type: 'ocr-prepare', bytes, dpi }, PREPARE_TIMEOUT_MS)) as
-                | { result?: unknown }
+                | { result?: unknown; error?: string }
                 | null
+              if (reply && typeof reply === 'object' && 'error' in reply && reply.error) {
+                throw new Error(reply.error)
+              }
               return reply?.result instanceof Uint8Array ? reply.result : null
             },
           }),

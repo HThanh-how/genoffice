@@ -102,6 +102,8 @@ export interface OcrRenderRequest {
   maxPages: number
   /** pages wanted for this call */
   count: number
+  /** optional page (1-based) to re-render using PDFium rasterization only, bypassing embeddedScanJpeg */
+  retryRenderedPage?: number
 }
 
 // ---- where the wasm lives (dev: node_modules; packaged: Resources/wasm) -------------------
@@ -226,6 +228,54 @@ export function jpegInfo(bytes: Uint8Array): JpegInfo | null {
   return null
 }
 
+/**
+ * Structural verification of a JPEG stream: must begin with SOI (0xff, 0xd8), have SOF and
+ * SOS (0xff, 0xda), and end with an EOI marker (0xff, 0xd9) near the end.
+ */
+export function isCompleteJpeg(bytes: Uint8Array): boolean {
+  if (bytes.length < 10) return false
+  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return false
+
+  let end = bytes.length - 1
+  while (end > 1 && (bytes[end] === 0x00 || bytes[end] === 0x0a || bytes[end] === 0x0d || bytes[end] === 0x20)) {
+    end--
+  }
+  if (end < 3 || bytes[end - 1] !== 0xff || bytes[end] !== 0xd9) {
+    return false
+  }
+
+  let hasSos = false
+  let pos = 2
+  while (pos + 1 < bytes.length) {
+    if (bytes[pos] !== 0xff) {
+      pos++
+      continue
+    }
+    const marker = bytes[pos + 1]!
+    if (marker === 0xff || marker === 0x00) {
+      pos++
+      continue
+    }
+    pos += 2
+    if (marker === 0xd8 || marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) {
+      continue
+    }
+    if (marker === 0xda) {
+      hasSos = true
+      break
+    }
+    if (marker === 0xd9) {
+      break
+    }
+    if (pos + 2 > bytes.length) return false
+    const len = (bytes[pos]! << 8) | bytes[pos + 1]!
+    if (len < 2) return false
+    pos += len
+  }
+
+  return hasSos
+}
+
 /** Pages whose JPEG longest edge is outside this range are rendered instead. */
 const EMBEDDED_MIN_EDGE_PX = 400
 const EMBEDDED_MAX_EDGE_PX = 6000
@@ -289,6 +339,7 @@ export function embeddedScanJpeg(
     const written = m._FPDFImageObj_GetImageDataRaw(image, dataBuf, size)
     if (written !== size) return null
     const jpeg = m.HEAPU8.slice(dataBuf, dataBuf + size)
+    if (!isCompleteJpeg(jpeg)) return null
     const info = jpegInfo(jpeg)
     if (!info || (info.components !== 1 && info.components !== 3)) return null
     const edge = Math.max(info.width, info.height)
@@ -299,15 +350,22 @@ export function embeddedScanJpeg(
   }
 }
 
-function renderPage(m: OcrPdfium, doc: number, index: number): OcrRenderedPage | null {
+function renderPage(
+  m: OcrPdfium,
+  doc: number,
+  index: number,
+  options: { bypassEmbedded?: boolean } = {},
+): OcrRenderedPage | null {
   const page = m._FPDF_LoadPage(doc, index)
   if (!page) return null
   try {
     const widthPt = m._FPDF_GetPageWidthF(page)
     const heightPt = m._FPDF_GetPageHeightF(page)
     if (!(widthPt > 0) || !(heightPt > 0)) return null
-    const embedded = embeddedScanJpeg(m, page, widthPt, heightPt)
-    if (embedded) return { page: index + 1, ...embedded, source: 'embedded' }
+    if (!options.bypassEmbedded) {
+      const embedded = embeddedScanJpeg(m, page, widthPt, heightPt)
+      if (embedded) return { page: index + 1, ...embedded, source: 'embedded' }
+    }
     const scale = ocrRenderScale(widthPt, heightPt)
     const width = Math.max(1, Math.min(6000, Math.round(widthPt * scale)))
     const height = Math.max(1, Math.min(6000, Math.round(heightPt * scale)))
@@ -439,6 +497,30 @@ export async function renderPdfPagesForOcr(
         typeof request.maxPages === 'number' && Number.isSafeInteger(request.maxPages) && request.maxPages > 0
           ? request.maxPages
           : 1000
+
+      if (typeof request.retryRenderedPage === 'number') {
+        const retryPage = request.retryRenderedPage
+        if (
+          !Number.isSafeInteger(retryPage) ||
+          retryPage < 1 ||
+          retryPage > Math.min(totalPages, safeMaxPages)
+        ) {
+          return { ok: false, code: 'render', message: `Invalid retry page: ${retryPage}` }
+        }
+        const rendered = renderPage(m, doc, retryPage - 1, { bypassEmbedded: true })
+        if (!rendered) {
+          return { ok: false, code: 'render', message: `Failed to rasterize page ${retryPage}` }
+        }
+        return {
+          ok: true,
+          hash,
+          mtimeMs: currentStat.mtimeMs,
+          sizeBytes: currentStat.size,
+          totalPages,
+          pages: [rendered],
+        }
+      }
+
       const wanted = planOcrBatch({
         totalPages,
         done: new Set(Array.isArray(request.done) ? request.done : []),

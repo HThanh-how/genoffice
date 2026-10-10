@@ -616,3 +616,144 @@ describe('OCR crash prevention and error handling (JOB OCR-WIN-01)', () => {
     }
   })
 })
+
+describe('Tesseract worker lifecycle and bounded initialization (JOB OCR2-04)', () => {
+  it('Condition 2: createWorker() resolving after initialization timeout is terminated immediately', async () => {
+    let terminateCalls = 0
+    let resolveWorker: (w: any) => void
+    const workerPromise = new Promise((resolve) => {
+      resolveWorker = resolve
+    })
+    const fakeWorker = {
+      setParameters: async () => {},
+      recognize: async () => ({ data: { text: 'ok', tsv: '' } }),
+      terminate: async () => {
+        terminateCalls++
+      },
+    }
+
+    const engine = new TesseractEngine({
+      langPath: '/mock/lang',
+      initTimeoutMs: 40,
+      loadModule: async () => ({
+        createWorker: async () => workerPromise as any,
+      }),
+    })
+
+    await expect(
+      engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' }),
+    ).rejects.toThrow('Tesseract worker initialization timed out')
+
+    expect(terminateCalls).toBe(0)
+    // Worker resolves late after timeout has already rejected
+    resolveWorker!(fakeWorker)
+    // Allow microtasks to run
+    await new Promise((r) => setTimeout(r, 20))
+    expect(terminateCalls).toBe(1)
+    await engine.dispose()
+  })
+
+  it('Condition 4 & 5: setParameters() rejection or hang is bounded and terminates worker', async () => {
+    let terminateCalls = 0
+    const hangingWorker = {
+      setParameters: () => new Promise(() => {}), // never resolves
+      recognize: async () => ({ data: { text: 'ok', tsv: '' } }),
+      terminate: async () => {
+        terminateCalls++
+      },
+    }
+
+    const engine = new TesseractEngine({
+      langPath: '/mock/lang',
+      initTimeoutMs: 50,
+      loadModule: async () => ({
+        createWorker: async () => hangingWorker as any,
+      }),
+    })
+
+    await expect(
+      engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' }),
+    ).rejects.toThrow('Tesseract worker initialization timed out')
+
+    expect(terminateCalls).toBe(1)
+    await engine.dispose()
+  })
+
+  it('Condition 6: dispose() during in-flight initialization terminates worker when created', async () => {
+    let terminateCalls = 0
+    let resolveWorker: (w: any) => void
+    const workerPromise = new Promise((resolve) => {
+      resolveWorker = resolve
+    })
+    const fakeWorker = {
+      setParameters: async () => {},
+      recognize: async () => ({ data: { text: 'ok', tsv: '' } }),
+      terminate: async () => {
+        terminateCalls++
+      },
+    }
+
+    let createWorkerCalled = false
+    const engine = new TesseractEngine({
+      langPath: '/mock/lang',
+      initTimeoutMs: 5000,
+      loadModule: async () => ({
+        createWorker: async () => {
+          createWorkerCalled = true
+          return workerPromise as any
+        },
+      }),
+    })
+
+    const runPromise = engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' })
+    while (!createWorkerCalled) await new Promise((r) => setTimeout(r, 5))
+    // dispose while initialization is still pending
+    await engine.dispose()
+    // Worker resolves after dispose
+    resolveWorker!(fakeWorker)
+    await expect(runPromise).rejects.toThrow()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(terminateCalls).toBeGreaterThanOrEqual(1)
+  })
+
+  it('Condition 10: multiple rapid initialization failures reset state cleanly without leaked workers', async () => {
+    let attempts = 0
+    let terminateCalls = 0
+    const workingWorker = {
+      setParameters: async () => {},
+      recognize: async () => ({ data: { text: 'success', tsv: '' } }),
+      terminate: async () => {
+        terminateCalls++
+      },
+    }
+
+    const engine = new TesseractEngine({
+      langPath: '/mock/lang',
+      initTimeoutMs: 100,
+      loadModule: async () => ({
+        createWorker: async () => {
+          attempts++
+          if (attempts <= 2) {
+            throw new Error(`Init failed attempt ${attempts}`)
+          }
+          return workingWorker as any
+        },
+      }),
+    })
+
+    await expect(
+      engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' }),
+    ).rejects.toThrow('Init failed attempt 1')
+
+    await expect(
+      engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' }),
+    ).rejects.toThrow('Init failed attempt 2')
+
+    // 3rd attempt succeeds cleanly
+    const result = await engine.recognizePage({ bytes: new Uint8Array([1, 2, 3]), dpi: 150, lang: 'vie' })
+    expect(result.text).toBe('success')
+
+    await engine.dispose()
+    expect(terminateCalls).toBe(1)
+  })
+})

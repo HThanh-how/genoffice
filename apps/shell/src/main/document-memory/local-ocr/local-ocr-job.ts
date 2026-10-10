@@ -35,6 +35,7 @@ import {
 } from '../runtime/local-ocr-engine'
 import { shouldEscalate, type EscalationReason } from './escalation'
 import type { EngineSelection, LocalOcrEnginePreference } from './registry'
+import { detectImageFormat } from './tesseract-prepare'
 
 /** PDFs larger than this are not read locally (the renderer loads the whole file). */
 export const LOCAL_OCR_MAX_PDF_BYTES = 64 * 1024 * 1024
@@ -60,6 +61,7 @@ export type LocalOcrGate = { ok: true } | { ok: false; reason: string }
 export type LocalOcrEvent =
   | { kind: 'page'; engine: string; ms: number; S: number; escalate: boolean; reason: EscalationReason; chars: number }
   | { kind: 'file-failed'; code: string }
+  | { kind: 'file-skipped'; code: string }
   | { kind: 'stopped'; reason: string }
 
 export interface LocalOcrJobDeps {
@@ -234,8 +236,9 @@ export class LocalOcrJob {
         break
       }
       const started = performance.now()
+      let saved: 'saved' | 'denied' | undefined
       try {
-        const saved = await this.recognizeAndSave(
+        saved = await this.recognizeAndSave(
           row.path,
           page.page,
           page.jpeg,
@@ -244,21 +247,60 @@ export class LocalOcrJob {
           meta,
           summary,
         )
-        if (saved === 'denied') {
-          stopReason = 'storage-denied'
-          break
-        }
-        touched = touched || saved === 'saved'
       } catch (error) {
         if (error instanceof LocalOcrUnavailableError) {
           stopReason = 'no-engine'
           break
         }
-        this.ocr.recordLocalFailure(row.path, file, 'engine-error')
-        summary.failed++
-        this.deps.log?.({ kind: 'file-failed', code: 'engine-error' })
+        // If an embedded JPEG failed due to genuine image-decoding error, attempt PDFium rasterization fallback once
+        if (page.source === 'embedded' && isImageDecodeError(error)) {
+          this.deps.log?.({ kind: 'file-failed', code: 'embedded-decode-error' })
+          const fallback = await this.deps.render(row.path, {
+            done: [...present, ...skip],
+            maxPages: light,
+            count: 1,
+            retryRenderedPage: page.page,
+          })
+          if (fallback?.ok && fallback.pages.length === 1 && fallback.hash === meta.hash) {
+            const fallbackPage = fallback.pages[0]!
+            try {
+              saved = await this.recognizeAndSave(
+                row.path,
+                page.page,
+                fallbackPage.jpeg,
+                RENDERED_PAGE_DPI,
+                engine,
+                meta,
+                summary,
+              )
+            } catch (fallbackError) {
+              if (fallbackError instanceof LocalOcrUnavailableError) {
+                stopReason = 'no-engine'
+                break
+              }
+              this.ocr.recordLocalFailure(row.path, file, 'engine-error')
+              summary.failed++
+              this.deps.log?.({ kind: 'file-failed', code: 'engine-error' })
+              break
+            }
+          } else {
+            this.ocr.recordLocalFailure(row.path, file, 'engine-error')
+            summary.failed++
+            this.deps.log?.({ kind: 'file-failed', code: 'engine-error' })
+            break
+          }
+        } else {
+          this.ocr.recordLocalFailure(row.path, file, 'engine-error')
+          summary.failed++
+          this.deps.log?.({ kind: 'file-failed', code: 'engine-error' })
+          break
+        }
+      }
+      if (saved === 'denied') {
+        stopReason = 'storage-denied'
         break
       }
+      touched = touched || saved === 'saved'
       await this.cool((first ? renderMs : 0) + (performance.now() - started))
       first = false
     }
@@ -286,7 +328,12 @@ export class LocalOcrJob {
     let loaded: { bytes: Uint8Array; mtimeMs: number; sizeBytes: number }
     try {
       loaded = await (this.deps.readImage ?? readImageFile)(image.path)
-    } catch {
+    } catch (error) {
+      if (error instanceof FileChangedDuringReadError) {
+        summary.skipped++
+        this.deps.log?.({ kind: 'file-skipped', code: 'file-modified' })
+        return null
+      }
       markImageOcr(db, image.documentId, IMAGE_OCR_STATE.failed)
       summary.failed++
       this.deps.log?.({ kind: 'file-failed', code: 'unreadable' })
@@ -299,6 +346,12 @@ export class LocalOcrJob {
     }
     const why = await this.guarded(signal)
     if (why) return why
+    if (detectImageFormat(loaded.bytes) === 'heic') {
+      markImageOcr(db, image.documentId, IMAGE_OCR_STATE.skipped)
+      summary.failed++
+      this.deps.log?.({ kind: 'file-failed', code: 'unsupported-image-format' })
+      return null
+    }
     const started = performance.now()
     const meta = {
       hash: createHash('sha256').update(loaded.bytes).digest('hex'),
@@ -311,9 +364,10 @@ export class LocalOcrJob {
       saved = await this.recognizeAndSave(image.path, 1, loaded.bytes, engine.descriptor.dpi, engine, meta, summary)
     } catch (error) {
       if (error instanceof LocalOcrUnavailableError) return 'no-engine'
-      markImageOcr(db, image.documentId, IMAGE_OCR_STATE.failed)
+      const isUnsupported = error instanceof Error && error.message.includes('unsupported-image-format')
+      markImageOcr(db, image.documentId, isUnsupported ? IMAGE_OCR_STATE.skipped : IMAGE_OCR_STATE.failed)
       summary.failed++
-      this.deps.log?.({ kind: 'file-failed', code: 'engine-error' })
+      this.deps.log?.({ kind: 'file-failed', code: isUnsupported ? 'unsupported-image-format' : 'engine-error' })
       return null
     }
     if (saved === 'denied') return 'storage-denied'
@@ -377,8 +431,25 @@ export class LocalOcrJob {
   }
 }
 
-async function readImageFile(path: string): Promise<{ bytes: Uint8Array; mtimeMs: number; sizeBytes: number }> {
+export class FileChangedDuringReadError extends Error {
+  constructor(path: string) {
+    super(`File modified during read: ${path}`)
+    this.name = 'FileChangedDuringReadError'
+  }
+}
+
+export function isImageDecodeError(error: unknown): boolean {
+  if (!error) return false
+  const msg = error instanceof Error ? error.message : String(error)
+  return /read image|cannot be read|unknown format|corrupt|truncated|decode|unsupported image/i.test(msg)
+}
+
+export async function readImageFile(path: string): Promise<{ bytes: Uint8Array; mtimeMs: number; sizeBytes: number }> {
   const before = await stat(path)
   const bytes = await readFile(path)
-  return { bytes, mtimeMs: before.mtimeMs, sizeBytes: before.size }
+  const after = await stat(path)
+  if (before.mtimeMs !== after.mtimeMs || before.size !== after.size || bytes.byteLength !== after.size) {
+    throw new FileChangedDuringReadError(path)
+  }
+  return { bytes, mtimeMs: after.mtimeMs, sizeBytes: after.size }
 }

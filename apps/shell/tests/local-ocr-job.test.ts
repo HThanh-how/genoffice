@@ -11,6 +11,7 @@ import { encodeGrayJpeg } from '../src/main/document-memory/jpeg-gray'
 import { decodePngGray } from '../src/main/document-memory/local-ocr/gray-image'
 import {
   LocalOcrJob,
+  FileChangedDuringReadError,
   type LocalOcrEvent,
   type LocalOcrJobDeps,
 } from '../src/main/document-memory/local-ocr/local-ocr-job'
@@ -480,3 +481,243 @@ describe('LocalOcrJob with the real Tesseract engine end to end', () => {
 function hashOf(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex')
 }
+
+describe('OCR Pipeline Repair Round 2: PDF fallback and persistence regression', () => {
+  it('OCR2-PDF-03 & OCR2-PDF-04: Fallback image is genuinely recognized, persisted and searchable', async () => {
+    const path = invoicePdf('fallback-success.pdf', 1)
+    enrollEmpty(path)
+
+    let calls = 0
+    const engine: LocalOcrEngine = {
+      id: 'tesseract-vie',
+      descriptor: {
+        id: 'tesseract-vie',
+        name: 'test',
+        platforms: 'all',
+        minFreeRamMB: 1,
+        dpi: 150,
+        escalationThreshold: 0.5,
+        license: 'test',
+        available: true,
+        notes: '',
+      },
+      isAvailable: () => true,
+      recognizePage: async () => {
+        calls++
+        if (calls === 1) {
+          throw new Error('Error attempting to read image.')
+        }
+        return recognition('good')
+      },
+      dispose: async () => {},
+    }
+
+    const summary = await makeJob(engine).runOnce()
+    expect(summary).toMatchObject({ files: 1, pages: 1, failed: 0 })
+    expect(calls).toBe(2)
+    expect(events.some((e) => e.kind === 'file-failed' && e.code === 'embedded-decode-error')).toBe(true)
+
+    const text = store.ocr.pageTier(path, 1)
+    expect(text).not.toBeNull()
+    expect(text?.tier).toBe('local')
+
+    await reindexNow(path)
+    expect(store.searchLexical('Viettel').length).toBeGreaterThan(0)
+    expect(store.searchLexical('0433').length).toBeGreaterThan(0)
+  })
+
+  it('OCR2-PDF-05: Unrecoverable page fails without infinite retry', async () => {
+    const path = invoicePdf('unrecoverable.pdf', 1)
+    enrollEmpty(path)
+
+    let calls = 0
+    const engine: LocalOcrEngine = {
+      id: 'tesseract-vie',
+      descriptor: {
+        id: 'tesseract-vie',
+        name: 'test',
+        platforms: 'all',
+        minFreeRamMB: 1,
+        dpi: 150,
+        escalationThreshold: 0.5,
+        license: 'test',
+        available: true,
+        notes: '',
+      },
+      isAvailable: () => true,
+      recognizePage: async () => {
+        calls++
+        throw new Error('Error attempting to read image.')
+      },
+      dispose: async () => {},
+    }
+
+    const summary = await makeJob(engine).runOnce()
+    expect(summary.failed).toBe(1)
+    expect(calls).toBe(2)
+    expect(store.ocr.localFailure(path)?.attempts).toBe(1)
+  })
+
+  it('OCR2-PDF-06: Successful earlier pages remain persisted when later page fails', async () => {
+    const path = invoicePdf('partial.pdf', 2)
+    enrollEmpty(path)
+
+    let calls = 0
+    const engine: LocalOcrEngine = {
+      id: 'tesseract-vie',
+      descriptor: {
+        id: 'tesseract-vie',
+        name: 'test',
+        platforms: 'all',
+        minFreeRamMB: 1,
+        dpi: 150,
+        escalationThreshold: 0.5,
+        license: 'test',
+        available: true,
+        notes: '',
+      },
+      isAvailable: () => true,
+      recognizePage: async () => {
+        calls++
+        if (calls === 1) return recognition('good')
+        throw new Error('Unrecoverable failure on page 2')
+      },
+      dispose: async () => {},
+    }
+
+    const summary = await makeJob(engine).runOnce()
+    expect(summary.pages).toBe(1)
+    expect(summary.failed).toBe(1)
+    expect(store.ocr.pagesPresent(path, stat(path).mtimeMs, stat(path).sizeBytes)).toContain(1)
+  })
+
+  it('OCR2-PDF-08: Input modification during retry prevents stale OCR persistence', async () => {
+    const path = invoicePdf('modified.pdf', 1)
+    enrollEmpty(path)
+
+    const engine: LocalOcrEngine = {
+      id: 'tesseract-vie',
+      descriptor: {
+        id: 'tesseract-vie',
+        name: 'test',
+        platforms: 'all',
+        minFreeRamMB: 1,
+        dpi: 150,
+        escalationThreshold: 0.5,
+        license: 'test',
+        available: true,
+        notes: '',
+      },
+      isAvailable: () => true,
+      recognizePage: async () => {
+        throw new Error('Error attempting to read image.')
+      },
+      dispose: async () => {},
+    }
+
+    const job = makeJob(engine, {
+      render: async (p, req) => {
+        if (req.retryRenderedPage) {
+          writeFileSync(p, Buffer.concat([readFileSync(p), Buffer.from('\n%modified')]))
+        }
+        return renderPdfPagesForOcr(p, req)
+      },
+    })
+
+    const summary = await job.runOnce()
+    expect(summary.failed).toBe(1)
+    expect(store.ocr.pagesPresent(path, stat(path).mtimeMs, stat(path).sizeBytes)).toEqual([])
+  })
+
+  it('Image: FileChangedDuringReadError safely skips file and logs file-modified', async () => {
+    const imgPath = enrollImage('concurrent.png')
+
+    const engine = new ScriptedEngine(['good'])
+    const job = makeJob(engine, {
+      readImage: async (p) => {
+        throw new FileChangedDuringReadError(p)
+      },
+    })
+
+    const summary = await job.runOnce()
+    expect(summary.skipped).toBe(1)
+    expect(summary.failed).toBe(0)
+    expect(events.some((e) => e.kind === 'file-skipped' && e.code === 'file-modified')).toBe(true)
+
+    const states = store.rawDb
+      .prepare('SELECT ocr_state AS state FROM document_media WHERE document_id = (SELECT id FROM documents WHERE path = ?)')
+      .get(imgPath) as { state: number } | undefined
+    expect(states?.state).not.toBe(IMAGE_OCR_STATE.failed)
+  })
+
+  it('Image: Unsupported HEIC format marks skipped and logs unsupported-image-format', async () => {
+    const heicPath = join(dir, 'photo.heic')
+    const heicBytes = Buffer.concat([
+      Buffer.from([
+        0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x68, 0x65, 0x69, 0x63, 0, 0, 0, 0, 0x6d, 0x69, 0x66,
+        0x31,
+      ]),
+      Buffer.alloc(20_000),
+    ])
+    writeFileSync(heicPath, heicBytes)
+    const st = statSync(heicPath)
+    store.enrollMedia(heicPath, st.mtimeMs, st.size)
+
+    let engineCalled = false
+    const engine: LocalOcrEngine = {
+      id: 'tesseract-vie',
+      descriptor: {
+        id: 'tesseract-vie',
+        name: 'test',
+        platforms: 'all',
+        minFreeRamMB: 1,
+        dpi: 150,
+        escalationThreshold: 0.5,
+        license: 'test',
+        available: true,
+        notes: '',
+      },
+      isAvailable: () => true,
+      recognizePage: async () => {
+        engineCalled = true
+        return recognition('good')
+      },
+      dispose: async () => {},
+    }
+
+    const summary = await makeJob(engine).runOnce()
+    expect(engineCalled).toBe(false)
+    expect(summary.failed).toBe(1)
+    expect(events.some((e) => e.kind === 'file-failed' && e.code === 'unsupported-image-format')).toBe(true)
+
+    const states = store.rawDb
+      .prepare('SELECT ocr_state AS state FROM document_media WHERE document_id = (SELECT id FROM documents WHERE path = ?)')
+      .get(heicPath) as { state: number } | undefined
+    expect(states?.state).toBe(IMAGE_OCR_STATE.skipped)
+  })
+
+  it('Image & Store: Valid image OCR persists and survives store restart', async () => {
+    const imgPath = enrollImage('invoice-persisted.png')
+    const registry = new LocalOcrEngineRegistry({ platform: 'linux', freeRamMB: () => 8000 })
+
+    const summary = await makeJob(null, { registry }).runOnce()
+    await registry.disposeAll()
+    expect(summary.files).toBe(1)
+    expect(summary.failed).toBe(0)
+
+    await reindexNow(imgPath)
+    expect(store.searchLexical('Viettel').length).toBeGreaterThan(0)
+
+    const dbPath = join(dir, 'memory.sqlite')
+    store.close()
+
+    const reopenedStore = new DocumentMemoryStore(dbPath)
+    try {
+      const hits = reopenedStore.searchLexical('Viettel')
+      expect(hits.length).toBeGreaterThan(0)
+      expect(reopenedStore.documentById(hits[0]!.documentId)?.path).toBe(imgPath)
+    } finally {
+      reopenedStore.close()
+    }
+  }, 60_000)
+})
