@@ -19,7 +19,8 @@ import {
   getDocumentIndexDiagnostics,
 } from './document-index-snapshot-service'
 import { registerFolderAndModelHandlers } from './document-index-folder-handlers'
-import { registerDocumentIndexImportanceHandlers } from './document-index-importance-handlers'; import { registerDocumentIndexStorageHandlers } from './document-index-storage-handlers'
+import { registerDocumentIndexImportanceHandlers } from './document-index-importance-handlers'
+import { registerDocumentIndexStorageHandlers } from './document-index-storage-handlers'
 
 export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
@@ -30,7 +31,8 @@ export interface DocumentIndexIpcDeps {
   settingsPath?: string | (() => string)
 }
 
-const samePath = (path: string): string => process.platform === 'win32' ? path.toLowerCase() : path
+const samePath = (path: string): string =>
+  process.platform === 'win32' ? path.toLowerCase() : path
 const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set(ISSUE_REASON_ORDER)
 
 /** Document-index popup IPC handler registration (< 250 LOC). */
@@ -42,17 +44,25 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
 
   const activeRoot = (root: unknown): string => {
     if (root === ALL_FOLDERS) return ALL_FOLDERS
-    if (typeof root !== 'string' || root !== getFolderScan()?.status().root) throw new Error('Invalid index issue request')
+    if (typeof root !== 'string' || root !== getFolderScan()?.status().root)
+      throw new Error('Invalid index issue request')
     return root
+  }
+  const checkDocId = (id: unknown): number => {
+    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
+      throw new Error('Invalid document id')
+    return id
   }
   const issueReason = (reason: unknown): IndexIssueReason | undefined => {
     if (reason === undefined || reason === null) return undefined
-    if (typeof reason !== 'string' || !ISSUE_REASONS.has(reason as IndexIssueReason)) throw new Error('Invalid index issue reason')
+    if (typeof reason !== 'string' || !ISSUE_REASONS.has(reason as IndexIssueReason))
+      throw new Error('Invalid index issue reason')
     return reason as IndexIssueReason
   }
 
   const snapshotCtx = {
-    getDocumentMemory, getFolderScan,
+    getDocumentMemory,
+    getFolderScan,
     getIssueReader: reader,
     getFolderCounts: () => folderCounts,
     dbPath: deps.dbPath,
@@ -60,31 +70,38 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   }
 
   registerFolderAndModelHandlers(deps, () => folderCounts.invalidate())
-  registerDocumentIndexImportanceHandlers(deps); registerDocumentIndexStorageHandlers(deps)
+  registerDocumentIndexImportanceHandlers(deps)
+  registerDocumentIndexStorageHandlers(deps)
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, (_event, ids: unknown) => {
-    if (!Array.isArray(ids) || ids.length > 200 || ids.some((id) => !Number.isSafeInteger(id) || id < 1)) {
+    if (
+      !Array.isArray(ids) ||
+      ids.length > 200 ||
+      ids.some((id) => !Number.isSafeInteger(id) || id < 1)
+    ) {
       return { queued: 0, skipped: Array.isArray(ids) ? ids.length : 0, error: 'invalid-request' }
     }
     const memory = getDocumentMemory()
     if (!memory) return { queued: 0, skipped: ids.length, error: 'unavailable' }
-    let queued = 0, error: string | undefined
+    let queued = 0,
+      error: string | undefined
     for (const id of new Set(ids)) {
       const result = memory.retryDocument(id)
-      if (result.ok) {
-        queued++
-      } else {
-        error ??= result.error ?? 'Failed to enqueue'
-      }
+      if (result.ok) queued++
+      else error ??= result.error ?? 'Failed to enqueue'
     }
     return { queued, skipped: ids.length - queued, ...(error ? { error } : {}) }
   })
 
-  ipcMain.handle(HOME_CHANNELS.getDocumentIndexIssues, (_event, root: unknown, offset: unknown = 0, reason?: unknown) => {
-    if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) throw new Error('Invalid index issue page')
-    if (!getDocumentMemory()) return { total: 0, items: [] }
-    return reader().page(activeRoot(root), offset, issueReason(reason))
-  })
+  ipcMain.handle(
+    HOME_CHANNELS.getDocumentIndexIssues,
+    (_event, root: unknown, offset: unknown = 0, reason?: unknown) => {
+      if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0)
+        throw new Error('Invalid index issue page')
+      if (!getDocumentMemory()) return { total: 0, items: [] }
+      return reader().page(activeRoot(root), offset, issueReason(reason))
+    },
+  )
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getIndexingNow, (): IndexingNow => {
     const memory = getDocumentMemory()
@@ -100,26 +117,43 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     )
   })
 
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.searchIndexedFiles, async (_event, query: unknown): Promise<IndexedFileHit[]> => {
-    if (typeof query !== 'string' || query.length > 200) return []
-    const memory = getDocumentMemory()
-    if (!memory) return []
-    const indexed = memory.aggregates ? await memory.aggregates.searchIndexed(query) : reader().search(query)
-    const known = new Set(indexed.map((hit) => samePath(hit.path)))
-    const elsewhere = (await memory.searchExternal(query, 8))
-      .filter((file) => !known.has(samePath(file.path)))
-      .map((file) => ({ id: 0, path: file.path, name: file.name, status: 'on-disk' as const, external: true }))
-    return [...indexed, ...elsewhere]
-  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.searchIndexedFiles,
+    async (_event, query: unknown): Promise<IndexedFileHit[]> => {
+      if (typeof query !== 'string' || query.length > 200) return []
+      const memory = getDocumentMemory()
+      if (!memory) return []
+      const indexed = memory.aggregates
+        ? await memory.aggregates.searchIndexed(query)
+        : reader().search(query)
+      const known = new Set(indexed.map((hit) => samePath(hit.path)))
+      const elsewhere = (await memory.searchExternal(query, 8))
+        .filter((file) => !known.has(samePath(file.path)))
+        .map((file) => ({
+          id: 0,
+          path: file.path,
+          name: file.name,
+          status: 'on-disk' as const,
+          external: true,
+        }))
+      return [...indexed, ...elsewhere]
+    },
+  )
 
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getIndexFileDetail, async (_event, id: unknown): Promise<IndexFileDetail | null> => {
-    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
-    if (!getDocumentMemory()) return null
-    const detail = reader().detail(id)
-    if (!detail) return null
-    const exists = await stat(detail.path).then((s) => s.isFile(), () => false)
-    return { ...detail, exists }
-  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.getIndexFileDetail,
+    async (_event, id: unknown): Promise<IndexFileDetail | null> => {
+      checkDocId(id)
+      if (!getDocumentMemory()) return null
+      const detail = reader().detail(id as number)
+      if (!detail) return null
+      const exists = await stat(detail.path).then(
+        (s) => s.isFile(),
+        () => false,
+      )
+      return { ...detail, exists }
+    },
+  )
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexIssueSummary, (_event, root: unknown) => {
     if (!getDocumentMemory()) return { total: 0, groups: [] }
@@ -128,93 +162,82 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     return memory?.aggregates ? memory.aggregates.issues(scope) : reader().summary(scope)
   })
 
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup, (_event, root: unknown, reason?: unknown) => {
-    const scope = activeRoot(root)
-    const only = issueReason(reason)
-    const memory = getDocumentMemory()
-    if (!memory) return { ok: false, retried: 0, error: 'unavailable' }
-    if (only === 'model') {
-      const isEnabled = memory.isEnabled?.() ?? memory.indexingActivityStatus?.().enabled
-      if (isEnabled === false) return { ok: false, retried: 0, error: 'paused' }
-      if (typeof memory.recycleEmbeddingWorker === 'function') {
-        memory.recycleEmbeddingWorker('Model retry requested from diagnostics')
-      } else {
-        memory.setEnabled(false)
-        memory.setEnabled(true)
-      }
-      folderCounts.invalidate()
-      return { ok: true, retried: 0 }
-    }
-    let retried = 0
-    const ids = reader().ids(scope, only)
-    if (ids.length <= 50) {
-      for (const id of ids) {
-        const result = memory.retryDocument(id)
-        if (result.ok) retried++
-      }
-      folderCounts.invalidate()
-      return { ok: true, retried }
-    }
-    return (async () => {
-      const BATCH_SIZE = 50
-      for (let i = 0; i < ids.length; i += BATCH_SIZE) {
-        for (const id of ids.slice(i, i + BATCH_SIZE)) {
-          const result = memory.retryDocument(id)
-          if (result.ok) retried++
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.retryDocumentIndexGroup,
+    (_event, root: unknown, reason?: unknown) => {
+      const scope = activeRoot(root)
+      const only = issueReason(reason)
+      const memory = getDocumentMemory()
+      if (!memory) return { ok: false, retried: 0, error: 'unavailable' }
+      if (only === 'model') {
+        const isEnabled = memory.isEnabled?.() ?? memory.indexingActivityStatus?.().enabled
+        if (isEnabled === false) return { ok: false, retried: 0, error: 'paused' }
+        if (typeof memory.recycleEmbeddingWorker === 'function') {
+          memory.recycleEmbeddingWorker('Model retry requested from diagnostics')
+        } else {
+          memory.setEnabled(false)
+          memory.setEnabled(true)
         }
-        if (i + BATCH_SIZE < ids.length) await new Promise((resolve) => setImmediate(resolve))
+        folderCounts.invalidate()
+        return { ok: true, retried: 0 }
       }
-      folderCounts.invalidate()
-      return { ok: true, retried }
-    })()
-  })
+      let retried = 0
+      const ids = reader().ids(scope, only)
+      if (ids.length <= 50) {
+        for (const id of ids) if (memory.retryDocument(id).ok) retried++
+        folderCounts.invalidate()
+        return { ok: true, retried }
+      }
+      return (async () => {
+        const BATCH_SIZE = 50
+        for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+          for (const id of ids.slice(i, i + BATCH_SIZE)) if (memory.retryDocument(id).ok) retried++
+          if (i + BATCH_SIZE < ids.length) await new Promise((resolve) => setImmediate(resolve))
+        }
+        folderCounts.invalidate()
+        return { ok: true, retried }
+      })()
+    },
+  )
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.deferIndexFile, (_event, id: unknown) => {
-    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
+    checkDocId(id)
     const memory = getDocumentMemory()
     if (!memory) return { ok: false, error: 'unavailable' }
-    const result = memory.deferDocument(id)
+    const result = memory.deferDocument(id as number)
     return result.ok ? { ok: true } : { ok: false, error: result.error ?? 'unavailable' }
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.stopIndexFile, async (_event, id: unknown) => {
-    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
+    checkDocId(id)
     folderCounts.invalidate()
     const memory = getDocumentMemory()
     if (!memory) return { ok: false, error: 'unavailable' }
-    const res = await memory.stopDocument(id)
+    const res = await memory.stopDocument(id as number)
     folderCounts.invalidate()
     return res.ok ? { ok: true } : { ok: false, error: res.error ?? 'unavailable' }
   })
 
   ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, async (_event, id: unknown) => {
-    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1) throw new Error('Invalid document id')
+    checkDocId(id)
     folderCounts.invalidate()
     const memory = getDocumentMemory()
     if (!memory) return { ok: false, error: 'unavailable' }
-    const res = await memory.readNowDocument(id)
+    const res = await memory.readNowDocument(id as number)
     folderCounts.invalidate()
     return res
   })
 
-  ipcMain.handle(HOME_CHANNELS.getIndexingActivity, (): HomeIndexingActivity => {
-    return getDocumentIndexSnapshot(snapshotCtx).activity
-  })
-
-  // Fast 2s polling snapshot endpoint
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexSnapshot, (_event, forceRefresh?: boolean) => {
-    return getDocumentIndexSnapshot(snapshotCtx, forceRefresh)
-  })
-
-  // Storage budget endpoint
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexStorageBudget, (_event, forceRefresh?: boolean) => {
-    return getDocumentIndexSnapshot(snapshotCtx, forceRefresh).storageBudget
-  })
-
-  // Heavy diagnostics endpoint cached for 60s (INV-10)
-  ipcMain.handle('get-document-index-diagnostics', async (_event, forceRefresh?: boolean) => {
-    return await getDocumentIndexDiagnostics(snapshotCtx, forceRefresh)
-  })
+  const snap = (force?: boolean) => getDocumentIndexSnapshot(snapshotCtx, force)
+  ipcMain.handle(HOME_CHANNELS.getIndexingActivity, (): HomeIndexingActivity => snap().activity)
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexSnapshot, (_e, f?: boolean) => snap(f))
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.getDocumentIndexStorageBudget,
+    (_e, f?: boolean) => snap(f).storageBudget,
+  )
+  ipcMain.handle('get-document-index-diagnostics', (_e, f?: boolean) =>
+    getDocumentIndexDiagnostics(snapshotCtx, f),
+  )
 
   return () => issueReader?.close()
 }

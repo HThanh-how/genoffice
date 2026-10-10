@@ -124,7 +124,11 @@ export class HotMetadataSearch {
     return mergeMediaHits(this.db, query, this.searchNamesBase(query, limit, candidateLimit), limit)
   }
 
-  private searchNamesBase(query: string, limit: number, candidateLimit: number): DocumentMemoryHit[] {
+  private searchNamesBase(
+    query: string,
+    limit: number,
+    candidateLimit: number,
+  ): DocumentMemoryHit[] {
     let words = nameWords(query)
     // Dropping filler words must not erase the query: "cái bè" (a place) would shrink to the
     // single word "be". Retry with the typed words when nothing usable is left.
@@ -163,9 +167,11 @@ export class HotMetadataSearch {
     }
 
     // 2. Secondary candidate retrieval / backfill fallback: standard document_name_fts
-    if (rows.length < candidateLimit) {
+    if (rows.length < limit) {
       try {
-        const ftsTokens = words.flatMap((w) =>
+        const selectiveWords = words.filter((w) => w.length >= 2 || isNaN(Number(w)))
+        const targetWords = selectiveWords.length > 0 ? selectiveWords : words
+        const ftsTokens = targetWords.flatMap((w) =>
           identifierVariants(w.replace(/["*]/g, '')).map((variant) => `"${variant}"*`),
         )
         const ftsQuery = ftsTokens.join(' OR ')
@@ -214,7 +220,11 @@ export class HotMetadataSearch {
       // Direction B: Concatenated query -> separated source
       if (words.length === 1 && words[0]!.length >= 4) {
         const singleQuery = words[0]!
-        if (stemJoined.includes(singleQuery) || singleQuery.includes(stemJoined) || joined.includes(singleQuery)) {
+        if (
+          stemJoined.includes(singleQuery) ||
+          singleQuery.includes(stemJoined) ||
+          joined.includes(singleQuery)
+        ) {
           matched = Math.max(matched, 1)
         }
       }
@@ -255,7 +265,8 @@ export class HotMetadataSearch {
           exactBonus = Math.max(exactBonus, 0.25)
         } else if (
           comp.text.startsWith(queryNorm) ||
-          (queryJoined.length >= 3 && (comp.joined.startsWith(queryJoined) || comp.joined.endsWith(queryJoined)))
+          (queryJoined.length >= 3 &&
+            (comp.joined.startsWith(queryJoined) || comp.joined.endsWith(queryJoined)))
         ) {
           prefixBonus = Math.max(prefixBonus, 0.15)
         }
@@ -276,14 +287,16 @@ export class HotMetadataSearch {
       else if (ageDays < 30) recentBonus = 0.04
       else if (ageDays < 90) recentBonus = 0.01
 
-      const nameScore = matchRatio * 0.7 + exactBonus + prefixBonus + crossSegmentBonus + recentBonus
+      const nameScore =
+        matchRatio * 0.7 + exactBonus + prefixBonus + crossSegmentBonus + recentBonus
       scored.push({ row, score: nameScore })
     }
 
     scored.sort(
       (a, b) =>
         b.score - a.score ||
-        readyRank(b.row.status, b.row.content_evicted) - readyRank(a.row.status, a.row.content_evicted) ||
+        readyRank(b.row.status, b.row.content_evicted) -
+          readyRank(a.row.status, a.row.content_evicted) ||
         b.row.updated_at - a.row.updated_at,
     )
 

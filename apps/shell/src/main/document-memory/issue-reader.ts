@@ -112,21 +112,37 @@ export class IndexIssueReader {
 
     // 1. Primary candidate retrieval: Dedicated normalized projection FTS
     if (hasNameProjection(db)) {
-      const ftsTokens = words.map((w) => w.replace(/["*()^]/g, '')).filter(Boolean)
-      if (ftsTokens.length > 0) {
-        const matchQuery = ftsTokens
-          .map((t) => (t.length >= 3 ? `("${t}"* OR compact_ngrams: "${t.slice(0, 3)}")` : `"${t}"*`))
-          .join(' AND ')
+      const clauses = words
+        .map((w) => {
+          const clean = w.replace(/["*()^]/g, '')
+          if (!clean) return null
+          const parts = clean.split(/[_/\\-]+/).filter(Boolean)
+          if (parts.length > 1) {
+            const joined = parts.join('')
+            const spaced = parts.join(' ')
+            return `("${spaced}" OR "${joined}"*)`
+          }
+          if (clean.length === 3) {
+            return `("${clean}"* OR compact_ngrams: "${clean}")`
+          }
+          return `"${clean}"*`
+        })
+        .filter(Boolean)
+
+      if (clauses.length > 0) {
+        const matchQuery = clauses.join(' AND ')
         try {
           const rows = db
-            .prepare(`
+            .prepare(
+              `
               SELECT d.id, d.path, d.name, d.status, d.error
               FROM document_name_projection_fts f
               JOIN documents d ON d.id = f.rowid
               WHERE document_name_projection_fts MATCH ? AND d.excluded = 0
               ORDER BY (d.status = 'ready') ASC, d.id ASC
               LIMIT ?
-            `)
+            `,
+            )
             .all(matchQuery, candidateLimit) as unknown as IssueRow[]
           for (const row of rows) testAndAddRow(row)
         } catch {
@@ -135,8 +151,8 @@ export class IndexIssueReader {
       }
     }
 
-    // 2. Secondary candidate retrieval: document_name_fts with Vietnamese d/đ variants
-    if (hits.length < limit) {
+    // 2. Secondary candidate retrieval: document_name_fts with Vietnamese d/đ variants (if primary found nothing or no projection)
+    if (hits.length === 0 || !hasNameProjection(db)) {
       try {
         const ftsTokens = words.flatMap((w) => {
           const clean = w.replace(/["*()^]/g, '')
@@ -148,14 +164,16 @@ export class IndexIssueReader {
         if (ftsTokens.length > 0) {
           const matchQuery = ftsTokens.join(' OR ')
           const rows = db
-            .prepare(`
+            .prepare(
+              `
               SELECT d.id, d.path, d.name, d.status, d.error
               FROM document_name_fts f
               JOIN documents d ON d.id = f.rowid
               WHERE document_name_fts MATCH ? AND d.excluded = 0
               ORDER BY (d.status = 'ready') ASC, d.id ASC
               LIMIT ?
-            `)
+            `,
+            )
             .all(matchQuery, candidateLimit) as unknown as IssueRow[]
           for (const row of rows) testAndAddRow(row)
         }
@@ -164,53 +182,72 @@ export class IndexIssueReader {
       }
     }
 
-    // 3. Unprojected documents check (if projection table exists)
+    // 3. Unprojected documents check (only if projection table exists and unprojected docs exist)
     if (hits.length < limit && hasNameProjection(db)) {
       try {
-        const unprojected = db
-          .prepare(`
-            SELECT d.id, d.path, d.name, d.status, d.error
-            FROM documents d
-            LEFT JOIN document_name_projection p ON p.document_id = d.id
-            WHERE d.excluded = 0 AND p.document_id IS NULL
-            ORDER BY (d.status = 'ready') ASC, d.id ASC
-            LIMIT 100
-          `)
-          .all() as unknown as IssueRow[]
-        for (const row of unprojected) testAndAddRow(row)
+        const hasUnprojected = db
+          .prepare(
+            'SELECT 1 FROM documents d LEFT JOIN document_name_projection p ON p.document_id = d.id WHERE d.excluded = 0 AND p.document_id IS NULL LIMIT 1',
+          )
+          .get()
+        if (hasUnprojected) {
+          const unprojected = db
+            .prepare(
+              `
+              SELECT d.id, d.path, d.name, d.status, d.error
+              FROM documents d
+              LEFT JOIN document_name_projection p ON p.document_id = d.id
+              WHERE d.excluded = 0 AND p.document_id IS NULL
+              ORDER BY (d.status = 'ready') ASC, d.id ASC
+              LIMIT 100
+            `,
+            )
+            .all() as unknown as IssueRow[]
+          for (const row of unprojected) testAndAddRow(row)
+        }
       } catch {
         // ignore
       }
     }
 
-    // 4. Bounded parameterized LIKE query fallback
-    if (hits.length < limit) {
+    // 4. Bounded parameterized LIKE query fallback (only if 0 hits, no projection, or sub-trigram tokens < 3 chars)
+    const needsLikeFallback =
+      hits.length < limit &&
+      (hits.length === 0 || !hasNameProjection(db) || words.some((w) => w.length < 3))
+
+    if (needsLikeFallback) {
       try {
         if (hasNameProjection(db)) {
-          const likeClauses = words.map(() => '(p.name_norm LIKE ? OR p.path_norm LIKE ?)').join(' AND ')
+          const likeClauses = words
+            .map(() => '(p.name_norm LIKE ? OR p.path_norm LIKE ?)')
+            .join(' AND ')
           const likeParams = words.flatMap((w) => [`%${w}%`, `%${w}%`])
           const rows = db
-            .prepare(`
+            .prepare(
+              `
               SELECT d.id, d.path, d.name, d.status, d.error
               FROM document_name_projection p
               JOIN documents d ON d.id = p.document_id
               WHERE d.excluded = 0 AND ${likeClauses}
               ORDER BY (d.status = 'ready') ASC, d.id ASC
               LIMIT ?
-            `)
+            `,
+            )
             .all(...likeParams, candidateLimit) as unknown as IssueRow[]
           for (const row of rows) testAndAddRow(row)
         } else {
           const likeClauses = words.map(() => '(d.name LIKE ? OR d.path LIKE ?)').join(' AND ')
           const likeParams = words.flatMap((w) => [`%${w}%`, `%${w}%`])
           const rows = db
-            .prepare(`
+            .prepare(
+              `
               SELECT d.id, d.path, d.name, d.status, d.error
               FROM documents d
               WHERE d.excluded = 0 AND ${likeClauses}
               ORDER BY (d.status = 'ready') ASC, d.id ASC
               LIMIT ?
-            `)
+            `,
+            )
             .all(...likeParams, candidateLimit) as unknown as IssueRow[]
           for (const row of rows) testAndAddRow(row)
         }
@@ -220,7 +257,7 @@ export class IndexIssueReader {
     }
 
     // Problem files first, then ready, with deterministic id ordering
-    hits.sort((a, b) => (Number(a.status === 'ready') - Number(b.status === 'ready')) || (a.id - b.id))
+    hits.sort((a, b) => Number(a.status === 'ready') - Number(b.status === 'ready') || a.id - b.id)
 
     return hits.slice(0, limit).map((row) => {
       const problem = row.status === 'error' || row.status === 'empty' || row.status === 'pending'

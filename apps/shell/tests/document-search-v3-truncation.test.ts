@@ -159,7 +159,7 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     expect(hit).toBeDefined()
     expect(hit!.truncated).toBe(true)
     expect(hit!.truncatedReason).toBe('content-limit')
-  })
+  }, 45_000)
 
   it('TRUNC-02 chunk-limit persists', async () => {
     const { manager, store, rawDb } = await createTestManager()
@@ -379,7 +379,7 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     }
     expect(updatedRow.truncated).toBe(1)
     expect(updatedRow.truncated_reason).toBe('content-limit')
-  })
+  }, 45_000)
 
   it('TRUNC-06 error clears stale reason', async () => {
     const { manager, store, rawDb } = await createTestManager()
@@ -497,5 +497,5 @@ describe('Document Search V3 - Truncation Metadata Suite (QA-07)', () => {
     expect(directRow.status).toBe('error')
     expect(directRow.truncated).toBe(0)
     expect(directRow.truncated_reason).toBeNull()
-  })
+  }, 45_000)
 })

@@ -6,7 +6,7 @@ import { ensureDocumentMediaSchema } from './migration/document-media'
 
 /**
  * CANONICAL SCHEMA V3 (Single Source of Truth - Invariant INV-08)
- * 
+ *
  * Strict physical schema rules:
  * - Table `chunks` contains ONLY: id, document_id, chunk_set_id, ordinal, text, location.
  * - Table `chunk_embeddings` is the SOLE canonical vector store.
@@ -242,7 +242,9 @@ export function applyCanonicalSchemaV3(db: DatabaseSync): void {
 
   // 4. Create dependent indexes, virtual tables, and triggers (Requirement 1 & 2)
   const hadNameFts = Boolean(
-    db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_name_fts'").get(),
+    db
+      .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'document_name_fts'")
+      .get(),
   )
   db.exec(CANONICAL_DEPENDENT_SCHEMA_SQL)
   if (!hadNameFts) {
@@ -253,11 +255,13 @@ export function applyCanonicalSchemaV3(db: DatabaseSync): void {
   }
 
   // 5. Schema version marker initialization
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO document_memory_meta (key, value)
     VALUES ('schema_version', '3'), ('name_fts_version', '1')
     ON CONFLICT(key) DO NOTHING;
-  `).run()
+  `,
+  ).run()
 
   // 6. Legacy vector migration if legacy vector column exists in chunks
   if (chunkCols.has('vector')) {
@@ -285,7 +289,9 @@ export function applyCanonicalSchemaV3(db: DatabaseSync): void {
   // 7. Configure chunk_fts automerge
   try {
     const hasFtsConfig = Boolean(
-      db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunk_fts_config'").get(),
+      db
+        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'chunk_fts_config'")
+        .get(),
     )
     if (hasFtsConfig) {
       const autoMerge = db.prepare("SELECT v FROM chunk_fts_config WHERE k = 'automerge'").get()

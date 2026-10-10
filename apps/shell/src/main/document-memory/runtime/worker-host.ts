@@ -62,9 +62,11 @@ export class WorkerHost {
     this.failWaiting('worker terminated')
     if (worker && typeof (worker as { terminate?: unknown }).terminate === 'function') {
       try {
-        const p = Promise.resolve((worker as { terminate: () => unknown }).terminate()).finally(() => {
-          this.terminatingWorkers.delete(p)
-        })
+        const p = Promise.resolve((worker as { terminate: () => unknown }).terminate()).finally(
+          () => {
+            this.terminatingWorkers.delete(p)
+          },
+        )
         this.terminatingWorkers.add(p)
         await p
       } catch {
@@ -82,9 +84,11 @@ export class WorkerHost {
     this.deps.releaseReservations()
     this.deps.recycled(reason)
     if (typeof (worker as { terminate?: unknown }).terminate === 'function') {
-      const p = Promise.resolve((worker as { terminate: () => unknown }).terminate()).finally(() => {
-        this.terminatingWorkers.delete(p)
-      })
+      const p = Promise.resolve((worker as { terminate: () => unknown }).terminate()).finally(
+        () => {
+          this.terminatingWorkers.delete(p)
+        },
+      )
       this.terminatingWorkers.add(p)
     }
     this.failWaiting(reason)

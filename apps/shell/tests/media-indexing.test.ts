@@ -7,14 +7,24 @@ import { SearchService } from '../src/main/document-memory/runtime/search-servic
 import { FreshnessCoordinator } from '../src/main/document-memory/runtime/freshness-coordinator'
 import { FolderScanManager, isIndexablePath } from '../src/main/document-memory/folder-scan'
 import { MediaMetadataFiller } from '../src/main/document-memory/media/media-filler'
-import { selectImageOcrCandidates, markImageOcr, IMAGE_OCR_STATE } from '../src/main/document-memory/media/media-ocr-gate'
+import {
+  selectImageOcrCandidates,
+  markImageOcr,
+  IMAGE_OCR_STATE,
+} from '../src/main/document-memory/media/media-ocr-gate'
 import { isSensitiveName } from '../src/main/document-memory/media/sensitive-names'
 import { parseMediaIntent } from '../src/main/document-memory/media/media-query'
 import { mediaCounts } from '../src/main/document-memory/media/media-repository'
 import type { SyncMetadataGuard } from '../src/main/document-memory/runtime/sync-metadata-admission'
-import { StandaloneSyncMetadataGuard, SyncMetadataAdmissionCoordinator } from '../src/main/document-memory/runtime/sync-metadata-admission'
+import {
+  StandaloneSyncMetadataGuard,
+  SyncMetadataAdmissionCoordinator,
+} from '../src/main/document-memory/runtime/sync-metadata-admission'
 import { StorageAdmissionController } from '../src/main/document-memory/runtime/storage-admission'
-import { createStorageBudget, type StorageBudgetSnapshot } from '../src/main/document-memory/storage-budget'
+import {
+  createStorageBudget,
+  type StorageBudgetSnapshot,
+} from '../src/main/document-memory/storage-budget'
 import { gif, jpeg, mkv, mp4, png, writeSparse } from './helpers/media-fixtures'
 
 let dir: string
@@ -84,9 +94,16 @@ afterEach(() => {
 
 describe('media enrollment through the real folder scan', () => {
   it('lists images and videos as finished name+metadata rows and fills their headers in the background', async () => {
-    file('Pictures/Trip 2017/IMG_20170316_101010.jpg', jpeg(4032, 3024, { exifDate: '2017:03:16 10:10:10' }))
+    file(
+      'Pictures/Trip 2017/IMG_20170316_101010.jpg',
+      jpeg(4032, 3024, { exifDate: '2017:03:16 10:10:10' }),
+    )
     file('Pictures/screen.png', png(1920, 1080))
-    file('Videos/clip.mp4', mp4({ width: 1280, height: 720, seconds: 90, mdatBytes: 20_000 }), 140_000)
+    file(
+      'Videos/clip.mp4',
+      mp4({ width: 1280, height: 720, seconds: 90, mdatBytes: 20_000 }),
+      140_000,
+    )
     file('Videos/movie.mkv', mkv({ width: 1920, height: 800, seconds: 3600 }), 60_000)
     file('Docs/report.txt', Buffer.from('plain text'))
     await scan(root())
@@ -102,13 +119,30 @@ describe('media enrollment through the real folder scan', () => {
     expect(await freshness.drainMediaMetadata()).toBe(4)
     const after = Object.fromEntries(rows().map((row) => [row.name, row]))
     expect(after['IMG_20170316_101010.jpg']).toMatchObject({
-      kind: 'image', container: 'jpeg', width: 4032, height: 3024, meta_state: 1, ocr_candidate: 1,
+      kind: 'image',
+      container: 'jpeg',
+      width: 4032,
+      height: 3024,
+      meta_state: 1,
+      ocr_candidate: 1,
       taken_ms: new Date(2017, 2, 16, 10, 10, 10).getTime(),
     })
     expect(after['IMG_20170316_101010.jpg']!.ts_ms).toBe(after['IMG_20170316_101010.jpg']!.taken_ms)
     expect(after['screen.png']).toMatchObject({ container: 'png', width: 1920, height: 1080 })
-    expect(after['clip.mp4']).toMatchObject({ kind: 'video', container: 'mp4', width: 1280, height: 720, duration_ms: 90_000, ocr_candidate: 0 })
-    expect(after['movie.mkv']).toMatchObject({ container: 'mkv', width: 1920, height: 800, duration_ms: 3_600_000 })
+    expect(after['clip.mp4']).toMatchObject({
+      kind: 'video',
+      container: 'mp4',
+      width: 1280,
+      height: 720,
+      duration_ms: 90_000,
+      ocr_candidate: 0,
+    })
+    expect(after['movie.mkv']).toMatchObject({
+      container: 'mkv',
+      width: 1920,
+      height: 800,
+      duration_ms: 3_600_000,
+    })
     expect(await freshness.drainMediaMetadata()).toBe(0)
 
     // the plain document is a normal pending document, untouched by any of this
@@ -123,17 +157,38 @@ describe('media enrollment through the real folder scan', () => {
     await freshness.drainMediaMetadata()
 
     const progress = store.folderChunkProgress(root())
-    expect(progress).toMatchObject({ totalFiles: 3, readyFiles: 3, pendingFiles: 0, errorFiles: 0, mediaFiles: 3 })
+    expect(progress).toMatchObject({
+      totalFiles: 3,
+      readyFiles: 3,
+      pendingFiles: 0,
+      errorFiles: 0,
+      mediaFiles: 3,
+    })
     expect(progress.releasedFiles).toBeUndefined()
-    expect(progress.pendingFiles + (progress.releasedFiles ?? 0) + progress.readyFiles + progress.errorFiles).toBe(progress.totalFiles)
+    expect(
+      progress.pendingFiles +
+        (progress.releasedFiles ?? 0) +
+        progress.readyFiles +
+        progress.errorFiles,
+    ).toBe(progress.totalFiles)
     expect(store.stats()).toMatchObject({ docs: 3, errors: 0 })
     expect(store.incompletePaths()).toEqual([])
-    expect(mediaCounts(store.rawDb)).toMatchObject({ images: 2, videos: 1, pendingMetadata: 0, ocrCandidates: 2 })
+    expect(mediaCounts(store.rawDb)).toMatchObject({
+      images: 2,
+      videos: 1,
+      pendingMetadata: 0,
+      ocrCandidates: 2,
+    })
 
     // a document next to them is the only thing that is still waiting
     writeFileSync(join(root(), 'a', 'notes.txt'), 'hello')
     await scan(root())
-    expect(store.folderChunkProgress(root())).toMatchObject({ totalFiles: 4, readyFiles: 3, pendingFiles: 1, mediaFiles: 3 })
+    expect(store.folderChunkProgress(root())).toMatchObject({
+      totalFiles: 4,
+      readyFiles: 3,
+      pendingFiles: 1,
+      mediaFiles: 3,
+    })
     expect(store.incompletePaths()).toEqual([join(root(), 'a', 'notes.txt')])
   })
 
@@ -142,7 +197,11 @@ describe('media enrollment through the real folder scan', () => {
     await scan(root())
     await freshness.drainMediaMetadata()
     const stored = store.documentByPath(path)!
-    const updatedAt = (store.rawDb.prepare('SELECT updated_at FROM documents WHERE id = ?').get(stored.id) as { updated_at: number }).updated_at
+    const updatedAt = (
+      store.rawDb.prepare('SELECT updated_at FROM documents WHERE id = ?').get(stored.id) as {
+        updated_at: number
+      }
+    ).updated_at
 
     const read = vi.fn(async () => ({ container: 'jpeg', width: 1, height: 1 }))
     const filler = new MediaMetadataFiller(store.rawDb, { read })
@@ -153,7 +212,13 @@ describe('media enrollment through the real folder scan', () => {
     }
     expect(read).not.toHaveBeenCalled()
     expect(rows()[0]).toMatchObject({ meta_state: 1, width: 800, height: 600 })
-    expect((store.rawDb.prepare('SELECT updated_at FROM documents WHERE id = ?').get(stored.id) as { updated_at: number }).updated_at).toBe(updatedAt)
+    expect(
+      (
+        store.rawDb.prepare('SELECT updated_at FROM documents WHERE id = ?').get(stored.id) as {
+          updated_at: number
+        }
+      ).updated_at,
+    ).toBe(updatedAt)
     expect(store.incompletePaths()).toEqual([])
 
     // the file is replaced: new header, new size
@@ -161,7 +226,10 @@ describe('media enrollment through the real folder scan', () => {
     utimesSync(path, new Date(2021, 5, 6), new Date(2021, 5, 6))
     await scan(root())
     expect(rows()[0]).toMatchObject({ meta_state: 0, width: null, height: null })
-    expect(store.documentByPath(path)).toMatchObject({ status: 'ready', sizeBytes: PHOTO_BYTES + 500 })
+    expect(store.documentByPath(path)).toMatchObject({
+      status: 'ready',
+      sizeBytes: PHOTO_BYTES + 500,
+    })
     await freshness.drainMediaMetadata()
     expect(rows()[0]).toMatchObject({ meta_state: 1, width: 1024, height: 768 })
   })
@@ -173,7 +241,12 @@ describe('media enrollment through the real folder scan', () => {
     unlinkSync(gone)
     await freshness.drainMediaMetadata()
     const byName = Object.fromEntries(rows().map((row) => [row.name, row]))
-    expect(byName['broken.jpg']).toMatchObject({ status: 'ready', meta_state: 1, width: null, container: 'jpeg' })
+    expect(byName['broken.jpg']).toMatchObject({
+      status: 'ready',
+      meta_state: 1,
+      width: null,
+      container: 'jpeg',
+    })
     expect(byName['soon-gone.png']).toMatchObject({ status: 'ready', meta_state: 2 })
     expect(mediaCounts(store.rawDb).pendingMetadata).toBe(0)
     expect(store.searchNames('broken', 5).map((hit) => hit.name)).toEqual(['broken.jpg'])
@@ -197,9 +270,32 @@ describe('noise guards', () => {
     file('ok/photo.jpg', jpeg(100, 100))
     file('ok/icon.png', png(16, 16), 4_000) // below 16 KB: an icon
     file('ok/tiny-video.mp4', mp4({ width: 10, height: 10, seconds: 1, mdatBytes: 100 }), 2_000) // videos have no floor
-    for (const noise of ['.thumbnails', 'thumbnails', '@eaDir', '__MACOSX', 'Pictures.photoslibrary/originals', 'Movie.imovielibrary', 'Library/Caches', 'Cache', 'Caches', 'node_modules/pkg', 'assets', 'res/drawable-xhdpi', 'drawable', 'mipmap-hdpi', 'icons', 'sprites', 'app/site-packages', '.Trash', 'Trash'])
+    for (const noise of [
+      '.thumbnails',
+      'thumbnails',
+      '@eaDir',
+      '__MACOSX',
+      'Pictures.photoslibrary/originals',
+      'Movie.imovielibrary',
+      'Library/Caches',
+      'Cache',
+      'Caches',
+      'node_modules/pkg',
+      'assets',
+      'res/drawable-xhdpi',
+      'drawable',
+      'mipmap-hdpi',
+      'icons',
+      'sprites',
+      'app/site-packages',
+      '.Trash',
+      'Trash',
+    ])
       file(`${noise}/x.jpg`, jpeg(100, 100))
-    writeFileSync(join(root(), 'assets', 'readme.txt'), 'documents in an assets folder are still indexed')
+    writeFileSync(
+      join(root(), 'assets', 'readme.txt'),
+      'documents in an assets folder are still indexed',
+    )
     await scan(root())
     expect(rows().map((row) => row.name)).toEqual(['photo.jpg', 'tiny-video.mp4'])
     expect(store.documentByPath(join(root(), 'assets', 'readme.txt'))).not.toBeNull()
@@ -245,13 +341,38 @@ describe('search', () => {
   const names = (query: string, limit = 5) => find(query, limit).map((hit) => hit.name)
 
   beforeEach(async () => {
-    file('Ảnh gia đình/Du lịch Đà Lạt/IMG_20170316_101010.jpg', jpeg(4032, 3024, { exifDate: '2017:03:16 10:10:10' }), PHOTO_BYTES, new Date(2017, 2, 16, 10))
-    file('Ảnh gia đình/Du lịch Đà Lạt/hoa hồng.png', png(800, 600), PHOTO_BYTES, new Date(2018, 0, 2))
+    file(
+      'Ảnh gia đình/Du lịch Đà Lạt/IMG_20170316_101010.jpg',
+      jpeg(4032, 3024, { exifDate: '2017:03:16 10:10:10' }),
+      PHOTO_BYTES,
+      new Date(2017, 2, 16, 10),
+    )
+    file(
+      'Ảnh gia đình/Du lịch Đà Lạt/hoa hồng.png',
+      png(800, 600),
+      PHOTO_BYTES,
+      new Date(2018, 0, 2),
+    )
     file('Camera/PXL_9.jpg', jpeg(300, 200), PHOTO_BYTES, new Date(2019, 7, 20, 9))
-    file('Camera/Ảnh chụp màn hình 2024-05-06 lúc 10.11.12.png', png(1440, 900), PHOTO_BYTES, new Date(2024, 4, 6))
+    file(
+      'Camera/Ảnh chụp màn hình 2024-05-06 lúc 10.11.12.png',
+      png(1440, 900),
+      PHOTO_BYTES,
+      new Date(2024, 4, 6),
+    )
     file('Camera/scan hợp đồng thuê nhà.jpg', jpeg(2480, 3508), PHOTO_BYTES, new Date(2022, 9, 9))
-    file('Videos/Sinh nhật bé.mp4', mp4({ width: 1920, height: 1080, seconds: 125, mdatBytes: 20_000 }), 150_000, new Date(2021, 11, 25))
-    file('Videos/phỏng vấn.mov', mp4({ width: 1280, height: 720, seconds: 3000, brand: 'qt  ', mdatBytes: 20_000 }), 150_000, new Date(2023, 2, 4))
+    file(
+      'Videos/Sinh nhật bé.mp4',
+      mp4({ width: 1920, height: 1080, seconds: 125, mdatBytes: 20_000 }),
+      150_000,
+      new Date(2021, 11, 25),
+    )
+    file(
+      'Videos/phỏng vấn.mov',
+      mp4({ width: 1280, height: 720, seconds: 3000, brand: 'qt  ', mdatBytes: 20_000 }),
+      150_000,
+      new Date(2023, 2, 4),
+    )
     file('Docs/Hợp đồng thuê nhà 2017-03-16.txt', Buffer.from('hợp đồng'))
     // the date is only in the name: the file was copied years later, so its mtime says 2024
     file('Camera/IMG_20150101_235959.jpg', jpeg(640, 480), PHOTO_BYTES, new Date(2024, 5, 5))
@@ -262,23 +383,49 @@ describe('search', () => {
   it('finds media by file name and folder, diacritic-insensitively, with dimensions / duration for the UI', () => {
     expect(names('hoa hong')).toEqual(['hoa hồng.png'])
     expect(names('hoa hồng')).toEqual(['hoa hồng.png'])
-    expect(names('Đà Lạt')).toEqual(expect.arrayContaining(['hoa hồng.png', 'IMG_20170316_101010.jpg']))
+    expect(names('Đà Lạt')).toEqual(
+      expect.arrayContaining(['hoa hồng.png', 'IMG_20170316_101010.jpg']),
+    )
     expect(names('sinh nhat')).toEqual(['Sinh nhật bé.mp4'])
     const [hit] = find('sinh nhat')
-    expect(hit!.media).toMatchObject({ kind: 'video', width: 1920, height: 1080, durationMs: 125_000, container: 'mp4', ocrCandidate: false, sensitive: false })
+    expect(hit!.media).toMatchObject({
+      kind: 'video',
+      width: 1920,
+      height: 1080,
+      durationMs: 125_000,
+      container: 'mp4',
+      ocrCandidate: false,
+      sensitive: false,
+    })
     expect(hit!.text).toContain('2:05')
     expect(hit!.text).toContain('never analyzed')
     expect(hit).toMatchObject({ chunkId: 0, location: 'file name', contentUnread: true })
     const [photo] = find('hoa hong')
-    expect(photo!.media).toMatchObject({ kind: 'image', width: 800, height: 600, ocrCandidate: true })
+    expect(photo!.media).toMatchObject({
+      kind: 'image',
+      width: 800,
+      height: 600,
+      ocrCandidate: true,
+    })
   })
 
   it('answers type words: ảnh / hình / video / phim / clip / screenshot / scan, with or without accents', () => {
-    const images = ['IMG_20170316_101010.jpg', 'hoa hồng.png', 'PXL_9.jpg', 'scan hợp đồng thuê nhà.jpg']
+    const images = [
+      'IMG_20170316_101010.jpg',
+      'hoa hồng.png',
+      'PXL_9.jpg',
+      'scan hợp đồng thuê nhà.jpg',
+    ]
     for (const query of ['ảnh', 'anh', 'hình ảnh', 'hinh anh', 'photo']) {
       const got = names(query, 8)
-      expect(got.some((name) => images.includes(name)), query).toBe(true)
-      expect(got.every((name) => !name.endsWith('.mp4') && !name.endsWith('.mov') || query === 'anh'), query).toBe(true)
+      expect(
+        got.some((name) => images.includes(name)),
+        query,
+      ).toBe(true)
+      expect(
+        got.every((name) => (!name.endsWith('.mp4') && !name.endsWith('.mov')) || query === 'anh'),
+        query,
+      ).toBe(true)
     }
     for (const query of ['video', 'phim', 'clip', 'videos']) {
       expect(names(query, 8).sort(), query).toEqual(['Sinh nhật bé.mp4', 'phỏng vấn.mov'].sort())
@@ -330,9 +477,37 @@ describe('search', () => {
 
 describe('privacy: sensitive marker and the OCR gates', () => {
   it('flags identity / legal / credential names, diacritic-insensitively and on whole words', () => {
-    for (const name of ['CCCD mặt trước.jpg', 'cmnd_nguyen_van_a.png', 'căn cước công dân.jpg', 'Chứng minh nhân dân.jpg', 'passport.jpeg', 'Hộ chiếu 2024.jpg', 'sổ hộ khẩu.png', 'so ho khau.png', 'sổ đỏ nhà.jpg', 'Giấy khai sinh bé An.jpg', 'bằng lái xe.jpg', 'Giấy phép lái xe.jpg', 'thẻ ngân hàng.png', 'ATM card.jpg', 'stk vietcombank.png', 'OTP 123.png', 'mật khẩu wifi.jpg', 'my password.png', 'CanCuoc.jpg', 'ho_chieu.jpg'])
+    for (const name of [
+      'CCCD mặt trước.jpg',
+      'cmnd_nguyen_van_a.png',
+      'căn cước công dân.jpg',
+      'Chứng minh nhân dân.jpg',
+      'passport.jpeg',
+      'Hộ chiếu 2024.jpg',
+      'sổ hộ khẩu.png',
+      'so ho khau.png',
+      'sổ đỏ nhà.jpg',
+      'Giấy khai sinh bé An.jpg',
+      'bằng lái xe.jpg',
+      'Giấy phép lái xe.jpg',
+      'thẻ ngân hàng.png',
+      'ATM card.jpg',
+      'stk vietcombank.png',
+      'OTP 123.png',
+      'mật khẩu wifi.jpg',
+      'my password.png',
+      'CanCuoc.jpg',
+      'ho_chieu.jpg',
+    ])
       expect(isSensitiveName(name), name).toBe(true)
-    for (const name of ['atmosphere.jpg', 'Du lịch Đà Lạt.jpg', 'optical.png', 'IMG_2017.jpg', 'stkx.png', 'hoa hồng.png'])
+    for (const name of [
+      'atmosphere.jpg',
+      'Du lịch Đà Lạt.jpg',
+      'optical.png',
+      'IMG_2017.jpg',
+      'stkx.png',
+      'hoa hồng.png',
+    ])
       expect(isSensitiveName(name), name).toBe(false)
     expect(isSensitiveName('scan 1.jpg', '/home/a/CCCD/scan 1.jpg')).toBe(true) // a sensitive folder marks what is inside
     expect(isSensitiveName('scan 1.jpg', '/home/a/Pictures/scan 1.jpg')).toBe(false)
@@ -345,7 +520,10 @@ describe('privacy: sensitive marker and the OCR gates', () => {
     const byName = Object.fromEntries(rows().map((row) => [row.name, row]))
     expect(byName['CCCD mặt trước.jpg']!.sensitive).toBe(1)
     expect(byName['Trip.jpg']!.sensitive).toBe(0)
-    expect(store.searchNames('cccd mat truoc', 3)[0]!.media).toMatchObject({ sensitive: true, ocrCandidate: true })
+    expect(store.searchNames('cccd mat truoc', 3)[0]!.media).toMatchObject({
+      sensitive: true,
+      ocrCandidate: true,
+    })
     expect(mediaCounts(store.rawDb).sensitive).toBe(1)
   })
 
@@ -357,14 +535,29 @@ describe('privacy: sensitive marker and the OCR gates', () => {
     for (const path of [scanned, idCard]) writeFileSync(path, '%PDF-1.4')
     await scan(root())
     for (const path of [scanned, idCard]) {
-      store.rawDb.prepare("UPDATE documents SET status = 'empty', error = 'No readable text; scanned documents need OCR' WHERE path = ?").run(path)
+      store.rawDb
+        .prepare(
+          "UPDATE documents SET status = 'empty', error = 'No readable text; scanned documents need OCR' WHERE path = ?",
+        )
+        .run(path)
     }
     // what Antigravity sees: PDFs only, sensitive ones left out
     expect(store.ocr.candidates(40).map((row) => row.path)).toEqual([scanned])
-    expect(store.ocr.candidates(40, { includeSensitive: true }).map((row) => row.path).sort()).toEqual([idCard, scanned].sort())
+    expect(
+      store.ocr
+        .candidates(40, { includeSensitive: true })
+        .map((row) => row.path)
+        .sort(),
+    ).toEqual([idCard, scanned].sort())
     // a media row that was somehow marked like a scanned PDF is still excluded structurally
-    store.rawDb.prepare("INSERT INTO documents(path, name, status, error, chunk_counted, mtime_ms, size_bytes) VALUES (?, 'x.pdf', 'empty', 'No readable text; scanned documents need OCR', 1, 1, 1)").run(join(root(), 'x.pdf'))
-    const id = (store.rawDb.prepare('SELECT id FROM documents WHERE name = ?').get('x.pdf') as { id: number }).id
+    store.rawDb
+      .prepare(
+        "INSERT INTO documents(path, name, status, error, chunk_counted, mtime_ms, size_bytes) VALUES (?, 'x.pdf', 'empty', 'No readable text; scanned documents need OCR', 1, 1, 1)",
+      )
+      .run(join(root(), 'x.pdf'))
+    const id = (
+      store.rawDb.prepare('SELECT id FROM documents WHERE name = ?').get('x.pdf') as { id: number }
+    ).id
     store.rawDb.prepare("INSERT INTO document_media(document_id, kind) VALUES (?, 'image')").run(id)
     expect(store.ocr.candidates(40).map((row) => row.path)).toEqual([scanned])
   })
@@ -378,15 +571,29 @@ describe('privacy: sensitive marker and the OCR gates', () => {
     expect(local.map((c) => basename(c.path)).sort()).toEqual(['passport.jpg', 'receipt.jpg'])
     expect(local.find((c) => c.path.endsWith('passport.jpg'))!.sensitive).toBe(true)
     expect(selectImageOcrCandidates(store.rawDb, { engine: 'cloud' })).toEqual([])
-    expect(selectImageOcrCandidates(store.rawDb, { engine: 'cloud', cloudOptIn: false })).toEqual([])
-    expect(selectImageOcrCandidates(store.rawDb, { engine: 'cloud', cloudOptIn: true }).map((c) => basename(c.path))).toEqual(['receipt.jpg'])
+    expect(selectImageOcrCandidates(store.rawDb, { engine: 'cloud', cloudOptIn: false })).toEqual(
+      [],
+    )
+    expect(
+      selectImageOcrCandidates(store.rawDb, { engine: 'cloud', cloudOptIn: true }).map((c) =>
+        basename(c.path),
+      ),
+    ).toEqual(['receipt.jpg'])
     // the local package marks what it has read; a changed file becomes a candidate again
     const receipt = local.find((c) => c.path.endsWith('receipt.jpg'))!
     markImageOcr(store.rawDb, receipt.documentId, IMAGE_OCR_STATE.done)
-    expect(selectImageOcrCandidates(store.rawDb, { engine: 'local' }).map((c) => c.path.split('/').pop())).toEqual(['passport.jpg'])
+    expect(
+      selectImageOcrCandidates(store.rawDb, { engine: 'local' }).map((c) =>
+        c.path.split('/').pop(),
+      ),
+    ).toEqual(['passport.jpg'])
     writeSparse(receipt.path, jpeg(1100, 700), PHOTO_BYTES + 10)
     await scan(root())
-    expect(selectImageOcrCandidates(store.rawDb, { engine: 'local' }).map((c) => c.path.split('/').pop()).sort()).toEqual(['passport.jpg', 'receipt.jpg'])
+    expect(
+      selectImageOcrCandidates(store.rawDb, { engine: 'local' })
+        .map((c) => c.path.split('/').pop())
+        .sort(),
+    ).toEqual(['passport.jpg', 'receipt.jpg'])
   })
 })
 
@@ -406,7 +613,11 @@ describe('extraction never turns a media row into pending work or an error', () 
     expect(store.documentByPath(fresh)?.status).toBe('ready')
     // an old "unreadable document" row for an image path is repaired by the next scan
     const legacy = file('o/legacy.png', png(50, 50))
-    store.rawDb.prepare("INSERT INTO documents(path, name, status, error, chunk_counted) VALUES (?, 'legacy.png', 'error', 'Cannot extract text', 1)").run(legacy)
+    store.rawDb
+      .prepare(
+        "INSERT INTO documents(path, name, status, error, chunk_counted) VALUES (?, 'legacy.png', 'error', 'Cannot extract text', 1)",
+      )
+      .run(legacy)
     await scan(root())
     expect(store.documentByPath(legacy)).toMatchObject({ status: 'ready', error: null })
   })
@@ -451,7 +662,9 @@ describe('storage admission', () => {
     expect(seen.find((s) => s.name === 'photo.jpg')?.lowPriority).toBe(true)
     expect(seen.find((s) => s.name === 'note.txt')?.lowPriority).toBeFalsy()
     expect(rows()).toHaveLength(0) // refused, nothing half-written
-    expect(store.rawDb.prepare('SELECT count(*) AS n FROM documents WHERE name = ?').get('photo.jpg')).toEqual({ n: 0 })
+    expect(
+      store.rawDb.prepare('SELECT count(*) AS n FROM documents WHERE name = ?').get('photo.jpg'),
+    ).toEqual({ n: 0 })
     expect(store.documentByPath(join(root(), 'adm', 'note.txt'))).not.toBeNull() // the document got in
     expect(store.enrollMedia(join(root(), 'adm', 'photo.jpg'), 1, 50_000).outcome).toBe('refused')
   })
@@ -462,9 +675,20 @@ describe('protected identity guard: media and documents retain name admission', 
     const budget = createStorageBudget(10_000_000)
     const used = Math.floor(10_000_000 * usageRatio)
     const snapshot = {
-      databaseBytes: used, budgetBytes: 10_000_000, usageRatio, chunksBytes: 0, embeddingsBytes: 0, ftsBytes: 0, ocrBytes: 0,
-      backupBytes: 0, reclaimableBytes: 0, limitState: usageRatio >= 1.1 ? 'full' : usageRatio >= 0.8 ? 'warning' : 'ok',
-      totalManagedBytes: used, nameMetadataBytes: 0, measurementStatus: 'fresh', isDegraded: false,
+      databaseBytes: used,
+      budgetBytes: 10_000_000,
+      usageRatio,
+      chunksBytes: 0,
+      embeddingsBytes: 0,
+      ftsBytes: 0,
+      ocrBytes: 0,
+      backupBytes: 0,
+      reclaimableBytes: 0,
+      limitState: usageRatio >= 1.1 ? 'full' : usageRatio >= 0.8 ? 'warning' : 'ok',
+      totalManagedBytes: used,
+      nameMetadataBytes: 0,
+      measurementStatus: 'fresh',
+      isDegraded: false,
     } as StorageBudgetSnapshot
     return new SyncMetadataAdmissionCoordinator({
       admission: new StorageAdmissionController(),
@@ -482,12 +706,21 @@ describe('protected identity guard: media and documents retain name admission', 
     for (const ratio of [0.5, 0.85, 0.95, 1.05, 1.15]) {
       const guard = coordinator(ratio)
       await new Promise((resolve) => setTimeout(resolve, 5)) // free-disk warm-up
-      const media = guard.canAdmitNewDocument({ name: 'a.jpg', path: '/p/a.jpg', lowPriority: true }, 2048)
+      const media = guard.canAdmitNewDocument(
+        { name: 'a.jpg', path: '/p/a.jpg', lowPriority: true },
+        2048,
+      )
       const doc = guard.canAdmitNewDocument({ name: 'a.docx', path: '/p/a.docx' }, 2048)
       results[String(ratio)] = [media.admitted, doc.admitted]
       guard.close()
     }
-    expect(results).toEqual({ '0.5': [true, true], '0.85': [true, true], '0.95': [true, true], '1.05': [true, true], '1.15': [false, false] })
+    expect(results).toEqual({
+      '0.5': [true, true],
+      '0.85': [true, true],
+      '0.95': [true, true],
+      '1.05': [true, true],
+      '1.15': [false, false],
+    })
   })
 })
 
@@ -500,7 +733,10 @@ describe('legacy behaviour that must not change', () => {
     file('mix/e.zip', Buffer.from('PK'), PHOTO_BYTES)
     file('mix/f.gif', gif(10, 10))
     await scan(root())
-    const all = store.listDocuments().map((doc) => basename(doc.path)).sort()
+    const all = store
+      .listDocuments()
+      .map((doc) => basename(doc.path))
+      .sort()
     expect(all).toEqual(['a.docx', 'b.pdf', 'f.gif'])
   })
 })

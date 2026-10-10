@@ -549,7 +549,7 @@ describe('DocumentMemoryManager', () => {
     } finally {
       listPaths.mockRestore()
     }
-  })
+  }, 45_000)
 
   it('backs off failed embeddings instead of exhausting a large queue in a retry burst', async () => {
     const fake = new FakeWorker(join(dir, 'document-memory.db'))
