@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   applyPendingDbMove,
   cancelDbMove,
+  CorruptRelocationJournalError,
   dbLocationState,
   isDbDirAccessible,
   planDbMove,
@@ -418,5 +419,72 @@ describe('crash-safety & fault-injection relocation protocol (P0-01)', () => {
       ok: true,
       docCount: 2,
     })
+  })
+
+  it('Scenario 15: Corrupted relocation journal without backup fails closed without empty DB creation', async () => {
+    writeFileSync(join(userData, 'document-memory-relocation-journal.json'), '{ corrupted json ...')
+
+    expect(() => resolveDbDir(userData)).toThrow(CorruptRelocationJournalError)
+    const state = dbLocationState(userData)
+    expect(state.unavailable).toBe(true)
+    expect(state.lastError).toMatch(/Corrupt relocation journal/)
+
+    const moveResult = await applyPendingDbMove(userData)
+    expect(moveResult.moved).toBe(false)
+    expect(moveResult.error).toMatch(/Corrupt relocation journal/)
+  })
+
+  it('Scenario 16: Interrupted relocation with corrupt primary journal safely recovers from .bak journal', async () => {
+    seedRealDatabase(target, 4)
+    const validJournal = {
+      version: 1,
+      sourceDir: userData,
+      targetDir: target,
+      phase: 'committed',
+      authoritative: 'target',
+      updatedAt: Date.now(),
+    }
+    writeFileSync(
+      join(userData, 'document-memory-relocation-journal.json.bak'),
+      JSON.stringify(validJournal, null, 2),
+    )
+    writeFileSync(
+      join(userData, 'document-memory-relocation-journal.json'),
+      'half-written-truncated-json-###',
+    )
+
+    expect(resolveDbDir(userData)).toBe(target)
+    const moveResult = await applyPendingDbMove(userData)
+    expect(moveResult.moved).toBe(true)
+    expect(getDatabaseDocCount(target)).toBe(4)
+    expect(resolveDbDir(userData)).toBe(target)
+  })
+
+  it('Scenario 17: Interrupted relocation NEVER deletes target artifacts solely because source DB is missing', async () => {
+    seedRealDatabase(target, 5)
+    // Source DB does NOT exist in userData!
+    expect(existsSync(join(userData, 'document-memory.db'))).toBe(false)
+
+    // Crash simulated right before commit: journal marked authoritative === 'source'
+    const uncommittedJournal = {
+      version: 1,
+      sourceDir: userData,
+      targetDir: target,
+      phase: 'staged',
+      authoritative: 'source',
+      updatedAt: Date.now(),
+    }
+    writeFileSync(
+      join(userData, 'document-memory-relocation-journal.json'),
+      JSON.stringify(uncommittedJournal, null, 2),
+    )
+
+    // In vulnerable implementation, !existsSync(sourceDbPath) caused unlink of all target files!
+    // In corrected implementation, the surviving target copy must be preserved and promoted!
+    const result = await applyPendingDbMove(userData)
+    expect(result.moved).toBe(true)
+    expect(existsSync(join(target, 'document-memory.db'))).toBe(true)
+    expect(getDatabaseDocCount(target)).toBe(5)
+    expect(resolveDbDir(userData)).toBe(target)
   })
 })

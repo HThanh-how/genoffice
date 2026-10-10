@@ -2,6 +2,7 @@ import {
   accessSync,
   closeSync,
   constants,
+  copyFileSync,
   existsSync,
   fsyncSync,
   mkdirSync,
@@ -93,19 +94,44 @@ function fsyncFile(filePath: string): void {
   }
 }
 
+export class CorruptRelocationJournalError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CorruptRelocationJournalError'
+  }
+}
+
 function writeAtomic(filePath: string, content: string): void {
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
+  const bakPath = `${filePath}.bak`
   writeFileSync(tmpPath, content, 'utf8')
   fsyncFile(tmpPath)
-  if (process.platform === 'win32') {
-    writeFileSync(filePath, content, 'utf8')
-    fsyncFile(filePath)
+  if (existsSync(filePath)) {
     try {
-      unlinkSync(tmpPath)
-    } catch {}
+      copyFileSync(filePath, bakPath)
+      fsyncFile(bakPath)
+    } catch {
+      // Best-effort backup
+    }
+  }
+  if (process.platform === 'win32') {
+    try {
+      try {
+        unlinkSync(filePath)
+      } catch {}
+      renameSync(tmpPath, filePath)
+      fsyncFile(filePath)
+    } catch {
+      writeFileSync(filePath, content, 'utf8')
+      fsyncFile(filePath)
+      try {
+        unlinkSync(tmpPath)
+      } catch {}
+    }
   } else {
     try {
       renameSync(tmpPath, filePath)
+      fsyncFile(filePath)
     } catch {
       writeFileSync(filePath, content, 'utf8')
       fsyncFile(filePath)
@@ -135,18 +161,54 @@ function write(userData: string, settings: LocationSettings): void {
   writeAtomic(join(userData, SETTINGS_FILE), JSON.stringify(settings, null, 2))
 }
 
-function readJournal(userData: string): RelocationJournal | null {
+function parseJournal(content: string): RelocationJournal | null {
   try {
-    const journalPath = join(userData, JOURNAL_FILE)
-    if (!existsSync(journalPath)) return null
-    const parsed = JSON.parse(readFileSync(journalPath, 'utf8')) as RelocationJournal
-    if (parsed && parsed.version === 1 && parsed.sourceDir && parsed.targetDir) {
+    const parsed = JSON.parse(content) as RelocationJournal
+    if (
+      parsed &&
+      parsed.version === 1 &&
+      typeof parsed.sourceDir === 'string' &&
+      typeof parsed.targetDir === 'string'
+    ) {
       return parsed
     }
     return null
   } catch {
     return null
   }
+}
+
+function readJournal(userData: string): RelocationJournal | null {
+  const journalPath = join(userData, JOURNAL_FILE)
+  const bakPath = `${journalPath}.bak`
+  const journalExists = existsSync(journalPath)
+  const bakExists = existsSync(bakPath)
+
+  if (!journalExists && !bakExists) return null
+
+  if (journalExists) {
+    try {
+      const content = readFileSync(journalPath, 'utf8')
+      const parsed = parseJournal(content)
+      if (parsed) return parsed
+    } catch {
+      // Primary journal unreadable, try backup
+    }
+  }
+
+  if (bakExists) {
+    try {
+      const content = readFileSync(bakPath, 'utf8')
+      const parsed = parseJournal(content)
+      if (parsed) return parsed
+    } catch {
+      // Backup also unreadable
+    }
+  }
+
+  throw new CorruptRelocationJournalError(
+    `Corrupt relocation journal in ${userData}; failing closed to prevent silent data loss`,
+  )
 }
 
 function writeJournal(userData: string, journal: RelocationJournal): void {
@@ -157,6 +219,9 @@ function writeJournal(userData: string, journal: RelocationJournal): void {
 function removeJournal(userData: string): void {
   try {
     unlinkSync(join(userData, JOURNAL_FILE))
+  } catch {}
+  try {
+    unlinkSync(join(userData, `${JOURNAL_FILE}.bak`))
   } catch {}
 }
 
@@ -202,20 +267,31 @@ export function sizeOfDb(dir: string): number {
 }
 
 export function dbLocationState(userData: string): DbLocationState {
-  const dir = resolveDbDir(userData)
-  const accessible = isDbDirAccessible(dir)
-  const { moveTo, lastError } = read(userData)
-  return {
-    dir,
-    isDefault: resolve(dir) === resolve(userData),
-    sizeBytes: accessible ? sizeOfDb(dir) : 0,
-    unavailable: !accessible,
-    ...(moveTo ? { pending: moveTo } : {}),
-    ...(!accessible
-      ? { lastError: lastError ?? 'Configured storage directory is unavailable or unmounted' }
-      : lastError
-        ? { lastError }
-        : {}),
+  try {
+    const dir = resolveDbDir(userData)
+    const accessible = isDbDirAccessible(dir)
+    const { moveTo, lastError } = read(userData)
+    return {
+      dir,
+      isDefault: resolve(dir) === resolve(userData),
+      sizeBytes: accessible ? sizeOfDb(dir) : 0,
+      unavailable: !accessible,
+      ...(moveTo ? { pending: moveTo } : {}),
+      ...(!accessible
+        ? { lastError: lastError ?? 'Configured storage directory is unavailable or unmounted' }
+        : lastError
+          ? { lastError }
+          : {}),
+    }
+  } catch (err) {
+    const lastError = err instanceof Error ? err.message : String(err)
+    return {
+      dir: userData,
+      isDefault: true,
+      sizeBytes: 0,
+      unavailable: true,
+      lastError,
+    }
   }
 }
 
@@ -415,9 +491,12 @@ async function recoverInterruptedRelocation(
 
   // Authoritative === 'source': move had not committed
   const sourceDbPath = join(sourceDir, 'document-memory.db')
+  const targetDbPath = join(targetDir, 'document-memory.db')
   const sourceValid = verifyDatabaseIntegrity(sourceDbPath)
-  if (sourceValid.ok || !existsSync(sourceDbPath)) {
-    // Clean up partial staging and target artifacts
+  const targetValid = verifyDatabaseIntegrity(targetDbPath)
+
+  if (sourceValid.ok) {
+    // Source is intact and verified. Safe to clean up target artifacts and roll back.
     try {
       await rm(stagingDir, { recursive: true, force: true })
     } catch {}
@@ -435,17 +514,19 @@ async function recoverInterruptedRelocation(
     return { moved: false, error: 'Interrupted move rolled back to source' }
   }
 
-  // Source is corrupted; check if target has a verified copy
-  const targetDbPath = join(targetDir, 'document-memory.db')
-  const targetValid = verifyDatabaseIntegrity(targetDbPath)
+  // Source is missing or corrupted: NEVER delete target solely because source DB is missing.
+  // Check if target has a verified surviving copy.
   if (targetValid.ok) {
+    try {
+      await rm(stagingDir, { recursive: true, force: true })
+    } catch {}
     const isDefault = resolve(targetDir) === resolve(userData)
     write(userData, { ...(isDefault ? {} : { dir: targetDir }), lastError: undefined })
     removeJournal(userData)
     return { moved: true }
   }
 
-  // Fail closed
+  // Neither candidate is valid: fail closed, NEVER delete any database files
   const errorMsg = 'Critical: Cannot verify database integrity during relocation crash recovery'
   write(userData, { dir: sourceDir, lastError: errorMsg })
   return { moved: false, error: errorMsg }
@@ -461,7 +542,12 @@ export async function applyPendingDbMove(
   faultHooks?: RelocationFaultHooks,
 ): Promise<{ moved: boolean; error?: string }> {
   // Step 0: Check for any interrupted prior relocation
-  const pendingJournal = readJournal(userData)
+  let pendingJournal: RelocationJournal | null
+  try {
+    pendingJournal = readJournal(userData)
+  } catch (err) {
+    return { moved: false, error: err instanceof Error ? err.message : String(err) }
+  }
   if (pendingJournal) {
     return await recoverInterruptedRelocation(userData, pendingJournal)
   }
@@ -670,7 +756,10 @@ export async function applyPendingDbMove(
     }
 
     const message = error instanceof Error ? error.message : String(error)
-    const journal = readJournal(userData)
+    let journal: RelocationJournal | null = null
+    try {
+      journal = readJournal(userData)
+    } catch {}
     if (journal && journal.authoritative === 'source') {
       removeJournal(userData)
     }
