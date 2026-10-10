@@ -12,6 +12,13 @@ import { extractDocument, MAX_INDEX_TEXT_CHARS } from '../src/main/document-memo
 import { resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
 import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
 
+function normalizePathIdentity(p: string): string {
+  const resolved = resolve(p)
+  return process.platform === 'win32'
+    ? resolved.replace(/\\/g, '/').toLowerCase()
+    : resolved
+}
+
 const PDF_FIXTURE = join(__dirname, 'fixtures', 'mixed-scan.pdf')
 
 class InProcessWorker extends EventEmitter {
@@ -39,17 +46,10 @@ class InProcessWorker extends EventEmitter {
           return
         }
         if (message.type === 'extract' && message.path) {
-          const norm = resolve(message.path)
-          const isFailing =
-            this.failPaths.has(norm) ||
-            this.failPaths.has(message.path) ||
-            [...this.failPaths].some(
-              (f) =>
-                norm === resolve(f) ||
-                norm.endsWith(f) ||
-                f.endsWith(norm) ||
-                norm.endsWith(basename(f)),
-            )
+          const norm = normalizePathIdentity(message.path)
+          const isFailing = [...this.failPaths].some(
+            (f) => normalizePathIdentity(f) === norm,
+          )
           if (isFailing) {
             this.emit('message', {
               id: message.id,
