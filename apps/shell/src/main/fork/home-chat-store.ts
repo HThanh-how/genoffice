@@ -195,9 +195,12 @@ export class HomeChatStore {
           if (!isObject(entry) || !isChatSessionId(entry.id)) continue
           try {
             await stat(this.file(entry.id))
-          } catch {
-            pruned = true
-            continue
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+              pruned = true
+              continue
+            }
+            throw error
           }
           loaded.push({
             id: entry.id.toLowerCase(),
@@ -215,8 +218,12 @@ export class HomeChatStore {
           await this.persistIndex().catch(() => {})
         }
       }
-    } catch {
-      loaded = null
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT' || error instanceof SyntaxError) {
+        loaded = null
+      } else {
+        throw error
+      }
     }
     this.index = loaded ?? (await this.rebuild())
     return this.index
@@ -227,8 +234,11 @@ export class HomeChatStore {
     let names: string[]
     try {
       names = await readdir(this.dir)
-    } catch {
-      return found
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        return found
+      }
+      throw error
     }
     for (const name of names) {
       const id = name.endsWith('.json') ? name.slice(0, -5) : ''
@@ -312,7 +322,12 @@ export class HomeChatStore {
       if (at >= 0) index[at] = summary
       else index.push(summary)
       await this.evict(index, id)
-      await this.persistIndex()
+      try {
+        await this.persistIndex()
+      } catch (error) {
+        await unlinkIfPresent(join(this.dir, INDEX_FILE)).catch(() => {})
+        throw error
+      }
       return summary
     })
   }
@@ -341,7 +356,12 @@ export class HomeChatStore {
       const at = index.findIndex((entry) => entry.id === session.id)
       if (at >= 0) index[at] = summary
       else index.push(summary)
-      await this.persistIndex()
+      try {
+        await this.persistIndex()
+      } catch (error) {
+        await unlinkIfPresent(join(this.dir, INDEX_FILE)).catch(() => {})
+        throw error
+      }
       return summary
     })
   }

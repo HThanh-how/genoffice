@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const mockedUnlink = vi.hoisted(() => vi.fn())
 const mockedReadFile = vi.hoisted(() => vi.fn())
+const mockedStat = vi.hoisted(() => vi.fn())
+const mockedReaddir = vi.hoisted(() => vi.fn())
 
 vi.mock('node:fs/promises', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs/promises')>()
@@ -14,10 +16,16 @@ vi.mock('node:fs/promises', async (importOriginal) => {
   mockedReadFile.mockImplementation((...args: Parameters<typeof actual.readFile>) =>
     actual.readFile(...args),
   )
+  mockedStat.mockImplementation((...args: Parameters<typeof actual.stat>) => actual.stat(...args))
+  mockedReaddir.mockImplementation((...args: Parameters<typeof actual.readdir>) =>
+    actual.readdir(...args),
+  )
   return {
     ...actual,
     unlink: mockedUnlink,
     readFile: mockedReadFile,
+    stat: mockedStat,
+    readdir: mockedReaddir,
   }
 })
 
@@ -41,6 +49,10 @@ beforeEach(async () => {
   mockedUnlink.mockImplementation((...args: any[]) => (actualFs.unlink as any)(...args))
   mockedReadFile.mockReset()
   mockedReadFile.mockImplementation((...args: any[]) => (actualFs.readFile as any)(...args))
+  mockedStat.mockReset()
+  mockedStat.mockImplementation((...args: any[]) => (actualFs.stat as any)(...args))
+  mockedReaddir.mockReset()
+  mockedReaddir.mockImplementation((...args: any[]) => (actualFs.readdir as any)(...args))
   dir = await mkdtemp(join(tmpdir(), 'home-chat-'))
   store = new HomeChatStore(dir)
 })
@@ -537,6 +549,95 @@ describe('HomeChatStore', () => {
       expect(updatedList.some((s) => s.id === toDelete)).toBe(false)
       const renamedSession = await store.get(toRename)
       expect(renamedSession?.title).toBe('Renamed concurrent title')
+    })
+
+    it('P0-02: stat() throwing EACCES during load propagates without pruning sessions', async () => {
+      const saved = await store.save({ messages: convo('perm-test') })
+      expect(saved).not.toBeNull()
+
+      // Reset store instance so load() will execute
+      const freshStore = new HomeChatStore(dir)
+
+      const eacces = Object.assign(new Error('Permission denied on stat'), { code: 'EACCES' })
+      mockedStat.mockImplementationOnce(async (path: any, ...args: any[]) => {
+        if (String(path).includes(saved!.id)) {
+          throw eacces
+        }
+        return (actualFs.stat as any)(path, ...args)
+      })
+
+      // Must propagate EACCES rather than silently pruning the session
+      await expect(freshStore.list()).rejects.toThrow(eacces)
+
+      // Verify the session remains in index.json on disk untouched
+      const indexRaw = JSON.parse(await actualFs.readFile(join(dir, 'index.json'), 'utf8'))
+      expect(indexRaw.sessions.some((s: any) => s.id === saved!.id)).toBe(true)
+    })
+
+    it('P0-02: stat() throwing EIO during load propagates without pruning sessions', async () => {
+      const saved = await store.save({ messages: convo('io-test') })
+      expect(saved).not.toBeNull()
+
+      const freshStore = new HomeChatStore(dir)
+      const eio = Object.assign(new Error('I/O error on stat'), { code: 'EIO' })
+      mockedStat.mockImplementationOnce(async (path: any, ...args: any[]) => {
+        if (String(path).includes(saved!.id)) {
+          throw eio
+        }
+        return (actualFs.stat as any)(path, ...args)
+      })
+
+      await expect(freshStore.list()).rejects.toThrow(eio)
+      const indexRaw = JSON.parse(await actualFs.readFile(join(dir, 'index.json'), 'utf8'))
+      expect(indexRaw.sessions.some((s: any) => s.id === saved!.id)).toBe(true)
+    })
+
+    it('P0-02: readdir() throwing ENOENT returns empty list for uncreated directory', async () => {
+      const emptyDir = join(dir, 'uncreated-subdir')
+      const emptyStore = new HomeChatStore(emptyDir)
+      const items = await emptyStore.list()
+      expect(items).toEqual([])
+    })
+
+    it('P0-02: readdir() throwing EACCES during rebuild propagates and does not assume empty store', async () => {
+      await store.save({ messages: convo('rebuild-perm') })
+      // Delete index to force rebuild()
+      await actualFs.unlink(join(dir, 'index.json'))
+
+      const freshStore = new HomeChatStore(dir)
+      const eacces = Object.assign(new Error('Directory permission denied'), { code: 'EACCES' })
+      mockedReaddir.mockImplementationOnce(async () => {
+        throw eacces
+      })
+
+      // Must throw, never return []
+      await expect(freshStore.list()).rejects.toThrow(eacces)
+    })
+
+    it('P0-02: session save succeeds on disk but index write fails; session remains durable on restart', async () => {
+      const writeErr = Object.assign(new Error('index write failed'), { code: 'EIO' })
+      const failingStore = new HomeChatStore(dir, async (path, data) => {
+        if (path.endsWith('index.json')) throw writeErr
+        return actualFs.writeFile(path, data)
+      })
+
+      await expect(failingStore.save({ messages: convo('save-with-index-fail') })).rejects.toThrow(
+        writeErr,
+      )
+
+      // Find the session file that was written to disk before index persistence failed
+      const files = await actualFs.readdir(dir)
+      const sessionFile = files.find((f) => f.endsWith('.json') && f !== 'index.json')
+      expect(sessionFile).toBeDefined()
+      const savedId = sessionFile!.replace('.json', '')
+
+      // On restart with fresh store, session must be discovered and readable
+      const restarted = new HomeChatStore(dir)
+      const list = await restarted.list()
+      expect(list.some((s) => s.id === savedId)).toBe(true)
+      const session = await restarted.get(savedId)
+      expect(session).not.toBeNull()
+      expect(session!.id).toBe(savedId)
     })
   })
 })
