@@ -30,26 +30,40 @@ export const MAX_PENDING_EMBED_DOCUMENTS = 16
 export const PDF_SLICE_MS = 10_000
 
 export async function statMeta(p: string): Promise<{ mtimeMs: number; sizeBytes: number } | null> {
-  try { const s = await stat(p); return { mtimeMs: s.mtimeMs, sizeBytes: s.size } } catch { return null }
+  try {
+    const s = await stat(p)
+    return { mtimeMs: s.mtimeMs, sizeBytes: s.size }
+  } catch {
+    return null
+  }
 }
 export function extractedStatus(r: ExtractResult): 'text-only' | 'empty' | 'ready' {
   if (!r.chunks.length) return r.media ? 'ready' : 'empty'
   return r.skipEmbeddings ? 'ready' : 'text-only'
 }
-export function isPartialExtract(v: unknown): v is { partial: true; pagesDone: number; totalPages: number } {
+export function isPartialExtract(
+  v: unknown,
+): v is { partial: true; pagesDone: number; totalPages: number } {
   const r = v as { partial?: unknown; pagesDone?: unknown; totalPages?: unknown } | null
-  return !!r && r.partial === true && typeof r.pagesDone === 'number' && typeof r.totalPages === 'number'
+  return (
+    !!r && r.partial === true && typeof r.pagesDone === 'number' && typeof r.totalPages === 'number'
+  )
 }
 export function isExtractResult(v: unknown): v is ExtractResult {
   if (!v || typeof v !== 'object') return false
   const r = v as Partial<ExtractResult>
   return typeof r.hash === 'string' && typeof r.mtimeMs === 'number' && Array.isArray(r.chunks)
 }
-export function readOutcome(doc: StoredDocument | null | undefined): { ok: boolean; error?: string; empty?: boolean } {
-  if (doc?.error) return { ok: false, error: doc.error }
-  if (doc?.status === 'error') return { ok: false, error: doc.error ?? 'Could not be read' }
-  if (doc?.status === 'empty') return { ok: true, empty: true }
-  return doc?.status === 'pending' ? { ok: false, error: 'not finished' } : { ok: true }
+export function readOutcome(doc: StoredDocument | null | undefined): {
+  ok: boolean
+  error?: string
+  empty?: boolean
+} {
+  if (!doc) return { ok: false, error: 'not found' }
+  if (doc.error) return { ok: false, error: doc.error }
+  if (doc.status === 'error') return { ok: false, error: doc.error ?? 'Could not be read' }
+  if (doc.status === 'empty') return { ok: true, empty: true }
+  return doc.status === 'pending' ? { ok: false, error: 'not finished' } : { ok: true }
 }
 
 import { readPdfPages, writePdfPages } from '../pdf-pages'
@@ -67,7 +81,9 @@ export class ExtractionCoordinator {
   private readonly workerTimeoutMs: number
 
   constructor(private readonly options: ExtractionCoordinatorOptions) {
-    this.pdfMaxPages = options.pdfPagesPath ? readPdfPages(options.pdfPagesPath) : (options.pdfMaxPages ?? DEFAULT_PDF_PAGES)
+    this.pdfMaxPages = options.pdfPagesPath
+      ? readPdfPages(options.pdfPagesPath)
+      : (options.pdfMaxPages ?? DEFAULT_PDF_PAGES)
     this.workerTimeoutMs = options.workerTimeoutMs ?? 60_000
   }
 
@@ -94,7 +110,11 @@ export class ExtractionCoordinator {
 
   recordScanInfo(path: string, result: ExtractResultPayload): void {
     if (result.scan) {
-      this.store.ocr.saveScanInfo(path, { mtimeMs: result.mtimeMs, sizeBytes: result.sizeBytes }, result.scan)
+      this.store.ocr.saveScanInfo(
+        path,
+        { mtimeMs: result.mtimeMs, sizeBytes: result.sizeBytes },
+        result.scan,
+      )
     } else if (result.totalPages !== undefined && Array.isArray(result.scanned)) {
       this.store.ocr.saveScanInfo(
         path,
