@@ -527,7 +527,7 @@ describe('DocumentMemoryManager', () => {
   it('bounds the documents held for embedding while embedding stalls, keeps reading the files behind them, and avoids rescanning all paths for priority', async () => {
     const fake = new FakeWorker(join(dir, 'document-memory.db'))
     fake.stopAfterBatches = 0
-    const instance = manager(fake)
+    const instance = await readyManager(fake)
     const listPaths = vi.spyOn(DocumentMemoryStore.prototype, 'listPaths')
     try {
       for (let i = 0; i < 64; i++) {
