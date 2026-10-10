@@ -294,7 +294,10 @@ export class TabManager {
   /** A document renderer said its file is loaded and on screen. */
   tabReady(webContentsId: number): void {
     const tab = this.tabs.find((t) => t.view?.webContents.id === webContentsId)
-    if (tab) this.markReady(tab.id)
+    if (tab) {
+      this.markReady(tab.id)
+      if (tab.id === this.activeId) this.focusActiveView()
+    }
   }
 
   /** files open in any tab, for the open-documents registry */
@@ -541,6 +544,11 @@ export class TabManager {
     else this.discardSpareSheetsView()
     this.refreshActiveTargets()
     this.focusActiveView()
+    setImmediate(() => {
+      if (!this.shellWindow.isDestroyed() && this.activeId === id) {
+        this.focusActiveView()
+      }
+    })
     this.onChanged()
   }
 
@@ -553,11 +561,14 @@ export class TabManager {
    *  (background opens must not steal OS focus); the window's `focus`
    *  handler re-runs it. */
   focusActiveView(): void {
-    if (this.shellWindow.isDestroyed() || !this.shellWindow.isFocused()) return
+    if (this.shellWindow.isDestroyed()) return
     const target = this.tabs.find((t) => t.id === this.activeId)
     if (!target) return
-    if (target.view) target.view.webContents.focus()
-    else this.shellWindow.webContents.focus()
+    if (target.view) {
+      target.view.webContents.focus()
+    } else if (this.shellWindow.isFocused()) {
+      this.shellWindow.webContents.focus()
+    }
   }
 
   /** Re-point the process-global active-editor targets and the app menu at this

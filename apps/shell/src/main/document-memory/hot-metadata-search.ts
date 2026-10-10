@@ -183,8 +183,10 @@ export class HotMetadataSearch {
           }
           const list = [...variants]
           return list.length === 1
-            ? `"${list[0]}"*`
-            : `(${list.map((v) => `"${v}"*`).join(' OR ')})`
+            ? /^\d+$/.test(list[0]!)
+              ? `"${list[0]}"`
+              : `"${list[0]}"*`
+            : `(${list.map((v) => (/^\d+$/.test(v) ? `"${v}"` : `"${v}"*`)).join(' OR ')})`
         })
         const ftsQuery = wordClauses.join(' AND ')
         const ftsRows = this.searchNameStatement.all(

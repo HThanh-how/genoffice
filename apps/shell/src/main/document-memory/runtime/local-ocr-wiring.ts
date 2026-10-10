@@ -85,6 +85,13 @@ export class LocalOcrRunner {
     this.abort?.abort()
   }
 
+  async cancelAndWait(): Promise<void> {
+    this.abort?.abort()
+    if (this.running) {
+      await this.running.catch(() => null)
+    }
+  }
+
   /** One scheduler tick. Single-flight: a tick that finds the previous one still running returns null at once. */
   tick(): Promise<LocalOcrRunSummary | null> {
     if (this.running) return Promise.resolve(null)
@@ -206,7 +213,7 @@ export function createLocalOcrWiring(deps: LocalOcrWiringDeps): LocalOcrWiring {
     registry,
     runner,
     dispose: async () => {
-      runner.cancel()
+      await runner.cancelAndWait()
       await registry.disposeAll()
     },
   }

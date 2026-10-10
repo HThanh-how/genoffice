@@ -184,9 +184,11 @@ export class IndexIssueReader {
             return `("${spaced}" OR "${joined}"*)`
           }
           if (clean.length === 3) {
-            return `("${clean}"* OR compact_ngrams: "${clean}")`
+            return /^\d+$/.test(clean)
+              ? `"${clean}"`
+              : `("${clean}"* OR compact_ngrams: "${clean}")`
           }
-          return `"${clean}"*`
+          return /^\d+$/.test(clean) ? `"${clean}"` : `"${clean}"*`
         })
         .filter(Boolean)
 

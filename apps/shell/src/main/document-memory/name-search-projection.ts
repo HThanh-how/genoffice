@@ -528,7 +528,7 @@ export function buildProjectionCandidateFtsQuery(words: readonly string[]): stri
     else if (w === 'xuat') variants.add('ra')
 
     const vList = [...variants]
-    const vOr = vList.map((v) => `"${v}"*`).join(' OR ')
+    const vOr = vList.map((v) => (/^\d+$/.test(v) ? `"${v}"` : `"${v}"*`)).join(' OR ')
     termClauses.push(`(name_norm: (${vOr}) OR path_norm: (${vOr}))`)
   }
 
@@ -536,7 +536,8 @@ export function buildProjectionCandidateFtsQuery(words: readonly string[]): stri
   const joined = safeWords.join('')
   const extraParts: string[] = []
   if (joined.length <= MAX_COMPONENT_LENGTH) {
-    extraParts.push(`name_norm: "${joined}"*`, `path_norm: "${joined}"*`)
+    const joinedFts = /^\d+$/.test(joined) ? `"${joined}"` : `"${joined}"*`
+    extraParts.push(`name_norm: ${joinedFts}`, `path_norm: ${joinedFts}`)
   }
 
   if (extraParts.length > 0) {

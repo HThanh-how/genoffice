@@ -143,18 +143,30 @@ function writeAtomic(filePath: string, content: string): void {
 }
 
 function read(userData: string): LocationSettings {
-  try {
-    const value: unknown = JSON.parse(readFileSync(join(userData, SETTINGS_FILE), 'utf8'))
-    if (!value || typeof value !== 'object') return {}
-    const { dir, moveTo, lastError } = value as LocationSettings
-    return {
-      ...(typeof dir === 'string' && dir ? { dir } : {}),
-      ...(typeof moveTo === 'string' && moveTo ? { moveTo } : {}),
-      ...(typeof lastError === 'string' && lastError ? { lastError } : {}),
+  const parseSettings = (filePath: string): LocationSettings | null => {
+    try {
+      if (!existsSync(filePath)) return null
+      const content = readFileSync(filePath, 'utf8')
+      const value: unknown = JSON.parse(content)
+      if (!value || typeof value !== 'object') return null
+      const { dir, moveTo, lastError } = value as LocationSettings
+      return {
+        ...(typeof dir === 'string' && dir ? { dir } : {}),
+        ...(typeof moveTo === 'string' && moveTo ? { moveTo } : {}),
+        ...(typeof lastError === 'string' && lastError ? { lastError } : {}),
+      }
+    } catch {
+      return null
     }
-  } catch {
-    return {}
   }
+
+  const primary = parseSettings(join(userData, SETTINGS_FILE))
+  if (primary !== null) return primary
+
+  const backup = parseSettings(join(userData, `${SETTINGS_FILE}.bak`))
+  if (backup !== null) return backup
+
+  return {}
 }
 
 function write(userData: string, settings: LocationSettings): void {
@@ -358,7 +370,7 @@ export function verifyDatabaseSchema(
         .all() as Array<{ name: string }>
       const tableNames = new Set(tables.map((t) => t.name))
       if (!tableNames.has('documents')) {
-        return { ok: true, docCount: 0, chunkCount: 0 }
+        return { ok: false, error: 'Required table "documents" is missing' }
       }
       const docRow = db.prepare('SELECT count(*) as c FROM documents;').get() as
         { c: number } | undefined
@@ -383,6 +395,20 @@ export function verifyDatabaseSchema(
       error: `Schema check failed: ${err instanceof Error ? err.message : String(err)}`,
     }
   }
+}
+
+/**
+ * Verifies both SQLite physical integrity and application schema for candidate databases.
+ */
+export function verifyDatabaseCandidate(
+  dbPath: string,
+  expectedDocCount?: number,
+): { ok: boolean; error?: string } {
+  const integrity = verifyDatabaseIntegrity(dbPath)
+  if (!integrity.ok) return integrity
+  const schema = verifyDatabaseSchema(dbPath, expectedDocCount)
+  if (!schema.ok) return { ok: false, error: schema.error }
+  return { ok: true }
 }
 
 /**
@@ -439,7 +465,7 @@ async function recoverInterruptedRelocation(
   if (authoritative === 'target') {
     // Target was committed as authoritative before interruption
     const targetDbPath = join(targetDir, 'document-memory.db')
-    const targetValid = verifyDatabaseIntegrity(targetDbPath)
+    const targetValid = verifyDatabaseCandidate(targetDbPath)
     if (targetValid.ok) {
       // Clean up staging directory if still around
       try {
@@ -459,7 +485,7 @@ async function recoverInterruptedRelocation(
 
     // Target database corrupted: check if source is still valid
     const sourceDbPath = join(sourceDir, 'document-memory.db')
-    const sourceValid = verifyDatabaseIntegrity(sourceDbPath)
+    const sourceValid = verifyDatabaseCandidate(sourceDbPath)
     if (sourceValid.ok) {
       // Roll back to source
       for (const name of ALL_POTENTIAL_DB_FILES) {
@@ -492,8 +518,8 @@ async function recoverInterruptedRelocation(
   // Authoritative === 'source': move had not committed
   const sourceDbPath = join(sourceDir, 'document-memory.db')
   const targetDbPath = join(targetDir, 'document-memory.db')
-  const sourceValid = verifyDatabaseIntegrity(sourceDbPath)
-  const targetValid = verifyDatabaseIntegrity(targetDbPath)
+  const sourceValid = verifyDatabaseCandidate(sourceDbPath)
+  const targetValid = verifyDatabaseCandidate(targetDbPath)
 
   if (sourceValid.ok) {
     // Source is intact and verified. Safe to clean up target artifacts and roll back.

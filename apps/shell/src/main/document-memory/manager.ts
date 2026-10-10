@@ -173,6 +173,8 @@ export class DocumentMemoryManager {
     this.pendingIntake.remove(p); this.enqueue(p, true)
   }
   indexDiscoveredFile(p: string, meta?: { mtimeMs: number; sizeBytes: number }) { return this.freshnessCoord.indexDiscoveredFile(p, meta) }
+  isWriteReady(): boolean { return Boolean(this.budgetCoord?.isWriteReady() && this.syncAdmissionCoord?.isReady()) }
+  async waitForWriteReady(timeoutMs = 10_000): Promise<boolean> { const started = Date.now(); while (!this.stopped && !this.isWriteReady()) { if (Date.now() - started > timeoutMs) return false; await new Promise((r) => setTimeout(r, 20)) }; return this.isWriteReady() }
   isEnabled(): boolean { return this.enabled }
   retryDocument(id: number, opts: { now?: boolean; prioritize?: boolean } = {}): { ok: boolean; error?: string } {
     if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
@@ -333,9 +335,7 @@ export class DocumentMemoryManager {
     const needing = this.chunkUpgrade.getDocumentsNeedingUpgrade(1, this.skippedMigrationDocs)
     if (needing.length > 0) { await this.migrateLegacyDocument(needing[0]!); this.scheduleMigrationStep(500) }
   }
-  close(): void {
-    void this.closeAsync()
-  }
+  close(): void { void this.closeAsync() }
   closeAsync(): Promise<void> {
     if (this.shutdownPromise) return this.shutdownPromise
     if (!this.stopped) {

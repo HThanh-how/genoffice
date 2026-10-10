@@ -7314,12 +7314,13 @@ app.on('before-quit', () => {
   stopMcpSync()
 })
 
-let willQuitCompleted = false
+let appShutdownState: 'idle' | 'shutting-down' | 'done' = 'idle'
 // after every window has closed, so the shell window's own 'closed' republish cannot revive the file
 app.on('will-quit', (event) => {
-  if (willQuitCompleted) return
+  if (appShutdownState === 'done') return
   event.preventDefault()
-  willQuitCompleted = true
+  if (appShutdownState === 'shutting-down') return
+  appShutdownState = 'shutting-down'
 
   folderScan?.close()
   knownSources?.close()
@@ -7332,11 +7333,23 @@ app.on('will-quit', (event) => {
   // a second instance that lost the lock quits too; it must not delete the running editor's list
   if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
 
-  const memoryClosePromise = documentMemory?.closeAsync() ?? Promise.resolve()
-  const fallbackTimer = new Promise<void>((resolve) => setTimeout(resolve, 5000))
-  void Promise.race([memoryClosePromise, fallbackTimer])
-    .catch(() => undefined)
-    .finally(() => {
-      app.quit()
-    })
+  const memoryClosePromise = (async () => {
+    if (!documentMemory) return
+    const deadline = setTimeout(() => {
+      console.warn('[app-shutdown] Document memory closeAsync exceeded 15s deadline; forcing exit')
+    }, 15_000)
+    deadline.unref?.()
+    try {
+      await documentMemory.closeAsync()
+    } catch (err) {
+      console.error('[app-shutdown] Error during document memory closeAsync:', err)
+    } finally {
+      clearTimeout(deadline)
+    }
+  })()
+
+  void memoryClosePromise.finally(() => {
+    appShutdownState = 'done'
+    app.quit()
+  })
 })

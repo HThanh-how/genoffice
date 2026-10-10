@@ -56,7 +56,7 @@ describe('off the main thread (real child-process worker)', () => {
       manager = undefined
     }
     if (dir) rmSync(dir, { recursive: true, force: true })
-  })
+  }, 30_000)
 
   it('(a) 93% of the quota is compacted to <= 80% by the worker process; the main event loop never stalls', async () => {
     dir = mkdtempSync(join(tmpdir(), 'compaction-offmain-'))

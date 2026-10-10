@@ -113,11 +113,12 @@ export class ScriptedWorker extends EventEmitter {
     }, this.options.delayMs ?? 0)
     this.pendingTimers.add(timer)
   }
-  terminate(): Promise<number> {
+  async terminate(): Promise<number> {
     for (const t of this.pendingTimers) clearTimeout(t)
     this.pendingTimers.clear()
+    await Promise.allSettled(Array.from(this.inFlight))
     this.inFlight.clear()
-    return Promise.resolve(0)
+    return 0
   }
 }
 

@@ -1,4 +1,4 @@
-import type { DatabaseSync } from 'node:sqlite'
+import type { DatabaseSync, StatementSync } from 'node:sqlite'
 import { retireOldSets } from '../../chunk-sets'
 import { documentIndexFields } from '../../normalization'
 import { measureSqlite } from '../../sqlite-timing'
@@ -26,6 +26,12 @@ function indexedAt(updatedAtSeconds: number | null): number | null {
 }
 
 export class ChunkRepository {
+  private selectChunksByDocStmt?: StatementSync
+  private delFtsStmt?: StatementSync
+  private delChunksByDocStmt?: StatementSync
+  private delDocEmbedCountsStmt?: StatementSync
+  private updateDocChunkDoneStmt?: StatementSync
+
   constructor(private readonly db: DatabaseSync) {}
 
   chunkInserter(
@@ -43,7 +49,9 @@ export class ChunkRepository {
       VALUES (?, ?, ?, ?)
     `)
     const canonical = embeddingModel ? getCanonicalProfile(embeddingModel) : null
-    const checkSpace = this.db.prepare('SELECT dimensions, model_repo FROM embedding_spaces WHERE id = ?')
+    const checkSpace = this.db.prepare(
+      'SELECT dimensions, model_repo FROM embedding_spaces WHERE id = ?',
+    )
     const ensureCanonicalSpace = this.db.prepare(`
       INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
       VALUES (?, ?, ?, ?, ?, 'q8')
@@ -83,7 +91,8 @@ export class ChunkRepository {
             )
           }
           if (!spaceEnsured) {
-            const existing = checkSpace.get(embeddingModel) as { dimensions: number; model_repo: string } | undefined
+            const existing = checkSpace.get(embeddingModel) as
+              { dimensions: number; model_repo: string } | undefined
             if (existing) {
               if (existing.dimensions !== canonical.dimensions) {
                 throw new Error(
@@ -105,12 +114,7 @@ export class ChunkRepository {
           ensureFallbackSpace.run(embeddingModel, embeddingModel, chunk.vector.length)
         }
 
-        addChunkEmbedding.run(
-          chunkId,
-          embeddingModel,
-          floatBlob(chunk.vector),
-          chunk.vector.length,
-        )
+        addChunkEmbedding.run(chunkId, embeddingModel, floatBlob(chunk.vector), chunk.vector.length)
         addEmbeddingCount.run(documentId, embeddingModel)
         updateDone.run(documentId)
         if (onAnnVector) {
@@ -143,7 +147,9 @@ export class ChunkRepository {
 
     retireOldSets(this.db, documentId)
     this.db.prepare('DELETE FROM document_embedding_counts WHERE document_id = ?').run(documentId)
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks)
       SELECT c.document_id, e.space_id, count(e.chunk_id)
       FROM chunks c
@@ -151,9 +157,13 @@ export class ChunkRepository {
       JOIN documents d ON d.id = c.document_id
       WHERE c.document_id = ? AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
       GROUP BY c.document_id, e.space_id
-    `).run(documentId)
+    `,
+      )
+      .run(documentId)
 
-    this.db.prepare(`
+    this.db
+      .prepare(
+        `
       UPDATE documents SET chunk_done = coalesce((
         SELECT count(e.chunk_id)
         FROM chunks c
@@ -161,7 +171,9 @@ export class ChunkRepository {
         JOIN documents d ON d.id = c.document_id
         WHERE c.document_id = ? AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)
       ), 0) WHERE id = ?
-    `).run(documentId, documentId)
+    `,
+      )
+      .run(documentId, documentId)
 
     const chunkIds = oldChunkIds.map((c) => c.id)
     if (onRemovedChunkIds) {
@@ -170,14 +182,21 @@ export class ChunkRepository {
   }
 
   deleteChunks(documentId: number, onRemovedChunkIds?: (chunkIds: number[]) => void): void {
-    const ids = this.db
-      .prepare('SELECT id FROM chunks WHERE document_id = ?')
-      .all(documentId) as Array<{ id: number }>
-    const delFts = this.db.prepare('DELETE FROM chunk_fts WHERE rowid = ?')
+    const selectStmt = (this.selectChunksByDocStmt ??= this.db.prepare(
+      'SELECT id FROM chunks WHERE document_id = ?',
+    ))
+    const ids = selectStmt.all(documentId) as Array<{ id: number }>
+    const delFts = (this.delFtsStmt ??= this.db.prepare('DELETE FROM chunk_fts WHERE rowid = ?'))
     for (const { id } of ids) delFts.run(id)
-    this.db.prepare('DELETE FROM chunks WHERE document_id = ?').run(documentId)
-    this.db.prepare('DELETE FROM document_embedding_counts WHERE document_id = ?').run(documentId)
-    this.db.prepare('UPDATE documents SET chunk_done = 0 WHERE id = ?').run(documentId)
+    ;(this.delChunksByDocStmt ??= this.db.prepare('DELETE FROM chunks WHERE document_id = ?')).run(
+      documentId,
+    )
+    ;(this.delDocEmbedCountsStmt ??= this.db.prepare(
+      'DELETE FROM document_embedding_counts WHERE document_id = ?',
+    )).run(documentId)
+    ;(this.updateDocChunkDoneStmt ??= this.db.prepare(
+      'UPDATE documents SET chunk_done = 0 WHERE id = ?',
+    )).run(documentId)
     if (ids.length > 0 && onRemovedChunkIds) {
       onRemovedChunkIds(ids.map((c) => c.id))
     }
@@ -194,7 +213,9 @@ export class ChunkRepository {
     for (;;) {
       const ids = list.all(documentId) as Array<{ id: number }>
       if (!ids.length) {
-        this.db.prepare('DELETE FROM document_embedding_counts WHERE document_id = ?').run(documentId)
+        this.db
+          .prepare('DELETE FROM document_embedding_counts WHERE document_id = ?')
+          .run(documentId)
         this.db.prepare('UPDATE documents SET chunk_done = 0 WHERE id = ?').run(documentId)
         return true
       }
