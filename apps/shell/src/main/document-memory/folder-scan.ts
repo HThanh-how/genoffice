@@ -165,6 +165,8 @@ export interface ScanJob {
   lastError?: string
   /** Whether the folder was stopped because it was unavailable/unreachable. */
   unavailable?: boolean
+  /** Whether the scan was temporarily deferred due to storage write gate backpressure. */
+  deferred?: boolean
   /** Epoch ms of the last completed metadata-only reconcile pass. */
   reconciledAt?: number
   /** Epoch ms the last full scan finished. */
@@ -264,6 +266,7 @@ export class FolderScanManager {
       resetMediaCounters(interrupted)
       delete interrupted.lastError
       delete interrupted.unavailable
+      delete interrupted.deferred
       if (hasManualOwner(interrupted)) {
         this.save()
         queueMicrotask(() => this.resume(interrupted.root))
@@ -272,13 +275,16 @@ export class FolderScanManager {
         this.save()
       }
     } else {
-      const hasUnavailable = this.manifest.jobs.some(
+      const hasUnavailableOrDeferred = this.manifest.jobs.some(
         (job) =>
           hasManualOwner(job) &&
           job.state === 'stopped' &&
-          (job.unavailable || job.lastError?.includes('unavailable')),
+          (job.unavailable ||
+            job.deferred ||
+            job.lastError?.includes('unavailable') ||
+            job.lastError?.includes('deferred')),
       )
-      if (hasUnavailable) {
+      if (hasUnavailableOrDeferred) {
         queueMicrotask(() => this.retryUnavailable())
       }
     }
@@ -808,6 +814,7 @@ export class FolderScanManager {
       const ready = await this.memory.waitForWriteReady(10_000)
       if (!ready && this.memory.isWriteReady && !this.memory.isWriteReady()) {
         job.state = 'stopped'
+        job.deferred = true
         job.lastError = 'Storage write gate not ready; scan deferred'
         this.save()
         this.emitRootsChanged()
@@ -876,9 +883,16 @@ export class FolderScanManager {
         if (!job.lastError) {
           job.lastError = 'Scan stopped: some discovered files could not be enrolled'
         }
+      } else if (job.errors > 0) {
+        job.state = 'stopped'
+        if (!job.lastError) {
+          job.lastError = 'Scan stopped: some directories or files could not be read'
+        }
       } else {
         job.state = 'complete'
         job.completedAt = Date.now()
+        delete job.deferred
+        delete job.lastError
       }
       this.save()
       this.emitRootsChanged()
@@ -1008,13 +1022,25 @@ export class FolderScanManager {
     if (this.closed) return []
     const retried: string[] = []
     for (const job of this.manifest.jobs) {
-      if (job.state === 'stopped' && (job.unavailable || job.lastError?.includes('unavailable'))) {
+      if (
+        job.state === 'stopped' &&
+        (job.unavailable ||
+          job.deferred ||
+          job.lastError?.includes('unavailable') ||
+          job.lastError?.includes('deferred'))
+      ) {
         if (!hasManualOwner(job)) {
           continue
+        }
+        if (job.deferred || job.lastError?.includes('deferred')) {
+          if (this.memory.isWriteReady && !this.memory.isWriteReady()) {
+            continue
+          }
         }
         try {
           validateRoot(job.root)
           job.unavailable = false
+          delete job.deferred
           delete job.lastError
           this.start(job.root, 'manual')
           retried.push(job.root)

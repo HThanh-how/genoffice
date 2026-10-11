@@ -66,20 +66,6 @@ export interface CompactionCycleOutcome {
   error?: string
 }
 
-export interface CompactionRunDiagnostic {
-  runId: string
-  epoch: number
-  configVersion?: number
-  requestType: 'run-retention' | 'free-space' | 'optimize-fts' | 'redundancy-analyze'
-  startedAt: number
-  endedAt: number
-  status: CompactionRunStatus | 'skipped' | 'stale'
-  skippedReason?: string
-  bytesBefore: number
-  bytesAfter: number
-  targetReached: boolean
-}
-
 export interface MakeRoomRequest {
   /** A real admission refusal includes concurrent leases and disk headroom, not just measured usage. */
   admissionDenied?: boolean

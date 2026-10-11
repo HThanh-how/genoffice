@@ -3,6 +3,7 @@ import {
   CREATE_NAME_SEARCH_PROJECTION_SQL,
   hasNameProjection,
   hasRowVersionColumn,
+  invalidateNameProjectionSchemaCache,
   initNameProjectionMetaState,
   getNameProjectionMetaState,
   CURRENT_NAME_PROJECTION_ALGORITHM_VERSION,
@@ -62,17 +63,24 @@ export function migrateNameSearchProjection(db: DatabaseSync): NameSearchProject
       if (!hasRowVersionColumn(db)) {
         db.exec('ALTER TABLE document_name_projection ADD COLUMN row_version INTEGER DEFAULT 1')
       }
+      invalidateNameProjectionSchemaCache(db)
 
       // 4. Record migration in schema_migrations if available
       const hasSchemaMigrations = Boolean(
-        db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get(),
+        db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+          )
+          .get(),
       )
       if (hasSchemaMigrations) {
-        db.prepare(`
+        db.prepare(
+          `
           INSERT INTO schema_migrations (id, applied_at)
           VALUES (?, unixepoch())
           ON CONFLICT(id) DO NOTHING;
-        `).run(NAME_SEARCH_PROJECTION_MIGRATION_ID)
+        `,
+        ).run(NAME_SEARCH_PROJECTION_MIGRATION_ID)
       }
 
       // 5. Version and rebuild state detection in document_memory_meta (propagate failure on error)

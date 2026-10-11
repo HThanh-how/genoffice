@@ -2,7 +2,6 @@ import {
   accessSync,
   closeSync,
   constants,
-  copyFileSync,
   existsSync,
   fsyncSync,
   mkdirSync,
@@ -62,10 +61,10 @@ export interface RelocationJournal {
   authoritative: 'source' | 'target'
   sourceDir: string
   targetDir: string
-  stagingDir: string
-  files: Array<{ name: string; size: number }>
+  stagingDir?: string
+  files?: Array<{ name: string; size: number }>
   expectedDocCount?: number
-  startedAt: number
+  startedAt?: number
   updatedAt: number
   error?: string
 }
@@ -122,13 +121,18 @@ export class CorruptLocationMetadataError extends Error {
   }
 }
 
-function writeAtomic(filePath: string, content: string): void {
+function writeAtomic(
+  filePath: string,
+  content: string,
+  options?: { isRecoveryRestore?: boolean },
+): void {
   // Validate that content is valid JSON before writing
   try {
     JSON.parse(content)
   } catch (err) {
     throw new Error(
       `Refusing to write invalid metadata JSON to ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
     )
   }
 
@@ -146,20 +150,39 @@ function writeAtomic(filePath: string, content: string): void {
     closeSync(fd)
   }
 
-  // 2. If the current filePath exists and is valid, durably maintain bakPath before replacement
-  if (existsSync(filePath)) {
+  // 2. Durably maintain bakPath before replacement:
+  // ONLY if this is NOT a recovery restore, AND if current filePath exists and is valid JSON!
+  // Never overwrite a valid backup with a corrupted or unverified primary file!
+  if (!options?.isRecoveryRestore && existsSync(filePath)) {
+    let currentFileValid = false
     try {
-      copyFileSync(filePath, bakTmpPath)
-      fsyncFile(bakTmpPath)
-      renameSync(bakTmpPath, bakPath)
-      fsyncFile(bakPath)
-      fsyncDir(dir)
+      const existing = readFileSync(filePath, 'utf8')
+      JSON.parse(existing)
+      currentFileValid = true
     } catch {
-      // Best-effort backup promotion
-    } finally {
+      // ignore parse failure
+    }
+
+    if (currentFileValid) {
       try {
-        if (existsSync(bakTmpPath)) unlinkSync(bakTmpPath)
-      } catch {}
+        const bakFd = openSync(bakTmpPath, 'w')
+        try {
+          const currentContent = readFileSync(filePath)
+          writeFileSync(bakFd, currentContent)
+          fsyncSync(bakFd)
+        } finally {
+          closeSync(bakFd)
+        }
+        renameSync(bakTmpPath, bakPath)
+        fsyncFile(bakPath)
+        fsyncDir(dir)
+      } catch {
+        // Best-effort backup promotion
+      } finally {
+        try {
+          if (existsSync(bakTmpPath)) unlinkSync(bakTmpPath)
+        } catch {}
+      }
     }
   }
 
@@ -198,6 +221,7 @@ function writeAtomic(filePath: string, content: string): void {
         } catch {}
         throw new Error(
           `Failed atomic file replacement for ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+          { cause: err },
         )
       }
     }
@@ -213,6 +237,7 @@ function writeAtomic(filePath: string, content: string): void {
       } catch {}
       throw new Error(
         `Failed atomic file replacement for ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+        { cause: err },
       )
     }
   }
@@ -233,12 +258,26 @@ function read(userData: string): LocationSettings {
       if (!existsSync(filePath)) return null
       const content = readFileSync(filePath, 'utf8')
       const value: unknown = JSON.parse(content)
-      if (!value || typeof value !== 'object') return null
-      const { dir, moveTo, lastError } = value as LocationSettings
+      if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+      const raw = value as Record<string, unknown>
+      for (const key of Object.keys(raw)) {
+        if (key !== 'dir' && key !== 'moveTo' && key !== 'lastError') return null
+      }
+      if (raw.dir !== undefined) {
+        if (typeof raw.dir !== 'string' || !raw.dir.trim() || !isAbsolute(raw.dir)) return null
+      }
+      if (raw.moveTo !== undefined) {
+        if (typeof raw.moveTo !== 'string' || !raw.moveTo.trim() || !isAbsolute(raw.moveTo)) {
+          return null
+        }
+      }
+      if (raw.lastError !== undefined) {
+        if (typeof raw.lastError !== 'string') return null
+      }
       return {
-        ...(typeof dir === 'string' && dir ? { dir } : {}),
-        ...(typeof moveTo === 'string' && moveTo ? { moveTo } : {}),
-        ...(typeof lastError === 'string' && lastError ? { lastError } : {}),
+        ...(typeof raw.dir === 'string' && raw.dir ? { dir: raw.dir } : {}),
+        ...(typeof raw.moveTo === 'string' && raw.moveTo ? { moveTo: raw.moveTo } : {}),
+        ...(typeof raw.lastError === 'string' && raw.lastError ? { lastError: raw.lastError } : {}),
       }
     } catch {
       return null
@@ -254,24 +293,23 @@ function read(userData: string): LocationSettings {
     const backup = parseSettings(bakPath)
     if (backup !== null) {
       // Primary was missing or corrupted, but backup is valid.
-      // Restore primary from valid backup
+      // Durably restore primary from valid backup WITHOUT overwriting backup!
       try {
-        write(userData, backup)
+        writeAtomic(primaryPath, JSON.stringify(backup, null, 2), { isRecoveryRestore: true })
       } catch {}
       return backup
     }
   }
 
   // Metadata files existed on disk, but neither primary nor backup could be parsed!
-  // If a database already exists in userData, this is an existing default-location installation.
-  const defaultDbExists = existsSync(join(userData, 'document-memory.db'))
-  if (defaultDbExists) {
+  // If an existing verified database is already present in userData, preserve default location.
+  const defaultDbPath = join(userData, 'document-memory.db')
+  if (existsSync(defaultDbPath) && verifyDatabaseIntegrity(defaultDbPath).ok) {
     return {
       lastError: 'Settings metadata was corrupted; preserved existing database in default location',
     }
   }
 
-  // If userData has NO database, this was previously relocated or is in an ambiguous state.
   // Fail closed to prevent silent data loss (creating a fresh empty database in userData).
   throw new CorruptLocationMetadataError(
     `Corrupt location metadata in ${userData}; failing closed to prevent silent data loss`,
@@ -285,15 +323,62 @@ function write(userData: string, settings: LocationSettings): void {
 function parseJournal(content: string): RelocationJournal | null {
   try {
     const parsed = JSON.parse(content) as RelocationJournal
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    if (parsed.version !== 1) return null
+    if (!['prepare', 'staged', 'committed', 'cleanup'].includes(parsed.phase)) return null
+    if (!['source', 'target'].includes(parsed.authoritative)) return null
     if (
-      parsed &&
-      parsed.version === 1 &&
-      typeof parsed.sourceDir === 'string' &&
-      typeof parsed.targetDir === 'string'
+      typeof parsed.sourceDir !== 'string' ||
+      !parsed.sourceDir.trim() ||
+      !isAbsolute(parsed.sourceDir)
     ) {
-      return parsed
+      return null
     }
-    return null
+    if (
+      typeof parsed.targetDir !== 'string' ||
+      !parsed.targetDir.trim() ||
+      !isAbsolute(parsed.targetDir) ||
+      resolve(parsed.sourceDir) === resolve(parsed.targetDir)
+    ) {
+      return null
+    }
+    if (
+      parsed.stagingDir !== undefined &&
+      (typeof parsed.stagingDir !== 'string' || !parsed.stagingDir.trim())
+    ) {
+      return null
+    }
+    if (parsed.files !== undefined) {
+      if (!Array.isArray(parsed.files)) return null
+      for (const f of parsed.files) {
+        if (
+          !f ||
+          typeof f !== 'object' ||
+          typeof f.name !== 'string' ||
+          typeof f.size !== 'number' ||
+          f.size < 0
+        ) {
+          return null
+        }
+      }
+    }
+    if (
+      parsed.expectedDocCount !== undefined &&
+      (typeof parsed.expectedDocCount !== 'number' ||
+        !Number.isInteger(parsed.expectedDocCount) ||
+        parsed.expectedDocCount < 0)
+    ) {
+      return null
+    }
+    if (
+      parsed.startedAt !== undefined &&
+      (typeof parsed.startedAt !== 'number' || parsed.startedAt <= 0)
+    ) {
+      return null
+    }
+    if (typeof parsed.updatedAt !== 'number' || parsed.updatedAt <= 0) return null
+
+    return parsed
   } catch {
     return null
   }
@@ -430,9 +515,7 @@ export function checkpointDatabaseWal(dbPath: string): { ok: boolean; error?: st
       db.exec('BEGIN IMMEDIATE; COMMIT;')
 
       const row = db.prepare('PRAGMA wal_checkpoint(TRUNCATE);').get() as
-        | { busy?: number; log?: number; checkpointed?: number }
-        | Record<string, unknown>
-        | undefined
+        { busy?: number; log?: number; checkpointed?: number } | Record<string, unknown> | undefined
       const busy = row
         ? typeof row.busy === 'number'
           ? row.busy
@@ -617,9 +700,11 @@ async function recoverInterruptedRelocation(
     const targetValid = verifyDatabaseCandidate(targetDbPath)
     if (targetValid.ok) {
       // Clean up staging directory if still around
-      try {
-        await rm(stagingDir, { recursive: true, force: true })
-      } catch {}
+      if (stagingDir) {
+        try {
+          await rm(stagingDir, { recursive: true, force: true })
+        } catch {}
+      }
       // Clean up source directory files
       for (const name of ALL_POTENTIAL_DB_FILES) {
         try {
@@ -642,9 +727,11 @@ async function recoverInterruptedRelocation(
           unlinkSync(join(targetDir, name))
         } catch {}
       }
-      try {
-        await rm(stagingDir, { recursive: true, force: true })
-      } catch {}
+      if (stagingDir) {
+        try {
+          await rm(stagingDir, { recursive: true, force: true })
+        } catch {}
+      }
       const isDefault = resolve(sourceDir) === resolve(userData)
       write(userData, {
         ...(isDefault ? {} : { dir: sourceDir }),
@@ -672,9 +759,11 @@ async function recoverInterruptedRelocation(
 
   if (sourceValid.ok) {
     // Source is intact and verified. Safe to clean up target artifacts and roll back.
-    try {
-      await rm(stagingDir, { recursive: true, force: true })
-    } catch {}
+    if (stagingDir) {
+      try {
+        await rm(stagingDir, { recursive: true, force: true })
+      } catch {}
+    }
     for (const name of ALL_POTENTIAL_DB_FILES) {
       try {
         unlinkSync(join(targetDir, name))
@@ -692,9 +781,11 @@ async function recoverInterruptedRelocation(
   // Source is missing or corrupted: NEVER delete target solely because source DB is missing.
   // Check if target has a verified surviving copy.
   if (targetValid.ok) {
-    try {
-      await rm(stagingDir, { recursive: true, force: true })
-    } catch {}
+    if (stagingDir) {
+      try {
+        await rm(stagingDir, { recursive: true, force: true })
+      } catch {}
+    }
     const isDefault = resolve(targetDir) === resolve(userData)
     write(userData, { ...(isDefault ? {} : { dir: targetDir }), lastError: undefined })
     removeJournal(userData)
@@ -780,7 +871,10 @@ export async function applyPendingDbMove(
       }
     }
 
-    // 1.6 Record baseline schema and counts
+    // 1.6 Record baseline schema, counts, and post-checkpoint source file stats
+    const sourceDbStats = existsSync(sourceDbPath)
+      ? { size: statSync(sourceDbPath).size, mtimeMs: statSync(sourceDbPath).mtimeMs }
+      : null
     const srcSchema = existsSync(sourceDbPath)
       ? verifyDatabaseSchema(sourceDbPath)
       : { docCount: 0 }
@@ -828,6 +922,19 @@ export async function applyPendingDbMove(
       fsyncFile(stagedFile)
       if ((await stat(srcFile)).size !== (await stat(stagedFile)).size) {
         throw new Error(`${name} copied short`)
+      }
+    }
+
+    // 2.0 Verify source quiescence: source must not have mutated during copy
+    if (sourceDbStats && existsSync(sourceDbPath)) {
+      const currentSrcStat = statSync(sourceDbPath)
+      if (
+        currentSrcStat.size !== sourceDbStats.size ||
+        currentSrcStat.mtimeMs !== sourceDbStats.mtimeMs
+      ) {
+        throw new Error(
+          'Source database modified during staging; aborting relocation for consistency',
+        )
       }
     }
 

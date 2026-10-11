@@ -610,7 +610,9 @@ describe('FolderScanManager', () => {
     expect(retriedRoots).toContain(resolve(folderB))
 
     // Chờ B quét xong thành công
-    await until(() => !instance.status().running && enrolledFiles.some((f) => f.includes('docB.txt')))
+    await until(
+      () => !instance.status().running && enrolledFiles.some((f) => f.includes('docB.txt')),
+    )
 
     // B đã hoàn thành sang complete / watching
     folderBEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderB))
@@ -809,7 +811,9 @@ describe('FolderScanManager', () => {
     expect(instance.isWaiting(folderC)).toBe(true)
 
     // Đợi đến khi toàn bộ hoàn tất
-    await until(() => !instance.status().running && enrolledFiles.some((f) => f.includes('docC.txt')))
+    await until(
+      () => !instance.status().running && enrolledFiles.some((f) => f.includes('docC.txt')),
+    )
 
     // Khi runner A thoát, C phải được tự động pick up và scan, không bị kẹt trong waiting queue
     expect(instance.isWaiting(folderC)).toBe(false)

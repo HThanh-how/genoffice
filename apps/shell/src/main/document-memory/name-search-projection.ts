@@ -345,13 +345,13 @@ function buildMediaProjection(name: string, path: string): DocumentProjectionTok
   const stemWords = normalizeDocumentText(name.replace(/\.[^/.]+$/, ''))
     .split(' ')
     .filter(Boolean)
-  const nameTokens = new Set(stemWords.filter((w) => w.length <= MAX_COMPONENT_LENGTH).slice(0, 6))
-  const joined = stemWords.slice(0, 3).join('')
+  const nameTokens = new Set(stemWords.filter((w) => w.length <= MAX_COMPONENT_LENGTH).slice(0, 8))
+  const joined = stemWords.slice(0, 4).join('')
   if (stemWords.length >= 2 && joined.length <= MAX_COMPONENT_LENGTH) nameTokens.add(joined)
   const pathTokens = new Set<string>()
   for (const dir of extractMeaningfulPathSegments(path, 3).reverse()) {
     for (const word of normalizeDocumentText(dir).split(' ')) {
-      if (word && word.length <= MAX_COMPONENT_LENGTH && pathTokens.size < 6) pathTokens.add(word)
+      if (word && word.length <= MAX_COMPONENT_LENGTH && pathTokens.size < 8) pathTokens.add(word)
     }
   }
   return {
@@ -814,6 +814,20 @@ export function syncProjectionExclude(db: DatabaseSync, docId: number): void {
 
 export function syncProjectionTombstone(db: DatabaseSync, docId: number): void {
   syncProjectionDelete(db, docId)
+}
+
+/**
+ * Invalidates schema detection and prepared statement caches for a connection.
+ * Must be invoked whenever the projection schema is altered or upgraded.
+ */
+export function invalidateNameProjectionSchemaCache(db: DatabaseSync): void {
+  hasRowVersionColumnCache.delete(db)
+  projectionTableExistsCache.delete(db)
+  projectionSelectRowVerStmtCache.delete(db)
+  projectionSelectLegacyStmtCache.delete(db)
+  projectionInsertRowVerStmtCache.delete(db)
+  projectionInsertLegacyStmtCache.delete(db)
+  projectionDeleteStmtCache.delete(db)
 }
 
 export interface NameProjectionBackfillBounds {

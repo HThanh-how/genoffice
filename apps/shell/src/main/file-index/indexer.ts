@@ -61,24 +61,27 @@ async function asyncFileStat(path: string): Promise<FileStatResult> {
 }
 
 function isInside(root: string, path: string): boolean {
+  if (root.includes('..') || path.includes('..')) {
+    const suffix = relative(root, path)
+    return (
+      suffix === '' ||
+      (!isAbsolute(suffix) &&
+        suffix !== '..' &&
+        !suffix.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`))
+    )
+  }
+
   if (process.platform === 'win32') {
-    const rootNorm = root.toLowerCase()
-    const pathNorm = path.toLowerCase()
-    if (pathNorm === rootNorm) return true
-    const sep = rootNorm.endsWith('\\') || rootNorm.endsWith('/') ? '' : '\\'
-    if (pathNorm.startsWith(rootNorm + sep)) return true
+    const r = root.replace(/\//g, '\\').toLowerCase()
+    const p = path.replace(/\//g, '\\').toLowerCase()
+    if (p === r) return true
+    const sep = r.endsWith('\\') ? '' : '\\'
+    return p.startsWith(r + sep)
   } else {
     if (path === root) return true
     const sep = root.endsWith('/') ? '' : '/'
-    if (path.startsWith(root + sep)) return true
+    return path.startsWith(root + sep)
   }
-  const suffix = relative(root, path)
-  return (
-    suffix === '' ||
-    (!isAbsolute(suffix) &&
-      suffix !== '..' &&
-      !suffix.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`))
-  )
 }
 
 async function parentConfirmsMissing(path: string): Promise<boolean> {

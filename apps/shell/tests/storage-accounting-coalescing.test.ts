@@ -3,7 +3,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { StorageAccountingRunner } from '../src/main/document-memory/runtime/storage-accounting-runner'
-import type { StorageAccountingOptions, StorageAccountingReport } from '../src/main/document-memory/runtime/storage-accounting'
+import type {
+  StorageAccountingOptions,
+  StorageAccountingReport,
+} from '../src/main/document-memory/runtime/storage-accounting'
 
 describe('P1-2: Storage accounting runner coalescing compatibility', () => {
   let tempDir: string
@@ -46,7 +49,7 @@ describe('P1-2: Storage accounting runner coalescing compatibility', () => {
         }
         // Respond asynchronously with the file size corresponding to the ANN file in options
         setTimeout(() => {
-          const annBytes = (data.annIndexesMeta?.[0]?.file_path === annPathA) ? 20_000 : 50_000
+          const annBytes = data.annIndexesMeta?.[0]?.file_path === annPathA ? 20_000 : 50_000
           const report: Partial<StorageAccountingReport> = {
             databaseBytes: 10_000,
             dbSizeBytes: 10_000,

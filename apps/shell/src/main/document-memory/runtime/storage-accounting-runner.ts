@@ -1,9 +1,6 @@
 import { Worker } from 'node:worker_threads'
 import accountingWorkerPath from './storage-accounting-worker?modulePath'
-import type {
-  StorageAccountingOptions,
-  StorageAccountingReport,
-} from './storage-accounting'
+import type { StorageAccountingOptions, StorageAccountingReport } from './storage-accounting'
 import { safeGetFileSize } from '../storage-budget'
 
 export interface StorageAccountingWorkerLike {
@@ -76,7 +73,8 @@ export class StorageAccountingRunner {
   ): Promise<StorageAccountingReport> {
     if (this.disposed || !options.dbPath) {
       return Promise.resolve(
-        fallbackReport ?? this.createDegradedFallback(options.dbPath || '', 'Accounting runner disposed'),
+        fallbackReport ??
+          this.createDegradedFallback(options.dbPath || '', 'Accounting runner disposed'),
       )
     }
 
@@ -107,7 +105,8 @@ export class StorageAccountingRunner {
     const runTask = async (): Promise<void> => {
       if (this.disposed) {
         capturedResolve(
-          fallbackReport ?? this.createDegradedFallback(options.dbPath, 'Accounting runner disposed'),
+          fallbackReport ??
+            this.createDegradedFallback(options.dbPath, 'Accounting runner disposed'),
         )
         return
       }
@@ -135,10 +134,7 @@ export class StorageAccountingRunner {
     return jobPromise
   }
 
-  private areOptionsCompatible(
-    a: StorageAccountingOptions,
-    b: StorageAccountingOptions,
-  ): boolean {
+  private areOptionsCompatible(a: StorageAccountingOptions, b: StorageAccountingOptions): boolean {
     if (a.dbPath !== b.dbPath) return false
     if (a.reusableFreelistBytes !== b.reusableFreelistBytes) return false
     if (
@@ -154,10 +150,12 @@ export class StorageAccountingRunner {
     if (Boolean(aMeta) !== Boolean(bMeta)) return false
     if (aMeta && bMeta) {
       if (aMeta.length !== bMeta.length) return false
-      const mapA = new Map(aMeta.map((m) => [m.space_id, m.file_path]))
-      for (const m of bMeta) {
-        if (!mapA.has(m.space_id)) return false
-        if (mapA.get(m.space_id) !== m.file_path) return false
+      const sortKey = (m: { space_id: string; file_path: string | null }) =>
+        `${m.space_id}\0${m.file_path ?? ''}`
+      const sortedA = aMeta.map(sortKey).sort()
+      const sortedB = bMeta.map(sortKey).sort()
+      for (let i = 0; i < sortedA.length; i++) {
+        if (sortedA[i] !== sortedB[i]) return false
       }
     }
     return true
