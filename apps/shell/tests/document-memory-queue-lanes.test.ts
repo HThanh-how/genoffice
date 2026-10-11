@@ -196,6 +196,13 @@ function open(worker: FakeIndexWorker, extra: Record<string, unknown> = {}): Doc
 }
 
 function statusCounts(): Record<string, number> {
+  const db = manager?.store?.rawDb
+  if (db) {
+    const rows = db
+      .prepare('SELECT status, count(*) AS n FROM documents GROUP BY status')
+      .all() as Array<{ status: string; n: number }>
+    return Object.fromEntries(rows.map((r) => [r.status, r.n]))
+  }
   const view = new DocumentMemoryStore(join(dir, 'document-memory.db'), { role: 'search' })
   try {
     const rows = view.rawDb

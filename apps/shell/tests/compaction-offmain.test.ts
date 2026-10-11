@@ -111,6 +111,7 @@ describe('off the main thread (real child-process worker)', () => {
     manager = new DocumentMemoryManager(dir, {
       workerFactory: (await realIndexWorkerFactory()) as any,
       pollIntervalMs: 3_600_000,
+      junkPurgeDelayMs: 3_600_000,
       workerTimeoutMs: 120_000,
     })
     const sched = (manager as any).maintScheduler

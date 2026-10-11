@@ -31,8 +31,7 @@ CREATE TABLE IF NOT EXISTS document_media (
   ocr_candidate INTEGER NOT NULL DEFAULT 0,
   ocr_state INTEGER NOT NULL DEFAULT 0
 );
-CREATE INDEX IF NOT EXISTS document_media_kind_ts ON document_media(kind, ts_ms);
-CREATE INDEX IF NOT EXISTS document_media_ts ON document_media(ts_ms);
+CREATE INDEX IF NOT EXISTS document_media_ts ON document_media(ts_ms, kind);
 CREATE INDEX IF NOT EXISTS document_media_pending ON document_media(document_id) WHERE meta_state = 0;
 `
 
