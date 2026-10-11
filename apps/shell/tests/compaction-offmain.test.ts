@@ -143,7 +143,27 @@ describe('off the main thread (real child-process worker)', () => {
     }
 
     const outcome = sched.getLastCompactionOutcome()
-    expect(outcome.report.targetReached).toBe(true)
+    expect(
+      outcome.report.targetReached,
+      JSON.stringify(
+        {
+          stoppedReason: outcome.report.stoppedReason,
+          bytesBefore: outcome.report.bytesBefore,
+          bytesAfter: outcome.report.bytesAfter,
+          targetFloor: outcome.report.targetFloor,
+          targetReached: outcome.report.targetReached,
+          estimatedBytesReclaimed: outcome.report.estimatedBytesReclaimed,
+          archiveVectorDocsPruned: outcome.report.age?.archiveVectorDocsPruned,
+          archiveContentDocsPruned: outcome.report.age?.archiveContentDocsPruned,
+          contentEvictedDocsCount: outcome.report.contentEvictedDocsCount,
+          protectedDocs: outcome.report.tier4ProtectedDocsCount,
+          reusableFreelistBytes: outcome.report.reusableFreelistBytes,
+          error: outcome.report.error,
+        },
+        null,
+        2,
+      ),
+    ).toBe(true)
     expect(outcome.report.bytesBefore / SOFT).toBeGreaterThan(0.9)
     expect(outcome.report.bytesAfter / SOFT).toBeLessThanOrEqual(0.8)
     expect(collectStorageAccounting({ dbPath }).totalManagedBytes / SOFT).toBeLessThanOrEqual(0.8)
