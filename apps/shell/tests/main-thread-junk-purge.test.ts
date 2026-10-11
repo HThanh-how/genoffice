@@ -120,6 +120,7 @@ describe('junk purge runs in bounded slices', () => {
 describe('the purge never blocks the event loop', () => {
   it('a long purge driven through the worker protocol keeps a 5 ms timer within 150 ms', async () => {
     seedDocuments(store.rawDb, { docs: 6000, junkEvery: 2, chunksPerDoc: 3 })
+    store.rawDb.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     const gaps: number[] = []
     let last = performance.now()
     const timer = setInterval(() => {

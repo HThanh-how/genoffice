@@ -3756,9 +3756,14 @@ const storageStartup: StorageStartupTracker = registerStorageStartup({
 })
 let appShuttingDown = false
 let everything: EverythingController | null = null
+const pendingRememberPaths: string[] = []
 function recordRecentFile(path: string): void {
   recordDocsRecentFile(path)
-  documentMemory?.remember(path)
+  if (documentMemory) {
+    documentMemory.remember(path)
+  } else {
+    pendingRememberPaths.push(path)
+  }
 }
 
 /** the single router: extension decides which module owns the file; false = nothing opened */
@@ -4028,6 +4033,10 @@ function attachDocumentMemory(
   startLegacyConverter()
   folderScan = new FolderScanManager(userDataDir, documentMemory)
   if (knownSources) void knownSources.reconcileDesiredSources()
+  const pendingRemember = pendingRememberPaths.splice(0)
+  for (const filePath of pendingRemember) {
+    documentMemory.remember(filePath)
+  }
   const pendingScans = pendingFolderScanPaths
   pendingFolderScanPaths = []
   for (const folder of pendingScans) startFolderScan(folder)

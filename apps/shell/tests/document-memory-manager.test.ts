@@ -33,7 +33,6 @@ class FakeWorker extends EventEmitter {
   extractionCalls: string[] = []
   stopAfterBatches = Infinity
   private pendingTimers = new Set<ReturnType<typeof setTimeout>>()
-  private terminated = false
 
   constructor(private readonly dbPath: string) {
     super()
@@ -48,10 +47,8 @@ class FakeWorker extends EventEmitter {
     limit?: number
     embeddingModel?: string
   }) {
-    if (this.terminated) return
     const timer = setTimeout(() => {
       this.pendingTimers.delete(timer)
-      if (this.terminated) return
       try {
         const ack = storageBudgetAckReply(message)
         if (ack) {
@@ -107,12 +104,10 @@ class FakeWorker extends EventEmitter {
     this.pendingTimers.add(timer)
   }
   terminate(): Promise<number> {
-    this.terminated = true
     for (const timer of this.pendingTimers) {
       clearTimeout(timer)
     }
     this.pendingTimers.clear()
-    this.removeAllListeners()
     return Promise.resolve(0)
   }
 }
