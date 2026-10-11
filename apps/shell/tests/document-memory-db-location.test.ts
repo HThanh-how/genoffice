@@ -666,3 +666,231 @@ describe('crash-safety & fault-injection relocation protocol (P0-01)', () => {
     expect(existsSync(join(userData, 'document-memory.db'))).toBe(true)
   })
 })
+
+describe('DB-RECOVERY negative test scenarios (Contract Section 5)', () => {
+  it('DB-RECOVERY-01: Valid primary and valid backup', () => {
+    seedRealDatabase(target, 4)
+    const primarySettings = { dir: target }
+    const backupSettings = { dir: userData }
+    writeFileSync(
+      join(userData, 'document-memory-location.json'),
+      JSON.stringify(primarySettings, null, 2),
+    )
+    writeFileSync(
+      join(userData, 'document-memory-location.json.bak'),
+      JSON.stringify(backupSettings, null, 2),
+    )
+
+    // Primary takes precedence over backup
+    expect(resolveDbDir(userData)).toBe(target)
+    expect(existsSync(join(userData, 'document-memory-location.json.bak'))).toBe(true)
+  })
+
+  it('DB-RECOVERY-02: Valid primary and corrupt backup', () => {
+    seedRealDatabase(target, 4)
+    writeFileSync(
+      join(userData, 'document-memory-location.json'),
+      JSON.stringify({ dir: target }, null, 2),
+    )
+    writeFileSync(join(userData, 'document-memory-location.json.bak'), '{ corrupt json content')
+
+    expect(resolveDbDir(userData)).toBe(target)
+  })
+
+  it('DB-RECOVERY-03: Corrupt primary and valid backup', () => {
+    seedRealDatabase(target, 4)
+    writeFileSync(join(userData, 'document-memory-location.json'), '{ corrupt json content')
+    writeFileSync(
+      join(userData, 'document-memory-location.json.bak'),
+      JSON.stringify({ dir: target }, null, 2),
+    )
+
+    expect(resolveDbDir(userData)).toBe(target)
+    const restored = JSON.parse(
+      readFileSync(join(userData, 'document-memory-location.json'), 'utf8'),
+    )
+    expect(restored.dir).toBe(target)
+  })
+
+  it('DB-RECOVERY-04: Missing primary and valid staged-old primary', () => {
+    seedRealDatabase(target, 4)
+    const oldPrimary = join(
+      userData,
+      `document-memory-location.json.${process.pid}.${Date.now()}.old`,
+    )
+    writeFileSync(oldPrimary, JSON.stringify({ dir: target }, null, 2))
+
+    expect(resolveDbDir(userData)).toBe(target)
+    expect(existsSync(join(userData, 'document-memory-location.json'))).toBe(true)
+  })
+
+  it('DB-RECOVERY-05: Missing primary, missing normal backup, valid staged backup-old candidate', () => {
+    seedRealDatabase(target, 4)
+    const oldBak = join(
+      userData,
+      `document-memory-location.json.bak.${process.pid}.${Date.now()}.old`,
+    )
+    writeFileSync(oldBak, JSON.stringify({ dir: target }, null, 2))
+
+    expect(resolveDbDir(userData)).toBe(target)
+    expect(existsSync(join(userData, 'document-memory-location.json'))).toBe(true)
+    const restored = JSON.parse(
+      readFileSync(join(userData, 'document-memory-location.json'), 'utf8'),
+    )
+    expect(restored.dir).toBe(target)
+  })
+
+  it('DB-RECOVERY-06 & 07: Backup promotion failure during write does not fail primary write', () => {
+    seedRealDatabase(userData, 4)
+    writeFileSync(
+      join(userData, 'document-memory-location.json'),
+      JSON.stringify({ dir: userData }, null, 2),
+    )
+    const bakTmp = join(
+      userData,
+      `document-memory-location.json.bak.${process.pid}.${Date.now()}.tmp`,
+    )
+    mkdirSync(bakTmp, { recursive: true })
+
+    expect(() => planDbMove(userData, target)).not.toThrow()
+    const state = dbLocationState(userData)
+    expect(state.pending).toBe(target)
+  })
+
+  it('DB-RECOVERY-08: Crash after backup moved to .old but before new backup is promoted', () => {
+    seedRealDatabase(target, 4)
+    writeFileSync(join(userData, 'document-memory-location.json'), '{ truncated json')
+    const stagedBakOld = join(
+      userData,
+      `document-memory-location.json.bak.${process.pid}.${Date.now() - 500}.old`,
+    )
+    writeFileSync(stagedBakOld, JSON.stringify({ dir: target }, null, 2))
+
+    expect(resolveDbDir(userData)).toBe(target)
+    const restored = JSON.parse(
+      readFileSync(join(userData, 'document-memory-location.json'), 'utf8'),
+    )
+    expect(restored.dir).toBe(target)
+  })
+
+  it('DB-RECOVERY-09: Recovery restore itself fails gracefully without destroying backup', () => {
+    seedRealDatabase(target, 4)
+    writeFileSync(join(userData, 'document-memory-location.json'), '{ corrupt json')
+    writeFileSync(
+      join(userData, 'document-memory-location.json.bak'),
+      JSON.stringify({ dir: target }, null, 2),
+    )
+
+    expect(existsSync(join(userData, 'document-memory-location.json.bak'))).toBe(true)
+  })
+
+  it('DB-RECOVERY-10: Cleanup of old files is safe and does not block valid resolution', () => {
+    seedRealDatabase(target, 4)
+    writeFileSync(
+      join(userData, 'document-memory-location.json'),
+      JSON.stringify({ dir: target }, null, 2),
+    )
+    writeFileSync(join(userData, 'document-memory-location.json.1.tmp'), 'stale')
+    writeFileSync(join(userData, 'document-memory-location.json.1.old'), 'stale')
+
+    expect(resolveDbDir(userData)).toBe(target)
+    expect(existsSync(join(userData, 'document-memory-location.json.1.tmp'))).toBe(false)
+  })
+
+  it('DB-RECOVERY-11: Recovery runs twice idempotently', () => {
+    seedRealDatabase(target, 4)
+    writeFileSync(join(userData, 'document-memory-location.json'), '{ broken')
+    writeFileSync(
+      join(userData, 'document-memory-location.json.bak'),
+      JSON.stringify({ dir: target }, null, 2),
+    )
+
+    expect(resolveDbDir(userData)).toBe(target)
+    expect(resolveDbDir(userData)).toBe(target)
+  })
+
+  it('DB-RECOVERY-12: Settings and relocation journal disagree about authoritative database', () => {
+    seedRealDatabase(target, 4)
+    writeFileSync(
+      join(userData, 'document-memory-location.json'),
+      JSON.stringify({ dir: userData }, null, 2),
+    )
+    const journal = {
+      version: 1,
+      sourceDir: userData,
+      targetDir: target,
+      phase: 'committed',
+      authoritative: 'target',
+      updatedAt: Date.now(),
+    }
+    writeFileSync(
+      join(userData, 'document-memory-relocation-journal.json'),
+      JSON.stringify(journal, null, 2),
+    )
+
+    expect(resolveDbDir(userData)).toBe(target)
+  })
+
+  it('DB-RECOVERY-13: Source is missing, target is valid in committed journal', async () => {
+    seedRealDatabase(target, 4)
+    const journal = {
+      version: 1,
+      sourceDir: userData,
+      targetDir: target,
+      phase: 'committed',
+      authoritative: 'target',
+      updatedAt: Date.now(),
+    }
+    writeFileSync(
+      join(userData, 'document-memory-relocation-journal.json'),
+      JSON.stringify(journal, null, 2),
+    )
+
+    expect(resolveDbDir(userData)).toBe(target)
+  })
+
+  it('DB-RECOVERY-14: Source is valid, target is corrupt in staged journal', () => {
+    seedRealDatabase(userData, 4)
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(target, 'document-memory.db'), 'corrupt database bytes')
+    const journal = {
+      version: 1,
+      sourceDir: userData,
+      targetDir: target,
+      phase: 'staged',
+      authoritative: 'source',
+      updatedAt: Date.now(),
+    }
+    writeFileSync(
+      join(userData, 'document-memory-relocation-journal.json'),
+      JSON.stringify(journal, null, 2),
+    )
+
+    expect(resolveDbDir(userData)).toBe(userData)
+  })
+
+  it('DB-RECOVERY-15: Neither database is valid during relocation fails closed', async () => {
+    mkdirSync(target, { recursive: true })
+    writeFileSync(join(userData, 'document-memory.db'), 'corrupted source')
+    writeFileSync(join(target, 'document-memory.db'), 'corrupted target')
+    const journal = {
+      version: 1,
+      sourceDir: userData,
+      targetDir: target,
+      phase: 'committed',
+      authoritative: 'target',
+      updatedAt: Date.now(),
+    }
+    writeFileSync(
+      join(userData, 'document-memory-relocation-journal.json'),
+      JSON.stringify(journal, null, 2),
+    )
+
+    const res = await applyPendingDbMove(userData)
+    expect(res.moved).toBe(false)
+    expect(res.error).toContain('neither source nor target')
+    // Neither database is deleted
+    expect(existsSync(join(userData, 'document-memory.db'))).toBe(true)
+    expect(existsSync(join(target, 'document-memory.db'))).toBe(true)
+  })
+})

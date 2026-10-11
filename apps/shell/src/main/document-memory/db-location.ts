@@ -303,6 +303,28 @@ function findStagedOldFiles(filePath: string): string[] {
   }
 }
 
+function findStagedBackupOldFiles(filePath: string): string[] {
+  try {
+    const dir = dirname(filePath)
+    const base = basename(filePath)
+    if (!existsSync(dir)) return []
+    const bakPrefix = `${base}.bak.`
+    const files = readdirSync(dir)
+    return files
+      .filter((f) => (f.startsWith(bakPrefix) || f === `${base}.bak.old`) && f.endsWith('.old'))
+      .map((f) => join(dir, f))
+      .sort((a, b) => {
+        try {
+          return statSync(b).mtimeMs - statSync(a).mtimeMs
+        } catch {
+          return 0
+        }
+      })
+  } catch {
+    return []
+  }
+}
+
 function cleanOrphanedTmpAndOldFiles(filePath: string): void {
   try {
     const dir = dirname(filePath)
@@ -399,11 +421,13 @@ function read(userData: string): LocationSettings {
   const primaryPath = join(userData, SETTINGS_FILE)
   const bakPath = join(userData, `${SETTINGS_FILE}.bak`)
   const oldFiles = findStagedOldFiles(primaryPath)
+  const oldBakFiles = findStagedBackupOldFiles(primaryPath)
   const primaryExists = existsSync(primaryPath)
   const bakExists = existsSync(bakPath)
   const hasOldFiles = oldFiles.length > 0
+  const hasOldBakFiles = oldBakFiles.length > 0
 
-  if (!primaryExists && !bakExists && !hasOldFiles) {
+  if (!primaryExists && !bakExists && !hasOldFiles && !hasOldBakFiles) {
     return {}
   }
 
@@ -438,6 +462,7 @@ function read(userData: string): LocationSettings {
     }
   }
 
+  // 1. Primary candidate takes absolute precedence when valid
   if (primaryExists) {
     const primary = parseSettings(primaryPath)
     if (primary !== null) {
@@ -446,7 +471,7 @@ function read(userData: string): LocationSettings {
     }
   }
 
-  // Primary was missing or corrupted: check .old candidates first (most recent pre-crash primary state)
+  // 2. Primary was missing or corrupted: check .old primary candidates first (most recent pre-crash primary state)
   for (const oldFile of oldFiles) {
     const oldSettings = parseSettings(oldFile)
     if (oldSettings !== null) {
@@ -458,7 +483,7 @@ function read(userData: string): LocationSettings {
     }
   }
 
-  // Next check .bak backup
+  // 3. Next check .bak backup
   if (bakExists) {
     const backup = parseSettings(bakPath)
     if (backup !== null) {
@@ -472,7 +497,21 @@ function read(userData: string): LocationSettings {
     }
   }
 
-  // Metadata files existed on disk, but neither primary, .old, nor backup could be parsed!
+  // 4. Next check staged backup-old candidates (e.g. crash during backup promotion before new backup was committed)
+  for (const oldBak of oldBakFiles) {
+    const backupSettings = parseSettings(oldBak)
+    if (backupSettings !== null) {
+      try {
+        writeAtomic(primaryPath, JSON.stringify(backupSettings, null, 2), {
+          isRecoveryRestore: true,
+        })
+        cleanOrphanedTmpAndOldFiles(primaryPath)
+      } catch {}
+      return backupSettings
+    }
+  }
+
+  // 5. Metadata files existed on disk, but neither primary, primary-old, backup, nor backup-old could be parsed!
   // If an existing verified database is already present in userData, preserve default location.
   const defaultDbPath = join(userData, 'document-memory.db')
   if (existsSync(defaultDbPath) && verifyDatabaseIntegrity(defaultDbPath).ok) {
@@ -573,9 +612,10 @@ function readJournal(userData: string): RelocationJournal | null {
   const journalPath = join(userData, JOURNAL_FILE)
   const bakPath = `${journalPath}.bak`
   const oldFiles = findStagedOldFiles(journalPath)
+  const oldBakFiles = findStagedBackupOldFiles(journalPath)
   const journalExists = existsSync(journalPath)
   const bakExists = existsSync(bakPath)
-  const hasOld = oldFiles.length > 0
+  const hasOld = oldFiles.length > 0 || oldBakFiles.length > 0
 
   if (!journalExists && !bakExists && !hasOld) return null
 
@@ -620,6 +660,20 @@ function readJournal(userData: string): RelocationJournal | null {
     } catch {
       // Backup also unreadable
     }
+  }
+
+  for (const oldBak of oldBakFiles) {
+    try {
+      const content = readFileSync(oldBak, 'utf8')
+      const parsed = parseJournal(content)
+      if (parsed) {
+        try {
+          writeAtomic(journalPath, JSON.stringify(parsed, null, 2), { isRecoveryRestore: true })
+          cleanOrphanedTmpAndOldFiles(journalPath)
+        } catch {}
+        return parsed
+      }
+    } catch {}
   }
 
   throw new CorruptRelocationJournalError(

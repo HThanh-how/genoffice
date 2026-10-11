@@ -703,15 +703,15 @@ export function applyFormWidgetEdits(pdfDoc: PDFDocument, edits: FormWidgetEditI
     const dict = ref ? pdfDoc.context.lookupMaybe(ref, PDFDict) : undefined
     const field = form.getFieldMaybe(e.fieldName)
     if (e.remove) {
-      if (ref) detachAnnot(pdfDoc, ref)
-      if (field) {
-        const widgets = field.acroField.getWidgets()
-        const idx = dict ? widgets.findIndex((w) => w.dict === dict) : -1
-        if (widgets.length <= 1 || idx < 0) {
-          form.removeField(field)
-        } else {
-          field.acroField.removeWidget(idx)
-        }
+      if (!field || !dict || !ref) continue
+      const widgets = field.acroField.getWidgets()
+      const idx = widgets.findIndex((w) => w.dict === dict)
+      if (idx < 0) continue
+      detachAnnot(pdfDoc, ref)
+      if (widgets.length <= 1) {
+        form.removeField(field)
+      } else {
+        field.acroField.removeWidget(idx)
       }
       continue
     }

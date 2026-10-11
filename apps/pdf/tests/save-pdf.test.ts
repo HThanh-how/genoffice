@@ -1182,3 +1182,288 @@ describe('applySaveRequest', () => {
     expect(String(needAppearances)).toBe('true')
   })
 })
+
+describe('PDF-DELETE negative regression tests (Contract Section 4)', () => {
+  const getWidgetIds = async (data: Uint8Array) => {
+    const task = getDocument({ data: data.slice() })
+    try {
+      const page = await (await task.promise).getPage(1)
+      const annos = await page.getAnnotations()
+      return annos
+        .filter((a) => a.subtype === 'Widget')
+        .map((a) => ({
+          id: a.id as string,
+          name: a.fieldName as string,
+          rect: a.rect as number[],
+        }))
+    } finally {
+      await task.destroy()
+    }
+  }
+
+  it('PDF-DELETE-01: Valid single-widget checkbox deletion', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 400])
+    const form = doc.getForm()
+    form.createCheckBox('agree').addToPage(page, { x: 10, y: 200, width: 14, height: 14 })
+    form.createTextField('other').addToPage(page, { x: 10, y: 100, width: 100, height: 20 })
+    const bytes = await doc.save({ useObjectStreams: false })
+
+    const widgets = await getWidgetIds(bytes)
+    const agreeW = widgets.find((w) => w.name === 'agree')!
+
+    const saved = await apply(
+      bytes,
+      request({
+        formWidgetEdits: [{ widgetId: agreeW.id, fieldName: 'agree', remove: true }],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    const outForm = out.getForm()
+    expect(outForm.getFieldMaybe('agree')).toBeUndefined()
+    expect(outForm.getFieldMaybe('other')).toBeDefined()
+    const afterWidgets = await getWidgetIds(saved)
+    expect(afterWidgets.some((w) => w.name === 'agree')).toBe(false)
+    expect(afterWidgets.some((w) => w.name === 'other')).toBe(true)
+  })
+
+  it('PDF-DELETE-02: Valid two-widget field, delete first widget, second widget survives', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 400])
+    const form = doc.getForm()
+    const field = form.createTextField('twice')
+    field.addToPage(page, { x: 10, y: 200, width: 50, height: 20 })
+    field.addToPage(page, { x: 10, y: 100, width: 50, height: 20 })
+    const bytes = await doc.save({ useObjectStreams: false })
+
+    const widgets = await getWidgetIds(bytes)
+    const twiceWidgets = widgets.filter((w) => w.name === 'twice')
+    expect(twiceWidgets).toHaveLength(2)
+
+    const saved = await apply(
+      bytes,
+      request({
+        formWidgetEdits: [{ widgetId: twiceWidgets[0]!.id, fieldName: 'twice', remove: true }],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    const outForm = out.getForm()
+    const outField = outForm.getTextField('twice')
+    expect(outField).toBeDefined()
+    expect(outField.acroField.getWidgets()).toHaveLength(1)
+    const afterWidgets = await getWidgetIds(saved)
+    expect(afterWidgets.filter((w) => w.name === 'twice')).toHaveLength(1)
+    expect(afterWidgets[0]!.id).toBe(twiceWidgets[1]!.id)
+  })
+
+  it('PDF-DELETE-03: Valid two-widget field, delete second widget, first widget survives', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 400])
+    const form = doc.getForm()
+    const field = form.createTextField('twice')
+    field.addToPage(page, { x: 10, y: 200, width: 50, height: 20 })
+    field.addToPage(page, { x: 10, y: 100, width: 50, height: 20 })
+    const bytes = await doc.save({ useObjectStreams: false })
+
+    const widgets = await getWidgetIds(bytes)
+    const twiceWidgets = widgets.filter((w) => w.name === 'twice')
+    expect(twiceWidgets).toHaveLength(2)
+
+    const saved = await apply(
+      bytes,
+      request({
+        formWidgetEdits: [{ widgetId: twiceWidgets[1]!.id, fieldName: 'twice', remove: true }],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    const outForm = out.getForm()
+    const outField = outForm.getTextField('twice')
+    expect(outField).toBeDefined()
+    expect(outField.acroField.getWidgets()).toHaveLength(1)
+    const afterWidgets = await getWidgetIds(saved)
+    expect(afterWidgets.filter((w) => w.name === 'twice')).toHaveLength(1)
+    expect(afterWidgets[0]!.id).toBe(twiceWidgets[0]!.id)
+  })
+
+  it('PDF-DELETE-04: Invalid widget ID must not delete a field', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 400])
+    const form = doc.getForm()
+    form.createTextField('title').addToPage(page, { x: 10, y: 200, width: 100, height: 20 })
+    const bytes = await doc.save({ useObjectStreams: false })
+
+    const saved = await apply(
+      bytes,
+      request({
+        formWidgetEdits: [
+          { widgetId: '9999R0', fieldName: 'title', remove: true },
+          { widgetId: 'invalid-id', fieldName: 'title', remove: true },
+        ],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    expect(out.getForm().getFieldMaybe('title')).toBeDefined()
+    expect(out.getForm().getTextField('title').acroField.getWidgets()).toHaveLength(1)
+    const afterWidgets = await getWidgetIds(saved)
+    expect(afterWidgets.filter((w) => w.name === 'title')).toHaveLength(1)
+  })
+
+  it('PDF-DELETE-05: Mismatched fieldName and widgetId must not delete either field or detach either annotation', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 400])
+    const form = doc.getForm()
+    form.createTextField('fieldA').addToPage(page, { x: 10, y: 200, width: 50, height: 20 })
+    form.createTextField('fieldB').addToPage(page, { x: 10, y: 100, width: 50, height: 20 })
+    const bytes = await doc.save({ useObjectStreams: false })
+
+    const widgets = await getWidgetIds(bytes)
+    const widgetB = widgets.find((w) => w.name === 'fieldB')!
+
+    const saved = await apply(
+      bytes,
+      request({
+        formWidgetEdits: [{ widgetId: widgetB.id, fieldName: 'fieldA', remove: true }],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    expect(out.getForm().getFieldMaybe('fieldA')).toBeDefined()
+    expect(out.getForm().getFieldMaybe('fieldB')).toBeDefined()
+    const afterWidgets = await getWidgetIds(saved)
+    expect(afterWidgets.some((w) => w.name === 'fieldA')).toBe(true)
+    expect(afterWidgets.some((w) => w.name === 'fieldB')).toBe(true)
+  })
+
+  it('PDF-DELETE-06: Missing widget dictionary must not cause deletion of unrelated PDF fields', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 400])
+    const form = doc.getForm()
+    form.createTextField('keepMe').addToPage(page, { x: 10, y: 200, width: 100, height: 20 })
+    const bytes = await doc.save({ useObjectStreams: false })
+
+    const saved = await apply(
+      bytes,
+      request({
+        formWidgetEdits: [{ widgetId: '500R', fieldName: 'keepMe', remove: true }],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    expect(out.getForm().getFieldMaybe('keepMe')).toBeDefined()
+    const afterWidgets = await getWidgetIds(saved)
+    expect(afterWidgets.some((w) => w.name === 'keepMe')).toBe(true)
+  })
+
+  it('PDF-DELETE-07: Removing one radio widget preserves the other options', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 400])
+    const form = doc.getForm()
+    const radio = form.createRadioGroup('contact')
+    radio.addOptionToPage('email', page, { x: 10, y: 200, width: 20, height: 20 })
+    radio.addOptionToPage('phone', page, { x: 10, y: 150, width: 20, height: 20 })
+    const bytes = await doc.save({ useObjectStreams: false })
+
+    const widgets = await getWidgetIds(bytes)
+    const radioWidgets = widgets.filter((w) => w.name === 'contact')
+    expect(radioWidgets).toHaveLength(2)
+
+    const saved = await apply(
+      bytes,
+      request({
+        formWidgetEdits: [{ widgetId: radioWidgets[0]!.id, fieldName: 'contact', remove: true }],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    const outRadio = out.getForm().getRadioGroup('contact')
+    expect(outRadio).toBeDefined()
+    expect(outRadio.acroField.getWidgets()).toHaveLength(1)
+    const afterWidgets = await getWidgetIds(saved)
+    expect(afterWidgets.filter((w) => w.name === 'contact')).toHaveLength(1)
+  })
+
+  it('PDF-DELETE-08: Saving and reopening the PDF preserves the expected field hierarchy', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 400])
+    const form = doc.getForm()
+    form.createTextField('h1').addToPage(page, { x: 10, y: 200, width: 100, height: 20 })
+    const field2 = form.createTextField('h2')
+    field2.addToPage(page, { x: 10, y: 150, width: 50, height: 20 })
+    field2.addToPage(page, { x: 10, y: 100, width: 50, height: 20 })
+    const bytes = await doc.save({ useObjectStreams: false })
+
+    const widgets = await getWidgetIds(bytes)
+    const h2Widgets = widgets.filter((w) => w.name === 'h2')
+
+    const saved = await apply(
+      bytes,
+      request({
+        formWidgetEdits: [{ widgetId: h2Widgets[0]!.id, fieldName: 'h2', remove: true }],
+      }),
+    )
+    const out1 = await PDFDocument.load(saved)
+    const bytes2 = await out1.save({ useObjectStreams: false })
+    const out2 = await PDFDocument.load(bytes2)
+    expect(out2.getForm().getFieldMaybe('h1')).toBeDefined()
+    expect(out2.getForm().getFieldMaybe('h2')).toBeDefined()
+    expect(out2.getForm().getTextField('h2').acroField.getWidgets()).toHaveLength(1)
+  })
+
+  it('PDF-DELETE-09: Unrelated page annotations remain intact', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 400])
+    const form = doc.getForm()
+    form.createTextField('toRemove').addToPage(page, { x: 10, y: 200, width: 100, height: 20 })
+    const bytesWithField = await doc.save({ useObjectStreams: false })
+
+    const bytesWithMarkup = await apply(
+      bytesWithField,
+      request({
+        markups: [
+          {
+            pageIndex: 0,
+            type: 'highlight',
+            color: [1, 0.87, 0.35],
+            quads: [[10, 100, 60, 100, 10, 88, 60, 88]],
+          },
+        ],
+      }),
+    )
+
+    const widgets = await getWidgetIds(bytesWithMarkup)
+    const removeW = widgets.find((w) => w.name === 'toRemove')!
+
+    const saved = await apply(
+      bytesWithMarkup,
+      request({
+        formWidgetEdits: [{ widgetId: removeW.id, fieldName: 'toRemove', remove: true }],
+      }),
+    )
+
+    const out = await PDFDocument.load(saved)
+    expect(out.getForm().getFieldMaybe('toRemove')).toBeUndefined()
+    const annots = pageAnnots(out, 0)
+    expect(annots.some((a) => subtypeOf(a) === 'Highlight')).toBe(true)
+  })
+
+  it('PDF-DELETE-10: A failed destructive operation does not produce a silently corrupted saved PDF', async () => {
+    const doc = await PDFDocument.create()
+    const page = doc.addPage([300, 400])
+    const form = doc.getForm()
+    form.createTextField('keep').addToPage(page, { x: 10, y: 200, width: 100, height: 20 })
+    const bytes = await doc.save({ useObjectStreams: false })
+
+    const saved = await apply(
+      bytes,
+      request({
+        formWidgetEdits: [
+          { widgetId: 'bad-id-1', fieldName: 'nonexistent', remove: true },
+          { widgetId: '9999R0', fieldName: 'keep', remove: true },
+        ],
+      }),
+    )
+    const out = await PDFDocument.load(saved)
+    expect(out.getForm().getFieldMaybe('keep')).toBeDefined()
+    const task = getDocument({ data: saved.slice() })
+    const pdfJsDoc = await task.promise
+    expect(pdfJsDoc.numPages).toBe(1)
+    await task.destroy()
+  })
+})
