@@ -74,13 +74,19 @@ describe('SQLite Page Cache Policy & Connection Roles', () => {
     customStore.close()
   })
 
-  it('keeps SQLite default wal_autocheckpoint at 1000 pages so WAL logs do not grow unbounded', () => {
-    const store = createTempStore()
-    const row = store.rawDb.prepare('PRAGMA wal_autocheckpoint').get() as {
+  it('keeps SQLite default wal_autocheckpoint at 1000 pages on worker role, and 0 on search role to prevent main-thread latency spikes', () => {
+    const workerStore = createTempStore({ role: 'worker' })
+    const workerRow = workerStore.rawDb.prepare('PRAGMA wal_autocheckpoint').get() as {
       wal_autocheckpoint: number
     }
+    expect(workerRow.wal_autocheckpoint).toBe(1000)
+    workerStore.close()
 
-    expect(row.wal_autocheckpoint).toBe(1000)
-    store.close()
+    const searchStore = createTempStore({ role: 'search' })
+    const searchRow = searchStore.rawDb.prepare('PRAGMA wal_autocheckpoint').get() as {
+      wal_autocheckpoint: number
+    }
+    expect(searchRow.wal_autocheckpoint).toBe(0)
+    searchStore.close()
   })
 })

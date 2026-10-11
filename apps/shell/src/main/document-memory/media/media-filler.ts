@@ -64,7 +64,6 @@ export class MediaMetadataFiller {
     const width = Math.max(1, this.options.concurrency ?? 4)
     let filled = 0
     try {
-      this.db.exec('PRAGMA wal_autocheckpoint = 0')
       while (!this.stopped && (this.options.shouldRun?.() ?? true)) {
         const batch = pendingMediaBatch(this.db, batchSize)
         if (!batch.length) break
@@ -86,12 +85,6 @@ export class MediaMetadataFiller {
     } catch (error) {
       // A closed database or a busy writer: rows stay pending and the next kick retries.
       this.lastError = error instanceof Error ? error.message : String(error)
-    } finally {
-      try {
-        this.db.exec('PRAGMA wal_autocheckpoint = 1000')
-      } catch {
-        // ignore if database closed
-      }
     }
     return filled
   }

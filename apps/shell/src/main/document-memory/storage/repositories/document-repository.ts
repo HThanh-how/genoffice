@@ -1483,49 +1483,42 @@ export class DocumentRepository {
     const started = performance.now()
     let removed = 0
     let scanned = 0
-    this.db.exec('PRAGMA wal_autocheckpoint = 0')
-    try {
-      for (;;) {
-        const rows = page.all(cursor, options.pageSize ?? 10) as Array<{ id: number; name: string }>
-        if (rows.length === 0) {
-          this.db.exec('BEGIN IMMEDIATE')
-          try {
-            writeMeta.run(options.flagKey, String(Date.now()))
-            deleteMeta.run(cursorKey)
-            this.db.exec('COMMIT')
-          } catch (err) {
-            this.db.exec('ROLLBACK')
-            throw err
-          }
-          this.db.exec('PRAGMA wal_autocheckpoint = 1000')
-          return { removed, scanned, done: true }
-        }
+    for (;;) {
+      const rows = page.all(cursor, options.pageSize ?? 10) as Array<{ id: number; name: string }>
+      if (rows.length === 0) {
         this.db.exec('BEGIN IMMEDIATE')
         try {
-          let last = cursor
-          for (const row of rows) {
-            if (scanned > 0 && performance.now() - started >= options.maxMs) break
-            if (isIgnored(row.name)) {
-              this.chunkRepo!.deleteChunks(row.id, (ids) => this.onAnnVectorsRemoved?.(ids))
-              deleteDoc.run(row.id)
-              syncProjectionDelete(this.db, row.id)
-              removed++
-            }
-            last = row.id
-            scanned++
-          }
-          cursor = last
-          writeMeta.run(cursorKey, String(cursor))
+          writeMeta.run(options.flagKey, String(Date.now()))
+          deleteMeta.run(cursorKey)
           this.db.exec('COMMIT')
         } catch (err) {
           this.db.exec('ROLLBACK')
           throw err
         }
-        return { removed, scanned, done: false }
+        return { removed, scanned, done: true }
       }
-    } catch (err) {
-      this.db.exec('PRAGMA wal_autocheckpoint = 1000')
-      throw err
+      this.db.exec('BEGIN IMMEDIATE')
+      try {
+        let last = cursor
+        for (const row of rows) {
+          if (scanned > 0 && performance.now() - started >= options.maxMs) break
+          if (isIgnored(row.name)) {
+            this.chunkRepo!.deleteChunks(row.id, (ids) => this.onAnnVectorsRemoved?.(ids))
+            deleteDoc.run(row.id)
+            syncProjectionDelete(this.db, row.id)
+            removed++
+          }
+          last = row.id
+          scanned++
+        }
+        cursor = last
+        writeMeta.run(cursorKey, String(cursor))
+        this.db.exec('COMMIT')
+      } catch (err) {
+        this.db.exec('ROLLBACK')
+        throw err
+      }
+      return { removed, scanned, done: false }
     }
   }
 
