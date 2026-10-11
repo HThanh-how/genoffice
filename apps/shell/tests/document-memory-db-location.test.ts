@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -486,5 +486,50 @@ describe('crash-safety & fault-injection relocation protocol (P0-01)', () => {
     expect(existsSync(join(target, 'document-memory.db'))).toBe(true)
     expect(getDatabaseDocCount(target)).toBe(5)
     expect(resolveDbDir(userData)).toBe(target)
+  })
+
+  it('Scenario 18: Corrupt location metadata on relocated installation fails closed and never silently resets to userData', () => {
+    // Relocated target has database with 5 docs; userData has NO database
+    seedRealDatabase(target, 5)
+    expect(existsSync(join(userData, 'document-memory.db'))).toBe(false)
+
+    // Primary location metadata is corrupted!
+    writeFileSync(join(userData, 'document-memory-location.json'), '{ corrupt json...')
+
+    // Must NOT silently default to userData and must fail closed!
+    expect(() => resolveDbDir(userData)).toThrowError(/failing closed to prevent silent data loss/)
+
+    const state = dbLocationState(userData)
+    expect(state.unavailable).toBe(true)
+    expect(state.lastError).toMatch(/failing closed to prevent silent data loss/)
+  })
+
+  it('Scenario 19: Genuine first install without database or metadata legitimately defaults to userData', () => {
+    // Neither database nor settings files exist in clean userData
+    expect(existsSync(join(userData, 'document-memory.db'))).toBe(false)
+    expect(existsSync(join(userData, 'document-memory-location.json'))).toBe(false)
+    expect(existsSync(join(userData, 'document-memory-location.json.bak'))).toBe(false)
+
+    expect(resolveDbDir(userData)).toBe(userData)
+    const state = dbLocationState(userData)
+    expect(state.dir).toBe(userData)
+    expect(state.isDefault).toBe(true)
+  })
+
+  it('Scenario 20: Corrupt primary metadata with valid backup restores primary and routes to target', () => {
+    seedRealDatabase(target, 3)
+    writeFileSync(join(userData, 'document-memory-location.json'), '{ corrupt json...')
+    writeFileSync(
+      join(userData, 'document-memory-location.json.bak'),
+      JSON.stringify({ dir: target }),
+    )
+
+    expect(resolveDbDir(userData)).toBe(target)
+    const state = dbLocationState(userData)
+    expect(state.dir).toBe(target)
+    expect(state.isDefault).toBe(false)
+    // Primary was self-healed from backup
+    const healed = JSON.parse(readFileSync(join(userData, 'document-memory-location.json'), 'utf8'))
+    expect(healed.dir).toBe(target)
   })
 })

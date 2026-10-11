@@ -152,7 +152,14 @@ export class StorageAccountingRunner {
     const aMeta = a.annIndexesMeta
     const bMeta = b.annIndexesMeta
     if (Boolean(aMeta) !== Boolean(bMeta)) return false
-    if (aMeta && bMeta && aMeta.length !== bMeta.length) return false
+    if (aMeta && bMeta) {
+      if (aMeta.length !== bMeta.length) return false
+      const mapA = new Map(aMeta.map((m) => [m.space_id, m.file_path]))
+      for (const m of bMeta) {
+        if (!mapA.has(m.space_id)) return false
+        if (mapA.get(m.space_id) !== m.file_path) return false
+      }
+    }
     return true
   }
 

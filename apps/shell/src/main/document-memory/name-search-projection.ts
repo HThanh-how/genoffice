@@ -105,15 +105,18 @@ export function hasMetaTable(db: DatabaseSync): boolean {
   }
 }
 
-/**
- * Guards row_version column query against legacy schemas without row_version.
- */
+const hasRowVersionColumnCache = new WeakMap<DatabaseSync, boolean>()
+
 export function hasRowVersionColumn(db: DatabaseSync): boolean {
+  const cached = hasRowVersionColumnCache.get(db)
+  if (cached !== undefined) return cached
   try {
     const columns = db.prepare("PRAGMA table_info('document_name_projection')").all() as Array<{
       name: string
     }>
-    return columns.some((c) => c.name === 'row_version')
+    const exists = columns.some((c) => c.name === 'row_version')
+    hasRowVersionColumnCache.set(db, exists)
+    return exists
   } catch {
     return false
   }
@@ -342,13 +345,13 @@ function buildMediaProjection(name: string, path: string): DocumentProjectionTok
   const stemWords = normalizeDocumentText(name.replace(/\.[^/.]+$/, ''))
     .split(' ')
     .filter(Boolean)
-  const nameTokens = new Set(stemWords.filter((w) => w.length <= MAX_COMPONENT_LENGTH).slice(0, 8))
-  const joined = stemWords.slice(0, 4).join('')
+  const nameTokens = new Set(stemWords.filter((w) => w.length <= MAX_COMPONENT_LENGTH).slice(0, 6))
+  const joined = stemWords.slice(0, 3).join('')
   if (stemWords.length >= 2 && joined.length <= MAX_COMPONENT_LENGTH) nameTokens.add(joined)
   const pathTokens = new Set<string>()
   for (const dir of extractMeaningfulPathSegments(path, 3).reverse()) {
     for (const word of normalizeDocumentText(dir).split(' ')) {
-      if (word && word.length <= MAX_COMPONENT_LENGTH && pathTokens.size < 8) pathTokens.add(word)
+      if (word && word.length <= MAX_COMPONENT_LENGTH && pathTokens.size < 6) pathTokens.add(word)
     }
   }
   return {
@@ -658,6 +661,9 @@ export function getNameProjectionSyncGuard(): NameProjectionSyncGuard | null {
  * Checks whether the stored projection row matches current normalized values and algorithm version.
  * Allows callers to skip rewriting unchanged projections to avoid unnecessary database growth and debt.
  */
+const projectionSelectRowVerStmtCache = new WeakMap<DatabaseSync, StatementSync>()
+const projectionSelectLegacyStmtCache = new WeakMap<DatabaseSync, StatementSync>()
+
 export function isProjectionUpToDate(
   db: DatabaseSync,
   docId: number,
@@ -666,10 +672,21 @@ export function isProjectionUpToDate(
   if (!hasNameProjection(db)) return false
   try {
     const hasRowVer = hasRowVersionColumn(db)
-    const sql = hasRowVer
-      ? 'SELECT name_norm, path_norm, compact_ngrams, row_version FROM document_name_projection WHERE document_id = ?'
-      : 'SELECT name_norm, path_norm, compact_ngrams FROM document_name_projection WHERE document_id = ?'
-    const row = db.prepare(sql).get(docId) as
+    let stmt = hasRowVer
+      ? projectionSelectRowVerStmtCache.get(db)
+      : projectionSelectLegacyStmtCache.get(db)
+    if (!stmt) {
+      const sql = hasRowVer
+        ? 'SELECT name_norm, path_norm, compact_ngrams, row_version FROM document_name_projection WHERE document_id = ?'
+        : 'SELECT name_norm, path_norm, compact_ngrams FROM document_name_projection WHERE document_id = ?'
+      stmt = db.prepare(sql)
+      if (hasRowVer) {
+        projectionSelectRowVerStmtCache.set(db, stmt)
+      } else {
+        projectionSelectLegacyStmtCache.set(db, stmt)
+      }
+    }
+    const row = stmt.get(docId) as
       | {
           name_norm: string
           path_norm: string
@@ -687,6 +704,9 @@ export function isProjectionUpToDate(
     return false
   }
 }
+
+const projectionInsertRowVerStmtCache = new WeakMap<DatabaseSync, StatementSync>()
+const projectionInsertLegacyStmtCache = new WeakMap<DatabaseSync, StatementSync>()
 
 /**
  * Inserts or updates projection tokens for a document atomically.
@@ -714,18 +734,23 @@ export function syncProjectionInsert(
     }
   }
   if (hasRowVersionColumn(db)) {
-    db.prepare(
-      `
-      INSERT INTO document_name_projection (document_id, name_norm, path_norm, compact_ngrams, updated_at, row_version)
-      VALUES (?, ?, ?, ?, unixepoch(), ?)
-      ON CONFLICT(document_id) DO UPDATE SET
-        name_norm = excluded.name_norm,
-        path_norm = excluded.path_norm,
-        compact_ngrams = excluded.compact_ngrams,
-        updated_at = unixepoch(),
-        row_version = excluded.row_version;
-    `,
-    ).run(
+    let stmt = projectionInsertRowVerStmtCache.get(db)
+    if (!stmt) {
+      stmt = db.prepare(
+        `
+        INSERT INTO document_name_projection (document_id, name_norm, path_norm, compact_ngrams, updated_at, row_version)
+        VALUES (?, ?, ?, ?, unixepoch(), ?)
+        ON CONFLICT(document_id) DO UPDATE SET
+          name_norm = excluded.name_norm,
+          path_norm = excluded.path_norm,
+          compact_ngrams = excluded.compact_ngrams,
+          updated_at = unixepoch(),
+          row_version = excluded.row_version;
+      `,
+      )
+      projectionInsertRowVerStmtCache.set(db, stmt)
+    }
+    stmt.run(
       doc.id,
       proj.nameNorm,
       proj.pathNorm,
@@ -733,17 +758,22 @@ export function syncProjectionInsert(
       CURRENT_NAME_PROJECTION_ALGORITHM_VERSION,
     )
   } else {
-    db.prepare(
-      `
-      INSERT INTO document_name_projection (document_id, name_norm, path_norm, compact_ngrams, updated_at)
-      VALUES (?, ?, ?, ?, unixepoch())
-      ON CONFLICT(document_id) DO UPDATE SET
-        name_norm = excluded.name_norm,
-        path_norm = excluded.path_norm,
-        compact_ngrams = excluded.compact_ngrams,
-        updated_at = unixepoch();
-    `,
-    ).run(doc.id, proj.nameNorm, proj.pathNorm, proj.compactNgrams)
+    let stmt = projectionInsertLegacyStmtCache.get(db)
+    if (!stmt) {
+      stmt = db.prepare(
+        `
+        INSERT INTO document_name_projection (document_id, name_norm, path_norm, compact_ngrams, updated_at)
+        VALUES (?, ?, ?, ?, unixepoch())
+        ON CONFLICT(document_id) DO UPDATE SET
+          name_norm = excluded.name_norm,
+          path_norm = excluded.path_norm,
+          compact_ngrams = excluded.compact_ngrams,
+          updated_at = unixepoch();
+      `,
+      )
+      projectionInsertLegacyStmtCache.set(db, stmt)
+    }
+    stmt.run(doc.id, proj.nameNorm, proj.pathNorm, proj.compactNgrams)
   }
   return true
 }

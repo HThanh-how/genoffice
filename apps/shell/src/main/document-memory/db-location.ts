@@ -15,7 +15,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { copyFile, rename, rm, stat } from 'node:fs/promises'
-import { isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 const SETTINGS_FILE = 'document-memory-location.json'
@@ -83,7 +83,7 @@ export interface RelocationFaultHooks {
 
 function fsyncFile(filePath: string): void {
   try {
-    const fd = openSync(filePath, 'r')
+    const fd = openSync(filePath, process.platform === 'win32' ? 'r+' : 'r')
     try {
       fsyncSync(fd)
     } finally {
@@ -94,6 +94,20 @@ function fsyncFile(filePath: string): void {
   }
 }
 
+function fsyncDir(dirPath: string): void {
+  if (process.platform === 'win32') return
+  try {
+    const fd = openSync(dirPath, 'r')
+    try {
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+  } catch {
+    // Directory fsync non-blocking fallback on POSIX
+  }
+}
+
 export class CorruptRelocationJournalError extends Error {
   constructor(message: string) {
     super(message)
@@ -101,48 +115,119 @@ export class CorruptRelocationJournalError extends Error {
   }
 }
 
+export class CorruptLocationMetadataError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'CorruptLocationMetadataError'
+  }
+}
+
 function writeAtomic(filePath: string, content: string): void {
+  // Validate that content is valid JSON before writing
+  try {
+    JSON.parse(content)
+  } catch (err) {
+    throw new Error(
+      `Refusing to write invalid metadata JSON to ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+    )
+  }
+
+  const dir = dirname(filePath)
   const tmpPath = `${filePath}.${process.pid}.${Date.now()}.tmp`
   const bakPath = `${filePath}.bak`
-  writeFileSync(tmpPath, content, 'utf8')
-  fsyncFile(tmpPath)
+  const bakTmpPath = `${bakPath}.${process.pid}.${Date.now()}.tmp`
+
+  // 1. Durably write the new content to tmpPath
+  const fd = openSync(tmpPath, 'w')
+  try {
+    writeFileSync(fd, content, 'utf8')
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+
+  // 2. If the current filePath exists and is valid, durably maintain bakPath before replacement
   if (existsSync(filePath)) {
     try {
-      copyFileSync(filePath, bakPath)
+      copyFileSync(filePath, bakTmpPath)
+      fsyncFile(bakTmpPath)
+      renameSync(bakTmpPath, bakPath)
       fsyncFile(bakPath)
+      fsyncDir(dir)
     } catch {
-      // Best-effort backup
+      // Best-effort backup promotion
+    } finally {
+      try {
+        if (existsSync(bakTmpPath)) unlinkSync(bakTmpPath)
+      } catch {}
     }
   }
+
+  // 3. Atomically promote tmpPath -> filePath
   if (process.platform === 'win32') {
-    try {
+    let promoted = false
+    for (let attempt = 0; attempt < 3; attempt++) {
       try {
-        unlinkSync(filePath)
-      } catch {}
-      renameSync(tmpPath, filePath)
-      fsyncFile(filePath)
-    } catch {
-      writeFileSync(filePath, content, 'utf8')
-      fsyncFile(filePath)
-      try {
-        unlinkSync(tmpPath)
-      } catch {}
+        renameSync(tmpPath, filePath)
+        promoted = true
+        break
+      } catch {
+        // Brief retry for transient Windows sharing collisions
+      }
     }
+    if (!promoted) {
+      // If direct replace failed on Windows, stage through .old with rollback restore
+      const oldPath = `${filePath}.${process.pid}.${Date.now()}.old`
+      try {
+        renameSync(filePath, oldPath)
+        try {
+          renameSync(tmpPath, filePath)
+          promoted = true
+          try {
+            unlinkSync(oldPath)
+          } catch {}
+        } catch (renameErr) {
+          try {
+            renameSync(oldPath, filePath)
+          } catch {}
+          throw renameErr
+        }
+      } catch (err) {
+        try {
+          if (existsSync(tmpPath)) unlinkSync(tmpPath)
+        } catch {}
+        throw new Error(
+          `Failed atomic file replacement for ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+        )
+      }
+    }
+    fsyncFile(filePath)
   } else {
     try {
       renameSync(tmpPath, filePath)
       fsyncFile(filePath)
-    } catch {
-      writeFileSync(filePath, content, 'utf8')
-      fsyncFile(filePath)
+      fsyncDir(dir)
+    } catch (err) {
       try {
-        unlinkSync(tmpPath)
+        if (existsSync(tmpPath)) unlinkSync(tmpPath)
       } catch {}
+      throw new Error(
+        `Failed atomic file replacement for ${filePath}: ${err instanceof Error ? err.message : String(err)}`,
+      )
     }
   }
 }
 
 function read(userData: string): LocationSettings {
+  const primaryPath = join(userData, SETTINGS_FILE)
+  const bakPath = join(userData, `${SETTINGS_FILE}.bak`)
+  const primaryExists = existsSync(primaryPath)
+  const bakExists = existsSync(bakPath)
+
+  if (!primaryExists && !bakExists) {
+    return {}
+  }
+
   const parseSettings = (filePath: string): LocationSettings | null => {
     try {
       if (!existsSync(filePath)) return null
@@ -160,13 +245,37 @@ function read(userData: string): LocationSettings {
     }
   }
 
-  const primary = parseSettings(join(userData, SETTINGS_FILE))
-  if (primary !== null) return primary
+  if (primaryExists) {
+    const primary = parseSettings(primaryPath)
+    if (primary !== null) return primary
+  }
 
-  const backup = parseSettings(join(userData, `${SETTINGS_FILE}.bak`))
-  if (backup !== null) return backup
+  if (bakExists) {
+    const backup = parseSettings(bakPath)
+    if (backup !== null) {
+      // Primary was missing or corrupted, but backup is valid.
+      // Restore primary from valid backup
+      try {
+        write(userData, backup)
+      } catch {}
+      return backup
+    }
+  }
 
-  return {}
+  // Metadata files existed on disk, but neither primary nor backup could be parsed!
+  // If a database already exists in userData, this is an existing default-location installation.
+  const defaultDbExists = existsSync(join(userData, 'document-memory.db'))
+  if (defaultDbExists) {
+    return {
+      lastError: 'Settings metadata was corrupted; preserved existing database in default location',
+    }
+  }
+
+  // If userData has NO database, this was previously relocated or is in an ambiguous state.
+  // Fail closed to prevent silent data loss (creating a fresh empty database in userData).
+  throw new CorruptLocationMetadataError(
+    `Corrupt location metadata in ${userData}; failing closed to prevent silent data loss`,
+  )
 }
 
 function write(userData: string, settings: LocationSettings): void {
@@ -309,13 +418,53 @@ export function dbLocationState(userData: string): DbLocationState {
 
 /**
  * Executes SQLite WAL checkpoint (TRUNCATE) to flush committed transactions from WAL into main DB file.
+ * Verifies exclusive access/quiescence, inspects SQLite checkpoint result fields, and verifies truncation.
  */
 export function checkpointDatabaseWal(dbPath: string): { ok: boolean; error?: string } {
   if (!existsSync(dbPath)) return { ok: true }
   try {
     const db = new DatabaseSync(dbPath)
     try {
-      db.exec('PRAGMA wal_checkpoint(TRUNCATE);')
+      db.exec('PRAGMA busy_timeout = 2000;')
+      // Verify quiescence and absence of active writer transactions
+      db.exec('BEGIN IMMEDIATE; COMMIT;')
+
+      const row = db.prepare('PRAGMA wal_checkpoint(TRUNCATE);').get() as
+        | { busy?: number; log?: number; checkpointed?: number }
+        | Record<string, unknown>
+        | undefined
+      const busy = row
+        ? typeof row.busy === 'number'
+          ? row.busy
+          : Number(Object.values(row)[0] ?? 0)
+        : 0
+      const log = row
+        ? typeof row.log === 'number'
+          ? row.log
+          : Number(Object.values(row)[1] ?? 0)
+        : 0
+
+      if (busy !== 0) {
+        return {
+          ok: false,
+          error: 'SQLite wal_checkpoint returned busy (active readers or writers holding lock)',
+        }
+      }
+      if (log > 0) {
+        return {
+          ok: false,
+          error: `SQLite wal_checkpoint incomplete: ${log} frames remain uncheckpointed in WAL`,
+        }
+      }
+
+      const walPath = `${dbPath}-wal`
+      if (existsSync(walPath)) {
+        try {
+          if (statSync(walPath).size > 0) {
+            return { ok: false, error: 'SQLite WAL file was not truncated to 0 bytes' }
+          }
+        } catch {}
+      }
       return { ok: true }
     } finally {
       db.close()

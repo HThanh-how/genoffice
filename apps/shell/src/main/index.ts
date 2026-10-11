@@ -7335,16 +7335,25 @@ app.on('will-quit', (event) => {
 
   const memoryClosePromise = (async () => {
     if (!documentMemory) return
-    const deadline = setTimeout(() => {
-      console.warn('[app-shutdown] Document memory closeAsync exceeded 15s deadline; forcing exit')
-    }, 15_000)
-    deadline.unref?.()
+    let deadlineTimer: NodeJS.Timeout | null = null
+    const timeoutPromise = new Promise<'timeout'>((resolve) => {
+      deadlineTimer = setTimeout(() => resolve('timeout'), 15_000)
+      deadlineTimer.unref?.()
+    })
     try {
-      await documentMemory.closeAsync()
+      const outcome = await Promise.race([
+        documentMemory.closeAsync().then(() => 'closed' as const),
+        timeoutPromise,
+      ])
+      if (outcome === 'timeout') {
+        console.warn(
+          '[app-shutdown] Document memory closeAsync exceeded 15s deadline; forcing process teardown',
+        )
+      }
     } catch (err) {
       console.error('[app-shutdown] Error during document memory closeAsync:', err)
     } finally {
-      clearTimeout(deadline)
+      if (deadlineTimer) clearTimeout(deadlineTimer)
     }
   })()
 

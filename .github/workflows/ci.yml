@@ -19,6 +19,9 @@ concurrency:
 permissions:
   contents: read
 
+env:
+  ONNXRUNTIME_NODE_INSTALL: skip
+
 jobs:
   test:
     runs-on: ubuntu-latest

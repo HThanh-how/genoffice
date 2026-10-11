@@ -823,4 +823,29 @@ describe('FolderScanManager', () => {
     const folderAEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderA))
     expect(folderAEntry).toBeUndefined()
   })
+
+  it('P0-4: write-gate denial during enrollment marks scan as stopped and does not falsely report complete', async () => {
+    const testFolder = join(dir, 'denial_test_folder')
+    mkdirSync(testFolder, { recursive: true })
+    writeFileSync(join(testFolder, 'file1.txt'), 'content1')
+    writeFileSync(join(testFolder, 'file2.txt'), 'content2')
+
+    // DiscoveredDocumentIndexer that simulates write-gate denial: indexDiscoveredFile returns false
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      isWriteReady: () => false,
+      waitForWriteReady: async () => false,
+      indexDiscoveredFile: () => false,
+    })
+    scanners.push(instance)
+
+    instance.start(testFolder, 'manual')
+    await until(() => !instance.status().running)
+
+    const folderEntry = instance.folders().find((f) => resolve(f.root) === resolve(testFolder))
+    expect(folderEntry).toBeDefined()
+    // State MUST NOT be 'complete'!
+    expect(folderEntry?.state).toBe('stopped')
+    expect(folderEntry?.completedAt).toBeUndefined()
+    expect(folderEntry?.lastError).toMatch(/Storage write gate not ready|Failed to enroll/i)
+  })
 })

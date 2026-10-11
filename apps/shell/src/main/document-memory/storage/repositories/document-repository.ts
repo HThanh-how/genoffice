@@ -1413,7 +1413,7 @@ export class DocumentRepository {
     let removed = 0
     let scanned = 0
     for (;;) {
-      const rows = page.all(cursor, options.pageSize ?? 50) as Array<{ id: number; name: string }>
+      const rows = page.all(cursor, options.pageSize ?? 10) as Array<{ id: number; name: string }>
       if (rows.length === 0) {
         this.db.exec('BEGIN IMMEDIATE')
         try {
@@ -1430,6 +1430,7 @@ export class DocumentRepository {
       try {
         let last = cursor
         for (const row of rows) {
+          if (performance.now() - started >= options.maxMs) break
           if (isIgnored(row.name)) {
             this.chunkRepo!.deleteChunks(row.id, (ids) => this.onAnnVectorsRemoved?.(ids))
             deleteDoc.run(row.id)
@@ -1438,7 +1439,6 @@ export class DocumentRepository {
           }
           last = row.id
           scanned++
-          if (performance.now() - started >= options.maxMs) break
         }
         cursor = last
         writeMeta.run(cursorKey, String(cursor))

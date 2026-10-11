@@ -805,9 +805,17 @@ export class FolderScanManager {
 
   private async walk(job: ScanJob): Promise<void> {
     if (this.memory.waitForWriteReady) {
-      await this.memory.waitForWriteReady(10_000)
+      const ready = await this.memory.waitForWriteReady(10_000)
+      if (!ready && this.memory.isWriteReady && !this.memory.isWriteReady()) {
+        job.state = 'stopped'
+        job.lastError = 'Storage write gate not ready; scan deferred'
+        this.save()
+        this.emitRootsChanged()
+        return
+      }
     }
     const budget = newMediaBudget(this.maxMediaPerFolder)
+    let enrollmentFailed = false
     const completed = await this.traverse(
       job.root,
       {
@@ -826,25 +834,27 @@ export class FolderScanManager {
               job.skipped++
               recordMediaBudget(job, budget)
             } else {
+              let enrolled = false
               if (this.memory.isWriteReady && !this.memory.isWriteReady()) {
                 await this.memory.waitForWriteReady?.(5_000)
               }
-              const enrolled = this.memory.indexDiscoveredFile(path, {
+              enrolled = this.memory.indexDiscoveredFile(path, {
                 mtimeMs: fileStat.mtimeMs,
                 sizeBytes: fileStat.size,
               })
+              if (!enrolled && this.memory.isWriteReady && !this.memory.isWriteReady()) {
+                await this.memory.waitForWriteReady?.(5_000)
+                enrolled = this.memory.indexDiscoveredFile(path, {
+                  mtimeMs: fileStat.mtimeMs,
+                  sizeBytes: fileStat.size,
+                })
+              }
               if (enrolled) {
                 job.enrolled++
-              } else if (this.memory.isWriteReady && !this.memory.isWriteReady()) {
-                await this.memory.waitForWriteReady?.(5_000)
-                if (
-                  this.memory.indexDiscoveredFile(path, {
-                    mtimeMs: fileStat.mtimeMs,
-                    sizeBytes: fileStat.size,
-                  })
-                ) {
-                  job.enrolled++
-                }
+              } else {
+                enrollmentFailed = true
+                job.errors++
+                job.lastError = `Failed to enroll discovered file: ${path}`
               }
             }
             if (mediaKindOfPath(path)) recordMediaBudget(job, budget)
@@ -861,7 +871,15 @@ export class FolderScanManager {
       () => this.closed || this.stopRequested,
     )
     if (completed) {
-      job.state = 'complete'
+      if (enrollmentFailed) {
+        job.state = 'stopped'
+        if (!job.lastError) {
+          job.lastError = 'Scan stopped: some discovered files could not be enrolled'
+        }
+      } else {
+        job.state = 'complete'
+        job.completedAt = Date.now()
+      }
       this.save()
       this.emitRootsChanged()
     }

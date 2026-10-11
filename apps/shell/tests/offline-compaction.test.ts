@@ -43,15 +43,22 @@ describe('offline VACUUM INTO compaction', () => {
     const ids = (
       db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: number }>
     ).map((r) => r.id)
-    for (const id of ids.filter((_, i) => i % 10 < 7)) {
-      db.prepare(
-        'DELETE FROM chunk_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?)',
-      ).run(id)
-      db.prepare(
-        'DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)',
-      ).run(id)
-      db.prepare('DELETE FROM chunks WHERE document_id = ?').run(id)
-      db.prepare('DELETE FROM documents WHERE id = ?').run(id)
+    db.exec('BEGIN IMMEDIATE')
+    try {
+      for (const id of ids.filter((_, i) => i % 10 < 7)) {
+        db.prepare(
+          'DELETE FROM chunk_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?)',
+        ).run(id)
+        db.prepare(
+          'DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)',
+        ).run(id)
+        db.prepare('DELETE FROM chunks WHERE document_id = ?').run(id)
+        db.prepare('DELETE FROM documents WHERE id = ?').run(id)
+      }
+      db.exec('COMMIT')
+    } catch (err) {
+      db.exec('ROLLBACK')
+      throw err
     }
     store.close()
   })
