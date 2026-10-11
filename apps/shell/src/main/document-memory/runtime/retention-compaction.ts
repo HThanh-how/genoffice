@@ -23,6 +23,11 @@ export function compactAfterRetentionBatch(
   db: DatabaseSync,
   options: { maxPages?: number } = {},
 ): RetentionCompactionResult {
+  if (process.platform === 'win32') {
+    try {
+      db.exec('PRAGMA mmap_size = 0;')
+    } catch {}
+  }
   let vacuum: VacuumResult = {
     vacuumed: false,
     initialFreelistPages: 0,
@@ -31,7 +36,10 @@ export function compactAfterRetentionBatch(
     bytesReclaimed: 0,
   }
   try {
-    vacuum = runIncrementalVacuum(db, { force: true, maxPages: options.maxPages ?? RETENTION_COMPACTION_MAX_PAGES })
+    vacuum = runIncrementalVacuum(db, {
+      force: true,
+      maxPages: options.maxPages ?? RETENTION_COMPACTION_MAX_PAGES,
+    })
   } catch {
     // keep going: the checkpoint below is still useful and retention must not fail on compaction
   }

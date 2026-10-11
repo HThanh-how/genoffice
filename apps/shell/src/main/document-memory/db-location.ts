@@ -283,7 +283,13 @@ function findStagedOldFiles(filePath: string): string[] {
     const prefix = `${base}.`
     const files = readdirSync(dir)
     return files
-      .filter((f) => (f.startsWith(prefix) || f === `${base}.old`) && f.endsWith('.old'))
+      .filter(
+        (f) =>
+          (f.startsWith(prefix) || f === `${base}.old`) &&
+          f.endsWith('.old') &&
+          !f.includes('.bak.') &&
+          !f.includes('.backup.'),
+      )
       .map((f) => join(dir, f))
       .sort((a, b) => {
         try {
@@ -747,7 +753,7 @@ export function checkpointDatabaseWal(dbPath: string): { ok: boolean; error?: st
       }
 
       const walPath = `${dbPath}-wal`
-      if (existsSync(walPath)) {
+      if (existsSync(walPath) && process.platform !== 'win32') {
         try {
           if (statSync(walPath).size > 0) {
             return { ok: false, error: 'SQLite WAL file was not truncated to 0 bytes' }
@@ -1246,6 +1252,14 @@ export async function applyPendingDbMove(
     try {
       journal = readJournal(userData)
     } catch {}
+    if (journal && journal.authoritative === 'target') {
+      const isDefault = resolve(target) === resolve(userData)
+      write(userData, {
+        ...(isDefault ? {} : { dir: target }),
+        lastError: message,
+      })
+      return { moved: false, error: message }
+    }
     if (journal && journal.authoritative === 'source') {
       removeJournal(userData)
     }

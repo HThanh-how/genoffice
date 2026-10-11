@@ -45,103 +45,19 @@ describe('FileIndexer diff on a big index', () => {
     db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     indexer = new FileIndexer(store, WORKER, { roots: () => [dir], extraPaths: () => [] }, 5_000)
 
-    const profiling = {
-      sqlitePageReadMs: 0,
-      maxSqlitePageReadMs: 0,
-      mapConstructionMs: 0,
-      maxMapConstructionMs: 0,
-      totalListAllSlicedMs: 0,
-      totalScanMs: 0,
-      pagesCount: 0,
-    }
-
-    store.listAllSliced = async function (yieldNow, pageSize = 1_000) {
-      const page = (this as any).db.prepare(
-        'SELECT id, path, mtime_ms, size_bytes, status FROM files WHERE id > ? ORDER BY id LIMIT ?',
-      )
-      const out = new Map<string, any>()
-      let after = 0
-      const startTotal = performance.now()
-      for (;;) {
-        profiling.pagesCount++
-        const t0 = performance.now()
-        const rows = page.all(after, pageSize) as any[]
-        const t1 = performance.now()
-        const readDuration = t1 - t0
-        profiling.sqlitePageReadMs += readDuration
-        if (readDuration > profiling.maxSqlitePageReadMs)
-          profiling.maxSqlitePageReadMs = readDuration
-
-        if (rows.length === 0) {
-          profiling.totalListAllSlicedMs = performance.now() - startTotal
-          return out
-        }
-
-        const t2 = performance.now()
-        for (const r of rows) {
-          out.set(r.path, {
-            path: r.path,
-            mtimeMs: r.mtime_ms,
-            sizeBytes: r.size_bytes,
-            status: r.status,
-          })
-        }
-        const t3 = performance.now()
-        const mapDuration = t3 - t2
-        profiling.mapConstructionMs += mapDuration
-        if (mapDuration > profiling.maxMapConstructionMs)
-          profiling.maxMapConstructionMs = mapDuration
-
-        after = rows[rows.length - 1]!.id
-        await yieldNow()
-      }
-    }
-
     const gaps: number[] = []
     let last = performance.now()
     const timer = setInterval(() => {
       gaps.push(performance.now() - last)
       last = performance.now()
     }, 4)
-    const tScanStart = performance.now()
     await indexer.scan()
-    profiling.totalScanMs = performance.now() - tScanStart
     // a block that ends the promise chain is only seen by the first timer that fires after it
     await new Promise((resolve) => setTimeout(resolve, 30))
     clearInterval(timer)
     expect(store.count()).toBeGreaterThan(150_000) // nothing was dropped
     const maxGap = Math.max(...gaps)
-    console.log(
-      '[PROFILING BREAKDOWN]',
-      JSON.stringify(
-        {
-          maxGap,
-          profiling,
-          topGaps: gaps
-            .filter((g) => g > 15)
-            .sort((a, b) => b - a)
-            .slice(0, 10),
-          totalGapsRecorded: gaps.length,
-        },
-        null,
-        2,
-      ),
-    )
     // the loop used to `continue` without ever yielding: hundreds of ms in one piece
-    expect(
-      maxGap,
-      JSON.stringify(
-        {
-          maxGap,
-          profiling,
-          topGaps: gaps
-            .filter((g) => g > 20)
-            .sort((a, b) => b - a)
-            .slice(0, 10),
-        },
-        null,
-        2,
-      ),
-    ).toBeLessThan(100)
+    expect(maxGap).toBeLessThan(100)
   }, 60_000)
 })

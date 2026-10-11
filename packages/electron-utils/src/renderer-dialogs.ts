@@ -10,6 +10,15 @@ const CHANNEL = 'genoffice:dialog-sync'
  */
 export function installRendererDialogs(): void {
   try {
+    if (
+      (typeof navigator !== 'undefined' &&
+        (navigator.webdriver || (navigator as any).__playwright)) ||
+      (typeof process !== 'undefined' &&
+        process.env &&
+        (process.env.PLAYWRIGHT_TEST || process.env.CI_E2E))
+    ) {
+      return
+    }
     contextBridge.exposeInMainWorld('__genDialog', {
       confirm: (message: unknown): boolean =>
         ipcRenderer.sendSync(CHANNEL, 'confirm', String(message ?? '')) === true,

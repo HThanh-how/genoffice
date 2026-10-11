@@ -1293,38 +1293,40 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
               <h3 className="hc-title" title={heading}>
                 {heading}
               </h3>
-              <button
-                type="button"
-                className="hc-icon-button"
-                aria-label={t('homeChatNew')}
-                title={t('homeChatNew')}
-                onClick={startNew}
-              >
-                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                  <path
-                    d="M10 4.5v11M4.5 10h11"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-              <button
-                type="button"
-                className="hc-icon-button"
-                aria-label={t('homeChatClose')}
-                title={t('homeChatClose')}
-                onClick={() => closePanel()}
-              >
-                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                  <path
-                    d="m5.5 5.5 9 9m0-9-9 9"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
+              <div className="home-chat-header-actions">
+                <button
+                  type="button"
+                  className="hc-icon-button"
+                  aria-label={t('homeChatNew')}
+                  title={t('homeChatNew')}
+                  onClick={startNew}
+                >
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path
+                      d="M10 4.5v11M4.5 10h11"
+                      stroke="currentColor"
+                      strokeWidth="1.7"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
+                <button
+                  type="button"
+                  className="hc-icon-button"
+                  aria-label={t('homeChatClose')}
+                  title={t('homeChatClose')}
+                  onClick={() => closePanel()}
+                >
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                    <path
+                      d="m5.5 5.5 9 9m0-9-9 9"
+                      stroke="currentColor"
+                      strokeWidth="1.7"
+                      strokeLinecap="round"
+                    />
+                  </svg>
+                </button>
+              </div>
             </header>
             <div className="hc-stage">
               <div

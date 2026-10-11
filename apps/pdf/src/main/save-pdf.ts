@@ -701,19 +701,21 @@ export function applyFormWidgetEdits(pdfDoc: PDFDocument, edits: FormWidgetEditI
   for (const e of edits) {
     const ref = widgetRef(e.widgetId)
     const dict = ref ? pdfDoc.context.lookupMaybe(ref, PDFDict) : undefined
-    if (!ref || !dict) continue
     const field = form.getFieldMaybe(e.fieldName)
     if (e.remove) {
-      const widgets = field?.acroField.getWidgets() ?? []
-      const idx = widgets.findIndex((w) => w.dict === dict)
-      if (field && widgets.length <= 1) {
-        form.removeField(field)
-      } else {
-        if (field && idx >= 0) field.acroField.removeWidget(idx)
-        detachAnnot(pdfDoc, ref)
+      if (ref) detachAnnot(pdfDoc, ref)
+      if (field) {
+        const widgets = field.acroField.getWidgets()
+        const idx = dict ? widgets.findIndex((w) => w.dict === dict) : -1
+        if (widgets.length <= 1 || idx < 0) {
+          form.removeField(field)
+        } else {
+          field.acroField.removeWidget(idx)
+        }
       }
       continue
     }
+    if (!ref || !dict) continue
     if (e.rect) {
       const r = [
         Math.min(e.rect[0], e.rect[2]),

@@ -19,8 +19,10 @@ export function openDatabase(dbPath: string, options: DatabaseOpenOptions = {}):
   const walCheckpointPragma = isWorker
     ? 'PRAGMA wal_autocheckpoint = 1000;'
     : 'PRAGMA wal_autocheckpoint = 0;'
+  const mmapPragma =
+    process.platform === 'win32' ? 'PRAGMA mmap_size = 0;' : 'PRAGMA mmap_size = 67108864;'
   db.exec(
-    `PRAGMA busy_timeout = 5000; PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA temp_store = MEMORY; PRAGMA mmap_size = 67108864; ${walCheckpointPragma}`,
+    `PRAGMA busy_timeout = 5000; PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA temp_store = MEMORY; ${mmapPragma} ${walCheckpointPragma}`,
   )
   const cacheKiB = options.cacheKiB ?? defaultSqliteCacheKiB(options.role ?? 'search')
   db.exec(`PRAGMA cache_size = -${cacheKiB};`)

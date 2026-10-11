@@ -75,9 +75,9 @@ export class IndexIssueReader {
     if (!this.db) {
       this.db = new DatabaseSync(this.dbPath, { readOnly: true })
       try {
-        this.db.exec(
-          'PRAGMA busy_timeout = 5000; PRAGMA cache_size = -16384; PRAGMA mmap_size = 67108864;',
-        )
+        const mmapPragma =
+          process.platform === 'win32' ? 'PRAGMA mmap_size = 0;' : 'PRAGMA mmap_size = 67108864;'
+        this.db.exec(`PRAGMA busy_timeout = 5000; PRAGMA cache_size = -16384; ${mmapPragma}`)
       } catch {}
     }
     return this.db

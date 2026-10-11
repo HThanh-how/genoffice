@@ -1550,7 +1550,8 @@ export function Home() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
-      if (event.key !== 'f' && event.key !== 'p') return
+      const k = event.key.toLowerCase()
+      if (k !== 'f' && k !== 'p' && event.code !== 'KeyF' && event.code !== 'KeyP') return
       const input = searchInputRef.current
       if (!input) return
       event.preventDefault()
