@@ -60,13 +60,19 @@ class FakeIndexWorker extends EventEmitter {
   dims = EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE].dimensions
   neverExtract = false
   neverAck = false
+  private pendingTimers = new Set<ReturnType<typeof setTimeout>>()
+  private terminated = false
+
   postMessage(message: { id: number; type: string; path?: string; texts?: string[] }): void {
+    if (this.terminated) return
     this.seen.push({
       type: message.type,
       ...(message.path ? { path: message.path } : {}),
       ...(message.texts ? { n: message.texts.length } : {}),
     })
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.pendingTimers.delete(timer)
+      if (this.terminated) return
       if (message.type === 'set-storage-budget' && this.neverAck) return
       const ack = storageBudgetAckReply(message)
       if (ack) return void this.emit('message', ack)
@@ -92,18 +98,33 @@ class FakeIndexWorker extends EventEmitter {
         }
       } else if (message.type === 'embed') {
         const reply = () => {
+          if (this.terminated) return
           this.emit('message', { type: 'model', state: 'ready' })
           this.emit('message', {
             id: message.id,
             result: (message.texts ?? []).map(() => new Array(this.dims).fill(0.1)),
           })
         }
-        if (this.embedDelayMs > 0) setTimeout(reply, this.embedDelayMs)
-        else reply()
+        if (this.embedDelayMs > 0) {
+          const embedTimer = setTimeout(() => {
+            this.pendingTimers.delete(embedTimer)
+            reply()
+          }, this.embedDelayMs)
+          this.pendingTimers.add(embedTimer)
+        } else {
+          reply()
+        }
       }
     }, 0)
+    this.pendingTimers.add(timer)
   }
   terminate(): Promise<number> {
+    this.terminated = true
+    for (const timer of this.pendingTimers) {
+      clearTimeout(timer)
+    }
+    this.pendingTimers.clear()
+    this.removeAllListeners()
     return Promise.resolve(0)
   }
   count(type: string): number {

@@ -174,17 +174,30 @@ describe('the purge never blocks the event loop', () => {
 
 class FakeWorker extends EventEmitter {
   requests: string[] = []
+  private pendingTimers = new Set<ReturnType<typeof setTimeout>>()
+  private terminated = false
+
   postMessage(message: { id: number; type: string }) {
+    if (this.terminated) return
     this.requests.push(message.type)
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.pendingTimers.delete(timer)
+      if (this.terminated) return
       const ack = storageBudgetAckReply(message)
       if (ack) this.emit('message', ack)
       else if (message.type === 'junk-purge-step')
         this.emit('message', { id: message.id, result: { removed: 0, scanned: 0, done: true } })
       else this.emit('message', { id: message.id, result: {} })
     }, 0)
+    this.pendingTimers.add(timer)
   }
   terminate() {
+    this.terminated = true
+    for (const timer of this.pendingTimers) {
+      clearTimeout(timer)
+    }
+    this.pendingTimers.clear()
+    this.removeAllListeners()
     return Promise.resolve(0)
   }
 }

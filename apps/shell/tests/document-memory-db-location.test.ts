@@ -532,4 +532,74 @@ describe('crash-safety & fault-injection relocation protocol (P0-01)', () => {
     const healed = JSON.parse(readFileSync(join(userData, 'document-memory-location.json'), 'utf8'))
     expect(healed.dir).toBe(target)
   })
+
+  it('Scenario 21: Unsafe or malicious stagingDir in journal fails closed without arbitrary directory deletion', async () => {
+    seedRealDatabase(target, 4)
+    // Create a sensitive canary directory that must NEVER be deleted
+    const canaryDir = join(root, 'sensitive-canary-dir')
+    mkdirSync(canaryDir, { recursive: true })
+    writeFileSync(join(canaryDir, 'important-file.txt'), 'do not touch')
+
+    // Inject journal attempting path traversal or arbitrary staging deletion
+    const maliciousJournal = {
+      version: 1,
+      sourceDir: userData,
+      targetDir: target,
+      stagingDir: canaryDir,
+      phase: 'staged',
+      authoritative: 'source',
+      updatedAt: Date.now(),
+    }
+    writeFileSync(
+      join(userData, 'document-memory-relocation-journal.json'),
+      JSON.stringify(maliciousJournal, null, 2),
+    )
+
+    // Journal parsing must reject unsafe staging directory and fail closed
+    expect(() => resolveDbDir(userData)).toThrow(CorruptRelocationJournalError)
+    const moveResult = await applyPendingDbMove(userData)
+    expect(moveResult.moved).toBe(false)
+    expect(moveResult.error).toMatch(/Corrupt relocation journal/)
+
+    // Sensitive canary directory and its files must be 100% intact
+    expect(existsSync(canaryDir)).toBe(true)
+    expect(existsSync(join(canaryDir, 'important-file.txt'))).toBe(true)
+  })
+
+  it('Scenario 22: Windows crash leaving only .old metadata restores primary and routes correctly', () => {
+    seedRealDatabase(target, 5)
+    // Primary is missing, but a valid .old candidate exists from an interrupted Windows rename
+    const oldPath = join(userData, 'document-memory-location.json.12345.1700000000.old')
+    writeFileSync(oldPath, JSON.stringify({ dir: target }))
+
+    expect(resolveDbDir(userData)).toBe(target)
+    const state = dbLocationState(userData)
+    expect(state.dir).toBe(target)
+    expect(state.isDefault).toBe(false)
+
+    // Primary was restored from .old candidate
+    const restored = JSON.parse(readFileSync(join(userData, 'document-memory-location.json'), 'utf8'))
+    expect(restored.dir).toBe(target)
+    // Orphaned .old file was cleaned up
+    expect(existsSync(oldPath)).toBe(false)
+  })
+
+  it('Scenario 23: Relocation journal with contradictory phase and authority fails closed', async () => {
+    seedRealDatabase(target, 4)
+    // Contradictory journal: phase is 'prepare' but claims 'target' is authoritative
+    const invalidJournal = {
+      version: 1,
+      sourceDir: userData,
+      targetDir: target,
+      phase: 'prepare',
+      authoritative: 'target',
+      updatedAt: Date.now(),
+    }
+    writeFileSync(
+      join(userData, 'document-memory-relocation-journal.json'),
+      JSON.stringify(invalidJournal, null, 2),
+    )
+
+    expect(() => resolveDbDir(userData)).toThrow(CorruptRelocationJournalError)
+  })
 })

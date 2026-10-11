@@ -137,6 +137,8 @@ CREATE INDEX IF NOT EXISTS chunk_sets_document_id ON chunk_sets(document_id);
 CREATE INDEX IF NOT EXISTS chunks_chunk_set_id ON chunks(chunk_set_id);
 -- Rename detection looks up other documents of the same size before it hashes a new file.
 CREATE INDEX IF NOT EXISTS documents_size_bytes ON documents(size_bytes);
+-- Fast indexed cursor walk for bounded junk purge slices
+CREATE INDEX IF NOT EXISTS documents_last_opened ON documents(last_opened_at, id);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS chunk_fts USING fts5(text, tokenize='unicode61 remove_diacritics 2');
 

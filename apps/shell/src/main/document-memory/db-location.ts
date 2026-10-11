@@ -4,9 +4,12 @@ import {
   constants,
   existsSync,
   fsyncSync,
+  lstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   statfsSync,
@@ -14,7 +17,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { copyFile, rename, rm, stat } from 'node:fs/promises'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 const SETTINGS_FILE = 'document-memory-location.json'
@@ -243,13 +246,95 @@ function writeAtomic(
   }
 }
 
+function findStagedOldFiles(filePath: string): string[] {
+  try {
+    const dir = dirname(filePath)
+    const base = basename(filePath)
+    if (!existsSync(dir)) return []
+    const prefix = `${base}.`
+    const files = readdirSync(dir)
+    return files
+      .filter((f) => (f.startsWith(prefix) || f === `${base}.old`) && f.endsWith('.old'))
+      .map((f) => join(dir, f))
+      .sort((a, b) => {
+        try {
+          return statSync(b).mtimeMs - statSync(a).mtimeMs
+        } catch {
+          return 0
+        }
+      })
+  } catch {
+    return []
+  }
+}
+
+function cleanOrphanedTmpAndOldFiles(filePath: string): void {
+  try {
+    const dir = dirname(filePath)
+    const base = basename(filePath)
+    if (!existsSync(dir)) return
+    const prefix = `${base}.`
+    const files = readdirSync(dir)
+    for (const f of files) {
+      if (
+        (f.startsWith(prefix) && (f.endsWith('.old') || f.endsWith('.tmp'))) ||
+        f === `${base}.old`
+      ) {
+        try {
+          unlinkSync(join(dir, f))
+        } catch {}
+      }
+    }
+  } catch {}
+}
+
+export function isSafeRelocationStagingDir(
+  stagingDir: unknown,
+  targetDir: string,
+  sourceDir: string,
+): boolean {
+  if (typeof stagingDir !== 'string' || !stagingDir.trim()) return false
+  if (!isAbsolute(stagingDir)) return false
+
+  const resolvedStaging = resolve(stagingDir)
+  const resolvedTarget = resolve(targetDir)
+  const resolvedSource = resolve(sourceDir)
+
+  if (!resolvedTarget || !resolvedSource || resolvedTarget === resolvedSource) return false
+  if (resolvedStaging === resolvedTarget || resolvedStaging === resolvedSource) return false
+  if (resolvedStaging === resolve('/') || dirname(resolvedStaging) === resolvedStaging) return false
+
+  if (resolve(dirname(resolvedStaging)) !== resolvedTarget) return false
+
+  const base = basename(resolvedStaging)
+  if (!base.startsWith('.relocation-staging-') || base.length < 22) return false
+
+  try {
+    if (existsSync(resolvedStaging)) {
+      const lst = lstatSync(resolvedStaging)
+      if (lst.isSymbolicLink()) return false
+      if (existsSync(resolvedTarget)) {
+        const realStaging = realpathSync(resolvedStaging)
+        const realTarget = realpathSync(resolvedTarget)
+        if (resolve(dirname(realStaging)) !== realTarget) return false
+      }
+    }
+  } catch {
+    return false
+  }
+
+  return true
+}
+
 function read(userData: string): LocationSettings {
   const primaryPath = join(userData, SETTINGS_FILE)
   const bakPath = join(userData, `${SETTINGS_FILE}.bak`)
+  const oldFiles = findStagedOldFiles(primaryPath)
   const primaryExists = existsSync(primaryPath)
   const bakExists = existsSync(bakPath)
+  const hasOldFiles = oldFiles.length > 0
 
-  if (!primaryExists && !bakExists) {
+  if (!primaryExists && !bakExists && !hasOldFiles) {
     return {}
   }
 
@@ -286,9 +371,25 @@ function read(userData: string): LocationSettings {
 
   if (primaryExists) {
     const primary = parseSettings(primaryPath)
-    if (primary !== null) return primary
+    if (primary !== null) {
+      cleanOrphanedTmpAndOldFiles(primaryPath)
+      return primary
+    }
   }
 
+  // Primary was missing or corrupted: check .old candidates first (most recent pre-crash primary state)
+  for (const oldFile of oldFiles) {
+    const oldSettings = parseSettings(oldFile)
+    if (oldSettings !== null) {
+      try {
+        writeAtomic(primaryPath, JSON.stringify(oldSettings, null, 2), { isRecoveryRestore: true })
+        cleanOrphanedTmpAndOldFiles(primaryPath)
+      } catch {}
+      return oldSettings
+    }
+  }
+
+  // Next check .bak backup
   if (bakExists) {
     const backup = parseSettings(bakPath)
     if (backup !== null) {
@@ -296,12 +397,13 @@ function read(userData: string): LocationSettings {
       // Durably restore primary from valid backup WITHOUT overwriting backup!
       try {
         writeAtomic(primaryPath, JSON.stringify(backup, null, 2), { isRecoveryRestore: true })
+        cleanOrphanedTmpAndOldFiles(primaryPath)
       } catch {}
       return backup
     }
   }
 
-  // Metadata files existed on disk, but neither primary nor backup could be parsed!
+  // Metadata files existed on disk, but neither primary, .old, nor backup could be parsed!
   // If an existing verified database is already present in userData, preserve default location.
   const defaultDbPath = join(userData, 'document-memory.db')
   if (existsSync(defaultDbPath) && verifyDatabaseIntegrity(defaultDbPath).ok) {
@@ -327,6 +429,21 @@ function parseJournal(content: string): RelocationJournal | null {
     if (parsed.version !== 1) return null
     if (!['prepare', 'staged', 'committed', 'cleanup'].includes(parsed.phase)) return null
     if (!['source', 'target'].includes(parsed.authoritative)) return null
+
+    // Strictly validate journal phase and authority consistency
+    if (
+      (parsed.phase === 'prepare' || parsed.phase === 'staged') &&
+      parsed.authoritative !== 'source'
+    ) {
+      return null
+    }
+    if (
+      (parsed.phase === 'committed' || parsed.phase === 'cleanup') &&
+      parsed.authoritative !== 'target'
+    ) {
+      return null
+    }
+
     if (
       typeof parsed.sourceDir !== 'string' ||
       !parsed.sourceDir.trim() ||
@@ -342,11 +459,10 @@ function parseJournal(content: string): RelocationJournal | null {
     ) {
       return null
     }
-    if (
-      parsed.stagingDir !== undefined &&
-      (typeof parsed.stagingDir !== 'string' || !parsed.stagingDir.trim())
-    ) {
-      return null
+    if (parsed.stagingDir !== undefined) {
+      if (!isSafeRelocationStagingDir(parsed.stagingDir, parsed.targetDir, parsed.sourceDir)) {
+        return null
+      }
     }
     if (parsed.files !== undefined) {
       if (!Array.isArray(parsed.files)) return null
@@ -387,26 +503,51 @@ function parseJournal(content: string): RelocationJournal | null {
 function readJournal(userData: string): RelocationJournal | null {
   const journalPath = join(userData, JOURNAL_FILE)
   const bakPath = `${journalPath}.bak`
+  const oldFiles = findStagedOldFiles(journalPath)
   const journalExists = existsSync(journalPath)
   const bakExists = existsSync(bakPath)
+  const hasOld = oldFiles.length > 0
 
-  if (!journalExists && !bakExists) return null
+  if (!journalExists && !bakExists && !hasOld) return null
 
   if (journalExists) {
     try {
       const content = readFileSync(journalPath, 'utf8')
       const parsed = parseJournal(content)
-      if (parsed) return parsed
+      if (parsed) {
+        cleanOrphanedTmpAndOldFiles(journalPath)
+        return parsed
+      }
     } catch {
-      // Primary journal unreadable, try backup
+      // Primary journal unreadable, try old/backup
     }
+  }
+
+  for (const oldFile of oldFiles) {
+    try {
+      const content = readFileSync(oldFile, 'utf8')
+      const parsed = parseJournal(content)
+      if (parsed) {
+        try {
+          writeAtomic(journalPath, JSON.stringify(parsed, null, 2), { isRecoveryRestore: true })
+          cleanOrphanedTmpAndOldFiles(journalPath)
+        } catch {}
+        return parsed
+      }
+    } catch {}
   }
 
   if (bakExists) {
     try {
       const content = readFileSync(bakPath, 'utf8')
       const parsed = parseJournal(content)
-      if (parsed) return parsed
+      if (parsed) {
+        try {
+          writeAtomic(journalPath, JSON.stringify(parsed, null, 2), { isRecoveryRestore: true })
+          cleanOrphanedTmpAndOldFiles(journalPath)
+        } catch {}
+        return parsed
+      }
     } catch {
       // Backup also unreadable
     }
@@ -423,12 +564,14 @@ function writeJournal(userData: string, journal: RelocationJournal): void {
 }
 
 function removeJournal(userData: string): void {
+  const journalPath = join(userData, JOURNAL_FILE)
   try {
-    unlinkSync(join(userData, JOURNAL_FILE))
+    unlinkSync(journalPath)
   } catch {}
   try {
     unlinkSync(join(userData, `${JOURNAL_FILE}.bak`))
   } catch {}
+  cleanOrphanedTmpAndOldFiles(journalPath)
 }
 
 /** Check if database directory is mounted, exists, and is readable & writable. */
@@ -694,17 +837,21 @@ async function recoverInterruptedRelocation(
 ): Promise<{ moved: boolean; error?: string }> {
   const { sourceDir, targetDir, stagingDir, authoritative } = journal
 
+  const safeCleanupStaging = async () => {
+    if (stagingDir && isSafeRelocationStagingDir(stagingDir, targetDir, sourceDir)) {
+      try {
+        await rm(stagingDir, { recursive: true, force: true })
+      } catch {}
+    }
+  }
+
   if (authoritative === 'target') {
     // Target was committed as authoritative before interruption
     const targetDbPath = join(targetDir, 'document-memory.db')
     const targetValid = verifyDatabaseCandidate(targetDbPath)
     if (targetValid.ok) {
       // Clean up staging directory if still around
-      if (stagingDir) {
-        try {
-          await rm(stagingDir, { recursive: true, force: true })
-        } catch {}
-      }
+      await safeCleanupStaging()
       // Clean up source directory files
       for (const name of ALL_POTENTIAL_DB_FILES) {
         try {
@@ -727,11 +874,7 @@ async function recoverInterruptedRelocation(
           unlinkSync(join(targetDir, name))
         } catch {}
       }
-      if (stagingDir) {
-        try {
-          await rm(stagingDir, { recursive: true, force: true })
-        } catch {}
-      }
+      await safeCleanupStaging()
       const isDefault = resolve(sourceDir) === resolve(userData)
       write(userData, {
         ...(isDefault ? {} : { dir: sourceDir }),
@@ -759,11 +902,7 @@ async function recoverInterruptedRelocation(
 
   if (sourceValid.ok) {
     // Source is intact and verified. Safe to clean up target artifacts and roll back.
-    if (stagingDir) {
-      try {
-        await rm(stagingDir, { recursive: true, force: true })
-      } catch {}
-    }
+    await safeCleanupStaging()
     for (const name of ALL_POTENTIAL_DB_FILES) {
       try {
         unlinkSync(join(targetDir, name))
@@ -781,11 +920,7 @@ async function recoverInterruptedRelocation(
   // Source is missing or corrupted: NEVER delete target solely because source DB is missing.
   // Check if target has a verified surviving copy.
   if (targetValid.ok) {
-    if (stagingDir) {
-      try {
-        await rm(stagingDir, { recursive: true, force: true })
-      } catch {}
-    }
+    await safeCleanupStaging()
     const isDefault = resolve(targetDir) === resolve(userData)
     write(userData, { ...(isDefault ? {} : { dir: targetDir }), lastError: undefined })
     removeJournal(userData)

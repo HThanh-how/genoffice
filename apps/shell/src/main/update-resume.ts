@@ -301,8 +301,13 @@ async function resumeDownload(
   }
 
   const fileOut = createWriteStream(partPath, appending ? { flags: 'r+', start: resumeFrom } : {})
-  /** wait for buffered writes to reach the disk; on failure keep what made it */
-  const settle = (): Promise<void> => new Promise((resolve) => fileOut.end(() => resolve()))
+  /** wait for buffered writes to reach the disk and file descriptor to close; on failure keep what made it */
+  const settle = (): Promise<void> =>
+    new Promise((resolve) => {
+      if (fileOut.closed) return resolve()
+      fileOut.once('close', () => resolve())
+      fileOut.end()
+    })
   // re-armed on every chunk (clear+set, not refresh, so fake timers work too)
   let stallTimer: ReturnType<typeof setTimeout> | undefined
   let stalled = false

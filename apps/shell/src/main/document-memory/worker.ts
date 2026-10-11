@@ -500,3 +500,12 @@ onIndexRequest(
       )
   },
 )
+
+if (typeof process.on === 'function') {
+  process.on('disconnect', () => {
+    try {
+      searchStore?.close()
+    } catch {}
+    process.exit(0)
+  })
+}

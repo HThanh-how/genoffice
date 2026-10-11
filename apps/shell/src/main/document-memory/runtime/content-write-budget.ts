@@ -537,7 +537,7 @@ export async function writeExtractedContentSliced(params: {
   try {
     const displaced = { value: false }
     const importance = incomingImportance(store, path)
-    const resizeLease = (remainingBytes: number): Promise<ResizeDecision> =>
+    const resizeLease = (remainingBytes: number, forceRefresh = false): Promise<ResizeDecision> =>
       resizeWithDisplacement(
         () =>
           resizeExtractionLease({
@@ -546,7 +546,7 @@ export async function writeExtractedContentSliced(params: {
             remainingBytes,
             maintScheduler,
             dbDir,
-            forceRefresh: true,
+            forceRefresh,
             ownerToken: createdFallbackLease ? ownerToken : undefined,
             isCurrent,
             isWriteReady: () => budgetCoord.isWriteReady(),
@@ -556,7 +556,7 @@ export async function writeExtractedContentSliced(params: {
         isCurrent,
         importance,
       )
-    const initialResize = await resizeLease(totalRemainingBytes)
+    const initialResize = await resizeLease(totalRemainingBytes, true)
 
     // Recheck lifecycle and gate after awaits
     if (!isCurrent()) {
@@ -590,7 +590,10 @@ export async function writeExtractedContentSliced(params: {
         if (!budgetCoord.isWriteReady()) return { proceed: false, reason: 'write-gate-closed' }
 
         // Remeasure physical accounting and resize extraction lease outside txn
-        const batchResize = await resizeLease(Math.max(info.totalEstimatedRemainingBytes, BASE_METADATA_WRITE_BYTES))
+        const batchResize = await resizeLease(
+          Math.max(info.totalEstimatedRemainingBytes, BASE_METADATA_WRITE_BYTES),
+          false,
+        )
 
         // Recheck lifecycle and write readiness after await
         if (!isCurrent()) return { proceed: false, reason: 'generation-changed' }
@@ -604,26 +607,29 @@ export async function writeExtractedContentSliced(params: {
         return { proceed: true }
       },
       postCommit: async (info: BatchCommitInfo): Promise<void> => {
-        // 1. Fresh physical measurement first to capture committed WAL/DB bytes on disk
-        let snap: StorageBudgetSnapshot | null
-        try {
-          snap = await maintScheduler.refreshAccountingAsync()
-        } catch (err) {
-          // If measurement refresh throws, invalidate scheduler and keep reservation charged
-          maintScheduler.invalidateAccounting(`content-write-postCommit: ${safeError(err)}`)
-          return
+        // Only run expensive worker-thread physical measurement refresh on final slice
+        if (info.remainingChunks === 0) {
+          let snap: StorageBudgetSnapshot | null
+          try {
+            snap = await maintScheduler.refreshAccountingAsync()
+          } catch (err) {
+            // If measurement refresh throws, invalidate scheduler and keep reservation charged
+            maintScheduler.invalidateAccounting(`content-write-postCommit: ${safeError(err)}`)
+            return
+          }
+
+          // Keep charged and fail closed if measurement is unknown or degraded
+          if (!snap || snap.measurementStatus !== 'fresh' || snap.isDegraded === true) {
+            maintScheduler.invalidateAccounting(
+              `content-write-postCommit: measurement ${snap?.measurementStatus ?? 'unknown'}`,
+            )
+            return
+          }
+
+          settledFresh = true
         }
 
-        // Keep charged and fail closed if measurement is unknown or degraded
-        if (!snap || snap.measurementStatus !== 'fresh' || snap.isDegraded === true) {
-          maintScheduler.invalidateAccounting(
-            `content-write-postCommit: measurement ${snap?.measurementStatus ?? 'unknown'}`,
-          )
-          return
-        }
-
-        settledFresh = true
-        // 2. Only after fresh physical measurement is valid, reconcile remaining reservation
+        // Only after measurement is valid/current, reconcile remaining reservation
         const targetLeaseBytes =
           info.remainingChunks > 0 ? Math.max(info.remainingBytes, BASE_METADATA_WRITE_BYTES) : 0
         admission.reconcile(reserveId, { remainingBytes: targetLeaseBytes })
