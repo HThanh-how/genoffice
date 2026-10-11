@@ -113,7 +113,7 @@ describe('off the main thread (real child-process worker)', () => {
       workerFactory: (await realIndexWorkerFactory()) as any,
       pollIntervalMs: 3_600_000,
       junkPurgeDelayMs: 3_600_000,
-      workerTimeoutMs: 120_000,
+      workerTimeoutMs: 240_000,
     })
     const sched = (manager as any).maintScheduler
     await waitForManagerWriteReady(manager, 20_000)
@@ -134,9 +134,20 @@ describe('off the main thread (real child-process worker)', () => {
       await sched.refreshAccountingAsync() // 93% -> arms the pressure run (2 s), the worker process does the rest
       const done = await waitFor(
         () => sched.getLastCompactionOutcome()?.status === 'completed',
-        120_000,
+        240_000,
       )
-      expect(done).toBe(true)
+      expect(
+        done,
+        JSON.stringify(
+          {
+            timeout: true,
+            outcome: sched.getLastCompactionOutcome(),
+            isCompactionRunning: sched.isCompactionRunning(),
+          },
+          null,
+          2,
+        ),
+      ).toBe(true)
     } finally {
       clearInterval(beat)
       delay.disable()

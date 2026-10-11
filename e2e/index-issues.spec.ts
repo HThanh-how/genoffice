@@ -2,7 +2,12 @@ import { test, expect } from '@playwright/test'
 import { launchShell, closeAndSaveVideo, waitForPageWithUrl } from './helpers'
 
 test('file warnings preserve ongoing progress and expose localized retry actions', async () => {
-  const launched = await launchShell({ onboardingSeen: true, lang: 'vi', videoDir: 'index-issues' })
+  const launched = await launchShell({
+    onboardingSeen: true,
+    lang: 'vi',
+    videoDir: 'index-issues',
+    settings: { starPrompt: { resolved: true } },
+  })
   try {
     await launched.app.evaluate(({ ipcMain }) => {
       const fixture = {
@@ -41,6 +46,7 @@ test('file warnings preserve ongoing progress and expose localized retry actions
       }
       Object.assign(globalThis, { __issuesFixture: fixture })
       for (const channel of [
+        'home:star-prompt-should-show',
         'home:get-indexing-activity',
         'home:get-document-index-snapshot',
         'home:get-document-index-issue-summary',
@@ -50,6 +56,7 @@ test('file warnings preserve ongoing progress and expose localized retry actions
         'home:reveal-document-index-file',
       ])
         ipcMain.removeHandler(channel)
+      ipcMain.handle('home:star-prompt-should-show', () => ({ show: false, docOpens: 0 }))
       ipcMain.handle('home:get-indexing-activity', () => fixture.activity)
       ipcMain.handle('home:get-document-index-snapshot', () => ({
         memory: {
