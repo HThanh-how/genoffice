@@ -578,7 +578,9 @@ describe('crash-safety & fault-injection relocation protocol (P0-01)', () => {
     expect(state.isDefault).toBe(false)
 
     // Primary was restored from .old candidate
-    const restored = JSON.parse(readFileSync(join(userData, 'document-memory-location.json'), 'utf8'))
+    const restored = JSON.parse(
+      readFileSync(join(userData, 'document-memory-location.json'), 'utf8'),
+    )
     expect(restored.dir).toBe(target)
     // Orphaned .old file was cleaned up
     expect(existsSync(oldPath)).toBe(false)

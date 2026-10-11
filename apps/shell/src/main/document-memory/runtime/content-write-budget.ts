@@ -137,12 +137,7 @@ export async function getValidatedFreeDiskBytes(dirPath: string): Promise<number
     const stat = await statfs(dirPath)
     const bavail = Number(stat.bavail)
     const bsize = Number(stat.bsize)
-    if (
-      Number.isSafeInteger(bavail) &&
-      Number.isSafeInteger(bsize) &&
-      bavail >= 0 &&
-      bsize > 0
-    ) {
+    if (Number.isSafeInteger(bavail) && Number.isSafeInteger(bsize) && bavail >= 0 && bsize > 0) {
       const product = bavail * bsize
       if (Number.isSafeInteger(product) && product >= 0) {
         return product
@@ -170,7 +165,8 @@ export async function getFreshValidatedAccounting(
   let snap = maintScheduler.getLastBudgetSnapshot()
   const now = Date.now()
   const isStale = !snap || !snap.measuredAt || now - snap.measuredAt > STALE_ACCOUNTING_CUTOFF_MS
-  const isUnknownOrDegraded = !snap || snap.measurementStatus === 'unknown' || snap.isDegraded === true
+  const isUnknownOrDegraded =
+    !snap || snap.measurementStatus === 'unknown' || snap.isDegraded === true
 
   if (forceRefresh || isStale || isUnknownOrDegraded) {
     try {
@@ -476,11 +472,17 @@ async function resizeWithDisplacement(
   importance: ImportanceClass | undefined,
 ): Promise<ResizeDecision> {
   let decision = await attempt()
-  if (decision.admitted || alreadyDisplaced.value || !isQuotaRefusal(decision) || !isCurrent()) return decision
+  if (decision.admitted || alreadyDisplaced.value || !isQuotaRefusal(decision) || !isCurrent())
+    return decision
   if (typeof maintScheduler.makeRoom !== 'function') return decision
   alreadyDisplaced.value = true
   const shortfall = Math.max(1, Math.ceil(decision.projectedBytes - decision.budgetBytes))
-  const room = await maintScheduler.makeRoom({ admissionDenied: true, neededBytes: shortfall, importance, reason: 'content' })
+  const room = await maintScheduler.makeRoom({
+    admissionDenied: true,
+    neededBytes: shortfall,
+    importance,
+    reason: 'content',
+  })
   if (room.retry && isCurrent()) decision = await attempt()
   return decision
 }
@@ -526,7 +528,9 @@ export async function writeExtractedContentSliced(params: {
   // 2. Track reservation ownership with unique token for safe cleanup
   const reserveId = `extract:${path}`
   const ownerToken = `extract:${path}:${Date.now()}:${Math.random().toString(36).slice(2)}`
-  const hadExistingReservation = Boolean(admission.listReservations().find((r) => r.id === reserveId))
+  const hadExistingReservation = Boolean(
+    admission.listReservations().find((r) => r.id === reserveId),
+  )
   const createdFallbackLease = !hadExistingReservation
 
   const totalRemainingBytes = estimateTotalChunksBytes(ext.chunks)

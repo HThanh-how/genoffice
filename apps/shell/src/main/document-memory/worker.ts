@@ -9,7 +9,10 @@ import { indexingWorkerData, postIndexMessage, onIndexRequest } from './runtime'
 import { backgroundCoolDown, interruptBackgroundSleep, withBackgroundBudget } from './cpu-budget'
 import { performance } from 'node:perf_hooks'
 import { handleCompactionRequest } from './runtime/worker-compaction'
-import { isCompactionRequest, type CompactionWorkerRequest } from './runtime/worker-compaction-types'
+import {
+  isCompactionRequest,
+  type CompactionWorkerRequest,
+} from './runtime/worker-compaction-types'
 import { readFile, stat } from 'node:fs/promises'
 import { createHash } from 'node:crypto'
 import { extname } from 'node:path'
@@ -23,7 +26,11 @@ import {
   DEFAULT_PDF_PAGES,
   type TruncatedReason,
 } from './chunks'
-import { DEFAULT_STORAGE_BUDGET, normalizeOvershootRatio, type DocumentIndexStorageBudget } from './storage-budget'
+import {
+  DEFAULT_STORAGE_BUDGET,
+  normalizeOvershootRatio,
+  type DocumentIndexStorageBudget,
+} from './storage-budget'
 
 function isValidWorkerBudget(budget: unknown): budget is DocumentIndexStorageBudget {
   if (!budget || typeof budget !== 'object') return false
@@ -46,14 +53,16 @@ function isValidWorkerVersion(version: unknown): version is number {
   )
 }
 
-let workerStorageBudget: DocumentIndexStorageBudget =
-  isValidWorkerBudget((indexingWorkerData as any)?.storageBudget)
-    ? (indexingWorkerData as any).storageBudget
-    : DEFAULT_STORAGE_BUDGET
-let workerConfigVersion: number | null =
-  isValidWorkerVersion((indexingWorkerData as any)?.configVersion)
-    ? (indexingWorkerData as any).configVersion
-    : null
+let workerStorageBudget: DocumentIndexStorageBudget = isValidWorkerBudget(
+  (indexingWorkerData as any)?.storageBudget,
+)
+  ? (indexingWorkerData as any).storageBudget
+  : DEFAULT_STORAGE_BUDGET
+let workerConfigVersion: number | null = isValidWorkerVersion(
+  (indexingWorkerData as any)?.configVersion,
+)
+  ? (indexingWorkerData as any).configVersion
+  : null
 
 export const MAX_INDEX_TEXT_CHARS = DEFAULT_STORAGE_BUDGET.maxExtractedCharactersPerFile
 import { DocumentMemoryStore } from './store'
@@ -102,7 +111,8 @@ export async function extractDocumentSliced(
   maxPdfPages = DEFAULT_PDF_PAGES,
 ) {
   const before = await stat(path)
-  if (before.size > DEFAULT_STORAGE_BUDGET.maxFileBytes) throw new Error('Document exceeds the 128 MB indexing limit')
+  if (before.size > DEFAULT_STORAGE_BUDGET.maxFileBytes)
+    throw new Error('Document exceeds the 128 MB indexing limit')
   // images: only the text the local OCR pass stored for them (media rows stay lean without it)
   if (mediaKindOfPath(path) === 'image') return extractImageOcrText(path, before, ocr)
   const kept = partialPdfs.get(path)
@@ -330,7 +340,10 @@ function runCompactionLane(request: CompactionWorkerRequest & { id: number }): v
   )
     .then((result) => postIndexMessage({ id: request.id, result }))
     .catch((error) =>
-      postIndexMessage({ id: request.id, error: error instanceof Error ? error.message : 'Compaction failed' }),
+      postIndexMessage({
+        id: request.id,
+        error: error instanceof Error ? error.message : 'Compaction failed',
+      }),
     )
 }
 
@@ -382,7 +395,9 @@ onIndexRequest(
           )
         else if (request.type === 'ocr-prepare')
           // CPU-bound decode / shrink / flatten of an image for the Tesseract engine (kept off the main thread)
-          result = await withBackgroundBudget(async () => prepareForTesseract(request.bytes!, request.dpi ?? 150))
+          result = await withBackgroundBudget(async () =>
+            prepareForTesseract(request.bytes!, request.dpi ?? 150),
+          )
         else if (request.type === 'search') {
           result = getWorkerStore().search(
             request.query,
@@ -400,17 +415,16 @@ onIndexRequest(
           )
         } else if (request.type === 'ann-rebuild' || request.type === 'ann-sync') {
           const targetSpace = request.spaceId ?? request.embeddingSpaceId ?? request.embeddingModel
-          result = await getWorkerStore().rebuildAnnIndex(
-            targetSpace,
-            request.hostPermit,
-          )
+          result = await getWorkerStore().rebuildAnnIndex(targetSpace, request.hostPermit)
         } else if (request.type === 'fts-maintenance-step') {
           const started = Date.now()
           const more = await withBackgroundBudget(async () => getWorkerStore().mergeFtsStep())
           result = { more: Boolean(more), durationMs: Date.now() - started }
         } else if (request.type === 'gc-step') {
           const started = Date.now()
-          const gcStats = await withBackgroundBudget(async () => getWorkerStore().runMaintenanceGc())
+          const gcStats = await withBackgroundBudget(async () =>
+            getWorkerStore().runMaintenanceGc(),
+          )
           result = { gcStats, durationMs: Date.now() - started }
         } else if (request.type === 'vacuum-step') {
           const started = Date.now()
@@ -430,7 +444,8 @@ onIndexRequest(
               appliedVersion: workerConfigVersion,
               desiredVersion: isValidWorkerVersion(targetVersion) ? targetVersion : -1,
               appliedBudgetBytes: workerStorageBudget.maxDatabaseBytes,
-              error: 'Invalid storage budget: maxDatabaseBytes must be a safe integer between 500 MB and 100 GB',
+              error:
+                'Invalid storage budget: maxDatabaseBytes must be a safe integer between 500 MB and 100 GB',
             }
           } else if (!isValidWorkerVersion(targetVersion)) {
             result = {
