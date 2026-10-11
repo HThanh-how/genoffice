@@ -15,8 +15,10 @@ export interface DatabaseOpenOptions {
  */
 export function openDatabase(dbPath: string, options: DatabaseOpenOptions = {}): DatabaseSync {
   const db = new DatabaseSync(dbPath)
+  const isSearch = (options.role ?? 'search') === 'search'
+  const walCheckpointPragma = isSearch ? 'PRAGMA wal_autocheckpoint = 0;' : 'PRAGMA wal_autocheckpoint = 1000;'
   db.exec(
-    'PRAGMA busy_timeout = 5000; PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA temp_store = MEMORY; PRAGMA mmap_size = 67108864;',
+    `PRAGMA busy_timeout = 5000; PRAGMA auto_vacuum = INCREMENTAL; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON; PRAGMA temp_store = MEMORY; PRAGMA mmap_size = 67108864; ${walCheckpointPragma}`,
   )
   const cacheKiB = options.cacheKiB ?? defaultSqliteCacheKiB(options.role ?? 'search')
   db.exec(`PRAGMA cache_size = -${cacheKiB};`)

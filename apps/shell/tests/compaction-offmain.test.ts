@@ -106,6 +106,7 @@ describe('off the main thread (real child-process worker)', () => {
     // the one-time main-thread name-projection backfill (not part of compaction) is completed up front so the
     // heartbeat below isolates the compaction work
     for (let i = 0; i < 100 && !seed.backfillNameProjectionBatch(100).done; i++);
+    seed.rawDb.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     seed.close()
 
     manager = new DocumentMemoryManager(dir, {

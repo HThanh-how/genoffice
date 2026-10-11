@@ -42,6 +42,7 @@ describe('FileIndexer diff on a big index', () => {
     )
     for (let i = 0; i < 150_000; i++) ins.run(join(dir, 'gone', 'deep', `x${i}.txt`), `x${i}.txt`)
     db.exec('COMMIT')
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     indexer = new FileIndexer(store, WORKER, { roots: () => [dir], extraPaths: () => [] }, 5_000)
     const gaps: number[] = []
     let last = performance.now()
