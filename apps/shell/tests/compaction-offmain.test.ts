@@ -88,7 +88,7 @@ describe('off the main thread (real child-process worker)', () => {
       })),
     ])
     seed.rawDb.exec('CREATE TABLE IF NOT EXISTS ballast (x BLOB)')
-    const target = Math.round(SOFT * 0.93)
+    const target = Math.round(SOFT * 0.925)
     seed.rawDb.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     let total = collectStorageAccounting({ dbPath }).totalManagedBytes
     expect(total).toBeLessThan(target)
@@ -106,6 +106,7 @@ describe('off the main thread (real child-process worker)', () => {
     // the one-time main-thread name-projection backfill (not part of compaction) is completed up front so the
     // heartbeat below isolates the compaction work
     for (let i = 0; i < 100 && !seed.backfillNameProjectionBatch(100).done; i++);
+    seed.rawDb.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     seed.close()
 
     manager = new DocumentMemoryManager(dir, {
