@@ -321,8 +321,12 @@ function getWorkerStore(): DocumentMemoryStore {
 let lastCompactionYield = performance.now()
 async function compactionYield(urgent: boolean): Promise<void> {
   const activeMs = Math.max(0, performance.now() - lastCompactionYield)
-  if (urgent) await new Promise<void>((resolve) => setImmediate(resolve))
-  else await backgroundCoolDown(activeMs)
+  if (urgent) {
+    await new Promise<void>((resolve) => setImmediate(resolve))
+  } else {
+    // Bound the per-batch cool-down slice so compaction progresses responsively while yielding to event loop
+    await backgroundCoolDown(Math.min(50, activeMs))
+  }
   lastCompactionYield = performance.now()
 }
 

@@ -2,7 +2,14 @@ import { statSync, createReadStream } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { resolve, extname, basename } from 'node:path'
 import { createHash } from 'node:crypto'
-import type { DocumentMemoryStore, DocumentMemoryHit, StoredDocument } from '../store'
+import type {
+  DocumentMemoryStore,
+  DocumentMemoryHit,
+  StoredDocument,
+  FileEnrollmentOutcome,
+  FileEnrollmentResult,
+} from '../store'
+export type { FileEnrollmentOutcome, FileEnrollmentResult }
 import type { FreshDocumentMemoryHit } from './search-service'
 import type { FileStabilityGate } from '../file-stability'
 import { volumeRootOf } from '../volume-root'
@@ -129,30 +136,57 @@ export class FreshnessCoordinator {
     return outcome === 'created' || outcome === 'updated'
   }
 
-  indexDiscoveredFile(
+  enrollDiscoveredFile(
     path: string,
     metadata?: { mtimeMs: number; sizeBytes: number },
-  ): boolean {
-    if (this.options.isStopped?.()) return false
+  ): FileEnrollmentResult {
+    if (this.options.isStopped?.()) return { outcome: 'skipped', reason: 'stopped' }
     const p = resolve(path)
     const admission = discoveredPathAdmission(p)
-    if (!admission.allowed) return false
+    if (!admission.allowed) return { outcome: 'excluded', reason: admission.reason }
     const current = metadata ?? safeStat(p)
-    if (!current) return false
+    if (!current) return { outcome: 'error', error: 'File not found or unreadable' }
     if (this.options.isEnabled && !this.options.isEnabled()) {
       this.options.intakeAdapter?.onDiscovered(p, current)
-      return false
+      return { outcome: 'skipped', reason: 'disabled' }
     }
-    if (mediaKindOfPath(p)) return this.indexMedia(p, current)
-    const needsIndex = this.store.enrollDiscovered(p, current.mtimeMs, current.sizeBytes)
+    if (mediaKindOfPath(p)) {
+      const mediaResult = this.store.enrollMedia(p, current.mtimeMs, current.sizeBytes)
+      if (mediaResult.outcome !== 'unchanged' || !this.mediaStarted) {
+        if (
+          mediaResult.outcome !== 'skipped' &&
+          mediaResult.outcome !== 'excluded' &&
+          mediaResult.outcome !== 'refused'
+        ) {
+          this.mediaStarted = true
+          this.filler().kick()
+        }
+      }
+      return {
+        outcome: mediaResult.outcome,
+        error: mediaResult.error,
+      }
+    }
+    const enrollResult = this.store.enrollDiscoveredResult(p, current.mtimeMs, current.sizeBytes)
+    if (
+      enrollResult.outcome === 'refused' ||
+      enrollResult.outcome === 'deferred' ||
+      enrollResult.outcome === 'excluded'
+    ) {
+      return enrollResult
+    }
     const document = this.store.documentByPath(p)
     if (!document || document.status === 'excluded') {
       if (!document) {
         this.options.intakeAdapter?.onDiscovered(p, current)
       }
-      return false
+      return { outcome: 'excluded' }
     }
-    if (!needsIndex && (document.mtimeMs !== current.mtimeMs || document.sizeBytes !== current.sizeBytes)) {
+    const needsIndex = enrollResult.outcome === 'created' || enrollResult.outcome === 'updated'
+    if (
+      !needsIndex &&
+      (document.mtimeMs !== current.mtimeMs || document.sizeBytes !== current.sizeBytes)
+    ) {
       this.options.intakeAdapter?.onDiscovered(p, current)
     }
     if (needsIndex && document.status !== 'pending' && document.status !== 'text-only') {
@@ -174,7 +208,12 @@ export class FreshnessCoordinator {
     ) {
       this.options.onEnqueue?.(p, false, current.sizeBytes)
     }
-    return needsIndex
+    return enrollResult
+  }
+
+  indexDiscoveredFile(path: string, metadata?: { mtimeMs: number; sizeBytes: number }): boolean {
+    const res = this.enrollDiscoveredFile(path, metadata)
+    return res.outcome === 'created' || res.outcome === 'updated'
   }
 
   prioritizeFolder(folder: string): number {
@@ -256,7 +295,10 @@ export class FreshnessCoordinator {
         return 'moved'
       }
     }
-    if (meta.sizeBytes <= RENAME_HASH_MAX_BYTES && this.hasOtherDocumentOfSize(path, meta.sizeBytes)) {
+    if (
+      meta.sizeBytes <= RENAME_HASH_MAX_BYTES &&
+      this.hasOtherDocumentOfSize(path, meta.sizeBytes)
+    ) {
       // A moved file keeps its size, so a file no other document matches in size is new and is never read or hashed.
       if (fileSha === undefined) fileSha = await hashFile(path).catch(() => null)
       if (fileSha) {
@@ -281,7 +323,9 @@ export class FreshnessCoordinator {
   private hasOtherDocumentOfSize(path: string, sizeBytes: number): boolean {
     try {
       return !!this.store.rawDb
-        .prepare('SELECT 1 FROM documents WHERE size_bytes = ? AND path != ? AND excluded = 0 LIMIT 1')
+        .prepare(
+          'SELECT 1 FROM documents WHERE size_bytes = ? AND path != ? AND excluded = 0 LIMIT 1',
+        )
         .get(sizeBytes, path)
     } catch {
       return true
@@ -370,7 +414,9 @@ export class FreshnessCoordinator {
     })
   }
 
-  private async checkFreshness(hit: DocumentMemoryHit): Promise<'fresh' | 'stale' | 'missing' | 'unverified'> {
+  private async checkFreshness(
+    hit: DocumentMemoryHit,
+  ): Promise<'fresh' | 'stale' | 'missing' | 'unverified'> {
     if (hit.mtimeMs === null || hit.sizeBytes === null) return 'unverified'
     const current = await this.statOutcome(hit.path, FRESHNESS_STAT_TIMEOUT_MS)
     if (current.kind === 'gone') return 'missing'
@@ -400,7 +446,8 @@ export class FreshnessCoordinator {
           if (this.store.documentByPath(path)) this.markMissing(path)
         } else if (
           outcome.kind === 'stable' &&
-          isIndexableExtension(extname(path)) && !isJunkFileName(basename(path)) &&
+          isIndexableExtension(extname(path)) &&
+          !isJunkFileName(basename(path)) &&
           withinSizeLimit(path, outcome.file.sizeBytes)
         ) {
           this.clearStabilityRetry(path)
@@ -429,7 +476,11 @@ export class FreshnessCoordinator {
     }
   }
 
-  private scheduleStabilityRetry(path: string, attempt: number, stabilityGate: FileStabilityGate): void {
+  private scheduleStabilityRetry(
+    path: string,
+    attempt: number,
+    stabilityGate: FileStabilityGate,
+  ): void {
     if (this.options.isStopped?.()) return
     if (!isIndexableExtension(extname(path)) || isJunkFileName(basename(path))) return
     const doc = this.store.documentByPath(path)
@@ -455,13 +506,21 @@ export class FreshnessCoordinator {
     this.stabilityRetries.set(key, { timer })
   }
 
-  private async retryStabilityCheck(path: string, nextAttempt: number, stabilityGate: FileStabilityGate): Promise<void> {
+  private async retryStabilityCheck(
+    path: string,
+    nextAttempt: number,
+    stabilityGate: FileStabilityGate,
+  ): Promise<void> {
     if (this.options.isStopped?.()) return
     const outcome = await stabilityGate.waitForStability(path)
     if (this.options.isStopped?.()) return
     if (outcome.kind === 'stable') {
       this.clearStabilityRetry(path)
-      if (isIndexableExtension(extname(path)) && !isJunkFileName(basename(path)) && withinSizeLimit(path, outcome.file.sizeBytes)) {
+      if (
+        isIndexableExtension(extname(path)) &&
+        !isJunkFileName(basename(path)) &&
+        withinSizeLimit(path, outcome.file.sizeBytes)
+      ) {
         const meta = { mtimeMs: outcome.file.mtimeMs, sizeBytes: outcome.file.sizeBytes }
         if (this.store.documentByPath(path)) {
           this.indexDiscoveredFile(path, meta)
@@ -534,7 +593,9 @@ export class FreshnessCoordinator {
   async verifyExtractedFreshness(
     path: string,
     extracted: { mtimeMs: number; sizeBytes: number },
-  ): Promise<{ kind: 'fresh' | 'modified'; meta: { mtimeMs: number; sizeBytes: number } } | { kind: 'gone' }> {
+  ): Promise<
+    { kind: 'fresh' | 'modified'; meta: { mtimeMs: number; sizeBytes: number } } | { kind: 'gone' }
+  > {
     const outcome = await this.statOutcome(path, 1500)
     if (outcome.kind !== 'file') return { kind: 'gone' }
     if (outcome.mtimeMs !== extracted.mtimeMs || outcome.sizeBytes !== extracted.sizeBytes) {

@@ -47,6 +47,15 @@ export type {
 }
 
 export type DocumentStatus = 'pending' | 'ready' | 'text-only' | 'empty' | 'error' | 'excluded'
+export type FileEnrollmentOutcome =
+  'created' | 'updated' | 'unchanged' | 'skipped' | 'excluded' | 'deferred' | 'refused' | 'error'
+
+export interface FileEnrollmentResult {
+  outcome: FileEnrollmentOutcome
+  error?: string
+  reason?: string
+}
+
 export type TruncatedReason =
   'chunk-limit' | 'content-limit' | 'pdf-page-limit' | 'tabular-sampling'
 
@@ -307,7 +316,10 @@ export class DocumentRepository {
       const row = this.db.prepare('SELECT id FROM documents WHERE path = ?').get(norm) as
         { id: number } | undefined
       if (row) {
-        syncProjectionInsert(this.db, { id: row.id, path: norm, name }, guard ?? undefined)
+        if (!syncProjectionInsert(this.db, { id: row.id, path: norm, name }, guard ?? undefined)) {
+          this.lastAdmissionError = 'Storage admission rejected projection write'
+          throw new Error('Storage admission rejected projection write')
+        }
       }
       return { admitted: true, reservationId, ownerToken, isNew: true }
     } catch (err) {
@@ -444,11 +456,19 @@ export class DocumentRepository {
       const row = this.db.prepare('SELECT id FROM documents WHERE path = ?').get(normalizedPath) as
         { id: number } | undefined
       if (row && (!existing || !isUpToDate)) {
-        syncProjectionInsert(
+        const projOk = syncProjectionInsert(
           this.db,
           { id: row.id, path: normalizedPath, name: fileName },
           guard ?? undefined,
         )
+        if (!projOk) {
+          this.lastAdmissionError = 'Storage admission rejected projection write'
+          this.db.exec('ROLLBACK')
+          if (guard && reservationId && ownerToken) {
+            guard.rollbackCommit(reservationId, ownerToken)
+          }
+          return false
+        }
       }
       this.db.exec('COMMIT')
       if (guard && reservationId && ownerToken) {
@@ -464,11 +484,14 @@ export class DocumentRepository {
     }
   }
 
-  enrollDiscovered(path: string, mtimeMs: number, sizeBytes: number): boolean {
+  enrollDiscoveredResult(path: string, mtimeMs: number, sizeBytes: number): FileEnrollmentResult {
     // Media is finished work at enrollment: never "needs indexing" (callers would queue extraction).
     if (mediaKindOfPath(path)) {
-      this.enrollMedia(path, mtimeMs, sizeBytes)
-      return false
+      const mediaResult = this.enrollMedia(path, mtimeMs, sizeBytes)
+      return {
+        outcome: mediaResult.outcome,
+        error: mediaResult.error,
+      }
     }
     const normalizedPath = resolve(path)
     const fileName = basename(normalizedPath)
@@ -479,10 +502,22 @@ export class DocumentRepository {
     this.db.exec('BEGIN IMMEDIATE')
     try {
       const existing = this.db
-        .prepare('SELECT id, mtime_ms, size_bytes, status FROM documents WHERE path = ?')
+        .prepare('SELECT id, mtime_ms, size_bytes, status, excluded FROM documents WHERE path = ?')
         .get(normalizedPath) as
-        | { id: number; mtime_ms: number | null; size_bytes: number | null; status: string }
+        | {
+            id: number
+            mtime_ms: number | null
+            size_bytes: number | null
+            status: string
+            excluded: number
+          }
         | undefined
+
+      if (existing && (existing.excluded === 1 || existing.status === 'excluded')) {
+        this.db.exec('COMMIT')
+        return { outcome: 'excluded' }
+      }
+
       const proj = buildDocumentProjection(fileName, normalizedPath)
       const isUpToDate = existing ? isProjectionUpToDate(this.db, existing.id, proj) : false
 
@@ -492,7 +527,11 @@ export class DocumentRepository {
         if (!dec.admitted) {
           this.lastAdmissionError = dec.error ?? dec.reason
           this.db.exec('ROLLBACK')
-          return false
+          return {
+            outcome: dec.reason === 'not-ready' ? 'deferred' : 'refused',
+            error: dec.error ?? dec.reason,
+            reason: dec.reason,
+          }
         }
         reservationId = dec.reservationId
         ownerToken = dec.ownerToken
@@ -504,7 +543,11 @@ export class DocumentRepository {
           this.lastAdmissionError = dec.error ?? dec.reason
           this.db.exec('ROLLBACK')
           // Preserve old searchable projection on denial
-          return false
+          return {
+            outcome: dec.reason === 'not-ready' ? 'deferred' : 'refused',
+            error: dec.error ?? dec.reason,
+            reason: dec.reason,
+          }
         }
         reservationId = dec.reservationId
         ownerToken = dec.ownerToken
@@ -523,32 +566,56 @@ export class DocumentRepository {
       if (!document || document.status === 'excluded') {
         this.db.exec('COMMIT')
         if (guard && reservationId && ownerToken) guard.settleCommit(reservationId, ownerToken)
-        return false
+        return { outcome: 'excluded' }
       }
       if (!existing || !isUpToDate) {
-        syncProjectionInsert(
+        const projOk = syncProjectionInsert(
           this.db,
           { id: document.id, path: normalizedPath, name: fileName },
           guard ?? undefined,
         )
+        if (!projOk) {
+          this.lastAdmissionError = 'Storage admission rejected projection write'
+          this.db.exec('ROLLBACK')
+          if (guard && reservationId && ownerToken) guard.rollbackCommit(reservationId, ownerToken)
+          return { outcome: 'refused', error: 'Storage admission rejected projection write' }
+        }
       }
       this.db.exec('COMMIT')
       if (guard && reservationId && ownerToken) {
         guard.settleCommit(reservationId, ownerToken)
       }
-      return (
-        document.mtimeMs === null ||
-        document.mtimeMs !== mtimeMs ||
-        document.sizeBytes !== sizeBytes ||
-        document.status === 'pending'
-      )
+
+      if (!existing) {
+        return { outcome: 'created' }
+      }
+
+      const hasChanged =
+        existing.mtime_ms === null ||
+        existing.mtime_ms !== mtimeMs ||
+        existing.size_bytes === null ||
+        existing.size_bytes !== sizeBytes ||
+        existing.status === 'pending'
+
+      return { outcome: hasChanged ? 'updated' : 'unchanged' }
     } catch (err) {
-      this.db.exec('ROLLBACK')
+      try {
+        this.db.exec('ROLLBACK')
+      } catch {}
       if (guard && reservationId && ownerToken) {
         guard.rollbackCommit(reservationId, ownerToken)
       }
-      throw err
+      return { outcome: 'error', error: err instanceof Error ? err.message : String(err) }
     }
+  }
+
+  enrollDiscovered(path: string, mtimeMs: number, sizeBytes: number): boolean {
+    if (mediaKindOfPath(path)) {
+      this.enrollMedia(path, mtimeMs, sizeBytes)
+      return false
+    }
+    const res = this.enrollDiscoveredResult(path, mtimeMs, sizeBytes)
+    return res.outcome === 'created' || res.outcome === 'updated'
   }
 
   listDocuments(): StoredDocument[] {
@@ -740,11 +807,15 @@ export class DocumentRepository {
       )
     const proj = buildDocumentProjection(fileName, normalizedPath)
     if (!isProjectionUpToDate(this.db, id, proj)) {
-      syncProjectionUpdate(
+      const projOk = syncProjectionUpdate(
         this.db,
         { id, path: normalizedPath, name: fileName },
         this.getEffectiveSyncGuard() ?? undefined,
       )
+      if (!projOk) {
+        this.lastAdmissionError = 'Storage admission rejected projection update'
+        throw new Error('Storage admission rejected projection update')
+      }
     }
     const textSample = replacement.chunks
       .slice(0, 5)
@@ -1500,7 +1571,11 @@ export class DocumentRepository {
       this.db
         .prepare('UPDATE documents SET path = ?, name = ?, updated_at = unixepoch() WHERE id = ?')
         .run(newNorm, newName, doc.id)
-      syncProjectionMove(this.db, doc.id, newNorm, newName, guard ?? undefined)
+      const projOk = syncProjectionMove(this.db, doc.id, newNorm, newName, guard ?? undefined)
+      if (!projOk) {
+        this.lastAdmissionError = 'Storage admission rejected projection move'
+        throw new Error('Storage admission rejected projection move')
+      }
       this.getOcr?.().rename(oldNorm, newNorm)
       this.db.exec('COMMIT')
       if (guard && reservationId && ownerToken) {

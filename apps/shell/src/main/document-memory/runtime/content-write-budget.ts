@@ -537,6 +537,8 @@ export async function writeExtractedContentSliced(params: {
   // True while the latest event is a fresh, healthy measurement taken right after a commit (no write since): the terminal
   // re-measurement in `finally` would repeat it, and every measurement is a worker-thread scan.
   let settledFresh = false
+  // Debt-based tracking of committed bytes across intermediate slices not yet reflected in physical accounting snapshot
+  let unmeasuredCommittedBytes = 0
 
   try {
     const displaced = { value: false }
@@ -593,11 +595,13 @@ export async function writeExtractedContentSliced(params: {
         if (!isCurrent()) return { proceed: false, reason: 'generation-changed' }
         if (!budgetCoord.isWriteReady()) return { proceed: false, reason: 'write-gate-closed' }
 
-        // Remeasure physical accounting and resize extraction lease outside txn
-        const batchResize = await resizeLease(
-          Math.max(info.totalEstimatedRemainingBytes, BASE_METADATA_WRITE_BYTES),
-          false,
-        )
+        // Remeasure physical accounting and resize extraction lease outside txn.
+        // Invariant: ACCOUNTED_PHYSICAL + RESERVED_UNWRITTEN + UNMEASURED_COMMITTED <= STORAGE_CAP.
+        // targetLeaseBytes includes unwritten chunks plus unmeasured committed debt across intermediate slices.
+        const targetLeaseBytes =
+          Math.max(info.totalEstimatedRemainingBytes, BASE_METADATA_WRITE_BYTES) +
+          unmeasuredCommittedBytes
+        const batchResize = await resizeLease(targetLeaseBytes, false)
 
         // Recheck lifecycle and write readiness after await
         if (!isCurrent()) return { proceed: false, reason: 'generation-changed' }
@@ -619,6 +623,8 @@ export async function writeExtractedContentSliced(params: {
           } catch (err) {
             // If measurement refresh throws, invalidate scheduler and keep reservation charged
             maintScheduler.invalidateAccounting(`content-write-postCommit: ${safeError(err)}`)
+            unmeasuredCommittedBytes += info.committedBytes
+            admission.reconcile(reserveId, { remainingBytes: unmeasuredCommittedBytes })
             return
           }
 
@@ -627,16 +633,21 @@ export async function writeExtractedContentSliced(params: {
             maintScheduler.invalidateAccounting(
               `content-write-postCommit: measurement ${snap?.measurementStatus ?? 'unknown'}`,
             )
+            unmeasuredCommittedBytes += info.committedBytes
+            admission.reconcile(reserveId, { remainingBytes: unmeasuredCommittedBytes })
             return
           }
 
           settledFresh = true
+          unmeasuredCommittedBytes = 0
+          admission.reconcile(reserveId, { remainingBytes: 0 })
+        } else {
+          // Intermediate slice committed: track committed debt without running expensive physical measurement
+          unmeasuredCommittedBytes += info.committedBytes
+          const targetLeaseBytes =
+            Math.max(info.remainingBytes, BASE_METADATA_WRITE_BYTES) + unmeasuredCommittedBytes
+          admission.reconcile(reserveId, { remainingBytes: targetLeaseBytes })
         }
-
-        // Only after measurement is valid/current, reconcile remaining reservation
-        const targetLeaseBytes =
-          info.remainingChunks > 0 ? Math.max(info.remainingBytes, BASE_METADATA_WRITE_BYTES) : 0
-        admission.reconcile(reserveId, { remainingBytes: targetLeaseBytes })
       },
     }
 
@@ -693,6 +704,10 @@ export async function writeExtractedContentSliced(params: {
           maintScheduler.invalidateAccounting(
             `content-write-terminal: measurement ${snap?.measurementStatus ?? 'unknown'}`,
           )
+        } else {
+          settledFresh = true
+          unmeasuredCommittedBytes = 0
+          admission.reconcile(reserveId, { remainingBytes: 0 })
         }
       } catch (err) {
         maintScheduler.invalidateAccounting(`content-write-terminal: ${safeError(err)}`)

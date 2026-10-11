@@ -341,17 +341,17 @@ export interface DocumentProjectionTokens {
  * three nearest folders, and NO trigram column (no fuzzy "compact component" matching). Every writer,
  * checker and backfill goes through buildDocumentProjection, so they all agree on this shape.
  */
-function buildMediaProjection(name: string, path: string): DocumentProjectionTokens {
+export function buildMediaProjection(name: string, path: string): DocumentProjectionTokens {
   const stemWords = normalizeDocumentText(name.replace(/\.[^/.]+$/, ''))
     .split(' ')
     .filter(Boolean)
-  const nameTokens = new Set(stemWords.filter((w) => w.length <= MAX_COMPONENT_LENGTH).slice(0, 6))
-  const joined = stemWords.slice(0, 3).join('')
+  const nameTokens = new Set(stemWords.filter((w) => w.length <= MAX_COMPONENT_LENGTH).slice(0, 8))
+  const joined = stemWords.slice(0, 4).join('')
   if (stemWords.length >= 2 && joined.length <= MAX_COMPONENT_LENGTH) nameTokens.add(joined)
   const pathTokens = new Set<string>()
   for (const dir of extractMeaningfulPathSegments(path, 2).reverse()) {
     for (const word of normalizeDocumentText(dir).split(' ')) {
-      if (word && word.length <= MAX_COMPONENT_LENGTH && pathTokens.size < 4) pathTokens.add(word)
+      if (word && word.length <= MAX_COMPONENT_LENGTH && pathTokens.size < 6) pathTokens.add(word)
     }
   }
   return {
@@ -782,8 +782,8 @@ export function syncProjectionUpdate(
   db: DatabaseSync,
   doc: { id: number; path: string; name: string },
   guard?: NameProjectionSyncGuard,
-): void {
-  syncProjectionInsert(db, doc, guard)
+): boolean {
+  return syncProjectionInsert(db, doc, guard)
 }
 
 export function syncProjectionMove(
@@ -792,8 +792,8 @@ export function syncProjectionMove(
   newPath: string,
   newName: string,
   guard?: NameProjectionSyncGuard,
-): void {
-  syncProjectionInsert(db, { id: docId, path: newPath, name: newName }, guard)
+): boolean {
+  return syncProjectionInsert(db, { id: docId, path: newPath, name: newName }, guard)
 }
 
 const projectionDeleteStmtCache = new WeakMap<DatabaseSync, StatementSync>()

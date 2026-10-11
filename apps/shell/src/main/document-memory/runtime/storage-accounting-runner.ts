@@ -37,7 +37,12 @@ const MAX_CONCURRENT_PENDING_PATHS = 32
 export class StorageAccountingRunner {
   private inFlightByPath = new Map<
     string,
-    { promise: Promise<StorageAccountingReport>; options: StorageAccountingOptions }
+    {
+      promise: Promise<StorageAccountingReport>
+      options: StorageAccountingOptions
+      resolve: (res: StorageAccountingReport) => void
+      fallbackReport?: StorageAccountingReport | null
+    }
   >()
   private activeExecution: Promise<void> = Promise.resolve()
   private settleInFlight: ((result: StorageAccountingReport) => void) | null = null
@@ -67,6 +72,32 @@ export class StorageAccountingRunner {
     return this.inFlightByPath.size > 0 || this.activeWorker !== null
   }
 
+  computeRequestSignature(options: StorageAccountingOptions): string {
+    const annMetaSig = options.annIndexesMeta
+      ? options.annIndexesMeta
+          .map((m) => `${m.space_id}\0${m.file_path ?? ''}`)
+          .sort()
+          .join(';')
+      : 'none'
+    return [
+      options.dbPath,
+      options.reusableFreelistBytes ?? 'def',
+      options.vectorsDir ?? '',
+      options.ocrDir ?? '',
+      options.tempDir ?? '',
+      options.modelDir ?? '',
+      options.maxDepth ?? '',
+      options.maxDirQueue ?? '',
+      options.maxVisitedEntries ?? '',
+      options.maxFileInventory ?? '',
+      annMetaSig,
+    ].join('::')
+  }
+
+  areOptionsCompatible(a: StorageAccountingOptions, b: StorageAccountingOptions): boolean {
+    return this.computeRequestSignature(a) === this.computeRequestSignature(b)
+  }
+
   run(
     options: StorageAccountingOptions,
     fallbackReport?: StorageAccountingReport | null,
@@ -78,11 +109,12 @@ export class StorageAccountingRunner {
       )
     }
 
-    // Per-dbPath coalescence with option compatibility check:
-    // If an in-flight measurement for the EXACT same dbPath with matching options exists,
-    // safely share its result. Never return a report from DB A to DB B!
-    const existing = this.inFlightByPath.get(options.dbPath)
-    if (existing && this.areOptionsCompatible(existing.options, options)) {
+    // Per-request signature coalescence:
+    // If an in-flight measurement for the EXACT same signature exists, safely share its result.
+    // Incompatible requests for the same dbPath receive their own queue entry without overwriting.
+    const signature = this.computeRequestSignature(options)
+    const existing = this.inFlightByPath.get(signature)
+    if (existing) {
       return existing.promise
     }
 
@@ -97,13 +129,18 @@ export class StorageAccountingRunner {
     }
 
     // Serialized execution: at most 1 worker thread runs at any given time.
-    let capturedResolve: (res: StorageAccountingReport) => void
+    let capturedResolve!: (res: StorageAccountingReport) => void
+    let settled = false
     const jobPromise = new Promise<StorageAccountingReport>((resolve) => {
-      capturedResolve = resolve
+      capturedResolve = (res) => {
+        if (settled) return
+        settled = true
+        resolve(res)
+      }
     })
 
     const runTask = async (): Promise<void> => {
-      if (this.disposed) {
+      if (this.disposed || settled) {
         capturedResolve(
           fallbackReport ??
             this.createDegradedFallback(options.dbPath, 'Accounting runner disposed'),
@@ -122,43 +159,21 @@ export class StorageAccountingRunner {
           ),
         )
       } finally {
-        if (this.inFlightByPath.get(options.dbPath)?.promise === jobPromise) {
-          this.inFlightByPath.delete(options.dbPath)
+        if (this.inFlightByPath.get(signature)?.promise === jobPromise) {
+          this.inFlightByPath.delete(signature)
         }
       }
     }
 
-    this.inFlightByPath.set(options.dbPath, { promise: jobPromise, options })
+    this.inFlightByPath.set(signature, {
+      promise: jobPromise,
+      options,
+      resolve: capturedResolve,
+      fallbackReport,
+    })
     this.activeExecution = this.activeExecution.then(runTask, runTask)
 
     return jobPromise
-  }
-
-  private areOptionsCompatible(a: StorageAccountingOptions, b: StorageAccountingOptions): boolean {
-    if (a.dbPath !== b.dbPath) return false
-    if (a.reusableFreelistBytes !== b.reusableFreelistBytes) return false
-    if (
-      a.vectorsDir !== b.vectorsDir ||
-      a.ocrDir !== b.ocrDir ||
-      a.tempDir !== b.tempDir ||
-      a.modelDir !== b.modelDir
-    ) {
-      return false
-    }
-    const aMeta = a.annIndexesMeta
-    const bMeta = b.annIndexesMeta
-    if (Boolean(aMeta) !== Boolean(bMeta)) return false
-    if (aMeta && bMeta) {
-      if (aMeta.length !== bMeta.length) return false
-      const sortKey = (m: { space_id: string; file_path: string | null }) =>
-        `${m.space_id}\0${m.file_path ?? ''}`
-      const sortedA = aMeta.map(sortKey).sort()
-      const sortedB = bMeta.map(sortKey).sort()
-      for (let i = 0; i < sortedA.length; i++) {
-        if (sortedA[i] !== sortedB[i]) return false
-      }
-    }
-    return true
   }
 
   private executeAccounting(
@@ -360,6 +375,12 @@ export class StorageAccountingRunner {
         // ignore
       }
       this.activeWorker = null
+    }
+    for (const [, entry] of this.inFlightByPath) {
+      entry.resolve(
+        entry.fallbackReport ??
+          this.createDegradedFallback(entry.options.dbPath, 'Accounting runner disposed'),
+      )
     }
     this.inFlightByPath.clear()
   }

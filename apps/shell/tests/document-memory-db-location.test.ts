@@ -9,6 +9,7 @@ import {
   CorruptRelocationJournalError,
   dbLocationState,
   isDbDirAccessible,
+  isSafeRelocationStagingDir,
   planDbMove,
   resolveDbDir,
   verifyDatabaseIntegrity,
@@ -603,5 +604,65 @@ describe('crash-safety & fault-injection relocation protocol (P0-01)', () => {
     )
 
     expect(() => resolveDbDir(userData)).toThrow(CorruptRelocationJournalError)
+  })
+
+  it('Scenario 24: isSafeRelocationStagingDir strictly validates canonical path, parent directory, and naming convention', () => {
+    const validStaging = join(target, '.relocation-staging-12345-67890123')
+    expect(isSafeRelocationStagingDir(validStaging, target, userData)).toBe(true)
+
+    // Path traversal in stagingDir
+    expect(
+      isSafeRelocationStagingDir(
+        join(target, '..', '.relocation-staging-12345-67890123'),
+        target,
+        userData,
+      ),
+    ).toBe(false)
+    // Wrong parent directory
+    expect(
+      isSafeRelocationStagingDir(
+        join(userData, '.relocation-staging-12345-67890123'),
+        target,
+        userData,
+      ),
+    ).toBe(false)
+    // Invalid naming convention
+    expect(isSafeRelocationStagingDir(join(target, 'not-staging-dir'), target, userData)).toBe(
+      false,
+    )
+    expect(isSafeRelocationStagingDir(join(target, '.relocation-staging-'), target, userData)).toBe(
+      false,
+    )
+    // Non-string or relative
+    expect(isSafeRelocationStagingDir(null, target, userData)).toBe(false)
+    expect(isSafeRelocationStagingDir('.relocation-staging-12345-67890123', target, userData)).toBe(
+      false,
+    )
+    // Aliasing target or source
+    expect(isSafeRelocationStagingDir(target, target, userData)).toBe(false)
+    expect(isSafeRelocationStagingDir(userData, target, userData)).toBe(false)
+    // Target identical to source
+    expect(isSafeRelocationStagingDir(validStaging, target, target)).toBe(false)
+  })
+
+  it('Scenario 25: Interrupted relocation with identical source and target fails closed without file loss', async () => {
+    seedRealDatabase(userData, 3)
+    const badJournal = {
+      version: 1,
+      sourceDir: userData,
+      targetDir: userData,
+      phase: 'prepare',
+      authoritative: 'source',
+      updatedAt: Date.now(),
+    }
+    // Writing directly to bypass parseJournal
+    writeFileSync(
+      join(userData, 'document-memory-relocation-journal.json'),
+      JSON.stringify(badJournal, null, 2),
+    )
+
+    // readJournal rejects identical directories during parse
+    expect(() => resolveDbDir(userData)).toThrow(CorruptRelocationJournalError)
+    expect(existsSync(join(userData, 'document-memory.db'))).toBe(true)
   })
 })

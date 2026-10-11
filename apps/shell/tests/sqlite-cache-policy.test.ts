@@ -11,7 +11,9 @@ import {
 describe('SQLite Page Cache Policy & Connection Roles', () => {
   let tempDirs: string[] = []
 
-  const createTempStore = (options: Parameters<typeof DocumentMemoryStore['prototype']['constructor']>[1] = {}) => {
+  const createTempStore = (
+    options: Parameters<(typeof DocumentMemoryStore)['prototype']['constructor']>[1] = {},
+  ) => {
     const dir = mkdtempSync(join(tmpdir(), 'cache-policy-test-'))
     tempDirs.push(dir)
     const dbPath = join(dir, 'test.db')
@@ -70,5 +72,15 @@ describe('SQLite Page Cache Policy & Connection Roles', () => {
 
     expect(row.cache_size).toBe(-12345)
     customStore.close()
+  })
+
+  it('keeps SQLite default wal_autocheckpoint at 1000 pages so WAL logs do not grow unbounded', () => {
+    const store = createTempStore()
+    const row = store.rawDb.prepare('PRAGMA wal_autocheckpoint').get() as {
+      wal_autocheckpoint: number
+    }
+
+    expect(row.wal_autocheckpoint).toBe(1000)
+    store.close()
   })
 })

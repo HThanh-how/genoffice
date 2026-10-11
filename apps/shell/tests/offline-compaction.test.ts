@@ -64,9 +64,7 @@ describe('offline VACUUM INTO compaction', () => {
   }, 30_000)
 
   afterEach(() => {
-    try {
-      rmSync(dir, { recursive: true, force: true })
-    } catch {}
+    rmSync(dir, { recursive: true, force: true })
   })
 
   const snapshot = (path = dbPath) => {

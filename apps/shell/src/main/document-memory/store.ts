@@ -14,6 +14,8 @@ import {
   type FileImportanceSuggestion,
   type FileImportanceEffective,
   type FileImportanceInfo,
+  type FileEnrollmentOutcome,
+  type FileEnrollmentResult,
   WRITE_SLICE_MS,
 } from './storage/repositories/document-repository'
 import { ChunkRepository } from './storage/repositories/chunk-repository'
@@ -50,6 +52,7 @@ export type {
   SliceOptions, BatchSliceInfo, BatchCommitInfo, BatchHookDecision,
   RepairInvalidCanonicalEmbeddingsResult, FileImportanceOverride,
   FileImportanceSuggestion, FileImportanceEffective, FileImportanceInfo,
+  FileEnrollmentOutcome, FileEnrollmentResult,
   NameProjectionBackfillResult,
 }
 
@@ -183,25 +186,14 @@ export class DocumentMemoryStore {
   hasUncountedDocuments(): boolean {
     return this.progressRepo.hasUncountedDocuments()
   }
-  remember(path: string): boolean {
-    return this.docRepo.remember(path)
-  }
-  enrollDiscovered(path: string, mtimeMs: number, sizeBytes: number): boolean {
-    return this.docRepo.enrollDiscovered(path, mtimeMs, sizeBytes)
-  }
+  remember(path: string): boolean { return this.docRepo.remember(path) }
+  enrollDiscovered(path: string, mtimeMs: number, sizeBytes: number): boolean { return this.docRepo.enrollDiscovered(path, mtimeMs, sizeBytes) }
+  enrollDiscoveredResult(path: string, mtimeMs: number, sizeBytes: number): FileEnrollmentResult { return this.docRepo.enrollDiscoveredResult(path, mtimeMs, sizeBytes) }
   enrollMedia(path: string, mtimeMs: number, sizeBytes: number) { return this.docRepo.enrollMedia(path, mtimeMs, sizeBytes) }
-  listDocuments(): StoredDocument[] {
-    return this.docRepo.listDocuments()
-  }
-  recentDocuments(limit = 20): StoredDocument[] {
-    return this.docRepo.recentDocuments(limit)
-  }
-  documentByPath(path: string): StoredDocument | null {
-    return this.docRepo.documentByPath(path)
-  }
-  documentById(id: number): StoredDocument | null {
-    return this.docRepo.documentById(id)
-  }
+  listDocuments(): StoredDocument[] { return this.docRepo.listDocuments() }
+  recentDocuments(limit = 20): StoredDocument[] { return this.docRepo.recentDocuments(limit) }
+  documentByPath(path: string): StoredDocument | null { return this.docRepo.documentByPath(path) }
+  documentById(id: number): StoredDocument | null { return this.docRepo.documentById(id) }
   chunkProgress(path: string, activeSpaceId?: string): DocumentChunkProgress {
     return this.progressRepo.chunkProgress(path, activeSpaceId)
   }

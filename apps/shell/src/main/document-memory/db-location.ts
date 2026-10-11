@@ -176,7 +176,32 @@ function writeAtomic(
         } finally {
           closeSync(bakFd)
         }
-        renameSync(bakTmpPath, bakPath)
+        if (process.platform === 'win32') {
+          let bakPromoted = false
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              renameSync(bakTmpPath, bakPath)
+              bakPromoted = true
+              break
+            } catch {}
+          }
+          if (!bakPromoted && existsSync(bakPath)) {
+            const bakOld = `${bakPath}.${process.pid}.${Date.now()}.old`
+            try {
+              renameSync(bakPath, bakOld)
+              renameSync(bakTmpPath, bakPath)
+              try {
+                unlinkSync(bakOld)
+              } catch {}
+            } catch {
+              try {
+                if (existsSync(bakOld)) renameSync(bakOld, bakPath)
+              } catch {}
+            }
+          }
+        } else {
+          renameSync(bakTmpPath, bakPath)
+        }
         fsyncFile(bakPath)
         fsyncDir(dir)
       } catch {
@@ -205,7 +230,9 @@ function writeAtomic(
       // If direct replace failed on Windows, stage through .old with rollback restore
       const oldPath = `${filePath}.${process.pid}.${Date.now()}.old`
       try {
-        renameSync(filePath, oldPath)
+        if (existsSync(filePath)) {
+          renameSync(filePath, oldPath)
+        }
         try {
           renameSync(tmpPath, filePath)
           promoted = true
@@ -214,7 +241,9 @@ function writeAtomic(
           } catch {}
         } catch (renameErr) {
           try {
-            renameSync(oldPath, filePath)
+            if (existsSync(oldPath)) {
+              renameSync(oldPath, filePath)
+            }
           } catch {}
           throw renameErr
         }
@@ -294,7 +323,11 @@ export function isSafeRelocationStagingDir(
   sourceDir: string,
 ): boolean {
   if (typeof stagingDir !== 'string' || !stagingDir.trim()) return false
-  if (!isAbsolute(stagingDir)) return false
+  if (typeof targetDir !== 'string' || !targetDir.trim()) return false
+  if (typeof sourceDir !== 'string' || !sourceDir.trim()) return false
+  if (!isAbsolute(stagingDir) || !isAbsolute(targetDir) || !isAbsolute(sourceDir)) return false
+  if (stagingDir.includes('..') || targetDir.includes('..') || sourceDir.includes('..'))
+    return false
 
   const resolvedStaging = resolve(stagingDir)
   const resolvedTarget = resolve(targetDir)
@@ -302,21 +335,51 @@ export function isSafeRelocationStagingDir(
 
   if (!resolvedTarget || !resolvedSource || resolvedTarget === resolvedSource) return false
   if (resolvedStaging === resolvedTarget || resolvedStaging === resolvedSource) return false
-  if (resolvedStaging === resolve('/') || dirname(resolvedStaging) === resolvedStaging) return false
+  if (
+    resolvedStaging === resolve('/') ||
+    dirname(resolvedStaging) === resolvedStaging ||
+    resolvedTarget === resolve('/') ||
+    dirname(resolvedTarget) === resolvedTarget ||
+    resolvedSource === resolve('/') ||
+    dirname(resolvedSource) === resolvedSource
+  ) {
+    return false
+  }
 
+  // Correct parent directory: staging directory MUST be an immediate direct child of targetDir
   if (resolve(dirname(resolvedStaging)) !== resolvedTarget) return false
 
+  // Staging naming convention: must begin with .relocation-staging- followed by valid identifier
   const base = basename(resolvedStaging)
   if (!base.startsWith('.relocation-staging-') || base.length < 22) return false
+  if (!/^\.relocation-staging-[0-9a-zA-Z_-]+$/.test(base)) return false
 
+  // Non-aliasing: ensure stagingDir is not an ancestor/prefix of target or source
+  const sep = resolvedStaging.includes('\\') ? '\\' : '/'
+  if (
+    resolvedTarget.startsWith(resolvedStaging + sep) ||
+    resolvedSource.startsWith(resolvedStaging + sep)
+  ) {
+    return false
+  }
+
+  // Symlink, junction, and escaping verification
   try {
     if (existsSync(resolvedStaging)) {
       const lst = lstatSync(resolvedStaging)
       if (lst.isSymbolicLink()) return false
+      if (!lst.isDirectory()) return false
+
       if (existsSync(resolvedTarget)) {
         const realStaging = realpathSync(resolvedStaging)
         const realTarget = realpathSync(resolvedTarget)
         if (resolve(dirname(realStaging)) !== realTarget) return false
+        if (realStaging === realTarget) return false
+      }
+      if (existsSync(resolvedSource)) {
+        const realStaging = realpathSync(resolvedStaging)
+        const realSource = realpathSync(resolvedSource)
+        if (realStaging === realSource) return false
       }
     }
   } catch {
@@ -836,6 +899,12 @@ async function recoverInterruptedRelocation(
   journal: RelocationJournal,
 ): Promise<{ moved: boolean; error?: string }> {
   const { sourceDir, targetDir, stagingDir, authoritative } = journal
+
+  if (resolve(sourceDir) === resolve(targetDir)) {
+    const errorMsg = 'Critical: Relocation journal has identical source and target directories'
+    write(userData, { dir: sourceDir, lastError: errorMsg })
+    return { moved: false, error: errorMsg }
+  }
 
   const safeCleanupStaging = async () => {
     if (stagingDir && isSafeRelocationStagingDir(stagingDir, targetDir, sourceDir)) {

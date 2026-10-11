@@ -67,7 +67,7 @@ describe('off the main thread (real child-process worker)', () => {
     // ~85 MB of evictable archive content + important documents + ballast up to 93% of the quota
     const seed = new DocumentMemoryStore(dbPath, { role: 'worker' })
     const docs = seedDocuments(seed, join(dir, 'files'), [
-      ...Array.from({ length: 180 }, (_, i) => ({
+      ...Array.from({ length: 150 }, (_, i) => ({
         name: `archive-${i}.txt`,
         ageDays: 400 + (i % 50),
         chunks: 10,
@@ -88,7 +88,7 @@ describe('off the main thread (real child-process worker)', () => {
       })),
     ])
     seed.rawDb.exec('CREATE TABLE IF NOT EXISTS ballast (x BLOB)')
-    const target = Math.round(SOFT * 0.925)
+    const target = Math.round(SOFT * 0.93)
     seed.rawDb.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     let total = collectStorageAccounting({ dbPath }).totalManagedBytes
     expect(total).toBeLessThan(target)
@@ -106,13 +106,12 @@ describe('off the main thread (real child-process worker)', () => {
     // the one-time main-thread name-projection backfill (not part of compaction) is completed up front so the
     // heartbeat below isolates the compaction work
     for (let i = 0; i < 100 && !seed.backfillNameProjectionBatch(100).done; i++);
-    seed.rawDb.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     seed.close()
 
     manager = new DocumentMemoryManager(dir, {
       workerFactory: (await realIndexWorkerFactory()) as any,
       pollIntervalMs: 3_600_000,
-      workerTimeoutMs: 240_000,
+      workerTimeoutMs: 120_000,
     })
     const sched = (manager as any).maintScheduler
     await waitForManagerWriteReady(manager, 20_000)
@@ -133,7 +132,7 @@ describe('off the main thread (real child-process worker)', () => {
       await sched.refreshAccountingAsync() // 93% -> arms the pressure run (2 s), the worker process does the rest
       const done = await waitFor(
         () => sched.getLastCompactionOutcome()?.status === 'completed',
-        240_000,
+        120_000,
       )
       expect(done).toBe(true)
     } finally {

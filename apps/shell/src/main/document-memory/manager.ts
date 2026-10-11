@@ -3,9 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { writeExtractedContentSliced, getValidatedFreeDiskBytes } from './runtime/content-write-budget'
 import type { Worker } from 'node:worker_threads'
-import type { DocumentIndexProgress } from '@genoffice/agent-core'; import type { FolderIndexProgress } from './folder-progress'
-import type { DocumentIndexStorageDiagnostics, DocumentIndexMigrationDiagnostics, IndexingBlockReason, IndexingNow } from '../../shared/fork/document-index-api'
-import type { DocumentMemoryStatus } from '../../shared/home-api'; import { DocumentMemoryStore, type FolderChunkProgress, type DocumentMemoryStats } from './store'; import { StatusAggregates, createThreadFetcher } from './runtime/status-aggregates'
+import type { DocumentIndexProgress } from '@genoffice/agent-core'; import type { FolderIndexProgress } from './folder-progress'; import type { DocumentIndexStorageDiagnostics, DocumentIndexMigrationDiagnostics, IndexingBlockReason, IndexingNow } from '../../shared/fork/document-index-api'
+import type { DocumentMemoryStatus } from '../../shared/home-api'; import { DocumentMemoryStore, type FolderChunkProgress, type DocumentMemoryStats, type FileEnrollmentOutcome, type FileEnrollmentResult } from './store'; import { StatusAggregates, createThreadFetcher } from './runtime/status-aggregates'
 import type { EmbeddingProfileId, MachineSpec } from './embedding-profiles'; import { resolveStartupEmbeddingProfile } from './embedding/initial-profile'; import { modelFilesCached } from './embedding/model-files'; import { createOcrHost, type OcrHostInput } from './ocr-host'; import type { OcrJobHost } from './agy-ocr-job'; import { createLocalOcrWiring, type LocalOcrWiring, type LocalOcrWiringDeps } from './runtime/local-ocr-wiring'; import type { LocalOcrGate } from './local-ocr/local-ocr-job'; import type { LocalOcrSettings } from '../../shared/fork/agy-ocr'
 import { FileStabilityGate, type FileStabilityGateOptions } from './file-stability'; import { BackgroundWorkGate, isIndexingPaused, onIndexingPolicyChange } from './background-work-gate'
 import { ChunkUpgradeCoordinator, type DocumentNeedingUpgrade } from './chunk-upgrade'; import { EmbeddingMigration } from './embedding-migration'
@@ -14,11 +13,10 @@ import { ExtractionCoordinator, statMeta, isPartialExtract, isExtractResult, rea
 import { EmbeddingCoordinator } from './runtime/embedding-coordinator'; import { reserveExtractionLease } from './runtime/extraction-lease'
 import { MaintenanceScheduler, INITIAL_MAINTENANCE_DELAY_MS } from './runtime/maintenance-scheduler'; import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'; import { AdmissionRetry } from './runtime/admission-retry'
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'; import { StorageAdmissionController } from './runtime/storage-admission'; import { AnnHostAdmissionCoordinator } from './runtime/ann-host-admission'; import { SyncMetadataAdmissionCoordinator } from './runtime/sync-metadata-admission'
-import { StorageBudgetCoordinator } from './runtime/storage-budget-coordinator'; import type { StorageBudgetConfig, StorageBudgetPreset } from './storage/storage-settings'
-import { createStorageBudget, type DocumentIndexStorageBudget, type StorageBudgetSnapshot } from './storage-budget'
+import { StorageBudgetCoordinator } from './runtime/storage-budget-coordinator'; import type { StorageBudgetConfig, StorageBudgetPreset } from './storage/storage-settings'; import { createStorageBudget, type DocumentIndexStorageBudget, type StorageBudgetSnapshot } from './storage-budget'
 import { createIndexProcess } from './process-worker'; import workerPath from './worker?modulePath'
 import { safeError } from './issues'; import { orderQueue, nextInOrder, weightOf } from './queue-order'; import type { WorkerRequest, WorkerReply } from './worker-types'
-export type { FreshDocumentMemoryHit }
+export type { FreshDocumentMemoryHit, FileEnrollmentOutcome, FileEnrollmentResult }
 function readEnabled(p: string): boolean { try { return JSON.parse(readFileSync(p, 'utf8'))?.enabled !== false } catch { return true } }
 function saveEnabled(p: string, enabled: boolean): void { try { writeFileSync(p, JSON.stringify({ enabled }), { mode: 0o600 }) } catch {} }
 export interface DocumentMemoryManagerOptions {
@@ -173,6 +171,8 @@ export class DocumentMemoryManager {
     this.pendingIntake.remove(p); this.enqueue(p, true)
   }
   indexDiscoveredFile(p: string, meta?: { mtimeMs: number; sizeBytes: number }) { return this.freshnessCoord.indexDiscoveredFile(p, meta) }
+  enrollDiscoveredFile(p: string, meta?: { mtimeMs: number; sizeBytes: number }): FileEnrollmentResult { return this.freshnessCoord.enrollDiscoveredFile(p, meta) }
+  onWriteReadyChange(listener: (ready: boolean) => void): () => void { return this.budgetCoord.onWriteReadyChange(listener) }
   isWriteReady(): boolean { return Boolean(this.budgetCoord?.isWriteReady() && this.syncAdmissionCoord?.isReady()) }
   async waitForWriteReady(timeoutMs = 10_000): Promise<boolean> { const started = Date.now(); while (!this.stopped && !this.isWriteReady()) { if (Date.now() - started > timeoutMs) return false; await new Promise((r) => setTimeout(r, 20)) }; return this.isWriteReady() }
   isEnabled(): boolean { return this.enabled }

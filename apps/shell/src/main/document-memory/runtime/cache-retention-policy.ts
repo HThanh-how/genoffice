@@ -709,7 +709,14 @@ export async function executeCacheRetentionPolicy(
       return report
     }
 
-    // Final physical re-accounting
+    // Final physical re-accounting: settle pending FTS tombstones and truncate WAL before assessing target floor
+    if (typeof options?.settleFtsDeletes === 'function') {
+      try {
+        await options.settleFtsDeletes()
+      } catch {
+        // best effort
+      }
+    }
     compactAfterRetentionBatch(db)
     currentPhysical = await measurePhysicalBytes()
     lastKnownPhysical = currentPhysical
