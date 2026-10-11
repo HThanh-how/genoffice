@@ -119,7 +119,7 @@ describe('the dashboard snapshot does not read the documents table on the callin
   afterEach(async () => {
     reader?.close()
     await manager?.closeAsync()
-    rmSync(dir, { recursive: true, force: true })
+    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   })
 
   it('serves counts from the reader thread and never calls stats / folderChunkProgress / the issue summary itself', async () => {

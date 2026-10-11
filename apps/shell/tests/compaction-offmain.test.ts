@@ -55,7 +55,7 @@ describe('off the main thread (real child-process worker)', () => {
       await manager.closeAsync()
       manager = undefined
     }
-    if (dir) rmSync(dir, { recursive: true, force: true })
+    if (dir) rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
   }, 30_000)
 
   it('(a) 93% of the quota is compacted to <= 80% by the worker process; the main event loop never stalls', async () => {
@@ -67,7 +67,7 @@ describe('off the main thread (real child-process worker)', () => {
     // ~85 MB of evictable archive content + important documents + ballast up to 93% of the quota
     const seed = new DocumentMemoryStore(dbPath, { role: 'worker' })
     const docs = seedDocuments(seed, join(dir, 'files'), [
-      ...Array.from({ length: 150 }, (_, i) => ({
+      ...Array.from({ length: 180 }, (_, i) => ({
         name: `archive-${i}.txt`,
         ageDays: 400 + (i % 50),
         chunks: 10,

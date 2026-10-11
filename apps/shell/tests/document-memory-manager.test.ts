@@ -23,7 +23,7 @@ beforeEach(() => {
 afterEach(async () => {
   for (const manager of managers) await manager.closeAsync()
   resetIndexingPolicyBus()
-  rmSync(dir, { recursive: true, force: true })
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 })
 
 class FakeWorker extends EventEmitter {
