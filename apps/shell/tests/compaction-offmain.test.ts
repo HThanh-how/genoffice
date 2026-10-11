@@ -67,7 +67,7 @@ describe('off the main thread (real child-process worker)', () => {
     // ~85 MB of evictable archive content + important documents + ballast up to 93% of the quota
     const seed = new DocumentMemoryStore(dbPath, { role: 'worker' })
     const docs = seedDocuments(seed, join(dir, 'files'), [
-      ...Array.from({ length: 150 }, (_, i) => ({
+      ...Array.from({ length: 180 }, (_, i) => ({
         name: `archive-${i}.txt`,
         ageDays: 400 + (i % 50),
         chunks: 10,
