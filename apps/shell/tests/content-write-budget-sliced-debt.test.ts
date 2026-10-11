@@ -78,7 +78,7 @@ describe('Content write budget: unmeasured committed debt invariant across slice
   it('preserves ACCOUNTED_PHYSICAL + RESERVED_UNWRITTEN + UNMEASURED_COMMITTED <= STORAGE_CAP invariant across intermediate slices without intermediate physical scans', async () => {
     const initialUsage = 1_000_000
     const budgetBytes = 50_000_000
-    const { maintScheduler, refreshCalls } = makeMockScheduler(initialUsage, budgetBytes)
+    const { maintScheduler } = makeMockScheduler(initialUsage, budgetBytes)
     const storageCap = contentWriteCapBytes(maintScheduler.budget)
 
     // Create 120 chunks to force multiple batches (50 max chunks per batch)

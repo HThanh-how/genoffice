@@ -14,10 +14,7 @@ import {
   shouldSkipDirectory,
 } from './scan-policy'
 import { isGeneratedArtifactPath } from './artifact-policy'
-import type {
-  FileEnrollmentResult,
-  FileEnrollmentOutcome,
-} from './storage/repositories/document-repository'
+import type { FileEnrollmentResult } from './storage/repositories/document-repository'
 export { IGNORED_DIRECTORIES, SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
 export { isGeneratedArtifactPath } from './artifact-policy'
 

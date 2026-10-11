@@ -7,7 +7,10 @@ import {
   type DocumentIndexStorageBudget,
 } from '../storage-budget'
 import type { AnnSpaceDirtySpec } from '../storage/repositories/cache-retention-repository'
-import { scheduleAnnRebuildAfterCompaction, type AnnRebuildRequest } from './ann-rebuild-after-compaction'
+import {
+  scheduleAnnRebuildAfterCompaction,
+  type AnnRebuildRequest,
+} from './ann-rebuild-after-compaction'
 import { executeCacheRetentionPolicy, type CacheRetentionReport } from './cache-retention-policy'
 import { analyzeRedundancyFully } from './redundancy-analyzer'
 import { freeSpaceForImportantDoc } from './redundancy-compaction'
@@ -54,7 +57,11 @@ export interface CompactionStoreLike {
   readonly dbPath: string
   mergeFtsStep(pages?: number): boolean
   invalidateAnnInMemory(spaceId: string): void
-  getAnnCanonicalMeta(spaceId: string): { canonicalCount: number; desiredGeneration: number; currentGeneration: number }
+  getAnnCanonicalMeta(spaceId: string): {
+    canonicalCount: number
+    desiredGeneration: number
+    currentGeneration: number
+  }
 }
 
 export interface CompactionWorkerContext {
@@ -100,7 +107,9 @@ export function createPhysicalMeter(store: CompactionStoreLike): () => number {
   const db = store.rawDb
   let annIndexesMeta: Array<{ space_id: string; file_path: string | null }> | undefined
   try {
-    annIndexesMeta = db.prepare('SELECT space_id, file_path FROM ann_indexes').all() as typeof annIndexesMeta
+    annIndexesMeta = db
+      .prepare('SELECT space_id, file_path FROM ann_indexes')
+      .all() as typeof annIndexesMeta
   } catch {
     annIndexesMeta = undefined
   }
@@ -110,15 +119,33 @@ export function createPhysicalMeter(store: CompactionStoreLike): () => number {
   } catch {
     reusableFreelistBytes = undefined
   }
-  const base = collectStorageAccounting({ dbPath: store.dbPath, annIndexesMeta, reusableFreelistBytes })
+  const base = collectStorageAccounting({
+    dbPath: store.dbPath,
+    annIndexesMeta,
+    reusableFreelistBytes,
+  })
   if (base.isDegraded) throw new Error('Storage accounting degraded; retention stopped')
   const other = Math.max(0, base.totalManagedBytes - base.databaseBytes)
   const dbPath = store.dbPath
-  return () => other + safeGetFileSize(dbPath) + safeGetFileSize(`${dbPath}-wal`) + safeGetFileSize(`${dbPath}-shm`)
+  return () =>
+    other +
+    safeGetFileSize(dbPath) +
+    safeGetFileSize(`${dbPath}-wal`) +
+    safeGetFileSize(`${dbPath}-shm`)
 }
 
-function baseResult(run: ActiveRun, req: { epoch?: number }, status: CompactionRunStatus, now: () => number): CompactionResultBase {
-  return { runId: run.runId, ...(req.epoch !== undefined ? { epoch: req.epoch } : {}), status, durationMs: now() - run.startedAt }
+function baseResult(
+  run: ActiveRun,
+  req: { epoch?: number },
+  status: CompactionRunStatus,
+  now: () => number,
+): CompactionResultBase {
+  return {
+    runId: run.runId,
+    ...(req.epoch !== undefined ? { epoch: req.epoch } : {}),
+    status,
+    durationMs: now() - run.startedAt,
+  }
 }
 
 function refusal(
@@ -126,17 +153,45 @@ function refusal(
   status: 'busy' | 'stale-config',
   error: string,
 ): CompactionWorkerResult {
-  const base = { runId: req.runId, ...(req.epoch !== undefined ? { epoch: req.epoch } : {}), status, durationMs: 0, error }
+  const base = {
+    runId: req.runId,
+    ...(req.epoch !== undefined ? { epoch: req.epoch } : {}),
+    status,
+    durationMs: 0,
+    error,
+  }
   switch (req.type) {
     case 'run-retention':
       return {
-        ...base, kind: 'run-retention', urgency: req.urgency, report: null, bytesBefore: 0, bytesAfter: 0, belowSoftQuota: false,
-        release: { vectorDocuments: 0, vectorChunks: 0, skeletonDocuments: 0, skeletonEstimatedBytes: 0 }, affectedAnnSpaces: [], annRequests: [],
+        ...base,
+        kind: 'run-retention',
+        urgency: req.urgency,
+        report: null,
+        bytesBefore: 0,
+        bytesAfter: 0,
+        belowSoftQuota: false,
+        release: {
+          vectorDocuments: 0,
+          vectorChunks: 0,
+          skeletonDocuments: 0,
+          skeletonEstimatedBytes: 0,
+        },
+        affectedAnnSpaces: [],
+        annRequests: [],
       }
     case 'free-space':
       return {
-        ...base, kind: 'free-space', displacement: null, agedStage: null, neededBytes: req.neededBytes, freedBytes: 0, usedBefore: 0, usedAfter: 0,
-        fitsHardCap: false, affectedAnnSpaces: [], annRequests: [],
+        ...base,
+        kind: 'free-space',
+        displacement: null,
+        agedStage: null,
+        neededBytes: req.neededBytes,
+        freedBytes: 0,
+        usedBefore: 0,
+        usedAfter: 0,
+        fitsHardCap: false,
+        affectedAnnSpaces: [],
+        annRequests: [],
       }
     case 'optimize-fts':
       return { ...base, kind: 'optimize-fts', result: null }
@@ -147,11 +202,19 @@ function refusal(
 
 function mergeSpaces(...lists: Array<AnnSpaceDirtySpec[] | undefined>): AnnSpaceDirtySpec[] {
   const bySpace = new Map<string, number>()
-  for (const list of lists) for (const s of list ?? []) bySpace.set(s.spaceId, Math.max(bySpace.get(s.spaceId) ?? 0, s.desiredGeneration))
-  return [...bySpace.entries()].map(([spaceId, desiredGeneration]) => ({ spaceId, desiredGeneration }))
+  for (const list of lists)
+    for (const s of list ?? [])
+      bySpace.set(s.spaceId, Math.max(bySpace.get(s.spaceId) ?? 0, s.desiredGeneration))
+  return [...bySpace.entries()].map(([spaceId, desiredGeneration]) => ({
+    spaceId,
+    desiredGeneration,
+  }))
 }
 
-function annFollowUp(ctx: CompactionWorkerContext, spaces: AnnSpaceDirtySpec[]): AnnRebuildRequest[] {
+function annFollowUp(
+  ctx: CompactionWorkerContext,
+  spaces: AnnSpaceDirtySpec[],
+): AnnRebuildRequest[] {
   if (spaces.length === 0) return []
   try {
     return scheduleAnnRebuildAfterCompaction(ctx.store, spaces).requests
@@ -170,18 +233,28 @@ export async function handleCompactionRequest(
   if (active) return refusal(req, 'busy', `compaction lane busy with ${active.type}`)
   const applied = ctx.getConfigVersion()
   if (req.configVersion !== undefined && applied !== req.configVersion) {
-    return refusal(req, 'stale-config', `worker applied budget version ${applied ?? 'none'}, request ${req.configVersion}`)
+    return refusal(
+      req,
+      'stale-config',
+      `worker applied budget version ${applied ?? 'none'}, request ${req.configVersion}`,
+    )
   }
   const now = ctx.now ?? Date.now
   const run: ActiveRun = { runId: req.runId, type: req.type, cancelled: false, startedAt: now() }
   active = run
   const deadline = run.startedAt + (req.deadlineMs ?? DEFAULT_COMPACTION_DEADLINE_MS)
   const shouldContinue = (): boolean =>
-    !run.cancelled && now() < deadline && (req.configVersion === undefined || ctx.getConfigVersion() === req.configVersion)
+    !run.cancelled &&
+    now() < deadline &&
+    (req.configVersion === undefined || ctx.getConfigVersion() === req.configVersion)
   const expired = (): boolean => now() >= deadline
   try {
     const finish = (status: CompactionRunStatus): CompactionRunStatus =>
-      status === 'completed' && run.cancelled ? 'cancelled' : status === 'completed' && expired() ? 'timeout' : status
+      status === 'completed' && run.cancelled
+        ? 'cancelled'
+        : status === 'completed' && expired()
+          ? 'timeout'
+          : status
     switch (req.type) {
       case 'run-retention':
         return await runRetention(ctx, req, run, shouldContinue, finish)
@@ -192,11 +265,21 @@ export async function handleCompactionRequest(
       case 'redundancy-analyze':
         return await runAnalyze(ctx, req, run, shouldContinue, finish)
       default:
-        return { ...refusal(req, 'busy', ''), status: 'error' as const, error: 'unknown compaction request', durationMs: now() - run.startedAt }
+        return {
+          ...refusal(req, 'busy', ''),
+          status: 'error' as const,
+          error: 'unknown compaction request',
+          durationMs: now() - run.startedAt,
+        }
     }
   } catch (err) {
     const failed = refusal(req, 'busy', '')
-    return { ...failed, status: 'error' as const, error: err instanceof Error ? err.message : String(err), durationMs: now() - run.startedAt }
+    return {
+      ...failed,
+      status: 'error' as const,
+      error: err instanceof Error ? err.message : String(err),
+      durationMs: now() - run.startedAt,
+    }
   } finally {
     if (active === run) active = null
   }
@@ -248,12 +331,24 @@ async function runRetention(
   const annRequests = annFollowUp(ctx, affectedAnnSpaces)
 
   // Release hooks: only far below the quota (60%), on a fresh measurement, so a release can never re-trigger retention.
-  const release = { vectorDocuments: 0, vectorChunks: 0, skeletonDocuments: 0, skeletonEstimatedBytes: 0 }
-  const measured = Boolean(report && report.stoppedReason !== 'error' && report.stoppedReason !== 'cancelled' && bytesAfter > 0)
+  const release = {
+    vectorDocuments: 0,
+    vectorChunks: 0,
+    skeletonDocuments: 0,
+    skeletonEstimatedBytes: 0,
+  }
+  const measured = Boolean(
+    report &&
+    report.stoppedReason !== 'error' &&
+    report.stoppedReason !== 'cancelled' &&
+    bytesAfter > 0,
+  )
   const usedForRelease = measured ? bytesAfter : req.usage?.usedBytes
   if (shouldContinue() && typeof usedForRelease === 'number' && soft > 0) {
     const usage = {
-      limitState: measured ? calculateStorageLimitState(usedForRelease, soft, budget.overshootRatio) : (req.usage?.limitState ?? 'ok'),
+      limitState: measured
+        ? calculateStorageLimitState(usedForRelease, soft, budget.overshootRatio)
+        : (req.usage?.limitState ?? 'ok'),
       usedBytes: usedForRelease,
       budgetBytes: soft,
       isDegraded: measured ? false : req.usage?.isDegraded,
@@ -351,7 +446,12 @@ async function runFreeSpace(
   // Stage 1: redundant / boilerplate / duplicate content, lowest value density first (T-A vectors, T-B skeleton).
   const displacement = await freeSpaceForImportantDoc(
     db,
-    { neededBytes: needed, budgetBytes: hard, incomingImportance: req.incomingImportance, force: true },
+    {
+      neededBytes: needed,
+      budgetBytes: hard,
+      incomingImportance: req.incomingImportance,
+      force: true,
+    },
     {
       measurePhysicalBytes: meter,
       yieldHook,
@@ -401,8 +501,33 @@ async function runFreeSpace(
     if (aged.stoppedReason === 'error') result.error = aged.error
   }
 
+  const displacedAnything = Boolean(
+    displacement.report &&
+    ((displacement.report.tiers?.vectors?.documents ?? 0) > 0 ||
+      (displacement.report.tiers?.skeleton?.documents ?? 0) > 0 ||
+      (displacement.report.skeleton?.documents ?? 0) > 0 ||
+      (displacement.report.freedBytes ?? 0) > 0),
+  )
+  const aged = result.agedStage
+  const agedEvictedAnything = Boolean(
+    aged &&
+    ((aged.estimatedBytesReclaimed ?? 0) > 0 ||
+      (aged.tier1OrphansFreed ?? 0) > 0 ||
+      (aged.tier2LowImportanceDocsPruned ?? 0) > 0 ||
+      (aged.tier3NormalDocsPruned ?? 0) > 0 ||
+      (aged.tier4ImportantDocsPruned ?? 0) > 0 ||
+      (aged.contentEvictedDocsCount ?? 0) > 0 ||
+      Boolean(
+        aged.age &&
+        ((aged.age.archiveVectorDocsPruned ?? 0) > 0 ||
+          (aged.age.archiveContentDocsPruned ?? 0) > 0 ||
+          (aged.age.freshVectorDocsPruned ?? 0) > 0),
+      ) ||
+      Boolean(aged.redundancy && (aged.redundancy.freedBytes ?? 0) > 0)),
+  )
+
   result.usedAfter = used
-  result.freedBytes = freed
+  result.freedBytes = displacedAnything || agedEvictedAnything ? freed : 0
   result.fitsHardCap = used + needed <= hard
   result.affectedAnnSpaces = spaces
   result.annRequests = annFollowUp(ctx, spaces)
@@ -426,10 +551,15 @@ async function runOptimizeFts(
     yield: () => ctx.yieldNow(false),
     shouldContinue,
     // compose with the scheduler's existing merge step instead of issuing a second, parallel mechanism
-    mergeStep: (table, pages) => (table === 'chunk_fts' ? ctx.store.mergeFtsStep(pages) : undefined),
+    mergeStep: (table, pages) =>
+      table === 'chunk_fts' ? ctx.store.mergeFtsStep(pages) : undefined,
   })
   const status: CompactionRunStatus =
-    result.stoppedReason === 'error' ? 'error' : result.stoppedReason === 'cancelled' ? 'cancelled' : finish('completed')
+    result.stoppedReason === 'error'
+      ? 'error'
+      : result.stoppedReason === 'cancelled'
+        ? 'cancelled'
+        : finish('completed')
   return {
     ...baseResult(run, req, status, now),
     ...(result.error ? { error: result.error } : {}),

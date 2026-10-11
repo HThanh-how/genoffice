@@ -1,14 +1,9 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { FolderScanManager } from '../src/main/document-memory/folder-scan'
-import {
-  buildMediaProjection,
-  syncProjectionInsert,
-  syncProjectionUpdate,
-  syncProjectionMove,
-} from '../src/main/document-memory/name-search-projection'
+import { buildMediaProjection } from '../src/main/document-memory/name-search-projection'
 import { openDatabase } from '../src/main/document-memory/storage/database'
 import { DocumentRepository } from '../src/main/document-memory/storage/repositories/document-repository'
 import { enrollMediaRow } from '../src/main/document-memory/media/media-enrollment'
@@ -134,7 +129,7 @@ describe('Agent B Regressions', () => {
       let rollbackCalled = false
       let commitCalled = false
 
-      let rejectWrites = true
+      const rejectWrites = true
       const rejectingGuard: SyncMetadataGuard = {
         isReady: () => true,
         canAdmitNewDocument: () => ({
@@ -182,8 +177,8 @@ describe('Agent B Regressions', () => {
     it('move rolls back transaction and lease reservation when syncProjectionMove returns false', () => {
       const dbPath = join(dir, 'test-move.db')
       const db = openDatabase(dbPath)
-      let rollbackCalled = false
-      let commitCalled = false
+      let rollbackCalled: boolean
+      let commitCalled: boolean
 
       let rejectWrites = false
       const guard: SyncMetadataGuard = {
@@ -252,7 +247,7 @@ describe('Agent B Regressions', () => {
       let rollbackCalled = false
       let commitCalled = false
 
-      let rejectWrites = true
+      const rejectWrites = true
       const rejectingGuard: SyncMetadataGuard = {
         isReady: () => true,
         canAdmitNewDocument: () => ({

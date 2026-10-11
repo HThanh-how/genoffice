@@ -168,11 +168,18 @@ export class FreshnessCoordinator {
       }
     }
     const enrollResult = this.store.enrollDiscoveredResult(p, current.mtimeMs, current.sizeBytes)
-    if (
-      enrollResult.outcome === 'refused' ||
-      enrollResult.outcome === 'deferred' ||
-      enrollResult.outcome === 'excluded'
-    ) {
+    if (enrollResult.outcome === 'excluded') {
+      return enrollResult
+    }
+    if (enrollResult.outcome === 'deferred') {
+      this.options.intakeAdapter?.onDiscovered(p, current)
+      return enrollResult
+    }
+    if (enrollResult.outcome === 'refused') {
+      const doc = this.store.documentByPath(p)
+      if (!doc || doc.mtimeMs !== current.mtimeMs || doc.sizeBytes !== current.sizeBytes) {
+        this.options.intakeAdapter?.onDiscovered(p, current)
+      }
       return enrollResult
     }
     const document = this.store.documentByPath(p)
