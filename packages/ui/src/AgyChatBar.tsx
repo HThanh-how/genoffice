@@ -175,6 +175,10 @@ const EN = {
   h: 'h',
   m: 'min',
   thinkingNow: 'Thinking',
+  thinkingHome: 'Thinking…',
+  searchingFiles: 'Searching files…',
+  readingDocs: 'Reading documents…',
+  writingAnswer: 'Writing answer…',
   starting: 'Starting Antigravity',
   usingTool: 'Using {tool}',
   stepTool: 'Used {tool}',
@@ -242,6 +246,10 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     h: 'giờ',
     m: 'phút',
     thinkingNow: 'Đang suy nghĩ',
+    thinkingHome: 'Đang suy nghĩ…',
+    searchingFiles: 'Đang tìm kiếm tệp…',
+    readingDocs: 'Đang đọc tài liệu…',
+    writingAnswer: 'Đang viết câu trả lời…',
     starting: 'Đang khởi động Antigravity',
     usingTool: 'Đang dùng {tool}',
     stepTool: 'Dùng {tool}',
@@ -304,6 +312,10 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     h: '小时',
     m: '分钟',
     thinkingNow: '思考中',
+    thinkingHome: '思考中…',
+    searchingFiles: '正在搜索文件…',
+    readingDocs: '正在阅读文档…',
+    writingAnswer: '正在撰写回答…',
     starting: '正在启动 Antigravity',
     usingTool: '正在使用 {tool}',
     stepTool: '使用 {tool}',
@@ -352,11 +364,45 @@ function span(ms: number, d: Dict): string {
   return `${minutes} ${d.m}`
 }
 
-function thinkTitle(run: Run, d: Dict): string {
+function thinkTitle(run: Run, d: Dict, mode: 'default' | 'home-chat' = 'default'): string {
   const seconds = Math.max(0, ((run.endedAt ?? Date.now()) - run.startedAt) / 1000)
-  const time = seconds >= 60 ? span(seconds * 1000, d) : `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`
-  if (run.phase === 'done') return fill(d.doneIn, { t: time })
+  if (run.phase === 'done') {
+    const time = seconds >= 60 ? span(seconds * 1000, d) : `${Math.round(seconds)}s`
+    return fill(d.doneIn, { t: time })
+  }
   if (run.phase === 'error') return fill(d.runFailed, { m: run.error ?? '' })
+
+  if (mode === 'home-chat') {
+    const time = seconds >= 60 ? span(seconds * 1000, d) : `${Math.round(seconds)}s`
+    let label = d.thinkingHome
+    if (run.phase === 'writing') {
+      label = d.writingAnswer
+    } else if (run.phase === 'tool') {
+      const toolLower = (run.tool ?? '').toLowerCase()
+      if (
+        toolLower.includes('search') ||
+        toolLower.includes('find') ||
+        toolLower.includes('grep') ||
+        toolLower.includes('glob')
+      ) {
+        label = d.searchingFiles
+      } else if (
+        toolLower.includes('read') ||
+        toolLower.includes('view') ||
+        toolLower.includes('open')
+      ) {
+        label = d.readingDocs
+      } else {
+        label = `${fill(d.usingTool, {
+          tool: `${run.tool ?? ''}${run.target ? ` ${run.target}` : ''}`.trim(),
+        })}…`
+      }
+    }
+    return `${label} · ${time}`
+  }
+
+  const defaultTime =
+    seconds >= 60 ? span(seconds * 1000, d) : `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`
   const label =
     run.phase === 'writing'
       ? d.writing
@@ -367,7 +413,7 @@ function thinkTitle(run: Run, d: Dict): string {
         : run.steps.length === 0
           ? d.starting
           : d.thinkingNow
-  return `${label}… ${time}`
+  return `${label}… ${defaultTime}`
 }
 
 function tone(remaining: number): 'ok' | 'warn' | 'low' {
@@ -390,11 +436,18 @@ export function AgyChatBar({
   lang,
   api,
   part = 'all',
+  mode = 'default',
+  activeRunId,
+  busy,
 }: {
   lang: string
   api?: AgyBarApi | undefined
   /** 'bar' = model + usage chips only, 'steps' = the live thinking strip only (placed by the host) */
   part?: 'all' | 'bar' | 'steps'
+  /** 'home-chat' uses calm single-line indicator, subtle timing, and unified activity states */
+  mode?: 'default' | 'home-chat'
+  activeRunId?: string
+  busy?: boolean
 }) {
   const d: Dict = (TEXT as Record<string, Dict | undefined>)[lang] ?? EN
   const [state, setState] = useState<AgyBarState | null>(null)
@@ -414,6 +467,8 @@ export function AgyChatBar({
   const [code, setCode] = useState('')
   const loginActive = useRef(false)
   loginActive.current = login.phase !== 'idle' || !!usage?.needsLogin
+  const activeRunIdRef = useRef(activeRunId)
+  activeRunIdRef.current = activeRunId
 
   const source = api ?? bridge()
 
@@ -465,9 +520,10 @@ export function AgyChatBar({
       setInstall(next)
       if (next.phase === 'done') setTimeout(() => setInstall({ phase: 'idle' }), 3000)
     })
-    const offRun = source.onAgyChatActivity?.((event) =>
-      setRun((current) => reduceRun(current, event)),
-    )
+    const offRun = source.onAgyChatActivity?.((event) => {
+      if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) return
+      setRun((current) => reduceRun(current, event))
+    })
     const onFocus = () => void loadState()
     window.addEventListener('focus', onFocus)
     window.addEventListener(MODEL_CHANGED, onFocus)
@@ -483,6 +539,18 @@ export function AgyChatBar({
       if (peekTimer.current) clearTimeout(peekTimer.current)
     }
   }, [source, loadState, apply])
+
+  useEffect(() => {
+    if (busy === false && run) {
+      setRun(null)
+    }
+  }, [busy, run])
+
+  useEffect(() => {
+    if (activeRunId && run && run.id !== activeRunId) {
+      setRun(null)
+    }
+  }, [activeRunId, run])
 
   const running = !!run && run.phase !== 'done' && run.phase !== 'error'
   useEffect(() => {
@@ -588,7 +656,7 @@ export function AgyChatBar({
 
   return (
     <div
-      className={`agy-bar${part === 'steps' ? ' is-steps' : ''}`}
+      className={`agy-bar${part === 'steps' ? ' is-steps' : ''}${mode === 'home-chat' ? ' is-home-chat' : ''}`}
       ref={rootRef}
       onMouseEnter={() => {
         hovering.current = true
@@ -734,22 +802,31 @@ export function AgyChatBar({
           <p className="agy-bar-note">{d.more}</p>
         </div>
       )}
-      {showSteps && run && (
-        <section className={`agy-think is-${run.phase}`} aria-live="polite">
+      {showSteps && (run || (mode === 'home-chat' && busy)) && (
+        <section
+          className={`agy-think is-${run?.phase ?? 'thinking'}${mode === 'home-chat' ? ' is-home-chat' : ''}`}
+          aria-live="polite"
+        >
           <button
             type="button"
             className="agy-think-head"
             aria-expanded={steps}
-            onClick={() => setSteps((value) => !value)}
+            onClick={() => {
+              if (run && run.steps.length > 0) setSteps((value) => !value)
+            }}
           >
             <span className="agy-think-dot" aria-hidden="true" />
-            <span className="agy-think-title">{thinkTitle(run, d)}</span>
-            {run.tokens > 0 && (
+            <span className="agy-think-title">
+              {run ? thinkTitle(run, d, mode) : `${d.thinkingHome} · 0s`}
+            </span>
+            {run && run.tokens > 0 && (
               <span className="agy-think-meta">{fill(d.thoughtTokens, { n: run.tokens })}</span>
             )}
-            <span className="agy-think-toggle">{steps ? d.hideSteps : d.showSteps}</span>
+            {run && run.steps.length > 0 && (
+              <span className="agy-think-toggle">{steps ? d.hideSteps : d.showSteps}</span>
+            )}
           </button>
-          {steps && (
+          {steps && run && (
             <div className="agy-think-body">
               <ol>
                 {run.steps.map((step, index) => (

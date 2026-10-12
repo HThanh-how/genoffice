@@ -50,6 +50,7 @@ type Props = {
   canRetry: boolean
   /** memoized per language by the parent so memo() equality holds across renders */
   labels: ChatLabels
+  activity?: React.ReactNode
   onOpenSource: (source: HomeChatSource) => void
   onRevealSource: (source: HomeChatSource) => void
   onRetry: () => void
@@ -83,6 +84,7 @@ function AssistantMessage({
   item,
   canRetry,
   labels,
+  activity,
   onOpenSource,
   onRevealSource,
   onRetry,
@@ -125,20 +127,18 @@ function AssistantMessage({
   const related = !!item.sources?.length && item.sources.every((source) => source.related)
   return (
     <article className="hc-msg assistant" aria-busy={item.streaming ? true : undefined}>
-      {showTyping ? (
-        <span className="hc-typing" role="status" aria-label={labels.loading}>
-          <i />
-          <i />
-          <i />
-          {item.status && <span className="hc-typing-status">{item.status}</span>}
-        </span>
-      ) : (
-        item.text && (
-          <div className="hc-answer">
-            <Markdown text={linked?.markdown ?? item.text} {...(nav ? { nav } : {})} />
-          </div>
-        )
-      )}
+      {showTyping
+        ? (activity ?? (
+            <span className="hc-typing" role="status" aria-label={labels.loading}>
+              <i className="hc-typing-dot" />
+              <span className="hc-typing-status">{item.status || labels.loading}</span>
+            </span>
+          ))
+        : item.text && (
+            <div className="hc-answer">
+              <Markdown text={linked?.markdown ?? item.text} {...(nav ? { nav } : {})} />
+            </div>
+          )}
       {item.error && (
         <div className="hc-error" role="alert">
           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">

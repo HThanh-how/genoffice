@@ -1413,12 +1413,21 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
                         item={item}
                         labels={labels.chat}
                         canRetry={!busy && item.id === items[lastIndex]?.id}
+                        activity={
+                          item.streaming && !item.text ? (
+                            <AgyChatBar
+                              lang={i18n.lang}
+                              part="steps"
+                              mode="home-chat"
+                              busy={busy}
+                            />
+                          ) : undefined
+                        }
                         onOpenSource={openSource}
                         onRevealSource={revealSource}
                         onRetry={retry}
                       />
                     ))}
-                    {busy && <AgyChatBar lang={i18n.lang} part="steps" />}
                   </div>
                 )}
               </div>
