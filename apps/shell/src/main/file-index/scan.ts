@@ -5,6 +5,7 @@ import {
   SUPPORTED_EXTENSIONS,
   isJunkFileName,
   shouldSkipDirectory,
+  isPathIgnored,
 } from '../document-memory/scan-policy'
 
 /** Name and content indexes admit the same document formats. */
@@ -72,13 +73,14 @@ function walkSupportedFiles(
       }
       const path = join(dir, ent.name)
       if (ent.isDirectory()) {
-        if (!shouldSkipDirectory(ent.name) && !isHiddenEntry(dir, ent.name, true))
+        if (!shouldSkipDirectory(ent.name, path) && !isHiddenEntry(dir, ent.name, true))
           walk(path, depth + 1)
       } else if (
         ent.isFile() &&
         isSupportedIndexFile(ent.name) &&
         !isHiddenEntry(dir, ent.name, false)
       ) {
+        if (isPathIgnored(path)) continue
         const st = statOrNull(path)
         if (st) out.push(st)
         else unreadable = true

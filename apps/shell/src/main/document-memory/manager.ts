@@ -15,7 +15,7 @@ import { MaintenanceScheduler, INITIAL_MAINTENANCE_DELAY_MS } from './runtime/ma
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'; import { StorageAdmissionController } from './runtime/storage-admission'; import { AnnHostAdmissionCoordinator } from './runtime/ann-host-admission'; import { SyncMetadataAdmissionCoordinator } from './runtime/sync-metadata-admission'
 import { StorageBudgetCoordinator } from './runtime/storage-budget-coordinator'; import type { StorageBudgetConfig, StorageBudgetPreset } from './storage/storage-settings'; import { createStorageBudget, type DocumentIndexStorageBudget, type StorageBudgetSnapshot } from './storage-budget'
 import { createIndexProcess } from './process-worker'; import workerPath from './worker?modulePath'
-import { safeError } from './issues'; import { orderQueue, nextInOrder, weightOf } from './queue-order'; import type { WorkerRequest, WorkerReply } from './worker-types'
+import { safeError } from './issues'; import { orderQueue, nextInOrder, weightOf } from './queue-order'; import type { WorkerRequest, WorkerReply } from './worker-types'; import { isPathIgnored } from './ignore-policy'
 export type { FreshDocumentMemoryHit, FileEnrollmentOutcome, FileEnrollmentResult }
 function readEnabled(p: string): boolean { try { return JSON.parse(readFileSync(p, 'utf8'))?.enabled !== false } catch { return true } }
 function saveEnabled(p: string, enabled: boolean): void { try { writeFileSync(p, JSON.stringify({ enabled }), { mode: 0o600 }) } catch {} }
@@ -280,7 +280,7 @@ export class DocumentMemoryManager {
   async readNowDocument(idOrPath: number | string): Promise<{ ok: boolean; error?: string; empty?: boolean }> {
     if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
     const path = typeof idOrPath === 'number' ? this.store.retryDocument(idOrPath) : resolve(idOrPath)
-    if (!path) return { ok: false, error: 'unavailable' }
+    if (!path || isPathIgnored(path)) return { ok: false, error: 'unavailable' }
     if (typeof idOrPath === 'string') this.remember(path)
     if (this.activeExtractions.has(path)) {
       this.deferred.delete(path); this.urgent.add(path); await this.waitUntilRead(path)
@@ -299,7 +299,7 @@ export class DocumentMemoryManager {
     const dl = Date.now() + this.workerTimeoutMs * 2; while (!this.stopped && Date.now() < dl && (this.activeExtractions.has(path) || this.queued.has(path))) await new Promise((r) => setTimeout(r, 20))
   }
   private async readOnce(path: string): Promise<void> {
-    const generation = this.currentGeneration(path); const epoch = this.epoch
+    if (isPathIgnored(path)) return; const generation = this.currentGeneration(path); const epoch = this.epoch
     this.activeGeneration.set(path, generation); this.activeExtractions.add(path); this.activeSince.set(path, Date.now()); this.pendingCount++
     try {
       const reply = await this.ask({ type: 'extract', path, interactive: true, maxPdfPages: this.extractionCoord.getPdfMaxPages() }, this.workerTimeoutMs, true)
@@ -349,7 +349,7 @@ export class DocumentMemoryManager {
     })())
   }
   private enqueue(path: string, prioritize = false, bytes?: number): void {
-    if (this.stopped || !this.enabled) return; const p = resolve(path); if (this.activeGeneration.get(p) === this.currentGeneration(p)) return
+    if (this.stopped || !this.enabled) return; const p = resolve(path); if (isPathIgnored(p) || this.activeGeneration.get(p) === this.currentGeneration(p)) return
     if (this.queued.has(p)) { if (prioritize) { const idx = this.queue.indexOf(p); if (idx > 0) { this.queue.splice(idx, 1); this.queue.unshift(p) } }; return }
     const doc = this.store.documentByPath(p); if (!doc || doc.status === 'excluded') return
     this.pathGeneration.set(p, this.currentGeneration(p) + 1); const size = bytes ?? doc.sizeBytes ?? undefined
@@ -394,7 +394,7 @@ export class DocumentMemoryManager {
       while (!this.stopped && this.enabled && !isIndexingPaused() && this.budgetCoord.isWriteReady() && this.gate.extractable(this.queue.length, this.urgent)) {
         // vectors are waiting and this lane has had its share of the process for now: the other lane goes next
         if (Date.now() - sliceStart >= EXTRACT_SLICE_MS && this.embeddingCoord.getQueueLength() > 0 && !this.embeddingCoord.isRetryPending()) break
-        const path = this.takeNext(); const wasTextOnly = this.gate.taken(path); this.queued.delete(path); this.activeExtractions.add(path)
+        const path = this.takeNext(); const wasTextOnly = this.gate.taken(path); this.queued.delete(path); if (isPathIgnored(path)) continue; this.activeExtractions.add(path)
         this.activeSince.set(path, Date.now()); const generation = this.currentGeneration(path)
         const epoch = this.epoch; this.activeGeneration.set(path, generation); this.pendingCount++
         if (!this.activeBytes.has(path)) { const doc = this.store.documentByPath(path); if (doc?.sizeBytes) this.activeBytes.set(path, doc.sizeBytes) }

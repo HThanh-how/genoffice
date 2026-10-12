@@ -13,6 +13,7 @@ import type { WriterRequest } from './worker-ops'
 import { isSupportedIndexFile } from './scan'
 import type { ScannedFile } from './scan'
 import type { FileIndexStore } from './store'
+import { isPathIgnored } from '../document-memory/ignore-policy'
 
 export interface IndexProgress {
   /** files currently in the index */
@@ -178,11 +179,15 @@ export class FileIndexer {
       const completeRoots: string[] = []
       for (const root of roots) {
         const res = await this.ask({ id: 0, type: 'scan', root }, (files) => {
-          for (const f of files) seen.set(f.path, f)
+          for (const f of files) {
+            if (!isPathIgnored(f.path)) seen.set(f.path, f)
+          }
         })
         // a crashed worker answers with an extract error; dropping the index on that would empty search
         if (res.type === 'scan') {
-          for (const f of res.files) seen.set(f.path, f)
+          for (const f of res.files) {
+            if (!isPathIgnored(f.path)) seen.set(f.path, f)
+          }
           if (res.complete === true && !res.truncated) completeRoots.push(root)
         }
       }
@@ -208,7 +213,7 @@ export class FileIndexer {
     const extras = new Set(this.sources.extraPaths())
     for (const p of extras) {
       if (this.stopped) return
-      if (seen.has(p) || !isSupportedIndexFile(p)) continue
+      if (seen.has(p) || !isSupportedIndexFile(p) || isPathIgnored(p)) continue
       const st = await asyncFileStat(p)
       if (st.kind === 'file') seen.set(p, st.file)
     }
@@ -219,6 +224,10 @@ export class FileIndexer {
     for (const path of known.keys()) {
       // every iteration may yield (an unchanged path is a `continue`, and a million of those are one long task otherwise)
       await yieldIfNeeded()
+      if (isPathIgnored(path)) {
+        gone.push(path)
+        continue
+      }
       if (seen.has(path)) continue
       // An offline root or a partial walk says nothing about the files omitted from it.
       const configuredRoot = sortedRoots.find((root) => isInside(root, path))
@@ -294,7 +303,7 @@ export class FileIndexer {
   }
 
   private enqueue(f: ScannedFile): void {
-    if (this.queued.has(f.path)) return
+    if (isPathIgnored(f.path) || this.queued.has(f.path)) return
     this.queued.add(f.path)
     this.queue.push(f)
     void this.drain()
@@ -307,6 +316,11 @@ export class FileIndexer {
       while (this.queue.length && !this.stopped && !isIndexingPaused()) {
         const f = this.queue.shift()!
         this.queued.delete(f.path)
+        if (isPathIgnored(f.path)) {
+          await this.removeRows([f.path])
+          this.preserveCachedBody.delete(f.path)
+          continue
+        }
         // the file may have changed again while queued; index what is on disk now
         const state = await asyncFileStat(f.path)
         if (state.kind !== 'file') {
