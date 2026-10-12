@@ -18,6 +18,8 @@ import {
   hasNameProjection,
   getMetaValue,
   NAME_PROJECTION_STATUS_KEY,
+  generateTrigrams,
+  MAX_QUERY_NGRAMS,
 } from './name-search-projection'
 
 export const ISSUE_PAGE_SIZE = 10
@@ -184,17 +186,20 @@ export class IndexIssueReader {
           const clean = w.replace(/["*()^]/g, '')
           if (!clean) return null
           const parts = clean.split(/[_/\\-]+/).filter(Boolean)
-          if (parts.length > 1) {
-            const joined = parts.join('')
-            const spaced = parts.join(' ')
-            return `("${spaced}" OR "${joined}"*)`
+          const prefix =
+            parts.length > 1
+              ? `("${parts.join(' ')}" OR "${parts.join('')}"*)`
+              : /^\d+$/.test(clean)
+                ? `"${clean}"`
+                : `"${clean}"*`
+          if (clean.length >= 3 && !/^\d+$/.test(clean)) {
+            const trigrams = generateTrigrams(clean, MAX_QUERY_NGRAMS)
+            if (trigrams.length > 0) {
+              const substring = trigrams.map((gram) => `"${gram}"`).join(' AND ')
+              return `(${prefix} OR compact_ngrams: (${substring}))`
+            }
           }
-          if (clean.length === 3) {
-            return /^\d+$/.test(clean)
-              ? `"${clean}"`
-              : `("${clean}"* OR compact_ngrams: "${clean}")`
-          }
-          return /^\d+$/.test(clean) ? `"${clean}"` : `"${clean}"*`
+          return prefix
         })
         .filter(Boolean)
 

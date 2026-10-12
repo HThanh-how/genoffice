@@ -183,6 +183,9 @@ describe('IndexIssueReader search correctness & performance against reference', 
       'contracts_3',
       'dien',
       'hopdong',
+      'dong',
+      'opdo',
+      'tracts_3',
       'document_50',
       'contracts_1 hopdong',
       'contracts_9 dien',
@@ -238,6 +241,7 @@ describe('IndexIssueReader search correctness & performance against reference', 
       'nghiem thu 433',
       'dept_7',
       'nghiemthu',
+      'ghiemthu',
       'Hóa đơn',
       'BỆNH VIỆN',
       'Đà Nẵng',
@@ -261,5 +265,32 @@ describe('IndexIssueReader search correctness & performance against reference', 
 
     expect(avgLatency).toBeLessThan(100)
     expect(maxLatency).toBeLessThan(100) // Consistently well below 250ms
+  })
+
+  it('finds infixes and suffixes without accepting unrelated trigram matches', () => {
+    const fixtures = [
+      { id: 10001, name: 'hopdong.pdf', path: '/home/agreements/hopdong.pdf' },
+      { id: 10002, name: 'don_ong.pdf', path: '/home/agreements/don_ong.pdf' },
+      { id: 10003, name: 'ghi_chu.txt', path: '/home/precongtrinhsuffix/ghi_chu.txt' },
+    ]
+    for (const f of fixtures) {
+      db.prepare('INSERT INTO documents (id, name, path, status) VALUES (?, ?, ?, ?)').run(
+        f.id,
+        f.name,
+        f.path,
+        'ready',
+      )
+      const proj = buildDocumentProjection(f.name, f.path)
+      db.prepare(
+        'INSERT INTO document_name_projection (document_id, name_norm, path_norm, compact_ngrams) VALUES (?, ?, ?, ?)',
+      ).run(f.id, proj.nameNorm, proj.pathNorm, proj.compactNgrams)
+    }
+
+    for (const query of ['agreements dong', 'agreements opdo', 'agreements ong', 'trinhsuffix']) {
+      const expected = referenceSearch(db, query).map((hit) => hit.id)
+      expect(expected.length).toBeGreaterThan(0)
+      expect(reader.search(query).map((hit) => hit.id)).toEqual(expected)
+    }
+    expect(reader.search('agreements dong').map((hit) => hit.id)).toEqual([10001])
   })
 })
