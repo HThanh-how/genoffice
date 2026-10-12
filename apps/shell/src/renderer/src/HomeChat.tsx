@@ -1046,6 +1046,12 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           try {
             const query = buildRetrievalQuery(message, toMessages(base))
             hits = (await api.documentMemorySearch(query, 8)).hits
+            if (api.testIgnorePath && hits.length > 0) {
+              const testResults = await Promise.all(
+                hits.map((h) => api.testIgnorePath!(h.path).catch(() => ({ ignored: false }))),
+              )
+              hits = hits.filter((_, idx) => !testResults[idx]?.ignored)
+            }
           } catch {
             // search is best-effort; the answer then says nothing matched
           }
@@ -1063,9 +1069,15 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           }
           // Files recently opened, or in the folder index, that match by name: their content is
           // not part of the search above, so they are offered as candidates by name (same id table).
-          const named = (await findFilesByName(api, message, 4).catch(() => [])).filter(
+          let named = (await findFilesByName(api, message, 4).catch(() => [])).filter(
             (file) => table.refForPath(file.path) === undefined,
           )
+          if (api.testIgnorePath && named.length > 0) {
+            const testResults = await Promise.all(
+              named.map((f) => api.testIgnorePath!(f.path).catch(() => ({ ignored: false }))),
+            )
+            named = named.filter((_, idx) => !testResults[idx]?.ignored)
+          }
           if (generation !== runGenerationRef.current || !mountedRef.current) return
           const byName = namedFilesBlock(named, table)
           if (byName.block) context.block = `${context.block}\n\n${byName.block}`

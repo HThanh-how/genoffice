@@ -51,10 +51,29 @@ export const DEFAULT_MAX_MEDIA_PER_FOLDER = 200_000
 
 /** Folders whose images are app resources, caches or thumbnails. Applies to MEDIA only (documents keep indexing there). */
 const NOISE_MEDIA_DIRECTORIES = new Set([
-  'thumbnails', 'thumbnail', 'thumbs', '@eadir', '__macosx', 'cache', 'caches', 'trash', '.trash', '.trashes',
-  'node_modules', 'site-packages', 'assets', 'res', 'drawable', 'mipmap', 'icons', 'icon', 'sprites', 'sprite',
+  'thumbnails',
+  'thumbnail',
+  'thumbs',
+  '@eadir',
+  '__macosx',
+  'cache',
+  'caches',
+  'trash',
+  '.trash',
+  '.trashes',
+  'node_modules',
+  'site-packages',
+  'assets',
+  'res',
+  'drawable',
+  'mipmap',
+  'icons',
+  'icon',
+  'sprites',
+  'sprite',
 ])
-const NOISE_MEDIA_DIRECTORY_PATTERN = /(\.(photoslibrary|imovielibrary|xcassets|appiconset|imageset|app|framework|bundle)|^(drawable|mipmap)-[\w-]+)$/i
+const NOISE_MEDIA_DIRECTORY_PATTERN =
+  /(\.(photoslibrary|imovielibrary|xcassets|appiconset|imageset|app|framework|bundle)|^(drawable|mipmap)-[\w-]+)$/i
 
 /** `dirs` are the folder names between the scanned root and the file (root itself is never judged). */
 export function isNoiseMediaPath(dirs: readonly string[]): boolean {
@@ -108,12 +127,22 @@ export function isIndexableFileName(name: string): boolean {
   return !isJunkFileName(name) && dot >= 0 && isIndexableExtension(name.slice(dot))
 }
 
-export function shouldSkipDirectory(name: string): boolean {
+import { isPathIgnored, evaluateIgnore } from './ignore-policy'
+
+export { isPathIgnored, evaluateIgnore }
+
+export function shouldSkipDirectory(name: string, fullPath?: string | number): boolean {
   const lower = name.toLowerCase()
-  return (
+  if (
     name.startsWith('.') ||
     name.startsWith('$') ||
     IGNORED_DIRECTORIES.has(lower) ||
     SYSTEM_DIRECTORY_NAMES.has(lower)
-  )
+  ) {
+    return true
+  }
+  if (typeof fullPath === 'string' && isPathIgnored(fullPath)) {
+    return true
+  }
+  return false
 }

@@ -14,9 +14,11 @@ import {
   shouldSkipDirectory,
 } from './scan-policy'
 import { isGeneratedArtifactPath } from './artifact-policy'
+import { isPathIgnored, setIgnoreStoragePath } from './ignore-policy'
 import type { FileEnrollmentResult } from './storage/repositories/document-repository'
 export { IGNORED_DIRECTORIES, SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
 export { isGeneratedArtifactPath } from './artifact-policy'
+export { isPathIgnored } from './ignore-policy'
 
 export const MAX_DOCUMENT_BYTES = 128 * 1024 * 1024
 const MAX_ROOT_LENGTH = 32_768
@@ -37,6 +39,7 @@ export function isIndexablePath(root: string, path: string): boolean {
   const name = relative.pop()
   if (!name || isIgnoredFileName(name)) return false
   if (relative.some(shouldSkipDirectory)) return false
+  if (isPathIgnored(path, root)) return false
   const ext = extname(name).toLowerCase()
   const media = mediaKindOfExtension(ext)
   // Size is unknown here: the size floor / folder cap are applied where the file is stat'ed.
@@ -263,6 +266,7 @@ export class FolderScanManager {
   ) {
     this.maxMediaPerFolder = options.maxMediaPerFolder ?? DEFAULT_MAX_MEDIA_PER_FOLDER
     mkdirSync(userData, { recursive: true })
+    setIgnoreStoragePath(resolve(userData, 'document-index-ignore-rules.json'))
     this.manifestPath = resolve(userData, 'document-memory-folders.json')
     this.memory = memory
     this.manifest = readManifest(this.manifestPath)
@@ -317,7 +321,11 @@ export class FolderScanManager {
       this.watcher = new FolderWatchManager(this, {
         isEnabled: () => isEnabled.call(memory),
         onEnabledChange: (listener) => onEnabledChange.call(memory, listener),
-        handleFileEvents: (paths) => handleFileEvents.call(memory, paths),
+        handleFileEvents: (paths) =>
+          handleFileEvents.call(
+            memory,
+            paths.filter((p) => !isPathIgnored(p)),
+          ),
       })
   }
 
@@ -1001,12 +1009,16 @@ export class FolderScanManager {
             continue
           }
           if (entry.isDirectory()) {
-            if (shouldSkipDirectory(entry.name) || isGeneratedArtifactPath(path))
+            if (
+              shouldSkipDirectory(entry.name, path) ||
+              isGeneratedArtifactPath(path) ||
+              isPathIgnored(path, root)
+            )
               handlers.onSkipped()
             else pending.push(path)
             continue
           }
-          if (!entry.isFile() || isIgnoredFileName(entry.name)) {
+          if (!entry.isFile() || isIgnoredFileName(entry.name) || isPathIgnored(path, root)) {
             handlers.onSkipped()
             continue
           }

@@ -303,3 +303,129 @@
 .ixq-detail strong {
   color: var(--text);
 }
+
+/* Ignore rules section */
+.ixs-ignore {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ixs-ignore-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ixs-ignore-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 8px;
+  background: var(--bg-card, var(--card));
+  border: 1px solid var(--border-subtle, var(--border));
+  font-size: 13px;
+}
+.ixs-ignore-item.disabled {
+  opacity: 0.6;
+}
+.ixs-ignore-pattern {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+  color: var(--text);
+}
+.ixs-ignore-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.ixs-ignore-desc {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.ixs-ignore-badge {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--hover);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+.ixs-badge-genoffice {
+  background: var(--accent-soft, var(--hover));
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.ixs-ignore-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.ixs-ignore-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  flex-wrap: wrap;
+}
+.ixs-ignore-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--hover);
+  border-radius: 8px;
+  align-items: center;
+}
+.ixs-ignore-tester {
+  margin-top: 6px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px dashed var(--border);
+  background: var(--card);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.ixs-ignore-tester h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.ixs-tester-form {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.ixs-tester-form .idx-input {
+  flex: 1;
+}
+.ixs-test-result {
+  padding: 8px 12px;
+  border-radius: 6px;
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.ixs-test-result p {
+  margin: 4px 0 0;
+  font-size: 12px;
+}
+.ixs-test-result.ignored {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+.ixs-test-result.indexed {
+  background: rgba(34, 197, 94, 0.1);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+.ixs-test-result.not-yet-indexed {
+  background: rgba(59, 130, 246, 0.1);
+  color: #3b82f6;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+}

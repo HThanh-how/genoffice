@@ -2,12 +2,39 @@ import type { FolderOwner } from '../../main/document-memory/folder-scan'
 import type { IndexIssueReason } from '../../main/document-memory/issues'
 import type { IndexIssueSummary } from '../../main/document-memory/issue-reader'
 import type { DbLocationState, DbMoveError } from '../../main/document-memory/db-location'
-import type { KnownSearchSource, KnownSearchSourceEntry, KnownSearchSourceStatus } from '../../main/document-memory/known-sources'
+import type {
+  KnownSearchSource,
+  KnownSearchSourceEntry,
+  KnownSearchSourceStatus,
+} from '../../main/document-memory/known-sources'
 
 import type { DocumentMemoryStatus, HomeIndexingActivity } from '../home-api'
 import type { IndexingModeState } from './indexing-mode'
 
-export type { DbLocationState, DbMoveError, FolderOwner, KnownSearchSource, KnownSearchSourceEntry, KnownSearchSourceStatus }
+export type {
+  DbLocationState,
+  DbMoveError,
+  FolderOwner,
+  KnownSearchSource,
+  KnownSearchSourceEntry,
+  KnownSearchSourceStatus,
+}
+
+export interface IgnoreRule {
+  id: string
+  pattern: string
+  enabled: boolean
+  scope: 'global' | string
+  description?: string
+  source?: 'user' | '.genofficeignore'
+}
+
+export interface IgnoreTestResult {
+  ignored: boolean
+  ruleId?: string
+  pattern?: string
+  reason?: string
+}
 
 /** User-visible and IPC-exposed storage snapshot. */
 export interface StorageBudgetSnapshot {
@@ -67,8 +94,20 @@ export interface DocumentIndexStorageDiagnostics {
   v2BackupSizeBytes: number | null
   schemaVersion: string
   migrationStatus: 'completed' | 'in-progress' | 'none'
-  topOffendersByChunks: Array<{ id: number; path: string; name: string; chunks: number; truncated: boolean }>
-  topOffendersBySize: Array<{ id: number; path: string; name: string; sizeBytes: number; chunks: number }>
+  topOffendersByChunks: Array<{
+    id: number
+    path: string
+    name: string
+    chunks: number
+    truncated: boolean
+  }>
+  topOffendersBySize: Array<{
+    id: number
+    path: string
+    name: string
+    sizeBytes: number
+    chunks: number
+  }>
   breakdown?: {
     chunksBytes: number
     embeddingsBytes: number
@@ -184,6 +223,9 @@ export const DOCUMENT_INDEX_CHANNELS = {
   setStorageBudgetSettings: 'home:set-storage-budget-settings',
   getDocumentIndexBackup: 'home:get-document-index-backup',
   deleteDocumentIndexBackup: 'home:delete-document-index-backup',
+  getIgnoreRules: 'home:get-ignore-rules',
+  saveIgnoreRules: 'home:save-ignore-rules',
+  testIgnorePath: 'home:test-ignore-path',
 } as const
 
 /** The previous (V2) index kept next to the live one after an upgrade. Not counted in the index size. */
@@ -430,7 +472,10 @@ export interface DocumentIndexApi {
   /** Retrieve the list of known search sources (Documents, Downloads, Desktop) with their paths and enabled states. */
   getKnownSearchSources(): Promise<KnownSearchSourceEntry[]>
   /** Enable or disable a known search source; toggles scanning and watching. */
-  setKnownSearchSource(id: KnownSearchSource, enabled: boolean): Promise<KnownSearchSourceEntry | void>
+  setKnownSearchSource(
+    id: KnownSearchSource,
+    enabled: boolean,
+  ): Promise<KnownSearchSourceEntry | void>
   /** Files in the index whose name or folder matches every word typed (accents ignored). */
   searchIndexedFiles(query: string): Promise<IndexedFileHit[]>
   /** Which files the indexer is reading now and who is next. */
@@ -471,7 +516,10 @@ export interface DocumentIndexApi {
   /** How far one file got: found, read, OCR, embedded. Null when the file is not in the index. */
   getIndexFileDetail(documentId: number): Promise<IndexFileDetail | null>
   /** Set file importance override (auto | important | low). */
-  setIndexFileImportance?(documentId: number, importance: FileImportanceOverride): Promise<{ ok: boolean; error?: string }>
+  setIndexFileImportance?(
+    documentId: number,
+    importance: FileImportanceOverride,
+  ): Promise<{ ok: boolean; error?: string }>
   getEmbeddingModel(): Promise<EmbeddingModelState>
   /** Switch the search model; documents are read again with it in the background. */
   setEmbeddingModel(profile: EmbeddingProfileChoice): Promise<{ ok: boolean; requeued: number }>
@@ -483,10 +531,17 @@ export interface DocumentIndexApi {
   getStorageBudgetSettings?(): Promise<StorageBudgetConfig>
   /** Update storage budget configuration. */
   setStorageBudgetSettings?(
-    settings: { maxDatabaseBytes?: number; preset?: StorageBudgetPreset; version?: number } | number,
+    settings:
+      { maxDatabaseBytes?: number; preset?: StorageBudgetPreset; version?: number } | number,
   ): Promise<{ ok: boolean; settings?: StorageBudgetConfig; error?: string }>
   /** The old index backup kept after an upgrade (size, age, whether it can be deleted now). */
   getDocumentIndexBackup?(): Promise<DocumentIndexBackupInfo>
   /** Deletes the old index backup. Only the backup files next to the live index; never the user's documents. */
   deleteDocumentIndexBackup?(): Promise<DocumentIndexBackupDeleteResult>
+  /** Active user-configurable and .genofficeignore rules. */
+  getIgnoreRules?(): Promise<IgnoreRule[]>
+  /** Save active user ignore rules safely. */
+  saveIgnoreRules?(rules: IgnoreRule[]): Promise<{ ok: boolean; error?: string }>
+  /** Test whether a candidate file path matches current ignore rules. */
+  testIgnorePath?(path: string, root?: string): Promise<IgnoreTestResult>
 }

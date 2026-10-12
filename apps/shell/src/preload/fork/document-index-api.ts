@@ -142,5 +142,14 @@ export function createDocumentIndexPreloadApi(
     async deleteDocumentIndexBackup() {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.deleteDocumentIndexBackup)
     },
+    async getIgnoreRules() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getIgnoreRules)
+    },
+    async saveIgnoreRules(rules) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.saveIgnoreRules, rules)
+    },
+    async testIgnorePath(path, root) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.testIgnorePath, path, root)
+    },
   }
 }

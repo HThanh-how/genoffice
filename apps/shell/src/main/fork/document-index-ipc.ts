@@ -21,6 +21,7 @@ import {
 import { registerFolderAndModelHandlers } from './document-index-folder-handlers'
 import { registerDocumentIndexImportanceHandlers } from './document-index-importance-handlers'
 import { registerDocumentIndexStorageHandlers } from './document-index-storage-handlers'
+import { isPathIgnored, registerIgnoreIpcHandlers } from '../document-memory/ignore-policy'
 
 export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
@@ -72,6 +73,7 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   registerFolderAndModelHandlers(deps, () => folderCounts.invalidate())
   registerDocumentIndexImportanceHandlers(deps)
   registerDocumentIndexStorageHandlers(deps)
+  registerIgnoreIpcHandlers(ipcMain, () => folderCounts.invalidate())
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, (_event, ids: unknown) => {
     if (
@@ -136,7 +138,8 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
           status: 'on-disk' as const,
           external: true,
         }))
-      return [...indexed, ...elsewhere]
+      const all = [...indexed, ...elsewhere]
+      return all.filter((hit) => !isPathIgnored(hit.path))
     },
   )
 
