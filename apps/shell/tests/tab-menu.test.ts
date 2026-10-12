@@ -21,6 +21,9 @@ const home = tab('home', { kind: 'home', closable: false })
 
 function actions(): TabMenuActions {
   return {
+    save: vi.fn(),
+    saveAs: vi.fn(),
+    print: vi.fn(),
     openInNewWindow: vi.fn(),
     splitBeside: vi.fn(),
     rename: vi.fn(),
@@ -85,6 +88,19 @@ describe('the tab context menu', () => {
     expect(given.copyText).toHaveBeenNthCalledWith(2, 'Hợp đồng.docx')
     expect(given.duplicate).toHaveBeenCalledWith('D:\\docs\\Hợp đồng.docx')
     expect(given.rename).toHaveBeenCalledWith('a')
+  })
+
+  it('saves, saves a copy, and prints the clicked untitled tab', () => {
+    const { items, actions: given } = menu(b, all)
+    for (const label of ['Save', 'Save As…', 'Print…']) {
+      expect(enabled(items.get(label))).toBe(true)
+      click(items.get(label))
+    }
+    expect(given.save).toHaveBeenCalledWith('b')
+    expect(given.saveAs).toHaveBeenCalledWith('b')
+    expect(given.print).toHaveBeenCalledWith('b')
+    const help = menu(tab('help', { kind: 'help' }), all).items
+    for (const label of ['Save', 'Save As…', 'Print…']) expect(enabled(help.get(label))).toBe(false)
   })
 
   it('switches off what needs a file for an untitled document, or one gone from the disk', () => {
@@ -194,7 +210,7 @@ describe('where the file is, shown in the tab menu', () => {
       labels: { openInNewWindow: 'Open in New Window', close: 'Close' },
       actions: actions(),
     })
-    expect(first(template).label).toBe('Rename')
+    expect(first(template).label).toBe('Save')
   })
 
   it('keeps the start and the end of a very long path', () => {

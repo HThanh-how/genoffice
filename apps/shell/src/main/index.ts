@@ -332,6 +332,8 @@ import { readClipboardFiles, writeClipboardFiles } from './fork/clipboard-files'
 import { pasteFiles } from './fork/folder-paste'
 import { isInsidePath, outermostPaths } from '../shared/path-nesting'
 import { tabMenuTemplate, tabMenuWords, type TabMenuActions } from './fork/tab-menu'
+import { tabMenuIcons } from './fork/tab-menu-icons'
+import { runTabDocumentAction, type TabDocumentAction } from './fork/tab-document-actions'
 import { isProgramFile } from './everything/junk'
 import { applyPendingDbMove, isDbDirAccessible, resolveDbDir } from './document-memory/db-location'
 import { registerDbLocationIpc } from './fork/db-location-ipc'
@@ -5778,7 +5780,35 @@ async function closeTabsInOrder(ids: string[]): Promise<void> {
 
 /** The shell's side of every entry of the tab menu (see fork/tab-menu.ts for what is offered). */
 function tabMenuActions(): TabMenuActions {
+  const documentAction = (id: string, action: TabDocumentAction) => {
+    if (!tabManager) return
+    runTabDocumentAction(
+      {
+        tabs: tabManager,
+        savePdf: (contents) => {
+          void flushPdfSave(contents)
+        },
+        savePdfAs: (target) => {
+          void savePdfAs(target)
+        },
+        printPdf: sendPdfPrintRequest,
+        saveMarkdown: (contents, mode) => {
+          void requestMarkdownSave(contents, mode)
+        },
+        printMarkdown: sendMarkdownPrintRequest,
+        saveHtml: (contents, mode) => {
+          void requestHtmlSave(contents, mode)
+        },
+        printHtml: sendHtmlPrintRequest,
+      },
+      id,
+      action,
+    )
+  }
   return {
+    save: (id) => documentAction(id, 'save'),
+    saveAs: (id) => documentAction(id, 'saveAs'),
+    print: (id) => documentAction(id, 'print'),
     openInNewWindow: (id) => detachTabToWindow(id),
     // two windows side by side, each on its own half of the screen the tab is on
     splitBeside: (id) => {
@@ -5960,6 +5990,7 @@ function registerTabsIpc(): void {
       words: tabMenuWords(currentLang()),
       labels: { openInNewWindow: tm('menuOpenInNewWindow'), close: tm('menuClose') },
       actions: tabMenuActions(),
+      icons: tabMenuIcons(),
     })
     Menu.buildFromTemplate(template).popup({
       window: shellWindow,
@@ -6362,8 +6393,7 @@ function buildHtmlMenu(): void {
     waiter/target grant or clears its autosave pause early */
 let savingPdfAs = false
 
-async function savePdfAs(): Promise<void> {
-  const tab = activePdfTarget()
+async function savePdfAs(tab = activePdfTarget()): Promise<void> {
   const host = pdfHostWindow(tab)
   if (!tab?.filePath || !host || savingPdfAs) return
   savingPdfAs = true
