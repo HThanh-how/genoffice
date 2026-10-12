@@ -469,6 +469,8 @@ export function AgyChatBar({
   loginActive.current = login.phase !== 'idle' || !!usage?.needsLogin
   const activeRunIdRef = useRef(activeRunId)
   activeRunIdRef.current = activeRunId
+  const busyRef = useRef(busy)
+  busyRef.current = busy
 
   const source = api ?? bridge()
 
@@ -521,8 +523,27 @@ export function AgyChatBar({
       if (next.phase === 'done') setTimeout(() => setInstall({ phase: 'idle' }), 3000)
     })
     const offRun = source.onAgyChatActivity?.((event) => {
-      if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) return
-      setRun((current) => reduceRun(current, event))
+      if (!busyRef.current) return
+      setRun((current) => {
+        if (!current) {
+          if (
+            event.phase !== 'start' &&
+            event.phase !== 'thinking' &&
+            event.phase !== 'tool' &&
+            event.phase !== 'writing'
+          ) {
+            return null
+          }
+          if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) {
+            return null
+          }
+          return reduceRun(null, event)
+        }
+        if (event.runId !== current.id) {
+          return current
+        }
+        return reduceRun(current, event)
+      })
     })
     const onFocus = () => void loadState()
     window.addEventListener('focus', onFocus)
@@ -537,6 +558,7 @@ export function AgyChatBar({
       window.removeEventListener(MODEL_CHANGED, onFocus)
       clearInterval(clock)
       if (peekTimer.current) clearTimeout(peekTimer.current)
+      setRun(null)
     }
   }, [source, loadState, apply])
 
@@ -616,7 +638,7 @@ export function AgyChatBar({
   const showBar = part !== 'steps'
   const showSteps = part !== 'bar'
 
-  const current = state.models.find((model) => model.id === state.selected) ?? state.models[0]
+  const current = state.models?.find((model) => model.id === state.selected) ?? state.models?.[0]
   const group = current?.group
   const buckets = usage?.groups?.find((g) => g.name === group)?.buckets ?? []
   const five = buckets.find((b) => b.window === '5h')

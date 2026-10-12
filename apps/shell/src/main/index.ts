@@ -4785,6 +4785,17 @@ function registerHomeIpc(): void {
   ipcMain.handle('document-memory:read', async (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid chunk id')
+    const meta = documentMemory?.store?.readChunk(id)
+    if (meta && isPathIgnored(meta.path)) {
+      return {
+        path: meta.path,
+        name: meta.name,
+        location: meta.location,
+        text: '',
+        verified: false,
+        error: 'Ignored document',
+      }
+    }
     const chunk = await documentMemory?.read(id)
     if (chunk && isPathIgnored(chunk.path)) {
       return {
@@ -4889,9 +4900,10 @@ function registerHomeIpc(): void {
         q && fileSearch
           ? await fileSearch.search(q, { exts, offset, limit })
           : { hits: [], total: 0 }
+      const filteredHits = result.hits.filter((h) => !isPathIgnored(h.path))
       return {
-        hits: result.hits.map((h) => ({ ...h, starred: starred.has(h.path) })),
-        total: result.total,
+        hits: filteredHits.map((h) => ({ ...h, starred: starred.has(h.path) })),
+        total: Math.max(0, result.total - (result.hits.length - filteredHits.length)),
         index: indexer.progress(),
       }
     },
@@ -4924,7 +4936,7 @@ function registerHomeIpc(): void {
       starred,
       Math.min(limit, 20),
     )
-    return hits
+    return hits.filter((h) => !isPathIgnored(h.path))
   })
 
   ipcMain.handle('kb:read', async (_event, raw: unknown): Promise<unknown> => {
@@ -4935,7 +4947,7 @@ function registerHomeIpc(): void {
     const path = typeof req.path === 'string' ? req.path : ''
     const offsetRaw = Number(req.offset)
     const offset = Number.isFinite(offsetRaw) ? Math.floor(offsetRaw) : 0
-    if (!path || !readStarredFiles().includes(path)) {
+    if (!path || !readStarredFiles().includes(path) || isPathIgnored(path)) {
       throw new Error('path is not in the knowledge base')
     }
     return readKnowledgeFilePage(path, offset)

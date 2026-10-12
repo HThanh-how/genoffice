@@ -308,4 +308,114 @@ describe('home-chat activity states and thinking UX (Phase 2)', () => {
       host.remove()
     }
   })
+
+  it('stale Thinking events never reach a new session or inactive run', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    let activityListener: ((event: unknown) => void) | null = null
+    const fakeApi = {
+      getAgyChatState: async () => ({
+        active: true,
+        selected: 'fast',
+        models: [{ id: 'fast', group: 'fast', title: 'Fast' }],
+      }),
+      getAgyChatUsage: async () => ({ refreshing: false }),
+      onAgyChatUsage: () => () => {},
+      onAgyChatActivity: (fn: (event: unknown) => void) => {
+        activityListener = fn
+        return () => {
+          activityListener = null
+        }
+      },
+    }
+
+    try {
+      // 1. Initial busy session with runId = 'session-1-run'
+      await act(async () => {
+        root.render(
+          createElement(AgyChatBar, {
+            lang: 'en',
+            part: 'steps',
+            mode: 'home-chat',
+            busy: true,
+            activeRunId: 'session-1-run',
+            api: fakeApi as never,
+          }),
+        )
+      })
+
+      // Send activity for session 1
+      await act(async () => {
+        activityListener?.({
+          runId: 'session-1-run',
+          phase: 'thinking',
+          at: Date.now(),
+        })
+      })
+
+      let title = host.querySelector('.agy-think-title')
+      expect(title?.textContent).toContain('Thinking…')
+
+      // 2. User stops / session completes: busy becomes false
+      await act(async () => {
+        root.render(
+          createElement(AgyChatBar, {
+            lang: 'en',
+            part: 'steps',
+            mode: 'home-chat',
+            busy: false,
+            activeRunId: undefined,
+            api: fakeApi as never,
+          }),
+        )
+      })
+
+      // Send a stale event from old session-1-run
+      await act(async () => {
+        activityListener?.({
+          runId: 'session-1-run',
+          phase: 'writing',
+          at: Date.now(),
+        })
+      })
+
+      // Should NOT render activity because busy is false
+      expect(host.querySelector('.agy-think-title')).toBeNull()
+
+      // 3. User starts a new session with runId = 'session-2-run'
+      await act(async () => {
+        root.render(
+          createElement(AgyChatBar, {
+            lang: 'en',
+            part: 'steps',
+            mode: 'home-chat',
+            busy: true,
+            activeRunId: 'session-2-run',
+            api: fakeApi as never,
+          }),
+        )
+      })
+
+      // Another stale event from old session-1-run arrives
+      await act(async () => {
+        activityListener?.({
+          runId: 'session-1-run',
+          phase: 'tool',
+          tool: 'searchFiles',
+          at: Date.now(),
+        })
+      })
+
+      // Old session tool activity must NOT be displayed in session 2!
+      title = host.querySelector('.agy-think-title')
+      expect(title?.textContent).not.toContain('Searching files…')
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+    }
+  })
 })

@@ -76,7 +76,25 @@ export function getIgnoreStoragePath(): string | null {
   return storageFilePath
 }
 
-export function globToRegex(pattern: string): RegExp {
+const regexCache = new Map<string, RegExp>()
+const MAX_REGEX_CACHE = 500
+
+export function clearRegexCache(): void {
+  regexCache.clear()
+}
+
+export function isPathCaseInsensitive(p: string): boolean {
+  return process.platform === 'win32' || /^[a-zA-Z]:[/\\]/.test(p)
+}
+
+export function globToRegex(
+  pattern: string,
+  caseInsensitive = process.platform === 'win32',
+): RegExp {
+  const cacheKey = `${pattern}::${caseInsensitive ? 'i' : 's'}`
+  const cached = regexCache.get(cacheKey)
+  if (cached) return cached
+
   let p = pattern.trim().replace(/\\/g, '/')
   const isDirOnly = p.endsWith('/')
   if (isDirOnly) p = p.slice(0, -1)
@@ -122,7 +140,13 @@ export function globToRegex(pattern: string): RegExp {
   }
 
   regexStr += '(?=$|/.*)'
-  return new RegExp(regexStr, 'i')
+  const regex = new RegExp(regexStr, caseInsensitive ? 'i' : undefined)
+  if (regexCache.size >= MAX_REGEX_CACHE) {
+    const firstKey = regexCache.keys().next().value
+    if (firstKey) regexCache.delete(firstKey)
+  }
+  regexCache.set(cacheKey, regex)
+  return regex
 }
 
 interface CachedIgnore {
@@ -130,6 +154,7 @@ interface CachedIgnore {
   rules: IgnoreRule[]
 }
 const genOfficeIgnoreCache = new Map<string, CachedIgnore>()
+const MAX_GENOFFICEIGNORE_CACHE = 100
 
 let knownRootsResolver: (() => string[]) | null = null
 
@@ -170,6 +195,10 @@ export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
         description: `.genofficeignore in ${dir}`,
       })
     }
+    if (genOfficeIgnoreCache.size >= MAX_GENOFFICEIGNORE_CACHE) {
+      const firstKey = genOfficeIgnoreCache.keys().next().value
+      if (firstKey) genOfficeIgnoreCache.delete(firstKey)
+    }
     genOfficeIgnoreCache.set(dir, { mtimeMs: stat.mtimeMs, rules })
     return rules
   } catch {
@@ -181,9 +210,32 @@ export function getActiveIgnoreRules(): IgnoreRule[] {
   return [...activeRules]
 }
 
+function persistRulesToDisk(rules: IgnoreRule[]): boolean {
+  if (!storageFilePath) return true
+  try {
+    mkdirSync(dirname(storageFilePath), { recursive: true })
+    const tmp = `${storageFilePath}.tmp`
+    writeFileSync(tmp, JSON.stringify(rules, null, 2), { mode: 0o600 })
+    renameSync(tmp, storageFilePath)
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function persistIgnoreRules(): boolean {
+  return persistRulesToDisk(activeRules)
+}
+
 export function setActiveIgnoreRules(rules: IgnoreRule[]): boolean {
-  activeRules = rules.map((r) => ({ ...r }))
-  return persistIgnoreRules()
+  const candidate = rules.map((r) => ({ ...r }))
+  const ok = persistRulesToDisk(candidate)
+  if (!ok) {
+    return false
+  }
+  activeRules = candidate
+  clearRegexCache()
+  return true
 }
 
 function isValidIgnoreRule(r: unknown): r is IgnoreRule {
@@ -213,19 +265,6 @@ export function loadPersistedIgnoreRules(): IgnoreRule[] {
   return activeRules
 }
 
-export function persistIgnoreRules(): boolean {
-  if (!storageFilePath) return true
-  try {
-    mkdirSync(dirname(storageFilePath), { recursive: true })
-    const tmp = `${storageFilePath}.tmp`
-    writeFileSync(tmp, JSON.stringify(activeRules, null, 2), { mode: 0o600 })
-    renameSync(tmp, storageFilePath)
-    return true
-  } catch {
-    return false
-  }
-}
-
 function normalizePath(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+/g, '/')
 }
@@ -233,7 +272,10 @@ function normalizePath(p: string): string {
 function isSubpathOrEqual(target: string, scope: string): boolean {
   const normTarget = normalizePath(target)
   const normScope = normalizePath(scope)
-  return normTarget === normScope || normTarget.startsWith(normScope + '/')
+  const isCI = isPathCaseInsensitive(normTarget) || isPathCaseInsensitive(normScope)
+  const t = isCI ? normTarget.toLowerCase() : normTarget
+  const s = isCI ? normScope.toLowerCase() : normScope
+  return t === s || t.startsWith(s.endsWith('/') ? s : s + '/')
 }
 
 export function resolveIndexedRoot(targetPath: string, explicitRoot?: string): string | undefined {
@@ -253,6 +295,9 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
   const resolvedRoot = resolveIndexedRoot(targetPath, root)
   const normTarget = normalizePath(targetPath)
   const normRoot = resolvedRoot ? normalizePath(resolvedRoot) : undefined
+  const isCI =
+    isPathCaseInsensitive(targetPath) ||
+    (resolvedRoot ? isPathCaseInsensitive(resolvedRoot) : false)
 
   // 1. Check active user rules
   for (const rule of activeRules) {
@@ -273,11 +318,11 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
     }
 
     try {
-      const regex = globToRegex(rule.pattern)
+      const regex = globToRegex(rule.pattern, isCI)
       const scopeBase = rule.scope !== 'global' ? normalizePath(rule.scope) : normRoot
       const relPath =
         scopeBase && isSubpathOrEqual(normTarget, scopeBase)
-          ? normTarget === scopeBase
+          ? isSubpathOrEqual(scopeBase, normTarget)
             ? ''
             : normTarget.slice(scopeBase.length).replace(/^\//, '')
           : normTarget
@@ -299,14 +344,14 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
     const rootRules = readGenOfficeIgnore(resolvedRoot)
     const relPath =
       normRoot && isSubpathOrEqual(normTarget, normRoot)
-        ? normTarget === normRoot
+        ? isSubpathOrEqual(normRoot, normTarget)
           ? ''
           : normTarget.slice(normRoot.length).replace(/^\//, '')
         : normTarget
 
     for (const rule of rootRules) {
       try {
-        const regex = globToRegex(rule.pattern)
+        const regex = globToRegex(rule.pattern, isCI)
         if (regex.test(normTarget) || (relPath && regex.test(relPath))) {
           return {
             ignored: true,

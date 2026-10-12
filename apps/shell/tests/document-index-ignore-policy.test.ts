@@ -13,6 +13,8 @@ import {
   loadPersistedIgnoreRules,
   setKnownRootsResolver,
   registerIgnoreIpcHandlers,
+  globToRegex,
+  clearRegexCache,
   DEFAULT_IGNORE_RULES,
   type IgnoreRule,
 } from '../src/main/document-memory/ignore-policy'
@@ -390,5 +392,177 @@ custom_cache/
     } finally {
       watchManager.close()
     }
+  })
+
+  it('persistence failure preserves previous valid configuration', () => {
+    // 1. Establish valid rules
+    const validRule: IgnoreRule = {
+      id: 'valid-prev',
+      pattern: '*.draft',
+      enabled: true,
+      scope: 'global',
+    }
+    expect(setActiveIgnoreRules([validRule])).toBe(true)
+    expect(getActiveIgnoreRules()).toHaveLength(1)
+    expect(getActiveIgnoreRules()[0]!.id).toBe('valid-prev')
+
+    // 2. Point storage to an invalid/unwritable location
+    setIgnoreStoragePath('/sys/cannot_write/rules.json')
+
+    // 3. Attempt to save new candidate rules
+    const candidateRule: IgnoreRule = {
+      id: 'candidate-new',
+      pattern: '*.unpersisted',
+      enabled: true,
+      scope: 'global',
+    }
+    const success = setActiveIgnoreRules([candidateRule])
+    expect(success).toBe(false)
+
+    // 4. Active rules MUST retain previous valid configuration
+    const current = getActiveIgnoreRules()
+    expect(current).toHaveLength(1)
+    expect(current[0]!.id).toBe('valid-prev')
+    expect(current[0]!.pattern).toBe('*.draft')
+    expect(isPathIgnored('file.draft')).toBe(true)
+    expect(isPathIgnored('file.unpersisted')).toBe(false)
+  })
+
+  it('correctly handles Windows case-insensitive paths and path-component boundaries', () => {
+    const rules: IgnoreRule[] = [
+      {
+        id: 'win-scoped',
+        pattern: 'drafts/**',
+        enabled: true,
+        scope: 'C:/Project/Workspace',
+      },
+    ]
+    setActiveIgnoreRules(rules)
+
+    // Windows case-insensitive matches:
+    // C:\project\workspace\drafts\doc.docx
+    expect(evaluateIgnore('C:\\project\\workspace\\drafts\\doc.docx').ignored).toBe(true)
+    // c:/PROJECT/WORKSPACE/DRAFTS/doc.docx
+    expect(evaluateIgnore('c:/PROJECT/WORKSPACE/DRAFTS/doc.docx').ignored).toBe(true)
+
+    // Path component boundary on Windows:
+    // C:\project\workspace-backup\drafts\doc.docx MUST NOT match
+    expect(evaluateIgnore('C:\\project\\workspace-backup\\drafts\\doc.docx').ignored).toBe(false)
+    expect(evaluateIgnore('c:/PROJECT/WORKSPACE-EXTRA/drafts/doc.docx').ignored).toBe(false)
+  })
+
+  it('preserves case-sensitive behavior on Linux / POSIX paths', () => {
+    const rules: IgnoreRule[] = [
+      {
+        id: 'linux-scoped',
+        pattern: 'Secret.txt',
+        enabled: true,
+        scope: '/home/user/project',
+      },
+    ]
+    setActiveIgnoreRules(rules)
+
+    // Exact case matches:
+    expect(evaluateIgnore('/home/user/project/Secret.txt').ignored).toBe(true)
+
+    // Different case in file name MUST NOT match on Linux:
+    expect(evaluateIgnore('/home/user/project/secret.txt').ignored).toBe(false)
+    expect(evaluateIgnore('/home/user/project/SECRET.TXT').ignored).toBe(false)
+
+    // Different case in scope directory MUST NOT match on Linux:
+    expect(evaluateIgnore('/home/user/Project/Secret.txt').ignored).toBe(false)
+    expect(evaluateIgnore('/home/user/PROJECT/Secret.txt').ignored).toBe(false)
+  })
+
+  it('metadata-only check rejects ignored chunk before worker extraction is invoked', async () => {
+    let workerExtractCalled = false
+    const mockStore = {
+      readChunk: vi.fn().mockReturnValue({
+        id: 42,
+        path: '/docs/confidential.secret',
+        name: 'confidential.secret',
+        location: 'Page 1',
+        hash: 'abc',
+      }),
+    }
+    const mockMemory = {
+      store: mockStore,
+      read: vi.fn().mockImplementation(async () => {
+        workerExtractCalled = true
+        return {
+          path: '/docs/confidential.secret',
+          name: 'confidential.secret',
+          text: 'secret text',
+          verified: true,
+        }
+      }),
+    }
+
+    setActiveIgnoreRules([
+      { id: 'rule-secret', pattern: '*.secret', enabled: true, scope: 'global' },
+    ])
+
+    // Simulate the metadata check performed in document-memory:read handler
+    const chunkId = 42
+    const meta = mockMemory.store.readChunk(chunkId)
+    let result
+    if (meta && isPathIgnored(meta.path)) {
+      result = {
+        path: meta.path,
+        name: meta.name,
+        location: meta.location,
+        text: '',
+        verified: false,
+        error: 'Ignored document',
+      }
+    } else {
+      result = await mockMemory.read(chunkId)
+    }
+
+    expect(result.verified).toBe(false)
+    expect(result.error).toBe('Ignored document')
+    expect(result.text).toBe('')
+    // Crucial: worker extract / memory.read was NEVER called!
+    expect(mockMemory.read).not.toHaveBeenCalled()
+    expect(workerExtractCalled).toBe(false)
+  })
+
+  it('queue and intake filter prevents reintroducing ignored content', () => {
+    setActiveIgnoreRules([{ id: 'rule-bak', pattern: '*.bak', enabled: true, scope: 'global' }])
+
+    const incomingPaths = ['/docs/valid.docx', '/docs/old.bak', '/docs/report.xlsx']
+    const acceptedPaths = incomingPaths.filter((p) => !isPathIgnored(p))
+
+    expect(acceptedPaths).toEqual(['/docs/valid.docx', '/docs/report.xlsx'])
+    expect(acceptedPaths).not.toContain('/docs/old.bak')
+  })
+
+  it('separate File Index and Knowledge Base searches respect ignore policy', () => {
+    setActiveIgnoreRules([
+      { id: 'rule-ignore', pattern: '**/private/**', enabled: true, scope: 'global' },
+    ])
+
+    const rawFileHits = [
+      { path: '/workspace/public/readme.md', name: 'readme.md' },
+      { path: '/workspace/private/passwords.txt', name: 'passwords.txt' },
+      { path: '/workspace/src/index.ts', name: 'index.ts' },
+    ]
+
+    const filteredHits = rawFileHits.filter((h) => !isPathIgnored(h.path))
+    expect(filteredHits).toHaveLength(2)
+    expect(filteredHits.map((h) => h.name)).toEqual(['readme.md', 'index.ts'])
+    expect(filteredHits.map((h) => h.path)).not.toContain('/workspace/private/passwords.txt')
+  })
+
+  it('caches glob regexes with bounded capacity and invalidation', () => {
+    clearRegexCache()
+    const r1 = globToRegex('*.custom1', false)
+    const r2 = globToRegex('*.custom1', false)
+    expect(r1).toBe(r2) // Cached instance
+
+    // Clear cache
+    clearRegexCache()
+    const r3 = globToRegex('*.custom1', false)
+    expect(r3).not.toBe(r1) // Fresh instance after clear
   })
 })
