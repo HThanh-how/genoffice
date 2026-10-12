@@ -1,7 +1,10 @@
-import type { MenuItemConstructorOptions } from 'electron'
+import type { MenuItemConstructorOptions, NativeImage } from 'electron'
 import type { TabSummary } from '../../shared/tabs-api'
 
 const EN = {
+  save: 'Save',
+  saveAs: 'Save As…',
+  print: 'Print…',
   rename: 'Rename',
   duplicate: 'Duplicate (copy the saved file)',
   splitBeside: 'Split side by side',
@@ -17,6 +20,9 @@ const EN = {
   reopen: 'Reopen closed tab',
 }
 const VI: typeof EN = {
+  save: 'Lưu',
+  saveAs: 'Lưu thành…',
+  print: 'In…',
   rename: 'Đổi tên',
   duplicate: 'Nhân bản (sao chép file đã lưu)',
   splitBeside: 'Chia đôi màn hình',
@@ -37,6 +43,9 @@ export const tabMenuWords = (lang: string): typeof EN => (lang === 'vi' ? VI : E
 
 /** What each menu entry does; the shell supplies these, the menu only decides what is offered. */
 export interface TabMenuActions {
+  save(id: string): void
+  saveAs(id: string): void
+  print(id: string): void
   openInNewWindow(id: string): void
   splitBeside(id: string): void
   rename(id: string): void
@@ -63,7 +72,10 @@ export interface TabMenuInput {
   /** the shell's existing, fully translated labels */
   labels: { openInNewWindow: string; close: string }
   actions: TabMenuActions
+  icons?: Partial<Record<TabMenuIcon, NativeImage>>
 }
+
+export type TabMenuIcon = keyof typeof EN | 'openInNewWindow' | 'close'
 
 const baseName = (path: string): string => path.split(/[\\/]/).pop() ?? path
 
@@ -94,9 +106,14 @@ export function tabMenuTemplate(input: TabMenuInput): MenuItemConstructorOptions
   const others = tabs.filter((other) => other.id !== tab.id && closable(other))
   const right = tabs.slice(index + 1).filter(closable)
   const everything = tabs.filter(closable)
-  return [
+  const document = tab.kind !== 'home' && tab.kind !== 'help'
+  const template: MenuItemConstructorOptions[] = [
     // where the file is, at a glance (the menu is the place people look when they ask "which one is this?")
     ...(file ? ([{ label: pathLabel(file), enabled: false }, { type: 'separator' }] as const) : []),
+    { id: 'save', label: words.save, enabled: document, click: () => actions.save(tab.id) },
+    { id: 'saveAs', label: words.saveAs, enabled: document, click: () => actions.saveAs(tab.id) },
+    { id: 'print', label: words.print, enabled: document, click: () => actions.print(tab.id) },
+    { type: 'separator' },
     { label: words.rename, enabled: !!file, click: () => actions.rename(tab.id) },
     { label: words.duplicate, enabled: onDisk, click: () => actions.duplicate(file!) },
     { type: 'separator' },
@@ -146,4 +163,13 @@ export function tabMenuTemplate(input: TabMenuInput): MenuItemConstructorOptions
     { type: 'separator' },
     { label: words.reopen, enabled: input.canReopen, click: () => actions.reopenClosed() },
   ]
+  const iconForLabel = new Map<string, TabMenuIcon>([
+    ...Object.entries(words).map(([key, label]) => [label, key as TabMenuIcon] as const),
+    [input.labels.openInNewWindow, 'openInNewWindow'],
+    [input.labels.close, 'close'],
+  ])
+  return template.map((item) => {
+    const icon = item.label ? input.icons?.[iconForLabel.get(item.label)!] : undefined
+    return icon ? { ...item, icon } : item
+  })
 }
