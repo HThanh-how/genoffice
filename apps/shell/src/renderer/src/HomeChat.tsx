@@ -1187,10 +1187,6 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   // Another part of the app (clipboard suggestions) can hand the assistant some text.
   const openPanelRef = useRef(openPanel)
   openPanelRef.current = openPanel
-  const startNewRef = useRef(startNew)
-  startNewRef.current = startNew
-  const openSessionRef = useRef(openSession)
-  openSessionRef.current = openSession
   useEffect(() => {
     const onPrefill = (event: Event) => {
       const detail = (event as CustomEvent<ChatPrefillDetail>).detail
@@ -1200,11 +1196,6 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
       touchedRef.current = true
       launchTokenRef.current++
       openPanelRef.current(intent, detail.sessionId)
-      if (intent === 'new') {
-        startNewRef.current()
-      } else if (intent === 'open-existing' && detail.sessionId) {
-        void openSessionRef.current(detail.sessionId)
-      }
       setInput(detail.text)
       setPendingSend(detail.send === true ? detail.text : null)
       window.setTimeout(() => inputRef.current?.focus(), 30)

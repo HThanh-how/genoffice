@@ -3,6 +3,7 @@ import { DocumentMemoryManager } from './document-memory/manager'
 import type { BootstrapResult } from './document-memory/storage-bootstrap'
 import { runStorageBootstrapOffThread } from './document-memory/runtime/storage-bootstrap-runner'
 import { currentMachineSpec } from './document-memory/embedding/initial-profile'
+import { isPathIgnored } from './document-memory/ignore-policy'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { rotatingFileWriter } from './fork/renderer-diagnostics'
 import {
@@ -4768,18 +4769,34 @@ function registerHomeIpc(): void {
     folderScan?.stop()
     documentMemory?.clear()
   })
-  ipcMain.handle('document-memory:search', (_event, query: unknown, limit: unknown) => {
+  ipcMain.handle('document-memory:search', async (_event, query: unknown, limit: unknown) => {
     if (typeof query !== 'string' || !query.trim() || query.length > 2000)
       throw new Error('Invalid memory query')
     const count = limit === undefined ? 8 : limit
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > 20)
       throw new Error('Invalid search limit')
-    return documentMemory?.search(query, count)
+    const result = await documentMemory?.search(query, count)
+    if (!result) return result
+    return {
+      ...result,
+      hits: result.hits.filter((h) => !isPathIgnored(h.path)),
+    }
   })
-  ipcMain.handle('document-memory:read', (_event, id: unknown) => {
+  ipcMain.handle('document-memory:read', async (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid chunk id')
-    return documentMemory?.read(id)
+    const chunk = await documentMemory?.read(id)
+    if (chunk && isPathIgnored(chunk.path)) {
+      return {
+        path: chunk.path,
+        name: chunk.name,
+        location: chunk.location,
+        text: '',
+        verified: false,
+        error: 'Ignored document',
+      }
+    }
+    return chunk
   })
   ipcMain.handle('document-memory:open', async (_event, id: unknown, offered?: unknown) => {
     // a file that was only found by name (id 0) opens by the path the search handed out

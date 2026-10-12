@@ -581,7 +581,38 @@ export function AgyChatBar({
     }
   }, [menu, open])
 
-  if (!source || !state?.active) return null
+  const [fallbackElapsed, setFallbackElapsed] = useState(0)
+  useEffect(() => {
+    if (!busy || (source && state?.active)) {
+      setFallbackElapsed(0)
+      return
+    }
+    const t0 = Date.now()
+    const timer = setInterval(() => {
+      setFallbackElapsed(Math.max(1, Math.round((Date.now() - t0) / 1000)))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [busy, source, state?.active])
+
+  if (!source || !state?.active) {
+    if (part !== 'bar' && busy) {
+      const timeStr = fallbackElapsed > 0 ? ` · ${fallbackElapsed}s` : ''
+      return (
+        <section
+          className={`agy-think is-thinking${mode === 'home-chat' ? ' is-home-chat' : ''}`}
+          aria-live="polite"
+        >
+          <div className="agy-think-head">
+            <span className="agy-think-dot" aria-hidden="true" />
+            <span className="agy-think-title">
+              {mode === 'home-chat' ? `${d.thinkingHome}${timeStr}` : `${d.thinkingNow}…`}
+            </span>
+          </div>
+        </section>
+      )
+    }
+    return null
+  }
   const showBar = part !== 'steps'
   const showSteps = part !== 'bar'
 

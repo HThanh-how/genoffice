@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import type { IpcMain } from 'electron'
 import { DOCUMENT_INDEX_CHANNELS } from '../../shared/fork/document-index-api'
@@ -125,11 +125,34 @@ export function globToRegex(pattern: string): RegExp {
   return new RegExp(regexStr, 'i')
 }
 
+interface CachedIgnore {
+  mtimeMs: number
+  rules: IgnoreRule[]
+}
+const genOfficeIgnoreCache = new Map<string, CachedIgnore>()
+
+let knownRootsResolver: (() => string[]) | null = null
+
+export function setKnownRootsResolver(resolver: () => string[]): void {
+  knownRootsResolver = resolver
+}
+
+export function clearGenOfficeIgnoreCache(): void {
+  genOfficeIgnoreCache.clear()
+}
+
 export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
   const filePath = resolve(dir, '.genofficeignore')
-  if (!existsSync(filePath)) return []
-
   try {
+    if (!existsSync(filePath)) {
+      genOfficeIgnoreCache.delete(dir)
+      return []
+    }
+    const stat = statSync(filePath)
+    const cached = genOfficeIgnoreCache.get(dir)
+    if (cached && cached.mtimeMs === stat.mtimeMs) {
+      return cached.rules
+    }
     const content = readFileSync(filePath, 'utf-8')
     const lines = content.split(/\r?\n/)
     const rules: IgnoreRule[] = []
@@ -147,6 +170,7 @@ export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
         description: `.genofficeignore in ${dir}`,
       })
     }
+    genOfficeIgnoreCache.set(dir, { mtimeMs: stat.mtimeMs, rules })
     return rules
   } catch {
     return []
@@ -157,9 +181,20 @@ export function getActiveIgnoreRules(): IgnoreRule[] {
   return [...activeRules]
 }
 
-export function setActiveIgnoreRules(rules: IgnoreRule[]): void {
+export function setActiveIgnoreRules(rules: IgnoreRule[]): boolean {
   activeRules = rules.map((r) => ({ ...r }))
-  persistIgnoreRules()
+  return persistIgnoreRules()
+}
+
+function isValidIgnoreRule(r: unknown): r is IgnoreRule {
+  return (
+    typeof r === 'object' &&
+    r !== null &&
+    typeof (r as IgnoreRule).id === 'string' &&
+    typeof (r as IgnoreRule).pattern === 'string' &&
+    typeof (r as IgnoreRule).enabled === 'boolean' &&
+    typeof (r as IgnoreRule).scope === 'string'
+  )
 }
 
 export function loadPersistedIgnoreRules(): IgnoreRule[] {
@@ -169,15 +204,8 @@ export function loadPersistedIgnoreRules(): IgnoreRule[] {
   try {
     const raw = readFileSync(storageFilePath, 'utf-8')
     const parsed = JSON.parse(raw) as unknown
-    if (Array.isArray(parsed) && parsed.length > 0) {
-      activeRules = parsed.filter(
-        (r): r is IgnoreRule =>
-          typeof r === 'object' &&
-          r !== null &&
-          typeof (r as IgnoreRule).id === 'string' &&
-          typeof (r as IgnoreRule).pattern === 'string' &&
-          typeof (r as IgnoreRule).enabled === 'boolean',
-      )
+    if (Array.isArray(parsed)) {
+      activeRules = parsed.filter(isValidIgnoreRule)
     }
   } catch {
     // Keep in-memory rules on read failure
@@ -185,15 +213,16 @@ export function loadPersistedIgnoreRules(): IgnoreRule[] {
   return activeRules
 }
 
-function persistIgnoreRules(): void {
-  if (!storageFilePath) return
+export function persistIgnoreRules(): boolean {
+  if (!storageFilePath) return true
   try {
     mkdirSync(dirname(storageFilePath), { recursive: true })
     const tmp = `${storageFilePath}.tmp`
     writeFileSync(tmp, JSON.stringify(activeRules, null, 2), { mode: 0o600 })
     renameSync(tmp, storageFilePath)
+    return true
   } catch {
-    // Safe write failure handling
+    return false
   }
 }
 
@@ -201,29 +230,59 @@ function normalizePath(p: string): string {
   return p.replace(/\\/g, '/').replace(/\/+/g, '/')
 }
 
+function isSubpathOrEqual(target: string, scope: string): boolean {
+  const normTarget = normalizePath(target)
+  const normScope = normalizePath(scope)
+  return normTarget === normScope || normTarget.startsWith(normScope + '/')
+}
+
+export function resolveIndexedRoot(targetPath: string, explicitRoot?: string): string | undefined {
+  if (explicitRoot) return explicitRoot
+  if (!knownRootsResolver) return undefined
+  try {
+    const roots = knownRootsResolver()
+    const matching = roots.filter((r) => isSubpathOrEqual(targetPath, r))
+    if (matching.length === 0) return undefined
+    return matching.sort((a, b) => b.length - a.length)[0]
+  } catch {
+    return undefined
+  }
+}
+
 export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchResult {
+  const resolvedRoot = resolveIndexedRoot(targetPath, root)
   const normTarget = normalizePath(targetPath)
-  const normRoot = root ? normalizePath(root) : undefined
+  const normRoot = resolvedRoot ? normalizePath(resolvedRoot) : undefined
 
   // 1. Check active user rules
   for (const rule of activeRules) {
     if (!rule.enabled) continue
-    if (rule.scope !== 'global' && normRoot) {
-      const normScope = normalizePath(rule.scope)
-      if (normRoot !== normScope && !normTarget.startsWith(normScope)) {
+    if (rule.scope !== 'global') {
+      // Enforce path-component boundaries: target must be inside rule.scope
+      if (!isSubpathOrEqual(normTarget, rule.scope)) {
+        continue
+      }
+      // If root is known, ensure rule scope is related to this root
+      if (
+        normRoot &&
+        !isSubpathOrEqual(normRoot, rule.scope) &&
+        !isSubpathOrEqual(rule.scope, normRoot)
+      ) {
         continue
       }
     }
 
     try {
       const regex = globToRegex(rule.pattern)
-      // Test full path or relative to root
+      const scopeBase = rule.scope !== 'global' ? normalizePath(rule.scope) : normRoot
       const relPath =
-        normRoot && normTarget.startsWith(normRoot)
-          ? normTarget.slice(normRoot.length).replace(/^\//, '')
+        scopeBase && isSubpathOrEqual(normTarget, scopeBase)
+          ? normTarget === scopeBase
+            ? ''
+            : normTarget.slice(scopeBase.length).replace(/^\//, '')
           : normTarget
 
-      if (regex.test(normTarget) || regex.test(relPath)) {
+      if (regex.test(normTarget) || (relPath && regex.test(relPath))) {
         return {
           ignored: true,
           matchedRule: rule,
@@ -235,18 +294,20 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
     }
   }
 
-  // 2. Check .genofficeignore in root if root is provided
-  if (root && existsSync(resolve(root, '.genofficeignore'))) {
-    const rootRules = readGenOfficeIgnore(root)
+  // 2. Check .genofficeignore in resolvedRoot
+  if (resolvedRoot) {
+    const rootRules = readGenOfficeIgnore(resolvedRoot)
     const relPath =
-      normRoot && normTarget.startsWith(normRoot)
-        ? normTarget.slice(normRoot.length).replace(/^\//, '')
+      normRoot && isSubpathOrEqual(normTarget, normRoot)
+        ? normTarget === normRoot
+          ? ''
+          : normTarget.slice(normRoot.length).replace(/^\//, '')
         : normTarget
 
     for (const rule of rootRules) {
       try {
         const regex = globToRegex(rule.pattern)
-        if (regex.test(normTarget) || regex.test(relPath)) {
+        if (regex.test(normTarget) || (relPath && regex.test(relPath))) {
           return {
             ignored: true,
             matchedRule: rule,
@@ -269,12 +330,32 @@ export function isPathIgnored(targetPath: string, root?: string): boolean {
 export function registerIgnoreIpcHandlers(
   ipcMain: Pick<IpcMain, 'handle'>,
   onInvalidate?: () => void,
+  getRoots?: () => string[],
 ): void {
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getIgnoreRules, () => getActiveIgnoreRules())
+  if (getRoots) {
+    setKnownRootsResolver(getRoots)
+  }
+
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getIgnoreRules, () => {
+    const userRules = getActiveIgnoreRules()
+    const roots = getRoots ? getRoots() : []
+    const fileRules: IgnoreRule[] = []
+    for (const r of roots) {
+      fileRules.push(...readGenOfficeIgnore(r))
+    }
+    return [...userRules, ...fileRules]
+  })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.saveIgnoreRules, (_event, rules: unknown) => {
     if (!Array.isArray(rules)) return { ok: false, error: 'invalid-rules' }
-    setActiveIgnoreRules(rules)
+    for (const r of rules) {
+      if (!isValidIgnoreRule(r)) return { ok: false, error: 'invalid-rule-format' }
+    }
+    const userRules = rules.filter((r) => (r as IgnoreRule).source !== '.genofficeignore')
+    const ok = setActiveIgnoreRules(userRules)
+    if (!ok) {
+      return { ok: false, error: 'persistence-failed' }
+    }
     onInvalidate?.()
     return { ok: true }
   })

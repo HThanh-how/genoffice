@@ -207,12 +207,18 @@ export function IgnoreRulesSettings({ api }: { api: HomeApi }) {
   }, [loadData])
 
   const saveRules = async (nextRules: IgnoreRule[]) => {
-    setRules(nextRules)
     try {
       if (api.saveIgnoreRules) {
-        await api.saveIgnoreRules(nextRules)
-        setNote(d.ignoreSaved)
-        setTimeout(() => setNote(''), 3000)
+        const res = await api.saveIgnoreRules(nextRules)
+        if (res && res.ok) {
+          setRules(nextRules)
+          setNote(d.ignoreSaved)
+          setTimeout(() => setNote(''), 3000)
+        } else {
+          setNote(d.failed)
+        }
+      } else {
+        setRules(nextRules)
       }
     } catch {
       setNote(d.failed)
@@ -220,6 +226,8 @@ export function IgnoreRulesSettings({ api }: { api: HomeApi }) {
   }
 
   const handleToggle = (id: string) => {
+    const target = rules.find((r) => r.id === id)
+    if (target?.source === '.genofficeignore') return
     const next = rules.map((r) => (r.id === id ? { ...r, enabled: !r.enabled } : r))
     void saveRules(next)
   }

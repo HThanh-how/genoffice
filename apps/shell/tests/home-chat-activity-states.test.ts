@@ -1,5 +1,8 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest'
+import { createRoot } from 'react-dom/client'
+import { act, createElement } from 'react'
+import { AgyChatBar } from '@genoffice/ui'
 
 describe('home-chat activity states and thinking UX (Phase 2)', () => {
   // Mock dictionary matching AgyChatBar structure
@@ -264,5 +267,45 @@ describe('home-chat activity states and thinking UX (Phase 2)', () => {
     // Phase C: Completed -> Clean final answer
     const doneTurn = evaluateTurnState(false, 'Hello, here are your documents...')
     expect(doneTurn.showActivity).toBe(false)
+  })
+
+  it('non-Antigravity provider displays fallback working indicator when busy', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+
+    try {
+      // 1. When busy={true} with no Antigravity active, renders Thinking…
+      await act(async () => {
+        root.render(
+          createElement(AgyChatBar, { lang: 'en', part: 'steps', mode: 'home-chat', busy: true }),
+        )
+      })
+      const title = host.querySelector('.agy-think-title')
+      expect(title).not.toBeNull()
+      expect(title?.textContent).toContain('Thinking…')
+
+      // 2. When busy={false}, indicator is not rendered
+      await act(async () => {
+        root.render(
+          createElement(AgyChatBar, { lang: 'en', part: 'steps', mode: 'home-chat', busy: false }),
+        )
+      })
+      expect(host.querySelector('.agy-think-title')).toBeNull()
+
+      // 3. When lang='vi' and busy={true}, renders Đang suy nghĩ…
+      await act(async () => {
+        root.render(
+          createElement(AgyChatBar, { lang: 'vi', part: 'steps', mode: 'home-chat', busy: true }),
+        )
+      })
+      const viTitle = host.querySelector('.agy-think-title')
+      expect(viTitle?.textContent).toContain('Đang suy nghĩ…')
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+    }
   })
 })

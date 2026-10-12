@@ -35,6 +35,14 @@ export interface DocumentIndexIpcDeps {
 const samePath = (path: string): string =>
   process.platform === 'win32' ? path.toLowerCase() : path
 const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set(ISSUE_REASON_ORDER)
+const EMPTY_NOW: IndexingNow = {
+  extracting: [],
+  embedding: {},
+  positions: {},
+  pages: {},
+  queued: 0,
+  paused: true,
+}
 
 /** Document-index popup IPC handler registration (< 250 LOC). */
 export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void {
@@ -73,7 +81,11 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   registerFolderAndModelHandlers(deps, () => folderCounts.invalidate())
   registerDocumentIndexImportanceHandlers(deps)
   registerDocumentIndexStorageHandlers(deps)
-  registerIgnoreIpcHandlers(ipcMain, () => folderCounts.invalidate())
+  const scanRoots = () =>
+    getFolderScan()
+      ?.folders()
+      .map((f) => f.root) ?? []
+  registerIgnoreIpcHandlers(ipcMain, () => folderCounts.invalidate(), scanRoots)
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, (_event, ids: unknown) => {
     if (
@@ -105,19 +117,10 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     },
   )
 
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getIndexingNow, (): IndexingNow => {
-    const memory = getDocumentMemory()
-    return (
-      memory?.nowStatus() ?? {
-        extracting: [],
-        embedding: {},
-        positions: {},
-        pages: {},
-        queued: 0,
-        paused: true,
-      }
-    )
-  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.getIndexingNow,
+    (): IndexingNow => getDocumentMemory()?.nowStatus() ?? EMPTY_NOW,
+  )
 
   ipcMain.handle(
     DOCUMENT_INDEX_CHANNELS.searchIndexedFiles,
@@ -149,11 +152,10 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
       checkDocId(id)
       if (!getDocumentMemory()) return null
       const detail = reader().detail(id as number)
-      if (!detail) return null
-      const exists = await stat(detail.path).then(
-        (s) => s.isFile(),
-        () => false,
-      )
+      if (!detail || isPathIgnored(detail.path)) return null
+      const exists = await stat(detail.path)
+        .then((s) => s.isFile())
+        .catch(() => false)
       return { ...detail, exists }
     },
   )

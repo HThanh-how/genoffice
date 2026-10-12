@@ -358,7 +358,7 @@ export function deduplicateSources(sources: HomeChatSource[]): HomeChatSource[] 
       s.documentId > 0
         ? `doc:${s.documentId}`
         : s.path
-          ? `path:${s.path.normalize('NFC').toLowerCase()}`
+          ? `path:${s.path.replace(/\\/g, '/').normalize('NFC')}`
           : `ref:${s.ref ?? s.name}`
     if (!seen.has(key)) {
       seen.add(key)

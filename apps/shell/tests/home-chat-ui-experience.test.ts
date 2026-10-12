@@ -21,11 +21,21 @@ describe('home-chat UI experience & search presentation (Phase 3)', () => {
   it('deduplicates multiple citations of the exact same path into one card', () => {
     const rawSources: HomeChatSource[] = [
       { documentId: 0, name: 'readme.md', path: '/workspace/README.md' },
-      { documentId: 0, name: 'readme.md', path: '/workspace/readme.md' },
+      { documentId: 0, name: 'readme.md', path: '/workspace/README.md' },
     ]
 
     const deduped = deduplicateSources(rawSources)
     expect(deduped).toHaveLength(1)
+  })
+
+  it('preserves distinct case-sensitive file paths as separate cards', () => {
+    const rawSources: HomeChatSource[] = [
+      { documentId: 0, name: 'README.md', path: '/workspace/README.md' },
+      { documentId: 0, name: 'readme.md', path: '/workspace/readme.md' },
+    ]
+
+    const deduped = deduplicateSources(rawSources)
+    expect(deduped).toHaveLength(2)
   })
 
   it('preserves distinct files even when they share the exact same basename', () => {
