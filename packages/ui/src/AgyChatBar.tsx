@@ -28,6 +28,7 @@ export interface AgyBarUsage {
 }
 export interface AgyBarActivity {
   runId: string
+  sessionId?: string
   phase: 'start' | 'thinking' | 'tool' | 'writing' | 'done' | 'error'
   at: number
   tool?: string
@@ -70,6 +71,7 @@ interface RunStep {
 }
 interface Run {
   id: string
+  sessionId?: string
   startedAt: number
   endedAt?: number
   steps: RunStep[]
@@ -84,12 +86,27 @@ function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
   if (event.phase === 'start')
     return {
       id: event.runId,
+      sessionId: event.sessionId,
       startedAt: event.at,
       steps: [],
       phase: 'thinking',
       tokens: 0,
     }
-  if (!run || run.id !== event.runId) return run
+  if (!run || run.id !== event.runId) {
+    if (event.phase === 'thinking' || event.phase === 'tool' || event.phase === 'writing') {
+      return {
+        id: event.runId,
+        sessionId: event.sessionId,
+        startedAt: event.at,
+        steps: [],
+        phase: event.phase,
+        tokens: event.thinkingTokens ?? 0,
+        tool: event.tool,
+        target: event.target,
+      }
+    }
+    return run
+  }
   if (event.phase === 'thinking')
     return {
       ...run,
@@ -438,6 +455,7 @@ export function AgyChatBar({
   part = 'all',
   mode = 'default',
   activeRunId,
+  sessionId,
   busy,
 }: {
   lang: string
@@ -447,6 +465,7 @@ export function AgyChatBar({
   /** 'home-chat' uses calm single-line indicator, subtle timing, and unified activity states */
   mode?: 'default' | 'home-chat'
   activeRunId?: string
+  sessionId?: string
   busy?: boolean
 }) {
   const d: Dict = (TEXT as Record<string, Dict | undefined>)[lang] ?? EN
@@ -469,6 +488,8 @@ export function AgyChatBar({
   loginActive.current = login.phase !== 'idle' || !!usage?.needsLogin
   const activeRunIdRef = useRef(activeRunId)
   activeRunIdRef.current = activeRunId
+  const sessionIdRef = useRef(sessionId)
+  sessionIdRef.current = sessionId
   const busyRef = useRef(busy)
   busyRef.current = busy
 
@@ -524,6 +545,12 @@ export function AgyChatBar({
     })
     const offRun = source.onAgyChatActivity?.((event) => {
       if (!busyRef.current) return
+      if (sessionIdRef.current && event.sessionId && event.sessionId !== sessionIdRef.current) {
+        return
+      }
+      if (sessionIdRef.current && !event.sessionId) {
+        return
+      }
       setRun((current) => {
         if (!current) {
           if (
@@ -540,6 +567,19 @@ export function AgyChatBar({
           return reduceRun(null, event)
         }
         if (event.runId !== current.id) {
+          if (
+            (sessionIdRef.current && event.sessionId === sessionIdRef.current) ||
+            (!activeRunIdRef.current && !sessionIdRef.current)
+          ) {
+            if (
+              event.phase === 'start' ||
+              event.phase === 'thinking' ||
+              event.phase === 'tool' ||
+              event.phase === 'writing'
+            ) {
+              return reduceRun(null, event)
+            }
+          }
           return current
         }
         return reduceRun(current, event)
@@ -574,6 +614,12 @@ export function AgyChatBar({
     }
   }, [activeRunId, run])
 
+  useEffect(() => {
+    if (sessionId && run && run.sessionId && run.sessionId !== sessionId) {
+      setRun(null)
+    }
+  }, [sessionId, run])
+
   const running = !!run && run.phase !== 'done' && run.phase !== 'error'
   useEffect(() => {
     if (!running) return
@@ -605,7 +651,7 @@ export function AgyChatBar({
 
   const [fallbackElapsed, setFallbackElapsed] = useState(0)
   useEffect(() => {
-    if (!busy || (source && state?.active)) {
+    if (!busy || (source && state?.active && run)) {
       setFallbackElapsed(0)
       return
     }
@@ -614,7 +660,7 @@ export function AgyChatBar({
       setFallbackElapsed(Math.max(1, Math.round((Date.now() - t0) / 1000)))
     }, 1000)
     return () => clearInterval(timer)
-  }, [busy, source, state?.active])
+  }, [busy, source, state?.active, run])
 
   if (!source || !state?.active) {
     if (part !== 'bar' && busy) {
@@ -870,7 +916,7 @@ export function AgyChatBar({
           >
             <span className="agy-think-dot" aria-hidden="true" />
             <span className="agy-think-title">
-              {run ? thinkTitle(run, d, mode) : `${d.thinkingHome} · 0s`}
+              {run ? thinkTitle(run, d, mode) : `${d.thinkingHome} · ${fallbackElapsed}s`}
             </span>
             {run && run.tokens > 0 && (
               <span className="agy-think-meta">{fill(d.thoughtTokens, { n: run.tokens })}</span>

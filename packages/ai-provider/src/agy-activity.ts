@@ -13,6 +13,8 @@ export type AgyActivityPhase = 'start' | 'thinking' | 'tool' | 'writing' | 'done
 export interface AgyActivity {
   /** one per chat turn */
   runId: string
+  /** optional session or request correlation identifier */
+  sessionId?: string
   phase: AgyActivityPhase
   /** epoch ms */
   at: number

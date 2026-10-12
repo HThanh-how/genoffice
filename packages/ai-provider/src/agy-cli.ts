@@ -1112,9 +1112,16 @@ export async function streamAgy(
   deps?: AgyRunDeps,
 ): Promise<void> {
   const runId = randomUUID()
+  const sessionId = cb.sessionId
   const model = config.model?.trim() || AGY_DEFAULT_MODEL
   const say: AgySay = (activity) =>
-    publishAgyActivity({ runId, at: Date.now(), model, ...activity })
+    publishAgyActivity({
+      runId,
+      ...(sessionId ? { sessionId } : {}),
+      at: Date.now(),
+      model,
+      ...activity,
+    })
   say({ phase: 'start' })
   try {
     await streamAgyTurn(config, system, messages, tools, maxTokens, cb, deps, say)
@@ -1128,7 +1135,7 @@ export async function streamAgy(
   }
 }
 
-type AgySay = (activity: Omit<AgyActivity, 'runId' | 'at' | 'model'>) => void
+type AgySay = (activity: Omit<AgyActivity, 'runId' | 'sessionId' | 'at' | 'model'>) => void
 
 /** A path or long command reduced to something that fits on one line. */
 function shortTarget(target: string): string {

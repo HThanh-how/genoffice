@@ -184,6 +184,9 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   const [notice, setNotice] = useState('')
   const [sessions, setSessions] = useState<HomeChatSessionSummary[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => crypto.randomUUID())
+  const activeSessionIdRef = useRef<string>(activeSessionId)
+  activeSessionIdRef.current = activeSessionId
   const [title, setTitle] = useState('')
   const [railOpen, setRailOpen] = useState(() => readStore(LS_RAIL) !== '0')
   const [size, setSize] = useState(readSize)
@@ -417,6 +420,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   if (!loopRef.current) {
     const transport = createIpcTransport({
       route: createGeminiRouter(),
+      sessionId: () => activeSessionIdRef.current,
       onStream: (listener) => api.onAiStream(listener as (chunk: IpcStreamChunk) => void),
       start: (request) => api.aiStream(request),
       cancel: (requestId) => void api.aiStreamCancel(requestId),
@@ -740,6 +744,9 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
 
   const adopt = (conv: Conversation, nextItems: ChatItem[], nextTitle: string) => {
     convRef.current = conv
+    const nextSessionId = conv.id ?? crypto.randomUUID()
+    setActiveSessionId(nextSessionId)
+    activeSessionIdRef.current = nextSessionId
     itemId.current = nextItems.length
     lastSavedRef.current = nextItems
     stickRef.current = true
@@ -1423,6 +1430,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
                               part="steps"
                               mode="home-chat"
                               busy={busy}
+                              sessionId={activeSessionId}
                             />
                           ) : undefined
                         }
