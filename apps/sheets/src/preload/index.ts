@@ -87,6 +87,7 @@ const desktopApi: DesktopApi = {
       ? ipcRenderer.invoke('document-memory:open', documentId)
       : Promise.resolve({ ok: false, error: 'Invalid document id' }),
   getLanguage: () => ipcRenderer.invoke('app:get-language'),
+  openSourcePath: (path: string) => ipcRenderer.invoke('home:open-path', path),
   onLanguageChanged(handler) {
     const listener = (
       _event: Electron.IpcRendererEvent,

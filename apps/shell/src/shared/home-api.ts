@@ -3,8 +3,6 @@ import type { IndexIssueReason } from '../main/document-memory/issues'
 import type { FolderScanStatus } from '../main/document-memory/folder-scan'
 import type {
   AiChatResponse,
-  AiStreamChunk,
-  AiStreamRequest,
   AiMediaProviderConfig,
   AiMediaProviderId,
   AiMediaProviderMeta,
@@ -14,12 +12,15 @@ import type {
   AiSearchProviderId,
   AiSearchProviderMeta,
   AiSettings,
+  AiStreamChunk,
+  AiStreamRequest,
   CodexModelCatalog,
 } from '@genoffice/ai-provider'
 import type { DocumentMemoryReadResult, DocumentMemorySearchResult } from '@genoffice/agent-core'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'
 import type { UpdateChannel, UpdateUiState } from './update-api'
 import type { UpdateSource } from './update-source'
+import type { KbFileInfo, KbReadPage, KbSearchHit } from '@genoffice/agent-core'
 import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 import type { ForkHomeApi } from './fork/fork-home-api'
 export type {
@@ -183,12 +184,12 @@ export interface FileSearchHit extends RecentEntry {
 
 /**
  * Endpoints the search reranker can judge against. The hosted Jev routes are
- * OpenRouter and TypeSafe's own API; Perplexity and Cloudflare host their own
- * decision models; Kev and Rizzo Flow are local /v1/systemone servers;
- * `custom` points at any other /v1/systemone-compatible server.
+ * OpenRouter and TypeSafe's own API; Perplexity, Cloudflare and Liquid AI host
+ * their own decision models; Kev and Rizzo Flow are local /v1/systemone
+ * servers; `custom` points at any other /v1/systemone-compatible server.
  */
 export type DecisionEndpoint =
-  'openrouter' | 'direct' | 'perplexity' | 'cloudflare' | 'kev' | 'rizzo' | 'custom'
+  'openrouter' | 'direct' | 'perplexity' | 'liquid' | 'cloudflare' | 'kev' | 'rizzo' | 'custom'
 
 /** home search options persisted in app-settings.json under `fileSearch` */
 export interface FileSearchSettings {
@@ -301,6 +302,17 @@ export interface HomeApi extends ForkHomeApi {
   statPaths(paths: string[]): Promise<RecentEntry[]>
   /** star / unstar a file */
   toggleStar(path: string): Promise<void>
+  // ---- knowledge-base ask panel: the reader's starred corpus, askable ----
+  /** the starred corpus as the AI's knowledge base */
+  kbList(): Promise<KbFileInfo[]>
+  /** full-text search over the corpus */
+  kbSearch(query: { q: string; limit?: number }): Promise<KbSearchHit[]>
+  /** one page of a corpus file's parsed text (path must be in kbList) */
+  kbRead(path: string, offset: number): Promise<KbReadPage>
+  /** the user's AI provider settings (shared with every app's panel) */
+  aiGetSettings(): Promise<AiSettings>
+  /** authentication status for the knowledge-base ask panel */
+  aiGskStatus(): Promise<{ loggedIn: boolean; email?: string }>
   /** open an existing file, routing to the right module by extension */
   openHelp(): Promise<void>
   openPath(path: string): Promise<void>

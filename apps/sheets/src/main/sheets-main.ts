@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { refreshCsvDigest } from './csv-digest'
 import { createServer } from 'node:http'
 import { userInfo } from 'node:os'
 import { basename, dirname, isAbsolute, join } from 'node:path'
@@ -92,6 +93,8 @@ import {
 } from '@genoffice/xlsx-gateway/gateway/csv-import'
 import {
   ensureGenofficeLogin,
+  noteGskCallFailure,
+  setGenofficeLoginOpener,
   gskApiKey,
   gskLoginInfo,
   hasGskAuth,
@@ -3145,17 +3148,10 @@ export function registerSheetsIpc(): void {
       Buffer.from(request.content, 'utf8'),
     ])
     await atomicWriteFile(targetPath, csvBytes)
-    // An export can land on a CSV session's own source file — refresh that
-    // session's guard digest so its next Save doesn't mistake this write for
-    // an external change.
+    // An export can land on a CSV session's own source file; refresh the
+    // digest so the next Save does not read this write as an external change.
     const writtenSha = await sha256File(targetPath).catch(() => undefined)
-    if (writtenSha !== undefined) {
-      for (const [sessionId, session] of entry.sessions) {
-        if (session.csvSourcePath === targetPath) {
-          entry.sessions.set(sessionId, { ...session, csvSourceSha: writtenSha })
-        }
-      }
-    }
+    if (writtenSha !== undefined) refreshCsvDigest(entry.sessions, targetPath, writtenSha)
     return { canceled: false, path: targetPath }
   })
 
@@ -3676,6 +3672,9 @@ export function registerSheetsAiIpc(): void {
     },
   )
 
+  // a 401 on the gsk key opens the device-code login once (genoffice-auth recovery)
+  setGenofficeLoginOpener((url) => void shell.openExternal(url))
+
   ipcMain.handle(IPC_CHANNELS.aiGskLogin, () => {
     ensureGenofficeLogin((url) => void shell.openExternal(url))
   })
@@ -3693,8 +3692,11 @@ export function registerSheetsAiIpc(): void {
     const request = aiChatRequestSchema.parse(input)
     const provider = request.settings.provider as AiProviderId
     let config = request.settings.providers[provider]
+    // set only when the gsk key was injected: a 401 then means that key expired
+    let gskKey = ''
     if (provider === 'genspark' && config && !config.apiKey) {
-      config = { ...config, apiKey: gskApiKey() }
+      gskKey = gskApiKey()
+      config = { ...config, apiKey: gskKey }
     }
     if (!config || (!isCliProvider(provider) && !config.apiKey)) {
       return {
@@ -3710,8 +3712,10 @@ export function registerSheetsAiIpc(): void {
       if (!result.ok && isAiOverloadedError(result.error)) {
         return { ok: false, error: tm('errAiBusy') }
       }
+      if (!result.ok) noteGskCallFailure(gskKey, result.error)
       return result
     } catch (err) {
+      noteGskCallFailure(gskKey, err)
       return { ok: false, error: isAiOverloadedError(err) ? tm('errAiBusy') : String(err) }
     }
   })
@@ -3726,8 +3730,11 @@ export function registerSheetsAiIpc(): void {
     let config = request.settings.providers[provider]
     // Genspark's key never enters the settings file; it is read from the gsk
     // login state per request
+    // set only when the gsk key was injected: a 401 then means that key expired
+    let gskKey = ''
     if (provider === 'genspark' && config && !config.apiKey) {
-      config = { ...config, apiKey: gskApiKey() }
+      gskKey = gskApiKey()
+      config = { ...config, apiKey: gskKey }
     }
     const send = (chunk: AiStreamChunk) => {
       if (!event.sender.isDestroyed()) event.sender.send(IPC_CHANNELS.aiStreamChunk, chunk)
@@ -3781,6 +3788,8 @@ export function registerSheetsAiIpc(): void {
       if (controller.signal.aborted) {
         send({ requestId, type: 'done' })
       } else {
+        // an expired/revoked key drops to signed-out so the inline sign-in button shows
+        noteGskCallFailure(gskKey, err)
         send({
           requestId,
           type: 'error',

@@ -7,6 +7,7 @@ import { folderMenuWords } from './fork/folder-menu-words'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
+import { KbAskPanel } from './KbAskPanel'
 import iconDocx from './assets/file-docx.svg'
 import iconXlsx from './assets/file-xlsx.svg'
 import iconPptx from './assets/file-pptx.svg'
@@ -1260,9 +1261,12 @@ export function Home() {
   const [view, setView] = useState<'recent' | 'starred'>('recent')
   // Genspark web projects take over the content area (like a selected folder)
   const [cloudMode, setCloudMode] = useState(false)
+  // the knowledge-base ask panel takes over the content area the same way
+  const [askMode, setAskMode] = useState(false)
   const [indexOpen, setIndexOpen] = useState(false)
   useEffect(() => {
     const open = () => {
+      setAskMode(false)
       setIndexOpen(true)
       setCloudMode(false)
       setSelectedFolder(null)
@@ -1721,6 +1725,7 @@ export function Home() {
     setView(next)
     setSelectedFolder(null)
     setCloudMode(false)
+    setAskMode(false)
     setSelected(new Set())
     setRowMenu(null)
     setGroupFilter(null)
@@ -1742,6 +1747,7 @@ export function Home() {
     setIndexOpen(false)
     setSelectedFolder(dir)
     setCloudMode(false)
+    setAskMode(false)
     setSelected(new Set())
     setRowMenu(null)
     setFolderMenu(null)
@@ -3291,7 +3297,7 @@ export function Home() {
         </div>
         <nav className="sidebar-nav">
           <button
-            className={`nav-item${view === 'recent' && !selectedFolder && !cloudMode && !indexOpen ? ' active' : ''}`}
+            className={`nav-item${view === 'recent' && !selectedFolder && !cloudMode && !indexOpen && !askMode ? ' active' : ''}`}
             onClick={() => changeView('recent')}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -3307,7 +3313,7 @@ export function Home() {
             <span className="nav-count">{navCounts.recent}</span>
           </button>
           <button
-            className={`nav-item${view === 'starred' && !selectedFolder && !cloudMode && !indexOpen ? ' active' : ''}`}
+            className={`nav-item${view === 'starred' && !selectedFolder && !cloudMode && !indexOpen && !askMode ? ' active' : ''}`}
             onClick={() => changeView('starred')}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -3326,6 +3332,7 @@ export function Home() {
             lang={lang}
             active={indexOpen}
             onOpen={() => {
+              setAskMode(false)
               setIndexOpen(true)
               setCloudMode(false)
               setSelectedFolder(null)
@@ -3333,18 +3340,32 @@ export function Home() {
               setRowMenu(null)
             }}
           />
-          <button className="nav-item" onClick={() => void window.aiOffice.openHelp()}>
+          <button
+            className={`nav-item${askMode && !selectedFolder && !cloudMode ? ' active' : ''}`}
+            onClick={() => {
+              setIndexOpen(false)
+              setAskMode(true)
+              setSelectedFolder(null)
+              setCloudMode(false)
+              setSelected(new Set())
+              setRowMenu(null)
+            }}
+          >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
-                d="M6.05 6.4a2.06 2.06 0 1 1 2.9 1.88c-.58.29-.95.89-.95 1.54v.28"
+                d="M14 10.5c0 .9-.7 1.6-1.6 1.6H5.4L2 14.5V3.6C2 2.7 2.7 2 3.6 2h8.8c.9 0 1.6.7 1.6 1.6z"
+                stroke="currentColor"
+                strokeWidth="1.3"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M5 6.2h6M5 8.6h4"
                 stroke="currentColor"
                 strokeWidth="1.3"
                 strokeLinecap="round"
               />
-              <circle cx="8" cy="12.6" r="0.85" fill="currentColor" />
-              <circle cx="8" cy="8" r="6.6" stroke="currentColor" strokeWidth="1.2" />
             </svg>
-            <span className="nav-label">{t('navUserGuide')}</span>
+            <span className="nav-label">{t('navAsk')}</span>
           </button>
           {loggedIn && (
             <button
@@ -3352,6 +3373,7 @@ export function Home() {
               onClick={() => {
                 setCloudMode(true)
                 setIndexOpen(false)
+                setAskMode(false)
                 setSelectedFolder(null)
                 setSelected(new Set())
                 setRowMenu(null)
@@ -3397,6 +3419,8 @@ export function Home() {
         <IndexDashboard api={window.aiOffice} onClose={() => setIndexOpen(false)} />
       ) : selectedFolder && rootOf(selectedFolder, roots)?.readable ? (
         renderFolderContent()
+      ) : askMode ? (
+        <KbAskPanel onOpenPath={(path) => void window.aiOffice.openPath(path)} />
       ) : cloudMode ? (
         <CloudProjectsView />
       ) : (
@@ -3540,7 +3564,7 @@ export function Home() {
       <HomeChat
         api={window.aiOffice}
         i18n={i18n}
-        dockLocation={!selectedFolder && !cloudMode && !indexOpen ? 'home' : 'floating'}
+        dockLocation={!selectedFolder && !cloudMode && !indexOpen && !askMode ? 'home' : 'floating'}
       />
       <ClipboardSuggest api={window.aiOffice} i18n={i18n} />
       <IndexingActivity api={window.aiOffice} lang={lang} />

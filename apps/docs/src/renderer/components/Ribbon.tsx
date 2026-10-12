@@ -2792,7 +2792,7 @@ function RibbonInner({
                     </div>
                   )}
                 </div>
-                <div className="table-tool-col">
+                <div className="table-tool-col table-tool-col-three">
                   <div className="table-tool-grid table-tool-grid-four">
                     <button onClick={() => runTableCommand(addRowBefore)}>
                       <IconRowInsertAbove />
