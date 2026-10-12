@@ -51,7 +51,9 @@ function seedGcDb(path: string, docs: number, chunksPerDoc: number): DocumentMem
   const insChunk = db.prepare(
     'INSERT INTO chunks (id, document_id, chunk_set_id, ordinal, text, location) VALUES (?, ?, NULL, ?, ?, ?)',
   )
-  const insEmb = db.prepare('INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, 8)')
+  const insEmb = db.prepare(
+    'INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, 8)',
+  )
   const insCount = db.prepare(
     'INSERT INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)',
   )
@@ -69,8 +71,10 @@ function seedGcDb(path: string, docs: number, chunksPerDoc: number): DocumentMem
       }
       chunkId++
     }
-    if (d % 7 === 0) insCount.run(d, space, 3) // stale: must be deleted
-    else if (d % 3 === 0) insCount.run(d, space, withVec + 11) // drifted: must be recounted
+    if (d % 7 === 0)
+      insCount.run(d, space, 3) // stale: must be deleted
+    else if (d % 3 === 0)
+      insCount.run(d, space, withVec + 11) // drifted: must be recounted
     else if (d % 11 !== 0) insCount.run(d, space, withVec) // exact; d % 11 == 0 has none: must be inserted? (no: only recount)
   }
   db.exec('COMMIT')
@@ -113,13 +117,19 @@ describe('D2: storage GC count recompute (join order)', () => {
       const t1 = performance.now()
       garbageCollectObsoleteStorage(b.rawDb)
       const newMs = performance.now() - t1
-      console.info(`[D2] old SQL ${oldMs.toFixed(0)} ms, new GC ${newMs.toFixed(0)} ms (220 docs / 7920 chunks)`)
+      console.info(
+        `[D2] old SQL ${oldMs.toFixed(0)} ms, new GC ${newMs.toFixed(0)} ms (220 docs / 7920 chunks)`,
+      )
 
       const snap = (s: DocumentMemoryStore): unknown => ({
         counts: s.rawDb
-          .prepare('SELECT document_id, space_id, completed_chunks FROM document_embedding_counts ORDER BY 1, 2')
+          .prepare(
+            'SELECT document_id, space_id, completed_chunks FROM document_embedding_counts ORDER BY 1, 2',
+          )
           .all(),
-        docs: s.rawDb.prepare('SELECT id, chunk_total, chunk_done FROM documents ORDER BY id').all(),
+        docs: s.rawDb
+          .prepare('SELECT id, chunk_total, chunk_done FROM documents ORDER BY id')
+          .all(),
       })
       const expected = snap(a)
       expect(snap(b)).toEqual(expected)
@@ -140,7 +150,9 @@ describe('D2: storage GC count recompute (join order)', () => {
     const s = seedGcDb(join(dir, 'p.db'), 30, 10)
     try {
       const plan = (sql: string): string =>
-        (s.rawDb.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>).map((r) => r.detail).join('\n')
+        (s.rawDb.prepare(`EXPLAIN QUERY PLAN ${sql}`).all() as Array<{ detail: string }>)
+          .map((r) => r.detail)
+          .join('\n')
       const del = plan(`DELETE FROM document_embedding_counts WHERE NOT EXISTS (
         SELECT 1 FROM chunks c CROSS JOIN chunk_embeddings ce ON ce.chunk_id = c.id
         WHERE c.document_id = document_embedding_counts.document_id AND ce.space_id = document_embedding_counts.space_id)`)
@@ -232,7 +244,9 @@ describe('D1: evicted vectors are not re-embedded (evict -> re-embed thrash)', (
     expect(store.incompletePaths()).toEqual([])
 
     // "before": without the marker (old behaviour) every evicted document is queued again
-    const markers = store.rawDb.prepare('SELECT document_id, evicted_at, hash FROM document_vector_evictions').all() as Array<{
+    const markers = store.rawDb
+      .prepare('SELECT document_id, evicted_at, hash FROM document_vector_evictions')
+      .all() as Array<{
       document_id: number
       evicted_at: number
       hash: string
@@ -240,9 +254,13 @@ describe('D1: evicted vectors are not re-embedded (evict -> re-embed thrash)', (
     store.rawDb.exec('DELETE FROM document_vector_evictions')
     const oldBehaviour = store.incompletePaths().length
     expect(oldBehaviour).toBe(evicted.length)
-    const put = store.rawDb.prepare('INSERT INTO document_vector_evictions (document_id, evicted_at, hash) VALUES (?, ?, ?)')
+    const put = store.rawDb.prepare(
+      'INSERT INTO document_vector_evictions (document_id, evicted_at, hash) VALUES (?, ?, ?)',
+    )
     for (const m of markers) put.run(m.document_id, m.evicted_at, m.hash)
-    console.info(`[D1] evicted docs: ${evicted.length}; re-queued by poll before fix: ${oldBehaviour}, after fix: ${store.incompletePaths().length}`)
+    console.info(
+      `[D1] evicted docs: ${evicted.length}; re-queued by poll before fix: ${oldBehaviour}, after fix: ${store.incompletePaths().length}`,
+    )
     store.close()
 
     // real manager (search role) + hand-written worker: poll() and the budget-state callback must queue nothing
@@ -252,7 +270,9 @@ describe('D1: evicted vectors are not re-embedded (evict -> re-embed thrash)', (
         const ack = storageBudgetAckReply(message)
         if (ack) return void queueMicrotask(() => this.emit('message', ack))
         requests.push(message)
-        queueMicrotask(() => this.emit('message', { id: message.id, error: 'not available in test' }))
+        queueMicrotask(() =>
+          this.emit('message', { id: message.id, error: 'not available in test' }),
+        )
       }
       terminate(): Promise<number> {
         return Promise.resolve(0)
@@ -267,7 +287,10 @@ describe('D1: evicted vectors are not re-embedded (evict -> re-embed thrash)', (
     try {
       const internal = manager as any
       await internal.poll()
-      internal.maintScheduler.options.onBudgetStateChange('ok', internal.maintScheduler.checkStorageBudget())
+      internal.maintScheduler.options.onBudgetStateChange(
+        'ok',
+        internal.maintScheduler.checkStorageBudget(),
+      )
       await new Promise((r) => setTimeout(r, 300))
       expect(requests.filter((r) => r.type === 'extract')).toEqual([])
       expect(internal.queued.size).toBe(0)
@@ -278,7 +301,7 @@ describe('D1: evicted vectors are not re-embedded (evict -> re-embed thrash)', (
         check.close()
       }
     } finally {
-      manager.close()
+      await manager.closeAsync()
     }
   }, 60_000)
 
@@ -287,7 +310,13 @@ describe('D1: evicted vectors are not re-embedded (evict -> re-embed thrash)', (
     const { store, evicted, budget } = await seedAndEvict(dbPath)
     try {
       expect(evicted.length).toBeGreaterThanOrEqual(5)
-      const [opened, retried, changed, released] = evicted as [string, string, string, string, string]
+      const [opened, retried, changed, released] = evicted as [
+        string,
+        string,
+        string,
+        string,
+        string,
+      ]
 
       // user opens it (last_opened_at moves past the eviction) -> eligible again
       store.remember(opened)
@@ -305,16 +334,41 @@ describe('D1: evicted vectors are not re-embedded (evict -> re-embed thrash)', (
       expect(store.incompletePaths()).not.toContain(released)
 
       // release rule: nothing while warning/full or above 60%, never beyond the projected 75%
-      const base = { limitState: 'ok', budgetBytes: budget, isDegraded: false, measurementStatus: 'fresh' }
-      expect(releaseEvictedVectorsIfRoom(store.rawDb, { ...base, usedBytes: budget * 0.7 }).documents).toBe(0)
-      expect(releaseEvictedVectorsIfRoom(store.rawDb, { ...base, limitState: 'warning', usedBytes: budget * 0.1 }).documents).toBe(0)
-      expect(releaseEvictedVectorsIfRoom(store.rawDb, { ...base, usedBytes: budget * 0.1, isDegraded: true }).documents).toBe(0)
+      const base = {
+        limitState: 'ok',
+        budgetBytes: budget,
+        isDegraded: false,
+        measurementStatus: 'fresh',
+      }
+      expect(
+        releaseEvictedVectorsIfRoom(store.rawDb, { ...base, usedBytes: budget * 0.7 }).documents,
+      ).toBe(0)
+      expect(
+        releaseEvictedVectorsIfRoom(store.rawDb, {
+          ...base,
+          limitState: 'warning',
+          usedBytes: budget * 0.1,
+        }).documents,
+      ).toBe(0)
+      expect(
+        releaseEvictedVectorsIfRoom(store.rawDb, {
+          ...base,
+          usedBytes: budget * 0.1,
+          isDegraded: true,
+        }).documents,
+      ).toBe(0)
       const near = releaseEvictedVectorsIfRoom(store.rawDb, { ...base, usedBytes: budget * 0.59 })
       expect(near.chunks * 4608 + budget * 0.59).toBeLessThanOrEqual(budget * 0.75)
       const ok = releaseEvictedVectorsIfRoom(store.rawDb, { ...base, usedBytes: budget * 0.1 })
       expect(ok.documents).toBeGreaterThan(0)
       // bounded per call; repeated cycles drain the rest
-      for (let i = 0; i < 10 && releaseEvictedVectorsIfRoom(store.rawDb, { ...base, usedBytes: budget * 0.1 }).documents > 0; i++);
+      for (
+        let i = 0;
+        i < 10 &&
+        releaseEvictedVectorsIfRoom(store.rawDb, { ...base, usedBytes: budget * 0.1 }).documents >
+          0;
+        i++
+      );
       expect(countVectorEvictions(store.rawDb)).toBe(0)
       expect(store.incompletePaths()).toContain(released)
     } finally {
@@ -329,9 +383,13 @@ describe('D1: evicted vectors are not re-embedded (evict -> re-embed thrash)', (
       const path = evicted[0]!
       const before = countVectorEvictions(store.rawDb)
       const doc = store.documentByPath(path)!
-      const chunk = store.rawDb.prepare('SELECT id FROM chunks WHERE document_id = ? LIMIT 1').get(doc.id) as { id: number }
+      const chunk = store.rawDb
+        .prepare('SELECT id FROM chunks WHERE document_id = ? LIMIT 1')
+        .get(doc.id) as { id: number }
       store.rawDb
-        .prepare('INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, 8)')
+        .prepare(
+          'INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, 8)',
+        )
         .run(chunk.id, PROFILE.embeddingId, new Uint8Array(new Float32Array(8).buffer))
       expect(countVectorEvictions(store.rawDb)).toBe(before - 1)
     } finally {

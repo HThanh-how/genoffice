@@ -11,7 +11,9 @@ import {
 describe('SQLite Page Cache Policy & Connection Roles', () => {
   let tempDirs: string[] = []
 
-  const createTempStore = (options: Parameters<typeof DocumentMemoryStore['prototype']['constructor']>[1] = {}) => {
+  const createTempStore = (
+    options: Parameters<(typeof DocumentMemoryStore)['prototype']['constructor']>[1] = {},
+  ) => {
     const dir = mkdtempSync(join(tmpdir(), 'cache-policy-test-'))
     tempDirs.push(dir)
     const dbPath = join(dir, 'test.db')
@@ -70,5 +72,21 @@ describe('SQLite Page Cache Policy & Connection Roles', () => {
 
     expect(row.cache_size).toBe(-12345)
     customStore.close()
+  })
+
+  it('keeps SQLite default wal_autocheckpoint at 1000 pages on worker role, and 0 on search role to prevent main-thread latency spikes', () => {
+    const workerStore = createTempStore({ role: 'worker' })
+    const workerRow = workerStore.rawDb.prepare('PRAGMA wal_autocheckpoint').get() as {
+      wal_autocheckpoint: number
+    }
+    expect(workerRow.wal_autocheckpoint).toBe(1000)
+    workerStore.close()
+
+    const searchStore = createTempStore({ role: 'search' })
+    const searchRow = searchStore.rawDb.prepare('PRAGMA wal_autocheckpoint').get() as {
+      wal_autocheckpoint: number
+    }
+    expect(searchRow.wal_autocheckpoint).toBe(0)
+    searchStore.close()
   })
 })

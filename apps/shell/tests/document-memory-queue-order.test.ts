@@ -96,14 +96,14 @@ class HandWorker extends EventEmitter {
   terminated = false
   paths: string[] = []
   private pending: { id: number; path: string } | undefined
-  postMessage(message: { id: number; type: string; path: string }): void {
+  postMessage(message: { id: number; type: string; path?: string }): void {
     const ack = storageBudgetAckReply(message)
     if (ack) {
       this.emit('message', ack)
       return
     }
-    this.paths.push(message.path)
-    this.pending = message
+    if (message.path) this.paths.push(message.path)
+    if (message.path) this.pending = message as { id: number; path: string }
   }
   finish(): void {
     const { id, path } = this.pending!
@@ -133,8 +133,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-order-'))
   workers = []
 })
-afterEach(() => {
-  manager?.close()
+afterEach(async () => {
+  await manager?.closeAsync()
   manager = undefined
   rmSync(dir, { recursive: true, force: true })
 })

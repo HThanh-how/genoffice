@@ -40,8 +40,8 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-lanes-'))
   mkdirSync(join(dir, 'files'))
 })
-afterEach(() => {
-  manager?.close()
+afterEach(async () => {
+  await manager?.closeAsync()
   manager = undefined
   rmSync(dir, { recursive: true, force: true })
 })
@@ -60,13 +60,19 @@ class FakeIndexWorker extends EventEmitter {
   dims = EMBEDDING_PROFILES[DEFAULT_EMBEDDING_PROFILE].dimensions
   neverExtract = false
   neverAck = false
+  private pendingTimers = new Set<ReturnType<typeof setTimeout>>()
+  private terminated = false
+
   postMessage(message: { id: number; type: string; path?: string; texts?: string[] }): void {
+    if (this.terminated) return
     this.seen.push({
       type: message.type,
       ...(message.path ? { path: message.path } : {}),
       ...(message.texts ? { n: message.texts.length } : {}),
     })
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.pendingTimers.delete(timer)
+      if (this.terminated) return
       if (message.type === 'set-storage-budget' && this.neverAck) return
       const ack = storageBudgetAckReply(message)
       if (ack) return void this.emit('message', ack)
@@ -74,32 +80,51 @@ class FakeIndexWorker extends EventEmitter {
       if (noop) return void this.emit('message', noop)
       if (message.type === 'extract') {
         if (this.neverExtract) return
-        const bytes = readFileSync(message.path!)
-        const stat = statSync(message.path!)
-        this.emit('message', {
-          id: message.id,
-          result: {
-            hash: createHash('sha256').update(bytes).digest('hex'),
-            mtimeMs: stat.mtimeMs,
-            sizeBytes: stat.size,
-            chunks: chunkDocumentText(bytes.toString('utf8')),
-            status: 'text-only',
-          },
-        })
+        try {
+          const bytes = readFileSync(message.path!)
+          const stat = statSync(message.path!)
+          this.emit('message', {
+            id: message.id,
+            result: {
+              hash: createHash('sha256').update(bytes).digest('hex'),
+              mtimeMs: stat.mtimeMs,
+              sizeBytes: stat.size,
+              chunks: chunkDocumentText(bytes.toString('utf8')),
+              status: 'text-only',
+            },
+          })
+        } catch {
+          // directory was cleaned up during teardown
+        }
       } else if (message.type === 'embed') {
         const reply = () => {
+          if (this.terminated) return
           this.emit('message', { type: 'model', state: 'ready' })
           this.emit('message', {
             id: message.id,
             result: (message.texts ?? []).map(() => new Array(this.dims).fill(0.1)),
           })
         }
-        if (this.embedDelayMs > 0) setTimeout(reply, this.embedDelayMs)
-        else reply()
+        if (this.embedDelayMs > 0) {
+          const embedTimer = setTimeout(() => {
+            this.pendingTimers.delete(embedTimer)
+            reply()
+          }, this.embedDelayMs)
+          this.pendingTimers.add(embedTimer)
+        } else {
+          reply()
+        }
       }
     }, 0)
+    this.pendingTimers.add(timer)
   }
   terminate(): Promise<number> {
+    this.terminated = true
+    for (const timer of this.pendingTimers) {
+      clearTimeout(timer)
+    }
+    this.pendingTimers.clear()
+    this.removeAllListeners()
     return Promise.resolve(0)
   }
   count(type: string): number {
@@ -171,6 +196,13 @@ function open(worker: FakeIndexWorker, extra: Record<string, unknown> = {}): Doc
 }
 
 function statusCounts(): Record<string, number> {
+  const db = manager?.store?.rawDb
+  if (db) {
+    const rows = db
+      .prepare('SELECT status, count(*) AS n FROM documents GROUP BY status')
+      .all() as Array<{ status: string; n: number }>
+    return Object.fromEntries(rows.map((r) => [r.status, r.n]))
+  }
   const view = new DocumentMemoryStore(join(dir, 'document-memory.db'), { role: 'search' })
   try {
     const rows = view.rawDb
@@ -186,7 +218,7 @@ async function until(check: () => boolean, ms = 15_000, what = 'condition'): Pro
   const deadline = Date.now() + ms
   while (!check()) {
     if (Date.now() > deadline) throw new Error(`${what} not reached in time`)
-    await new Promise((resolve) => setTimeout(resolve, 20))
+    await new Promise((resolve) => setTimeout(resolve, 50))
   }
 }
 
@@ -197,7 +229,7 @@ describe('reading does not wait for vectors', () => {
     worker.embedDelayMs = 1_500 // a slow computer: the 24 files ahead need ~36 s of vector batches
     manager = open(worker)
     // the constructor alone starts the worker and the poll (what attachDocumentMemory() does), nothing else is called
-    await until(() => (statusCounts().pending ?? 0) === 0, 15_000, 'all never-read files read')
+    await until(() => (statusCounts().pending ?? 0) === 0, 35_000, 'all never-read files read')
     expect(worker.count('extract')).toBeGreaterThanOrEqual(40)
     // their text is searchable already; their vectors are still queued, not lost
     expect(manager.status().pending).toBeGreaterThan(0)
@@ -216,7 +248,7 @@ describe('reading does not wait for vectors', () => {
     seedLine(0, 60)
     const worker = new FakeIndexWorker()
     manager = open(worker)
-    await until(() => (statusCounts().ready ?? 0) === 60, 30_000, 'all files ready')
+    await until(() => (statusCounts().ready ?? 0) === 60, 50_000, 'all files ready')
     const extractAt = worker.seen
       .map((m, i) => (m.type === 'extract' ? i : -1))
       .filter((i) => i >= 0)

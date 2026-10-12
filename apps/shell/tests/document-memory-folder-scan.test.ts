@@ -610,7 +610,9 @@ describe('FolderScanManager', () => {
     expect(retriedRoots).toContain(resolve(folderB))
 
     // Chờ B quét xong thành công
-    await until(() => !instance.status().running && enrolledFiles.some((f) => f.includes('docB.txt')))
+    await until(
+      () => !instance.status().running && enrolledFiles.some((f) => f.includes('docB.txt')),
+    )
 
     // B đã hoàn thành sang complete / watching
     folderBEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderB))
@@ -809,7 +811,9 @@ describe('FolderScanManager', () => {
     expect(instance.isWaiting(folderC)).toBe(true)
 
     // Đợi đến khi toàn bộ hoàn tất
-    await until(() => !instance.status().running && enrolledFiles.some((f) => f.includes('docC.txt')))
+    await until(
+      () => !instance.status().running && enrolledFiles.some((f) => f.includes('docC.txt')),
+    )
 
     // Khi runner A thoát, C phải được tự động pick up và scan, không bị kẹt trong waiting queue
     expect(instance.isWaiting(folderC)).toBe(false)
@@ -822,5 +826,30 @@ describe('FolderScanManager', () => {
     // Root A đã bị unregister sạch sẽ
     const folderAEntry = instance.folders().find((f) => resolve(f.root) === resolve(folderA))
     expect(folderAEntry).toBeUndefined()
+  })
+
+  it('P0-4: write-gate denial during enrollment marks scan as stopped and does not falsely report complete', async () => {
+    const testFolder = join(dir, 'denial_test_folder')
+    mkdirSync(testFolder, { recursive: true })
+    writeFileSync(join(testFolder, 'file1.txt'), 'content1')
+    writeFileSync(join(testFolder, 'file2.txt'), 'content2')
+
+    // DiscoveredDocumentIndexer that simulates write-gate denial: indexDiscoveredFile returns false
+    const instance = new FolderScanManager(join(dir, 'state'), {
+      isWriteReady: () => false,
+      waitForWriteReady: async () => false,
+      indexDiscoveredFile: () => false,
+    })
+    scanners.push(instance)
+
+    instance.start(testFolder, 'manual')
+    await until(() => !instance.status().running)
+
+    const folderEntry = instance.folders().find((f) => resolve(f.root) === resolve(testFolder))
+    expect(folderEntry).toBeDefined()
+    // State MUST NOT be 'complete'!
+    expect(folderEntry?.state).toBe('stopped')
+    expect(folderEntry?.completedAt).toBeUndefined()
+    expect(folderEntry?.lastError).toMatch(/Storage write gate not ready|Failed to enroll/i)
   })
 })

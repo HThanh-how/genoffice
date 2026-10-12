@@ -61,13 +61,27 @@ async function asyncFileStat(path: string): Promise<FileStatResult> {
 }
 
 function isInside(root: string, path: string): boolean {
-  const suffix = relative(root, path)
-  return (
-    suffix === '' ||
-    (!isAbsolute(suffix) &&
-      suffix !== '..' &&
-      !suffix.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`))
-  )
+  if (root.includes('..') || path.includes('..')) {
+    const suffix = relative(root, path)
+    return (
+      suffix === '' ||
+      (!isAbsolute(suffix) &&
+        suffix !== '..' &&
+        !suffix.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`))
+    )
+  }
+
+  if (process.platform === 'win32') {
+    const r = root.replace(/\//g, '\\').toLowerCase()
+    const p = path.replace(/\//g, '\\').toLowerCase()
+    if (p === r) return true
+    const sep = r.endsWith('\\') ? '' : '\\'
+    return p.startsWith(r + sep)
+  } else {
+    if (path === root) return true
+    const sep = root.endsWith('/') ? '' : '/'
+    return path.startsWith(root + sep)
+  }
 }
 
 async function parentConfirmsMissing(path: string): Promise<boolean> {
@@ -201,14 +215,13 @@ export class FileIndexer {
     const known = await this.store.listAllSliced(yieldIfNeeded)
     const gone: string[] = []
     const reachableRoots = new Map<string, boolean>()
+    const sortedRoots = [...roots].sort((a, b) => b.length - a.length)
     for (const path of known.keys()) {
       // every iteration may yield (an unchanged path is a `continue`, and a million of those are one long task otherwise)
       await yieldIfNeeded()
       if (seen.has(path)) continue
       // An offline root or a partial walk says nothing about the files omitted from it.
-      const configuredRoot = roots
-        .filter((root) => isInside(root, path))
-        .sort((a, b) => b.length - a.length)[0]
+      const configuredRoot = sortedRoots.find((root) => isInside(root, path))
       if (configuredRoot && !completeRoots.includes(configuredRoot)) continue
       const state = await asyncFileStat(path)
       if (state.kind !== 'missing') continue

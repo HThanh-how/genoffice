@@ -33,10 +33,10 @@ describe('Folder & Library Index Progress Scoped to Active Space Suite (QA-10)',
     activeStores = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const m of activeManagers) {
       try {
-        m.close()
+        await m.closeAsync()
       } catch {}
     }
     for (const s of activeStores) {
@@ -82,8 +82,16 @@ describe('Folder & Library Index Progress Scoped to Active Space Suite (QA-10)',
       ],
     })
     const doc1 = store.documentByPath(doc1Path)!
-    store.rawDb.prepare("INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization) VALUES ('space-a', 'r', '1', 'mean', 384, 'fp32'), ('space-b', 'r', '1', 'mean', 384, 'fp32'), ('space-c', 'r', '1', 'mean', 384, 'fp32')").run()
-    store.rawDb.prepare('INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)').run(doc1.id, 'space-a', 3)
+    store.rawDb
+      .prepare(
+        "INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization) VALUES ('space-a', 'r', '1', 'mean', 384, 'fp32'), ('space-b', 'r', '1', 'mean', 384, 'fp32'), ('space-c', 'r', '1', 'mean', 384, 'fp32')",
+      )
+      .run()
+    store.rawDb
+      .prepare(
+        'INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)',
+      )
+      .run(doc1.id, 'space-a', 3)
 
     // Insert doc 2: 2 chunks, embedded in space-b
     store.replaceDocument(doc2Path, {
@@ -97,7 +105,11 @@ describe('Folder & Library Index Progress Scoped to Active Space Suite (QA-10)',
       ],
     })
     const doc2 = store.documentByPath(doc2Path)!
-    store.rawDb.prepare('INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)').run(doc2.id, 'space-b', 2)
+    store.rawDb
+      .prepare(
+        'INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)',
+      )
+      .run(doc2.id, 'space-b', 2)
 
     // Scope to space-a: only doc 1 is completed (3/5 chunks)
     const progA = store.folderChunkProgress(docsFolder, 'space-a')
@@ -129,7 +141,11 @@ describe('Folder & Library Index Progress Scoped to Active Space Suite (QA-10)',
     const folder1 = join(tempDir, 'folder1')
     const folder2 = join(tempDir, 'folder2')
 
-    store.rawDb.prepare("INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization) VALUES ('target-space', 'r', '1', 'mean', 384, 'fp32'), ('other-space', 'r', '1', 'mean', 384, 'fp32')").run()
+    store.rawDb
+      .prepare(
+        "INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization) VALUES ('target-space', 'r', '1', 'mean', 384, 'fp32'), ('other-space', 'r', '1', 'mean', 384, 'fp32')",
+      )
+      .run()
 
     store.replaceDocument(join(folder1, 'f1.txt'), {
       hash: 'h1',
@@ -139,7 +155,11 @@ describe('Folder & Library Index Progress Scoped to Active Space Suite (QA-10)',
       chunks: [{ text: 'f1 chunk', location: 'p1' }],
     })
     const d1 = store.documentByPath(join(folder1, 'f1.txt'))!
-    store.rawDb.prepare('INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)').run(d1.id, 'target-space', 1)
+    store.rawDb
+      .prepare(
+        'INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)',
+      )
+      .run(d1.id, 'target-space', 1)
 
     store.replaceDocument(join(folder2, 'f2.txt'), {
       hash: 'h2',
@@ -149,7 +169,11 @@ describe('Folder & Library Index Progress Scoped to Active Space Suite (QA-10)',
       chunks: [{ text: 'f2 chunk', location: 'p1' }],
     })
     const d2 = store.documentByPath(join(folder2, 'f2.txt'))!
-    store.rawDb.prepare('INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)').run(d2.id, 'other-space', 1)
+    store.rawDb
+      .prepare(
+        'INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)',
+      )
+      .run(d2.id, 'other-space', 1)
 
     const libProg = store.folderChunkProgress(undefined, 'target-space')
     expect(libProg.totalFiles).toBe(2)

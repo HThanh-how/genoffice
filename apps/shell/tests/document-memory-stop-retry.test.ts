@@ -7,15 +7,18 @@ import type { Worker } from 'node:worker_threads'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
-import type { StorageBudgetWorkerResult, WorkerReply } from '../src/main/document-memory/worker-types'
+import type {
+  StorageBudgetWorkerResult,
+  WorkerReply,
+} from '../src/main/document-memory/worker-types'
 
 let dir: string
 let manager: DocumentMemoryManager | undefined
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-stop-'))
 })
-afterEach(() => {
-  manager?.close()
+afterEach(async () => {
+  await manager?.closeAsync()
   manager = undefined
   rmSync(dir, { recursive: true, force: true })
 })
@@ -61,8 +64,7 @@ class SlowWorker extends EventEmitter {
   }
   hasValidAck(): boolean {
     return (
-      this.acks.length > 0 &&
-      this.acks.every((a) => a.ok && a.appliedVersion === a.desiredVersion)
+      this.acks.length > 0 && this.acks.every((a) => a.ok && a.appliedVersion === a.desiredVersion)
     )
   }
   /** the long read finally finishes */

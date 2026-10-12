@@ -23,9 +23,9 @@ beforeEach(() => {
   managers = []
 })
 
-afterEach(() => {
+afterEach(async () => {
   for (const manager of managers) {
-    manager.close()
+    await manager.closeAsync()
   }
   for (const gate of gates) {
     gate.dispose()
@@ -455,10 +455,7 @@ describe('FolderScanManager reconcileSubtree', () => {
     // Simultaneously queue a valid file that must wait for a released semaphore slot
     const validPromise = gate.waitForStability(join(testDir, 'valid-doc.txt'))
 
-    const [hResults, vResult] = await Promise.all([
-      Promise.all(hangingPromises),
-      validPromise,
-    ])
+    const [hResults, vResult] = await Promise.all([Promise.all(hangingPromises), validPromise])
 
     expect(hResults).toHaveLength(4)
     expect(hResults.every((r) => r.kind === 'unavailable')).toBe(true)
@@ -536,7 +533,9 @@ describe('FolderScanManager reconcileSubtree', () => {
     const started = Date.now()
     while (!extractedPaths.includes(resolve(docPath))) {
       if (Date.now() - started > 2500) {
-        throw new Error('Timed out waiting for manager stability retry timer to index unlocked file')
+        throw new Error(
+          'Timed out waiting for manager stability retry timer to index unlocked file',
+        )
       }
       await delay(20)
     }

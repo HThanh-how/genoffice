@@ -129,12 +129,14 @@ export function generateSyntheticFixture(options = {}) {
   `)
 
   // Add default embedding spaces
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
     VALUES
       ('standard', 'genoffice/F2LLM-v2-80M-ONNX', 'ad88d7a126', 'last-token', 320, 'q8'),
       ('high', 'Qwen/Qwen3-Embedding-0.6B', 'bd58e9fd4b', 'last-token', 512, 'q8')
-  `).run()
+  `,
+  ).run()
 
   const insertDoc = db.prepare(`
     INSERT INTO documents (
@@ -169,10 +171,12 @@ export function generateSyntheticFixture(options = {}) {
 
   if (profile === 'pathological') {
     // 1. Obsolete embedding space
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
       VALUES ('obsolete-e5', 'Xenova/multilingual-e5-small', 'rev-old', 'mean', 384, 'q8')
-    `).run()
+    `,
+    ).run()
 
     // 2. 10 Chromium license files inside build output (Case B: Auto-discovered artifact)
     for (let i = 1; i <= 10; i++) {
@@ -180,8 +184,23 @@ export function generateSyntheticFixture(options = {}) {
       const setId = setIdSeq++
       const p = `D:/work/build/win-unpacked/resources/LICENSES.chromium_${i}.html`
       insertDoc.run(
-        docId, p, `LICENSES.chromium_${i}.html`, 'ready', 1000, 500000, `hash-lic-${i}`,
-        'standard', setId, null, 0, 1, 'chunk-limit', 0, 1000, 20, 20
+        docId,
+        p,
+        `LICENSES.chromium_${i}.html`,
+        'ready',
+        1000,
+        500000,
+        `hash-lic-${i}`,
+        'standard',
+        setId,
+        null,
+        0,
+        1,
+        'chunk-limit',
+        0,
+        1000,
+        20,
+        20,
       )
       insertSet.run(setId, docId, 'active')
       for (let c = 0; c < 20; c++) {
@@ -199,15 +218,40 @@ export function generateSyntheticFixture(options = {}) {
     const userOpenedSetId = setIdSeq++
     const userPath = 'D:/work/project/LICENSES.chromium.html'
     insertDoc.run(
-      userOpenedDocId, userPath, 'LICENSES.chromium.html', 'ready', 2000, 40000, 'hash-user-lic',
-      'standard', userOpenedSetId, null, 0, 0, null, 1710000000, 1710000000, 5, 5
+      userOpenedDocId,
+      userPath,
+      'LICENSES.chromium.html',
+      'ready',
+      2000,
+      40000,
+      'hash-user-lic',
+      'standard',
+      userOpenedSetId,
+      null,
+      0,
+      0,
+      null,
+      1710000000,
+      1710000000,
+      5,
+      5,
     )
     insertSet.run(userOpenedSetId, userOpenedDocId, 'active')
     for (let c = 0; c < 5; c++) {
       const chunkId = chunkIdSeq++
       const txt = `User explicitly opened license passage ${c}`
       const v = floatBlob([0.3, 0.4], 320)
-      insertChunk.run(chunkId, userOpenedDocId, userOpenedSetId, c, txt, txt, `Chunk ${c + 1}`, v, 320)
+      insertChunk.run(
+        chunkId,
+        userOpenedDocId,
+        userOpenedSetId,
+        c,
+        txt,
+        txt,
+        `Chunk ${c + 1}`,
+        v,
+        320,
+      )
       insertFts.run(chunkId, txt)
       insertEmbedding.run(chunkId, 'standard', v, 320)
     }
@@ -217,8 +261,23 @@ export function generateSyntheticFixture(options = {}) {
     const retiredSetId = setIdSeq++
     const activeSetId = setIdSeq++
     insertDoc.run(
-      multiSetDocId, 'D:/docs/contract.docx', 'contract.docx', 'ready', 3000, 80000, 'hash-contract',
-      'standard', activeSetId, null, 0, 0, null, 1700000000, 1700000000, 3, 3
+      multiSetDocId,
+      'D:/docs/contract.docx',
+      'contract.docx',
+      'ready',
+      3000,
+      80000,
+      'hash-contract',
+      'standard',
+      activeSetId,
+      null,
+      0,
+      0,
+      null,
+      1700000000,
+      1700000000,
+      3,
+      3,
     )
     insertSet.run(retiredSetId, multiSetDocId, 'retired')
     insertSet.run(activeSetId, multiSetDocId, 'active')
@@ -227,7 +286,17 @@ export function generateSyntheticFixture(options = {}) {
     for (let c = 0; c < 3; c++) {
       const chunkId = chunkIdSeq++
       const txt = `Old contract draft chunk ${c}`
-      insertChunk.run(chunkId, multiSetDocId, retiredSetId, c, txt, txt, `Chunk ${c + 1}`, null, null)
+      insertChunk.run(
+        chunkId,
+        multiSetDocId,
+        retiredSetId,
+        c,
+        txt,
+        txt,
+        `Chunk ${c + 1}`,
+        null,
+        null,
+      )
       insertFts.run(chunkId, txt)
     }
 
@@ -244,17 +313,47 @@ export function generateSyntheticFixture(options = {}) {
     // 5. Excluded document
     const excludedDocId = docIdSeq++
     insertDoc.run(
-      excludedDocId, 'D:/secret/financials.xlsx', 'financials.xlsx', 'ready', 4000, 10000, 'hash-fin',
-      'standard', null, null, 1, 0, null, 0, 0, 0, 0
+      excludedDocId,
+      'D:/secret/financials.xlsx',
+      'financials.xlsx',
+      'ready',
+      4000,
+      10000,
+      'hash-fin',
+      'standard',
+      null,
+      null,
+      1,
+      0,
+      null,
+      0,
+      0,
+      0,
+      0,
     )
 
     // 6. OCR PDF document
     const ocrDocId = docIdSeq++
-    const ocrSetId = setIdSeq++
+    const ocrSetId = setIdSeq
     const ocrPath = 'D:/scans/invoice_scan.pdf'
     insertDoc.run(
-      ocrDocId, ocrPath, 'invoice_scan.pdf', 'ready', 5000, 120000, 'hash-scan',
-      'standard', ocrSetId, null, 0, 0, null, 1715000000, 1715000000, 2, 2
+      ocrDocId,
+      ocrPath,
+      'invoice_scan.pdf',
+      'ready',
+      5000,
+      120000,
+      'hash-scan',
+      'standard',
+      ocrSetId,
+      null,
+      0,
+      0,
+      null,
+      1715000000,
+      1715000000,
+      2,
+      2,
     )
     insertSet.run(ocrSetId, ocrDocId, 'active')
     for (let c = 0; c < 2; c++) {
@@ -263,15 +362,18 @@ export function generateSyntheticFixture(options = {}) {
       insertChunk.run(chunkId, ocrDocId, ocrSetId, c, txt, txt, `[OCR:p${c + 1}]`, null, null)
       insertFts.run(chunkId, txt)
     }
-    db.prepare(`
+    db.prepare(
+      `
       INSERT INTO ocr_pages (path, page, hash, mtime_ms, size_bytes, total_pages, text)
       VALUES (?, 1, 'h1', 5000, 120000, 2, 'OCR transcribed scan total amount $1000')
-    `).run(ocrPath)
-    db.prepare(`
+    `,
+    ).run(ocrPath)
+    db.prepare(
+      `
       INSERT INTO pdf_scan_info (path, mtime_ms, size_bytes, total_pages, scanned)
       VALUES (?, 5000, 120000, 2, 'scanned')
-    `).run(ocrPath)
-
+    `,
+    ).run(ocrPath)
   } else {
     // Normal small / medium / large generation
     const docCount = profile === 'large' ? 1000 : profile === 'medium' ? 100 : 10
@@ -282,8 +384,23 @@ export function generateSyntheticFixture(options = {}) {
       const setId = setIdSeq++
       const p = `D:/corpus/document_${i}.docx`
       insertDoc.run(
-        docId, p, `document_${i}.docx`, 'ready', 1000 + i, 5000, `hash-${i}`,
-        'standard', setId, null, 0, 0, null, 1700000000 + i, 1700000000 + i, chunksPerDoc, chunksPerDoc
+        docId,
+        p,
+        `document_${i}.docx`,
+        'ready',
+        1000 + i,
+        5000,
+        `hash-${i}`,
+        'standard',
+        setId,
+        null,
+        0,
+        0,
+        null,
+        1700000000 + i,
+        1700000000 + i,
+        chunksPerDoc,
+        chunksPerDoc,
       )
       insertSet.run(setId, docId, 'active')
 
@@ -310,8 +427,12 @@ export function generateSyntheticFixture(options = {}) {
 }
 
 if (process.argv[1] && process.argv[1].endsWith('document-memory-fixture.mjs')) {
-  const profileArg = process.argv.find((a) => a.startsWith('--profile='))?.split('=')[1] || 'pathological'
-  const outArg = process.argv.find((a) => a.startsWith('--out='))?.split('=')[1] || './test-fixture.db'
+  const profileArg =
+    process.argv.find((a) => a.startsWith('--profile='))?.split('=')[1] || 'pathological'
+  const outArg =
+    process.argv.find((a) => a.startsWith('--out='))?.split('=')[1] || './test-fixture.db'
   const res = generateSyntheticFixture({ profile: profileArg, out: outArg })
-  console.log(`Generated fixture: profile=${res.profile}, docs=${res.documents}, chunks=${res.chunks}, file=${res.path}`)
+  console.log(
+    `Generated fixture: profile=${res.profile}, docs=${res.documents}, chunks=${res.chunks}, file=${res.path}`,
+  )
 }

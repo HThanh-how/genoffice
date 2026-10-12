@@ -183,7 +183,7 @@ export class FileIndexStore {
    */
   async listAllSliced(
     yieldNow: () => Promise<void>,
-    pageSize = 2_000,
+    pageSize = 1_000,
   ): Promise<Map<string, IndexedFile>> {
     const page = this.db.prepare(
       'SELECT id, path, mtime_ms, size_bytes, status FROM files WHERE id > ? ORDER BY id LIMIT ?',

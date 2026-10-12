@@ -122,22 +122,38 @@ function setupMultiSpaceFixtureDb(
   insertSpace.run('fake-320', 'models/fake-model-320', 'rev-fake', 'cls', 320, 'fp32')
 
   // Document 1 with active chunk set 1
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO documents (id, path, name, status, last_opened_at, active_chunk_set_id, embedding_model, chunk_total, chunk_done)
     VALUES (1, 'D:/documents/company-handbook.docx', 'company-handbook.docx', 'ready', 1700000000, 1, 'f2-320', 2, 2)
-  `).run()
+  `,
+  ).run()
 
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO chunk_sets (id, document_id, chunker_version, state)
     VALUES (1, 1, 1, 'active')
-  `).run()
+  `,
+  ).run()
 
   const insertChunk = db.prepare(`
     INSERT INTO chunks (id, document_id, chunk_set_id, ordinal, text, normalized, location)
     VALUES (?, 1, 1, ?, ?, ?, ?)
   `)
-  insertChunk.run(101, 0, 'Nguyên tắc vận hành doanh nghiệp và bảo mật thông tin', 'nguyen tac van hanh doanh nghiep va bao mat thong tin', 'Trang 1')
-  insertChunk.run(102, 1, 'Chỉ số đo lường hiệu suất OKR và kế hoạch Q4', 'chi so do luong hieu suat okr va ke hoach q4', 'Trang 2')
+  insertChunk.run(
+    101,
+    0,
+    'Nguyên tắc vận hành doanh nghiệp và bảo mật thông tin',
+    'nguyen tac van hanh doanh nghiep va bao mat thong tin',
+    'Trang 1',
+  )
+  insertChunk.run(
+    102,
+    1,
+    'Chỉ số đo lường hiệu suất OKR và kế hoạch Q4',
+    'chi so do luong hieu suat okr va ke hoach q4',
+    'Trang 2',
+  )
 
   // Distinct vectors for each space to guarantee byte-level verification
   const v1_f2 = createSampleVector(320, 0.111)
@@ -154,7 +170,12 @@ function setupMultiSpaceFixtureDb(
   `)
 
   // Insert with deterministic order based on parameter
-  const insertVectorsForChunk = (chunkId: number, f2Vec: Uint8Array, qwenVec: Uint8Array, fakeVec: Uint8Array) => {
+  const insertVectorsForChunk = (
+    chunkId: number,
+    f2Vec: Uint8Array,
+    qwenVec: Uint8Array,
+    fakeVec: Uint8Array,
+  ) => {
     if (insertionOrder === 'fake-first') {
       insertChunkEmbedding.run(chunkId, 'fake-320', fakeVec, 320)
       insertChunkEmbedding.run(chunkId, 'qwen-512', qwenVec, 512)
@@ -174,7 +195,9 @@ function setupMultiSpaceFixtureDb(
   insertVectorsForChunk(102, v2_f2, v2_qwen, v2_fake)
 
   // ann_indexes for spaces
-  const insertAnn = db.prepare('INSERT INTO ann_indexes (space_id, generation, state) VALUES (?, 1, ?)')
+  const insertAnn = db.prepare(
+    'INSERT INTO ann_indexes (space_id, generation, state) VALUES (?, 1, ?)',
+  )
   insertAnn.run('f2-320', 'ready')
   insertAnn.run('qwen-512', 'ready')
   insertAnn.run('fake-320', 'ready')
@@ -214,9 +237,11 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
 
     const rawDb = new DatabaseSync(dbPath)
     try {
-      const allEmbeddings = rawDb.prepare(
-        'SELECT chunk_id, space_id, vector, vector_dim FROM chunk_embeddings ORDER BY chunk_id ASC'
-      ).all() as Array<{
+      const allEmbeddings = rawDb
+        .prepare(
+          'SELECT chunk_id, space_id, vector, vector_dim FROM chunk_embeddings ORDER BY chunk_id ASC',
+        )
+        .all() as Array<{
         chunk_id: number
         space_id: string
         vector: Uint8Array
@@ -231,9 +256,15 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
       }
 
       // 2. Zero foreign vectors (0 from fake-320, 0 from qwen-512)
-      const fakeVectors = rawDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'fake-320'").get() as { count: number }
-      const qwenVectors = rawDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'qwen-512'").get() as { count: number }
-      const foreignVectors = rawDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id != 'f2-320'").get() as { count: number }
+      const fakeVectors = rawDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'fake-320'")
+        .get() as { count: number }
+      const qwenVectors = rawDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'qwen-512'")
+        .get() as { count: number }
+      const foreignVectors = rawDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id != 'f2-320'")
+        .get() as { count: number }
       expect(fakeVectors.count).toBe(0)
       expect(qwenVectors.count).toBe(0)
       expect(foreignVectors.count).toBe(0)
@@ -247,9 +278,9 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
       expect(Buffer.from(chunk102Emb!.vector).equals(Buffer.from(vectors.v2_f2))).toBe(true)
 
       // 4. Verify document_embedding_counts table
-      const docCounts = rawDb.prepare(
-        'SELECT document_id, space_id, completed_chunks FROM document_embedding_counts'
-      ).all() as Array<{
+      const docCounts = rawDb
+        .prepare('SELECT document_id, space_id, completed_chunks FROM document_embedding_counts')
+        .all() as Array<{
         document_id: number
         space_id: string
         completed_chunks: number
@@ -262,7 +293,9 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
       })
 
       // 5. Document status & model
-      const doc = rawDb.prepare('SELECT id, status, embedding_model, chunk_done FROM documents WHERE id = 1').get() as {
+      const doc = rawDb
+        .prepare('SELECT id, status, embedding_model, chunk_done FROM documents WHERE id = 1')
+        .get() as {
         id: number
         status: string
         embedding_model: string
@@ -293,9 +326,11 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
 
     const rawDb = new DatabaseSync(dbPath)
     try {
-      const allEmbeddings = rawDb.prepare(
-        'SELECT chunk_id, space_id, vector, vector_dim FROM chunk_embeddings ORDER BY chunk_id ASC'
-      ).all() as Array<{
+      const allEmbeddings = rawDb
+        .prepare(
+          'SELECT chunk_id, space_id, vector, vector_dim FROM chunk_embeddings ORDER BY chunk_id ASC',
+        )
+        .all() as Array<{
         chunk_id: number
         space_id: string
         vector: Uint8Array
@@ -310,9 +345,15 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
       }
 
       // 2. Zero foreign vectors (0 from f2-320, 0 from fake-320)
-      const f2Vectors = rawDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'f2-320'").get() as { count: number }
-      const fakeVectors = rawDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'fake-320'").get() as { count: number }
-      const foreignVectors = rawDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id != 'qwen-512'").get() as { count: number }
+      const f2Vectors = rawDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'f2-320'")
+        .get() as { count: number }
+      const fakeVectors = rawDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'fake-320'")
+        .get() as { count: number }
+      const foreignVectors = rawDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id != 'qwen-512'")
+        .get() as { count: number }
       expect(f2Vectors.count).toBe(0)
       expect(fakeVectors.count).toBe(0)
       expect(foreignVectors.count).toBe(0)
@@ -326,9 +367,9 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
       expect(Buffer.from(chunk102Emb!.vector).equals(Buffer.from(vectors.v2_qwen))).toBe(true)
 
       // 4. Document counts
-      const docCounts = rawDb.prepare(
-        'SELECT document_id, space_id, completed_chunks FROM document_embedding_counts'
-      ).all() as Array<{
+      const docCounts = rawDb
+        .prepare('SELECT document_id, space_id, completed_chunks FROM document_embedding_counts')
+        .all() as Array<{
         document_id: number
         space_id: string
         completed_chunks: number
@@ -341,7 +382,9 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
       })
 
       // 5. Document status & model
-      const doc = rawDb.prepare('SELECT id, status, embedding_model, chunk_done FROM documents WHERE id = 1').get() as {
+      const doc = rawDb
+        .prepare('SELECT id, status, embedding_model, chunk_done FROM documents WHERE id = 1')
+        .get() as {
         id: number
         status: string
         embedding_model: string
@@ -386,18 +429,28 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
 
       // 2. Vector count is strictly 0: no foreign vectors from f2-320, qwen-512, or fake-320
       const rawDb = store.rawDb
-      const totalEmbeddings = rawDb.prepare('SELECT count(*) as count FROM chunk_embeddings').get() as { count: number }
+      const totalEmbeddings = rawDb
+        .prepare('SELECT count(*) as count FROM chunk_embeddings')
+        .get() as { count: number }
       expect(totalEmbeddings.count).toBe(0)
 
-      const f2Vectors = rawDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'f2-320'").get() as { count: number }
-      const qwenVectors = rawDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'qwen-512'").get() as { count: number }
-      const fakeVectors = rawDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'fake-320'").get() as { count: number }
+      const f2Vectors = rawDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'f2-320'")
+        .get() as { count: number }
+      const qwenVectors = rawDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'qwen-512'")
+        .get() as { count: number }
+      const fakeVectors = rawDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'fake-320'")
+        .get() as { count: number }
       expect(f2Vectors.count).toBe(0)
       expect(qwenVectors.count).toBe(0)
       expect(fakeVectors.count).toBe(0)
 
       // 3. document_embedding_counts has 0 records
-      const countRows = rawDb.prepare('SELECT count(*) as count FROM document_embedding_counts').get() as { count: number }
+      const countRows = rawDb
+        .prepare('SELECT count(*) as count FROM document_embedding_counts')
+        .get() as { count: number }
       expect(countRows.count).toBe(0)
 
       // 4. Document gracefully transitioned to 'text-only' status with null embedding_model and chunk_done = 0
@@ -405,7 +458,9 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
       expect(doc).not.toBeNull()
       expect(doc?.status).toBe('text-only')
 
-      const rawDoc = rawDb.prepare('SELECT id, status, embedding_model, chunk_done FROM documents WHERE id = 1').get() as {
+      const rawDoc = rawDb
+        .prepare('SELECT id, status, embedding_model, chunk_done FROM documents WHERE id = 1')
+        .get() as {
         id: number
         status: string
         embedding_model: string | null
@@ -432,7 +487,9 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
 
     const rawDb = new DatabaseSync(dbPath)
     try {
-      const f2Rows = rawDb.prepare('SELECT chunk_id, space_id, vector FROM chunk_embeddings WHERE space_id = ?').all('f2-320') as Array<{
+      const f2Rows = rawDb
+        .prepare('SELECT chunk_id, space_id, vector FROM chunk_embeddings WHERE space_id = ?')
+        .all('f2-320') as Array<{
         chunk_id: number
         space_id: string
         vector: Uint8Array
@@ -454,31 +511,51 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
     const onlyFakeDb = new DatabaseSync(onlyFakeDbPath)
     createBaseV2Schema(onlyFakeDb)
 
-    onlyFakeDb.prepare(`
+    onlyFakeDb
+      .prepare(
+        `
       INSERT INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run('fake-320', 'models/fake-model-320', 'rev-fake', 'cls', 320, 'fp32')
+    `,
+      )
+      .run('fake-320', 'models/fake-model-320', 'rev-fake', 'cls', 320, 'fp32')
 
-    onlyFakeDb.prepare(`
+    onlyFakeDb
+      .prepare(
+        `
       INSERT INTO documents (id, path, name, status, last_opened_at, active_chunk_set_id, embedding_model, chunk_total, chunk_done)
       VALUES (2, 'D:/documents/fake-only.docx', 'fake-only.docx', 'ready', 1700000000, 2, 'fake-320', 1, 1)
-    `).run()
+    `,
+      )
+      .run()
 
-    onlyFakeDb.prepare(`
+    onlyFakeDb
+      .prepare(
+        `
       INSERT INTO chunk_sets (id, document_id, chunker_version, state)
       VALUES (2, 2, 1, 'active')
-    `).run()
+    `,
+      )
+      .run()
 
-    onlyFakeDb.prepare(`
+    onlyFakeDb
+      .prepare(
+        `
       INSERT INTO chunks (id, document_id, chunk_set_id, ordinal, text, normalized, location)
       VALUES (201, 2, 2, 0, 'Chunk chỉ có FakeModel embedding', 'chunk chi co fakemodel embedding', 'P1')
-    `).run()
+    `,
+      )
+      .run()
 
     const fakeVec201 = createSampleVector(320, 0.777)
-    onlyFakeDb.prepare(`
+    onlyFakeDb
+      .prepare(
+        `
       INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
       VALUES (201, 'fake-320', ?, 320)
-    `).run(fakeVec201)
+    `,
+      )
+      .run(fakeVec201)
     onlyFakeDb.close()
 
     // Migrate targeting f2-320 (320D)
@@ -494,14 +571,22 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
 
     const verifyFakeDb = new DatabaseSync(onlyFakeDbPath)
     try {
-      const f2Count = verifyFakeDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'f2-320'").get() as { count: number }
-      const fakeCount = verifyFakeDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'fake-320'").get() as { count: number }
-      const totalCount = verifyFakeDb.prepare('SELECT count(*) as count FROM chunk_embeddings').get() as { count: number }
+      const f2Count = verifyFakeDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'f2-320'")
+        .get() as { count: number }
+      const fakeCount = verifyFakeDb
+        .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id = 'fake-320'")
+        .get() as { count: number }
+      const totalCount = verifyFakeDb
+        .prepare('SELECT count(*) as count FROM chunk_embeddings')
+        .get() as { count: number }
       expect(f2Count.count).toBe(0)
       expect(fakeCount.count).toBe(0)
       expect(totalCount.count).toBe(0)
 
-      const doc = verifyFakeDb.prepare('SELECT status, embedding_model, chunk_done FROM documents WHERE id = 2').get() as {
+      const doc = verifyFakeDb
+        .prepare('SELECT status, embedding_model, chunk_done FROM documents WHERE id = 2')
+        .get() as {
         status: string
         embedding_model: string | null
         chunk_done: number
@@ -516,7 +601,11 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
 
   it('SPACE-05: source order does not affect selected model', () => {
     // Test 3 different table insertion orders for chunk_embeddings in source SQLite
-    const orders: Array<'fake-first' | 'qwen-first' | 'f2-first'> = ['fake-first', 'qwen-first', 'f2-first']
+    const orders: Array<'fake-first' | 'qwen-first' | 'f2-first'> = [
+      'fake-first',
+      'qwen-first',
+      'f2-first',
+    ]
 
     for (const order of orders) {
       const orderDbPath = join(tempDir, `order-${order}.db`)
@@ -531,7 +620,9 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
 
       const orderDb = new DatabaseSync(orderDbPath)
       try {
-        const f2Rows = orderDb.prepare('SELECT chunk_id, space_id, vector FROM chunk_embeddings WHERE space_id = ?').all('f2-320') as Array<{
+        const f2Rows = orderDb
+          .prepare('SELECT chunk_id, space_id, vector FROM chunk_embeddings WHERE space_id = ?')
+          .all('f2-320') as Array<{
           chunk_id: number
           space_id: string
           vector: Uint8Array
@@ -544,7 +635,9 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
         expect(Buffer.from(r102.vector).equals(Buffer.from(orderVectors.v2_f2))).toBe(true)
 
         // Ensure 0 foreign vectors
-        const foreignCount = orderDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id != 'f2-320'").get() as { count: number }
+        const foreignCount = orderDb
+          .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id != 'f2-320'")
+          .get() as { count: number }
         expect(foreignCount.count).toBe(0)
       } finally {
         orderDb.close()
@@ -562,7 +655,9 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
 
       const qwenDb = new DatabaseSync(qwenOrderDbPath)
       try {
-        const qwenRows = qwenDb.prepare('SELECT chunk_id, space_id, vector FROM chunk_embeddings WHERE space_id = ?').all('qwen-512') as Array<{
+        const qwenRows = qwenDb
+          .prepare('SELECT chunk_id, space_id, vector FROM chunk_embeddings WHERE space_id = ?')
+          .all('qwen-512') as Array<{
           chunk_id: number
           space_id: string
           vector: Uint8Array
@@ -574,13 +669,15 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
         expect(Buffer.from(r101.vector).equals(Buffer.from(qwenVectors.v1_qwen))).toBe(true)
         expect(Buffer.from(r102.vector).equals(Buffer.from(qwenVectors.v2_qwen))).toBe(true)
 
-        const foreignCount = qwenDb.prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id != 'qwen-512'").get() as { count: number }
+        const foreignCount = qwenDb
+          .prepare("SELECT count(*) as count FROM chunk_embeddings WHERE space_id != 'qwen-512'")
+          .get() as { count: number }
         expect(foreignCount.count).toBe(0)
       } finally {
         qwenDb.close()
       }
     }
-  })
+  }, 60_000)
 
   it('SPACE-06: target dimensions mismatch → fail', () => {
     // 1. Space 'f2-320' has declared dimensions 320, but options provide activeDimensions = 512
@@ -609,32 +706,52 @@ describe('Pair 02: Migration Active-Space Selection Suite (QA-02)', () => {
     const corruptDb = new DatabaseSync(corruptDbPath)
     createBaseV2Schema(corruptDb)
 
-    corruptDb.prepare(`
+    corruptDb
+      .prepare(
+        `
       INSERT INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
       VALUES ('corrupt-space', 'models/corrupt', 'rev1', 'mean', 320, 'q8')
-    `).run()
+    `,
+      )
+      .run()
 
-    corruptDb.prepare(`
+    corruptDb
+      .prepare(
+        `
       INSERT INTO documents (id, path, name, status, last_opened_at, active_chunk_set_id, embedding_model, chunk_total, chunk_done)
       VALUES (3, 'D:/documents/corrupt.docx', 'corrupt.docx', 'ready', 1700000000, 3, 'corrupt-space', 1, 1)
-    `).run()
+    `,
+      )
+      .run()
 
-    corruptDb.prepare(`
+    corruptDb
+      .prepare(
+        `
       INSERT INTO chunk_sets (id, document_id, chunker_version, state)
       VALUES (3, 3, 1, 'active')
-    `).run()
+    `,
+      )
+      .run()
 
-    corruptDb.prepare(`
+    corruptDb
+      .prepare(
+        `
       INSERT INTO chunks (id, document_id, chunk_set_id, ordinal, text, normalized, location)
       VALUES (301, 3, 3, 0, 'Corrupt vector chunk', 'corrupt vector chunk', 'P1')
-    `).run()
+    `,
+      )
+      .run()
 
     // Insert 128D vector blob for a 320D declared space
     const corruptVec = createSampleVector(128, 0.999)
-    corruptDb.prepare(`
+    corruptDb
+      .prepare(
+        `
       INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim)
       VALUES (301, 'corrupt-space', ?, 128)
-    `).run(corruptVec)
+    `,
+      )
+      .run(corruptVec)
     corruptDb.close()
 
     expect(() => {

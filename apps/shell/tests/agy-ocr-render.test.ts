@@ -272,4 +272,61 @@ describe('renderPdfPagesForOcr (real PDFium)', () => {
       },
     )
   })
+
+  it('OCR2-PDF-01: Valid embedded JPEG still uses fast path', async () => {
+    const { path, jpegs } = pdfOf(1)
+    const result = await renderPdfPagesForOcr(path, { done: [], maxPages: 5, count: 5 })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.pages).toHaveLength(1)
+    expect(result.pages[0]!.source).toBe('embedded')
+    expect(Buffer.from(result.pages[0]!.jpeg).equals(Buffer.from(jpegs[0]!))).toBe(true)
+  })
+
+  it('OCR2-PDF-02: Damaged embedded JPEG triggers PDFium rasterization fallback', async () => {
+    const w = 800
+    const h = 1100
+    const validJpeg = encodeGrayJpeg(testPattern(w, h, 0), w, h, 80)
+    const damagedJpeg = validJpeg.subarray(0, validJpeg.length >> 1)
+    const pdfBytes = buildScannedPdf([{ jpeg: damagedJpeg, width: w, height: h }])
+    const badPdfPath = join(dir, `damaged-embedded-${Date.now()}.pdf`)
+    writeFileSync(badPdfPath, pdfBytes)
+
+    const result = await renderPdfPagesForOcr(badPdfPath, { done: [], maxPages: 5, count: 5 })
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.pages).toHaveLength(1)
+    expect(result.pages[0]!.source).toBe('rendered')
+  })
+
+  it('OCR2-PDF-07: retryRenderedPage cannot exceed page/size limits and bypasses embedded fast path', async () => {
+    const { path } = pdfOf(3)
+
+    // Valid retry page returns exactly 1 page with source: 'rendered'
+    const retryValid = await renderPdfPagesForOcr(path, {
+      done: [],
+      maxPages: 10,
+      count: 1,
+      retryRenderedPage: 2,
+    })
+    expect(retryValid.ok).toBe(true)
+    if (!retryValid.ok) return
+    expect(retryValid.pages).toHaveLength(1)
+    expect(retryValid.pages[0]!.page).toBe(2)
+    expect(retryValid.pages[0]!.source).toBe('rendered')
+
+    // Out-of-bounds retry page (0, negative, > totalPages, or > maxPages) returns render failure
+    expect(
+      await renderPdfPagesForOcr(path, { done: [], maxPages: 10, count: 1, retryRenderedPage: 0 }),
+    ).toMatchObject({ ok: false, code: 'render' })
+    expect(
+      await renderPdfPagesForOcr(path, { done: [], maxPages: 10, count: 1, retryRenderedPage: -1 }),
+    ).toMatchObject({ ok: false, code: 'render' })
+    expect(
+      await renderPdfPagesForOcr(path, { done: [], maxPages: 10, count: 1, retryRenderedPage: 99 }),
+    ).toMatchObject({ ok: false, code: 'render' })
+    expect(
+      await renderPdfPagesForOcr(path, { done: [], maxPages: 2, count: 1, retryRenderedPage: 3 }),
+    ).toMatchObject({ ok: false, code: 'render' })
+  })
 })

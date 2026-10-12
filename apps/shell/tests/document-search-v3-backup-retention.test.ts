@@ -11,15 +11,7 @@
  * - BACKUP-07: Recovery uses exact manifest backup path rather than guessing
  */
 
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  statSync,
-  utimesSync,
-  writeFileSync,
-} from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -33,7 +25,6 @@ import {
 } from '../src/main/document-memory/storage/migration/backup-retention'
 import {
   findAllV2Backups,
-  initV3RetentionState,
   readV3RetentionState,
   writeV3RetentionState,
 } from '../src/main/document-memory/storage/migration/v3-retention-state'
@@ -92,18 +83,24 @@ function createValidV2Database(path: string, markerPayload = 'v2-data'): void {
       meta_value TEXT
     );
   `)
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO documents (id, path, name, status, mtime_ms, size_bytes)
     VALUES (1, 'D:/documents/test.docx', 'test.docx', 'completed', 1700000000000, 1024)
-  `).run()
-  db.prepare(`
+  `,
+  ).run()
+  db.prepare(
+    `
     INSERT INTO document_chunks (id, document_id, chunk_index, content, token_count)
     VALUES (1, 1, 0, 'sample search content', 3)
-  `).run()
-  db.prepare(`
+  `,
+  ).run()
+  db.prepare(
+    `
     INSERT INTO v2_metadata (meta_key, meta_value)
     VALUES ('marker', ?)
-  `).run(markerPayload)
+  `,
+  ).run(markerPayload)
   db.close()
 }
 
@@ -164,7 +161,7 @@ describe('Document Search V3: Backup Collision & Retention Hardening Suite (QA-0
   })
 
   // BACKUP-01: existing old backup doesn't collide
-  it('BACKUP-01 existing old backup doesn\'t collide', () => {
+  it("BACKUP-01 existing old backup doesn't collide", () => {
     createValidV2Database(dbPath, 'original-v2-marker')
 
     // Scenario 1: Pre-existing canonical backup file on disk
@@ -190,13 +187,17 @@ describe('Document Search V3: Backup Collision & Retention Hardening Suite (QA-0
 
     // Pre-existing backup contents are completely intact and untouched
     expect(readFileSync(canonicalBackup, 'utf8')).toBe('PRE_EXISTING_CANONICAL_BACKUP_PAYLOAD')
-    expect(readFileSync(existingCollisionPath, 'utf8')).toBe('PRE_EXISTING_TIMESTAMPED_BACKUP_PAYLOAD')
+    expect(readFileSync(existingCollisionPath, 'utf8')).toBe(
+      'PRE_EXISTING_TIMESTAMPED_BACKUP_PAYLOAD',
+    )
 
     // Newly generated backup is valid SQLite containing original V2 data
     expect(isBackupVerified(result.backupDbPath)).toBe(true)
     const backupDb = new DatabaseSync(result.backupDbPath)
     try {
-      const row = backupDb.prepare('SELECT meta_value FROM v2_metadata WHERE meta_key = ?').get('marker') as { meta_value: string }
+      const row = backupDb
+        .prepare('SELECT meta_value FROM v2_metadata WHERE meta_key = ?')
+        .get('marker') as { meta_value: string }
       expect(row.meta_value).toBe('original-v2-marker')
     } finally {
       backupDb.close()
@@ -239,8 +240,12 @@ describe('Document Search V3: Backup Collision & Retention Hardening Suite (QA-0
     const db1 = new DatabaseSync(backupPath1)
     const db2 = new DatabaseSync(backupPath2)
     try {
-      const row1 = db1.prepare('SELECT meta_value FROM v2_metadata WHERE meta_key = ?').get('marker') as { meta_value: string }
-      const row2 = db2.prepare('SELECT meta_value FROM v2_metadata WHERE meta_key = ?').get('marker') as { meta_value: string }
+      const row1 = db1
+        .prepare('SELECT meta_value FROM v2_metadata WHERE meta_key = ?')
+        .get('marker') as { meta_value: string }
+      const row2 = db2
+        .prepare('SELECT meta_value FROM v2_metadata WHERE meta_key = ?')
+        .get('marker') as { meta_value: string }
       expect(row1.meta_value).toBe('migration-1-data')
       expect(row2.meta_value).toBe('migration-2-data')
     } finally {
@@ -393,7 +398,9 @@ describe('Document Search V3: Backup Collision & Retention Hardening Suite (QA-0
     expect(existsSync(dbPath)).toBe(true)
     const restoredDb = new DatabaseSync(dbPath)
     try {
-      const row = restoredDb.prepare('SELECT meta_value FROM v2_metadata WHERE meta_key = ?').get('marker') as { meta_value: string }
+      const row = restoredDb
+        .prepare('SELECT meta_value FROM v2_metadata WHERE meta_key = ?')
+        .get('marker') as { meta_value: string }
       expect(row.meta_value).toBe('v2-data-before-failure')
     } finally {
       restoredDb.close()

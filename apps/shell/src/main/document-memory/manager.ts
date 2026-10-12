@@ -3,9 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { writeExtractedContentSliced, getValidatedFreeDiskBytes } from './runtime/content-write-budget'
 import type { Worker } from 'node:worker_threads'
-import type { DocumentIndexProgress } from '@genoffice/agent-core'; import type { FolderIndexProgress } from './folder-progress'
-import type { DocumentIndexStorageDiagnostics, DocumentIndexMigrationDiagnostics, IndexingBlockReason, IndexingNow } from '../../shared/fork/document-index-api'
-import type { DocumentMemoryStatus } from '../../shared/home-api'; import { DocumentMemoryStore, type FolderChunkProgress, type DocumentMemoryStats } from './store'; import { StatusAggregates, createThreadFetcher } from './runtime/status-aggregates'
+import type { DocumentIndexProgress } from '@genoffice/agent-core'; import type { FolderIndexProgress } from './folder-progress'; import type { DocumentIndexStorageDiagnostics, DocumentIndexMigrationDiagnostics, IndexingBlockReason, IndexingNow } from '../../shared/fork/document-index-api'
+import type { DocumentMemoryStatus } from '../../shared/home-api'; import { DocumentMemoryStore, type FolderChunkProgress, type DocumentMemoryStats, type FileEnrollmentOutcome, type FileEnrollmentResult } from './store'; import { StatusAggregates, createThreadFetcher } from './runtime/status-aggregates'
 import type { EmbeddingProfileId, MachineSpec } from './embedding-profiles'; import { resolveStartupEmbeddingProfile } from './embedding/initial-profile'; import { modelFilesCached } from './embedding/model-files'; import { createOcrHost, type OcrHostInput } from './ocr-host'; import type { OcrJobHost } from './agy-ocr-job'; import { createLocalOcrWiring, type LocalOcrWiring, type LocalOcrWiringDeps } from './runtime/local-ocr-wiring'; import type { LocalOcrGate } from './local-ocr/local-ocr-job'; import type { LocalOcrSettings } from '../../shared/fork/agy-ocr'
 import { FileStabilityGate, type FileStabilityGateOptions } from './file-stability'; import { BackgroundWorkGate, isIndexingPaused, onIndexingPolicyChange } from './background-work-gate'
 import { ChunkUpgradeCoordinator, type DocumentNeedingUpgrade } from './chunk-upgrade'; import { EmbeddingMigration } from './embedding-migration'
@@ -14,11 +13,10 @@ import { ExtractionCoordinator, statMeta, isPartialExtract, isExtractResult, rea
 import { EmbeddingCoordinator } from './runtime/embedding-coordinator'; import { reserveExtractionLease } from './runtime/extraction-lease'
 import { MaintenanceScheduler, INITIAL_MAINTENANCE_DELAY_MS } from './runtime/maintenance-scheduler'; import { LegacyChunkMigrator } from './runtime/legacy-chunk-migrator'; import { AdmissionRetry } from './runtime/admission-retry'
 import { readActiveEmbeddingConfig } from './storage/embedding-settings'; import { StorageAdmissionController } from './runtime/storage-admission'; import { AnnHostAdmissionCoordinator } from './runtime/ann-host-admission'; import { SyncMetadataAdmissionCoordinator } from './runtime/sync-metadata-admission'
-import { StorageBudgetCoordinator } from './runtime/storage-budget-coordinator'; import type { StorageBudgetConfig, StorageBudgetPreset } from './storage/storage-settings'
-import { createStorageBudget, type DocumentIndexStorageBudget, type StorageBudgetSnapshot } from './storage-budget'
+import { StorageBudgetCoordinator } from './runtime/storage-budget-coordinator'; import type { StorageBudgetConfig, StorageBudgetPreset } from './storage/storage-settings'; import { createStorageBudget, type DocumentIndexStorageBudget, type StorageBudgetSnapshot } from './storage-budget'
 import { createIndexProcess } from './process-worker'; import workerPath from './worker?modulePath'
 import { safeError } from './issues'; import { orderQueue, nextInOrder, weightOf } from './queue-order'; import type { WorkerRequest, WorkerReply } from './worker-types'
-export type { FreshDocumentMemoryHit }
+export type { FreshDocumentMemoryHit, FileEnrollmentOutcome, FileEnrollmentResult }
 function readEnabled(p: string): boolean { try { return JSON.parse(readFileSync(p, 'utf8'))?.enabled !== false } catch { return true } }
 function saveEnabled(p: string, enabled: boolean): void { try { writeFileSync(p, JSON.stringify({ enabled }), { mode: 0o600 }) } catch {} }
 export interface DocumentMemoryManagerOptions {
@@ -55,7 +53,7 @@ export class DocumentMemoryManager {
   private readonly activeBytes = new Map<string, number>(); private readonly activeExtractions = new Set<string>(); private readonly activeSince = new Map<string, number>()
   private readonly activeGeneration = new Map<string, number>(); private readonly pathGeneration = new Map<string, number>(); private readonly readProgress = new Map<string, { done: number; total: number }>()
   private readonly skippedMigrationDocs = new Set<number>(); private readonly enabledListeners = new Set<() => void>(); private readonly clearedListeners = new Set<() => void>()
-  private readonly counterBackfill: Promise<void>; private migrationTimer: NodeJS.Timeout | null = null; private pollTimer: NodeJS.Timeout | null = null
+  private readonly counterBackfill: Promise<void>; private migrationTimer: NodeJS.Timeout | null = null; private pollTimer: NodeJS.Timeout | null = null; private shutdownPromise: Promise<void> | null = null
   private readonly stopPolicyWatch: () => void; private readonly stabilityGate: FileStabilityGate; private readonly backgroundGate: BackgroundWorkGate
   private readonly chunkUpgrade: ChunkUpgradeCoordinator; private readonly embeddingMigration: EmbeddingMigration
   private readonly admissionRetry = new AdmissionRetry({ refresh: async () => { const s = await this.maintScheduler.refreshAccountingAsync(); return s.measurementStatus === 'fresh' && !s.isDegraded }, resume: () => void this.poll(), isActive: () => this.enabled && !this.stopped && !isIndexingPaused() })
@@ -173,6 +171,10 @@ export class DocumentMemoryManager {
     this.pendingIntake.remove(p); this.enqueue(p, true)
   }
   indexDiscoveredFile(p: string, meta?: { mtimeMs: number; sizeBytes: number }) { return this.freshnessCoord.indexDiscoveredFile(p, meta) }
+  enrollDiscoveredFile(p: string, meta?: { mtimeMs: number; sizeBytes: number }): FileEnrollmentResult { return this.freshnessCoord.enrollDiscoveredFile(p, meta) }
+  onWriteReadyChange(listener: (ready: boolean) => void): () => void { return this.budgetCoord.onWriteReadyChange(listener) }
+  isWriteReady(): boolean { return Boolean(this.budgetCoord?.isWriteReady() && this.syncAdmissionCoord?.isReady()) }
+  async waitForWriteReady(timeoutMs = 10_000): Promise<boolean> { const started = Date.now(); while (!this.stopped && !this.isWriteReady()) { if (Date.now() - started > timeoutMs) return false; await new Promise((r) => setTimeout(r, 20)) }; return this.isWriteReady() }
   isEnabled(): boolean { return this.enabled }
   retryDocument(id: number, opts: { now?: boolean; prioritize?: boolean } = {}): { ok: boolean; error?: string } {
     if (!this.enabled || this.stopped) return { ok: false, error: 'paused' }
@@ -247,7 +249,7 @@ export class DocumentMemoryManager {
   }
   exclude(path: string): void { this.pendingIntake.remove(resolve(path)); this.store.exclude(path) }
   clear(): void {
-    this.store.clear(); this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear(); this.embeddingCoord.clearQueue(); this.pendingIntake.clear()
+    this.store.clear(); this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear(); this.embeddingCoord.clearQueue(); this.pendingIntake.clear(); this.statusAgg?.reset()
     for (const fn of this.clearedListeners) try { fn() } catch {}
   }
   async search(query: string, limit = 8): Promise<{ hits: FreshDocumentMemoryHit[]; pending: number; errors: number; modelState: string }> {
@@ -333,16 +335,18 @@ export class DocumentMemoryManager {
     const needing = this.chunkUpgrade.getDocumentsNeedingUpgrade(1, this.skippedMigrationDocs)
     if (needing.length > 0) { await this.migrateLegacyDocument(needing[0]!); this.scheduleMigrationStep(500) }
   }
-  close(): void {
-    if (this.stopped) return
-    this.stopped = true; this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
-    if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose()
-    if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
-    this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
-    this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear()
-    this.host.terminate()
-    void this.localOcrWiring?.dispose().catch(() => undefined)
-    this.store.close()
+  close(): void { void this.closeAsync() }
+  closeAsync(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise
+    if (!this.stopped) {
+      this.stopped = true; this.stopJunkPurge?.(); this.statusAgg?.close(); this.stopPolicyWatch(); this.epoch++
+      if (this.pollTimer) { clearInterval(this.pollTimer); this.pollTimer = null }; this.admissionRetry.dispose(); if (this.migrationTimer) { clearTimeout(this.migrationTimer); this.migrationTimer = null }
+      this.syncAdmissionCoord.close(); this.budgetCoord.close(); this.maintScheduler.dispose(); this.freshnessCoord.clearMissing(); this.embeddingCoord.clearQueue(); this.skippedMigrationDocs.clear(); this.admission.clear(); this.pendingIntake.close()
+      this.queue.length = 0; this.queued.clear(); this.gate.clear(); this.urgent.clear(); this.deferred.clear()
+    }
+    return (this.shutdownPromise = (async () => {
+      try { await this.localOcrWiring?.dispose().catch(() => undefined); await this.host.terminate() } finally { this.store.close() }
+    })())
   }
   private enqueue(path: string, prioritize = false, bytes?: number): void {
     if (this.stopped || !this.enabled) return; const p = resolve(path); if (this.activeGeneration.get(p) === this.currentGeneration(p)) return
@@ -381,7 +385,7 @@ export class DocumentMemoryManager {
   }
   private async runEmbedPass(): Promise<void> {
     const startedAt = Date.now()
-    try { await this.embeddingCoord.drainEmbeddings((req, timeout) => this.ask(req, timeout, true) as any, () => { this.progressTicks++ }, EMBED_SLICE_MS) } finally { this.lanes.add('embed', Date.now() - startedAt) }
+    try { await this.embeddingCoord.drainEmbeddings((req, timeout) => this.ask(req, timeout, true) as any, () => { this.progressTicks++ }, EMBED_SLICE_MS) } finally { this.lanes.add('embed', Date.now() - startedAt); if (!this.stopped && this.enabled) this.drain() }
   }
   private async drainExtractions(): Promise<void> {
     if (this.extracting || this.stopped) return

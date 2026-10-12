@@ -21,9 +21,7 @@ import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { FreshnessCoordinator } from '../src/main/document-memory/runtime/freshness-coordinator'
-import {
-  migrateStorageV2ToV3,
-} from '../src/main/document-memory/storage-migration'
+import { migrateStorageV2ToV3 } from '../src/main/document-memory/storage-migration'
 import {
   getManifestPath,
   recoverInterruptedCutover,
@@ -47,10 +45,7 @@ import {
   IndexStatusCache,
 } from '../src/main/fork/document-index-snapshot-service'
 import { IndexIssueReader } from '../src/main/document-memory/issue-reader'
-import {
-  publishIndexingPolicy,
-  resetIndexingPolicyBus,
-} from '../src/main/fork/indexing-policy-bus'
+import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
 import { MaintenanceScheduler } from '../src/main/document-memory/runtime/maintenance-scheduler'
 import type { WorkerRequest } from '../src/main/document-memory/worker-types'
 import { storageBudgetAckReply, waitForManagerWriteReady } from './helpers/storage-budget-ack'
@@ -120,10 +115,10 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
     managers = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const m of managers) {
       try {
-        m.close()
+        await m.closeAsync()
       } catch {
         // ignore
       }
@@ -279,9 +274,13 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
       // Interactive readNowDocument must trigger immediately even under pause!
       const readPromise = manager.readNowDocument(normalFile)
       await vi.waitFor(() =>
-        expect(workers.some((w) => w.requests.some((r) => r.path === normalFile && r.interactive))).toBe(true),
+        expect(
+          workers.some((w) => w.requests.some((r) => r.path === normalFile && r.interactive)),
+        ).toBe(true),
       )
-      const readWorker = workers.find((w) => w.requests.some((r) => r.path === normalFile && r.interactive))!
+      const readWorker = workers.find((w) =>
+        w.requests.some((r) => r.path === normalFile && r.interactive),
+      )!
 
       readWorker.finish(true)
       const readResult = await readPromise
@@ -307,7 +306,11 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
       manager.indexDiscoveredFile(userFile, { mtimeMs: userSt.mtimeMs, sizeBytes: userSt.size })
 
       const userReadPromise = manager.readNowDocument(userFile)
-      await vi.waitFor(() => expect(workers.some((w) => w.requests.some((r) => r.path === userFile && r.interactive))).toBe(true))
+      await vi.waitFor(() =>
+        expect(
+          workers.some((w) => w.requests.some((r) => r.path === userFile && r.interactive)),
+        ).toBe(true),
+      )
 
       // The previous worker was recycled/terminated to preempt heavy extraction
       expect(activeWorker.terminated).toBe(true)
@@ -341,9 +344,30 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
       rmSync(testFile3)
 
       const hits = [
-        { id: 1, path: testFile1, name: 'fresh-doc.txt', mtimeMs: st1.mtimeMs, sizeBytes: st1.size, score: 1 },
-        { id: 2, path: testFile2, name: 'stale-doc.txt', mtimeMs: st2.mtimeMs, sizeBytes: st2.size, score: 0.9 },
-        { id: 3, path: testFile3, name: 'missing-doc.txt', mtimeMs: st3.mtimeMs, sizeBytes: st3.size, score: 0.8 },
+        {
+          id: 1,
+          path: testFile1,
+          name: 'fresh-doc.txt',
+          mtimeMs: st1.mtimeMs,
+          sizeBytes: st1.size,
+          score: 1,
+        },
+        {
+          id: 2,
+          path: testFile2,
+          name: 'stale-doc.txt',
+          mtimeMs: st2.mtimeMs,
+          sizeBytes: st2.size,
+          score: 0.9,
+        },
+        {
+          id: 3,
+          path: testFile3,
+          name: 'missing-doc.txt',
+          mtimeMs: st3.mtimeMs,
+          sizeBytes: st3.size,
+          score: 0.8,
+        },
       ]
 
       const annotated = await freshness.annotateFreshness(hits)
@@ -377,7 +401,9 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
 
       // Create initial valid source
       const db = new DatabaseSync(sourceDb)
-      db.exec("CREATE TABLE test_data (val TEXT); INSERT INTO test_data VALUES ('original-source');")
+      db.exec(
+        "CREATE TABLE test_data (val TEXT); INSERT INTO test_data VALUES ('original-source');",
+      )
       db.close()
 
       // Simulate step 1 of cutover: source was renamed to backup, temp is being prepared, then CRASH!
@@ -544,8 +570,16 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
       const vec384 = floatBlob(new Array(384).fill(0.01))
       const vec768 = floatBlob(new Array(768).fill(0.02))
 
-      v2Db.prepare('INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, ?)').run(101, 'space-active', vec384, 384)
-      v2Db.prepare('INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, ?)').run(101, 'space-other', vec768, 768)
+      v2Db
+        .prepare(
+          'INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, ?)',
+        )
+        .run(101, 'space-active', vec384, 384)
+      v2Db
+        .prepare(
+          'INSERT INTO chunk_embeddings (chunk_id, space_id, vector, vector_dim) VALUES (?, ?, ?, ?)',
+        )
+        .run(101, 'space-other', vec768, 768)
 
       v2Db.close()
 
@@ -561,7 +595,9 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
       const v3Store = new DocumentMemoryStore(dbPath)
       try {
         const rawDb = v3Store.rawDb
-        const rows = rawDb.prepare('SELECT chunk_id, space_id, vector_dim FROM chunk_embeddings').all() as Array<{
+        const rows = rawDb
+          .prepare('SELECT chunk_id, space_id, vector_dim FROM chunk_embeddings')
+          .all() as Array<{
           chunk_id: number
           space_id: string
           vector_dim: number
@@ -571,7 +607,9 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
         expect(rows[0].vector_dim).toBe(384)
 
         // Ensure space-other was NOT copied into chunk_embeddings
-        const otherRows = rawDb.prepare("SELECT * FROM chunk_embeddings WHERE space_id = 'space-other'").all()
+        const otherRows = rawDb
+          .prepare("SELECT * FROM chunk_embeddings WHERE space_id = 'space-other'")
+          .all()
         expect(otherRows).toHaveLength(0)
       } finally {
         v3Store.close()
@@ -588,9 +626,9 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
       const store = new DocumentMemoryStore(dbPath)
       const rawDb = store.rawDb
 
-      const columns = (rawDb.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>).map(
-        (c) => c.name,
-      )
+      const columns = (
+        rawDb.prepare('PRAGMA table_info(chunks)').all() as Array<{ name: string }>
+      ).map((c) => c.name)
 
       expect(columns).toContain('id')
       expect(columns).toContain('document_id')
@@ -645,11 +683,13 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
       expect(gcStats.orphanChunksDeleted).toBeGreaterThanOrEqual(1)
 
       // Chunk set 2 (building) MUST be preserved!
-      const set2 = db.prepare('SELECT state FROM chunk_sets WHERE id = 2').get() as { state: string } | undefined
+      const set2 = db.prepare('SELECT state FROM chunk_sets WHERE id = 2').get() as
+        { state: string } | undefined
       expect(set2).toBeDefined()
       expect(set2?.state).toBe('building')
 
-      const chunk1002 = db.prepare('SELECT text FROM chunks WHERE id = 1002').get() as { text: string } | undefined
+      const chunk1002 = db.prepare('SELECT text FROM chunks WHERE id = 1002').get() as
+        { text: string } | undefined
       expect(chunk1002?.text).toBe('Building chunk being upgraded')
 
       // Chunk 1003 (in retired set 3) MUST be removed
@@ -657,7 +697,11 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
       expect(chunk1003).toBeUndefined()
 
       // document_embedding_counts recounted correctly (now 2 remaining valid embeddings: 1001 & 1002)
-      const countRow = db.prepare("SELECT completed_chunks FROM document_embedding_counts WHERE document_id = 10 AND space_id = 'space-1'").get() as { completed_chunks: number }
+      const countRow = db
+        .prepare(
+          "SELECT completed_chunks FROM document_embedding_counts WHERE document_id = 10 AND space_id = 'space-1'",
+        )
+        .get() as { completed_chunks: number }
       expect(countRow.completed_chunks).toBe(2)
 
       store.close()
@@ -675,10 +719,12 @@ describe('Document Search V3 Enterprise Parity & Fault Injection Suite', () => {
           ('model-b', 'repo-b', 'rev', 'mean', 768, 'fp32');
       `)
 
-      db.prepare(`
+      db.prepare(
+        `
         INSERT INTO documents (id, path, name, status, embedding_model, chunk_counted, chunk_total, chunk_done)
         VALUES (1, ?, 'multi-space.txt', 'text-only', 'model-a', 0, 2, 0);
-      `).run(docPath)
+      `,
+      ).run(docPath)
 
       db.exec(`
         INSERT INTO chunks (id, document_id, ordinal, text, location) VALUES

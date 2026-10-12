@@ -57,8 +57,8 @@ beforeEach(() => {
   managers = []
   worker = new SpyWorker()
 })
-afterEach(() => {
-  for (const manager of managers) manager.close()
+afterEach(async () => {
+  for (const manager of managers) await manager.closeAsync()
   rmSync(dir, { recursive: true, force: true })
 })
 

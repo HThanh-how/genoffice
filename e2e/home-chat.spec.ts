@@ -107,8 +107,8 @@ test('home chat finds remembered content, opens its source and preserves the hom
     await home.screenshot({ path: screenshotPath('home-chat-glass-dark') })
     await home.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'))
     await home
-      .locator('.home-chat-panel')
-      .getByRole('button', { name: /annual-budget\.md/ })
+      .locator('.home-chat-panel .hc-answer .hc-file-open')
+      .filter({ hasText: 'annual-budget.md' })
       .click()
     await expect(home.locator('.tab-item').filter({ hasText: 'annual-budget.md' })).toHaveCount(1)
     await expect(home.locator('.home-hero')).not.toBeVisible()

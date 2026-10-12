@@ -6,7 +6,6 @@ import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { IndexIssueReader } from '../src/main/document-memory/issue-reader'
 import {
   getDocumentIndexSnapshot,
-  getDocumentIndexDiagnostics,
   snapshotCache,
   diagnosticsCache,
   SNAPSHOT_CACHE_TTL_MS,
@@ -35,10 +34,14 @@ describe('Document Index Snapshot Lightweight Verification Suite', () => {
     diagnosticsCache.clear()
 
     storageDiagMock = vi.fn().mockImplementation(() => {
-      throw new Error('CRITICAL VIOLATION: storage diagnostics invoked during lightweight snapshot!')
+      throw new Error(
+        'CRITICAL VIOLATION: storage diagnostics invoked during lightweight snapshot!',
+      )
     })
     migrationDiagMock = vi.fn().mockImplementation(() => {
-      throw new Error('CRITICAL VIOLATION: migration diagnostics invoked during lightweight snapshot!')
+      throw new Error(
+        'CRITICAL VIOLATION: migration diagnostics invoked during lightweight snapshot!',
+      )
     })
   })
 
@@ -304,9 +307,9 @@ describe('Document Index Snapshot Lightweight Verification Suite', () => {
   // =========================================================================
   it('production IPC handler passes through to lightweight snapshot without diagnostics', async () => {
     const memory = createMockMemory()
-    const handlers = new Map<string, Function>()
+    const handlers = new Map<string, (...args: any[]) => any>()
     const fakeIpcMain = {
-      handle: (channel: string, handler: Function) => {
+      handle: (channel: string, handler: (...args: any[]) => any) => {
         handlers.set(channel, handler)
       },
     }

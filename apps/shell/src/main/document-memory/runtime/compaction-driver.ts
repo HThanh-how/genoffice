@@ -103,7 +103,10 @@ export interface CompactionDriverOptions {
   now?: () => number
 }
 
-function resultOf<T extends CompactionWorkerResult>(reply: WorkerReply | null, kind: T['kind']): T | null {
+function resultOf<T extends CompactionWorkerResult>(
+  reply: WorkerReply | null,
+  kind: T['kind'],
+): T | null {
   if (!reply || !('result' in reply)) return null
   const r = reply.result as { kind?: string } | null
   return r && typeof r === 'object' && r.kind === kind ? (r as T) : null
@@ -144,18 +147,26 @@ export class CompactionDriver {
 
   /** Called by the scheduler whenever a fresh budget snapshot exists: arms a pressure run when one is due. */
   onSnapshot(snapshot: StorageBudgetSnapshot): void {
-    if (this.stopped || !this.options.askWorker || this.timer || this.inflight || this.starting) return
+    if (this.stopped || !this.options.askWorker || this.timer || this.inflight || this.starting)
+      return
     const target = compactionTarget(snapshot)
-    if (target.urgency === 'none' || this.now() < this.backoffUntil) return
+    if (target.urgency === 'none') return
+    if (this.now() < this.backoffUntil) {
+      this.schedule(Math.max(NORMAL_START_DELAY_MS, this.backoffUntil - this.now()))
+      return
+    }
     this.schedule(target.urgency === 'urgent' ? 250 : NORMAL_START_DELAY_MS)
   }
 
   schedule(delayMs: number): void {
     if (this.stopped || this.timer || !this.options.askWorker) return
-    this.timer = setTimeout(() => {
-      this.timer = null
-      void this.runScheduled()
-    }, Math.max(0, delayMs))
+    this.timer = setTimeout(
+      () => {
+        this.timer = null
+        void this.runScheduled()
+      },
+      Math.max(0, delayMs),
+    )
     this.timer.unref?.()
   }
 
@@ -164,6 +175,7 @@ export class CompactionDriver {
     if (this.options.isPaused() || (this.options.isWriteReady && !this.options.isWriteReady())) {
       // gate closed (paused / awaiting the budget ACK): do not spend a measurement per snapshot until it can run
       this.backoffUntil = this.now() + RETRY_AFTER_BUSY_MS
+      this.schedule(RETRY_AFTER_BUSY_MS)
       return
     }
     this.starting = true // the refresh below produces a snapshot; it must not arm a second timer
@@ -182,7 +194,10 @@ export class CompactionDriver {
   }
 
   /** One compaction decision + worker round trip. Skips (never queues) when another run is in flight. */
-  runCycle(snapshot: StorageBudgetSnapshot, reason: CompactionCycleOutcome['reason']): Promise<CompactionCycleOutcome> {
+  runCycle(
+    snapshot: StorageBudgetSnapshot,
+    reason: CompactionCycleOutcome['reason'],
+  ): Promise<CompactionCycleOutcome> {
     const skip = (why: string): Promise<CompactionCycleOutcome> =>
       Promise.resolve(this.skipped(reason, why, compactionTarget(snapshot).urgency))
     if (this.stopped) return skip('stopped')
@@ -197,14 +212,30 @@ export class CompactionDriver {
     return run
   }
 
-  private skipped(reason: CompactionCycleOutcome['reason'], why: string, urgency: CompactionUrgency): CompactionCycleOutcome {
+  private skipped(
+    reason: CompactionCycleOutcome['reason'],
+    why: string,
+    urgency: CompactionUrgency,
+  ): CompactionCycleOutcome {
     return {
-      at: this.now(), reason, urgency, status: 'skipped', skippedReason: why,
-      bytesBefore: 0, bytesAfter: 0, reclaimedBytes: 0, belowSoftQuota: false, report: null, annRebuildRequests: 0,
+      at: this.now(),
+      reason,
+      urgency,
+      status: 'skipped',
+      skippedReason: why,
+      bytesBefore: 0,
+      bytesAfter: 0,
+      reclaimedBytes: 0,
+      belowSoftQuota: false,
+      report: null,
+      annRebuildRequests: 0,
     }
   }
 
-  private async execute(snapshot: StorageBudgetSnapshot, reason: CompactionCycleOutcome['reason']): Promise<CompactionCycleOutcome> {
+  private async execute(
+    snapshot: StorageBudgetSnapshot,
+    reason: CompactionCycleOutcome['reason'],
+  ): Promise<CompactionCycleOutcome> {
     const askWorker = this.options.askWorker!
     const budget = this.options.getBudget()
     const target = compactionTarget(snapshot)
@@ -233,13 +264,18 @@ export class CompactionDriver {
     if (this.currentRunId === runId) this.currentRunId = null
     const result = resultOf<RetentionWorkerResult>(reply, 'run-retention')
     // Stale-reply safety: dispose/close bumped the epoch, or the reply belongs to another run.
-    if (this.stopped || epoch !== this.options.getEpoch() || (result && (result.runId !== runId || (result.epoch !== undefined && result.epoch !== epoch)))) {
+    if (
+      this.stopped ||
+      epoch !== this.options.getEpoch() ||
+      (result && (result.runId !== runId || (result.epoch !== undefined && result.epoch !== epoch)))
+    ) {
       return this.skipped(reason, 'stale-reply', target.urgency)
     }
     if (!result) {
       // No usable report. A null reply is a timeout / worker restart: tell a possibly still-running worker to stop and
       // back off. A reply without a matching report is a worker that does not know the request: just back off.
-      if (reply === null) void askWorker({ type: 'cancel-compaction', runId }, 5_000).catch(() => null)
+      if (reply === null)
+        void askWorker({ type: 'cancel-compaction', runId }, 5_000).catch(() => null)
       this.backoffUntil = this.now() + RETRY_AFTER_BUSY_MS * 6
       const why = reply && 'error' in reply ? String(reply.error) : reply ? 'no-report' : 'no-reply'
       const out = this.skipped(reason, why, target.urgency)
@@ -253,15 +289,25 @@ export class CompactionDriver {
     } catch {
       // keep the worker-measured numbers below
     }
-    if (this.stopped || epoch !== this.options.getEpoch()) return this.skipped(reason, 'stale-reply', target.urgency)
+    if (this.stopped || epoch !== this.options.getEpoch())
+      return this.skipped(reason, 'stale-reply', target.urgency)
 
     for (const s of result.affectedAnnSpaces) this.options.invalidateMainAnn?.(s.spaceId)
     const reclaimed = Math.max(0, result.bytesBefore - result.bytesAfter)
     const outcome: CompactionCycleOutcome = {
-      at: this.now(), reason, urgency: target.urgency, status: result.status, runId,
-      bytesBefore: result.bytesBefore, bytesAfter: result.bytesAfter, reclaimedBytes: reclaimed,
-      belowSoftQuota: result.belowSoftQuota, report: result.report, release: result.release,
-      annRebuildRequests: result.annRequests.length, ...(result.error ? { error: result.error } : {}),
+      at: this.now(),
+      reason,
+      urgency: target.urgency,
+      status: result.status,
+      runId,
+      bytesBefore: result.bytesBefore,
+      bytesAfter: result.bytesAfter,
+      reclaimedBytes: reclaimed,
+      belowSoftQuota: result.belowSoftQuota,
+      report: result.report,
+      release: result.release,
+      annRebuildRequests: result.annRequests.length,
+      ...(result.error ? { error: result.error } : {}),
     }
     this.lastOutcome = outcome
     try {
@@ -284,14 +330,23 @@ export class CompactionDriver {
     return outcome
   }
 
-  private planFollowUp(after: StorageBudgetSnapshot, result: RetentionWorkerResult, reclaimed: number): void {
+  private planFollowUp(
+    after: StorageBudgetSnapshot,
+    result: RetentionWorkerResult,
+    reclaimed: number,
+  ): void {
     const next = compactionTarget(after)
     if (next.urgency === 'none') {
       this.backoffUntil = 0
       return
     }
     const progressed = reclaimed >= PROGRESS_MIN_BYTES
-    if (result.status === 'busy' || result.status === 'stale-config' || result.status === 'cancelled' || result.status === 'timeout') {
+    if (
+      result.status === 'busy' ||
+      result.status === 'stale-config' ||
+      result.status === 'cancelled' ||
+      result.status === 'timeout'
+    ) {
       this.backoffUntil = this.now() + RETRY_AFTER_BUSY_MS
       this.schedule(RETRY_AFTER_BUSY_MS)
       return
@@ -307,7 +362,10 @@ export class CompactionDriver {
       return
     }
     // normal pressure: the run already went to the floor or exhausted its candidates; idle back-off
-    this.backoffUntil = progressed && result.report?.targetReached === false ? 0 : this.now() + NORMAL_NO_PROGRESS_BACKOFF_MS
+    this.backoffUntil =
+      progressed && result.report?.targetReached === false
+        ? 0
+        : this.now() + NORMAL_NO_PROGRESS_BACKOFF_MS
   }
 
   // ---------------------------------------------------------------------------------------------------------
@@ -329,7 +387,12 @@ export class CompactionDriver {
     const budget = this.options.getBudget()
     if (snap.isDegraded || snap.measurementStatus === 'unknown') return no('accounting-unknown')
     const used = snap.totalManagedBytes ?? snap.databaseBytes
-    if (!request.admissionDenied && request.reason !== 'name-metadata' && used + request.neededBytes < contentWriteCapBytes(budget)) return no('below-content-cap')
+    if (
+      !request.admissionDenied &&
+      request.reason !== 'name-metadata' &&
+      used + request.neededBytes < contentWriteCapBytes(budget)
+    )
+      return no('below-content-cap')
     if (this.now() < this.makeRoomCooldownUntil) return no('cooldown')
     const flight = this.doMakeRoom(request).finally(() => {
       if (this.makeRoomInflight === flight) this.makeRoomInflight = null
@@ -353,7 +416,8 @@ export class CompactionDriver {
           t.unref?.()
         }),
       ])
-      if (this.stopped || epoch !== this.options.getEpoch()) return { attempted: false, retry: false, freedBytes: 0, reason: 'stale' }
+      if (this.stopped || epoch !== this.options.getEpoch())
+        return { attempted: false, retry: false, freedBytes: 0, reason: 'stale' }
     }
     let snap = this.options.getSnapshot()
     try {
@@ -364,30 +428,64 @@ export class CompactionDriver {
     if (request.reason === 'name-metadata') {
       const before = snap.nameMetadataBytes
       const runId = `names:${epoch}:${++this.runSeq}:${this.now()}`
-      const reply = await askWorker({
-        type: 'optimize-fts', runId, epoch,
-        ...(budget.version !== undefined ? { configVersion: budget.version } : {}),
-        maxPages: 512, budgetMs: 5_000,
-      }, 60_000)
+      const reply = await askWorker(
+        {
+          type: 'optimize-fts',
+          runId,
+          epoch,
+          ...(budget.version !== undefined ? { configVersion: budget.version } : {}),
+          maxPages: 512,
+          budgetMs: 5_000,
+        },
+        60_000,
+      )
       const result = resultOf<OptimizeFtsWorkerResult>(reply, 'optimize-fts')
-      if (this.stopped || epoch !== this.options.getEpoch() || result?.runId !== runId || result.status !== 'completed') {
+      if (
+        this.stopped ||
+        epoch !== this.options.getEpoch() ||
+        result?.runId !== runId ||
+        result.status !== 'completed'
+      ) {
         this.makeRoomCooldownUntil = this.now() + MAKE_ROOM_COOLDOWN_MS
-        return { attempted: true, retry: false, freedBytes: 0, reason: 'name-compaction-incomplete' }
+        return {
+          attempted: true,
+          retry: false,
+          freedBytes: 0,
+          reason: 'name-compaction-incomplete',
+        }
       }
       const after = await this.options.refreshAccounting()
-      const freed = before !== undefined && after.nameMetadataBytes !== undefined && !after.isDegraded
-        ? Math.max(0, before - after.nameMetadataBytes) : 0
+      const freed =
+        before !== undefined && after.nameMetadataBytes !== undefined && !after.isDegraded
+          ? Math.max(0, before - after.nameMetadataBytes)
+          : 0
       const retry = freed >= request.neededBytes
       if (!retry) this.makeRoomCooldownUntil = this.now() + MAKE_ROOM_COOLDOWN_MS
-      return { attempted: true, retry, freedBytes: freed, ...(retry ? {} : { reason: 'name-metadata-full' }) }
+      return {
+        attempted: true,
+        retry,
+        freedBytes: freed,
+        ...(retry ? {} : { reason: 'name-metadata-full' }),
+      }
     }
     const freedMeanwhile = Math.max(0, usedAtStart - usedNow(snap))
-    if (freedMeanwhile >= request.neededBytes) return { attempted: false, retry: true, freedBytes: freedMeanwhile, reason: 'freed-by-retention' }
-    const margin = Math.min(Math.floor(budget.maxDatabaseBytes * DISPLACEMENT_MARGIN_RATIO), DISPLACEMENT_MARGIN_MAX_BYTES)
+    if (freedMeanwhile >= request.neededBytes)
+      return {
+        attempted: false,
+        retry: true,
+        freedBytes: freedMeanwhile,
+        reason: 'freed-by-retention',
+      }
+    const margin = Math.min(
+      Math.floor(budget.maxDatabaseBytes * DISPLACEMENT_MARGIN_RATIO),
+      DISPLACEMENT_MARGIN_MAX_BYTES,
+    )
     const runId = `free:${epoch}:${++this.runSeq}:${this.now()}`
     const reply = await askWorker(
       {
-        type: 'free-space', runId, epoch,
+        type: 'free-space',
+        runId,
+        epoch,
         ...(budget.version !== undefined ? { configVersion: budget.version } : {}),
         neededBytes: Math.max(1, request.neededBytes) + margin,
         ...(request.importance ? { incomingImportance: request.importance } : {}),
@@ -399,8 +497,15 @@ export class CompactionDriver {
       return { attempted: true, retry: false, freedBytes: 0, reason: 'stale-reply' }
     }
     if (!result || result.status === 'busy' || result.status === 'stale-config') {
-      this.makeRoomCooldownUntil = this.now() + (result ? RETRY_AFTER_BUSY_MS : MAKE_ROOM_COOLDOWN_MS)
-      return { attempted: true, retry: false, freedBytes: 0, reason: result?.status ?? 'no-reply', ...(result ? { status: result.status } : {}) }
+      this.makeRoomCooldownUntil =
+        this.now() + (result ? RETRY_AFTER_BUSY_MS : MAKE_ROOM_COOLDOWN_MS)
+      return {
+        attempted: true,
+        retry: false,
+        freedBytes: 0,
+        reason: result?.status ?? 'no-reply',
+        ...(result ? { status: result.status } : {}),
+      }
     }
     try {
       await this.options.refreshAccounting()
@@ -414,7 +519,13 @@ export class CompactionDriver {
     const retry = result.freedBytes >= request.neededBytes
     // Nothing (more) evictable: do not hammer the worker for every refused file.
     if (!retry) this.makeRoomCooldownUntil = this.now() + MAKE_ROOM_COOLDOWN_MS
-    return { attempted: true, retry, freedBytes: result.freedBytes, status: result.status, ...(retry ? {} : { reason: 'insufficient' }) }
+    return {
+      attempted: true,
+      retry,
+      freedBytes: result.freedBytes,
+      status: result.status,
+      ...(retry ? {} : { reason: 'insufficient' }),
+    }
   }
 
   // ---------------------------------------------------------------------------------------------------------
@@ -422,8 +533,11 @@ export class CompactionDriver {
   // ---------------------------------------------------------------------------------------------------------
 
   /** Idle FTS segment optimisation (composes with the scheduler's merge step, runs in the worker). */
-  async optimizeFtsIfIdle(snapshot: StorageBudgetSnapshot): Promise<OptimizeFtsWorkerResult | null> {
-    if (this.stopped || !this.options.askWorker || this.inflight || this.options.isPaused()) return null
+  async optimizeFtsIfIdle(
+    snapshot: StorageBudgetSnapshot,
+  ): Promise<OptimizeFtsWorkerResult | null> {
+    if (this.stopped || !this.options.askWorker || this.inflight || this.options.isPaused())
+      return null
     if (this.options.isWriteReady && !this.options.isWriteReady()) return null
     if (compactionTarget(snapshot).urgency === 'urgent') return null
     const interval = this.ftsPending ? FTS_OPTIMIZE_PENDING_INTERVAL_MS : FTS_OPTIMIZE_INTERVAL_MS
@@ -433,18 +547,27 @@ export class CompactionDriver {
     const budget = this.options.getBudget()
     const runId = `fts:${epoch}:${++this.runSeq}:${this.now()}`
     const reply = await this.options.askWorker(
-      { type: 'optimize-fts', runId, epoch, ...(budget.version !== undefined ? { configVersion: budget.version } : {}) },
+      {
+        type: 'optimize-fts',
+        runId,
+        epoch,
+        ...(budget.version !== undefined ? { configVersion: budget.version } : {}),
+      },
       60_000,
     )
     const result = resultOf<OptimizeFtsWorkerResult>(reply, 'optimize-fts')
-    if (this.stopped || epoch !== this.options.getEpoch() || !result || result.runId !== runId) return null
+    if (this.stopped || epoch !== this.options.getEpoch() || !result || result.runId !== runId)
+      return null
     this.ftsPending = (result.result?.pending.length ?? 0) > 0
     return result
   }
 
   /** Keeps the redundancy analysis current at moderate usage so a later displacement is a pure shrink. */
-  async analyzeIfIdle(snapshot: StorageBudgetSnapshot): Promise<RedundancyAnalyzeWorkerResult | null> {
-    if (this.stopped || !this.options.askWorker || this.inflight || this.options.isPaused()) return null
+  async analyzeIfIdle(
+    snapshot: StorageBudgetSnapshot,
+  ): Promise<RedundancyAnalyzeWorkerResult | null> {
+    if (this.stopped || !this.options.askWorker || this.inflight || this.options.isPaused())
+      return null
     if (this.options.isWriteReady && !this.options.isWriteReady()) return null
     const budget = this.options.getBudget()
     const used = snapshot.totalManagedBytes ?? snapshot.databaseBytes
@@ -454,11 +577,17 @@ export class CompactionDriver {
     const epoch = this.options.getEpoch()
     const runId = `ana:${epoch}:${++this.runSeq}:${this.now()}`
     const reply = await this.options.askWorker(
-      { type: 'redundancy-analyze', runId, epoch, ...(budget.version !== undefined ? { configVersion: budget.version } : {}) },
+      {
+        type: 'redundancy-analyze',
+        runId,
+        epoch,
+        ...(budget.version !== undefined ? { configVersion: budget.version } : {}),
+      },
       60_000,
     )
     const result = resultOf<RedundancyAnalyzeWorkerResult>(reply, 'redundancy-analyze')
-    if (this.stopped || epoch !== this.options.getEpoch() || !result || result.runId !== runId) return null
+    if (this.stopped || epoch !== this.options.getEpoch() || !result || result.runId !== runId)
+      return null
     return result
   }
 

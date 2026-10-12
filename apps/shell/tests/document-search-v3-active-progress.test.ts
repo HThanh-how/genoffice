@@ -52,10 +52,12 @@ describe('Active-Space Progress Invariants Suite (QA-08)', () => {
 
     // Register embedding spaces in schema
     store.rawDb
-      .prepare(`
+      .prepare(
+        `
         INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
         VALUES (?, ?, ?, ?, ?, ?), (?, ?, ?, ?, ?, ?)
-      `)
+      `,
+      )
       .run(
         F2_SPACE_ID,
         EMBEDDING_PROFILES.standard.repo,
@@ -101,10 +103,10 @@ describe('Active-Space Progress Invariants Suite (QA-08)', () => {
     insertCount.run(docId, QWEN_SPACE_ID, 40)
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     if (manager) {
       try {
-        manager.close()
+        await manager.closeAsync()
       } catch {}
       manager = null
     }
@@ -327,7 +329,9 @@ describe('Active-Space Progress Invariants Suite (QA-08)', () => {
     // In our fixture: F2 = 100, Qwen = 40.
     // Sum across all spaces in document_embedding_counts table is 140!
     const totalStoredRows = store.rawDb
-      .prepare('SELECT sum(completed_chunks) AS total FROM document_embedding_counts WHERE document_id = (SELECT id FROM documents WHERE path = ?)')
+      .prepare(
+        'SELECT sum(completed_chunks) AS total FROM document_embedding_counts WHERE document_id = (SELECT id FROM documents WHERE path = ?)',
+      )
       .get(docPath) as { total: number }
     expect(totalStoredRows.total).toBe(140)
 
@@ -357,19 +361,25 @@ describe('Active-Space Progress Invariants Suite (QA-08)', () => {
     // 3. Add a 3rd space with 80 completed chunks (Total = 100 + 40 + 80 = 220 vectors!)
     const thirdSpaceId = 'third-custom-space-320'
     store.rawDb
-      .prepare(`
+      .prepare(
+        `
         INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
         VALUES (?, 'repo/custom', 'r1', 'mean', 320, 'q8')
-      `)
+      `,
+      )
       .run(thirdSpaceId)
 
     const docId = store.documentByPath(docPath)!.id
     store.rawDb
-      .prepare('INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)')
+      .prepare(
+        'INSERT OR REPLACE INTO document_embedding_counts (document_id, space_id, completed_chunks) VALUES (?, ?, ?)',
+      )
       .run(docId, thirdSpaceId, 80)
 
     const grandTotal = store.rawDb
-      .prepare('SELECT sum(completed_chunks) AS total FROM document_embedding_counts WHERE document_id = ?')
+      .prepare(
+        'SELECT sum(completed_chunks) AS total FROM document_embedding_counts WHERE document_id = ?',
+      )
       .get(docId) as { total: number }
     expect(grandTotal.total).toBe(220) // Total vectors in database is 220 for 100 chunks
 

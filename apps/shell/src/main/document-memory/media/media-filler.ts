@@ -58,7 +58,8 @@ export class MediaMetadataFiller {
   }
 
   private async run(): Promise<number> {
-    const read = this.options.read ?? ((path: string, kind: MediaKind) => readMediaMetadata(path, kind))
+    const read =
+      this.options.read ?? ((path: string, kind: MediaKind) => readMediaMetadata(path, kind))
     const batchSize = this.options.batchSize ?? 64
     const width = Math.max(1, this.options.concurrency ?? 4)
     let filled = 0

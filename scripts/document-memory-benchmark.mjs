@@ -19,14 +19,16 @@ export function runBenchmark(options = {}) {
   const chunkRow = db.prepare('SELECT count(*) as c FROM chunks').get()
   const chunks = chunkRow?.c ?? 0
 
-  let vectors = 0
+  let vectors
   try {
     const vecRow = db.prepare('SELECT count(*) as c FROM chunk_embeddings').get()
     vectors = vecRow?.c ?? 0
   } catch {
     // fallback if legacy
     try {
-      const legacyVecRow = db.prepare('SELECT count(*) as c FROM chunks WHERE vector IS NOT NULL').get()
+      const legacyVecRow = db
+        .prepare('SELECT count(*) as c FROM chunks WHERE vector IS NOT NULL')
+        .get()
       vectors = legacyVecRow?.c ?? 0
     } catch {
       vectors = 0
@@ -36,7 +38,16 @@ export function runBenchmark(options = {}) {
   // Lexical FTS benchmark
   const queryCount = Number(options.queries || 50)
   const lexicalLatencies = []
-  const testTerms = ['enterprise', 'document', 'performance', 'contract', 'chunk', 'terms', 'clause', 'scan']
+  const testTerms = [
+    'enterprise',
+    'document',
+    'performance',
+    'contract',
+    'chunk',
+    'terms',
+    'clause',
+    'scan',
+  ]
 
   const ftsStmt = db.prepare(`
     SELECT rowid, rank FROM chunk_fts WHERE chunk_fts MATCH ? ORDER BY rank LIMIT 20
@@ -101,7 +112,8 @@ export function runBenchmark(options = {}) {
 }
 
 if (process.argv[1] && process.argv[1].endsWith('document-memory-benchmark.mjs')) {
-  const dbArg = process.argv.find((a) => a.startsWith('--db='))?.split('=')[1] || './test-fixture.db'
+  const dbArg =
+    process.argv.find((a) => a.startsWith('--db='))?.split('=')[1] || './test-fixture.db'
   const queriesArg = process.argv.find((a) => a.startsWith('--queries='))?.split('=')[1] || '50'
   const results = runBenchmark({ db: dbArg, queries: queriesArg })
   console.log(JSON.stringify(results, null, 2))

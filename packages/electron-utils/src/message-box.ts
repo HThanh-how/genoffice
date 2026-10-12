@@ -162,6 +162,15 @@ export function installThemedDialogs(
       kind === 'confirm'
         ? { type: 'question', message: text, buttons: ['OK', 'Cancel'], defaultId: 0, cancelId: 1 }
         : { type: 'info', message: text, buttons: ['OK'] }
+    try {
+      if (typeof dialog.showMessageBoxSync === 'function') {
+        const result = win
+          ? dialog.showMessageBoxSync(win, options)
+          : dialog.showMessageBoxSync(options)
+        event.returnValue = kind === 'confirm' ? result === 0 : undefined
+        return
+      }
+    } catch {}
     void Promise.resolve()
       .then(() => provider(win, options))
       .then((r) => {

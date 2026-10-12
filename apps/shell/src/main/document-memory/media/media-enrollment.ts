@@ -66,7 +66,8 @@ export function enrollMediaRow(
   )
   const peek = lookup.get(normalized) as unknown as ExistingRow | undefined
   if (peek && (peek.excluded === 1 || peek.status === 'excluded')) return { outcome: 'excluded' }
-  if (peek?.media_id != null && peek.mtime_ms === mtimeMs && peek.size_bytes === sizeBytes) return { outcome: 'unchanged' }
+  if (peek?.media_id != null && peek.mtime_ms === mtimeMs && peek.size_bytes === sizeBytes)
+    return { outcome: 'unchanged' }
   if (!peek && kind === 'image' && sizeBytes < MIN_IMAGE_BYTES) return { outcome: 'skipped' }
 
   let reservationId: string | undefined
@@ -84,7 +85,10 @@ export function enrollMediaRow(
       const bytes = existing
         ? estimateDocumentProjectionBytes(name, normalized)
         : estimateNewDocumentMetadataBytes(name, normalized)
-      const decision = guard.canAdmitNewDocument({ name, path: normalized, lowPriority: true }, bytes)
+      const decision = guard.canAdmitNewDocument(
+        { name, path: normalized, lowPriority: true },
+        bytes,
+      )
       if (!decision.admitted) {
         db.exec('ROLLBACK')
         return { outcome: 'refused', error: decision.error ?? decision.reason }
@@ -121,9 +125,20 @@ export function enrollMediaRow(
        ON CONFLICT(document_id) DO UPDATE SET kind = excluded.kind, container = NULL, width = NULL,
          height = NULL, duration_ms = NULL, taken_ms = NULL, ts_ms = excluded.ts_ms, meta_state = 0,
          sensitive = excluded.sensitive, ocr_candidate = excluded.ocr_candidate, ocr_state = 0`,
-    ).run(id, kind, Math.round(mtimeMs), isSensitiveName(name, normalized) ? 1 : 0, kind === 'image' ? 1 : 0)
+    ).run(
+      id,
+      kind,
+      Math.round(mtimeMs),
+      isSensitiveName(name, normalized) ? 1 : 0,
+      kind === 'image' ? 1 : 0,
+    )
     if (!existing || !projectionCurrent) {
-      syncProjectionInsert(db, { id, path: normalized, name }, guard ?? undefined)
+      const projOk = syncProjectionInsert(db, { id, path: normalized, name }, guard ?? undefined)
+      if (!projOk) {
+        db.exec('ROLLBACK')
+        if (guard && reservationId && ownerToken) guard.rollbackCommit(reservationId, ownerToken)
+        return { outcome: 'refused', error: 'Storage admission rejected projection write' }
+      }
     }
     db.exec('COMMIT')
     if (guard && reservationId && ownerToken) guard.settleCommit(reservationId, ownerToken)

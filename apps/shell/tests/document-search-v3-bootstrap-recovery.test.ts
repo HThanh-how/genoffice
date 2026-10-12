@@ -7,7 +7,6 @@ import {
   type BootstrapResult,
 } from '../src/main/document-memory/storage-bootstrap'
 import * as cutoverModule from '../src/main/document-memory/storage/migration/cutover'
-import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 
 describe('Pair 05: Document Search V3 Bootstrap Fail-Closed Recovery Suite (QA-05)', () => {
   let tempDir: string
@@ -68,7 +67,9 @@ describe('Pair 05: Document Search V3 Bootstrap Fail-Closed Recovery Suite (QA-0
     expect(result.ready).toBe(false)
     expect(result.migrated).toBe(false)
     expect(result.error).toBeDefined()
-    expect(result.error).toContain('Interrupted cutover recovery failed: EIO: unrecoverable hardware I/O failure')
+    expect(result.error).toContain(
+      'Interrupted cutover recovery failed: EIO: unrecoverable hardware I/O failure',
+    )
   })
 
   it('BOOT-02 source missing + backup exists → not fresh install', async () => {
@@ -104,17 +105,15 @@ describe('Pair 05: Document Search V3 Bootstrap Fail-Closed Recovery Suite (QA-0
     expect(result.error).toBeDefined()
     expect(
       result.error!.includes('unexpected temporary migration artifacts') ||
-      result.error!.includes('Document-memory database is missing while migration or rollback artifacts still exist.'),
+        result.error!.includes(
+          'Document-memory database is missing while migration or rollback artifacts still exist.',
+        ),
     ).toBe(true)
   })
 
   it('BOOT-04 corrupt manifest → ready false', async () => {
     // Scenario A: Truncated / malformed JSON content
-    writeFileSync(
-      manifestPath,
-      '{"phase": "prepared", "sourceDbPath": "truncated...',
-      'utf8',
-    )
+    writeFileSync(manifestPath, '{"phase": "prepared", "sourceDbPath": "truncated...', 'utf8')
 
     // Execute WITHOUT mocking recoverInterruptedCutover to test real manifest parsing failure
     const malformedResult = await ensureDocumentMemoryStorageReady(tempDir)
@@ -122,7 +121,9 @@ describe('Pair 05: Document Search V3 Bootstrap Fail-Closed Recovery Suite (QA-0
     expect(malformedResult.ready).toBe(false)
     expect(malformedResult.migrated).toBe(false)
     expect(malformedResult.error).toBeDefined()
-    expect(malformedResult.error).toContain('Interrupted cutover recovery failed: Corrupted cutover manifest')
+    expect(malformedResult.error).toContain(
+      'Interrupted cutover recovery failed: Corrupted cutover manifest',
+    )
     expect(malformedResult.error).toContain('invalid JSON')
 
     // Scenario B: Valid JSON syntax but invalid phase
@@ -168,7 +169,11 @@ describe('Pair 05: Document Search V3 Bootstrap Fail-Closed Recovery Suite (QA-0
       throw new Error('Fatal failure during cutover crash recovery')
     })
 
-    const failedLaunch1 = await initializeDocumentMemoryLifecycle(tempDir, tempDir, managerFactorySpy)
+    const failedLaunch1 = await initializeDocumentMemoryLifecycle(
+      tempDir,
+      tempDir,
+      managerFactorySpy,
+    )
 
     expect(failedLaunch1.bootstrap.ready).toBe(false)
     expect(failedLaunch1.manager).toBeNull()
@@ -177,7 +182,11 @@ describe('Pair 05: Document Search V3 Bootstrap Fail-Closed Recovery Suite (QA-0
     // Failure Case 2: Corrupted cutover manifest
     writeFileSync(manifestPath, '{ "invalidJson": true, ', 'utf8')
 
-    const failedLaunch2 = await initializeDocumentMemoryLifecycle(tempDir, tempDir, managerFactorySpy)
+    const failedLaunch2 = await initializeDocumentMemoryLifecycle(
+      tempDir,
+      tempDir,
+      managerFactorySpy,
+    )
 
     expect(failedLaunch2.bootstrap.ready).toBe(false)
     expect(failedLaunch2.manager).toBeNull()
@@ -188,7 +197,11 @@ describe('Pair 05: Document Search V3 Bootstrap Fail-Closed Recovery Suite (QA-0
     const backupPath = join(tempDir, `document-memory.${Date.now()}.v2.backup.db`)
     writeFileSync(backupPath, 'backup-bytes', 'utf8')
 
-    const failedLaunch3 = await initializeDocumentMemoryLifecycle(tempDir, tempDir, managerFactorySpy)
+    const failedLaunch3 = await initializeDocumentMemoryLifecycle(
+      tempDir,
+      tempDir,
+      managerFactorySpy,
+    )
 
     expect(failedLaunch3.bootstrap.ready).toBe(false)
     expect(failedLaunch3.manager).toBeNull()
@@ -196,7 +209,11 @@ describe('Pair 05: Document Search V3 Bootstrap Fail-Closed Recovery Suite (QA-0
 
     // Contrast with Success Case: True fresh install
     rmSync(backupPath, { force: true })
-    const successLaunch = await initializeDocumentMemoryLifecycle(tempDir, tempDir, managerFactorySpy)
+    const successLaunch = await initializeDocumentMemoryLifecycle(
+      tempDir,
+      tempDir,
+      managerFactorySpy,
+    )
 
     expect(successLaunch.bootstrap.ready).toBe(true)
     expect(successLaunch.manager).not.toBeNull()

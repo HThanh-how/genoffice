@@ -24,19 +24,22 @@ vi.mock('@huggingface/tokenizers', () => ({
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { SearchService } from '../src/main/document-memory/runtime/search-service'
-import { EMBEDDING_PROFILES, type EmbeddingProfile } from '../src/main/document-memory/embedding-profiles'
+import {
+  EMBEDDING_PROFILES,
+  type EmbeddingProfile,
+} from '../src/main/document-memory/embedding-profiles'
 import {
   isIndexingPaused,
   publishIndexingPolicy,
   resetIndexingPolicyBus,
   type PublishedPolicy,
 } from '../src/main/fork/indexing-policy-bus'
-import {
-  snapshotCache,
-  diagnosticsCache,
-} from '../src/main/fork/document-index-snapshot-service'
+import { snapshotCache, diagnosticsCache } from '../src/main/fork/document-index-snapshot-service'
 import { IndexIssueReader } from '../src/main/document-memory/issue-reader'
-import { blobVector, floatBlob } from '../src/main/document-memory/storage/repositories/embedding-repository'
+import {
+  blobVector,
+  floatBlob,
+} from '../src/main/document-memory/storage/repositories/embedding-repository'
 import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 
 const F2_SPACE_ID = 'test-f2-dim4:v1'
@@ -117,10 +120,10 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
     diagnosticsCache.clear()
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     if (manager) {
       try {
-        manager.close()
+        await manager.closeAsync()
       } catch {}
       manager = null
     }
@@ -148,11 +151,36 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
 
     // Document contains 5 chunks, but 0 vector embeddings generated
     const chunks = [
-      { id: 1, ordinal: 0, text: 'Executive Summary: enterprise financial outlook and strategic initiatives', location: 'Page 1' },
-      { id: 2, ordinal: 1, text: 'Operating expenses reduction across cloud infrastructure clusters', location: 'Page 2' },
-      { id: 3, ordinal: 2, text: 'Strict cryptographic encryption at rest protocol implementation', location: 'Page 3' },
-      { id: 4, ordinal: 3, text: 'Risk assessment regarding foreign exchange volatility and inflation', location: 'Page 4' },
-      { id: 5, ordinal: 4, text: 'Appendix A: consolidated balance sheet and audited ledger entries', location: 'Page 5' },
+      {
+        id: 1,
+        ordinal: 0,
+        text: 'Executive Summary: enterprise financial outlook and strategic initiatives',
+        location: 'Page 1',
+      },
+      {
+        id: 2,
+        ordinal: 1,
+        text: 'Operating expenses reduction across cloud infrastructure clusters',
+        location: 'Page 2',
+      },
+      {
+        id: 3,
+        ordinal: 2,
+        text: 'Strict cryptographic encryption at rest protocol implementation',
+        location: 'Page 3',
+      },
+      {
+        id: 4,
+        ordinal: 3,
+        text: 'Risk assessment regarding foreign exchange volatility and inflation',
+        location: 'Page 4',
+      },
+      {
+        id: 5,
+        ordinal: 4,
+        text: 'Appendix A: consolidated balance sheet and audited ledger entries',
+        location: 'Page 5',
+      },
     ]
 
     await store.replaceDocumentSliced(docPath, {
@@ -178,7 +206,12 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
     const searchService = new SearchService({ store })
 
     // 1. Filename Exact & Partial Lexical Query
-    const filenameHits = await searchService.searchProgressive('quarterly audit', 5, undefined, F2_SPACE_ID)
+    const filenameHits = await searchService.searchProgressive(
+      'quarterly audit',
+      5,
+      undefined,
+      F2_SPACE_ID,
+    )
     expect(filenameHits.length).toBeGreaterThan(0)
     expect(filenameHits[0]!.name).toBe('quarterly-audit-2026.docx')
     expect(filenameHits[0]!.path).toBe(docPath)
@@ -186,7 +219,12 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
     expect(filenameHits[0]!.missing).toBe(false)
 
     // 2. Full-Text Lexical Phrase Query matching chunk 3
-    const phraseHits = await searchService.searchProgressive('cryptographic encryption', 5, undefined, F2_SPACE_ID)
+    const phraseHits = await searchService.searchProgressive(
+      'cryptographic encryption',
+      5,
+      undefined,
+      F2_SPACE_ID,
+    )
     expect(phraseHits.length).toBeGreaterThan(0)
     const matchedChunk = phraseHits.find((h) => h.text.includes('cryptographic encryption'))
     expect(matchedChunk).toBeDefined()
@@ -196,12 +234,22 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
     expect(matchedChunk!.score).not.toBe(0)
 
     // 3. Lexical query matching chunk 1
-    const summaryHits = await searchService.searchProgressive('financial outlook', 5, undefined, F2_SPACE_ID)
+    const summaryHits = await searchService.searchProgressive(
+      'financial outlook',
+      5,
+      undefined,
+      F2_SPACE_ID,
+    )
     expect(summaryHits.length).toBeGreaterThan(0)
     expect(summaryHits.some((h) => h.text.includes('financial outlook'))).toBe(true)
 
     // 4. Verify searchProgressive does not throw or fail when askEmbed is undefined or returns null
-    const noVectorHits = await searchService.searchProgressive('balance sheet ledger', 5, undefined, F2_SPACE_ID)
+    const noVectorHits = await searchService.searchProgressive(
+      'balance sheet ledger',
+      5,
+      undefined,
+      F2_SPACE_ID,
+    )
     expect(noVectorHits.length).toBeGreaterThan(0)
     expect(noVectorHits.some((h) => h.text.includes('balance sheet'))).toBe(true)
   })
@@ -333,10 +381,12 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
     // TOTAL VECTORS in table = 125 (for a 50 chunk document!)
     const customSpaceId = 'custom-space-dim4'
     store.rawDb
-      .prepare(`
+      .prepare(
+        `
         INSERT OR IGNORE INTO embedding_spaces (id, model_repo, model_revision, pooling, dimensions, quantization)
         VALUES (?, 'repo/custom', 'r1', 'mean', 4, 'q8')
-      `)
+      `,
+      )
       .run(customSpaceId)
 
     const insertCounts = store.rawDb.prepare(`
@@ -348,7 +398,9 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
     insertCounts.run(docId, customSpaceId, 45)
 
     const sumCheck = store.rawDb
-      .prepare('SELECT sum(completed_chunks) AS total FROM document_embedding_counts WHERE document_id = ?')
+      .prepare(
+        'SELECT sum(completed_chunks) AS total FROM document_embedding_counts WHERE document_id = ?',
+      )
       .get(docId) as { total: number }
     expect(sumCheck.total).toBe(125)
 
@@ -465,7 +517,9 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
             this.emit('message', { type: 'model', state: 'ready' })
             this.emit('message', {
               id: message.id,
-              result: (message.texts ?? []).map(() => Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)),
+              result: (message.texts ?? []).map(() =>
+                Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1),
+              ),
             })
           }
         }, 30)
@@ -565,7 +619,9 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
     // SIMULATE SUDDEN PROCESS KILL / UNCOMMITTED TRANSACTION INTERRUPT:
     // Start an explicit transaction, insert partial rows, then ROLLBACK to simulate crash recovery
     const actualChunkIds = store.rawDb
-      .prepare('SELECT id FROM chunks WHERE document_id = (SELECT id FROM documents WHERE path = ?) ORDER BY ordinal ASC')
+      .prepare(
+        'SELECT id FROM chunks WHERE document_id = (SELECT id FROM documents WHERE path = ?) ORDER BY ordinal ASC',
+      )
       .all(docPath) as Array<{ id: number }>
 
     store.rawDb.exec('BEGIN IMMEDIATE')
@@ -586,19 +642,21 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
     recoveredStore.ensureEmbeddingSpace(testProfileF2)
 
     // 1. AUDIT: SQLite Database Integrity Check
-    const pragmaIntegrity = recoveredStore.rawDb
-      .prepare('PRAGMA integrity_check')
-      .get() as { integrity_check: string }
+    const pragmaIntegrity = recoveredStore.rawDb.prepare('PRAGMA integrity_check').get() as {
+      integrity_check: string
+    }
     expect(pragmaIntegrity.integrity_check).toBe('ok')
 
     // 2. AUDIT: Zero duplicate vectors in chunk_embeddings
     const duplicateRows = recoveredStore.rawDb
-      .prepare(`
+      .prepare(
+        `
         SELECT chunk_id, space_id, count(*) AS count
         FROM chunk_embeddings
         GROUP BY chunk_id, space_id
         HAVING count > 1
-      `)
+      `,
+      )
       .all()
     expect(duplicateRows).toHaveLength(0)
 
@@ -620,10 +678,12 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
 
     // 4. AUDIT: Document counts table consistency
     const countRow = recoveredStore.rawDb
-      .prepare(`
+      .prepare(
+        `
         SELECT completed_chunks FROM document_embedding_counts
         WHERE space_id = ? AND document_id = (SELECT id FROM documents WHERE path = ?)
-      `)
+      `,
+      )
       .get(F2_SPACE_ID, docPath) as { completed_chunks: number }
     expect(countRow.completed_chunks).toBe(30)
 
@@ -638,7 +698,14 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
       0.2,
       0.1,
     ])
-    recoveredStore.setChunkEmbeddings(docPath, 'hash-archive-80', 30, remainingVectors, F2_SPACE_ID, true)
+    recoveredStore.setChunkEmbeddings(
+      docPath,
+      'hash-archive-80',
+      30,
+      remainingVectors,
+      F2_SPACE_ID,
+      true,
+    )
 
     // Final Post-Resume Audit
     const finalProg = recoveredStore.chunkProgress(docPath, F2_SPACE_ID)
@@ -646,12 +713,14 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
     expect(finalProg.totalChunks).toBe(TOTAL_CHUNKS)
 
     const finalDuplicates = recoveredStore.rawDb
-      .prepare(`
+      .prepare(
+        `
         SELECT chunk_id, space_id, count(*) AS count
         FROM chunk_embeddings
         GROUP BY chunk_id, space_id
         HAVING count > 1
-      `)
+      `,
+      )
       .all()
     expect(finalDuplicates).toHaveLength(0)
 
@@ -688,12 +757,30 @@ describe('Semantic Soak Independent Auditor Suite (PAIR 20)', () => {
     store.ensureEmbeddingSpace(EMBEDDING_PROFILES.high)
 
     // Write all 40 chunks for F2
-    const f2Vectors = Array.from({ length: CHUNK_COUNT }, () => Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.2))
-    store.setChunkEmbeddings(docPath, 'hash-stress-40', 0, f2Vectors, EMBEDDING_PROFILES.standard.embeddingId, true)
+    const f2Vectors = Array.from({ length: CHUNK_COUNT }, () =>
+      Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.2),
+    )
+    store.setChunkEmbeddings(
+      docPath,
+      'hash-stress-40',
+      0,
+      f2Vectors,
+      EMBEDDING_PROFILES.standard.embeddingId,
+      true,
+    )
 
     // Write 20 chunks for Qwen
-    const qwenVectors = Array.from({ length: 20 }, () => Array(EMBEDDING_PROFILES.high.dimensions).fill(0.1))
-    store.setChunkEmbeddings(docPath, 'hash-stress-40', 0, qwenVectors, EMBEDDING_PROFILES.high.embeddingId, false)
+    const qwenVectors = Array.from({ length: 20 }, () =>
+      Array(EMBEDDING_PROFILES.high.dimensions).fill(0.1),
+    )
+    store.setChunkEmbeddings(
+      docPath,
+      'hash-stress-40',
+      0,
+      qwenVectors,
+      EMBEDDING_PROFILES.high.embeddingId,
+      false,
+    )
 
     manager = new DocumentMemoryManager(tempDir, {
       dbDir: tempDir,

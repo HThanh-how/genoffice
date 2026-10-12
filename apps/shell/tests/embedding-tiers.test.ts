@@ -26,7 +26,10 @@ import {
   chooseInitialEmbeddingProfile,
   resolveStartupEmbeddingProfile,
 } from '../src/main/document-memory/embedding/initial-profile'
-import { readEmbeddingProfileId, writeActiveEmbeddingConfig } from '../src/main/document-memory/storage/embedding-settings'
+import {
+  readEmbeddingProfileId,
+  writeActiveEmbeddingConfig,
+} from '../src/main/document-memory/storage/embedding-settings'
 
 const tiered = TIERED_PROFILE_IDS.map((id) => EMBEDDING_PROFILES[id])
 const ORT_OK = '1.23.2'
@@ -52,10 +55,28 @@ describe('tiered embedding profiles', () => {
   it('has the four tiers with the benchmark models and stored dimensions', () => {
     expect(EMBEDDING_PROFILE_IDS).toEqual(['standard', 'high', 'base', 'balanced', 'mid', 'plus'])
     const { base, balanced, mid, plus } = EMBEDDING_PROFILES
-    expect([base.repo, base.dimensions, base.vectorQuantisation]).toEqual(['hotchpotch/bekko-embedding-v1-a8m', 384, 'int8'])
-    expect([balanced.repo, balanced.dimensions, balanced.vectorQuantisation]).toEqual(['hotchpotch/bekko-embedding-v1-a25m', 384, 'int8'])
-    expect([mid.repo, mid.dimensions, mid.nativeDimensions, mid.vectorQuantisation]).toEqual(['onnx-community/embeddinggemma-2-ONNX', 512, 768, 'int8'])
-    expect([plus.repo, plus.dimensions, plus.nativeDimensions, plus.vectorQuantisation]).toEqual(['onnx-community/embeddinggemma-2-ONNX', 512, 768, 'int8'])
+    expect([base.repo, base.dimensions, base.vectorQuantisation]).toEqual([
+      'hotchpotch/bekko-embedding-v1-a8m',
+      384,
+      'int8',
+    ])
+    expect([balanced.repo, balanced.dimensions, balanced.vectorQuantisation]).toEqual([
+      'hotchpotch/bekko-embedding-v1-a25m',
+      384,
+      'int8',
+    ])
+    expect([mid.repo, mid.dimensions, mid.nativeDimensions, mid.vectorQuantisation]).toEqual([
+      'onnx-community/embeddinggemma-2-ONNX',
+      512,
+      768,
+      'int8',
+    ])
+    expect([plus.repo, plus.dimensions, plus.nativeDimensions, plus.vectorQuantisation]).toEqual([
+      'onnx-community/embeddinggemma-2-ONNX',
+      512,
+      768,
+      'int8',
+    ])
     expect(base.pooling).toBe('mean')
     expect(mid.pooling).toBe('sentence')
     expect(base.tier).toBe('base')
@@ -78,33 +99,56 @@ describe('tiered embedding profiles', () => {
       expect(paths).toContain(profile.tokenizerConfigFile)
     }
     // external-weights export: the data file must be downloaded next to the .onnx
-    expect(EMBEDDING_PROFILES.mid.files.map((f) => f.path)).toContain('onnx/model_quantized.onnx_data')
+    expect(EMBEDDING_PROFILES.mid.files.map((f) => f.path)).toContain(
+      'onnx/model_quantized.onnx_data',
+    )
   })
 
   it('rejects a mutable revision, a bad size and a missing pin on a tiered profile', () => {
     const base = EMBEDDING_PROFILES.base
     expect(() => assertEmbeddingManifest({ ...base, revision: 'main' })).toThrow('full commit SHA')
     expect(() =>
-      assertEmbeddingManifest({ ...base, files: base.files.map((f, i) => (i ? f : { ...f, bytes: -1 })) }),
+      assertEmbeddingManifest({
+        ...base,
+        files: base.files.map((f, i) => (i ? f : { ...f, bytes: -1 })),
+      }),
     ).toThrow('Invalid size')
     expect(() =>
-      assertEmbeddingManifest({ ...base, files: base.files.map((f, i) => (i ? f : { path: f.path })) }),
+      assertEmbeddingManifest({
+        ...base,
+        files: base.files.map((f, i) => (i ? f : { path: f.path })),
+      }),
     ).toThrow('must pin sha256')
-    expect(() => assertEmbeddingManifest({ ...base, files: base.files.slice(1) })).toThrow('Missing manifest entry')
+    expect(() => assertEmbeddingManifest({ ...base, files: base.files.slice(1) })).toThrow(
+      'Missing manifest entry',
+    )
   })
 
   it('gives every distinct vector space a distinct embeddingId; mid and plus deliberately share one', () => {
     const ids = EMBEDDING_PROFILE_IDS.map((id) => EMBEDDING_PROFILES[id].embeddingId)
     expect(new Set(ids).size).toBe(ids.length - 1)
     expect(EMBEDDING_PROFILES.mid.embeddingId).toBe(EMBEDDING_PROFILES.plus.embeddingId)
-    expect(EMBEDDING_PROFILES.mid.embeddingId).toBe('embeddinggemma-2:daa72c5124:q8:sentence:512:v8:p1')
+    expect(EMBEDDING_PROFILES.mid.embeddingId).toBe(
+      'embeddinggemma-2:daa72c5124:q8:sentence:512:v8:p1',
+    )
     expect(EMBEDDING_PROFILES.base.embeddingId).toBe('bekko-a8m:c721113d59:qe8:mean:384:v8:p1')
     expect(EMBEDDING_PROFILES.balanced.embeddingId).toBe('bekko-a25m:44f0b8af0f:qe8:mean:384:v8:p1')
     // mid and plus agree on everything that defines the vectors
-    for (const key of ['repo', 'revision', 'modelFile', 'dimensions', 'pooling', 'queryPrefix', 'passagePrefix', 'vectorQuantisation'] as const)
+    for (const key of [
+      'repo',
+      'revision',
+      'modelFile',
+      'dimensions',
+      'pooling',
+      'queryPrefix',
+      'passagePrefix',
+      'vectorQuantisation',
+    ] as const)
       expect(EMBEDDING_PROFILES.plus[key]).toEqual(EMBEDDING_PROFILES.mid[key])
     // ... and differ only in resources
-    expect(EMBEDDING_PROFILES.plus.maxInputTokens).toBeGreaterThan(EMBEDDING_PROFILES.mid.maxInputTokens)
+    expect(EMBEDDING_PROFILES.plus.maxInputTokens).toBeGreaterThan(
+      EMBEDDING_PROFILES.mid.maxInputTokens,
+    )
     expect(EMBEDDING_PROFILES.plus.maxThreads).toBeGreaterThan(EMBEDDING_PROFILES.mid.maxThreads)
     expect(EMBEDDING_PROFILES.plus.concurrency).toBeGreaterThan(EMBEDDING_PROFILES.mid.concurrency)
   })
@@ -129,9 +173,15 @@ describe('tiered embedding profiles', () => {
     expect(EMBEDDING_GEMMA_2.queryPrefix).toBe('task: search result | query: ')
     expect(EMBEDDING_GEMMA_2.passagePrefix).toBe('title: none | text: ')
     expect(EMBEDDING_GEMMA_2.queryInstruction).toBe('')
-    expect(HARRIER_270M.queryInstruction).toContain('retrieve the most relevant local document passages')
+    expect(HARRIER_270M.queryInstruction).toContain(
+      'retrieve the most relevant local document passages',
+    )
     expect(HARRIER_270M.passagePrefix).toBe('')
-    expect(EMBEDDING_PROFILES.mid.emptyInputs?.map((i) => i.name)).toEqual(['image_features', 'video_features', 'audio_features'])
+    expect(EMBEDDING_PROFILES.mid.emptyInputs?.map((i) => i.name)).toEqual([
+      'image_features',
+      'video_features',
+      'audio_features',
+    ])
   })
 
   it('keeps each tier within 15-20% of its RAM floor and asks for head-room before loading', () => {
@@ -169,8 +219,19 @@ describe('tiered embedding profiles', () => {
 })
 
 describe('suggestBiggestProfile (tiers)', () => {
-  const m = (totalMemGiB: number, logicalCores: number, extra: Partial<Parameters<typeof suggestBiggestProfile>[0]> = {}) =>
-    suggestBiggestProfile({ arch: 'x64', platform: 'linux', totalMemGiB, logicalCores, ortVersion: ORT_OK, ...extra })
+  const m = (
+    totalMemGiB: number,
+    logicalCores: number,
+    extra: Partial<Parameters<typeof suggestBiggestProfile>[0]> = {},
+  ) =>
+    suggestBiggestProfile({
+      arch: 'x64',
+      platform: 'linux',
+      totalMemGiB,
+      logicalCores,
+      ortVersion: ORT_OK,
+      ...extra,
+    })
 
   it('maps RAM and cores to base / balanced / mid / plus', () => {
     expect(m(4, 2).profile).toBe('base')
@@ -215,24 +276,45 @@ describe('suggestBiggestProfile (tiers)', () => {
 })
 
 describe('chooseInitialEmbeddingProfile', () => {
-  const spec = { arch: 'x64', platform: 'linux', totalMemGiB: 32, logicalCores: 8, ortVersion: ORT_OK }
+  const spec = {
+    arch: 'x64',
+    platform: 'linux',
+    totalMemGiB: 32,
+    logicalCores: 8,
+    ortVersion: ORT_OK,
+  }
 
   it('never overrides a saved profile', () => {
     for (const saved of ['standard', 'high', 'base', 'balanced', 'mid', 'plus'] as const)
-      expect(chooseInitialEmbeddingProfile({ saved, hasExistingIndex: true, spec })).toEqual({ profile: saved, source: 'saved' })
-    expect(chooseInitialEmbeddingProfile({ saved: 'standard', hasExistingIndex: false, spec }).profile).toBe('standard')
+      expect(chooseInitialEmbeddingProfile({ saved, hasExistingIndex: true, spec })).toEqual({
+        profile: saved,
+        source: 'saved',
+      })
+    expect(
+      chooseInitialEmbeddingProfile({ saved: 'standard', hasExistingIndex: false, spec }).profile,
+    ).toBe('standard')
   })
 
   it('moves an existing index without a settings file to the base tier (the legacy repository is gone)', () => {
-    expect(chooseInitialEmbeddingProfile({ saved: undefined, hasExistingIndex: true, spec })).toEqual({
+    expect(
+      chooseInitialEmbeddingProfile({ saved: undefined, hasExistingIndex: true, spec }),
+    ).toEqual({
       profile: 'base',
       source: 'existing-index',
     })
   })
 
   it('recommends a tier on a fresh install (and ignores an unreadable saved value)', () => {
-    expect(chooseInitialEmbeddingProfile({ saved: undefined, hasExistingIndex: false, spec })).toEqual({ profile: 'base', source: 'recommended' })
-    expect(chooseInitialEmbeddingProfile({ saved: 'garbage', hasExistingIndex: false, spec: { ...spec, totalMemGiB: 4 } }).profile).toBe('base')
+    expect(
+      chooseInitialEmbeddingProfile({ saved: undefined, hasExistingIndex: false, spec }),
+    ).toEqual({ profile: 'base', source: 'recommended' })
+    expect(
+      chooseInitialEmbeddingProfile({
+        saved: 'garbage',
+        hasExistingIndex: false,
+        spec: { ...spec, totalMemGiB: 4 },
+      }).profile,
+    ).toBe('base')
   })
 })
 
@@ -248,7 +330,13 @@ describe('profile type surface', () => {
 })
 
 describe('resolveStartupEmbeddingProfile (real files)', () => {
-  const spec = { arch: 'x64', platform: 'linux', totalMemGiB: 16, logicalCores: 8, ortVersion: ORT_OK }
+  const spec = {
+    arch: 'x64',
+    platform: 'linux',
+    totalMemGiB: 16,
+    logicalCores: 8,
+    ortVersion: ORT_OK,
+  }
   const withDir = (run: (dir: string) => void) => {
     const dir = mkdtempSync(join(tmpdir(), 'genoffice-initial-profile-'))
     try {
@@ -261,11 +349,20 @@ describe('resolveStartupEmbeddingProfile (real files)', () => {
   it('persists the recommendation once for a fresh install, then leaves later choices alone', () =>
     withDir((dir) => {
       const dbPath = join(dir, 'document-memory.db')
-      expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath, spec })).toEqual({ profile: 'base', source: 'recommended' })
+      expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath, spec })).toEqual({
+        profile: 'base',
+        source: 'recommended',
+      })
       expect(readEmbeddingProfileId(dir)).toBe('base')
       // the user picks something else; a bigger machine later must not change it
       writeActiveEmbeddingConfig(dir, 'mid')
-      expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath, spec: { ...spec, totalMemGiB: 64 } })).toEqual({
+      expect(
+        resolveStartupEmbeddingProfile({
+          settingsDir: dir,
+          dbPath,
+          spec: { ...spec, totalMemGiB: 64 },
+        }),
+      ).toEqual({
         profile: 'mid',
         source: 'saved',
       })
@@ -275,7 +372,10 @@ describe('resolveStartupEmbeddingProfile (real files)', () => {
     withDir((dir) => {
       const dbPath = join(dir, 'document-memory.db')
       writeFileSync(dbPath, 'sqlite')
-      expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath, spec })).toEqual({ profile: 'base', source: 'existing-index' })
+      expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath, spec })).toEqual({
+        profile: 'base',
+        source: 'existing-index',
+      })
       expect(readEmbeddingProfileId(dir)).toBe('base')
     }))
 
@@ -284,7 +384,13 @@ describe('resolveStartupEmbeddingProfile (real files)', () => {
       writeFileSync(join(dir, 'embedding-settings.json'), JSON.stringify({ profile: 'high' }))
       const sub = join(dir, 'db')
       mkdirSync(sub)
-      expect(resolveStartupEmbeddingProfile({ settingsDir: sub, dbPath: join(sub, 'x.db'), spec }).profile).toBe('high')
-      expect(resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath: join(dir, 'x.db'), spec }).source).toBe('saved')
+      expect(
+        resolveStartupEmbeddingProfile({ settingsDir: sub, dbPath: join(sub, 'x.db'), spec })
+          .profile,
+      ).toBe('high')
+      expect(
+        resolveStartupEmbeddingProfile({ settingsDir: dir, dbPath: join(dir, 'x.db'), spec })
+          .source,
+      ).toBe('saved')
     }))
 })

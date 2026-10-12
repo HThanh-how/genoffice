@@ -54,7 +54,9 @@ test.describe('tab tear-off and dock', () => {
       const windowsNow = () =>
         app.evaluate(({ BrowserWindow }) =>
           BrowserWindow.getAllWindows()
-            .filter((w) => !w.isDestroyed())
+            .filter(
+              (w) => !w.isDestroyed() && w.getTitle() !== '' && !w.getTitle().startsWith('Opening'),
+            )
             .map((w) => ({ title: w.getTitle(), position: w.getPosition() })),
         )
 

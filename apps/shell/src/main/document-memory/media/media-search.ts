@@ -87,22 +87,32 @@ function toHit(row: HitRow, score: number): DocumentMemoryHit {
  * A date selects by the capture date / mtime (index on kind+ts) UNION the same date written in the name
  * (name projection FTS), so the cost follows the number of matches, never the size of the library.
  */
-export function searchMediaIntent(db: DatabaseSync, intent: MediaIntent, limit: number): DocumentMemoryHit[] {
+export function searchMediaIntent(
+  db: DatabaseSync,
+  intent: MediaIntent,
+  limit: number,
+): DocumentMemoryHit[] {
   const run = (withNameDate: boolean): HitRow[] => {
     const params: Array<string | number> = []
     const where: string[] = ['d.excluded = 0']
     let from = 'document_media m JOIN documents d ON d.id = m.document_id'
     if (intent.range) {
-      const kind = intent.kind ? ' AND kind = ?' : ''
-      const byTime = `SELECT document_id AS id FROM document_media WHERE ts_ms >= ? AND ts_ms < ?${kind}`
-      params.push(intent.range.from, intent.range.to)
-      if (intent.kind) params.push(intent.kind)
+      let byTime: string
+      if (intent.kind) {
+        byTime =
+          'SELECT document_id AS id FROM document_media WHERE kind = ? AND ts_ms >= ? AND ts_ms < ?'
+        params.push(intent.kind, intent.range.from, intent.range.to)
+      } else {
+        byTime = 'SELECT document_id AS id FROM document_media WHERE ts_ms >= ? AND ts_ms < ?'
+        params.push(intent.range.from, intent.range.to)
+      }
       let ids = byTime
       if (withNameDate && intent.nameDateMatch) {
-        ids += ' UNION SELECT rowid FROM document_name_projection_fts WHERE document_name_projection_fts MATCH ?'
+        ids +=
+          ' UNION SELECT rowid FROM document_name_projection_fts WHERE document_name_projection_fts MATCH ?'
         params.push(intent.nameDateMatch)
       }
-      from = `(${ids}) ids JOIN document_media m ON m.document_id = ids.id JOIN documents d ON d.id = ids.id`
+      from = `(${ids}) ids CROSS JOIN document_media m ON m.document_id = ids.id CROSS JOIN documents d ON d.id = ids.id`
     }
     if (intent.kind) {
       where.push('m.kind = ?')
@@ -114,7 +124,8 @@ export function searchMediaIntent(db: DatabaseSync, intent: MediaIntent, limit: 
     }
     const fts = ftsQuery(intent.words)
     if (fts) {
-      where.push('d.id IN (SELECT rowid FROM document_name_fts WHERE document_name_fts MATCH ?)')
+      from += ' CROSS JOIN document_name_fts fts ON fts.rowid = d.id'
+      where.push('document_name_fts MATCH ?')
       params.push(fts)
     }
     return db
@@ -143,10 +154,22 @@ export function searchMediaIntent(db: DatabaseSync, intent: MediaIntent, limit: 
  * The name-search entry point's media step: describe media hits the normal name search found, and add the
  * hits a type word / extension / date asks for. Never throws (search must not fail because of media).
  */
-export function mergeMediaHits(db: DatabaseSync, query: string, base: DocumentMemoryHit[], limit: number): DocumentMemoryHit[] {
+export function mergeMediaHits(
+  db: DatabaseSync,
+  query: string,
+  base: DocumentMemoryHit[],
+  limit: number,
+): DocumentMemoryHit[] {
   try {
-    const info = mediaInfoFor(db, base.map((hit) => hit.documentId))
-    const described = info.size ? base.map((hit) => (info.has(hit.documentId) ? withMedia(hit, info.get(hit.documentId)!) : hit)) : base
+    const info = mediaInfoFor(
+      db,
+      base.map((hit) => hit.documentId),
+    )
+    const described = info.size
+      ? base.map((hit) =>
+          info.has(hit.documentId) ? withMedia(hit, info.get(hit.documentId)!) : hit,
+        )
+      : base
     const intent = parseMediaIntent(query)
     if (!intent) return described
     const extra = searchMediaIntent(db, intent, limit)
@@ -154,7 +177,8 @@ export function mergeMediaHits(db: DatabaseSync, query: string, base: DocumentMe
     const byId = new Map(described.map((hit) => [hit.documentId, hit]))
     for (const hit of extra) {
       const known = byId.get(hit.documentId)
-      if (!known || hit.score > known.score) byId.set(hit.documentId, known ? { ...known, score: hit.score } : hit)
+      if (!known || hit.score > known.score)
+        byId.set(hit.documentId, known ? { ...known, score: hit.score } : hit)
     }
     return [...byId.values()].sort((a, b) => b.score - a.score).slice(0, limit)
   } catch {

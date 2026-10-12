@@ -69,7 +69,7 @@ export class HotMetadataSearch {
         d.content_evicted,
         bm25(document_name_fts, 5.0, 1.0) AS name_rank
       FROM document_name_fts
-      JOIN documents d ON d.id = document_name_fts.rowid
+      CROSS JOIN documents d ON d.id = document_name_fts.rowid
       WHERE document_name_fts MATCH ? AND d.excluded = 0
       ORDER BY name_rank
       LIMIT ?;
@@ -105,7 +105,7 @@ export class HotMetadataSearch {
               d.content_evicted,
               bm25(document_name_projection_fts, 5.0, 2.0, 1.0) AS name_rank
             FROM document_name_projection_fts
-            JOIN documents d ON d.id = document_name_projection_fts.rowid
+            CROSS JOIN documents d ON d.id = document_name_projection_fts.rowid
             WHERE document_name_projection_fts MATCH ? AND d.excluded = 0
             ORDER BY name_rank
             LIMIT ?;
@@ -124,7 +124,11 @@ export class HotMetadataSearch {
     return mergeMediaHits(this.db, query, this.searchNamesBase(query, limit, candidateLimit), limit)
   }
 
-  private searchNamesBase(query: string, limit: number, candidateLimit: number): DocumentMemoryHit[] {
+  private searchNamesBase(
+    query: string,
+    limit: number,
+    candidateLimit: number,
+  ): DocumentMemoryHit[] {
     let words = nameWords(query)
     // Dropping filler words must not erase the query: "cái bè" (a place) would shrink to the
     // single word "be". Retry with the typed words when nothing usable is left.
@@ -163,12 +167,28 @@ export class HotMetadataSearch {
     }
 
     // 2. Secondary candidate retrieval / backfill fallback: standard document_name_fts
-    if (rows.length < candidateLimit) {
+    if (rows.length < limit) {
       try {
-        const ftsTokens = words.flatMap((w) =>
-          identifierVariants(w.replace(/["*]/g, '')).map((variant) => `"${variant}"*`),
-        )
-        const ftsQuery = ftsTokens.join(' OR ')
+        const selectiveWords = words.filter((w) => w.length >= 2 || isNaN(Number(w)))
+        const targetWords = selectiveWords.length > 0 ? selectiveWords : words
+        const wordClauses = targetWords.map((w, idx) => {
+          const variants = new Set(identifierVariants(w.replace(/["*]/g, '')))
+          if (idx > 0) {
+            const prevCompound = (targetWords[idx - 1]! + w).replace(/["*]/g, '')
+            if (prevCompound.length <= 40) variants.add(prevCompound)
+          }
+          if (idx < targetWords.length - 1) {
+            const nextCompound = (w + targetWords[idx + 1]!).replace(/["*]/g, '')
+            if (nextCompound.length <= 40) variants.add(nextCompound)
+          }
+          const list = [...variants]
+          return list.length === 1
+            ? /^\d+$/.test(list[0]!)
+              ? `"${list[0]}"`
+              : `"${list[0]}"*`
+            : `(${list.map((v) => (/^\d+$/.test(v) ? `"${v}"` : `"${v}"*`)).join(' OR ')})`
+        })
+        const ftsQuery = wordClauses.join(' AND ')
         const ftsRows = this.searchNameStatement.all(
           ftsQuery,
           candidateLimit - rows.length,
@@ -177,6 +197,27 @@ export class HotMetadataSearch {
           if (!seenIds.has(r.id)) {
             seenIds.add(r.id)
             rows.push(r)
+          }
+        }
+
+        // 3. Relaxed multi-word fallback when fewer than limit candidates matched strict conjunctive queries
+        if (rows.length < limit && words.length > 2) {
+          const selectiveRelaxedWords = targetWords.filter((w) => w.length >= 3 && isNaN(Number(w)))
+          const relaxedTokens = selectiveRelaxedWords.flatMap((w) =>
+            identifierVariants(w.replace(/["*]/g, '')).map((v) => `"${v}"*`),
+          )
+          if (relaxedTokens.length > 0) {
+            const relaxedQuery = relaxedTokens.join(' OR ')
+            const relaxedRows = this.searchNameStatement.all(
+              relaxedQuery,
+              candidateLimit - rows.length,
+            ) as unknown as CandidateRow[]
+            for (const r of relaxedRows) {
+              if (!seenIds.has(r.id)) {
+                seenIds.add(r.id)
+                rows.push(r)
+              }
+            }
           }
         }
       } catch (err: unknown) {
@@ -214,7 +255,11 @@ export class HotMetadataSearch {
       // Direction B: Concatenated query -> separated source
       if (words.length === 1 && words[0]!.length >= 4) {
         const singleQuery = words[0]!
-        if (stemJoined.includes(singleQuery) || singleQuery.includes(stemJoined) || joined.includes(singleQuery)) {
+        if (
+          stemJoined.includes(singleQuery) ||
+          singleQuery.includes(stemJoined) ||
+          joined.includes(singleQuery)
+        ) {
           matched = Math.max(matched, 1)
         }
       }
@@ -255,7 +300,8 @@ export class HotMetadataSearch {
           exactBonus = Math.max(exactBonus, 0.25)
         } else if (
           comp.text.startsWith(queryNorm) ||
-          (queryJoined.length >= 3 && (comp.joined.startsWith(queryJoined) || comp.joined.endsWith(queryJoined)))
+          (queryJoined.length >= 3 &&
+            (comp.joined.startsWith(queryJoined) || comp.joined.endsWith(queryJoined)))
         ) {
           prefixBonus = Math.max(prefixBonus, 0.15)
         }
@@ -276,14 +322,16 @@ export class HotMetadataSearch {
       else if (ageDays < 30) recentBonus = 0.04
       else if (ageDays < 90) recentBonus = 0.01
 
-      const nameScore = matchRatio * 0.7 + exactBonus + prefixBonus + crossSegmentBonus + recentBonus
+      const nameScore =
+        matchRatio * 0.7 + exactBonus + prefixBonus + crossSegmentBonus + recentBonus
       scored.push({ row, score: nameScore })
     }
 
     scored.sort(
       (a, b) =>
         b.score - a.score ||
-        readyRank(b.row.status, b.row.content_evicted) - readyRank(a.row.status, a.row.content_evicted) ||
+        readyRank(b.row.status, b.row.content_evicted) -
+          readyRank(a.row.status, a.row.content_evicted) ||
         b.row.updated_at - a.row.updated_at,
     )
 

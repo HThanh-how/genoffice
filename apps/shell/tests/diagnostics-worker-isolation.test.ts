@@ -4,13 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { IndexIssueReader } from '../src/main/document-memory/issue-reader'
-import {
-  getDocumentIndexDiagnostics,
-  getDocumentIndexSnapshot,
-  snapshotCache,
-  diagnosticsCache,
-  DIAGNOSTICS_CACHE_TTL_MS,
-} from '../src/main/fork/document-index-snapshot-service'
+import { snapshotCache, diagnosticsCache } from '../src/main/fork/document-index-snapshot-service'
 import { registerDocumentIndexIpc } from '../src/main/fork/document-index-ipc'
 import {
   DOCUMENT_INDEX_CHANNELS,
@@ -28,7 +22,7 @@ describe('Document Index Diagnostics Worker Isolation & IPC Suite', () => {
   let asyncStorageMock: ReturnType<typeof vi.fn>
   let migrationMock: ReturnType<typeof vi.fn>
 
-  let ipcHandlers: Map<string, Function>
+  let ipcHandlers: Map<string, (...args: any[]) => any>
   let unregisterIpc: (() => void) | null = null
 
   const validDiagnostics: DocumentIndexStorageDiagnostics = {
@@ -116,9 +110,9 @@ describe('Document Index Diagnostics Worker Isolation & IPC Suite', () => {
       return validMigration
     })
 
-    ipcHandlers = new Map<string, Function>()
+    ipcHandlers = new Map<string, (...args: any[]) => any>()
     const fakeIpcMain = {
-      handle: (channel: string, handler: Function) => {
+      handle: (channel: string, handler: (...args: any[]) => any) => {
         ipcHandlers.set(channel, handler)
       },
     }
@@ -175,10 +169,7 @@ describe('Document Index Diagnostics Worker Isolation & IPC Suite', () => {
     expect(handler).toBeDefined()
 
     // Dispatch concurrent requests simultaneously
-    const [result1, result2] = await Promise.all([
-      handler!({}, false),
-      handler!({}, false),
-    ])
+    const [result1, result2] = await Promise.all([handler!({}, false), handler!({}, false)])
 
     expect(result1).toBeDefined()
     expect(result2).toBeDefined()

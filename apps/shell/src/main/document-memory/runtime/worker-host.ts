@@ -53,12 +53,27 @@ export class WorkerHost {
     }
   }
 
+  private readonly terminatingWorkers = new Set<Promise<unknown>>()
+
   /** Stops the process for good (the manager is closing). */
-  terminate(): void {
+  async terminate(): Promise<void> {
     const worker = this.worker
     this.worker = null
-    if (worker && typeof (worker as { terminate?: unknown }).terminate === 'function')
-      void worker.terminate()
+    this.failWaiting('worker terminated')
+    if (worker && typeof (worker as { terminate?: unknown }).terminate === 'function') {
+      try {
+        const p = Promise.resolve((worker as { terminate: () => unknown }).terminate()).finally(
+          () => {
+            this.terminatingWorkers.delete(p)
+          },
+        )
+        this.terminatingWorkers.add(p)
+        await p
+      } catch {
+        // ignore termination errors
+      }
+    }
+    await Promise.all(Array.from(this.terminatingWorkers))
   }
 
   recycle(reason: string): void {
@@ -68,7 +83,14 @@ export class WorkerHost {
     this.deps.onFailure(reason, false)
     this.deps.releaseReservations()
     this.deps.recycled(reason)
-    if (typeof (worker as { terminate?: unknown }).terminate === 'function') void worker.terminate()
+    if (typeof (worker as { terminate?: unknown }).terminate === 'function') {
+      const p = Promise.resolve((worker as { terminate: () => unknown }).terminate()).finally(
+        () => {
+          this.terminatingWorkers.delete(p)
+        },
+      )
+      this.terminatingWorkers.add(p)
+    }
     this.failWaiting(reason)
   }
 

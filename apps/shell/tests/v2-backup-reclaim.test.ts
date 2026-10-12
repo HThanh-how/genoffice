@@ -176,7 +176,9 @@ describe('V2 backup inventory and user-initiated delete', () => {
     v2.exec(
       'CREATE TABLE documents (id INTEGER PRIMARY KEY); CREATE TABLE chunks (id INTEGER PRIMARY KEY, vector BLOB);',
     )
+    v2.exec('BEGIN')
     for (let i = 0; i < 200; i++) v2.exec(`INSERT INTO documents VALUES (${i})`)
+    v2.exec('COMMIT')
     v2.close()
     expect((await deleteV2Backups(dbPath)).refused).toBe('live-index-not-v3')
     expect(existsSync(join(dir, NAME))).toBe(true)

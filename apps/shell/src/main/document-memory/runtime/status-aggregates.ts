@@ -137,6 +137,10 @@ export class StatusAggregates {
     this.activeSpace = options.activeSpace ?? (() => undefined)
   }
 
+  reset(): void {
+    this.entries.clear()
+  }
+
   stats(space = this.activeSpace()): DocumentMemoryStats {
     return this.read('stats', { op: 'stats', space }, { docs: 0, chunks: 0, vectors: 0, errors: 0 })
   }

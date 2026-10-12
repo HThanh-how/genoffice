@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -27,7 +27,8 @@ function readMarker(path: string): string | null {
   if (!existsSync(path)) return null
   const db = new DatabaseSync(path)
   try {
-    const row = db.prepare('SELECT marker FROM documents LIMIT 1').get() as { marker?: string } | undefined
+    const row = db.prepare('SELECT marker FROM documents LIMIT 1').get() as
+      { marker?: string } | undefined
     return row?.marker ?? null
   } catch {
     return null

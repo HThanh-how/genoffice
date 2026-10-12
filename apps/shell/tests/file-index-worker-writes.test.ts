@@ -31,8 +31,12 @@ afterEach(() => {
   indexer = null
   resetIndexingPolicyBus()
   store.close()
-  rmSync(dir, { recursive: true, force: true })
-  rmSync(storeDir, { recursive: true, force: true })
+  try {
+    rmSync(dir, { recursive: true, force: true })
+  } catch {}
+  try {
+    rmSync(storeDir, { recursive: true, force: true })
+  } catch {}
 })
 
 const workerIndexer = (timeoutMs = 600) =>

@@ -3,8 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
-import { DocumentMemoryManager } from '../src/main/document-memory/manager'
-import { getEventLoopMetrics, getSqliteTimingSummary } from '../src/main/document-memory/sqlite-timing'
+import {
+  getEventLoopMetrics,
+  getSqliteTimingSummary,
+} from '../src/main/document-memory/sqlite-timing'
 import {
   getDocumentIndexSnapshot,
   IndexStatusCache,
@@ -148,9 +150,9 @@ describe('Document Memory Snapshot & Consolidated Telemetry Suite (IT-4)', () =>
   })
 
   it('loads, saves and returns truthful PDF pages state and contract', async () => {
-    const handlers = new Map<string, Function>()
+    const handlers = new Map<string, (...args: any[]) => any>()
     const fakeIpcMain = {
-      handle: (ch: string, fn: Function) => handlers.set(ch, fn),
+      handle: (ch: string, fn: (...args: any[]) => any) => handlers.set(ch, fn),
     }
 
     const pdfConfigFile = join(directory, 'document-memory-pdf.json')

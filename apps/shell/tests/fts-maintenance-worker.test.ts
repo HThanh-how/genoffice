@@ -7,10 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { DocumentMemoryStore } from '../src/main/document-memory/store'
 import { storageBudgetAckReply } from './helpers/storage-budget-ack'
-import {
-  publishIndexingPolicy,
-  resetIndexingPolicyBus,
-} from '../src/main/fork/indexing-policy-bus'
+import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
 
 const PAUSED_POLICY = {
   paused: true,
@@ -148,7 +145,7 @@ describe('FTS Maintenance Worker Delegation', () => {
     const ftsRequests = mockWorker.sentRequests.filter((r) => r.type === 'fts-maintenance-step')
     expect(ftsRequests.length).toBeGreaterThanOrEqual(1)
 
-    manager.close()
+    await manager.closeAsync()
   })
 
   it('schedules next step when worker reports more=true and stops when more=false', async () => {
@@ -171,10 +168,12 @@ describe('FTS Maintenance Worker Delegation', () => {
 
     // Wait a bit more to ensure no 3rd step was scheduled
     await new Promise((resolve) => setTimeout(resolve, 300))
-    const ftsRequestsAfter = mockWorker.sentRequests.filter((r) => r.type === 'fts-maintenance-step')
+    const ftsRequestsAfter = mockWorker.sentRequests.filter(
+      (r) => r.type === 'fts-maintenance-step',
+    )
     expect(ftsRequestsAfter.length).toBe(2)
 
-    manager.close()
+    await manager.closeAsync()
   })
 
   it('delegates gc-step and vacuum-step to worker process', async () => {
@@ -200,7 +199,7 @@ describe('FTS Maintenance Worker Delegation', () => {
     expect(gcRequests.length).toBe(1)
     expect(vacuumRequests.length).toBe(1)
 
-    manager.close()
+    await manager.closeAsync()
   })
 
   it('suspends maintenance when isIndexingPaused is active', async () => {
@@ -219,6 +218,6 @@ describe('FTS Maintenance Worker Delegation', () => {
     // When paused, no requests should be sent to worker
     expect(mockWorker.sentRequests.length).toBe(0)
 
-    manager.close()
+    await manager.closeAsync()
   })
 })

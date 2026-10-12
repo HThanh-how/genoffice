@@ -46,16 +46,17 @@ describe('Document Search V3 Artifact Admission Policy & Resource Budgets', () =
     managers = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const manager of managers) {
-      manager.close()
+      await manager.closeAsync()
     }
     rmSync(tempDir, { recursive: true, force: true })
   })
 
   function createTestManager(): DocumentMemoryManager {
     const manager = new DocumentMemoryManager(tempDir, {
-      workerFactory: () => new TestWorkerStub(join(tempDir, 'document-memory.db')) as unknown as Worker,
+      workerFactory: () =>
+        new TestWorkerStub(join(tempDir, 'document-memory.db')) as unknown as Worker,
     })
     managers.push(manager)
     return manager
@@ -127,7 +128,13 @@ describe('Document Search V3 Artifact Admission Policy & Resource Budgets', () =
       // manager.remember must not reject explicit user opens
       manager.remember(targetFile)
 
-      const store = (manager as unknown as { store: { documentByPath: (p: string) => { status: string; excluded?: number } | undefined } }).store
+      const store = (
+        manager as unknown as {
+          store: {
+            documentByPath: (p: string) => { status: string; excluded?: number } | undefined
+          }
+        }
+      ).store
       const doc = store.documentByPath(targetFile)
       expect(doc).toBeDefined()
       expect(doc?.status).not.toBe('excluded')

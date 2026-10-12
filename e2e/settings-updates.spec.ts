@@ -20,13 +20,15 @@ test('About saves a validated source and offers an immediate update check', asyn
     await source.fill('other-owner/office')
     await expect(check).toBeDisabled()
     await page.getByRole('button', { name: 'Save', exact: true }).click()
-    await expect(page.getByRole('status')).toHaveText('Saved')
+    await expect(page.locator('.set-field-desc[role="status"]')).toHaveText('Saved')
     await expect(check).toBeEnabled()
     const saved = JSON.parse(await readFile(join(userDataDir, 'app-settings.json'), 'utf8'))
     expect(saved.updateSource).toEqual({ kind: 'github', value: 'other-owner/office' })
     await source.fill('../invalid')
     await page.getByRole('button', { name: 'Save', exact: true }).click()
-    await expect(page.getByRole('status')).toHaveText('Invalid update source or connection failed.')
+    await expect(page.locator('.set-field-desc[role="status"]')).toHaveText(
+      'Invalid update source or connection failed.',
+    )
     expect(
       JSON.parse(await readFile(join(userDataDir, 'app-settings.json'), 'utf8')).updateSource,
     ).toEqual(saved.updateSource)

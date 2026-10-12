@@ -26,7 +26,9 @@ class QuietWorker extends EventEmitter {
       this.emit('message', { type: 'model', state: 'ready' })
       this.emit('message', {
         id: message.id,
-        result: (message.texts ?? []).map(() => new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1)),
+        result: (message.texts ?? []).map(() =>
+          new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1),
+        ),
       })
     }, 0)
   }
@@ -47,8 +49,8 @@ beforeEach(() => {
   })
   manager.setEnabled(false)
 })
-afterEach(() => {
-  manager.close()
+afterEach(async () => {
+  await manager.closeAsync()
   rmSync(dir, { recursive: true, force: true })
 })
 

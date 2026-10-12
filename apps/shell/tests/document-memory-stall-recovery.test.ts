@@ -15,8 +15,8 @@ let manager: DocumentMemoryManager | undefined
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-stall-'))
 })
-afterEach(() => {
-  manager?.close()
+afterEach(async () => {
+  await manager?.closeAsync()
   manager = undefined
   rmSync(dir, { recursive: true, force: true })
 })

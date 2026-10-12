@@ -42,7 +42,9 @@ describe('FileIndexer diff on a big index', () => {
     )
     for (let i = 0; i < 150_000; i++) ins.run(join(dir, 'gone', 'deep', `x${i}.txt`), `x${i}.txt`)
     db.exec('COMMIT')
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
     indexer = new FileIndexer(store, WORKER, { roots: () => [dir], extraPaths: () => [] }, 5_000)
+
     const gaps: number[] = []
     let last = performance.now()
     const timer = setInterval(() => {
@@ -54,7 +56,8 @@ describe('FileIndexer diff on a big index', () => {
     await new Promise((resolve) => setTimeout(resolve, 30))
     clearInterval(timer)
     expect(store.count()).toBeGreaterThan(150_000) // nothing was dropped
+    const maxGap = Math.max(...gaps)
     // the loop used to `continue` without ever yielding: hundreds of ms in one piece
-    expect(Math.max(...gaps)).toBeLessThan(100)
+    expect(maxGap).toBeLessThan(100)
   }, 60_000)
 })

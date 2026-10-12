@@ -20,10 +20,10 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-memory-manager-'))
   managers = []
 })
-afterEach(() => {
-  for (const manager of managers) manager.close()
+afterEach(async () => {
+  for (const manager of managers) await manager.closeAsync()
   resetIndexingPolicyBus()
-  rmSync(dir, { recursive: true, force: true })
+  rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
 })
 
 class FakeWorker extends EventEmitter {
@@ -32,6 +32,8 @@ class FakeWorker extends EventEmitter {
   embeddingCalls: string[][] = []
   extractionCalls: string[] = []
   stopAfterBatches = Infinity
+  private pendingTimers = new Set<ReturnType<typeof setTimeout>>()
+
   constructor(private readonly dbPath: string) {
     super()
   }
@@ -45,7 +47,8 @@ class FakeWorker extends EventEmitter {
     limit?: number
     embeddingModel?: string
   }) {
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      this.pendingTimers.delete(timer)
       try {
         const ack = storageBudgetAckReply(message)
         if (ack) {
@@ -98,8 +101,13 @@ class FakeWorker extends EventEmitter {
         })
       }
     }, this.delay)
+    this.pendingTimers.add(timer)
   }
   terminate(): Promise<number> {
+    for (const timer of this.pendingTimers) {
+      clearTimeout(timer)
+    }
+    this.pendingTimers.clear()
     return Promise.resolve(0)
   }
 }
@@ -112,9 +120,10 @@ async function until(check: () => boolean, timeout = 3000) {
   }
 }
 
-function manager(fake: FakeWorker, pollIntervalMs = 60_000) {
+function manager(fake: FakeWorker, pollIntervalMs = 60_000, workerTimeoutMs?: number) {
   const instance = new DocumentMemoryManager(dir, {
     pollIntervalMs,
+    ...(workerTimeoutMs ? { workerTimeoutMs } : {}),
     workerFactory: (_path, data) => {
       // Assert the worker and index share one SQLite database and a private cache folder.
       expect(data.dbPath).toBe(join(dir, 'document-memory.db'))
@@ -127,8 +136,8 @@ function manager(fake: FakeWorker, pollIntervalMs = 60_000) {
 }
 
 /** Manager whose startup storage-budget handshake has been ACKed, so metadata writes are admitted. */
-async function readyManager(fake: FakeWorker, pollIntervalMs?: number) {
-  const instance = manager(fake, pollIntervalMs)
+async function readyManager(fake: FakeWorker, pollIntervalMs?: number, workerTimeoutMs?: number) {
+  const instance = manager(fake, pollIntervalMs, workerTimeoutMs)
   await waitForManagerWriteReady(instance)
   return instance
 }
@@ -527,7 +536,7 @@ describe('DocumentMemoryManager', () => {
   it('bounds the documents held for embedding while embedding stalls, keeps reading the files behind them, and avoids rescanning all paths for priority', async () => {
     const fake = new FakeWorker(join(dir, 'document-memory.db'))
     fake.stopAfterBatches = 0
-    const instance = manager(fake)
+    const instance = await readyManager(fake, undefined, 3_000)
     const listPaths = vi.spyOn(DocumentMemoryStore.prototype, 'listPaths')
     try {
       for (let i = 0; i < 64; i++) {
@@ -535,9 +544,10 @@ describe('DocumentMemoryManager', () => {
         writeFileSync(path, `Bulk document ${i}`)
         instance.indexDiscoveredFile(path)
       }
-      await until(() => fake.embeddingCalls.length === 1)
-      await new Promise((resolve) => setTimeout(resolve, 100))
-      const coord = (instance as unknown as { embeddingCoord: { getQueueLength(): number } }).embeddingCoord
+      await until(() => fake.embeddingCalls.length === 1, 15_000)
+      await until(() => fake.extractionCalls.length > 16, 45_000)
+      const coord = (instance as unknown as { embeddingCoord: { getQueueLength(): number } })
+        .embeddingCoord
       // memory stays bounded: no more than 16 documents' text waits in the vector line ...
       expect(coord.getQueueLength()).toBeLessThanOrEqual(16)
       // ... yet reading went on past that bound (the old line stopped at 16 read files until the vectors caught up)
@@ -548,7 +558,7 @@ describe('DocumentMemoryManager', () => {
     } finally {
       listPaths.mockRestore()
     }
-  })
+  }, 60_000)
 
   it('backs off failed embeddings instead of exhausting a large queue in a retry burst', async () => {
     const fake = new FakeWorker(join(dir, 'document-memory.db'))

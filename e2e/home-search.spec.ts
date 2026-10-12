@@ -104,7 +104,7 @@ test.describe('home file search', () => {
       await expect(box).toHaveValue('')
       await expect(page.locator('.search-results')).toHaveCount(0)
       await expect(page.locator('.recents-heading .section-label')).toHaveText('Recent')
-      await page.locator('body').click()
+      await page.locator('.recents-heading').click()
       await page.keyboard.press(process.platform === 'darwin' ? 'Meta+f' : 'Control+f')
       await expect(box).toBeFocused()
 

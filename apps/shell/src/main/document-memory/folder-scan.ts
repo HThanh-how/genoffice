@@ -14,6 +14,7 @@ import {
   shouldSkipDirectory,
 } from './scan-policy'
 import { isGeneratedArtifactPath } from './artifact-policy'
+import type { FileEnrollmentResult } from './storage/repositories/document-repository'
 export { IGNORED_DIRECTORIES, SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
 export { isGeneratedArtifactPath } from './artifact-policy'
 
@@ -39,7 +40,8 @@ export function isIndexablePath(root: string, path: string): boolean {
   const ext = extname(name).toLowerCase()
   const media = mediaKindOfExtension(ext)
   // Size is unknown here: the size floor / folder cap are applied where the file is stat'ed.
-  if (media ? mediaRejection(media, relative) !== null : !SUPPORTED_EXTENSIONS.has(ext)) return false
+  if (media ? mediaRejection(media, relative) !== null : !SUPPORTED_EXTENSIONS.has(ext))
+    return false
   if (isGeneratedArtifactPath(path)) return false
   return true
 }
@@ -85,11 +87,20 @@ export interface FolderScanStatus {
   skipped: number
   errors: number
   lastError?: string
+  refused?: boolean
+  deferred?: boolean
   reconciledAt?: number
 }
 
 export interface DiscoveredDocumentIndexer {
   indexDiscoveredFile(path: string, metadata?: { mtimeMs: number; sizeBytes: number }): boolean
+  enrollDiscoveredFile?(
+    path: string,
+    metadata?: { mtimeMs: number; sizeBytes: number },
+  ): FileEnrollmentResult
+  isWriteReady?(): boolean
+  waitForWriteReady?(timeoutMs?: number): Promise<boolean>
+  onWriteReadyChange?(listener: (ready: boolean) => void): () => void
   /** Reconcile a root against a fresh metadata-only listing (adds, changes, moves, deletions). */
   reconcileFolder?(
     root: string,
@@ -162,6 +173,10 @@ export interface ScanJob {
   lastError?: string
   /** Whether the folder was stopped because it was unavailable/unreachable. */
   unavailable?: boolean
+  /** Whether the scan was temporarily deferred due to storage write gate backpressure. */
+  deferred?: boolean
+  /** Whether the scan was refused due to storage admission / write gate quota denial. */
+  refused?: boolean
   /** Epoch ms of the last completed metadata-only reconcile pass. */
   reconciledAt?: number
   /** Epoch ms the last full scan finished. */
@@ -204,6 +219,7 @@ export interface FolderSummary {
   errors: number
   lastError?: string
   unavailable?: boolean
+  refused?: boolean
   history: ScanRun[]
   media?: number
   mediaSkipped?: number
@@ -238,6 +254,7 @@ export class FolderScanManager {
   private saveDirty = false
 
   private readonly maxMediaPerFolder: number
+  private readonly unsubscribeWriteReady?: () => void
 
   constructor(
     userData: string,
@@ -250,6 +267,13 @@ export class FolderScanManager {
     this.memory = memory
     this.manifest = readManifest(this.manifestPath)
     memory.onCleared?.(() => this.unregisterAll())
+    if (memory.onWriteReadyChange) {
+      this.unsubscribeWriteReady = memory.onWriteReadyChange((ready) => {
+        if (ready && !this.closed) {
+          this.retryUnavailable()
+        }
+      })
+    }
     const interrupted = this.manifest.jobs.find((job) => job.state === 'running')
     if (interrupted) {
       // Traversal restarts at the selected root. Reset traversal counters so they
@@ -261,6 +285,8 @@ export class FolderScanManager {
       resetMediaCounters(interrupted)
       delete interrupted.lastError
       delete interrupted.unavailable
+      delete interrupted.deferred
+      delete interrupted.refused
       if (hasManualOwner(interrupted)) {
         this.save()
         queueMicrotask(() => this.resume(interrupted.root))
@@ -269,13 +295,18 @@ export class FolderScanManager {
         this.save()
       }
     } else {
-      const hasUnavailable = this.manifest.jobs.some(
+      const hasUnavailableOrDeferred = this.manifest.jobs.some(
         (job) =>
           hasManualOwner(job) &&
           job.state === 'stopped' &&
-          (job.unavailable || job.lastError?.includes('unavailable')),
+          (job.unavailable ||
+            job.deferred ||
+            job.refused ||
+            job.lastError?.includes('unavailable') ||
+            job.lastError?.includes('deferred') ||
+            job.lastError?.includes('refused')),
       )
-      if (hasUnavailable) {
+      if (hasUnavailableOrDeferred) {
         queueMicrotask(() => this.retryUnavailable())
       }
     }
@@ -541,7 +572,10 @@ export class FolderScanManager {
     }
 
     if (this.activeRoot) {
-      if (this.activeRoot !== normalizedRoot && !this.waiting.some((w) => resolve(w) === normalizedRoot))
+      if (
+        this.activeRoot !== normalizedRoot &&
+        !this.waiting.some((w) => resolve(w) === normalizedRoot)
+      )
         this.waiting.push(normalizedRoot)
       this.save()
       return this.status()
@@ -583,7 +617,10 @@ export class FolderScanManager {
     this.pendingRestartRoots.delete(normalizedRoot)
 
     if (this.activeRoot) {
-      if (this.activeRoot !== normalizedRoot && !this.waiting.some((w) => resolve(w) === normalizedRoot)) {
+      if (
+        this.activeRoot !== normalizedRoot &&
+        !this.waiting.some((w) => resolve(w) === normalizedRoot)
+      ) {
         this.waiting.push(normalizedRoot)
       }
       this.save()
@@ -598,6 +635,9 @@ export class FolderScanManager {
     job.errors = 0
     resetMediaCounters(job)
     delete job.lastError
+    delete job.refused
+    delete job.deferred
+    delete job.unavailable
 
     this.save()
     this.run(job)
@@ -662,6 +702,8 @@ export class FolderScanManager {
       enrolled: job?.enrolled ?? 0,
       skipped: job?.skipped ?? 0,
       errors: job?.errors ?? 0,
+      ...(job?.refused ? { refused: true } : {}),
+      ...(job?.deferred ? { deferred: true } : {}),
       ...(job?.lastError ? { lastError: job.lastError } : {}),
       ...(job?.reconciledAt ? { reconciledAt: job.reconciledAt } : {}),
     }
@@ -670,6 +712,7 @@ export class FolderScanManager {
   close(): void {
     this.closed = true
     this.stopRequested = true
+    this.unsubscribeWriteReady?.()
     if (this.saveDirty) this.save()
     this.watcher?.close()
     this.watcher = null
@@ -795,7 +838,20 @@ export class FolderScanManager {
   }
 
   private async walk(job: ScanJob): Promise<void> {
+    if (this.memory.waitForWriteReady) {
+      const ready = await this.memory.waitForWriteReady(10_000)
+      if (!ready && this.memory.isWriteReady && !this.memory.isWriteReady()) {
+        job.state = 'stopped'
+        job.deferred = true
+        job.lastError = 'Storage write gate not ready; scan deferred'
+        this.save()
+        this.emitRootsChanged()
+        return
+      }
+    }
     const budget = newMediaBudget(this.maxMediaPerFolder)
+    let enrollmentFailed = false
+    let scanStoppedEarly = false
     const completed = await this.traverse(
       job.root,
       {
@@ -807,19 +863,66 @@ export class FolderScanManager {
           job.discovered++
           try {
             const fileStat = await stat(path)
-            if (this.closed || this.stopRequested) return false
+            if (this.closed || this.stopRequested || scanStoppedEarly) return false
             if (!fileStat.isFile()) {
               job.skipped++
             } else if (!isListableSize(path, fileStat.size, budget)) {
               job.skipped++
               recordMediaBudget(job, budget)
-            } else if (
-              this.memory.indexDiscoveredFile(path, {
+            } else {
+              const meta = {
                 mtimeMs: fileStat.mtimeMs,
                 sizeBytes: fileStat.size,
-              })
-            ) {
-              job.enrolled++
+              }
+              if (this.memory.enrollDiscoveredFile) {
+                if (this.memory.isWriteReady && !this.memory.isWriteReady()) {
+                  await this.memory.waitForWriteReady?.(5_000)
+                }
+                const res = this.memory.enrollDiscoveredFile(path, meta)
+                if (res.outcome === 'created' || res.outcome === 'updated') {
+                  job.enrolled++
+                } else if (res.outcome === 'unchanged') {
+                  // File is already indexed with identical mtime and size; clean no-op, neither enrolled nor error
+                } else if (res.outcome === 'skipped' || res.outcome === 'excluded') {
+                  job.skipped++
+                } else if (res.outcome === 'refused' || res.outcome === 'deferred') {
+                  // Storage admission / write gate backpressure denial marks refused/deferred and cleanly stops scan
+                  scanStoppedEarly = true
+                  job.state = 'stopped'
+                  if (res.outcome === 'deferred') {
+                    job.deferred = true
+                    job.lastError = res.error ?? 'Storage write gate not ready; scan deferred'
+                  } else {
+                    job.refused = true
+                    job.lastError = res.error ?? 'Storage write gate refused file enrollment'
+                  }
+                  return false
+                } else {
+                  enrollmentFailed = true
+                  job.errors++
+                  job.lastError = res.error ?? `Failed to enroll discovered file: ${path}`
+                }
+              } else {
+                let enrolled = false
+                if (this.memory.isWriteReady && !this.memory.isWriteReady()) {
+                  await this.memory.waitForWriteReady?.(5_000)
+                }
+                if (this.memory.isWriteReady && !this.memory.isWriteReady()) {
+                  job.state = 'stopped'
+                  job.deferred = true
+                  job.lastError = 'Storage write gate not ready; scan deferred'
+                  scanStoppedEarly = true
+                  return false
+                }
+                enrolled = this.memory.indexDiscoveredFile(path, meta)
+                if (enrolled) {
+                  job.enrolled++
+                } else {
+                  enrollmentFailed = true
+                  job.errors++
+                  job.lastError = `Failed to enroll discovered file: ${path}`
+                }
+              }
             }
             if (mediaKindOfPath(path)) recordMediaBudget(job, budget)
           } catch (error) {
@@ -832,12 +935,34 @@ export class FolderScanManager {
         // at most a couple of seconds of traversal; enrollment itself is idempotent in SQLite.
         afterDirectory: () => this.saveSoon(),
       },
-      () => this.closed || this.stopRequested,
+      () => this.closed || this.stopRequested || scanStoppedEarly,
     )
     if (completed) {
-      job.state = 'complete'
+      if (enrollmentFailed) {
+        job.state = 'stopped'
+        if (!job.lastError) {
+          job.lastError = 'Scan stopped: some discovered files could not be enrolled'
+        }
+      } else if (job.errors > 0) {
+        job.state = 'stopped'
+        if (!job.lastError) {
+          job.lastError = 'Scan stopped: some directories or files could not be read'
+        }
+      } else {
+        job.state = 'complete'
+        job.completedAt = Date.now()
+        delete job.deferred
+        delete job.refused
+        delete job.lastError
+      }
       this.save()
       this.emitRootsChanged()
+    } else {
+      if (job.refused || job.deferred) {
+        job.state = 'stopped'
+        this.save()
+        this.emitRootsChanged()
+      }
     }
   }
 
@@ -876,7 +1001,8 @@ export class FolderScanManager {
             continue
           }
           if (entry.isDirectory()) {
-            if (shouldSkipDirectory(entry.name) || isGeneratedArtifactPath(path)) handlers.onSkipped()
+            if (shouldSkipDirectory(entry.name) || isGeneratedArtifactPath(path))
+              handlers.onSkipped()
             else pending.push(path)
             continue
           }
@@ -934,7 +1060,8 @@ export class FolderScanManager {
     return this.manifest.jobs
       .map((job) => ({
         root: job.root,
-        owners: job.owners && job.owners.length > 0 ? [...job.owners] : (['manual'] as FolderOwner[]),
+        owners:
+          job.owners && job.owners.length > 0 ? [...job.owners] : (['manual'] as FolderOwner[]),
         state: job.state,
         priority: job.priority === true,
         ...(job.startedAt === undefined ? {} : { startedAt: job.startedAt }),
@@ -946,6 +1073,7 @@ export class FolderScanManager {
         errors: job.errors,
         ...(job.lastError ? { lastError: job.lastError } : {}),
         ...(job.unavailable ? { unavailable: true } : {}),
+        ...(job.refused ? { refused: true } : {}),
         history: job.history ?? [],
         ...(job.media ? { media: job.media } : {}),
         ...(job.mediaSkipped ? { mediaSkipped: job.mediaSkipped } : {}),
@@ -962,13 +1090,39 @@ export class FolderScanManager {
     if (this.closed) return []
     const retried: string[] = []
     for (const job of this.manifest.jobs) {
-      if (job.state === 'stopped' && (job.unavailable || job.lastError?.includes('unavailable'))) {
+      if (
+        job.state === 'stopped' &&
+        (job.unavailable ||
+          job.deferred ||
+          job.refused ||
+          job.lastError?.includes('unavailable') ||
+          job.lastError?.includes('deferred') ||
+          job.lastError?.includes('refused'))
+      ) {
         if (!hasManualOwner(job)) {
+          continue
+        }
+        if (
+          job.deferred ||
+          job.refused ||
+          job.lastError?.includes('deferred') ||
+          job.lastError?.includes('refused')
+        ) {
+          if (this.memory.isWriteReady && !this.memory.isWriteReady()) {
+            continue
+          }
+        }
+        if (
+          (this.activeRoot && resolve(this.activeRoot) === resolve(job.root)) ||
+          this.isWaiting(job.root)
+        ) {
           continue
         }
         try {
           validateRoot(job.root)
           job.unavailable = false
+          delete job.deferred
+          delete job.refused
           delete job.lastError
           this.start(job.root, 'manual')
           retried.push(job.root)
@@ -1011,7 +1165,9 @@ export class FolderScanManager {
 
     if (job.owners.length > 0) {
       if (this.pendingRestartRoots.has(normalized)) {
-        const remaining = (this.pendingRestartRoots.get(normalized) ?? []).filter((o) => o !== owner)
+        const remaining = (this.pendingRestartRoots.get(normalized) ?? []).filter(
+          (o) => o !== owner,
+        )
         if (remaining.length > 0) {
           this.pendingRestartRoots.set(normalized, remaining)
         } else {
@@ -1057,7 +1213,9 @@ export class FolderScanManager {
 
     if (job.owners.length > 0) {
       if (this.pendingRestartRoots.has(normalized)) {
-        const remaining = (this.pendingRestartRoots.get(normalized) ?? []).filter((o) => o !== owner)
+        const remaining = (this.pendingRestartRoots.get(normalized) ?? []).filter(
+          (o) => o !== owner,
+        )
         if (remaining.length > 0) {
           this.pendingRestartRoots.set(normalized, remaining)
         } else {
@@ -1234,4 +1392,3 @@ export async function reconcileSubtree(
 ): Promise<{ ok: boolean; reason?: string; files?: number }> {
   return scanner.reconcileSubtree(root, subtree)
 }
-

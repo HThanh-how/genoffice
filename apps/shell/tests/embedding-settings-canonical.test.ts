@@ -8,7 +8,6 @@ import {
   LEGACY_EMBEDDING_SETTINGS_FILENAME,
   readActiveEmbeddingConfig,
   readEmbeddingProfileId,
-  resolveEmbeddingSettingsPath,
   writeActiveEmbeddingConfig,
 } from '../src/main/document-memory/storage/embedding-settings'
 import { ensureDocumentMemoryStorageReady } from '../src/main/document-memory/storage-bootstrap'
@@ -23,10 +22,10 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
     managers = []
   })
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const m of managers) {
       try {
-        m.close()
+        await m.closeAsync()
       } catch {
         // ignore errors during teardown
       }
@@ -48,12 +47,14 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
     expect(mgr1.embeddingSettings().profile).toBe('high')
 
     // Close first manager before simulating application restart
-    mgr1.close()
+    await mgr1.closeAsync()
 
     // 2. Restart: new manager instance pointing to the same directory
     const mgr2 = createManager()
     expect(mgr2.embeddingSettings().profile).toBe('high')
-    expect(mgr2.indexingActivityStatus().activeEmbeddingSpace).toBe(EMBEDDING_PROFILES.high.embeddingId)
+    expect(mgr2.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES.high.embeddingId,
+    )
   })
 
   it('PROFILE-02: saved Standard -> restart -> Standard', async () => {
@@ -67,12 +68,14 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
     expect(mgr1.embeddingSettings().profile).toBe('standard')
 
     // Close first manager before restart
-    mgr1.close()
+    await mgr1.closeAsync()
 
     // 2. Restart: new manager instance pointing to the same directory
     const mgr2 = createManager()
     expect(mgr2.embeddingSettings().profile).toBe('standard')
-    expect(mgr2.indexingActivityStatus().activeEmbeddingSpace).toBe(EMBEDDING_PROFILES.standard.embeddingId)
+    expect(mgr2.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES.standard.embeddingId,
+    )
 
     // Verify canonical JSON file on disk
     const canonicalPath = join(dir, EMBEDDING_SETTINGS_FILENAME)
@@ -102,12 +105,14 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
 
     // 5. Verify symmetry when profile switches to 'standard'
     mgr.setEmbeddingProfile('standard')
-    mgr.close()
+    await mgr.closeAsync()
 
     const nextBootstrapConfig = readActiveEmbeddingConfig(dir)
     const nextMgr = createManager()
     expect(nextMgr.embeddingSettings().profile).toBe(nextBootstrapConfig.profileId)
-    expect(nextMgr.indexingActivityStatus().activeEmbeddingSpace).toBe(nextBootstrapConfig.activeSpaceId)
+    expect(nextMgr.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      nextBootstrapConfig.activeSpaceId,
+    )
     expect(nextBootstrapConfig.profileId).toBe('standard')
   })
 
@@ -126,8 +131,10 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
 
     const mgrA = createManager()
     expect(mgrA.embeddingSettings().profile).toBe('high')
-    expect(mgrA.indexingActivityStatus().activeEmbeddingSpace).toBe(EMBEDDING_PROFILES.high.embeddingId)
-    mgrA.close()
+    expect(mgrA.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES.high.embeddingId,
+    )
+    await mgrA.closeAsync()
 
     // Verify canonical content was not modified/overwritten by legacy
     const canonicalContentA = JSON.parse(readFileSync(canonicalPath, 'utf8'))
@@ -143,8 +150,10 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
 
     const mgrB = createManager()
     expect(mgrB.embeddingSettings().profile).toBe('standard')
-    expect(mgrB.indexingActivityStatus().activeEmbeddingSpace).toBe(EMBEDDING_PROFILES.standard.embeddingId)
-    mgrB.close()
+    expect(mgrB.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES.standard.embeddingId,
+    )
+    await mgrB.closeAsync()
   })
 
   it('PROFILE-05: legacy-only migrates once (chỉ có file legacy -> đọc legacy và ghi sang canonical)', async () => {
@@ -186,7 +195,7 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
       expect(existsSync(sepCanonical)).toBe(true)
       const sepData = JSON.parse(readFileSync(sepCanonical, 'utf8'))
       expect(sepData.profile).toBe('high')
-      mgr.close()
+      await mgr.closeAsync()
     } finally {
       rmSync(separateDir, { recursive: true, force: true })
     }
@@ -203,7 +212,9 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
     const res1 = mgr.setEmbeddingProfile('high')
     expect(res1.changed).toBe(true)
     expect(mgr.embeddingSettings().profile).toBe('high')
-    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(EMBEDDING_PROFILES.high.embeddingId)
+    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES.high.embeddingId,
+    )
 
     // Verify canonical file persisted on disk
     expect(existsSync(canonicalPath)).toBe(true)
@@ -214,7 +225,9 @@ describe('Embedding Profile Single Source of Truth & Canonical Persistence', () 
     const res2 = mgr.setEmbeddingProfile('standard')
     expect(res2.changed).toBe(true)
     expect(mgr.embeddingSettings().profile).toBe('standard')
-    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(EMBEDDING_PROFILES.standard.embeddingId)
+    expect(mgr.indexingActivityStatus().activeEmbeddingSpace).toBe(
+      EMBEDDING_PROFILES.standard.embeddingId,
+    )
 
     // Verify canonical file updated on disk
     const content2 = JSON.parse(readFileSync(canonicalPath, 'utf8'))

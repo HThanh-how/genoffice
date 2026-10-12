@@ -8,7 +8,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { chunkDocumentText } from '../src/main/document-memory/chunks'
 import { DocumentMemoryManager } from '../src/main/document-memory/manager'
 import { publishIndexingPolicy, resetIndexingPolicyBus } from '../src/main/fork/indexing-policy-bus'
-import type { StorageBudgetWorkerResult, WorkerReply } from '../src/main/document-memory/worker-types'
+import type {
+  StorageBudgetWorkerResult,
+  WorkerReply,
+} from '../src/main/document-memory/worker-types'
 
 class HandWorker extends EventEmitter {
   terminated = false
@@ -47,8 +50,7 @@ class HandWorker extends EventEmitter {
   }
   hasValidAck(): boolean {
     return (
-      this.acks.length > 0 &&
-      this.acks.every((a) => a.ok && a.appliedVersion === a.desiredVersion)
+      this.acks.length > 0 && this.acks.every((a) => a.ok && a.appliedVersion === a.desiredVersion)
     )
   }
   finish(skipEmbeddings = true): void {
@@ -105,8 +107,8 @@ beforeEach(() => {
     autoDeferAfterMs: 3_600_000,
   })
 })
-afterEach(() => {
-  manager.close()
+afterEach(async () => {
+  await manager.closeAsync()
   resetIndexingPolicyBus()
   rmSync(dir, { recursive: true, force: true })
 })
