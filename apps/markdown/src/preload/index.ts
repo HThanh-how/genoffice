@@ -41,6 +41,7 @@ const api: MarkdownApi = {
       ? ipcRenderer.invoke('document-memory:open', documentId)
       : Promise.resolve({ ok: false, error: 'Invalid document id' }),
   consumePending: () => ipcRenderer.invoke(MARKDOWN_CHANNELS.consumePending),
+  openSourcePath: (path: string) => ipcRenderer.invoke('home:open-path', path),
   consumeHeadlessExport: () => ipcRenderer.invoke(MARKDOWN_CHANNELS.consumeHeadlessExport),
   headlessExportDone: (result: { ok: boolean; error?: string }) =>
     ipcRenderer.send(MARKDOWN_CHANNELS.headlessExportDone, result),

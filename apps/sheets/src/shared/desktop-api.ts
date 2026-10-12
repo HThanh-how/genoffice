@@ -2903,6 +2903,8 @@ export interface DesktopApi {
   /** Open a previously indexed document by its search result id. */
   getDocumentIndexProgress(path: string): Promise<DocumentIndexProgress>
   documentMemoryOpen(documentId: number): Promise<{ ok: boolean; error?: string }>
+  /** open any shell-routed document path (an AI answer's filenav citation) */
+  openSourcePath(path: string): Promise<void>
   /** current UI language (persisted by the shell in app-settings.json) */
   getLanguage(): Promise<'zh' | 'en' | 'ja' | 'ko' | 'fr' | 'de' | 'es' | 'th' | 'id' | 'ru' | 'ar'>
   /** language switched from the shell home page */

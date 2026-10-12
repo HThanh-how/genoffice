@@ -962,6 +962,11 @@ export function ExcelShell({
           aiBusy={aiBusy}
           onPromptChange={onPromptChange}
           onSend={onSend}
+          onSendQueued={(text, atts) => {
+            if (aiBusy) return false
+            onSend(text, atts)
+            return true
+          }}
           onStop={onStop}
           onNewChat={onNewChat}
           onUndo={onUndo}

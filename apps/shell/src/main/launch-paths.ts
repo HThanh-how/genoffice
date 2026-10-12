@@ -1,7 +1,28 @@
 import { existsSync } from 'node:fs'
 
-const SUPPORTED_LAUNCH_RE =
-  /\.(docx|doc|xlsx|xlsm|xls|csv|tsv|pptx|ppt|pdf|md|markdown|txt|json|html?)$/i
+/** Every extension the suite opens; also the contract the packaged file
+ *  associations must advertise (tests/file-associations.test.ts), so a file
+ *  the app accepts is one the OS can send it. */
+export const LAUNCHABLE_EXTS = [
+  'docx',
+  'doc',
+  'xlsx',
+  'xlsm',
+  'xls',
+  'csv',
+  'tsv',
+  'pptx',
+  'ppt',
+  'pdf',
+  'md',
+  'markdown',
+  'txt',
+  'json',
+  'html',
+  'htm',
+] as const
+
+const SUPPORTED_LAUNCH_RE = new RegExp(`\\.(${LAUNCHABLE_EXTS.join('|')})$`, 'i')
 const UNSUPPORTED_LAUNCH_RE = /\.(rtf|odt|pps|odp|ods|xlsb|pages|key|numbers)$/i
 
 interface LaunchPayload {
