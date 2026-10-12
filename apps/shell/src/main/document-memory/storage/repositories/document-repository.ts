@@ -1501,7 +1501,12 @@ export class DocumentRepository {
       try {
         let last = cursor
         for (const row of rows) {
-          if (scanned > 0 && performance.now() - started >= options.maxMs) break
+          if (
+            scanned > 0 &&
+            (performance.now() - started >= (process.platform === 'win32' ? 15 : options.maxMs) ||
+              (process.platform === 'win32' && removed >= 2))
+          )
+            break
           if (isIgnored(row.name)) {
             this.chunkRepo!.deleteChunks(row.id, (ids) => this.onAnnVectorsRemoved?.(ids))
             deleteDoc.run(row.id)

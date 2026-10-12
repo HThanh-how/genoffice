@@ -74,8 +74,9 @@ test.describe('docs visual regression', () => {
         // bakes the horizontal scrollbar into the image. Xvfb allows windows
         // larger than its screen.
         await launched.app.evaluate(({ BrowserWindow }) => {
-          const win = BrowserWindow.getAllWindows()[0]
-          win?.setBounds({ x: 0, y: 0, width: 1360, height: 1500 })
+          for (const win of BrowserWindow.getAllWindows()) {
+            win.setBounds({ x: 0, y: 0, width: 1360, height: 1500 })
+          }
         })
         const pageCount = await settledPageCount(editorPage)
         expect(pageCount).toBe(doc.pages)

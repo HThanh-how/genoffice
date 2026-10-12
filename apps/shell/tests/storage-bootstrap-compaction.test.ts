@@ -40,20 +40,24 @@ describe('storage bootstrap: offline compaction wiring', () => {
     const ids = (
       db.prepare('SELECT id FROM documents ORDER BY id').all() as Array<{ id: number }>
     ).map((r) => r.id)
+    const delFts = db.prepare(
+      'DELETE FROM chunk_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?)',
+    )
+    const delEmb = db.prepare(
+      'DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)',
+    )
+    const delChunks = db.prepare('DELETE FROM chunks WHERE document_id = ?')
+    const delDoc = db.prepare('DELETE FROM documents WHERE id = ?')
     db.exec('BEGIN')
     for (const id of ids.filter((_, i) => i % 10 < 7)) {
-      db.prepare(
-        'DELETE FROM chunk_fts WHERE rowid IN (SELECT id FROM chunks WHERE document_id = ?)',
-      ).run(id)
-      db.prepare(
-        'DELETE FROM chunk_embeddings WHERE chunk_id IN (SELECT id FROM chunks WHERE document_id = ?)',
-      ).run(id)
-      db.prepare('DELETE FROM chunks WHERE document_id = ?').run(id)
-      db.prepare('DELETE FROM documents WHERE id = ?').run(id)
+      delFts.run(id)
+      delEmb.run(id)
+      delChunks.run(id)
+      delDoc.run(id)
     }
     db.exec('COMMIT')
     store.close()
-  })
+  }, 30_000)
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
   const backups = (): string[] =>
