@@ -36,11 +36,16 @@ export function isWriterRequest(req: { type?: string }): req is WriterRequest {
 
 /** What `FileIndexer.apply` did on the main thread, as one function the worker (and the tests) can call. */
 export function applyExtracted(
-  store: Pick<FileIndexStore, 'upsert'>,
+  store: Pick<FileIndexStore, 'upsert' | 'remove'>,
   file: ScannedFile,
   result: Extracted,
   preserve: boolean,
+  isIgnored?: (path: string) => boolean,
 ): void {
+  if (isIgnored?.(file.path)) {
+    store.remove([file.path])
+    return
+  }
   if (result.kind === 'text') store.upsert(file, result.text, 'ok')
   else if (result.kind === 'name-only') store.upsert(file, null, 'name-only')
   else if (!preserve) store.upsert(file, null, 'error')
@@ -50,15 +55,24 @@ export async function handleWriterRequest(
   store: FileIndexStore,
   req: WriterRequest,
   extract: (path: string) => Promise<Extracted>,
+  isIgnored?: (path: string) => boolean,
 ): Promise<WriterResponse> {
   try {
     if (req.type === 'pending') store.upsertPendingBatch(req.files)
     else if (req.type === 'remove') store.remove(req.paths)
     else if (req.type === 'index-error')
-      applyExtracted(store, req.file, { kind: 'error', error: req.error }, req.preserve)
+      applyExtracted(store, req.file, { kind: 'error', error: req.error }, req.preserve, isIgnored)
     else {
+      if (isIgnored?.(req.file.path)) {
+        store.remove([req.file.path])
+        return { id: req.id, type: 'written', status: 'error' }
+      }
       const result = await extract(req.file.path)
-      applyExtracted(store, req.file, result, req.preserve)
+      if (isIgnored?.(req.file.path)) {
+        store.remove([req.file.path])
+        return { id: req.id, type: 'written', status: 'error' }
+      }
+      applyExtracted(store, req.file, result, req.preserve, isIgnored)
       return { id: req.id, type: 'written', status: result.kind }
     }
     return { id: req.id, type: 'written' }

@@ -66,6 +66,16 @@ export const DEFAULT_IGNORE_RULES: IgnoreRule[] = [
 
 let activeRules: IgnoreRule[] = [...DEFAULT_IGNORE_RULES]
 let storageFilePath: string | null = null
+let policyGeneration = 0
+
+export function getIgnorePolicyGeneration(): number {
+  return policyGeneration
+}
+
+export function bumpIgnorePolicyGeneration(): void {
+  policyGeneration++
+  clearRegexCache()
+}
 
 export function setIgnoreStoragePath(path: string): void {
   storageFilePath = path
@@ -175,7 +185,10 @@ export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
   const filePath = resolve(dir, '.genofficeignore')
   try {
     if (!existsSync(filePath)) {
-      genOfficeIgnoreCache.delete(dir)
+      if (genOfficeIgnoreCache.has(dir)) {
+        genOfficeIgnoreCache.delete(dir)
+        bumpIgnorePolicyGeneration()
+      }
       return []
     }
     const stat = statSync(filePath)
@@ -183,6 +196,7 @@ export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
     if (cached && cached.mtimeMs === stat.mtimeMs) {
       return cached.rules
     }
+    bumpIgnorePolicyGeneration()
     const content = readFileSync(filePath, 'utf-8')
     const lines = content.split(/\r?\n/)
     const rules: IgnoreRule[] = []
@@ -248,7 +262,7 @@ export function setActiveIgnoreRules(rules: IgnoreRule[]): boolean {
     return false
   }
   activeRules = candidate
-  clearRegexCache()
+  bumpIgnorePolicyGeneration()
   return true
 }
 
@@ -283,6 +297,7 @@ export function loadPersistedIgnoreRules(): IgnoreRule[] {
   } catch {
     // Keep in-memory rules on read failure
   }
+  bumpIgnorePolicyGeneration()
   return activeRules
 }
 

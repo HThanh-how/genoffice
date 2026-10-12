@@ -82,7 +82,7 @@ interface Run {
   error?: string
 }
 
-function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
+export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
   if (event.phase === 'start')
     return {
       id: event.runId,
@@ -492,6 +492,7 @@ export function AgyChatBar({
   sessionIdRef.current = sessionId
   const busyRef = useRef(busy)
   busyRef.current = busy
+  const supersededRunIds = useRef(new Set<string>())
 
   const source = api ?? bridge()
 
@@ -551,6 +552,12 @@ export function AgyChatBar({
       if (sessionIdRef.current && !event.sessionId) {
         return
       }
+      if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) {
+        return
+      }
+      if (supersededRunIds.current.has(event.runId)) {
+        return
+      }
       setRun((current) => {
         if (!current) {
           if (
@@ -568,17 +575,12 @@ export function AgyChatBar({
         }
         if (event.runId !== current.id) {
           if (
-            (sessionIdRef.current && event.sessionId === sessionIdRef.current) ||
-            (!activeRunIdRef.current && !sessionIdRef.current)
+            event.phase === 'start' &&
+            (!activeRunIdRef.current || event.runId === activeRunIdRef.current) &&
+            event.at >= current.startedAt
           ) {
-            if (
-              event.phase === 'start' ||
-              event.phase === 'thinking' ||
-              event.phase === 'tool' ||
-              event.phase === 'writing'
-            ) {
-              return reduceRun(null, event)
-            }
+            supersededRunIds.current.add(current.id)
+            return reduceRun(null, event)
           }
           return current
         }
@@ -603,19 +605,22 @@ export function AgyChatBar({
   }, [source, loadState, apply])
 
   useEffect(() => {
-    if (busy === false && run) {
-      setRun(null)
+    if (busy === false) {
+      if (run) setRun(null)
+      supersededRunIds.current.clear()
     }
   }, [busy, run])
 
   useEffect(() => {
     if (activeRunId && run && run.id !== activeRunId) {
+      supersededRunIds.current.add(run.id)
       setRun(null)
     }
   }, [activeRunId, run])
 
   useEffect(() => {
     if (sessionId && run && run.sessionId && run.sessionId !== sessionId) {
+      supersededRunIds.current.clear()
       setRun(null)
     }
   }, [sessionId, run])

@@ -279,7 +279,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
           }, route.firstContentTimeoutMs)
         }
         unsubscribe = options.onStream((chunk) => {
-          if (chunk.requestId !== requestId || settled) return
+          if (chunk.requestId !== thisRequestId || settled || thisRequestId !== requestId) return
           if (chunk.type === 'ping') {
             armSilence()
           } else if (chunk.type === 'delta') {

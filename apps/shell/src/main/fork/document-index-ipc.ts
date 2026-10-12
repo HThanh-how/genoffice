@@ -32,17 +32,10 @@ export interface DocumentIndexIpcDeps {
   settingsPath?: string | (() => string)
 }
 
-const samePath = (path: string): string =>
-  process.platform === 'win32' ? path.toLowerCase() : path
+const samePath = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p)
 const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set(ISSUE_REASON_ORDER)
-const EMPTY_NOW: IndexingNow = {
-  extracting: [],
-  embedding: {},
-  positions: {},
-  pages: {},
-  queued: 0,
-  paused: true,
-}
+// prettier-ignore
+const EMPTY_NOW: IndexingNow = { extracting: [], embedding: {}, positions: {}, pages: {}, queued: 0, paused: true }
 
 /** Document-index popup IPC handler registration (< 250 LOC). */
 export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void {
@@ -51,23 +44,23 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   let issueReader: IndexIssueReader | null = null
   const reader = (): IndexIssueReader => (issueReader ??= new IndexIssueReader(deps.dbPath()))
 
-  const activeRoot = (root: unknown): string => {
-    if (root === ALL_FOLDERS) return ALL_FOLDERS
-    if (typeof root !== 'string' || root !== getFolderScan()?.status().root)
-      throw new Error('Invalid index issue request')
-    return root
+  const fail = (m: string): never => {
+    throw new Error(m)
   }
-  const checkDocId = (id: unknown): number => {
-    if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
-      throw new Error('Invalid document id')
-    return id
-  }
-  const issueReason = (reason: unknown): IndexIssueReason | undefined => {
-    if (reason === undefined || reason === null) return undefined
-    if (typeof reason !== 'string' || !ISSUE_REASONS.has(reason as IndexIssueReason))
-      throw new Error('Invalid index issue reason')
-    return reason as IndexIssueReason
-  }
+  const activeRoot = (r: unknown): string =>
+    r === ALL_FOLDERS
+      ? ALL_FOLDERS
+      : typeof r === 'string' && r === getFolderScan()?.status().root
+        ? r
+        : fail('root')
+  const checkDocId = (id: unknown): number =>
+    typeof id === 'number' && Number.isSafeInteger(id) && id >= 1 ? id : fail('id')
+  const issueReason = (r: unknown): IndexIssueReason | undefined =>
+    r == null
+      ? undefined
+      : typeof r === 'string' && ISSUE_REASONS.has(r as IndexIssueReason)
+        ? (r as IndexIssueReason)
+        : fail('reason')
 
   const snapshotCtx = {
     getDocumentMemory,
@@ -85,16 +78,24 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     getFolderScan()
       ?.folders()
       .map((f) => f.root) ?? []
-  registerIgnoreIpcHandlers(ipcMain, () => folderCounts.invalidate(), scanRoots)
+  registerIgnoreIpcHandlers(
+    ipcMain,
+    () => {
+      folderCounts.invalidate()
+      getFolderScan()
+        ?.folders()
+        .forEach((f) => void getFolderScan()?.reconcile(f.root))
+    },
+    scanRoots,
+  )
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, (_event, ids: unknown) => {
     if (
       !Array.isArray(ids) ||
       ids.length > 200 ||
       ids.some((id) => !Number.isSafeInteger(id) || id < 1)
-    ) {
+    )
       return { queued: 0, skipped: Array.isArray(ids) ? ids.length : 0, error: 'invalid-request' }
-    }
     const memory = getDocumentMemory()
     if (!memory) return { queued: 0, skipped: ids.length, error: 'unavailable' }
     let queued = 0,
@@ -153,9 +154,10 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
       if (!getDocumentMemory()) return null
       const detail = reader().detail(id as number)
       if (!detail || isPathIgnored(detail.path)) return null
-      const exists = await stat(detail.path)
-        .then((s) => s.isFile())
-        .catch(() => false)
+      const exists = await stat(detail.path).then(
+        (s) => s.isFile(),
+        () => false,
+      )
       return { ...detail, exists }
     },
   )
@@ -233,16 +235,13 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     return res
   })
 
-  const snap = (force?: boolean) => getDocumentIndexSnapshot(snapshotCtx, force)
+  const snap = (f?: boolean) => getDocumentIndexSnapshot(snapshotCtx, f)
   ipcMain.handle(HOME_CHANNELS.getIndexingActivity, (): HomeIndexingActivity => snap().activity)
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexSnapshot, (_e, f?: boolean) => snap(f))
-  ipcMain.handle(
-    DOCUMENT_INDEX_CHANNELS.getDocumentIndexStorageBudget,
-    (_e, f?: boolean) => snap(f).storageBudget,
-  )
-  ipcMain.handle('get-document-index-diagnostics', (_e, f?: boolean) =>
-    getDocumentIndexDiagnostics(snapshotCtx, f),
-  )
+  // prettier-ignore
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexStorageBudget, (_e, f?: boolean) => snap(f).storageBudget)
+  // prettier-ignore
+  ipcMain.handle('get-document-index-diagnostics', (_e, f?: boolean) => getDocumentIndexDiagnostics(snapshotCtx, f))
 
   return () => issueReader?.close()
 }

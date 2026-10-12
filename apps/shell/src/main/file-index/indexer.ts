@@ -13,7 +13,7 @@ import type { WriterRequest } from './worker-ops'
 import { isSupportedIndexFile } from './scan'
 import type { ScannedFile } from './scan'
 import type { FileIndexStore } from './store'
-import { isPathIgnored } from '../document-memory/ignore-policy'
+import { isPathIgnored, getIgnorePolicyGeneration } from '../document-memory/ignore-policy'
 
 export interface IndexProgress {
   /** files currently in the index */
@@ -331,12 +331,21 @@ export class FileIndexer {
           continue
         }
         const st = state.file
+        const startPolicyGen = getIgnorePolicyGeneration()
         if (this.workerWritesDb) {
           await this.indexInWorker(st)
           continue
         }
         const res = await this.ask({ id: 0, type: 'extract', path: st.path })
         if (res.type !== 'extract') continue
+        if (
+          isPathIgnored(st.path) ||
+          (getIgnorePolicyGeneration() !== startPolicyGen && isPathIgnored(st.path))
+        ) {
+          await this.removeRows([st.path])
+          this.preserveCachedBody.delete(st.path)
+          continue
+        }
         this.apply(st, res.result)
       }
     } finally {
@@ -346,8 +355,18 @@ export class FileIndexer {
 
   /** Parse and write in the worker; the main thread hears only the outcome. A timeout or crash is recorded like any failed parse. */
   private async indexInWorker(f: ScannedFile): Promise<void> {
+    if (isPathIgnored(f.path)) {
+      await this.removeRows([f.path])
+      this.preserveCachedBody.delete(f.path)
+      return
+    }
     const preserve = this.preserveCachedBody.has(f.path)
     const res = await this.ask({ id: 0, type: 'index', file: f, preserve })
+    if (isPathIgnored(f.path)) {
+      await this.removeRows([f.path])
+      this.preserveCachedBody.delete(f.path)
+      return
+    }
     if (res.type === 'written' && res.status !== undefined) {
       if (res.status !== 'error') this.preserveCachedBody.delete(f.path)
       return
@@ -360,6 +379,11 @@ export class FileIndexer {
   }
 
   private apply(f: ScannedFile, r: Extracted): void {
+    if (isPathIgnored(f.path)) {
+      this.store.remove([f.path])
+      this.preserveCachedBody.delete(f.path)
+      return
+    }
     try {
       if (r.kind === 'text') {
         this.store.upsert(f, r.text, 'ok')

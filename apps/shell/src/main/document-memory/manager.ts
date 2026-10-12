@@ -320,7 +320,7 @@ export class DocumentMemoryManager {
   async triggerAnnSync(spaceId?: string) { const sp = spaceId ?? this.embeddingCoord.currentProfile.embeddingId; const meta = this.store.getAnnCanonicalMeta(sp); return AnnHostAdmissionCoordinator.dispatchAnnRebuild({ admission: this.admission, maintScheduler: this.maintScheduler, budgetCoord: this.budgetCoord, askWorker: (req, t) => this.ask(req, t, true), spaceId: sp, dimensions: this.embeddingCoord.currentProfile.dimensions, vectorCount: meta.canonicalCount, targetGeneration: meta.desiredGeneration, workerTimeoutMs: this.workerTimeoutMs, isStopped: () => this.stopped }) }
   currentGeneration(path: string): number { return this.pathGeneration.get(resolve(path)) ?? 0 }
   isCurrent(path: string, generation: number, epoch: number): boolean {
-    if (this.stopped || !this.enabled || epoch !== this.epoch || generation !== this.currentGeneration(path)) return false
+    if (this.stopped || !this.enabled || epoch !== this.epoch || generation !== this.currentGeneration(path) || isPathIgnored(path)) return false
     const doc = this.store.documentByPath(path); return !!doc && doc.status !== 'excluded'
   }
   sourceUnavailable(path: string): Promise<boolean> { return this.freshnessCoord.sourceUnavailable(path) }; migrateLegacyDocument(doc: DocumentNeedingUpgrade): Promise<boolean> { if (!this.maintScheduler.canAcceptExpensiveWork()) return Promise.resolve(false); return this.legacyMigrator.migrate(doc, this.skippedMigrationDocs) }
