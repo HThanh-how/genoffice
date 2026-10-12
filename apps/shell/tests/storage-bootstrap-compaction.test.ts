@@ -57,7 +57,7 @@ describe('storage bootstrap: offline compaction wiring', () => {
     }
     db.exec('COMMIT')
     store.close()
-  }, 30_000)
+  })
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
 
   const backups = (): string[] =>

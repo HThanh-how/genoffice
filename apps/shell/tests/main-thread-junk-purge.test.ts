@@ -132,11 +132,8 @@ describe('the purge never blocks the event loop', () => {
     await new Promise<void>((resolve) => {
       const stop = startJunkPurge({
         store,
-        // the worker, off the immediate tick: one slice per request, like the real protocol
-        ask: async () =>
-          new Promise((resolve) =>
-            setImmediate(() => resolve({ id: 1, result: runJunkPurgeStep(store) })),
-          ),
+        // the worker, in this thread: one slice per request, like the real protocol
+        ask: async () => ({ id: 1, result: runJunkPurgeStep(store) }),
         isActive: () => true,
         stepGapMs: 1,
         setTimer: (fn, ms) => setTimeout(fn, ms),
