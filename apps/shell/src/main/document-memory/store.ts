@@ -18,7 +18,7 @@ import {
   type FileEnrollmentResult,
   WRITE_SLICE_MS,
 } from './storage/repositories/document-repository'
-import { ChunkRepository } from './storage/repositories/chunk-repository'
+import { ChunkRepository, type DocumentChunkMetadata } from './storage/repositories/chunk-repository'
 import {
   EmbeddingRepository,
   type RepairInvalidCanonicalEmbeddingsResult,
@@ -53,7 +53,7 @@ export type {
   RepairInvalidCanonicalEmbeddingsResult, FileImportanceOverride,
   FileImportanceSuggestion, FileImportanceEffective, FileImportanceInfo,
   FileEnrollmentOutcome, FileEnrollmentResult,
-  NameProjectionBackfillResult,
+  NameProjectionBackfillResult, DocumentChunkMetadata,
 }
 
 export interface DocumentMemoryHit {
@@ -326,6 +326,9 @@ export class DocumentMemoryStore {
   }
   readChunk(chunkId: number): DocumentMemoryHit | null {
     return this.chunkRepo.readChunk(chunkId)
+  }
+  readChunkMetadata(chunkId: number): DocumentChunkMetadata | null {
+    return this.chunkRepo.readChunkMetadata(chunkId)
   }
   stats(activeEmbeddingSpace?: string): DocumentMemoryStats {
     return this.progressRepo.stats(activeEmbeddingSpace)

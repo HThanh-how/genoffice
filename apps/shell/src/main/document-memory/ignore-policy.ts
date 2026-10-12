@@ -84,7 +84,12 @@ export function clearRegexCache(): void {
 }
 
 export function isPathCaseInsensitive(p: string): boolean {
-  return process.platform === 'win32' || /^[a-zA-Z]:[/\\]/.test(p)
+  return (
+    process.platform === 'win32' ||
+    /^[a-zA-Z]:[/\\]/.test(p) ||
+    p.startsWith('\\\\') ||
+    p.startsWith('//')
+  )
 }
 
 export function globToRegex(
@@ -227,7 +232,16 @@ export function persistIgnoreRules(): boolean {
   return persistRulesToDisk(activeRules)
 }
 
+export const MAX_RULE_COUNT = 500
+export const MAX_PATTERN_LENGTH = 500
+export const MAX_ID_LENGTH = 100
+export const MAX_SCOPE_LENGTH = 500
+
 export function setActiveIgnoreRules(rules: IgnoreRule[]): boolean {
+  if (rules.length > MAX_RULE_COUNT) return false
+  for (const r of rules) {
+    if (!isValidIgnoreRule(r)) return false
+  }
   const candidate = rules.map((r) => ({ ...r }))
   const ok = persistRulesToDisk(candidate)
   if (!ok) {
@@ -239,13 +253,20 @@ export function setActiveIgnoreRules(rules: IgnoreRule[]): boolean {
 }
 
 function isValidIgnoreRule(r: unknown): r is IgnoreRule {
+  if (typeof r !== 'object' || r === null) return false
+  const rule = r as IgnoreRule
   return (
-    typeof r === 'object' &&
-    r !== null &&
-    typeof (r as IgnoreRule).id === 'string' &&
-    typeof (r as IgnoreRule).pattern === 'string' &&
-    typeof (r as IgnoreRule).enabled === 'boolean' &&
-    typeof (r as IgnoreRule).scope === 'string'
+    typeof rule.id === 'string' &&
+    rule.id.length > 0 &&
+    rule.id.length <= MAX_ID_LENGTH &&
+    typeof rule.pattern === 'string' &&
+    rule.pattern.length > 0 &&
+    rule.pattern.length <= MAX_PATTERN_LENGTH &&
+    typeof rule.enabled === 'boolean' &&
+    typeof rule.scope === 'string' &&
+    rule.scope.length <= MAX_SCOPE_LENGTH &&
+    (rule.description === undefined || typeof rule.description === 'string') &&
+    (rule.source === undefined || rule.source === 'user' || rule.source === '.genofficeignore')
   )
 }
 
@@ -266,7 +287,9 @@ export function loadPersistedIgnoreRules(): IgnoreRule[] {
 }
 
 function normalizePath(p: string): string {
-  return p.replace(/\\/g, '/').replace(/\/+/g, '/')
+  const isUnc = p.startsWith('\\\\') || p.startsWith('//')
+  const unified = p.replace(/\\/g, '/').replace(/\/+/g, '/')
+  return isUnc ? '/' + unified : unified
 }
 
 function isSubpathOrEqual(target: string, scope: string): boolean {
@@ -392,7 +415,8 @@ export function registerIgnoreIpcHandlers(
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.saveIgnoreRules, (_event, rules: unknown) => {
-    if (!Array.isArray(rules)) return { ok: false, error: 'invalid-rules' }
+    if (!Array.isArray(rules) || rules.length > MAX_RULE_COUNT)
+      return { ok: false, error: 'invalid-rules' }
     for (const r of rules) {
       if (!isValidIgnoreRule(r)) return { ok: false, error: 'invalid-rule-format' }
     }

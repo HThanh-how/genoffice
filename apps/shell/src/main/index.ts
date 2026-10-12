@@ -4785,7 +4785,7 @@ function registerHomeIpc(): void {
   ipcMain.handle('document-memory:read', async (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid chunk id')
-    const meta = documentMemory?.store?.readChunk(id)
+    const meta = documentMemory?.store?.readChunkMetadata(id)
     if (meta && isPathIgnored(meta.path)) {
       return {
         path: meta.path,
