@@ -271,6 +271,8 @@ export interface StreamCallbacks {
   }) => void
   /** Stable renderer transport id for providers with native sessions. */
   sessionId?: string
+  /** Transport request id for correlating live turn activity with the active request attempt. */
+  requestId?: string
   signal: AbortSignal
 }
 

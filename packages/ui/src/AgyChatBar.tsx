@@ -28,6 +28,7 @@ export interface AgyBarUsage {
 }
 export interface AgyBarActivity {
   runId: string
+  requestId?: string
   sessionId?: string
   phase: 'start' | 'thinking' | 'tool' | 'writing' | 'done' | 'error'
   at: number
@@ -71,6 +72,7 @@ interface RunStep {
 }
 interface Run {
   id: string
+  requestId?: string
   sessionId?: string
   startedAt: number
   endedAt?: number
@@ -86,6 +88,7 @@ export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
   if (event.phase === 'start')
     return {
       id: event.runId,
+      requestId: event.requestId,
       sessionId: event.sessionId,
       startedAt: event.at,
       steps: [],
@@ -96,6 +99,7 @@ export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
     if (event.phase === 'thinking' || event.phase === 'tool' || event.phase === 'writing') {
       return {
         id: event.runId,
+        requestId: event.requestId,
         sessionId: event.sessionId,
         startedAt: event.at,
         steps: [],
@@ -455,6 +459,7 @@ export function AgyChatBar({
   part = 'all',
   mode = 'default',
   activeRunId,
+  activeRequestId,
   sessionId,
   busy,
 }: {
@@ -465,6 +470,7 @@ export function AgyChatBar({
   /** 'home-chat' uses calm single-line indicator, subtle timing, and unified activity states */
   mode?: 'default' | 'home-chat'
   activeRunId?: string
+  activeRequestId?: string | null
   sessionId?: string
   busy?: boolean
 }) {
@@ -486,20 +492,38 @@ export function AgyChatBar({
   const [code, setCode] = useState('')
   const loginActive = useRef(false)
   loginActive.current = login.phase !== 'idle' || !!usage?.needsLogin
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  const stateRef = useRef<AgyBarState | null>(state)
+  stateRef.current = state
   const activeRunIdRef = useRef(activeRunId)
   activeRunIdRef.current = activeRunId
+  const activeRequestIdRef = useRef(activeRequestId)
+  const prevActiveRequestIdRef = useRef(activeRequestId)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
   const busyRef = useRef(busy)
   busyRef.current = busy
   const supersededRunIds = useRef(new Set<string>())
+  const supersededRequestIds = useRef(new Set<string>())
+
+  if (prevActiveRequestIdRef.current !== activeRequestId) {
+    if (prevActiveRequestIdRef.current) {
+      supersededRequestIds.current.add(prevActiveRequestIdRef.current)
+    }
+    prevActiveRequestIdRef.current = activeRequestId
+  }
+  activeRequestIdRef.current = activeRequestId
 
   const source = api ?? bridge()
 
   const loadState = useCallback(async () => {
     try {
       const next = await source?.getAgyChatState()
-      if (next) setState(next)
+      if (next) {
+        stateRef.current = next
+        setState(next)
+      }
     } catch {
       // keep what is shown
     }
@@ -545,12 +569,25 @@ export function AgyChatBar({
       if (next.phase === 'done') setTimeout(() => setInstall({ phase: 'idle' }), 3000)
     })
     const offRun = source.onAgyChatActivity?.((event) => {
-      if (!busyRef.current) return
+      if (modeRef.current === 'home-chat' ? !busyRef.current : busyRef.current === false) return
+      if (stateRef.current && !stateRef.current.active) return
       if (sessionIdRef.current && event.sessionId && event.sessionId !== sessionIdRef.current) {
         return
       }
       if (sessionIdRef.current && !event.sessionId) {
         return
+      }
+      if (event.requestId && supersededRequestIds.current.has(event.requestId)) {
+        return
+      }
+      if (activeRequestIdRef.current !== undefined) {
+        if (
+          !activeRequestIdRef.current ||
+          !event.requestId ||
+          event.requestId !== activeRequestIdRef.current
+        ) {
+          return
+        }
       }
       if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) {
         return
@@ -568,16 +605,43 @@ export function AgyChatBar({
           ) {
             return null
           }
+          if (activeRequestIdRef.current !== undefined) {
+            if (
+              !activeRequestIdRef.current ||
+              !event.requestId ||
+              event.requestId !== activeRequestIdRef.current
+            ) {
+              return null
+            }
+          }
           if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) {
             return null
           }
           return reduceRun(null, event)
         }
+        if (current.requestId && event.requestId && event.requestId !== current.requestId) {
+          if (
+            activeRequestIdRef.current &&
+            event.requestId === activeRequestIdRef.current &&
+            (event.phase === 'start' ||
+              event.phase === 'thinking' ||
+              event.phase === 'tool' ||
+              event.phase === 'writing')
+          ) {
+            supersededRequestIds.current.add(current.requestId)
+            supersededRunIds.current.add(current.id)
+            return reduceRun(null, event)
+          }
+          return current
+        }
         if (event.runId !== current.id) {
           if (
             event.phase === 'start' &&
             (!activeRunIdRef.current || event.runId === activeRunIdRef.current) &&
-            event.at >= current.startedAt
+            (activeRequestIdRef.current !== undefined
+              ? !!activeRequestIdRef.current && event.requestId === activeRequestIdRef.current
+              : (!current.requestId || !event.requestId || event.requestId === current.requestId) &&
+                event.at >= current.startedAt)
           ) {
             supersededRunIds.current.add(current.id)
             return reduceRun(null, event)
@@ -606,13 +670,31 @@ export function AgyChatBar({
 
   useEffect(() => {
     if (busy === false) {
-      if (run) setRun(null)
+      if (run) {
+        if (run.requestId) supersededRequestIds.current.add(run.requestId)
+        setRun(null)
+      }
+      if (activeRequestIdRef.current) {
+        supersededRequestIds.current.add(activeRequestIdRef.current)
+      }
       supersededRunIds.current.clear()
     }
   }, [busy, run])
 
   useEffect(() => {
+    if (!run) return
+    if (activeRequestId !== undefined) {
+      if (!activeRequestId || run.requestId !== activeRequestId) {
+        if (run.requestId) supersededRequestIds.current.add(run.requestId)
+        supersededRunIds.current.add(run.id)
+        setRun(null)
+      }
+    }
+  }, [activeRequestId, run])
+
+  useEffect(() => {
     if (activeRunId && run && run.id !== activeRunId) {
+      if (run.requestId) supersededRequestIds.current.add(run.requestId)
       supersededRunIds.current.add(run.id)
       setRun(null)
     }
@@ -620,12 +702,33 @@ export function AgyChatBar({
 
   useEffect(() => {
     if (sessionId && run && run.sessionId && run.sessionId !== sessionId) {
+      if (run.requestId) supersededRequestIds.current.add(run.requestId)
       supersededRunIds.current.clear()
       setRun(null)
     }
   }, [sessionId, run])
 
-  const running = !!run && run.phase !== 'done' && run.phase !== 'error'
+  useEffect(() => {
+    if (state && !state.active && run) {
+      if (run.requestId) supersededRequestIds.current.add(run.requestId)
+      supersededRunIds.current.add(run.id)
+      setRun(null)
+    }
+  }, [state, run])
+
+  const effectiveRun =
+    run &&
+    (!state || state.active) &&
+    (!sessionId || !run.sessionId || run.sessionId === sessionId) &&
+    (!activeRunId || run.id === activeRunId) &&
+    (activeRequestId === undefined
+      ? !run.requestId || !supersededRequestIds.current.has(run.requestId)
+      : !!activeRequestId && run.requestId === activeRequestId) &&
+    (mode === 'home-chat' ? !!busy : busy !== false)
+      ? run
+      : null
+
+  const running = !!effectiveRun && effectiveRun.phase !== 'done' && effectiveRun.phase !== 'error'
   useEffect(() => {
     if (!running) return
     const timer = setInterval(() => tick((n) => n + 1), 1000)
@@ -656,7 +759,7 @@ export function AgyChatBar({
 
   const [fallbackElapsed, setFallbackElapsed] = useState(0)
   useEffect(() => {
-    if (!busy || (source && state?.active && run)) {
+    if (!busy || (source && state?.active && effectiveRun)) {
       setFallbackElapsed(0)
       return
     }
@@ -665,7 +768,7 @@ export function AgyChatBar({
       setFallbackElapsed(Math.max(1, Math.round((Date.now() - t0) / 1000)))
     }, 1000)
     return () => clearInterval(timer)
-  }, [busy, source, state?.active, run])
+  }, [busy, source, state?.active, effectiveRun])
 
   if (!source || !state?.active) {
     if (part !== 'bar' && busy) {
@@ -906,9 +1009,9 @@ export function AgyChatBar({
           <p className="agy-bar-note">{d.more}</p>
         </div>
       )}
-      {showSteps && (run || (mode === 'home-chat' && busy)) && (
+      {showSteps && (effectiveRun || (mode === 'home-chat' && busy)) && (
         <section
-          className={`agy-think is-${run?.phase ?? 'thinking'}${mode === 'home-chat' ? ' is-home-chat' : ''}`}
+          className={`agy-think is-${effectiveRun?.phase ?? 'thinking'}${mode === 'home-chat' ? ' is-home-chat' : ''}`}
           aria-live="polite"
         >
           <button
@@ -916,24 +1019,28 @@ export function AgyChatBar({
             className="agy-think-head"
             aria-expanded={steps}
             onClick={() => {
-              if (run && run.steps.length > 0) setSteps((value) => !value)
+              if (effectiveRun && effectiveRun.steps.length > 0) setSteps((value) => !value)
             }}
           >
             <span className="agy-think-dot" aria-hidden="true" />
             <span className="agy-think-title">
-              {run ? thinkTitle(run, d, mode) : `${d.thinkingHome} · ${fallbackElapsed}s`}
+              {effectiveRun
+                ? thinkTitle(effectiveRun, d, mode)
+                : `${d.thinkingHome} · ${fallbackElapsed}s`}
             </span>
-            {run && run.tokens > 0 && (
-              <span className="agy-think-meta">{fill(d.thoughtTokens, { n: run.tokens })}</span>
+            {effectiveRun && effectiveRun.tokens > 0 && (
+              <span className="agy-think-meta">
+                {fill(d.thoughtTokens, { n: effectiveRun.tokens })}
+              </span>
             )}
-            {run && run.steps.length > 0 && (
+            {effectiveRun && effectiveRun.steps.length > 0 && (
               <span className="agy-think-toggle">{steps ? d.hideSteps : d.showSteps}</span>
             )}
           </button>
-          {steps && run && (
+          {steps && effectiveRun && (
             <div className="agy-think-body">
               <ol>
-                {run.steps.map((step, index) => (
+                {effectiveRun.steps.map((step, index) => (
                   <li key={index} className={`is-${step.kind}`}>
                     <span className="agy-think-step-name">
                       {step.kind === 'thinking'

@@ -3935,6 +3935,7 @@ export function registerAiIpc(): void {
     try {
       let stopReason: string | undefined
       await streamForProvider(provider, config, system, messages, tools, maxTokens, {
+        ...(requestId ? { requestId } : {}),
         ...(request.sessionId ? { sessionId: request.sessionId } : {}),
         signal: controller.signal,
         onDelta: (text) => send({ requestId, type: 'delta', text }),

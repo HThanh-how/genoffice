@@ -187,6 +187,13 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   const [activeSessionId, setActiveSessionId] = useState<string>(() => crypto.randomUUID())
   const activeSessionIdRef = useRef<string>(activeSessionId)
   activeSessionIdRef.current = activeSessionId
+  const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
+  const activeRequestIdRef = useRef<string | null>(null)
+  activeRequestIdRef.current = activeRequestId
+  const clearActiveRequest = () => {
+    activeRequestIdRef.current = null
+    setActiveRequestId(null)
+  }
   const [title, setTitle] = useState('')
   const [railOpen, setRailOpen] = useState(() => readStore(LS_RAIL) !== '0')
   const [size, setSize] = useState(readSize)
@@ -308,7 +315,11 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     try {
       const settings = await api.getAiSettings()
       if (mountedRef.current) {
+        const previousProvider = settingsRef.current?.provider
         settingsRef.current = settings
+        if (previousProvider && previousProvider !== settings.provider && !busyRef.current) {
+          clearActiveRequest()
+        }
         setSettingsReady(true)
         setSettingsFailed(false)
         setNotice((previous) =>
@@ -421,6 +432,17 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     const transport = createIpcTransport({
       route: createGeminiRouter(),
       sessionId: () => activeSessionIdRef.current,
+      onAttemptStarted: ({ requestId }) => {
+        if (
+          !mountedRef.current ||
+          activeRunRef.current === 0 ||
+          activeRunRef.current !== runGenerationRef.current
+        ) {
+          return
+        }
+        activeRequestIdRef.current = requestId
+        setActiveRequestId(requestId)
+      },
       onStream: (listener) => api.onAiStream(listener as (chunk: IpcStreamChunk) => void),
       start: (request) => api.aiStream(request),
       cancel: (requestId) => void api.aiStreamCancel(requestId),
@@ -485,6 +507,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
                   : tRef.current('homeChatNoReply'),
             }
           })
+          clearActiveRequest()
           setBusy(false)
           // names the answer wrote without an id become files to open, not only words
           if (unlisted && finalText)
@@ -494,6 +517,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           if (!live()) return
           batcherRef.current?.cancel()
           updateLastAssistant((last) => ({ ...last, error, streaming: false }))
+          clearActiveRequest()
           setBusy(false)
         },
       },
@@ -733,6 +757,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     runGenerationRef.current++
     batcherRef.current?.cancel()
     loopRef.current?.reset()
+    clearActiveRequest()
     needsSeedRef.current = true
     if (busyRef.current) {
       const settled = stopStreamingItems(itemsRef.current)
@@ -747,6 +772,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     const nextSessionId = conv.id ?? crypto.randomUUID()
     setActiveSessionId(nextSessionId)
     activeSessionIdRef.current = nextSessionId
+    clearActiveRequest()
     itemId.current = nextItems.length
     lastSavedRef.current = nextItems
     stickRef.current = true
@@ -969,6 +995,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
       const indexCommand = mentionsIndex(message) ? parseIndexCommand(message) : null
       if (indexCommand) {
         const generation = ++runGenerationRef.current
+        clearActiveRequest()
         busyRef.current = true
         setBusy(true)
         setNotice('')
@@ -1001,6 +1028,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           )
         } finally {
           if (mountedRef.current && generation === runGenerationRef.current) {
+            clearActiveRequest()
             busyRef.current = false
             setBusy(false)
           }
@@ -1019,6 +1047,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
       }
       const generation = ++runGenerationRef.current
       activeRunRef.current = generation
+      clearActiveRequest()
       const userId = ++itemId.current
       const assistantId = ++itemId.current
       stickRef.current = true
@@ -1040,6 +1069,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           error: tRef.current('homeChatSettingsFailed'),
           streaming: false,
         }))
+        clearActiveRequest()
         setBusy(false)
         return
       }
@@ -1119,6 +1149,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
         if (generation !== runGenerationRef.current) return
         const detail = error instanceof Error ? error.message : tRef.current('homeChatError')
         updateLastAssistant((last) => ({ ...last, error: detail, streaming: false }))
+        clearActiveRequest()
         setBusy(false)
       }
     },
@@ -1132,6 +1163,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     runGenerationRef.current++
     batcherRef.current?.flush()
     loopRef.current?.reset()
+    clearActiveRequest()
     needsSeedRef.current = true
     setItems(stopStreamingItems)
     setBusy(false)
@@ -1431,6 +1463,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
                               mode="home-chat"
                               busy={busy}
                               sessionId={activeSessionId}
+                              activeRequestId={activeRequestId}
                             />
                           ) : undefined
                         }

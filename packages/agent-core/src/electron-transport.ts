@@ -57,6 +57,8 @@ export const IPC_STREAM_SILENCE_TIMEOUT_MS = 240_000
 export interface IpcTransportOptions<S> {
   /** Optional session or correlation identifier (or dynamic resolver function) */
   sessionId?: string | (() => string)
+  /** Optional hook notified with the authoritative requestId and sessionId before an attempt starts */
+  onAttemptStarted?: (context: { requestId: string; sessionId: string }) => void
   /** subscribe to stream chunks; returns the unsubscribe function */
   onStream(listener: (chunk: IpcStreamChunk) => void): () => void
   /** forward the start request to the main process; a returned promise reports handler failure */
@@ -331,6 +333,9 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         })
         armSilence()
         try {
+          if (!cancelled && !finished) {
+            options.onAttemptStarted?.({ requestId, sessionId })
+          }
           route?.onAttempt?.(settings, requestId, attemptRequest)
           Promise.resolve(
             options.start({
