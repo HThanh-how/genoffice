@@ -339,6 +339,7 @@ import { runHeadlessExport, type HeadlessExporters } from './headless-export'
 import { TabManager } from './tab-manager'
 import { tabMenuTemplate, tabMenuWords, type TabMenuActions, isProgramFile } from './tab-menu'
 import { runTabDocumentAction, type TabDocumentAction } from './tab-document-actions'
+import { duplicateDocumentFile } from './tab-duplicate'
 import { installShellCloseGuard } from './window-close-guard'
 import {
   activateDetached,
@@ -4316,14 +4317,12 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.duplicateFile, async (_event, path: unknown) => {
     if (typeof path !== 'string' || !existsSync(path)) return
     if (!isUserVisibleFile(path, fileTargetSources())) return
-    const target = copyTargetFor(path)
     try {
-      await atomicCopyFile(path, target)
+      const target = await duplicateDocumentFile(path, { copySuffix: tm('copySuffix') })
+      recordRecentFile(target)
     } catch (err) {
       showErrorDialog(shellWindow, tm('errDuplicateFailed'), err)
-      return
     }
-    recordRecentFile(target)
   })
 
   ipcMain.handle(HOME_CHANNELS.deleteFiles, async (_event, paths: unknown) => {
@@ -4929,17 +4928,6 @@ async function closeTabsInOrder(ids: string[]): Promise<void> {
   }
 }
 
-/** "Name - Copy.ext", then "Name - Copy (2).ext": a name that is free next to the original */
-function copyTargetFor(path: string): string {
-  const ext = extname(path)
-  const base = basename(path, ext)
-  const dir = dirname(path)
-  for (let i = 1; ; i++) {
-    const target = join(dir, `${base} ${tm('copySuffix')}${i === 1 ? '' : ` ${i}`}${ext}`)
-    if (!existsSync(target)) return target
-  }
-}
-
 /** The shell's side of every entry of the tab menu (see tab-menu.ts for what is offered). */
 function tabMenuActions(): TabMenuActions {
   const documentAction = (id: string, action: TabDocumentAction) => {
@@ -4991,9 +4979,8 @@ function tabMenuActions(): TabMenuActions {
         shellWindow.webContents.send(TABS_CHANNELS.startRename, id)
     },
     duplicate: (path) => {
-      const target = copyTargetFor(path)
-      void atomicCopyFile(path, target).then(
-        () => {
+      void duplicateDocumentFile(path, { copySuffix: tm('copySuffix') }).then(
+        (target) => {
           recordRecentFile(target)
           openDocumentPath(target)
         },
