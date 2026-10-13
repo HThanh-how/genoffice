@@ -2,6 +2,7 @@ import { watch as fsWatch, type FSWatcher } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { basename, isAbsolute, relative, resolve, sep } from 'node:path'
 import { isIgnoredFileName, isIndexablePath, shouldSkipDirectory } from './folder-scan'
+import { readGenOfficeIgnore, refreshGenOfficeIgnoreForRoot } from './ignore-policy'
 
 export interface FolderReconcileOutcome {
   ok: boolean
@@ -188,6 +189,7 @@ export class FolderWatchManager {
         }
         isFirst = false
         try {
+          refreshGenOfficeIgnoreForRoot(root)
           const result = (await this.folders.reconcile(root)) as { ok?: boolean; reason?: string }
           if (result?.ok === false) {
             if (result.reason === 'busy') this.markDirty(root)
@@ -235,7 +237,10 @@ export class FolderWatchManager {
       state.watcher = watcher
       if (state.needsCatchUp) {
         state.needsCatchUp = false
+        refreshGenOfficeIgnoreForRoot(root)
         this.markDirty(root)
+      } else {
+        readGenOfficeIgnore(root)
       }
     } catch {
       // Missing/unavailable root, permissions, or no recursive support: back off and retry.
@@ -304,6 +309,7 @@ export class FolderWatchManager {
   private onEvent(root: string, name: string | null): void {
     if (this.closed || !this.safeEnabled()) return
     if (!name) {
+      refreshGenOfficeIgnoreForRoot(root)
       this.markDirty(root)
       return
     }
@@ -318,9 +324,29 @@ export class FolderWatchManager {
     const parts = relative(root, full).split(sep).filter(Boolean)
     const leaf = parts[parts.length - 1]
     if (!leaf || parts.some((part) => part === '..')) return
+    if (
+      leaf.toLowerCase() === '.genofficeignore' &&
+      !parts.slice(0, -1).some(shouldSkipDirectory)
+    ) {
+      refreshGenOfficeIgnoreForRoot(root)
+      this.markIgnorePolicyDirty(root)
+      return
+    }
     if (isIgnoredFileName(leaf) || parts.slice(0, -1).some(shouldSkipDirectory)) return
     if (shouldSkipDirectory(basename(leaf))) return
     void this.handlePossibleDirectory(root, full)
+  }
+
+  private markIgnorePolicyDirty(root: string): void {
+    const state = this.roots.get(root)
+    if (!state || this.closed) return
+    if (state.dirTimer) clearTimeout(state.dirTimer)
+    const wait = Math.min(this.options.dirReconcileDelayMs, 250)
+    state.dirTimer = setTimeout(() => {
+      state.dirTimer = null
+      void this.reconcileRoot(root)
+    }, wait)
+    state.dirTimer.unref?.()
   }
 
   private async handlePossibleDirectory(root: string, full: string): Promise<void> {
@@ -368,8 +394,7 @@ export class FolderWatchManager {
       if (this.closed || !this.safeEnabled()) return
       try {
         const result = (await this.folders.reconcileSubtree(root, subtree)) as
-          | { ok?: boolean; reason?: string }
-          | undefined
+          { ok?: boolean; reason?: string } | undefined
         if (!result || result.ok === false) {
           this.markDirty(root)
           return
@@ -436,6 +461,7 @@ export class FolderWatchManager {
     }
     state.pendingSubtrees.clear()
     try {
+      refreshGenOfficeIgnoreForRoot(root)
       const result = (await this.folders.reconcile(root)) as { ok?: boolean; reason?: string }
       if (result?.ok === false && result.reason === 'busy') {
         this.markDirty(root)

@@ -21,7 +21,8 @@ import {
 import { registerFolderAndModelHandlers } from './document-index-folder-handlers'
 import { registerDocumentIndexImportanceHandlers } from './document-index-importance-handlers'
 import { registerDocumentIndexStorageHandlers } from './document-index-storage-handlers'
-import { isPathIgnored, registerIgnoreIpcHandlers } from '../document-memory/ignore-policy'
+import { createIgnoreReconcileController } from './document-index-ignore-reconcile'
+import { isPathIgnored } from '../document-memory/ignore-policy'
 
 export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
@@ -30,12 +31,19 @@ export interface DocumentIndexIpcDeps {
   dbPath: () => string
   getKnownSources?: () => KnownSourcesManager | null
   settingsPath?: string | (() => string)
+  onRefreshFileIndex?: (roots?: string[]) => void
 }
 
 const samePath = (p: string): string => (process.platform === 'win32' ? p.toLowerCase() : p)
 const ISSUE_REASONS: ReadonlySet<IndexIssueReason> = new Set(ISSUE_REASON_ORDER)
-// prettier-ignore
-const EMPTY_NOW: IndexingNow = { extracting: [], embedding: {}, positions: {}, pages: {}, queued: 0, paused: true }
+const EMPTY_NOW: IndexingNow = {
+  extracting: [],
+  embedding: {},
+  positions: {},
+  pages: {},
+  queued: 0,
+  paused: true,
+}
 
 /** Document-index popup IPC handler registration (< 250 LOC). */
 export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void {
@@ -74,20 +82,12 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   registerFolderAndModelHandlers(deps, () => folderCounts.invalidate())
   registerDocumentIndexImportanceHandlers(deps)
   registerDocumentIndexStorageHandlers(deps)
-  const scanRoots = () =>
-    getFolderScan()
-      ?.folders()
-      .map((f) => f.root) ?? []
-  registerIgnoreIpcHandlers(
+  const ignoreReconcile = createIgnoreReconcileController({
     ipcMain,
-    () => {
-      folderCounts.invalidate()
-      getFolderScan()
-        ?.folders()
-        .forEach((f) => void getFolderScan()?.reconcile(f.root))
-    },
-    scanRoots,
-  )
+    getFolderScan,
+    onRefreshFileIndex: deps.onRefreshFileIndex,
+    invalidateFolderCounts: () => folderCounts.invalidate(),
+  })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.enqueueDocumentIndex, (_event, ids: unknown) => {
     if (
@@ -163,10 +163,10 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   )
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexIssueSummary, (_event, root: unknown) => {
-    if (!getDocumentMemory()) return { total: 0, groups: [] }
-    const scope = activeRoot(root)
     const memory = getDocumentMemory()
-    return memory?.aggregates ? memory.aggregates.issues(scope) : reader().summary(scope)
+    if (!memory) return { total: 0, groups: [] }
+    const scope = activeRoot(root)
+    return memory.aggregates ? memory.aggregates.issues(scope) : reader().summary(scope)
   })
 
   ipcMain.handle(
@@ -179,9 +179,9 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
       if (only === 'model') {
         const isEnabled = memory.isEnabled?.() ?? memory.indexingActivityStatus?.().enabled
         if (isEnabled === false) return { ok: false, retried: 0, error: 'paused' }
-        if (typeof memory.recycleEmbeddingWorker === 'function') {
+        if (typeof memory.recycleEmbeddingWorker === 'function')
           memory.recycleEmbeddingWorker('Model retry requested from diagnostics')
-        } else {
+        else {
           memory.setEnabled(false)
           memory.setEnabled(true)
         }
@@ -196,10 +196,9 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
         return { ok: true, retried }
       }
       return (async () => {
-        const BATCH_SIZE = 50
-        for (let i = 0; i < ids.length; i += BATCH_SIZE) {
-          for (const id of ids.slice(i, i + BATCH_SIZE)) if (memory.retryDocument(id).ok) retried++
-          if (i + BATCH_SIZE < ids.length) await new Promise((resolve) => setImmediate(resolve))
+        for (let i = 0; i < ids.length; i += 50) {
+          for (const id of ids.slice(i, i + 50)) if (memory.retryDocument(id).ok) retried++
+          if (i + 50 < ids.length) await new Promise((resolve) => setImmediate(resolve))
         }
         folderCounts.invalidate()
         return { ok: true, retried }
@@ -211,10 +210,9 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     checkDocId(id)
     const memory = getDocumentMemory()
     if (!memory) return { ok: false, error: 'unavailable' }
-    const result = memory.deferDocument(id as number)
-    return result.ok ? { ok: true } : { ok: false, error: result.error ?? 'unavailable' }
+    const res = memory.deferDocument(id as number)
+    return res.ok ? { ok: true } : { ok: false, error: res.error ?? 'unavailable' }
   })
-
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.stopIndexFile, async (_event, id: unknown) => {
     checkDocId(id)
     folderCounts.invalidate()
@@ -224,7 +222,6 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     folderCounts.invalidate()
     return res.ok ? { ok: true } : { ok: false, error: res.error ?? 'unavailable' }
   })
-
   ipcMain.handle(HOME_CHANNELS.retryDocumentIndex, async (_event, id: unknown) => {
     checkDocId(id)
     folderCounts.invalidate()
@@ -234,14 +231,17 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     folderCounts.invalidate()
     return res
   })
-
   const snap = (f?: boolean) => getDocumentIndexSnapshot(snapshotCtx, f)
   ipcMain.handle(HOME_CHANNELS.getIndexingActivity, (): HomeIndexingActivity => snap().activity)
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexSnapshot, (_e, f?: boolean) => snap(f))
-  // prettier-ignore
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexStorageBudget, (_e, f?: boolean) => snap(f).storageBudget)
-  // prettier-ignore
-  ipcMain.handle('get-document-index-diagnostics', (_e, f?: boolean) => getDocumentIndexDiagnostics(snapshotCtx, f))
-
-  return () => issueReader?.close()
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexStorageBudget, (_e, f?: boolean) => {
+    return snap(f).storageBudget
+  })
+  ipcMain.handle('get-document-index-diagnostics', (_e, f?: boolean) => {
+    return getDocumentIndexDiagnostics(snapshotCtx, f)
+  })
+  return () => {
+    ignoreReconcile.dispose()
+    issueReader?.close()
+  }
 }
