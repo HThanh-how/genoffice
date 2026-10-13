@@ -67,12 +67,22 @@ export const DEFAULT_IGNORE_RULES: IgnoreRule[] = [
 let activeRules: IgnoreRule[] = [...DEFAULT_IGNORE_RULES]
 let storageFilePath: string | null = null
 let policyGeneration = 1
+let localCacheRevision = 0
+let isWorkerReplica = false
 let snapshotRoots: string[] = []
 
 export interface IgnorePolicySnapshot {
   version: number
   rules: IgnoreRule[]
   roots: string[]
+}
+
+export type SnapshotApplyStatus = 'applied' | 'unchanged' | 'rejected-stale' | 'rejected-invalid'
+
+export interface SnapshotApplyResult {
+  applied: boolean
+  status: SnapshotApplyStatus
+  version: number
 }
 
 export interface IgnorePolicyChangeEvent {
@@ -106,12 +116,26 @@ export function getIgnorePolicyGeneration(): number {
   return policyGeneration
 }
 
+export function getLocalIgnoreCacheRevision(): number {
+  return localCacheRevision
+}
+
 export function bumpIgnorePolicyGeneration(): void {
   policyGeneration++
   clearRegexCache()
 }
 
+function recordLocalGenOfficeIgnoreRevision(): boolean {
+  localCacheRevision++
+  if (isWorkerReplica) {
+    return false
+  }
+  bumpIgnorePolicyGeneration()
+  return true
+}
+
 export function setIgnoreStoragePath(path: string): void {
+  isWorkerReplica = false
   storageFilePath = path
   loadPersistedIgnoreRules()
 }
@@ -262,13 +286,14 @@ export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
           raw: null,
           rules: [],
         })
-        bumpIgnorePolicyGeneration()
-        emitIgnorePolicyChange({
-          version: policyGeneration,
-          reason: 'genofficeignore',
-          affectedRoots: [dir],
-          globalChanged: false,
-        })
+        if (recordLocalGenOfficeIgnoreRevision()) {
+          emitIgnorePolicyChange({
+            version: policyGeneration,
+            reason: 'genofficeignore',
+            affectedRoots: [dir],
+            globalChanged: false,
+          })
+        }
       } else if (!cached) {
         setCachedIgnoreEntry(dir, {
           mtimeMs: -1,
@@ -298,7 +323,7 @@ export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
       return cached.rules
     }
     const hadPrevious = cached !== undefined
-    bumpIgnorePolicyGeneration()
+    const bumpedAuthoritative = recordLocalGenOfficeIgnoreRevision()
     const rules = parseGenOfficeIgnoreContent(dir, content)
     setCachedIgnoreEntry(dir, {
       mtimeMs: stat.mtimeMs,
@@ -307,7 +332,7 @@ export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
       raw: content,
       rules,
     })
-    if (hadPrevious) {
+    if (hadPrevious && bumpedAuthoritative) {
       emitIgnorePolicyChange({
         version: policyGeneration,
         reason: 'genofficeignore',
@@ -371,6 +396,8 @@ export function refreshGenOfficeIgnoreForRoot(dir: string): boolean {
         raw: null,
         rules: [],
       })
+      isWorkerReplica = false
+      localCacheRevision++
       bumpIgnorePolicyGeneration()
       emitIgnorePolicyChange({
         version: policyGeneration,
@@ -396,6 +423,8 @@ export function refreshGenOfficeIgnoreForRoot(dir: string): boolean {
       raw: content,
       rules,
     })
+    isWorkerReplica = false
+    localCacheRevision++
     bumpIgnorePolicyGeneration()
     emitIgnorePolicyChange({
       version: policyGeneration,
@@ -439,6 +468,33 @@ function ruleSignature(r: IgnoreRule): string {
   return `${r.id}\0${r.pattern}\0${r.enabled ? '1' : '0'}\0${r.scope}`
 }
 
+function areRulesEquivalent(a: readonly IgnoreRule[], b: readonly IgnoreRule[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    const ra = a[i]!
+    const rb = b[i]!
+    if (
+      ra.id !== rb.id ||
+      ra.pattern !== rb.pattern ||
+      ra.enabled !== rb.enabled ||
+      ra.scope !== rb.scope ||
+      ra.description !== rb.description ||
+      ra.source !== rb.source
+    ) {
+      return false
+    }
+  }
+  return true
+}
+
+function areRootsEquivalent(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false
+  }
+  return true
+}
+
 function computeChangedRules(
   prev: readonly IgnoreRule[],
   next: readonly IgnoreRule[],
@@ -468,6 +524,7 @@ export function setActiveIgnoreRules(rules: IgnoreRule[]): boolean {
   if (!ok) {
     return false
   }
+  isWorkerReplica = false
   const changed = computeChangedRules(activeRules, candidate)
   activeRules = candidate
   bumpIgnorePolicyGeneration()
@@ -554,21 +611,82 @@ export function getIgnorePolicySnapshot(extraRoots?: readonly string[]): IgnoreP
 }
 
 /**
+ * Applies a structured-cloneable policy snapshot in memory with detailed outcome reporting.
+ * Never persists to disk, rejects stale/invalid snapshots, and avoids clearing caches on idempotent repeats.
+ */
+export function applyIgnorePolicySnapshotDetailed(snapshot: unknown): SnapshotApplyResult {
+  if (!isValidIgnorePolicySnapshot(snapshot)) {
+    return {
+      applied: false,
+      status: 'rejected-invalid',
+      version: policyGeneration,
+    }
+  }
+  if (snapshot.version < policyGeneration) {
+    return {
+      applied: false,
+      status: 'rejected-stale',
+      version: policyGeneration,
+    }
+  }
+  const candidateRules = snapshot.rules.map((r) => ({ ...r }))
+  const candidateRoots = [...new Set(snapshot.roots)]
+  const rulesChanged = !areRulesEquivalent(activeRules, candidateRules)
+  const rootsChanged = !areRootsEquivalent(snapshotRoots, candidateRoots)
+
+  if (isWorkerReplica && snapshot.version === policyGeneration) {
+    if (!rulesChanged && !rootsChanged) {
+      return {
+        applied: true,
+        status: 'unchanged',
+        version: policyGeneration,
+      }
+    }
+    if (rulesChanged) {
+      activeRules = candidateRules
+      clearRegexCache()
+    }
+    if (rootsChanged) {
+      const nextRootSet = new Set(candidateRoots)
+      for (const cachedDir of genOfficeIgnoreCache.keys()) {
+        if (!nextRootSet.has(cachedDir)) {
+          genOfficeIgnoreCache.delete(cachedDir)
+        }
+      }
+      snapshotRoots = candidateRoots
+    }
+    return {
+      applied: true,
+      status: 'applied',
+      version: policyGeneration,
+    }
+  }
+
+  isWorkerReplica = true
+  activeRules = candidateRules
+  snapshotRoots = candidateRoots
+  policyGeneration = snapshot.version
+  if (rulesChanged) {
+    clearRegexCache()
+  }
+  clearGenOfficeIgnoreCache()
+  return {
+    applied: true,
+    status: 'applied',
+    version: policyGeneration,
+  }
+}
+
+/**
  * Applies a structured-cloneable policy snapshot in memory (used by worker replicas).
  * Never persists to disk and rejects stale snapshot versions.
  */
 export function applyIgnorePolicySnapshot(snapshot: unknown): boolean {
-  if (!isValidIgnorePolicySnapshot(snapshot)) return false
-  if (snapshot.version < policyGeneration) return false
-  activeRules = snapshot.rules.map((r) => ({ ...r }))
-  snapshotRoots = [...new Set(snapshot.roots)]
-  policyGeneration = snapshot.version
-  clearRegexCache()
-  clearGenOfficeIgnoreCache()
-  return true
+  return applyIgnorePolicySnapshotDetailed(snapshot).applied
 }
 
 export function loadPersistedIgnoreRules(): IgnoreRule[] {
+  isWorkerReplica = false
   if (!storageFilePath || !existsSync(storageFilePath)) {
     return activeRules
   }

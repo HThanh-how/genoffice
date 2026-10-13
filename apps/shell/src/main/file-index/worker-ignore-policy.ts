@@ -1,17 +1,26 @@
 import {
   applyIgnorePolicySnapshot,
+  applyIgnorePolicySnapshotDetailed,
   getIgnorePolicyGeneration,
   getIgnorePolicySnapshot,
+  getLocalIgnoreCacheRevision,
   isPathIgnored,
   type IgnorePolicySnapshot,
+  type SnapshotApplyStatus,
 } from '../document-memory/ignore-policy'
 
 export {
+  applyIgnorePolicySnapshot,
+  applyIgnorePolicySnapshotDetailed,
   getIgnorePolicyGeneration,
   getIgnorePolicySnapshot,
+  getLocalIgnoreCacheRevision,
   isPathIgnored,
   type IgnorePolicySnapshot,
+  type SnapshotApplyStatus,
 }
+
+export type IgnorePolicyAckStatus = SnapshotApplyStatus | 'startup-failed'
 
 export interface IgnorePolicyWorkerMessage {
   id?: number
@@ -24,6 +33,7 @@ export interface IgnorePolicyAckResponse {
   type: 'ignore-policy-ack'
   version: number
   applied: boolean
+  status?: IgnorePolicyAckStatus
 }
 
 export function isIgnorePolicyMessage(message: unknown): message is IgnorePolicyWorkerMessage {
@@ -59,12 +69,13 @@ export function applyWorkerIgnorePolicyMessage(message: unknown): IgnorePolicyAc
     typeof message === 'object' && message !== null
       ? (message as { snapshot?: unknown }).snapshot
       : undefined
-  const applied = applyIgnorePolicySnapshot(snapshot)
+  const outcome = applyIgnorePolicySnapshotDetailed(snapshot)
   return {
     ...(id !== undefined ? { id } : {}),
     type: 'ignore-policy-ack',
-    version: getIgnorePolicyGeneration(),
-    applied,
+    version: outcome.version,
+    applied: outcome.applied,
+    status: outcome.status,
   }
 }
 
@@ -75,11 +86,12 @@ export function applyWorkerDataIgnorePolicy(workerData: unknown): IgnorePolicyAc
   if (typeof workerData !== 'object' || workerData === null) return null
   const snapshot = (workerData as { ignorePolicy?: unknown }).ignorePolicy
   if (snapshot === undefined) return null
-  const applied = applyIgnorePolicySnapshot(snapshot)
+  const outcome = applyIgnorePolicySnapshotDetailed(snapshot)
   return {
     type: 'ignore-policy-ack',
-    version: getIgnorePolicyGeneration(),
-    applied,
+    version: outcome.version,
+    applied: outcome.applied,
+    status: outcome.applied ? outcome.status : 'startup-failed',
   }
 }
 
@@ -90,5 +102,5 @@ export function applyRequestIgnorePolicy(request: unknown): boolean {
   if (typeof request !== 'object' || request === null) return false
   const snapshot = (request as { ignorePolicy?: unknown }).ignorePolicy
   if (snapshot === undefined) return false
-  return applyIgnorePolicySnapshot(snapshot)
+  return applyIgnorePolicySnapshotDetailed(snapshot).applied
 }

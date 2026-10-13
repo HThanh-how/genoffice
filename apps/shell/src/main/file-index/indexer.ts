@@ -131,6 +131,7 @@ export class FileIndexer {
   private stopped = false
   private workerPolicyVersion = 0
   private workerSupportsIgnorePolicyMsg = false
+  private policySyncFailures = 0
   private readonly stopPolicyWatch: () => void
   private readonly stopIgnorePolicyWatch: () => void
 
@@ -182,12 +183,24 @@ export class FileIndexer {
   ): Promise<IgnorePolicyAckResponse> {
     const res = await this.ask({ id: 0, type: 'ignore-policy', snapshot })
     if (isIgnorePolicyAckMessage(res)) {
+      if (
+        !res.applied &&
+        res.status !== 'rejected-invalid' &&
+        snapshot.version >= getIgnorePolicyGeneration()
+      ) {
+        this.recycleWorker()
+        const retryRes = await this.ask({ id: 0, type: 'ignore-policy', snapshot })
+        if (isIgnorePolicyAckMessage(retryRes)) {
+          return retryRes
+        }
+      }
       return res
     }
     return {
       type: 'ignore-policy-ack',
       version: this.workerPolicyVersion,
       applied: false,
+      status: 'rejected-invalid',
     }
   }
 
@@ -585,6 +598,7 @@ export class FileIndexer {
     this.worker = null
     this.workerPolicyVersion = 0
     this.workerSupportsIgnorePolicyMsg = false
+    this.policySyncFailures = 0
     this.failPending('worker restarted')
     void w.terminate()
   }
@@ -601,6 +615,7 @@ export class FileIndexer {
     if (this.worker) return this.worker
     this.workerPolicyVersion = 0
     this.workerSupportsIgnorePolicyMsg = false
+    this.policySyncFailures = 0
     const w = new Worker(this.workerPath, {
       resourceLimits: { maxOldGenerationSizeMb: this.workerHeapLimitMb },
       workerData: {
@@ -612,25 +627,36 @@ export class FileIndexer {
       if (this.worker !== w) return
       if (isIgnorePolicyAckMessage(msg)) {
         this.workerSupportsIgnorePolicyMsg = true
-        if (msg.version > this.workerPolicyVersion) {
-          this.workerPolicyVersion = msg.version
-        }
-        if (msg.id === undefined && this.workerPolicyVersion < getIgnorePolicyGeneration()) {
-          try {
-            w.postMessage({
-              id: this.nextId++,
-              type: 'ignore-policy',
-              snapshot: getIgnorePolicySnapshot(this.sources.roots()),
-            } satisfies WorkerRequest)
-          } catch {
-            // Worker will resync on next request
+        if (msg.applied) {
+          this.policySyncFailures = 0
+          if (msg.version > this.workerPolicyVersion) {
+            this.workerPolicyVersion = msg.version
           }
+        } else {
+          this.policySyncFailures++
         }
         if (msg.id !== undefined) {
           const cb = this.waiting.get(msg.id)
           if (cb) {
             this.waiting.delete(msg.id)
             cb(msg)
+            return
+          }
+        }
+        if (!msg.applied || this.workerPolicyVersion < getIgnorePolicyGeneration()) {
+          if (this.policySyncFailures <= 1) {
+            try {
+              w.postMessage({
+                id: this.nextId++,
+                type: 'ignore-policy',
+                snapshot: getIgnorePolicySnapshot(this.sources.roots()),
+              } satisfies WorkerRequest)
+            } catch {
+              // Worker will resync on next request
+            }
+          } else {
+            this.policySyncFailures = 0
+            this.recycleWorker()
           }
         }
         return
@@ -650,6 +676,7 @@ export class FileIndexer {
       this.worker = null
       this.workerPolicyVersion = 0
       this.workerSupportsIgnorePolicyMsg = false
+      this.policySyncFailures = 0
       this.failPending('worker exited')
     }
     w.on('error', drop)
