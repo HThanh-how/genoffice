@@ -447,6 +447,19 @@ function bridge(): AgyBarApi | undefined {
     : (window as unknown as { agyChat?: AgyBarApi }).agyChat
 }
 
+const MAX_SUPERSEDED_IDS = 200
+
+function addBoundedId(set: Set<string>, id: string | undefined | null): void {
+  if (!id) return
+  if (set.has(id)) {
+    set.delete(id)
+  } else if (set.size >= MAX_SUPERSEDED_IDS) {
+    const oldest = set.values().next().value
+    if (oldest !== undefined) set.delete(oldest)
+  }
+  set.add(id)
+}
+
 /**
  * Model chooser and quota readout shown right under an AI chat box when the Antigravity provider
  * is active (it renders nothing otherwise). The readout is stale-while-revalidate: it shows the
@@ -460,6 +473,7 @@ export function AgyChatBar({
   mode = 'default',
   activeRunId,
   activeRequestId,
+  getActiveRequestId,
   sessionId,
   busy,
 }: {
@@ -471,6 +485,7 @@ export function AgyChatBar({
   mode?: 'default' | 'home-chat'
   activeRunId?: string
   activeRequestId?: string | null
+  getActiveRequestId?: () => string | null | undefined
   sessionId?: string
   busy?: boolean
 }) {
@@ -499,6 +514,8 @@ export function AgyChatBar({
   const activeRunIdRef = useRef(activeRunId)
   activeRunIdRef.current = activeRunId
   const activeRequestIdRef = useRef(activeRequestId)
+  const getActiveRequestIdRef = useRef(getActiveRequestId)
+  getActiveRequestIdRef.current = getActiveRequestId
   const prevActiveRequestIdRef = useRef(activeRequestId)
   const sessionIdRef = useRef(sessionId)
   sessionIdRef.current = sessionId
@@ -509,11 +526,14 @@ export function AgyChatBar({
 
   if (prevActiveRequestIdRef.current !== activeRequestId) {
     if (prevActiveRequestIdRef.current) {
-      supersededRequestIds.current.add(prevActiveRequestIdRef.current)
+      addBoundedId(supersededRequestIds.current, prevActiveRequestIdRef.current)
     }
     prevActiveRequestIdRef.current = activeRequestId
   }
   activeRequestIdRef.current = activeRequestId
+
+  const resolveCurrentRequestId = (): string | null | undefined =>
+    getActiveRequestIdRef.current ? getActiveRequestIdRef.current() : activeRequestIdRef.current
 
   const source = api ?? bridge()
 
@@ -551,6 +571,8 @@ export function AgyChatBar({
 
   useEffect(() => {
     if (!source) return
+    const runIds = supersededRunIds.current
+    const reqIds = supersededRequestIds.current
     void loadState()
     void source
       .getAgyChatUsage()
@@ -577,25 +599,29 @@ export function AgyChatBar({
       if (sessionIdRef.current && !event.sessionId) {
         return
       }
-      if (event.requestId && supersededRequestIds.current.has(event.requestId)) {
+      const currentRequestId = resolveCurrentRequestId()
+      if (prevActiveRequestIdRef.current !== currentRequestId) {
+        if (prevActiveRequestIdRef.current) {
+          addBoundedId(reqIds, prevActiveRequestIdRef.current)
+        }
+        prevActiveRequestIdRef.current = currentRequestId
+      }
+      if (event.requestId && reqIds.has(event.requestId)) {
         return
       }
-      if (activeRequestIdRef.current !== undefined) {
-        if (
-          !activeRequestIdRef.current ||
-          !event.requestId ||
-          event.requestId !== activeRequestIdRef.current
-        ) {
+      if (currentRequestId !== undefined) {
+        if (!currentRequestId || !event.requestId || event.requestId !== currentRequestId) {
           return
         }
       }
       if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) {
         return
       }
-      if (supersededRunIds.current.has(event.runId)) {
+      if (runIds.has(event.runId)) {
         return
       }
       setRun((current) => {
+        const latestRequestId = resolveCurrentRequestId()
         if (!current) {
           if (
             event.phase !== 'start' &&
@@ -605,12 +631,8 @@ export function AgyChatBar({
           ) {
             return null
           }
-          if (activeRequestIdRef.current !== undefined) {
-            if (
-              !activeRequestIdRef.current ||
-              !event.requestId ||
-              event.requestId !== activeRequestIdRef.current
-            ) {
+          if (latestRequestId !== undefined) {
+            if (!latestRequestId || !event.requestId || event.requestId !== latestRequestId) {
               return null
             }
           }
@@ -621,15 +643,15 @@ export function AgyChatBar({
         }
         if (current.requestId && event.requestId && event.requestId !== current.requestId) {
           if (
-            activeRequestIdRef.current &&
-            event.requestId === activeRequestIdRef.current &&
+            latestRequestId &&
+            event.requestId === latestRequestId &&
             (event.phase === 'start' ||
               event.phase === 'thinking' ||
               event.phase === 'tool' ||
               event.phase === 'writing')
           ) {
-            supersededRequestIds.current.add(current.requestId)
-            supersededRunIds.current.add(current.id)
+            addBoundedId(reqIds, current.requestId)
+            addBoundedId(runIds, current.id)
             return reduceRun(null, event)
           }
           return current
@@ -638,12 +660,12 @@ export function AgyChatBar({
           if (
             event.phase === 'start' &&
             (!activeRunIdRef.current || event.runId === activeRunIdRef.current) &&
-            (activeRequestIdRef.current !== undefined
-              ? !!activeRequestIdRef.current && event.requestId === activeRequestIdRef.current
+            (latestRequestId !== undefined
+              ? !!latestRequestId && event.requestId === latestRequestId
               : (!current.requestId || !event.requestId || event.requestId === current.requestId) &&
                 event.at >= current.startedAt)
           ) {
-            supersededRunIds.current.add(current.id)
+            addBoundedId(runIds, current.id)
             return reduceRun(null, event)
           }
           return current
@@ -664,6 +686,8 @@ export function AgyChatBar({
       window.removeEventListener(MODEL_CHANGED, onFocus)
       clearInterval(clock)
       if (peekTimer.current) clearTimeout(peekTimer.current)
+      runIds.clear()
+      reqIds.clear()
       setRun(null)
     }
   }, [source, loadState, apply])
@@ -671,38 +695,37 @@ export function AgyChatBar({
   useEffect(() => {
     if (busy === false) {
       if (run) {
-        if (run.requestId) supersededRequestIds.current.add(run.requestId)
+        addBoundedId(supersededRequestIds.current, run.requestId)
         setRun(null)
       }
-      if (activeRequestIdRef.current) {
-        supersededRequestIds.current.add(activeRequestIdRef.current)
-      }
+      addBoundedId(supersededRequestIds.current, resolveCurrentRequestId())
       supersededRunIds.current.clear()
     }
   }, [busy, run])
 
   useEffect(() => {
     if (!run) return
-    if (activeRequestId !== undefined) {
-      if (!activeRequestId || run.requestId !== activeRequestId) {
-        if (run.requestId) supersededRequestIds.current.add(run.requestId)
-        supersededRunIds.current.add(run.id)
+    const currentRequestId = getActiveRequestId ? getActiveRequestId() : activeRequestId
+    if (currentRequestId !== undefined) {
+      if (!currentRequestId || run.requestId !== currentRequestId) {
+        addBoundedId(supersededRequestIds.current, run.requestId)
+        addBoundedId(supersededRunIds.current, run.id)
         setRun(null)
       }
     }
-  }, [activeRequestId, run])
+  }, [activeRequestId, getActiveRequestId, run])
 
   useEffect(() => {
     if (activeRunId && run && run.id !== activeRunId) {
-      if (run.requestId) supersededRequestIds.current.add(run.requestId)
-      supersededRunIds.current.add(run.id)
+      addBoundedId(supersededRequestIds.current, run.requestId)
+      addBoundedId(supersededRunIds.current, run.id)
       setRun(null)
     }
   }, [activeRunId, run])
 
   useEffect(() => {
     if (sessionId && run && run.sessionId && run.sessionId !== sessionId) {
-      if (run.requestId) supersededRequestIds.current.add(run.requestId)
+      addBoundedId(supersededRequestIds.current, run.requestId)
       supersededRunIds.current.clear()
       setRun(null)
     }
@@ -710,20 +733,23 @@ export function AgyChatBar({
 
   useEffect(() => {
     if (state && !state.active && run) {
-      if (run.requestId) supersededRequestIds.current.add(run.requestId)
-      supersededRunIds.current.add(run.id)
+      addBoundedId(supersededRequestIds.current, run.requestId)
+      addBoundedId(supersededRunIds.current, run.id)
       setRun(null)
     }
   }, [state, run])
 
+  const effectiveRequestId = getActiveRequestId ? getActiveRequestId() : activeRequestId
   const effectiveRun =
     run &&
     (!state || state.active) &&
     (!sessionId || !run.sessionId || run.sessionId === sessionId) &&
     (!activeRunId || run.id === activeRunId) &&
-    (activeRequestId === undefined
+    (effectiveRequestId === undefined
       ? !run.requestId || !supersededRequestIds.current.has(run.requestId)
-      : !!activeRequestId && run.requestId === activeRequestId) &&
+      : !!effectiveRequestId &&
+        run.requestId === effectiveRequestId &&
+        !supersededRequestIds.current.has(run.requestId)) &&
     (mode === 'home-chat' ? !!busy : busy !== false)
       ? run
       : null

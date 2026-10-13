@@ -189,7 +189,6 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   activeSessionIdRef.current = activeSessionId
   const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
   const activeRequestIdRef = useRef<string | null>(null)
-  activeRequestIdRef.current = activeRequestId
   const clearActiveRequest = () => {
     activeRequestIdRef.current = null
     setActiveRequestId(null)
@@ -1464,6 +1463,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
                               busy={busy}
                               sessionId={activeSessionId}
                               activeRequestId={activeRequestId}
+                              getActiveRequestId={() => activeRequestIdRef.current}
                             />
                           ) : undefined
                         }
