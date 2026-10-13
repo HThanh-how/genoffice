@@ -42,8 +42,10 @@ export function createIgnoreReconcileController(
   const dirtyRoots = new Set<string>()
   const runningRoots = new Set<string>()
   const rerunRoots = new Set<string>()
+  const deferredBusyRoots = new Set<string>()
   const retryCounts = new Map<string, number>()
   const retryTimers = new Map<string, NodeJS.Timeout>()
+  let watchedRunner: Promise<unknown> | null = null
   let pendingGlobal = false
   let debounceTimer: NodeJS.Timeout | null = null
   let lastScheduledVersion = -1
@@ -74,6 +76,30 @@ export function createIgnoreReconcileController(
     retryTimers.set(root, timer)
   }
 
+  const wakeDeferredBusyRoots = (): void => {
+    if (disposed || deferredBusyRoots.size === 0) return
+    const roots = [...deferredBusyRoots]
+    deferredBusyRoots.clear()
+    for (const r of roots) {
+      retryCounts.delete(r)
+      scheduleRetry(r, debounceMs)
+    }
+  }
+
+  const watchActiveScanRunner = (scan: unknown): void => {
+    const candidate = (scan as { runner?: Promise<unknown> | null } | null)?.runner
+    if (!candidate || typeof candidate.then !== 'function' || watchedRunner === candidate) {
+      return
+    }
+    watchedRunner = candidate
+    void candidate.finally(() => {
+      if (watchedRunner === candidate) {
+        watchedRunner = null
+      }
+      wakeDeferredBusyRoots()
+    })
+  }
+
   const reconcileSingleRoot = async (root: string): Promise<void> => {
     if (disposed) return
     if (runningRoots.has(root)) {
@@ -84,7 +110,10 @@ export function createIgnoreReconcileController(
     runningRoots.add(root)
     try {
       const scan = deps.getFolderScan()
-      if (!scan) return
+      if (!scan) {
+        deferredBusyRoots.add(root)
+        return
+      }
       const res = (await scan.reconcile(root)) as { ok?: boolean; reason?: string } | null
       if (disposed) return
       if (res && res.ok === false && res.reason === 'busy') {
@@ -93,11 +122,17 @@ export function createIgnoreReconcileController(
           retryCounts.set(root, attempt)
           const backoff = Math.min(retryBaseMs * 2 ** (attempt - 1), retryMaxMs)
           scheduleRetry(root, backoff)
+        } else {
+          retryCounts.delete(root)
+          deferredBusyRoots.add(root)
+          watchActiveScanRunner(scan)
         }
         return
       }
+      deferredBusyRoots.delete(root)
       retryCounts.delete(root)
       deps.invalidateFolderCounts?.()
+      wakeDeferredBusyRoots()
     } catch {
       // Unreadable or disconnected root must not spin or trigger destructive cleanup
       retryCounts.delete(root)
@@ -132,14 +167,21 @@ export function createIgnoreReconcileController(
       for (const r of allRoots) addTarget(r)
     }
     for (const r of dirtyRoots) addTarget(r)
+    for (const r of deferredBusyRoots) addTarget(r)
 
-    pendingGlobal = false
+    if (deps.getFolderScan()) {
+      pendingGlobal = false
+    }
     dirtyRoots.clear()
+    deferredBusyRoots.clear()
 
     deps.invalidateFolderCounts?.()
     deps.onRefreshFileIndex?.(targetRoots.length > 0 ? targetRoots : allRoots)
 
-    await Promise.all(targetRoots.map((root) => reconcileSingleRoot(root)))
+    for (const root of targetRoots) {
+      if (disposed) break
+      await reconcileSingleRoot(root)
+    }
   }
 
   const schedule = (event?: Partial<IgnorePolicyChangeEvent>): void => {
@@ -193,7 +235,9 @@ export function createIgnoreReconcileController(
     registerIgnoreIpcHandlers(
       deps.ipcMain,
       () => {
-        schedule({ version: getIgnorePolicyGeneration() })
+        if (getIgnorePolicyGeneration() !== lastScheduledVersion) {
+          schedule({ version: getIgnorePolicyGeneration() })
+        }
       },
       configuredRoots,
     )
@@ -213,6 +257,7 @@ export function createIgnoreReconcileController(
     retryTimers.clear()
     dirtyRoots.clear()
     rerunRoots.clear()
+    deferredBusyRoots.clear()
     retryCounts.clear()
   }
 
