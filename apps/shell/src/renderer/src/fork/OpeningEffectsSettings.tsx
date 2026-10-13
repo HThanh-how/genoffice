@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Dropdown } from '@genoffice/ui'
 import type { OpeningEffectsState } from '../../../shared/home-api'
+import { OpeningCardStudio } from './OpeningCardStudio'
 import {
   CUSTOM_SCENE,
   OPENING_APPS,
@@ -188,6 +189,12 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
               </div>
             </div>
           ))}
+          <OpeningCardStudio
+            state={state}
+            lang={lang}
+            onUpdateState={setState}
+            onPreview={(app, s) => void api.previewOpening(app, s)}
+          />
           <div className="set-field-desc set-opening-guide">{c.guide}</div>
           {error && <div className="set-field-desc set-opening-error">{error}</div>}
         </>

@@ -12,8 +12,22 @@ import {
   setOpeningConfig,
   startOpeningNotice,
 } from './fork/opening-window'
-import { OPENING_APPS, normalizeOpeningPrefs } from '../shared/opening-scenes-meta'
+import {
+  DEFAULT_SCENE_FOR_APP,
+  OPENING_APPS,
+  normalizeOpeningPrefs,
+} from '../shared/opening-scenes-meta'
 import type { OpeningApp, OpeningPrefs } from '../shared/opening-scenes-meta'
+import { getAllBuiltInCards } from '../shared/opening-card-families'
+import type { OpeningCardDefinition, AiCardGenerationInput } from '../shared/opening-card-types'
+import {
+  deleteMediaAsset,
+  getAssetDataUrl,
+  listMediaAssets,
+  storeMediaAssetFromBuffer,
+} from './fork/opening-media-storage'
+import { validateAiCardSchema } from './fork/opening-card-ai'
+import { imageGenerationAvailable } from '@genoffice/ai-provider'
 import { execSync, spawn } from 'node:child_process'
 import {
   appendFileSync,
@@ -4129,11 +4143,25 @@ function customOpeningHtml(target: OpeningApp): string | null {
 }
 
 function openingEffectsState(): OpeningEffectsState {
+  const prefs = openingPrefs()
+  let canGenerateImages = false
+  try {
+    const aiConfig = readAppSettings(APP_SETTINGS_PATH()).aiSettings
+    canGenerateImages = imageGenerationAvailable(
+      aiConfig as Parameters<typeof imageGenerationAvailable>[0],
+      false,
+    )
+  } catch {
+    // fallback
+  }
   return {
-    prefs: openingPrefs(),
+    prefs,
     custom: Object.fromEntries(
       OPENING_APPS.map((a) => [a, existsSync(openingHtmlPath(a))]),
     ) as Record<OpeningApp, boolean>,
+    builtInCards: getAllBuiltInCards() as OpeningCardDefinition[],
+    mediaAssets: listMediaAssets(app.getPath('userData')),
+    canGenerateImages,
   }
 }
 
@@ -5329,6 +5357,152 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.previewOpening, (_event, target: unknown, scene: unknown) => {
     if (!isOpeningApp(target) || typeof scene !== 'string') return
     previewOpeningScene({ app: target, scene, lang: currentLang() })
+  })
+  ipcMain.handle(HOME_CHANNELS.saveOpeningCard, (_event, input: unknown): OpeningEffectsState => {
+    if (!input || typeof input !== 'object') return openingEffectsState()
+    const card = input as OpeningCardDefinition
+    if (typeof card.id !== 'string' || typeof card.name !== 'string' || !card.material) {
+      return openingEffectsState()
+    }
+    const prefs = openingPrefs()
+    const existing = prefs.customCards || []
+    const idx = existing.findIndex((c) => c.id === card.id)
+    const customCards =
+      idx >= 0 ? existing.map((c, i) => (i === idx ? card : c)) : [...existing, card]
+    writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', { ...prefs, customCards })
+    return openingEffectsState()
+  })
+  ipcMain.handle(
+    HOME_CHANNELS.deleteOpeningCard,
+    (_event, cardId: unknown): OpeningEffectsState => {
+      if (typeof cardId !== 'string') return openingEffectsState()
+      const prefs = openingPrefs()
+      const customCards = (prefs.customCards || []).filter((c) => c.id !== cardId)
+      const scenes = { ...prefs.scenes }
+      for (const app of OPENING_APPS) {
+        if (scenes[app] === cardId) {
+          scenes[app] = DEFAULT_SCENE_FOR_APP[app]
+        }
+      }
+      const globalCard = prefs.globalCard === cardId ? undefined : prefs.globalCard
+      const favorites = (prefs.favorites || []).filter((id) => id !== cardId)
+      writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+        ...prefs,
+        customCards,
+        scenes,
+        globalCard,
+        favorites,
+      })
+      return openingEffectsState()
+    },
+  )
+  ipcMain.handle(
+    HOME_CHANNELS.importOpeningMedia,
+    async (_event, bufferBase64: unknown, _fileName: unknown) => {
+      if (typeof bufferBase64 !== 'string') {
+        return { ok: false, error: 'Invalid payload', state: openingEffectsState() }
+      }
+      try {
+        const buf = Buffer.from(bufferBase64, 'base64')
+        const stored = await storeMediaAssetFromBuffer(app.getPath('userData'), buf)
+        return { ok: true, asset: stored, state: openingEffectsState() }
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          state: openingEffectsState(),
+        }
+      }
+    },
+  )
+  ipcMain.handle(
+    HOME_CHANNELS.deleteOpeningMedia,
+    (_event, assetId: unknown): OpeningEffectsState => {
+      if (typeof assetId === 'string') {
+        deleteMediaAsset(app.getPath('userData'), assetId)
+      }
+      return openingEffectsState()
+    },
+  )
+  ipcMain.handle(HOME_CHANNELS.generateAiCard, async (_event, input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      return { ok: false, error: 'Invalid input' }
+    }
+    const req = input as AiCardGenerationInput
+    const validated = validateAiCardSchema({
+      name: req.prompt.slice(0, 30).trim() || 'AI Custom Card',
+      description: req.prompt.slice(0, 100),
+      preset: req.preset || 'frosted-glass',
+      themeMode: req.themeMode || 'system',
+      accentColor: req.accentColor,
+    })
+    return validated
+  })
+  ipcMain.handle(
+    HOME_CHANNELS.toggleOpeningFavorite,
+    (_event, cardId: unknown): OpeningEffectsState => {
+      if (typeof cardId !== 'string') return openingEffectsState()
+      const prefs = openingPrefs()
+      const favs = new Set(prefs.favorites || [])
+      if (favs.has(cardId)) {
+        favs.delete(cardId)
+      } else {
+        favs.add(cardId)
+      }
+      writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+        ...prefs,
+        favorites: Array.from(favs),
+      })
+      return openingEffectsState()
+    },
+  )
+  ipcMain.handle(HOME_CHANNELS.exportOpeningCards, (): string => {
+    const prefs = openingPrefs()
+    return JSON.stringify(prefs.customCards || [], null, 2)
+  })
+  ipcMain.handle(HOME_CHANNELS.importOpeningCards, (_event, jsonContent: unknown) => {
+    if (typeof jsonContent !== 'string') {
+      return { ok: false, count: 0, error: 'Invalid payload', state: openingEffectsState() }
+    }
+    try {
+      const parsed = JSON.parse(jsonContent)
+      if (!Array.isArray(parsed)) {
+        return { ok: false, count: 0, error: 'Expected JSON array', state: openingEffectsState() }
+      }
+      const validCards: OpeningCardDefinition[] = []
+      for (const item of parsed) {
+        const check = validateAiCardSchema(item)
+        if (check.ok && check.card) {
+          validCards.push(check.card)
+        }
+      }
+      if (validCards.length === 0) {
+        return {
+          ok: false,
+          count: 0,
+          error: 'No valid card definitions found',
+          state: openingEffectsState(),
+        }
+      }
+      const prefs = openingPrefs()
+      const existing = prefs.customCards || []
+      const mergedMap = new Map(existing.map((c) => [c.id, c]))
+      for (const card of validCards) {
+        mergedMap.set(card.id, card)
+      }
+      writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+        ...prefs,
+        customCards: Array.from(mergedMap.values()),
+      })
+      return { ok: true, count: validCards.length, state: openingEffectsState() }
+    } catch (err) {
+      return {
+        ok: false,
+        count: 0,
+        error: err instanceof Error ? err.message : String(err),
+        state: openingEffectsState(),
+      }
+    }
   })
   ipcMain.handle(HOME_CHANNELS.listLegacyRecovery, () =>
     listLegacyRecovery(app.getPath('userData')),
@@ -7177,7 +7351,17 @@ app.whenReady().then(async () => {
   // database open yet
   const dbMove = await applyPendingDbMove(userDataDir)
   everything = createEverything(userDataDir)
-  setOpeningConfig({ prefs: openingPrefs, customHtml: customOpeningHtml })
+  setOpeningConfig({
+    prefs: openingPrefs,
+    customHtml: customOpeningHtml,
+    mediaDataUrl: (assetId) => {
+      try {
+        return getAssetDataUrl(app.getPath('userData'), assetId)
+      } catch {
+        return null
+      }
+    },
+  })
   const indexDbDir = resolveDbDir(userDataDir)
 
   // Fail-closed storage initialization: never open or create fresh DB on ambiguity. The check and any V2->V3

@@ -57,6 +57,12 @@ export type UiLanguage =
 
 /** UI theme preference */
 import type { OpeningApp, OpeningPrefs } from './opening-scenes-meta'
+import type {
+  AiCardGenerationInput,
+  AiCardGenerationResult,
+  OpeningCardDefinition,
+  StoredMediaAsset,
+} from './opening-card-types'
 
 export type UiTheme = 'light' | 'dark' | 'system'
 
@@ -81,6 +87,9 @@ export interface LegacyConvertState {
 export interface OpeningEffectsState {
   prefs: OpeningPrefs
   custom: Record<OpeningApp, boolean>
+  builtInCards?: OpeningCardDefinition[]
+  mediaAssets?: StoredMediaAsset[]
+  canGenerateImages?: boolean
 }
 
 export interface LegacyRecoveryEntry {
@@ -414,8 +423,21 @@ export interface HomeApi extends ForkHomeApi {
     app: OpeningApp,
   ): Promise<{ ok: boolean; error?: string; state: OpeningEffectsState }>
   removeOpeningHtml(app: OpeningApp): Promise<OpeningEffectsState>
-  /** play a scene in a small window for a few seconds */
+  /** play a scene or card in a small window for a few seconds */
   previewOpening(app: OpeningApp, scene: string): Promise<void>
+  saveOpeningCard(card: OpeningCardDefinition): Promise<OpeningEffectsState>
+  deleteOpeningCard(cardId: string): Promise<OpeningEffectsState>
+  importOpeningMedia(
+    bufferBase64: string,
+    fileName?: string,
+  ): Promise<{ ok: boolean; asset?: StoredMediaAsset; error?: string; state: OpeningEffectsState }>
+  deleteOpeningMedia(assetId: string): Promise<OpeningEffectsState>
+  generateAiCard(input: AiCardGenerationInput): Promise<AiCardGenerationResult>
+  toggleOpeningFavorite(cardId: string): Promise<OpeningEffectsState>
+  exportOpeningCards(): Promise<string>
+  importOpeningCards(
+    jsonContent: string,
+  ): Promise<{ ok: boolean; count: number; error?: string; state: OpeningEffectsState }>
   /** start (or continue) the background conversion now */
   startLegacyConvert(): Promise<LegacyConvertState>
   setLegacyDocSettings(settings: LegacyDocSettings): Promise<LegacyDocSettings>
@@ -751,6 +773,14 @@ export const HOME_CHANNELS = {
   importOpeningHtml: 'home:import-opening-html',
   removeOpeningHtml: 'home:remove-opening-html',
   previewOpening: 'home:preview-opening',
+  saveOpeningCard: 'home:save-opening-card',
+  deleteOpeningCard: 'home:delete-opening-card',
+  importOpeningMedia: 'home:import-opening-media',
+  deleteOpeningMedia: 'home:delete-opening-media',
+  generateAiCard: 'home:generate-ai-card',
+  toggleOpeningFavorite: 'home:toggle-opening-favorite',
+  exportOpeningCards: 'home:export-opening-cards',
+  importOpeningCards: 'home:import-opening-cards',
   startLegacyConvert: 'home:start-legacy-convert',
   setLegacyDocSettings: 'home:set-legacy-doc-settings',
   listLegacyRecovery: 'home:list-legacy-recovery',

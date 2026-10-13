@@ -150,13 +150,22 @@ export const CUSTOM_SCENE = 'custom'
 
 export type OpeningTierChoice = 'auto' | 'full' | 'lite' | 'minimal'
 
+import type { OpeningCardDefinition } from './opening-card-types'
+import { isBuiltInCard } from './opening-card-families'
+
 export interface OpeningPrefs {
   /** the scene over a tab while its file opens; off = nothing */
   enabled: boolean
   /** how rich the animation is: by what the machine can afford, or fixed */
   tier: OpeningTierChoice
-  /** per app: a scene id, or `custom` for the imported page */
+  /** per app: a scene id, card id, or `custom` for the imported page */
   scenes: Record<OpeningApp, string>
+  /** optional global card ID */
+  globalCard?: string
+  /** user's favorited card IDs */
+  favorites?: string[]
+  /** custom user cards registered in the studio */
+  customCards?: OpeningCardDefinition[]
 }
 
 export const DEFAULT_OPENING_PREFS: OpeningPrefs = {
@@ -167,8 +176,28 @@ export const DEFAULT_OPENING_PREFS: OpeningPrefs = {
 
 export const sceneMeta = (id: string): SceneMeta => SCENES.find((s) => s.id === id) ?? SCENES[0]!
 
-const knownScene = (id: unknown): id is string =>
-  typeof id === 'string' && (id === CUSTOM_SCENE || SCENES.some((s) => s.id === id))
+export const knownSceneOrCard = (id: unknown): id is string =>
+  typeof id === 'string' &&
+  (id === CUSTOM_SCENE ||
+    SCENES.some((s) => s.id === id) ||
+    isBuiltInCard(id) ||
+    id.startsWith('custom:') ||
+    id.startsWith('ai:'))
+
+const isSafeCardDefinition = (c: unknown): c is OpeningCardDefinition => {
+  if (!c || typeof c !== 'object') return false
+  const card = c as Record<string, unknown>
+  return (
+    typeof card.id === 'string' &&
+    card.id.length > 0 &&
+    card.id.length <= 100 &&
+    typeof card.name === 'string' &&
+    card.name.length > 0 &&
+    card.name.length <= 100 &&
+    card.material !== null &&
+    typeof card.material === 'object'
+  )
+}
 
 /** Whatever was stored (possibly old, partial or hand-edited) as safe preferences. */
 export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
@@ -178,14 +207,26 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
     unknown
   >
   const tier = value.tier
-  return {
+  const res: OpeningPrefs = {
     enabled: value.enabled !== false,
     tier: tier === 'full' || tier === 'lite' || tier === 'minimal' ? tier : 'auto',
     scenes: Object.fromEntries(
       OPENING_APPS.map((app) => [
         app,
-        knownScene(scenes[app]) ? (scenes[app] as string) : DEFAULT_SCENE_FOR_APP[app],
+        knownSceneOrCard(scenes[app]) ? (scenes[app] as string) : DEFAULT_SCENE_FOR_APP[app],
       ]),
     ) as Record<OpeningApp, string>,
   }
+  if (typeof value.globalCard === 'string' && knownSceneOrCard(value.globalCard)) {
+    res.globalCard = value.globalCard
+  }
+  if (Array.isArray(value.favorites)) {
+    res.favorites = Array.from(
+      new Set(value.favorites.filter((f): f is string => typeof f === 'string' && f.length > 0)),
+    )
+  }
+  if (Array.isArray(value.customCards)) {
+    res.customCards = value.customCards.filter(isSafeCardDefinition)
+  }
+  return res
 }

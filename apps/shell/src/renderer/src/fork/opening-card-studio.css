@@ -1,0 +1,356 @@
+/* Opening Card Studio - Neutral, Monochromatic & Premium Styles */
+
+:root {
+  --ocs-surface: var(--surface-subtle);
+  --ocs-surface-hover: var(--hover);
+  --ocs-bg: var(--surface);
+  --ocs-border: var(--border);
+  --ocs-border-subtle: var(--border-subtle);
+  --ocs-text: var(--text);
+  --ocs-text-muted: var(--text-muted);
+  --ocs-accent: var(--accent);
+  --ocs-accent-ink: #ffffff;
+  --ocs-badge-bg: rgba(255, 255, 255, 0.25);
+  --ocs-badge-shadow: rgba(0, 0, 0, 0.2);
+  --ocs-fav-bg: rgba(0, 0, 0, 0.45);
+  --ocs-fav-active-bg: rgba(0, 0, 0, 0.65);
+  --ocs-fav-color: rgba(255, 255, 255, 0.7);
+  --ocs-fav-active-color: #ffd700;
+  --ocs-card-bg: var(--surface-subtle);
+  --ocs-card-border: var(--border);
+  --ocs-checkered: #80808020;
+}
+
+.ocs-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  margin-top: 12px;
+}
+
+/* Master Toolbar */
+.ocs-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 14px;
+  background: var(--ocs-surface);
+  border: 1px solid var(--ocs-border);
+  border-radius: 10px;
+}
+
+.ocs-toolbar-left {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+
+.ocs-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ocs-search-input {
+  padding: 6px 12px;
+  font-size: 13px;
+  background: var(--ocs-bg);
+  border: 1px solid var(--ocs-border);
+  border-radius: 6px;
+  color: var(--ocs-text);
+  min-width: 180px;
+  outline: none;
+}
+.ocs-search-input:focus {
+  border-color: var(--ocs-accent);
+}
+
+/* Category Filter Tabs */
+.ocs-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ocs-tab-btn {
+  padding: 5px 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+  border: 1px solid var(--ocs-border-subtle);
+  border-radius: 20px;
+  background: transparent;
+  color: var(--ocs-text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.ocs-tab-btn:hover {
+  background: var(--ocs-surface-hover);
+  color: var(--ocs-text);
+}
+
+.ocs-tab-btn.active {
+  background: var(--ocs-accent);
+  color: var(--ocs-accent-ink);
+  border-color: var(--ocs-accent);
+}
+
+/* Gallery Grid */
+.ocs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(185px, 1fr));
+  gap: 12px;
+  max-height: 480px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.ocs-card-item {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--ocs-border);
+  border-radius: 12px;
+  background: var(--ocs-card-bg);
+  overflow: hidden;
+  cursor: pointer;
+  transition:
+    transform 0.15s ease,
+    box-shadow 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.ocs-card-item:hover {
+  transform: translateY(-2px);
+  border-color: var(--ocs-accent);
+  box-shadow: 0 6px 18px var(--ocs-badge-shadow);
+}
+
+.ocs-card-item.selected {
+  border-color: var(--ocs-accent);
+  box-shadow: 0 0 0 2px var(--ocs-accent);
+}
+
+/* Static Thumbnail */
+.ocs-thumb-box {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.ocs-thumb-badge {
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--ocs-badge-bg);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--ocs-accent-ink);
+  box-shadow: 0 2px 8px var(--ocs-badge-shadow);
+}
+
+.ocs-fav-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: var(--ocs-fav-bg);
+  border: none;
+  border-radius: 50%;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ocs-fav-color);
+  cursor: pointer;
+  transition: color 0.15s ease;
+}
+
+.ocs-fav-btn:hover {
+  color: var(--ocs-fav-active-color);
+}
+
+.ocs-fav-btn.active {
+  color: var(--ocs-fav-active-color);
+  background: var(--ocs-fav-active-bg);
+}
+
+/* Card Metadata */
+.ocs-card-info {
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ocs-card-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ocs-text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ocs-card-desc {
+  font-size: 11px;
+  color: var(--ocs-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ocs-assigned-badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.ocs-assigned-tag {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--ocs-surface-hover);
+  color: var(--ocs-text);
+}
+
+/* Actions in Card */
+.ocs-card-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  border-top: 1px solid var(--ocs-border-subtle);
+  background: var(--ocs-bg);
+  gap: 4px;
+}
+
+.ocs-action-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  border: 1px solid var(--ocs-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--ocs-text);
+  cursor: pointer;
+}
+.ocs-action-btn:hover {
+  background: var(--ocs-surface-hover);
+}
+.ocs-action-btn.primary {
+  background: var(--ocs-accent);
+  color: var(--ocs-accent-ink);
+  border-color: var(--ocs-accent);
+}
+
+/* Customizer & AI Panels */
+.ocs-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--ocs-border);
+  border-radius: 12px;
+  background: var(--ocs-surface);
+  margin-top: 8px;
+}
+
+.ocs-panel-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ocs-text);
+}
+
+.ocs-panel-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+@media (max-width: 720px) {
+  .ocs-panel-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+.ocs-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ocs-form-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--ocs-text);
+}
+
+.ocs-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.ocs-slider-val {
+  font-size: 12px;
+  color: var(--ocs-text-muted);
+  min-width: 36px;
+}
+
+/* Interactive Preview Box */
+.ocs-preview-box {
+  width: 100%;
+  height: 180px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: repeating-conic-gradient(var(--ocs-checkered) 0% 25%, transparent 0% 50%) 50% / 16px
+    16px;
+  padding: 16px;
+  box-sizing: border-box;
+}
+
+.ocs-interactive-stage {
+  width: 100%;
+  max-width: 360px;
+  height: 130px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 14px 18px;
+  box-sizing: border-box;
+  transition: all 0.2s ease;
+}
+
+/* Drag and Drop Zone */
+.ocs-dropzone {
+  border: 2px dashed var(--ocs-border);
+  border-radius: 10px;
+  padding: 24px;
+  text-align: center;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+
+.ocs-dropzone:hover,
+.ocs-dropzone.dragover {
+  border-color: var(--ocs-accent);
+  background: var(--ocs-surface-hover);
+}
