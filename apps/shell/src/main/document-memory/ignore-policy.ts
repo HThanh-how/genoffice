@@ -248,10 +248,13 @@ function setCachedIgnoreEntry(dir: string, entry: CachedIgnore): void {
 
 export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
   const filePath = resolve(dir, '.genofficeignore')
+  const cached = genOfficeIgnoreCache.get(dir)
   try {
     if (!existsSync(filePath)) {
-      const cached = genOfficeIgnoreCache.get(dir)
       if (cached && cached.raw !== null) {
+        if (!existsSync(dir)) {
+          return cached.rules
+        }
         setCachedIgnoreEntry(dir, {
           mtimeMs: -1,
           size: -1,
@@ -278,7 +281,6 @@ export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
       return []
     }
     const stat = statSync(filePath)
-    const cached = genOfficeIgnoreCache.get(dir)
     if (
       cached &&
       cached.raw !== null &&
@@ -315,6 +317,25 @@ export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
     }
     return rules
   } catch {
+    if (cached && cached.raw !== null) {
+      return cached.rules
+    }
+    try {
+      if (existsSync(filePath)) {
+        const normalizedRoot = resolve(dir)
+        return [
+          {
+            id: `genofficeignore-${dir}-unreadable`,
+            pattern: '**',
+            enabled: true,
+            scope: normalizedRoot,
+            description: 'Rule from .genofficeignore (unreadable)',
+          },
+        ]
+      }
+    } catch {
+      // ignore secondary stat failure
+    }
     return []
   }
 }
@@ -338,6 +359,9 @@ export function refreshGenOfficeIgnoreForRoot(dir: string): boolean {
             rules: [],
           })
         }
+        return false
+      }
+      if (!existsSync(dir)) {
         return false
       }
       setCachedIgnoreEntry(dir, {

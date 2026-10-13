@@ -123,6 +123,7 @@ export class FileIndexer {
   private readonly queued = new Set<string>()
   private readonly preserveCachedBody = new Set<string>()
   private draining = false
+  private drainTask: Promise<void> | null = null
   private scanning = false
   private scanRequested = false
   private rescanTimer: NodeJS.Timeout | null = null
@@ -153,6 +154,14 @@ export class FileIndexer {
     })
     this.stopIgnorePolicyWatch = subscribeIgnorePolicyChanges(() => {
       if (this.stopped) return
+      for (let i = this.queue.length - 1; i >= 0; i--) {
+        const f = this.queue[i]!
+        if (isPathIgnored(f.path)) {
+          this.queue.splice(i, 1)
+          this.queued.delete(f.path)
+          this.preserveCachedBody.delete(f.path)
+        }
+      }
       if (this.worker && this.workerSupportsIgnorePolicyMsg) {
         try {
           this.worker.postMessage({
@@ -202,6 +211,7 @@ export class FileIndexer {
 
   /** scan now unless one ran within `maxAgeMs` */
   refreshIfStale(maxAgeMs: number): void {
+    if (this.stopped) return
     if (Date.now() - this.lastScanAt >= maxAgeMs) void this.scan()
   }
 
@@ -221,6 +231,10 @@ export class FileIndexer {
       ) {
         await this.syncWorkerIgnorePolicy(getIgnorePolicySnapshot(this.sources.roots()))
       }
+      if (this.drainTask) {
+        await this.drainTask
+      }
+      if (this.stopped) return
       const seen = new Map<string, ScannedFile>()
       const roots = [...this.sources.roots()]
       const completeRoots: string[] = []
@@ -259,10 +273,10 @@ export class FileIndexer {
       }
     } finally {
       this.scanning = false
-      void this.drain()
+      if (!this.stopped) void this.drain()
     }
     // a refresh that arrived mid-scan runs now, whether or not the walk succeeded
-    if (this.scanRequested) {
+    if (!this.stopped && this.scanRequested) {
       this.scanRequested = false
       void this.scan()
     }
@@ -280,7 +294,7 @@ export class FileIndexer {
       if (this.stopped) return
       if (seen.has(p) || !isSupportedIndexFile(p) || isPathIgnored(p)) continue
       const st = await asyncFileStat(p)
-      if (st.kind === 'file') seen.set(p, st.file)
+      if (st.kind === 'file' && !isPathIgnored(p)) seen.set(p, st.file)
     }
     const known = await this.store.listAllSliced(yieldIfNeeded)
     const gone: string[] = []
@@ -325,13 +339,18 @@ export class FileIndexer {
     const flushFresh = async (): Promise<void> => {
       if (fresh.length === 0) return
       const batch = fresh.splice(0, fresh.length)
-      await this.writePending(batch)
-      for (const f of batch) this.enqueue(f)
+      const allowed = await this.writePending(batch)
+      for (const f of allowed) this.enqueue(f)
     }
     for (const f of seen.values()) {
       if (this.stopped) return
       await yieldIfNeeded()
       const k = known.get(f.path)
+      if (isPathIgnored(f.path)) {
+        if (k) await this.removeRows([f.path])
+        this.preserveCachedBody.delete(f.path)
+        continue
+      }
       // An unchanged file that already failed is not retried: a parse that kills the
       // worker would otherwise be re-run on every scan. Pending rows always resume.
       if (k && k.status !== 'pending' && k.mtimeMs === f.mtimeMs && k.sizeBytes === f.sizeBytes) {
@@ -362,9 +381,35 @@ export class FileIndexer {
     else this.store.remove(paths)
   }
 
-  private async writePending(files: ScannedFile[]): Promise<void> {
-    if (this.workerWritesDb) await this.ask({ id: 0, type: 'pending', files })
-    else for (const f of files) this.store.upsert(f, null, 'pending')
+  private async writePending(files: ScannedFile[]): Promise<ScannedFile[]> {
+    const allowed: ScannedFile[] = []
+    const blocked: string[] = []
+    for (const f of files) {
+      if (isPathIgnored(f.path)) {
+        blocked.push(f.path)
+        this.preserveCachedBody.delete(f.path)
+      } else {
+        allowed.push(f)
+      }
+    }
+    if (blocked.length > 0) {
+      await this.removeRows(blocked)
+    }
+    if (allowed.length === 0) return []
+    if (this.workerWritesDb) {
+      await this.ask({ id: 0, type: 'pending', files: allowed })
+      const stillBlocked = allowed.filter((f) => isPathIgnored(f.path)).map((f) => f.path)
+      if (stillBlocked.length > 0) {
+        await this.removeRows(stillBlocked)
+        for (const p of stillBlocked) this.preserveCachedBody.delete(p)
+        return allowed.filter((f) => !isPathIgnored(f.path))
+      }
+    } else {
+      for (const f of allowed) {
+        if (!isPathIgnored(f.path)) this.store.upsert(f, null, 'pending')
+      }
+    }
+    return allowed
   }
 
   private enqueue(f: ScannedFile): void {
@@ -374,60 +419,73 @@ export class FileIndexer {
     void this.drain()
   }
 
-  private async drain(): Promise<void> {
-    if (this.draining || this.scanning || this.stopped || isIndexingPaused()) return
+  private drain(): Promise<void> {
+    if (this.draining || this.scanning || this.stopped || isIndexingPaused()) {
+      return this.drainTask ?? Promise.resolve()
+    }
     this.draining = true
-    try {
-      while (this.queue.length && !this.stopped && !isIndexingPaused()) {
-        const f = this.queue.shift()!
-        this.queued.delete(f.path)
-        if (isPathIgnored(f.path)) {
-          await this.removeRows([f.path])
-          this.preserveCachedBody.delete(f.path)
-          continue
-        }
-        // the file may have changed again while queued; index what is on disk now
-        const state = await asyncFileStat(f.path)
-        if (state.kind !== 'file') {
-          if (state.kind === 'missing' && (await parentConfirmsMissing(f.path))) {
-            this.store.remove([f.path])
-            this.preserveCachedBody.delete(f.path)
-          }
-          continue
-        }
-        const st = state.file
-        const startPolicyGen = getIgnorePolicyGeneration()
-        if (this.workerWritesDb) {
-          await this.indexInWorker(st)
-          continue
-        }
-        const res = await this.ask({ id: 0, type: 'extract', path: st.path })
-        if (res.type !== 'extract') continue
-        if (
-          isPathIgnored(st.path) ||
-          (getIgnorePolicyGeneration() !== startPolicyGen && isPathIgnored(st.path))
-        ) {
-          await this.removeRows([st.path])
-          this.preserveCachedBody.delete(st.path)
-          continue
-        }
-        this.apply(st, res.result)
-      }
-    } finally {
+    const task = this.runDrainLoop().finally(() => {
       this.draining = false
+      if (this.drainTask === task) this.drainTask = null
+    })
+    this.drainTask = task
+    return task
+  }
+
+  private async runDrainLoop(): Promise<void> {
+    while (this.queue.length && !this.stopped && !this.scanning && !isIndexingPaused()) {
+      const f = this.queue.shift()!
+      this.queued.delete(f.path)
+      if (isPathIgnored(f.path)) {
+        await this.removeRows([f.path])
+        this.preserveCachedBody.delete(f.path)
+        continue
+      }
+      // the file may have changed again while queued; index what is on disk now
+      const state = await asyncFileStat(f.path)
+      if (state.kind !== 'file') {
+        if (state.kind === 'missing' && (await parentConfirmsMissing(f.path))) {
+          this.store.remove([f.path])
+          this.preserveCachedBody.delete(f.path)
+        }
+        continue
+      }
+      const st = state.file
+      const startPolicyGen = getIgnorePolicyGeneration()
+      if (this.workerWritesDb) {
+        await this.indexInWorker(st)
+        continue
+      }
+      const res = await this.ask({ id: 0, type: 'extract', path: st.path })
+      if (this.stopped || res.type !== 'extract') continue
+      if (
+        isPathIgnored(st.path) ||
+        (getIgnorePolicyGeneration() !== startPolicyGen && isPathIgnored(st.path))
+      ) {
+        await this.removeRows([st.path])
+        this.preserveCachedBody.delete(st.path)
+        continue
+      }
+      this.apply(st, res.result)
     }
   }
 
   /** Parse and write in the worker; the main thread hears only the outcome. A timeout or crash is recorded like any failed parse. */
   private async indexInWorker(f: ScannedFile): Promise<void> {
+    if (this.stopped) return
     if (isPathIgnored(f.path)) {
       await this.removeRows([f.path])
       this.preserveCachedBody.delete(f.path)
       return
     }
+    const startPolicyGen = getIgnorePolicyGeneration()
     const preserve = this.preserveCachedBody.has(f.path)
     const res = await this.ask({ id: 0, type: 'index', file: f, preserve })
-    if (isPathIgnored(f.path)) {
+    if (this.stopped) return
+    if (
+      isPathIgnored(f.path) ||
+      (getIgnorePolicyGeneration() !== startPolicyGen && isPathIgnored(f.path))
+    ) {
       await this.removeRows([f.path])
       this.preserveCachedBody.delete(f.path)
       return
@@ -441,6 +499,11 @@ export class FileIndexer {
         ? res.result.error
         : 'index write failed'
     await this.ask({ id: 0, type: 'index-error', file: f, preserve, error })
+    if (this.stopped) return
+    if (isPathIgnored(f.path)) {
+      await this.removeRows([f.path])
+      this.preserveCachedBody.delete(f.path)
+    }
   }
 
   private apply(f: ScannedFile, r: Extracted): void {
@@ -466,6 +529,13 @@ export class FileIndexer {
     req: WorkerRequest | WriterRequest,
     onPart?: (files: ScannedFile[]) => void,
   ): Promise<WorkerResponse> {
+    if (this.stopped) {
+      return Promise.resolve({
+        id: this.nextId++,
+        type: 'extract',
+        result: { kind: 'error', error: 'indexer stopped' },
+      })
+    }
     const id = this.nextId++
     if (onPart) this.partSinks.set(id, onPart)
     return new Promise((resolve) => {
