@@ -60,6 +60,11 @@ import {
   structuralDeleteFormulaErrorSync,
   type PlanContext,
 } from './plan-operations'
+import {
+  registerCellFontAliases,
+  untilCellFontsLoaded,
+  workbookFontFamilies,
+} from './cell-font-fallback'
 import { isNumericIdentifierText } from './cell-warning'
 import { consumePendingUndoCarry, undoStackDepth } from './undo-carry'
 import { createSaveGate, shouldRunSaveTick } from './save-scheduler'
@@ -1526,7 +1531,7 @@ export function App({
           // Signed-out failures get an inline sign-in button; detected via
           // gsk status rather than matching the localized error text — but only
           // when Genspark is the provider: a BYOK user's error (e.g. their own
-          // provider's rate limit) must not advertise a Genspark sign-in (#1948)
+          // provider's rate limit) must not advertise a Genspark sign-in (genoffice#1948)
           void window.desktopApi
             .aiGskStatus()
             .then((status) => {
@@ -4250,6 +4255,7 @@ export function App({
     opts?: { continueChat?: boolean; onInitialRangeLoaded?: () => void },
   ): Promise<boolean> {
     if (!(await commitActiveEditor())) return false
+    await untilCellFontsLoaded(registerCellFontAliases(workbookFontFamilies(opened)))
     if (opts?.continueChat) chatContinuesRef.current = true
     const selected: WorkbookFile = {
       ...opened,
