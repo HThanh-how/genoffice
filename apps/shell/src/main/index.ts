@@ -16,10 +16,12 @@ import {
   BrowserWindow,
   Menu,
   app,
+  clipboard,
   dialog,
   ipcMain,
   nativeImage,
   nativeTheme,
+  screen,
   session,
   shell,
   webContents,
@@ -335,6 +337,8 @@ import { normalizeFileSearchSettings, probeDecision, SearchReranker } from './fi
 import { listKnowledgeFiles, readKnowledgeFilePage, searchKnowledgeBase } from './knowledge-base'
 import { runHeadlessExport, type HeadlessExporters } from './headless-export'
 import { TabManager } from './tab-manager'
+import { tabMenuTemplate, tabMenuWords, type TabMenuActions, isProgramFile } from './tab-menu'
+import { runTabDocumentAction, type TabDocumentAction } from './tab-document-actions'
 import { installShellCloseGuard } from './window-close-guard'
 import {
   activateDetached,
@@ -3405,6 +3409,7 @@ function createShellWindow(): void {
     () => currentUiScale,
   )
   tabManager = manager
+  manager.setClosedListener((closed) => rememberClosedTab(closed))
 
   // Docking: a detached window dragged over this window's tab strip hands its
   // document back. The strip reports the insertion slot for each preview
@@ -4311,21 +4316,14 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.duplicateFile, async (_event, path: unknown) => {
     if (typeof path !== 'string' || !existsSync(path)) return
     if (!isUserVisibleFile(path, fileTargetSources())) return
-    const ext = extname(path)
-    const base = basename(path, ext)
-    const dir = dirname(path)
-    for (let i = 1; ; i++) {
-      const target = join(dir, `${base} ${tm('copySuffix')}${i === 1 ? '' : ` ${i}`}${ext}`)
-      if (existsSync(target)) continue
-      try {
-        await atomicCopyFile(path, target)
-      } catch (err) {
-        showErrorDialog(shellWindow, tm('errDuplicateFailed'), err)
-        return
-      }
-      recordRecentFile(target)
+    const target = copyTargetFor(path)
+    try {
+      await atomicCopyFile(path, target)
+    } catch (err) {
+      showErrorDialog(shellWindow, tm('errDuplicateFailed'), err)
       return
     }
+    recordRecentFile(target)
   })
 
   ipcMain.handle(HOME_CHANNELS.deleteFiles, async (_event, paths: unknown) => {
@@ -4910,6 +4908,115 @@ function activeHtmlTarget() {
   return activeEditorTarget('html', () => tabManager?.activeHtmlTab())
 }
 
+/** files of tabs that were closed, newest last, so "Reopen closed tab" can bring them back */
+const recentlyClosedTabs: Array<{ kind: TabKind; filePath: string }> = []
+const MAX_RECENTLY_CLOSED = 20
+
+function rememberClosedTab(closed: { kind: TabKind; filePath: string }): void {
+  const at = recentlyClosedTabs.findIndex((entry) => entry.filePath === closed.filePath)
+  if (at >= 0) recentlyClosedTabs.splice(at, 1)
+  recentlyClosedTabs.push(closed)
+  if (recentlyClosedTabs.length > MAX_RECENTLY_CLOSED) recentlyClosedTabs.shift()
+}
+
+/** Close tabs one after another: a save prompt that is cancelled leaves that tab, and stops. */
+async function closeTabsInOrder(ids: string[]): Promise<void> {
+  for (const id of ids) {
+    if (!tabManager) return
+    if (!tabManager.list().some((tab) => tab.id === id)) continue
+    await tabManager.closeTab(id)
+    if (tabManager.list().some((tab) => tab.id === id)) return
+  }
+}
+
+/** "Name - Copy.ext", then "Name - Copy (2).ext": a name that is free next to the original */
+function copyTargetFor(path: string): string {
+  const ext = extname(path)
+  const base = basename(path, ext)
+  const dir = dirname(path)
+  for (let i = 1; ; i++) {
+    const target = join(dir, `${base} ${tm('copySuffix')}${i === 1 ? '' : ` ${i}`}${ext}`)
+    if (!existsSync(target)) return target
+  }
+}
+
+/** The shell's side of every entry of the tab menu (see tab-menu.ts for what is offered). */
+function tabMenuActions(): TabMenuActions {
+  const documentAction = (id: string, action: TabDocumentAction) => {
+    if (!tabManager) return
+    runTabDocumentAction(
+      {
+        tabs: tabManager,
+        savePdf: (contents) => {
+          void flushPdfSave(contents)
+        },
+        savePdfAs: (target) => {
+          void savePdfAs(target)
+        },
+        printPdf: sendPdfPrintRequest,
+        saveMarkdown: (contents, mode) => {
+          void requestMarkdownSave(contents, mode)
+        },
+        printMarkdown: sendMarkdownPrintRequest,
+        saveHtml: (contents, mode) => {
+          void requestHtmlSave(contents, mode)
+        },
+        printHtml: sendHtmlPrintRequest,
+      },
+      id,
+      action,
+    )
+  }
+  return {
+    save: (id) => documentAction(id, 'save'),
+    saveAs: (id) => documentAction(id, 'saveAs'),
+    print: (id) => documentAction(id, 'print'),
+    openInNewWindow: (id) => detachTabToWindow(id),
+    // two windows side by side, each on its own half of the screen the tab is on
+    splitBeside: (id) => {
+      if (!tabManager || !shellWindow) return
+      const record = tabManager.detachTab(id)
+      if (!record) return
+      const win = createDetachedEditorWindow({ ...record, applyMenuFor })
+      const area = screen.getDisplayMatching(shellWindow.getBounds()).workArea
+      const half = Math.floor(area.width / 2)
+      if (shellWindow.isMaximized()) shellWindow.unmaximize()
+      if (shellWindow.isFullScreen()) shellWindow.setFullScreen(false)
+      shellWindow.setBounds({ x: area.x, y: area.y, width: half, height: area.height })
+      win.setBounds({ x: area.x + half, y: area.y, width: area.width - half, height: area.height })
+      win.focus()
+    },
+    rename: (id) => {
+      if (shellWindow && !shellWindow.isDestroyed())
+        shellWindow.webContents.send(TABS_CHANNELS.startRename, id)
+    },
+    duplicate: (path) => {
+      const target = copyTargetFor(path)
+      void atomicCopyFile(path, target).then(
+        () => {
+          recordRecentFile(target)
+          openDocumentPath(target)
+        },
+        (error) => console.warn('[tabs] duplicate failed:', error),
+      )
+    },
+    copyText: (text) => clipboard.writeText(text),
+    reveal: (path) => shell.showItemInFolder(path),
+    openDefault: (path) => {
+      // a document tab is a document, never a program; keep it that way for a renamed one
+      if (!isProgramFile(path)) void shell.openPath(path)
+    },
+    move: (id, toIndex) => tabManager?.reorderTab(id, toIndex),
+    closeTabs: (ids) => void closeTabsInOrder(ids),
+    reopenClosed: () => {
+      while (recentlyClosedTabs.length) {
+        const closed = recentlyClosedTabs.pop()!
+        if (existsSync(closed.filePath) && openDocumentPath(closed.filePath)) return
+      }
+    },
+  }
+}
+
 function registerTabsIpc(): void {
   ipcMain.on(TABS_CHANNELS.chromePressed, (event) => broadcastChromePressed(event.sender))
   ipcMain.handle(TABS_CHANNELS.list, () => tabManager?.list() ?? [])
@@ -4981,20 +5088,15 @@ function registerTabsIpc(): void {
     if (!tabManager || !shellWindow || typeof id !== 'string') return
     const tab = tabManager.list().find((t) => t.id === id)
     if (!tab || tab.kind === 'home') return
-    const template: MenuItemConstructorOptions[] = []
-    // every document tab except a chrome-free Present tab (a live preview of
-    // another tab's document — it has nothing of its own to move)
-    if (tabManager.canDetachTab(id)) {
-      template.push({
-        label: tm('menuOpenInNewWindow'),
-        click: () => detachTabToWindow(id),
-      })
-      template.push({ type: 'separator' })
-    }
-    template.push({
-      label: tm('menuClose'),
-      enabled: tab.closable,
-      click: () => void tabManager?.closeTab(id),
+    const template = tabMenuTemplate({
+      tab,
+      tabs: tabManager.list(),
+      canDetach: tabManager.canDetachTab(id),
+      fileExists: !!tab.filePath && existsSync(tab.filePath),
+      canReopen: recentlyClosedTabs.length > 0,
+      words: tabMenuWords(currentLang()),
+      labels: { openInNewWindow: tm('menuOpenInNewWindow'), close: tm('menuClose') },
+      actions: tabMenuActions(),
     })
     Menu.buildFromTemplate(template).popup({
       window: shellWindow,
@@ -5398,8 +5500,7 @@ function buildHtmlMenu(): void {
     waiter/target grant or clears its autosave pause early */
 let savingPdfAs = false
 
-async function savePdfAs(): Promise<void> {
-  const tab = activePdfTarget()
+async function savePdfAs(tab = activePdfTarget()): Promise<void> {
   const host = pdfHostWindow(tab)
   if (!tab?.filePath || !host || savingPdfAs) return
   savingPdfAs = true
