@@ -26,9 +26,37 @@ export interface IgnoreReconcileController {
   dispose: () => void
 }
 
+function normalizeScopePath(rawPath: string): string {
+  const trimmed = rawPath.trim()
+  const isWinDrive = /^[a-zA-Z]:[/\\]/.test(trimmed)
+  const isUnc = trimmed.startsWith('\\\\') || trimmed.startsWith('//')
+  const base = trimmed.startsWith('/') || isWinDrive || isUnc ? trimmed : resolve(trimmed)
+  const unified = base.replace(/\\/g, '/').replace(/\/+/g, '/')
+  const withUnc = isUnc && !unified.startsWith('//') ? '/' + unified : unified
+  if (withUnc === '/' || /^[a-zA-Z]:\/$/.test(withUnc) || withUnc === '//') {
+    return withUnc
+  }
+  return withUnc.endsWith('/') ? withUnc.slice(0, -1) : withUnc
+}
+
 function normalizeRootKey(root: string): string {
-  const resolved = resolve(root).replace(/\\/g, '/')
-  return isPathCaseInsensitive(resolved) ? resolved.toLowerCase() : resolved
+  const norm = normalizeScopePath(root)
+  return isPathCaseInsensitive(norm) ? norm.toLowerCase() : norm
+}
+
+function isSubpathOrSame(child: string, parent: string): boolean {
+  if (child === parent) return true
+  const prefix = parent.endsWith('/') ? parent : `${parent}/`
+  return child.startsWith(prefix)
+}
+
+export function scopesIntersect(configuredRoot: string, ruleScope: string): boolean {
+  const normRoot = normalizeScopePath(configuredRoot)
+  const normScope = normalizeScopePath(ruleScope)
+  const isCI = isPathCaseInsensitive(normRoot) || isPathCaseInsensitive(normScope)
+  const r = isCI ? normRoot.toLowerCase() : normRoot
+  const s = isCI ? normScope.toLowerCase() : normScope
+  return isSubpathOrSame(r, s) || isSubpathOrSame(s, r)
 }
 
 export function createIgnoreReconcileController(
@@ -187,15 +215,7 @@ export function createIgnoreReconcileController(
   const schedule = (event?: Partial<IgnorePolicyChangeEvent>): void => {
     if (disposed) return
     const version = event?.version ?? getIgnorePolicyGeneration()
-    if (
-      event?.version !== undefined &&
-      version === lastScheduledVersion &&
-      (debounceTimer !== null || runningRoots.size > 0)
-    ) {
-      return
-    }
-    lastScheduledVersion = version
-    deps.invalidateFolderCounts?.()
+    const isNewVersion = event?.version === undefined || version !== lastScheduledVersion
 
     const allRoots = configuredRoots()
     const isScopedOnly =
@@ -203,21 +223,53 @@ export function createIgnoreReconcileController(
       Array.isArray(event.affectedRoots) &&
       event.affectedRoots.length > 0
 
+    let eventGlobal = !isScopedOnly
+    const eventRoots: string[] = []
     if (!isScopedOnly) {
-      pendingGlobal = true
-      for (const r of allRoots) dirtyRoots.add(r)
+      for (const r of allRoots) eventRoots.push(r)
     } else {
-      const byKey = new Map<string, string>()
-      for (const r of allRoots) byKey.set(normalizeRootKey(r), r)
       for (const rawScope of event.affectedRoots!) {
-        const matched = byKey.get(normalizeRootKey(rawScope))
-        if (matched) {
-          dirtyRoots.add(matched)
-        } else if (allRoots.length === 0) {
-          dirtyRoots.add(rawScope)
+        if (!rawScope || rawScope === 'global') {
+          eventGlobal = true
+          for (const r of allRoots) eventRoots.push(r)
+          continue
+        }
+        let matchedAny = false
+        for (const r of allRoots) {
+          if (scopesIntersect(r, rawScope)) {
+            eventRoots.push(r)
+            matchedAny = true
+          }
+        }
+        if (!matchedAny && allRoots.length === 0) {
+          eventRoots.push(rawScope)
         }
       }
     }
+
+    const existingDirtyKeys = new Set([...dirtyRoots].map(normalizeRootKey))
+    let addedScope = false
+    if (eventGlobal && !pendingGlobal) {
+      pendingGlobal = true
+      addedScope = true
+    }
+    for (const r of eventRoots) {
+      const key = normalizeRootKey(r)
+      if (!existingDirtyKeys.has(key)) {
+        existingDirtyKeys.add(key)
+        dirtyRoots.add(r)
+        addedScope = true
+      }
+      if (runningRoots.has(r) && (isNewVersion || addedScope)) {
+        rerunRoots.add(r)
+      }
+    }
+
+    if (!isNewVersion && !addedScope && (debounceTimer !== null || runningRoots.size > 0)) {
+      return
+    }
+    lastScheduledVersion = version
+    deps.invalidateFolderCounts?.()
 
     if (debounceTimer) clearTimeout(debounceTimer)
     debounceTimer = setTimeout(() => {
