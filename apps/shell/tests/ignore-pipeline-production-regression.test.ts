@@ -125,7 +125,7 @@ describe('ignore-pipeline-production-regression', () => {
     expect(store.search('unique').hits).toHaveLength(0)
   })
 
-  it('4. Document Memory enqueue rejects ignored paths', () => {
+  it('4. Document Memory enqueue rejects ignored paths', async () => {
     const memDir = mkdtempSync(join(tmpdir(), 'genoffice-mem-'))
     const ignoredDoc = join(memDir, 'secret_notes.docx')
     writeFileSync(ignoredDoc, 'secret')
@@ -146,7 +146,7 @@ describe('ignore-pipeline-production-regression', () => {
       expect(st.positions[ignoredDoc]).toBeUndefined()
       expect(st.extracting.some((e) => e.path === ignoredDoc)).toBe(false)
     } finally {
-      manager.close()
+      await manager.closeAsync()
       rmSync(memDir, { recursive: true, force: true })
     }
   })
@@ -170,7 +170,7 @@ describe('ignore-pipeline-production-regression', () => {
       expect(readRes.ok).toBe(false)
       expect(readRes.error).toBe('unavailable')
     } finally {
-      manager.close()
+      await manager.closeAsync()
       rmSync(memDir, { recursive: true, force: true })
     }
   })

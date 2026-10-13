@@ -485,6 +485,7 @@ describe('Worker Ignore Policy Integration (Real Worker & Production Ops)', () =
       type: 'ignore-policy-ack',
       version: 700,
       applied: false,
+      status: 'rejected-invalid',
     })
     expect(isPathIgnored(join(rootA, 'doc.v700'))).toBe(true)
 

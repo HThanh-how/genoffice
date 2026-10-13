@@ -195,8 +195,10 @@ custom_cache/
   })
 
   it('failed disk write is reported properly via persistence result', () => {
-    // Point storage to a path in a nonexistent non-creatable root or invalid file
-    setIgnoreStoragePath('/sys/invalid_nonexistent_dir_cannot_create/rules.json')
+    // Point storage to a path under a regular file (guaranteed ENOTDIR/EEXIST on all platforms)
+    const blocker = join(tempDir, 'blocker-fail-1')
+    writeFileSync(blocker, 'blocker')
+    setIgnoreStoragePath(join(blocker, 'cannot-create', 'rules.json'))
     const success = setActiveIgnoreRules([])
     expect(success).toBe(false)
   })
@@ -241,7 +243,9 @@ custom_cache/
     expect(invalidateCalled).toBe(true)
 
     // 4. Persistence failure reporting
-    setIgnoreStoragePath('/sys/cannot_write/rules.json')
+    const blockerIpc = join(tempDir, 'blocker-ipc')
+    writeFileSync(blockerIpc, 'blocker')
+    setIgnoreStoragePath(join(blockerIpc, 'cannot-write', 'rules.json'))
     const resFailed = (await saveHandler({}, [validRule])) as { ok: boolean; error?: string }
     expect(resFailed.ok).toBe(false)
     expect(resFailed.error).toBe('persistence-failed')
@@ -407,7 +411,9 @@ custom_cache/
     expect(getActiveIgnoreRules()[0]!.id).toBe('valid-prev')
 
     // 2. Point storage to an invalid/unwritable location
-    setIgnoreStoragePath('/sys/cannot_write/rules.json')
+    const blockerPrev = join(tempDir, 'blocker-prev')
+    writeFileSync(blockerPrev, 'blocker')
+    setIgnoreStoragePath(join(blockerPrev, 'cannot-write', 'rules.json'))
 
     // 3. Attempt to save new candidate rules
     const candidateRule: IgnoreRule = {
@@ -451,7 +457,7 @@ custom_cache/
     expect(evaluateIgnore('c:/PROJECT/WORKSPACE-EXTRA/drafts/doc.docx').ignored).toBe(false)
   })
 
-  it('preserves case-sensitive behavior on Linux / POSIX paths', () => {
+  it('preserves case-sensitive behavior on Linux / POSIX paths and case-insensitive on Windows', () => {
     const rules: IgnoreRule[] = [
       {
         id: 'linux-scoped',
@@ -465,13 +471,24 @@ custom_cache/
     // Exact case matches:
     expect(evaluateIgnore('/home/user/project/Secret.txt').ignored).toBe(true)
 
-    // Different case in file name MUST NOT match on Linux:
-    expect(evaluateIgnore('/home/user/project/secret.txt').ignored).toBe(false)
-    expect(evaluateIgnore('/home/user/project/SECRET.TXT').ignored).toBe(false)
+    if (process.platform === 'win32') {
+      // Windows treats paths as case-insensitive by design:
+      expect(evaluateIgnore('/home/user/project/secret.txt').ignored).toBe(true)
+      expect(evaluateIgnore('/home/user/project/SECRET.TXT').ignored).toBe(true)
+      expect(evaluateIgnore('/home/user/Project/Secret.txt').ignored).toBe(true)
+      expect(evaluateIgnore('/home/user/PROJECT/Secret.txt').ignored).toBe(true)
+    } else {
+      // Different case in file name MUST NOT match on Linux / POSIX:
+      expect(evaluateIgnore('/home/user/project/secret.txt').ignored).toBe(false)
+      expect(evaluateIgnore('/home/user/project/SECRET.TXT').ignored).toBe(false)
 
-    // Different case in scope directory MUST NOT match on Linux:
-    expect(evaluateIgnore('/home/user/Project/Secret.txt').ignored).toBe(false)
-    expect(evaluateIgnore('/home/user/PROJECT/Secret.txt').ignored).toBe(false)
+      // Different case in scope directory MUST NOT match on Linux / POSIX:
+      expect(evaluateIgnore('/home/user/Project/Secret.txt').ignored).toBe(false)
+      expect(evaluateIgnore('/home/user/PROJECT/Secret.txt').ignored).toBe(false)
+    }
+
+    // Path component boundary is enforced on all platforms:
+    expect(evaluateIgnore('/home/user/project-backup/Secret.txt').ignored).toBe(false)
   })
 
   it('metadata-only check rejects ignored chunk before worker extraction is invoked', async () => {
