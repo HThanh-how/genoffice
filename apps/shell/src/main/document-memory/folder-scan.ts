@@ -14,9 +14,11 @@ import {
   shouldSkipDirectory,
 } from './scan-policy'
 import { isGeneratedArtifactPath } from './artifact-policy'
+import { isPathIgnored, setIgnoreStoragePath } from './ignore-policy'
 import type { FileEnrollmentResult } from './storage/repositories/document-repository'
 export { IGNORED_DIRECTORIES, SUPPORTED_EXTENSIONS, shouldSkipDirectory } from './scan-policy'
 export { isGeneratedArtifactPath } from './artifact-policy'
+export { isPathIgnored } from './ignore-policy'
 
 export const MAX_DOCUMENT_BYTES = 128 * 1024 * 1024
 const MAX_ROOT_LENGTH = 32_768
@@ -37,6 +39,7 @@ export function isIndexablePath(root: string, path: string): boolean {
   const name = relative.pop()
   if (!name || isIgnoredFileName(name)) return false
   if (relative.some(shouldSkipDirectory)) return false
+  if (isPathIgnored(path, root)) return false
   const ext = extname(name).toLowerCase()
   const media = mediaKindOfExtension(ext)
   // Size is unknown here: the size floor / folder cap are applied where the file is stat'ed.
@@ -248,6 +251,8 @@ export class FolderScanManager {
   private closed = false
   private runner: Promise<void> | null = null
   private reconciling = false
+  private busyWaiters = false
+  private readonly unavailableReconcileRoots = new Set<string>()
   private watcher: FolderWatchManager | null = null
   private readonly rootListeners = new Set<() => void>()
   private saveTimer: NodeJS.Timeout | null = null
@@ -263,6 +268,7 @@ export class FolderScanManager {
   ) {
     this.maxMediaPerFolder = options.maxMediaPerFolder ?? DEFAULT_MAX_MEDIA_PER_FOLDER
     mkdirSync(userData, { recursive: true })
+    setIgnoreStoragePath(resolve(userData, 'document-index-ignore-rules.json'))
     this.manifestPath = resolve(userData, 'document-memory-folders.json')
     this.memory = memory
     this.manifest = readManifest(this.manifestPath)
@@ -317,7 +323,11 @@ export class FolderScanManager {
       this.watcher = new FolderWatchManager(this, {
         isEnabled: () => isEnabled.call(memory),
         onEnabledChange: (listener) => onEnabledChange.call(memory, listener),
-        handleFileEvents: (paths) => handleFileEvents.call(memory, paths),
+        handleFileEvents: (paths) =>
+          handleFileEvents.call(
+            memory,
+            paths.filter((p) => !isPathIgnored(p)),
+          ),
       })
   }
 
@@ -341,16 +351,23 @@ export class FolderScanManager {
    */
   async reconcile(root: string): Promise<{ ok: boolean; reason?: string; files?: number }> {
     const normalized = resolve(root)
-    if (this.closed || this.activeRoot || this.reconciling) return { ok: false, reason: 'busy' }
+    if (this.closed || this.activeRoot || this.reconciling) {
+      if (!this.closed) this.busyWaiters = true
+      return { ok: false, reason: 'busy' }
+    }
     const job = this.jobFor(normalized)
     if (!job || job.state !== 'complete') return { ok: false, reason: 'not-complete' }
     if (!this.memory.reconcileFolder) return { ok: false, reason: 'unsupported' }
     this.reconciling = true
     try {
       try {
-        if (!(await stat(job.root)).isDirectory()) return { ok: false, reason: 'unavailable' }
+        if (!(await stat(job.root)).isDirectory()) {
+          this.unavailableReconcileRoots.add(job.root)
+          return { ok: false, reason: 'unavailable' }
+        }
       } catch {
         // An unplugged drive or deleted root: never treat its files as deleted.
+        this.unavailableReconcileRoots.add(job.root)
         return { ok: false, reason: 'unavailable' }
       }
       const files = new Map<string, { mtimeMs: number; sizeBytes: number }>()
@@ -378,18 +395,28 @@ export class FolderScanManager {
         () => this.closed,
       )
       if (!completed) return { ok: false, reason: 'interrupted' }
-      if (unavailable) return { ok: false, reason: 'unavailable' }
+      if (unavailable) {
+        this.unavailableReconcileRoots.add(job.root)
+        return { ok: false, reason: 'unavailable' }
+      }
       await this.memory.reconcileFolder(job.root, files)
       recordMediaBudget(job, budget)
       job.reconciledAt = Date.now()
       this.recordRun(job, 'refresh', 'complete', { discovered: files.size })
       if (job.priority) this.memory.prioritizeFolder?.(job.root)
       this.save()
+      if (this.unavailableReconcileRoots.delete(job.root)) {
+        this.busyWaiters = true
+      }
       return { ok: true, files: files.size }
     } catch (error) {
       return { ok: false, reason: error instanceof Error ? error.message : 'failed' }
     } finally {
       this.reconciling = false
+      if (!this.closed && !this.activeRoot && this.busyWaiters) {
+        this.busyWaiters = false
+        this.emitRootsChanged()
+      }
     }
   }
 
@@ -407,7 +434,10 @@ export class FolderScanManager {
     if (rel.startsWith('..') || isAbsolute(rel)) {
       return { ok: false, reason: 'invalid-subtree' }
     }
-    if (this.closed || this.activeRoot || this.reconciling) return { ok: false, reason: 'busy' }
+    if (this.closed || this.activeRoot || this.reconciling) {
+      if (!this.closed) this.busyWaiters = true
+      return { ok: false, reason: 'busy' }
+    }
     const job = this.jobFor(normalizedRoot)
     if (!job || job.state !== 'complete') return { ok: false, reason: 'not-complete' }
     if (!this.memory.reconcileSubtree && !this.memory.reconcileFolder) {
@@ -495,6 +525,10 @@ export class FolderScanManager {
       return { ok: false, reason: error instanceof Error ? error.message : 'failed' }
     } finally {
       this.reconciling = false
+      if (!this.closed && !this.activeRoot && this.busyWaiters) {
+        this.busyWaiters = false
+        this.emitRootsChanged()
+      }
     }
   }
 
@@ -669,6 +703,8 @@ export class FolderScanManager {
     this.registrationEpoch++
     this.stopRequested = true
     this.waiting.length = 0
+    this.busyWaiters = false
+    this.unavailableReconcileRoots.clear()
     this.pendingForgetRoots.clear()
     this.pendingRestartRoots.clear()
     if (this.activeRoot) {
@@ -712,6 +748,8 @@ export class FolderScanManager {
   close(): void {
     this.closed = true
     this.stopRequested = true
+    this.busyWaiters = false
+    this.unavailableReconcileRoots.clear()
     this.unsubscribeWriteReady?.()
     if (this.saveDirty) this.save()
     this.watcher?.close()
@@ -776,6 +814,10 @@ export class FolderScanManager {
             this.waiting.unshift(job.root)
           }
           this.startNextWaiting(this.registrationEpoch)
+          if (!this.closed && !this.activeRoot && !this.reconciling && this.busyWaiters) {
+            this.busyWaiters = false
+            this.emitRootsChanged()
+          }
           return
         }
 
@@ -787,14 +829,21 @@ export class FolderScanManager {
            * was registered after the clear.
            */
           this.startNextWaiting(this.registrationEpoch)
+          if (!this.closed && !this.activeRoot && !this.reconciling && this.busyWaiters) {
+            this.busyWaiters = false
+            this.emitRootsChanged()
+          }
           return
         }
 
+        let emittedOnForget = false
         if (this.pendingForgetRoots.has(job.root)) {
           this.pendingForgetRoots.delete(job.root)
+          this.unavailableReconcileRoots.delete(job.root)
           this.manifest.jobs = this.manifest.jobs.filter((j) => j.root !== job.root)
           this.save()
           this.emitRootsChanged()
+          emittedOnForget = true
         } else {
           if (job.state === 'complete') job.completedAt = Date.now()
           if (job.state !== 'running') this.recordRun(job, 'scan', job.state)
@@ -802,6 +851,13 @@ export class FolderScanManager {
           this.save()
         }
         this.startNextWaiting(currentEpoch)
+        if (!this.closed && !this.activeRoot && !this.reconciling) {
+          const shouldEmitBusyWakeup = this.busyWaiters
+          this.busyWaiters = false
+          if (!emittedOnForget && (shouldEmitBusyWakeup || job.state !== 'complete')) {
+            this.emitRootsChanged()
+          }
+        }
       })
   }
 
@@ -1001,12 +1057,16 @@ export class FolderScanManager {
             continue
           }
           if (entry.isDirectory()) {
-            if (shouldSkipDirectory(entry.name) || isGeneratedArtifactPath(path))
+            if (
+              shouldSkipDirectory(entry.name, path) ||
+              isGeneratedArtifactPath(path) ||
+              isPathIgnored(path, root)
+            )
               handlers.onSkipped()
             else pending.push(path)
             continue
           }
-          if (!entry.isFile() || isIgnoredFileName(entry.name)) {
+          if (!entry.isFile() || isIgnoredFileName(entry.name) || isPathIgnored(path, root)) {
             handlers.onSkipped()
             continue
           }

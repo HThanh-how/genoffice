@@ -619,8 +619,8 @@
 
 .hc-header {
   flex: 0 0 auto;
-  min-height: 62px;
-  padding: 10px 16px;
+  min-height: 52px;
+  padding: 8px 14px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -632,7 +632,7 @@
   min-width: 0;
   margin: 0 0 0 4px;
   overflow: hidden;
-  font-size: 14px;
+  font-size: 13.5px;
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -640,10 +640,10 @@
 
 .hc-icon-button {
   flex: 0 0 auto;
-  width: 34px;
-  height: 34px;
+  width: 32px;
+  height: 32px;
   border: 1px solid transparent;
-  border-radius: 10px;
+  border-radius: 8px;
   display: grid;
   place-items: center;
   color: var(--text-secondary);
@@ -888,21 +888,38 @@
 
 .hc-typing {
   display: inline-flex;
-  gap: 5px;
-  padding: 8px 0;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
 }
 
-.hc-typing {
-  align-items: center;
+.hc-typing-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: hc-soft-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes hc-soft-pulse {
+  0%,
+  100% {
+    opacity: 0.45;
+    transform: scale(0.9);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .hc-typing-status {
-  margin-left: 4px;
   font-size: 12.5px;
-  color: var(--text-tertiary);
+  color: var(--text-secondary);
 }
 
-.hc-typing i {
+.hc-typing i:not(.hc-typing-dot) {
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -916,6 +933,13 @@
 
 .hc-typing i:nth-child(3) {
   animation-delay: 0.3s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hc-typing-dot {
+    animation: none !important;
+    opacity: 0.7;
+  }
 }
 
 .hc-error {
@@ -985,12 +1009,12 @@
   display: inline-flex;
   align-items: center;
   max-width: 100%;
-  vertical-align: -5px;
-  margin: 0 1px;
+  vertical-align: -3px;
+  margin: 0 2px;
   border: 1px solid var(--border-subtle);
-  border-radius: 9px;
-  background: var(--surface);
-  line-height: 1.2;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface-subtle) 40%, var(--surface));
+  line-height: 1.25;
 }
 
 .hc-file:hover {
@@ -1006,14 +1030,15 @@
   min-width: 0;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 2px 4px 2px 3px;
+  gap: 5px;
+  padding: 1px 4px 1px 3px;
   border: 0;
-  border-radius: 8px 0 0 8px;
+  border-radius: 5px 0 0 5px;
   color: var(--text);
   background: none;
   font: inherit;
-  font-size: 0.94em;
+  font-size: 0.9em;
+  font-weight: 500;
   cursor: pointer;
 }
 
@@ -1027,7 +1052,7 @@
 
 .hc-file-name {
   min-width: 0;
-  max-width: 34em;
+  max-width: 24em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -272,7 +272,7 @@ export function AskDock({
     setText('')
     setHits(null)
     inputRef.current?.blur()
-    requestChatPrefill({ text: message, send: true, continue: true })
+    requestChatPrefill({ text: message, send: true, intent: 'new' })
   }
 
   const refreshHits = async () => {

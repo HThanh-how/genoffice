@@ -50,6 +50,7 @@ type Props = {
   canRetry: boolean
   /** memoized per language by the parent so memo() equality holds across renders */
   labels: ChatLabels
+  activity?: React.ReactNode
   onOpenSource: (source: HomeChatSource) => void
   onRevealSource: (source: HomeChatSource) => void
   onRetry: () => void
@@ -83,6 +84,7 @@ function AssistantMessage({
   item,
   canRetry,
   labels,
+  activity,
   onOpenSource,
   onRevealSource,
   onRetry,
@@ -125,20 +127,18 @@ function AssistantMessage({
   const related = !!item.sources?.length && item.sources.every((source) => source.related)
   return (
     <article className="hc-msg assistant" aria-busy={item.streaming ? true : undefined}>
-      {showTyping ? (
-        <span className="hc-typing" role="status" aria-label={labels.loading}>
-          <i />
-          <i />
-          <i />
-          {item.status && <span className="hc-typing-status">{item.status}</span>}
-        </span>
-      ) : (
-        item.text && (
-          <div className="hc-answer">
-            <Markdown text={linked?.markdown ?? item.text} {...(nav ? { nav } : {})} />
-          </div>
-        )
-      )}
+      {showTyping
+        ? (activity ?? (
+            <span className="hc-typing" role="status" aria-label={labels.loading}>
+              <i className="hc-typing-dot" />
+              <span className="hc-typing-status">{item.status || labels.loading}</span>
+            </span>
+          ))
+        : item.text && (
+            <div className="hc-answer">
+              <Markdown text={linked?.markdown ?? item.text} {...(nav ? { nav } : {})} />
+            </div>
+          )}
       {item.error && (
         <div className="hc-error" role="alert">
           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -349,6 +349,25 @@ function formatDate(ms: number | undefined, locale: string): string {
   }
 }
 
+/** Deduplicates summary cards by stable file identity, never merging distinct files with same basename */
+export function deduplicateSources(sources: HomeChatSource[]): HomeChatSource[] {
+  const seen = new Set<string>()
+  const result: HomeChatSource[] = []
+  for (const s of sources) {
+    const key =
+      s.documentId > 0
+        ? `doc:${s.documentId}`
+        : s.path
+          ? `path:${s.path.replace(/\\/g, '/').normalize('NFC')}`
+          : `ref:${s.ref ?? s.name}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      result.push(s)
+    }
+  }
+  return result
+}
+
 /** The files an answer relies on, as compact cards, with the index details folded away. */
 function FilesPanel({
   sources,
@@ -357,14 +376,17 @@ function FilesPanel({
   onOpen,
   onReveal,
 }: { sources: HomeChatSource[]; related: boolean } & FileHandlers) {
-  const title = related ? labels.relatedFiles(sources.length) : labels.filesInAnswer(sources.length)
+  const uniqueSources = useMemo(() => deduplicateSources(sources), [sources])
+  const title = related
+    ? labels.relatedFiles(uniqueSources.length)
+    : labels.filesInAnswer(uniqueSources.length)
   return (
     <section className="hc-files" aria-label={title}>
       <h4 className="hc-files-title">{title}</h4>
       <div className="hc-cards">
-        {sources.map((source) => (
+        {uniqueSources.map((source) => (
           <FileCard
-            key={source.ref ?? (source.documentId || source.path)}
+            key={source.documentId > 0 ? `doc-${source.documentId}` : source.path || source.name}
             source={source}
             labels={labels}
             onOpen={onOpen}
@@ -375,7 +397,7 @@ function FilesPanel({
       <details className="hc-details">
         <summary>{labels.searchDetails}</summary>
         <ul>
-          {sources.map((source) => {
+          {uniqueSources.map((source) => {
             const status = source.missing
               ? labels.sourceMissing
               : source.stale
@@ -387,7 +409,11 @@ function FilesPanel({
                     : labels.statusOk
             const where = source.location && source.location !== source.path ? source.location : ''
             return (
-              <li key={source.ref ?? (source.documentId || source.path)}>
+              <li
+                key={
+                  source.documentId > 0 ? `doc-${source.documentId}` : source.path || source.name
+                }
+              >
                 <span className="hc-details-name">{source.name}</span>
                 {[where, status].filter(Boolean).join(' · ')}
               </li>

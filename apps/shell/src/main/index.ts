@@ -3,6 +3,7 @@ import { DocumentMemoryManager } from './document-memory/manager'
 import type { BootstrapResult } from './document-memory/storage-bootstrap'
 import { runStorageBootstrapOffThread } from './document-memory/runtime/storage-bootstrap-runner'
 import { currentMachineSpec } from './document-memory/embedding/initial-profile'
+import { isPathIgnored } from './document-memory/ignore-policy'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { rotatingFileWriter } from './fork/renderer-diagnostics'
 import {
@@ -4065,6 +4066,13 @@ function attachDocumentMemory(
   pendingFolderScanPaths = []
   for (const folder of pendingScans) startFolderScan(folder)
   indexAddedFoldersNotYetScanned()
+  for (const listener of [...folderScanReadyListeners]) {
+    try {
+      listener()
+    } catch {
+      // A faulty listener must not block storage startup readiness.
+    }
+  }
   setTimeout(() => {
     documentMemory
       ?.runBackupRetentionMaintenance()
@@ -4081,6 +4089,9 @@ function attachDocumentMemory(
   }, 15_000)
   storageStartup.set('ready')
 }
+
+const folderScanReadyListeners = new Set<() => void>()
+let disposeDocumentIndexIpc: (() => void) | null = null
 
 let legacyConverter: LegacyConverter | null = null
 
@@ -4686,14 +4697,22 @@ function registerHomeIpc(): void {
       getScanner: () => folderScan,
     })
   }
-  registerDocumentIndexIpc({
+  disposeDocumentIndexIpc?.()
+  disposeDocumentIndexIpc = registerDocumentIndexIpc({
     ipcMain,
     getDocumentMemory: () => documentMemory,
     getFolderScan: () => folderScan,
+    onScannerReady: (listener) => {
+      folderScanReadyListeners.add(listener)
+      return () => {
+        folderScanReadyListeners.delete(listener)
+      }
+    },
     getKnownSources: () => knownSources,
     dbPath: () =>
       documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db'),
     settingsPath: APP_SETTINGS_PATH,
+    onRefreshFileIndex: () => fileIndexer?.refresh(),
   })
   registerEverythingIpc(ipcMain, () => everything)
   registerDbLocationIpc({
@@ -4768,18 +4787,45 @@ function registerHomeIpc(): void {
     folderScan?.stop()
     documentMemory?.clear()
   })
-  ipcMain.handle('document-memory:search', (_event, query: unknown, limit: unknown) => {
+  ipcMain.handle('document-memory:search', async (_event, query: unknown, limit: unknown) => {
     if (typeof query !== 'string' || !query.trim() || query.length > 2000)
       throw new Error('Invalid memory query')
     const count = limit === undefined ? 8 : limit
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > 20)
       throw new Error('Invalid search limit')
-    return documentMemory?.search(query, count)
+    const result = await documentMemory?.search(query, count)
+    if (!result) return result
+    return {
+      ...result,
+      hits: result.hits.filter((h) => !isPathIgnored(h.path)),
+    }
   })
-  ipcMain.handle('document-memory:read', (_event, id: unknown) => {
+  ipcMain.handle('document-memory:read', async (_event, id: unknown) => {
     if (typeof id !== 'number' || !Number.isSafeInteger(id) || id < 1)
       throw new Error('Invalid chunk id')
-    return documentMemory?.read(id)
+    const meta = documentMemory?.store?.readChunkMetadata(id)
+    if (meta && isPathIgnored(meta.path)) {
+      return {
+        path: meta.path,
+        name: meta.name,
+        location: meta.location,
+        text: '',
+        verified: false,
+        error: 'Ignored document',
+      }
+    }
+    const chunk = await documentMemory?.read(id)
+    if (chunk && isPathIgnored(chunk.path)) {
+      return {
+        path: chunk.path,
+        name: chunk.name,
+        location: chunk.location,
+        text: '',
+        verified: false,
+        error: 'Ignored document',
+      }
+    }
+    return chunk
   })
   ipcMain.handle('document-memory:open', async (_event, id: unknown, offered?: unknown) => {
     // a file that was only found by name (id 0) opens by the path the search handed out
@@ -4872,9 +4918,10 @@ function registerHomeIpc(): void {
         q && fileSearch
           ? await fileSearch.search(q, { exts, offset, limit })
           : { hits: [], total: 0 }
+      const filteredHits = result.hits.filter((h) => !isPathIgnored(h.path))
       return {
-        hits: result.hits.map((h) => ({ ...h, starred: starred.has(h.path) })),
-        total: result.total,
+        hits: filteredHits.map((h) => ({ ...h, starred: starred.has(h.path) })),
+        total: Math.max(0, result.total - (result.hits.length - filteredHits.length)),
         index: indexer.progress(),
       }
     },
@@ -4907,7 +4954,7 @@ function registerHomeIpc(): void {
       starred,
       Math.min(limit, 20),
     )
-    return hits
+    return hits.filter((h) => !isPathIgnored(h.path))
   })
 
   ipcMain.handle('kb:read', async (_event, raw: unknown): Promise<unknown> => {
@@ -4918,7 +4965,7 @@ function registerHomeIpc(): void {
     const path = typeof req.path === 'string' ? req.path : ''
     const offsetRaw = Number(req.offset)
     const offset = Number.isFinite(offsetRaw) ? Math.floor(offsetRaw) : 0
-    if (!path || !readStarredFiles().includes(path)) {
+    if (!path || !readStarredFiles().includes(path) || isPathIgnored(path)) {
       throw new Error('path is not in the knowledge base')
     }
     return readKnowledgeFilePage(path, offset)
@@ -7427,6 +7474,9 @@ app.on('will-quit', (event) => {
   if (appShutdownState === 'shutting-down') return
   appShutdownState = 'shutting-down'
 
+  disposeDocumentIndexIpc?.()
+  disposeDocumentIndexIpc = null
+  folderScanReadyListeners.clear()
   folderScan?.close()
   knownSources?.close()
   fileIndexer?.stop()

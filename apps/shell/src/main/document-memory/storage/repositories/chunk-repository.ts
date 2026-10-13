@@ -331,6 +331,28 @@ export class ChunkRepository {
     }
   }
 
+  readChunkMetadata(chunkId: number): DocumentChunkMetadata | null {
+    const row = this.db
+      .prepare(
+        `SELECT d.id AS document_id, d.path, d.name, c.id AS chunk_id, c.location
+      FROM chunks c JOIN documents d ON d.id = c.document_id
+      WHERE c.id = ? AND d.excluded = 0
+        AND (c.chunk_set_id IS NULL OR c.chunk_set_id = d.active_chunk_set_id)`,
+      )
+      .get(chunkId) as
+      | { document_id: number; path: string; name: string; chunk_id: number; location: string }
+      | undefined
+    return row
+      ? {
+          chunkId: row.chunk_id,
+          documentId: row.document_id,
+          path: row.path,
+          name: row.name,
+          location: row.location,
+        }
+      : null
+  }
+
   readChunk(chunkId: number): DocumentMemoryHit | null {
     const row = this.db
       .prepare(
@@ -359,4 +381,12 @@ export class ChunkRepository {
         }
       : null
   }
+}
+
+export interface DocumentChunkMetadata {
+  chunkId: number
+  documentId: number
+  path: string
+  name: string
+  location: string
 }

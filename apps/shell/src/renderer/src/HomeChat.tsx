@@ -24,7 +24,12 @@ import type {
   HomeChatSessionSummary,
   HomeChatSource,
 } from '../../shared/fork/home-chat-types'
-import { CHAT_PREFILL_EVENT, announceChatPanel, type ChatPrefillDetail } from './chat-events'
+import {
+  CHAT_PREFILL_EVENT,
+  announceChatPanel,
+  type ChatPrefillDetail,
+  type ChatLaunchIntent,
+} from './chat-events'
 import { ChatMessage, type ChatItem, type ChatLabels } from './home-chat/ChatMessage'
 import { AgyChatBar } from '@genoffice/ui'
 import { AskDock } from './home-chat/AskDock'
@@ -179,6 +184,15 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   const [notice, setNotice] = useState('')
   const [sessions, setSessions] = useState<HomeChatSessionSummary[]>([])
   const [activeId, setActiveId] = useState<string | null>(null)
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => crypto.randomUUID())
+  const activeSessionIdRef = useRef<string>(activeSessionId)
+  activeSessionIdRef.current = activeSessionId
+  const [activeRequestId, setActiveRequestId] = useState<string | null>(null)
+  const activeRequestIdRef = useRef<string | null>(null)
+  const clearActiveRequest = () => {
+    activeRequestIdRef.current = null
+    setActiveRequestId(null)
+  }
   const [title, setTitle] = useState('')
   const [railOpen, setRailOpen] = useState(() => readStore(LS_RAIL) !== '0')
   const [size, setSize] = useState(readSize)
@@ -208,6 +222,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   const saveTimerRef = useRef(0)
   const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
   const openTokenRef = useRef(0)
+  const launchTokenRef = useRef(0)
   const initRef = useRef(false)
   const touchedRef = useRef(false)
   const toastTimerRef = useRef(0)
@@ -299,7 +314,11 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     try {
       const settings = await api.getAiSettings()
       if (mountedRef.current) {
+        const previousProvider = settingsRef.current?.provider
         settingsRef.current = settings
+        if (previousProvider && previousProvider !== settings.provider && !busyRef.current) {
+          clearActiveRequest()
+        }
         setSettingsReady(true)
         setSettingsFailed(false)
         setNotice((previous) =>
@@ -411,6 +430,18 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   if (!loopRef.current) {
     const transport = createIpcTransport({
       route: createGeminiRouter(),
+      sessionId: () => activeSessionIdRef.current,
+      onAttemptStarted: ({ requestId }) => {
+        if (
+          !mountedRef.current ||
+          activeRunRef.current === 0 ||
+          activeRunRef.current !== runGenerationRef.current
+        ) {
+          return
+        }
+        activeRequestIdRef.current = requestId
+        setActiveRequestId(requestId)
+      },
       onStream: (listener) => api.onAiStream(listener as (chunk: IpcStreamChunk) => void),
       start: (request) => api.aiStream(request),
       cancel: (requestId) => void api.aiStreamCancel(requestId),
@@ -475,6 +506,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
                   : tRef.current('homeChatNoReply'),
             }
           })
+          clearActiveRequest()
           setBusy(false)
           // names the answer wrote without an id become files to open, not only words
           if (unlisted && finalText)
@@ -484,6 +516,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           if (!live()) return
           batcherRef.current?.cancel()
           updateLastAssistant((last) => ({ ...last, error, streaming: false }))
+          clearActiveRequest()
           setBusy(false)
         },
       },
@@ -723,6 +756,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     runGenerationRef.current++
     batcherRef.current?.cancel()
     loopRef.current?.reset()
+    clearActiveRequest()
     needsSeedRef.current = true
     if (busyRef.current) {
       const settled = stopStreamingItems(itemsRef.current)
@@ -734,6 +768,10 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
 
   const adopt = (conv: Conversation, nextItems: ChatItem[], nextTitle: string) => {
     convRef.current = conv
+    const nextSessionId = conv.id ?? crypto.randomUUID()
+    setActiveSessionId(nextSessionId)
+    activeSessionIdRef.current = nextSessionId
+    clearActiveRequest()
     itemId.current = nextItems.length
     lastSavedRef.current = nextItems
     stickRef.current = true
@@ -751,7 +789,9 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
 
   const startNew = useCallback(() => {
     touchedRef.current = true
+    initRef.current = true
     openTokenRef.current++
+    launchTokenRef.current++
     detachCurrent()
     adopt({ id: null, dead: false, requested: false }, [], '')
     collapseRailWhenNarrow()
@@ -762,12 +802,14 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   const openSession = useCallback(
     async (id: string) => {
       touchedRef.current = true
+      initRef.current = true
       if (id === convRef.current.id) {
         collapseRailWhenNarrow()
         focusInput()
         return
       }
       const token = ++openTokenRef.current
+      launchTokenRef.current++
       detachCurrent()
       let session: HomeChatSession | null
       try {
@@ -880,29 +922,65 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   }
 
   // First open: bring back the chat that was open last.
-  const restoreLast = useCallback(async () => {
-    if (initRef.current) return
-    initRef.current = true
-    const list = await refreshList()
-    if (touchedRef.current || itemsRef.current.length > 0) return
-    const last = readStore(LS_LAST)
-    if (last && list.some((entry) => entry.id === last)) await openSession(last)
-  }, [openSession, refreshList])
+  const restoreLast = useCallback(
+    async (token: number) => {
+      if (initRef.current) return
+      initRef.current = true
+      const list = await refreshList()
+      if (
+        token !== launchTokenRef.current ||
+        touchedRef.current ||
+        itemsRef.current.length > 0 ||
+        !mountedRef.current
+      ) {
+        return
+      }
+      const last = readStore(LS_LAST)
+      if (last && list.some((entry) => entry.id === last)) {
+        if (token !== launchTokenRef.current || itemsRef.current.length > 0) return
+        await openSession(last)
+      }
+    },
+    [openSession, refreshList],
+  )
 
-  const openPanel = useCallback(() => {
-    openRef.current = true
-    // Reopening from the "answer ready" chip lands on the latest message; a plain
-    // restore returns to where the user was reading.
-    const memo = scrollMemoRef.current
-    const resume = memo && !memo.stick && !launcherCtl.getState().unread
-    stickRef.current = !resume
-    restoreTopRef.current = resume ? memo.top : null
-    setOpen(true)
-    setInvitation(true)
-    focusInput()
-    void loadSettings()
-    void restoreLast()
-  }, [focusInput, launcherCtl, loadSettings, restoreLast])
+  const openPanel = useCallback(
+    (intent: ChatLaunchIntent = 'resume', targetSessionId?: string) => {
+      openRef.current = true
+      const token = ++launchTokenRef.current
+      // Reopening from the "answer ready" chip lands on the latest message; a plain
+      // restore returns to where the user was reading.
+      const memo = scrollMemoRef.current
+      const resume = memo && !memo.stick && !launcherCtl.getState().unread
+      stickRef.current = !resume
+      restoreTopRef.current = resume ? memo.top : null
+      setOpen(true)
+      setInvitation(true)
+      focusInput()
+      void loadSettings()
+
+      if (intent === 'new') {
+        initRef.current = true
+        touchedRef.current = true
+        startNew()
+        return
+      }
+      if (intent === 'open-existing' && targetSessionId) {
+        initRef.current = true
+        touchedRef.current = true
+        void openSession(targetSessionId)
+        return
+      }
+
+      // 'resume' intent: if active conversation exists or already touched, keep it
+      if (convRef.current.id !== null || itemsRef.current.length > 0 || touchedRef.current) {
+        return
+      }
+      // Pristine open: restore the last conversation
+      void restoreLast(token)
+    },
+    [focusInput, launcherCtl, loadSettings, openSession, restoreLast, startNew],
+  )
 
   // ---- sending ------------------------------------------------------------
 
@@ -916,6 +994,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
       const indexCommand = mentionsIndex(message) ? parseIndexCommand(message) : null
       if (indexCommand) {
         const generation = ++runGenerationRef.current
+        clearActiveRequest()
         busyRef.current = true
         setBusy(true)
         setNotice('')
@@ -948,6 +1027,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           )
         } finally {
           if (mountedRef.current && generation === runGenerationRef.current) {
+            clearActiveRequest()
             busyRef.current = false
             setBusy(false)
           }
@@ -966,6 +1046,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
       }
       const generation = ++runGenerationRef.current
       activeRunRef.current = generation
+      clearActiveRequest()
       const userId = ++itemId.current
       const assistantId = ++itemId.current
       stickRef.current = true
@@ -987,6 +1068,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           error: tRef.current('homeChatSettingsFailed'),
           streaming: false,
         }))
+        clearActiveRequest()
         setBusy(false)
         return
       }
@@ -1000,6 +1082,12 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           try {
             const query = buildRetrievalQuery(message, toMessages(base))
             hits = (await api.documentMemorySearch(query, 8)).hits
+            if (api.testIgnorePath && hits.length > 0) {
+              const testResults = await Promise.all(
+                hits.map((h) => api.testIgnorePath!(h.path).catch(() => ({ ignored: false }))),
+              )
+              hits = hits.filter((_, idx) => !testResults[idx]?.ignored)
+            }
           } catch {
             // search is best-effort; the answer then says nothing matched
           }
@@ -1017,9 +1105,15 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           }
           // Files recently opened, or in the folder index, that match by name: their content is
           // not part of the search above, so they are offered as candidates by name (same id table).
-          const named = (await findFilesByName(api, message, 4).catch(() => [])).filter(
+          let named = (await findFilesByName(api, message, 4).catch(() => [])).filter(
             (file) => table.refForPath(file.path) === undefined,
           )
+          if (api.testIgnorePath && named.length > 0) {
+            const testResults = await Promise.all(
+              named.map((f) => api.testIgnorePath!(f.path).catch(() => ({ ignored: false }))),
+            )
+            named = named.filter((_, idx) => !testResults[idx]?.ignored)
+          }
           if (generation !== runGenerationRef.current || !mountedRef.current) return
           const byName = namedFilesBlock(named, table)
           if (byName.block) context.block = `${context.block}\n\n${byName.block}`
@@ -1054,6 +1148,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
         if (generation !== runGenerationRef.current) return
         const detail = error instanceof Error ? error.message : tRef.current('homeChatError')
         updateLastAssistant((last) => ({ ...last, error: detail, streaming: false }))
+        clearActiveRequest()
         setBusy(false)
       }
     },
@@ -1067,6 +1162,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     runGenerationRef.current++
     batcherRef.current?.flush()
     loopRef.current?.reset()
+    clearActiveRequest()
     needsSeedRef.current = true
     setItems(stopStreamingItems)
     setBusy(false)
@@ -1129,15 +1225,15 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   // Another part of the app (clipboard suggestions) can hand the assistant some text.
   const openPanelRef = useRef(openPanel)
   openPanelRef.current = openPanel
-  const startNewRef = useRef(startNew)
-  startNewRef.current = startNew
   useEffect(() => {
     const onPrefill = (event: Event) => {
       const detail = (event as CustomEvent<ChatPrefillDetail>).detail
       if (!detail || typeof detail.text !== 'string' || !detail.text.trim()) return
+      const intent: ChatLaunchIntent =
+        detail.intent ?? (detail.continue === true ? 'resume' : 'new')
       touchedRef.current = true
-      openPanelRef.current()
-      if (itemsRef.current.length > 0 && detail.continue !== true) startNewRef.current()
+      launchTokenRef.current++
+      openPanelRef.current(intent, detail.sessionId)
       setInput(detail.text)
       setPendingSend(detail.send === true ? detail.text : null)
       window.setTimeout(() => inputRef.current?.focus(), 30)
@@ -1358,12 +1454,24 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
                         item={item}
                         labels={labels.chat}
                         canRetry={!busy && item.id === items[lastIndex]?.id}
+                        activity={
+                          item.streaming && !item.text ? (
+                            <AgyChatBar
+                              lang={i18n.lang}
+                              part="steps"
+                              mode="home-chat"
+                              busy={busy}
+                              sessionId={activeSessionId}
+                              activeRequestId={activeRequestId}
+                              getActiveRequestId={() => activeRequestIdRef.current}
+                            />
+                          ) : undefined
+                        }
                         onOpenSource={openSource}
                         onRevealSource={revealSource}
                         onRetry={retry}
                       />
                     ))}
-                    {busy && <AgyChatBar lang={i18n.lang} part="steps" />}
                   </div>
                 )}
               </div>

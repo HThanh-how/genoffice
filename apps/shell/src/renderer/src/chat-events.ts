@@ -5,10 +5,20 @@
  */
 export const CHAT_PREFILL_EVENT = 'genoffice:chat-prefill'
 
+export type ChatLaunchIntent = 'new' | 'resume' | 'open-existing'
+
 export type ChatPrefillDetail = {
   text: string
   send?: boolean
-  /** keep the open conversation instead of starting a new one */
+  /**
+   * Explicit launch intent:
+   * - 'new': Start a fresh empty conversation.
+   * - 'resume': Reopen or keep the active conversation.
+   * - 'open-existing': Open a specific saved session by sessionId.
+   */
+  intent?: ChatLaunchIntent
+  sessionId?: string
+  /** @deprecated use intent: 'resume' instead */
   continue?: boolean
 }
 

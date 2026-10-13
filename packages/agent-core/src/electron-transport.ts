@@ -55,6 +55,10 @@ export interface IpcStreamStart<S> {
 export const IPC_STREAM_SILENCE_TIMEOUT_MS = 240_000
 
 export interface IpcTransportOptions<S> {
+  /** Optional session or correlation identifier (or dynamic resolver function) */
+  sessionId?: string | (() => string)
+  /** Optional hook notified with the authoritative requestId and sessionId before an attempt starts */
+  onAttemptStarted?: (context: { requestId: string; sessionId: string }) => void
   /** subscribe to stream chunks; returns the unsubscribe function */
   onStream(listener: (chunk: IpcStreamChunk) => void): () => void
   /** forward the start request to the main process; a returned promise reports handler failure */
@@ -124,7 +128,10 @@ export interface IpcTransportOptions<S> {
  */
 export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTransport {
   const timeoutText = () => options.timeoutErrorText?.() ?? options.unknownErrorText()
-  const sessionId = crypto.randomUUID()
+  const resolveSessionId = () =>
+    typeof options.sessionId === 'function'
+      ? options.sessionId()
+      : (options.sessionId ?? crypto.randomUUID())
   return {
     compactionBudget() {
       const settings = options.getSettings() as { provider?: string } | null
@@ -256,6 +263,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         if (cancelled || finished) return
         requestId = crypto.randomUUID()
         const thisRequestId = requestId
+        const sessionId = resolveSessionId()
         attempts++
         settled = false
         let emitted = false
@@ -273,7 +281,7 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
           }, route.firstContentTimeoutMs)
         }
         unsubscribe = options.onStream((chunk) => {
-          if (chunk.requestId !== requestId || settled) return
+          if (chunk.requestId !== thisRequestId || settled || thisRequestId !== requestId) return
           if (chunk.type === 'ping') {
             armSilence()
           } else if (chunk.type === 'delta') {
@@ -325,6 +333,9 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
         })
         armSilence()
         try {
+          if (!cancelled && !finished) {
+            options.onAttemptStarted?.({ requestId, sessionId })
+          }
           route?.onAttempt?.(settings, requestId, attemptRequest)
           Promise.resolve(
             options.start({

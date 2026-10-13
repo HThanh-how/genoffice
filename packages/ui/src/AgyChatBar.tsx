@@ -28,6 +28,8 @@ export interface AgyBarUsage {
 }
 export interface AgyBarActivity {
   runId: string
+  requestId?: string
+  sessionId?: string
   phase: 'start' | 'thinking' | 'tool' | 'writing' | 'done' | 'error'
   at: number
   tool?: string
@@ -70,6 +72,8 @@ interface RunStep {
 }
 interface Run {
   id: string
+  requestId?: string
+  sessionId?: string
   startedAt: number
   endedAt?: number
   steps: RunStep[]
@@ -80,16 +84,33 @@ interface Run {
   error?: string
 }
 
-function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
+export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
   if (event.phase === 'start')
     return {
       id: event.runId,
+      ...(event.requestId !== undefined ? { requestId: event.requestId } : {}),
+      ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
       startedAt: event.at,
       steps: [],
       phase: 'thinking',
       tokens: 0,
     }
-  if (!run || run.id !== event.runId) return run
+  if (!run || run.id !== event.runId) {
+    if (event.phase === 'thinking' || event.phase === 'tool' || event.phase === 'writing') {
+      return {
+        id: event.runId,
+        ...(event.requestId !== undefined ? { requestId: event.requestId } : {}),
+        ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
+        startedAt: event.at,
+        steps: [],
+        phase: event.phase,
+        tokens: event.thinkingTokens ?? 0,
+        ...(event.tool !== undefined ? { tool: event.tool } : {}),
+        ...(event.target !== undefined ? { target: event.target } : {}),
+      }
+    }
+    return run
+  }
   if (event.phase === 'thinking')
     return {
       ...run,
@@ -175,6 +196,10 @@ const EN = {
   h: 'h',
   m: 'min',
   thinkingNow: 'Thinking',
+  thinkingHome: 'Thinking…',
+  searchingFiles: 'Searching files…',
+  readingDocs: 'Reading documents…',
+  writingAnswer: 'Writing answer…',
   starting: 'Starting Antigravity',
   usingTool: 'Using {tool}',
   stepTool: 'Used {tool}',
@@ -242,6 +267,10 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     h: 'giờ',
     m: 'phút',
     thinkingNow: 'Đang suy nghĩ',
+    thinkingHome: 'Đang suy nghĩ…',
+    searchingFiles: 'Đang tìm kiếm tệp…',
+    readingDocs: 'Đang đọc tài liệu…',
+    writingAnswer: 'Đang viết câu trả lời…',
     starting: 'Đang khởi động Antigravity',
     usingTool: 'Đang dùng {tool}',
     stepTool: 'Dùng {tool}',
@@ -304,6 +333,10 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     h: '小时',
     m: '分钟',
     thinkingNow: '思考中',
+    thinkingHome: '思考中…',
+    searchingFiles: '正在搜索文件…',
+    readingDocs: '正在阅读文档…',
+    writingAnswer: '正在撰写回答…',
     starting: '正在启动 Antigravity',
     usingTool: '正在使用 {tool}',
     stepTool: '使用 {tool}',
@@ -352,11 +385,45 @@ function span(ms: number, d: Dict): string {
   return `${minutes} ${d.m}`
 }
 
-function thinkTitle(run: Run, d: Dict): string {
+function thinkTitle(run: Run, d: Dict, mode: 'default' | 'home-chat' = 'default'): string {
   const seconds = Math.max(0, ((run.endedAt ?? Date.now()) - run.startedAt) / 1000)
-  const time = seconds >= 60 ? span(seconds * 1000, d) : `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`
-  if (run.phase === 'done') return fill(d.doneIn, { t: time })
+  if (run.phase === 'done') {
+    const time = seconds >= 60 ? span(seconds * 1000, d) : `${Math.round(seconds)}s`
+    return fill(d.doneIn, { t: time })
+  }
   if (run.phase === 'error') return fill(d.runFailed, { m: run.error ?? '' })
+
+  if (mode === 'home-chat') {
+    const time = seconds >= 60 ? span(seconds * 1000, d) : `${Math.round(seconds)}s`
+    let label = d.thinkingHome
+    if (run.phase === 'writing') {
+      label = d.writingAnswer
+    } else if (run.phase === 'tool') {
+      const toolLower = (run.tool ?? '').toLowerCase()
+      if (
+        toolLower.includes('search') ||
+        toolLower.includes('find') ||
+        toolLower.includes('grep') ||
+        toolLower.includes('glob')
+      ) {
+        label = d.searchingFiles
+      } else if (
+        toolLower.includes('read') ||
+        toolLower.includes('view') ||
+        toolLower.includes('open')
+      ) {
+        label = d.readingDocs
+      } else {
+        label = `${fill(d.usingTool, {
+          tool: `${run.tool ?? ''}${run.target ? ` ${run.target}` : ''}`.trim(),
+        })}…`
+      }
+    }
+    return `${label} · ${time}`
+  }
+
+  const defaultTime =
+    seconds >= 60 ? span(seconds * 1000, d) : `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`
   const label =
     run.phase === 'writing'
       ? d.writing
@@ -367,7 +434,7 @@ function thinkTitle(run: Run, d: Dict): string {
         : run.steps.length === 0
           ? d.starting
           : d.thinkingNow
-  return `${label}… ${time}`
+  return `${label}… ${defaultTime}`
 }
 
 function tone(remaining: number): 'ok' | 'warn' | 'low' {
@@ -380,6 +447,19 @@ function bridge(): AgyBarApi | undefined {
     : (window as unknown as { agyChat?: AgyBarApi }).agyChat
 }
 
+const MAX_SUPERSEDED_IDS = 200
+
+function addBoundedId(set: Set<string>, id: string | undefined | null): void {
+  if (!id) return
+  if (set.has(id)) {
+    set.delete(id)
+  } else if (set.size >= MAX_SUPERSEDED_IDS) {
+    const oldest = set.values().next().value
+    if (oldest !== undefined) set.delete(oldest)
+  }
+  set.add(id)
+}
+
 /**
  * Model chooser and quota readout shown right under an AI chat box when the Antigravity provider
  * is active (it renders nothing otherwise). The readout is stale-while-revalidate: it shows the
@@ -390,11 +470,24 @@ export function AgyChatBar({
   lang,
   api,
   part = 'all',
+  mode = 'default',
+  activeRunId,
+  activeRequestId,
+  getActiveRequestId,
+  sessionId,
+  busy,
 }: {
   lang: string
   api?: AgyBarApi | undefined
   /** 'bar' = model + usage chips only, 'steps' = the live thinking strip only (placed by the host) */
   part?: 'all' | 'bar' | 'steps'
+  /** 'home-chat' uses calm single-line indicator, subtle timing, and unified activity states */
+  mode?: 'default' | 'home-chat'
+  activeRunId?: string
+  activeRequestId?: string | null
+  getActiveRequestId?: () => string | null | undefined
+  sessionId?: string
+  busy?: boolean
 }) {
   const d: Dict = (TEXT as Record<string, Dict | undefined>)[lang] ?? EN
   const [state, setState] = useState<AgyBarState | null>(null)
@@ -414,13 +507,43 @@ export function AgyChatBar({
   const [code, setCode] = useState('')
   const loginActive = useRef(false)
   loginActive.current = login.phase !== 'idle' || !!usage?.needsLogin
+  const modeRef = useRef(mode)
+  modeRef.current = mode
+  const stateRef = useRef<AgyBarState | null>(state)
+  stateRef.current = state
+  const activeRunIdRef = useRef(activeRunId)
+  activeRunIdRef.current = activeRunId
+  const activeRequestIdRef = useRef(activeRequestId)
+  const getActiveRequestIdRef = useRef(getActiveRequestId)
+  getActiveRequestIdRef.current = getActiveRequestId
+  const prevActiveRequestIdRef = useRef(activeRequestId)
+  const sessionIdRef = useRef(sessionId)
+  sessionIdRef.current = sessionId
+  const busyRef = useRef(busy)
+  busyRef.current = busy
+  const supersededRunIds = useRef(new Set<string>())
+  const supersededRequestIds = useRef(new Set<string>())
+
+  if (prevActiveRequestIdRef.current !== activeRequestId) {
+    if (prevActiveRequestIdRef.current) {
+      addBoundedId(supersededRequestIds.current, prevActiveRequestIdRef.current)
+    }
+    prevActiveRequestIdRef.current = activeRequestId
+  }
+  activeRequestIdRef.current = activeRequestId
+
+  const resolveCurrentRequestId = (): string | null | undefined =>
+    getActiveRequestIdRef.current ? getActiveRequestIdRef.current() : activeRequestIdRef.current
 
   const source = api ?? bridge()
 
   const loadState = useCallback(async () => {
     try {
       const next = await source?.getAgyChatState()
-      if (next) setState(next)
+      if (next) {
+        stateRef.current = next
+        setState(next)
+      }
     } catch {
       // keep what is shown
     }
@@ -448,6 +571,8 @@ export function AgyChatBar({
 
   useEffect(() => {
     if (!source) return
+    const runIds = supersededRunIds.current
+    const reqIds = supersededRequestIds.current
     void loadState()
     void source
       .getAgyChatUsage()
@@ -465,9 +590,89 @@ export function AgyChatBar({
       setInstall(next)
       if (next.phase === 'done') setTimeout(() => setInstall({ phase: 'idle' }), 3000)
     })
-    const offRun = source.onAgyChatActivity?.((event) =>
-      setRun((current) => reduceRun(current, event)),
-    )
+    const offRun = source.onAgyChatActivity?.((event) => {
+      if (modeRef.current === 'home-chat' ? !busyRef.current : busyRef.current === false) return
+      if (stateRef.current && !stateRef.current.active) return
+      if (sessionIdRef.current && event.sessionId && event.sessionId !== sessionIdRef.current) {
+        return
+      }
+      if (sessionIdRef.current && !event.sessionId) {
+        return
+      }
+      const currentRequestId = resolveCurrentRequestId()
+      if (prevActiveRequestIdRef.current !== currentRequestId) {
+        if (prevActiveRequestIdRef.current) {
+          addBoundedId(reqIds, prevActiveRequestIdRef.current)
+        }
+        prevActiveRequestIdRef.current = currentRequestId
+      }
+      if (event.requestId && reqIds.has(event.requestId)) {
+        return
+      }
+      if (currentRequestId !== undefined) {
+        if (!currentRequestId || !event.requestId || event.requestId !== currentRequestId) {
+          return
+        }
+      }
+      if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) {
+        return
+      }
+      if (runIds.has(event.runId)) {
+        return
+      }
+      setRun((current) => {
+        const latestRequestId = resolveCurrentRequestId()
+        if (!current) {
+          if (
+            event.phase !== 'start' &&
+            event.phase !== 'thinking' &&
+            event.phase !== 'tool' &&
+            event.phase !== 'writing'
+          ) {
+            return null
+          }
+          if (latestRequestId !== undefined) {
+            if (!latestRequestId || !event.requestId || event.requestId !== latestRequestId) {
+              return null
+            }
+          }
+          if (activeRunIdRef.current && event.runId !== activeRunIdRef.current) {
+            return null
+          }
+          return reduceRun(null, event)
+        }
+        if (current.requestId && event.requestId && event.requestId !== current.requestId) {
+          if (
+            latestRequestId &&
+            event.requestId === latestRequestId &&
+            (event.phase === 'start' ||
+              event.phase === 'thinking' ||
+              event.phase === 'tool' ||
+              event.phase === 'writing')
+          ) {
+            addBoundedId(reqIds, current.requestId)
+            addBoundedId(runIds, current.id)
+            return reduceRun(null, event)
+          }
+          return current
+        }
+        if (event.runId !== current.id) {
+          if (
+            event.phase === 'start' &&
+            (!activeRunIdRef.current || event.runId === activeRunIdRef.current) &&
+            (latestRequestId !== undefined
+              ? !!latestRequestId && event.requestId === latestRequestId
+              : (!current.requestId || !event.requestId || event.requestId === current.requestId) &&
+                event.at >= current.startedAt)
+          ) {
+            addBoundedId(runIds, current.id)
+            return reduceRun(null, event)
+          }
+          return current
+        }
+        return reduceRun(current, event)
+      })
+    })
     const onFocus = () => void loadState()
     window.addEventListener('focus', onFocus)
     window.addEventListener(MODEL_CHANGED, onFocus)
@@ -481,10 +686,75 @@ export function AgyChatBar({
       window.removeEventListener(MODEL_CHANGED, onFocus)
       clearInterval(clock)
       if (peekTimer.current) clearTimeout(peekTimer.current)
+      runIds.clear()
+      reqIds.clear()
+      setRun(null)
     }
   }, [source, loadState, apply])
 
-  const running = !!run && run.phase !== 'done' && run.phase !== 'error'
+  useEffect(() => {
+    if (busy === false) {
+      if (run) {
+        addBoundedId(supersededRequestIds.current, run.requestId)
+        setRun(null)
+      }
+      addBoundedId(supersededRequestIds.current, resolveCurrentRequestId())
+      supersededRunIds.current.clear()
+    }
+  }, [busy, run])
+
+  useEffect(() => {
+    if (!run) return
+    const currentRequestId = getActiveRequestId ? getActiveRequestId() : activeRequestId
+    if (currentRequestId !== undefined) {
+      if (!currentRequestId || run.requestId !== currentRequestId) {
+        addBoundedId(supersededRequestIds.current, run.requestId)
+        addBoundedId(supersededRunIds.current, run.id)
+        setRun(null)
+      }
+    }
+  }, [activeRequestId, getActiveRequestId, run])
+
+  useEffect(() => {
+    if (activeRunId && run && run.id !== activeRunId) {
+      addBoundedId(supersededRequestIds.current, run.requestId)
+      addBoundedId(supersededRunIds.current, run.id)
+      setRun(null)
+    }
+  }, [activeRunId, run])
+
+  useEffect(() => {
+    if (sessionId && run && run.sessionId && run.sessionId !== sessionId) {
+      addBoundedId(supersededRequestIds.current, run.requestId)
+      supersededRunIds.current.clear()
+      setRun(null)
+    }
+  }, [sessionId, run])
+
+  useEffect(() => {
+    if (state && !state.active && run) {
+      addBoundedId(supersededRequestIds.current, run.requestId)
+      addBoundedId(supersededRunIds.current, run.id)
+      setRun(null)
+    }
+  }, [state, run])
+
+  const effectiveRequestId = getActiveRequestId ? getActiveRequestId() : activeRequestId
+  const effectiveRun =
+    run &&
+    (!state || state.active) &&
+    (!sessionId || !run.sessionId || run.sessionId === sessionId) &&
+    (!activeRunId || run.id === activeRunId) &&
+    (effectiveRequestId === undefined
+      ? !run.requestId || !supersededRequestIds.current.has(run.requestId)
+      : !!effectiveRequestId &&
+        run.requestId === effectiveRequestId &&
+        !supersededRequestIds.current.has(run.requestId)) &&
+    (mode === 'home-chat' ? !!busy : busy !== false)
+      ? run
+      : null
+
+  const running = !!effectiveRun && effectiveRun.phase !== 'done' && effectiveRun.phase !== 'error'
   useEffect(() => {
     if (!running) return
     const timer = setInterval(() => tick((n) => n + 1), 1000)
@@ -513,11 +783,42 @@ export function AgyChatBar({
     }
   }, [menu, open])
 
-  if (!source || !state?.active) return null
+  const [fallbackElapsed, setFallbackElapsed] = useState(0)
+  useEffect(() => {
+    if (!busy || (source && state?.active && effectiveRun)) {
+      setFallbackElapsed(0)
+      return
+    }
+    const t0 = Date.now()
+    const timer = setInterval(() => {
+      setFallbackElapsed(Math.max(1, Math.round((Date.now() - t0) / 1000)))
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [busy, source, state?.active, effectiveRun])
+
+  if (!source || !state?.active) {
+    if (part !== 'bar' && busy) {
+      const timeStr = fallbackElapsed > 0 ? ` · ${fallbackElapsed}s` : ''
+      return (
+        <section
+          className={`agy-think is-thinking${mode === 'home-chat' ? ' is-home-chat' : ''}`}
+          aria-live="polite"
+        >
+          <div className="agy-think-head">
+            <span className="agy-think-dot" aria-hidden="true" />
+            <span className="agy-think-title">
+              {mode === 'home-chat' ? `${d.thinkingHome}${timeStr}` : `${d.thinkingNow}…`}
+            </span>
+          </div>
+        </section>
+      )
+    }
+    return null
+  }
   const showBar = part !== 'steps'
   const showSteps = part !== 'bar'
 
-  const current = state.models.find((model) => model.id === state.selected) ?? state.models[0]
+  const current = state.models?.find((model) => model.id === state.selected) ?? state.models?.[0]
   const group = current?.group
   const buckets = usage?.groups?.find((g) => g.name === group)?.buckets ?? []
   const five = buckets.find((b) => b.window === '5h')
@@ -588,7 +889,7 @@ export function AgyChatBar({
 
   return (
     <div
-      className={`agy-bar${part === 'steps' ? ' is-steps' : ''}`}
+      className={`agy-bar${part === 'steps' ? ' is-steps' : ''}${mode === 'home-chat' ? ' is-home-chat' : ''}`}
       ref={rootRef}
       onMouseEnter={() => {
         hovering.current = true
@@ -734,25 +1035,38 @@ export function AgyChatBar({
           <p className="agy-bar-note">{d.more}</p>
         </div>
       )}
-      {showSteps && run && (
-        <section className={`agy-think is-${run.phase}`} aria-live="polite">
+      {showSteps && (effectiveRun || (mode === 'home-chat' && busy)) && (
+        <section
+          className={`agy-think is-${effectiveRun?.phase ?? 'thinking'}${mode === 'home-chat' ? ' is-home-chat' : ''}`}
+          aria-live="polite"
+        >
           <button
             type="button"
             className="agy-think-head"
             aria-expanded={steps}
-            onClick={() => setSteps((value) => !value)}
+            onClick={() => {
+              if (effectiveRun && effectiveRun.steps.length > 0) setSteps((value) => !value)
+            }}
           >
             <span className="agy-think-dot" aria-hidden="true" />
-            <span className="agy-think-title">{thinkTitle(run, d)}</span>
-            {run.tokens > 0 && (
-              <span className="agy-think-meta">{fill(d.thoughtTokens, { n: run.tokens })}</span>
+            <span className="agy-think-title">
+              {effectiveRun
+                ? thinkTitle(effectiveRun, d, mode)
+                : `${d.thinkingHome} · ${fallbackElapsed}s`}
+            </span>
+            {effectiveRun && effectiveRun.tokens > 0 && (
+              <span className="agy-think-meta">
+                {fill(d.thoughtTokens, { n: effectiveRun.tokens })}
+              </span>
             )}
-            <span className="agy-think-toggle">{steps ? d.hideSteps : d.showSteps}</span>
+            {effectiveRun && effectiveRun.steps.length > 0 && (
+              <span className="agy-think-toggle">{steps ? d.hideSteps : d.showSteps}</span>
+            )}
           </button>
-          {steps && (
+          {steps && effectiveRun && (
             <div className="agy-think-body">
               <ol>
-                {run.steps.map((step, index) => (
+                {effectiveRun.steps.map((step, index) => (
                   <li key={index} className={`is-${step.kind}`}>
                     <span className="agy-think-step-name">
                       {step.kind === 'thinking'
