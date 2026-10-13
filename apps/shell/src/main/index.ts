@@ -340,6 +340,7 @@ import { TabManager } from './tab-manager'
 import { tabMenuTemplate, tabMenuWords, type TabMenuActions, isProgramFile } from './tab-menu'
 import { runTabDocumentAction, type TabDocumentAction } from './tab-document-actions'
 import { duplicateDocumentFile } from './tab-duplicate'
+import { closeTabsInOrder, createRecentlyClosedTracker } from './tab-lifecycle'
 import { installShellCloseGuard } from './window-close-guard'
 import {
   activateDetached,
@@ -3410,7 +3411,7 @@ function createShellWindow(): void {
     () => currentUiScale,
   )
   tabManager = manager
-  manager.setClosedListener((closed) => rememberClosedTab(closed))
+  manager.setClosedListener((closed) => recentlyClosed.push(closed))
 
   // Docking: a detached window dragged over this window's tab strip hands its
   // document back. The strip reports the insertion slot for each preview
@@ -4908,25 +4909,7 @@ function activeHtmlTarget() {
 }
 
 /** files of tabs that were closed, newest last, so "Reopen closed tab" can bring them back */
-const recentlyClosedTabs: Array<{ kind: TabKind; filePath: string }> = []
-const MAX_RECENTLY_CLOSED = 20
-
-function rememberClosedTab(closed: { kind: TabKind; filePath: string }): void {
-  const at = recentlyClosedTabs.findIndex((entry) => entry.filePath === closed.filePath)
-  if (at >= 0) recentlyClosedTabs.splice(at, 1)
-  recentlyClosedTabs.push(closed)
-  if (recentlyClosedTabs.length > MAX_RECENTLY_CLOSED) recentlyClosedTabs.shift()
-}
-
-/** Close tabs one after another: a save prompt that is cancelled leaves that tab, and stops. */
-async function closeTabsInOrder(ids: string[]): Promise<void> {
-  for (const id of ids) {
-    if (!tabManager) return
-    if (!tabManager.list().some((tab) => tab.id === id)) continue
-    await tabManager.closeTab(id)
-    if (tabManager.list().some((tab) => tab.id === id)) return
-  }
-}
+const recentlyClosed = createRecentlyClosedTracker()
 
 /** The shell's side of every entry of the tab menu (see tab-menu.ts for what is offered). */
 function tabMenuActions(): TabMenuActions {
@@ -4994,13 +4977,8 @@ function tabMenuActions(): TabMenuActions {
       if (!isProgramFile(path)) void shell.openPath(path)
     },
     move: (id, toIndex) => tabManager?.reorderTab(id, toIndex),
-    closeTabs: (ids) => void closeTabsInOrder(ids),
-    reopenClosed: () => {
-      while (recentlyClosedTabs.length) {
-        const closed = recentlyClosedTabs.pop()!
-        if (existsSync(closed.filePath) && openDocumentPath(closed.filePath)) return
-      }
-    },
+    closeTabs: (ids) => void (tabManager && closeTabsInOrder(tabManager, ids)),
+    reopenClosed: () => recentlyClosed.reopenNext(openDocumentPath, existsSync),
   }
 }
 
@@ -5080,7 +5058,7 @@ function registerTabsIpc(): void {
       tabs: tabManager.list(),
       canDetach: tabManager.canDetachTab(id),
       fileExists: !!tab.filePath && existsSync(tab.filePath),
-      canReopen: recentlyClosedTabs.length > 0,
+      canReopen: recentlyClosed.getEntries().length > 0,
       words: tabMenuWords(currentLang()),
       labels: { openInNewWindow: tm('menuOpenInNewWindow'), close: tm('menuClose') },
       actions: tabMenuActions(),
