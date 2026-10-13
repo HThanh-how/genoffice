@@ -13,7 +13,14 @@ import type { WriterRequest } from './worker-ops'
 import { isSupportedIndexFile } from './scan'
 import type { ScannedFile } from './scan'
 import type { FileIndexStore } from './store'
-import { isPathIgnored, getIgnorePolicyGeneration } from '../document-memory/ignore-policy'
+import {
+  isPathIgnored,
+  getIgnorePolicyGeneration,
+  getIgnorePolicySnapshot,
+  subscribeIgnorePolicyChanges,
+  type IgnorePolicySnapshot,
+} from '../document-memory/ignore-policy'
+import { isIgnorePolicyAckMessage, type IgnorePolicyAckResponse } from './worker-ignore-policy'
 
 export interface IndexProgress {
   /** files currently in the index */
@@ -121,7 +128,10 @@ export class FileIndexer {
   private rescanTimer: NodeJS.Timeout | null = null
   private lastScanAt = 0
   private stopped = false
+  private workerPolicyVersion = 0
+  private workerSupportsIgnorePolicyMsg = false
   private readonly stopPolicyWatch: () => void
+  private readonly stopIgnorePolicyWatch: () => void
 
   constructor(
     private readonly store: FileIndexStore,
@@ -141,6 +151,35 @@ export class FileIndexer {
       if (this.worker)
         this.worker.postMessage({ type: 'policy', threads: 1, cpuShare: policy.cpuShare })
     })
+    this.stopIgnorePolicyWatch = subscribeIgnorePolicyChanges(() => {
+      if (this.stopped) return
+      if (this.worker && this.workerSupportsIgnorePolicyMsg) {
+        try {
+          this.worker.postMessage({
+            id: this.nextId++,
+            type: 'ignore-policy',
+            snapshot: getIgnorePolicySnapshot(this.sources.roots()),
+          })
+        } catch {
+          // ignore post errors on a closing worker
+        }
+      }
+    })
+  }
+
+  /** Explicitly synchronize the active Ignore policy snapshot with the worker thread and await acknowledgement. */
+  async syncWorkerIgnorePolicy(
+    snapshot: IgnorePolicySnapshot = getIgnorePolicySnapshot(this.sources.roots()),
+  ): Promise<IgnorePolicyAckResponse> {
+    const res = await this.ask({ id: 0, type: 'ignore-policy', snapshot })
+    if (isIgnorePolicyAckMessage(res)) {
+      return res
+    }
+    return {
+      type: 'ignore-policy-ack',
+      version: this.workerPolicyVersion,
+      applied: false,
+    }
   }
 
   progress(): IndexProgress {
@@ -174,24 +213,50 @@ export class FileIndexer {
     }
     this.scanning = true
     try {
+      const startPolicyGen = getIgnorePolicyGeneration()
+      if (
+        this.worker &&
+        this.workerSupportsIgnorePolicyMsg &&
+        this.workerPolicyVersion < startPolicyGen
+      ) {
+        await this.syncWorkerIgnorePolicy(getIgnorePolicySnapshot(this.sources.roots()))
+      }
       const seen = new Map<string, ScannedFile>()
       const roots = [...this.sources.roots()]
       const completeRoots: string[] = []
       for (const root of roots) {
+        const rootStartGen = getIgnorePolicyGeneration()
         const res = await this.ask({ id: 0, type: 'scan', root }, (files) => {
           for (const f of files) {
-            if (!isPathIgnored(f.path)) seen.set(f.path, f)
+            if (!isPathIgnored(f.path, root)) seen.set(f.path, f)
           }
         })
+        const afterRootGen = getIgnorePolicyGeneration()
+        if (afterRootGen !== rootStartGen || afterRootGen !== startPolicyGen) {
+          this.scanRequested = true
+        }
         // a crashed worker answers with an extract error; dropping the index on that would empty search
         if (res.type === 'scan') {
           for (const f of res.files) {
-            if (!isPathIgnored(f.path)) seen.set(f.path, f)
+            if (!isPathIgnored(f.path, root)) seen.set(f.path, f)
           }
-          if (res.complete === true && !res.truncated) completeRoots.push(root)
+          if (
+            res.complete === true &&
+            !res.truncated &&
+            afterRootGen === rootStartGen &&
+            afterRootGen === startPolicyGen
+          ) {
+            completeRoots.push(root)
+          }
         }
       }
+      if (getIgnorePolicyGeneration() !== startPolicyGen) {
+        this.scanRequested = true
+      }
       await this.diff(seen, roots, completeRoots)
+      if (getIgnorePolicyGeneration() !== startPolicyGen) {
+        this.scanRequested = true
+      }
     } finally {
       this.scanning = false
       void this.drain()
@@ -423,7 +488,11 @@ export class FileIndexer {
         resolve(r)
       })
       try {
-        this.ensureWorker().postMessage({ ...req, id })
+        const payload =
+          req.type === 'ignore-policy'
+            ? { ...req, id }
+            : { ...req, ignorePolicy: getIgnorePolicySnapshot(this.sources.roots()), id }
+        this.ensureWorker().postMessage(payload)
       } catch (e) {
         // a failed post must not reject into the void-ed callers: answer as an
         // extraction error, exactly like the drop handler does for a crash
@@ -444,6 +513,8 @@ export class FileIndexer {
     const w = this.worker
     if (!w) return
     this.worker = null
+    this.workerPolicyVersion = 0
+    this.workerSupportsIgnorePolicyMsg = false
     this.failPending('worker restarted')
     void w.terminate()
   }
@@ -458,12 +529,42 @@ export class FileIndexer {
 
   private ensureWorker(): Worker {
     if (this.worker) return this.worker
+    this.workerPolicyVersion = 0
+    this.workerSupportsIgnorePolicyMsg = false
     const w = new Worker(this.workerPath, {
       resourceLimits: { maxOldGenerationSizeMb: this.workerHeapLimitMb },
-      ...(this.workerWritesDb ? { workerData: { dbPath: this.workerWritesDb } } : {}),
+      workerData: {
+        ...(this.workerWritesDb ? { dbPath: this.workerWritesDb } : {}),
+        ignorePolicy: getIgnorePolicySnapshot(this.sources.roots()),
+      },
     })
     w.on('message', (msg: WorkerResponse) => {
       if (this.worker !== w) return
+      if (isIgnorePolicyAckMessage(msg)) {
+        this.workerSupportsIgnorePolicyMsg = true
+        if (msg.version > this.workerPolicyVersion) {
+          this.workerPolicyVersion = msg.version
+        }
+        if (msg.id === undefined && this.workerPolicyVersion < getIgnorePolicyGeneration()) {
+          try {
+            w.postMessage({
+              id: this.nextId++,
+              type: 'ignore-policy',
+              snapshot: getIgnorePolicySnapshot(this.sources.roots()),
+            } satisfies WorkerRequest)
+          } catch {
+            // Worker will resync on next request
+          }
+        }
+        if (msg.id !== undefined) {
+          const cb = this.waiting.get(msg.id)
+          if (cb) {
+            this.waiting.delete(msg.id)
+            cb(msg)
+          }
+        }
+        return
+      }
       if (msg.type === 'scan-part') {
         this.partSinks.get(msg.id)?.(msg.files)
         return
@@ -477,6 +578,8 @@ export class FileIndexer {
       // a crashed worker fails its in-flight request as an extraction error so the queue moves on
       if (this.worker !== w) return
       this.worker = null
+      this.workerPolicyVersion = 0
+      this.workerSupportsIgnorePolicyMsg = false
       this.failPending('worker exited')
     }
     w.on('error', drop)
@@ -490,6 +593,7 @@ export class FileIndexer {
   stop(): void {
     this.stopped = true
     this.stopPolicyWatch()
+    this.stopIgnorePolicyWatch()
     if (this.rescanTimer) clearTimeout(this.rescanTimer)
     this.queue.length = 0
     this.queued.clear()

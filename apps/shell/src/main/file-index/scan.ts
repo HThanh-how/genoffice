@@ -73,14 +73,18 @@ function walkSupportedFiles(
       }
       const path = join(dir, ent.name)
       if (ent.isDirectory()) {
-        if (!shouldSkipDirectory(ent.name, path) && !isHiddenEntry(dir, ent.name, true))
+        if (
+          !shouldSkipDirectory(ent.name, path) &&
+          !isPathIgnored(path, root) &&
+          !isHiddenEntry(dir, ent.name, true)
+        )
           walk(path, depth + 1)
       } else if (
         ent.isFile() &&
         isSupportedIndexFile(ent.name) &&
         !isHiddenEntry(dir, ent.name, false)
       ) {
-        if (isPathIgnored(path)) continue
+        if (isPathIgnored(path, root)) continue
         const st = statOrNull(path)
         if (st) out.push(st)
         else unreadable = true

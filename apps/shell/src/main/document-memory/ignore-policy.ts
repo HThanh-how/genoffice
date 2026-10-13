@@ -66,7 +66,41 @@ export const DEFAULT_IGNORE_RULES: IgnoreRule[] = [
 
 let activeRules: IgnoreRule[] = [...DEFAULT_IGNORE_RULES]
 let storageFilePath: string | null = null
-let policyGeneration = 0
+let policyGeneration = 1
+let snapshotRoots: string[] = []
+
+export interface IgnorePolicySnapshot {
+  version: number
+  rules: IgnoreRule[]
+  roots: string[]
+}
+
+export interface IgnorePolicyChangeEvent {
+  version: number
+  reason: 'user-rules' | 'genofficeignore' | 'reload'
+  affectedRoots?: string[]
+  globalChanged: boolean
+}
+
+type IgnorePolicyListener = (event: IgnorePolicyChangeEvent) => void
+const policyListeners = new Set<IgnorePolicyListener>()
+
+export function subscribeIgnorePolicyChanges(listener: IgnorePolicyListener): () => void {
+  policyListeners.add(listener)
+  return () => {
+    policyListeners.delete(listener)
+  }
+}
+
+function emitIgnorePolicyChange(event: IgnorePolicyChangeEvent): void {
+  for (const listener of policyListeners) {
+    try {
+      listener(event)
+    } catch {
+      // Listener errors must never break policy updates
+    }
+  }
+}
 
 export function getIgnorePolicyGeneration(): number {
   return policyGeneration
@@ -166,6 +200,9 @@ export function globToRegex(
 
 interface CachedIgnore {
   mtimeMs: number
+  size: number
+  ino: number
+  raw: string | null
   rules: IgnoreRule[]
 }
 const genOfficeIgnoreCache = new Map<string, CachedIgnore>()
@@ -181,47 +218,170 @@ export function clearGenOfficeIgnoreCache(): void {
   genOfficeIgnoreCache.clear()
 }
 
+function parseGenOfficeIgnoreContent(dir: string, content: string): IgnoreRule[] {
+  const lines = content.split(/\r?\n/)
+  const rules: IgnoreRule[] = []
+  let idx = 0
+  for (const rawLine of lines) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) continue
+    idx++
+    rules.push({
+      id: `.genofficeignore-${idx}-${line}`,
+      pattern: line,
+      enabled: true,
+      scope: dir,
+      source: '.genofficeignore',
+      description: `.genofficeignore in ${dir}`,
+    })
+  }
+  return rules
+}
+
+function setCachedIgnoreEntry(dir: string, entry: CachedIgnore): void {
+  if (!genOfficeIgnoreCache.has(dir) && genOfficeIgnoreCache.size >= MAX_GENOFFICEIGNORE_CACHE) {
+    const firstKey = genOfficeIgnoreCache.keys().next().value
+    if (firstKey) genOfficeIgnoreCache.delete(firstKey)
+  }
+  genOfficeIgnoreCache.set(dir, entry)
+}
+
 export function readGenOfficeIgnore(dir: string): IgnoreRule[] {
   const filePath = resolve(dir, '.genofficeignore')
   try {
     if (!existsSync(filePath)) {
-      if (genOfficeIgnoreCache.has(dir)) {
-        genOfficeIgnoreCache.delete(dir)
+      const cached = genOfficeIgnoreCache.get(dir)
+      if (cached && cached.raw !== null) {
+        setCachedIgnoreEntry(dir, {
+          mtimeMs: -1,
+          size: -1,
+          ino: -1,
+          raw: null,
+          rules: [],
+        })
         bumpIgnorePolicyGeneration()
+        emitIgnorePolicyChange({
+          version: policyGeneration,
+          reason: 'genofficeignore',
+          affectedRoots: [dir],
+          globalChanged: false,
+        })
+      } else if (!cached) {
+        setCachedIgnoreEntry(dir, {
+          mtimeMs: -1,
+          size: -1,
+          ino: -1,
+          raw: null,
+          rules: [],
+        })
       }
       return []
     }
     const stat = statSync(filePath)
     const cached = genOfficeIgnoreCache.get(dir)
-    if (cached && cached.mtimeMs === stat.mtimeMs) {
+    if (
+      cached &&
+      cached.raw !== null &&
+      cached.mtimeMs === stat.mtimeMs &&
+      cached.size === stat.size &&
+      cached.ino === stat.ino
+    ) {
       return cached.rules
     }
-    bumpIgnorePolicyGeneration()
     const content = readFileSync(filePath, 'utf-8')
-    const lines = content.split(/\r?\n/)
-    const rules: IgnoreRule[] = []
-    let idx = 0
-    for (const rawLine of lines) {
-      const line = rawLine.trim()
-      if (!line || line.startsWith('#')) continue
-      idx++
-      rules.push({
-        id: `.genofficeignore-${idx}-${line}`,
-        pattern: line,
-        enabled: true,
-        scope: dir,
-        source: '.genofficeignore',
-        description: `.genofficeignore in ${dir}`,
+    if (cached && cached.raw === content) {
+      cached.mtimeMs = stat.mtimeMs
+      cached.size = stat.size
+      cached.ino = stat.ino
+      return cached.rules
+    }
+    const hadPrevious = cached !== undefined
+    bumpIgnorePolicyGeneration()
+    const rules = parseGenOfficeIgnoreContent(dir, content)
+    setCachedIgnoreEntry(dir, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      ino: stat.ino,
+      raw: content,
+      rules,
+    })
+    if (hadPrevious) {
+      emitIgnorePolicyChange({
+        version: policyGeneration,
+        reason: 'genofficeignore',
+        affectedRoots: [dir],
+        globalChanged: false,
       })
     }
-    if (genOfficeIgnoreCache.size >= MAX_GENOFFICEIGNORE_CACHE) {
-      const firstKey = genOfficeIgnoreCache.keys().next().value
-      if (firstKey) genOfficeIgnoreCache.delete(firstKey)
-    }
-    genOfficeIgnoreCache.set(dir, { mtimeMs: stat.mtimeMs, rules })
     return rules
   } catch {
     return []
+  }
+}
+
+/**
+ * Explicitly refreshes cached `.genofficeignore` state for `dir` (e.g. on a watcher event).
+ * Returns true if the effective rules for `dir` changed and a policy-change event was emitted.
+ */
+export function refreshGenOfficeIgnoreForRoot(dir: string): boolean {
+  const filePath = resolve(dir, '.genofficeignore')
+  try {
+    const cached = genOfficeIgnoreCache.get(dir)
+    if (!existsSync(filePath)) {
+      if (!cached || cached.raw === null) {
+        if (!cached) {
+          setCachedIgnoreEntry(dir, {
+            mtimeMs: -1,
+            size: -1,
+            ino: -1,
+            raw: null,
+            rules: [],
+          })
+        }
+        return false
+      }
+      setCachedIgnoreEntry(dir, {
+        mtimeMs: -1,
+        size: -1,
+        ino: -1,
+        raw: null,
+        rules: [],
+      })
+      bumpIgnorePolicyGeneration()
+      emitIgnorePolicyChange({
+        version: policyGeneration,
+        reason: 'genofficeignore',
+        affectedRoots: [dir],
+        globalChanged: false,
+      })
+      return true
+    }
+    const stat = statSync(filePath)
+    const content = readFileSync(filePath, 'utf-8')
+    if (cached && cached.raw === content) {
+      cached.mtimeMs = stat.mtimeMs
+      cached.size = stat.size
+      cached.ino = stat.ino
+      return false
+    }
+    const rules = parseGenOfficeIgnoreContent(dir, content)
+    setCachedIgnoreEntry(dir, {
+      mtimeMs: stat.mtimeMs,
+      size: stat.size,
+      ino: stat.ino,
+      raw: content,
+      rules,
+    })
+    bumpIgnorePolicyGeneration()
+    emitIgnorePolicyChange({
+      version: policyGeneration,
+      reason: 'genofficeignore',
+      affectedRoots: [dir],
+      globalChanged: false,
+    })
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -251,6 +411,29 @@ export const MAX_PATTERN_LENGTH = 500
 export const MAX_ID_LENGTH = 100
 export const MAX_SCOPE_LENGTH = 500
 
+function ruleSignature(r: IgnoreRule): string {
+  return `${r.id}\0${r.pattern}\0${r.enabled ? '1' : '0'}\0${r.scope}`
+}
+
+function computeChangedRules(
+  prev: readonly IgnoreRule[],
+  next: readonly IgnoreRule[],
+): IgnoreRule[] {
+  const prevBySig = new Map<string, IgnoreRule>()
+  for (const r of prev) prevBySig.set(ruleSignature(r), r)
+  const nextBySig = new Map<string, IgnoreRule>()
+  for (const r of next) nextBySig.set(ruleSignature(r), r)
+
+  const changed: IgnoreRule[] = []
+  for (const [sig, rule] of prevBySig) {
+    if (!nextBySig.has(sig)) changed.push(rule)
+  }
+  for (const [sig, rule] of nextBySig) {
+    if (!prevBySig.has(sig)) changed.push(rule)
+  }
+  return changed
+}
+
 export function setActiveIgnoreRules(rules: IgnoreRule[]): boolean {
   if (rules.length > MAX_RULE_COUNT) return false
   for (const r of rules) {
@@ -261,8 +444,19 @@ export function setActiveIgnoreRules(rules: IgnoreRule[]): boolean {
   if (!ok) {
     return false
   }
+  const changed = computeChangedRules(activeRules, candidate)
   activeRules = candidate
   bumpIgnorePolicyGeneration()
+  if (changed.length > 0) {
+    const globalChanged = changed.some((r) => r.scope === 'global')
+    const affectedRoots = globalChanged ? undefined : [...new Set(changed.map((r) => r.scope))]
+    emitIgnorePolicyChange({
+      version: policyGeneration,
+      reason: 'user-rules',
+      ...(affectedRoots ? { affectedRoots } : {}),
+      globalChanged,
+    })
+  }
   return true
 }
 
@@ -282,6 +476,72 @@ function isValidIgnoreRule(r: unknown): r is IgnoreRule {
     (rule.description === undefined || typeof rule.description === 'string') &&
     (rule.source === undefined || rule.source === 'user' || rule.source === '.genofficeignore')
   )
+}
+
+export function isValidIgnorePolicySnapshot(snapshot: unknown): snapshot is IgnorePolicySnapshot {
+  if (typeof snapshot !== 'object' || snapshot === null) return false
+  const s = snapshot as Partial<IgnorePolicySnapshot>
+  if (typeof s.version !== 'number' || !Number.isSafeInteger(s.version) || s.version < 1) {
+    return false
+  }
+  if (!Array.isArray(s.rules) || s.rules.length > MAX_RULE_COUNT) {
+    return false
+  }
+  for (const rule of s.rules) {
+    if (!isValidIgnoreRule(rule)) return false
+  }
+  if (!Array.isArray(s.roots) || s.roots.length > MAX_RULE_COUNT) {
+    return false
+  }
+  for (const root of s.roots) {
+    if (typeof root !== 'string' || root.length === 0 || root.length > MAX_SCOPE_LENGTH) {
+      return false
+    }
+  }
+  return true
+}
+
+export function getIgnorePolicySnapshot(extraRoots?: readonly string[]): IgnorePolicySnapshot {
+  let configuredRoots: string[]
+  try {
+    configuredRoots = knownRootsResolver ? knownRootsResolver() : snapshotRoots
+  } catch {
+    configuredRoots = snapshotRoots
+  }
+  const mergedRoots: string[] = []
+  const seenRoots = new Set<string>()
+  for (const root of [...configuredRoots, ...(extraRoots ?? [])]) {
+    if (
+      typeof root === 'string' &&
+      root.length > 0 &&
+      root.length <= MAX_SCOPE_LENGTH &&
+      !seenRoots.has(root)
+    ) {
+      seenRoots.add(root)
+      mergedRoots.push(root)
+      if (mergedRoots.length >= MAX_RULE_COUNT) break
+    }
+  }
+  return {
+    version: Math.max(1, policyGeneration),
+    rules: activeRules.map((r) => ({ ...r })),
+    roots: mergedRoots,
+  }
+}
+
+/**
+ * Applies a structured-cloneable policy snapshot in memory (used by worker replicas).
+ * Never persists to disk and rejects stale snapshot versions.
+ */
+export function applyIgnorePolicySnapshot(snapshot: unknown): boolean {
+  if (!isValidIgnorePolicySnapshot(snapshot)) return false
+  if (snapshot.version < policyGeneration) return false
+  activeRules = snapshot.rules.map((r) => ({ ...r }))
+  snapshotRoots = [...new Set(snapshot.roots)]
+  policyGeneration = snapshot.version
+  clearRegexCache()
+  clearGenOfficeIgnoreCache()
+  return true
 }
 
 export function loadPersistedIgnoreRules(): IgnoreRule[] {
@@ -318,9 +578,9 @@ function isSubpathOrEqual(target: string, scope: string): boolean {
 
 export function resolveIndexedRoot(targetPath: string, explicitRoot?: string): string | undefined {
   if (explicitRoot) return explicitRoot
-  if (!knownRootsResolver) return undefined
   try {
-    const roots = knownRootsResolver()
+    const roots = knownRootsResolver ? knownRootsResolver() : snapshotRoots
+    if (!roots || roots.length === 0) return undefined
     const matching = roots.filter((r) => isSubpathOrEqual(targetPath, r))
     if (matching.length === 0) return undefined
     return matching.sort((a, b) => b.length - a.length)[0]

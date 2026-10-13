@@ -9,9 +9,21 @@ import { FileIndexStore } from './store'
 import { handleWriterRequest, isWriterRequest, type WriterResponse } from './worker-ops'
 import { applyPolicyMessage, isPolicyMessage } from '../fork/indexing-worker-policy'
 import { withBackgroundBudget } from '../document-memory/cpu-budget'
+import {
+  applyRequestIgnorePolicy,
+  applyWorkerDataIgnorePolicy,
+  applyWorkerIgnorePolicyMessage,
+  isIgnorePolicyMessage,
+  isPathIgnored,
+  type IgnorePolicyAckResponse,
+  type IgnorePolicySnapshot,
+  type IgnorePolicyWorkerMessage,
+} from './worker-ignore-policy'
 
 export type WorkerRequest =
-  { id: number; type: 'extract'; path: string } | { id: number; type: 'scan'; root: string }
+  | { id: number; type: 'extract'; path: string; ignorePolicy?: IgnorePolicySnapshot }
+  | { id: number; type: 'scan'; root: string; ignorePolicy?: IgnorePolicySnapshot }
+  | IgnorePolicyWorkerMessage
 
 export type WorkerResponse =
   | { id: number; type: 'extract'; result: Awaited<ReturnType<typeof extractText>> }
@@ -19,9 +31,15 @@ export type WorkerResponse =
   | { id: number; type: 'scan-part'; files: ScannedFile[] }
   | { id: number; type: 'scan'; files: ScannedFile[]; complete?: boolean; truncated?: boolean }
   | WriterResponse
+  | IgnorePolicyAckResponse
 
 /** Files per `scan-part` message: ~1 ms to deserialize on the receiving thread. */
 export const SCAN_PART_SIZE = 4_000
+
+const startupAck = applyWorkerDataIgnorePolicy(workerData)
+if (startupAck) {
+  parentPort?.postMessage(startupAck satisfies WorkerResponse)
+}
 
 let store: FileIndexStore | null = null
 function writerStore(): FileIndexStore {
@@ -35,17 +53,31 @@ parentPort?.on('message', async (req: WorkerRequest | Parameters<typeof isWriter
     applyPolicyMessage(req)
     return
   }
+  if (isIgnorePolicyMessage(req)) {
+    const ack = applyWorkerIgnorePolicyMessage(req)
+    parentPort?.postMessage(ack satisfies WorkerResponse)
+    return
+  }
+  applyRequestIgnorePolicy(req)
   if (isWriterRequest(req)) {
-    const run = () => handleWriterRequest(writerStore(), req, extractText)
+    const run = () => handleWriterRequest(writerStore(), req, extractText, isPathIgnored)
     const res = req.type === 'index' ? await withBackgroundBudget(run) : await run()
     parentPort?.postMessage(res satisfies WorkerResponse)
     return
   }
   const request = req as WorkerRequest
   if (request.type === 'extract') {
+    if (isPathIgnored(request.path)) {
+      parentPort?.postMessage({
+        id: request.id,
+        type: 'extract',
+        result: { kind: 'error', error: 'path is ignored' },
+      } satisfies WorkerResponse)
+      return
+    }
     const result = await withBackgroundBudget(() => extractText(request.path))
     parentPort?.postMessage({ id: request.id, type: 'extract', result } satisfies WorkerResponse)
-  } else {
+  } else if (request.type === 'scan') {
     const snapshot = scanFileSnapshot(request.root)
     for (let i = 0; i < snapshot.files.length; i += SCAN_PART_SIZE)
       parentPort?.postMessage({

@@ -1,6 +1,11 @@
 import type { Extracted } from './extract'
 import type { ScannedFile } from './scan'
 import { FileIndexStore } from './store'
+import {
+  applyRequestIgnorePolicy,
+  isPathIgnored,
+  type IgnorePolicySnapshot,
+} from './worker-ignore-policy'
 
 /**
  * Writes the file index runs in the extraction worker thread instead of on Electron's main thread.
@@ -10,13 +15,16 @@ import { FileIndexStore } from './store'
  * a stall for every window of the app. The worker thread already holds the parsed text, so it writes it too, through
  * its own connection; the main thread keeps only reads (search, listing) and sends batches of names.
  */
-export type WriterRequest =
+export type WriterRequest = (
   | { id: number; type: 'pending'; files: ScannedFile[] }
   | { id: number; type: 'remove'; paths: string[] }
   /** Parse the file in the worker and write the result there: the text never travels to the main thread. */
   | { id: number; type: 'index'; file: ScannedFile; preserve: boolean }
   /** The parse timed out or the worker died: record the failure (unless a cached body must survive). */
   | { id: number; type: 'index-error'; file: ScannedFile; preserve: boolean; error: string }
+) & {
+  ignorePolicy?: IgnorePolicySnapshot
+}
 
 export type WriterResponse = {
   id: number
@@ -36,40 +44,69 @@ export function isWriterRequest(req: { type?: string }): req is WriterRequest {
 
 /** What `FileIndexer.apply` did on the main thread, as one function the worker (and the tests) can call. */
 export function applyExtracted(
-  store: Pick<FileIndexStore, 'upsert' | 'remove'>,
+  store: Pick<FileIndexStore, 'upsert'> & Partial<Pick<FileIndexStore, 'remove'>>,
   file: ScannedFile,
   result: Extracted,
   preserve: boolean,
-  isIgnored?: (path: string) => boolean,
+  isIgnored: (path: string) => boolean = isPathIgnored,
 ): void {
-  if (isIgnored?.(file.path)) {
-    store.remove([file.path])
+  if (isIgnored(file.path)) {
+    store.remove?.([file.path])
     return
   }
-  if (result.kind === 'text') store.upsert(file, result.text, 'ok')
-  else if (result.kind === 'name-only') store.upsert(file, null, 'name-only')
-  else if (!preserve) store.upsert(file, null, 'error')
+  if (result.kind === 'text') {
+    if (isIgnored(file.path)) {
+      store.remove?.([file.path])
+      return
+    }
+    store.upsert(file, result.text, 'ok')
+  } else if (result.kind === 'name-only') {
+    if (isIgnored(file.path)) {
+      store.remove?.([file.path])
+      return
+    }
+    store.upsert(file, null, 'name-only')
+  } else if (!preserve) {
+    if (isIgnored(file.path)) {
+      store.remove?.([file.path])
+      return
+    }
+    store.upsert(file, null, 'error')
+  }
 }
 
 export async function handleWriterRequest(
   store: FileIndexStore,
   req: WriterRequest,
   extract: (path: string) => Promise<Extracted>,
-  isIgnored?: (path: string) => boolean,
+  isIgnored: (path: string) => boolean = isPathIgnored,
 ): Promise<WriterResponse> {
   try {
-    if (req.type === 'pending') store.upsertPendingBatch(req.files)
-    else if (req.type === 'remove') store.remove(req.paths)
-    else if (req.type === 'index-error')
+    applyRequestIgnorePolicy(req)
+    if (req.type === 'pending') {
+      const allowed: ScannedFile[] = []
+      const ignoredPaths: string[] = []
+      for (const file of req.files) {
+        if (isIgnored(file.path)) ignoredPaths.push(file.path)
+        else allowed.push(file)
+      }
+      if (ignoredPaths.length > 0) store.remove?.(ignoredPaths)
+      if (allowed.length > 0) store.upsertPendingBatch(allowed)
+    } else if (req.type === 'remove') {
+      store.remove(req.paths)
+    } else if (req.type === 'index-error') {
       applyExtracted(store, req.file, { kind: 'error', error: req.error }, req.preserve, isIgnored)
-    else {
-      if (isIgnored?.(req.file.path)) {
-        store.remove([req.file.path])
+    } else {
+      if (isIgnored(req.file.path)) {
+        store.remove?.([req.file.path])
         return { id: req.id, type: 'written', status: 'error' }
       }
       const result = await extract(req.file.path)
-      if (isIgnored?.(req.file.path)) {
-        store.remove([req.file.path])
+      // Yield to the check phase so any ignore-policy message posted to parentPort
+      // while extraction was running is applied before checking admission or writing.
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      if (isIgnored(req.file.path)) {
+        store.remove?.([req.file.path])
         return { id: req.id, type: 'written', status: 'error' }
       }
       applyExtracted(store, req.file, result, req.preserve, isIgnored)
