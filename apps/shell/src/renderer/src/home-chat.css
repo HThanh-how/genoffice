@@ -898,7 +898,7 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--accent, #596cdb);
+  background: var(--accent);
   animation: hc-soft-pulse 1.8s ease-in-out infinite;
 }
 
