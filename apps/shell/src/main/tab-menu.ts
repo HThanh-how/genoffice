@@ -287,8 +287,9 @@ export interface TabMenuInput {
 
 export type TabMenuIcon = keyof typeof EN | 'openInNewWindow' | 'close'
 
-/** Executable and script extensions that should not be launched via default app */
+/** Executable, script, shortcut, and launcher extensions that should not be launched via default app */
 const PROGRAM_EXTENSIONS = new Set([
+  // Windows executables, scripts, shortcuts, and installers
   '.exe',
   '.com',
   '.scr',
@@ -303,12 +304,37 @@ const PROGRAM_EXTENSIONS = new Set([
   '.wsf',
   '.hta',
   '.lnk',
+  '.url',
   '.reg',
-  '.jar',
   '.cpl',
+  '.pif',
+  '.gadget',
+  '.msc',
+  '.inf',
+  '.ins',
+  '.isp',
+  // macOS applications, scripts, workflows, and packages
   '.app',
+  '.command',
+  '.action',
+  '.workflow',
+  '.scpt',
+  '.applescript',
+  '.terminal',
+  '.pkg',
+  '.mpkg',
+  // Linux launchers, binaries, and shell scripts
+  '.desktop',
   '.sh',
+  '.bash',
+  '.zsh',
+  '.csh',
+  '.ksh',
   '.bin',
+  '.run',
+  '.out',
+  // Java archives
+  '.jar',
 ])
 
 export function isProgramFile(path: string): boolean {

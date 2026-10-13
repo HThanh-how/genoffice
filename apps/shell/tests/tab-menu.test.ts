@@ -137,19 +137,57 @@ describe('the tab context menu', () => {
   })
 
   it('prevents opening executable and program files with the default application', () => {
+    // Windows executables, scripts, shortcuts, and installers
     expect(isProgramFile('C:\\Tools\\setup.exe')).toBe(true)
     expect(isProgramFile('/usr/bin/script.bat')).toBe(true)
     expect(isProgramFile('cmd.cmd')).toBe(true)
     expect(isProgramFile('run.ps1')).toBe(true)
     expect(isProgramFile('run.vbs')).toBe(true)
+    expect(isProgramFile('shortcut.lnk')).toBe(true)
+    expect(isProgramFile('internet.url')).toBe(true)
+    expect(isProgramFile('legacy.pif')).toBe(true)
+    expect(isProgramFile('widget.gadget')).toBe(true)
+    // macOS scripts, applications, and workflows
+    expect(isProgramFile('/Users/user/script.command')).toBe(true)
+    expect(isProgramFile('Automator.action')).toBe(true)
+    expect(isProgramFile('Auto.workflow')).toBe(true)
+    expect(isProgramFile('Script.scpt')).toBe(true)
+    expect(isProgramFile('Script.applescript')).toBe(true)
+    // Linux launchers and shell scripts
+    expect(isProgramFile('/usr/share/applications/app.desktop')).toBe(true)
     expect(isProgramFile('run.sh')).toBe(true)
+    expect(isProgramFile('script.bash')).toBe(true)
+    expect(isProgramFile('script.zsh')).toBe(true)
+    expect(isProgramFile('binary.bin')).toBe(true)
+    // Case insensitivity and double extension tricks
+    expect(isProgramFile('SETUP.EXE')).toBe(true)
+    expect(isProgramFile('LAUNCH.COMMAND')).toBe(true)
+    expect(isProgramFile('report.pdf.exe')).toBe(true)
+    expect(isProgramFile('summary.docx.command')).toBe(true)
+
+    // Valid documents supported by GenOffice and external tools must NOT be blocked
     expect(isProgramFile('document.docx')).toBe(false)
-    expect(isProgramFile('sheet.xlsx')).toBe(false)
+    expect(isProgramFile('spreadsheet.xlsx')).toBe(false)
+    expect(isProgramFile('presentation.pptx')).toBe(false)
+    expect(isProgramFile('document.pdf')).toBe(false)
     expect(isProgramFile('notes.md')).toBe(false)
+    expect(isProgramFile('page.html')).toBe(false)
+    expect(isProgramFile('data.csv')).toBe(false)
+    expect(isProgramFile('readme.txt')).toBe(false)
+    expect(isProgramFile('Báo cáo tổng hợp.docx')).toBe(false)
+    expect(isProgramFile('日本語テスト.xlsx')).toBe(false)
 
     const programTab = tab('prog', { filePath: 'D:\\Downloads\\malicious.exe' })
     const progMenu = menu(programTab, [home, programTab], { fileExists: true }).items
     expect(enabled(progMenu.get('Open with the default app'))).toBe(false)
+
+    const commandTab = tab('cmd-tab', { filePath: '/Users/work/script.command' })
+    const cmdMenu = menu(commandTab, [home, commandTab], { fileExists: true }).items
+    expect(enabled(cmdMenu.get('Open with the default app'))).toBe(false)
+
+    const desktopTab = tab('dsk-tab', { filePath: '/home/user/app.desktop' })
+    const dskMenu = menu(desktopTab, [home, desktopTab], { fileExists: true }).items
+    expect(enabled(dskMenu.get('Open with the default app'))).toBe(false)
   })
 
   it('closes the other tabs, the tabs to the right, or all of them, never Home', () => {
