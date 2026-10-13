@@ -4066,6 +4066,13 @@ function attachDocumentMemory(
   pendingFolderScanPaths = []
   for (const folder of pendingScans) startFolderScan(folder)
   indexAddedFoldersNotYetScanned()
+  for (const listener of [...folderScanReadyListeners]) {
+    try {
+      listener()
+    } catch {
+      // A faulty listener must not block storage startup readiness.
+    }
+  }
   setTimeout(() => {
     documentMemory
       ?.runBackupRetentionMaintenance()
@@ -4082,6 +4089,9 @@ function attachDocumentMemory(
   }, 15_000)
   storageStartup.set('ready')
 }
+
+const folderScanReadyListeners = new Set<() => void>()
+let disposeDocumentIndexIpc: (() => void) | null = null
 
 let legacyConverter: LegacyConverter | null = null
 
@@ -4687,10 +4697,17 @@ function registerHomeIpc(): void {
       getScanner: () => folderScan,
     })
   }
-  registerDocumentIndexIpc({
+  disposeDocumentIndexIpc?.()
+  disposeDocumentIndexIpc = registerDocumentIndexIpc({
     ipcMain,
     getDocumentMemory: () => documentMemory,
     getFolderScan: () => folderScan,
+    onScannerReady: (listener) => {
+      folderScanReadyListeners.add(listener)
+      return () => {
+        folderScanReadyListeners.delete(listener)
+      }
+    },
     getKnownSources: () => knownSources,
     dbPath: () =>
       documentMemory?.dbPath ?? join(resolveDbDir(app.getPath('userData')), 'document-memory.db'),
@@ -7457,6 +7474,9 @@ app.on('will-quit', (event) => {
   if (appShutdownState === 'shutting-down') return
   appShutdownState = 'shutting-down'
 
+  disposeDocumentIndexIpc?.()
+  disposeDocumentIndexIpc = null
+  folderScanReadyListeners.clear()
   folderScan?.close()
   knownSources?.close()
   fileIndexer?.stop()

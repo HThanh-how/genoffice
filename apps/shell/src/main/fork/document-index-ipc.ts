@@ -28,6 +28,7 @@ export interface DocumentIndexIpcDeps {
   ipcMain: Pick<IpcMain, 'handle'>
   getDocumentMemory: () => DocumentMemoryManager | null
   getFolderScan: () => FolderScanManager | null
+  onScannerReady?: (listener: () => void) => (() => void) | void
   dbPath: () => string
   getKnownSources?: () => KnownSourcesManager | null
   settingsPath?: string | (() => string)
@@ -51,7 +52,6 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   const folderCounts = createSwrCache<FolderChunkProgress>()
   let issueReader: IndexIssueReader | null = null
   const reader = (): IndexIssueReader => (issueReader ??= new IndexIssueReader(deps.dbPath()))
-
   const fail = (m: string): never => {
     throw new Error(m)
   }
@@ -69,7 +69,6 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
       : typeof r === 'string' && ISSUE_REASONS.has(r as IndexIssueReason)
         ? (r as IndexIssueReason)
         : fail('reason')
-
   const snapshotCtx = {
     getDocumentMemory,
     getFolderScan,
@@ -78,13 +77,13 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
     dbPath: deps.dbPath,
     settingsPath: deps.settingsPath,
   }
-
   registerFolderAndModelHandlers(deps, () => folderCounts.invalidate())
   registerDocumentIndexImportanceHandlers(deps)
   registerDocumentIndexStorageHandlers(deps)
   const ignoreReconcile = createIgnoreReconcileController({
     ipcMain,
     getFolderScan,
+    onScannerReady: deps.onScannerReady,
     onRefreshFileIndex: deps.onRefreshFileIndex,
     invalidateFolderCounts: () => folderCounts.invalidate(),
   })
@@ -234,12 +233,13 @@ export function registerDocumentIndexIpc(deps: DocumentIndexIpcDeps): () => void
   const snap = (f?: boolean) => getDocumentIndexSnapshot(snapshotCtx, f)
   ipcMain.handle(HOME_CHANNELS.getIndexingActivity, (): HomeIndexingActivity => snap().activity)
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexSnapshot, (_e, f?: boolean) => snap(f))
-  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getDocumentIndexStorageBudget, (_e, f?: boolean) => {
-    return snap(f).storageBudget
-  })
-  ipcMain.handle('get-document-index-diagnostics', (_e, f?: boolean) => {
-    return getDocumentIndexDiagnostics(snapshotCtx, f)
-  })
+  ipcMain.handle(
+    DOCUMENT_INDEX_CHANNELS.getDocumentIndexStorageBudget,
+    (_e, f?: boolean) => snap(f).storageBudget,
+  )
+  ipcMain.handle('get-document-index-diagnostics', (_e, f?: boolean) =>
+    getDocumentIndexDiagnostics(snapshotCtx, f),
+  )
   return () => {
     ignoreReconcile.dispose()
     issueReader?.close()

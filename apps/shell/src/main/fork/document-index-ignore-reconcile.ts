@@ -16,6 +16,7 @@ type RegisteredFolderSummary = ReturnType<FolderScanManager['folders']>[number]
 export interface IgnoreReconcileDeps {
   ipcMain?: Pick<IpcMain, 'handle'>
   getFolderScan: () => ReconcileScanHandle | null
+  onScannerReady?: (listener: () => void) => (() => void) | void
   onRefreshFileIndex?: (roots: string[]) => void
   invalidateFolderCounts?: () => void
   debounceMs?: number
@@ -27,6 +28,7 @@ export interface IgnoreReconcileDeps {
 export interface IgnoreReconcileController {
   schedule: (event?: Partial<IgnorePolicyChangeEvent>) => void
   flush: () => Promise<void>
+  notifyScannerReady: () => void
   dispose: () => void
 }
 
@@ -35,6 +37,19 @@ type RootRegistrySnapshot = {
   scan: ReconcileScanHandle | null
   summaries: RegisteredFolderSummary[]
   roots: string[]
+}
+
+const MAX_PENDING_SCOPES = 256
+const scannerReadyListeners = new Set<() => void>()
+
+export function notifyIgnoreReconcileScannerReady(): void {
+  for (const listener of [...scannerReadyListeners]) {
+    try {
+      listener()
+    } catch {
+      // A faulty listener must not break scanner initialization.
+    }
+  }
 }
 
 function normalizeScopePath(rawPath: string): string {
@@ -77,33 +92,90 @@ export function createIgnoreReconcileController(
   const retryBaseMs = deps.retryBaseMs ?? 300
   const retryMaxMs = deps.retryMaxMs ?? 5_000
   const maxRetries = deps.maxRetries ?? 6
+  const maxCooldownRetries = Math.max(maxRetries, 4)
+  const maxTotalRetries = maxRetries + maxCooldownRetries
+  const cooldownDelayMs = Math.min(retryMaxMs * 2, Math.max(retryMaxMs, retryBaseMs * 4))
 
+  const pendingScopes = new Map<string, string>()
   const dirtyRoots = new Set<string>()
   const runningRoots = new Set<string>()
   const rerunRoots = new Set<string>()
   const deferredBusyRoots = new Set<string>()
+  const transientFailedRoots = new Set<string>()
   const pendingIncompleteRoots = new Set<string>()
   const pendingUnavailableRoots = new Set<string>()
   const unsupportedRoots = new Set<string>()
   const retryCounts = new Map<string, number>()
   const retryTimers = new Map<string, NodeJS.Timeout>()
   const scanConfirmedRootKeys = new WeakMap<object, Set<string>>()
+  const initializedScans = new WeakSet<object>()
   let everSawConfiguredRoots = false
-  let watchedRunner: Promise<unknown> | null = null
   let observedScan: ReconcileScanHandle | null = null
+  let lastRegistryRetryScan: ReconcileScanHandle | null = null
   let unsubscribeScanRoots: (() => void) | null = null
+  let unsubscribeScannerReadyDep: (() => void) | null = null
   let pendingGlobal = false
-  let globalRetryCount = 0
-  let globalRetryTimer: NodeJS.Timeout | null = null
+  let registryRetryCount = 0
+  let registryRetryTimer: NodeJS.Timeout | null = null
   let debounceTimer: NodeJS.Timeout | null = null
+  let isFlushing = false
   let lastScheduledVersion = -1
   let disposed = false
 
   const hasPendingRootWork = (): boolean =>
     dirtyRoots.size > 0 ||
     deferredBusyRoots.size > 0 ||
+    transientFailedRoots.size > 0 ||
     pendingIncompleteRoots.size > 0 ||
     pendingUnavailableRoots.size > 0
+
+  const hasAnyPendingWork = (): boolean =>
+    pendingGlobal || pendingScopes.size > 0 || hasPendingRootWork()
+
+  const hasMatchingRoot = (set: Set<string>, root: string): boolean => {
+    const key = normalizeRootKey(root)
+    for (const item of set) {
+      if (normalizeRootKey(item) === key) return true
+    }
+    return false
+  }
+
+  const deleteMatchingRoot = (set: Set<string>, root: string): void => {
+    const key = normalizeRootKey(root)
+    for (const item of [...set]) {
+      if (normalizeRootKey(item) === key) {
+        set.delete(item)
+      }
+    }
+  }
+
+  const getRetryCount = (root: string): number => retryCounts.get(normalizeRootKey(root)) ?? 0
+
+  const setRetryCount = (root: string, count: number): void => {
+    retryCounts.set(normalizeRootKey(root), count)
+  }
+
+  const clearRetryCount = (root: string): void => {
+    retryCounts.delete(normalizeRootKey(root))
+  }
+
+  const hasRetryTimer = (root: string): boolean => retryTimers.has(normalizeRootKey(root))
+
+  const clearRetryTimer = (root: string): void => {
+    const key = normalizeRootKey(root)
+    const timer = retryTimers.get(key)
+    if (timer !== undefined) {
+      clearTimeout(timer)
+      retryTimers.delete(key)
+    }
+  }
+
+  const clearRegistryRetryTimer = (): void => {
+    if (registryRetryTimer) {
+      clearTimeout(registryRetryTimer)
+      registryRetryTimer = null
+    }
+  }
 
   const getConfirmedSetForScan = (scan: ReconcileScanHandle): Set<string> => {
     let set = scanConfirmedRootKeys.get(scan)
@@ -114,6 +186,63 @@ export function createIgnoreReconcileController(
     return set
   }
 
+  const recordPendingScope = (rawScope: string): boolean => {
+    if (pendingGlobal) return false
+    const normalized = normalizeScopePath(rawScope)
+    const key = normalizeRootKey(normalized)
+    if (pendingScopes.has(key)) return false
+    if (pendingScopes.size >= MAX_PENDING_SCOPES) {
+      pendingScopes.clear()
+      pendingGlobal = true
+      return true
+    }
+    pendingScopes.set(key, normalized)
+    return true
+  }
+
+  const resolvePendingScopes = (
+    snapshot: RootRegistrySnapshot,
+    finalizeUnmatched: boolean,
+  ): string[] => {
+    if (
+      pendingScopes.size === 0 ||
+      snapshot.kind === 'unavailable' ||
+      snapshot.kind === 'uninitialized'
+    ) {
+      return []
+    }
+    if (snapshot.kind === 'empty') {
+      if (finalizeUnmatched && snapshot.scan && initializedScans.has(snapshot.scan)) {
+        pendingScopes.clear()
+      }
+      return []
+    }
+
+    const matchedRoots: string[] = []
+    for (const [scopeKey, scopePath] of [...pendingScopes.entries()]) {
+      let matched = false
+      for (const configuredRoot of snapshot.roots) {
+        if (scopesIntersect(configuredRoot, scopePath)) {
+          matchedRoots.push(configuredRoot)
+          matched = true
+        }
+      }
+      if (matched || finalizeUnmatched) {
+        pendingScopes.delete(scopeKey)
+      }
+    }
+    return matchedRoots
+  }
+
+  const scheduleFlushSoon = (delayMs = debounceMs): void => {
+    if (disposed || debounceTimer !== null || isFlushing) return
+    debounceTimer = setTimeout(() => {
+      debounceTimer = null
+      void flush()
+    }, delayMs)
+    debounceTimer.unref?.()
+  }
+
   const inspectScanRoots = (): RootRegistrySnapshot => {
     let scan: ReconcileScanHandle | null
     try {
@@ -121,11 +250,7 @@ export function createIgnoreReconcileController(
     } catch {
       scan = null
     }
-    if (
-      !scan ||
-      typeof scan.folders !== 'function' ||
-      (scan as { closed?: boolean }).closed === true
-    ) {
+    if (!scan || typeof scan.folders !== 'function') {
       return { kind: 'unavailable', scan: null, summaries: [], roots: [] }
     }
 
@@ -140,8 +265,20 @@ export function createIgnoreReconcileController(
       return { kind: 'unavailable', scan: null, summaries: [], roots: [] }
     }
 
+    if (scan !== lastRegistryRetryScan) {
+      lastRegistryRetryScan = scan
+      registryRetryCount = 0
+    }
+    if (scan !== observedScan) {
+      attachScanLifecycleListener(scan)
+      if (hasAnyPendingWork()) {
+        scheduleFlushSoon(Math.min(debounceMs, 15))
+      }
+    }
+
     const confirmedOnScan = getConfirmedSetForScan(scan)
     if (summaries.length > 0) {
+      initializedScans.add(scan)
       everSawConfiguredRoots = true
       for (const summary of summaries) {
         confirmedOnScan.add(normalizeRootKey(summary.root))
@@ -154,7 +291,7 @@ export function createIgnoreReconcileController(
       }
     }
 
-    if (confirmedOnScan.size === 0 && (everSawConfiguredRoots || hasPendingRootWork())) {
+    if (!initializedScans.has(scan) && (everSawConfiguredRoots || hasAnyPendingWork())) {
       return { kind: 'uninitialized', scan, summaries: [], roots: [] }
     }
 
@@ -163,57 +300,26 @@ export function createIgnoreReconcileController(
 
   const configuredRoots = (): string[] => inspectScanRoots().roots
 
-  const deleteMatchingRoot = (set: Set<string>, root: string): void => {
-    const key = normalizeRootKey(root)
-    for (const item of [...set]) {
-      if (normalizeRootKey(item) === key) {
-        set.delete(item)
-      }
-    }
-  }
-
-  const clearRetryTimer = (root: string): void => {
-    const key = normalizeRootKey(root)
-    for (const [timerRoot, timer] of [...retryTimers.entries()]) {
-      if (normalizeRootKey(timerRoot) === key) {
-        clearTimeout(timer)
-        retryTimers.delete(timerRoot)
-      }
-    }
-  }
-
-  const clearRetryCount = (root: string): void => {
-    const key = normalizeRootKey(root)
-    for (const countRoot of [...retryCounts.keys()]) {
-      if (normalizeRootKey(countRoot) === key) {
-        retryCounts.delete(countRoot)
-      }
-    }
-  }
-
-  const clearGlobalRetryTimer = (): void => {
-    if (globalRetryTimer) {
-      clearTimeout(globalRetryTimer)
-      globalRetryTimer = null
-    }
-  }
-
-  const scheduleGlobalRetry = (): void => {
-    if (disposed || !pendingGlobal || globalRetryTimer) return
-    const attempt = globalRetryCount + 1
-    if (attempt > maxRetries) return
-    globalRetryCount = attempt
-    const backoff = Math.min(retryBaseMs * 2 ** (attempt - 1), retryMaxMs)
-    globalRetryTimer = setTimeout(() => {
-      globalRetryTimer = null
+  const scheduleRegistryRetry = (): void => {
+    if (disposed || (!pendingGlobal && pendingScopes.size === 0) || registryRetryTimer) return
+    const attempt = registryRetryCount + 1
+    if (attempt > maxTotalRetries) return
+    registryRetryCount = attempt
+    const backoff =
+      attempt <= maxRetries
+        ? Math.min(retryBaseMs * 2 ** (attempt - 1), retryMaxMs)
+        : cooldownDelayMs
+    registryRetryTimer = setTimeout(() => {
+      registryRetryTimer = null
       void flush()
     }, backoff)
-    globalRetryTimer.unref?.()
+    registryRetryTimer.unref?.()
   }
 
   const clearRootPendingState = (root: string): void => {
     deleteMatchingRoot(dirtyRoots, root)
     deleteMatchingRoot(deferredBusyRoots, root)
+    deleteMatchingRoot(transientFailedRoots, root)
     deleteMatchingRoot(pendingIncompleteRoots, root)
     deleteMatchingRoot(pendingUnavailableRoots, root)
     deleteMatchingRoot(unsupportedRoots, root)
@@ -242,6 +348,7 @@ export function createIgnoreReconcileController(
     const sets = [
       dirtyRoots,
       deferredBusyRoots,
+      transientFailedRoots,
       pendingIncompleteRoots,
       pendingUnavailableRoots,
       unsupportedRoots,
@@ -261,12 +368,13 @@ export function createIgnoreReconcileController(
   const scheduleRetry = (root: string, delayMs: number): void => {
     if (disposed) return
     clearRetryTimer(root)
+    const key = normalizeRootKey(root)
     const timer = setTimeout(() => {
-      retryTimers.delete(root)
+      retryTimers.delete(key)
       void reconcileSingleRoot(root)
     }, delayMs)
     timer.unref?.()
-    retryTimers.set(root, timer)
+    retryTimers.set(key, timer)
   }
 
   const wakeDeferredBusyRoots = (): void => {
@@ -286,9 +394,25 @@ export function createIgnoreReconcileController(
 
     pruneConfirmedRemovedRoots(snapshot)
 
+    if (snapshot.kind === 'ready' && pendingScopes.size > 0) {
+      const resolvedRoots = resolvePendingScopes(snapshot, false)
+      for (const r of resolvedRoots) {
+        if (!hasMatchingRoot(dirtyRoots, r)) {
+          dirtyRoots.add(r)
+        }
+        if (!hasRetryTimer(r) && !hasMatchingRoot(runningRoots, r)) {
+          clearRetryCount(r)
+          scheduleRetry(r, debounceMs)
+        }
+      }
+      if (pendingScopes.size > 0) {
+        scheduleFlushSoon(debounceMs)
+      }
+    }
+
     if (pendingGlobal && snapshot.kind === 'ready') {
-      clearGlobalRetryTimer()
-      globalRetryCount = 0
+      clearRegistryRetryTimer()
+      registryRetryCount = 0
       void flush()
       return
     }
@@ -308,10 +432,23 @@ export function createIgnoreReconcileController(
         summary &&
         !summary.unavailable &&
         summary.state === 'complete' &&
-        !retryTimers.has(root) &&
-        !runningRoots.has(root)
+        !hasRetryTimer(root) &&
+        !hasMatchingRoot(runningRoots, root)
       ) {
-        retryCounts.set(root, maxRetries)
+        setRetryCount(root, maxRetries)
+        scheduleRetry(root, debounceMs)
+      }
+    }
+    for (const root of [...transientFailedRoots]) {
+      const summary = summaryByKey.get(normalizeRootKey(root))
+      if (
+        summary &&
+        !summary.unavailable &&
+        summary.state === 'complete' &&
+        !hasRetryTimer(root) &&
+        !hasMatchingRoot(runningRoots, root)
+      ) {
+        setRetryCount(root, maxTotalRetries)
         scheduleRetry(root, debounceMs)
       }
     }
@@ -324,9 +461,20 @@ export function createIgnoreReconcileController(
 
   const attachScanLifecycleListener = (scan: ReconcileScanHandle | null): void => {
     if (disposed || !scan || observedScan === scan) return
+    const previousScan = observedScan
     unsubscribeScanRoots?.()
     unsubscribeScanRoots = null
     observedScan = scan
+    if (previousScan !== null) {
+      registryRetryCount = 0
+      retryCounts.clear()
+      for (const r of [...unsupportedRoots]) {
+        unsupportedRoots.delete(r)
+        if (!hasMatchingRoot(dirtyRoots, r)) {
+          dirtyRoots.add(r)
+        }
+      }
+    }
     if (typeof scan.onRootsChanged === 'function') {
       unsubscribeScanRoots = scan.onRootsChanged(() => {
         onScanLifecycleChange()
@@ -334,25 +482,48 @@ export function createIgnoreReconcileController(
     }
   }
 
-  const watchActiveScanRunner = (scan: unknown): void => {
-    const candidate = (scan as { runner?: Promise<unknown> | null } | null)?.runner
-    if (!candidate || typeof candidate.then !== 'function' || watchedRunner === candidate) {
-      return
+  const notifyScannerReady = (): void => {
+    if (disposed) return
+    clearRegistryRetryTimer()
+    registryRetryCount = 0
+    for (const root of [...deferredBusyRoots, ...transientFailedRoots, ...pendingIncompleteRoots]) {
+      clearRetryCount(root)
     }
-    watchedRunner = candidate
-    void candidate.finally(() => {
-      if (watchedRunner === candidate) {
-        watchedRunner = null
+    const snapshot = inspectScanRoots()
+    if (snapshot.scan) {
+      attachScanLifecycleListener(snapshot.scan)
+    }
+    if (hasAnyPendingWork()) {
+      if (debounceTimer) {
+        clearTimeout(debounceTimer)
+        debounceTimer = null
       }
-      onScanLifecycleChange()
-      wakeDeferredBusyRoots()
-    })
+      if (!isFlushing) {
+        void flush()
+      }
+    }
+  }
+
+  const scheduleTransientOrBusyRetry = (root: string, isBusy: boolean): void => {
+    const attempt = getRetryCount(root) + 1
+    if (attempt <= maxRetries) {
+      setRetryCount(root, attempt)
+      const backoff = Math.min(retryBaseMs * 2 ** (attempt - 1), retryMaxMs)
+      scheduleRetry(root, backoff)
+    } else if (attempt <= maxTotalRetries) {
+      setRetryCount(root, attempt)
+      scheduleRetry(root, isBusy ? retryMaxMs : cooldownDelayMs)
+    } else {
+      setRetryCount(root, maxTotalRetries)
+    }
   }
 
   const reconcileSingleRoot = async (root: string): Promise<void> => {
     if (disposed) return
-    if (runningRoots.has(root)) {
-      rerunRoots.add(root)
+    if (hasMatchingRoot(runningRoots, root)) {
+      if (!hasMatchingRoot(rerunRoots, root)) {
+        rerunRoots.add(root)
+      }
       return
     }
     clearRetryTimer(root)
@@ -361,16 +532,9 @@ export function createIgnoreReconcileController(
       const snapshot = inspectScanRoots()
       const scan = snapshot.scan
       if (!scan || snapshot.kind === 'unavailable') {
-        dirtyRoots.add(root)
-        deferredBusyRoots.add(root)
-        const attempt = (retryCounts.get(root) ?? 0) + 1
-        if (attempt <= maxRetries) {
-          retryCounts.set(root, attempt)
-          const backoff = Math.min(retryBaseMs * 2 ** (attempt - 1), retryMaxMs)
-          scheduleRetry(root, backoff)
-        } else {
-          clearRetryCount(root)
-        }
+        if (!hasMatchingRoot(dirtyRoots, root)) dirtyRoots.add(root)
+        if (!hasMatchingRoot(deferredBusyRoots, root)) deferredBusyRoots.add(root)
+        scheduleTransientOrBusyRetry(root, true)
         return
       }
 
@@ -386,7 +550,12 @@ export function createIgnoreReconcileController(
         return
       }
 
-      const res = (await scan.reconcile(root)) as { ok?: boolean; reason?: string } | null
+      if (snapshot.kind === 'ready' && !currentKeys.has(rootKey)) {
+        clearRootPendingState(root)
+        return
+      }
+
+      const res = await scan.reconcile(root)
       if (disposed) return
       if (res && res.ok === true) {
         confirmedOnScan.add(rootKey)
@@ -397,84 +566,87 @@ export function createIgnoreReconcileController(
         return
       }
 
-      dirtyRoots.add(root)
       const reason = res && typeof res.reason === 'string' ? res.reason : 'failed'
 
       if (reason === 'unsupported') {
+        deleteMatchingRoot(dirtyRoots, root)
         deleteMatchingRoot(deferredBusyRoots, root)
+        deleteMatchingRoot(transientFailedRoots, root)
         deleteMatchingRoot(pendingIncompleteRoots, root)
         deleteMatchingRoot(pendingUnavailableRoots, root)
-        unsupportedRoots.add(root)
+        if (!hasMatchingRoot(unsupportedRoots, root)) {
+          unsupportedRoots.add(root)
+        }
+        clearRetryTimer(root)
         clearRetryCount(root)
         return
       }
 
+      if (!hasMatchingRoot(dirtyRoots, root)) {
+        dirtyRoots.add(root)
+      }
+
       if (reason === 'unavailable') {
         deleteMatchingRoot(deferredBusyRoots, root)
+        deleteMatchingRoot(transientFailedRoots, root)
         deleteMatchingRoot(pendingIncompleteRoots, root)
-        pendingUnavailableRoots.add(root)
-        const attempt = (retryCounts.get(root) ?? 0) + 1
+        if (!hasMatchingRoot(pendingUnavailableRoots, root)) {
+          pendingUnavailableRoots.add(root)
+        }
+        const attempt = getRetryCount(root) + 1
         if (attempt <= maxRetries) {
-          retryCounts.set(root, attempt)
+          setRetryCount(root, attempt)
           const backoff = Math.min(retryBaseMs * 2 ** (attempt - 1), retryMaxMs)
           scheduleRetry(root, backoff)
         } else {
-          retryCounts.set(root, maxRetries)
+          setRetryCount(root, maxRetries)
         }
         return
       }
 
       if (reason === 'not-complete') {
         deleteMatchingRoot(deferredBusyRoots, root)
-        pendingIncompleteRoots.add(root)
-        watchActiveScanRunner(scan)
+        deleteMatchingRoot(transientFailedRoots, root)
+        if (!hasMatchingRoot(pendingIncompleteRoots, root)) {
+          pendingIncompleteRoots.add(root)
+        }
         const summary = snapshot.summaries.find((f) => normalizeRootKey(f.root) === rootKey)
-        const hasLifecycleHook =
-          typeof scan.onRootsChanged === 'function' ||
-          Boolean((scan as { runner?: unknown }).runner)
+        const hasLifecycleHook = typeof scan.onRootsChanged === 'function'
         if (!hasLifecycleHook && summary?.state !== 'stopped') {
-          const attempt = (retryCounts.get(root) ?? 0) + 1
-          if (attempt <= maxRetries) {
-            retryCounts.set(root, attempt)
-            const backoff = Math.min(retryBaseMs * 2 ** (attempt - 1), retryMaxMs)
-            scheduleRetry(root, backoff)
-          } else {
-            clearRetryCount(root)
-          }
+          scheduleTransientOrBusyRetry(root, false)
         } else {
           clearRetryCount(root)
         }
         return
       }
 
-      deferredBusyRoots.add(root)
-      watchActiveScanRunner(scan)
-      const attempt = (retryCounts.get(root) ?? 0) + 1
-      if (attempt <= maxRetries) {
-        retryCounts.set(root, attempt)
-        const backoff = Math.min(retryBaseMs * 2 ** (attempt - 1), retryMaxMs)
-        scheduleRetry(root, backoff)
-      } else if (!(scan as { runner?: unknown }).runner && attempt <= maxRetries + 2) {
-        retryCounts.set(root, attempt)
-        scheduleRetry(root, retryMaxMs)
-      } else {
-        clearRetryCount(root)
+      if (reason === 'busy') {
+        deleteMatchingRoot(transientFailedRoots, root)
+        if (!hasMatchingRoot(deferredBusyRoots, root)) {
+          deferredBusyRoots.add(root)
+        }
+        scheduleTransientOrBusyRetry(root, true)
+        return
       }
+
+      deleteMatchingRoot(deferredBusyRoots, root)
+      if (!hasMatchingRoot(transientFailedRoots, root)) {
+        transientFailedRoots.add(root)
+      }
+      scheduleTransientOrBusyRetry(root, false)
     } catch {
-      dirtyRoots.add(root)
-      deferredBusyRoots.add(root)
-      const attempt = (retryCounts.get(root) ?? 0) + 1
-      if (attempt <= maxRetries) {
-        retryCounts.set(root, attempt)
-        const backoff = Math.min(retryBaseMs * 2 ** (attempt - 1), retryMaxMs)
-        scheduleRetry(root, backoff)
-      } else {
-        clearRetryCount(root)
+      if (!hasMatchingRoot(dirtyRoots, root)) {
+        dirtyRoots.add(root)
       }
+      deleteMatchingRoot(deferredBusyRoots, root)
+      if (!hasMatchingRoot(transientFailedRoots, root)) {
+        transientFailedRoots.add(root)
+      }
+      scheduleTransientOrBusyRetry(root, false)
     } finally {
-      runningRoots.delete(root)
-      if (!disposed && rerunRoots.has(root)) {
-        rerunRoots.delete(root)
+      deleteMatchingRoot(runningRoots, root)
+      if (!disposed && hasMatchingRoot(rerunRoots, root)) {
+        deleteMatchingRoot(rerunRoots, root)
         clearRetryCount(root)
         scheduleRetry(root, debounceMs)
       }
@@ -487,47 +659,74 @@ export function createIgnoreReconcileController(
       debounceTimer = null
     }
     if (disposed) return
-    const snapshot = inspectScanRoots()
-    if (snapshot.scan) {
-      attachScanLifecycleListener(snapshot.scan)
-    }
-    pruneConfirmedRemovedRoots(snapshot)
-
-    const allRoots = snapshot.roots
-    const targetRoots: string[] = []
-    const seen = new Set<string>()
-    const addTarget = (r: string): void => {
-      const key = normalizeRootKey(r)
-      if (!seen.has(key)) {
-        seen.add(key)
-        targetRoots.push(r)
+    isFlushing = true
+    try {
+      const snapshot = inspectScanRoots()
+      if (snapshot.scan) {
+        attachScanLifecycleListener(snapshot.scan)
       }
-    }
+      pruneConfirmedRemovedRoots(snapshot)
 
-    if (pendingGlobal) {
-      for (const r of allRoots) {
-        dirtyRoots.add(r)
-        addTarget(r)
+      const allRoots = snapshot.roots
+      const targetRoots: string[] = []
+      const seen = new Set<string>()
+      const addTarget = (r: string): void => {
+        const key = normalizeRootKey(r)
+        if (!seen.has(key)) {
+          seen.add(key)
+          targetRoots.push(r)
+        }
       }
-      if (snapshot.kind === 'ready' || snapshot.kind === 'empty') {
-        pendingGlobal = false
-        clearGlobalRetryTimer()
-        globalRetryCount = 0
-      } else {
-        scheduleGlobalRetry()
+
+      if (pendingScopes.size > 0) {
+        const resolvedFromScopes = resolvePendingScopes(snapshot, true)
+        for (const r of resolvedFromScopes) {
+          if (!hasMatchingRoot(dirtyRoots, r)) {
+            dirtyRoots.add(r)
+          }
+          addTarget(r)
+        }
       }
-    }
-    for (const r of dirtyRoots) addTarget(r)
-    for (const r of deferredBusyRoots) addTarget(r)
-    for (const r of pendingIncompleteRoots) addTarget(r)
-    for (const r of pendingUnavailableRoots) addTarget(r)
 
-    deps.invalidateFolderCounts?.()
-    deps.onRefreshFileIndex?.(targetRoots.length > 0 ? targetRoots : allRoots)
+      if (pendingGlobal) {
+        for (const r of allRoots) {
+          if (!hasMatchingRoot(dirtyRoots, r)) {
+            dirtyRoots.add(r)
+          }
+          addTarget(r)
+        }
+        if (snapshot.kind === 'ready' || snapshot.kind === 'empty') {
+          pendingGlobal = false
+          clearRegistryRetryTimer()
+          registryRetryCount = 0
+        }
+      }
 
-    for (const root of targetRoots) {
-      if (disposed) break
-      await reconcileSingleRoot(root)
+      if (
+        (pendingGlobal || pendingScopes.size > 0) &&
+        (snapshot.kind === 'unavailable' || snapshot.kind === 'uninitialized')
+      ) {
+        scheduleRegistryRetry()
+      } else if (!pendingGlobal && pendingScopes.size === 0) {
+        clearRegistryRetryTimer()
+        registryRetryCount = 0
+      }
+
+      for (const r of dirtyRoots) addTarget(r)
+      for (const r of deferredBusyRoots) addTarget(r)
+      for (const r of transientFailedRoots) addTarget(r)
+      for (const r of pendingIncompleteRoots) addTarget(r)
+      for (const r of pendingUnavailableRoots) addTarget(r)
+
+      deps.invalidateFolderCounts?.()
+      deps.onRefreshFileIndex?.(targetRoots.length > 0 ? targetRoots : allRoots)
+
+      for (const root of targetRoots) {
+        if (disposed) break
+        await reconcileSingleRoot(root)
+      }
+    } finally {
+      isFlushing = false
     }
   }
 
@@ -548,6 +747,8 @@ export function createIgnoreReconcileController(
 
     let eventGlobal = !isScopedOnly
     const eventRoots: string[] = []
+    let addedPendingScope = false
+
     if (!isScopedOnly) {
       for (const r of allRoots) eventRoots.push(r)
     } else {
@@ -564,34 +765,53 @@ export function createIgnoreReconcileController(
             matchedAny = true
           }
         }
-        if (!matchedAny && allRoots.length === 0) {
-          eventRoots.push(rawScope)
+        if (!matchedAny && snapshot.kind !== 'ready') {
+          if (recordPendingScope(rawScope)) {
+            addedPendingScope = true
+          }
         }
       }
     }
 
     const existingDirtyKeys = new Set([...dirtyRoots].map(normalizeRootKey))
-    let addedScope = false
+    let addedScope = addedPendingScope
     if (eventGlobal) {
-      clearGlobalRetryTimer()
-      globalRetryCount = 0
+      pendingScopes.clear()
+      clearRegistryRetryTimer()
+      registryRetryCount = 0
       if (!pendingGlobal) {
         pendingGlobal = true
         addedScope = true
       }
+      if (isNewVersion) {
+        for (const r of [...unsupportedRoots]) {
+          unsupportedRoots.delete(r)
+          eventRoots.push(r)
+        }
+        for (const r of [...transientFailedRoots, ...pendingUnavailableRoots]) {
+          clearRetryCount(r)
+        }
+      }
+    } else if (addedPendingScope) {
+      clearRegistryRetryTimer()
+      registryRetryCount = 0
     }
+
     for (const r of eventRoots) {
       const key = normalizeRootKey(r)
       if (!existingDirtyKeys.has(key)) {
         existingDirtyKeys.add(key)
         dirtyRoots.add(r)
         addedScope = true
-      } else if (isNewVersion) {
+      }
+      if (isNewVersion) {
         deleteMatchingRoot(unsupportedRoots, r)
         clearRetryCount(r)
       }
-      if (runningRoots.has(r) && (isNewVersion || addedScope)) {
-        rerunRoots.add(r)
+      if (hasMatchingRoot(runningRoots, r) && (isNewVersion || addedScope)) {
+        if (!hasMatchingRoot(rerunRoots, r)) {
+          rerunRoots.add(r)
+        }
       }
     }
 
@@ -613,6 +833,14 @@ export function createIgnoreReconcileController(
     schedule(event)
   })
 
+  scannerReadyListeners.add(notifyScannerReady)
+  if (typeof deps.onScannerReady === 'function') {
+    const unsub = deps.onScannerReady(notifyScannerReady)
+    if (typeof unsub === 'function') {
+      unsubscribeScannerReadyDep = unsub
+    }
+  }
+
   if (deps.ipcMain) {
     registerIgnoreIpcHandlers(
       deps.ipcMain,
@@ -629,10 +857,14 @@ export function createIgnoreReconcileController(
     if (disposed) return
     disposed = true
     unsubscribePolicy()
+    scannerReadyListeners.delete(notifyScannerReady)
+    unsubscribeScannerReadyDep?.()
+    unsubscribeScannerReadyDep = null
     unsubscribeScanRoots?.()
     unsubscribeScanRoots = null
     observedScan = null
-    clearGlobalRetryTimer()
+    lastRegistryRetryScan = null
+    clearRegistryRetryTimer()
     if (debounceTimer) {
       clearTimeout(debounceTimer)
       debounceTimer = null
@@ -641,9 +873,11 @@ export function createIgnoreReconcileController(
       clearTimeout(timer)
     }
     retryTimers.clear()
+    pendingScopes.clear()
     dirtyRoots.clear()
     rerunRoots.clear()
     deferredBusyRoots.clear()
+    transientFailedRoots.clear()
     pendingIncompleteRoots.clear()
     pendingUnavailableRoots.clear()
     unsupportedRoots.clear()
@@ -653,6 +887,7 @@ export function createIgnoreReconcileController(
   return {
     schedule,
     flush,
+    notifyScannerReady,
     dispose,
   }
 }
