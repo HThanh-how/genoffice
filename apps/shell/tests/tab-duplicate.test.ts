@@ -1,11 +1,29 @@
 import { existsSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { copyFile, link, mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { buildDuplicateCandidatePath, duplicateDocumentFile } from '../src/main/tab-duplicate'
 
-describe('tab duplicate file operations and collision safety (D1-D14)', () => {
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  return {
+    ...actual,
+    existsSync: vi.fn((path: Parameters<typeof actual.existsSync>[0]) => actual.existsSync(path)),
+  }
+})
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  return {
+    ...actual,
+    open: vi.fn(actual.open),
+    link: vi.fn(actual.link),
+    copyFile: vi.fn(actual.copyFile),
+  }
+})
+
+describe('tab duplicate file operations and collision safety (D1-D17)', () => {
   let tempDir: string
 
   beforeEach(async () => {
@@ -55,20 +73,37 @@ describe('tab duplicate file operations and collision safety (D1-D14)', () => {
     expect(await readFile(target, 'utf8')).toBe('Slides V1')
   })
 
-  it('D4: TOCTOU race — destination file created concurrently right at candidate name is NOT clobbered', async () => {
+  it('D4: TOCTOU race — destination file created concurrently between existsSync check and link() call', async () => {
     const src = join(tempDir, 'Contract.docx')
     await writeFile(src, 'Contract source', 'utf8')
 
-    // Pre-create the first candidate to simulate concurrent creation
     const copy1 = join(tempDir, 'Contract Copy.docx')
     await writeFile(copy1, 'CONCURRENT PRE-EXISTING DATA', 'utf8')
 
-    const target = await duplicateDocumentFile(src, { copySuffix: 'Copy' })
+    // Simulate TOCTOU window: existsSync() returns false for copy1 as if it wasn't there yet during the fast-path check,
+    // but the file is physically present on disk when link() executes.
+    const realFs = await vi.importActual<typeof import('node:fs')>('node:fs')
+    const existsSyncMock = vi.mocked(existsSync)
+    let simulatedRace = false
+    existsSyncMock.mockImplementation((path) => {
+      if (path === copy1 && !simulatedRace) {
+        simulatedRace = true
+        return false // Simulate destination not present at the moment of existsSync check
+      }
+      return realFs.existsSync(path)
+    })
 
-    // Must NOT overwrite copy1
-    expect(target).toBe(join(tempDir, 'Contract Copy 2.docx'))
-    expect(await readFile(copy1, 'utf8')).toBe('CONCURRENT PRE-EXISTING DATA')
-    expect(await readFile(target, 'utf8')).toBe('Contract source')
+    try {
+      const target = await duplicateDocumentFile(src, { copySuffix: 'Copy' })
+
+      // link() must catch EEXIST and safely advance to candidate 2 without overwriting copy1
+      expect(target).toBe(join(tempDir, 'Contract Copy 2.docx'))
+      expect(await readFile(copy1, 'utf8')).toBe('CONCURRENT PRE-EXISTING DATA')
+      expect(await readFile(target, 'utf8')).toBe('Contract source')
+      expect(simulatedRace).toBe(true)
+    } finally {
+      existsSyncMock.mockImplementation((path) => realFs.existsSync(path))
+    }
   })
 
   it('D5: handles near-simultaneous duplicate operations without clobbering', async () => {
@@ -94,13 +129,33 @@ describe('tab duplicate file operations and collision safety (D1-D14)', () => {
     await expect(duplicateDocumentFile(src)).rejects.toThrow()
   })
 
-  it('D7: handles unreadable source file safely', async () => {
+  it('D7: handles unreadable source file safely (EACCES/EPERM distinct from ENOENT)', async () => {
     const src = join(tempDir, 'Restricted.docx')
     await writeFile(src, 'Confidential', 'utf8')
-    // Attempting duplicate on a nonexistent path or inaccessible directory
-    const invalidSrc = join(tempDir, 'missing-folder', 'File.docx')
 
-    await expect(duplicateDocumentFile(invalidSrc)).rejects.toThrow()
+    if (process.platform !== 'win32') {
+      const { chmod } = await import('node:fs/promises')
+      await chmod(src, 0o000)
+    }
+
+    try {
+      const error = await duplicateDocumentFile(src).catch((e) => e)
+      expect(error).toBeDefined()
+      if (process.platform !== 'win32') {
+        expect(['EACCES', 'EPERM']).toContain((error as NodeJS.ErrnoException).code)
+      }
+
+      // Verify no orphan .tmp file remains in tempDir
+      const { readdir } = await import('node:fs/promises')
+      const files = await readdir(tempDir)
+      const tmpFiles = files.filter((f) => f.endsWith('.tmp'))
+      expect(tmpFiles).toHaveLength(0)
+    } finally {
+      if (process.platform !== 'win32') {
+        const { chmod } = await import('node:fs/promises')
+        await chmod(src, 0o644).catch(() => {})
+      }
+    }
   })
 
   it('D8: preserves Unicode names across Vietnamese, Japanese, etc.', async () => {
@@ -221,6 +276,123 @@ describe('tab duplicate file operations and collision safety (D1-D14)', () => {
     const files = await readdir(tempDir)
     const tmpFiles = files.filter((f) => f.endsWith('.tmp'))
     expect(tmpFiles).toHaveLength(0)
+  })
+
+  it('D15: cleans up temporary file if syncFileBestEffort fails early with non-tolerated error', async () => {
+    const src = join(tempDir, 'SyncFail.docx')
+    await writeFile(src, 'Valid content', 'utf8')
+
+    const realFsPromises =
+      await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    const openMock = vi.mocked(open)
+
+    // Simulate open failure during sync on .tmp file with untolerated EIO
+    openMock.mockImplementation(async (path, flags, mode) => {
+      if (typeof path === 'string' && path.includes('.tmp')) {
+        const err = new Error('Simulated IO error') as NodeJS.ErrnoException
+        err.code = 'EIO'
+        throw err
+      }
+      return realFsPromises.open(path, flags, mode)
+    })
+
+    try {
+      await expect(duplicateDocumentFile(src, { copySuffix: 'Copy' })).rejects.toThrow(
+        'Simulated IO error',
+      )
+
+      // Verify no orphan .tmp file remains in tempDir despite sync failure
+      const { readdir } = await import('node:fs/promises')
+      const files = await readdir(tempDir)
+      const tmpFiles = files.filter((f) => f.endsWith('.tmp'))
+      expect(tmpFiles).toHaveLength(0)
+    } finally {
+      openMock.mockImplementation((path, flags, mode) => realFsPromises.open(path, flags, mode))
+    }
+  })
+
+  it('D16: fallback to COPYFILE_EXCL on non-link filesystems cleans up partial target on unexpected copy failure', async () => {
+    const src = join(tempDir, 'FallbackDoc.docx')
+    await writeFile(src, 'Fallback content', 'utf8')
+
+    const realFsPromises =
+      await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    const linkMock = vi.mocked(link)
+    const copyFileMock = vi.mocked(copyFile)
+
+    // Simulate link throwing EXDEV (cross-device or unsupported hard link)
+    linkMock.mockImplementation(async () => {
+      const err = new Error('Cross-device link not permitted') as NodeJS.ErrnoException
+      err.code = 'EXDEV'
+      throw err
+    })
+
+    // Simulate copyFile during fallback creating partial target and then throwing ENOSPC
+    copyFileMock.mockImplementation(async (srcPath, destPath, flags) => {
+      if (typeof destPath === 'string' && destPath.endsWith('FallbackDoc Copy.docx')) {
+        // Create partial file on disk to simulate partial write before disk-full error
+        await writeFile(destPath, 'PARTIAL CORRUPT DATA', 'utf8')
+        const err = new Error('No space left on device') as NodeJS.ErrnoException
+        err.code = 'ENOSPC'
+        throw err
+      }
+      return realFsPromises.copyFile(srcPath, destPath, flags)
+    })
+
+    try {
+      await expect(duplicateDocumentFile(src, { copySuffix: 'Copy' })).rejects.toThrow(
+        'No space left on device',
+      )
+
+      // Partial target MUST be unlinked and cleaned up
+      const target = join(tempDir, 'FallbackDoc Copy.docx')
+      expect(existsSync(target)).toBe(false)
+
+      // No leftover .tmp file
+      const { readdir } = await import('node:fs/promises')
+      const files = await readdir(tempDir)
+      expect(files.filter((f) => f.endsWith('.tmp'))).toHaveLength(0)
+    } finally {
+      linkMock.mockImplementation((existingPath, newPath) =>
+        realFsPromises.link(existingPath, newPath),
+      )
+      copyFileMock.mockImplementation((srcPath, destPath, flags) =>
+        realFsPromises.copyFile(srcPath, destPath, flags),
+      )
+    }
+  })
+
+  it('D17: fallback to COPYFILE_EXCL successfully publishes on non-link filesystems', async () => {
+    const src = join(tempDir, 'ExdevSuccess.docx')
+    await writeFile(src, 'FAT32 content', 'utf8')
+
+    const realFsPromises =
+      await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
+    const linkMock = vi.mocked(link)
+
+    // Simulate link throwing ENOTSUP (filesystem does not support hard links)
+    linkMock.mockImplementation(async () => {
+      const err = new Error('Operation not supported') as NodeJS.ErrnoException
+      err.code = 'ENOTSUP'
+      throw err
+    })
+
+    try {
+      const target = await duplicateDocumentFile(src, { copySuffix: 'Copy' })
+
+      expect(target).toBe(join(tempDir, 'ExdevSuccess Copy.docx'))
+      expect(existsSync(target)).toBe(true)
+      expect(await readFile(target, 'utf8')).toBe('FAT32 content')
+
+      // No leftover .tmp file
+      const { readdir } = await import('node:fs/promises')
+      const files = await readdir(tempDir)
+      expect(files.filter((f) => f.endsWith('.tmp'))).toHaveLength(0)
+    } finally {
+      linkMock.mockImplementation((existingPath, newPath) =>
+        realFsPromises.link(existingPath, newPath),
+      )
+    }
   })
 
   it('buildDuplicateCandidatePath correctly structures suffix and spacing', () => {

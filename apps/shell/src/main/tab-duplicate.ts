@@ -66,11 +66,11 @@ export async function duplicateDocumentFile(
   const dir = dirname(sourcePath)
   const tmp = join(dir, `.${basename(sourcePath)}.${randomBytes(8).toString('hex')}.tmp`)
 
-  // 1. Copy source to temporary file first
-  await copyFile(sourcePath, tmp)
-  await syncFileBestEffort(tmp)
-
   try {
+    // 1. Copy source to temporary file first (guaranteed cleanup in finally block)
+    await copyFile(sourcePath, tmp)
+    await syncFileBestEffort(tmp)
+
     // 2. Find and exclusively publish to candidate target
     for (let i = 1; i <= maxAttempts; i++) {
       const target = buildDuplicateCandidatePath(sourcePath, copySuffix, i)
@@ -89,7 +89,9 @@ export async function duplicateDocumentFile(
           continue
         }
         if (LINK_UNSUPPORTED_CODES.has(code)) {
-          // Filesystem does not support hard links (e.g. FAT32/exFAT/network mount); fallback to exclusive copyFile
+          // Filesystem does not support hard links (e.g. FAT32/exFAT/network mount); fallback to exclusive copyFile.
+          // Note: On non-link filesystems, copyFile(..., COPYFILE_EXCL) provides kernel-level exclusive creation
+          // but is non-atomic across file content transfer. On unexpected copy failure, clean up partial target.
           try {
             await copyFile(tmp, target, constants.COPYFILE_EXCL)
             return target
@@ -97,6 +99,7 @@ export async function duplicateDocumentFile(
             if (errorCode(copyError) === 'EEXIST') {
               continue
             }
+            await unlink(target).catch(() => {})
             throw copyError
           }
         }
