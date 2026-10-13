@@ -311,10 +311,11 @@ describe('tab duplicate file operations and collision safety (D1-D17)', () => {
     }
   })
 
-  it('D16: fallback to COPYFILE_EXCL on non-link filesystems cleans up partial target on unexpected copy failure', async () => {
+  it('D16: failed fallback must not delete a destination created by another actor', async () => {
     const src = join(tempDir, 'FallbackDoc.docx')
     await writeFile(src, 'Fallback content', 'utf8')
 
+    const target = join(tempDir, 'FallbackDoc Copy.docx')
     const realFsPromises =
       await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises')
     const linkMock = vi.mocked(link)
@@ -327,11 +328,11 @@ describe('tab duplicate file operations and collision safety (D1-D17)', () => {
       throw err
     })
 
-    // Simulate copyFile during fallback creating partial target and then throwing ENOSPC
+    // Simulate copyFile failing on fallback, while another actor concurrently creates target
     copyFileMock.mockImplementation(async (srcPath, destPath, flags) => {
-      if (typeof destPath === 'string' && destPath.endsWith('FallbackDoc Copy.docx')) {
-        // Create partial file on disk to simulate partial write before disk-full error
-        await writeFile(destPath, 'PARTIAL CORRUPT DATA', 'utf8')
+      if (typeof destPath === 'string' && destPath === target) {
+        // Another process creates or replaces target right before the error propagates
+        await writeFile(target, 'THIRD_PARTY_DATA_MUST_SURVIVE', 'utf8')
         const err = new Error('No space left on device') as NodeJS.ErrnoException
         err.code = 'ENOSPC'
         throw err
@@ -344,11 +345,14 @@ describe('tab duplicate file operations and collision safety (D1-D17)', () => {
         'No space left on device',
       )
 
-      // Partial target MUST be unlinked and cleaned up
-      const target = join(tempDir, 'FallbackDoc Copy.docx')
-      expect(existsSync(target)).toBe(false)
+      // CRITICAL DATA SAFETY INVARIANT: Destination created by another actor must NOT be unlinked
+      expect(existsSync(target)).toBe(true)
+      expect(await readFile(target, 'utf8')).toBe('THIRD_PARTY_DATA_MUST_SURVIVE')
 
-      // No leftover .tmp file
+      // Source document must remain untouched
+      expect(await readFile(src, 'utf8')).toBe('Fallback content')
+
+      // Private .tmp file must be cleaned up in finally block
       const { readdir } = await import('node:fs/promises')
       const files = await readdir(tempDir)
       expect(files.filter((f) => f.endsWith('.tmp'))).toHaveLength(0)

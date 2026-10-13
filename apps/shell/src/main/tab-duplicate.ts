@@ -90,8 +90,9 @@ export async function duplicateDocumentFile(
         }
         if (LINK_UNSUPPORTED_CODES.has(code)) {
           // Filesystem does not support hard links (e.g. FAT32/exFAT/network mount); fallback to exclusive copyFile.
-          // Note: On non-link filesystems, copyFile(..., COPYFILE_EXCL) provides kernel-level exclusive creation
-          // but is non-atomic across file content transfer. On unexpected copy failure, clean up partial target.
+          // Fallback uses COPYFILE_EXCL to avoid overwriting an existing destination.
+          // Unlike hard-link publication, the copy is not atomic across content transfer.
+          // Do not unlink the destination on failure because another actor may own that path.
           try {
             await copyFile(tmp, target, constants.COPYFILE_EXCL)
             return target
@@ -99,7 +100,6 @@ export async function duplicateDocumentFile(
             if (errorCode(copyError) === 'EEXIST') {
               continue
             }
-            await unlink(target).catch(() => {})
             throw copyError
           }
         }
