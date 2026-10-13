@@ -88,8 +88,8 @@ export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
   if (event.phase === 'start')
     return {
       id: event.runId,
-      requestId: event.requestId,
-      sessionId: event.sessionId,
+      ...(event.requestId !== undefined ? { requestId: event.requestId } : {}),
+      ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
       startedAt: event.at,
       steps: [],
       phase: 'thinking',
@@ -99,14 +99,14 @@ export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
     if (event.phase === 'thinking' || event.phase === 'tool' || event.phase === 'writing') {
       return {
         id: event.runId,
-        requestId: event.requestId,
-        sessionId: event.sessionId,
+        ...(event.requestId !== undefined ? { requestId: event.requestId } : {}),
+        ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
         startedAt: event.at,
         steps: [],
         phase: event.phase,
         tokens: event.thinkingTokens ?? 0,
-        tool: event.tool,
-        target: event.target,
+        ...(event.tool !== undefined ? { tool: event.tool } : {}),
+        ...(event.target !== undefined ? { target: event.target } : {}),
       }
     }
     return run
