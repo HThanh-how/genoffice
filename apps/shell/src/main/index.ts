@@ -4318,11 +4318,20 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.duplicateFile, async (_event, path: unknown) => {
     if (typeof path !== 'string' || !existsSync(path)) return
     if (!isUserVisibleFile(path, fileTargetSources())) return
-    try {
-      const target = await duplicateDocumentFile(path, { copySuffix: tm('copySuffix') })
+    const ext = extname(path)
+    const base = basename(path, ext)
+    const dir = dirname(path)
+    for (let i = 1; ; i++) {
+      const target = join(dir, `${base} ${tm('copySuffix')}${i === 1 ? '' : ` ${i}`}${ext}`)
+      if (existsSync(target)) continue
+      try {
+        await atomicCopyFile(path, target)
+      } catch (err) {
+        showErrorDialog(shellWindow, tm('errDuplicateFailed'), err)
+        return
+      }
       recordRecentFile(target)
-    } catch (err) {
-      showErrorDialog(shellWindow, tm('errDuplicateFailed'), err)
+      return
     }
   })
 
