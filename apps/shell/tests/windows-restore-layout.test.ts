@@ -454,6 +454,36 @@ describe('shell window restore layout', () => {
     expect(view.webContents.reload).not.toHaveBeenCalled()
   })
 
+  it('activating a tab while the window reports degenerate bounds does not zero-size it', () => {
+    // the MCP bring-forward path restores the window and activates a tab in
+    // the same tick; the target view must keep its last good geometry
+    const docsId = manager.openDocsTab('/tmp/report.docx')
+    const docsView = lastCreatedView(createDocsView)
+    manager.openSheetsTab()
+    docsView.setBounds.mockClear()
+
+    shell.bounds = { x: 0, y: 0, width: 0, height: 0 }
+    manager.activateTab(docsId)
+    expect(docsView.setBounds).not.toHaveBeenCalled()
+
+    shell.bounds = { x: 0, y: 0, width: WINDOW_WIDTH, height: WINDOW_HEIGHT }
+    manager.activateTab(docsId)
+    expect(docsView.setBounds).toHaveBeenLastCalledWith(stripRect(WINDOW_WIDTH, WINDOW_HEIGHT))
+  })
+
+  it('the spare Sheets view skips degenerate bounds when it spawns while minimized', () => {
+    vi.useFakeTimers()
+    try {
+      manager.openSheetsTab()
+      shell.bounds = { x: 0, y: 0, width: 0, height: 0 }
+      vi.advanceTimersByTime(3000)
+      const spare = lastCreatedView(createSheetsView)
+      expect(spare.setBounds).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('keeps the Linux/X11 deferred resize layout unchanged', async () => {
     manager.openSheetsTab()
     const view = lastCreatedView(createSheetsView)
@@ -578,6 +608,17 @@ describe('window lifecycle diagnostics', () => {
     shell.emit('restore')
     const restoreSnapshots = lines.filter((line) => line.includes('[window] restore'))
     expect(restoreSnapshots).toHaveLength(1)
+  })
+
+  it('lifecycle snapshots follow the current writer and stop when diagnostics are cleared', () => {
+    const lines: string[] = []
+    manager.setDiagnostics((line) => lines.push(line))
+    shell.emit('restore')
+    expect(lines.some((line) => line.includes('[window] restore'))).toBe(true)
+
+    manager.setDiagnostics(null)
+    shell.emit('restore')
+    expect(lines.filter((line) => line.includes('[window] restore'))).toHaveLength(1)
   })
 })
 

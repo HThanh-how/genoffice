@@ -163,7 +163,10 @@ export class TabManager {
       setActiveSheetsWebContents(active.view?.webContents ?? null)
       this.shellWindow.contentView.addChildView(view)
       view.setVisible(false)
-      view.setBounds(this.contentBounds())
+      // the window may be minimized or mid-restore when the spare spawns; a
+      // degenerate rect would leave the spare zero-sized until its next layout
+      const bounds = this.contentBounds()
+      if (isSettledRect(bounds)) view.setBounds(bounds)
       view.webContents.once('render-process-gone', () => {
         if (this.spareSheetsView !== view) return
         this.spareSheetsView = null
@@ -293,20 +296,22 @@ export class TabManager {
     this.diagnosticsWrite = write
     if (write && !this.lifecycleInstrumented) {
       this.lifecycleInstrumented = true
-      this.instrumentWindowLifecycle(write)
+      this.instrumentWindowLifecycle()
     }
   }
 
   /**
    * Compact window-lifecycle records around minimize/restore so a restored
    * window that comes back white can be traced to geometry, visibility or a
-   * dead renderer. A few lines per transition, never document contents or
-   * file paths.
+   * dead renderer. One line per lifecycle event, never document contents or
+   * file paths; the snapshot reads the *current* writer so clearing or
+   * replacing diagnostics also retires the lifecycle lines.
    */
-  private instrumentWindowLifecycle(write: DiagnosticsWrite): void {
+  private instrumentWindowLifecycle(): void {
     const win = this.shellWindow
     const snapshot = (event: string): void => {
-      if (win.isDestroyed()) return
+      const write = this.diagnosticsWrite
+      if (!write || win.isDestroyed()) return
       const active = this.tabs.find((t) => t.id === this.activeId)
       const bounds = win.getContentBounds()
       const wc = active?.view?.webContents
@@ -591,10 +596,13 @@ export class TabManager {
     const target = this.tabs.find((t) => t.id === id)
     if (!target) return
     for (const t of this.tabs) t.view?.setVisible(t.id === id)
-    if (target.view) target.view.setBounds(this.contentBounds())
+    const bounds = this.contentBounds()
+    // a bring-forward while the window is minimized or mid-restore must not
+    // zero-size the view being activated (same guard as layout())
+    if (target.view && isSettledRect(bounds)) target.view.setBounds(bounds)
     this.activeId = id
     this.overlays?.activate(id)
-    this.overlays?.layout(id, this.contentBounds())
+    if (isSettledRect(bounds)) this.overlays?.layout(id, bounds)
     if (target.kind === 'sheets') this.scheduleSpareSheetsView(3000)
     else this.discardSpareSheetsView()
     this.refreshActiveTargets()
