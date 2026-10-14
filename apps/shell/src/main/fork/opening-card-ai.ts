@@ -7,7 +7,7 @@ import type {
   OpeningMaterialPreset,
   OpeningThemeMode,
 } from '../../shared/opening-card-types'
-import { activeProvider, chatForProvider, imageGenerationAvailable } from '@genoffice/ai-provider'
+import { activeProvider, chatForProvider } from '@genoffice/ai-provider'
 import type { AiSettings } from '@genoffice/ai-provider'
 import { sanitizeHexColor } from './opening-card-css'
 import { sanitizeOpeningCss, sanitizeOpeningHtml } from './opening-card-html-sanitizer'

@@ -315,6 +315,7 @@ describe('Opening Card Studio — Generation Modes & Persistence Reliability', (
         const customCards =
           idx >= 0 ? existing.map((c, i) => (i === idx ? finalCard : c)) : [...existing, finalCard]
         writeSetting('/app/settings/path', 'openingEffects', { ...prefs, customCards })
+        storedAssetId = undefined
         const state: OpeningEffectsState = {
           prefs: { ...prefs, customCards },
           custom: { docs: false, sheets: false, slides: false, pdf: false },

@@ -5496,6 +5496,7 @@ function registerHomeIpc(): void {
         const customCards =
           idx >= 0 ? existing.map((c, i) => (i === idx ? finalCard : c)) : [...existing, finalCard]
         writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', { ...prefs, customCards })
+        storedAssetId = undefined
         const finalState = openingEffectsState()
         return { ok: true, state: finalState, ...finalState }
       } catch (err) {
