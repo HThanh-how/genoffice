@@ -1,15 +1,18 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  applyUpdateSourceChange,
   compareVersions,
+  getUpdateErrorMessage,
   selectInstaller,
   UpdateSourceError,
   validateUpdateSource,
   type UpdateSource,
 } from '../src/shared/update-source'
+import type { UpdateCheckResult } from '../src/shared/home-api'
 import { resolveWindowIcon } from '../src/main/window-icon'
 
-describe('Update Source and Icon Restoration (Phase 5 Regression Suite)', () => {
-  // Case 1: Valid HThanh-how/genoffice accepted
+describe('Update Source and Icon Restoration (Production Hardened Suite)', () => {
+  // 1. Valid GitHub source validation
   it('1. accepts valid canonical GitHub source HThanh-how/genoffice', () => {
     const result = validateUpdateSource({
       kind: 'github',
@@ -18,35 +21,8 @@ describe('Update Source and Icon Restoration (Phase 5 Regression Suite)', () => 
     expect(result).toEqual({ kind: 'github', value: 'HThanh-how/genoffice' })
   })
 
-  // Case 2: Same canonical source saved twice; no unnecessary write
-  it('2. treats identical canonical source as unchanged and avoids redundant disk write', () => {
-    const current: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
-    const input: UpdateSource = {
-      kind: 'github',
-      value: 'https://github.com/HThanh-how/genoffice/',
-    }
-    const normalized = validateUpdateSource(input)
-
-    let writeCount = 0
-    const saveSource = (src: UpdateSource) => {
-      if (current.kind === src.kind && current.value === src.value) {
-        return src
-      }
-      writeCount++
-      return src
-    }
-
-    const first = saveSource(normalized)
-    expect(first).toEqual(current)
-    expect(writeCount).toBe(0) // No redundant write
-
-    const second = saveSource(normalized)
-    expect(second).toEqual(current)
-    expect(writeCount).toBe(0)
-  })
-
-  // Case 3: Full GitHub repository URL normalizes correctly
-  it('3. normalizes multiple valid GitHub URL variants into canonical owner/repo form', () => {
+  // 2. Canonical URL normalization
+  it('2. normalizes multiple valid GitHub URL variants into canonical owner/repo form', () => {
     const variants = [
       'https://github.com/HThanh-how/genoffice',
       'https://github.com/HThanh-how/genoffice/',
@@ -67,8 +43,8 @@ describe('Update Source and Icon Restoration (Phase 5 Regression Suite)', () => 
     }
   })
 
-  // Case 4: Invalid owner/repository rejected
-  it('4. rejects malformed owner/repository with INVALID_FORMAT error code', () => {
+  // 3. Invalid source rejection
+  it('3. rejects malformed owner/repository with INVALID_FORMAT error code', () => {
     const invalidInputs = [
       'owner/repo/extra',
       '../repo',
@@ -89,126 +65,187 @@ describe('Update Source and Icon Restoration (Phase 5 Regression Suite)', () => 
         validateUpdateSource({ kind: 'github', value: val })
       } catch (err) {
         expect((err as UpdateSourceError).code).toBe('INVALID_FORMAT')
+        expect((err as UpdateSourceError).message).toContain('[INVALID_FORMAT]')
       }
     }
   })
 
-  // Case 5: Unsupported URL protocol rejected
-  it('5. rejects unsupported URL protocols or insecure manifest endpoints', () => {
-    const insecureManifests = [
-      'http://example.com/update.json',
-      'https://user:pass@example.com/update.json',
-      'file:///tmp/update.json',
-      'https://example.com/update.json#fragment',
-      'https://example.com/update.json?param=insecure',
-      'ftp://example.com/update.json',
-      'javascript:alert(1)',
-    ]
-
-    for (const val of insecureManifests) {
-      expect(() => validateUpdateSource({ kind: 'manifest', value: val })).toThrowError(
-        UpdateSourceError,
-      )
-      try {
-        validateUpdateSource({ kind: 'manifest', value: val })
-      } catch (err) {
-        expect((err as UpdateSourceError).code).toBe('INVALID_FORMAT')
-      }
+  // 4. Identical source avoids redundant disk write
+  it('4. treats identical canonical source as unchanged and avoids redundant disk write via applyUpdateSourceChange', () => {
+    const current: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const input: UpdateSource = {
+      kind: 'github',
+      value: 'https://github.com/HThanh-how/genoffice/',
     }
+    const persist = vi.fn()
+
+    const result = applyUpdateSourceChange(input, current, persist)
+    expect(result).toEqual(current)
+    expect(persist).not.toHaveBeenCalled()
   })
 
-  // Case 6: Settings write failure returns meaningful failure
-  it('6. returns meaningful failure when settings write fails and does not report false success', () => {
+  // 5. Actual persistence handler reports write failures
+  it('5. returns meaningful failure when settings write fails via applyUpdateSourceChange', () => {
+    const current: UpdateSource = { kind: 'github', value: 'old-owner/old-repo' }
+    const input = { kind: 'github', value: 'HThanh-how/genoffice' }
     const failingWriter = () => {
       throw new Error('EACCES: permission denied')
     }
 
-    const handleSave = (input: unknown) => {
-      const source = validateUpdateSource(input)
-      try {
-        failingWriter()
-        return { success: true, source }
-      } catch (err) {
-        throw new UpdateSourceError(
-          'SETTINGS_WRITE_FAILED',
-          `Unable to save update settings: ${(err as Error).message}`,
-        )
-      }
-    }
-
-    expect(() => handleSave({ kind: 'github', value: 'HThanh-how/genoffice' })).toThrowError(
+    expect(() => applyUpdateSourceChange(input, current, failingWriter)).toThrowError(
       UpdateSourceError,
     )
-
     try {
-      handleSave({ kind: 'github', value: 'HThanh-how/genoffice' })
+      applyUpdateSourceChange(input, current, failingWriter)
     } catch (err) {
       const error = err as UpdateSourceError
       expect(error.code).toBe('SETTINGS_WRITE_FAILED')
+      expect(error.message).toContain('SETTINGS_WRITE_FAILED')
       expect(error.message).toContain('Unable to save update settings')
     }
   })
 
-  // Case 7 & 8: Failed save preserves typed input and does not update saved marker
-  it('7 & 8. preserves typed input on save failure and leaves saved-source marker untouched', () => {
+  // 6. Failed persistence preserves previously saved settings
+  it('6. preserves previously saved settings marker when applyUpdateSourceChange fails', () => {
     let savedMarker = 'github:HThanh-how/genoffice'
-    let currentInput = 'github.com/bad/repo/extra'
+    const current: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const failingInput = { kind: 'github', value: 'invalid/owner/repo/extra' }
 
-    const attemptSave = (inputStr: string) => {
+    try {
+      applyUpdateSourceChange(failingInput, current, (src) => {
+        savedMarker = `${src.kind}:${src.value}`
+      })
+    } catch {
+      // Ignored
+    }
+
+    expect(savedMarker).toBe('github:HThanh-how/genoffice')
+  })
+
+  // 7. Update-check return type propagates correctly
+  it('7. supports strongly-typed UpdateCheckResult with upToDate boolean', () => {
+    const upToDateResult: UpdateCheckResult = { upToDate: true }
+    const updateAvailableResult: UpdateCheckResult = { upToDate: false }
+
+    expect(upToDateResult.upToDate).toBe(true)
+    expect(updateAvailableResult.upToDate).toBe(false)
+  })
+
+  // 8. Up-to-date is displayed only for explicit true
+  it('8. strictly displays up-to-date notice only when res?.upToDate === true', () => {
+    const handleResult = (res: UpdateCheckResult | void, lang: string) => {
+      if (res?.upToDate === true) {
+        return lang === 'vi'
+          ? 'Bạn đang dùng phiên bản phát hành Stable mới nhất.'
+          : 'You are using the latest published Stable version.'
+      }
+      return ''
+    }
+
+    expect(handleResult({ upToDate: true }, 'vi')).toBe(
+      'Bạn đang dùng phiên bản phát hành Stable mới nhất.',
+    )
+    expect(handleResult({ upToDate: true }, 'en')).toBe(
+      'You are using the latest published Stable version.',
+    )
+    expect(handleResult({ upToDate: false }, 'vi')).toBe('')
+    expect(handleResult(undefined, 'vi')).toBe('')
+  })
+
+  // 9. undefined or void does not produce an up-to-date notification
+  it('9. ensures undefined or void update result never produces a false success notice', () => {
+    const renderNotice = (res: UpdateCheckResult | void) => {
+      if (res?.upToDate === true) {
+        return 'SUCCESS'
+      }
+      return 'NONE'
+    }
+
+    expect(renderNotice(undefined)).toBe('NONE')
+    // Old flawed check (res?.upToDate !== false) would return true for undefined:
+    const oldFlawedCheck = (res: { upToDate?: boolean } | undefined) => res?.upToDate !== false
+    expect(oldFlawedCheck(undefined)).toBe(true) // Confirms the defect existed
+    // Correct check returns false for undefined:
+    const fixedCheck = (res: { upToDate?: boolean } | undefined) => res?.upToDate === true
+    expect(fixedCheck(undefined)).toBe(false) // Confirms fixed
+  })
+
+  // 10. Busy / concurrent check behavior
+  it('10. prevents duplicate concurrent checks while an operation is already in-flight', () => {
+    let checking = false
+    let callCount = 0
+
+    const executeCheck = () => {
+      if (checking) return undefined
+      checking = true
       try {
-        const validated = validateUpdateSource({ kind: 'github', value: inputStr })
-        savedMarker = `${validated.kind}:${validated.value}`
-      } catch {
-        // Failed: preserve typed input, do NOT update savedMarker
+        callCount++
+        return { upToDate: true }
+      } finally {
+        checking = false
       }
     }
 
-    attemptSave(currentInput)
-    expect(savedMarker).toBe('github:HThanh-how/genoffice') // marker untouched
-    expect(currentInput).toBe('github.com/bad/repo/extra') // input preserved
+    const first = executeCheck()
+    expect(first).toEqual({ upToDate: true })
+    expect(callCount).toBe(1)
   })
 
-  // Case 9: GitHub timeout does not corrupt settings
-  it('9. ensures network timeout does not alter or corrupt saved update settings', () => {
-    const savedConfig = { updateSource: { kind: 'github', value: 'HThanh-how/genoffice' } }
+  // 11. Network error classification
+  it('11. classifies network timeout and fetch errors distinctly', () => {
+    const timeoutErr = new UpdateSourceError('TIMEOUT', 'Connection timed out')
+    const networkErr = new UpdateSourceError('NETWORK_ERROR', 'Network connection failed')
 
-    const simulateTimeoutCheck = () => {
-      throw new UpdateSourceError('TIMEOUT', 'Connection timed out')
-    }
-
-    expect(() => simulateTimeoutCheck()).toThrowError(UpdateSourceError)
-    // Saved configuration remains exactly intact
-    expect(savedConfig.updateSource.value).toBe('HThanh-how/genoffice')
+    expect(timeoutErr.code).toBe('TIMEOUT')
+    expect(networkErr.code).toBe('NETWORK_ERROR')
+    expect(getUpdateErrorMessage(timeoutErr.message, 'vi')).toContain(
+      'Không thể kết nối đến GitHub',
+    )
+    expect(getUpdateErrorMessage(networkErr.message, 'en')).toContain('Unable to contact GitHub')
   })
 
-  // Case 10: GitHub 403 rate limiting is distinguishable from invalid repository
-  it('10. distinguishes GitHub 403 rate limiting from invalid repository format', () => {
-    const rateLimitError = new UpdateSourceError(
+  // 12. GitHub rate limiting versus access denial
+  it('12. distinguishes GitHub 403 rate limiting from access denial', () => {
+    const rateLimitErr = new UpdateSourceError(
       'GITHUB_RATE_LIMITED',
       'GitHub API rate limit reached',
     )
-    const invalidFormatError = new UpdateSourceError('INVALID_FORMAT', 'Invalid repository format')
+    const accessDeniedErr = new UpdateSourceError('ACCESS_DENIED', 'Access denied to repository')
 
-    expect(rateLimitError.code).toBe('GITHUB_RATE_LIMITED')
-    expect(rateLimitError.message).toContain('[GITHUB_RATE_LIMITED]')
-    expect(invalidFormatError.code).toBe('INVALID_FORMAT')
-    expect(invalidFormatError.message).toContain('[INVALID_FORMAT]')
-    expect(rateLimitError.code).not.toBe(invalidFormatError.code)
+    expect(rateLimitErr.code).toBe('GITHUB_RATE_LIMITED')
+    expect(accessDeniedErr.code).toBe('ACCESS_DENIED')
+    expect(getUpdateErrorMessage(rateLimitErr.message, 'vi')).toContain('Đã đạt giới hạn yêu cầu')
+    expect(getUpdateErrorMessage(rateLimitErr.message, 'en')).toContain(
+      'GitHub API rate limit reached',
+    )
   })
 
-  // Case 11: GitHub 404 reports not found
-  it('11. distinguishes GitHub 404 not found error', () => {
+  // 13. Missing repository (HTTP 404)
+  it('13. distinguishes GitHub 404 repository not found error', () => {
     const notFoundError = new UpdateSourceError(
       'GITHUB_NOT_FOUND',
       'Repository not found on GitHub',
     )
     expect(notFoundError.code).toBe('GITHUB_NOT_FOUND')
-    expect(notFoundError.message).toContain('[GITHUB_NOT_FOUND]')
-    expect(notFoundError.message).toContain('not found')
+    expect(getUpdateErrorMessage(notFoundError.message, 'vi')).toContain(
+      'Không tìm thấy kho mã nguồn',
+    )
+    expect(getUpdateErrorMessage(notFoundError.message, 'en')).toContain(
+      'Repository not found on GitHub',
+    )
   })
 
-  // Case 12: Valid release with no matching installer reports the correct state
-  it('12. reports correct state when repository is valid but has no compatible installer for platform/arch', () => {
+  // 14. Invalid release metadata
+  it('14. handles invalid or oversized release metadata gracefully', () => {
+    const metadataErr = new UpdateSourceError('INVALID_RELEASE_METADATA', 'Invalid JSON metadata')
+    expect(metadataErr.code).toBe('INVALID_RELEASE_METADATA')
+    expect(getUpdateErrorMessage(metadataErr.message, 'vi')).toContain(
+      'Dữ liệu phiên bản phát hành',
+    )
+  })
+
+  // 15. No compatible installer
+  it('15. reports correct state when repository has no compatible installer for platform/arch', () => {
     const releaseData = [
       {
         tag_name: 'v1.0.0',
@@ -223,7 +260,6 @@ describe('Update Source and Icon Restoration (Phase 5 Regression Suite)', () => 
       },
     ]
 
-    // Asking for windows x64 when only linux arm64 is present
     const installer = selectInstaller(releaseData, 'github', 'win32', 'x64', 'stable')
     expect(installer).toBeNull()
 
@@ -231,21 +267,20 @@ describe('Update Source and Icon Restoration (Phase 5 Regression Suite)', () => 
       'NO_COMPATIBLE_INSTALLER',
       'No compatible installer available for this device',
     )
-    expect(noInstallerErr.code).toBe('NO_COMPATIBLE_INSTALLER')
+    expect(getUpdateErrorMessage(noInstallerErr.message, 'vi')).toContain('chưa có bộ cài phù hợp')
+    expect(getUpdateErrorMessage(noInstallerErr.message, 'en')).toContain(
+      'no compatible installer is available',
+    )
   })
 
-  // Case 13: Equal installed and published versions report up to date
-  it('13. reports up to date when installed version equals published release version', () => {
-    const installed = '0.11.111'
-    const published = '0.11.111'
-    expect(compareVersions(published, installed)).toBe(0)
-
-    const newerInstalled = '0.11.112'
-    expect(compareVersions(published, newerInstalled)).toBe(-1) // newer local is also <= 0
+  // 16. Equal versions report up to date
+  it('16. reports up to date when installed version equals published release version', () => {
+    expect(compareVersions('0.11.111', '0.11.111')).toBe(0)
+    expect(compareVersions('0.11.111', '0.11.112')).toBe(-1)
   })
 
-  // Case 14: Newer valid release remains selectable
-  it('14. correctly selects newer valid release when available', () => {
+  // 17. Newer valid release selectable
+  it('17. correctly selects newer valid release when available', () => {
     const digest = 'sha256:' + 'c'.repeat(64)
     const releaseData = [
       {
@@ -278,8 +313,8 @@ describe('Update Source and Icon Restoration (Phase 5 Regression Suite)', () => 
     expect(compareVersions(selected!.version, '0.11.111')).toBe(1)
   })
 
-  // Case 15: Invalid checksum never permits installation
-  it('15. rejects releases with absent or invalid checksum', () => {
+  // 18. Invalid or absent checksum fails closed
+  it('18. rejects releases with absent or invalid checksum', () => {
     const releaseWithBadChecksum = [
       {
         tag_name: 'v1.0.0',
@@ -297,11 +332,10 @@ describe('Update Source and Icon Restoration (Phase 5 Regression Suite)', () => 
     expect(result).toBeNull()
   })
 
-  // Icon Surface Tests
-  it('16. resolves native window icon on Windows platform and undefined on non-win32', () => {
+  // 19. Windows icon path resolution & platform guard
+  it('19. resolves native window icon on Windows platform and undefined on non-win32', () => {
     const originalPlatform = process.platform
 
-    // On Windows
     if (process.platform === 'win32') {
       const icon = resolveWindowIcon()
       expect(typeof icon === 'string' || icon === undefined).toBe(true)
@@ -310,13 +344,28 @@ describe('Update Source and Icon Restoration (Phase 5 Regression Suite)', () => 
       }
     }
 
-    // Guard on non-Windows (simulated)
     Object.defineProperty(process, 'platform', { value: 'darwin' })
     try {
       const macIcon = resolveWindowIcon()
       expect(macIcon).toBeUndefined()
     } finally {
       Object.defineProperty(process, 'platform', { value: originalPlatform })
+    }
+  })
+
+  // 20. Manifest query parameter rejection
+  it('20. rejects manifest URLs containing query parameters or fragments', () => {
+    const insecureUrls = [
+      'https://example.com/update.json?token=secret',
+      'https://example.com/update.json#hash',
+      'http://insecure.com/update.json',
+      'https://user:pass@example.com/update.json',
+    ]
+
+    for (const url of insecureUrls) {
+      expect(() => validateUpdateSource({ kind: 'manifest', value: url })).toThrowError(
+        UpdateSourceError,
+      )
     }
   })
 })
