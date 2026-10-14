@@ -1354,6 +1354,13 @@
   background: var(--accent-soft, var(--bg-hover));
   color: var(--accent);
 }
+.set-group-brand-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  display: block;
+  object-fit: contain;
+}
 .set-group-text {
   display: flex;
   flex-direction: column;
@@ -1483,7 +1490,9 @@
   border: 1px solid var(--border-subtle, var(--border, #e2e8f0));
   border-radius: 10px;
   background: var(--surface-subtle, var(--surface, #fff));
-  transition: border-color 0.15s ease, background 0.15s ease;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
 }
 .idx-common-source-card.is-active {
   border-color: color-mix(in srgb, var(--accent, #0066cc) 40%, var(--border-subtle, #e2e8f0));
@@ -1554,7 +1563,7 @@
 }
 .idx-switch-slider::before {
   position: absolute;
-  content: "";
+  content: '';
   height: 14px;
   width: 14px;
   left: 3px;
