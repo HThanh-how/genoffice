@@ -473,17 +473,27 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
       setAiLoading(false)
       activeAiRequestIdRef.current = null
       if (res?.ok) {
-        if (res.modeUsed === 'html' && res.htmlDraft) {
+        if (res.modeUsed === 'html' && res.htmlDraft && aiMode === 'html') {
           setAiHtmlDraft(res.htmlDraft)
           setAiPreviewCard(res.card ?? null)
           setEditDraftHtml(res.htmlDraft.html)
           setEditDraftCss(res.htmlDraft.css)
           setAiModelUsed(res.modelUsed)
           setAiSubTab('preview')
-        } else if (res.card) {
+        } else if (res.modeUsed === 'style' && res.card && aiMode === 'style') {
           setAiPreviewCard(res.card)
           setAiHtmlDraft(null)
           setAiModelUsed(res.modelUsed)
+        } else if (res.modeUsed === 'image' && res.card && aiMode === 'image') {
+          setAiPreviewCard(res.card)
+          setAiHtmlDraft(null)
+          setAiModelUsed(res.modelUsed)
+        } else {
+          setAiError(
+            isVi
+              ? 'Phản hồi từ AI không khớp với chế độ đã chọn.'
+              : 'AI response does not match the selected generation mode.',
+          )
         }
       } else {
         setAiError(res?.error ?? 'AI generation failed')
@@ -1232,7 +1242,7 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
             </button>
           </div>
 
-          {aiMode === 'image' && !state.canGenerateImages && (
+          {aiMode === 'image' && (
             <div className="ocs-unsupported-notice">
               {isVi
                 ? '⚠️ Nhà cung cấp AI hiện tại chưa hỗ trợ chức năng sinh hình ảnh trực tiếp. Vui lòng chuyển sang chế độ Thẻ HTML hoặc Mẫu phong cách.'
@@ -1443,7 +1453,7 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
                   <button
                     type="button"
                     className="ocs-action-btn primary"
-                    disabled={aiLoading || !aiPrompt.trim()}
+                    disabled={aiLoading || !aiPrompt.trim() || aiMode === 'image'}
                     onClick={handleAiGenerate}
                   >
                     {aiLoading

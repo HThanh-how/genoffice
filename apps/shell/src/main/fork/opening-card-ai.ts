@@ -414,17 +414,11 @@ export async function generateAiCardWithRealProvider(
   const mode = input.mode || 'style'
 
   if (mode === 'image') {
-    const canGen = imageGenerationAvailable(
-      aiSettings as Parameters<typeof imageGenerationAvailable>[0],
-      false,
-    )
-    if (!canGen) {
-      return {
-        ok: false,
-        error:
-          'Image generation is not supported by the active AI provider or model configuration. Please switch to HTML mode or configure a compatible media provider.',
-        modeUsed: 'image',
-      }
+    return {
+      ok: false,
+      error:
+        'AI image generation is not supported by the active AI provider or is not yet implemented. Please select HTML Scene or Style Preset mode.',
+      modeUsed: 'image',
     }
   }
 
@@ -518,7 +512,14 @@ export async function generateAiCardWithRealProvider(
     }
   }
 
-  // Default: Declarative Material Style mode
+  if (mode !== 'style') {
+    return {
+      ok: false,
+      error: `Unsupported generation mode: ${mode}`,
+    }
+  }
+
+  // Declarative Material Style mode
   let userMessage = `Create an opening card style based on this description:\n"${promptText}"`
   if (input.preset) userMessage += `\nPreferred preset: ${input.preset}`
   if (input.themeMode) userMessage += `\nPreferred theme mode: ${input.themeMode}`
