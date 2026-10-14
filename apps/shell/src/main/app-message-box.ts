@@ -106,10 +106,34 @@ export function showAppMessageBox(
   return task
 }
 
+interface BoxBehavior {
+  dismissOnBlur?: boolean
+  visual?: 'update-status'
+}
+
+export function showUpdateStatusMessageBox(
+  parentOrOptions: BrowserWindow | null | undefined | MessageBoxOptions,
+  supplied?: MessageBoxOptions,
+): Promise<MessageBoxReturnValue> {
+  const parent = supplied
+    ? ((parentOrOptions as BrowserWindow | null | undefined) ?? BrowserWindow.getFocusedWindow())
+    : BrowserWindow.getFocusedWindow()
+  const options = supplied ?? (parentOrOptions as MessageBoxOptions)
+  if (dialog.showMessageBox !== nativeDialogShowMessageBox) {
+    return parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options)
+  }
+  const task = queue.then(() =>
+    openBox(parent, options, undefined, { dismissOnBlur: true, visual: 'update-status' }),
+  )
+  queue = task.catch(() => undefined)
+  return task
+}
+
 function openBox(
   parent: BrowserWindow | null,
   options: MessageBoxOptions,
   toastTone?: FeedbackWindowState['toastTone'],
+  behavior?: BoxBehavior,
 ): Promise<MessageBoxReturnValue> {
   register()
   const buttons = options.buttons?.length ? options.buttons : ['OK']
@@ -125,7 +149,7 @@ function openBox(
   const win = new BrowserWindow({
     width: Math.min(toastTone ? 460 : 560, Math.max(280, area.width - 32)),
     height: Math.min(toastTone ? 220 : 480, Math.max(200, area.height - 48)),
-    ...(host ? { parent: host, modal: !toastTone } : {}),
+    ...(host ? { parent: host, modal: !toastTone && !behavior?.dismissOnBlur } : {}),
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',
@@ -173,12 +197,14 @@ function openBox(
       checkboxLabel: options.checkboxLabel,
       checkboxChecked: options.checkboxChecked,
       type: options.type,
+      visual: behavior?.visual,
     },
   }
   return new Promise((resolve) => {
     const id = win.webContents.id
     let settled = false
     let expiry: ReturnType<typeof setTimeout> | undefined
+    let hasGenuinelyFocused = false
     const finish = (result: MessageBoxResult) => {
       if (settled) return
       settled = true
@@ -189,6 +215,16 @@ function openBox(
     }
     pending.set(id, { state, finish })
     if (toastTone) expiry = setTimeout(() => finish(fallback), 6800)
+    if (behavior?.dismissOnBlur) {
+      win.on('focus', () => {
+        hasGenuinelyFocused = true
+      })
+      win.on('blur', () => {
+        if (hasGenuinelyFocused && !settled) {
+          finish(fallback)
+        }
+      })
+    }
     win.once('ready-to-show', () => {
       if (!settled) {
         if (toastTone) win.showInactive()
