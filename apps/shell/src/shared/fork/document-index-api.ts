@@ -20,20 +20,70 @@ export type {
   KnownSearchSourceStatus,
 }
 
+export type IndexRuleAction = 'allow' | 'ignore'
+export type IndexPolicyMode = 'standard' | 'allowlist'
+
 export interface IgnoreRule {
   id: string
   pattern: string
   enabled: boolean
   scope: 'global' | string
   description?: string
-  source?: 'user' | '.genofficeignore'
+  source?: 'user' | '.genofficeignore' | 'preset'
+  action?: IndexRuleAction
+}
+
+export interface IndexingPreset {
+  id: string
+  name: string
+  action: IndexRuleAction
+  category: 'protective' | 'recommended' | 'media' | 'advanced'
+  description: string
+  patterns: readonly string[]
+  isProtective?: boolean
+  enabled?: boolean
+}
+
+export interface IgnorePolicyConfig {
+  schemaVersion: number
+  mode: IndexPolicyMode
+  rules: IgnoreRule[]
+  presets: Record<string, boolean>
+}
+
+export interface GenOfficeIgnoreFileResult {
+  exists: boolean
+  content: string
+  rules: IgnoreRule[]
+  mode?: IndexPolicyMode
+  mtimeMs?: number
+  revision?: string
+  error?: string
+}
+
+export interface GenOfficeIgnoreSaveResult {
+  ok: boolean
+  revision?: string
+  error?: string
+  validationErrors?: string[]
 }
 
 export interface IgnoreTestResult {
   ignored: boolean
+  decision?: 'allow' | 'ignore'
   ruleId?: string
   pattern?: string
   reason?: string
+  action?: IndexRuleAction
+  source?: string
+  scope?: string
+  winningRule?: IgnoreRule
+  overriddenRule?: IgnoreRule
+  mode?: IndexPolicyMode
+  eligibility?: 'supported' | 'unsupported' | 'outside-root' | 'invalid'
+  hardGateBlocked?: boolean
+  hardGateReason?: string
+  explanation?: string
 }
 
 /** User-visible and IPC-exposed storage snapshot. */
@@ -226,6 +276,11 @@ export const DOCUMENT_INDEX_CHANNELS = {
   getIgnoreRules: 'home:get-ignore-rules',
   saveIgnoreRules: 'home:save-ignore-rules',
   testIgnorePath: 'home:test-ignore-path',
+  getIgnorePolicyConfig: 'home:get-ignore-policy-config',
+  saveIgnorePolicyConfig: 'home:save-ignore-policy-config',
+  getGenOfficeIgnoreFile: 'home:get-genofficeignore-file',
+  saveGenOfficeIgnoreFile: 'home:save-genofficeignore-file',
+  getPolicyPresets: 'home:get-policy-presets',
 } as const
 
 /** The previous (V2) index kept next to the live one after an upgrade. Not counted in the index size. */
@@ -544,4 +599,20 @@ export interface DocumentIndexApi {
   saveIgnoreRules?(rules: IgnoreRule[]): Promise<{ ok: boolean; error?: string }>
   /** Test whether a candidate file path matches current ignore rules. */
   testIgnorePath?(path: string, root?: string): Promise<IgnoreTestResult>
+  /** Retrieve full indexing policy config including mode, rules, and preset states. */
+  getIgnorePolicyConfig?(): Promise<IgnorePolicyConfig>
+  /** Save indexing policy config (mode, rules, presets). */
+  saveIgnorePolicyConfig?(
+    config: Partial<IgnorePolicyConfig>,
+  ): Promise<{ ok: boolean; error?: string }>
+  /** Read .genofficeignore file content, parsed rules, and mode for a specific root. */
+  getGenOfficeIgnoreFile?(root: string): Promise<GenOfficeIgnoreFileResult>
+  /** Atomically save .genofficeignore file with validation and conflict checking. */
+  saveGenOfficeIgnoreFile?(
+    root: string,
+    content: string,
+    expectedRevision?: string,
+  ): Promise<GenOfficeIgnoreSaveResult>
+  /** List available versioned presets with patterns and enabled states. */
+  getPolicyPresets?(): Promise<IndexingPreset[]>
 }
