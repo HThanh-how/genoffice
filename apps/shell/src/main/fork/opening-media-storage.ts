@@ -1,9 +1,26 @@
 import { randomBytes } from 'node:crypto'
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs'
+import {
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  readSync,
+  readdirSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { atomicWriteFile } from '../atomic-write'
+import type { StoredMediaAsset } from '../../shared/opening-card-types'
 
 export const MAX_MEDIA_ASSET_BYTES = 10 * 1024 * 1024 // 10 MB cap
+export const MAX_BASE64_MEDIA_CHARS = 14 * 1024 * 1024 // ~14 MB string cap
+
+export function isBase64PayloadLengthSafe(str: unknown): boolean {
+  return typeof str === 'string' && str.length > 0 && str.length <= MAX_BASE64_MEDIA_CHARS
+}
 
 const ASSET_ID_REGEX = /^asset_[0-9]+_[0-9a-f]{16}\.(png|jpg|webp|gif)$/i
 
@@ -91,11 +108,50 @@ export function resolveSafeAssetPath(userDataPath: string, assetId: string): str
   return target
 }
 
-export interface StoredMediaAsset {
-  assetId: string
-  mime: string
-  sizeBytes: number
-  dataUrl?: string
+function getRegistryPath(userDataPath: string): string {
+  return join(getOpeningAssetsDir(userDataPath), 'registry.json')
+}
+
+function readRegistry(userDataPath: string): StoredMediaAsset[] | null {
+  try {
+    const regPath = getRegistryPath(userDataPath)
+    if (!existsSync(regPath)) return null
+    const content = readFileSync(regPath, 'utf8')
+    const list = JSON.parse(content)
+    if (Array.isArray(list)) {
+      return list.filter(
+        (a): a is StoredMediaAsset =>
+          a && typeof a.assetId === 'string' && isSafeAssetId(a.assetId),
+      )
+    }
+  } catch {
+    // fallback
+  }
+  return null
+}
+
+function writeRegistrySync(userDataPath: string, list: StoredMediaAsset[]): void {
+  try {
+    const dir = getOpeningAssetsDir(userDataPath)
+    if (!existsSync(dir)) return
+    const regPath = getRegistryPath(userDataPath)
+    writeFileSync(regPath, JSON.stringify(list, null, 2), 'utf8')
+  } catch {
+    // best-effort
+  }
+}
+
+function updateRegistryWithAsset(userDataPath: string, asset: StoredMediaAsset): void {
+  const current = readRegistry(userDataPath) || []
+  const updated = [...current.filter((a) => a.assetId !== asset.assetId), asset]
+  writeRegistrySync(userDataPath, updated)
+}
+
+function removeAssetFromRegistry(userDataPath: string, assetId: string): void {
+  const current = readRegistry(userDataPath)
+  if (!current) return
+  const updated = current.filter((a) => a.assetId !== assetId)
+  writeRegistrySync(userDataPath, updated)
 }
 
 /**
@@ -123,11 +179,19 @@ export async function storeMediaAssetFromBuffer(
 
   await atomicWriteFile(targetPath, buffer)
 
-  return {
+  // Generate lightweight thumbnail data URL (capped at max 128KB data)
+  const thumbnailDataUrl = `data:${sniffed.mime};base64,${buffer.subarray(0, Math.min(buffer.length, 128 * 1024)).toString('base64')}`
+  const assetRecord: StoredMediaAsset = {
     assetId,
     mime: sniffed.mime,
     sizeBytes: buffer.length,
+    thumbnailUrl: thumbnailDataUrl,
+    createdAt: Date.now(),
   }
+
+  updateRegistryWithAsset(userDataPath, assetRecord)
+
+  return assetRecord
 }
 
 /**
@@ -152,6 +216,7 @@ export function deleteMediaAsset(userDataPath: string, assetId: string): boolean
     const filePath = resolveSafeAssetPath(userDataPath, assetId)
     if (existsSync(filePath)) {
       unlinkSync(filePath)
+      removeAssetFromRegistry(userDataPath, assetId)
       return true
     }
     return false
@@ -162,28 +227,46 @@ export function deleteMediaAsset(userDataPath: string, assetId: string): boolean
 
 /**
  * Lists all existing valid media assets in storage.
+ * Uses registry cache to avoid reading full image buffers from disk.
  */
 export function listMediaAssets(userDataPath: string): StoredMediaAsset[] {
   const dir = getOpeningAssetsDir(userDataPath)
+  const cached = readRegistry(userDataPath)
+  if (cached) {
+    const valid = cached.filter((a) => existsSync(join(dir, a.assetId)))
+    if (valid.length === cached.length) {
+      return valid
+    }
+  }
+
   try {
     const files = readdirSync(dir)
     const result: StoredMediaAsset[] = []
     for (const f of files) {
       if (isSafeAssetId(f)) {
         try {
-          const s = statSync(join(dir, f))
-          const fd = readFileSync(join(dir, f))
-          const sniffed = sniffImageSignature(fd.subarray(0, 16))
-          result.push({
-            assetId: f,
-            mime: sniffed?.mime ?? 'image/png',
-            sizeBytes: s.size,
-          })
+          const filePath = join(dir, f)
+          const s = statSync(filePath)
+          const fd = openSync(filePath, 'r')
+          const header = Buffer.alloc(16)
+          readSync(fd, header, 0, 16, 0)
+          closeSync(fd)
+
+          const sniffed = sniffImageSignature(header)
+          if (sniffed) {
+            result.push({
+              assetId: f,
+              mime: sniffed.mime,
+              sizeBytes: s.size,
+              createdAt: s.mtimeMs,
+            })
+          }
         } catch {
           // ignore corrupted unstat-able file
         }
       }
     }
+    writeRegistrySync(userDataPath, result)
     return result
   } catch {
     return []

@@ -58,10 +58,18 @@ export interface OpeningCardDefinition {
 export interface OpeningStudioPrefsExtension {
   /** Optional global default card ID applied to all apps unless specifically overridden */
   globalCard?: string
+  /** Explicit per-app overrides; absent means app inherits globalCard (or default app scene) */
+  appOverrides?: Partial<Record<string, string>>
   /** List of card IDs favorited by the user */
   favorites?: string[]
   /** Custom cards created or imported by the user */
   customCards?: OpeningCardDefinition[]
+}
+
+export interface EffectiveOpeningCard {
+  id: string
+  source: 'preview' | 'override' | 'global' | 'default'
+  isOverride: boolean
 }
 
 export interface StoredMediaAsset {
@@ -69,6 +77,8 @@ export interface StoredMediaAsset {
   mime: string
   sizeBytes: number
   dataUrl?: string
+  thumbnailUrl?: string
+  createdAt?: number
 }
 
 export interface OpeningMediaAssetInfo {
@@ -77,6 +87,7 @@ export interface OpeningMediaAssetInfo {
   mime: string
   sizeBytes: number
   createdAt: number
+  thumbnailUrl?: string
 }
 
 export interface AiCardGenerationInput {
@@ -84,10 +95,24 @@ export interface AiCardGenerationInput {
   accentColor?: string
   preset?: OpeningMaterialPreset
   themeMode?: OpeningThemeMode
+  model?: string
 }
 
 export interface AiCardGenerationResult {
   ok: boolean
   card?: OpeningCardDefinition
   error?: string
+  rawResponse?: string
+  modelUsed?: string
+}
+
+/**
+ * Portable, versioned export format for Opening Card Studio collections.
+ */
+export interface OpeningCardExportBundle {
+  version: 1
+  exportedAt: number
+  appVersion?: string
+  cards: OpeningCardDefinition[]
+  assets?: StoredMediaAsset[]
 }

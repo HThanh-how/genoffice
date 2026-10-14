@@ -447,10 +447,12 @@ const homeApi: HomeApi = {
     }
   },
   async deleteOpeningMedia(assetId) {
-    return (await ipcRenderer.invoke(
-      HOME_CHANNELS.deleteOpeningMedia,
-      assetId,
-    )) as OpeningEffectsState
+    return (await ipcRenderer.invoke(HOME_CHANNELS.deleteOpeningMedia, assetId)) as {
+      ok: boolean
+      inUse?: boolean
+      error?: string
+      state: OpeningEffectsState
+    }
   },
   async generateAiCard(input) {
     return (await ipcRenderer.invoke(HOME_CHANNELS.generateAiCard, input)) as any

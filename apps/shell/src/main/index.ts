@@ -16,18 +16,35 @@ import {
   DEFAULT_SCENE_FOR_APP,
   OPENING_APPS,
   normalizeOpeningPrefs,
+  resolveEffectiveOpeningCard,
 } from '../shared/opening-scenes-meta'
 import type { OpeningApp, OpeningPrefs } from '../shared/opening-scenes-meta'
-import { getAllBuiltInCards } from '../shared/opening-card-families'
-import type { OpeningCardDefinition, AiCardGenerationInput } from '../shared/opening-card-types'
+import { getAllBuiltInCards, isBuiltInCard } from '../shared/opening-card-families'
+import type {
+  OpeningCardDefinition,
+  AiCardGenerationInput,
+  EffectiveOpeningCard,
+} from '../shared/opening-card-types'
 import {
   deleteMediaAsset,
   getAssetDataUrl,
+  isBase64PayloadLengthSafe,
   listMediaAssets,
+  resolveSafeAssetPath,
   storeMediaAssetFromBuffer,
 } from './fork/opening-media-storage'
-import { validateAiCardSchema } from './fork/opening-card-ai'
-import { imageGenerationAvailable } from '@genoffice/ai-provider'
+import { generateAiCardWithRealProvider } from './fork/opening-card-ai'
+import {
+  createOpeningCardExportBundle,
+  importCardsFromExportBundle,
+  validateCardDefinition,
+} from './fork/opening-card-export'
+import {
+  defaultAiSettings,
+  imageGenerationAvailable,
+  resolveAiSettings,
+} from '@genoffice/ai-provider'
+import type { AiSettings } from '@genoffice/ai-provider'
 import { execSync, spawn } from 'node:child_process'
 import {
   appendFileSync,
@@ -4142,11 +4159,30 @@ function customOpeningHtml(target: OpeningApp): string | null {
   }
 }
 
+function loadOpeningAiSettings(): AiSettings {
+  const filePath = join(app.getPath('userData'), 'ai-settings.json')
+  try {
+    if (existsSync(filePath)) {
+      const raw = JSON.parse(readFileSync(filePath, 'utf8'))
+      return resolveAiSettings(raw, defaultAiSettings())
+    }
+  } catch {
+    // fallback
+  }
+  try {
+    const raw = readAppSettings(APP_SETTINGS_PATH()).aiSettings
+    if (raw) return resolveAiSettings(raw, defaultAiSettings())
+  } catch {
+    // fallback
+  }
+  return defaultAiSettings()
+}
+
 function openingEffectsState(): OpeningEffectsState {
   const prefs = openingPrefs()
   let canGenerateImages = false
   try {
-    const aiConfig = readAppSettings(APP_SETTINGS_PATH()).aiSettings
+    const aiConfig = loadOpeningAiSettings()
     canGenerateImages = imageGenerationAvailable(
       aiConfig as Parameters<typeof imageGenerationAvailable>[0],
       false,
@@ -4156,6 +4192,9 @@ function openingEffectsState(): OpeningEffectsState {
   }
   return {
     prefs,
+    effectiveScenes: Object.fromEntries(
+      OPENING_APPS.map((a) => [a, resolveEffectiveOpeningCard(prefs, a)]),
+    ) as Record<OpeningApp, EffectiveOpeningCard>,
     custom: Object.fromEntries(
       OPENING_APPS.map((a) => [a, existsSync(openingHtmlPath(a))]),
     ) as Record<OpeningApp, boolean>,
@@ -5359,10 +5398,19 @@ function registerHomeIpc(): void {
     previewOpeningScene({ app: target, scene, lang: currentLang() })
   })
   ipcMain.handle(HOME_CHANNELS.saveOpeningCard, (_event, input: unknown): OpeningEffectsState => {
-    if (!input || typeof input !== 'object') return openingEffectsState()
-    const card = input as OpeningCardDefinition
-    if (typeof card.id !== 'string' || typeof card.name !== 'string' || !card.material) {
+    const validation = validateCardDefinition(input)
+    if (!validation.ok || !validation.card) {
       return openingEffectsState()
+    }
+    const card = validation.card
+    if (isBuiltInCard(card.id)) {
+      return openingEffectsState()
+    }
+    if (card.mediaAssetId) {
+      const assetPath = resolveSafeAssetPath(app.getPath('userData'), card.mediaAssetId)
+      if (!existsSync(assetPath)) {
+        return openingEffectsState()
+      }
     }
     const prefs = openingPrefs()
     const existing = prefs.customCards || []
@@ -5384,12 +5432,19 @@ function registerHomeIpc(): void {
           scenes[app] = DEFAULT_SCENE_FOR_APP[app]
         }
       }
+      const appOverrides = { ...(prefs.appOverrides || {}) }
+      for (const app of OPENING_APPS) {
+        if (appOverrides[app] === cardId) {
+          delete appOverrides[app]
+        }
+      }
       const globalCard = prefs.globalCard === cardId ? undefined : prefs.globalCard
       const favorites = (prefs.favorites || []).filter((id) => id !== cardId)
       writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
         ...prefs,
         customCards,
         scenes,
+        appOverrides: Object.keys(appOverrides).length > 0 ? appOverrides : undefined,
         globalCard,
         favorites,
       })
@@ -5399,8 +5454,12 @@ function registerHomeIpc(): void {
   ipcMain.handle(
     HOME_CHANNELS.importOpeningMedia,
     async (_event, bufferBase64: unknown, _fileName: unknown) => {
-      if (typeof bufferBase64 !== 'string') {
-        return { ok: false, error: 'Invalid payload', state: openingEffectsState() }
+      if (typeof bufferBase64 !== 'string' || !isBase64PayloadLengthSafe(bufferBase64)) {
+        return {
+          ok: false,
+          error: 'Invalid or oversized image payload',
+          state: openingEffectsState(),
+        }
       }
       try {
         const buf = Buffer.from(bufferBase64, 'base64')
@@ -5417,11 +5476,25 @@ function registerHomeIpc(): void {
   )
   ipcMain.handle(
     HOME_CHANNELS.deleteOpeningMedia,
-    (_event, assetId: unknown): OpeningEffectsState => {
-      if (typeof assetId === 'string') {
-        deleteMediaAsset(app.getPath('userData'), assetId)
+    (
+      _event,
+      assetId: unknown,
+    ): { ok: boolean; inUse?: boolean; error?: string; state: OpeningEffectsState } => {
+      if (typeof assetId !== 'string') {
+        return { ok: false, error: 'Invalid asset ID', state: openingEffectsState() }
       }
-      return openingEffectsState()
+      const prefs = openingPrefs()
+      const inUse = (prefs.customCards || []).some((c) => c.mediaAssetId === assetId)
+      if (inUse) {
+        return {
+          ok: false,
+          inUse: true,
+          error: 'Cannot delete media asset because it is currently used by a saved opening card.',
+          state: openingEffectsState(),
+        }
+      }
+      const ok = deleteMediaAsset(app.getPath('userData'), assetId)
+      return { ok, state: openingEffectsState() }
     },
   )
   ipcMain.handle(HOME_CHANNELS.generateAiCard, async (_event, input: unknown) => {
@@ -5429,14 +5502,8 @@ function registerHomeIpc(): void {
       return { ok: false, error: 'Invalid input' }
     }
     const req = input as AiCardGenerationInput
-    const validated = validateAiCardSchema({
-      name: req.prompt.slice(0, 30).trim() || 'AI Custom Card',
-      description: req.prompt.slice(0, 100),
-      preset: req.preset || 'frosted-glass',
-      themeMode: req.themeMode || 'system',
-      accentColor: req.accentColor,
-    })
-    return validated
+    const aiSettings = loadOpeningAiSettings()
+    return await generateAiCardWithRealProvider(req, aiSettings)
   })
   ipcMain.handle(
     HOME_CHANNELS.toggleOpeningFavorite,
@@ -5458,51 +5525,32 @@ function registerHomeIpc(): void {
   )
   ipcMain.handle(HOME_CHANNELS.exportOpeningCards, (): string => {
     const prefs = openingPrefs()
-    return JSON.stringify(prefs.customCards || [], null, 2)
+    const bundle = createOpeningCardExportBundle(prefs.customCards || [], app.getPath('userData'))
+    return JSON.stringify(bundle, null, 2)
   })
-  ipcMain.handle(HOME_CHANNELS.importOpeningCards, (_event, jsonContent: unknown) => {
+  ipcMain.handle(HOME_CHANNELS.importOpeningCards, async (_event, jsonContent: unknown) => {
     if (typeof jsonContent !== 'string') {
       return { ok: false, count: 0, error: 'Invalid payload', state: openingEffectsState() }
     }
-    try {
-      const parsed = JSON.parse(jsonContent)
-      if (!Array.isArray(parsed)) {
-        return { ok: false, count: 0, error: 'Expected JSON array', state: openingEffectsState() }
-      }
-      const validCards: OpeningCardDefinition[] = []
-      for (const item of parsed) {
-        const check = validateAiCardSchema(item)
-        if (check.ok && check.card) {
-          validCards.push(check.card)
-        }
-      }
-      if (validCards.length === 0) {
-        return {
-          ok: false,
-          count: 0,
-          error: 'No valid card definitions found',
-          state: openingEffectsState(),
-        }
-      }
-      const prefs = openingPrefs()
-      const existing = prefs.customCards || []
-      const mergedMap = new Map(existing.map((c) => [c.id, c]))
-      for (const card of validCards) {
-        mergedMap.set(card.id, card)
-      }
-      writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
-        ...prefs,
-        customCards: Array.from(mergedMap.values()),
-      })
-      return { ok: true, count: validCards.length, state: openingEffectsState() }
-    } catch (err) {
-      return {
-        ok: false,
-        count: 0,
-        error: err instanceof Error ? err.message : String(err),
-        state: openingEffectsState(),
-      }
+    const prefs = openingPrefs()
+    const result = await importCardsFromExportBundle(
+      jsonContent,
+      app.getPath('userData'),
+      prefs.customCards || [],
+    )
+    if (!result.ok) {
+      return { ok: false, count: 0, error: result.error, state: openingEffectsState() }
     }
+    const existing = prefs.customCards || []
+    const mergedMap = new Map(existing.map((c) => [c.id, c]))
+    for (const card of result.importedCards) {
+      mergedMap.set(card.id, card)
+    }
+    writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+      ...prefs,
+      customCards: Array.from(mergedMap.values()),
+    })
+    return { ok: true, count: result.count, state: openingEffectsState() }
   })
   ipcMain.handle(HOME_CHANNELS.listLegacyRecovery, () =>
     listLegacyRecovery(app.getPath('userData')),

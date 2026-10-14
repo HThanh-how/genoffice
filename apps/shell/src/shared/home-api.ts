@@ -60,6 +60,7 @@ import type { OpeningApp, OpeningPrefs } from './opening-scenes-meta'
 import type {
   AiCardGenerationInput,
   AiCardGenerationResult,
+  EffectiveOpeningCard,
   OpeningCardDefinition,
   StoredMediaAsset,
 } from './opening-card-types'
@@ -90,6 +91,7 @@ export interface OpeningEffectsState {
   builtInCards?: OpeningCardDefinition[]
   mediaAssets?: StoredMediaAsset[]
   canGenerateImages?: boolean
+  effectiveScenes?: Record<OpeningApp, EffectiveOpeningCard>
 }
 
 export interface LegacyRecoveryEntry {
@@ -431,7 +433,9 @@ export interface HomeApi extends ForkHomeApi {
     bufferBase64: string,
     fileName?: string,
   ): Promise<{ ok: boolean; asset?: StoredMediaAsset; error?: string; state: OpeningEffectsState }>
-  deleteOpeningMedia(assetId: string): Promise<OpeningEffectsState>
+  deleteOpeningMedia(
+    assetId: string,
+  ): Promise<{ ok: boolean; inUse?: boolean; error?: string; state: OpeningEffectsState }>
   generateAiCard(input: AiCardGenerationInput): Promise<AiCardGenerationResult>
   toggleOpeningFavorite(cardId: string): Promise<OpeningEffectsState>
   exportOpeningCards(): Promise<string>

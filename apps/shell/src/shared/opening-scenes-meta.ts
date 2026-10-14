@@ -150,7 +150,7 @@ export const CUSTOM_SCENE = 'custom'
 
 export type OpeningTierChoice = 'auto' | 'full' | 'lite' | 'minimal'
 
-import type { OpeningCardDefinition } from './opening-card-types'
+import type { EffectiveOpeningCard, OpeningCardDefinition } from './opening-card-types'
 import { isBuiltInCard } from './opening-card-families'
 
 export interface OpeningPrefs {
@@ -162,6 +162,8 @@ export interface OpeningPrefs {
   scenes: Record<OpeningApp, string>
   /** optional global card ID */
   globalCard?: string
+  /** explicit per-app overrides; absent/inherit means app uses globalCard (or default app scene) */
+  appOverrides?: Partial<Record<OpeningApp, string>>
   /** user's favorited card IDs */
   favorites?: string[]
   /** custom user cards registered in the studio */
@@ -181,8 +183,59 @@ export const knownSceneOrCard = (id: unknown): id is string =>
   (id === CUSTOM_SCENE ||
     SCENES.some((s) => s.id === id) ||
     isBuiltInCard(id) ||
+    id.startsWith('curated:') ||
     id.startsWith('custom:') ||
     id.startsWith('ai:'))
+
+/**
+ * Resolves the effective opening card or scene for a given app.
+ * Precedence hierarchy (Section 4):
+ * 1. Explicit preview scene (options.scene, e.g. from preview modal)
+ * 2. Explicit per-app override (set in prefs.appOverrides[app] or explicit custom choice in prefs.scenes[app])
+ * 3. Global Default card (prefs.globalCard if set and valid)
+ * 4. Application default scene (DEFAULT_SCENE_FOR_APP[app])
+ */
+export function resolveEffectiveOpeningCard(
+  prefs: OpeningPrefs,
+  app: OpeningApp,
+  previewScene?: string,
+): EffectiveOpeningCard {
+  if (previewScene && knownSceneOrCard(previewScene)) {
+    return { id: previewScene, source: 'preview', isOverride: false }
+  }
+
+  // 1. Explicit appOverrides check
+  const override = prefs.appOverrides?.[app]
+  if (override && override !== 'inherit' && knownSceneOrCard(override)) {
+    return { id: override, source: 'override', isOverride: true }
+  }
+
+  // 2. Legacy scenes override check:
+  // If scenes[app] is explicitly set to something other than DEFAULT_SCENE_FOR_APP[app],
+  // it is treated as a per-app override.
+  const scene = prefs.scenes?.[app]
+  if (
+    scene &&
+    scene !== 'inherit' &&
+    scene !== DEFAULT_SCENE_FOR_APP[app] &&
+    scene !== prefs.globalCard &&
+    knownSceneOrCard(scene)
+  ) {
+    return { id: scene, source: 'override', isOverride: true }
+  }
+
+  // 3. Fallback to globalCard if configured and valid
+  if (prefs.globalCard && knownSceneOrCard(prefs.globalCard)) {
+    return { id: prefs.globalCard, source: 'global', isOverride: false }
+  }
+
+  // 4. Default application scene
+  return {
+    id: DEFAULT_SCENE_FOR_APP[app],
+    source: 'default',
+    isOverride: false,
+  }
+}
 
 const isSafeCardDefinition = (c: unknown): c is OpeningCardDefinition => {
   if (!c || typeof c !== 'object') return false
@@ -219,6 +272,19 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
   }
   if (typeof value.globalCard === 'string' && knownSceneOrCard(value.globalCard)) {
     res.globalCard = value.globalCard
+  }
+  if (value.appOverrides && typeof value.appOverrides === 'object') {
+    const rawOverrides = value.appOverrides as Record<string, unknown>
+    const appOverrides: Partial<Record<OpeningApp, string>> = {}
+    for (const app of OPENING_APPS) {
+      const val = rawOverrides[app]
+      if (typeof val === 'string' && (val === 'inherit' || knownSceneOrCard(val))) {
+        appOverrides[app] = val
+      }
+    }
+    if (Object.keys(appOverrides).length > 0) {
+      res.appOverrides = appOverrides
+    }
   }
   if (Array.isArray(value.favorites)) {
     res.favorites = Array.from(

@@ -1,9 +1,13 @@
 import type {
+  AiCardGenerationInput,
+  AiCardGenerationResult,
   OpeningCardDefinition,
   OpeningMaterialConfig,
   OpeningMaterialPreset,
   OpeningThemeMode,
 } from '../../shared/opening-card-types'
+import { activeProvider, chatForProvider } from '@genoffice/ai-provider'
+import type { AiSettings } from '@genoffice/ai-provider'
 import { sanitizeHexColor } from './opening-card-css'
 
 const ALLOWED_PRESETS: readonly OpeningMaterialPreset[] = [
@@ -231,4 +235,131 @@ Allowed fields:
 
 DO NOT include HTML, scripts, code, or markdown. Output ONLY the JSON object.
 User brief: "${userPrompt.slice(0, 500)}"`
+}
+
+const CARD_DESIGN_SYSTEM_PROMPT = `You are a specialist UI designer for GenOffice Opening Card Studio.
+Based on the user's brief, generate an elegant, minimalist opening splash card configuration as a strict JSON object.
+
+Allowed presets: "solid", "frosted-glass", "liquid-glass", "minimal-monochrome".
+Allowed themeMode: "light", "dark", "system".
+JSON schema:
+{
+  "name": "Short, elegant card title (max 40 chars)",
+  "description": "One sentence describing the mood and palette (max 120 chars)",
+  "preset": "frosted-glass",
+  "themeMode": "system",
+  "opacity": 0.85,
+  "blurPx": 22,
+  "accentColor": "#2b7cd3",
+  "borderRadiusPx": 18,
+  "borderWidthPx": 1,
+  "shadowIntensity": 0.35
+}
+
+Rules:
+- Respond ONLY with the JSON object.
+- DO NOT wrap in markdown fences or commentary if possible.
+- Never include HTML, scripts, or executable code.`
+
+/**
+ * Invokes the configured GenOffice AI provider to generate a customized card configuration.
+ * Produces a preview card only; the card is NOT saved to disk until explicit user approval.
+ */
+export async function generateAiCardWithRealProvider(
+  input: AiCardGenerationInput,
+  aiSettings: AiSettings,
+  signal?: AbortSignal,
+  chatFn: typeof chatForProvider = chatForProvider,
+): Promise<AiCardGenerationResult> {
+  if (!input || typeof input.prompt !== 'string' || !input.prompt.trim()) {
+    return { ok: false, error: 'Please enter a description for the opening card.' }
+  }
+
+  const promptText = input.prompt.trim()
+  if (promptText.length > 500) {
+    return { ok: false, error: 'Prompt exceeds 500 characters.' }
+  }
+
+  const provider = activeProvider(aiSettings)
+  const baseConfig = aiSettings.providers[provider]
+  if (!baseConfig) {
+    return {
+      ok: false,
+      error: `AI provider "${provider}" is not configured. Please set up an AI model in Settings > AI.`,
+    }
+  }
+
+  // Check if provider is usable
+  if (provider !== 'agy' && provider !== 'genspark' && !baseConfig.apiKey && !baseConfig.baseUrl) {
+    return {
+      ok: false,
+      error: `No API key found for "${provider}". Please add an API key in Settings > AI.`,
+    }
+  }
+
+  const config = input.model ? { ...baseConfig, model: input.model } : baseConfig
+
+  let userMessage = `Create an opening card style based on this description:\n"${promptText}"`
+  if (input.preset) userMessage += `\nPreferred preset: ${input.preset}`
+  if (input.themeMode) userMessage += `\nPreferred theme mode: ${input.themeMode}`
+  if (input.accentColor) userMessage += `\nPreferred accent color: ${input.accentColor}`
+
+  try {
+    const response = await chatFn(provider, config, CARD_DESIGN_SYSTEM_PROMPT, userMessage, signal)
+
+    if (!response.ok) {
+      return {
+        ok: false,
+        error: response.error || 'AI generation request failed.',
+        modelUsed: config.model,
+      }
+    }
+
+    if (!response.content || !response.content.trim()) {
+      return {
+        ok: false,
+        error: 'The AI model returned an empty response. Please try again.',
+        modelUsed: config.model,
+      }
+    }
+
+    let parsed: unknown
+    try {
+      parsed = parseAiJsonPayload(response.content)
+    } catch {
+      return {
+        ok: false,
+        error: 'Failed to parse AI response into valid JSON.',
+        rawResponse: response.content,
+        modelUsed: config.model,
+      }
+    }
+
+    const validation = validateAiCardSchema(parsed)
+    if (!validation.ok || !validation.card) {
+      return {
+        ok: false,
+        error: validation.error || 'AI generated output did not conform to card schema.',
+        rawResponse: response.content,
+        modelUsed: config.model,
+      }
+    }
+
+    // Return the preview card (transient, not saved until user clicks Save)
+    return {
+      ok: true,
+      card: validation.card,
+      rawResponse: response.content,
+      modelUsed: config.model,
+    }
+  } catch (err: unknown) {
+    if (signal?.aborted) {
+      return { ok: false, error: 'Generation was cancelled by the user.' }
+    }
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      modelUsed: config.model,
+    }
+  }
 }

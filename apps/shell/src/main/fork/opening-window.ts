@@ -4,6 +4,7 @@ import {
   CUSTOM_SCENE,
   DEFAULT_OPENING_PREFS,
   DEFAULT_SCENE_FOR_APP,
+  resolveEffectiveOpeningCard,
   sceneMeta,
 } from '../../shared/opening-scenes-meta'
 import type { OpeningApp, OpeningPrefs } from '../../shared/opening-scenes-meta'
@@ -357,7 +358,8 @@ export function buildOpeningPage(options: {
   const prefs = config.prefs()
   const words = openingWords(options.lang, options.kind)
   const tier = options.forceTier ?? (prefs.tier === 'auto' ? machineTier() : prefs.tier)
-  const chosen = options.scene ?? prefs.scenes[options.app] ?? prefs.globalCard
+  const effective = resolveEffectiveOpeningCard(prefs, options.app, options.scene)
+  const chosen = effective.id
   if (chosen === CUSTOM_SCENE) {
     const user = config.customHtml(options.app)
     if (user !== null) {

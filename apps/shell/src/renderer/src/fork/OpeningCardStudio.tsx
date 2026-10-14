@@ -1,7 +1,9 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import type { OpeningEffectsState } from '../../../shared/home-api'
 import {
+  DEFAULT_SCENE_FOR_APP,
   OPENING_APPS,
+  resolveEffectiveOpeningCard,
   type OpeningApp,
   type OpeningPrefs,
 } from '../../../shared/opening-scenes-meta'
@@ -9,6 +11,7 @@ import type {
   OpeningCardDefinition,
   OpeningMaterialPreset,
   OpeningThemeMode,
+  StoredMediaAsset,
 } from '../../../shared/opening-card-types'
 import { getAllBuiltInCards } from '../../../shared/opening-card-families'
 import './opening-card-studio.css'
@@ -21,9 +24,9 @@ interface StudioProps {
 }
 
 const APP_NAMES: Record<OpeningApp, { en: string; vi: string; letter: string }> = {
-  docs: { en: 'Word', vi: 'Văn bản', letter: 'W' },
-  sheets: { en: 'Excel', vi: 'Bảng tính', letter: 'X' },
-  slides: { en: 'PowerPoint', vi: 'Trình chiếu', letter: 'P' },
+  docs: { en: 'Word (.docx)', vi: 'Word (.docx)', letter: 'W' },
+  sheets: { en: 'Excel (.xlsx)', vi: 'Excel (.xlsx)', letter: 'X' },
+  slides: { en: 'PowerPoint (.pptx)', vi: 'PowerPoint (.pptx)', letter: 'P' },
   pdf: { en: 'PDF', vi: 'PDF', letter: 'PDF' },
   markdown: { en: 'Markdown', vi: 'Markdown', letter: 'M' },
   html: { en: 'HTML', vi: 'HTML', letter: '</>' },
@@ -42,10 +45,18 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
   const [showCustomizer, setShowCustomizer] = useState(false)
   const [showAiModal, setShowAiModal] = useState(false)
   const [showMediaModal, setShowMediaModal] = useState(false)
+  const [dragOver, setDragOver] = useState(false)
+  const [mediaError, setMediaError] = useState('')
+
+  // AI Workflow state (prompt -> generate -> preview -> approve/save or discard)
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState('')
+  const [aiPreviewCard, setAiPreviewCard] = useState<OpeningCardDefinition | null>(null)
+  const [aiModelUsed, setAiModelUsed] = useState<string | undefined>()
+
   const [statusMessage, setStatusMessage] = useState('')
+  const importFileInputRef = useRef<HTMLInputElement>(null)
 
   // Customizer state
   const [editPreset, setEditPreset] = useState<OpeningMaterialPreset>('frosted-glass')
@@ -56,6 +67,15 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
   const [editShadow, setEditShadow] = useState(0.35)
   const [editAccent, setEditAccent] = useState('#2b7cd3')
   const [editName, setEditName] = useState('')
+
+  // Media map for fast asset thumbnail lookup
+  const mediaMap = useMemo(() => {
+    const map = new Map<string, StoredMediaAsset>()
+    for (const a of state.mediaAssets ?? []) {
+      map.set(a.assetId, a)
+    }
+    return map
+  }, [state.mediaAssets])
 
   // Combine built-in cards and custom cards
   const allCards: OpeningCardDefinition[] = useMemo(() => {
@@ -70,14 +90,12 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
     const favs = new Set(prefs.favorites ?? [])
 
     return allCards.filter((card) => {
-      // Category filter
       if (activeCategory === 'favorites' && !favs.has(card.id)) return false
       if (activeCategory === 'curated' && card.category !== 'curated') return false
       if (activeCategory === 'canvas' && card.category !== 'canvas') return false
       if (activeCategory === 'media' && card.category !== 'media') return false
       if (activeCategory === 'ai' && card.category !== 'ai') return false
 
-      // Search query
       if (query) {
         const matchName = card.name.toLowerCase().includes(query)
         const matchDesc = card.description?.toLowerCase().includes(query)
@@ -89,19 +107,17 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
     })
   }, [allCards, search, activeCategory, prefs.favorites])
 
-  // Map of card ID to apps currently assigned
+  // Assigned apps map
   const assignedMap = useMemo(() => {
     const map = new Map<string, OpeningApp[]>()
     for (const app of OPENING_APPS) {
-      const assigned = prefs.scenes[app]
-      if (assigned) {
-        const list = map.get(assigned) ?? []
-        list.push(app)
-        map.set(assigned, list)
-      }
+      const effective = state.effectiveScenes?.[app] ?? resolveEffectiveOpeningCard(prefs, app)
+      const list = map.get(effective.id) ?? []
+      list.push(app)
+      map.set(effective.id, list)
     }
     return map
-  }, [prefs.scenes])
+  }, [state.effectiveScenes, prefs])
 
   // Handlers
   const handleToggleFavorite = (cardId: string) => {
@@ -109,14 +125,37 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
   }
 
   const handleAssignToApp = (app: OpeningApp, cardId: string) => {
+    const nextOverrides = { ...(prefs.appOverrides || {}), [app]: cardId }
+    const nextScenes = { ...prefs.scenes, [app]: cardId }
     const nextPrefs: OpeningPrefs = {
       ...prefs,
-      scenes: {
-        ...prefs.scenes,
-        [app]: cardId,
-      },
+      appOverrides: nextOverrides,
+      scenes: nextScenes,
     }
     void api.setOpeningPrefs?.(nextPrefs).then(onUpdateState)
+    setStatusMessage(
+      isVi ? `Đã gán thẻ cho ${APP_NAMES[app].vi}` : `Assigned card to ${APP_NAMES[app].en}`,
+    )
+    setTimeout(() => setStatusMessage(''), 3000)
+  }
+
+  const handleResetOverride = (app: OpeningApp) => {
+    const nextOverrides = { ...(prefs.appOverrides || {}) }
+    delete nextOverrides[app]
+    const nextScenes = { ...prefs.scenes }
+    nextScenes[app] = prefs.globalCard || DEFAULT_SCENE_FOR_APP[app]
+    const nextPrefs: OpeningPrefs = {
+      ...prefs,
+      appOverrides: Object.keys(nextOverrides).length > 0 ? nextOverrides : undefined,
+      scenes: nextScenes,
+    }
+    void api.setOpeningPrefs?.(nextPrefs).then(onUpdateState)
+    setStatusMessage(
+      isVi
+        ? `Đã xóa tùy biến riêng của ${APP_NAMES[app].vi}`
+        : `Reset ${APP_NAMES[app].en} override to Global Default`,
+    )
+    setTimeout(() => setStatusMessage(''), 3000)
   }
 
   const handleSetGlobal = (cardId: string) => {
@@ -125,6 +164,12 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
       globalCard: cardId,
     }
     void api.setOpeningPrefs?.(nextPrefs).then(onUpdateState)
+    setStatusMessage(
+      isVi
+        ? 'Đã đặt làm Mặc định chung cho tất cả ứng dụng!'
+        : 'Set as Global Default for all apps!',
+    )
+    setTimeout(() => setStatusMessage(''), 3000)
   }
 
   const openCustomizer = (card: OpeningCardDefinition) => {
@@ -175,12 +220,29 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
     void api.deleteOpeningCard?.(cardId).then((res) => {
       onUpdateState(res)
       if (selectedCard?.id === cardId) setSelectedCard(null)
+      setStatusMessage(isVi ? 'Đã xóa thẻ.' : 'Card deleted.')
+      setTimeout(() => setStatusMessage(''), 3000)
     })
   }
 
-  const handleMediaUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0]
-    if (!file) return
+  const processImageFile = (file: File) => {
+    setMediaError('')
+    if (file.size > 10 * 1024 * 1024) {
+      setMediaError(
+        isVi ? 'Kích thước tệp vượt quá giới hạn 10 MB.' : 'File size exceeds maximum 10 MB limit.',
+      )
+      return
+    }
+    const allowed = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+    if (!allowed.includes(file.type)) {
+      setMediaError(
+        isVi
+          ? 'Định dạng ảnh không được hỗ trợ. Chỉ chấp nhận PNG, JPEG, WebP, GIF.'
+          : 'Unsupported image format. Allowed formats: PNG, JPEG, WebP, GIF.',
+      )
+      return
+    }
+
     const reader = new FileReader()
     reader.onload = () => {
       const result = reader.result as string
@@ -188,7 +250,6 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
       if (base64) {
         void api.importOpeningMedia?.(base64, file.name).then((res) => {
           if (res.ok && res.asset) {
-            // Auto register card
             const newMediaCard: OpeningCardDefinition = {
               id: `custom:media_${Date.now()}`,
               name: file.name.replace(/\.[^.]+$/, ''),
@@ -214,7 +275,7 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
               setTimeout(() => setStatusMessage(''), 3000)
             })
           } else if (res.error) {
-            alert(res.error)
+            setMediaError(res.error)
           }
         })
       }
@@ -222,24 +283,35 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
     reader.readAsDataURL(file)
   }
 
+  const handleMediaUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) processImageFile(file)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files?.[0]
+    if (file) processImageFile(file)
+  }
+
+  // Real AI generation workflow (request -> preview -> explicit user save)
   const handleAiGenerate = () => {
     if (!aiPrompt.trim()) return
     setAiLoading(true)
     setAiError('')
+    setAiPreviewCard(null)
+    setAiModelUsed(undefined)
+
     void api
       .generateAiCard?.({ prompt: aiPrompt })
       .then((res) => {
         setAiLoading(false)
         if (res.ok && res.card) {
-          void api.saveOpeningCard?.(res.card).then((nextState) => {
-            onUpdateState(nextState)
-            setShowAiModal(false)
-            setAiPrompt('')
-            setStatusMessage(isVi ? 'Đã tạo thẻ AI thành công!' : 'AI Card generated!')
-            setTimeout(() => setStatusMessage(''), 3000)
-          })
+          setAiPreviewCard(res.card)
+          setAiModelUsed(res.modelUsed)
         } else {
-          setAiError(res.error ?? 'Generation failed')
+          setAiError(res.error ?? 'AI generation failed')
         }
       })
       .catch((err) => {
@@ -248,9 +320,116 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
       })
   }
 
+  const handleApproveAiCard = () => {
+    if (!aiPreviewCard) return
+    void api.saveOpeningCard?.(aiPreviewCard).then((nextState) => {
+      onUpdateState(nextState)
+      setShowAiModal(false)
+      setAiPreviewCard(null)
+      setAiPrompt('')
+      setStatusMessage(isVi ? 'Đã lưu thẻ AI vào bộ sưu tập!' : 'AI card saved to your collection!')
+      setTimeout(() => setStatusMessage(''), 3000)
+    })
+  }
+
+  // Export & Import handlers
+  const handleExport = async () => {
+    try {
+      const json = await api.exportOpeningCards?.()
+      if (!json) return
+      const blob = new Blob([json], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `genoffice-opening-cards-${Date.now()}.json`
+      a.click()
+      URL.revokeObjectURL(url)
+      setStatusMessage(isVi ? 'Đã xuất gói thẻ thành công!' : 'Opening cards exported!')
+      setTimeout(() => setStatusMessage(''), 3000)
+    } catch (err) {
+      alert(String(err))
+    }
+  }
+
+  const handleImportFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = async () => {
+      const text = reader.result as string
+      if (text) {
+        const res = await api.importOpeningCards?.(text)
+        if (res?.ok && res.state) {
+          onUpdateState(res.state)
+          setStatusMessage(
+            isVi
+              ? `Đã nhập thành công ${res.count} thẻ!`
+              : `Successfully imported ${res.count} cards!`,
+          )
+          setTimeout(() => setStatusMessage(''), 3000)
+        } else if (res?.error) {
+          alert(res.error)
+        }
+      }
+    }
+    reader.readAsText(file)
+    e.target.value = ''
+  }
+
   return (
     <div className="ocs-container">
-      {/* Top Toolbar */}
+      {/* Active Application Assignments Overview Bar */}
+      <div className="ocs-overview">
+        {OPENING_APPS.map((app) => {
+          const effective = state.effectiveScenes?.[app] ?? resolveEffectiveOpeningCard(prefs, app)
+          const matchedCard = allCards.find((c) => c.id === effective.id)
+          const cardName = matchedCard?.name ?? effective.id
+
+          return (
+            <div key={app} className="ocs-app-pill">
+              <div className="ocs-app-header">
+                <span>{APP_NAMES[app].vi && isVi ? APP_NAMES[app].vi : APP_NAMES[app].en}</span>
+                <span
+                  className={`ocs-app-badge ${
+                    effective.source === 'global'
+                      ? 'global'
+                      : effective.source === 'override'
+                        ? 'override'
+                        : 'default'
+                  }`}
+                >
+                  {effective.source === 'global'
+                    ? isVi
+                      ? 'Mặc định chung'
+                      : 'Global'
+                    : effective.source === 'override'
+                      ? isVi
+                        ? 'Tùy biến riêng'
+                        : 'Override'
+                      : isVi
+                        ? 'Gốc'
+                        : 'Default'}
+                </span>
+              </div>
+              <div className="ocs-app-card-name" title={cardName}>
+                {cardName}
+              </div>
+              {effective.source === 'override' && (
+                <button
+                  type="button"
+                  className="ocs-reset-override-btn"
+                  onClick={() => handleResetOverride(app)}
+                  title={isVi ? 'Khôi phục về Mặc định chung' : 'Reset to Global Default'}
+                >
+                  {isVi ? '↺ Về mặc định chung' : '↺ Reset override'}
+                </button>
+              )}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Master Toolbar */}
       <div className="ocs-toolbar">
         <div className="ocs-toolbar-left">
           <input
@@ -264,9 +443,9 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
             {(
               [
                 { key: 'all', en: 'All', vi: 'Tất cả' },
-                { key: 'curated', en: 'Curated (12)', vi: 'Mẫu đẹp (12)' },
-                { key: 'canvas', en: 'Dynamic (32)', vi: 'Động (32)' },
-                { key: 'media', en: 'Custom Media', vi: 'Ảnh cá nhân' },
+                { key: 'curated', en: 'Curated', vi: 'Mẫu đẹp' },
+                { key: 'canvas', en: 'Dynamic', vi: 'Động' },
+                { key: 'media', en: 'Personal Media', vi: 'Ảnh cá nhân' },
                 { key: 'ai', en: 'AI Cards', vi: 'Thẻ AI' },
                 { key: 'favorites', en: 'Favorites', vi: 'Yêu thích' },
               ] as const
@@ -291,9 +470,34 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
           >
             {isVi ? '+ Nhập ảnh' : '+ Import Media'}
           </button>
-          <button type="button" className="ocs-action-btn" onClick={() => setShowAiModal(true)}>
+          <button
+            type="button"
+            className="ocs-action-btn"
+            onClick={() => {
+              setShowAiModal(true)
+              setAiError('')
+              setAiPreviewCard(null)
+            }}
+          >
             {isVi ? '✨ Tạo bằng AI' : '✨ Generate with AI'}
           </button>
+          <button type="button" className="ocs-action-btn" onClick={handleExport}>
+            {isVi ? 'Xuất thẻ' : 'Export'}
+          </button>
+          <button
+            type="button"
+            className="ocs-action-btn"
+            onClick={() => importFileInputRef.current?.click()}
+          >
+            {isVi ? 'Nhập thẻ' : 'Import'}
+          </button>
+          <input
+            ref={importFileInputRef}
+            type="file"
+            accept=".json"
+            style={{ display: 'none' }}
+            onChange={handleImportFile}
+          />
         </div>
       </div>
 
@@ -310,6 +514,7 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
           const assignedApps = assignedMap.get(card.id) ?? []
           const isGlobal = prefs.globalCard === card.id
           const [bg1, bg2] = card.thumbnailColors ?? ['#18233a', '#2b3e66']
+          const mediaAsset = card.mediaAssetId ? mediaMap.get(card.mediaAssetId) : undefined
 
           return (
             <div
@@ -317,14 +522,28 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
               className={`ocs-card-item ${selectedCard?.id === card.id ? 'selected' : ''}`}
               onClick={() => setSelectedCard(card)}
             >
-              {/* Thumbnail */}
+              {/* Thumbnail: Real image thumbnail or dynamic gradient */}
               <div
                 className="ocs-thumb-box"
                 style={{
-                  background: `linear-gradient(145deg, ${bg1} 0%, ${bg2} 100%)`,
+                  background: mediaAsset?.thumbnailUrl
+                    ? 'transparent'
+                    : `linear-gradient(145deg, ${bg1} 0%, ${bg2} 100%)`,
                 }}
               >
-                <div className="ocs-thumb-badge">{card.category === 'canvas' ? '✨' : '✦'}</div>
+                {mediaAsset?.thumbnailUrl ? (
+                  <img
+                    src={mediaAsset.thumbnailUrl}
+                    alt={card.name}
+                    className="ocs-thumb-img"
+                    loading="lazy"
+                  />
+                ) : card.mediaAssetId ? (
+                  <div className="ocs-thumb-placeholder">🖼️ {card.name}</div>
+                ) : (
+                  <div className="ocs-thumb-badge">{card.category === 'canvas' ? '✨' : '✦'}</div>
+                )}
+
                 <button
                   type="button"
                   className={`ocs-fav-btn ${isFav ? 'active' : ''}`}
@@ -549,7 +768,11 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
                 }}
               >
                 <div
-                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                  style={{
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                  }}
                 >
                   <div
                     style={{
@@ -580,13 +803,21 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
         </div>
       )}
 
-      {/* Media Upload Modal */}
+      {/* Drag & Drop Personal Media Modal */}
       {showMediaModal && (
         <div className="ocs-panel">
           <div className="ocs-panel-title">
             {isVi ? 'Nhập ảnh nền cá nhân' : 'Import Personal Media'}
           </div>
-          <div className="ocs-dropzone">
+          <div
+            className={`ocs-dropzone ${dragOver ? 'dragover' : ''}`}
+            onDragOver={(e) => {
+              e.preventDefault()
+              setDragOver(true)
+            }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={handleDrop}
+          >
             <input
               type="file"
               accept="image/png, image/jpeg, image/webp, image/gif"
@@ -597,26 +828,40 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
             <label htmlFor="ocs-file-input" style={{ cursor: 'pointer' }}>
               <div style={{ fontSize: '28px', marginBottom: '8px' }}>📁</div>
               <div style={{ fontSize: '13px', fontWeight: 600 }}>
-                {isVi ? 'Bấm để chọn ảnh từ máy' : 'Click to select image file'}
+                {isVi
+                  ? 'Kéo thả ảnh vào đây hoặc bấm để chọn tệp'
+                  : 'Drag & drop image here or click to browse'}
               </div>
-              <div style={{ fontSize: '11px', color: 'var(--muted, #666)', marginTop: '4px' }}>
-                PNG, JPEG, WebP, GIF (Tối đa 10 MB)
+              <div
+                style={{
+                  fontSize: '11px',
+                  color: 'var(--muted, #666)',
+                  marginTop: '4px',
+                }}
+              >
+                PNG, JPEG, WebP, GIF ({isVi ? 'Tối đa 10 MB' : 'Max 10 MB'})
               </div>
             </label>
           </div>
+          {mediaError && (
+            <div style={{ color: '#d32f2f', fontSize: '12px', marginTop: '6px' }}>{mediaError}</div>
+          )}
           <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '8px' }}>
             <button
               type="button"
               className="ocs-action-btn"
-              onClick={() => setShowMediaModal(false)}
+              onClick={() => {
+                setShowMediaModal(false)
+                setMediaError('')
+              }}
             >
-              {isVi ? 'Hủy' : 'Cancel'}
+              {isVi ? 'Đóng' : 'Close'}
             </button>
           </div>
         </div>
       )}
 
-      {/* AI Generator Modal */}
+      {/* AI Generator Modal with Preview & Approval Workflow */}
       {showAiModal && (
         <div className="ocs-panel">
           <div className="ocs-panel-title">
@@ -634,21 +879,177 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
               placeholder="e.g. Nordic ice mist with crisp cyan borders for writing"
               value={aiPrompt}
               onChange={(e) => setAiPrompt(e.target.value)}
+              disabled={aiLoading}
             />
           </div>
 
-          {aiError && <div style={{ color: '#d32f2f', fontSize: '12px' }}>{aiError}</div>}
+          {aiError && (
+            <div style={{ color: '#d32f2f', fontSize: '12px', marginTop: '4px' }}>{aiError}</div>
+          )}
 
-          <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+          {/* AI Generated Preview Stage (Section 3.1 & 13) */}
+          {aiPreviewCard && (
+            <div
+              style={{
+                marginTop: '12px',
+                padding: '12px',
+                border: '1px solid var(--ocs-border)',
+                borderRadius: '8px',
+                background: 'var(--ocs-bg)',
+              }}
+            >
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  marginBottom: '8px',
+                }}
+              >
+                <span style={{ fontSize: '13px', fontWeight: 600 }}>
+                  {isVi ? 'Xem trước thẻ AI sinh ra:' : 'AI Generated Preview:'}
+                </span>
+                {aiModelUsed && (
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      background: 'var(--ocs-surface)',
+                      padding: '2px 6px',
+                      borderRadius: '4px',
+                      color: 'var(--ocs-text-muted)',
+                    }}
+                  >
+                    Model: {aiModelUsed}
+                  </span>
+                )}
+              </div>
+
+              <div className="ocs-preview-box" style={{ height: '140px' }}>
+                <div
+                  className="ocs-interactive-stage"
+                  style={{
+                    background:
+                      aiPreviewCard.material.preset === 'solid'
+                        ? `rgba(24, 27, 34, ${aiPreviewCard.material.opacity ?? 0.95})`
+                        : `rgba(20, 25, 36, ${aiPreviewCard.material.opacity ?? 0.85})`,
+                    backdropFilter:
+                      (aiPreviewCard.material.blurPx ?? 22) > 0
+                        ? `blur(${aiPreviewCard.material.blurPx}px)`
+                        : 'none',
+                    borderRadius: `${aiPreviewCard.material.borderRadiusPx ?? 18}px`,
+                    border: `1px solid ${aiPreviewCard.material.borderColor ?? 'rgba(255, 255, 255, 0.15)'}`,
+                    boxShadow: `0 14px 40px rgba(0,0,0,${(aiPreviewCard.material.shadowIntensity ?? 0.35) * 0.8})`,
+                    color: '#f3f5fa',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: '32px',
+                        height: '32px',
+                        borderRadius: '6px',
+                        background: aiPreviewCard.material.accentColor ?? '#2b7cd3',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontWeight: 'bold',
+                        color: '#fff',
+                      }}
+                    >
+                      AI
+                    </div>
+                    <span style={{ fontSize: '10px', color: '#aab3c8' }}>
+                      {aiPreviewCard.material.preset}
+                    </span>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: '13px', fontWeight: 600 }}>{aiPreviewCard.name}</div>
+                    {aiPreviewCard.description && (
+                      <div
+                        style={{
+                          fontSize: '11px',
+                          color: '#aab3c8',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        }}
+                      >
+                        {aiPreviewCard.description}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div
+            style={{
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              marginTop: '12px',
+            }}
+          >
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {!aiPreviewCard ? (
+                <button
+                  type="button"
+                  className="ocs-action-btn primary"
+                  disabled={aiLoading || !aiPrompt.trim()}
+                  onClick={handleAiGenerate}
+                >
+                  {aiLoading
+                    ? isVi
+                      ? 'Đang kết nối AI...'
+                      : 'Connecting to AI model...'
+                    : isVi
+                      ? 'Tạo thẻ'
+                      : 'Generate'}
+                </button>
+              ) : (
+                <>
+                  <button
+                    type="button"
+                    className="ocs-action-btn primary"
+                    onClick={handleApproveAiCard}
+                  >
+                    {isVi ? '✓ Lưu thẻ này' : '✓ Save this Card'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ocs-action-btn"
+                    disabled={aiLoading}
+                    onClick={handleAiGenerate}
+                  >
+                    {isVi ? '🔄 Tạo biến thể khác' : '🔄 Regenerate'}
+                  </button>
+                  <button
+                    type="button"
+                    className="ocs-action-btn"
+                    onClick={() => setAiPreviewCard(null)}
+                  >
+                    {isVi ? 'Hủy bản này' : 'Discard'}
+                  </button>
+                </>
+              )}
+            </div>
+
             <button
               type="button"
-              className="ocs-action-btn primary"
-              disabled={aiLoading}
-              onClick={handleAiGenerate}
+              className="ocs-action-btn"
+              onClick={() => {
+                setShowAiModal(false)
+                setAiPreviewCard(null)
+                setAiError('')
+              }}
             >
-              {aiLoading ? (isVi ? 'Đang tạo...' : 'Generating...') : isVi ? 'Tạo thẻ' : 'Generate'}
-            </button>
-            <button type="button" className="ocs-action-btn" onClick={() => setShowAiModal(false)}>
               {isVi ? 'Đóng' : 'Close'}
             </button>
           </div>
