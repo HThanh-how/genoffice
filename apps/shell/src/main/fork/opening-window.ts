@@ -4,6 +4,7 @@ import {
   CUSTOM_SCENE,
   DEFAULT_OPENING_PREFS,
   DEFAULT_SCENE_FOR_APP,
+  resolveEffectiveOpeningCard,
   sceneMeta,
 } from '../../shared/opening-scenes-meta'
 import type { OpeningApp, OpeningPrefs } from '../../shared/opening-scenes-meta'
@@ -198,6 +199,11 @@ repeating-linear-gradient(transparent 0 25px,var(--sk1) 25px 26px);background-co
 .sk-code .sk{height:10px}
 @media (prefers-reduced-motion:reduce){.sk{animation:none}}`
 
+import type { OpeningCardDefinition } from '../../shared/opening-card-types'
+import { getBuiltInCard } from '../../shared/opening-card-families'
+import { buildMaterialCss } from './opening-card-css'
+import { buildIsolatedHtmlHostDocument } from './opening-card-html-sanitizer'
+
 /** The splash page: the app's colour and badge, the file name, one line of why, an animated sea. */
 export function openingPageHtml(
   words: OpeningWords,
@@ -207,14 +213,36 @@ export function openingPageHtml(
   scene?: string,
   /** `window`: the scene fills its own small window; `card`: a small card on a plain backdrop (over a tab) */
   layout: 'window' | 'card' = 'window',
+  cardDef?: OpeningCardDefinition,
+  mediaDataUrl?: string,
 ): string {
   const theme = SPLASH_THEMES[appName]
   const rgb = rgbOf(theme.color)
-  const sceneId = scene ?? DEFAULT_SCENE_FOR_APP[appName]
-  const script = tier === 'minimal' ? '' : `<script>${SCENE_LIB}${SCENE_BOOT}</script>`
+  const isCanvasScene = !cardDef || cardDef.contentKind === 'canvas-scene'
+  const sceneId = cardDef?.sceneId ?? scene ?? DEFAULT_SCENE_FOR_APP[appName]
+  const script =
+    !isCanvasScene || tier === 'minimal' ? '' : `<script>${SCENE_LIB}${SCENE_BOOT}</script>`
   const [bg1, bg2] = sceneMeta(sceneId).bg
+
+  let materialCss = ''
+  let mediaStyle = ''
+  if (cardDef?.material) {
+    const built = buildMaterialCss(cardDef.material, { appColor: theme.color })
+    materialCss = built.inlineCss
+  }
+  if (mediaDataUrl) {
+    const dim =
+      typeof cardDef?.mediaDim === 'number' && !Number.isNaN(cardDef.mediaDim)
+        ? Math.max(0, Math.min(1, cardDef.mediaDim))
+        : 0.25
+    const fit = cardDef?.mediaFit === 'contain' ? 'contain' : 'cover'
+    if (/^data:image\/(?:png|jpeg|webp|gif);base64,[A-Za-z0-9+/=]+$/.test(mediaDataUrl)) {
+      mediaStyle = `.stage { background-image: linear-gradient(rgba(0,0,0,${dim}), rgba(0,0,0,${dim})), url('${mediaDataUrl}') !important; background-size: ${fit} !important; background-position: center !important; }`
+    }
+  }
+
   return `<!doctype html><html><head><meta charset="utf-8"><title>${escapeHtml(words.title)}</title>
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'">
 <style>
 :root{color-scheme:dark;--accent:${theme.color};--rgb:${rgb};--bg1:${bg1};--bg2:${bg2};--fg:#f3f5fa;--muted:#aab3c8;--backdrop:#eef0f4}
 @media (prefers-color-scheme:dark){:root{--backdrop:#15171c}}
@@ -251,12 +279,14 @@ box-shadow:0 0 0 1px rgba(255,255,255,.18),0 8px 26px rgba(var(--rgb),.55);anima
 @keyframes sweep{from{transform:translateX(-110%)}to{transform:translateX(320%)}}
 body{transition:opacity .3s ease}body.leaving{opacity:0}
 ${layout === 'card' ? SKELETON_CSS : ''}
+${materialCss}
+${mediaStyle}
 @media (prefers-reduced-motion:reduce){.badge,.glow,.bubble,.bar i{animation:none}}
 </style></head>
 <body${layout === 'card' ? ' class="card"' : ''} data-app="${appName}" data-scene="${sceneId}" data-tier="${tier}" data-rgb="${rgb}" data-lt="${lighterRgbOf(theme.color)}">
 ${layout === 'card' ? skeletonHtml(appName) : ''}
 <div class="stage">
-<canvas id="sea" aria-hidden="true"></canvas><div class="glow"></div>
+${isCanvasScene ? '<canvas id="sea" aria-hidden="true"></canvas><div class="glow"></div>' : ''}
 <span class="bubble b1"></span><span class="bubble b2"></span><span class="bubble b3"></span>
 <div class="badge" aria-hidden="true">${escapeHtml(theme.letter)}</div>
 <div class="text" role="status"><div class="title">${escapeHtml(words.title)}</div>
@@ -273,6 +303,10 @@ export interface OpeningConfig {
   prefs(): OpeningPrefs
   /** the imported HTML page of an app, or null */
   customHtml(app: SplashApp): string | null
+  /** data URL getter for personal media assets */
+  mediaDataUrl?(assetId: string): string | null
+  /** getter for managed HTML card assets ({ html, css }) */
+  htmlCardContent?(assetId: string): { html: string; css: string } | null
 }
 
 let config: OpeningConfig = { prefs: () => DEFAULT_OPENING_PREFS, customHtml: () => null }
@@ -327,7 +361,8 @@ export function buildOpeningPage(options: {
   const prefs = config.prefs()
   const words = openingWords(options.lang, options.kind)
   const tier = options.forceTier ?? (prefs.tier === 'auto' ? machineTier() : prefs.tier)
-  const chosen = options.scene ?? prefs.scenes[options.app]
+  const effective = resolveEffectiveOpeningCard(prefs, options.app, options.scene)
+  const chosen = effective.id
   if (chosen === CUSTOM_SCENE) {
     const user = config.customHtml(options.app)
     if (user !== null) {
@@ -340,6 +375,38 @@ export function buildOpeningPage(options: {
       })
     }
   }
+
+  const cardDef = getBuiltInCard(chosen) ?? prefs.customCards?.find((c) => c.id === chosen)
+
+  // AI-generated or custom HTML opening card scene
+  if (cardDef?.contentKind === 'ai-html' && cardDef.htmlAssetId && config.htmlCardContent) {
+    const htmlAsset = config.htmlCardContent(cardDef.htmlAssetId)
+    if (htmlAsset) {
+      return buildIsolatedHtmlHostDocument(
+        htmlAsset.html,
+        htmlAsset.css,
+        {
+          fileName: options.fileName,
+          title: words.title,
+          hint: words.hint,
+          appName: SPLASH_THEMES[options.app].letter,
+          accentColor: cardDef.material.accentColor || SPLASH_THEMES[options.app].color,
+        },
+        {
+          reducedMotion: tier === 'minimal',
+          isCardLayout: options.layout === 'card',
+          skeletonHtml: options.layout === 'card' ? skeletonHtml(options.app) : undefined,
+        },
+      )
+    }
+  }
+
+  let mediaDataUrl: string | undefined
+  if (cardDef?.mediaAssetId && config.mediaDataUrl) {
+    const url = config.mediaDataUrl(cardDef.mediaAssetId)
+    if (url) mediaDataUrl = url
+  }
+
   return openingPageHtml(
     words,
     options.fileName,
@@ -347,6 +414,8 @@ export function buildOpeningPage(options: {
     tier,
     chosen === CUSTOM_SCENE ? undefined : chosen,
     options.layout,
+    cardDef,
+    mediaDataUrl,
   )
 }
 

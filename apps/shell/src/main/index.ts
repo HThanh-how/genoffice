@@ -12,8 +12,47 @@ import {
   setOpeningConfig,
   startOpeningNotice,
 } from './fork/opening-window'
-import { OPENING_APPS, normalizeOpeningPrefs } from '../shared/opening-scenes-meta'
+import {
+  DEFAULT_SCENE_FOR_APP,
+  OPENING_APPS,
+  normalizeOpeningPrefs,
+  resolveEffectiveOpeningCard,
+} from '../shared/opening-scenes-meta'
 import type { OpeningApp, OpeningPrefs } from '../shared/opening-scenes-meta'
+import { getAllBuiltInCards, isBuiltInCard } from '../shared/opening-card-families'
+import type {
+  OpeningCardDefinition,
+  AiCardGenerationInput,
+  EffectiveOpeningCard,
+  StoredHtmlAsset,
+} from '../shared/opening-card-types'
+import {
+  deleteMediaAsset,
+  getAssetDataUrl,
+  isBase64PayloadLengthSafe,
+  listMediaAssets,
+  resolveSafeAssetPath,
+  storeMediaAssetFromBuffer,
+} from './fork/opening-media-storage'
+import { generateAiCardWithRealProvider } from './fork/opening-card-ai'
+import {
+  createOpeningCardExportBundle,
+  importCardsFromExportBundle,
+  validateCardDefinition,
+} from './fork/opening-card-export'
+import {
+  deleteHtmlCardAsset,
+  readHtmlCardAsset,
+  resolveSafeHtmlAssetPath as resolveSafeHtmlAssetPathFork,
+  storeHtmlCardAsset,
+} from './fork/opening-html-storage'
+import { sanitizeOpeningCss, sanitizeOpeningHtml } from './fork/opening-card-html-sanitizer'
+import {
+  defaultAiSettings,
+  imageGenerationAvailable,
+  resolveAiSettings,
+} from '@genoffice/ai-provider'
+import type { AiSettings } from '@genoffice/ai-provider'
 import { execSync, spawn } from 'node:child_process'
 import {
   appendFileSync,
@@ -27,7 +66,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import {
@@ -319,7 +358,7 @@ import type {
   LegacyDocSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
-import type { OpeningEffectsState } from '../shared/home-api'
+import type { OpeningEffectsState, SaveOpeningHtmlCardResult } from '../shared/home-api'
 import { DOCUMENT_INDEX_CHANNELS, type PasteFilesResult } from '../shared/fork/document-index-api'
 import { registerHomeChatIpc } from './fork/home-chat-ipc'
 import { registerDocumentIndexIpc } from './fork/document-index-ipc'
@@ -4128,12 +4167,48 @@ function customOpeningHtml(target: OpeningApp): string | null {
   }
 }
 
+function loadOpeningAiSettings(): AiSettings {
+  const filePath = join(app.getPath('userData'), 'ai-settings.json')
+  try {
+    if (existsSync(filePath)) {
+      const raw = JSON.parse(readFileSync(filePath, 'utf8'))
+      return resolveAiSettings(raw, defaultAiSettings())
+    }
+  } catch {
+    // fallback
+  }
+  try {
+    const raw = readAppSettings(APP_SETTINGS_PATH()).aiSettings
+    if (raw) return resolveAiSettings(raw, defaultAiSettings())
+  } catch {
+    // fallback
+  }
+  return defaultAiSettings()
+}
+
 function openingEffectsState(): OpeningEffectsState {
+  const prefs = openingPrefs()
+  let canGenerateImages = false
+  try {
+    const aiConfig = loadOpeningAiSettings()
+    canGenerateImages = imageGenerationAvailable(
+      aiConfig as Parameters<typeof imageGenerationAvailable>[0],
+      false,
+    )
+  } catch {
+    // fallback
+  }
   return {
-    prefs: openingPrefs(),
+    prefs,
+    effectiveScenes: Object.fromEntries(
+      OPENING_APPS.map((a) => [a, resolveEffectiveOpeningCard(prefs, a)]),
+    ) as Record<OpeningApp, EffectiveOpeningCard>,
     custom: Object.fromEntries(
       OPENING_APPS.map((a) => [a, existsSync(openingHtmlPath(a))]),
     ) as Record<OpeningApp, boolean>,
+    builtInCards: getAllBuiltInCards() as OpeningCardDefinition[],
+    mediaAssets: listMediaAssets(app.getPath('userData')),
+    canGenerateImages,
   }
 }
 
@@ -5329,6 +5404,290 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.previewOpening, (_event, target: unknown, scene: unknown) => {
     if (!isOpeningApp(target) || typeof scene !== 'string') return
     previewOpeningScene({ app: target, scene, lang: currentLang() })
+  })
+  ipcMain.handle(HOME_CHANNELS.saveOpeningCard, (_event, input: unknown): OpeningEffectsState => {
+    const validation = validateCardDefinition(input)
+    if (!validation.ok || !validation.card) {
+      return openingEffectsState()
+    }
+    const card = validation.card
+    if (isBuiltInCard(card.id)) {
+      return openingEffectsState()
+    }
+    if (card.mediaAssetId) {
+      const assetPath = resolveSafeAssetPath(app.getPath('userData'), card.mediaAssetId)
+      if (!existsSync(assetPath)) {
+        return openingEffectsState()
+      }
+    }
+    if (card.htmlAssetId) {
+      const htmlPath = resolveSafeHtmlAssetPathFork(app.getPath('userData'), card.htmlAssetId)
+      if (!existsSync(htmlPath)) {
+        return openingEffectsState()
+      }
+    }
+    const prefs = openingPrefs()
+    const existing = prefs.customCards || []
+    const idx = existing.findIndex((c) => c.id === card.id)
+    const customCards =
+      idx >= 0 ? existing.map((c, i) => (i === idx ? card : c)) : [...existing, card]
+    writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', { ...prefs, customCards })
+    return openingEffectsState()
+  })
+  ipcMain.handle(
+    HOME_CHANNELS.saveOpeningHtmlCard,
+    async (_event, input: unknown): Promise<SaveOpeningHtmlCardResult> => {
+      if (!input || typeof input !== 'object') {
+        return { ok: false, error: 'Invalid input payload: expected an object' }
+      }
+      const { card, html, css } = input as {
+        card?: unknown
+        html?: unknown
+        css?: unknown
+      }
+      if (!card || typeof card !== 'object') {
+        return { ok: false, error: 'Invalid card definition: expected an object' }
+      }
+      if (typeof html !== 'string' || !html.trim()) {
+        return { ok: false, error: 'HTML content cannot be empty' }
+      }
+      if (typeof css !== 'string') {
+        return { ok: false, error: 'CSS content must be a string' }
+      }
+
+      const validation = validateCardDefinition(card as OpeningCardDefinition)
+      if (!validation.ok || !validation.card) {
+        return { ok: false, error: validation.error || 'Invalid card definition' }
+      }
+
+      const htmlSanitize = sanitizeOpeningHtml(html)
+      if (!htmlSanitize.ok || !htmlSanitize.sanitizedHtml) {
+        return {
+          ok: false,
+          error: `HTML sanitization failed: ${htmlSanitize.error || 'unsafe or invalid elements'}`,
+        }
+      }
+
+      const cssSanitize = sanitizeOpeningCss(css)
+      if (!cssSanitize.ok || typeof cssSanitize.sanitizedCss !== 'string') {
+        return {
+          ok: false,
+          error: `CSS validation failed: ${cssSanitize.error || 'prohibited or invalid rules'}`,
+        }
+      }
+
+      let storedAssetId: string | undefined
+      try {
+        const stored = await storeHtmlCardAsset(
+          app.getPath('userData'),
+          htmlSanitize.sanitizedHtml,
+          cssSanitize.sanitizedCss,
+        )
+        storedAssetId = stored.assetId
+
+        const finalCard: OpeningCardDefinition = {
+          ...validation.card,
+          contentKind: 'ai-html',
+          htmlAssetId: stored.assetId,
+        }
+        const prefs = openingPrefs()
+        const existing = prefs.customCards || []
+        const idx = existing.findIndex((c) => c.id === finalCard.id)
+        const customCards =
+          idx >= 0 ? existing.map((c, i) => (i === idx ? finalCard : c)) : [...existing, finalCard]
+        writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', { ...prefs, customCards })
+        storedAssetId = undefined
+        const finalState = openingEffectsState()
+        return { ok: true, state: finalState, ...finalState }
+      } catch (err) {
+        if (storedAssetId) {
+          try {
+            deleteHtmlCardAsset(app.getPath('userData'), storedAssetId)
+          } catch {
+            // best-effort rollback cleanup
+          }
+        }
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
+      }
+    },
+  )
+  ipcMain.handle(
+    HOME_CHANNELS.readOpeningHtmlCard,
+    (_event, htmlAssetId: unknown): StoredHtmlAsset | null => {
+      if (typeof htmlAssetId !== 'string') return null
+      try {
+        return readHtmlCardAsset(app.getPath('userData'), htmlAssetId)
+      } catch {
+        return null
+      }
+    },
+  )
+  ipcMain.handle(
+    HOME_CHANNELS.deleteOpeningCard,
+    (_event, cardId: unknown): OpeningEffectsState => {
+      if (typeof cardId !== 'string') return openingEffectsState()
+      const prefs = openingPrefs()
+      const cardToDelete = (prefs.customCards || []).find((c) => c.id === cardId)
+      const customCards = (prefs.customCards || []).filter((c) => c.id !== cardId)
+      if (cardToDelete?.htmlAssetId) {
+        const stillInUse = customCards.some((c) => c.htmlAssetId === cardToDelete.htmlAssetId)
+        if (!stillInUse) {
+          deleteHtmlCardAsset(app.getPath('userData'), cardToDelete.htmlAssetId)
+        }
+      }
+      const scenes = { ...prefs.scenes }
+      for (const app of OPENING_APPS) {
+        if (scenes[app] === cardId) {
+          scenes[app] = DEFAULT_SCENE_FOR_APP[app]
+        }
+      }
+      const appOverrides = { ...(prefs.appOverrides || {}) }
+      for (const app of OPENING_APPS) {
+        if (appOverrides[app] === cardId) {
+          delete appOverrides[app]
+        }
+      }
+      const globalCard = prefs.globalCard === cardId ? undefined : prefs.globalCard
+      const favorites = (prefs.favorites || []).filter((id) => id !== cardId)
+      writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+        ...prefs,
+        customCards,
+        scenes,
+        appOverrides: Object.keys(appOverrides).length > 0 ? appOverrides : undefined,
+        globalCard,
+        favorites,
+      })
+      return openingEffectsState()
+    },
+  )
+  ipcMain.handle(
+    HOME_CHANNELS.importOpeningMedia,
+    async (_event, bufferBase64: unknown, _fileName: unknown) => {
+      if (typeof bufferBase64 !== 'string' || !isBase64PayloadLengthSafe(bufferBase64)) {
+        return {
+          ok: false,
+          error: 'Invalid or oversized image payload',
+          state: openingEffectsState(),
+        }
+      }
+      try {
+        const buf = Buffer.from(bufferBase64, 'base64')
+        const stored = await storeMediaAssetFromBuffer(app.getPath('userData'), buf)
+        return { ok: true, asset: stored, state: openingEffectsState() }
+      } catch (error) {
+        return {
+          ok: false,
+          error: error instanceof Error ? error.message : String(error),
+          state: openingEffectsState(),
+        }
+      }
+    },
+  )
+  ipcMain.handle(
+    HOME_CHANNELS.deleteOpeningMedia,
+    (
+      _event,
+      assetId: unknown,
+    ): { ok: boolean; inUse?: boolean; error?: string; state: OpeningEffectsState } => {
+      if (typeof assetId !== 'string') {
+        return { ok: false, error: 'Invalid asset ID', state: openingEffectsState() }
+      }
+      const prefs = openingPrefs()
+      const inUse = (prefs.customCards || []).some((c) => c.mediaAssetId === assetId)
+      if (inUse) {
+        return {
+          ok: false,
+          inUse: true,
+          error: 'Cannot delete media asset because it is currently used by a saved opening card.',
+          state: openingEffectsState(),
+        }
+      }
+      const ok = deleteMediaAsset(app.getPath('userData'), assetId)
+      return { ok, state: openingEffectsState() }
+    },
+  )
+  const activeAiCardControllers = new Map<string, AbortController>()
+
+  ipcMain.handle(HOME_CHANNELS.generateAiCard, async (_event, input: unknown) => {
+    if (!input || typeof input !== 'object') {
+      return { ok: false, error: 'Invalid input' }
+    }
+    const req = input as AiCardGenerationInput
+    const requestId = req.requestId || randomBytes(8).toString('hex')
+    const controller = new AbortController()
+    activeAiCardControllers.set(requestId, controller)
+
+    try {
+      const aiSettings = loadOpeningAiSettings()
+      return await generateAiCardWithRealProvider(
+        { ...req, requestId },
+        aiSettings,
+        controller.signal,
+      )
+    } finally {
+      activeAiCardControllers.delete(requestId)
+    }
+  })
+
+  ipcMain.handle(HOME_CHANNELS.cancelAiCardGeneration, (_event, requestId: unknown): boolean => {
+    if (typeof requestId !== 'string') return false
+    const controller = activeAiCardControllers.get(requestId)
+    if (controller) {
+      controller.abort('Cancelled by user')
+      activeAiCardControllers.delete(requestId)
+      return true
+    }
+    return false
+  })
+  ipcMain.handle(
+    HOME_CHANNELS.toggleOpeningFavorite,
+    (_event, cardId: unknown): OpeningEffectsState => {
+      if (typeof cardId !== 'string') return openingEffectsState()
+      const prefs = openingPrefs()
+      const favs = new Set(prefs.favorites || [])
+      if (favs.has(cardId)) {
+        favs.delete(cardId)
+      } else {
+        favs.add(cardId)
+      }
+      writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+        ...prefs,
+        favorites: Array.from(favs),
+      })
+      return openingEffectsState()
+    },
+  )
+  ipcMain.handle(HOME_CHANNELS.exportOpeningCards, (): string => {
+    const prefs = openingPrefs()
+    const bundle = createOpeningCardExportBundle(prefs.customCards || [], app.getPath('userData'))
+    return JSON.stringify(bundle, null, 2)
+  })
+  ipcMain.handle(HOME_CHANNELS.importOpeningCards, async (_event, jsonContent: unknown) => {
+    if (typeof jsonContent !== 'string') {
+      return { ok: false, count: 0, error: 'Invalid payload', state: openingEffectsState() }
+    }
+    const prefs = openingPrefs()
+    const result = await importCardsFromExportBundle(
+      jsonContent,
+      app.getPath('userData'),
+      prefs.customCards || [],
+    )
+    if (!result.ok) {
+      return { ok: false, count: 0, error: result.error, state: openingEffectsState() }
+    }
+    const existing = prefs.customCards || []
+    const mergedMap = new Map(existing.map((c) => [c.id, c]))
+    for (const card of result.importedCards) {
+      mergedMap.set(card.id, card)
+    }
+    writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+      ...prefs,
+      customCards: Array.from(mergedMap.values()),
+    })
+    return { ok: true, count: result.count, state: openingEffectsState() }
   })
   ipcMain.handle(HOME_CHANNELS.listLegacyRecovery, () =>
     listLegacyRecovery(app.getPath('userData')),
@@ -7177,7 +7536,24 @@ app.whenReady().then(async () => {
   // database open yet
   const dbMove = await applyPendingDbMove(userDataDir)
   everything = createEverything(userDataDir)
-  setOpeningConfig({ prefs: openingPrefs, customHtml: customOpeningHtml })
+  setOpeningConfig({
+    prefs: openingPrefs,
+    customHtml: customOpeningHtml,
+    htmlCardContent: (assetId) => {
+      try {
+        return readHtmlCardAsset(app.getPath('userData'), assetId)
+      } catch {
+        return null
+      }
+    },
+    mediaDataUrl: (assetId) => {
+      try {
+        return getAssetDataUrl(app.getPath('userData'), assetId)
+      } catch {
+        return null
+      }
+    },
+  })
   const indexDbDir = resolveDbDir(userDataDir)
 
   // Fail-closed storage initialization: never open or create fresh DB on ambiguity. The check and any V2->V3

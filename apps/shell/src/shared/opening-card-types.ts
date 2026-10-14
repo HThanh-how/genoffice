@@ -1,0 +1,150 @@
+export type OpeningMaterialPreset =
+  'solid' | 'frosted-glass' | 'liquid-glass' | 'minimal-monochrome'
+
+export type OpeningThemeMode = 'light' | 'dark' | 'system'
+
+export type CardContentKind =
+  | 'canvas-scene'
+  | 'curated-material'
+  | 'personal-media'
+  | 'ai-declarative'
+  | 'custom-html'
+  | 'ai-html'
+
+export type CardCategory = 'canvas' | 'curated' | 'media' | 'ai' | 'custom'
+
+export interface OpeningMaterialConfig {
+  preset: OpeningMaterialPreset
+  themeMode?: OpeningThemeMode
+  /** Card background opacity (0.1 to 1.0) */
+  opacity?: number
+  /** Card blur intensity in pixels (0 to 50) */
+  blurPx?: number
+  /** Primary accent color in hex format (e.g. #2b7cd3) */
+  accentColor?: string
+  /** Card corner radius in pixels (8 to 36) */
+  borderRadiusPx?: number
+  /** Subtle border stroke width in pixels (0 to 4) */
+  borderWidthPx?: number
+  /** Optional border color override (rgba or hex) */
+  borderColor?: string
+  /** Drop shadow intensity factor (0.0 to 1.0) */
+  shadowIntensity?: number
+  /** Accessibility fallback: disables blur and enforces high-opacity solid background */
+  reduceTransparency?: boolean
+}
+
+export interface OpeningCardDefinition {
+  id: string
+  name: string
+  description?: string
+  category: CardCategory
+  contentKind: CardContentKind
+  /** Reference to one of the 32 Canvas scenes (when contentKind === 'canvas-scene') */
+  sceneId?: string
+  /** ID or filename of personal media asset in app storage (when contentKind === 'personal-media' or 'ai-declarative') */
+  mediaAssetId?: string
+  /** ID of managed HTML asset in app storage (when contentKind === 'ai-html' or 'custom-html') */
+  htmlAssetId?: string
+  /** How media fits within the card: cover, contain, or center */
+  mediaFit?: 'cover' | 'contain' | 'center'
+  /** Darkening overlay over the media to keep text readable (0.0 to 0.9) */
+  mediaDim?: number
+  /** Material appearance configuration */
+  material: OpeningMaterialConfig
+  /** Static preview gradient or color stops for lightweight gallery rendering */
+  thumbnailColors?: [string, string]
+  /** Creation epoch timestamp */
+  createdAt?: number
+  /** Built-in cards cannot be deleted by the user */
+  isBuiltIn?: boolean
+  /** Searchable tags */
+  tags?: string[]
+}
+
+export interface OpeningStudioPrefsExtension {
+  /** Optional global default card ID applied to all apps unless specifically overridden */
+  globalCard?: string
+  /** Explicit per-app overrides; absent means app inherits globalCard (or default app scene) */
+  appOverrides?: Partial<Record<string, string>>
+  /** List of card IDs favorited by the user */
+  favorites?: string[]
+  /** Custom cards created or imported by the user */
+  customCards?: OpeningCardDefinition[]
+}
+
+export interface EffectiveOpeningCard {
+  id: string
+  source: 'preview' | 'override' | 'global' | 'default'
+  isOverride: boolean
+}
+
+export interface StoredMediaAsset {
+  assetId: string
+  mime: string
+  sizeBytes: number
+  dataUrl?: string
+  thumbnailUrl?: string
+  createdAt?: number
+}
+
+export interface StoredHtmlAsset {
+  assetId: string
+  html: string
+  css: string
+  createdAt?: number
+  sizeBytes?: number
+}
+
+export interface GeneratedHtmlCardDraft {
+  version: 1
+  name: string
+  description?: string
+  html: string
+  css: string
+  themeMode: OpeningThemeMode
+  accentColor?: string
+}
+
+export interface OpeningMediaAssetInfo {
+  id: string
+  fileName: string
+  mime: string
+  sizeBytes: number
+  createdAt: number
+  thumbnailUrl?: string
+}
+
+export type AiCardGenerationMode = 'style' | 'html' | 'image'
+
+export interface AiCardGenerationInput {
+  prompt: string
+  mode?: AiCardGenerationMode
+  accentColor?: string
+  preset?: OpeningMaterialPreset
+  themeMode?: OpeningThemeMode
+  model?: string
+  requestId?: string
+}
+
+export interface AiCardGenerationResult {
+  ok: boolean
+  card?: OpeningCardDefinition
+  htmlDraft?: GeneratedHtmlCardDraft
+  modeUsed?: AiCardGenerationMode
+  error?: string
+  rawResponse?: string
+  modelUsed?: string
+}
+
+/**
+ * Portable, versioned export format for Opening Card Studio collections.
+ */
+export interface OpeningCardExportBundle {
+  version: 1
+  exportedAt: number
+  appVersion?: string
+  cards: OpeningCardDefinition[]
+  assets?: StoredMediaAsset[]
+  htmlAssets?: StoredHtmlAsset[]
+}

@@ -37,8 +37,10 @@ import type {
   FileSearchSettings,
   LegacyConvertState,
   OpeningEffectsState,
+  SaveOpeningHtmlCardResult,
   LegacyDocSettings,
 } from '../shared/home-api'
+import type { StoredHtmlAsset } from '../shared/opening-card-types'
 import { HOME_CHANNELS } from '../shared/home-api'
 import { INTEGRATIONS_CHANNELS } from '../shared/integrations-api'
 import type {
@@ -428,6 +430,66 @@ const homeApi: HomeApi = {
   },
   async previewOpening(app, scene) {
     await ipcRenderer.invoke(HOME_CHANNELS.previewOpening, app, scene)
+  },
+  async saveOpeningCard(card) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.saveOpeningCard, card)) as OpeningEffectsState
+  },
+  async saveOpeningHtmlCard(input) {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.saveOpeningHtmlCard,
+      input,
+    )) as SaveOpeningHtmlCardResult
+  },
+  async readOpeningHtmlCard(htmlAssetId) {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.readOpeningHtmlCard,
+      htmlAssetId,
+    )) as StoredHtmlAsset | null
+  },
+  async deleteOpeningCard(cardId) {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.deleteOpeningCard,
+      cardId,
+    )) as OpeningEffectsState
+  },
+  async importOpeningMedia(bufferBase64, fileName) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.importOpeningMedia, bufferBase64, fileName)) as {
+      ok: boolean
+      asset?: any
+      error?: string
+      state: OpeningEffectsState
+    }
+  },
+  async deleteOpeningMedia(assetId) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.deleteOpeningMedia, assetId)) as {
+      ok: boolean
+      inUse?: boolean
+      error?: string
+      state: OpeningEffectsState
+    }
+  },
+  async generateAiCard(input) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.generateAiCard, input)) as any
+  },
+  async cancelAiCardGeneration(requestId) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.cancelAiCardGeneration, requestId)) as boolean
+  },
+  async toggleOpeningFavorite(cardId) {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.toggleOpeningFavorite,
+      cardId,
+    )) as OpeningEffectsState
+  },
+  async exportOpeningCards() {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.exportOpeningCards)) as string
+  },
+  async importOpeningCards(jsonContent) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.importOpeningCards, jsonContent)) as {
+      ok: boolean
+      count: number
+      error?: string
+      state: OpeningEffectsState
+    }
   },
   async startLegacyConvert() {
     return (await ipcRenderer.invoke(HOME_CHANNELS.startLegacyConvert)) as LegacyConvertState

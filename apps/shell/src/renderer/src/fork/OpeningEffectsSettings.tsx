@@ -1,10 +1,9 @@
 import { useEffect, useState } from 'react'
 import { Dropdown } from '@genoffice/ui'
 import type { OpeningEffectsState } from '../../../shared/home-api'
+import { OpeningCardStudio } from './OpeningCardStudio'
 import {
-  CUSTOM_SCENE,
   OPENING_APPS,
-  SCENES,
   type OpeningApp,
   type OpeningPrefs,
   type OpeningTierChoice,
@@ -98,10 +97,6 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
     setState({ ...state, prefs: next })
     void api.setOpeningPrefs(next).then(setState)
   }
-  const sceneOptions = (app: OpeningApp) => [
-    ...SCENES.map((s) => ({ value: s.id, label: lang === 'vi' ? s.vi : s.en })),
-    ...(custom[app] ? [{ value: CUSTOM_SCENE, label: c.custom }] : []),
-  ]
   const importFor = (app: OpeningApp) => {
     setError('')
     void api.importOpeningHtml(app).then((result) => {
@@ -150,45 +145,54 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
               onPick={(tier) => save({ ...prefs, tier })}
             />
           </div>
-          {OPENING_APPS.map((app) => (
-            <div className="set-field set-opening-row" key={app}>
-              <div className="set-field-text">
-                <div className="set-field-stack">
-                  <div className="set-field-label">{c.apps[app]}</div>
-                  {custom[app] && <div className="set-field-desc">{c.imported}</div>}
+          <OpeningCardStudio
+            state={state}
+            lang={lang}
+            onUpdateState={setState}
+            onPreview={(app, s) => void api.previewOpening(app, s)}
+          />
+
+          <details className="set-opening-advanced">
+            <summary>
+              {lang === 'vi'
+                ? 'Tùy chọn nâng cao (HTML tùy chỉnh cũ)'
+                : 'Advanced (Legacy Custom HTML)'}
+            </summary>
+            <div style={{ marginTop: '12px' }}>
+              <div className="set-field-desc set-opening-guide">{c.guide}</div>
+              {OPENING_APPS.map((app) => (
+                <div className="set-field set-opening-row" key={app} style={{ marginTop: '8px' }}>
+                  <div className="set-field-text">
+                    <div className="set-field-stack">
+                      <div className="set-field-label">{c.apps[app]}</div>
+                      {custom[app] && <div className="set-field-desc">{c.imported}</div>}
+                    </div>
+                  </div>
+                  <div className="set-opening-controls">
+                    <button
+                      type="button"
+                      className="set-btn"
+                      onClick={() => void api.previewOpening(app, 'custom')}
+                    >
+                      {c.preview}
+                    </button>
+                    <button type="button" className="set-btn" onClick={() => importFor(app)}>
+                      {custom[app] ? c.replaceHtml : c.importHtml}
+                    </button>
+                    {custom[app] && (
+                      <button
+                        type="button"
+                        className="set-btn"
+                        onClick={() => void api.removeOpeningHtml(app).then(setState)}
+                      >
+                        {c.remove}
+                      </button>
+                    )}
+                  </div>
                 </div>
-              </div>
-              <div className="set-opening-controls">
-                <Dropdown
-                  className="set-dd set-dd-wide"
-                  value={prefs.scenes[app]}
-                  ariaLabel={c.apps[app]}
-                  options={sceneOptions(app)}
-                  onPick={(scene) => save({ ...prefs, scenes: { ...prefs.scenes, [app]: scene } })}
-                />
-                <button
-                  type="button"
-                  className="set-btn"
-                  onClick={() => void api.previewOpening(app, prefs.scenes[app])}
-                >
-                  {c.preview}
-                </button>
-                <button type="button" className="set-btn" onClick={() => importFor(app)}>
-                  {custom[app] ? c.replaceHtml : c.importHtml}
-                </button>
-                {custom[app] && (
-                  <button
-                    type="button"
-                    className="set-btn"
-                    onClick={() => void api.removeOpeningHtml(app).then(setState)}
-                  >
-                    {c.remove}
-                  </button>
-                )}
-              </div>
+              ))}
             </div>
-          ))}
-          <div className="set-field-desc set-opening-guide">{c.guide}</div>
+          </details>
           {error && <div className="set-field-desc set-opening-error">{error}</div>}
         </>
       )}
