@@ -168,5 +168,8 @@ export function createDocumentIndexPreloadApi(
         expectedRevision,
       )
     },
+    async getPolicyPresets() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getPolicyPresets)
+    },
   }
 }
