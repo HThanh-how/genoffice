@@ -28,6 +28,7 @@ import type {
   FolderRoot,
   MoveResult,
   HomeApi,
+  UpdateCheckResult,
   RecentEntry,
   RecentPage,
   RenameResult,
@@ -333,9 +334,9 @@ const homeApi: HomeApi = {
       throw new Error('Invalid update source')
     return await ipcRenderer.invoke(HOME_CHANNELS.setUpdateSource, source)
   },
-  async checkForUpdates() {
+  async checkForUpdates(): Promise<UpdateCheckResult | void> {
     return (await ipcRenderer.invoke(HOME_CHANNELS.checkForUpdates)) as
-      { upToDate?: boolean } | undefined
+      UpdateCheckResult | undefined
   },
   async getUpdateChannel() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getUpdateChannel)

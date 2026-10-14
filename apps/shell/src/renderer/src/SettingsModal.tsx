@@ -2,7 +2,11 @@ import { appNotify } from './ui-feedback'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import appIcon from './assets/app-icon.png'
-import { validateUpdateSource, type UpdateSource } from '../../shared/update-source'
+import {
+  getUpdateErrorMessage,
+  validateUpdateSource,
+  type UpdateSource,
+} from '../../shared/update-source'
 import { OpeningEffectsSettings } from './fork/OpeningEffectsSettings'
 import { AiInstructionsSettings, aiInstructionsTitle } from './fork/AiInstructionsSettings'
 import {
@@ -211,67 +215,6 @@ function SetGroup({
       <div className="set-group-body">{children}</div>
     </section>
   )
-}
-
-function getUpdateErrorMessage(code: string, lang: string): string {
-  const isVi = lang === 'vi'
-  const c = code.toUpperCase()
-  if (
-    c.includes('INVALID_FORMAT') ||
-    c.includes('OWNER/REPOSITORY') ||
-    c.includes('INVALID UPDATE SOURCE') ||
-    c.includes('HTTPS WITHOUT CREDENTIALS')
-  ) {
-    return isVi
-      ? 'Định dạng kho mã nguồn không hợp lệ. Hãy dùng owner/repository.'
-      : 'Invalid repository format. Use owner/repository.'
-  }
-  if (
-    c.includes('SETTINGS_WRITE_FAILED') ||
-    c.includes('STORAGE') ||
-    c.includes('EACCES') ||
-    c.includes('EPERM')
-  ) {
-    return isVi
-      ? 'Không thể lưu cài đặt cập nhật. Kiểm tra quyền ghi bộ nhớ của ứng dụng.'
-      : 'Unable to save update settings. Check application storage permissions.'
-  }
-  if (c.includes('GITHUB_NOT_FOUND') || c.includes('404') || c.includes('NOT FOUND')) {
-    return isVi
-      ? 'Không tìm thấy kho mã nguồn trên GitHub. Kiểm tra lại tên owner/repository.'
-      : 'Repository not found on GitHub. Check the owner/repository name.'
-  }
-  if (c.includes('GITHUB_RATE_LIMITED') || c.includes('403') || c.includes('RATE LIMIT')) {
-    return isVi
-      ? 'Đã đạt giới hạn yêu cầu của GitHub API. Vui lòng thử lại sau.'
-      : 'GitHub API rate limit reached. Please try again later.'
-  }
-  if (
-    c.includes('TIMEOUT') ||
-    c.includes('NETWORK_ERROR') ||
-    c.includes('FETCH FAILED') ||
-    c.includes('ENOTFOUND') ||
-    c.includes('ECONNREFUSED') ||
-    c.includes('ECONNRESET') ||
-    c.includes('ETIMEDOUT')
-  ) {
-    return isVi
-      ? 'Không thể kết nối đến GitHub. Nguồn cập nhật đã lưu không bị thay đổi.'
-      : 'Unable to contact GitHub. Your saved update source has not changed.'
-  }
-  if (c.includes('NO_COMPATIBLE_INSTALLER') || c.includes('COMPATIBLE INSTALLER')) {
-    return isVi
-      ? 'Kho mã nguồn hợp lệ nhưng chưa có bộ cài phù hợp cho thiết bị này.'
-      : 'The repository is valid, but no compatible installer is available for this device.'
-  }
-  if (c.includes('INVALID_RELEASE_METADATA') || c.includes('RELEASE METADATA')) {
-    return isVi
-      ? 'Dữ liệu phiên bản phát hành từ nguồn cập nhật không hợp lệ.'
-      : 'Invalid release metadata from update source.'
-  }
-  return isVi
-    ? 'Không thể hoàn thành thao tác cập nhật. Vui lòng thử lại.'
-    : 'Unable to complete update operation. Please try again.'
 }
 
 // GenMail's option order: follow-system first, then the manual picks
@@ -2399,7 +2342,7 @@ export function SettingsModal({
                           void window.aiOffice
                             .checkForUpdates()
                             .then((res) => {
-                              if ((res as { upToDate?: boolean } | undefined)?.upToDate !== false) {
+                              if (res?.upToDate === true) {
                                 setUpdateNotice(
                                   lang === 'vi'
                                     ? 'Bạn đang dùng phiên bản phát hành Stable mới nhất.'

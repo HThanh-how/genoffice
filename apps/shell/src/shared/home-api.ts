@@ -20,6 +20,7 @@ import type { DocumentMemoryReadResult, DocumentMemorySearchResult } from '@geno
 import type { DocumentIndexProgress } from '@genoffice/agent-core'
 import type { UpdateChannel, UpdateUiState } from './update-api'
 import type { UpdateSource } from './update-source'
+export type UpdateCheckResult = { upToDate: boolean }
 import type { KbFileInfo, KbReadPage, KbSearchHit } from '@genoffice/agent-core'
 import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 import type { ForkHomeApi } from './fork/fork-home-api'
@@ -389,7 +390,7 @@ export interface HomeApi extends ForkHomeApi {
   /** current update channel (persisted in userData/app-settings.json; default 'stable') */
   getUpdateSource(): Promise<UpdateSource>
   setUpdateSource(source: UpdateSource): Promise<UpdateSource>
-  checkForUpdates(): Promise<{ upToDate?: boolean } | void>
+  checkForUpdates(): Promise<UpdateCheckResult | void>
   getUpdateChannel(): Promise<UpdateChannel>
   /** switch + persist the update channel; triggers an immediate update check */
   setUpdateChannel(channel: UpdateChannel): Promise<void>

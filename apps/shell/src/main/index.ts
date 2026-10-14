@@ -480,6 +480,7 @@ import {
 import { setAiErrorLogger } from '@genoffice/ai-provider'
 import { checkForkUpdates } from './fork-updater'
 import {
+  applyUpdateSourceChange,
   DEFAULT_UPDATE_SOURCE,
   UpdateSourceError,
   validateUpdateSource,
@@ -5309,20 +5310,9 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.getUpdateSource, () => currentUpdateSource())
   ipcMain.handle(HOME_CHANNELS.setUpdateSource, (_event, input: unknown) => {
-    const source = validateUpdateSource(input)
-    const current = currentUpdateSource()
-    if (current.kind === source.kind && current.value === source.value) {
-      return source
-    }
-    try {
+    return applyUpdateSourceChange(input, currentUpdateSource(), (source) => {
       writeAppSetting(APP_SETTINGS_PATH(), 'updateSource', source)
-      return source
-    } catch (err) {
-      throw new UpdateSourceError(
-        'SETTINGS_WRITE_FAILED',
-        `Unable to save update settings: ${(err as Error)?.message ?? 'write failed'}`,
-      )
-    }
+    })
   })
   ipcMain.handle(HOME_CHANNELS.checkForUpdates, () => checkForUpdatesNow())
 

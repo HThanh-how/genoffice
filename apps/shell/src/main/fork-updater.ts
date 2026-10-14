@@ -17,6 +17,7 @@ import {
   type UpdateSource,
 } from '../shared/update-source'
 import type { UpdateChannel } from '../shared/update-api'
+import type { UpdateCheckResult } from '../shared/home-api'
 import { initialState } from './updater'
 import { closeUpdateWindow, pushUpdateState, showUpdateWindow } from './update-window'
 import { startUpdateProgress } from './fork/update-progress'
@@ -119,7 +120,7 @@ export async function checkForkUpdates(
   channel: UpdateChannel,
   getWindow: () => BrowserWindow | null,
   options: { background?: boolean } = {},
-): Promise<{ upToDate: boolean } | void> {
+): Promise<UpdateCheckResult | void> {
   const background = options.background === true
   if (checking || downloading) return
   checking = true
@@ -147,8 +148,13 @@ export async function checkForkUpdates(
       if (response.status === 404) {
         throw new UpdateSourceError('GITHUB_NOT_FOUND', 'Repository not found on GitHub')
       }
-      if (response.status === 403 || response.headers.get('x-ratelimit-remaining') === '0') {
-        throw new UpdateSourceError('GITHUB_RATE_LIMITED', 'GitHub API rate limit reached')
+      if (response.status === 403) {
+        const remaining = response.headers.get('x-ratelimit-remaining')
+        const retryAfter = response.headers.get('retry-after')
+        if (remaining === '0' || retryAfter !== null) {
+          throw new UpdateSourceError('GITHUB_RATE_LIMITED', 'GitHub API rate limit reached')
+        }
+        throw new UpdateSourceError('ACCESS_DENIED', 'Access denied to repository')
       }
       if (response.status === 401) {
         throw new UpdateSourceError('ACCESS_DENIED', 'Access denied to repository')
