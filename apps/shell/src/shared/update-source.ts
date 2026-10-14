@@ -25,7 +25,9 @@ export class UpdateSourceError extends Error {
   }
 }
 
-export function secureUpdateUrl(value: unknown): string {
+export type UpdateCheckResult = { upToDate: boolean }
+
+export function validateConfiguredUpdateUrl(value: unknown): string {
   if (typeof value !== 'string' || value.length > 2048) {
     throw new UpdateSourceError('INVALID_FORMAT', 'Invalid update URL')
   }
@@ -42,6 +44,166 @@ export function secureUpdateUrl(value: unknown): string {
     )
   }
   return url.href
+}
+
+export const secureUpdateUrl = validateConfiguredUpdateUrl
+
+export function isOfficialGithubHost(hostname: string): boolean {
+  if (!hostname || typeof hostname !== 'string') return false
+  const lower = hostname.toLowerCase()
+  if (lower === 'github.com' || lower.endsWith('.github.com')) return true
+  if (lower === 'githubusercontent.com' || lower.endsWith('.githubusercontent.com')) return true
+  if (
+    /^github-production-release-asset-[a-z0-9]+\.s3(?:\.[a-z0-9-]+)?\.amazonaws\.com$/i.test(lower)
+  ) {
+    return true
+  }
+  return false
+}
+
+export function validateResolvedInstallerUrl(
+  originalUrl: string,
+  finalUrl: string,
+  source: UpdateSource,
+): string {
+  if (typeof finalUrl !== 'string' || finalUrl.length > 4096) {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid resolved installer URL')
+  }
+  let parsedFinal: URL
+  try {
+    parsedFinal = new URL(finalUrl)
+  } catch {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid resolved installer URL format')
+  }
+  if (parsedFinal.protocol !== 'https:') {
+    throw new UpdateSourceError(
+      'INVALID_FORMAT',
+      'Installer download redirect cannot downgrade to insecure HTTP',
+    )
+  }
+  if (parsedFinal.username || parsedFinal.password) {
+    throw new UpdateSourceError(
+      'INVALID_FORMAT',
+      'Credentials in installer download URL are forbidden',
+    )
+  }
+  if (parsedFinal.hash) {
+    throw new UpdateSourceError(
+      'INVALID_FORMAT',
+      'Fragments in installer download URL are forbidden',
+    )
+  }
+
+  let parsedOriginal: URL
+  try {
+    parsedOriginal = new URL(originalUrl)
+  } catch {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid original installer URL format')
+  }
+  if (parsedOriginal.protocol !== 'https:') {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Original installer URL must use HTTPS')
+  }
+  if (parsedOriginal.username || parsedOriginal.password) {
+    throw new UpdateSourceError(
+      'INVALID_FORMAT',
+      'Original installer URL cannot contain credentials',
+    )
+  }
+
+  if (source.kind === 'github') {
+    if (!isOfficialGithubHost(parsedOriginal.hostname)) {
+      throw new UpdateSourceError(
+        'ACCESS_DENIED',
+        `Original release asset host is not an official GitHub host: ${parsedOriginal.hostname}`,
+      )
+    }
+    if (!isOfficialGithubHost(parsedFinal.hostname)) {
+      throw new UpdateSourceError(
+        'ACCESS_DENIED',
+        `Disallowed GitHub asset redirect destination: ${parsedFinal.hostname}`,
+      )
+    }
+  }
+
+  return parsedFinal.href
+}
+
+export function validateResolvedMetadataUrl(
+  originalUrl: string,
+  finalUrl: string,
+  source: UpdateSource,
+): string {
+  if (typeof finalUrl !== 'string' || finalUrl.length > 2048) {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid resolved metadata URL')
+  }
+  let parsedFinal: URL
+  try {
+    parsedFinal = new URL(finalUrl)
+  } catch {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid resolved metadata URL format')
+  }
+  if (parsedFinal.protocol !== 'https:') {
+    throw new UpdateSourceError(
+      'INVALID_FORMAT',
+      'Update metadata URL cannot downgrade to insecure HTTP',
+    )
+  }
+  if (parsedFinal.username || parsedFinal.password) {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Credentials in metadata URL are forbidden')
+  }
+  if (parsedFinal.hash) {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Fragments in metadata URL are forbidden')
+  }
+
+  if (source.kind === 'github') {
+    if (!isOfficialGithubHost(parsedFinal.hostname)) {
+      throw new UpdateSourceError(
+        'ACCESS_DENIED',
+        `Disallowed metadata redirect destination: ${parsedFinal.hostname}`,
+      )
+    }
+  }
+  return parsedFinal.href
+}
+
+export function resolveUpdateNotice(
+  result: UpdateCheckResult | void,
+  error: unknown,
+  lang: string,
+): string | null {
+  if (error) {
+    const errCode = (error as { code?: string })?.code || (error as Error)?.message || String(error)
+    return getUpdateErrorMessage(errCode, lang)
+  }
+  if (result?.upToDate === true) {
+    return lang === 'vi'
+      ? 'Bạn đang dùng phiên bản phát hành Stable mới nhất.'
+      : 'You are using the latest published Stable version.'
+  }
+  return null
+}
+
+export interface UpdateCoordinator {
+  run<T>(task: () => Promise<T>): Promise<T | undefined>
+  isBusy(): boolean
+}
+
+export function createUpdateCoordinator(): UpdateCoordinator {
+  let busy = false
+  return {
+    async run<T>(task: () => Promise<T>): Promise<T | undefined> {
+      if (busy) return undefined
+      busy = true
+      try {
+        return await task()
+      } finally {
+        busy = false
+      }
+    },
+    isBusy() {
+      return busy
+    },
+  }
 }
 
 export function validateUpdateSource(input: unknown): UpdateSource {

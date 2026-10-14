@@ -19,8 +19,8 @@ import type {
 import type { DocumentMemoryReadResult, DocumentMemorySearchResult } from '@genoffice/agent-core'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'
 import type { UpdateChannel, UpdateUiState } from './update-api'
-import type { UpdateSource } from './update-source'
-export type UpdateCheckResult = { upToDate: boolean }
+import type { UpdateSource, UpdateCheckResult } from './update-source'
+export type { UpdateCheckResult }
 import type { KbFileInfo, KbReadPage, KbSearchHit } from '@genoffice/agent-core'
 import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 import type { ForkHomeApi } from './fork/fork-home-api'

@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import appIcon from './assets/app-icon.png'
 import {
   getUpdateErrorMessage,
+  resolveUpdateNotice,
   validateUpdateSource,
   type UpdateSource,
 } from '../../shared/update-source'
@@ -2342,18 +2343,12 @@ export function SettingsModal({
                           void window.aiOffice
                             .checkForUpdates()
                             .then((res) => {
-                              if (res?.upToDate === true) {
-                                setUpdateNotice(
-                                  lang === 'vi'
-                                    ? 'Bạn đang dùng phiên bản phát hành Stable mới nhất.'
-                                    : 'You are using the latest published Stable version.',
-                                )
-                              }
+                              const notice = resolveUpdateNotice(res, null, lang)
+                              if (notice) setUpdateNotice(notice)
                             })
                             .catch((err: unknown) => {
-                              const errCode =
-                                (err as { code?: string })?.code || (err as Error)?.message || ''
-                              setUpdateNotice(getUpdateErrorMessage(errCode, lang))
+                              const notice = resolveUpdateNotice(undefined, err, lang)
+                              if (notice) setUpdateNotice(notice)
                             })
                             .finally(() => setUpdateBusy(false))
                         }}
