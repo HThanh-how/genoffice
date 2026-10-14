@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { HomeApi } from '../../../../shared/home-api'
 import type { StudioStrings } from './studio-strings'
 import type { TestDisplay, TestOutcome } from './policy-ui-types'
@@ -30,12 +30,35 @@ export function PathTester({ strings: d, api, roots }: PathTesterProps) {
   const [display, setDisplay] = useState<TestDisplay | null>(null)
   const [busy, setBusy] = useState(false)
 
+  const runSeqRef = useRef(0)
+  const mountedRef = useRef(true)
+
+  useEffect(
+    () => () => {
+      mountedRef.current = false
+    },
+    [],
+  )
+
+  /**
+   * Every decision is tied to the path/root that produced it. As soon as the
+   * submitted input changes, any result already on screen is stale and must
+   * not be shown for the new path.
+   */
+  const isCurrent = (result: TestDisplay | null): boolean =>
+    result !== null && result.path === path.trim() && result.root === root
+
   const run = async () => {
     const target = path.trim()
     if (!target) return
+    const submittedRoot = root
+    const seq = ++runSeqRef.current
     setBusy(true)
+    setDisplay(null)
     try {
-      const result = api.testIgnorePath ? await api.testIgnorePath(target, root || undefined) : null
+      const result = api.testIgnorePath
+        ? await api.testIgnorePath(target, submittedRoot || undefined)
+        : null
       const outcome = classifyTestResult(result)
       let indexed: boolean | null = null
       if (outcome === 'allowed' && api.searchIndexedFiles) {
@@ -49,14 +72,25 @@ export function PathTester({ strings: d, api, roots }: PathTesterProps) {
           indexed = null
         }
       }
-      setDisplay({ outcome, result: result ?? null, indexed })
+      // A slower, earlier run must not overwrite a newer one.
+      if (!mountedRef.current || seq !== runSeqRef.current) return
+      setDisplay({ outcome, result: result ?? null, indexed, path: target, root: submittedRoot })
     } catch {
       // An IPC failure is an explicit error state, never a silent "allowed".
-      setDisplay({ outcome: 'error', result: null, indexed: null })
+      if (!mountedRef.current || seq !== runSeqRef.current) return
+      setDisplay({
+        outcome: 'error',
+        result: null,
+        indexed: null,
+        path: target,
+        root: submittedRoot,
+      })
     } finally {
-      setBusy(false)
+      if (mountedRef.current && seq === runSeqRef.current) setBusy(false)
     }
   }
+
+  const shown = isCurrent(display) ? display : null
 
   return (
     <div className="ixr-tester">
@@ -72,7 +106,10 @@ export function PathTester({ strings: d, api, roots }: PathTesterProps) {
           type="text"
           className="idx-input ixr-input"
           value={path}
-          onChange={(event) => setPath(event.target.value)}
+          onChange={(event) => {
+            setPath(event.target.value)
+            setDisplay(null)
+          }}
           placeholder={d.testerPlaceholder}
           aria-label={d.testerTitle}
         />
@@ -80,7 +117,10 @@ export function PathTester({ strings: d, api, roots }: PathTesterProps) {
           <select
             className="idx-input ixr-select"
             value={root}
-            onChange={(event) => setRoot(event.target.value)}
+            onChange={(event) => {
+              setRoot(event.target.value)
+              setDisplay(null)
+            }}
             aria-label={d.testerRoot}
           >
             <option value="">{d.testerAuto}</option>
@@ -97,22 +137,22 @@ export function PathTester({ strings: d, api, roots }: PathTesterProps) {
         </button>
       </form>
 
-      {display && (
-        <div className={`ixr-test-result outcome-${display.outcome}`} role="status">
-          <span className="ixr-outcome">{outcomeLabel(d, display.outcome)}</span>
-          {display.outcome === 'error' && (
+      {shown && (
+        <div className={`ixr-test-result outcome-${shown.outcome}`} role="status">
+          <span className="ixr-outcome">{outcomeLabel(d, shown.outcome)}</span>
+          {shown.outcome === 'error' && (
             <span className="ixr-test-detail">{d.outcomeErrorHint}</span>
           )}
-          {display.outcome !== 'error' && display.result?.winningRule && (
+          {shown.outcome !== 'error' && shown.result?.winningRule && (
             <span className="ixr-test-detail">
-              <code>{display.result.winningRule.pattern}</code>
+              <code>{shown.result.winningRule.pattern}</code>
               <span className="ixr-muted">
-                {display.result.explanation ?? display.result.reason ?? ''}
+                {shown.result.explanation ?? shown.result.reason ?? ''}
               </span>
             </span>
           )}
-          {display.outcome === 'allowed' && display.indexed !== null && (
-            <span className="ixr-muted">{display.indexed ? d.indexedYes : d.indexedNo}</span>
+          {shown.outcome === 'allowed' && shown.indexed !== null && (
+            <span className="ixr-muted">{shown.indexed ? d.indexedYes : d.indexedNo}</span>
           )}
         </div>
       )}

@@ -29,6 +29,13 @@ export interface TestDisplay {
   outcome: TestOutcome
   result: IgnoreTestResult | null
   indexed: boolean | null
+  /**
+   * The exact path/root the decision was computed for. A result is only ever
+   * rendered while it still matches the current input, so an asynchronous
+   * response from an earlier run can never be attributed to a new path.
+   */
+  path: string
+  root: string
 }
 
 export type { IgnoreRule, IndexPolicyMode, IndexingPreset, IgnoreTestResult }

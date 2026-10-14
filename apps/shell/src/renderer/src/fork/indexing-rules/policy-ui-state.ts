@@ -83,6 +83,26 @@ export function pageSelectionIds(pageRules: readonly IgnoreRule[]): Set<string> 
   return ids
 }
 
+/**
+ * "Select all" on a page is a toggle. When every selectable row of the visible
+ * page is already selected, clicking the header checkbox clears exactly those
+ * rows and leaves selections made on other pages untouched. Read-only
+ * (.genofficeignore / preset) rules are never part of the set.
+ */
+export function togglePageSelection(
+  selected: Set<string>,
+  pageIds: readonly string[],
+): Set<string> {
+  const next = new Set(selected)
+  const alreadySelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id))
+  if (alreadySelected) {
+    for (const id of pageIds) next.delete(id)
+  } else {
+    for (const id of pageIds) next.add(id)
+  }
+  return next
+}
+
 export function isPageFullySelected(
   selected: Set<string>,
   pageRules: readonly IgnoreRule[],

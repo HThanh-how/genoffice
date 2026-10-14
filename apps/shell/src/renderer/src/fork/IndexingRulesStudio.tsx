@@ -18,6 +18,7 @@ import {
   isEditableRule,
   isSensitivePattern,
   presetStates,
+  togglePageSelection,
   toggleSelected,
 } from './indexing-rules/policy-ui-state'
 import type { RuleFilters, StudioView } from './indexing-rules/policy-ui-types'
@@ -341,40 +342,61 @@ export function IndexingRulesStudio({ api }: { api: HomeApi }) {
   }
 
   const saveEditor = async (): Promise<boolean> => {
-    if (!editorRoot) return false
+    const submittedRoot = editorRoot
+    if (!submittedRoot) return false
+    // Snapshot exactly what is being persisted. A response that arrives after
+    // the user moved to another root (or reloaded this one) belongs to a file
+    // the editor is no longer showing, so it must not touch editor state.
+    const submittedContent = editorContent
+    const submittedRevision = editorRevision
+    const submittedLoadSeq = editorLoadSeqRef.current
     const seq = ++editorSaveSeqRef.current
+    const stillEditingSubmittedRoot = () =>
+      editorRootRef.current === submittedRoot &&
+      editorLoadSeqRef.current === submittedLoadSeq &&
+      seq === editorSaveSeqRef.current
     setEditorSaving(true)
     setEditorErrors([])
     setEditorConflict(false)
     try {
       const res = api.saveGenOfficeIgnoreFile
-        ? await api.saveGenOfficeIgnoreFile(editorRoot, editorContent, editorRevision)
+        ? await api.saveGenOfficeIgnoreFile(submittedRoot, submittedContent, submittedRevision)
         : null
-      if (!mountedRef.current || seq !== editorSaveSeqRef.current) return false
+      if (!mountedRef.current) return false
       if (res?.ok) {
-        setEditorOriginal(editorContent)
-        setEditorRevision(res.revision ?? '')
-        setEditorExists(true)
-        setFileExists((prev) => ({ ...prev, [editorRoot]: true }))
+        // The file for the submitted root now exists regardless of which root
+        // the editor is currently displaying.
+        setFileExists((prev) => ({ ...prev, [submittedRoot]: true }))
+        if (stillEditingSubmittedRoot()) {
+          // Only the submitted content is persisted; edits typed while the save
+          // was in flight stay dirty.
+          setEditorOriginal(submittedContent)
+          setEditorRevision(res.revision ?? '')
+          setEditorExists(true)
+        }
         appNotify(d.editorSaved, 'success')
         void loadData()
         return true
       }
       if (res?.error === 'conflict') {
-        setEditorConflict(true)
+        if (stillEditingSubmittedRoot()) setEditorConflict(true)
         appNotify(d.editorConflict, 'error')
         return false
       }
-      setEditorErrors(res?.validationErrors ?? [res?.error ?? d.saveFailed])
+      if (stillEditingSubmittedRoot()) {
+        setEditorErrors(res?.validationErrors ?? [res?.error ?? d.saveFailed])
+      }
       appNotify(d.saveFailed, 'error')
       return false
     } catch (error) {
-      if (!mountedRef.current || seq !== editorSaveSeqRef.current) return false
-      setEditorErrors([error instanceof Error ? error.message : d.saveFailed])
+      if (!mountedRef.current) return false
+      if (stillEditingSubmittedRoot()) {
+        setEditorErrors([error instanceof Error ? error.message : d.saveFailed])
+      }
       appNotify(d.saveFailed, 'error')
       return false
     } finally {
-      if (mountedRef.current) setEditorSaving(false)
+      if (mountedRef.current && seq === editorSaveSeqRef.current) setEditorSaving(false)
     }
   }
 
@@ -544,13 +566,7 @@ export function IndexingRulesStudio({ api }: { api: HomeApi }) {
           }}
           selected={selected}
           onToggleSelect={(id) => setSelected((prev) => toggleSelected(prev, id))}
-          onSelectPage={(ids) =>
-            setSelected((prev) => {
-              const next = new Set(prev)
-              for (const id of ids) next.add(id)
-              return next
-            })
-          }
+          onSelectPage={(ids) => setSelected((prev) => togglePageSelection(prev, ids))}
           onClearSelection={() => setSelected(new Set())}
           onBulkEnable={bulkSetEnabled}
           onBulkDelete={() => void bulkDelete()}

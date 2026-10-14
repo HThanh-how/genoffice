@@ -93,6 +93,7 @@ export function RulesPanel(props: RulesPanelProps) {
     [filtered, safePage, pageSize],
   )
   const selectableOnPage = pageRules.filter(isEditableRule)
+  const pageIds = useMemo(() => [...pageSelectionIds(pageRules)], [pageRules])
   const fullySelected = isPageFullySelected(selected, pageRules)
   const editableSelected = selectedEditableCount(rules, selected)
 
@@ -236,9 +237,10 @@ export function RulesPanel(props: RulesPanelProps) {
               <input
                 type="checkbox"
                 aria-label={d.selectPage}
+                title={fullySelected ? d.clearSelection : d.selectPage}
                 checked={fullySelected}
                 disabled={selectableOnPage.length === 0}
-                onChange={() => onSelectPage([...pageSelectionIds(pageRules)])}
+                onChange={() => onSelectPage(pageIds)}
               />
             </th>
             <th>{d.colRule}</th>

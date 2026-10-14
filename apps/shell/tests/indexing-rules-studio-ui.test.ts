@@ -21,6 +21,7 @@ import {
   isEditableRule,
   pageSelectionIds,
   rowDescription,
+  togglePageSelection,
 } from '../src/renderer/src/fork/indexing-rules/policy-ui-state'
 
 const PRESETS: IndexingPreset[] = [
@@ -551,5 +552,301 @@ describe('IndexingRulesStudio scalability', () => {
     console.log(`1000-rule studio: mount ${Math.round(mountMs)}ms, 100 rows rendered`)
     expect(rows().length).toBe(100)
     expect(host.querySelector('.ixr-pagination')?.textContent).toContain('Page 1 of 10')
+  })
+})
+
+describe('IndexingRulesStudio cross-root editor save race', () => {
+  afterEach(teardown)
+
+  it('a late save response for root A cannot mutate the editor of root B', async () => {
+    const { api } = makeApi({
+      roots: [ROOT_A, ROOT_B],
+      ignoreFileResponses: [
+        { root: ROOT_A, exists: true, content: '@mode standard\n', revision: 'rA', delayMs: 0 },
+        { root: ROOT_B, exists: false, content: '', revision: '', delayMs: 80 },
+      ],
+    })
+    const saveCalls: Array<{ root: string; content: string; revision: string }> = []
+    const racingApi = {
+      ...api,
+      saveGenOfficeIgnoreFile: async (root: string, content: string, revision: string) => {
+        saveCalls.push({ root, content, revision })
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        return root === ROOT_A ? { ok: true, revision: 'rA2' } : { ok: true, revision: 'rB2' }
+      },
+    } as unknown as HomeApi
+
+    await mountStudio(racingApi)
+    await click(navButton('.genofficeignore'))
+    await setInput(host.querySelector('.ixr-editor-text'), '@mode standard\nA saved\n')
+    // 1. save A (slow)
+    await click(host.querySelector('.ixr-editor-actions .ixr-btn-primary'))
+    // 2. switch to B while A's save is still in flight, 3. B loads
+    await setSelect(host.querySelector('.ixr-editor-toolbar select'), ROOT_B)
+    await click(dialogButton('Discard'))
+    await settle(400)
+
+    const editor = host.querySelector('.ixr-editor-text') as HTMLTextAreaElement | null
+    // B's editor must still describe B, not the A save that just landed.
+    expect(editor?.value).toBe('')
+    expect(host.querySelector('.ixr-file-status')?.classList.contains('missing')).toBe(true)
+    expect(host.querySelector('.ixr-editor-status .ixr-status-clean')).toBeTruthy()
+    expect(host.querySelector('.ixr-editor-status .ixr-status-dirty')).toBeNull()
+
+    // 4. saving B afterwards must submit B's revision, never A's.
+    await setInput(editor, '@mode allowlist\n')
+    await click(host.querySelector('.ixr-editor-actions .ixr-btn-primary'))
+    await settle(300)
+    expect(saveCalls.length).toBe(2)
+    expect(saveCalls[1].root).toBe(ROOT_B)
+    expect(saveCalls[1].revision).toBe('')
+  })
+
+  it('marks only the submitted content as persisted when the draft changes mid-save', async () => {
+    const { api } = makeApi({
+      ignoreFileResponses: [
+        { root: ROOT_A, exists: true, content: '@mode standard\n', revision: 'r1', delayMs: 0 },
+      ],
+    })
+    const saveCalls: Array<{ root: string; content: string }> = []
+    const slowApi = {
+      ...api,
+      saveGenOfficeIgnoreFile: async (root: string, content: string) => {
+        saveCalls.push({ root, content })
+        await new Promise((resolve) => setTimeout(resolve, 120))
+        return { ok: true, revision: 'r2' }
+      },
+    } as unknown as HomeApi
+
+    await mountStudio(slowApi)
+    await click(navButton('.genofficeignore'))
+    await setInput(host.querySelector('.ixr-editor-text'), '@mode standard\nsubmitted\n')
+    await click(host.querySelector('.ixr-editor-actions .ixr-btn-primary'))
+    // The user keeps typing while the save is in flight.
+    await setInput(
+      host.querySelector('.ixr-editor-text'),
+      '@mode standard\nsubmitted\ntyped later\n',
+    )
+    await settle(400)
+
+    expect(saveCalls[0].content).toBe('@mode standard\nsubmitted\n')
+    const editor = host.querySelector('.ixr-editor-text') as HTMLTextAreaElement | null
+    expect(editor?.value).toBe('@mode standard\nsubmitted\ntyped later\n')
+    // The later keystrokes are not persisted, so the draft is still dirty.
+    expect(host.querySelector('.ixr-editor-status .ixr-status-dirty')).toBeTruthy()
+    expect(host.querySelector('.ixr-editor-status .ixr-status-clean')).toBeNull()
+  })
+
+  it('keeps conflict detection scoped to the root that was submitted', async () => {
+    const { api } = makeApi({
+      roots: [ROOT_A, ROOT_B],
+      ignoreFileResponses: [
+        { root: ROOT_A, exists: true, content: 'A\n', revision: 'rA', delayMs: 0 },
+        { root: ROOT_B, exists: true, content: 'B\n', revision: 'rB', delayMs: 0 },
+      ],
+    })
+    const conflictApi = {
+      ...api,
+      saveGenOfficeIgnoreFile: async (root: string) => {
+        await new Promise((resolve) => setTimeout(resolve, 150))
+        return root === ROOT_A ? { ok: false, error: 'conflict' } : { ok: true, revision: 'rB2' }
+      },
+    } as unknown as HomeApi
+
+    await mountStudio(conflictApi)
+    await click(navButton('.genofficeignore'))
+    await setInput(host.querySelector('.ixr-editor-text'), 'A changed\n')
+    await click(host.querySelector('.ixr-editor-actions .ixr-btn-primary'))
+    await setSelect(host.querySelector('.ixr-editor-toolbar select'), ROOT_B)
+    await click(dialogButton('Discard'))
+    await settle(400)
+
+    // The conflict belongs to A; B's editor must not be flagged or errored.
+    expect(host.querySelector('.ixr-alert.warning')).toBeNull()
+    expect(host.querySelector('.ixr-error-list')).toBeNull()
+    expect(toastText()).toContain('The file changed on disk')
+  })
+})
+
+describe('Rules panel page select-all toggle', () => {
+  afterEach(teardown)
+
+  it('pure toggle: selecting a fully selected page deselects exactly that page', () => {
+    const selected = new Set(['other-page', 'p1a', 'p1b'])
+    const toggled = togglePageSelection(selected, ['p1a', 'p1b'])
+    expect([...toggled].sort()).toEqual(['other-page'])
+    const reselected = togglePageSelection(toggled, ['p1a', 'p1b'])
+    expect([...reselected].sort()).toEqual(['other-page', 'p1a', 'p1b'])
+    expect(togglePageSelection(new Set(), []).size).toBe(0)
+  })
+
+  it('clicking the checked Select All checkbox deselects the page again', async () => {
+    const rules = Array.from({ length: 60 }, (_, index) => userRule(`r${index}`))
+    const { api } = makeApi({
+      config: { schemaVersion: 1, mode: 'standard', rules, presets: {} },
+    })
+    await mountStudio(api)
+    await click(navButton('Rules'))
+    const headerCheckbox = host.querySelector('.ixr-th-check input') as HTMLInputElement | null
+    expect(headerCheckbox?.checked).toBe(false)
+
+    await click(headerCheckbox)
+    expect(headerCheckbox?.checked).toBe(true)
+    expect(host.querySelector('.ixr-bulk')?.textContent).toContain('25 selected')
+
+    await click(headerCheckbox)
+    expect(host.querySelector('.ixr-bulk')).toBeNull()
+    expect(rows().filter((row) => row.classList.contains('selected')).length).toBe(0)
+  })
+
+  it('deselecting one page preserves selections on other pages', async () => {
+    const rules = Array.from({ length: 60 }, (_, index) => userRule(`r${index}`))
+    const { api } = makeApi({
+      config: { schemaVersion: 1, mode: 'standard', rules, presets: {} },
+    })
+    await mountStudio(api)
+    await click(navButton('Rules'))
+    const headerCheckbox = host.querySelector('.ixr-th-check input') as HTMLInputElement | null
+    await click(headerCheckbox) // page 1 -> 25 selected
+
+    await click(host.querySelector('.ixr-pagination .ixr-btn[aria-label="Next page"]'))
+    await click(headerCheckbox) // page 2 -> 50 selected
+    expect(host.querySelector('.ixr-bulk')?.textContent).toContain('50 selected')
+
+    await click(host.querySelector('.ixr-pagination .ixr-btn[aria-label="Previous page"]'))
+    expect(headerCheckbox?.checked).toBe(true)
+    await click(headerCheckbox) // deselect page 1 only
+    expect(host.querySelector('.ixr-bulk')?.textContent).toContain('25 selected')
+    expect(rows().filter((row) => row.classList.contains('selected')).length).toBe(0)
+
+    await click(host.querySelector('.ixr-pagination .ixr-btn[aria-label="Next page"]'))
+    expect(rows().filter((row) => row.classList.contains('selected')).length).toBe(25)
+  })
+
+  it('never selects read-only file or preset rules on the page', async () => {
+    const { api } = makeApi({
+      config: {
+        schemaVersion: 1,
+        mode: 'standard',
+        rules: [userRule('a'), userRule('b')],
+        presets: {},
+      },
+      fileRules: [
+        { id: 'f1', pattern: '*.tmp', enabled: true, scope: ROOT_A, source: '.genofficeignore' },
+        { id: 'p1', pattern: '**/dist/**', enabled: true, scope: 'global', source: 'preset' },
+      ],
+    })
+    await mountStudio(api)
+    await click(navButton('Rules'))
+    const headerCheckbox = host.querySelector('.ixr-th-check input') as HTMLInputElement | null
+    await click(headerCheckbox)
+    expect(headerCheckbox?.checked).toBe(true)
+    expect(host.querySelector('.ixr-bulk')?.textContent).toContain('2 selected')
+    expect(host.querySelector('.ixr-bulk')?.textContent).toContain('2 editable')
+    await click(headerCheckbox)
+    expect(host.querySelector('.ixr-bulk')).toBeNull()
+    expect(rows().filter((row) => row.classList.contains('selected')).length).toBe(0)
+  })
+})
+
+describe('PathTester stale response', () => {
+  afterEach(teardown)
+
+  it('invalidates a pending result when the tested path changes', async () => {
+    const { api } = makeApi()
+    const delayedApi = {
+      ...api,
+      testIgnorePath: async (target: string) => {
+        if (target === 'slow/old.docx') {
+          await new Promise((resolve) => setTimeout(resolve, 200))
+          return {
+            ignored: true,
+            eligibility: 'supported',
+            winningRule: { id: 'old-rule', pattern: 'old.docx', enabled: true, scope: 'global' },
+            explanation: 'Matched the stale path.',
+          }
+        }
+        return { ignored: false, eligibility: 'supported' }
+      },
+    } as unknown as HomeApi
+
+    await mountStudio(delayedApi)
+    await setInput(host.querySelector('#ixr-tester-input'), 'slow/old.docx')
+    await click(host.querySelector('.ixr-tester-form .ixr-btn'))
+    await setInput(host.querySelector('#ixr-tester-input'), 'fresh/new.docx')
+    await settle(400)
+
+    // The "Ignored" verdict for the abandoned path must not be shown for the new one.
+    expect(host.querySelector('.ixr-test-result')).toBeNull()
+
+    await click(host.querySelector('.ixr-tester-form .ixr-btn'))
+    await settle(200)
+    expect(host.querySelector('.ixr-test-result')?.classList.contains('outcome-allowed')).toBe(true)
+    expect(host.querySelector('.ixr-outcome')?.textContent).toBe('Allowed')
+  })
+
+  it('a slower earlier run cannot overwrite a faster later run', async () => {
+    const { api } = makeApi()
+    const delayedApi = {
+      ...api,
+      testIgnorePath: async (target: string) => {
+        if (target === 'slow.docx') {
+          await new Promise((resolve) => setTimeout(resolve, 250))
+          return {
+            ignored: true,
+            eligibility: 'supported',
+            winningRule: { id: 'slow-rule', pattern: 'slow.docx', enabled: true, scope: 'global' },
+            explanation: 'stale decision',
+          }
+        }
+        return { ignored: false, eligibility: 'supported' }
+      },
+    } as unknown as HomeApi
+
+    await mountStudio(delayedApi)
+    await setInput(host.querySelector('#ixr-tester-input'), 'slow.docx')
+    await click(host.querySelector('.ixr-tester-form .ixr-btn'))
+    await setInput(host.querySelector('#ixr-tester-input'), 'fast.docx')
+    await act(async () => {
+      host.querySelector('.ixr-tester-form')?.requestSubmit()
+    })
+    await settle(500)
+
+    const result = host.querySelector('.ixr-test-result')
+    expect(result?.classList.contains('outcome-allowed')).toBe(true)
+    expect(result?.textContent).not.toContain('stale decision')
+    expect(result?.textContent).not.toContain('Ignored')
+  })
+
+  it('still reports all four outcomes for the submitted path', async () => {
+    const { api } = makeApi()
+    const outcomes: Array<{ target: string; expected: string }> = [
+      { target: 'a.docx', expected: 'Allowed' },
+      { target: 'b.tmp', expected: 'Ignored' },
+      { target: 'c.exe', expected: 'Unsupported format' },
+    ]
+    const multiApi = {
+      ...api,
+      testIgnorePath: async (target: string) => {
+        if (target === 'b.tmp') {
+          return {
+            ignored: true,
+            eligibility: 'supported',
+            winningRule: { id: 'tmp', pattern: '*.tmp', enabled: true, scope: 'global' },
+            explanation: 'Matched ignore rule "*.tmp".',
+          }
+        }
+        if (target === 'c.exe') return { ignored: false, eligibility: 'unsupported' }
+        return { ignored: false, eligibility: 'supported' }
+      },
+    } as unknown as HomeApi
+
+    await mountStudio(multiApi)
+    for (const { target, expected } of outcomes) {
+      await setInput(host.querySelector('#ixr-tester-input'), target)
+      await click(host.querySelector('.ixr-tester-form .ixr-btn'))
+      await settle(150)
+      expect(host.querySelector('.ixr-outcome')?.textContent).toBe(expected)
+    }
   })
 })
