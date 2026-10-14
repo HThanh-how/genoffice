@@ -13,6 +13,7 @@ import {
   compareVersions,
   secureUpdateUrl,
   selectInstaller,
+  UpdateSourceError,
   type UpdateSource,
 } from '../shared/update-source'
 import type { UpdateChannel } from '../shared/update-api'
@@ -118,7 +119,7 @@ export async function checkForkUpdates(
   channel: UpdateChannel,
   getWindow: () => BrowserWindow | null,
   options: { background?: boolean } = {},
-): Promise<void> {
+): Promise<{ upToDate: boolean } | void> {
   const background = options.background === true
   if (checking || downloading) return
   checking = true
@@ -129,42 +130,69 @@ export async function checkForkUpdates(
       source.kind === 'github'
         ? `https://api.github.com/repos/${source.value}/releases?per_page=30`
         : source.value
-    const response = await net.fetch(endpoint, {
-      headers: { Accept: 'application/json', 'User-Agent': 'GenOffice-update' },
-      signal: AbortSignal.timeout(30_000),
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    let response: Response
+    try {
+      response = await net.fetch(endpoint, {
+        headers: { Accept: 'application/json', 'User-Agent': 'GenOffice-update' },
+        signal: AbortSignal.timeout(30_000),
+      })
+    } catch (fetchErr: unknown) {
+      const err = fetchErr as Error
+      if (err?.name === 'TimeoutError' || String(err).toLowerCase().includes('timeout')) {
+        throw new UpdateSourceError('TIMEOUT', 'Connection timed out')
+      }
+      throw new UpdateSourceError('NETWORK_ERROR', 'Network connection failed')
+    }
+    if (!response.ok) {
+      if (response.status === 404) {
+        throw new UpdateSourceError('GITHUB_NOT_FOUND', 'Repository not found on GitHub')
+      }
+      if (response.status === 403 || response.headers.get('x-ratelimit-remaining') === '0') {
+        throw new UpdateSourceError('GITHUB_RATE_LIMITED', 'GitHub API rate limit reached')
+      }
+      if (response.status === 401) {
+        throw new UpdateSourceError('ACCESS_DENIED', 'Access denied to repository')
+      }
+      throw new UpdateSourceError('NETWORK_ERROR', `HTTP ${response.status}`)
+    }
     if (response.url) secureUpdateUrl(response.url)
     if (!response.body || Number(response.headers.get('content-length')) > 2_000_000)
-      throw new Error('Update metadata is too large or empty')
+      throw new UpdateSourceError(
+        'INVALID_RELEASE_METADATA',
+        'Update metadata is too large or empty',
+      )
     const chunks: Buffer[] = []
     let metadataBytes = 0
     for await (const chunk of Readable.fromWeb(response.body as never)) {
       metadataBytes += chunk.length
-      if (metadataBytes > 2_000_000) throw new Error('Update metadata is too large')
+      if (metadataBytes > 2_000_000)
+        throw new UpdateSourceError('INVALID_RELEASE_METADATA', 'Update metadata is too large')
       chunks.push(Buffer.from(chunk))
     }
     const body = Buffer.concat(chunks).toString('utf8')
-    const release = selectInstaller(
-      JSON.parse(body),
-      source.kind,
-      process.platform,
-      process.arch,
-      channel,
-    )
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(body)
+    } catch {
+      throw new UpdateSourceError('INVALID_RELEASE_METADATA', 'Invalid JSON metadata')
+    }
+    const release = selectInstaller(parsed, source.kind, process.platform, process.arch, channel)
     if (!release) {
       if (background) return
       await showAppMessageBox({
         type: 'info',
         title,
         message: vietnamese
-          ? 'Nguồn này chưa có bộ cài phù hợp cho máy của bạn. Hãy thử lại sau khi GitHub build xong.'
-          : 'This source has no compatible installer yet. Try again once the GitHub build finishes.',
+          ? 'Nguồn này hợp lệ nhưng chưa có bộ cài phù hợp cho thiết bị này. Hãy thử lại sau khi bản build hoàn tất.'
+          : 'The repository is valid, but no compatible installer is available for this device.',
       })
-      return
+      throw new UpdateSourceError(
+        'NO_COMPATIBLE_INSTALLER',
+        'No compatible installer available for this device',
+      )
     }
     if (compareVersions(release.version, app.getVersion()) <= 0) {
-      if (background) return
+      if (background) return { upToDate: true }
       await showUpdateStatusMessageBox({
         type: 'info',
         title,
@@ -172,7 +200,7 @@ export async function checkForkUpdates(
           ? `Bạn đang dùng bản mới nhất (${app.getVersion()}).`
           : `You are up to date (${app.getVersion()}).`,
       })
-      return
+      return { upToDate: true }
     }
     const identity = `${source.kind}:${source.value}:${release.version}:${release.sha256}`
     if (identity !== activeSource) installer = null
@@ -268,15 +296,42 @@ export async function checkForkUpdates(
       state.phase = 'downloaded'
     }
     showUpdateWindow(getWindow(), state, actions)
-  } catch {
+    return { upToDate: false }
+  } catch (err: unknown) {
     if (background) return
+    const error = err as UpdateSourceError
+    const code = error?.code
+    if (code === 'NO_COMPATIBLE_INSTALLER') {
+      throw err
+    }
+    let message: string
+    if (code === 'GITHUB_NOT_FOUND') {
+      message = vietnamese
+        ? 'Không tìm thấy kho mã nguồn trên GitHub. Kiểm tra lại tên owner/repository.'
+        : 'Repository not found on GitHub. Check the owner/repository name.'
+    } else if (code === 'GITHUB_RATE_LIMITED') {
+      message = vietnamese
+        ? 'Đã đạt giới hạn yêu cầu của GitHub API. Vui lòng thử lại sau.'
+        : 'GitHub API rate limit reached. Please try again later.'
+    } else if (code === 'TIMEOUT' || code === 'NETWORK_ERROR') {
+      message = vietnamese
+        ? 'Không thể kết nối đến GitHub. Nguồn cập nhật đã lưu không bị thay đổi.'
+        : 'Unable to contact GitHub. Your saved update source has not changed.'
+    } else if (code === 'INVALID_RELEASE_METADATA') {
+      message = vietnamese
+        ? 'Dữ liệu phiên bản phát hành từ nguồn cập nhật không hợp lệ.'
+        : 'Invalid release metadata from update source.'
+    } else {
+      message = vietnamese
+        ? 'Không kiểm tra được cập nhật. Kiểm tra mạng và nguồn cập nhật rồi thử lại.'
+        : 'Could not check for updates. Check your connection and update source, then try again.'
+    }
     await showAppMessageBox({
       type: 'warning',
       title,
-      message: vietnamese
-        ? 'Không kiểm tra được cập nhật. Kiểm tra mạng và nguồn cập nhật rồi thử lại.'
-        : 'Could not check for updates. Check your connection and update source, then try again.',
+      message,
     })
+    throw err
   } finally {
     checking = false
   }

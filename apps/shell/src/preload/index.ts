@@ -334,7 +334,8 @@ const homeApi: HomeApi = {
     return await ipcRenderer.invoke(HOME_CHANNELS.setUpdateSource, source)
   },
   async checkForUpdates() {
-    await ipcRenderer.invoke(HOME_CHANNELS.checkForUpdates)
+    return (await ipcRenderer.invoke(HOME_CHANNELS.checkForUpdates)) as
+      { upToDate?: boolean } | undefined
   },
   async getUpdateChannel() {
     const result: unknown = await ipcRenderer.invoke(HOME_CHANNELS.getUpdateChannel)

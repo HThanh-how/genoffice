@@ -389,7 +389,7 @@ export interface HomeApi extends ForkHomeApi {
   /** current update channel (persisted in userData/app-settings.json; default 'stable') */
   getUpdateSource(): Promise<UpdateSource>
   setUpdateSource(source: UpdateSource): Promise<UpdateSource>
-  checkForUpdates(): Promise<void>
+  checkForUpdates(): Promise<{ upToDate?: boolean } | void>
   getUpdateChannel(): Promise<UpdateChannel>
   /** switch + persist the update channel; triggers an immediate update check */
   setUpdateChannel(channel: UpdateChannel): Promise<void>

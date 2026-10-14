@@ -4,29 +4,72 @@ export interface UpdateSource {
 }
 export const DEFAULT_UPDATE_SOURCE: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
 
+export type UpdateSourceErrorCode =
+  | 'INVALID_FORMAT'
+  | 'SETTINGS_WRITE_FAILED'
+  | 'IPC_UNAVAILABLE'
+  | 'NETWORK_ERROR'
+  | 'TIMEOUT'
+  | 'GITHUB_NOT_FOUND'
+  | 'GITHUB_RATE_LIMITED'
+  | 'ACCESS_DENIED'
+  | 'INVALID_RELEASE_METADATA'
+  | 'NO_COMPATIBLE_INSTALLER'
+
+export class UpdateSourceError extends Error {
+  code: UpdateSourceErrorCode
+  constructor(code: UpdateSourceErrorCode, message: string) {
+    super(`[${code}] ${message}`)
+    this.name = 'UpdateSourceError'
+    this.code = code
+  }
+}
+
 export function secureUpdateUrl(value: unknown): string {
-  if (typeof value !== 'string' || value.length > 2048) throw new Error('Invalid update URL')
-  const url = new URL(value)
-  if (url.protocol !== 'https:' || url.username || url.password || url.hash)
-    throw new Error('Update URLs must use HTTPS without credentials or fragments')
+  if (typeof value !== 'string' || value.length > 2048) {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid update URL')
+  }
+  let url: URL
+  try {
+    url = new URL(value)
+  } catch {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid update URL format')
+  }
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash || url.search) {
+    throw new UpdateSourceError(
+      'INVALID_FORMAT',
+      'Update URLs must use HTTPS without credentials, query parameters, or fragments',
+    )
+  }
   return url.href
 }
 
 export function validateUpdateSource(input: unknown): UpdateSource {
-  if (!input || typeof input !== 'object') throw new Error('Invalid update source')
+  if (!input || typeof input !== 'object') {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid update source')
+  }
   const { kind, value } = input as UpdateSource
-  if (typeof value !== 'string') throw new Error('Invalid update source')
+  if (typeof value !== 'string') {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid update source')
+  }
   if (kind === 'github') {
-    const repo = value
-      .trim()
-      .replace(/^https:\/\/github\.com\//, '')
-      .replace(/\/$/, '')
-    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repo) || repo.length > 200)
-      throw new Error('Enter a GitHub owner/repository')
+    let repo = value.trim()
+    repo = repo
+      .replace(/^(?:git\+)?https?:\/\/(?:www\.)?github\.com\//i, '')
+      .replace(/^(?:www\.)?github\.com\//i, '')
+      .replace(/\/+$/, '')
+      .replace(/\.git$/i, '')
+      .replace(/\/+$/, '')
+    if (
+      !/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(repo) ||
+      repo.length > 200
+    ) {
+      throw new UpdateSourceError('INVALID_FORMAT', 'Enter a GitHub owner/repository')
+    }
     return { kind, value: repo }
   }
   if (kind === 'manifest') return { kind, value: secureUpdateUrl(value.trim()) }
-  throw new Error('Invalid update source')
+  throw new UpdateSourceError('INVALID_FORMAT', 'Invalid update source')
 }
 
 export interface InstallerRelease {
