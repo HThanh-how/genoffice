@@ -12,6 +12,7 @@ import {
   selectInstaller,
   UpdateSourceError,
   validateConfiguredUpdateUrl,
+  validateOriginalInstallerUrl,
   validateResolvedInstallerUrl,
   validateResolvedMetadataUrl,
   validateUpdateSource,
@@ -138,7 +139,7 @@ describe('Update Source and Icon Restoration — Production Hardened Suite', () 
   })
 
   it('6. returns meaningful failure and preserves state when settings write fails', () => {
-    let savedState = 'github:HThanh-how/genoffice'
+    const savedState = 'github:HThanh-how/genoffice'
     const current: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
     const input = { kind: 'github', value: 'new-owner/new-repo' }
     const failingWriter = () => {
@@ -537,5 +538,82 @@ describe('Update Source and Icon Restoration — Production Hardened Suite', () 
       expect(typeof activeIcon === 'string').toBe(true)
       expect(activeIcon?.endsWith('.ico') || activeIcon?.endsWith('.png')).toBe(true)
     }
+  })
+
+  it('21. validates original installer URL before initiating download (rejects HTTP downgrade, query strings, and untrusted origins)', () => {
+    const source: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+
+    // Valid GitHub release asset URL
+    const validUrl =
+      'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe'
+    expect(validateOriginalInstallerUrl(validUrl, source)).toBe(validUrl)
+
+    // Rejects HTTP downgrade before fetch
+    expect(() =>
+      validateOriginalInstallerUrl(
+        'http://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe',
+        source,
+      ),
+    ).toThrowError(UpdateSourceError)
+
+    // Rejects query parameters in original GitHub URL before fetch
+    expect(() =>
+      validateOriginalInstallerUrl(
+        'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe?token=secret',
+        source,
+      ),
+    ).toThrowError(UpdateSourceError)
+
+    // Rejects attacker-controlled host masquerading as GitHub
+    expect(() =>
+      validateOriginalInstallerUrl(
+        'https://github.com.attacker.example/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe',
+        source,
+      ),
+    ).toThrowError(UpdateSourceError)
+
+    // Rejects embedded credentials
+    expect(() =>
+      validateOriginalInstallerUrl(
+        'https://admin:pass@github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe',
+        source,
+      ),
+    ).toThrowError(UpdateSourceError)
+  })
+
+  it('22. intercepts and validates intermediate redirects before following each network hop', () => {
+    const source: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const originalUrl =
+      'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe'
+
+    // Legitimate redirect to official GitHub CDN with signed token is accepted
+    const legitimateCdnRedirect =
+      'https://release-assets.githubusercontent.com/github-production-release-asset/123/setup.exe?sp=r&sig=abc12345'
+    expect(validateResolvedInstallerUrl(originalUrl, legitimateCdnRedirect, source)).toBe(
+      legitimateCdnRedirect,
+    )
+
+    // Unauthorized redirect hop to attacker host is rejected before following
+    expect(() =>
+      validateResolvedInstallerUrl(originalUrl, 'https://evil.com/fake-installer.exe', source),
+    ).toThrowError(UpdateSourceError)
+
+    // Redirect attempting HTTP downgrade is rejected before following
+    expect(() =>
+      validateResolvedInstallerUrl(
+        originalUrl,
+        'http://release-assets.githubusercontent.com/setup.exe',
+        source,
+      ),
+    ).toThrowError(UpdateSourceError)
+
+    // Redirect attempting credential injection is rejected before following
+    expect(() =>
+      validateResolvedInstallerUrl(
+        originalUrl,
+        'https://user:pass@release-assets.githubusercontent.com/setup.exe',
+        source,
+      ),
+    ).toThrowError(UpdateSourceError)
   })
 })

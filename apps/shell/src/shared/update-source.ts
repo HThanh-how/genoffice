@@ -128,6 +128,45 @@ export function validateResolvedInstallerUrl(
   return parsedFinal.href
 }
 
+export function validateOriginalInstallerUrl(originalUrl: string, source: UpdateSource): string {
+  if (typeof originalUrl !== 'string' || originalUrl.length > 2048) {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid original installer URL')
+  }
+  let parsed: URL
+  try {
+    parsed = new URL(originalUrl)
+  } catch {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Invalid original installer URL format')
+  }
+  if (parsed.protocol !== 'https:') {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Original installer URL must use HTTPS')
+  }
+  if (parsed.username || parsed.password) {
+    throw new UpdateSourceError(
+      'INVALID_FORMAT',
+      'Original installer URL cannot contain credentials',
+    )
+  }
+  if (parsed.hash) {
+    throw new UpdateSourceError('INVALID_FORMAT', 'Original installer URL cannot contain fragments')
+  }
+  if (source.kind === 'github') {
+    if (parsed.search) {
+      throw new UpdateSourceError(
+        'INVALID_FORMAT',
+        'Original GitHub release asset URL cannot contain query parameters',
+      )
+    }
+    if (!isOfficialGithubHost(parsed.hostname)) {
+      throw new UpdateSourceError(
+        'ACCESS_DENIED',
+        `Original release asset host is not an official GitHub host: ${parsed.hostname}`,
+      )
+    }
+  }
+  return parsed.href
+}
+
 export function validateResolvedMetadataUrl(
   originalUrl: string,
   finalUrl: string,

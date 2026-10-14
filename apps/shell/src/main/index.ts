@@ -482,7 +482,6 @@ import { checkForkUpdates } from './fork-updater'
 import {
   applyUpdateSourceChange,
   DEFAULT_UPDATE_SOURCE,
-  UpdateSourceError,
   validateUpdateSource,
   type UpdateSource,
 } from '../shared/update-source'

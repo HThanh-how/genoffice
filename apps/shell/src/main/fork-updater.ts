@@ -14,6 +14,7 @@ import {
   createUpdateCoordinator,
   selectInstaller,
   UpdateSourceError,
+  validateOriginalInstallerUrl,
   validateResolvedInstallerUrl,
   validateResolvedMetadataUrl,
   type UpdateSource,
@@ -237,32 +238,106 @@ export async function checkForkUpdates(
           await mkdir(root, { recursive: true })
           folder = await mkdtemp(join(root, 'download-'))
           const target = join(folder, `GenOffice-${release.version}${release.extension}`)
-          const res = await net.fetch(release.url, { signal: AbortSignal.timeout(15 * 60_000) })
-          if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
-          if (res.url) {
-            validateResolvedInstallerUrl(release.url, res.url, source)
-          }
-          const length = Number(res.headers.get('content-length'))
-          if (length > MAX_INSTALLER) throw new Error('Installer is too large')
+
+          // 1. Validate original URL before issuing any network hop
+          validateOriginalInstallerUrl(release.url, source)
+
           const hash = createHash('sha256')
           let bytes = 0
-          const meter = new Transform({
-            transform(chunk, _encoding, callback) {
-              bytes += chunk.length
-              if (bytes > MAX_INSTALLER) return callback(new Error('Installer is too large'))
-              hash.update(chunk)
-              pushUpdateState({
-                percent: length > 0 ? Math.min(99, Math.floor((bytes / length) * 100)) : 0,
+          const createMeter = (length: number) =>
+            new Transform({
+              transform(chunk, _encoding, callback) {
+                bytes += chunk.length
+                if (bytes > MAX_INSTALLER) return callback(new Error('Installer is too large'))
+                hash.update(chunk)
+                pushUpdateState({
+                  percent: length > 0 ? Math.min(99, Math.floor((bytes / length) * 100)) : 0,
+                })
+                callback(null, chunk)
+              },
+            })
+
+          const electronNet = net as unknown as {
+            request?: (url: string) => {
+              on(event: string, listener: (...args: any[]) => void): void
+              followRedirect(): void
+              abort(): void
+              end(): void
+            }
+          }
+
+          const electronRequest = electronNet.request
+          if (typeof electronRequest === 'function') {
+            await new Promise<void>((resolve, reject) => {
+              let resolvedUrl = release.url
+              const req = electronRequest(release.url)
+              const timer = setTimeout(() => {
+                req.abort()
+                reject(new Error('Download timeout'))
+              }, 15 * 60_000)
+
+              req.on('redirect', (_statusCode: number, _method: string, redirectUrl: string) => {
+                try {
+                  validateResolvedInstallerUrl(release.url, redirectUrl, source)
+                  resolvedUrl = redirectUrl
+                  req.followRedirect()
+                } catch (err) {
+                  clearTimeout(timer)
+                  req.abort()
+                  reject(err)
+                }
               })
-              callback(null, chunk)
-            },
-          })
-          await pipeline(
-            Readable.fromWeb(res.body as never),
-            meter,
-            createWriteStream(target, { flags: 'wx' }),
-          )
-          if (hash.digest('hex') !== release.sha256) throw new Error('Installer checksum mismatch')
+
+              req.on('response', (res: any) => {
+                clearTimeout(timer)
+                if (res.statusCode < 200 || res.statusCode >= 300) {
+                  return reject(new Error(`HTTP ${res.statusCode}`))
+                }
+                try {
+                  validateResolvedInstallerUrl(release.url, resolvedUrl, source)
+                } catch (err) {
+                  return reject(err)
+                }
+                const length = Number(res.headers?.['content-length'] || 0)
+                if (length > MAX_INSTALLER) return reject(new Error('Installer is too large'))
+                const meter = createMeter(length)
+                pipeline(res, meter, createWriteStream(target, { flags: 'wx' }))
+                  .then(() => {
+                    if (hash.digest('hex') !== release.sha256) {
+                      throw new Error('Installer checksum mismatch')
+                    }
+                    resolve()
+                  })
+                  .catch(reject)
+              })
+
+              req.on('error', (err: unknown) => {
+                clearTimeout(timer)
+                reject(err)
+              })
+
+              req.end()
+            })
+          } else {
+            // Fallback for environments where net.request is not available (e.g. test runner)
+            const res = await net.fetch(release.url, { signal: AbortSignal.timeout(15 * 60_000) })
+            if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+            if (res.url) {
+              validateResolvedInstallerUrl(release.url, res.url, source)
+            }
+            const length = Number(res.headers.get('content-length'))
+            if (length > MAX_INSTALLER) throw new Error('Installer is too large')
+            const meter = createMeter(length)
+            await pipeline(
+              Readable.fromWeb(res.body as never),
+              meter,
+              createWriteStream(target, { flags: 'wx' }),
+            )
+            if (hash.digest('hex') !== release.sha256) {
+              throw new Error('Installer checksum mismatch')
+            }
+          }
+
           installer = target
           pushUpdateState({ phase: 'downloaded', percent: 100 })
         } catch {
