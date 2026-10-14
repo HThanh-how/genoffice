@@ -211,6 +211,9 @@ export function getUpdateErrorMessage(code: string, lang: string): string {
       ? 'Đã đạt giới hạn yêu cầu của GitHub API. Vui lòng thử lại sau.'
       : 'GitHub API rate limit reached. Please try again later.'
   }
+  if (c.includes('ACCESS_DENIED') || c.includes('FORBIDDEN') || c.includes('UNAUTHORIZED')) {
+    return isVi ? 'Không có quyền truy cập vào kho mã nguồn này.' : 'Access denied to repository.'
+  }
   if (
     c.includes('TIMEOUT') ||
     c.includes('NETWORK_ERROR') ||

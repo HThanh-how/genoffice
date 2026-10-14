@@ -192,10 +192,7 @@ export async function checkForkUpdates(
           ? 'Nguồn này hợp lệ nhưng chưa có bộ cài phù hợp cho thiết bị này. Hãy thử lại sau khi bản build hoàn tất.'
           : 'The repository is valid, but no compatible installer is available for this device.',
       })
-      throw new UpdateSourceError(
-        'NO_COMPATIBLE_INSTALLER',
-        'No compatible installer available for this device',
-      )
+      return
     }
     if (compareVersions(release.version, app.getVersion()) <= 0) {
       if (background) return { upToDate: true }
@@ -307,9 +304,6 @@ export async function checkForkUpdates(
     if (background) return
     const error = err as UpdateSourceError
     const code = error?.code
-    if (code === 'NO_COMPATIBLE_INSTALLER') {
-      throw err
-    }
     let message: string
     if (code === 'GITHUB_NOT_FOUND') {
       message = vietnamese
@@ -319,6 +313,10 @@ export async function checkForkUpdates(
       message = vietnamese
         ? 'Đã đạt giới hạn yêu cầu của GitHub API. Vui lòng thử lại sau.'
         : 'GitHub API rate limit reached. Please try again later.'
+    } else if (code === 'ACCESS_DENIED') {
+      message = vietnamese
+        ? 'Không có quyền truy cập vào kho mã nguồn này.'
+        : 'Access denied to repository.'
     } else if (code === 'TIMEOUT' || code === 'NETWORK_ERROR') {
       message = vietnamese
         ? 'Không thể kết nối đến GitHub. Nguồn cập nhật đã lưu không bị thay đổi.'
@@ -337,7 +335,7 @@ export async function checkForkUpdates(
       title,
       message,
     })
-    throw err
+    return
   } finally {
     checking = false
   }

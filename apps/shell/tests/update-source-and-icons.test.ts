@@ -218,6 +218,12 @@ describe('Update Source and Icon Restoration (Production Hardened Suite)', () =>
     expect(getUpdateErrorMessage(rateLimitErr.message, 'en')).toContain(
       'GitHub API rate limit reached',
     )
+    expect(getUpdateErrorMessage(accessDeniedErr.message, 'vi')).toContain(
+      'Không có quyền truy cập',
+    )
+    expect(getUpdateErrorMessage(accessDeniedErr.message, 'en')).toContain(
+      'Access denied to repository',
+    )
   })
 
   // 13. Missing repository (HTTP 404)
