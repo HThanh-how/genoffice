@@ -2,6 +2,7 @@ import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { useI18n } from './locale'
 import './ui-feedback.css'
+import { UpdateArtwork } from './UpdateArtwork'
 import type { MessageBoxRequest, MessageBoxResult } from '../../shared/feedback-api'
 
 export type FeedbackTone = 'info' | 'success' | 'warning' | 'error' | 'danger'
@@ -350,6 +351,7 @@ export function UiFeedbackHost() {
                 </svg>
               </button>
             )}
+            {isUpdateStatus && <UpdateArtwork variant="up-to-date" />}
             <div className="ui-feedback-dialog-heading">
               <span className="ui-feedback-icon">
                 <FeedbackIcon tone={request.options.tone ?? 'info'} />
