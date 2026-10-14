@@ -62,6 +62,7 @@ import type {
   AiCardGenerationResult,
   EffectiveOpeningCard,
   OpeningCardDefinition,
+  StoredHtmlAsset,
   StoredMediaAsset,
 } from './opening-card-types'
 
@@ -428,6 +429,12 @@ export interface HomeApi extends ForkHomeApi {
   /** play a scene or card in a small window for a few seconds */
   previewOpening(app: OpeningApp, scene: string): Promise<void>
   saveOpeningCard(card: OpeningCardDefinition): Promise<OpeningEffectsState>
+  saveOpeningHtmlCard?(input: {
+    card: OpeningCardDefinition
+    html: string
+    css: string
+  }): Promise<OpeningEffectsState>
+  readOpeningHtmlCard?(htmlAssetId: string): Promise<StoredHtmlAsset | null>
   deleteOpeningCard(cardId: string): Promise<OpeningEffectsState>
   importOpeningMedia(
     bufferBase64: string,
@@ -779,6 +786,8 @@ export const HOME_CHANNELS = {
   removeOpeningHtml: 'home:remove-opening-html',
   previewOpening: 'home:preview-opening',
   saveOpeningCard: 'home:save-opening-card',
+  saveOpeningHtmlCard: 'home:save-opening-html-card',
+  readOpeningHtmlCard: 'home:read-opening-html-card',
   deleteOpeningCard: 'home:delete-opening-card',
   importOpeningMedia: 'home:import-opening-media',
   deleteOpeningMedia: 'home:delete-opening-media',

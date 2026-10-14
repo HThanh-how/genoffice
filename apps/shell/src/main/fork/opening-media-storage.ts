@@ -162,6 +162,8 @@ export interface DecodedImageResult {
   width: number
   height: number
   thumbnailDataUrl: string
+  isFallbackThumbnail?: boolean
+  decoder: 'native' | 'fallback'
 }
 
 function parseImageDimensions(
@@ -254,7 +256,11 @@ function getNativeImageApi() {
   return null
 }
 
-export function validateAndDecodeImage(buffer: Buffer, mime: string): DecodedImageResult {
+export function validateAndDecodeImage(
+  buffer: Buffer,
+  mime: string,
+  options: { requireNativeDecoder?: boolean } = {},
+): DecodedImageResult {
   const nativeApi = getNativeImageApi()
   if (nativeApi) {
     const img = nativeApi.createFromBuffer(buffer)
@@ -294,7 +300,12 @@ export function validateAndDecodeImage(buffer: Buffer, mime: string): DecodedIma
       width: size.width,
       height: size.height,
       thumbnailDataUrl,
+      decoder: 'native',
     }
+  }
+
+  if (options.requireNativeDecoder) {
+    throw new Error('Native image decoder is unavailable in this environment')
   }
 
   const dims = parseImageDimensions(buffer, mime)
@@ -313,6 +324,8 @@ export function validateAndDecodeImage(buffer: Buffer, mime: string): DecodedIma
     width: dims.width,
     height: dims.height,
     thumbnailDataUrl: fallbackPng,
+    isFallbackThumbnail: true,
+    decoder: 'fallback',
   }
 }
 

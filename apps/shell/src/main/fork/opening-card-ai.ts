@@ -1,14 +1,16 @@
 import type {
   AiCardGenerationInput,
   AiCardGenerationResult,
+  GeneratedHtmlCardDraft,
   OpeningCardDefinition,
   OpeningMaterialConfig,
   OpeningMaterialPreset,
   OpeningThemeMode,
 } from '../../shared/opening-card-types'
-import { activeProvider, chatForProvider } from '@genoffice/ai-provider'
+import { activeProvider, chatForProvider, imageGenerationAvailable } from '@genoffice/ai-provider'
 import type { AiSettings } from '@genoffice/ai-provider'
 import { sanitizeHexColor } from './opening-card-css'
+import { sanitizeOpeningCss, sanitizeOpeningHtml } from './opening-card-html-sanitizer'
 
 const ALLOWED_PRESETS: readonly OpeningMaterialPreset[] = [
   'solid',
@@ -261,8 +263,137 @@ Rules:
 - DO NOT wrap in markdown fences or commentary if possible.
 - Never include HTML, scripts, or executable code.`
 
+export const HTML_CARD_SYSTEM_PROMPT = `You are a specialist UI & motion design engineer for GenOffice Opening Card Studio.
+Based on the user's brief, produce an original, visually stunning, self-contained HTML/CSS opening card scene as a strict JSON object.
+
+Allowed themeMode: "light", "dark", "system".
+JSON schema:
+{
+  "version": 1,
+  "name": "Short, elegant card title (max 40 chars)",
+  "description": "Brief description of the visual scene and mood (max 120 chars)",
+  "themeMode": "dark",
+  "accentColor": "#2b7cd3",
+  "html": "<div class=\\"opening-scene\\"><div class=\\"glow-orb\\"></div><div class=\\"card-glass\\"><div class=\\"doc-badge\\">{{appName}}</div><div class=\\"doc-info\\"><h1 class=\\"doc-title\\">{{title}}</h1><p class=\\"doc-name\\">{{fileName}}</p><span class=\\"doc-hint\\">{{hint}}</span></div><div class=\\"loading-bar\\"><div class=\\"loading-fill\\"></div></div></div></div>",
+  "css": ".opening-scene { position: relative; width: 440px; height: 240px; display: flex; align-items: center; justify-content: center; overflow: hidden; border-radius: 20px; box-shadow: 0 24px 60px rgba(0,0,0,0.35); } ..."
+}
+
+Critical Design & Technical Guidelines:
+1. Return self-contained HTML structure and CSS styling.
+2. The card should be centered, sized around 440px by 240px (responsive with max-width/max-height).
+3. Use rich CSS keyframes animations: floating elements, moving light reflections, glowing orbs, animated gradients, subtle particle/petal effects, smooth loading indicators.
+4. Support glassmorphism, translucency (backdrop-filter: blur), rounded corners (border-radius: 16-24px), layered depth, and delicate borders (rgba(255,255,255,0.15)).
+5. Include dynamic document placeholders inside the HTML text nodes:
+   - {{fileName}} : name of opening document
+   - {{title}}    : opening action title (e.g. "Opening document…")
+   - {{hint}}     : status hint (e.g. "Getting document ready")
+   - {{appName}}  : application name or badge
+   - {{accentColor}} : accent color
+6. Always include a prefers-reduced-motion media query:
+   @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+7. STRICT SECURITY RULES:
+   - NEVER include <script>, <iframe>, <object>, <embed>, <form>, <base>, or <meta>.
+   - NEVER use inline event handlers (onclick, onload, onerror).
+   - NEVER use @import or external url() links. NO external fonts, scripts, or CDN styles.
+   - Output ONLY the strict JSON object.`
+
 /**
- * Invokes the configured GenOffice AI provider to generate a customized card configuration.
+ * Validates and sanitizes AI-generated HTML/CSS card output.
+ */
+export function validateAiHtmlCardSchema(raw: unknown): {
+  ok: boolean
+  draft?: GeneratedHtmlCardDraft
+  card?: OpeningCardDefinition
+  error?: string
+} {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'AI output must be a JSON object' }
+  }
+
+  const obj = raw as Record<string, unknown>
+
+  // Name
+  if (typeof obj.name !== 'string' || obj.name.trim().length === 0) {
+    return { ok: false, error: 'Card name is required' }
+  }
+  const name = obj.name.trim().slice(0, 60)
+  if (FORBIDDEN_PATTERN.test(name)) {
+    return { ok: false, error: 'Card name contains prohibited code or HTML patterns' }
+  }
+
+  // Description
+  let description: string | undefined
+  if (typeof obj.description === 'string' && obj.description.trim()) {
+    description = obj.description.trim().slice(0, 200)
+    if (FORBIDDEN_PATTERN.test(description)) {
+      return { ok: false, error: 'Description contains prohibited code or HTML patterns' }
+    }
+  }
+
+  // Theme Mode
+  const rawTheme = String(obj.themeMode || 'system').toLowerCase()
+  const themeMode: OpeningThemeMode = (ALLOWED_THEME_MODES as readonly string[]).includes(rawTheme)
+    ? (rawTheme as OpeningThemeMode)
+    : 'system'
+
+  // Accent Color
+  const accentColor = sanitizeHexColor(
+    typeof obj.accentColor === 'string' ? obj.accentColor : undefined,
+    '#2b7cd3',
+  )
+
+  // HTML
+  if (typeof obj.html !== 'string' || !obj.html.trim()) {
+    return { ok: false, error: 'Generated HTML is empty or invalid' }
+  }
+  const sanitizedHtmlRes = sanitizeOpeningHtml(obj.html)
+  if (!sanitizedHtmlRes.ok || !sanitizedHtmlRes.sanitizedHtml) {
+    return { ok: false, error: sanitizedHtmlRes.error || 'HTML sanitization failed' }
+  }
+
+  // CSS
+  if (typeof obj.css !== 'string' || !obj.css.trim()) {
+    return { ok: false, error: 'Generated CSS is empty or invalid' }
+  }
+  const sanitizedCssRes = sanitizeOpeningCss(obj.css)
+  if (!sanitizedCssRes.ok || !sanitizedCssRes.sanitizedCss) {
+    return { ok: false, error: sanitizedCssRes.error || 'CSS validation failed' }
+  }
+
+  const cardId = `ai:html_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+
+  const draft: GeneratedHtmlCardDraft = {
+    version: 1,
+    name,
+    description,
+    html: sanitizedHtmlRes.sanitizedHtml,
+    css: sanitizedCssRes.sanitizedCss,
+    themeMode,
+    accentColor,
+  }
+
+  const card: OpeningCardDefinition = {
+    id: cardId,
+    name,
+    description,
+    category: 'ai',
+    contentKind: 'ai-html',
+    material: {
+      preset: 'frosted-glass',
+      themeMode,
+      accentColor,
+    },
+    thumbnailColors: [accentColor, themeMode === 'light' ? '#e2e8f0' : '#181b22'],
+    createdAt: Date.now(),
+    isBuiltIn: false,
+    tags: ['ai-generated', 'ai-html', themeMode],
+  }
+
+  return { ok: true, draft, card }
+}
+
+/**
+ * Invokes the configured GenOffice AI provider to generate a customized card configuration or HTML card.
  * Produces a preview card only; the card is NOT saved to disk until explicit user approval.
  */
 export async function generateAiCardWithRealProvider(
@@ -278,6 +409,23 @@ export async function generateAiCardWithRealProvider(
   const promptText = input.prompt.trim()
   if (promptText.length > 500) {
     return { ok: false, error: 'Prompt exceeds 500 characters.' }
+  }
+
+  const mode = input.mode || 'style'
+
+  if (mode === 'image') {
+    const canGen = imageGenerationAvailable(
+      aiSettings as Parameters<typeof imageGenerationAvailable>[0],
+      false,
+    )
+    if (!canGen) {
+      return {
+        ok: false,
+        error:
+          'Image generation is not supported by the active AI provider or model configuration. Please switch to HTML mode or configure a compatible media provider.',
+        modeUsed: 'image',
+      }
+    }
   }
 
   const provider = activeProvider(aiSettings)
@@ -299,6 +447,78 @@ export async function generateAiCardWithRealProvider(
 
   const config = input.model ? { ...baseConfig, model: input.model } : baseConfig
 
+  if (mode === 'html') {
+    let userMessage = `Create an original HTML opening card scene based on this description:\n"${promptText}"`
+    if (input.themeMode) userMessage += `\nPreferred theme mode: ${input.themeMode}`
+    if (input.accentColor) userMessage += `\nPreferred accent color: ${input.accentColor}`
+
+    try {
+      const response = await chatFn(provider, config, HTML_CARD_SYSTEM_PROMPT, userMessage, signal)
+
+      if (!response.ok) {
+        return {
+          ok: false,
+          error: response.error || 'AI generation request failed.',
+          modelUsed: config.model,
+          modeUsed: 'html',
+        }
+      }
+
+      if (!response.content || !response.content.trim()) {
+        return {
+          ok: false,
+          error: 'The AI model returned an empty response. Please try again.',
+          modelUsed: config.model,
+          modeUsed: 'html',
+        }
+      }
+
+      let parsed: unknown
+      try {
+        parsed = parseAiJsonPayload(response.content)
+      } catch {
+        return {
+          ok: false,
+          error: 'Failed to parse AI response into valid JSON.',
+          rawResponse: response.content,
+          modelUsed: config.model,
+          modeUsed: 'html',
+        }
+      }
+
+      const validation = validateAiHtmlCardSchema(parsed)
+      if (!validation.ok || !validation.card || !validation.draft) {
+        return {
+          ok: false,
+          error: validation.error || 'AI generated HTML did not conform to safe card schema.',
+          rawResponse: response.content,
+          modelUsed: config.model,
+          modeUsed: 'html',
+        }
+      }
+
+      return {
+        ok: true,
+        card: validation.card,
+        htmlDraft: validation.draft,
+        modeUsed: 'html',
+        rawResponse: response.content,
+        modelUsed: config.model,
+      }
+    } catch (err: unknown) {
+      if (signal?.aborted) {
+        return { ok: false, error: 'Generation was cancelled by the user.', modeUsed: 'html' }
+      }
+      return {
+        ok: false,
+        error: err instanceof Error ? err.message : String(err),
+        modelUsed: config.model,
+        modeUsed: 'html',
+      }
+    }
+  }
+
+  // Default: Declarative Material Style mode
   let userMessage = `Create an opening card style based on this description:\n"${promptText}"`
   if (input.preset) userMessage += `\nPreferred preset: ${input.preset}`
   if (input.themeMode) userMessage += `\nPreferred theme mode: ${input.themeMode}`
@@ -312,6 +532,7 @@ export async function generateAiCardWithRealProvider(
         ok: false,
         error: response.error || 'AI generation request failed.',
         modelUsed: config.model,
+        modeUsed: 'style',
       }
     }
 
@@ -320,6 +541,7 @@ export async function generateAiCardWithRealProvider(
         ok: false,
         error: 'The AI model returned an empty response. Please try again.',
         modelUsed: config.model,
+        modeUsed: 'style',
       }
     }
 
@@ -332,6 +554,7 @@ export async function generateAiCardWithRealProvider(
         error: 'Failed to parse AI response into valid JSON.',
         rawResponse: response.content,
         modelUsed: config.model,
+        modeUsed: 'style',
       }
     }
 
@@ -342,6 +565,7 @@ export async function generateAiCardWithRealProvider(
         error: validation.error || 'AI generated output did not conform to card schema.',
         rawResponse: response.content,
         modelUsed: config.model,
+        modeUsed: 'style',
       }
     }
 
@@ -349,17 +573,19 @@ export async function generateAiCardWithRealProvider(
     return {
       ok: true,
       card: validation.card,
+      modeUsed: 'style',
       rawResponse: response.content,
       modelUsed: config.model,
     }
   } catch (err: unknown) {
     if (signal?.aborted) {
-      return { ok: false, error: 'Generation was cancelled by the user.' }
+      return { ok: false, error: 'Generation was cancelled by the user.', modeUsed: 'style' }
     }
     return {
       ok: false,
       error: err instanceof Error ? err.message : String(err),
       modelUsed: config.model,
+      modeUsed: 'style',
     }
   }
 }

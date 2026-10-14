@@ -351,4 +351,123 @@ test.describe('Opening Card Studio — Electron E2E Flows', () => {
       await closeAndSaveVideo(launched, 'opening-e2e9-10')
     }
   })
+
+  test('E2E-11: AI HTML opening card save, asset reading, export bundle, and restart persistence', async () => {
+    test.setTimeout(120_000)
+    const launched = await launchShell({
+      onboardingSeen: true,
+      settings: { starPrompt: { resolved: true }, lang: 'en' },
+      videoDir: 'opening-card-studio-e2e11',
+    })
+    const { page, userDataDir } = launched
+    let firstLaunchedClosed = false
+
+    try {
+      // 1. Save an AI HTML card via IPC
+      const saveRes = await page.evaluate(async () => {
+        const api = window.aiOffice
+        const card = {
+          id: 'custom:ai_html_e2e',
+          name: 'Liquid Glass Quantum',
+          category: 'custom' as const,
+          contentKind: 'ai-html' as const,
+          material: {
+            preset: 'liquid-glass' as const,
+            themeMode: 'dark' as const,
+            accentColor: '#38bdf8',
+          },
+        }
+        const html = '<div class="quantum-card"><h1>{{title}}</h1><p>{{fileName}}</p></div>'
+        const css = '.quantum-card { color: #38bdf8; backdrop-filter: blur(20px); }'
+
+        return await api.saveOpeningHtmlCard?.({ card, html, css })
+      })
+
+      expect(saveRes).toBeDefined()
+      const savedCard = saveRes!.prefs.customCards?.find((c) => c.id === 'custom:ai_html_e2e')
+      expect(savedCard).toBeDefined()
+      expect(savedCard?.contentKind).toBe('ai-html')
+      expect(savedCard?.htmlAssetId).toBeDefined()
+
+      // 2. Read back the HTML asset directly via IPC
+      const htmlAsset = await page.evaluate(async (assetId) => {
+        return await window.aiOffice.readOpeningHtmlCard?.(assetId)
+      }, savedCard!.htmlAssetId!)
+
+      expect(htmlAsset).not.toBeNull()
+      expect(htmlAsset?.html).toContain('{{title}}')
+      expect(htmlAsset?.css).toContain('backdrop-filter: blur(20px)')
+
+      // 3. Assign this HTML card to Docs
+      const assignedState = await page.evaluate(async (cardId) => {
+        const api = window.aiOffice
+        const current = await api.getOpeningEffects()
+        return await api.setOpeningPrefs({
+          ...current.prefs,
+          appOverrides: {
+            ...current.prefs.appOverrides,
+            docs: cardId,
+          },
+          scenes: {
+            ...current.prefs.scenes,
+            docs: cardId,
+          },
+        })
+      }, savedCard!.id)
+
+      expect(assignedState.prefs.scenes.docs).toBe(savedCard!.id)
+
+      // 4. Export bundle and verify embedded htmlAssets
+      const bundleJson = await page.evaluate(async () => {
+        return await window.aiOffice.exportOpeningCards?.()
+      })
+
+      expect(bundleJson).toBeDefined()
+      const parsedBundle = JSON.parse(bundleJson!)
+      expect(parsedBundle.version).toBe(1)
+      expect(parsedBundle.htmlAssets).toBeDefined()
+      expect(
+        parsedBundle.htmlAssets.some(
+          (h: { assetId: string }) => h.assetId === savedCard!.htmlAssetId,
+        ),
+      ).toBe(true)
+
+      // 5. Close first session
+      await closeAndSaveVideo(launched, 'opening-e2e11')
+      firstLaunchedClosed = true
+
+      // 6. Relaunch with same userDataDir to verify persistence
+      const relaunch = await launchShell({
+        userDataDir,
+        lang: 'en',
+        videoDir: 'opening-card-studio-e2e11-relaunch',
+      })
+      const { page: page2 } = relaunch
+
+      try {
+        const persisted = await page2.evaluate(async () => {
+          const state = await window.aiOffice.getOpeningEffects()
+          const docsCard = state.prefs.customCards?.find((c) => c.id === 'custom:ai_html_e2e')
+          const asset = docsCard?.htmlAssetId
+            ? await window.aiOffice.readOpeningHtmlCard?.(docsCard.htmlAssetId)
+            : null
+          return {
+            docsScene: state.prefs.scenes.docs,
+            hasCard: Boolean(docsCard),
+            hasAsset: Boolean(asset),
+          }
+        })
+
+        expect(persisted.docsScene).toBe('custom:ai_html_e2e')
+        expect(persisted.hasCard).toBe(true)
+        expect(persisted.hasAsset).toBe(true)
+      } finally {
+        await closeAndSaveVideo(relaunch, 'opening-e2e11-relaunch')
+      }
+    } finally {
+      if (!firstLaunchedClosed) {
+        await closeAndSaveVideo(launched, 'opening-e2e11-err')
+      }
+    }
+  })
 })

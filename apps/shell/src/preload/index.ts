@@ -39,6 +39,7 @@ import type {
   OpeningEffectsState,
   LegacyDocSettings,
 } from '../shared/home-api'
+import type { StoredHtmlAsset } from '../shared/opening-card-types'
 import { HOME_CHANNELS } from '../shared/home-api'
 import { INTEGRATIONS_CHANNELS } from '../shared/integrations-api'
 import type {
@@ -431,6 +432,18 @@ const homeApi: HomeApi = {
   },
   async saveOpeningCard(card) {
     return (await ipcRenderer.invoke(HOME_CHANNELS.saveOpeningCard, card)) as OpeningEffectsState
+  },
+  async saveOpeningHtmlCard(input) {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.saveOpeningHtmlCard,
+      input,
+    )) as OpeningEffectsState
+  },
+  async readOpeningHtmlCard(htmlAssetId) {
+    return (await ipcRenderer.invoke(
+      HOME_CHANNELS.readOpeningHtmlCard,
+      htmlAssetId,
+    )) as StoredHtmlAsset | null
   },
   async deleteOpeningCard(cardId) {
     return (await ipcRenderer.invoke(

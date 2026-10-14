@@ -202,6 +202,7 @@ repeating-linear-gradient(transparent 0 25px,var(--sk1) 25px 26px);background-co
 import type { OpeningCardDefinition } from '../../shared/opening-card-types'
 import { getBuiltInCard } from '../../shared/opening-card-families'
 import { buildMaterialCss } from './opening-card-css'
+import { buildIsolatedHtmlHostDocument } from './opening-card-html-sanitizer'
 
 /** The splash page: the app's colour and badge, the file name, one line of why, an animated sea. */
 export function openingPageHtml(
@@ -304,6 +305,8 @@ export interface OpeningConfig {
   customHtml(app: SplashApp): string | null
   /** data URL getter for personal media assets */
   mediaDataUrl?(assetId: string): string | null
+  /** getter for managed HTML card assets ({ html, css }) */
+  htmlCardContent?(assetId: string): { html: string; css: string } | null
 }
 
 let config: OpeningConfig = { prefs: () => DEFAULT_OPENING_PREFS, customHtml: () => null }
@@ -374,6 +377,30 @@ export function buildOpeningPage(options: {
   }
 
   const cardDef = getBuiltInCard(chosen) ?? prefs.customCards?.find((c) => c.id === chosen)
+
+  // AI-generated or custom HTML opening card scene
+  if (cardDef?.contentKind === 'ai-html' && cardDef.htmlAssetId && config.htmlCardContent) {
+    const htmlAsset = config.htmlCardContent(cardDef.htmlAssetId)
+    if (htmlAsset) {
+      return buildIsolatedHtmlHostDocument(
+        htmlAsset.html,
+        htmlAsset.css,
+        {
+          fileName: options.fileName,
+          title: words.title,
+          hint: words.hint,
+          appName: SPLASH_THEMES[options.app].letter,
+          accentColor: cardDef.material.accentColor || SPLASH_THEMES[options.app].color,
+        },
+        {
+          reducedMotion: tier === 'minimal',
+          isCardLayout: options.layout === 'card',
+          skeletonHtml: options.layout === 'card' ? skeletonHtml(options.app) : undefined,
+        },
+      )
+    }
+  }
+
   let mediaDataUrl: string | undefined
   if (cardDef?.mediaAssetId && config.mediaDataUrl) {
     const url = config.mediaDataUrl(cardDef.mediaAssetId)

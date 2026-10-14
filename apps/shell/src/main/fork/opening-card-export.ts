@@ -8,6 +8,7 @@ import type {
   OpeningMaterialConfig,
   OpeningMaterialPreset,
   OpeningThemeMode,
+  StoredHtmlAsset,
   StoredMediaAsset,
 } from '../../shared/opening-card-types'
 import { isBuiltInCard } from '../../shared/opening-card-families'
@@ -20,6 +21,13 @@ import {
   sniffImageSignature,
   storeMediaAssetFromBuffer,
 } from './opening-media-storage'
+import {
+  deleteHtmlCardAsset,
+  isSafeHtmlAssetId,
+  readHtmlCardAsset,
+  storeHtmlCardAsset,
+} from './opening-html-storage'
+import { sanitizeOpeningCss, sanitizeOpeningHtml } from './opening-card-html-sanitizer'
 
 const FORBIDDEN_PATTERN = /<script|javascript:|on\w+=|<\/|<[a-z]|expression\(|eval\(/i
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/
@@ -41,6 +49,7 @@ const ALLOWED_CONTENT_KINDS: readonly CardContentKind[] = [
   'personal-media',
   'ai-declarative',
   'custom-html',
+  'ai-html',
 ]
 
 function clampNumber(val: unknown, min: number, max: number, fallback: number): number {
@@ -174,6 +183,16 @@ export function validateCardDefinition(raw: unknown): {
     }
   }
 
+  // Validate optional htmlAssetId
+  let htmlAssetId: string | undefined
+  if (obj.htmlAssetId !== undefined) {
+    if (typeof obj.htmlAssetId === 'string' && isSafeHtmlAssetId(obj.htmlAssetId)) {
+      htmlAssetId = obj.htmlAssetId
+    } else {
+      return { ok: false, error: 'Invalid htmlAssetId format' }
+    }
+  }
+
   // Validate mediaFit & mediaDim
   const rawFit = typeof obj.mediaFit === 'string' ? obj.mediaFit : 'cover'
   const mediaFit = rawFit === 'contain' ? 'contain' : rawFit === 'center' ? 'center' : 'cover'
@@ -220,6 +239,7 @@ export function validateCardDefinition(raw: unknown): {
     material,
     ...(sceneId ? { sceneId } : {}),
     ...(mediaAssetId ? { mediaAssetId } : {}),
+    ...(htmlAssetId ? { htmlAssetId } : {}),
     ...(obj.mediaFit ? { mediaFit } : {}),
     ...(mediaDim !== undefined ? { mediaDim } : {}),
     ...(thumbnailColors ? { thumbnailColors } : {}),
@@ -240,6 +260,7 @@ export function createOpeningCardExportBundle(
   userDataPath: string,
 ): OpeningCardExportBundle {
   const assetsMap = new Map<string, StoredMediaAsset>()
+  const htmlAssetsMap = new Map<string, StoredHtmlAsset>()
   const exportedCards: OpeningCardDefinition[] = []
 
   for (const card of cards) {
@@ -268,15 +289,29 @@ export function createOpeningCardExportBundle(
         // Asset file missing: card exported with degraded media, will fall back to material
       }
     }
+
+    if (validCard.htmlAssetId && !htmlAssetsMap.has(validCard.htmlAssetId)) {
+      try {
+        const htmlAsset = readHtmlCardAsset(userDataPath, validCard.htmlAssetId)
+        if (htmlAsset) {
+          htmlAssetsMap.set(validCard.htmlAssetId, htmlAsset)
+        }
+      } catch {
+        // HTML asset missing: fallback
+      }
+    }
+
     exportedCards.push(validCard)
   }
 
   const assets = Array.from(assetsMap.values())
+  const htmlAssets = Array.from(htmlAssetsMap.values())
   return {
     version: 1,
     exportedAt: Date.now(),
     cards: exportedCards,
     assets: assets.length > 0 ? assets : undefined,
+    htmlAssets: htmlAssets.length > 0 ? htmlAssets : undefined,
   }
 }
 
@@ -321,6 +356,7 @@ export async function importCardsFromExportBundle(
 
   let rawCards: unknown[]
   let rawAssets: unknown[] = []
+  let rawHtmlAssets: unknown[] = []
 
   if (
     parsed &&
@@ -335,6 +371,9 @@ export async function importCardsFromExportBundle(
     rawCards = bundle.cards
     if (Array.isArray(bundle.assets)) {
       rawAssets = bundle.assets
+    }
+    if (Array.isArray(bundle.htmlAssets)) {
+      rawHtmlAssets = bundle.htmlAssets
     }
   } else if (Array.isArray(parsed)) {
     rawCards = parsed
@@ -361,6 +400,14 @@ export async function importCardsFromExportBundle(
       importedCards: [],
       count: 0,
       error: `Bundle exceeds maximum asset limit of ${MAX_IMPORT_ASSETS} assets`,
+    }
+  }
+  if (rawHtmlAssets.length > MAX_IMPORT_ASSETS) {
+    return {
+      ok: false,
+      importedCards: [],
+      count: 0,
+      error: `Bundle exceeds maximum HTML asset limit of ${MAX_IMPORT_ASSETS} assets`,
     }
   }
 
@@ -405,6 +452,36 @@ export async function importCardsFromExportBundle(
     }
   }
 
+  // Pre-validate embedded HTML assets
+  const validHtmlAssets: StoredHtmlAsset[] = []
+  for (const h of rawHtmlAssets) {
+    if (
+      h &&
+      typeof h === 'object' &&
+      typeof (h as StoredHtmlAsset).assetId === 'string' &&
+      isSafeHtmlAssetId((h as StoredHtmlAsset).assetId) &&
+      typeof (h as StoredHtmlAsset).html === 'string' &&
+      typeof (h as StoredHtmlAsset).css === 'string'
+    ) {
+      const hAsset = h as StoredHtmlAsset
+      const htmlCheck = sanitizeOpeningHtml(hAsset.html)
+      const cssCheck = sanitizeOpeningCss(hAsset.css)
+      if (!htmlCheck.ok || !cssCheck.ok) {
+        return {
+          ok: false,
+          importedCards: [],
+          count: 0,
+          error: `Embedded HTML asset ${hAsset.assetId} contains prohibited or unsafe code`,
+        }
+      }
+      validHtmlAssets.push({
+        ...hAsset,
+        html: htmlCheck.sanitizedHtml!,
+        css: cssCheck.sanitizedCss!,
+      })
+    }
+  }
+
   // Phase 2: Prepare IDs & references
   const allocatedIds = new Set(existingCards.map((c) => c.id))
   const preparedCards: OpeningCardDefinition[] = []
@@ -418,12 +495,17 @@ export async function importCardsFromExportBundle(
     preparedCards.push({ ...card, id: finalId })
   }
 
-  // Phase 3 & 4: Import Media with Rollback on Failure
+  // Phase 3 & 4: Import Media and HTML Assets with Rollback on Failure
   const newlyCreatedAssetIds: string[] = []
+  const newlyCreatedHtmlAssetIds: string[] = []
   const importedAssetMap = new Map<string, string>() // oldAssetId -> newAssetId
+  const importedHtmlAssetMap = new Map<string, string>() // oldHtmlAssetId -> newHtmlAssetId
 
   const referencedAssetIds = new Set(
     preparedCards.map((c) => c.mediaAssetId).filter((id): id is string => typeof id === 'string'),
+  )
+  const referencedHtmlAssetIds = new Set(
+    preparedCards.map((c) => c.htmlAssetId).filter((id): id is string => typeof id === 'string'),
   )
 
   try {
@@ -442,28 +524,47 @@ export async function importCardsFromExportBundle(
       newlyCreatedAssetIds.push(stored.assetId)
       importedAssetMap.set(asset.assetId, stored.assetId)
     }
+
+    for (const hAsset of validHtmlAssets) {
+      if (!referencedHtmlAssetIds.has(hAsset.assetId)) {
+        continue
+      }
+      const stored = await storeHtmlCardAsset(userDataPath, hAsset.html, hAsset.css)
+      newlyCreatedHtmlAssetIds.push(stored.assetId)
+      importedHtmlAssetMap.set(hAsset.assetId, stored.assetId)
+    }
   } catch (err) {
     // Phase 5: Rollback newly created assets
     for (const assetId of newlyCreatedAssetIds) {
       deleteMediaAsset(userDataPath, assetId)
     }
+    for (const assetId of newlyCreatedHtmlAssetIds) {
+      deleteHtmlCardAsset(userDataPath, assetId)
+    }
     return {
       ok: false,
       importedCards: [],
       count: 0,
-      error: `Media import failed: ${err instanceof Error ? err.message : String(err)}`,
+      error: `Asset import failed: ${err instanceof Error ? err.message : String(err)}`,
     }
   }
 
-  // Remap media asset IDs on accepted cards
+  // Remap media and HTML asset IDs on accepted cards
   const finalCards: OpeningCardDefinition[] = preparedCards.map((card) => {
-    if (card.mediaAssetId) {
-      const remapped = importedAssetMap.get(card.mediaAssetId)
-      if (remapped) {
-        return { ...card, mediaAssetId: remapped }
+    let remappedCard = card
+    if (remappedCard.mediaAssetId) {
+      const remappedMedia = importedAssetMap.get(remappedCard.mediaAssetId)
+      if (remappedMedia) {
+        remappedCard = { ...remappedCard, mediaAssetId: remappedMedia }
       }
     }
-    return card
+    if (remappedCard.htmlAssetId) {
+      const remappedHtml = importedHtmlAssetMap.get(remappedCard.htmlAssetId)
+      if (remappedHtml) {
+        remappedCard = { ...remappedCard, htmlAssetId: remappedHtml }
+      }
+    }
+    return remappedCard
   })
 
   return {

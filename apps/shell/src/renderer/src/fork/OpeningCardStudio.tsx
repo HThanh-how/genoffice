@@ -8,12 +8,15 @@ import {
   type OpeningPrefs,
 } from '../../../shared/opening-scenes-meta'
 import type {
+  AiCardGenerationMode,
+  GeneratedHtmlCardDraft,
   OpeningCardDefinition,
   OpeningMaterialPreset,
   OpeningThemeMode,
   StoredMediaAsset,
 } from '../../../shared/opening-card-types'
 import { getAllBuiltInCards } from '../../../shared/opening-card-families'
+import { buildIsolatedHtmlHostDocument } from '../../../shared/opening-card-html-sanitizer'
 import './opening-card-studio.css'
 
 interface StudioProps {
@@ -49,10 +52,15 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
   const [mediaError, setMediaError] = useState('')
 
   // AI Workflow state (prompt -> generate -> preview -> approve/save or discard)
+  const [aiMode, setAiMode] = useState<AiCardGenerationMode>('html')
   const [aiPrompt, setAiPrompt] = useState('')
   const [aiLoading, setAiLoading] = useState(false)
   const [aiError, setAiError] = useState('')
   const [aiPreviewCard, setAiPreviewCard] = useState<OpeningCardDefinition | null>(null)
+  const [aiHtmlDraft, setAiHtmlDraft] = useState<GeneratedHtmlCardDraft | null>(null)
+  const [aiSubTab, setAiSubTab] = useState<'preview' | 'html' | 'css'>('preview')
+  const [editDraftHtml, setEditDraftHtml] = useState('')
+  const [editDraftCss, setEditDraftCss] = useState('')
   const [aiModelUsed, setAiModelUsed] = useState<string | undefined>()
   const activeAiRequestIdRef = useRef<string | null>(null)
 
@@ -78,6 +86,13 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
   const [editShadow, setEditShadow] = useState(0.35)
   const [editAccent, setEditAccent] = useState('#2b7cd3')
   const [editName, setEditName] = useState('')
+
+  // Customizer state for HTML cards
+  const [customizerCardIsHtml, setCustomizerCardIsHtml] = useState(false)
+  const [customizerHtml, setCustomizerHtml] = useState('')
+  const [customizerCss, setCustomizerCss] = useState('')
+  const [customizerTab, setCustomizerTab] = useState<'preview' | 'html' | 'css'>('preview')
+  const [customizerLoading, setCustomizerLoading] = useState(false)
 
   // Media map for fast asset thumbnail lookup
   const mediaMap = useMemo(() => {
@@ -105,7 +120,8 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
       if (activeCategory === 'curated' && card.category !== 'curated') return false
       if (activeCategory === 'canvas' && card.category !== 'canvas') return false
       if (activeCategory === 'media' && card.category !== 'media') return false
-      if (activeCategory === 'ai' && card.category !== 'ai') return false
+      if (activeCategory === 'ai' && card.category !== 'ai' && card.contentKind !== 'ai-html')
+        return false
 
       if (query) {
         const matchName = card.name.toLowerCase().includes(query)
@@ -117,6 +133,42 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
       return true
     })
   }, [allCards, search, activeCategory, prefs.favorites])
+
+  // Isolated host document for live AI HTML preview
+  const aiPreviewHtmlDoc = useMemo(() => {
+    if (!editDraftHtml) return ''
+    return buildIsolatedHtmlHostDocument(
+      editDraftHtml,
+      editDraftCss,
+      {
+        fileName: 'Quarterly_Strategy_2026.docx',
+        fileType: 'docx',
+        title: isVi ? 'Đang mở tài liệu…' : 'Opening Document…',
+        hint: isVi ? 'Đang tải bố cục…' : 'Loading document layout…',
+        appName: 'Word (.docx)',
+        accentColor: aiPreviewCard?.material?.accentColor || '#2b7cd3',
+      },
+      { isCardLayout: true },
+    )
+  }, [editDraftHtml, editDraftCss, aiPreviewCard?.material?.accentColor, isVi])
+
+  // Isolated host document for Customizer HTML preview
+  const customizerPreviewHtmlDoc = useMemo(() => {
+    if (!customizerHtml) return ''
+    return buildIsolatedHtmlHostDocument(
+      customizerHtml,
+      customizerCss,
+      {
+        fileName: `${editName || 'Document'}.docx`,
+        fileType: 'docx',
+        title: isVi ? 'Đang mở tài liệu…' : 'Opening Document…',
+        hint: isVi ? 'Đang tải bố cục…' : 'Loading document layout…',
+        appName: 'Word (.docx)',
+        accentColor: editAccent,
+      },
+      { isCardLayout: true },
+    )
+  }, [customizerHtml, customizerCss, editName, editAccent, isVi])
 
   // Assigned apps map
   const assignedMap = useMemo(() => {
@@ -201,7 +253,7 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
     }
   }
 
-  const openCustomizer = (card: OpeningCardDefinition) => {
+  const openCustomizer = async (card: OpeningCardDefinition) => {
     setSelectedCard(card)
     setEditName(`${card.name} (Custom)`)
     setEditPreset(card.material.preset)
@@ -211,11 +263,76 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
     setEditRadius(card.material.borderRadiusPx ?? 18)
     setEditShadow(card.material.shadowIntensity ?? 0.35)
     setEditAccent(card.material.accentColor ?? '#2b7cd3')
+    setCustomizerTab('preview')
+
+    if (card.contentKind === 'ai-html' && card.htmlAssetId) {
+      setCustomizerCardIsHtml(true)
+      setCustomizerLoading(true)
+      try {
+        const asset = await api.readOpeningHtmlCard?.(card.htmlAssetId)
+        if (asset) {
+          setCustomizerHtml(asset.html)
+          setCustomizerCss(asset.css)
+        } else {
+          setCustomizerHtml('')
+          setCustomizerCss('')
+        }
+      } catch {
+        setCustomizerHtml('')
+        setCustomizerCss('')
+      } finally {
+        setCustomizerLoading(false)
+      }
+    } else {
+      setCustomizerCardIsHtml(false)
+      setCustomizerHtml('')
+      setCustomizerCss('')
+    }
     setShowCustomizer(true)
   }
 
   const handleSaveCustomCard = async () => {
     if (!editName.trim()) return
+
+    if (customizerCardIsHtml && customizerHtml) {
+      const newCard: OpeningCardDefinition = {
+        id: `custom:card_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        name: editName.trim(),
+        category: 'custom',
+        contentKind: 'ai-html',
+        material: {
+          preset: editPreset,
+          themeMode: editTheme,
+          opacity: editOpacity,
+          blurPx: editBlur,
+          borderRadiusPx: editRadius,
+          shadowIntensity: editShadow,
+          accentColor: editAccent,
+        },
+        thumbnailColors: [editAccent, '#181b22'],
+        createdAt: Date.now(),
+        isBuiltIn: false,
+        tags: ['custom', 'ai-html'],
+      }
+      try {
+        const res = await api.saveOpeningHtmlCard?.({
+          card: newCard,
+          html: customizerHtml,
+          css: customizerCss,
+        })
+        if (res) {
+          onUpdateState(res)
+          setShowCustomizer(false)
+          setErrorMessage('')
+          setStatusMessage(isVi ? 'Đã lưu thẻ tùy chỉnh!' : 'Custom card saved!')
+          setTimeout(() => setStatusMessage(''), 3000)
+        }
+      } catch (err) {
+        setErrorMessage(err instanceof Error ? err.message : String(err))
+      }
+      return
+    }
+
     const newCard: OpeningCardDefinition = {
       id: `custom:card_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       name: editName.trim(),
@@ -344,19 +461,30 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
     setAiLoading(true)
     setAiError('')
     setAiPreviewCard(null)
+    setAiHtmlDraft(null)
     setAiModelUsed(undefined)
 
     try {
-      const res = await api.generateAiCard?.({ prompt: aiPrompt, requestId })
+      const res = await api.generateAiCard?.({ prompt: aiPrompt, requestId, mode: aiMode })
       if (activeAiRequestIdRef.current !== requestId) {
         // Request was superseded or cancelled
         return
       }
       setAiLoading(false)
       activeAiRequestIdRef.current = null
-      if (res?.ok && res.card) {
-        setAiPreviewCard(res.card)
-        setAiModelUsed(res.modelUsed)
+      if (res?.ok) {
+        if (res.modeUsed === 'html' && res.htmlDraft) {
+          setAiHtmlDraft(res.htmlDraft)
+          setAiPreviewCard(res.card ?? null)
+          setEditDraftHtml(res.htmlDraft.html)
+          setEditDraftCss(res.htmlDraft.css)
+          setAiModelUsed(res.modelUsed)
+          setAiSubTab('preview')
+        } else if (res.card) {
+          setAiPreviewCard(res.card)
+          setAiHtmlDraft(null)
+          setAiModelUsed(res.modelUsed)
+        }
       } else {
         setAiError(res?.error ?? 'AI generation failed')
       }
@@ -380,6 +508,49 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
   }
 
   const handleApproveAiCard = async () => {
+    if (aiMode === 'html' && aiHtmlDraft) {
+      try {
+        const cardToSave: OpeningCardDefinition = {
+          id:
+            aiPreviewCard?.id ||
+            `custom:card_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+          name: aiPreviewCard?.name || aiHtmlDraft.name,
+          description: aiPreviewCard?.description || aiHtmlDraft.description,
+          category: 'ai',
+          contentKind: 'ai-html',
+          material: aiPreviewCard?.material ?? {
+            preset: 'frosted-glass',
+            themeMode: aiHtmlDraft.themeMode ?? 'system',
+            accentColor: aiHtmlDraft.accentColor ?? '#2b7cd3',
+          },
+          thumbnailColors: [aiHtmlDraft.accentColor ?? '#2b7cd3', '#181b22'],
+          createdAt: Date.now(),
+          isBuiltIn: false,
+          tags: ['ai-generated', 'ai-html'],
+        }
+        const nextState = await api.saveOpeningHtmlCard?.({
+          card: cardToSave,
+          html: editDraftHtml,
+          css: editDraftCss,
+        })
+        if (nextState) {
+          onUpdateState(nextState)
+          setShowAiModal(false)
+          setAiPreviewCard(null)
+          setAiHtmlDraft(null)
+          setAiPrompt('')
+          setErrorMessage('')
+          setStatusMessage(
+            isVi ? 'Đã lưu thẻ HTML AI vào bộ sưu tập!' : 'AI HTML card saved to your collection!',
+          )
+          setTimeout(() => setStatusMessage(''), 3000)
+        }
+      } catch (err) {
+        setAiError(err instanceof Error ? err.message : String(err))
+      }
+      return
+    }
+
     if (!aiPreviewCard) return
     try {
       const nextState = await api.saveOpeningCard?.(aiPreviewCard)
@@ -611,6 +782,8 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
                     className="ocs-thumb-img"
                     loading="lazy"
                   />
+                ) : card.contentKind === 'ai-html' ? (
+                  <div className="ocs-thumb-badge ocs-badge-html">AI HTML</div>
                 ) : card.mediaAssetId ? (
                   <div className="ocs-thumb-placeholder">🖼️ {card.name}</div>
                 ) : (
@@ -635,10 +808,13 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
                 <div className="ocs-card-title">{card.name}</div>
                 {card.description && <div className="ocs-card-desc">{card.description}</div>}
                 <div className="ocs-assigned-badges">
+                  {card.contentKind === 'ai-html' && (
+                    <span className="ocs-assigned-tag ocs-badge-html">HTML</span>
+                  )}
                   {isGlobal && (
                     <span
                       className="ocs-assigned-tag"
-                      style={{ background: '#2b7cd3', color: '#fff' }}
+                      style={{ background: 'var(--ocs-accent)', color: 'var(--ocs-accent-ink)' }}
                     >
                       {isVi ? 'Mặc định chung' : 'Global Default'}
                     </span>
@@ -717,9 +893,13 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
       {showCustomizer && selectedCard && (
         <div className="ocs-panel">
           <div className="ocs-panel-title">
-            {isVi
-              ? `Tùy biến chất liệu cho "${selectedCard.name}"`
-              : `Customize Material for "${selectedCard.name}"`}
+            {customizerCardIsHtml
+              ? isVi
+                ? `Tùy biến thẻ HTML "${selectedCard.name}"`
+                : `Customize HTML Card "${selectedCard.name}"`
+              : isVi
+                ? `Tùy biến chất liệu cho "${selectedCard.name}"`
+                : `Customize Material for "${selectedCard.name}"`}
           </div>
           <div className="ocs-panel-body">
             {/* Controls */}
@@ -734,58 +914,70 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
                 />
               </div>
 
-              <div className="ocs-form-group">
-                <label className="ocs-form-label">
-                  {isVi ? 'Chất liệu (Material)' : 'Material Preset'}
-                </label>
-                <select
-                  className="ocs-search-input"
-                  value={editPreset}
-                  onChange={(e) => setEditPreset(e.target.value as OpeningMaterialPreset)}
-                >
-                  <option value="frosted-glass">
-                    {isVi ? 'Frosted Glass (Kính mờ)' : 'Frosted Glass'}
-                  </option>
-                  <option value="liquid-glass">
-                    {isVi ? 'Liquid Glass (Kính lỏng quang học)' : 'Liquid Glass'}
-                  </option>
-                  <option value="minimal-monochrome">
-                    {isVi ? 'Minimal Monochrome (Đơn sắc)' : 'Minimal Monochrome'}
-                  </option>
-                  <option value="solid">{isVi ? 'Solid (Màu đặc phẳng)' : 'Solid'}</option>
-                </select>
-              </div>
-
-              <div className="ocs-form-group">
-                <label className="ocs-form-label">{isVi ? 'Độ mờ (Blur)' : 'Blur Intensity'}</label>
-                <div className="ocs-slider-row">
-                  <input
-                    type="range"
-                    min="0"
-                    max="48"
-                    value={editBlur}
-                    onChange={(e) => setEditBlur(Number(e.target.value))}
-                  />
-                  <span className="ocs-slider-val">{editBlur}px</span>
+              {customizerCardIsHtml ? (
+                <div className="ocs-unsupported-notice">
+                  {isVi
+                    ? '✦ Thẻ HTML tùy biến: Bạn có thể chỉnh sửa mã nguồn HTML và CSS ở khung bên phải.'
+                    : '✦ Custom HTML Card: You can edit the original HTML and CSS source in the right pane.'}
                 </div>
-              </div>
+              ) : (
+                <>
+                  <div className="ocs-form-group">
+                    <label className="ocs-form-label">
+                      {isVi ? 'Chất liệu (Material)' : 'Material Preset'}
+                    </label>
+                    <select
+                      className="ocs-search-input"
+                      value={editPreset}
+                      onChange={(e) => setEditPreset(e.target.value as OpeningMaterialPreset)}
+                    >
+                      <option value="frosted-glass">
+                        {isVi ? 'Frosted Glass (Kính mờ)' : 'Frosted Glass'}
+                      </option>
+                      <option value="liquid-glass">
+                        {isVi ? 'Liquid Glass (Kính lỏng quang học)' : 'Liquid Glass'}
+                      </option>
+                      <option value="minimal-monochrome">
+                        {isVi ? 'Minimal Monochrome (Đơn sắc)' : 'Minimal Monochrome'}
+                      </option>
+                      <option value="solid">{isVi ? 'Solid (Màu đặc phẳng)' : 'Solid'}</option>
+                    </select>
+                  </div>
 
-              <div className="ocs-form-group">
-                <label className="ocs-form-label">
-                  {isVi ? 'Độ mờ đục (Opacity)' : 'Card Opacity'}
-                </label>
-                <div className="ocs-slider-row">
-                  <input
-                    type="range"
-                    min="0.1"
-                    max="1.0"
-                    step="0.05"
-                    value={editOpacity}
-                    onChange={(e) => setEditOpacity(Number(e.target.value))}
-                  />
-                  <span className="ocs-slider-val">{Math.round(editOpacity * 100)}%</span>
-                </div>
-              </div>
+                  <div className="ocs-form-group">
+                    <label className="ocs-form-label">
+                      {isVi ? 'Độ mờ (Blur)' : 'Blur Intensity'}
+                    </label>
+                    <div className="ocs-slider-row">
+                      <input
+                        type="range"
+                        min="0"
+                        max="48"
+                        value={editBlur}
+                        onChange={(e) => setEditBlur(Number(e.target.value))}
+                      />
+                      <span className="ocs-slider-val">{editBlur}px</span>
+                    </div>
+                  </div>
+
+                  <div className="ocs-form-group">
+                    <label className="ocs-form-label">
+                      {isVi ? 'Độ mờ đục (Opacity)' : 'Card Opacity'}
+                    </label>
+                    <div className="ocs-slider-row">
+                      <input
+                        type="range"
+                        min="0.1"
+                        max="1.0"
+                        step="0.05"
+                        value={editOpacity}
+                        onChange={(e) => setEditOpacity(Number(e.target.value))}
+                      />
+                      <span className="ocs-slider-val">{Math.round(editOpacity * 100)}%</span>
+                    </div>
+                  </div>
+                </>
+              )}
 
               <div className="ocs-form-group">
                 <label className="ocs-form-label">{isVi ? 'Màu điểm nhấn' : 'Accent Color'}</label>
@@ -822,55 +1014,117 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
               </div>
             </div>
 
-            {/* Live Interactive CSS Preview */}
+            {/* Live Interactive Preview */}
             <div className="ocs-preview-box">
-              <div
-                className="ocs-interactive-stage"
-                style={{
-                  background:
-                    editPreset === 'solid'
-                      ? `rgba(24, 27, 34, ${editOpacity})`
-                      : editPreset === 'liquid-glass'
-                        ? `linear-gradient(135deg, rgba(22, 30, 48, ${editOpacity * 0.92}) 0%, rgba(14, 18, 28, ${editOpacity}) 100%)`
-                        : `rgba(20, 25, 36, ${editOpacity})`,
-                  backdropFilter: editBlur > 0 ? `blur(${editBlur}px)` : 'none',
-                  borderRadius: `${editRadius}px`,
-                  border: `1px solid rgba(255, 255, 255, 0.15)`,
-                  boxShadow: `0 14px 40px rgba(0,0,0,${editShadow * 0.8})`,
-                  color: '#f3f5fa',
-                }}
-              >
+              {customizerCardIsHtml ? (
+                <div style={{ width: '100%' }}>
+                  <div className="ocs-code-tabs">
+                    <button
+                      type="button"
+                      className={`ocs-code-tab ${customizerTab === 'preview' ? 'active' : ''}`}
+                      onClick={() => setCustomizerTab('preview')}
+                    >
+                      {isVi ? 'Xem thử' : 'Preview'}
+                    </button>
+                    <button
+                      type="button"
+                      className={`ocs-code-tab ${customizerTab === 'html' ? 'active' : ''}`}
+                      onClick={() => setCustomizerTab('html')}
+                    >
+                      HTML
+                    </button>
+                    <button
+                      type="button"
+                      className={`ocs-code-tab ${customizerTab === 'css' ? 'active' : ''}`}
+                      onClick={() => setCustomizerTab('css')}
+                    >
+                      CSS
+                    </button>
+                  </div>
+                  {customizerLoading ? (
+                    <div
+                      style={{
+                        padding: '20px',
+                        textAlign: 'center',
+                        color: 'var(--ocs-text-muted)',
+                      }}
+                    >
+                      {isVi ? 'Đang tải HTML...' : 'Loading HTML asset...'}
+                    </div>
+                  ) : customizerTab === 'preview' ? (
+                    <iframe
+                      sandbox=""
+                      srcDoc={customizerPreviewHtmlDoc}
+                      className="ocs-iframe-preview"
+                      title="Customizer HTML Preview"
+                    />
+                  ) : customizerTab === 'html' ? (
+                    <textarea
+                      className="ocs-code-editor"
+                      value={customizerHtml}
+                      onChange={(e) => setCustomizerHtml(e.target.value)}
+                      spellCheck={false}
+                    />
+                  ) : (
+                    <textarea
+                      className="ocs-code-editor"
+                      value={customizerCss}
+                      onChange={(e) => setCustomizerCss(e.target.value)}
+                      spellCheck={false}
+                    />
+                  )}
+                </div>
+              ) : (
                 <div
+                  className="ocs-interactive-stage"
                   style={{
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                    alignItems: 'center',
+                    background:
+                      editPreset === 'solid'
+                        ? `rgba(24, 27, 34, ${editOpacity})`
+                        : editPreset === 'liquid-glass'
+                          ? `linear-gradient(135deg, rgba(22, 30, 48, ${editOpacity * 0.92}) 0%, rgba(14, 18, 28, ${editOpacity}) 100%)`
+                          : `rgba(20, 25, 36, ${editOpacity})`,
+                    backdropFilter: editBlur > 0 ? `blur(${editBlur}px)` : 'none',
+                    borderRadius: `${editRadius}px`,
+                    border: `1px solid rgba(255, 255, 255, 0.15)`,
+                    boxShadow: `0 14px 40px rgba(0,0,0,${editShadow * 0.8})`,
+                    color: '#f3f5fa',
                   }}
                 >
                   <div
                     style={{
-                      width: '36px',
-                      height: '36px',
-                      borderRadius: '8px',
-                      background: editAccent,
                       display: 'flex',
+                      justifyContent: 'space-between',
                       alignItems: 'center',
-                      justifyContent: 'center',
-                      fontWeight: 'bold',
-                      color: '#fff',
                     }}
                   >
-                    W
+                    <div
+                      style={{
+                        width: '36px',
+                        height: '36px',
+                        borderRadius: '8px',
+                        background: editAccent,
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontWeight: 'bold',
+                        color: '#fff',
+                      }}
+                    >
+                      W
+                    </div>
+                    <span style={{ fontSize: '11px', color: '#aab3c8' }}>Preview</span>
                   </div>
-                  <span style={{ fontSize: '11px', color: '#aab3c8' }}>Preview</span>
-                </div>
-                <div>
-                  <div style={{ fontSize: '14px', fontWeight: 600 }}>{editName || 'Document'}</div>
-                  <div style={{ fontSize: '11px', color: '#aab3c8' }}>
-                    {isVi ? 'Đang chuẩn bị tài liệu...' : 'Getting document ready...'}
+                  <div>
+                    <div style={{ fontSize: '14px', fontWeight: 600 }}>
+                      {editName || 'Document'}
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#aab3c8' }}>
+                      {isVi ? 'Đang chuẩn bị tài liệu...' : 'Getting document ready...'}
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
@@ -940,16 +1194,76 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
           <div className="ocs-panel-title">
             {isVi ? '✨ Bộ sinh thẻ bằng AI' : '✨ AI Card Generator'}
           </div>
+
+          {/* AI Mode Selector */}
+          <div className="ocs-mode-selector">
+            <button
+              type="button"
+              className={`ocs-mode-btn ${aiMode === 'html' ? 'active' : ''}`}
+              onClick={() => {
+                setAiMode('html')
+                setAiPreviewCard(null)
+                setAiHtmlDraft(null)
+              }}
+            >
+              {isVi ? '🌐 Thẻ HTML tùy biến' : '🌐 HTML Scene'}
+            </button>
+            <button
+              type="button"
+              className={`ocs-mode-btn ${aiMode === 'style' ? 'active' : ''}`}
+              onClick={() => {
+                setAiMode('style')
+                setAiPreviewCard(null)
+                setAiHtmlDraft(null)
+              }}
+            >
+              {isVi ? '🎨 Mẫu phong cách' : '🎨 Style Preset'}
+            </button>
+            <button
+              type="button"
+              className={`ocs-mode-btn ${aiMode === 'image' ? 'active' : ''}`}
+              onClick={() => {
+                setAiMode('image')
+                setAiPreviewCard(null)
+                setAiHtmlDraft(null)
+              }}
+            >
+              {isVi ? '🖼️ Hình nền AI' : '🖼️ AI Background'}
+            </button>
+          </div>
+
+          {aiMode === 'image' && !state.canGenerateImages && (
+            <div className="ocs-unsupported-notice">
+              {isVi
+                ? '⚠️ Nhà cung cấp AI hiện tại chưa hỗ trợ chức năng sinh hình ảnh trực tiếp. Vui lòng chuyển sang chế độ Thẻ HTML hoặc Mẫu phong cách.'
+                : '⚠️ The active AI provider does not support direct image generation. Please select HTML Scene or Style Preset mode.'}
+            </div>
+          )}
+
           <div className="ocs-form-group">
             <label className="ocs-form-label">
-              {isVi
-                ? 'Mô tả phong cách thẻ bạn muốn (VD: Minimalist dark slate with emerald glow):'
-                : 'Describe your card brief (e.g. Minimalist dark slate with emerald glow):'}
+              {aiMode === 'html'
+                ? isVi
+                  ? 'Mô tả hiệu ứng & bố cục HTML (VD: Liquid Glass với viền phát sáng và hiệu ứng trượt):'
+                  : 'Describe HTML scene & animation (e.g. Liquid Glass with glowing border & smooth slide):'
+                : aiMode === 'image'
+                  ? isVi
+                    ? 'Mô tả hình nền muốn sinh (VD: Vũ trụ sâu thẳm với tinh vân tím):'
+                    : 'Describe background image to generate (e.g. Deep space with violet nebula):'
+                  : isVi
+                    ? 'Mô tả phong cách thẻ bạn muốn (VD: Minimalist dark slate with emerald glow):'
+                    : 'Describe your card brief (e.g. Minimalist dark slate with emerald glow):'}
             </label>
             <textarea
               className="ocs-search-input"
               rows={3}
-              placeholder="e.g. Nordic ice mist with crisp cyan borders for writing"
+              placeholder={
+                aiMode === 'html'
+                  ? 'e.g. Floating translucent glass card with glowing animated borders and soft backdrop'
+                  : aiMode === 'image'
+                    ? 'e.g. Atmospheric geometric gradient background with soft bokeh'
+                    : 'e.g. Nordic ice mist with crisp cyan borders for writing'
+              }
               value={aiPrompt}
               onChange={(e) => setAiPrompt(e.target.value)}
               disabled={aiLoading}
@@ -960,7 +1274,7 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
             <div style={{ color: '#d32f2f', fontSize: '12px', marginTop: '4px' }}>{aiError}</div>
           )}
 
-          {/* AI Generated Preview Stage (Section 3.1 & 13) */}
+          {/* AI Generated Preview Stage */}
           {aiPreviewCard && (
             <div
               style={{
@@ -997,68 +1311,121 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
                 )}
               </div>
 
-              <div className="ocs-preview-box" style={{ height: '140px' }}>
-                <div
-                  className="ocs-interactive-stage"
-                  style={{
-                    background:
-                      aiPreviewCard.material.preset === 'solid'
-                        ? `rgba(24, 27, 34, ${aiPreviewCard.material.opacity ?? 0.95})`
-                        : `rgba(20, 25, 36, ${aiPreviewCard.material.opacity ?? 0.85})`,
-                    backdropFilter:
-                      (aiPreviewCard.material.blurPx ?? 22) > 0
-                        ? `blur(${aiPreviewCard.material.blurPx}px)`
-                        : 'none',
-                    borderRadius: `${aiPreviewCard.material.borderRadiusPx ?? 18}px`,
-                    border: `1px solid ${aiPreviewCard.material.borderColor ?? 'rgba(255, 255, 255, 0.15)'}`,
-                    boxShadow: `0 14px 40px rgba(0,0,0,${(aiPreviewCard.material.shadowIntensity ?? 0.35) * 0.8})`,
-                    color: '#f3f5fa',
-                  }}
-                >
+              {aiMode === 'html' && aiHtmlDraft ? (
+                <div>
+                  <div className="ocs-code-tabs">
+                    <button
+                      type="button"
+                      className={`ocs-code-tab ${aiSubTab === 'preview' ? 'active' : ''}`}
+                      onClick={() => setAiSubTab('preview')}
+                    >
+                      {isVi ? 'Xem thử' : 'Preview'}
+                    </button>
+                    <button
+                      type="button"
+                      className={`ocs-code-tab ${aiSubTab === 'html' ? 'active' : ''}`}
+                      onClick={() => setAiSubTab('html')}
+                    >
+                      HTML
+                    </button>
+                    <button
+                      type="button"
+                      className={`ocs-code-tab ${aiSubTab === 'css' ? 'active' : ''}`}
+                      onClick={() => setAiSubTab('css')}
+                    >
+                      CSS
+                    </button>
+                  </div>
+
+                  {aiSubTab === 'preview' ? (
+                    <iframe
+                      sandbox=""
+                      srcDoc={aiPreviewHtmlDoc}
+                      className="ocs-iframe-preview"
+                      title="AI Card Live Preview"
+                    />
+                  ) : aiSubTab === 'html' ? (
+                    <textarea
+                      className="ocs-code-editor"
+                      value={editDraftHtml}
+                      onChange={(e) => setEditDraftHtml(e.target.value)}
+                      spellCheck={false}
+                      placeholder="<div>...</div>"
+                    />
+                  ) : (
+                    <textarea
+                      className="ocs-code-editor"
+                      value={editDraftCss}
+                      onChange={(e) => setEditDraftCss(e.target.value)}
+                      spellCheck={false}
+                      placeholder=".card { ... }"
+                    />
+                  )}
+                </div>
+              ) : (
+                <div className="ocs-preview-box" style={{ height: '140px' }}>
                   <div
+                    className="ocs-interactive-stage"
                     style={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
+                      background:
+                        aiPreviewCard.material.preset === 'solid'
+                          ? `rgba(24, 27, 34, ${aiPreviewCard.material.opacity ?? 0.95})`
+                          : `rgba(20, 25, 36, ${aiPreviewCard.material.opacity ?? 0.85})`,
+                      backdropFilter:
+                        (aiPreviewCard.material.blurPx ?? 22) > 0
+                          ? `blur(${aiPreviewCard.material.blurPx}px)`
+                          : 'none',
+                      borderRadius: `${aiPreviewCard.material.borderRadiusPx ?? 18}px`,
+                      border: `1px solid ${aiPreviewCard.material.borderColor ?? 'rgba(255, 255, 255, 0.15)'}`,
+                      boxShadow: `0 14px 40px rgba(0,0,0,${(aiPreviewCard.material.shadowIntensity ?? 0.35) * 0.8})`,
+                      color: '#f3f5fa',
                     }}
                   >
                     <div
                       style={{
-                        width: '32px',
-                        height: '32px',
-                        borderRadius: '6px',
-                        background: aiPreviewCard.material.accentColor ?? '#2b7cd3',
                         display: 'flex',
+                        justifyContent: 'space-between',
                         alignItems: 'center',
-                        justifyContent: 'center',
-                        fontWeight: 'bold',
-                        color: '#fff',
                       }}
                     >
-                      AI
-                    </div>
-                    <span style={{ fontSize: '10px', color: '#aab3c8' }}>
-                      {aiPreviewCard.material.preset}
-                    </span>
-                  </div>
-                  <div>
-                    <div style={{ fontSize: '13px', fontWeight: 600 }}>{aiPreviewCard.name}</div>
-                    {aiPreviewCard.description && (
                       <div
                         style={{
-                          fontSize: '11px',
-                          color: '#aab3c8',
-                          whiteSpace: 'nowrap',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
+                          width: '32px',
+                          height: '32px',
+                          borderRadius: '6px',
+                          background: aiPreviewCard.material.accentColor ?? '#2b7cd3',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          fontWeight: 'bold',
+                          color: '#fff',
                         }}
                       >
-                        {aiPreviewCard.description}
+                        AI
                       </div>
-                    )}
+                      <span style={{ fontSize: '10px', color: '#aab3c8' }}>
+                        {aiPreviewCard.material.preset}
+                      </span>
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '13px', fontWeight: 600 }}>{aiPreviewCard.name}</div>
+                      {aiPreviewCard.description && (
+                        <div
+                          style={{
+                            fontSize: '11px',
+                            color: '#aab3c8',
+                            whiteSpace: 'nowrap',
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                          }}
+                        >
+                          {aiPreviewCard.description}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
+              )}
             </div>
           )}
 
@@ -1126,7 +1493,12 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
                   <button
                     type="button"
                     className="ocs-action-btn"
-                    onClick={() => setAiPreviewCard(null)}
+                    onClick={() => {
+                      setAiPreviewCard(null)
+                      setAiHtmlDraft(null)
+                      setEditDraftHtml('')
+                      setEditDraftCss('')
+                    }}
                   >
                     {isVi ? 'Hủy bản này' : 'Discard'}
                   </button>
@@ -1143,6 +1515,9 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
                 }
                 setShowAiModal(false)
                 setAiPreviewCard(null)
+                setAiHtmlDraft(null)
+                setEditDraftHtml('')
+                setEditDraftCss('')
                 setAiError('')
               }}
             >

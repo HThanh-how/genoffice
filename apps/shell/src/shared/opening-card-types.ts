@@ -4,7 +4,12 @@ export type OpeningMaterialPreset =
 export type OpeningThemeMode = 'light' | 'dark' | 'system'
 
 export type CardContentKind =
-  'canvas-scene' | 'curated-material' | 'personal-media' | 'ai-declarative' | 'custom-html'
+  | 'canvas-scene'
+  | 'curated-material'
+  | 'personal-media'
+  | 'ai-declarative'
+  | 'custom-html'
+  | 'ai-html'
 
 export type CardCategory = 'canvas' | 'curated' | 'media' | 'ai' | 'custom'
 
@@ -39,6 +44,8 @@ export interface OpeningCardDefinition {
   sceneId?: string
   /** ID or filename of personal media asset in app storage (when contentKind === 'personal-media' or 'ai-declarative') */
   mediaAssetId?: string
+  /** ID of managed HTML asset in app storage (when contentKind === 'ai-html' or 'custom-html') */
+  htmlAssetId?: string
   /** How media fits within the card: cover, contain, or center */
   mediaFit?: 'cover' | 'contain' | 'center'
   /** Darkening overlay over the media to keep text readable (0.0 to 0.9) */
@@ -81,6 +88,24 @@ export interface StoredMediaAsset {
   createdAt?: number
 }
 
+export interface StoredHtmlAsset {
+  assetId: string
+  html: string
+  css: string
+  createdAt?: number
+  sizeBytes?: number
+}
+
+export interface GeneratedHtmlCardDraft {
+  version: 1
+  name: string
+  description?: string
+  html: string
+  css: string
+  themeMode: OpeningThemeMode
+  accentColor?: string
+}
+
 export interface OpeningMediaAssetInfo {
   id: string
   fileName: string
@@ -90,8 +115,11 @@ export interface OpeningMediaAssetInfo {
   thumbnailUrl?: string
 }
 
+export type AiCardGenerationMode = 'style' | 'html' | 'image'
+
 export interface AiCardGenerationInput {
   prompt: string
+  mode?: AiCardGenerationMode
   accentColor?: string
   preset?: OpeningMaterialPreset
   themeMode?: OpeningThemeMode
@@ -102,6 +130,8 @@ export interface AiCardGenerationInput {
 export interface AiCardGenerationResult {
   ok: boolean
   card?: OpeningCardDefinition
+  htmlDraft?: GeneratedHtmlCardDraft
+  modeUsed?: AiCardGenerationMode
   error?: string
   rawResponse?: string
   modelUsed?: string
@@ -116,4 +146,5 @@ export interface OpeningCardExportBundle {
   appVersion?: string
   cards: OpeningCardDefinition[]
   assets?: StoredMediaAsset[]
+  htmlAssets?: StoredHtmlAsset[]
 }
