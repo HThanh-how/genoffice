@@ -127,9 +127,9 @@ export function isIndexableFileName(name: string): boolean {
   return !isJunkFileName(name) && dot >= 0 && isIndexableExtension(name.slice(dot))
 }
 
-import { isPathIgnored, evaluateIgnore } from './ignore-policy'
+import { isPathIgnored, evaluateIgnore, mayContainExplicitAllow } from './ignore-policy'
 
-export { isPathIgnored, evaluateIgnore }
+export { isPathIgnored, evaluateIgnore, mayContainExplicitAllow }
 
 export function shouldSkipDirectory(name: string, fullPath?: string | number): boolean {
   const lower = name.toLowerCase()
@@ -139,9 +139,15 @@ export function shouldSkipDirectory(name: string, fullPath?: string | number): b
     IGNORED_DIRECTORIES.has(lower) ||
     SYSTEM_DIRECTORY_NAMES.has(lower)
   ) {
+    if (typeof fullPath === 'string' && mayContainExplicitAllow(fullPath)) {
+      return false
+    }
     return true
   }
   if (typeof fullPath === 'string' && isPathIgnored(fullPath)) {
+    if (mayContainExplicitAllow(fullPath)) {
+      return false
+    }
     return true
   }
   return false
