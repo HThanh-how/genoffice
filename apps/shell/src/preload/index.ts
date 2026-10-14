@@ -457,6 +457,9 @@ const homeApi: HomeApi = {
   async generateAiCard(input) {
     return (await ipcRenderer.invoke(HOME_CHANNELS.generateAiCard, input)) as any
   },
+  async cancelAiCardGeneration(requestId) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.cancelAiCardGeneration, requestId)) as boolean
+  },
   async toggleOpeningFavorite(cardId) {
     return (await ipcRenderer.invoke(
       HOME_CHANNELS.toggleOpeningFavorite,

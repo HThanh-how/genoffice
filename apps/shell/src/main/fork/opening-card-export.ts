@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { existsSync, readFileSync } from 'node:fs'
 import type {
   CardCategory,
   CardContentKind,
@@ -10,8 +11,15 @@ import type {
   StoredMediaAsset,
 } from '../../shared/opening-card-types'
 import { isBuiltInCard } from '../../shared/opening-card-families'
+import { SCENES } from '../../shared/opening-scenes-meta'
 import { sanitizeBorderColor, sanitizeHexColor } from './opening-card-css'
-import { getAssetDataUrl, isSafeAssetId, storeMediaAssetFromBuffer } from './opening-media-storage'
+import {
+  deleteMediaAsset,
+  isSafeAssetId,
+  resolveSafeAssetPath,
+  sniffImageSignature,
+  storeMediaAssetFromBuffer,
+} from './opening-media-storage'
 
 const FORBIDDEN_PATTERN = /<script|javascript:|on\w+=|<\/|<[a-z]|expression\(|eval\(/i
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9_.:-]+$/
@@ -180,6 +188,16 @@ export function validateCardDefinition(raw: unknown): {
     thumbnailColors = [c1, c2]
   }
 
+  // Validate optional sceneId (for canvas-scene or customized animated cards)
+  let sceneId: string | undefined
+  if (obj.sceneId !== undefined) {
+    if (typeof obj.sceneId === 'string' && SCENES.some((s) => s.id === obj.sceneId)) {
+      sceneId = obj.sceneId
+    } else {
+      return { ok: false, error: 'Invalid or unsupported sceneId reference' }
+    }
+  }
+
   // Validate tags
   let tags: string[] | undefined
   if (Array.isArray(obj.tags)) {
@@ -200,6 +218,7 @@ export function validateCardDefinition(raw: unknown): {
     category,
     contentKind,
     material,
+    ...(sceneId ? { sceneId } : {}),
     ...(mediaAssetId ? { mediaAssetId } : {}),
     ...(obj.mediaFit ? { mediaFit } : {}),
     ...(mediaDim !== undefined ? { mediaDim } : {}),
@@ -214,12 +233,13 @@ export function validateCardDefinition(raw: unknown): {
 
 /**
  * Creates a versioned, portable export bundle of custom cards and their embedded media assets.
+ * Deduplicates shared assets, computes true binary byte sizes, and sniffs exact image MIME types.
  */
 export function createOpeningCardExportBundle(
   cards: readonly OpeningCardDefinition[],
   userDataPath: string,
 ): OpeningCardExportBundle {
-  const assets: StoredMediaAsset[] = []
+  const assetsMap = new Map<string, StoredMediaAsset>()
   const exportedCards: OpeningCardDefinition[] = []
 
   for (const card of cards) {
@@ -227,25 +247,31 @@ export function createOpeningCardExportBundle(
     if (!validation.ok || !validation.card) continue
 
     const validCard = validation.card
-    if (validCard.mediaAssetId) {
+    if (validCard.mediaAssetId && !assetsMap.has(validCard.mediaAssetId)) {
       try {
-        const dataUrl = getAssetDataUrl(userDataPath, validCard.mediaAssetId)
-        if (dataUrl) {
-          assets.push({
-            assetId: validCard.mediaAssetId,
-            mime: 'image/png',
-            sizeBytes: dataUrl.length,
-            dataUrl,
-            createdAt: Date.now(),
-          })
+        const filePath = resolveSafeAssetPath(userDataPath, validCard.mediaAssetId)
+        if (existsSync(filePath)) {
+          const buf = readFileSync(filePath)
+          const sniffed = sniffImageSignature(buf)
+          if (sniffed) {
+            const dataUrl = `data:${sniffed.mime};base64,${buf.toString('base64')}`
+            assetsMap.set(validCard.mediaAssetId, {
+              assetId: validCard.mediaAssetId,
+              mime: sniffed.mime,
+              sizeBytes: buf.length,
+              dataUrl,
+              createdAt: Date.now(),
+            })
+          }
         }
       } catch {
-        // Asset file missing: export card with warning, card can fallback to material
+        // Asset file missing: card exported with degraded media, will fall back to material
       }
     }
     exportedCards.push(validCard)
   }
 
+  const assets = Array.from(assetsMap.values())
   return {
     version: 1,
     exportedAt: Date.now(),
@@ -254,9 +280,14 @@ export function createOpeningCardExportBundle(
   }
 }
 
+export const MAX_IMPORT_BUNDLE_JSON_CHARS = 50 * 1024 * 1024 // 50 MB
+export const MAX_IMPORT_CARDS = 100
+export const MAX_IMPORT_ASSETS = 50
+export const MAX_SINGLE_ASSET_BASE64_CHARS = 14 * 1024 * 1024 // ~10 MB binary
+
 /**
  * Validates and imports cards from an exported JSON bundle or legacy array.
- * Copies embedded assets into app storage, prevents duplicate ID clashes, and guarantees lossless round-trip.
+ * Uses a controlled 5-phase transaction with automatic asset rollback on failure.
  */
 export async function importCardsFromExportBundle(
   jsonContent: string,
@@ -268,15 +299,28 @@ export async function importCardsFromExportBundle(
   count: number
   error?: string
 }> {
+  // Phase 1: Preflight Validation
+  if (typeof jsonContent !== 'string' || !jsonContent.trim()) {
+    return { ok: false, importedCards: [], count: 0, error: 'Empty import payload' }
+  }
+  if (jsonContent.length > MAX_IMPORT_BUNDLE_JSON_CHARS) {
+    return {
+      ok: false,
+      importedCards: [],
+      count: 0,
+      error: 'Bundle exceeds maximum size limit of 50 MB',
+    }
+  }
+
   let parsed: unknown
   try {
     parsed = JSON.parse(jsonContent)
-  } catch (err) {
+  } catch {
     return { ok: false, importedCards: [], count: 0, error: 'Invalid JSON payload' }
   }
 
-  let cardsToProcess: unknown[]
-  const embeddedAssets: StoredMediaAsset[] = []
+  let rawCards: unknown[]
+  let rawAssets: unknown[] = []
 
   if (
     parsed &&
@@ -288,13 +332,12 @@ export async function importCardsFromExportBundle(
     if (!Array.isArray(bundle.cards)) {
       return { ok: false, importedCards: [], count: 0, error: 'Bundle missing cards array' }
     }
-    cardsToProcess = bundle.cards
+    rawCards = bundle.cards
     if (Array.isArray(bundle.assets)) {
-      embeddedAssets.push(...bundle.assets)
+      rawAssets = bundle.assets
     }
   } else if (Array.isArray(parsed)) {
-    // Backwards compatibility with raw card array
-    cardsToProcess = parsed
+    rawCards = parsed
   } else {
     return {
       ok: false,
@@ -304,57 +347,33 @@ export async function importCardsFromExportBundle(
     }
   }
 
-  // Restore portable assets if available
-  const importedAssetMap = new Map<string, string>() // oldAssetId -> newAssetId
-  for (const asset of embeddedAssets) {
-    if (
-      asset.dataUrl &&
-      typeof asset.dataUrl === 'string' &&
-      asset.dataUrl.startsWith('data:image/')
-    ) {
-      try {
-        const base64Index = asset.dataUrl.indexOf(';base64,')
-        if (base64Index > 0) {
-          const base64Data = asset.dataUrl.slice(base64Index + 8)
-          const buffer = Buffer.from(base64Data, 'base64')
-          const stored = await storeMediaAssetFromBuffer(userDataPath, buffer)
-          importedAssetMap.set(asset.assetId, stored.assetId)
-        }
-      } catch {
-        // Skip unparseable asset
-      }
+  if (rawCards.length > MAX_IMPORT_CARDS) {
+    return {
+      ok: false,
+      importedCards: [],
+      count: 0,
+      error: `Bundle exceeds maximum card limit of ${MAX_IMPORT_CARDS} cards`,
+    }
+  }
+  if (rawAssets.length > MAX_IMPORT_ASSETS) {
+    return {
+      ok: false,
+      importedCards: [],
+      count: 0,
+      error: `Bundle exceeds maximum asset limit of ${MAX_IMPORT_ASSETS} assets`,
     }
   }
 
-  const existingIds = new Set(existingCards.map((c) => c.id))
-  const importedCards: OpeningCardDefinition[] = []
-
-  for (const raw of cardsToProcess) {
+  // Pre-validate all card definitions first
+  const validatedCards: OpeningCardDefinition[] = []
+  for (const raw of rawCards) {
     const check = validateCardDefinition(raw)
-    if (!check.ok || !check.card) continue
-
-    let card = check.card
-
-    // Never overwrite built-in cards
-    if (isBuiltInCard(card.id)) {
-      card = { ...card, id: `custom:imported_${Date.now()}_${randomBytes(4).toString('hex')}` }
-    } else if (existingIds.has(card.id)) {
-      // Re-key duplicate ID to avoid accidental clobbering
-      card = { ...card, id: `custom:imported_${Date.now()}_${randomBytes(4).toString('hex')}` }
+    if (check.ok && check.card) {
+      validatedCards.push(check.card)
     }
-
-    // Remap media asset ID if asset was restored or check if asset exists
-    if (card.mediaAssetId) {
-      const remapped = importedAssetMap.get(card.mediaAssetId)
-      if (remapped) {
-        card = { ...card, mediaAssetId: remapped }
-      }
-    }
-
-    importedCards.push(card)
   }
 
-  if (importedCards.length === 0) {
+  if (validatedCards.length === 0) {
     return {
       ok: false,
       importedCards: [],
@@ -363,9 +382,93 @@ export async function importCardsFromExportBundle(
     }
   }
 
+  // Pre-validate embedded asset payload lengths
+  const validAssets: StoredMediaAsset[] = []
+  for (const a of rawAssets) {
+    if (
+      a &&
+      typeof a === 'object' &&
+      typeof (a as StoredMediaAsset).assetId === 'string' &&
+      isSafeAssetId((a as StoredMediaAsset).assetId) &&
+      typeof (a as StoredMediaAsset).dataUrl === 'string'
+    ) {
+      const asset = a as StoredMediaAsset
+      if (asset.dataUrl!.length > MAX_SINGLE_ASSET_BASE64_CHARS) {
+        return {
+          ok: false,
+          importedCards: [],
+          count: 0,
+          error: `Embedded asset ${asset.assetId} exceeds single asset size limit`,
+        }
+      }
+      validAssets.push(asset)
+    }
+  }
+
+  // Phase 2: Prepare IDs & references
+  const allocatedIds = new Set(existingCards.map((c) => c.id))
+  const preparedCards: OpeningCardDefinition[] = []
+
+  for (const card of validatedCards) {
+    let finalId = card.id
+    if (isBuiltInCard(finalId) || allocatedIds.has(finalId)) {
+      finalId = `custom:imported_${Date.now()}_${randomBytes(4).toString('hex')}`
+    }
+    allocatedIds.add(finalId)
+    preparedCards.push({ ...card, id: finalId })
+  }
+
+  // Phase 3 & 4: Import Media with Rollback on Failure
+  const newlyCreatedAssetIds: string[] = []
+  const importedAssetMap = new Map<string, string>() // oldAssetId -> newAssetId
+
+  const referencedAssetIds = new Set(
+    preparedCards.map((c) => c.mediaAssetId).filter((id): id is string => typeof id === 'string'),
+  )
+
+  try {
+    for (const asset of validAssets) {
+      if (!referencedAssetIds.has(asset.assetId)) {
+        continue
+      }
+      if (!asset.dataUrl || !asset.dataUrl.startsWith('data:image/')) {
+        continue
+      }
+      const base64Index = asset.dataUrl.indexOf(';base64,')
+      if (base64Index <= 0) continue
+      const base64Data = asset.dataUrl.slice(base64Index + 8)
+      const buffer = Buffer.from(base64Data, 'base64')
+      const stored = await storeMediaAssetFromBuffer(userDataPath, buffer)
+      newlyCreatedAssetIds.push(stored.assetId)
+      importedAssetMap.set(asset.assetId, stored.assetId)
+    }
+  } catch (err) {
+    // Phase 5: Rollback newly created assets
+    for (const assetId of newlyCreatedAssetIds) {
+      deleteMediaAsset(userDataPath, assetId)
+    }
+    return {
+      ok: false,
+      importedCards: [],
+      count: 0,
+      error: `Media import failed: ${err instanceof Error ? err.message : String(err)}`,
+    }
+  }
+
+  // Remap media asset IDs on accepted cards
+  const finalCards: OpeningCardDefinition[] = preparedCards.map((card) => {
+    if (card.mediaAssetId) {
+      const remapped = importedAssetMap.get(card.mediaAssetId)
+      if (remapped) {
+        return { ...card, mediaAssetId: remapped }
+      }
+    }
+    return card
+  })
+
   return {
     ok: true,
-    importedCards,
-    count: importedCards.length,
+    importedCards: finalCards,
+    count: finalCards.length,
   }
 }

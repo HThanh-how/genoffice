@@ -178,58 +178,67 @@ export const DEFAULT_OPENING_PREFS: OpeningPrefs = {
 
 export const sceneMeta = (id: string): SceneMeta => SCENES.find((s) => s.id === id) ?? SCENES[0]!
 
-export const knownSceneOrCard = (id: unknown): id is string =>
-  typeof id === 'string' &&
-  (id === CUSTOM_SCENE ||
-    SCENES.some((s) => s.id === id) ||
-    isBuiltInCard(id) ||
-    id.startsWith('curated:') ||
-    id.startsWith('custom:') ||
-    id.startsWith('ai:'))
+export const isCardOrSceneAvailable = (id: unknown, prefs?: OpeningPrefs): id is string => {
+  if (typeof id !== 'string' || !id) return false
+  if (id === CUSTOM_SCENE || SCENES.some((s) => s.id === id) || isBuiltInCard(id)) {
+    return true
+  }
+  if (id.startsWith('curated:')) {
+    return true
+  }
+  if (id.startsWith('custom:') || id.startsWith('ai:')) {
+    if (prefs && Array.isArray(prefs.customCards)) {
+      return prefs.customCards.some((c) => c.id === id)
+    }
+    return true
+  }
+  return false
+}
+
+export const knownSceneOrCard = (id: unknown): id is string => isCardOrSceneAvailable(id)
 
 /**
  * Resolves the effective opening card or scene for a given app.
- * Precedence hierarchy (Section 4):
+ * Canonical precedence hierarchy:
  * 1. Explicit preview scene (options.scene, e.g. from preview modal)
- * 2. Explicit per-app override (set in prefs.appOverrides[app] or explicit custom choice in prefs.scenes[app])
+ * 2. Explicit per-app override in appOverrides (highest precedence for configured choices)
  * 3. Global Default card (prefs.globalCard if set and valid)
- * 4. Application default scene (DEFAULT_SCENE_FOR_APP[app])
+ * 4. Legacy per-app scene preference (when no globalCard is set)
+ * 5. Application default scene (DEFAULT_SCENE_FOR_APP[app])
  */
 export function resolveEffectiveOpeningCard(
   prefs: OpeningPrefs,
   app: OpeningApp,
   previewScene?: string,
 ): EffectiveOpeningCard {
-  if (previewScene && knownSceneOrCard(previewScene)) {
+  // 1. Explicit preview scene
+  if (previewScene && isCardOrSceneAvailable(previewScene, prefs)) {
     return { id: previewScene, source: 'preview', isOverride: false }
   }
 
-  // 1. Explicit appOverrides check
+  // 2. Explicit per-app override in appOverrides
   const override = prefs.appOverrides?.[app]
-  if (override && override !== 'inherit' && knownSceneOrCard(override)) {
+  if (override && override !== 'inherit' && isCardOrSceneAvailable(override, prefs)) {
     return { id: override, source: 'override', isOverride: true }
   }
 
-  // 2. Legacy scenes override check:
-  // If scenes[app] is explicitly set to something other than DEFAULT_SCENE_FOR_APP[app],
-  // it is treated as a per-app override.
-  const scene = prefs.scenes?.[app]
-  if (
-    scene &&
-    scene !== 'inherit' &&
-    scene !== DEFAULT_SCENE_FOR_APP[app] &&
-    scene !== prefs.globalCard &&
-    knownSceneOrCard(scene)
-  ) {
-    return { id: scene, source: 'override', isOverride: true }
-  }
-
-  // 3. Fallback to globalCard if configured and valid
-  if (prefs.globalCard && knownSceneOrCard(prefs.globalCard)) {
+  // 3. Global Default card (applies to all apps without explicit override)
+  if (prefs.globalCard && isCardOrSceneAvailable(prefs.globalCard, prefs)) {
     return { id: prefs.globalCard, source: 'global', isOverride: false }
   }
 
-  // 4. Default application scene
+  // 4. Legacy per-app scene preference (when no globalCard is configured)
+  const legacyScene = prefs.scenes?.[app]
+  if (
+    legacyScene &&
+    legacyScene !== 'inherit' &&
+    legacyScene !== DEFAULT_SCENE_FOR_APP[app] &&
+    isCardOrSceneAvailable(legacyScene, prefs)
+  ) {
+    return { id: legacyScene, source: 'override', isOverride: true }
+  }
+
+  // 5. Default application scene
   return {
     id: DEFAULT_SCENE_FOR_APP[app],
     source: 'default',

@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { OpeningEffectsState } from '../../../shared/home-api'
 import {
   DEFAULT_SCENE_FOR_APP,
@@ -54,9 +54,20 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
   const [aiError, setAiError] = useState('')
   const [aiPreviewCard, setAiPreviewCard] = useState<OpeningCardDefinition | null>(null)
   const [aiModelUsed, setAiModelUsed] = useState<string | undefined>()
+  const activeAiRequestIdRef = useRef<string | null>(null)
 
   const [statusMessage, setStatusMessage] = useState('')
+  const [errorMessage, setErrorMessage] = useState('')
   const importFileInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    return () => {
+      if (activeAiRequestIdRef.current) {
+        void api.cancelAiCardGeneration?.(activeAiRequestIdRef.current)
+        activeAiRequestIdRef.current = null
+      }
+    }
+  }, [api])
 
   // Customizer state
   const [editPreset, setEditPreset] = useState<OpeningMaterialPreset>('frosted-glass')
@@ -124,7 +135,7 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
     void api.toggleOpeningFavorite?.(cardId).then(onUpdateState)
   }
 
-  const handleAssignToApp = (app: OpeningApp, cardId: string) => {
+  const handleAssignToApp = async (app: OpeningApp, cardId: string) => {
     const nextOverrides = { ...(prefs.appOverrides || {}), [app]: cardId }
     const nextScenes = { ...prefs.scenes, [app]: cardId }
     const nextPrefs: OpeningPrefs = {
@@ -132,44 +143,62 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
       appOverrides: nextOverrides,
       scenes: nextScenes,
     }
-    void api.setOpeningPrefs?.(nextPrefs).then(onUpdateState)
-    setStatusMessage(
-      isVi ? `Đã gán thẻ cho ${APP_NAMES[app].vi}` : `Assigned card to ${APP_NAMES[app].en}`,
-    )
-    setTimeout(() => setStatusMessage(''), 3000)
+    try {
+      const nextState = await api.setOpeningPrefs?.(nextPrefs)
+      if (nextState) onUpdateState(nextState)
+      setErrorMessage('')
+      setStatusMessage(
+        isVi ? `Đã gán thẻ cho ${APP_NAMES[app].vi}` : `Assigned card to ${APP_NAMES[app].en}`,
+      )
+      setTimeout(() => setStatusMessage(''), 3000)
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    }
   }
 
-  const handleResetOverride = (app: OpeningApp) => {
+  const handleResetOverride = async (app: OpeningApp) => {
     const nextOverrides = { ...(prefs.appOverrides || {}) }
     delete nextOverrides[app]
     const nextScenes = { ...prefs.scenes }
-    nextScenes[app] = prefs.globalCard || DEFAULT_SCENE_FOR_APP[app]
+    nextScenes[app] = DEFAULT_SCENE_FOR_APP[app]
     const nextPrefs: OpeningPrefs = {
       ...prefs,
       appOverrides: Object.keys(nextOverrides).length > 0 ? nextOverrides : undefined,
       scenes: nextScenes,
     }
-    void api.setOpeningPrefs?.(nextPrefs).then(onUpdateState)
-    setStatusMessage(
-      isVi
-        ? `Đã xóa tùy biến riêng của ${APP_NAMES[app].vi}`
-        : `Reset ${APP_NAMES[app].en} override to Global Default`,
-    )
-    setTimeout(() => setStatusMessage(''), 3000)
+    try {
+      const nextState = await api.setOpeningPrefs?.(nextPrefs)
+      if (nextState) onUpdateState(nextState)
+      setErrorMessage('')
+      setStatusMessage(
+        isVi
+          ? `Đã xóa tùy biến riêng của ${APP_NAMES[app].vi}`
+          : `Reset ${APP_NAMES[app].en} override to Global Default`,
+      )
+      setTimeout(() => setStatusMessage(''), 3000)
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    }
   }
 
-  const handleSetGlobal = (cardId: string) => {
+  const handleSetGlobal = async (cardId: string) => {
     const nextPrefs: OpeningPrefs = {
       ...prefs,
       globalCard: cardId,
     }
-    void api.setOpeningPrefs?.(nextPrefs).then(onUpdateState)
-    setStatusMessage(
-      isVi
-        ? 'Đã đặt làm Mặc định chung cho tất cả ứng dụng!'
-        : 'Set as Global Default for all apps!',
-    )
-    setTimeout(() => setStatusMessage(''), 3000)
+    try {
+      const nextState = await api.setOpeningPrefs?.(nextPrefs)
+      if (nextState) onUpdateState(nextState)
+      setErrorMessage('')
+      setStatusMessage(
+        isVi
+          ? 'Đã đặt làm Mặc định chung cho tất cả ứng dụng!'
+          : 'Set as Global Default for all apps!',
+      )
+      setTimeout(() => setStatusMessage(''), 3000)
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    }
   }
 
   const openCustomizer = (card: OpeningCardDefinition) => {
@@ -185,7 +214,7 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
     setShowCustomizer(true)
   }
 
-  const handleSaveCustomCard = () => {
+  const handleSaveCustomCard = async () => {
     if (!editName.trim()) return
     const newCard: OpeningCardDefinition = {
       id: `custom:card_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -208,21 +237,33 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
       isBuiltIn: false,
       tags: ['custom', editPreset],
     }
-    void api.saveOpeningCard?.(newCard).then((res) => {
-      onUpdateState(res)
-      setShowCustomizer(false)
-      setStatusMessage(isVi ? 'Đã lưu thẻ tùy chỉnh!' : 'Custom card saved!')
-      setTimeout(() => setStatusMessage(''), 3000)
-    })
+    try {
+      const res = await api.saveOpeningCard?.(newCard)
+      if (res) {
+        onUpdateState(res)
+        setShowCustomizer(false)
+        setErrorMessage('')
+        setStatusMessage(isVi ? 'Đã lưu thẻ tùy chỉnh!' : 'Custom card saved!')
+        setTimeout(() => setStatusMessage(''), 3000)
+      }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    }
   }
 
-  const handleDeleteCard = (cardId: string) => {
-    void api.deleteOpeningCard?.(cardId).then((res) => {
-      onUpdateState(res)
-      if (selectedCard?.id === cardId) setSelectedCard(null)
-      setStatusMessage(isVi ? 'Đã xóa thẻ.' : 'Card deleted.')
-      setTimeout(() => setStatusMessage(''), 3000)
-    })
+  const handleDeleteCard = async (cardId: string) => {
+    try {
+      const res = await api.deleteOpeningCard?.(cardId)
+      if (res) {
+        onUpdateState(res)
+        if (selectedCard?.id === cardId) setSelectedCard(null)
+        setErrorMessage('')
+        setStatusMessage(isVi ? 'Đã xóa thẻ.' : 'Card deleted.')
+        setTimeout(() => setStatusMessage(''), 3000)
+      }
+    } catch (err) {
+      setErrorMessage(err instanceof Error ? err.message : String(err))
+    }
   }
 
   const processImageFile = (file: File) => {
@@ -296,40 +337,66 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
   }
 
   // Real AI generation workflow (request -> preview -> explicit user save)
-  const handleAiGenerate = () => {
-    if (!aiPrompt.trim()) return
+  const handleAiGenerate = async () => {
+    if (!aiPrompt.trim() || aiLoading) return
+    const requestId = `aicard_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    activeAiRequestIdRef.current = requestId
     setAiLoading(true)
     setAiError('')
     setAiPreviewCard(null)
     setAiModelUsed(undefined)
 
-    void api
-      .generateAiCard?.({ prompt: aiPrompt })
-      .then((res) => {
+    try {
+      const res = await api.generateAiCard?.({ prompt: aiPrompt, requestId })
+      if (activeAiRequestIdRef.current !== requestId) {
+        // Request was superseded or cancelled
+        return
+      }
+      setAiLoading(false)
+      activeAiRequestIdRef.current = null
+      if (res?.ok && res.card) {
+        setAiPreviewCard(res.card)
+        setAiModelUsed(res.modelUsed)
+      } else {
+        setAiError(res?.error ?? 'AI generation failed')
+      }
+    } catch (err) {
+      if (activeAiRequestIdRef.current === requestId) {
         setAiLoading(false)
-        if (res.ok && res.card) {
-          setAiPreviewCard(res.card)
-          setAiModelUsed(res.modelUsed)
-        } else {
-          setAiError(res.error ?? 'AI generation failed')
-        }
-      })
-      .catch((err) => {
-        setAiLoading(false)
-        setAiError(String(err))
-      })
+        activeAiRequestIdRef.current = null
+        setAiError(err instanceof Error ? err.message : String(err))
+      }
+    }
   }
 
-  const handleApproveAiCard = () => {
+  const handleCancelAiGenerate = async () => {
+    const reqId = activeAiRequestIdRef.current
+    activeAiRequestIdRef.current = null
+    setAiLoading(false)
+    if (reqId) {
+      await api.cancelAiCardGeneration?.(reqId)
+    }
+    setAiError(isVi ? 'Đã hủy quá trình tạo thẻ.' : 'Card generation cancelled.')
+  }
+
+  const handleApproveAiCard = async () => {
     if (!aiPreviewCard) return
-    void api.saveOpeningCard?.(aiPreviewCard).then((nextState) => {
-      onUpdateState(nextState)
-      setShowAiModal(false)
-      setAiPreviewCard(null)
-      setAiPrompt('')
-      setStatusMessage(isVi ? 'Đã lưu thẻ AI vào bộ sưu tập!' : 'AI card saved to your collection!')
-      setTimeout(() => setStatusMessage(''), 3000)
-    })
+    try {
+      const nextState = await api.saveOpeningCard?.(aiPreviewCard)
+      if (nextState) {
+        onUpdateState(nextState)
+        setShowAiModal(false)
+        setAiPreviewCard(null)
+        setAiPrompt('')
+        setErrorMessage('')
+        setStatusMessage(
+          isVi ? 'Đã lưu thẻ AI vào bộ sưu tập!' : 'AI card saved to your collection!',
+        )
+        setTimeout(() => setStatusMessage(''), 3000)
+      }
+    } catch (err) {
+      setAiError(err instanceof Error ? err.message : String(err))
+    }
   }
 
   // Export & Import handlers
@@ -504,6 +571,12 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
       {statusMessage && (
         <div className="set-field-desc" style={{ color: 'var(--accent, #2b7cd3)' }}>
           {statusMessage}
+        </div>
+      )}
+
+      {errorMessage && (
+        <div className="set-field-desc" style={{ color: '#ef4444' }}>
+          {errorMessage}
         </div>
       )}
 
@@ -999,20 +1072,31 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
           >
             <div style={{ display: 'flex', gap: '8px' }}>
               {!aiPreviewCard ? (
-                <button
-                  type="button"
-                  className="ocs-action-btn primary"
-                  disabled={aiLoading || !aiPrompt.trim()}
-                  onClick={handleAiGenerate}
-                >
-                  {aiLoading
-                    ? isVi
-                      ? 'Đang kết nối AI...'
-                      : 'Connecting to AI model...'
-                    : isVi
-                      ? 'Tạo thẻ'
-                      : 'Generate'}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    className="ocs-action-btn primary"
+                    disabled={aiLoading || !aiPrompt.trim()}
+                    onClick={handleAiGenerate}
+                  >
+                    {aiLoading
+                      ? isVi
+                        ? 'Đang kết nối AI...'
+                        : 'Connecting to AI model...'
+                      : isVi
+                        ? 'Tạo thẻ'
+                        : 'Generate'}
+                  </button>
+                  {aiLoading && (
+                    <button
+                      type="button"
+                      className="ocs-action-btn"
+                      onClick={handleCancelAiGenerate}
+                    >
+                      {isVi ? 'Hủy' : 'Cancel'}
+                    </button>
+                  )}
+                </>
               ) : (
                 <>
                   <button
@@ -1030,6 +1114,15 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
                   >
                     {isVi ? '🔄 Tạo biến thể khác' : '🔄 Regenerate'}
                   </button>
+                  {aiLoading && (
+                    <button
+                      type="button"
+                      className="ocs-action-btn"
+                      onClick={handleCancelAiGenerate}
+                    >
+                      {isVi ? 'Hủy' : 'Cancel'}
+                    </button>
+                  )}
                   <button
                     type="button"
                     className="ocs-action-btn"
@@ -1045,6 +1138,9 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
               type="button"
               className="ocs-action-btn"
               onClick={() => {
+                if (aiLoading) {
+                  void handleCancelAiGenerate()
+                }
                 setShowAiModal(false)
                 setAiPreviewCard(null)
                 setAiError('')

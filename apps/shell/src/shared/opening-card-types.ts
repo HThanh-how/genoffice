@@ -96,6 +96,7 @@ export interface AiCardGenerationInput {
   preset?: OpeningMaterialPreset
   themeMode?: OpeningThemeMode
   model?: string
+  requestId?: string
 }
 
 export interface AiCardGenerationResult {

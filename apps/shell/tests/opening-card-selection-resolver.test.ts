@@ -97,4 +97,72 @@ describe('Opening Card Studio: Selection Resolver Precedence & Global Default', 
     expect(effective.id).toBe(DEFAULT_SCENE_FOR_APP.docs)
     expect(effective.source).toBe('default')
   })
+
+  it('Global A -> Docs B -> Reset Docs -> Global C -> Docs dynamically follows Global C', () => {
+    // 1. Initial: Global A
+    let prefs: OpeningPrefs = {
+      ...basePrefs,
+      globalCard: 'curated:frosted-blue',
+    }
+    expect(resolveEffectiveOpeningCard(prefs, 'docs').id).toBe('curated:frosted-blue')
+
+    // 2. Set Docs override to Docs B
+    prefs = {
+      ...prefs,
+      appOverrides: {
+        docs: 'curated:graphite',
+      },
+    }
+    const overridden = resolveEffectiveOpeningCard(prefs, 'docs')
+    expect(overridden.id).toBe('curated:graphite')
+    expect(overridden.isOverride).toBe(true)
+
+    // 3. Reset Docs override (as implemented in handleResetOverride)
+    const nextOverrides = { ...prefs.appOverrides }
+    delete nextOverrides.docs
+    prefs = {
+      ...prefs,
+      appOverrides: Object.keys(nextOverrides).length > 0 ? nextOverrides : undefined,
+      scenes: {
+        ...prefs.scenes,
+        docs: DEFAULT_SCENE_FOR_APP.docs,
+      },
+    }
+    const reset = resolveEffectiveOpeningCard(prefs, 'docs')
+    expect(reset.id).toBe('curated:frosted-blue')
+    expect(reset.isOverride).toBe(false)
+    expect(reset.source).toBe('global')
+
+    // 4. Update Global Default to Global C
+    prefs = {
+      ...prefs,
+      globalCard: 'curated:midnight-glass',
+    }
+    const updatedGlobal = resolveEffectiveOpeningCard(prefs, 'docs')
+    expect(updatedGlobal.id).toBe('curated:midnight-glass')
+    expect(updatedGlobal.source).toBe('global')
+    expect(updatedGlobal.isOverride).toBe(false)
+  })
+
+  it('safely falls back to default scene when a referenced custom card is deleted', () => {
+    const deletedCardId = 'custom:deleted_meeting_card'
+    const prefsWithDeletedCard: OpeningPrefs = {
+      ...basePrefs,
+      customCards: [], // User deleted all custom cards
+      globalCard: deletedCardId,
+      appOverrides: {
+        docs: deletedCardId,
+      },
+    }
+
+    // Both override and global point to deleted card -> must safely fall back to app default
+    const effectiveDocs = resolveEffectiveOpeningCard(prefsWithDeletedCard, 'docs')
+    expect(effectiveDocs.id).toBe(DEFAULT_SCENE_FOR_APP.docs)
+    expect(effectiveDocs.source).toBe('default')
+    expect(effectiveDocs.isOverride).toBe(false)
+
+    const effectiveSheets = resolveEffectiveOpeningCard(prefsWithDeletedCard, 'sheets')
+    expect(effectiveSheets.id).toBe(DEFAULT_SCENE_FOR_APP.sheets)
+    expect(effectiveSheets.source).toBe('default')
+  })
 })

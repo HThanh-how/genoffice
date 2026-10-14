@@ -154,6 +154,168 @@ function removeAssetFromRegistry(userDataPath: string, assetId: string): void {
   writeRegistrySync(userDataPath, updated)
 }
 
+export const MAX_IMAGE_DIMENSION_PX = 8192
+export const TARGET_THUMBNAIL_MAX_WIDTH = 320
+export const TARGET_THUMBNAIL_MAX_HEIGHT = 180
+
+export interface DecodedImageResult {
+  width: number
+  height: number
+  thumbnailDataUrl: string
+}
+
+function parseImageDimensions(
+  buffer: Buffer,
+  mime: string,
+): { width: number; height: number } | null {
+  if (mime === 'image/png') {
+    if (buffer.length < 24) return null
+    if (buffer[12] === 0x49 && buffer[13] === 0x48 && buffer[14] === 0x44 && buffer[15] === 0x52) {
+      const width = buffer.readUInt32BE(16)
+      const height = buffer.readUInt32BE(20)
+      if (width > 0 && height > 0 && buffer.length >= 33) {
+        return { width, height }
+      }
+    }
+    return null
+  }
+
+  if (mime === 'image/gif') {
+    if (buffer.length < 10) return null
+    const width = buffer.readUInt16LE(6)
+    const height = buffer.readUInt16LE(8)
+    if (width > 0 && height > 0 && buffer.length >= 14) {
+      return { width, height }
+    }
+    return null
+  }
+
+  if (mime === 'image/jpeg') {
+    let offset = 2
+    while (offset < buffer.length - 8) {
+      if (buffer[offset] !== 0xff) {
+        offset++
+        continue
+      }
+      const marker = buffer[offset + 1]
+      if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
+        const height = buffer.readUInt16BE(offset + 5)
+        const width = buffer.readUInt16BE(offset + 7)
+        if (width > 0 && height > 0) {
+          return { width, height }
+        }
+        return null
+      }
+      const length = buffer.readUInt16BE(offset + 2)
+      offset += 2 + length
+    }
+    return null
+  }
+
+  if (mime === 'image/webp') {
+    if (buffer.length < 30) return null
+    if (buffer[12] === 0x56 && buffer[13] === 0x50 && buffer[14] === 0x38 && buffer[15] === 0x20) {
+      const width = buffer.readUInt16LE(26) & 0x3fff
+      const height = buffer.readUInt16LE(28) & 0x3fff
+      if (width > 0 && height > 0) return { width, height }
+    }
+    if (buffer[12] === 0x56 && buffer[13] === 0x50 && buffer[14] === 0x38 && buffer[15] === 0x4c) {
+      if (buffer[20] === 0x2f) {
+        const b0 = buffer[21]
+        const b1 = buffer[22]
+        const b2 = buffer[23]
+        const b3 = buffer[24]
+        const width = 1 + (((b1 & 0x3f) << 8) | b0)
+        const height = 1 + (((b3 & 0x0f) << 10) | (b2 << 2) | ((b1 & 0xc0) >> 6))
+        if (width > 0 && height > 0) return { width, height }
+      }
+    }
+    if (buffer[12] === 0x56 && buffer[13] === 0x50 && buffer[14] === 0x38 && buffer[15] === 0x58) {
+      const width = 1 + buffer.readUIntLE(24, 3)
+      const height = 1 + buffer.readUIntLE(27, 3)
+      if (width > 0 && height > 0) return { width, height }
+    }
+    return null
+  }
+
+  return null
+}
+
+function getNativeImageApi() {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const electron = require('electron')
+    if (electron && typeof electron.nativeImage?.createFromBuffer === 'function') {
+      return electron.nativeImage
+    }
+  } catch {
+    // fallback
+  }
+  return null
+}
+
+export function validateAndDecodeImage(buffer: Buffer, mime: string): DecodedImageResult {
+  const nativeApi = getNativeImageApi()
+  if (nativeApi) {
+    const img = nativeApi.createFromBuffer(buffer)
+    if (img.isEmpty()) {
+      throw new Error(
+        'Corrupt or undecodable image payload: image contains no decodable pixel data',
+      )
+    }
+    const size = img.getSize()
+    if (size.width <= 0 || size.height <= 0) {
+      throw new Error('Corrupt or undecodable image payload: invalid image dimensions')
+    }
+    if (size.width > MAX_IMAGE_DIMENSION_PX || size.height > MAX_IMAGE_DIMENSION_PX) {
+      throw new Error(
+        `Image dimensions exceed the maximum allowed limit of ${MAX_IMAGE_DIMENSION_PX}x${MAX_IMAGE_DIMENSION_PX} pixels`,
+      )
+    }
+
+    let thumbW = size.width
+    let thumbH = size.height
+    if (thumbW > TARGET_THUMBNAIL_MAX_WIDTH || thumbH > TARGET_THUMBNAIL_MAX_HEIGHT) {
+      const scale = Math.min(
+        TARGET_THUMBNAIL_MAX_WIDTH / thumbW,
+        TARGET_THUMBNAIL_MAX_HEIGHT / thumbH,
+      )
+      thumbW = Math.max(1, Math.round(thumbW * scale))
+      thumbH = Math.max(1, Math.round(thumbH * scale))
+    }
+    const thumbImg =
+      thumbW === size.width && thumbH === size.height
+        ? img
+        : img.resize({ width: thumbW, height: thumbH, quality: 'good' })
+    const thumbPngBuffer = thumbImg.toPNG()
+    const thumbnailDataUrl = `data:image/png;base64,${thumbPngBuffer.toString('base64')}`
+
+    return {
+      width: size.width,
+      height: size.height,
+      thumbnailDataUrl,
+    }
+  }
+
+  const dims = parseImageDimensions(buffer, mime)
+  if (!dims || dims.width <= 0 || dims.height <= 0) {
+    throw new Error('Corrupt or undecodable image payload: image contains no decodable pixel data')
+  }
+  if (dims.width > MAX_IMAGE_DIMENSION_PX || dims.height > MAX_IMAGE_DIMENSION_PX) {
+    throw new Error(
+      `Image dimensions exceed the maximum allowed limit of ${MAX_IMAGE_DIMENSION_PX}x${MAX_IMAGE_DIMENSION_PX} pixels`,
+    )
+  }
+
+  const fallbackPng =
+    'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  return {
+    width: dims.width,
+    height: dims.height,
+    thumbnailDataUrl: fallbackPng,
+  }
+}
+
 /**
  * Validates, saves, and registers personal media into app-managed isolated storage.
  */
@@ -173,19 +335,19 @@ export async function storeMediaAssetFromBuffer(
     throw new Error('Unsupported image format. Allowed formats: PNG, JPEG, WebP, GIF.')
   }
 
+  const decoded = validateAndDecodeImage(buffer, sniffed.mime)
+
   const nonce = randomBytes(8).toString('hex')
   const assetId = `asset_${Date.now()}_${nonce}${sniffed.ext}`
   const targetPath = resolveSafeAssetPath(userDataPath, assetId)
 
   await atomicWriteFile(targetPath, buffer)
 
-  // Generate lightweight thumbnail data URL (capped at max 128KB data)
-  const thumbnailDataUrl = `data:${sniffed.mime};base64,${buffer.subarray(0, Math.min(buffer.length, 128 * 1024)).toString('base64')}`
   const assetRecord: StoredMediaAsset = {
     assetId,
     mime: sniffed.mime,
     sizeBytes: buffer.length,
-    thumbnailUrl: thumbnailDataUrl,
+    thumbnailUrl: decoded.thumbnailDataUrl,
     createdAt: Date.now(),
   }
 

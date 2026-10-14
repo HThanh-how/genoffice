@@ -142,11 +142,11 @@ describe('Opening Card Studio: Versioned Export & Import Bundle', () => {
 
     it('embeds referenced personal media in bundle and restores it into storage', async () => {
       // 1. Create personal media asset
-      const pngHeader = Buffer.from([
-        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
-        0x52,
-      ])
-      const asset = await storeMediaAssetFromBuffer(tmpDir, pngHeader)
+      const validPng = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64',
+      )
+      const asset = await storeMediaAssetFromBuffer(tmpDir, validPng)
 
       // 2. Create card referencing asset
       const mediaCard: OpeningCardDefinition = {
@@ -234,6 +234,116 @@ describe('Opening Card Studio: Versioned Export & Import Bundle', () => {
       const res2 = await importCardsFromExportBundle(badVersion, tmpDir, [])
       expect(res2.ok).toBe(false)
       expect(res2.error).toContain('Unsupported import format')
+    })
+
+    it('preserves sceneId for canvas-scene cards across export and import', async () => {
+      const canvasCard: OpeningCardDefinition = {
+        id: 'custom:aurora_scene',
+        name: 'Aurora Borealis Card',
+        category: 'canvas',
+        contentKind: 'canvas-scene',
+        sceneId: 'aurora',
+        material: { preset: 'solid' },
+        createdAt: Date.now(),
+        isBuiltIn: false,
+      }
+
+      const bundle = createOpeningCardExportBundle([canvasCard], tmpDir)
+      expect(bundle.cards[0].sceneId).toBe('aurora')
+
+      const res = await importCardsFromExportBundle(JSON.stringify(bundle), tmpDir, [])
+      expect(res.ok).toBe(true)
+      expect(res.importedCards[0].sceneId).toBe('aurora')
+    })
+
+    it('rejects import before asset persistence if 0 valid cards exist', async () => {
+      const bundle = {
+        version: 1,
+        cards: [{ notAValidCard: true }],
+        assets: [
+          {
+            assetId: 'asset_unimported.png',
+            mime: 'image/png',
+            sizeBytes: 68,
+            createdAt: Date.now(),
+            thumbnailUrl: '',
+            dataUrl:
+              'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+          },
+        ],
+      }
+
+      const res = await importCardsFromExportBundle(JSON.stringify(bundle), tmpDir, [])
+      expect(res.ok).toBe(false)
+      expect(res.error).toContain('No valid card definitions')
+
+      // Ensure no assets were written to disk
+      const assets = listMediaAssets(tmpDir)
+      expect(assets).toHaveLength(0)
+    })
+
+    it('assigns unique IDs to intra-bundle duplicate card IDs', async () => {
+      const cardA: OpeningCardDefinition = {
+        id: 'custom:dupe_id',
+        name: 'Dupe Card 1',
+        category: 'custom',
+        contentKind: 'curated-material',
+        material: { preset: 'solid' },
+        createdAt: Date.now(),
+        isBuiltIn: false,
+      }
+      const cardB: OpeningCardDefinition = {
+        id: 'custom:dupe_id',
+        name: 'Dupe Card 2',
+        category: 'custom',
+        contentKind: 'curated-material',
+        material: { preset: 'solid' },
+        createdAt: Date.now(),
+        isBuiltIn: false,
+      }
+
+      const bundle = {
+        version: 1,
+        cards: [cardA, cardB],
+      }
+
+      const res = await importCardsFromExportBundle(JSON.stringify(bundle), tmpDir, [])
+      expect(res.ok).toBe(true)
+      expect(res.count).toBe(2)
+      expect(res.importedCards[0].id).not.toBe(res.importedCards[1].id)
+    })
+
+    it('deduplicates shared media assets in export bundle', async () => {
+      const validPng = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        'base64',
+      )
+      const asset = await storeMediaAssetFromBuffer(tmpDir, validPng)
+
+      const card1: OpeningCardDefinition = {
+        id: 'custom:shared_1',
+        name: 'Shared Card 1',
+        category: 'media',
+        contentKind: 'personal-media',
+        mediaAssetId: asset.assetId,
+        material: { preset: 'solid' },
+        createdAt: Date.now(),
+        isBuiltIn: false,
+      }
+      const card2: OpeningCardDefinition = {
+        id: 'custom:shared_2',
+        name: 'Shared Card 2',
+        category: 'media',
+        contentKind: 'personal-media',
+        mediaAssetId: asset.assetId,
+        material: { preset: 'solid' },
+        createdAt: Date.now(),
+        isBuiltIn: false,
+      }
+
+      const bundle = createOpeningCardExportBundle([card1, card2], tmpDir)
+      expect(bundle.assets).toBeDefined()
+      expect(bundle.assets?.length).toBe(1)
     })
   })
 })

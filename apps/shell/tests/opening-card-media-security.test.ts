@@ -1,6 +1,8 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { crc32, deflateSync } from 'node:zlib'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   MAX_MEDIA_ASSET_BYTES,
@@ -11,6 +13,7 @@ import {
   resolveSafeAssetPath,
   sniffImageSignature,
   storeMediaAssetFromBuffer,
+  validateAndDecodeImage,
 } from '../src/main/fork/opening-media-storage'
 
 // Valid minimal image headers
@@ -26,6 +29,57 @@ const WEBP_HEADER = Buffer.from([
 const GIF_HEADER = Buffer.from([
   0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x0a, 0x00, 0x0a, 0x00, 0x80, 0x00,
 ])
+
+export const VALID_1X1_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64',
+)
+
+export const VALID_1X1_JPEG = Buffer.from(
+  '/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA=',
+  'base64',
+)
+
+export const VALID_1X1_WEBP = Buffer.from(
+  'UklGRiQAAABXRUJQVlA4IBgAAAAwAQCdASoBAAEAAQAcJaQAA3AA/v3AgAA=',
+  'base64',
+)
+
+export const VALID_1X1_GIF = Buffer.from(
+  'R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+  'base64',
+)
+
+function createLargeValidPng(width = 400, height = 300, minBytes = 140 * 1024): Buffer {
+  const raw = randomBytes(Math.max(minBytes, height * (1 + width * 3)))
+  const compressed = deflateSync(raw)
+
+  function makeChunk(type: string, data: Buffer): Buffer {
+    const len = Buffer.alloc(4)
+    len.writeUInt32BE(data.length)
+    const t = Buffer.from(type)
+    const crcBuf = Buffer.alloc(4)
+    crcBuf.writeUInt32BE(crc32(Buffer.concat([t, data])))
+    return Buffer.concat([len, t, data, crcBuf])
+  }
+
+  const ihdr = Buffer.alloc(13)
+  ihdr.writeUInt32BE(width, 0)
+  ihdr.writeUInt32BE(height, 4)
+  ihdr[8] = 8 // 8-bit depth
+  ihdr[9] = 2 // RGB color
+  ihdr[10] = 0
+  ihdr[11] = 0
+  ihdr[12] = 0
+
+  const header = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+  return Buffer.concat([
+    header,
+    makeChunk('IHDR', ihdr),
+    makeChunk('IDAT', compressed),
+    makeChunk('IEND', Buffer.alloc(0)),
+  ])
+}
 
 describe('Opening Card Studio: Media Storage Security & Magic Bytes Sniffing', () => {
   let tempUserData: string
@@ -85,13 +139,63 @@ describe('Opening Card Studio: Media Storage Security & Magic Bytes Sniffing', (
     )
   })
 
-  it('stores valid assets, generates base64 data URLs, and lists assets correctly', async () => {
-    const pngData = Buffer.concat([PNG_HEADER, Buffer.from('sample png data payload')])
-    const stored = await storeMediaAssetFromBuffer(tempUserData, pngData)
+  it('T1-T4: stores real PNG (> 128 KB), generates bounded thumbnail, and validates MIME', async () => {
+    const largePng = createLargeValidPng(400, 300, 140 * 1024)
+    expect(largePng.length).toBeGreaterThan(128 * 1024)
+
+    const stored = await storeMediaAssetFromBuffer(tempUserData, largePng)
 
     expect(stored.assetId).toMatch(/^asset_[0-9]+_[0-9a-f]{16}\.png$/)
     expect(stored.mime).toBe('image/png')
-    expect(stored.sizeBytes).toBe(pngData.length)
+    expect(stored.sizeBytes).toBe(largePng.length)
+    expect(stored.thumbnailUrl.startsWith('data:image/png;base64,')).toBe(true)
+
+    // T10: Verify stored bytes on disk match source exactly
+    const storedPath = resolveSafeAssetPath(tempUserData, stored.assetId)
+    const onDiskBytes = readFileSync(storedPath)
+    expect(onDiskBytes.length).toBe(largePng.length)
+    expect(onDiskBytes.equals(largePng)).toBe(true)
+  })
+
+  it('T5-T7: imports valid JPEG, WebP, and GIF images and assigns correct metadata', async () => {
+    const jpegAsset = await storeMediaAssetFromBuffer(tempUserData, VALID_1X1_JPEG)
+    expect(jpegAsset.mime).toBe('image/jpeg')
+    expect(jpegAsset.sizeBytes).toBe(VALID_1X1_JPEG.length)
+
+    const webpAsset = await storeMediaAssetFromBuffer(tempUserData, VALID_1X1_WEBP)
+    expect(webpAsset.mime).toBe('image/webp')
+    expect(webpAsset.sizeBytes).toBe(VALID_1X1_WEBP.length)
+
+    const gifAsset = await storeMediaAssetFromBuffer(tempUserData, VALID_1X1_GIF)
+    expect(gifAsset.mime).toBe('image/gif')
+    expect(gifAsset.sizeBytes).toBe(VALID_1X1_GIF.length)
+
+    const allAssets = listMediaAssets(tempUserData)
+    expect(allAssets).toHaveLength(3)
+  })
+
+  it('T8: strictly rejects file containing only PNG header without decodable pixel data', async () => {
+    // Header only payload
+    await expect(storeMediaAssetFromBuffer(tempUserData, PNG_HEADER)).rejects.toThrow(
+      'Corrupt or undecodable image payload',
+    )
+
+    // Truncated payload after IHDR
+    const truncatedIhdr = Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44,
+      0x52,
+    ])
+    await expect(storeMediaAssetFromBuffer(tempUserData, truncatedIhdr)).rejects.toThrow(
+      'Corrupt or undecodable image payload',
+    )
+  })
+
+  it('stores valid assets, generates base64 data URLs, and lists assets correctly', async () => {
+    const stored = await storeMediaAssetFromBuffer(tempUserData, VALID_1X1_PNG)
+
+    expect(stored.assetId).toMatch(/^asset_[0-9]+_[0-9a-f]{16}\.png$/)
+    expect(stored.mime).toBe('image/png')
+    expect(stored.sizeBytes).toBe(VALID_1X1_PNG.length)
 
     // Data URL verification
     const dataUrl = getAssetDataUrl(tempUserData, stored.assetId)
@@ -106,5 +210,12 @@ describe('Opening Card Studio: Media Storage Security & Magic Bytes Sniffing', (
     const deleted = deleteMediaAsset(tempUserData, stored.assetId)
     expect(deleted).toBe(true)
     expect(listMediaAssets(tempUserData)).toHaveLength(0)
+  })
+
+  it('validateAndDecodeImage parses dimensions and generates valid thumbnail', () => {
+    const res = validateAndDecodeImage(VALID_1X1_PNG, 'image/png')
+    expect(res.width).toBe(1)
+    expect(res.height).toBe(1)
+    expect(res.thumbnailDataUrl).toContain('data:image/png;base64,')
   })
 })

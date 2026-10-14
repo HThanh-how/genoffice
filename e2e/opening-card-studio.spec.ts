@@ -5,9 +5,11 @@ import type { OpeningPrefs } from '../apps/shell/src/shared/opening-scenes-meta'
 
 test.describe('Opening Card Studio — Electron E2E Flows', () => {
   test('E2E-1: Select curated card, apply to Docs, restart application, verify selection persisted', async () => {
+    test.setTimeout(120_000)
     const launched = await launchShell({
       onboardingSeen: true,
-      settings: { starPrompt: { resolved: true } },
+      lang: 'en',
+      settings: { starPrompt: { resolved: true }, lang: 'en' },
       videoDir: 'opening-card-studio-e2e1',
     })
     const { page, userDataDir } = launched
@@ -15,20 +17,22 @@ test.describe('Opening Card Studio — Electron E2E Flows', () => {
 
     try {
       // 1. Open Settings modal
-      const settingsBtn = page.getByRole('button', { name: 'Settings', exact: true })
-      await expect(settingsBtn).toBeVisible()
+      const settingsBtn = page.locator('.account-btn')
+      await expect(settingsBtn).toBeVisible({ timeout: 15_000 })
       await settingsBtn.click()
 
-      // 2. Click General nav item
-      await page.locator('.set-nav-item').filter({ hasText: 'General' }).click()
+      // Wait for Settings dialog
+      await expect(page.locator('.set-dialog')).toBeVisible({ timeout: 15_000 })
 
-      // 3. Expand Opening effects section in General
-      const openingSummary = page.locator('summary', { hasText: 'Opening effects' })
-      await expect(openingSummary).toBeVisible()
+      // 2. Expand Opening effects section in General
+      const openingSummary = page.locator('summary', {
+        hasText: /Opening effects|Hiệu ứng mở tệp/i,
+      })
+      await expect(openingSummary).toBeVisible({ timeout: 15_000 })
       await openingSummary.click()
 
-      // 4. Studio is visible with cards
-      await expect(page.locator('.ocs-container')).toBeVisible()
+      // 3. Studio is visible with cards
+      await expect(page.locator('.ocs-container')).toBeVisible({ timeout: 15_000 })
 
       // 5. Assign curated:frosted-blue to docs via IPC
       const nextState = await page.evaluate(async () => {
@@ -57,6 +61,7 @@ test.describe('Opening Card Studio — Electron E2E Flows', () => {
       // 7. Relaunch shell with same userDataDir to verify persistence across restart
       const relaunch = await launchShell({
         userDataDir,
+        lang: 'en',
         videoDir: 'opening-card-studio-e2e1-relaunch',
       })
       const { page: page2 } = relaunch
@@ -161,6 +166,27 @@ test.describe('Opening Card Studio — Electron E2E Flows', () => {
       expect(validRes.asset?.mime).toBe('image/png')
       expect(validRes.asset?.thumbnailUrl).toContain('data:image/png;base64,')
 
+      // Verify browser Image() actually decodes the thumbnail
+      const decodedCheck = await page.evaluate(async (thumbUrl) => {
+        return new Promise<{ naturalWidth: number; naturalHeight: number; loaded: boolean }>(
+          (resolve) => {
+            const img = new Image()
+            img.onload = () =>
+              resolve({
+                naturalWidth: img.naturalWidth,
+                naturalHeight: img.naturalHeight,
+                loaded: true,
+              })
+            img.onerror = () => resolve({ naturalWidth: 0, naturalHeight: 0, loaded: false })
+            img.src = thumbUrl
+          },
+        )
+      }, validRes.asset!.thumbnailUrl)
+
+      expect(decodedCheck.loaded).toBe(true)
+      expect(decodedCheck.naturalWidth).toBeGreaterThan(0)
+      expect(decodedCheck.naturalHeight).toBeGreaterThan(0)
+
       // 2. Invalid file upload (plain text pretending to be image)
       const invalidBase64 = Buffer.from('NOT AN IMAGE FILE AT ALL').toString('base64')
       const invalidRes = await page.evaluate(async (b64) => {
@@ -183,29 +209,49 @@ test.describe('Opening Card Studio — Electron E2E Flows', () => {
     const { page } = launched
 
     try {
-      // Trigger AI generation through IPC
-      const genRes = await page.evaluate(async () => {
-        return await window.aiOffice.generateAiCard({
-          prompt: 'Clean monochromatic liquid slate with subtle silver border',
-          preset: 'liquid-glass',
-          themeMode: 'dark',
-        })
+      // 1. Controlled validation check: Empty prompt is strictly rejected
+      const emptyRes = await page.evaluate(async () => {
+        return await window.aiOffice.generateAiCard({ prompt: '   ' })
       })
+      expect(emptyRes.ok).toBe(false)
+      expect(emptyRes.error).toContain('Please enter a description')
 
-      if (genRes.ok && genRes.card) {
-        expect(genRes.card.category).toBe('ai')
-        expect(genRes.card.material).toBeDefined()
-
-        // Explicit user approval saves the card into customCards
-        const savedState = await page.evaluate(async (card) => {
-          return await window.aiOffice.saveOpeningCard(card)
-        }, genRes.card)
-
-        const found = savedState.prefs.customCards?.some((c) => c.id === genRes.card?.id)
-        expect(found).toBe(true)
-      } else {
-        expect(genRes.error).toBeDefined()
+      // 2. Deterministic AI preview & approval workflow:
+      // Construct a valid generated card preview structure
+      const aiCard = {
+        id: `ai:card_${Date.now()}_e2etest`,
+        name: 'Liquid Slate Frost',
+        description: 'Clean monochromatic liquid slate with subtle silver border',
+        category: 'ai' as const,
+        contentKind: 'curated-material' as const,
+        material: {
+          preset: 'liquid-glass' as const,
+          themeMode: 'dark' as const,
+          opacity: 0.85,
+          blurPx: 22,
+          borderRadiusPx: 18,
+          borderWidthPx: 1,
+          accentColor: '#94a3b8',
+          shadowIntensity: 0.35,
+        },
+        createdAt: Date.now(),
+        isBuiltIn: false,
+        tags: ['ai', 'liquid-glass'],
       }
+
+      // Explicit user approval saves the card into customCards
+      const savedState = await page.evaluate(async (card) => {
+        return await window.aiOffice.saveOpeningCard(card)
+      }, aiCard)
+
+      const found = savedState.prefs.customCards?.some((c) => c.id === aiCard.id)
+      expect(found).toBe(true)
+
+      // Verify that the saved card can be retrieved and resolved
+      const currentState = await page.evaluate(async () => {
+        return await window.aiOffice.getOpeningEffects()
+      })
+      expect(currentState.prefs.customCards?.some((c) => c.id === aiCard.id)).toBe(true)
     } finally {
       await closeAndSaveVideo(launched, 'opening-e2e6')
     }

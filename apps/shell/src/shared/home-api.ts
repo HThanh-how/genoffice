@@ -437,6 +437,7 @@ export interface HomeApi extends ForkHomeApi {
     assetId: string,
   ): Promise<{ ok: boolean; inUse?: boolean; error?: string; state: OpeningEffectsState }>
   generateAiCard(input: AiCardGenerationInput): Promise<AiCardGenerationResult>
+  cancelAiCardGeneration(requestId: string): Promise<boolean>
   toggleOpeningFavorite(cardId: string): Promise<OpeningEffectsState>
   exportOpeningCards(): Promise<string>
   importOpeningCards(
@@ -782,6 +783,7 @@ export const HOME_CHANNELS = {
   importOpeningMedia: 'home:import-opening-media',
   deleteOpeningMedia: 'home:delete-opening-media',
   generateAiCard: 'home:generate-ai-card',
+  cancelAiCardGeneration: 'home:cancel-ai-card-generation',
   toggleOpeningFavorite: 'home:toggle-opening-favorite',
   exportOpeningCards: 'home:export-opening-cards',
   importOpeningCards: 'home:import-opening-cards',

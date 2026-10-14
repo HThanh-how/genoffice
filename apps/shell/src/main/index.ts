@@ -58,7 +58,7 @@ import {
   statSync,
   writeFileSync,
 } from 'node:fs'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { stat } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, resolve } from 'node:path'
 import {
@@ -5497,13 +5497,38 @@ function registerHomeIpc(): void {
       return { ok, state: openingEffectsState() }
     },
   )
+  const activeAiCardControllers = new Map<string, AbortController>()
+
   ipcMain.handle(HOME_CHANNELS.generateAiCard, async (_event, input: unknown) => {
     if (!input || typeof input !== 'object') {
       return { ok: false, error: 'Invalid input' }
     }
     const req = input as AiCardGenerationInput
-    const aiSettings = loadOpeningAiSettings()
-    return await generateAiCardWithRealProvider(req, aiSettings)
+    const requestId = req.requestId || randomBytes(8).toString('hex')
+    const controller = new AbortController()
+    activeAiCardControllers.set(requestId, controller)
+
+    try {
+      const aiSettings = loadOpeningAiSettings()
+      return await generateAiCardWithRealProvider(
+        { ...req, requestId },
+        aiSettings,
+        controller.signal,
+      )
+    } finally {
+      activeAiCardControllers.delete(requestId)
+    }
+  })
+
+  ipcMain.handle(HOME_CHANNELS.cancelAiCardGeneration, (_event, requestId: unknown): boolean => {
+    if (typeof requestId !== 'string') return false
+    const controller = activeAiCardControllers.get(requestId)
+    if (controller) {
+      controller.abort('Cancelled by user')
+      activeAiCardControllers.delete(requestId)
+      return true
+    }
+    return false
   })
   ipcMain.handle(
     HOME_CHANNELS.toggleOpeningFavorite,
