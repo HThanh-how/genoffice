@@ -1,4 +1,5 @@
 import type { UpdateUiState, UpdateWindowApi } from '../../shared/update-api'
+import './update-artwork.css'
 
 // exposed by src/preload/update.ts
 const api = (window as unknown as { aiOfficeUpdate: UpdateWindowApi }).aiOfficeUpdate

@@ -10,6 +10,7 @@ export interface MessageBoxRequest {
   checkboxLabel?: string
   checkboxChecked?: boolean
   type?: 'none' | 'info' | 'error' | 'question' | 'warning'
+  visual?: 'update-status'
 }
 export interface MessageBoxResult {
   response: number

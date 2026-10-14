@@ -1,0 +1,333 @@
+/* Premium Apple-inspired Update Artwork: Aurora Glass (Dark) & Spring Sunrise (Light) */
+
+.update-artwork {
+  --ua-dark-bg: #07101f;
+  --ua-dark-deep: #171738;
+  --ua-dark-aurora: #7667e8;
+  --ua-dark-cyan: #56dff2;
+  --ua-dark-highlight: #f4f7ff;
+  --ua-dark-glass: rgba(23, 23, 56, 0.55);
+  --ua-dark-border: rgba(255, 255, 255, 0.12);
+  --ua-dark-glow: rgba(86, 223, 242, 0.22);
+  --ua-dark-badge-bg: rgba(23, 23, 56, 0.7);
+  --ua-dark-badge-border: rgba(118, 103, 232, 0.4);
+
+  --ua-light-peach: #ffe4d4;
+  --ua-light-sky: #ddeeff;
+  --ua-light-mint: #d8f5e7;
+  --ua-light-lavender: #ddd8ff;
+  --ua-light-coral: #f4a48c;
+  --ua-light-navy: #233047;
+  --ua-light-glass: rgba(255, 255, 255, 0.65);
+  --ua-light-border: rgba(255, 255, 255, 0.85);
+  --ua-light-glow: rgba(244, 164, 140, 0.28);
+  --ua-light-badge-bg: rgba(255, 255, 255, 0.85);
+  --ua-light-badge-border: rgba(244, 164, 140, 0.45);
+
+  --ua-shadow-disc: rgba(0, 0, 0, 0.08);
+  --ua-shadow-badge: rgba(0, 0, 0, 0.12);
+  --ua-glow-fallback: rgba(86, 223, 242, 0.15);
+  --ua-glass-close-fallback: rgba(255, 255, 255, 0.2);
+
+  --ua-current-bg: var(--ua-light-peach);
+  --ua-current-accent: var(--ua-light-coral);
+  --ua-current-glass: var(--ua-light-glass);
+  --ua-current-border: var(--ua-light-border);
+  --ua-current-glow: var(--ua-light-glow);
+  --ua-current-badge-bg: var(--ua-light-badge-bg);
+  --ua-current-badge-border: var(--ua-light-badge-border);
+  --ua-current-text: var(--ua-light-navy);
+
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+  box-sizing: border-box;
+}
+
+/* Light Theme Defaults (Spring Sunrise) */
+:root .update-artwork,
+[data-theme='light'] .update-artwork {
+  --ua-current-accent: var(--ua-light-coral);
+  --ua-current-glass: var(--ua-light-glass);
+  --ua-current-border: var(--ua-light-border);
+  --ua-current-glow: var(--ua-light-glow);
+  --ua-current-badge-bg: var(--ua-light-badge-bg);
+  --ua-current-badge-border: var(--ua-light-badge-border);
+  --ua-current-text: var(--ua-light-navy);
+}
+
+/* Dark Theme Explicit (Aurora Glass) */
+[data-theme='dark'] .update-artwork {
+  --ua-current-accent: var(--ua-dark-cyan);
+  --ua-current-glass: var(--ua-dark-glass);
+  --ua-current-border: var(--ua-dark-border);
+  --ua-current-glow: var(--ua-dark-glow);
+  --ua-current-badge-bg: var(--ua-dark-badge-bg);
+  --ua-current-badge-border: var(--ua-dark-badge-border);
+  --ua-current-text: var(--ua-dark-highlight);
+}
+
+/* System Theme Dark Mode Fallback */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .update-artwork {
+    --ua-current-accent: var(--ua-dark-cyan);
+    --ua-current-glass: var(--ua-dark-glass);
+    --ua-current-border: var(--ua-dark-border);
+    --ua-current-glow: var(--ua-dark-glow);
+    --ua-current-badge-bg: var(--ua-dark-badge-bg);
+    --ua-current-badge-border: var(--ua-dark-badge-border);
+    --ua-current-text: var(--ua-dark-highlight);
+  }
+}
+
+/* Canvas Stage */
+.update-artwork-stage {
+  position: relative;
+  width: 100%;
+  height: 140px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 18px 18px 0 0;
+  overflow: hidden;
+}
+
+/* Background Atmosphere */
+.update-artwork-atmosphere {
+  position: absolute;
+  inset: 0;
+  transition: opacity 300ms ease;
+}
+
+/* Light Style Atmosphere (Spring Sunrise) */
+:root .update-artwork-atmosphere,
+[data-theme='light'] .update-artwork-atmosphere {
+  background:
+    radial-gradient(circle at 20% 20%, var(--ua-light-sky) 0%, transparent 60%),
+    radial-gradient(circle at 80% 25%, var(--ua-light-mint) 0%, transparent 55%),
+    radial-gradient(circle at 50% 80%, var(--ua-light-lavender) 0%, transparent 70%),
+    linear-gradient(135deg, var(--ua-light-peach) 0%, var(--ua-light-sky) 100%);
+}
+
+/* Dark Style Atmosphere (Aurora Glass) */
+[data-theme='dark'] .update-artwork-atmosphere {
+  background:
+    radial-gradient(circle at 30% 20%, var(--ua-dark-aurora) 0%, transparent 55%),
+    radial-gradient(circle at 75% 30%, var(--ua-dark-cyan) 0%, transparent 50%),
+    linear-gradient(145deg, var(--ua-dark-bg) 0%, var(--ua-dark-deep) 100%);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) .update-artwork-atmosphere {
+    background:
+      radial-gradient(circle at 30% 20%, var(--ua-dark-aurora) 0%, transparent 55%),
+      radial-gradient(circle at 75% 30%, var(--ua-dark-cyan) 0%, transparent 50%),
+      linear-gradient(145deg, var(--ua-dark-bg) 0%, var(--ua-dark-deep) 100%);
+  }
+}
+
+/* Flowing Ribbons & Light Orbs */
+.update-artwork-aurora {
+  position: absolute;
+  inset: -20px;
+  opacity: 0.7;
+  filter: blur(18px);
+  transform: translateZ(0);
+}
+
+.update-artwork-ribbon {
+  position: absolute;
+  width: 140px;
+  height: 140px;
+  border-radius: 50%;
+  animation: ua-float 14s ease-in-out infinite alternate;
+}
+
+.update-artwork-ribbon-1 {
+  top: -10px;
+  left: 20%;
+  background: radial-gradient(circle, var(--ua-current-accent) 0%, transparent 70%);
+  animation-duration: 12s;
+}
+
+.update-artwork-ribbon-2 {
+  bottom: -20px;
+  right: 25%;
+  background: radial-gradient(circle, var(--ua-current-glow) 0%, transparent 70%);
+  animation-duration: 16s;
+  animation-delay: -4s;
+}
+
+/* Glass Floating Shapes */
+.update-artwork-glass-disc {
+  position: absolute;
+  border-radius: 50%;
+  background: var(--ua-current-glass);
+  backdrop-filter: blur(6px);
+  border: 1px solid var(--ua-current-border);
+  box-shadow: 0 4px 16px var(--ua-shadow-disc);
+}
+
+.update-artwork-glass-disc-1 {
+  width: 72px;
+  height: 72px;
+  top: 15px;
+  left: 14%;
+  animation: ua-drift 10s ease-in-out infinite alternate;
+}
+
+.update-artwork-glass-disc-2 {
+  width: 48px;
+  height: 48px;
+  bottom: 20px;
+  right: 18%;
+  animation: ua-drift 8s ease-in-out infinite alternate-reverse;
+}
+
+/* Central Emblem / Badge */
+.update-artwork-badge {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  width: 64px;
+  height: 64px;
+  border-radius: 20px;
+  background: var(--ua-current-badge-bg);
+  border: 1px solid var(--ua-current-badge-border);
+  backdrop-filter: blur(12px);
+  box-shadow:
+    0 10px 24px var(--ua-shadow-badge),
+    0 0 0 1px var(--ua-current-border) inset;
+  transition: transform 250ms ease;
+}
+
+.update-artwork-badge svg {
+  width: 32px;
+  height: 32px;
+  display: block;
+}
+
+/* Animated Checkmark for up-to-date */
+.update-artwork-check-path {
+  stroke: var(--ua-current-accent);
+  stroke-dasharray: 40;
+  stroke-dashoffset: 40;
+  animation: ua-draw-check 650ms cubic-bezier(0.2, 0.8, 0.2, 1) 200ms forwards;
+}
+
+.update-artwork-circle-path {
+  stroke: var(--ua-current-border);
+  opacity: 0.6;
+}
+
+/* Phase Specific Badges */
+.update-artwork[data-variant='checking'] .update-artwork-badge svg {
+  animation: ua-spin 3s linear infinite;
+}
+
+.update-artwork[data-variant='downloading'] .update-artwork-badge svg {
+  animation: ua-pulse 2s ease-in-out infinite;
+}
+
+/* Keyframes */
+@keyframes ua-draw-check {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes ua-float {
+  0% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(15px, 8px) scale(1.08);
+  }
+  100% {
+    transform: translate(-10px, -6px) scale(0.95);
+  }
+}
+
+@keyframes ua-drift {
+  0% {
+    transform: translateY(0);
+  }
+  100% {
+    transform: translateY(-8px);
+  }
+}
+
+@keyframes ua-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes ua-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.9;
+  }
+  50% {
+    transform: scale(1.06);
+    opacity: 1;
+  }
+}
+
+/* Dialog integration with ui-feedback */
+.ui-feedback-dialog--update-status {
+  padding-top: 0;
+  overflow: hidden;
+  border: 1px solid var(--ua-current-border, var(--border));
+  box-shadow:
+    var(--shadow-modal-strong),
+    0 0 28px var(--ua-current-glow, var(--ua-glow-fallback));
+}
+
+.ui-feedback-dialog--update-status .update-artwork {
+  margin: 0 -26px 20px;
+  width: calc(100% + 52px);
+}
+
+@media (max-width: 520px) {
+  .ui-feedback-dialog--update-status .update-artwork {
+    margin: 0 -22px 20px;
+    width: calc(100% + 44px);
+  }
+}
+
+.ui-feedback-dialog--update-status .ui-feedback-dialog-heading {
+  margin-top: 4px;
+}
+
+.ui-feedback-dialog--update-status .ui-feedback-icon {
+  display: none;
+}
+
+.ui-feedback-dialog--update-status .ui-feedback-dialog-close {
+  z-index: 10;
+  background: var(--ua-current-glass, var(--ua-glass-close-fallback));
+  backdrop-filter: blur(8px);
+  border: 1px solid var(--ua-current-border, transparent);
+}
+
+/* Reduced Motion Fallback */
+@media (prefers-reduced-motion: reduce) {
+  .update-artwork-ribbon,
+  .update-artwork-glass-disc,
+  .update-artwork[data-variant='checking'] .update-artwork-badge svg,
+  .update-artwork[data-variant='downloading'] .update-artwork-badge svg {
+    animation: none !important;
+  }
+  .update-artwork-check-path {
+    stroke-dashoffset: 0 !important;
+    animation: none !important;
+  }
+}

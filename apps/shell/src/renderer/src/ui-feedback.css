@@ -1,5 +1,10 @@
 .ui-feedback-root {
-  --feedback-color: var(--accent);
+  --feedback-accent: var(--accent, #3b82f6);
+  --feedback-btn-primary-text: var(--color-btn-primary-text, #ffffff);
+  --feedback-btn-primary: var(--color-btn-primary, #232425);
+  --feedback-btn-primary-hover: var(--color-btn-primary-hover, #393a3b);
+  --feedback-btn-danger-text: #ffffff;
+  --feedback-color: var(--feedback-accent);
   position: fixed;
   inset: 0;
   z-index: 1200;
@@ -23,6 +28,7 @@
   backdrop-filter: blur(3px);
 }
 .ui-feedback-dialog {
+  position: relative;
   width: min(460px, 100%);
   max-height: calc(100vh - 48px);
   overflow-y: auto;
@@ -91,10 +97,10 @@
 }
 .ui-feedback-checkbox input {
   margin-top: 3px;
-  accent-color: var(--accent);
+  accent-color: var(--feedback-accent);
 }
 .ui-feedback-checkbox input:focus-visible {
-  outline: 2px solid var(--accent);
+  outline: 2px solid var(--feedback-accent);
   outline-offset: 3px;
 }
 .ui-feedback-button {
@@ -115,19 +121,21 @@
 }
 .ui-feedback-button.primary {
   border-color: transparent;
-  color: var(--color-btn-primary-text);
-  background: var(--accent);
+  color: var(--feedback-btn-primary-text);
+  background: var(--feedback-btn-primary);
 }
 .ui-feedback-button.primary:hover {
-  background: var(--accent-hover);
+  background: var(--feedback-btn-primary-hover);
 }
 .ui-feedback-dialog.tone-danger .primary,
 .ui-feedback-dialog.tone-error .primary {
   background: var(--danger);
+  color: var(--feedback-btn-danger-text);
 }
 .ui-feedback-button:focus-visible,
-.ui-feedback-dismiss:focus-visible {
-  outline: 2px solid var(--accent);
+.ui-feedback-dismiss:focus-visible,
+.ui-feedback-dialog-close:focus-visible {
+  outline: 2px solid var(--feedback-accent);
   outline-offset: 3px;
 }
 .ui-feedback-toasts {
@@ -195,6 +203,33 @@
 .ui-feedback-dismiss svg {
   width: 17px;
   height: 17px;
+}
+.ui-feedback-dialog-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    background 150ms ease,
+    color 150ms ease;
+}
+.ui-feedback-dialog-close:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.ui-feedback-dialog-close svg {
+  width: 18px;
+  height: 18px;
 }
 .ui-feedback-root .tone-success {
   --feedback-color: var(--success);

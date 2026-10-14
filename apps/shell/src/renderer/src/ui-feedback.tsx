@@ -2,6 +2,7 @@ import { useEffect, useRef, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { useI18n } from './locale'
 import './ui-feedback.css'
+import { UpdateArtwork } from './UpdateArtwork'
 import type { MessageBoxRequest, MessageBoxResult } from '../../shared/feedback-api'
 
 export type FeedbackTone = 'info' | 'success' | 'warning' | 'error' | 'danger'
@@ -224,6 +225,17 @@ export function UiFeedbackHost() {
         : 0
   const focusId =
     request?.kind === 'messagebox' && request.box?.cancelId === undefined ? defaultId : cancelId
+  const isUpdateStatus = request?.box?.visual === 'update-status'
+  const isDismissibleInfo = Boolean(
+    request &&
+    (request.kind === 'alert' ||
+      isUpdateStatus ||
+      (request.kind === 'messagebox' &&
+        buttons.length <= 1 &&
+        request.options.tone !== 'danger' &&
+        request.options.tone !== 'error' &&
+        request.box?.type !== 'error')),
+  )
 
   useEffect(() => {
     if (!request) return
@@ -292,21 +304,54 @@ export function UiFeedbackHost() {
         <div
           className="ui-feedback-backdrop"
           onMouseDown={(event) => {
-            if (event.target === event.currentTarget && request.kind === 'confirm')
-              settleDialog(request.id, 0)
+            if (event.target === event.currentTarget) {
+              if (request.kind === 'confirm') {
+                settleDialog(request.id, 0)
+              } else if (isDismissibleInfo) {
+                settleDialog(
+                  request.id,
+                  cancelIndex(request),
+                  checkboxRef.current?.checked ?? request.box?.checkboxChecked ?? false,
+                )
+              }
+            }
           }}
         >
           <div
             ref={dialogRef}
-            className={`ui-feedback-dialog tone-${request.options.tone ?? 'info'}`}
+            className={`ui-feedback-dialog tone-${request.options.tone ?? 'info'}${isUpdateStatus ? ' ui-feedback-dialog--update-status' : ''}`}
             role="dialog"
-            aria-modal="true"
+            aria-modal={isUpdateStatus ? 'false' : 'true'}
             aria-labelledby="ui-feedback-title"
             aria-describedby={
               request.box?.detail ? 'ui-feedback-message ui-feedback-detail' : 'ui-feedback-message'
             }
             tabIndex={-1}
           >
+            {isDismissibleInfo && (
+              <button
+                type="button"
+                className="ui-feedback-dialog-close"
+                aria-label={words.close}
+                onClick={() =>
+                  settleDialog(
+                    request.id,
+                    cancelIndex(request),
+                    checkboxRef.current?.checked ?? request.box?.checkboxChecked ?? false,
+                  )
+                }
+              >
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path
+                    d="m5.5 5.5 9 9m0-9-9 9"
+                    stroke="currentColor"
+                    strokeWidth="1.6"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            )}
+            {isUpdateStatus && <UpdateArtwork variant="up-to-date" />}
             <div className="ui-feedback-dialog-heading">
               <span className="ui-feedback-icon">
                 <FeedbackIcon tone={request.options.tone ?? 'info'} />

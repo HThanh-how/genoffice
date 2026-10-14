@@ -1,4 +1,4 @@
-import { showAppMessageBox } from './app-message-box'
+import { showAppMessageBox, showUpdateStatusMessageBox } from './app-message-box'
 import { spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
@@ -165,7 +165,7 @@ export async function checkForkUpdates(
     }
     if (compareVersions(release.version, app.getVersion()) <= 0) {
       if (background) return
-      await showAppMessageBox({
+      await showUpdateStatusMessageBox({
         type: 'info',
         title,
         message: vietnamese
