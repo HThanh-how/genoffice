@@ -379,68 +379,96 @@ export function tabMenuTemplate(input: TabMenuInput): MenuItemConstructorOptions
     { id: 'saveAs', label: words.saveAs, enabled: document, click: () => actions.saveAs(tab.id) },
     { id: 'print', label: words.print, enabled: document, click: () => actions.print(tab.id) },
     { type: 'separator' },
-    { label: words.rename, enabled: !!file, click: () => actions.rename(tab.id) },
-    { label: words.duplicate, enabled: onDisk, click: () => actions.duplicate(file!) },
+    { id: 'rename', label: words.rename, enabled: !!file, click: () => actions.rename(tab.id) },
+    {
+      id: 'duplicate',
+      label: words.duplicate,
+      enabled: onDisk,
+      click: () => actions.duplicate(file!),
+    },
     { type: 'separator' },
     {
+      id: 'splitBeside',
       label: words.splitBeside,
       enabled: input.canDetach,
       click: () => actions.splitBeside(tab.id),
     },
     {
+      id: 'openInNewWindow',
       label: input.labels.openInNewWindow,
       enabled: input.canDetach,
       click: () => actions.openInNewWindow(tab.id),
     },
     { type: 'separator' },
-    { label: words.copyPath, enabled: !!file, click: () => actions.copyText(file!) },
-    { label: words.copyName, enabled: !!file, click: () => actions.copyText(baseName(file!)) },
-    { label: words.reveal, enabled: onDisk, click: () => actions.reveal(file!) },
     {
+      id: 'copyPath',
+      label: words.copyPath,
+      enabled: !!file,
+      click: () => actions.copyText(file!),
+    },
+    {
+      id: 'copyName',
+      label: words.copyName,
+      enabled: !!file,
+      click: () => actions.copyText(baseName(file!)),
+    },
+    { id: 'reveal', label: words.reveal, enabled: onDisk, click: () => actions.reveal(file!) },
+    {
+      id: 'openDefault',
       label: words.openDefault,
       enabled: onDisk && !isProgramFile(file!),
       click: () => actions.openDefault(file!),
     },
     { type: 'separator' },
     {
+      id: 'moveLeft',
       label: words.moveLeft,
       enabled: index > 1,
       click: () => actions.move(tab.id, index - 1),
     },
     {
+      id: 'moveRight',
       label: words.moveRight,
       enabled: index >= 1 && index < tabs.length - 1,
       click: () => actions.move(tab.id, index + 1),
     },
     { type: 'separator' },
-    { label: input.labels.close, enabled: closable(tab), click: () => actions.closeTabs([tab.id]) },
     {
+      id: 'close',
+      label: input.labels.close,
+      enabled: closable(tab),
+      click: () => actions.closeTabs([tab.id]),
+    },
+    {
+      id: 'closeOthers',
       label: words.closeOthers,
       enabled: others.length > 0,
       click: () => actions.closeTabs(others.map((other) => other.id)),
     },
     {
+      id: 'closeRight',
       label: words.closeRight,
       enabled: right.length > 0,
       click: () => actions.closeTabs(right.map((other) => other.id)),
     },
     {
+      id: 'closeAll',
       label: words.closeAll,
       enabled: everything.length > 0,
       click: () => actions.closeTabs(everything.map((other) => other.id)),
     },
     { type: 'separator' },
-    { label: words.reopen, enabled: input.canReopen, click: () => actions.reopenClosed() },
+    {
+      id: 'reopen',
+      label: words.reopen,
+      enabled: input.canReopen,
+      click: () => actions.reopenClosed(),
+    },
   ]
 
-  const iconForLabel = new Map<string, TabMenuIcon>([
-    ...Object.entries(words).map(([key, label]) => [label, key as TabMenuIcon] as const),
-    [input.labels.openInNewWindow, 'openInNewWindow'],
-    [input.labels.close, 'close'],
-  ])
-
   return template.map((item) => {
-    const icon = item.label ? input.icons?.[iconForLabel.get(item.label)!] : undefined
+    if (item.type === 'separator' || !item.id) return item
+    const icon = input.icons?.[item.id as TabMenuIcon]
     return icon ? { ...item, icon } : item
   })
 }

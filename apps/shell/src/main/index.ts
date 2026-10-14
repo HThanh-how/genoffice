@@ -348,6 +348,7 @@ import { sanitizeFileBase } from './mcp/tools/document-tools'
 import { runHeadlessExport, type HeadlessExporters } from './headless-export'
 import { TabManager } from './tab-manager'
 import { tabMenuTemplate, tabMenuWords, type TabMenuActions, isProgramFile } from './tab-menu'
+import { tabActionIcons } from './tab-menu-icons'
 import { runTabDocumentAction, type TabDocumentAction } from './tab-document-actions'
 import { duplicateDocumentFile } from './tab-duplicate'
 import { closeTabsInOrder, createRecentlyClosedTracker } from './tab-lifecycle'
@@ -5246,6 +5247,7 @@ function registerTabsIpc(): void {
       words: tabMenuWords(currentLang()),
       labels: { openInNewWindow: tm('menuOpenInNewWindow'), close: tm('menuClose') },
       actions: tabMenuActions(),
+      icons: tabActionIcons(),
     })
     Menu.buildFromTemplate(template).popup({
       window: shellWindow,
