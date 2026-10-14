@@ -320,12 +320,16 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
           html: customizerHtml,
           css: customizerCss,
         })
-        if (res) {
-          onUpdateState(res)
+        if (res?.ok) {
+          onUpdateState(res.state)
           setShowCustomizer(false)
           setErrorMessage('')
           setStatusMessage(isVi ? 'Đã lưu thẻ tùy chỉnh!' : 'Custom card saved!')
           setTimeout(() => setStatusMessage(''), 3000)
+        } else {
+          setErrorMessage(
+            res?.error ?? (isVi ? 'Lưu thẻ HTML thất bại' : 'Failed to save HTML card'),
+          )
         }
       } catch (err) {
         setErrorMessage(err instanceof Error ? err.message : String(err))
@@ -538,13 +542,13 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
           isBuiltIn: false,
           tags: ['ai-generated', 'ai-html'],
         }
-        const nextState = await api.saveOpeningHtmlCard?.({
+        const res = await api.saveOpeningHtmlCard?.({
           card: cardToSave,
           html: editDraftHtml,
           css: editDraftCss,
         })
-        if (nextState) {
-          onUpdateState(nextState)
+        if (res?.ok) {
+          onUpdateState(res.state)
           setShowAiModal(false)
           setAiPreviewCard(null)
           setAiHtmlDraft(null)
@@ -554,6 +558,8 @@ export function OpeningCardStudio({ state, lang, onUpdateState, onPreview }: Stu
             isVi ? 'Đã lưu thẻ HTML AI vào bộ sưu tập!' : 'AI HTML card saved to your collection!',
           )
           setTimeout(() => setStatusMessage(''), 3000)
+        } else {
+          setAiError(res?.error ?? (isVi ? 'Lưu thẻ HTML thất bại' : 'Failed to save HTML card'))
         }
       } catch (err) {
         setAiError(err instanceof Error ? err.message : String(err))

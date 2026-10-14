@@ -89,7 +89,7 @@ export async function storeHtmlCardAsset(
   }
 
   const cssResult = sanitizeOpeningCss(rawCss)
-  if (!cssResult.ok || !cssResult.sanitizedCss) {
+  if (!cssResult.ok || typeof cssResult.sanitizedCss !== 'string') {
     throw new Error(cssResult.error || 'CSS validation failed')
   }
 

@@ -37,6 +37,7 @@ import type {
   FileSearchSettings,
   LegacyConvertState,
   OpeningEffectsState,
+  SaveOpeningHtmlCardResult,
   LegacyDocSettings,
 } from '../shared/home-api'
 import type { StoredHtmlAsset } from '../shared/opening-card-types'
@@ -437,7 +438,7 @@ const homeApi: HomeApi = {
     return (await ipcRenderer.invoke(
       HOME_CHANNELS.saveOpeningHtmlCard,
       input,
-    )) as OpeningEffectsState
+    )) as SaveOpeningHtmlCardResult
   },
   async readOpeningHtmlCard(htmlAssetId) {
     return (await ipcRenderer.invoke(

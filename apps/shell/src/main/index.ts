@@ -46,6 +46,7 @@ import {
   resolveSafeHtmlAssetPath as resolveSafeHtmlAssetPathFork,
   storeHtmlCardAsset,
 } from './fork/opening-html-storage'
+import { sanitizeOpeningCss, sanitizeOpeningHtml } from './fork/opening-card-html-sanitizer'
 import {
   defaultAiSettings,
   imageGenerationAvailable,
@@ -357,7 +358,7 @@ import type {
   LegacyDocSettings,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
-import type { OpeningEffectsState } from '../shared/home-api'
+import type { OpeningEffectsState, SaveOpeningHtmlCardResult } from '../shared/home-api'
 import { DOCUMENT_INDEX_CHANNELS, type PasteFilesResult } from '../shared/fork/document-index-api'
 import { registerHomeChatIpc } from './fork/home-chat-ipc'
 import { registerDocumentIndexIpc } from './fork/document-index-ipc'
@@ -5435,19 +5436,55 @@ function registerHomeIpc(): void {
   })
   ipcMain.handle(
     HOME_CHANNELS.saveOpeningHtmlCard,
-    async (_event, input: unknown): Promise<OpeningEffectsState> => {
-      if (!input || typeof input !== 'object') return openingEffectsState()
+    async (_event, input: unknown): Promise<SaveOpeningHtmlCardResult> => {
+      if (!input || typeof input !== 'object') {
+        return { ok: false, error: 'Invalid input payload: expected an object' }
+      }
       const { card, html, css } = input as {
-        card: OpeningCardDefinition
-        html: string
-        css: string
+        card?: unknown
+        html?: unknown
+        css?: unknown
       }
-      const validation = validateCardDefinition(card)
+      if (!card || typeof card !== 'object') {
+        return { ok: false, error: 'Invalid card definition: expected an object' }
+      }
+      if (typeof html !== 'string' || !html.trim()) {
+        return { ok: false, error: 'HTML content cannot be empty' }
+      }
+      if (typeof css !== 'string') {
+        return { ok: false, error: 'CSS content must be a string' }
+      }
+
+      const validation = validateCardDefinition(card as OpeningCardDefinition)
       if (!validation.ok || !validation.card) {
-        return openingEffectsState()
+        return { ok: false, error: validation.error || 'Invalid card definition' }
       }
+
+      const htmlSanitize = sanitizeOpeningHtml(html)
+      if (!htmlSanitize.ok || !htmlSanitize.sanitizedHtml) {
+        return {
+          ok: false,
+          error: `HTML sanitization failed: ${htmlSanitize.error || 'unsafe or invalid elements'}`,
+        }
+      }
+
+      const cssSanitize = sanitizeOpeningCss(css)
+      if (!cssSanitize.ok || typeof cssSanitize.sanitizedCss !== 'string') {
+        return {
+          ok: false,
+          error: `CSS validation failed: ${cssSanitize.error || 'prohibited or invalid rules'}`,
+        }
+      }
+
+      let storedAssetId: string | undefined
       try {
-        const stored = await storeHtmlCardAsset(app.getPath('userData'), html, css)
+        const stored = await storeHtmlCardAsset(
+          app.getPath('userData'),
+          htmlSanitize.sanitizedHtml,
+          cssSanitize.sanitizedCss,
+        )
+        storedAssetId = stored.assetId
+
         const finalCard: OpeningCardDefinition = {
           ...validation.card,
           contentKind: 'ai-html',
@@ -5459,9 +5496,20 @@ function registerHomeIpc(): void {
         const customCards =
           idx >= 0 ? existing.map((c, i) => (i === idx ? finalCard : c)) : [...existing, finalCard]
         writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', { ...prefs, customCards })
-        return openingEffectsState()
-      } catch {
-        return openingEffectsState()
+        const finalState = openingEffectsState()
+        return { ok: true, state: finalState, ...finalState }
+      } catch (err) {
+        if (storedAssetId) {
+          try {
+            deleteHtmlCardAsset(app.getPath('userData'), storedAssetId)
+          } catch {
+            // best-effort rollback cleanup
+          }
+        }
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+        }
       }
     },
   )

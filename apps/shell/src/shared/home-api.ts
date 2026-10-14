@@ -95,6 +95,10 @@ export interface OpeningEffectsState {
   effectiveScenes?: Record<OpeningApp, EffectiveOpeningCard>
 }
 
+export type SaveOpeningHtmlCardResult =
+  | ({ ok: true; state: OpeningEffectsState } & Partial<OpeningEffectsState>)
+  | { ok: false; error: string }
+
 export interface LegacyRecoveryEntry {
   id: string
   sourcePath: string
@@ -433,7 +437,7 @@ export interface HomeApi extends ForkHomeApi {
     card: OpeningCardDefinition
     html: string
     css: string
-  }): Promise<OpeningEffectsState>
+  }): Promise<SaveOpeningHtmlCardResult>
   readOpeningHtmlCard?(htmlAssetId: string): Promise<StoredHtmlAsset | null>
   deleteOpeningCard(cardId: string): Promise<OpeningEffectsState>
   importOpeningMedia(
