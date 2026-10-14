@@ -47,7 +47,7 @@ import {
 } from '../../../slides/src/main/slides-main'
 import { rendererUrl, safeExternalUrl } from '@genoffice/electron-utils'
 import type { DocumentTabKind, OpenDocumentTab, TabKind, TabSummary } from '../shared/tabs-api'
-import { TAB_STRIP_HEIGHT } from '../shared/tab-drag-geometry'
+import { TAB_STRIP_HEIGHT, isSettledRect } from '../shared/tab-drag-geometry'
 import { OpeningOverlays, type OverlayDeps } from './fork/opening-overlay'
 import { attachRendererDiagnostics, type DiagnosticsWrite } from './fork/renderer-diagnostics'
 import type { SplashApp } from './fork/opening-window'
@@ -118,6 +118,7 @@ export class TabManager {
   private overlaySuppressed = false
   private diagnosticsWrite: DiagnosticsWrite | null = null
   private documentReadyListener: ((tabId: string) => void) | null = null
+  private lifecycleInstrumented = false
 
   constructor(
     private readonly shellWindow: BrowserWindow,
@@ -138,6 +139,15 @@ export class TabManager {
       this.layout()
       setImmediate(() => this.layout())
     })
+    // Windows fires `restore` when a minimized window comes back from the taskbar,
+    // sometimes before the client bounds have settled — the same stale-geometry
+    // race as Linux/X11 maximize (issue #15). Reconcile synchronously (the bounds
+    // are usually already right) and once more on the next tick. Bounded: exactly
+    // two layout passes per restore, no polling, no recurring timers.
+    shellWindow.on('restore', () => {
+      this.reconcileAfterWindowRestore()
+      setImmediate(() => this.reconcileAfterWindowRestore())
+    })
   }
 
   private scheduleSpareSheetsView(delayMs: number): void {
@@ -153,7 +163,10 @@ export class TabManager {
       setActiveSheetsWebContents(active.view?.webContents ?? null)
       this.shellWindow.contentView.addChildView(view)
       view.setVisible(false)
-      view.setBounds(this.contentBounds())
+      // the window may be minimized or mid-restore when the spare spawns; a
+      // degenerate rect would leave the spare zero-sized until its next layout
+      const bounds = this.contentBounds()
+      if (isSettledRect(bounds)) view.setBounds(bounds)
       view.webContents.once('render-process-gone', () => {
         if (this.spareSheetsView !== view) return
         this.spareSheetsView = null
@@ -229,9 +242,25 @@ export class TabManager {
   layout(): void {
     // Deferred resize layouts can land after the shell window was closed.
     if (this.shellWindow.isDestroyed()) return
+    const bounds = this.contentBounds()
+    // A minimized or mid-restore window can report a degenerate client rect;
+    // applying it would shrink the active view to nothing — the white screen
+    // after a Windows taskbar restore. Keep the last good layout instead.
+    if (!isSettledRect(bounds)) return
     const active = this.tabs.find((t) => t.id === this.activeId)
-    if (active?.view) active.view.setBounds(this.contentBounds())
-    this.overlays?.layout(this.activeId, this.contentBounds())
+    if (active?.view) active.view.setBounds(bounds)
+    this.overlays?.layout(this.activeId, bounds)
+  }
+
+  /**
+   * Re-fit the active view and its opening overlay after the native window
+   * returns from the taskbar. Deliberately narrower than activateTab: no
+   * visibility toggles, no focus, no menu, no onChanged — the active tab, its
+   * WebContentsView and every other document stay exactly as they were.
+   */
+  reconcileAfterWindowRestore(): void {
+    if (this.shellWindow.isDestroyed() || this.shellWindow.isMinimized()) return
+    this.layout()
   }
 
   /**
@@ -265,6 +294,37 @@ export class TabManager {
   /** Record what each new tab's page does while it loads (for tracking down a tab that comes up white). */
   setDiagnostics(write: DiagnosticsWrite | null): void {
     this.diagnosticsWrite = write
+    if (write && !this.lifecycleInstrumented) {
+      this.lifecycleInstrumented = true
+      this.instrumentWindowLifecycle()
+    }
+  }
+
+  /**
+   * Compact window-lifecycle records around minimize/restore so a restored
+   * window that comes back white can be traced to geometry, visibility or a
+   * dead renderer. One line per lifecycle event, never document contents or
+   * file paths; the snapshot reads the *current* writer so clearing or
+   * replacing diagnostics also retires the lifecycle lines.
+   */
+  private instrumentWindowLifecycle(): void {
+    const win = this.shellWindow
+    const snapshot = (event: string): void => {
+      const write = this.diagnosticsWrite
+      if (!write || win.isDestroyed()) return
+      const active = this.tabs.find((t) => t.id === this.activeId)
+      const bounds = win.getContentBounds()
+      const wc = active?.view?.webContents
+      write(
+        `${new Date().toISOString()} [window] ${event} minimized=${win.isMinimized()} visible=${win.isVisible()} content=${bounds.width}x${bounds.height} active=${active?.kind ?? 'none'} renderer=${wc ? (wc.isDestroyed() ? 'gone' : 'alive') : 'none'}`,
+      )
+    }
+    win.on('minimize', () => snapshot('minimize'))
+    win.on('restore', () => snapshot('restore'))
+    win.on('maximize', () => snapshot('maximize'))
+    win.on('unmaximize', () => snapshot('unmaximize'))
+    win.on('show', () => snapshot('show'))
+    win.on('focus', () => snapshot('focus'))
   }
 
   private instrument(view: WebContentsView, kind: TabKind, openPath: string | undefined): void {
@@ -536,10 +596,13 @@ export class TabManager {
     const target = this.tabs.find((t) => t.id === id)
     if (!target) return
     for (const t of this.tabs) t.view?.setVisible(t.id === id)
-    if (target.view) target.view.setBounds(this.contentBounds())
+    const bounds = this.contentBounds()
+    // a bring-forward while the window is minimized or mid-restore must not
+    // zero-size the view being activated (same guard as layout())
+    if (target.view && isSettledRect(bounds)) target.view.setBounds(bounds)
     this.activeId = id
     this.overlays?.activate(id)
-    this.overlays?.layout(id, this.contentBounds())
+    if (isSettledRect(bounds)) this.overlays?.layout(id, bounds)
     if (target.kind === 'sheets') this.scheduleSpareSheetsView(3000)
     else this.discardSpareSheetsView()
     this.refreshActiveTargets()
