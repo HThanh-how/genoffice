@@ -27,7 +27,7 @@ test('About saves a validated source and offers an immediate update check', asyn
     await source.fill('../invalid')
     await page.getByRole('button', { name: 'Save', exact: true }).click()
     await expect(page.locator('.set-field-desc[role="status"]')).toHaveText(
-      'Invalid update source or connection failed.',
+      'Invalid repository format. Use owner/repository.',
     )
     expect(
       JSON.parse(await readFile(join(userDataDir, 'app-settings.json'), 'utf8')).updateSource,
