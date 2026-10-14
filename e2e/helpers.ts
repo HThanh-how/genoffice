@@ -34,6 +34,8 @@ interface LaunchOptions {
   scanFolder?: string
   /** extra environment variables for the launched app */
   env?: Record<string, string>
+  /** renderer viewport for layout screenshots (e.g. 1024x768, 1920x1080) */
+  viewport?: { width: number; height: number; deviceScaleFactor?: number }
 }
 
 export interface LaunchedApp {
@@ -74,6 +76,7 @@ export async function launchShell(options: LaunchOptions): Promise<LaunchedApp> 
   const app = await electron.launch({
     executablePath,
     args,
+    ...(options.viewport ? { viewport: options.viewport } : {}),
     env: {
       ...hostEnv,
       GENOFFICE_USER_DATA: userDataDir,
