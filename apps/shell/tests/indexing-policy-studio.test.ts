@@ -21,6 +21,7 @@ import {
   getIgnorePolicyGeneration,
   setKnownRootsResolver,
   clearRegexCache,
+  isPathCaseInsensitive,
   DEFAULT_IGNORE_RULES,
   DEFAULT_INDEXING_PRESETS,
   type IgnoreRule,
@@ -282,8 +283,29 @@ describe('Enterprise Indexing Policy Studio — Comprehensive Suite', () => {
       ]
       setActiveIgnoreRules(rules)
 
+      // The exact-case pattern always matches the exact-case path.
       expect(isPathIgnored('/var/data/ExactCase.txt')).toBe(true)
-      expect(isPathIgnored('/var/data/exactcase.txt')).toBe(false)
+
+      // Case sensitivity is a property of the filesystem, not of the pattern.
+      // isPathCaseInsensitive() reports Windows (native, drive-relative and
+      // UNC paths) as case-insensitive and POSIX paths as case-sensitive,
+      // matching the platform contract already asserted in
+      // ignore-metadata-production-regression.test.ts.
+      const windows = process.platform === 'win32'
+
+      expect(isPathCaseInsensitive('/var/data/ExactCase.txt')).toBe(windows)
+
+      if (windows) {
+        // On Windows "/var/data/..." is drive-relative (C:\var\data\...), so
+        // exactcase.txt and ExactCase.txt are the same file and the rule must
+        // match both spellings.
+        expect(isPathIgnored('/var/data/exactcase.txt')).toBe(true)
+        expect(isPathIgnored('C:\\var\\data\\EXACTCASE.TXT')).toBe(true)
+      } else {
+        // On POSIX the pattern contract is exact: a different case is a
+        // different file and must not be ignored.
+        expect(isPathIgnored('/var/data/exactcase.txt')).toBe(false)
+      }
     })
 
     it('12. UNC paths parsed and evaluated cleanly', () => {
