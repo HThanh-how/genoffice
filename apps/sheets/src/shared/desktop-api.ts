@@ -2588,7 +2588,16 @@ export const aiSettingsInputSchema = z
     search: z
       .object({
         provider: z.string().min(1),
-        providers: z.record(z.string(), z.object({ apiKey: z.string() }).strict()),
+        providers: z.record(
+          z.string(),
+          z
+            .object({
+              apiKey: z.string(),
+              cliPath: z.string().optional(),
+              model: z.string().optional(),
+            })
+            .strict(),
+        ),
       })
       .strict()
       .optional(),

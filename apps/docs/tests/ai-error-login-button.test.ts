@@ -100,6 +100,7 @@ describe('AI error bubble sign-in button', () => {
       let listener: ChunkListener | null = null
       ;(window as unknown as Record<string, unknown>).desktop = {
         aiGskStatus: vi.fn(async () => ({ loggedIn: false })),
+        getGeminiModels: vi.fn(async () => []),
         onAiStream: (l: ChunkListener) => {
           listener = l
           return () => {
@@ -141,12 +142,13 @@ describe('AI error bubble sign-in button', () => {
     }
   })
 
-  it('offers the sign-in button when Genspark is the provider', async () => {
+  it('keeps sign-in absent when a legacy Genspark selection is encountered', async () => {
     const editor = createEditor()
     try {
       let listener: ChunkListener | null = null
       ;(window as unknown as Record<string, unknown>).desktop = {
         aiGskStatus: vi.fn(async () => ({ loggedIn: false })),
+        getGeminiModels: vi.fn(async () => []),
         onAiStream: (l: ChunkListener) => {
           listener = l
           return () => {
@@ -180,7 +182,7 @@ describe('AI error bubble sign-in button', () => {
         await flush()
       })
       expect(container.querySelector('.ai-msg-error')).not.toBeNull()
-      expect(container.querySelector('.ai-login-btn')).not.toBeNull()
+      expect(container.querySelector('.ai-login-btn')).toBeNull()
       act(() => mounted.root.unmount())
     } finally {
       editor.destroy()

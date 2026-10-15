@@ -59,7 +59,9 @@ describe('the open dialog and the external-open guard', () => {
   const source = readFileSync(join(import.meta.dirname, '../src/main/docs-main.ts'), 'utf8')
 
   it('offers exactly the extensions the guard accepts', () => {
-    expect(source).toContain('extensions: [...OPENABLE_DOC_EXTENSIONS]')
+    expect(source).toContain(
+      "extensions: [...OPENABLE_DOC_EXTENSIONS, ...(shellHooks ? ['doc'] : [])]",
+    )
     expect(source).not.toMatch(/extensions: \[[^\]]*'odt'[^\]]*\]/)
   })
 
