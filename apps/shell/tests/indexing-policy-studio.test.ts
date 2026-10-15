@@ -512,7 +512,10 @@ describe('Enterprise Indexing Policy Studio — Comprehensive Suite', () => {
       writeFileSync(realFile, 'external content\n', 'utf-8')
 
       const symlinkPath = join(rootA, '.genofficeignore')
-      symlinkSync(realFile, symlinkPath)
+      // Directory junctions exercise the same link guard without Windows symlink privileges.
+      const linkTarget = process.platform === 'win32' ? join(tempDir, 'external') : realFile
+      if (process.platform === 'win32') mkdirSync(linkTarget)
+      symlinkSync(linkTarget, symlinkPath, process.platform === 'win32' ? 'junction' : 'file')
 
       const saveRes = writeGenOfficeIgnoreFile(rootA, 'attempted overwrite\n')
       expect(saveRes.ok).toBe(false)

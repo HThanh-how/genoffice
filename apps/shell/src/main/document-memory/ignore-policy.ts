@@ -337,6 +337,7 @@ export function bumpIgnorePolicyGeneration(): void {
 function recordLocalGenOfficeIgnoreRevision(): boolean {
   localCacheRevision++
   if (isWorkerReplica) {
+    clearPolicyCaches()
     return false
   }
   bumpIgnorePolicyGeneration()
@@ -404,6 +405,8 @@ interface CompiledRule {
   normScopeLower: string
   isExtensionOnly: boolean
   extensionLower?: string
+  requiredSegment?: string
+  requiredSegmentLower?: string
   regex: RegExp
   regexCI: RegExp
 }
@@ -428,6 +431,7 @@ interface AllowRuleIndex {
   prefix: string | null
   prefixLower: string | null
   prefixSegments: string[]
+  unanchored: boolean
 }
 
 let allowRuleIndex: AllowRuleIndex[] = []
@@ -453,6 +457,7 @@ export function clearRegexCache(): void {
 function clearPolicyCaches(): void {
   regexCache.clear()
   evalCache.clear()
+  evaluationRootCache.clear()
   allowCheckCache.clear()
   allowRuleIndexGeneration = -1
   compiledRulesGeneration = -1
@@ -518,7 +523,9 @@ export function globToRegex(
   }
 
   if (matchAnywhere) {
-    regexStr = '(?:^|.*/)' + regexStr
+    // Anchor the search once; an unanchored alternation retries a failing glob
+    // at every character of a long path, even between component boundaries.
+    regexStr = '^(?:.*/)?' + regexStr
   } else if (regexStr.startsWith('/')) {
     regexStr = '^' + regexStr.slice(1)
   } else {
@@ -541,6 +548,7 @@ function compileSingleRule(rule: IgnoreRule): CompiledRule {
   const p = rule.pattern.trim()
   const isExtOnly = /^\*\.[a-zA-Z0-9_-]+$/.test(p)
   const ext = isExtOnly ? p.slice(1).toLowerCase() : undefined
+  const requiredSegment = literalPatternSegments(p)[0]
 
   return {
     raw: rule,
@@ -550,6 +558,8 @@ function compileSingleRule(rule: IgnoreRule): CompiledRule {
     normScopeLower,
     isExtensionOnly: isExtOnly,
     extensionLower: ext,
+    requiredSegment,
+    requiredSegmentLower: requiredSegment?.toLowerCase(),
     regex: globToRegex(rule.pattern, false),
     regexCI: globToRegex(rule.pattern, true),
   }
@@ -598,6 +608,35 @@ interface CachedIgnore {
 
 const genOfficeIgnoreCache = new Map<string, CachedIgnore>()
 const MAX_GENOFFICEIGNORE_CACHE = 150
+type RootIgnoreDetails = ReturnType<typeof readGenOfficeIgnoreDetailed>
+const evaluationRootCache = new Map<string, RootIgnoreDetails>()
+let evaluationRootCacheTurn: ReturnType<typeof setImmediate> | undefined
+const compiledRootRuleCache = new WeakMap<IgnoreRule[], CompiledRule[]>()
+
+/** Share a root's filesystem check within one turn of a scan, never across turns. */
+function evaluationRootDetails(root: string): RootIgnoreDetails {
+  const cached = evaluationRootCache.get(root)
+  if (cached) return cached
+  const details = readGenOfficeIgnoreDetailed(root)
+  evaluationRootCache.set(root, details)
+  if (!evaluationRootCacheTurn) {
+    evaluationRootCacheTurn = setImmediate(() => {
+      evaluationRootCacheTurn = undefined
+      evaluationRootCache.clear()
+    })
+    evaluationRootCacheTurn.unref()
+  }
+  return details
+}
+
+function compileRootRules(rules: IgnoreRule[]): CompiledRule[] {
+  let compiled = compiledRootRuleCache.get(rules)
+  if (!compiled) {
+    compiled = rules.map(compileSingleRule)
+    compiledRootRuleCache.set(rules, compiled)
+  }
+  return compiled
+}
 
 let knownRootsResolver: (() => string[]) | null = null
 
@@ -1433,10 +1472,15 @@ export function resolveIndexedRoot(targetPath: string, explicitRoot?: string): s
 
 /**
  * Literal leading path segments of a glob, up to the first wildcard.
- * "2026/reports/**" => ["2026", "reports"]; "**/target.docx" => [].
+ * Skip leading globstars, then keep segments up to the first remaining wildcard.
  */
 function literalPatternSegments(pattern: string): string[] {
-  const p = pattern.trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
+  const p = pattern
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/^(?:\*\*\/)+/, '')
+    .replace(/\/+$/, '')
   if (!p) return []
 
   const segments: string[] = []
@@ -1464,6 +1508,7 @@ function ensureAllowRuleIndex(): AllowRuleIndex[] {
       prefix,
       prefixLower: prefix ? prefix.toLowerCase() : null,
       prefixSegments: segments,
+      unanchored: rule.pattern.trim().replace(/\\/g, '/').startsWith('**/'),
     })
   }
 
@@ -1475,9 +1520,7 @@ function ensureAllowRuleIndex(): AllowRuleIndex[] {
 /** dir is the subtree itself, inside it, or an ancestor of it. */
 function pathOverlaps(dirComp: string, subtree: string): boolean {
   return (
-    dirComp === subtree ||
-    dirComp.startsWith(subtree + '/') ||
-    subtree.startsWith(dirComp + '/')
+    dirComp === subtree || dirComp.startsWith(subtree + '/') || subtree.startsWith(dirComp + '/')
   )
 }
 
@@ -1505,6 +1548,23 @@ function relativePrefixRescuesDirectory(
   return false
 }
 
+function scopedPrefixRescuesDirectory(
+  dirComp: string,
+  scope: string,
+  prefix: string,
+  segments: string[],
+  unanchored: boolean,
+): boolean {
+  if (!unanchored) return pathOverlaps(dirComp, `${scope}/${prefix}`)
+  if (!pathOverlaps(dirComp, scope)) return false
+  if (dirComp === scope || scope.startsWith(dirComp + '/')) return true
+  return relativePrefixRescuesDirectory(
+    dirComp.slice(scope.length).replace(/^\/+/, ''),
+    prefix,
+    segments,
+  )
+}
+
 /**
  * Determines whether a directory may contain an explicitly allowed descendant.
  * Prevents pruning directories that hold specifically allowed files without
@@ -1514,7 +1574,8 @@ export function mayContainExplicitAllow(dirPath: string, root?: string): boolean
   const normDir = normalizePath(dirPath).replace(/\/+$/, '')
   const isCI = isPathCaseInsensitive(dirPath)
   const dirComp = isCI ? normDir.toLowerCase() : normDir
-  const cacheKey = `${dirComp}::${policyGeneration}`
+  const resolvedRoot = resolveIndexedRoot(dirPath, root)
+  const cacheKey = `${dirComp}::${resolvedRoot ?? ''}::${policyGeneration}`
 
   const cached = allowCheckCache.get(cacheKey)
   if (cached !== undefined) return cached
@@ -1526,10 +1587,15 @@ export function mayContainExplicitAllow(dirPath: string, root?: string): boolean
     if (entry.scope) {
       const s = isCI ? entry.scopeLower! : entry.scope
       if (entry.prefix) {
-        const subtree = isCI
-          ? `${s}/${entry.prefixLower!}`
-          : `${s}/${entry.prefix}`
-        if (pathOverlaps(dirComp, subtree)) {
+        if (
+          scopedPrefixRescuesDirectory(
+            dirComp,
+            s,
+            isCI ? entry.prefixLower! : entry.prefix,
+            isCI ? entry.prefixSegments.map((part) => part.toLowerCase()) : entry.prefixSegments,
+            entry.unanchored,
+          )
+        ) {
           result = true
           break
         }
@@ -1554,17 +1620,24 @@ export function mayContainExplicitAllow(dirPath: string, root?: string): boolean
 
   // 2. .genofficeignore in the owning root (already cached by mtime/size/ino).
   if (!result) {
-    const resolvedRoot = resolveIndexedRoot(dirPath, root)
     if (resolvedRoot) {
-      for (const rule of readGenOfficeIgnoreDetailed(resolvedRoot).rules) {
+      for (const rule of evaluationRootDetails(resolvedRoot).rules) {
         if (!rule.enabled || rule.action !== 'allow') continue
         const scope = normalizePath(rule.scope).replace(/\/+$/, '')
         const s = isCI ? scope.toLowerCase() : scope
         const segments = literalPatternSegments(rule.pattern)
         if (segments.length > 0) {
           const prefix = segments.join('/')
-          const subtree = isCI ? `${s}/${prefix.toLowerCase()}` : `${s}/${prefix}`
-          if (pathOverlaps(dirComp, subtree)) {
+          const unanchored = rule.pattern.trim().replace(/\\/g, '/').startsWith('**/')
+          if (
+            scopedPrefixRescuesDirectory(
+              dirComp,
+              s,
+              isCI ? prefix.toLowerCase() : prefix,
+              isCI ? segments.map((part) => part.toLowerCase()) : segments,
+              unanchored,
+            )
+          ) {
             result = true
             break
           }
@@ -1595,8 +1668,12 @@ function matchCompiledRule(
   normRoot: string | undefined,
   isCI: boolean,
   extLower: string,
+  pathSegments: ReadonlySet<string>,
 ): boolean {
   if (!cRule.raw.enabled) return false
+  // Most directory exclusions can be rejected without executing their regex.
+  const required = isCI ? cRule.requiredSegmentLower : cRule.requiredSegment
+  if (required && !pathSegments.has(required)) return false
 
   // Scope check
   if (!cRule.isGlobal) {
@@ -1637,23 +1714,23 @@ function matchCompiledRule(
 }
 
 export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchResult {
-  const normTarget = normalizePath(targetPath)
   const resolvedRoot = resolveIndexedRoot(targetPath, root)
-  const normRoot = resolvedRoot ? normalizePath(resolvedRoot) : undefined
-  const cacheKey = `${normTarget}::${normRoot ?? ''}::${policyGeneration}`
+  const cacheKey = `${targetPath}::${resolvedRoot ?? ''}::${policyGeneration}`
 
   const cached = evalCache.get(cacheKey)
   if (cached) {
-    evalCache.delete(cacheKey)
-    evalCache.set(cacheKey, cached)
     return cached
   }
+
+  const normTarget = normalizePath(targetPath)
+  const normRoot = resolvedRoot ? normalizePath(resolvedRoot) : undefined
 
   const isCI =
     isPathCaseInsensitive(targetPath) ||
     (resolvedRoot ? isPathCaseInsensitive(resolvedRoot) : false)
 
   const ext = extname(normTarget).toLowerCase()
+  const pathSegments = new Set((isCI ? normTarget.toLowerCase() : normTarget).split('/'))
   const isSupportedExt = isKnownSupportedExtension(ext)
   const isOutsideRoots = Boolean(snapshotRoots.length > 0 && !resolvedRoot)
 
@@ -1669,7 +1746,7 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
   let effectiveMode = policyMode
   let rootRules: IgnoreRule[] = []
   if (resolvedRoot) {
-    const rootDetails = readGenOfficeIgnoreDetailed(resolvedRoot)
+    const rootDetails = evaluationRootDetails(resolvedRoot)
     if (rootDetails.mode) {
       effectiveMode = rootDetails.mode
     }
@@ -1677,7 +1754,7 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
   }
 
   const active = ensureCompiledRules()
-  const compiledRootRules = rootRules.map(compileSingleRule)
+  const compiledRootRules = compileRootRules(rootRules)
 
   // -------------------------------------------------------------------------
   // Level 1: Explicit User / .genofficeignore Allow rules
@@ -1686,7 +1763,7 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
   for (const cRule of active) {
     if (
       cRule.action === 'allow' &&
-      matchCompiledRule(cRule, normTarget, relPath, normRoot, isCI, ext)
+      matchCompiledRule(cRule, normTarget, relPath, normRoot, isCI, ext, pathSegments)
     ) {
       winningAllowRule = cRule.raw
       break
@@ -1696,7 +1773,7 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
     for (const cRule of compiledRootRules) {
       if (
         cRule.action === 'allow' &&
-        matchCompiledRule(cRule, normTarget, relPath, normRoot, isCI, ext)
+        matchCompiledRule(cRule, normTarget, relPath, normRoot, isCI, ext, pathSegments)
       ) {
         winningAllowRule = cRule.raw
         break
@@ -1711,7 +1788,7 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
   for (const cRule of active) {
     if (
       cRule.action === 'ignore' &&
-      matchCompiledRule(cRule, normTarget, relPath, normRoot, isCI, ext)
+      matchCompiledRule(cRule, normTarget, relPath, normRoot, isCI, ext, pathSegments)
     ) {
       matchingIgnoreRule = cRule.raw
       break
@@ -1721,7 +1798,7 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
     for (const cRule of compiledRootRules) {
       if (
         cRule.action === 'ignore' &&
-        matchCompiledRule(cRule, normTarget, relPath, normRoot, isCI, ext)
+        matchCompiledRule(cRule, normTarget, relPath, normRoot, isCI, ext, pathSegments)
       ) {
         matchingIgnoreRule = cRule.raw
         break
