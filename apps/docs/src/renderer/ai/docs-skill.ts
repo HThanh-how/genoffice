@@ -21,6 +21,7 @@ import {
   type AiDocExtras,
 } from './tools'
 import type { AiNotesAccess } from './note-ops'
+import { verifyDocsResponse } from './response-verify'
 
 const IMAGE_GEN_OFF_NOTE =
   '\n\nNote: generate_image is currently unavailable (no image provider: signed out of Genspark or cloud tools off, and no media API key in Settings). Do not call or promise it; use image_search for imagery.'
@@ -67,6 +68,7 @@ export function createDocsSkill(
       .join('')
   return {
     id: 'docx',
+    verifyResponse: verifyDocsResponse,
     // live: the predicate is re-read before every model request
     get systemPrompt() {
       // only when the open document actually withholds something, so a
