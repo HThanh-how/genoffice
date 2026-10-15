@@ -7,7 +7,7 @@
  * Build first: `npm run build:all`.
  */
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -50,9 +50,17 @@ export async function launchShell(options: LaunchOptions): Promise<LaunchedApp> 
   }
   const userDataDir = options.userDataDir ?? (await mkdtemp(join(tmpdir(), 'genoffice-e2e-')))
   if (options.onboardingSeen || options.settings) {
+    const settingsPath = join(userDataDir, 'app-settings.json')
+    let savedSettings: Record<string, unknown> = {}
+    try {
+      savedSettings = JSON.parse(await readFile(settingsPath, 'utf8'))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
     await writeFile(
-      join(userDataDir, 'app-settings.json'),
+      settingsPath,
       JSON.stringify({
+        ...savedSettings,
         ...(options.onboardingSeen ? { onboardingSeen: true } : {}),
         ...options.settings,
       }),
