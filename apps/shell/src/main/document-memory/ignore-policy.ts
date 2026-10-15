@@ -420,13 +420,14 @@ const MAX_EVAL_CACHE = 10000
 // Pruning-safety answers are memoized per directory and policy generation.
 // shouldSkipDirectory() calls mayContainExplicitAllow() for every candidate
 // pruned directory on the main thread, so an uncached lookup is a real
-// traversal cost. The bound must stay above a typical folder count so a long
-// walk does not evict its own answers.
+// traversal cost. The bound must stay above a typical folder count so that a
+// long walk does not evict its own answers.
 interface AllowRuleIndex {
   scope: string | null
   scopeLower: string | null
   prefix: string | null
   prefixLower: string | null
+  prefixSegments: string[]
 }
 
 let allowRuleIndex: AllowRuleIndex[] = []
@@ -1432,18 +1433,18 @@ export function resolveIndexedRoot(targetPath: string, explicitRoot?: string): s
 
 /**
  * Literal leading path segments of a glob, up to the first wildcard.
- * "2026/reports/**" => "2026/reports"; "**/target.docx" => null.
+ * "2026/reports/**" => ["2026", "reports"]; "**/target.docx" => [].
  */
-function literalPatternPrefix(pattern: string): string | null {
+function literalPatternSegments(pattern: string): string[] {
   const p = pattern.trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '')
-  if (!p) return null
+  if (!p) return []
 
   const segments: string[] = []
   for (const part of p.split('/')) {
     if (!part || part.includes('*') || part.includes('?') || part.includes('[')) break
     segments.push(part)
   }
-  return segments.length > 0 ? segments.join('/') : null
+  return segments
 }
 
 /** Rebuild the allow-rule index once per policy generation. */
@@ -1453,13 +1454,16 @@ function ensureAllowRuleIndex(): AllowRuleIndex[] {
   const built: AllowRuleIndex[] = []
   for (const rule of activeRules) {
     if (!rule.enabled || rule.action !== 'allow') continue
-    const scope = rule.scope !== 'global' ? normalizePath(rule.scope).replace(/\/+$/, '') : null
-    const prefix = literalPatternPrefix(rule.pattern)
+    const isGlobal = rule.scope === 'global'
+    const scope = isGlobal ? null : normalizePath(rule.scope).replace(/\/+$/, '')
+    const segments = literalPatternSegments(rule.pattern)
+    const prefix = segments.length > 0 ? segments.join('/') : null
     built.push({
       scope,
       scopeLower: scope ? scope.toLowerCase() : null,
       prefix,
       prefixLower: prefix ? prefix.toLowerCase() : null,
+      prefixSegments: segments,
     })
   }
 
@@ -1468,26 +1472,43 @@ function ensureAllowRuleIndex(): AllowRuleIndex[] {
   return built
 }
 
-/**
- * Can the subtree an allow rule matches ever live inside this directory?
- * Every test is a path-component boundary test; a bare substring match would
- * rescue "2026/reportsX" for prefix "2026/reports", which is the bug this fixes.
- */
-function prefixRescuesDirectory(dirComp: string, prefix: string): boolean {
-  if (dirComp === prefix) return true
-  // the allowed subtree sits inside this directory
-  if (prefix.startsWith(dirComp + '/')) return true
-  // this directory is inside the allowed subtree
-  if (dirComp.startsWith(prefix + '/') || dirComp === prefix) return true
-  // relative patterns match anywhere, so the directory may be deeper inside
-  // the matched subtree or end exactly on its literal prefix
-  return dirComp.endsWith('/' + prefix) || dirComp.includes('/' + prefix + '/')
+/** dir is the subtree itself, inside it, or an ancestor of it. */
+function pathOverlaps(dirComp: string, subtree: string): boolean {
+  return (
+    dirComp === subtree ||
+    dirComp.startsWith(subtree + '/') ||
+    subtree.startsWith(dirComp + '/')
+  )
 }
 
 /**
- * Determines whether a directory may contain an explicitly allowed descendant,
- * or is itself inside an allowed scope. Prevents pruning directories that hold
- * specifically allowed files without re-walking the rule set per directory.
+ * A global relative pattern such as "2026/reports/**" can match anywhere in the
+ * path, so a directory matters when it is inside the literal prefix, ends on it,
+ * or sits on the way down to it ("/work/2026" for prefix "2026/reports").
+ * Every test is a component-boundary test; a bare substring match would rescue
+ * "2026/reportsX", which is precisely the bug being fixed.
+ */
+function relativePrefixRescuesDirectory(
+  dirComp: string,
+  prefix: string,
+  segments: string[],
+): boolean {
+  if (dirComp === prefix) return true
+  if (dirComp.startsWith(prefix + '/')) return true
+  if (dirComp.endsWith('/' + prefix) || dirComp.includes('/' + prefix + '/')) return true
+
+  let head = ''
+  for (const segment of segments) {
+    head = head ? `${head}/${segment}` : segment
+    if (dirComp === head || dirComp.endsWith('/' + head)) return true
+  }
+  return false
+}
+
+/**
+ * Determines whether a directory may contain an explicitly allowed descendant.
+ * Prevents pruning directories that hold specifically allowed files without
+ * re-walking the rule set for every candidate directory.
  */
 export function mayContainExplicitAllow(dirPath: string, root?: string): boolean {
   const normDir = normalizePath(dirPath).replace(/\/+$/, '')
@@ -1500,23 +1521,35 @@ export function mayContainExplicitAllow(dirPath: string, root?: string): boolean
 
   let result = false
 
-  // 1. Active user rules: a scoped rule overlapping this directory, or a
-  //    global pattern whose literal prefix touches this directory.
+  // 1. Active user rules.
   for (const entry of ensureAllowRuleIndex()) {
     if (entry.scope) {
       const s = isCI ? entry.scopeLower! : entry.scope
-      if (s === dirComp || s.startsWith(dirComp + '/') || dirComp.startsWith(s)) {
-        result = true
-        break
+      if (entry.prefix) {
+        const subtree = isCI
+          ? `${s}/${entry.prefixLower!}`
+          : `${s}/${entry.prefix}`
+        if (pathOverlaps(dirComp, subtree)) {
+          result = true
+          break
+        }
+      } else {
+        // No literal prefix (e.g. "**/*.docx"): the rule can match any file
+        // inside its scope, so directories inside or above the scope matter.
+        if (pathOverlaps(dirComp, s)) {
+          result = true
+          break
+        }
       }
-    }
-    if (!result && entry.prefix) {
+    } else if (entry.prefix) {
       const p = isCI ? entry.prefixLower! : entry.prefix
-      if (prefixRescuesDirectory(dirComp, p)) {
+      if (relativePrefixRescuesDirectory(dirComp, p, entry.prefixSegments)) {
         result = true
         break
       }
     }
+    // A global allow rule without a literal path prefix ("*.docx") cannot
+    // rescue a pruned directory; matching it would defeat pruning entirely.
   }
 
   // 2. .genofficeignore in the owning root (already cached by mtime/size/ino).
@@ -1527,14 +1560,15 @@ export function mayContainExplicitAllow(dirPath: string, root?: string): boolean
         if (!rule.enabled || rule.action !== 'allow') continue
         const scope = normalizePath(rule.scope).replace(/\/+$/, '')
         const s = isCI ? scope.toLowerCase() : scope
-        if (s === dirComp || s.startsWith(dirComp + '/') || dirComp.startsWith(s)) {
-          result = true
-          break
-        }
-        const prefix = literalPatternPrefix(rule.pattern)
-        if (!prefix) continue
-        const p = isCI ? prefix.toLowerCase() : prefix
-        if (prefixRescuesDirectory(dirComp, p)) {
+        const segments = literalPatternSegments(rule.pattern)
+        if (segments.length > 0) {
+          const prefix = segments.join('/')
+          const subtree = isCI ? `${s}/${prefix.toLowerCase()}` : `${s}/${prefix}`
+          if (pathOverlaps(dirComp, subtree)) {
+            result = true
+            break
+          }
+        } else if (pathOverlaps(dirComp, s)) {
           result = true
           break
         }
@@ -1628,7 +1662,7 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
     scopeBase && isSubpathOrEqual(normTarget, scopeBase)
       ? isSubpathOrEqual(scopeBase, normTarget)
         ? ''
-        : normTarget.slice(scopeBase.length).replace(/^\/+/, '')
+        : normTarget.slice(scopeBase.length).replace(/^\/\//, '')
       : normTarget
 
   // Effective mode: .genofficeignore in root overrides global mode
