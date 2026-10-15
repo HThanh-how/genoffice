@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { MenuItemConstructorOptions } from 'electron'
 import type { TabSummary } from '../src/shared/tabs-api'
+import { mainMenuStrings, translateMainMenu, tm } from './helpers/main-menu-strings'
 import {
   baseName,
   isProgramFile,
   pathLabel,
   tabMenuTemplate,
-  tabMenuWords,
   type TabMenuActions,
   type TabMenuInput,
 } from '../src/main/tab-menu'
@@ -55,8 +55,7 @@ function menu(
     canDetach: true,
     fileExists: true,
     canReopen: true,
-    words: tabMenuWords('en'),
-    labels: { openInNewWindow: 'Open in New Window', close: 'Close' },
+    tm,
     actions: given,
     ...extra,
   })
@@ -148,7 +147,7 @@ describe('the tab context menu', () => {
     expect(isProgramFile('legacy.pif')).toBe(true)
     expect(isProgramFile('widget.gadget')).toBe(true)
     // macOS scripts, applications, and workflows
-    expect(isProgramFile('/Users/user/script.command')).toBe(true)
+    expect(isProgramFile('/tmp/x/script.command')).toBe(true)
     expect(isProgramFile('Automator.action')).toBe(true)
     expect(isProgramFile('Auto.workflow')).toBe(true)
     expect(isProgramFile('Script.scpt')).toBe(true)
@@ -175,13 +174,13 @@ describe('the tab context menu', () => {
     expect(isProgramFile('data.csv')).toBe(false)
     expect(isProgramFile('readme.txt')).toBe(false)
     expect(isProgramFile('Báo cáo tổng hợp.docx')).toBe(false)
-    expect(isProgramFile('日本語テスト.xlsx')).toBe(false)
+    expect(isProgramFile('\u65e5\u672c\u8a9eテスト.xlsx')).toBe(false)
 
     const programTab = tab('prog', { filePath: 'D:\\Downloads\\malicious.exe' })
     const progMenu = menu(programTab, [home, programTab], { fileExists: true }).items
     expect(enabled(progMenu.get('Open with the default app'))).toBe(false)
 
-    const commandTab = tab('cmd-tab', { filePath: '/Users/work/script.command' })
+    const commandTab = tab('cmd-tab', { filePath: '/tmp/x/script.command' })
     const cmdMenu = menu(commandTab, [home, commandTab], { fileExists: true }).items
     expect(enabled(cmdMenu.get('Open with the default app'))).toBe(false)
 
@@ -234,6 +233,14 @@ describe('the tab context menu', () => {
     expect(enabled(stuck.get('Open in New Window'))).toBe(false)
   })
 
+  it('disables document commands for the chrome-free Present tab', () => {
+    const preview = tab('preview', { kind: 'html', filePath: '/tmp/x/page.html' })
+    const { items } = menu(preview, [home, preview], { canDetach: false })
+    for (const label of ['Save', 'Save As…', 'Print…'])
+      expect(enabled(items.get(label))).toBe(false)
+    expect(enabled(items.get('Close'))).toBe(true)
+  })
+
   it('reopens a closed tab only when there is one', () => {
     expect(enabled(menu(a, all, { canReopen: false }).items.get('Reopen closed tab'))).toBe(false)
     const { items, actions: given } = menu(a, all)
@@ -241,20 +248,57 @@ describe('the tab context menu', () => {
     expect(given.reopenClosed).toHaveBeenCalled()
   })
 
-  it('localizes menu words correctly across languages', () => {
-    expect(tabMenuWords('vi').closeOthers).toBe('Đóng các thẻ khác')
-    expect(tabMenuWords('vi').splitBeside).toBe('Chia đôi màn hình')
-    expect(tabMenuWords('zh').closeOthers).toBe('关闭其他标签页')
-    expect(tabMenuWords('ja').closeOthers).toBe('他のタブを閉じる')
-    expect(tabMenuWords('fr').closeOthers).toBe('Fermer les autres onglets')
-    expect(tabMenuWords('de').closeOthers).toBe('Andere Tabs schließen')
-    expect(tabMenuWords('es').closeOthers).toBe('Cerrar las demás pestañas')
-    expect(tabMenuWords('unknown').closeOthers).toBe('Close other tabs')
+  it('uses the main table for every supported locale without English fallback', () => {
+    const locales = [
+      'zh',
+      'en',
+      'vi',
+      'ja',
+      'ko',
+      'fr',
+      'de',
+      'es',
+      'th',
+      'id',
+      'ru',
+      'ar',
+      'pt',
+      'it',
+      'pl',
+      'cs',
+      'nl',
+      'ms',
+      'he',
+      'hi',
+      'zh-TW',
+    ] as const
+    expect(Object.keys(mainMenuStrings).sort()).toEqual([...locales].sort())
+    for (const locale of locales) {
+      const localized = menu(a, all, { tm: (key) => translateMainMenu(locale, key) }).raw
+      for (const item of localized) {
+        if (!item.id) continue
+        const key =
+          item.id === 'openInNewWindow'
+            ? 'menuOpenInNewWindow'
+            : item.id === 'close'
+              ? 'menuClose'
+              : `menuTab${item.id[0]!.toUpperCase()}${item.id.slice(1)}`
+        expect(mainMenuStrings[locale]).toHaveProperty(key)
+        expect(item.label).toBe(mainMenuStrings[locale][key as keyof typeof mainMenuStrings.en])
+        expect(item.label?.trim().length).toBeGreaterThan(0)
+      }
+    }
+    expect(translateMainMenu('vi', 'menuTabCloseOthers')).toBe('Đóng các thẻ khác')
+    expect(translateMainMenu('zh', 'menuTabCloseOthers')).toBe(
+      '\u5173\u95ed\u5176\u4ed6\u6807\u7b7e\u9875',
+    )
+    expect(translateMainMenu('th', 'menuTabSave')).toBe('บันทึก')
+    expect(translateMainMenu('id', 'menuTabSave')).toBe('Simpan')
   })
 })
 
 describe('where the file is, shown in the tab menu', () => {
-  const path = 'G:\\Mr Quốc\\Ba\\Ra viện BV Chợ Rẫy.pdf'
+  const path = 'D:\\Documents\\Project\\report.pdf'
   const first = (template: MenuItemConstructorOptions[]) => template[0]!
 
   it('starts with the file path as a line that cannot be clicked', () => {
@@ -264,8 +308,7 @@ describe('where the file is, shown in the tab menu', () => {
       canDetach: true,
       fileExists: true,
       canReopen: false,
-      words: tabMenuWords('en'),
-      labels: { openInNewWindow: 'Open in New Window', close: 'Close' },
+      tm,
       actions: actions(),
     })
     expect(first(template)).toMatchObject({ label: path, enabled: false })
@@ -279,8 +322,7 @@ describe('where the file is, shown in the tab menu', () => {
       canDetach: true,
       fileExists: false,
       canReopen: false,
-      words: tabMenuWords('en'),
-      labels: { openInNewWindow: 'Open in New Window', close: 'Close' },
+      tm,
       actions: actions(),
     })
     expect(first(template).label).toBe('Save')

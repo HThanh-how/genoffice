@@ -24,6 +24,7 @@ function fixture(kind: TabKind) {
     tabs: {
       list: () => [selected, clicked],
       activateTab: vi.fn(),
+      canDetachTab: () => true,
       webContentsForTab: (id) => (id === clicked.id ? contents : undefined),
     },
     savePdf: vi.fn(),
@@ -90,6 +91,19 @@ describe('document actions from a background tab context menu', () => {
     expect(contents.send).not.toHaveBeenCalled()
     expect(deps.tabs.activateTab).not.toHaveBeenCalled()
   })
+
+  it.each(['save', 'saveAs', 'print'] as const)(
+    'does not activate or send %s to a Present tab',
+    (action) => {
+      const { deps, contents } = fixture('html')
+      deps.tabs.canDetachTab = () => false
+      runTabDocumentAction(deps, 'clicked', action)
+      expect(deps.tabs.activateTab).not.toHaveBeenCalled()
+      expect(contents.send).not.toHaveBeenCalled()
+      expect(deps.saveHtml).not.toHaveBeenCalled()
+      expect(deps.printHtml).not.toHaveBeenCalled()
+    },
+  )
 
   it('ignores tabs closed while the context menu was open', () => {
     const { deps, contents } = fixture('docs')

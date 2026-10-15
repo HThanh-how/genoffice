@@ -215,6 +215,7 @@ import {
   TextStyleMark,
   UnderlineMark,
 } from './marks'
+import { DocRedaction } from './redaction'
 import {
   DropCapExtension,
   EaHintQuotesExtension,
@@ -1143,6 +1144,9 @@ export const DocNoteRef = Node.create({
       kind: { default: 'footnote' as 'footnote' | 'endnote' },
       id: { default: '' },
       num: { default: 1 },
+      // the marker run's own rPr bytes, so a styled reference survives a save
+      // that rebuilds its paragraph (same bargain as the inline image's attr)
+      rawRPr: { default: null as string | null, rendered: false },
     }
   },
   parseHTML() {
@@ -7066,6 +7070,7 @@ export const editorExtensions = [
   CtrlCheckboxMark,
   RprChangeMark,
   TextStyleMark,
+  DocRedaction,
   FormatOffClearExtension,
   CommentMark,
   InsMark,

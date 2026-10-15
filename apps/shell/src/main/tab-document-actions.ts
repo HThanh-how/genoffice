@@ -8,6 +8,7 @@ export interface TabDocumentActionDeps {
   tabs: {
     list(): TabSummary[]
     activateTab(id: string): void
+    canDetachTab(id: string): boolean
     webContentsForTab(id: string): WebContents | undefined
   }
   savePdf(contents: WebContents): void
@@ -27,7 +28,14 @@ export function runTabDocumentAction(
 ): void {
   const tab = deps.tabs.list().find((item) => item.id === id)
   const contents = deps.tabs.webContentsForTab(id)
-  if (!tab || tab.kind === 'home' || tab.kind === 'help' || !contents || contents.isDestroyed())
+  if (
+    !tab ||
+    tab.kind === 'home' ||
+    tab.kind === 'help' ||
+    !deps.tabs.canDetachTab(id) ||
+    !contents ||
+    contents.isDestroyed()
+  )
     return
   deps.tabs.activateTab(id)
   const command = action === 'saveAs' ? 'save-as' : action
