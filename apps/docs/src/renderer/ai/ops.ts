@@ -108,6 +108,8 @@ export interface OpResult {
   /** targets skipped because the text is a pending tracked deletion */
   skippedDeleted?: number
   detail?: string
+  /** 0-based block indexes in the pre-operation document that were deleted */
+  deletedIndexes?: number[]
 }
 
 export interface ExecuteOutcome {
@@ -1062,6 +1064,7 @@ function runDeleteBlocks(op: Op, env: RunEnv): OpResult {
     changed: matched.length,
     skippedProtected: 0,
     skippedDeleted,
+    deletedIndexes: matched.map((b) => b.index),
   }
 }
 
@@ -1613,6 +1616,10 @@ export function executeOps(editor: Editor, ops: unknown, ctx: OpContext = {}): E
   }
   if (ctx.dryRun) return { ok: true, results: [], summary: '', plan }
 
+  const currentOfOrig: Array<number | null> = Array.from(
+    { length: editor.state.doc.childCount },
+    (_, i) => i,
+  )
   const tr = editor.state.tr
   const schema = editor.schema
   const selection = frozenSelectionRange(editor, ctx.selection) ?? editor.state.selection
@@ -1624,7 +1631,47 @@ export function executeOps(editor: Editor, ops: unknown, ctx: OpContext = {}): E
         from: tr.mapping.map(selection.from),
         to: tr.mapping.map(selection.to),
       }
-      results.push(def.apply(op, { tr, schema, sel, ctx, editor }))
+      let effectiveOp = op
+      if (op.target?.blockIndexes) {
+        const mapped = op.target.blockIndexes
+          .map((origIdx) =>
+            origIdx >= 0 && origIdx < currentOfOrig.length ? currentOfOrig[origIdx] : null,
+          )
+          .filter((idx): idx is number => idx !== null)
+        effectiveOp = { ...effectiveOp, target: { ...op.target, blockIndexes: mapped } }
+      }
+      if (Array.isArray(op.blockIndexes)) {
+        const mapped = op.blockIndexes
+          .map((origIdx) =>
+            origIdx >= 0 && origIdx < currentOfOrig.length ? currentOfOrig[origIdx] : null,
+          )
+          .filter((idx): idx is number => idx !== null)
+        let mappedAfter = op.afterBlockIndex
+        if (typeof op.afterBlockIndex === 'number' && op.afterBlockIndex >= 0) {
+          const afterMapped =
+            op.afterBlockIndex < currentOfOrig.length ? currentOfOrig[op.afterBlockIndex] : null
+          mappedAfter = afterMapped ?? -1
+        }
+        effectiveOp = { ...effectiveOp, blockIndexes: mapped, afterBlockIndex: mappedAfter }
+      }
+      const res = def.apply(effectiveOp, { tr, schema, sel, ctx, editor })
+      results.push(res)
+      if (res.deletedIndexes && res.deletedIndexes.length > 0) {
+        const deletedSet = new Set(res.deletedIndexes)
+        for (let i = 0; i < currentOfOrig.length; i++) {
+          const cur = currentOfOrig[i]
+          if (cur === null) continue
+          if (deletedSet.has(cur)) {
+            currentOfOrig[i] = null
+          } else {
+            let countBefore = 0
+            for (const d of res.deletedIndexes) {
+              if (d < cur) countBefore++
+            }
+            currentOfOrig[i] = cur - countBefore
+          }
+        }
+      }
     }
   } catch (e) {
     return failure(e instanceof Error ? e.message : String(e))

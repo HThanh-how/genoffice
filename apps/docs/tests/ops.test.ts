@@ -406,6 +406,21 @@ describe('deleteBlocks', () => {
     expect(editor.state.doc.childCount).toBe(1)
     expect(editor.state.doc.child(0).textContent).toBe('')
   })
+
+  it('preserves target blockIndexes after structural deleteBlocks in the same batch', () => {
+    const editor = createEditor(fixtureDoc())
+    const targetText = editor.state.doc.child(1).textContent
+    const outcome = executeOps(editor, [
+      { op: 'deleteBlocks', target: { blockIndexes: [0] } },
+      { op: 'setFont', target: { blockIndexes: [1] }, bold: true },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(editor.state.doc.child(0).textContent).toBe(targetText)
+    const runs = editor.state.doc.child(0).content
+    expect(runs.child(0).marks.some((m) => m.type.name === 'bold')).toBe(true)
+    const otherRuns = editor.state.doc.child(1).content
+    expect(otherRuns.child(0).marks.some((m) => m.type.name === 'bold')).toBe(false)
+  })
 })
 
 describe('moveBlocks', () => {
