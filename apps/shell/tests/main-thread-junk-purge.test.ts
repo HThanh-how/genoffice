@@ -12,6 +12,8 @@ import {
 } from '../src/main/document-memory/runtime/junk-purge'
 import { storageBudgetAckReply } from './helpers/storage-budget-ack'
 import { seedDocuments } from './helpers/seed-documents'
+import { realIndexWorkerFactory } from './helpers/index-worker-process'
+import type { WorkerReply, WorkerRequest } from '../src/main/document-memory/worker-types'
 
 let dir: string
 let store: DocumentMemoryStore
@@ -121,6 +123,40 @@ describe('the purge never blocks the event loop', () => {
   it('a long purge driven through the worker protocol keeps a 5 ms timer within 150 ms', async () => {
     seedDocuments(store.rawDb, { docs: 6000, junkEvery: 2, chunksPerDoc: 3 })
     store.rawDb.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+    const worker = (await realIndexWorkerFactory())('index-worker', {
+      cacheDir: dir,
+      dbPath: join(dir, 'm.db'),
+    })
+    let requestId = 0
+    const ask = (request: WorkerRequest, timeoutMs: number): Promise<WorkerReply | null> =>
+      new Promise((resolve, reject) => {
+        const id = ++requestId
+        const cleanup = (): void => {
+          clearTimeout(timeout)
+          worker.off('message', onMessage)
+          worker.off('error', onError)
+          worker.off('exit', onExit)
+        }
+        const onMessage = (reply: WorkerReply): void => {
+          if (!('id' in reply) || reply.id !== id) return
+          cleanup()
+          if ('error' in reply) reject(new Error(String(reply.error)))
+          else resolve(reply)
+        }
+        const onError = (error: Error): void => {
+          cleanup()
+          reject(error)
+        }
+        const onExit = (code: number): void => onError(new Error(`Index worker exited: ${code}`))
+        const timeout = setTimeout(() => {
+          cleanup()
+          reject(new Error('Junk purge worker request timed out'))
+        }, timeoutMs)
+        worker.on('message', onMessage)
+        worker.once('error', onError)
+        worker.once('exit', onExit)
+        worker.postMessage({ ...request, id })
+      })
     const gaps: number[] = []
     let last = performance.now()
     const timer = setInterval(() => {
@@ -129,25 +165,37 @@ describe('the purge never blocks the event loop', () => {
       last = now
     }, 5)
     const sync = vi.spyOn(store, 'purgeDiscoveredByName')
-    await new Promise<void>((resolve) => {
-      const stop = startJunkPurge({
-        store,
-        // the worker, in this thread: one slice per request, like the real protocol
-        ask: async () => ({ id: 1, result: runJunkPurgeStep(store) }),
-        isActive: () => true,
-        stepGapMs: 1,
-        setTimer: (fn, ms) => setTimeout(fn, ms),
+    const mainStep = vi.spyOn(store, 'purgeDiscoveredByNameStep')
+    let stop = (): void => {}
+    let wait: ReturnType<typeof setInterval> | undefined
+    try {
+      await new Promise<void>((resolve, reject) => {
+        stop = startJunkPurge({
+          store,
+          // Run the production worker in its own process, including SQLite commits and checkpoints.
+          ask: (request, timeoutMs) =>
+            ask(request, timeoutMs).catch((error) => {
+              reject(error)
+              return null
+            }),
+          isActive: () => true,
+          stepGapMs: 1,
+          setTimer: (fn, ms) => setTimeout(fn, ms),
+        })
+        wait = setInterval(() => {
+          if (junkPurgeDone(store)) {
+            resolve()
+          }
+        }, 20)
       })
-      const wait = setInterval(() => {
-        if (junkPurgeDone(store)) {
-          clearInterval(wait)
-          stop()
-          resolve()
-        }
-      }, 20)
-    })
-    clearInterval(timer)
+    } finally {
+      stop()
+      clearInterval(wait)
+      clearInterval(timer)
+      await worker.terminate()
+    }
     expect(sync).not.toHaveBeenCalled()
+    expect(mainStep).not.toHaveBeenCalled()
     expect(count("SELECT count(*) n FROM documents WHERE name LIKE '~$%'")).toBe(0)
     // the single-transaction purge held the loop for the whole run (seconds on this data)
     expect(Math.max(...gaps)).toBeLessThan(150)

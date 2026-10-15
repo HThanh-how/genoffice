@@ -12,6 +12,8 @@ jobs:
   macos:
     runs-on: macos-15
     timeout-minutes: 120
+    permissions:
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,3 +61,9 @@ jobs:
           path: ${{ steps.stage.outputs.path }}
           if-no-files-found: error
           retention-days: 7
+
+      - name: Publish unsigned installer to GitHub Release
+        if: github.ref == 'refs/heads/main' && vars.GENOFFICE_SIGNED_RELEASES != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node tools/publish-fork-release.mjs '${{ steps.stage.outputs.path }}'

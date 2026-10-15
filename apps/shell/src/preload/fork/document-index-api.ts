@@ -151,5 +151,25 @@ export function createDocumentIndexPreloadApi(
     async testIgnorePath(path, root) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.testIgnorePath, path, root)
     },
+    async getIgnorePolicyConfig() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getIgnorePolicyConfig)
+    },
+    async saveIgnorePolicyConfig(config) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.saveIgnorePolicyConfig, config)
+    },
+    async getGenOfficeIgnoreFile(root) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getGenOfficeIgnoreFile, root)
+    },
+    async saveGenOfficeIgnoreFile(root, content, expectedRevision) {
+      return ipcRenderer.invoke(
+        DOCUMENT_INDEX_CHANNELS.saveGenOfficeIgnoreFile,
+        root,
+        content,
+        expectedRevision,
+      )
+    },
+    async getPolicyPresets() {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getPolicyPresets)
+    },
   }
 }

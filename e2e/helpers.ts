@@ -7,7 +7,7 @@
  * Build first: `npm run build:all`.
  */
 import { _electron as electron, type ElectronApplication, type Page } from '@playwright/test'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -34,6 +34,8 @@ interface LaunchOptions {
   scanFolder?: string
   /** extra environment variables for the launched app */
   env?: Record<string, string>
+  /** renderer viewport for layout screenshots (e.g. 1024x768, 1920x1080) */
+  viewport?: { width: number; height: number; deviceScaleFactor?: number }
 }
 
 export interface LaunchedApp {
@@ -48,9 +50,17 @@ export async function launchShell(options: LaunchOptions): Promise<LaunchedApp> 
   }
   const userDataDir = options.userDataDir ?? (await mkdtemp(join(tmpdir(), 'genoffice-e2e-')))
   if (options.onboardingSeen || options.settings) {
+    const settingsPath = join(userDataDir, 'app-settings.json')
+    let savedSettings: Record<string, unknown> = {}
+    try {
+      savedSettings = JSON.parse(await readFile(settingsPath, 'utf8'))
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
     await writeFile(
-      join(userDataDir, 'app-settings.json'),
+      settingsPath,
       JSON.stringify({
+        ...savedSettings,
         ...(options.onboardingSeen ? { onboardingSeen: true } : {}),
         ...options.settings,
       }),
@@ -74,6 +84,7 @@ export async function launchShell(options: LaunchOptions): Promise<LaunchedApp> 
   const app = await electron.launch({
     executablePath,
     args,
+    ...(options.viewport ? { viewport: options.viewport } : {}),
     env: {
       ...hostEnv,
       GENOFFICE_USER_DATA: userDataDir,
