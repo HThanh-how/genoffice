@@ -24,7 +24,7 @@ import {
   writeFile,
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { basename, dirname, extname, isAbsolute, join } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import {
   BrowserWindow,
@@ -248,6 +248,8 @@ const tMain = createI18n({
     dlgExportHtml: '导出为 HTML',
     dlgExportMarkdown: '导出为 Markdown',
     dlgPickExportDir: '选择导出目录',
+    dlgMailMergeSource: '选择合并数据源',
+    dlgMailMergeOutput: '选择导出目录',
     errUnsupportedExt: '暂不支持 .{ext} 类型',
     errNotFile: '不是文件',
     errTooLarge: '超过 {mb}MB 上限',
@@ -387,6 +389,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Export as HTML',
     dlgExportMarkdown: 'Export as Markdown',
     dlgPickExportDir: 'Choose Export Folder',
+    dlgMailMergeSource: 'Choose Merge Data Source',
+    dlgMailMergeOutput: 'Choose Export Folder',
     errUnsupportedExt: '.{ext} files are not supported',
     errNotFile: 'not a file',
     errTooLarge: 'exceeds the {mb}MB limit',
@@ -527,6 +531,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Xuất dưới dạng HTML',
     dlgExportMarkdown: 'Xuất dưới dạng Markdown',
     dlgPickExportDir: 'Chọn thư mục xuất',
+    dlgMailMergeSource: 'Chọn nguồn dữ liệu trộn',
+    dlgMailMergeOutput: 'Chọn thư mục xuất',
     errUnsupportedExt: 'Tệp .{ext} không được hỗ trợ',
     errNotFile: 'không phải là tệp',
     errTooLarge: 'vượt quá giới hạn {mb}MB',
@@ -3552,7 +3558,17 @@ const testExportDir = process.env.GENOFFICE_TEST_EXPORT_DIR || null
 
 function canPdfWrite(wcId: number, filePath: string): boolean {
   if (testExportDir && filePath.startsWith(testExportDir + '/')) return true
+  if (isMailMergeBatchPdf(wcId, filePath)) return true
   return pdfWritablePaths.get(wcId)?.has(filePath) === true
+}
+
+/** A mail-merge batch writes many files into one chosen directory; those paths
+ *  are authorized by the directory pick, and must not each be opened in a tab. */
+const mailMergePdfDirs = new Map<number, string>()
+
+function isMailMergeBatchPdf(wcId: number, filePath: string): boolean {
+  const dir = mailMergePdfDirs.get(wcId)
+  return !!dir && filePath.startsWith(dir + sep)
 }
 
 // Export as images runs the regular PDF export against a temp file: that file must
@@ -5427,7 +5443,7 @@ export function registerDocsIpc(): void {
         })
         const data = await withInternalLinks(printed, links)
         await atomicWriteFile(filePath, data)
-        if (!isImageExportTemp(event.sender.id, filePath)) openGeneratedFile(filePath)
+        if (!isImageExportTemp(event.sender.id, filePath) && !isMailMergeBatchPdf(event.sender.id, filePath)) openGeneratedFile(filePath)
         return { ok: true, path: filePath }
       } catch (err) {
         // path is already authorized, so the renderer can retry chunked to the same target
@@ -5635,11 +5651,173 @@ export function registerDocsIpc(): void {
         }
         if (Array.isArray(links) && links.length > 0) addPdfInternalLinks(merged, links)
         await atomicWriteFile(filePath, Buffer.from(await merged.save()))
-        if (!isImageExportTemp(event.sender.id, filePath)) openGeneratedFile(filePath)
+        if (!isImageExportTemp(event.sender.id, filePath) && !isMailMergeBatchPdf(event.sender.id, filePath)) openGeneratedFile(filePath)
         return { ok: true, path: filePath }
       } catch (err) {
         return { ok: false, error: String(err) }
       }
+    },
+  )
+
+  // ---- Mail merge: recipient sources, output directory, batch writes ----
+  // The renderer never gets unrestricted filesystem access: a write is only
+  // accepted into the directory this same renderer picked through the dialog,
+  // and the file name is re-sanitized here so a recipient value such as
+  // `../../secret` can never leave it.
+  const mailMergeDirs = new Map<number, string>()
+  interface SheetGridWaiter {
+    wcId: number
+    resolve: (result: { ok: boolean; result?: unknown; error?: string }) => void
+    timer: NodeJS.Timeout
+  }
+  const sheetGridPending = new Map<string, SheetGridWaiter>()
+  ipcMain.on('sheets:mcp-result', (event, payload: unknown) => {
+    const p = payload as { requestId?: unknown; ok?: unknown; result?: unknown; error?: unknown }
+    if (!p || typeof p.requestId !== 'string') return
+    const waiter = sheetGridPending.get(p.requestId)
+    if (!waiter) return
+    // only the tab the command targeted may answer it
+    if (waiter.wcId !== event.sender.id) return
+    sheetGridPending.delete(p.requestId)
+    clearTimeout(waiter.timer)
+    waiter.resolve({
+      ok: p.ok === true,
+      ...(p.result === undefined ? {} : { result: p.result }),
+      ...(typeof p.error === 'string' ? { error: p.error } : {}),
+    })
+  })
+
+  ipcMain.handle('docs:pick-mail-merge-source', async (event) => {
+    const result = await openDialog(event, {
+      title: tm('dlgMailMergeSource'),
+      properties: ['openFile'],
+      filters: [{ name: 'CSV / XLSX', extensions: ['csv', 'tsv', 'xlsx', 'xlsm'] }],
+    })
+    const path = result.canceled ? null : (result.filePaths[0] ?? null)
+    if (!path) return null
+    try {
+      const bytes = await readFile(path)
+      if (bytes.length > 64 * 1024 * 1024) return { ok: false, error: 'file too large' }
+      return { ok: true, path, base64: bytes.toString('base64') }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle('docs:pick-mail-merge-output-dir', async (event) => {
+    const result = await openDialog(event, {
+      title: tm('dlgMailMergeOutput'),
+      properties: ['openDirectory', 'createDirectory'],
+    })
+    const dir = result.canceled ? null : (result.filePaths[0] ?? null)
+    if (!dir) return null
+    mailMergeDirs.set(event.sender.id, dir)
+    mailMergePdfDirs.set(event.sender.id, dir)
+    return { dir }
+  })
+
+  /** Names already present in the chosen directory, so the renderer can avoid
+   *  clobbering them without touching the filesystem itself. */
+  ipcMain.handle('docs:list-mail-merge-output', async (event, dir: unknown) => {
+    const authorized = mailMergeDirs.get(event.sender.id)
+    if (!authorized || typeof dir !== 'string' || dir !== authorized) {
+      return { ok: false, error: 'output directory is not authorized' }
+    }
+    try {
+      const names = readdirSync(dir)
+        .filter((n) => /\.(docx|pdf)$/i.test(n))
+        .slice(0, 20000)
+      return { ok: true, names }
+    } catch (err) {
+      return { ok: false, error: String(err) }
+    }
+  })
+
+  ipcMain.handle(
+    'docs:write-mail-merge-file',
+    async (event, dir: unknown, name: unknown, base64: unknown, overwrite: unknown) => {
+      const authorized = mailMergeDirs.get(event.sender.id)
+      if (!authorized || typeof dir !== 'string' || dir !== authorized) {
+        return { ok: false, error: 'output directory is not authorized' }
+      }
+      if (typeof name !== 'string' || typeof base64 !== 'string') {
+        return { ok: false, error: 'invalid write request' }
+      }
+      const safeName = name
+        .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .replace(/^\.+|\.+$/g, '')
+        .slice(0, 200)
+      if (!safeName) return { ok: false, error: 'invalid file name' }
+      let target = join(authorized, safeName)
+      // join() of a sanitized name cannot escape the directory, but verify anyway
+      if (!target.startsWith(authorized + sep) && target !== authorized) {
+        return { ok: false, error: 'output path is outside the chosen directory' }
+      }
+      const policy = overwrite === 'skip' ? 'skip' : overwrite === 'rename' ? 'rename' : 'overwrite'
+      if (policy !== 'overwrite' && existsSync(target)) {
+        if (policy === 'skip') return { ok: false, skipped: true, path: target }
+        const dot = safeName.lastIndexOf('.')
+        const base = dot > 0 ? safeName.slice(0, dot) : safeName
+        const ext = dot > 0 ? safeName.slice(dot) : ''
+        let n = 2
+        while (n < 10000 && existsSync(join(authorized, `${base} (${n})${ext}`))) n += 1
+        target = join(authorized, `${base} (${n})${ext}`)
+      }
+      try {
+        await atomicWriteFile(target, Buffer.from(base64, 'base64'))
+        return { ok: true, path: target }
+      } catch (err) {
+        return { ok: false, error: String(err), path: target }
+      }
+    },
+  )
+
+  /** Open spreadsheets, as the mail-merge recipient picker sees them. */
+  ipcMain.handle('docs:list-sheet-tabs', () => {
+    const tabs: Array<{ id: string; title: string; filePath?: string; active: boolean }> = []
+    for (const wc of webContents.getAllWebContents()) {
+      if (wc.isDestroyed()) continue
+      const url = wc.url ?? ''
+      if (!/(^|\/\/)sheets\/|://sheets\//.test(url)) continue
+      tabs.push({
+        id: String(wc.id),
+        title: wc.getTitle() || 'Spreadsheet',
+        active: wc === webContents.getActive(),
+      })
+    }
+    return tabs
+  })
+
+  /** Read a worksheet's grid straight out of the live workbook (no intermediate file). */
+  ipcMain.handle(
+    'docs:read-sheet-grid',
+    async (event, wcId: unknown, sheet: unknown, addresses: unknown) => {
+      const id = Number(wcId)
+      if (!Number.isInteger(id) || id <= 0) return { ok: false, error: 'invalid spreadsheet tab' }
+      const wc = webContents.fromId(id)
+      if (!wc || wc.isDestroyed()) return { ok: false, error: 'that spreadsheet is closed' }
+      const cells = Array.isArray(addresses)
+        ? addresses.filter((a): a is string => typeof a === 'string').slice(0, 200_000)
+        : []
+      const requestId = `mm-${randomUUID()}`
+      const reply = new Promise<{ ok: boolean; result?: unknown; error?: string }>((resolve) => {
+        const timer = setTimeout(() => {
+          sheetGridPending.delete(requestId)
+          resolve({ ok: false, error: 'the spreadsheet did not answer in time' })
+        }, 30_000)
+        sheetGridPending.set(requestId, { wcId: id, resolve, timer })
+      })
+      wc.send('sheets:mcp-command', {
+        requestId,
+        command: 'read_sheet',
+        payload: {
+          ...(typeof sheet === 'string' && sheet ? { sheet } : {}),
+          ...(cells.length > 0 ? { addresses: cells } : {}),
+        },
+      })
+      return reply
     },
   )
 

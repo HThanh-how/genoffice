@@ -316,6 +316,85 @@ export async function xlsxToText(bytes: Uint8Array): Promise<string> {
   return `[No extractable text: none of the ${n} sheet${n === 1 ? '' : 's'} holds cell data; the content is in embedded images, which this extraction does not read.]\n\n${body}`
 }
 
+/** One worksheet as a rectangular grid of displayed cell text. */
+export interface XlsxSheetGrid {
+  name: string
+  rows: string[][]
+}
+
+/**
+ * Structured read of a workbook for callers that need cells rather than prose
+ * (mail merge, for example). Values are the displayed text, so a cell holding
+ * the identifier `001234` as text keeps its leading zeros, and a date cell
+ * reads as the date it shows rather than its serial number.
+ */
+export async function xlsxToGrid(
+  bytes: Uint8Array,
+  maxRows = 200_000,
+): Promise<XlsxSheetGrid[]> {
+  await assertZipInflatesWithinLimits(bytes)
+  const zip = await JSZip.loadAsync(bytes)
+  assertZipWithinLimits(zip)
+  const workbookXml = await zipText(zip, 'xl/workbook.xml')
+  if (!workbookXml) throw new Error('Invalid xlsx: missing xl/workbook.xml')
+
+  const workbook = parser.parse(workbookXml) as Record<string, any>
+  const sheetDefs = asArray(workbook.workbook?.sheets?.sheet) as Array<Record<string, unknown>>
+  const dateStyles = await loadDateStyles(zip)
+  const date1904 = isDate1904(workbook)
+
+  const relsXml = await zipText(zip, 'xl/_rels/workbook.xml.rels')
+  const relTargets = new Map<string, string>()
+  if (relsXml) {
+    const rels = parser.parse(relsXml) as Record<string, any>
+    for (const rel of asArray(rels.Relationships?.Relationship) as Array<Record<string, unknown>>) {
+      const id = String(rel['@_Id'] ?? '')
+      const target = String(rel['@_Target'] ?? '')
+      const resolved = target.trim() === '' ? '' : resolveTarget('xl/workbook.xml', target)
+      if (id !== '' && resolved !== '') relTargets.set(id, resolved)
+    }
+  }
+
+  const shared: string[] = []
+  const sharedXml = await zipText(zip, 'xl/sharedStrings.xml')
+  if (sharedXml) {
+    const sst = parser.parse(sharedXml) as Record<string, any>
+    for (const si of asArray(sst.sst?.si) as Array<Record<string, unknown>>) {
+      shared.push(sharedStringText(si))
+    }
+  }
+
+  const grids: XlsxSheetGrid[] = []
+  for (const sheet of sheetDefs) {
+    const path = relTargets.get(relationshipId(sheet))
+    const sheetXml = path ? await zipText(zip, path) : undefined
+    if (!sheetXml) continue
+    const worksheet = parser.parse(sheetXml) as Record<string, any>
+    const rowNodes = asArray(worksheet.worksheet?.sheetData?.row) as Array<Record<string, unknown>>
+    const rows: string[][] = []
+    const sharedFormulas: SharedFormulas = new Map()
+    for (const row of rowNodes.slice(0, maxRows)) {
+      const cells: string[] = []
+      for (const cell of asArray(row.c as Cell | Cell[])) {
+        const text = cellText(cell, shared, dateStyles, date1904, sharedFormulas)
+        const ref = cell['@_r']
+        const col = ref ? columnIndex(ref) : cells.length
+        if (col < 0 || col >= MAX_XLSX_COLS) {
+          cells.push(text)
+          continue
+        }
+        while (cells.length < col) cells.push('')
+        if (cells.length === col) cells.push(text)
+        else if (cells[col] === '') cells[col] = text
+        else cells.push(text)
+      }
+      rows.push(cells)
+    }
+    grids.push({ name: String(sheet['@_name'] ?? ''), rows })
+  }
+  return grids
+}
+
 function countElements(value: unknown, name: string): number {
   if (Array.isArray(value)) return value.reduce((n, item) => n + countElements(item, name), 0)
   if (value === null || typeof value !== 'object') return 0

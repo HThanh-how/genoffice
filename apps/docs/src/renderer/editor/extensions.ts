@@ -236,6 +236,7 @@ import { AutoDirectionExtension } from './direction'
 import { AutoCorrectExtension } from './autocorrect'
 import { InactiveSelectionExtension } from './inactive-selection'
 import { FieldCodesExtension } from './field-codes'
+import { MailMergePreviewExtension } from './mail-merge-preview'
 import { AiQueueAnchorsExtension } from './ai-queue-anchors'
 import { CheckboxToggleExtension } from './checkbox-toggle'
 import { PageGapNavExtension } from './page-gap-nav'
@@ -7080,6 +7081,7 @@ export const editorExtensions = [
   PendingCommentHighlightExtension,
   ResolvedCommentsExtension,
   FieldCodesExtension,
+  MailMergePreviewExtension,
   NativeTableSupport,
   TableHandle,
   TrackChangesExtension,

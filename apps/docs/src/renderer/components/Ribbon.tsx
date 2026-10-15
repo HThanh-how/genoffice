@@ -148,6 +148,7 @@ import {
   InsertTab,
   LayoutTab,
   ReferencesTab,
+  MailingsTab,
   ReviewTab,
   ViewTab,
   type InkPenSettings,
@@ -290,6 +291,18 @@ interface RibbonProps {
   ) => void
   mirrorMargins: boolean
   onMirrorMargins: (on: boolean) => void
+  /** Mailings tab: the recipient source, preview state and export hooks */
+  mergeSource: import('../mail-merge/types').MailMergeSource | null
+  mergePreviewOn: boolean
+  mergePreviewIndex: number
+  mergeHighlight: boolean
+  onOpenMergePicker: (kind?: import('../mail-merge/types').MailMergeSourceKind) => void
+  onToggleMergePreview: (on: boolean) => void
+  onStepMergePreview: (delta: number) => void
+  onToggleMergeHighlight: (on: boolean) => void
+  onInsertMergeField: (name: string) => void
+  onCheckMergeErrors: () => void
+  onMergeExport: (format: 'docx' | 'pdf') => void
   pageColor: string | null
   onPageColor: (hex: string | null) => void
   /** Design → Watermark / Themes */
@@ -503,8 +516,8 @@ const IN_TAB = new URLSearchParams(window.location.search).get('mode') === 'tab'
 
 const TABS = (
   IS_MAC
-    ? ['home', 'insert', 'draw', 'design', 'layout', 'references', 'review', 'view']
-    : ['file', 'home', 'insert', 'draw', 'design', 'layout', 'references', 'review', 'view']
+    ? ['home', 'insert', 'draw', 'design', 'layout', 'references', 'mailings', 'review', 'view']
+    : ['file', 'home', 'insert', 'draw', 'design', 'layout', 'references', 'mailings', 'review', 'view']
 ) as readonly string[]
 const TABLE_TABS = ['tableDesign', 'tableLayout'] as const
 
@@ -636,6 +649,7 @@ const TAB_LABEL_KEYS: Record<string, StringKey> = {
   design: 'ribbonTabDesign',
   layout: 'ribbonTabLayout',
   references: 'ribbonTabReferences',
+  mailings: 'ribbonTabMailings',
   review: 'ribbonTabReview',
   view: 'ribbonTabView',
   tableDesign: 'ribbonTabTableDesign',
@@ -4156,6 +4170,24 @@ function RibbonInner({
             onPaperSizeAll={onPaperSizeAll}
             mirrorMargins={mirrorMargins}
             onMirrorMargins={onMirrorMargins}
+          />
+        ) : tab === 'mailings' ? (
+          <MailingsTab
+            editor={editor}
+            hasDoc={canEdit}
+            dropdown={dropdown}
+            setDropdown={setDropdown}
+            source={mergeSource}
+            previewOn={mergePreviewOn}
+            previewIndex={mergePreviewIndex}
+            highlight={mergeHighlight}
+            onOpenPicker={onOpenMergePicker}
+            onTogglePreview={onToggleMergePreview}
+            onStepPreview={onStepMergePreview}
+            onToggleHighlight={onToggleMergeHighlight}
+            onInsertField={onInsertMergeField}
+            onCheckErrors={onCheckMergeErrors}
+            onExport={onMergeExport}
           />
         ) : tab === 'references' ? (
           <ReferencesTab

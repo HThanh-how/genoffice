@@ -186,3 +186,22 @@ export {
 } from './list-markers'
 
 export { previewFontSettings } from './font-settings'
+export {
+  applyMergeValues,
+  applyMergeValuesToBlock,
+  applyMergeValuesToGenerated,
+  applyMergeValuesToHeaderFooter,
+  buildOutputFileName,
+  collectMergeFields,
+  evaluateConditionalField,
+  isConditionalField,
+  isMergeField,
+  mergeFieldName,
+  mergePlaceholder,
+  patchMergeFieldXml,
+  sanitizeFileNamePart,
+  uniqueFileName,
+  type MergeFieldRef,
+  type MergeReport,
+  type MergeValues,
+} from './mail-merge'

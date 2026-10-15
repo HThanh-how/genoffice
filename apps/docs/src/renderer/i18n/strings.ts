@@ -4,6 +4,7 @@ import { editorStrings } from './strings-editor'
 import { ribbonStrings } from './strings-ribbon'
 import { tableStrings } from './strings-table'
 import { zoteroStrings } from './strings-zotero'
+import { mailMergeStrings } from './strings-mail-merge'
 
 export const strings = {
   zh: {
@@ -13,6 +14,7 @@ export const strings = {
     ...editorStrings.zh,
     ...aiStrings.zh,
     ...zoteroStrings.zh,
+    ...mailMergeStrings.zh,
   },
   en: {
     ...appStrings.en,
@@ -21,6 +23,7 @@ export const strings = {
     ...editorStrings.en,
     ...aiStrings.en,
     ...zoteroStrings.en,
+    ...mailMergeStrings.en,
   },
   ja: {
     ...appStrings.ja,
@@ -166,6 +169,7 @@ export const strings = {
     ...editorStrings.vi,
     ...aiStrings.vi,
     ...zoteroStrings.vi,
+    ...mailMergeStrings.vi,
   },
   'zh-TW': {
     ...appStrings['zh-TW'],

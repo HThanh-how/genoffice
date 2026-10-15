@@ -554,9 +554,28 @@ export interface DesktopApi {
   listPrinters(): Promise<PrinterInfo[]>
   /** render the document to PDF and ask where to save; size in twips.
    *  outPath is only honored when a previous export dialog chose that exact path */
+  /** Mail merge: pick a recipient file (CSV/XLSX) and get its bytes back. */
+  pickMailMergeSource(): Promise<{ ok: boolean; path?: string; base64?: string; error?: string } | null>
+  /** Mail merge: choose the output directory; the write channel only accepts this one. */
+  pickMailMergeOutputDir(): Promise<{ dir: string } | null>
+  /** Write one merged output file into the directory chosen above. */
+  writeMailMergeFile(
+    dir: string,
+    name: string,
+    base64: string,
+    overwrite?: 'skip' | 'rename' | 'overwrite',
+  ): Promise<{ ok: boolean; path?: string; error?: string; skipped?: boolean }>
+  /** File names already present in the chosen output directory. */
+  listMailMergeOutput(dir: string): Promise<{ ok: boolean; names?: string[]; error?: string }>
+  /** Open spreadsheets, for "Use an open spreadsheet" in the recipient picker. */
+  listSheetTabs(): Promise<Array<{ id: string; title: string; active: boolean }>>
+  /** Read a worksheet grid from the live workbook (values as displayed). */
+  readSheetGrid(
+    wcId: number,
+    sheet?: string,
+    addresses?: string[],
+  ): Promise<{ ok: boolean; result?: unknown; error?: string }>
   exportPdf(
-    defaultName: string,
-    pageWidthTwips: number,
     pageHeightTwips: number,
     outPath?: string,
     scale?: number,

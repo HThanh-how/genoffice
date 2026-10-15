@@ -304,6 +304,13 @@ import {
 } from './components/ribbon-tabs'
 import { ComparePanel } from './components/ComparePanel'
 import {
+  MailMergeExportDialog,
+  MailMergeProgressDialog,
+  MailMergeValidationDialog,
+} from './components/mail-merge/MailMergeDialogs'
+import { RecipientPickerDialog } from './components/mail-merge/RecipientPickerDialog'
+import { useMailMergeSession } from './mail-merge/mail-merge-session'
+import {
   EditorContextMenu,
   FontDialog,
   ParagraphDialog,
@@ -1957,6 +1964,7 @@ export function App() {
 
   /** App state bundle for the extracted file actions (file-actions.ts); refreshed every render. */
   const fileCtxRef = useRef<FileActionContext>(null as unknown as FileActionContext)
+  const mailMerge = useMailMergeSession(editor, () => fileCtxRef.current)
   // style-pane previews patch the parsed styles; a font-settle rebuild must keep them
   const liveStylesRef = useRef<{ parsed: ParsedDocFull; styles: Map<string, StyleInfo> } | null>(
     null,
@@ -7294,6 +7302,17 @@ export function App() {
         editor={editor}
         formatState={formatState}
         hasDoc={!!doc}
+        mergeSource={mailMerge.source}
+        mergePreviewOn={mailMerge.previewOn}
+        mergePreviewIndex={mailMerge.previewIndex}
+        mergeHighlight={mailMerge.highlight}
+        onOpenMergePicker={(kind) => mailMerge.openPicker(kind)}
+        onToggleMergePreview={(on) => mailMerge.togglePreview(on)}
+        onStepMergePreview={(delta) => mailMerge.stepPreview(delta)}
+        onToggleMergeHighlight={(on) => mailMerge.toggleHighlight(on)}
+        onInsertMergeField={(name) => mailMerge.insertField(name)}
+        onCheckMergeErrors={() => mailMerge.checkErrors()}
+        onMergeExport={(format) => mailMerge.openExport(format)}
         onFind={() => {
           setShowFind(true)
           setFindFocusInput((n) => n + 1)
@@ -7357,6 +7376,36 @@ export function App() {
         splitView={splitView}
         {...ribbonActions}
       />
+
+      {mailMerge.dialog === 'picker' && (
+        <RecipientPickerDialog
+          source={mailMerge.source}
+          onClose={() => mailMerge.closeDialog()}
+          onApply={mailMerge.applySource}
+        />
+      )}
+      {mailMerge.dialog === 'export' && mailMerge.source && (
+        <MailMergeExportDialog
+          source={mailMerge.source}
+          format={mailMerge.pendingFormat}
+          onClose={() => mailMerge.closeDialog()}
+          onStart={mailMerge.startExport}
+        />
+      )}
+      {mailMerge.dialog === 'validate' && (
+        <MailMergeValidationDialog
+          issues={mailMerge.issues}
+          onClose={() => mailMerge.closeDialog()}
+          onContinue={() => mailMerge.closeDialog()}
+        />
+      )}
+      {mailMerge.dialog === 'progress' && mailMerge.progress && (
+        <MailMergeProgressDialog
+          progress={mailMerge.progress}
+          onCancel={mailMerge.cancelExport}
+          onClose={() => mailMerge.closeDialog()}
+        />
+      )}
 
       <div className="app-main">
         {doc && (

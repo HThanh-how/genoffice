@@ -7407,6 +7407,25 @@ body.docs-crop-active .doc-protected[data-doc-protected='image'] .doc-img-wrap {
   cursor: pointer;
 }
 
+/* Mail merge: merge fields can be highlighted, and preview shows one recipient's
+   value in place of the «placeholder» without touching the template's text. */
+.mm-field-highlight {
+  background: var(--docs-paper-field-bg);
+  border-radius: 2px;
+}
+
+.mm-field-preview-src {
+  /* same trick Word's field-code view uses: the placeholder stays in the doc,
+     it just stops taking up space on the page */
+  font-size: 0;
+}
+
+.mm-field-preview-value {
+  background: rgba(0, 148, 80, 0.16);
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
 /* Bookmark / Cross-reference dialogs */
 .modal-row {
   display: flex;

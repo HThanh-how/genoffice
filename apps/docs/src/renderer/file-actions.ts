@@ -8,6 +8,7 @@
 import type { Editor } from '@tiptap/core'
 import { history } from '@tiptap/pm/history'
 import {
+  applyMergeValuesToHeaderFooter,
   applyPageNumType,
   applySectionSettings,
   applyTitlePg,
@@ -31,6 +32,8 @@ import {
   type DocProtection,
   type DefaultFonts,
   type HeaderFooter,
+  type MergeReport,
+  type MergeValues,
   type NoteInfo,
   type ParsedDocFull,
   type SectionInfo,
@@ -53,7 +56,8 @@ import {
   type HfVariantsState,
   type PendingNumbering,
 } from './doc-state'
-import { hfSaveOptions } from './hf-sections'
+import { hfSaveOptions, type HfSaveOptions } from './hf-sections'
+import { applyMergeValuesToPmDoc } from './editor/merge-doc'
 import { fetchDocBytes } from './doc-bytes'
 import { parseDocxOffThread } from './parse-off-thread'
 import { PHASED_APPEND } from './editor/streaming-tail-guard'
@@ -745,13 +749,47 @@ function deriveAutoFileName(editor: Editor): string | null {
  * serialization half of save(); no dialogs, no state changes. Also used for
  * crash-recovery copies.
  */
-export async function buildDocBytes(ctx: FileActionContext): Promise<Uint8Array | null> {
+/** Header/footer parts carry merge fields too; resolve them for one recipient. */
+function mergeHeaderFooterOptions(
+  options: HfSaveOptions,
+  values: MergeValues,
+  report: MergeReport,
+): HfSaveOptions {
+  const map = (hf: HeaderFooter | undefined): HeaderFooter | undefined =>
+    hf ? applyMergeValuesToHeaderFooter(hf, values, report) : hf
+  const out: HfSaveOptions = { ...options }
+  for (const key of ['header', 'footer', 'headerFirst', 'footerFirst', 'headerEven', 'footerEven'] as const) {
+    if (out[key]) out[key] = map(out[key])
+  }
+  if (out.sectionHf) {
+    out.sectionHf = out.sectionHf.map((entry) => ({ ...entry, hf: map(entry.hf)! }))
+  }
+  return out
+}
+
+/**
+ * Mail-merge variant: serialize the document as it would save, but with one
+ * recipient's values substituted into every MERGEFIELD. The editor and the
+ * template on disk are never touched — the merge happens on a copy of the
+ * editor's PM tree.
+ */
+export interface DocMergeContext {
+  values: MergeValues
+  report: MergeReport
+}
+
+export async function buildDocBytes(
+  ctx: FileActionContext,
+  merge?: DocMergeContext,
+): Promise<Uint8Array | null> {
   const generation = docGeneration
   if (ctx.settleFontSettings) ctx = await ctx.settleFontSettings()
   if (docGeneration !== generation) return null
   const { doc, editor } = ctx
   if (!doc || !editor) return null
-  const pmJson = editor.getJSON() as PmNode
+  const pmJson = merge
+    ? applyMergeValuesToPmDoc(editor.state.doc, merge.values, merge.report)
+    : (editor.getJSON() as PmNode)
   const plan = pmDocToSavePlan(pmJson, doc.parsed.blocks)
   // chart data edits patch the chart's own zip part, not the body XML
   const partXml: Record<string, string> = {}
@@ -820,11 +858,12 @@ export async function buildDocBytes(ctx: FileActionContext): Promise<Uint8Array 
     edits: ctx.sectionHfEdits,
     links: ctx.hfLinks,
   })
+  const mergedHf = merge ? mergeHeaderFooterOptions(hfOptions, merge.values, merge.report) : hfOptions
   const bytes = await saveDocx(doc.parsed, saveBlocks, {
     section: ctx.sectionDirty && ctx.section ? ctx.section : undefined,
     sectionStartType: ctx.trailingStartType ?? undefined,
     pgNumType: ctx.pgNumEdit ?? undefined,
-    ...hfOptions,
+    ...mergedHf,
     numbering: ctx.numberingDirty
       ? pruneUnreferencedNumbering(ctx.pendingNumbering, pmJson)
       : undefined,
