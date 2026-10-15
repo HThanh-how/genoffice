@@ -5,6 +5,8 @@ export { AgyChatBar } from './AgyChatBar'
 export { AiQueueStrip } from './AiQueueStrip'
 export { useChatRunQueue, type ChatRunQueue, type QueuedChatMessage } from './chat-run-queue'
 export { AI_QUEUE_LABELS, type AiQueueStripLabels } from './strings-ai-queue'
+export { AiUsageChip, addTokenUsage, formatTokenCount, type AiTokenUsageView } from './AiUsageChip'
+export { AI_USAGE_LABELS, type AiUsageLabels } from './strings-ai-usage'
 export { AiScopeQuote, type AiScopeQuoteData } from './AiScopeQuote'
 export {
   AI_CUSTOM_FONT_MAX_PX,
@@ -25,6 +27,7 @@ export {
   aiPanelInitiallyOpen,
   rememberAiPanelOpen,
   useAiPanelPrefs,
+  useAiSidebarEnabled,
   aiPanelWidthAtPointer,
 } from './ai-panel-prefs-store'
 export {

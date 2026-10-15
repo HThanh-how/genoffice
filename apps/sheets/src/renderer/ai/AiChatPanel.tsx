@@ -12,8 +12,10 @@ import {
   AI_QUEUE_LABELS,
   AiScopeQuote,
   AiTypingIndicator,
-  useChatRunQueue,
+  AiUsageChip,
   type AiScopeQuoteData,
+  type AiTokenUsageView,
+  useChatRunQueue,
 } from '@genoffice/ui'
 import { GensparkMark } from '../ribbon-icons'
 import type { ChangePlan } from '@genoffice/xlsx-gateway/domain/workbook.types'
@@ -219,6 +221,8 @@ export interface AiChatMessage {
   readonly attachments?: readonly AttachmentMeta[] | undefined
   /** the range this user message targeted, frozen at send */
   readonly scope?: AiScopeQuoteData | undefined
+  /** tokens the provider billed for this reply, summed across its turns (absent when unreported) */
+  readonly usage?: AiTokenUsageView | undefined
 }
 
 const MODEL_BRIDGE: AiModelPickerBridge = {
@@ -232,6 +236,7 @@ const MODEL_BRIDGE: AiModelPickerBridge = {
 export function AiChatPanel({
   isOpen,
   aiProvider,
+  hideRail = false,
   hasContent,
   chat,
   historicChat = [],
@@ -245,6 +250,7 @@ export function AiChatPanel({
   prompt,
   preview,
   aiBusy,
+  sessionUsage,
   onPromptChange,
   onSend,
   onStop,
@@ -260,6 +266,8 @@ export function AiChatPanel({
 }: {
   readonly isOpen: boolean
   readonly aiProvider: string | undefined
+  /** true suppresses even the collapsed rail (the "show the AI sidebar" setting is off) */
+  readonly hideRail?: boolean
   /** the workbook has cells with content — empty workbooks get "build me a sheet" copy instead */
   readonly hasContent: boolean
   readonly chat: readonly AiChatMessage[]
@@ -277,6 +285,8 @@ export function AiChatPanel({
   readonly prompt: string
   readonly preview: ChangePlan | null
   readonly aiBusy: boolean
+  /** tokens billed across the session, shown beside the composer */
+  readonly sessionUsage?: AiTokenUsageView | undefined
   readonly onPromptChange: (prompt: string) => void
   /** Send the composer text, or the given instruction when provided (used by the
    *  failed-run Retry, which also resends the message's original attachments;
@@ -467,6 +477,8 @@ export function AiChatPanel({
   }
 
   if (!isOpen) {
+    // the sidebar setting is off: nothing to show until an explicit AI action opens the panel
+    if (hideRail) return <></>
     return (
       <aside className="copilot collapsed">
         <button
@@ -656,6 +668,11 @@ export function AiChatPanel({
             ) : (
               <>
                 {entry.tools.length > 0 && <ToolChipList tools={entry.tools} />}
+                {entry.usage && (
+                  <div className="ai-message-usage">
+                    <AiUsageChip usage={entry.usage} lang={lang} />
+                  </div>
+                )}
                 {entry.text ? (
                   <div dir="auto">
                     <Markdown text={entry.text} navs={[citationNav, fileNav]} />
@@ -878,6 +895,7 @@ export function AiChatPanel({
           footerStart={
             <>
               <AiModelPicker bridge={MODEL_BRIDGE} lang={lang} />
+              {sessionUsage && <AiUsageChip usage={sessionUsage} session lang={lang} />}
               <button
                 className="ai-attach-btn"
                 onClick={onPickAttachments}

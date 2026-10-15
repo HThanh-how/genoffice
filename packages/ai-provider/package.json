@@ -17,7 +17,8 @@
     "./browser": "./src/browser.ts",
     "./codex-app-server": "./src/codex-app-server.ts",
     "./custom-models": "./src/custom-models.ts",
-    "./provider-models": "./src/provider-models.ts"
+    "./provider-models": "./src/provider-models.ts",
+    "./trace": "./src/trace.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

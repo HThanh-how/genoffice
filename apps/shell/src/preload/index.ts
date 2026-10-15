@@ -213,6 +213,9 @@ const homeApi: HomeApi = {
   async kbRead(path, offset) {
     return ipcRenderer.invoke('kb:read', { path, offset })
   },
+  async kbCreateDocument(request) {
+    return ipcRenderer.invoke('kb:create-document', request)
+  },
   async aiGetSettings() {
     return (await ipcRenderer.invoke('ai:get-settings')) as AiSettings
   },
@@ -832,8 +835,12 @@ const homeApi: HomeApi = {
   async getCodexModels(cliPath) {
     return (await ipcRenderer.invoke('ai:codex-models', cliPath)) as CodexModelCatalog
   },
-  async getCustomModels(baseUrl, apiKey) {
-    return (await ipcRenderer.invoke('ai:custom-models', { baseUrl, apiKey })) as CodexModelCatalog
+  async getCustomModels(baseUrl, apiKey, api) {
+    return (await ipcRenderer.invoke('ai:custom-models', {
+      baseUrl,
+      apiKey,
+      ...(api ? { api } : {}),
+    })) as CodexModelCatalog
   },
   async getGeminiModels(apiKey) {
     return (await ipcRenderer.invoke('ai:gemini-models', { apiKey })) as CodexModelCatalog

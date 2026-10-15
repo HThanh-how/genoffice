@@ -18,10 +18,13 @@ import {
   AI_QUEUE_LABELS,
   AiScopeQuote,
   AiTypingIndicator,
+  AiUsageChip,
+  addTokenUsage,
   createFileNav,
   Markdown,
   useChatRunQueue,
   type AiScopeQuoteData,
+  type AiTokenUsageView,
 } from '@genoffice/ui'
 import { aiLangDirective, t as tGlobal, useI18n } from '../i18n/locale'
 import sendEnterOn from '../assets/send-enter-on.png'
@@ -224,6 +227,8 @@ interface ChatEntry {
   tools?: ToolActivity[]
   /** the element this user message targeted, frozen at send */
   scope?: AiScopeQuoteData
+  /** tokens the provider billed for this reply, summed across its turns (absent when unreported) */
+  usage?: AiTokenUsageView
 }
 
 /** the whole source text: one string is the exact rollback unit */
@@ -521,6 +526,10 @@ export function AiPanel({
   const runMutatedRef = useRef(false)
   /** tool activity of the whole run, for transcript persistence */
   const runToolsRef = useRef<ToolActivity[]>([])
+  /** tokens billed so far in the in-flight run (summed across turns) */
+  const runUsageRef = useRef<AiTokenUsageView | undefined>(undefined)
+  /** tokens billed across the panel's session (the composer chip) */
+  const [sessionUsage, setSessionUsage] = useState<AiTokenUsageView | undefined>(undefined)
   const chatIdsRef = useRef<{ projectId: string; chatId: string } | null>(null)
   /** messages sent before resolveChat returned, flushed once the chat id is known */
   const pendingPersistRef = useRef<
@@ -750,6 +759,11 @@ export function AiPanel({
           patchLast({ streaming: false })
           setChat((prev) => [...prev, { role: 'assistant', text: '', streaming: true }])
         },
+        onUsage: (usage) => {
+          runUsageRef.current = addTokenUsage(runUsageRef.current, usage)
+          setSessionUsage((prev) => addTokenUsage(prev, usage))
+          patchLast({ usage: runUsageRef.current })
+        },
         onDone: ({ text, cancelled, turnLimit, truncated }) => {
           const base = turnLimit
             ? [text, tGlobal('aiTurnLimit')].filter(Boolean).join('\n\n')
@@ -933,6 +947,7 @@ export function AiPanel({
     runMutatedRef.current = false
     depsRef.current.onPrompt(displayText ?? instruction)
     runToolsRef.current = []
+    runUsageRef.current = undefined
     setChat((prev) => [
       ...prev,
       {
@@ -1335,6 +1350,11 @@ export function AiPanel({
                 )
               )}
               {hasTools && <ToolChipList tools={entry.tools!} />}
+              {entry.usage && (
+                <div className="ai-message-usage">
+                  <AiUsageChip usage={entry.usage} lang={lang} />
+                </div>
+              )}
               {showToolbar && (
                 <div className="ai-msg-toolbar">
                   <button
@@ -1584,6 +1604,7 @@ export function AiPanel({
           footerStart={
             <>
               <AiModelPicker bridge={MODEL_BRIDGE} lang={lang} />
+              {sessionUsage && <AiUsageChip usage={sessionUsage} session lang={lang} />}
               <button
                 type="button"
                 className="ai-attach-btn"

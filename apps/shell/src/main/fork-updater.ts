@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Readable, Transform } from 'node:stream'
+import { PassThrough, Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { app, net, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
@@ -257,65 +257,65 @@ export async function checkForkUpdates(
               },
             })
 
-          const electronNet = net as unknown as {
-            request?: (url: string) => {
-              on(event: string, listener: (...args: any[]) => void): void
-              followRedirect(): void
-              abort(): void
-              end(): void
-            }
-          }
-
-          const electronRequest = electronNet.request
-          if (typeof electronRequest === 'function') {
+          if (typeof net.request === 'function') {
             await new Promise<void>((resolve, reject) => {
               let resolvedUrl = release.url
-              const req = electronRequest(release.url)
-              const timer = setTimeout(() => {
-                req.abort()
-                reject(new Error('Download timeout'))
-              }, 15 * 60_000)
-
-              req.on('redirect', (_statusCode: number, _method: string, redirectUrl: string) => {
+              const req = net.request({ url: release.url, redirect: 'manual' })
+              let responseStream: PassThrough | undefined
+              const finish = (error?: unknown) => {
+                clearTimeout(timer)
+                if (error) {
+                  responseStream?.destroy()
+                  req.abort()
+                  reject(error)
+                } else {
+                  resolve()
+                }
+              }
+              const timer = setTimeout(() => finish(new Error('Download timeout')), 15 * 60_000)
+              req.on('redirect', (_statusCode, _method, redirectUrl) => {
                 try {
                   validateResolvedInstallerUrl(release.url, redirectUrl, source)
                   resolvedUrl = redirectUrl
                   req.followRedirect()
                 } catch (err) {
-                  clearTimeout(timer)
-                  req.abort()
-                  reject(err)
+                  finish(err)
                 }
               })
-
-              req.on('response', (res: any) => {
-                clearTimeout(timer)
+              req.on('response', (res) => {
+                const stream = new PassThrough()
+                responseStream = stream
                 if (res.statusCode < 200 || res.statusCode >= 300) {
-                  return reject(new Error(`HTTP ${res.statusCode}`))
+                  finish(new Error(`HTTP ${res.statusCode}`))
+                  return
                 }
                 try {
                   validateResolvedInstallerUrl(release.url, resolvedUrl, source)
+                  const length = Number(res.headers['content-length'] || 0)
+                  if (length > MAX_INSTALLER) throw new Error('Installer is too large')
+                  const meter = createMeter(length)
+                  const download = pipeline(
+                    stream,
+                    meter,
+                    createWriteStream(target, { flags: 'wx' }),
+                  )
+                    .then(() => {
+                      if (hash.digest('hex') !== release.sha256) {
+                        throw new Error('Installer checksum mismatch')
+                      }
+                      finish()
+                    })
+                    .catch(finish)
+                  res.on('data', (chunk) => stream.write(chunk))
+                  res.on('end', () => stream.end())
+                  res.on('error', finish)
+                  res.on('aborted', () => finish(new Error('Download aborted')))
+                  void download
                 } catch (err) {
-                  return reject(err)
+                  finish(err)
                 }
-                const length = Number(res.headers?.['content-length'] || 0)
-                if (length > MAX_INSTALLER) return reject(new Error('Installer is too large'))
-                const meter = createMeter(length)
-                pipeline(res, meter, createWriteStream(target, { flags: 'wx' }))
-                  .then(() => {
-                    if (hash.digest('hex') !== release.sha256) {
-                      throw new Error('Installer checksum mismatch')
-                    }
-                    resolve()
-                  })
-                  .catch(reject)
               })
-
-              req.on('error', (err: unknown) => {
-                clearTimeout(timer)
-                reject(err)
-              })
-
+              req.on('error', finish)
               req.end()
             })
           } else {
