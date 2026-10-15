@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AgentMessage, AgentToolCall } from '@genoffice/agent-core'
+import {
+  AgentLoop,
+  type AgentMessage,
+  type AgentSkill,
+  type AgentToolCall,
+  type AgentTransport,
+} from '@genoffice/agent-core'
 import { buildAgyPrompt, streamAgy } from '../src/agy-cli'
 import {
   AGY_SCHEMA_TURN_NOTE,
@@ -7,6 +13,7 @@ import {
   renderAgyStructuredTurn,
   resolveAgyToolProtocol,
 } from '../src/agy-structured-turn'
+import { streamForProvider } from '../src/index'
 import { CLI, FakeChild, runDeps } from './helpers/agy-fake'
 
 const tools = [
@@ -397,5 +404,517 @@ describe('streamAgy: text-first tool turns (GENOFFICE_AGY_TOOL_MODE=text)', () =
     })
     await expect(t.pending).rejects.toThrow(/malformed GenOffice <tool_call>/)
     expect(t.spawnCount()).toBe(1)
+  })
+})
+
+describe('Section 7 Regression Matrix: 20 scenarios', () => {
+  it('TEST 1: Valid structured_output object', async () => {
+    const t = await runTurn({
+      replies: [
+        structuredReply('Đã định dạng.', [
+          { name: 'replace_text', arguments: { find: 'tiêu đề' } },
+        ]),
+      ],
+    })
+    await t.pending
+    expect(t.deltas).toEqual(['Đã định dạng.'])
+    expect(t.calls.map((c) => [c.name, c.input])).toEqual([['replace_text', { find: 'tiêu đề' }]])
+    expect(t.stops).toEqual(['tool_use'])
+  })
+
+  it('TEST 2: Valid JSON structured turn inside result.response without structured_output', async () => {
+    const rawResponse = JSON.stringify({
+      text: 'Tôi đã định dạng lại văn bản',
+      tool_calls: [
+        {
+          name: 'replace_text',
+          arguments: { find: 'tiêu đề' },
+        },
+        {
+          name: 'read_document',
+          arguments: {},
+        },
+      ],
+    })
+    const t = await runTurn({
+      replies: [
+        result({
+          response: rawResponse,
+          // Notice: NO structured_output property!
+        }),
+      ],
+    })
+    await t.pending
+    // Raw JSON is never emitted through onDelta
+    expect(t.deltas).toEqual(['Tôi đã định dạng lại văn bản'])
+    expect(t.calls.map((c) => [c.name, c.input])).toEqual([
+      ['replace_text', { find: 'tiêu đề' }],
+      ['read_document', {}],
+    ])
+    expect(t.stops).toEqual(['tool_use'])
+    expect(t.diagnostics[0]).toMatchObject({
+      status: 'success',
+      reason: 'cli_result',
+      toolCallCount: 2,
+    })
+  })
+
+  it('TEST 3: Multiple tool calls in one structured JSON response', async () => {
+    const t = await runTurn({
+      replies: [
+        result({
+          response: JSON.stringify({
+            text: 'Thực hiện 3 lệnh',
+            tool_calls: [
+              { name: 'read_document', arguments: {} },
+              { name: 'replace_text', arguments: { find: 'chương 1' } },
+              { name: 'replace_text', arguments: { find: 'chương 2' } },
+            ],
+          }),
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.calls.map((c) => [c.name, c.input])).toEqual([
+      ['read_document', {}],
+      ['replace_text', { find: 'chương 1' }],
+      ['replace_text', { find: 'chương 2' }],
+    ])
+    expect(t.calls).toHaveLength(3)
+  })
+
+  it('TEST 4: Structured JSON with empty tool_calls', async () => {
+    const t = await runTurn({
+      replies: [
+        result({
+          response: JSON.stringify({
+            text: 'Đây là nội dung tài liệu.',
+            tool_calls: [],
+          }),
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.deltas).toEqual(['Đây là nội dung tài liệu.'])
+    expect(t.calls).toEqual([])
+    expect(t.stops).toEqual(['end_turn'])
+  })
+
+  it('TEST 5: Valid <tool_call> text protocol', async () => {
+    const t = await runTurn({
+      jsonSchema: false,
+      replies: [
+        result({
+          response: 'Đang đọc.\n<tool_call>{"name":"read_document","arguments":{}}</tool_call>',
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.deltas).toEqual(['Đang đọc.'])
+    expect(t.calls.map((c) => c.name)).toEqual(['read_document'])
+  })
+
+  it('TEST 6: Ordinary plain-text response', async () => {
+    const t = await runTurn({
+      replies: [result({ response: 'Tài liệu nói về hợp đồng mua bán.' })],
+    })
+    await t.pending
+    expect(t.deltas).toEqual(['Tài liệu nói về hợp đồng mua bán.'])
+    expect(t.calls).toEqual([])
+    expect(t.stops).toEqual(['end_turn'])
+  })
+
+  it('TEST 7: Plain text explaining JSON syntax', async () => {
+    const explanation =
+      'Để gọi công cụ, sử dụng định dạng JSON: {"name": "replace_text", "arguments": {"find": "abc"}}. Hãy thử lại.'
+    const t = await runTurn({
+      replies: [result({ response: explanation })],
+    })
+    await t.pending
+    expect(t.deltas).toEqual([explanation])
+    expect(t.calls).toEqual([])
+    expect(t.stops).toEqual(['end_turn'])
+  })
+
+  it('TEST 8: Unknown tool name', async () => {
+    const t = await runTurn({
+      replies: [
+        result({
+          response: JSON.stringify({
+            text: 'Thực thi lệnh lạ',
+            tool_calls: [{ name: 'delete_entire_hard_drive', arguments: {} }],
+          }),
+        }),
+        result({ response: '<tool_call>invalid_again' }),
+      ],
+    })
+    await expect(t.pending).rejects.toThrow(/could not be read|malformed GenOffice tool request/)
+    expect(t.calls).toEqual([])
+  })
+
+  it('TEST 9: Malformed arguments', async () => {
+    const t = await runTurn({
+      replies: [
+        result({
+          response: JSON.stringify({
+            text: 'Sửa lỗi',
+            tool_calls: [{ name: 'replace_text', arguments: 'find=string-instead-of-object' }],
+          }),
+        }),
+        result({ response: '<tool_call>invalid_again' }),
+      ],
+    })
+    await expect(t.pending).rejects.toThrow(/could not be read|malformed GenOffice tool request/)
+    expect(t.calls).toEqual([])
+  })
+
+  it('TEST 10: Malformed JSON recognizable as a structured tool request', async () => {
+    const t = await runTurn({
+      replies: [
+        result({
+          response: '{"text": "Đang sửa", "tool_calls": [broken-json',
+        }),
+        result({ response: '<tool_call>invalid_again' }),
+      ],
+    })
+    await expect(t.pending).rejects.toThrow(/could not be read|malformed GenOffice tool request/)
+    expect(t.deltas).toEqual([])
+    expect(t.calls).toEqual([])
+  })
+
+  it('TEST 11: Truncated structured JSON', async () => {
+    const t = await runTurn({
+      replies: [
+        result({
+          response:
+            '{"text": "Đang định dạng", "tool_calls": [{"name": "replace_text", "arguments":',
+        }),
+        result({ response: '<tool_call>invalid_again' }),
+      ],
+    })
+    await expect(t.pending).rejects.toThrow(/could not be read|malformed GenOffice tool request/)
+    expect(t.calls).toEqual([])
+  })
+
+  it('TEST 12: Repeated tool calls: no accidental duplication from fallback or retry', async () => {
+    const t = await runTurn({
+      replies: [
+        result({
+          response: JSON.stringify({
+            text: 'Lặp công cụ',
+            tool_calls: [
+              { name: 'replace_text', arguments: { find: 'a' } },
+              { name: 'replace_text', arguments: { find: 'b' } },
+            ],
+          }),
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.spawnCount()).toBe(1)
+    expect(t.calls).toHaveLength(2)
+    expect(t.calls[0].input).toEqual({ find: 'a' })
+    expect(t.calls[1].input).toEqual({ find: 'b' })
+    expect(t.calls[0].id).not.toBe(t.calls[1].id)
+  })
+
+  it('TEST 13: Cancellation before delivery', async () => {
+    const controller = new AbortController()
+    const child = new FakeChild()
+    const { deps } = runDeps(child, {
+      capabilities: async () => ({ effort: false, jsonSchema: true }),
+    })
+    const calls: AgentToolCall[] = []
+    const pending = streamAgy(
+      { apiKey: '', cliPath: CLI, model: 'm' },
+      '',
+      [{ role: 'user', text: 'edit' }],
+      tools,
+      1000,
+      {
+        signal: controller.signal,
+        onDelta: vi.fn(),
+        onToolCall: (c) => calls.push(c),
+      },
+      deps,
+    )
+    pending.catch(() => undefined)
+    await new Promise((r) => setTimeout(r, 5))
+    child.emitLines([
+      result({
+        response: JSON.stringify({
+          text: 'Chưa kịp giao',
+          tool_calls: [{ name: 'read_document', arguments: {} }],
+        }),
+      }),
+    ])
+    controller.abort()
+    child.exit(0)
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' })
+    expect(calls).toEqual([])
+  })
+
+  it('TEST 14: Structured JSON including Vietnamese Unicode and escaped quotes', async () => {
+    const viText =
+      'Tôi đã định dạng lại văn bản theo chuẩn thể thức văn bản hành chính Việt Nam (Nghị định 30/2020/NĐ-CP). "Trích yếu": Căn cứ Luật Tổ chức Chính phủ.'
+    const viArg = 'CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM\nĐộc lập - Tự do - Hạnh phúc'
+    const t = await runTurn({
+      replies: [
+        result({
+          response: JSON.stringify({
+            text: viText,
+            tool_calls: [
+              {
+                name: 'replace_text',
+                arguments: { find: viArg },
+              },
+            ],
+          }),
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.deltas).toEqual([viText])
+    expect(t.calls.map((c) => [c.name, c.input])).toEqual([['replace_text', { find: viArg }]])
+  })
+
+  it('TEST 15: Valid native Gemini function-call response', async () => {
+    const geminiResponse = {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      text: async () => '',
+      body: {
+        getReader() {
+          const encoder = new TextEncoder()
+          const chunks = [
+            encoder.encode(
+              'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"replace_text","args":{"find":"gemini-test"}}}]},"finishReason":"STOP"}]}\n\n',
+            ),
+          ]
+          return {
+            async read() {
+              const value = chunks.shift()
+              return value ? { done: false, value } : { done: true, value: undefined }
+            },
+            async cancel() {},
+            releaseLock() {},
+          }
+        },
+      },
+    } as unknown as Response
+    const fetchMock = vi.fn().mockResolvedValue(geminiResponse)
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const calls: AgentToolCall[] = []
+      const deltas: string[] = []
+      await streamForProvider(
+        'gemini',
+        { apiKey: 'k', model: 'gemini-2.5-flash' },
+        'system',
+        [{ role: 'user', text: 'hi' }],
+        tools,
+        1000,
+        {
+          signal: new AbortController().signal,
+          onDelta: (d) => deltas.push(d),
+          onToolCall: (c) => calls.push(c),
+        },
+      )
+      expect(calls.map((c) => [c.name, c.input])).toEqual([
+        ['replace_text', { find: 'gemini-test' }],
+      ])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('TEST 16: Valid OpenAI-compatible tool-call response', async () => {
+    const openaiResponse = {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-type': 'text/event-stream' }),
+      text: async () => '',
+      body: {
+        getReader() {
+          const encoder = new TextEncoder()
+          const chunks = [
+            encoder.encode(
+              'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"replace_text","arguments":"{\\"find\\":\\"openai-test\\"}"}}]}}]}\n\n',
+            ),
+            encoder.encode('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n'),
+            encoder.encode('data: [DONE]\n\n'),
+          ]
+          return {
+            async read() {
+              const value = chunks.shift()
+              return value ? { done: false, value } : { done: true, value: undefined }
+            },
+            async cancel() {},
+            releaseLock() {},
+          }
+        },
+      },
+    } as unknown as Response
+    const fetchMock = vi.fn().mockResolvedValue(openaiResponse)
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      const calls: AgentToolCall[] = []
+      await streamForProvider(
+        'openai',
+        { apiKey: 'k', model: 'gpt-4o' },
+        'system',
+        [{ role: 'user', text: 'hi' }],
+        tools,
+        1000,
+        {
+          signal: new AbortController().signal,
+          onDelta: vi.fn(),
+          onToolCall: (c) => calls.push(c),
+        },
+      )
+      expect(calls.map((c) => [c.name, c.input])).toEqual([
+        ['replace_text', { find: 'openai-test' }],
+      ])
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('TEST 17: Structured tool result followed by unexpected trailing text', async () => {
+    const jsonWithTrailing =
+      JSON.stringify({
+        text: 'Đã xong',
+        tool_calls: [{ name: 'read_document', arguments: {} }],
+      }) + 'svg'
+    const t = await runTurn({
+      replies: [
+        result({ response: jsonWithTrailing }),
+        result({ response: '<tool_call>invalid_again' }),
+      ],
+    })
+    await expect(t.pending).rejects.toThrow(/could not be read|malformed GenOffice tool request/)
+    expect(t.deltas).toEqual([])
+    expect(t.calls).toEqual([])
+  })
+
+  it('TEST 18: Structured JSON wrapped in a complete Markdown code fence', async () => {
+    const fenced =
+      '```json\n' +
+      JSON.stringify({
+        text: 'Bọc trong code fence',
+        tool_calls: [{ name: 'read_document', arguments: {} }],
+      }) +
+      '\n```'
+    const t = await runTurn({
+      replies: [result({ response: fenced })],
+    })
+    await t.pending
+    expect(t.deltas).toEqual(['Bọc trong code fence'])
+    expect(t.calls.map((c) => c.name)).toEqual(['read_document'])
+  })
+
+  it('TEST 19: A successful tool invocation followed by a normal final answer in AgentLoop', async () => {
+    let turnNumber = 0
+    const executedToolNames: string[] = []
+    const transport: AgentTransport = {
+      stream: (_req, cb) => {
+        turnNumber++
+        if (turnNumber === 1) {
+          queueMicrotask(() => {
+            cb.onDelta?.('Đang thực hiện thay thế văn bản.')
+            cb.onToolCall?.({ id: 'call-1', name: 'replace_text', input: { find: 'cũ' } })
+            cb.onStopReason?.('tool_use')
+            cb.onDone?.()
+          })
+        } else {
+          queueMicrotask(() => {
+            cb.onDelta?.('Tôi đã thay thế văn bản thành công.')
+            cb.onStopReason?.('end_turn')
+            cb.onDone?.()
+          })
+        }
+        return { cancel: () => {} }
+      },
+    }
+    const skill: AgentSkill = {
+      id: 'test_skill',
+      systemPrompt: 'test system prompt',
+      tools,
+      executeTool: async (call) => {
+        executedToolNames.push(call.name)
+        return { output: 'Đã thay thế 1 lần', summary: 'Đã thay thế 1 lần', isError: false }
+      },
+    }
+    const resultOutcome = await new Promise<{ text: string; cancelled: boolean }>((resolve) => {
+      const loop = new AgentLoop({
+        transport,
+        skill,
+        events: {
+          onDone: (out) => resolve(out),
+        },
+      })
+      loop.run('Thay thế từ cũ trong tài liệu')
+    })
+    expect(executedToolNames).toEqual(['replace_text'])
+    expect(resultOutcome.text).toBe('Tôi đã thay thế văn bản thành công.')
+    expect(resultOutcome.cancelled).toBe(false)
+  })
+
+  it('TEST 20: Tool invocation fails: failure is reflected in final outcome without false success', async () => {
+    let turnNumber = 0
+    const transport: AgentTransport = {
+      stream: (req, cb) => {
+        turnNumber++
+        if (turnNumber === 1) {
+          queueMicrotask(() => {
+            cb.onDelta?.('Đang kiểm tra tài liệu.')
+            cb.onToolCall?.({ id: 'call-1', name: 'read_document', input: {} })
+            cb.onStopReason?.('tool_use')
+            cb.onDone?.()
+          })
+        } else {
+          const lastMsg = req.messages.at(-1) as {
+            role: string
+            results?: Array<{ isError?: boolean }>
+          }
+          const hasError = lastMsg?.results?.some((r) => r.isError)
+          queueMicrotask(() => {
+            if (hasError) {
+              cb.onDelta?.('Không thể đọc tài liệu vì tệp đang bị khóa.')
+            } else {
+              cb.onDelta?.('Tôi đã đọc tài liệu thành công.')
+            }
+            cb.onStopReason?.('end_turn')
+            cb.onDone?.()
+          })
+        }
+        return { cancel: () => {} }
+      },
+    }
+    const skill: AgentSkill = {
+      id: 'test_skill',
+      systemPrompt: 'test system prompt',
+      tools,
+      executeTool: async () => {
+        return {
+          output: 'Lỗi: Tệp đang bị khóa bởi tiến trình khác.',
+          summary: 'Lỗi',
+          isError: true,
+        }
+      },
+    }
+    const resultOutcome = await new Promise<{ text: string }>((resolve) => {
+      const loop = new AgentLoop({
+        transport,
+        skill,
+        events: {
+          onDone: (out) => resolve(out),
+        },
+      })
+      loop.run('Đọc tài liệu')
+    })
+    expect(resultOutcome.text).toBe('Không thể đọc tài liệu vì tệp đang bị khóa.')
+    expect(resultOutcome.text).not.toContain('thành công')
   })
 })
