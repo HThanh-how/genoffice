@@ -1,5 +1,5 @@
 import type { AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
-import { AGY_MAX_TOOL_CALLS_PER_TURN } from './agy-tools'
+import { AGY_MAX_TOOL_CALLS_PER_TURN, parseAgyToolCalls } from './agy-tools'
 import { resolveToolName } from './agy-tool-repair'
 
 /**
@@ -239,4 +239,52 @@ export function parseAgyStructuredText(
       calls,
     },
   }
+}
+
+export type AgyTurnFromTextResult =
+  | { kind: 'valid'; turn: StructuredToolTurn; syntax: 'structured' | 'tags' }
+  | { kind: 'prose'; text: string }
+  | { kind: 'malformed'; reason: string }
+
+/**
+ * Unified turn reader for text responses from the Antigravity CLI.
+ * Consistently recognizes:
+ * 1. Serialized structured turn JSON ({ text, tool_calls }).
+ * 2. Legacy <tool_call> blocks inside text.
+ * 3. Ordinary prose (no executable tool calls).
+ *
+ * Enforces strict fail-closed semantics for malformed structured JSON or
+ * corrupted <tool_call> blocks so raw executable requests never leak to chat as prose.
+ */
+export function readAgyTurnFromText(
+  rawText: string,
+  known: ReadonlySet<string>,
+): AgyTurnFromTextResult {
+  const structured = parseAgyStructuredText(rawText, known)
+  if (structured.kind === 'valid') {
+    return { kind: 'valid', turn: structured.turn, syntax: 'structured' }
+  }
+  if (structured.kind === 'malformed') {
+    return { kind: 'malformed', reason: structured.reason }
+  }
+
+  // Not a standalone structured turn; check for <tool_call> tags or normal prose
+  const parsed = parseAgyToolCalls(rawText, known)
+  if (parsed.invalidBlocks > 0) {
+    return {
+      kind: 'malformed',
+      reason: `${parsed.invalidBlocks} malformed GenOffice <tool_call> block(s)`,
+    }
+  }
+  if (parsed.calls.length > 0) {
+    return {
+      kind: 'valid',
+      turn: {
+        text: parsed.text,
+        calls: parsed.calls.map((c) => ({ name: c.name, input: c.input })),
+      },
+      syntax: 'tags',
+    }
+  }
+  return { kind: 'prose', text: parsed.text }
 }

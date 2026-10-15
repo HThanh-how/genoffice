@@ -918,3 +918,107 @@ describe('Section 7 Regression Matrix: 20 scenarios', () => {
     expect(resultOutcome.text).not.toContain('thành công')
   })
 })
+
+describe('Issue 1: AGY retry and text-first structured JSON regressions', () => {
+  it('Schema mode -> text retry -> structured JSON', async () => {
+    const t = await runTurn({
+      replies: [
+        result({ response: '{"text": "Đang sửa", "tool_calls": [broken-json' }),
+        result({
+          response: JSON.stringify({
+            text: 'Đã phục hồi từ retry',
+            tool_calls: [{ name: 'replace_text', arguments: { find: 'cũ', replace: 'mới' } }],
+          }),
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.deltas).toEqual(['Đã phục hồi từ retry'])
+    expect(t.calls.map((c) => c.name)).toEqual(['replace_text'])
+    expect(t.calls[0]?.input).toEqual({ find: 'cũ', replace: 'mới' })
+    expect(t.stops).toEqual(['tool_use'])
+  })
+
+  it('Text-first mode -> structured JSON', async () => {
+    const t = await runTurn({
+      jsonSchema: false,
+      replies: [
+        result({
+          response: JSON.stringify({
+            text: 'Đang thực hiện',
+            tool_calls: [{ name: 'replace_text', arguments: { find: 'a', replace: 'b' } }],
+          }),
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.deltas).toEqual(['Đang thực hiện'])
+    expect(t.calls.map((c) => c.name)).toEqual(['replace_text'])
+    expect(t.calls[0]?.input).toEqual({ find: 'a', replace: 'b' })
+    expect(t.stops).toEqual(['tool_use'])
+  })
+
+  it('Text-first mode -> malformed structured JSON fails closed', async () => {
+    const t = await runTurn({
+      jsonSchema: false,
+      replies: [
+        result({
+          response:
+            '{"text": "Đang sửa", "tool_calls": [{"name": "replace_text", "arguments": "invalid-args"}]}',
+        }),
+        result({ response: 'still invalid' }),
+      ],
+    })
+    await expect(t.pending).rejects.toThrow(/malformed GenOffice tool request/)
+    expect(t.calls).toEqual([])
+  })
+
+  it('Text retry -> unknown tool fails closed without leaking raw JSON', async () => {
+    const t = await runTurn({
+      replies: [
+        result({ response: '{"text": "Lỗi", "tool_calls": [broken' }),
+        result({
+          response: JSON.stringify({
+            text: 'Gọi tool lạ',
+            tool_calls: [{ name: 'non_existent_tool', arguments: {} }],
+          }),
+        }),
+      ],
+    })
+    await expect(t.pending).rejects.toThrow(/could not be read|malformed GenOffice tool request/)
+    expect(t.calls).toEqual([])
+  })
+
+  it('Text retry -> valid normal prose is delivered as end_turn', async () => {
+    const t = await runTurn({
+      replies: [
+        result({ response: '{"text": "Thử lại", "tool_calls": [broken' }),
+        result({
+          response: 'Tài liệu không có thay đổi nào cần thực hiện.',
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.deltas).toEqual(['Tài liệu không có thay đổi nào cần thực hiện.'])
+    expect(t.calls).toEqual([])
+    expect(t.stops).toEqual(['end_turn'])
+  })
+
+  it('No duplicate tool execution after retry', async () => {
+    const t = await runTurn({
+      replies: [
+        result({ response: '{"text": "Lần 1", "tool_calls": [broken' }),
+        result({
+          response: JSON.stringify({
+            text: 'Đang chạy',
+            tool_calls: [{ name: 'read_document', arguments: {} }],
+          }),
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.spawnCount()).toBe(2)
+    expect(t.calls.length).toBe(1)
+    expect(t.calls[0]?.name).toBe('read_document')
+  })
+})
