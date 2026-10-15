@@ -108,9 +108,10 @@ export function readStructuredToolTurn(
   const record = value as Record<string, unknown>
   const rawCalls = record.tool_calls
   if (!Array.isArray(rawCalls)) return null
+  if (rawCalls.length > AGY_MAX_TOOL_CALLS_PER_TURN) return null
   const calls: StructuredToolTurn['calls'] = []
-  for (const raw of rawCalls.slice(0, AGY_MAX_TOOL_CALLS_PER_TURN)) {
-    if (typeof raw !== 'object' || raw === null) return null
+  for (const raw of rawCalls) {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
     const { name, arguments: args } = raw as { name?: unknown; arguments?: unknown }
     const resolved = typeof name === 'string' ? resolveToolName(name, known) : null
     if (!resolved) return null
@@ -118,4 +119,124 @@ export function readStructuredToolTurn(
     calls.push({ name: resolved, input: args as Record<string, unknown> })
   }
   return { text: typeof record.text === 'string' ? record.text.trim() : '', calls }
+}
+
+export type AgyStructuredTextResult =
+  | { kind: 'valid'; turn: StructuredToolTurn }
+  | { kind: 'malformed'; reason: string }
+  | { kind: 'none' }
+
+function stripOuterFence(text: string): string {
+  const trimmed = text.trim()
+  const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed)
+  return match ? match[1]!.trim() : trimmed
+}
+
+/**
+ * Recover a complete standalone structured turn from raw text (e.g. when result.structured_output
+ * is absent but the model returned serialized JSON). Enforces strict schema bounds and fail-closed
+ * semantics so executable tool requests cannot leak to chat as ordinary text.
+ */
+export function parseAgyStructuredText(
+  rawText: string,
+  known: ReadonlySet<string>,
+): AgyStructuredTextResult {
+  const trimmed = rawText.trim()
+  if (!trimmed) return { kind: 'none' }
+
+  const unwrapped = stripOuterFence(trimmed)
+  const looksLikeObject = unwrapped.startsWith('{')
+  const mentionsToolCalls = unwrapped.includes('"tool_calls"') || unwrapped.includes("'tool_calls'")
+
+  if (!looksLikeObject && !mentionsToolCalls) {
+    return { kind: 'none' }
+  }
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(unwrapped)
+  } catch (err) {
+    if (looksLikeObject && mentionsToolCalls) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { kind: 'malformed', reason: `Invalid JSON syntax or trailing content: ${msg}` }
+    }
+    return { kind: 'none' }
+  }
+
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    if (mentionsToolCalls) {
+      return { kind: 'malformed', reason: 'Structured turn root must be a JSON object' }
+    }
+    return { kind: 'none' }
+  }
+
+  const record = parsed as Record<string, unknown>
+  const hasToolCalls = 'tool_calls' in record
+  if (!hasToolCalls) {
+    return { kind: 'none' }
+  }
+
+  const allowedKeys = new Set(['text', 'tool_calls'])
+  for (const key of Object.keys(record)) {
+    if (!allowedKeys.has(key)) {
+      return {
+        kind: 'malformed',
+        reason: `Unrecognized top-level field "${key}" in structured turn`,
+      }
+    }
+  }
+
+  if ('text' in record && typeof record.text !== 'string') {
+    return { kind: 'malformed', reason: 'Field "text" in structured turn must be a string' }
+  }
+
+  const rawCalls = record.tool_calls
+  if (!Array.isArray(rawCalls)) {
+    return { kind: 'malformed', reason: 'Field "tool_calls" must be an array' }
+  }
+
+  if (rawCalls.length > AGY_MAX_TOOL_CALLS_PER_TURN) {
+    return {
+      kind: 'malformed',
+      reason: `Tool call count ${rawCalls.length} exceeds limit of ${AGY_MAX_TOOL_CALLS_PER_TURN}`,
+    }
+  }
+
+  const calls: StructuredToolTurn['calls'] = []
+  for (let i = 0; i < rawCalls.length; i++) {
+    const raw = rawCalls[i]
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      return { kind: 'malformed', reason: `tool_calls[${i}] must be an object` }
+    }
+    const callObj = raw as Record<string, unknown>
+    for (const key of Object.keys(callObj)) {
+      if (key !== 'name' && key !== 'arguments') {
+        return { kind: 'malformed', reason: `tool_calls[${i}] has unrecognized field "${key}"` }
+      }
+    }
+    if (typeof callObj.name !== 'string' || !callObj.name.trim()) {
+      return { kind: 'malformed', reason: `tool_calls[${i}] is missing a valid name` }
+    }
+    const resolved = resolveToolName(callObj.name, known)
+    if (!resolved) {
+      return { kind: 'malformed', reason: `tool_calls[${i}] names unknown tool "${callObj.name}"` }
+    }
+    if (
+      callObj.arguments === undefined ||
+      callObj.arguments === null ||
+      typeof callObj.arguments !== 'object' ||
+      Array.isArray(callObj.arguments)
+    ) {
+      return { kind: 'malformed', reason: `tool_calls[${i}] arguments must be a JSON object` }
+    }
+    calls.push({ name: resolved, input: callObj.arguments as Record<string, unknown> })
+  }
+
+  return {
+    kind: 'valid',
+    turn: {
+      text: typeof record.text === 'string' ? record.text.trim() : '',
+      calls,
+    },
+  }
 }
