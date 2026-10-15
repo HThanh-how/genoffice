@@ -17,11 +17,14 @@ import type { WorkerReply, WorkerRequest } from '../src/main/document-memory/wor
 
 let dir: string
 let store: DocumentMemoryStore
+let cleanupPurgeTest: (() => Promise<void>) | undefined
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'genoffice-junk-step-'))
   store = new DocumentMemoryStore(join(dir, 'm.db'))
 })
-afterEach(() => {
+afterEach(async () => {
+  await cleanupPurgeTest?.()
+  cleanupPurgeTest = undefined
   store.close()
   rmSync(dir, { recursive: true, force: true })
 })
@@ -120,14 +123,22 @@ describe('junk purge runs in bounded slices', () => {
 })
 
 describe('the purge never blocks the event loop', () => {
-  it('a long purge driven through the worker protocol keeps a 5 ms timer within 150 ms', async () => {
+  it('a long purge driven through the worker protocol keeps a 5 ms timer within 150 ms', async ({
+    signal,
+  }) => {
+    const started = performance.now()
     seedDocuments(store.rawDb, { docs: 6000, junkEvery: 2, chunksPerDoc: 3 })
     store.rawDb.exec('PRAGMA wal_checkpoint(TRUNCATE)')
-    const worker = (await realIndexWorkerFactory())('index-worker', {
+    const factory = await realIndexWorkerFactory()
+    signal.throwIfAborted()
+    const worker = factory('index-worker', {
       cacheDir: dir,
       dbPath: join(dir, 'm.db'),
     })
     let requestId = 0
+    let completedRequests = 0
+    let lastReply: WorkerReply | null = null
+    const pendingRequests = new Set<(error: Error) => void>()
     const ask = (request: WorkerRequest, timeoutMs: number): Promise<WorkerReply | null> =>
       new Promise((resolve, reject) => {
         const id = ++requestId
@@ -136,12 +147,17 @@ describe('the purge never blocks the event loop', () => {
           worker.off('message', onMessage)
           worker.off('error', onError)
           worker.off('exit', onExit)
+          pendingRequests.delete(onError)
         }
         const onMessage = (reply: WorkerReply): void => {
           if (!('id' in reply) || reply.id !== id) return
           cleanup()
           if ('error' in reply) reject(new Error(String(reply.error)))
-          else resolve(reply)
+          else {
+            completedRequests++
+            lastReply = reply
+            resolve(reply)
+          }
         }
         const onError = (error: Error): void => {
           cleanup()
@@ -155,8 +171,11 @@ describe('the purge never blocks the event loop', () => {
         worker.on('message', onMessage)
         worker.once('error', onError)
         worker.once('exit', onExit)
+        pendingRequests.add(onError)
         worker.postMessage({ ...request, id })
       })
+    // Exercise the real process boundary at full worker load, without testing the power policy's deliberate cooldowns.
+    worker.postMessage({ type: 'policy', threads: 1, cpuShare: 1 })
     const gaps: number[] = []
     let last = performance.now()
     const timer = setInterval(() => {
@@ -168,8 +187,39 @@ describe('the purge never blocks the event loop', () => {
     const mainStep = vi.spyOn(store, 'purgeDiscoveredByNameStep')
     let stop = (): void => {}
     let wait: ReturnType<typeof setInterval> | undefined
+    let deadline: ReturnType<typeof setTimeout> | undefined
+    let rejectPurge: ((error: Error) => void) | undefined
+    let cleanupPromise: Promise<void> | undefined
+    const abort = (): void => rejectPurge?.(new Error('Junk purge test aborted'))
+    const cleanup = (): Promise<void> => {
+      cleanupPromise ??= (async () => {
+        stop()
+        clearInterval(wait)
+        clearInterval(timer)
+        clearTimeout(deadline)
+        signal.removeEventListener('abort', abort)
+        abort()
+        for (const rejectRequest of pendingRequests)
+          rejectRequest(new Error('Junk purge test ended'))
+        await worker.terminate()
+      })()
+      return cleanupPromise
+    }
+    cleanupPurgeTest = cleanup
     try {
       await new Promise<void>((resolve, reject) => {
+        rejectPurge = reject
+        signal.addEventListener('abort', abort, { once: true })
+        deadline = setTimeout(
+          () => {
+            reject(
+              new Error(
+                `Junk purge did not finish: ${JSON.stringify({ completedRequests, lastReply })}`,
+              ),
+            )
+          },
+          Math.max(1, 55_000 - (performance.now() - started)),
+        )
         stop = startJunkPurge({
           store,
           // Run the production worker in its own process, including SQLite commits and checkpoints.
@@ -189,10 +239,7 @@ describe('the purge never blocks the event loop', () => {
         }, 20)
       })
     } finally {
-      stop()
-      clearInterval(wait)
-      clearInterval(timer)
-      await worker.terminate()
+      await cleanup()
     }
     expect(sync).not.toHaveBeenCalled()
     expect(mainStep).not.toHaveBeenCalled()
