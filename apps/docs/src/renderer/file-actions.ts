@@ -758,7 +758,14 @@ function mergeHeaderFooterOptions(
   const map = (hf: HeaderFooter | undefined): HeaderFooter | undefined =>
     hf ? applyMergeValuesToHeaderFooter(hf, values, report) : hf
   const out: HfSaveOptions = { ...options }
-  for (const key of ['header', 'footer', 'headerFirst', 'footerFirst', 'headerEven', 'footerEven'] as const) {
+  for (const key of [
+    'header',
+    'footer',
+    'headerFirst',
+    'footerFirst',
+    'headerEven',
+    'footerEven',
+  ] as const) {
     if (out[key]) out[key] = map(out[key])
   }
   if (out.sectionHf) {
@@ -788,7 +795,7 @@ export async function buildDocBytes(
   const { doc, editor } = ctx
   if (!doc || !editor) return null
   const pmJson = merge
-    ? applyMergeValuesToPmDoc(editor.state.doc, merge.values, merge.report)
+    ? (applyMergeValuesToPmDoc(editor.state.doc, merge.values, merge.report).toJSON() as PmNode)
     : (editor.getJSON() as PmNode)
   const plan = pmDocToSavePlan(pmJson, doc.parsed.blocks)
   // chart data edits patch the chart's own zip part, not the body XML
@@ -858,7 +865,9 @@ export async function buildDocBytes(
     edits: ctx.sectionHfEdits,
     links: ctx.hfLinks,
   })
-  const mergedHf = merge ? mergeHeaderFooterOptions(hfOptions, merge.values, merge.report) : hfOptions
+  const mergedHf = merge
+    ? mergeHeaderFooterOptions(hfOptions, merge.values, merge.report)
+    : hfOptions
   const bytes = await saveDocx(doc.parsed, saveBlocks, {
     section: ctx.sectionDirty && ctx.section ? ctx.section : undefined,
     sectionStartType: ctx.trailingStartType ?? undefined,

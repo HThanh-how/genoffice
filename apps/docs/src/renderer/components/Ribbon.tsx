@@ -292,17 +292,17 @@ interface RibbonProps {
   mirrorMargins: boolean
   onMirrorMargins: (on: boolean) => void
   /** Mailings tab: the recipient source, preview state and export hooks */
-  mergeSource: import('../mail-merge/types').MailMergeSource | null
-  mergePreviewOn: boolean
-  mergePreviewIndex: number
-  mergeHighlight: boolean
-  onOpenMergePicker: (kind?: import('../mail-merge/types').MailMergeSourceKind) => void
-  onToggleMergePreview: (on: boolean) => void
-  onStepMergePreview: (delta: number) => void
-  onToggleMergeHighlight: (on: boolean) => void
-  onInsertMergeField: (name: string) => void
-  onCheckMergeErrors: () => void
-  onMergeExport: (format: 'docx' | 'pdf') => void
+  mergeSource?: import('../mail-merge/types').MailMergeSource | null
+  mergePreviewOn?: boolean
+  mergePreviewIndex?: number
+  mergeHighlight?: boolean
+  onOpenMergePicker?: (kind?: import('../mail-merge/types').MailMergeSourceKind) => void
+  onToggleMergePreview?: (on: boolean) => void
+  onStepMergePreview?: (delta: number) => void
+  onToggleMergeHighlight?: (on: boolean) => void
+  onInsertMergeField?: (name: string) => void
+  onCheckMergeErrors?: () => void
+  onMergeExport?: (format: 'docx' | 'pdf') => void
   pageColor: string | null
   onPageColor: (hex: string | null) => void
   /** Design → Watermark / Themes */
@@ -517,7 +517,18 @@ const IN_TAB = new URLSearchParams(window.location.search).get('mode') === 'tab'
 const TABS = (
   IS_MAC
     ? ['home', 'insert', 'draw', 'design', 'layout', 'references', 'mailings', 'review', 'view']
-    : ['file', 'home', 'insert', 'draw', 'design', 'layout', 'references', 'mailings', 'review', 'view']
+    : [
+        'file',
+        'home',
+        'insert',
+        'draw',
+        'design',
+        'layout',
+        'references',
+        'mailings',
+        'review',
+        'view',
+      ]
 ) as readonly string[]
 const TABLE_TABS = ['tableDesign', 'tableLayout'] as const
 
@@ -748,6 +759,17 @@ function RibbonInner({
   onPaperSizeAll,
   mirrorMargins,
   onMirrorMargins,
+  mergeSource = null,
+  mergePreviewOn = false,
+  mergePreviewIndex = 0,
+  mergeHighlight = false,
+  onOpenMergePicker = () => {},
+  onToggleMergePreview = () => {},
+  onStepMergePreview = () => {},
+  onToggleMergeHighlight = () => {},
+  onInsertMergeField = () => {},
+  onCheckMergeErrors = () => {},
+  onMergeExport = () => {},
   pageColor,
   onPageColor,
   watermark,

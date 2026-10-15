@@ -9,8 +9,8 @@
  * formatting and table structure, and the save pipeline then emits ordinary
  * runs — exactly what Word writes for a merged document.
  */
-import type { Node as PmNode } from '@tiptap/pm/model'
-import { Transaction } from '@tiptap/pm/state'
+import type { Mark, Node as PmNode } from '@tiptap/pm/model'
+import { Transform } from '@tiptap/pm/transform'
 import {
   evaluateConditionalField,
   isConditionalField,
@@ -20,10 +20,13 @@ import {
   type MergeValues,
 } from '@genoffice/docx-engine'
 
+export type { MergeReport, MergeValues } from '@genoffice/docx-engine'
+
 interface Replacement {
   from: number
   to: number
-  node: PmNode
+  text: string
+  marks: readonly Mark[]
 }
 
 /** The value a field should show for this row, or null when it cannot be resolved. */
@@ -71,14 +74,19 @@ export function applyMergeValuesToPmDoc(
     if (!mark) return
     const value = mergeFieldValue(String(mark.attrs.instr ?? ''), values, report)
     if (value === null) return
-    const marks = node.marks.filter((m) => m.type.name !== 'instrField')
-    replacements.push({ from: pos, to: pos + node.nodeSize, node: doc.schema.createTextNode(value, marks) })
+    // the field mark goes away; the run's own formatting (bold, font, colour) stays
+    replacements.push({
+      from: pos,
+      to: pos + node.nodeSize,
+      text: value,
+      marks: mark.type.removeFromSet(node.marks),
+    })
   })
   if (replacements.length === 0) return doc
-  const tr = new Transaction(doc)
+  const tr = new Transform(doc)
   for (let i = replacements.length - 1; i >= 0; i--) {
     const r = replacements[i]
-    tr.replace(r.from, r.to, r.node)
+    tr.replaceWith(r.from, r.to, doc.type.schema.text(r.text, r.marks))
   }
   return tr.doc
 }

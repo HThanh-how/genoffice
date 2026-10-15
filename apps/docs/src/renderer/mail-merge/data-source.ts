@@ -3,7 +3,7 @@
  * spreadsheet) into the normalized recipient list the picker and the export
  * pipeline work with.
  */
-import { xlsxToGrid } from '@genoffice/file-parse'
+import { xlsxToGrid } from '@genoffice/file-parse/xlsx'
 import { parseCsvRows, sniffDelimiter, trimEmptyRows } from './csv'
 import type { MailMergeColumn, MailMergeRecipient, MailMergeSource } from './types'
 
@@ -51,7 +51,7 @@ export function sourceFromRows(
   const headerRow = options.hasHeader ? (data[0] ?? []) : []
   const columns = options.hasHeader
     ? buildColumns(headerRow)
-    : buildColumns(Array.from({ length: Math.max(1, ...data.map((r) => r.length)) }, (_, i) => ''))
+    : buildColumns(Array.from({ length: Math.max(1, ...data.map((r) => r.length)) }, () => ''))
   const body = options.hasHeader ? data.slice(1) : data
   const recipients: MailMergeRecipient[] = body.map((row, id) => {
     const values: Record<string, string> = {}
@@ -91,9 +91,7 @@ export async function loadXlsxSource(
 ): Promise<MailMergeSource> {
   const grids = await xlsxToGrid(base64ToBytes(base64))
   if (grids.length === 0) throw new Error('the workbook has no worksheets')
-  const sheet = sheetName
-    ? grids.find((g) => g.name === sheetName) ?? grids[0]
-    : grids[0]
+  const sheet = sheetName ? (grids.find((g) => g.name === sheetName) ?? grids[0]) : grids[0]
   return sourceFromRows(sheet.rows, { kind: 'xlsx', label, sheet: sheet.name, hasHeader })
 }
 
@@ -146,14 +144,18 @@ export async function loadSheetSource(
   if (addresses.length === 0) throw new Error('invalid range')
   const response = await window.desktop.readSheetGrid(wcId, sheet, addresses)
   if (!response.ok) throw new Error(response.error ?? 'the spreadsheet could not be read')
-  const cells = (response.result as { cells?: Record<string, { value?: unknown }> } | undefined)?.cells
+  const cells = (response.result as { cells?: Record<string, { value?: unknown }> } | undefined)
+    ?.cells
   if (!cells) throw new Error('the spreadsheet returned no cells')
   const m = /^([A-Za-z]+)(\d+):([A-Za-z]+)(\d+)$/.exec(range.trim())
   if (!m) throw new Error('invalid range')
   const firstRow = parseInt(m[2], 10)
   const firstCol = m[1].toUpperCase()
   const lastCol = m[3].toUpperCase()
-  const width = Math.min(MAX_COLUMNS, addressesInRange(`${firstCol}${firstRow}:${lastCol}${firstRow}`).length)
+  const width = Math.min(
+    MAX_COLUMNS,
+    addressesInRange(`${firstCol}${firstRow}:${lastCol}${firstRow}`).length,
+  )
   const rows: string[][] = []
   for (let r = firstRow; ; r++) {
     const row: string[] = []

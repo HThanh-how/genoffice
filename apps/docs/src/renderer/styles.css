@@ -7426,6 +7426,191 @@ body.docs-crop-active .doc-protected[data-doc-protected='image'] .doc-img-wrap {
   padding: 0 2px;
 }
 
+/* the preview stepper sits next to the Preview Results button */
+.mm-preview-nav {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.mm-preview-count {
+  font-size: 12px;
+  color: var(--text-dim);
+  min-width: 44px;
+  text-align: center;
+}
+
+.mm-caret-left {
+  transform: rotate(180deg);
+}
+
+/* Mail merge dialogs: recipient picker, export settings, progress, error list */
+.mail-merge-picker {
+  width: min(780px, 92vw);
+}
+
+.mm-source-tabs {
+  display: flex;
+  gap: 6px;
+  margin: 10px 0;
+}
+
+.mm-source-tab {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  background: var(--surface);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.mm-source-tab.active {
+  border-color: var(--border-strong);
+  background: var(--docs-paper-field-bg);
+}
+
+.mm-source-controls,
+.mm-picker-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.mm-source-controls label,
+.mm-picker-filters label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.mm-recipient-table {
+  font-size: 13px;
+}
+
+.mm-recipient-head,
+.mm-recipient-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.mm-recipient-head {
+  border-bottom: 1px solid var(--border-strong);
+  font-weight: 600;
+}
+
+.mm-recipient-row span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mm-recipient-row.unselected {
+  opacity: 0.55;
+}
+
+.mm-empty {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 12px 0;
+}
+
+.mm-pagination {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.mm-picker-meta,
+.mm-visible-count {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.mm-picker-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.mm-dir-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin: 6px 0;
+}
+
+.mm-current {
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.mm-pattern-hint {
+  display: block;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: 4px;
+}
+
+.mm-progress-bar {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--border);
+  overflow: hidden;
+  margin: 10px 0;
+}
+
+.mm-progress-fill {
+  height: 100%;
+  background: var(--word-blue);
+  border-radius: 4px;
+}
+
+.mm-progress-counts {
+  list-style: none;
+  display: flex;
+  gap: 12px;
+  margin: 0 0 8px;
+  padding: 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.mm-error-list {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+
+.mm-issue-list {
+  list-style: none;
+  margin: 8px 0;
+  padding: 0;
+  font-size: 13px;
+}
+
+.mm-issue {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  margin-bottom: 6px;
+}
+
+.mm-issue.error {
+  border-color: var(--border-strong);
+  background: var(--docs-paper-field-bg);
+}
+
 /* Bookmark / Cross-reference dialogs */
 .modal-row {
   display: flex;

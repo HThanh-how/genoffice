@@ -673,6 +673,8 @@ const tMain = createI18n({
     dlgExportHtml: 'HTML としてエクスポート',
     dlgExportMarkdown: 'Markdown としてエクスポート',
     dlgPickExportDir: 'エクスポート先フォルダーの選択',
+    dlgMailMergeSource: 'メール合并データ源を選択',
+    dlgMailMergeOutput: '出力フォルダーを選択',
     errUnsupportedExt: '.{ext} 形式には対応していません',
     errNotFile: 'ファイルではありません',
     errTooLarge: '{mb}MB の上限を超えています',
@@ -814,6 +816,8 @@ const tMain = createI18n({
     dlgExportHtml: 'HTML로 내보내기',
     dlgExportMarkdown: 'Markdown로 내보내기',
     dlgPickExportDir: '내보낼 폴더 선택',
+    dlgMailMergeSource: '병합 데이터 원본 선택',
+    dlgMailMergeOutput: '내보낼 폴더 선택',
     errUnsupportedExt: '.{ext} 형식은 지원되지 않습니다',
     errNotFile: '파일이 아닙니다',
     errTooLarge: '{mb}MB 제한을 초과했습니다',
@@ -956,6 +960,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Exporter au format HTML',
     dlgExportMarkdown: 'Exporter au format Markdown',
     dlgPickExportDir: "Choisir le dossier d'exportation",
+    dlgMailMergeSource: 'Choisir la source de fusion',
+    dlgMailMergeOutput: 'Choisir le dossier de fusion',
     errUnsupportedExt: 'les fichiers .{ext} ne sont pas pris en charge',
     errNotFile: "n'est pas un fichier",
     errTooLarge: 'dépasse la limite de {mb} Mo',
@@ -1098,6 +1104,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Als HTML exportieren',
     dlgExportMarkdown: 'Als Markdown exportieren',
     dlgPickExportDir: 'Exportordner auswählen',
+    dlgMailMergeSource: 'Fusionsdatenquelle auswählen',
+    dlgMailMergeOutput: 'Exportordner auswählen',
     errUnsupportedExt: '.{ext}-Dateien werden nicht unterstützt',
     errNotFile: 'keine Datei',
     errTooLarge: 'überschreitet das Limit von {mb} MB',
@@ -1239,6 +1247,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Exportar como HTML',
     dlgExportMarkdown: 'Exportar como Markdown',
     dlgPickExportDir: 'Elegir carpeta de exportación',
+    dlgMailMergeSource: 'Elegir origen de datos de combinación',
+    dlgMailMergeOutput: 'Elegir carpeta de exportación',
     errUnsupportedExt: 'los archivos .{ext} no son compatibles',
     errNotFile: 'no es un archivo',
     errTooLarge: 'supera el límite de {mb} MB',
@@ -1380,6 +1390,8 @@ const tMain = createI18n({
     dlgExportHtml: 'ส่งออกเป็น HTML',
     dlgExportMarkdown: 'ส่งออกเป็น Markdown',
     dlgPickExportDir: 'เลือกโฟลเดอร์ส่งออก',
+    dlgMailMergeSource: 'เลือกแหล่งข้อมูลการผสาน',
+    dlgMailMergeOutput: 'เลือกโฟลเดอร์ส่งออก',
     errUnsupportedExt: 'ไม่รองรับไฟล์ .{ext}',
     errNotFile: 'ไม่ใช่ไฟล์',
     errTooLarge: 'เกินขีดจำกัด {mb}MB',
@@ -1521,6 +1533,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Ekspor sebagai HTML',
     dlgExportMarkdown: 'Ekspor sebagai Markdown',
     dlgPickExportDir: 'Pilih Folder Ekspor',
+    dlgMailMergeSource: 'Pilih Sumber Data Gabungan',
+    dlgMailMergeOutput: 'Pilih Folder Ekspor',
     errUnsupportedExt: 'file .{ext} tidak didukung',
     errNotFile: 'bukan file',
     errTooLarge: 'melebihi batas {mb}MB',
@@ -1661,6 +1675,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Экспорт в HTML',
     dlgExportMarkdown: 'Экспорт в Markdown',
     dlgPickExportDir: 'Выбор папки для экспорта',
+    dlgMailMergeSource: 'Выбор источника данных слияния',
+    dlgMailMergeOutput: 'Выбор папки экспорта',
     errUnsupportedExt: 'файлы .{ext} не поддерживаются',
     errNotFile: 'не является файлом',
     errTooLarge: 'превышает лимит {mb} МБ',
@@ -1802,6 +1818,8 @@ const tMain = createI18n({
     dlgExportHtml: 'تصدير بتنسيق HTML',
     dlgExportMarkdown: 'تصدير بتنسيق Markdown',
     dlgPickExportDir: 'اختيار مجلد التصدير',
+    dlgMailMergeSource: 'اختيار مصدر بيانات الدمج',
+    dlgMailMergeOutput: 'اختيار مجلد التصدير',
     errUnsupportedExt: 'ملفات .{ext} غير مدعومة',
     errNotFile: 'ليس ملفًا',
     errTooLarge: 'يتجاوز الحد {mb}MB',
@@ -1943,6 +1961,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Exportar como HTML',
     dlgExportMarkdown: 'Exportar como Markdown',
     dlgPickExportDir: 'Escolher Pasta de Exportação',
+    dlgMailMergeSource: 'Escolher fonte de dados de mesclagem',
+    dlgMailMergeOutput: 'Escolher pasta de exportação',
     errUnsupportedExt: 'arquivos .{ext} não são suportados',
     errNotFile: 'não é um arquivo',
     errTooLarge: 'excede o limite de {mb}MB',
@@ -2084,6 +2104,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Esporta come HTML',
     dlgExportMarkdown: 'Esporta come Markdown',
     dlgPickExportDir: 'Scegli la cartella di esportazione',
+    dlgMailMergeSource: 'Scegli origine dati merge',
+    dlgMailMergeOutput: 'Scegli cartella di esportazione',
     errUnsupportedExt: 'i file .{ext} non sono supportati',
     errNotFile: 'non è un file',
     errTooLarge: 'supera il limite di {mb} MB',
@@ -2225,6 +2247,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Eksportuj jako HTML',
     dlgExportMarkdown: 'Eksportuj jako Markdown',
     dlgPickExportDir: 'Wybierz folder eksportu',
+    dlgMailMergeSource: 'Wybierz źródło danych merge',
+    dlgMailMergeOutput: 'Wybierz folder eksportu',
     errUnsupportedExt: 'pliki .{ext} nie są obsługiwane',
     errNotFile: 'to nie jest plik',
     errTooLarge: 'przekracza limit {mb} MB',
@@ -2366,6 +2390,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Exportovat jako HTML',
     dlgExportMarkdown: 'Exportovat jako Markdown',
     dlgPickExportDir: 'Zvolte složku pro export',
+    dlgMailMergeSource: 'Zvolte zdroj dat slučování',
+    dlgMailMergeOutput: 'Zvolte složku exportu',
     errUnsupportedExt: 'soubory .{ext} nejsou podporovány',
     errNotFile: 'není soubor',
     errTooLarge: 'překračuje limit {mb} MB',
@@ -2507,6 +2533,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Exporteren als HTML',
     dlgExportMarkdown: 'Exporteren als Markdown',
     dlgPickExportDir: 'Exportmap kiezen',
+    dlgMailMergeSource: 'Kies merge-gegevensbron',
+    dlgMailMergeOutput: 'Kies exportmap',
     errUnsupportedExt: '.{ext}-bestanden worden niet ondersteund',
     errNotFile: 'geen bestand',
     errTooLarge: 'overschrijdt de limiet van {mb} MB',
@@ -2648,6 +2676,8 @@ const tMain = createI18n({
     dlgExportHtml: 'Eksport sebagai HTML',
     dlgExportMarkdown: 'Eksport sebagai Markdown',
     dlgPickExportDir: 'Pilih Folder Eksport',
+    dlgMailMergeSource: 'Pilih Sumber Data Gabungan',
+    dlgMailMergeOutput: 'Pilih Folder Eksport',
     errUnsupportedExt: 'fail .{ext} tidak disokong',
     errNotFile: 'bukan fail',
     errTooLarge: 'melebihi had {mb}MB',
@@ -2788,6 +2818,8 @@ const tMain = createI18n({
     dlgExportHtml: 'ייצוא כ-HTML',
     dlgExportMarkdown: 'ייצוא כ-Markdown',
     dlgPickExportDir: 'בחירת תיקיית ייצוא',
+    dlgMailMergeSource: 'בחירת מקור נתונים למיזוג',
+    dlgMailMergeOutput: 'בחירת תיקיית ייצוא',
     errUnsupportedExt: 'קובצי .{ext} אינם נתמכים',
     errNotFile: 'אינו קובץ',
     errTooLarge: 'חורג מהמגבלה של {mb}MB',
@@ -2928,6 +2960,8 @@ const tMain = createI18n({
     dlgExportHtml: 'HTML के रूप में निर्यात करें',
     dlgExportMarkdown: 'Markdown के रूप में निर्यात करें',
     dlgPickExportDir: 'निर्यात फ़ोल्डर चुनें',
+    dlgMailMergeSource: 'मर्ज डेटा स्रोत चुनें',
+    dlgMailMergeOutput: 'निर्यात फ़ोल्डर चुनें',
     errUnsupportedExt: '.{ext} फ़ाइलें समर्थित नहीं हैं',
     errNotFile: 'फ़ाइल नहीं है',
     errTooLarge: '{mb}MB की सीमा से अधिक है',
@@ -3067,6 +3101,8 @@ const tMain = createI18n({
     dlgExportHtml: '匯出為 HTML',
     dlgExportMarkdown: '匯出為 Markdown',
     dlgPickExportDir: '選擇匯出目錄',
+    dlgMailMergeSource: 'मर्ज डेटा स्रोत चुनें',
+    dlgMailMergeOutput: 'निर्यात फ़ोल्डर चुनें',
     errUnsupportedExt: '暫不支援 .{ext} 類型',
     errNotFile: '不是檔案',
     errTooLarge: '超過 {mb}MB 上限',
@@ -5443,7 +5479,11 @@ export function registerDocsIpc(): void {
         })
         const data = await withInternalLinks(printed, links)
         await atomicWriteFile(filePath, data)
-        if (!isImageExportTemp(event.sender.id, filePath) && !isMailMergeBatchPdf(event.sender.id, filePath)) openGeneratedFile(filePath)
+        if (
+          !isImageExportTemp(event.sender.id, filePath) &&
+          !isMailMergeBatchPdf(event.sender.id, filePath)
+        )
+          openGeneratedFile(filePath)
         return { ok: true, path: filePath }
       } catch (err) {
         // path is already authorized, so the renderer can retry chunked to the same target
@@ -5651,7 +5691,11 @@ export function registerDocsIpc(): void {
         }
         if (Array.isArray(links) && links.length > 0) addPdfInternalLinks(merged, links)
         await atomicWriteFile(filePath, Buffer.from(await merged.save()))
-        if (!isImageExportTemp(event.sender.id, filePath) && !isMailMergeBatchPdf(event.sender.id, filePath)) openGeneratedFile(filePath)
+        if (
+          !isImageExportTemp(event.sender.id, filePath) &&
+          !isMailMergeBatchPdf(event.sender.id, filePath)
+        )
+          openGeneratedFile(filePath)
         return { ok: true, path: filePath }
       } catch (err) {
         return { ok: false, error: String(err) }
@@ -5744,6 +5788,7 @@ export function registerDocsIpc(): void {
         return { ok: false, error: 'invalid write request' }
       }
       const safeName = name
+        // eslint-disable-next-line no-control-regex -- a recipient value is user text; controls must not reach the filesystem
         .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
         .replace(/\s+/g, ' ')
         .trim()
@@ -5775,16 +5820,16 @@ export function registerDocsIpc(): void {
   )
 
   /** Open spreadsheets, as the mail-merge recipient picker sees them. */
-  ipcMain.handle('docs:list-sheet-tabs', () => {
-    const tabs: Array<{ id: string; title: string; filePath?: string; active: boolean }> = []
+  ipcMain.handle('docs:list-sheet-tabs', (event) => {
+    const tabs: Array<{ id: string; title: string; active: boolean }> = []
     for (const wc of webContents.getAllWebContents()) {
       if (wc.isDestroyed()) continue
-      const url = wc.url ?? ''
-      if (!/(^|\/\/)sheets\/|://sheets\//.test(url)) continue
+      const url = wc.getURL() ?? ''
+      if (!/(^|\/\/)sheets\/|:\/\/sheets\//.test(url)) continue
       tabs.push({
         id: String(wc.id),
         title: wc.getTitle() || 'Spreadsheet',
-        active: wc === webContents.getActive(),
+        active: wc === event.sender,
       })
     }
     return tabs

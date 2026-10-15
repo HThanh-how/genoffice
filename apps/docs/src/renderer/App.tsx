@@ -7380,6 +7380,7 @@ export function App() {
       {mailMerge.dialog === 'picker' && (
         <RecipientPickerDialog
           source={mailMerge.source}
+          preferredKind={mailMerge.preferredKind}
           onClose={() => mailMerge.closeDialog()}
           onApply={mailMerge.applySource}
         />

@@ -30,6 +30,7 @@ export interface MailMergeSession {
   previewOn: boolean
   previewIndex: number
   highlight: boolean
+  preferredKind?: MailMergeSourceKind
   progress: MailMergeExportProgress | null
   issues: MailMergeValidationIssue[]
   openPicker: (kind?: MailMergeSourceKind) => void
@@ -53,11 +54,13 @@ export function useMailMergeSession(
 ): MailMergeSession {
   const [source, setSource] = useState<MailMergeSource | null>(null)
   const [dialog, setDialog] = useState<MailMergeDialog>(null)
+  const [preferredKind, setPreferredKind] = useState<MailMergeSourceKind | undefined>(undefined)
   const [previewOn, setPreviewOn] = useState(false)
   const [previewIndex, setPreviewIndex] = useState(0)
   const [highlight, setHighlight] = useState(false)
   const [progress, setProgress] = useState<MailMergeExportProgress | null>(null)
   const [issues, setIssues] = useState<MailMergeValidationIssue[]>([])
+  const [running, setRunning] = useState(false)
   const cancelRef = useRef<CancelToken>({ cancelled: false })
   const runningRef = useRef(false)
   const [pendingFormat, setPendingFormat] = useState<'docx' | 'pdf'>('docx')
@@ -97,18 +100,19 @@ export function useMailMergeSession(
   return {
     source,
     dialog,
+    preferredKind,
     previewOn,
     previewIndex,
     highlight,
     progress,
     issues,
-    exportRunning: runningRef.current,
+    exportRunning: running,
     pendingFormat,
 
     openPicker: (kind) => {
       if (!editor) return
+      setPreferredKind(kind)
       setDialog('picker')
-      void kind
     },
 
     openExport: (format) => {
@@ -139,6 +143,9 @@ export function useMailMergeSession(
 
     insertField: (name) => {
       if (!editor) return
+      // Word inserts the field as a real MERGEFIELD, not as literal «text»:
+      // the run carries the instrField mark, so the engine round-trips it to
+      // <w:fldChar>…MERGEFIELD… and preview/export can resolve it.
       editor
         .chain()
         .focus()
@@ -147,7 +154,6 @@ export function useMailMergeSession(
           text: mergePlaceholder(name),
           marks: [{ type: 'instrField', attrs: { instr: `MERGEFIELD ${name}` } }],
         })
-        .unsetMark('instrField')
         .run()
     },
 
@@ -160,6 +166,7 @@ export function useMailMergeSession(
     startExport: (options) => {
       if (runningRef.current || !source) return
       runningRef.current = true
+      setRunning(true)
       cancelRef.current = { cancelled: false }
       setProgress({
         total: selectedCount(source),
@@ -176,13 +183,23 @@ export function useMailMergeSession(
         .then((final) => setProgress(final))
         .catch((error) =>
           setProgress((prev) => ({
-            ...(prev ?? { total: 0, done: 0, succeeded: 0, failed: 0, skipped: 0, current: '', errors: [], cancelled: false }),
+            ...(prev ?? {
+              total: 0,
+              done: 0,
+              succeeded: 0,
+              failed: 0,
+              skipped: 0,
+              current: '',
+              errors: [],
+              cancelled: false,
+            }),
             failed: (prev?.failed ?? 0) + 1,
             errors: [...(prev?.errors ?? []), { recipient: 'export', message: String(error) }],
           })),
         )
         .finally(() => {
           runningRef.current = false
+          setRunning(false)
         })
     },
 

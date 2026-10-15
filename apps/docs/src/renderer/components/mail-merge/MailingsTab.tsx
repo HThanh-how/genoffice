@@ -1,9 +1,9 @@
 import { Dropdown } from '@genoffice/ui'
-import { BIG, TabProps } from './ribbon-tabs'
-import { IconCaret, IconHighlight, IconSearch, IconTable } from './icons'
-import { useI18n } from '../i18n/locale'
-import type { MailMergeSource } from '../mail-merge/types'
-import { selectedCount } from '../mail-merge/recipient-store'
+import { BIG, TabProps } from '../ribbon-tabs'
+import { IconCaret, IconHighlight, IconSearch, IconTable } from '../icons'
+import { useI18n } from '../../i18n/locale'
+import type { MailMergeSource } from '../../mail-merge/types'
+import { selectedCount } from '../../mail-merge/recipient-store'
 
 export interface MailingsTabProps extends TabProps {
   source: MailMergeSource | null
@@ -20,10 +20,7 @@ export interface MailingsTabProps extends TabProps {
 }
 
 export function MailingsTab({
-  editor,
   hasDoc,
-  dropdown,
-  setDropdown,
   source,
   previewOn,
   previewIndex,
@@ -91,11 +88,17 @@ export function MailingsTab({
             ariaLabel={tr('mailMergeInsertField')}
             options={
               ready
-                ? source!.columns.map((column) => ({ value: column.name, label: column.name }))
-                : [{ value: 'none', label: tr('mailMergeNoColumns') }]
+                ? [
+                    { value: 'insert-field', label: tr('mailMergeInsertField'), disabled: true },
+                    ...source!.columns.map((column) => ({
+                      value: column.name,
+                      label: column.name,
+                    })),
+                  ]
+                : [{ value: 'insert-field', label: tr('mailMergeNoColumns'), disabled: true }]
             }
             onPick={(value) => {
-              if (value !== 'none') onInsertField(value)
+              if (value !== 'insert-field') onInsertField(value)
             }}
           />
           <button
@@ -134,7 +137,9 @@ export function MailingsTab({
               aria-label={tr('mailMergePrev')}
               onClick={() => onStepPreview(-1)}
             >
-              <IconCaret className="mm-caret-left" />
+              <span className="mm-caret mm-caret-left">
+                <IconCaret />
+              </span>
             </button>
             <span className="mm-preview-count" aria-live="polite">
               {previewOn && source ? `${previewIndex + 1} / ${selectedCount(source)}` : '—'}

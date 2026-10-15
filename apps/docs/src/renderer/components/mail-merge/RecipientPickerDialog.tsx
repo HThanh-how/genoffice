@@ -1,14 +1,19 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useModalKeys } from './modal-keys'
-import { useI18n } from '../i18n/locale'
+import { useModalKeys } from '../modal-keys'
+import { useI18n } from '../../i18n/locale'
 import {
   loadCsvSource,
   loadSheetSource,
   loadXlsxSource,
   listXlsxSheets,
-} from '../mail-merge/data-source'
-import { DEFAULT_FILTER, selectedCount, setSelected, visibleRecipients } from '../mail-merge/recipient-store'
-import type { MailMergeFilter, MailMergeSource, MailMergeSourceKind } from '../mail-merge/types'
+} from '../../mail-merge/data-source'
+import {
+  DEFAULT_FILTER,
+  selectedCount,
+  setSelected,
+  visibleRecipients,
+} from '../../mail-merge/recipient-store'
+import type { MailMergeFilter, MailMergeSource, MailMergeSourceKind } from '../../mail-merge/types'
 
 const PAGE_SIZE = 100
 
@@ -85,12 +90,22 @@ export function RecipientPickerDialog({
     }
     try {
       const context = await window.desktop.readSheetGrid(Number(tabId))
-      const names = (context.result as { context?: { sheets?: Array<{ name: string }> } } | undefined)?.context?.sheets
+      const names = (
+        context.result as { context?: { sheets?: Array<{ name: string }> } } | undefined
+      )?.context?.sheets
       const list = names?.map((s) => s.name) ?? []
       setSheets(list)
       const chosen = sheet || list[0] || ''
       setSheet(chosen)
-      setPending(await loadSheetSource(Number(tabId), t('mailMergeOpenSpreadsheet'), chosen, range, hasHeader))
+      setPending(
+        await loadSheetSource(
+          Number(tabId),
+          t('mailMergeOpenSpreadsheet'),
+          chosen,
+          range,
+          hasHeader,
+        ),
+      )
       setError('')
       setPage(0)
     } catch (err) {
@@ -112,7 +127,12 @@ export function RecipientPickerDialog({
   }
 
   return (
-    <div className="modal-backdrop" ref={modalKeys.ref} onKeyDown={modalKeys.onKeyDown} onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
+    <div
+      className="modal-backdrop"
+      ref={modalKeys.ref}
+      onKeyDown={modalKeys.onKeyDown}
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
       <div className="modal mail-merge-picker">
         <h2>{t('mailMergePickerTitle')}</h2>
         <div className="mm-source-tabs" role="tablist">
@@ -124,7 +144,11 @@ export function RecipientPickerDialog({
               className={`mm-source-tab ${kind === value ? 'active' : ''}`}
               onClick={() => setKind(value)}
             >
-              {value === 'csv' ? t('mailMergeFromCsv') : value === 'xlsx' ? t('mailMergeFromExcel') : t('mailMergeFromSheets')}
+              {value === 'csv'
+                ? t('mailMergeFromCsv')
+                : value === 'xlsx'
+                  ? t('mailMergeFromExcel')
+                  : t('mailMergeFromSheets')}
             </button>
           ))}
         </div>
@@ -155,7 +179,11 @@ export function RecipientPickerDialog({
               </label>
               <label>
                 {t('mailMergeRange')}
-                <input value={range} onChange={(e) => setRange(e.target.value)} placeholder="A1:F1000" />
+                <input
+                  value={range}
+                  onChange={(e) => setRange(e.target.value)}
+                  placeholder="A1:F1000"
+                />
               </label>
               <button className="btn-ghost" onClick={() => void readOpenSheet()}>
                 {t('mailMergeReadSheet')}
@@ -173,7 +201,10 @@ export function RecipientPickerDialog({
                     value={sheet}
                     onChange={(e) => {
                       setSheet(e.target.value)
-                      if (rawFile) void applyXlsx(rawFile.base64, rawFile.path, e.target.value).catch((err) => setError(String(err)))
+                      if (rawFile)
+                        void applyXlsx(rawFile.base64, rawFile.path, e.target.value).catch((err) =>
+                          setError(String(err)),
+                        )
                     }}
                   >
                     {sheets.map((name) => (
@@ -187,7 +218,11 @@ export function RecipientPickerDialog({
             </>
           )}
           <label className="mm-header-toggle">
-            <input type="checkbox" checked={hasHeader} onChange={(e) => setHasHeader(e.target.checked)} />
+            <input
+              type="checkbox"
+              checked={hasHeader}
+              onChange={(e) => setHasHeader(e.target.checked)}
+            />
             {t('mailMergeFirstRowHeader')}
           </label>
         </div>
@@ -197,9 +232,7 @@ export function RecipientPickerDialog({
             <span>
               {t('mailMergeSourceLabel', { source: pending.label, sheet: pending.sheet ?? '' })}
             </span>
-            <span>
-              {t('mailMergeRecipientCount', { n: pending.recipients.length, selected })}
-            </span>
+            <span>{t('mailMergeRecipientCount', { n: pending.recipients.length, selected })}</span>
           </div>
         )}
 
@@ -236,7 +269,9 @@ export function RecipientPickerDialog({
               <select
                 value={filter.operator}
                 aria-label={t('mailMergeFilterOperator')}
-                onChange={(e) => setFilter({ ...filter, operator: e.target.value as MailMergeFilter['operator'] })}
+                onChange={(e) =>
+                  setFilter({ ...filter, operator: e.target.value as MailMergeFilter['operator'] })
+                }
               >
                 <option value="contains">{t('mailMergeContains')}</option>
                 <option value="equals">{t('mailMergeEquals')}</option>
@@ -260,7 +295,12 @@ export function RecipientPickerDialog({
                   </option>
                 ))}
               </select>
-              <button className="btn-ghost" onClick={() => setFilter({ ...filter, sortDir: filter.sortDir === 'asc' ? 'desc' : 'asc' })}>
+              <button
+                className="btn-ghost"
+                onClick={() =>
+                  setFilter({ ...filter, sortDir: filter.sortDir === 'asc' ? 'desc' : 'asc' })
+                }
+              >
                 {filter.sortDir === 'asc' ? t('mailMergeAscending') : t('mailMergeDescending')}
               </button>
             </div>
@@ -281,7 +321,9 @@ export function RecipientPickerDialog({
                     role="cell"
                     checked={recipient.selected}
                     aria-label={t('mailMergeSelectRecipient', { id: recipient.id + 1 })}
-                    onChange={(e) => setPending(setSelected(pending, new Set([recipient.id]), e.target.checked))}
+                    onChange={(e) =>
+                      setPending(setSelected(pending, new Set([recipient.id]), e.target.checked))
+                    }
                   />
                   {pending.columns.map((c) => (
                     <span role="cell" key={c.name}>
@@ -295,13 +337,21 @@ export function RecipientPickerDialog({
 
             {pageCount > 1 && (
               <div className="mm-pagination">
-                <button className="btn-ghost" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+                <button
+                  className="btn-ghost"
+                  disabled={page === 0}
+                  onClick={() => setPage((p) => p - 1)}
+                >
                   {t('mailMergePrevPage')}
                 </button>
                 <span>
                   {page + 1} / {pageCount}
                 </span>
-                <button className="btn-ghost" disabled={page >= pageCount - 1} onClick={() => setPage((p) => p + 1)}>
+                <button
+                  className="btn-ghost"
+                  disabled={page >= pageCount - 1}
+                  onClick={() => setPage((p) => p + 1)}
+                >
                   {t('mailMergeNextPage')}
                 </button>
                 <span className="mm-visible-count">

@@ -119,8 +119,7 @@ function resolvedRun(run: Run, text: string): Run {
   return next
 }
 
-function mapRuns(runs: Run[] | undefined, values: MergeValues, report: MergeReport): Run[] | undefined {
-  if (!runs) return runs
+function mapRuns(runs: Run[], values: MergeValues, report: MergeReport): Run[] {
   const out: Run[] = []
   for (const run of runs) {
     const instr = run.instrField
@@ -164,11 +163,24 @@ function mapRuns(runs: Run[] | undefined, values: MergeValues, report: MergeRepo
 function mapTableModel(model: TableModel, values: MergeValues, report: MergeReport): TableModel {
   return {
     ...model,
-    rows: model.rows.map((row) => ({
-      ...row,
-      richParas: row.richParas?.map((para) => ({ ...para, runs: mapRuns(para.runs, values, report) })),
-      nestedTables: row.nestedTables?.map((nested) => mapTableModel(nested, values, report)),
-    })),
+    // rows are arrays of cells; only the cell's paragraph runs are rewritten,
+    // so borders, widths, merges and shading are untouched
+    rows: model.rows.map((cells) =>
+      cells.map((cell) => ({
+        ...cell,
+        paras: cell.paras.map((para) =>
+          para.replace(/\u00AB[^\u00BB]*\u00BB/g, (whole) => {
+            const name = whole.slice(1, -1)
+            return name in values ? values[name] : whole
+          }),
+        ),
+        richParas: cell.richParas?.map((para) => ({
+          ...para,
+          runs: mapRuns(para.runs, values, report),
+        })),
+        nestedTables: cell.nestedTables?.map((nested) => mapTableModel(nested, values, report)),
+      })),
+    ),
   }
 }
 
@@ -201,7 +213,11 @@ export function patchMergeFieldXml(xml: string, values: MergeValues, report: Mer
       continue
     }
     const name = isMerge ? mergeFieldName(instr) : null
-    const value = isIf ? evaluateConditionalField(instr, values) : name && name in values ? values[name] : null
+    const value = isIf
+      ? evaluateConditionalField(instr, values)
+      : name && name in values
+        ? values[name]
+        : null
     if (value === null) {
       if (name) report.missing.push(name)
       else report.unsupported += 1
@@ -230,10 +246,7 @@ export function patchMergeFieldXml(xml: string, values: MergeValues, report: Mer
 }
 
 function escapeXml(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 function decodeEntities(text: string): string {
@@ -269,7 +282,9 @@ export function collectMergeFields(blocks: Block[]): MergeFieldRef[] {
       }
     }
     if (block.originalXml) {
-      for (const instr of block.originalXml.matchAll(/<w:instrText[^>]*>([\s\S]*?)<\/w:instrText>/g)) {
+      for (const instr of block.originalXml.matchAll(
+        /<w:instrText[^>]*>([\s\S]*?)<\/w:instrText>/g,
+      )) {
         push(decodeEntities(instr[1]), block.id)
       }
     }
@@ -278,19 +293,30 @@ export function collectMergeFields(blocks: Block[]): MergeFieldRef[] {
 }
 
 /** One template paragraph, merged. */
-export function applyMergeValuesToBlock(block: Block, values: MergeValues, report: MergeReport): Block {
+export function applyMergeValuesToBlock(
+  block: Block,
+  values: MergeValues,
+  report: MergeReport,
+): Block {
   const next: Block = { ...block }
+  // the run/table model is the source of truth whenever it exists
   if (next.runs) next.runs = mapRuns(next.runs, values, report)
   if (next.table) next.table = mapTableModel(next.table, values, report)
-  // a paragraph the run model cannot reach is byte-preserved: patch its XML
-  if (!next.runs && next.originalXml && /MERGEFIELD/.test(next.originalXml)) {
+  // a block the model cannot reach is byte-preserved: patch the cached field
+  // result inside its original XML instead. Only done when nothing was merged
+  // through the model, so a field is never counted (or rewritten) twice.
+  if (!next.runs && !next.table && next.originalXml && /MERGEFIELD/.test(next.originalXml)) {
     next.originalXml = patchMergeFieldXml(next.originalXml, values, report)
   }
   return next
 }
 
 /** The whole body, merged for one recipient. The input blocks are never mutated. */
-export function applyMergeValues(blocks: Block[], values: MergeValues, report?: MergeReport): Block[] {
+export function applyMergeValues(
+  blocks: Block[],
+  values: MergeValues,
+  report?: MergeReport,
+): Block[] {
   const r = report ?? { missing: [], unused: [], unsupported: 0, applied: 0 }
   return blocks.map((block) => applyMergeValuesToBlock(block, values, r))
 }
@@ -325,7 +351,9 @@ export function applyMergeValuesToHeaderFooter(
  * every path separator, control character and reserved name is neutralised, and
  * the result can never escape the directory it is written into.
  */
-const ILLEGAL_NAME_CHARS = /[\\/:*?"<>|\u0000-\u001f\u007f]/g
+const ILLEGAL_NAME_CHARS =
+  // eslint-disable-next-line no-control-regex -- recipient values are user text: the C0 range and DEL must not reach the filesystem
+  /[\\/:*?"<>|\u0000-\u001f\u007f]/g
 
 export function sanitizeFileNamePart(raw: string): string {
   const cleaned = raw
@@ -365,7 +393,8 @@ export function buildOutputFileName(options: FileNamePatternOptions): string {
     if (value === undefined) return ''
     return sanitizeFileNamePart(value)
   })
-  const base = expanded.replace(/\s+/g, ' ').trim() || `merge-${String(index).padStart(indexWidth, '0')}`
+  const base =
+    expanded.replace(/\s+/g, ' ').trim() || `merge-${String(index).padStart(indexWidth, '0')}`
   const ext = extension.replace(/^\./, '').toLowerCase() || 'docx'
   return `${base}.${ext}`
 }

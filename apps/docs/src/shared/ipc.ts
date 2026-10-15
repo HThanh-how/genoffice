@@ -555,7 +555,12 @@ export interface DesktopApi {
   /** render the document to PDF and ask where to save; size in twips.
    *  outPath is only honored when a previous export dialog chose that exact path */
   /** Mail merge: pick a recipient file (CSV/XLSX) and get its bytes back. */
-  pickMailMergeSource(): Promise<{ ok: boolean; path?: string; base64?: string; error?: string } | null>
+  pickMailMergeSource(): Promise<{
+    ok: boolean
+    path?: string
+    base64?: string
+    error?: string
+  } | null>
   /** Mail merge: choose the output directory; the write channel only accepts this one. */
   pickMailMergeOutputDir(): Promise<{ dir: string } | null>
   /** Write one merged output file into the directory chosen above. */
@@ -576,6 +581,8 @@ export interface DesktopApi {
     addresses?: string[],
   ): Promise<{ ok: boolean; result?: unknown; error?: string }>
   exportPdf(
+    defaultName: string,
+    pageWidthTwips: number,
     pageHeightTwips: number,
     outPath?: string,
     scale?: number,

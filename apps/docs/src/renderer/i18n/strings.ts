@@ -32,6 +32,7 @@ export const strings = {
     ...editorStrings.ja,
     ...aiStrings.ja,
     ...zoteroStrings.ja,
+    ...mailMergeStrings.ja,
   },
   ko: {
     ...appStrings.ko,
@@ -40,6 +41,7 @@ export const strings = {
     ...editorStrings.ko,
     ...aiStrings.ko,
     ...zoteroStrings.ko,
+    ...mailMergeStrings.ko,
   },
   fr: {
     ...appStrings.fr,
@@ -48,6 +50,7 @@ export const strings = {
     ...editorStrings.fr,
     ...aiStrings.fr,
     ...zoteroStrings.fr,
+    ...mailMergeStrings.fr,
   },
   de: {
     ...appStrings.de,
@@ -56,6 +59,7 @@ export const strings = {
     ...editorStrings.de,
     ...aiStrings.de,
     ...zoteroStrings.de,
+    ...mailMergeStrings.de,
   },
   es: {
     ...appStrings.es,
@@ -64,6 +68,7 @@ export const strings = {
     ...editorStrings.es,
     ...aiStrings.es,
     ...zoteroStrings.es,
+    ...mailMergeStrings.es,
   },
   th: {
     ...appStrings.th,
@@ -72,6 +77,7 @@ export const strings = {
     ...editorStrings.th,
     ...aiStrings.th,
     ...zoteroStrings.th,
+    ...mailMergeStrings.th,
   },
   id: {
     ...appStrings.id,
@@ -80,6 +86,7 @@ export const strings = {
     ...editorStrings.id,
     ...aiStrings.id,
     ...zoteroStrings.id,
+    ...mailMergeStrings.id,
   },
   ru: {
     ...appStrings.ru,
@@ -88,6 +95,7 @@ export const strings = {
     ...editorStrings.ru,
     ...aiStrings.ru,
     ...zoteroStrings.ru,
+    ...mailMergeStrings.ru,
   },
   ar: {
     ...appStrings.ar,
@@ -96,6 +104,7 @@ export const strings = {
     ...editorStrings.ar,
     ...aiStrings.ar,
     ...zoteroStrings.ar,
+    ...mailMergeStrings.ar,
   },
   pt: {
     ...appStrings.pt,
@@ -104,6 +113,7 @@ export const strings = {
     ...editorStrings.pt,
     ...aiStrings.pt,
     ...zoteroStrings.pt,
+    ...mailMergeStrings.pt,
   },
   it: {
     ...appStrings.it,
@@ -112,6 +122,7 @@ export const strings = {
     ...editorStrings.it,
     ...aiStrings.it,
     ...zoteroStrings.it,
+    ...mailMergeStrings.it,
   },
   pl: {
     ...appStrings.pl,
@@ -120,6 +131,7 @@ export const strings = {
     ...editorStrings.pl,
     ...aiStrings.pl,
     ...zoteroStrings.pl,
+    ...mailMergeStrings.pl,
   },
   cs: {
     ...appStrings.cs,
@@ -128,6 +140,7 @@ export const strings = {
     ...editorStrings.cs,
     ...aiStrings.cs,
     ...zoteroStrings.cs,
+    ...mailMergeStrings.cs,
   },
   nl: {
     ...appStrings.nl,
@@ -136,6 +149,7 @@ export const strings = {
     ...editorStrings.nl,
     ...aiStrings.nl,
     ...zoteroStrings.nl,
+    ...mailMergeStrings.nl,
   },
   ms: {
     ...appStrings.ms,
@@ -144,6 +158,7 @@ export const strings = {
     ...editorStrings.ms,
     ...aiStrings.ms,
     ...zoteroStrings.ms,
+    ...mailMergeStrings.ms,
   },
   he: {
     ...appStrings.he,
@@ -152,6 +167,7 @@ export const strings = {
     ...editorStrings.he,
     ...aiStrings.he,
     ...zoteroStrings.he,
+    ...mailMergeStrings.he,
   },
   hi: {
     ...appStrings.hi,
@@ -160,6 +176,7 @@ export const strings = {
     ...editorStrings.hi,
     ...aiStrings.hi,
     ...zoteroStrings.hi,
+    ...mailMergeStrings.hi,
   },
 
   vi: {
@@ -178,5 +195,6 @@ export const strings = {
     ...editorStrings['zh-TW'],
     ...aiStrings['zh-TW'],
     ...zoteroStrings['zh-TW'],
+    ...mailMergeStrings['zh-TW'],
   },
 }

@@ -1,6 +1,7 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import { parseDocx, saveDocx } from '../src/index'
+import type { Block, GeneratedBlock } from '../src/types'
 import {
   applyMergeValues,
   buildOutputFileName,
@@ -34,12 +35,12 @@ describe('merge field instructions', () => {
   })
 
   it('evaluates IF fields against a row', () => {
-    expect(evaluateConditionalField('IF «Department» "Sales" "Other"', { Department: 'Sales' })).toBe(
-      'Sales',
-    )
-    expect(evaluateConditionalField('IF «Department» "Sales" "Other"', { Department: 'Finance' })).toBe(
-      'Sales',
-    )
+    expect(
+      evaluateConditionalField('IF «Department» "Sales" "Other"', { Department: 'Sales' }),
+    ).toBe('Sales')
+    expect(
+      evaluateConditionalField('IF «Department» "Sales" "Other"', { Department: 'Finance' }),
+    ).toBe('Sales')
     expect(
       evaluateConditionalField('IF «Amount» > "1000" "large" "small"', { Amount: '2500' }),
     ).toBe('large')
@@ -90,7 +91,12 @@ describe('applyMergeValues', () => {
     expect(report.applied).toBe(1)
 
     // the merged tree serialises to a real docx whose text is the recipient's
-    const bytes = await saveDocx(parsed, merged.map((block) => ({ kind: 'generated', block })))
+    const finalBlocks = merged.map((block) =>
+      block.type === 'passthrough'
+        ? { kind: 'original' as const, docxIndex: block.docxIndex! }
+        : { kind: 'generated' as const, block: { ...block, type: 'paragraph' } as GeneratedBlock },
+    )
+    const bytes = await saveDocx(parsed, finalBlocks)
     const xml = await documentXmlOf(bytes)
     expect(xml).toContain('Nguyễn Văn A')
     expect(xml).not.toContain('MERGEFIELD')
@@ -99,16 +105,32 @@ describe('applyMergeValues', () => {
   })
 
   it('never mutates the template blocks it is given', () => {
-    const parsed = { blocks: [{ runs: [{ text: '«Name»', instrField: 'MERGEFIELD Name' }] }] } as never
-    const before = JSON.stringify(parsed.blocks)
-    applyMergeValues(parsed.blocks as never, { Name: 'Alice' })
-    expect(JSON.stringify(parsed.blocks)).toBe(before)
+    const blocks: Block[] = [
+      {
+        id: 'b0',
+        type: 'paragraph',
+        docxIndex: 0,
+        originalXml: null,
+        runs: [{ text: '«Name»', instrField: 'MERGEFIELD Name' }],
+      },
+    ]
+    const before = JSON.stringify(blocks)
+    applyMergeValues(blocks, { Name: 'Alice' })
+    expect(JSON.stringify(blocks)).toBe(before)
   })
 
   it('reports a field the row has no column for instead of blanking it', () => {
     const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
     const merged = applyMergeValues(
-      [{ runs: [{ text: '«City»', instrField: 'MERGEFIELD City' }] }] as never,
+      [
+        {
+          id: 'b0',
+          type: 'paragraph',
+          docxIndex: 0,
+          originalXml: null,
+          runs: [{ text: '«City»', instrField: 'MERGEFIELD City' }],
+        },
+      ],
       { Name: 'Alice' },
       report,
     )
@@ -133,8 +155,12 @@ describe('applyMergeValues', () => {
     expect(tableBlock).toBeTruthy()
     const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
     const merged = applyMergeValues(parsed.blocks, { Name: 'Alice', Department: 'Sales' }, report)
-    const cellRuns = JSON.stringify(merged[0].table ?? {}).includes('Alice')
-    expect(cellRuns).toBe(true)
+    const table = merged.find((b) => b.type === 'table')?.table
+    expect(table).toBeTruthy()
+    const cellText = (table!.rows[0] ?? [])
+      .map((cell) => (cell.richParas ?? []).flatMap((p) => p.runs.map((r) => r.text)).join(''))
+      .join('|')
+    expect(cellText).toBe('Alice|Sales')
     expect(report.applied).toBe(2)
   })
 
@@ -187,7 +213,7 @@ describe('output file naming', () => {
         values: { Name: '../../../../test' },
         extension: 'pdf',
       }),
-    ).toBe('_.._.._.._.._test.pdf')
+    ).toBe('_.._.._.._test.pdf')
   })
 
   it('falls back to a numbered name when every token is empty', () => {
