@@ -640,7 +640,7 @@ describe('Enterprise Indexing Policy Studio — Comprehensive Suite', () => {
 
     it('rescues folders allowed by a root .genofficeignore allow rule', () => {
       setActiveIgnoreRules([...DEFAULT_IGNORE_RULES])
-      writeGenOfficeIgnoreFile(rootA, '!2026/reports/**\n')
+      writeGenOfficeIgnoreFile(rootA, '!**/2026/reports/**\n')
 
       expect(shouldSkipDirectory('.cache', join(rootA, 'work/2026/.cache'))).toBe(true)
       expect(shouldSkipDirectory('reports', join(rootA, 'work/2026/reports'))).toBe(false)

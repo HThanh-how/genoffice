@@ -1662,7 +1662,7 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
     scopeBase && isSubpathOrEqual(normTarget, scopeBase)
       ? isSubpathOrEqual(scopeBase, normTarget)
         ? ''
-        : normTarget.slice(scopeBase.length).replace(/^\/\//, '')
+        : normTarget.slice(scopeBase.length).replace(/^\/+/, '')
       : normTarget
 
   // Effective mode: .genofficeignore in root overrides global mode
