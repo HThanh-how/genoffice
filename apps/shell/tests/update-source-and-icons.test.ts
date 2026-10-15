@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createHash } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { existsSync, readFileSync, statSync } from 'node:fs'
+import { mkdtemp, readdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Readable } from 'node:stream'
 import {
   applyUpdateSourceChange,
   compareVersions,
@@ -42,7 +46,7 @@ vi.mock('electron-updater', () => ({
 }))
 
 import { resolveWindowIcon, resolveWindowIconPath } from '../src/main/window-icon'
-import { forkUpdateCoordinator } from '../src/main/fork-updater'
+import { downloadInstaller, forkUpdateCoordinator } from '../src/main/fork-updater'
 import { checkForUpdatesNow, setManualUpdateCheck } from '../src/main/updater'
 
 describe('Update Source and Icon Restoration — Production Hardened Suite', () => {
@@ -615,5 +619,393 @@ describe('Update Source and Icon Restoration — Production Hardened Suite', () 
         source,
       ),
     ).toThrowError(UpdateSourceError)
+  })
+
+  // =========================================================================
+  // SECTION 8: Real Redirect & Download Orchestration (Cases A through H)
+  // =========================================================================
+
+  class TestClientRequest extends EventEmitter {
+    public options: { method?: string; url: string; redirect?: string }
+    public followRedirectCalled = 0
+    public abortCalled = 0
+    public ended = false
+
+    constructor(options: { method?: string; url: string; redirect?: string }) {
+      super()
+      this.options = options
+    }
+
+    followRedirect(): void {
+      this.followRedirectCalled++
+    }
+
+    abort(): void {
+      this.abortCalled++
+      this.emit('abort')
+    }
+
+    end(): void {
+      this.ended = true
+    }
+  }
+
+  class TestIncomingMessage extends Readable {
+    public statusCode: number
+    public headers: Record<string, string>
+
+    constructor(statusCode = 200, headers: Record<string, string> = {}) {
+      super()
+      this.statusCode = statusCode
+      this.headers = headers
+    }
+
+    _read(): void {}
+  }
+
+  it('23. (Case A) exercises valid GitHub CDN signed redirect: verifies redirect: manual, validation passes, and followRedirect is called synchronously', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'genoffice-test-'))
+    const source: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const originalUrl =
+      'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe'
+    const cdnUrl =
+      'https://release-assets.githubusercontent.com/github-production-release-asset/123/setup.exe?sp=r&sig=valid_token'
+    const installerContent = Buffer.from('verified-installer-bytes-case-a')
+    const sha256 = createHash('sha256').update(installerContent).digest('hex')
+
+    let activeReq: TestClientRequest | null = null
+
+    const target = await downloadInstaller(
+      {
+        url: originalUrl,
+        version: '0.11.113',
+        extension: '.exe',
+        sha256,
+      },
+      source,
+      {
+        userDataPath: tmp,
+        netRequest: (options) => {
+          expect(options.redirect).toBe('manual')
+          expect(options.method).toBe('GET')
+          expect(options.url).toBe(originalUrl)
+          activeReq = new TestClientRequest(options)
+          process.nextTick(() => {
+            activeReq!.emit('redirect', 302, 'GET', cdnUrl, {})
+            expect(activeReq!.followRedirectCalled).toBe(1)
+            expect(activeReq!.abortCalled).toBe(0)
+
+            const res = new TestIncomingMessage(200, {
+              'content-length': String(installerContent.length),
+            })
+            activeReq!.emit('response', res)
+            res.push(installerContent)
+            res.push(null)
+          })
+          return activeReq as any
+        },
+      },
+    )
+
+    expect(existsSync(target)).toBe(true)
+    expect(readFileSync(target)).toEqual(installerContent)
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  it('24. (Case B) aborts request and avoids followRedirect on attacker-controlled redirect hostname', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'genoffice-test-'))
+    const source: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const originalUrl =
+      'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe'
+    const attackerUrl = 'https://evil.attacker.com/malicious.exe'
+
+    let activeReq: TestClientRequest | null = null
+
+    await expect(
+      downloadInstaller(
+        {
+          url: originalUrl,
+          version: '0.11.113',
+          extension: '.exe',
+          sha256: 'a'.repeat(64),
+        },
+        source,
+        {
+          userDataPath: tmp,
+          netRequest: (options) => {
+            activeReq = new TestClientRequest(options)
+            process.nextTick(() => {
+              activeReq!.emit('redirect', 302, 'GET', attackerUrl, {})
+            })
+            return activeReq as any
+          },
+        },
+      ),
+    ).rejects.toThrowError(UpdateSourceError)
+
+    expect(activeReq!.followRedirectCalled).toBe(0)
+    expect(activeReq!.abortCalled).toBe(1)
+    const updatesDir = join(tmp, 'updates')
+    if (existsSync(updatesDir)) {
+      expect(await readdir(updatesDir)).toEqual([])
+    }
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  it('25. (Case C) aborts request and avoids followRedirect on HTTP downgrade redirect', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'genoffice-test-'))
+    const source: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const originalUrl =
+      'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe'
+    const insecureUrl = 'http://release-assets.githubusercontent.com/setup.exe'
+
+    let activeReq: TestClientRequest | null = null
+
+    await expect(
+      downloadInstaller(
+        {
+          url: originalUrl,
+          version: '0.11.113',
+          extension: '.exe',
+          sha256: 'a'.repeat(64),
+        },
+        source,
+        {
+          userDataPath: tmp,
+          netRequest: (options) => {
+            activeReq = new TestClientRequest(options)
+            process.nextTick(() => {
+              activeReq!.emit('redirect', 302, 'GET', insecureUrl, {})
+            })
+            return activeReq as any
+          },
+        },
+      ),
+    ).rejects.toThrowError(UpdateSourceError)
+
+    expect(activeReq!.followRedirectCalled).toBe(0)
+    expect(activeReq!.abortCalled).toBe(1)
+    const updatesDir = join(tmp, 'updates')
+    if (existsSync(updatesDir)) {
+      expect(await readdir(updatesDir)).toEqual([])
+    }
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  it('26. (Case D) validates every intermediate hop in a redirect chain before calling followRedirect', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'genoffice-test-'))
+    const source: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const originalUrl =
+      'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe'
+    const hop1 = 'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/hop1.exe'
+    const hop2 =
+      'https://release-assets.githubusercontent.com/github-production-release-asset/456/setup.exe?token=xyz'
+    const installerContent = Buffer.from('multi-hop-installer-content')
+    const sha256 = createHash('sha256').update(installerContent).digest('hex')
+
+    let activeReq: TestClientRequest | null = null
+
+    const target = await downloadInstaller(
+      {
+        url: originalUrl,
+        version: '0.11.113',
+        extension: '.exe',
+        sha256,
+      },
+      source,
+      {
+        userDataPath: tmp,
+        netRequest: (options) => {
+          activeReq = new TestClientRequest(options)
+          process.nextTick(() => {
+            // First hop
+            activeReq!.emit('redirect', 302, 'GET', hop1, {})
+            expect(activeReq!.followRedirectCalled).toBe(1)
+
+            // Second hop
+            activeReq!.emit('redirect', 302, 'GET', hop2, {})
+            expect(activeReq!.followRedirectCalled).toBe(2)
+
+            const res = new TestIncomingMessage(200, {
+              'content-length': String(installerContent.length),
+            })
+            activeReq!.emit('response', res)
+            res.push(installerContent)
+            res.push(null)
+          })
+          return activeReq as any
+        },
+      },
+    )
+
+    expect(existsSync(target)).toBe(true)
+    expect(readFileSync(target)).toEqual(installerContent)
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  it('27. (Case E) total download timeout stays active during streaming and aborts on stalled response body', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'genoffice-test-'))
+    const source: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const originalUrl =
+      'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe'
+
+    let activeReq: TestClientRequest | null = null
+
+    await expect(
+      downloadInstaller(
+        {
+          url: originalUrl,
+          version: '0.11.113',
+          extension: '.exe',
+          sha256: 'a'.repeat(64),
+        },
+        source,
+        {
+          userDataPath: tmp,
+          timeoutMs: 80, // short timeout for test
+          netRequest: (options) => {
+            activeReq = new TestClientRequest(options)
+            process.nextTick(() => {
+              const activeRes = new TestIncomingMessage(200, { 'content-length': '1000' })
+              activeReq!.emit('response', activeRes)
+              // response headers received, but streaming stalls (no data chunks pushed)
+            })
+            return activeReq as any
+          },
+        },
+      ),
+    ).rejects.toThrowError(/timeout/i)
+
+    expect(activeReq!.abortCalled).toBe(1)
+    const updatesDir = join(tmp, 'updates')
+    if (existsSync(updatesDir)) {
+      expect(await readdir(updatesDir)).toEqual([])
+    }
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  it('28. (Case F) cleans up partial temporary file and directory when download is interrupted', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'genoffice-test-'))
+    const source: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const originalUrl =
+      'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe'
+
+    let activeReq: TestClientRequest | null = null
+
+    await expect(
+      downloadInstaller(
+        {
+          url: originalUrl,
+          version: '0.11.113',
+          extension: '.exe',
+          sha256: 'a'.repeat(64),
+        },
+        source,
+        {
+          userDataPath: tmp,
+          netRequest: (options) => {
+            activeReq = new TestClientRequest(options)
+            process.nextTick(() => {
+              const activeRes = new TestIncomingMessage(200, { 'content-length': '1000' })
+              activeReq!.emit('response', activeRes)
+              activeRes.push(Buffer.from('partial-chunk-'))
+              // Interrupted mid-stream
+              process.nextTick(() => {
+                activeRes.destroy(new Error('Connection reset by peer'))
+              })
+            })
+            return activeReq as any
+          },
+        },
+      ),
+    ).rejects.toThrowError(/Connection reset by peer/)
+
+    const updatesDir = join(tmp, 'updates')
+    if (existsSync(updatesDir)) {
+      expect(await readdir(updatesDir)).toEqual([])
+    }
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  it('29. (Case G) rejects download on checksum mismatch, removes file, and does not accept installer', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'genoffice-test-'))
+    const source: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const originalUrl =
+      'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe'
+    const actualBytes = Buffer.from('unexpected-bytes-tampered')
+    const expectedChecksum = 'e'.repeat(64)
+
+    await expect(
+      downloadInstaller(
+        {
+          url: originalUrl,
+          version: '0.11.113',
+          extension: '.exe',
+          sha256: expectedChecksum,
+        },
+        source,
+        {
+          userDataPath: tmp,
+          netRequest: (options) => {
+            const req = new TestClientRequest(options)
+            process.nextTick(() => {
+              const res = new TestIncomingMessage(200, {
+                'content-length': String(actualBytes.length),
+              })
+              req.emit('response', res)
+              res.push(actualBytes)
+              res.push(null)
+            })
+            return req as any
+          },
+        },
+      ),
+    ).rejects.toThrowError(/checksum mismatch/i)
+
+    const updatesDir = join(tmp, 'updates')
+    if (existsSync(updatesDir)) {
+      expect(await readdir(updatesDir)).toEqual([])
+    }
+    await rm(tmp, { recursive: true, force: true })
+  })
+
+  it('30. (Case H) accepts download on valid checksum, preserves file, and returns ready installer path', async () => {
+    const tmp = await mkdtemp(join(tmpdir(), 'genoffice-test-'))
+    const source: UpdateSource = { kind: 'github', value: 'HThanh-how/genoffice' }
+    const originalUrl =
+      'https://github.com/HThanh-how/genoffice/releases/download/v0.11.113/GenOffice-setup.exe'
+    const validContent = Buffer.from('verified-correct-installer-payload')
+    const correctChecksum = createHash('sha256').update(validContent).digest('hex')
+
+    const target = await downloadInstaller(
+      {
+        url: originalUrl,
+        version: '0.11.113',
+        extension: '.exe',
+        sha256: correctChecksum,
+      },
+      source,
+      {
+        userDataPath: tmp,
+        netRequest: (options) => {
+          const req = new TestClientRequest(options)
+          process.nextTick(() => {
+            const res = new TestIncomingMessage(200, {
+              'content-length': String(validContent.length),
+            })
+            req.emit('response', res)
+            res.push(validContent)
+            res.push(null)
+          })
+          return req as any
+        },
+      },
+    )
+
+    expect(existsSync(target)).toBe(true)
+    expect(readFileSync(target)).toEqual(validContent)
+    const digest = createHash('sha256').update(readFileSync(target)).digest('hex')
+    expect(digest).toBe(correctChecksum)
+    await rm(tmp, { recursive: true, force: true })
   })
 })

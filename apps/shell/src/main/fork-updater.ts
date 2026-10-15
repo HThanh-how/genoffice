@@ -116,6 +116,234 @@ export function installAndRestart(
     }
   })
 }
+
+export interface DownloadInstallerRelease {
+  url: string
+  version: string
+  extension: string
+  sha256: string
+}
+
+export interface ElectronClientRequestMock {
+  on(event: string, listener: (...args: any[]) => void): void
+  followRedirect(): void
+  abort(): void
+  end(): void
+}
+
+export interface DownloadInstallerDeps {
+  netRequest?: (options: {
+    method?: string
+    url: string
+    redirect?: 'follow' | 'error' | 'manual'
+  }) => ElectronClientRequestMock
+  netFetch?: typeof net.fetch
+  userDataPath?: string
+  timeoutMs?: number
+  onProgress?: (percent: number) => void
+}
+
+/**
+ * Orchestrates explicit manual-redirect download of the native installer:
+ * - Constructs net.request with redirect: 'manual'
+ * - Validates each redirect hop synchronously before calling followRedirect()
+ * - Aborts the request immediately on untrusted destinations
+ * - Keeps download timeout active throughout response data streaming
+ * - Destroys active streams and cleans up temporary files on failure
+ * - Validates SHA-256 and bounds maximum installer size
+ */
+export async function downloadInstaller(
+  release: DownloadInstallerRelease,
+  source: UpdateSource,
+  deps: DownloadInstallerDeps = {},
+): Promise<string> {
+  // 1. Validate original URL before issuing any network hop
+  validateOriginalInstallerUrl(release.url, source)
+
+  const timeoutMs = deps.timeoutMs ?? 15 * 60_000
+  const root = join(deps.userDataPath ?? app.getPath('userData'), 'updates')
+  await mkdir(root, { recursive: true })
+  const folder = await mkdtemp(join(root, 'download-'))
+  const target = join(folder, `GenOffice-${release.version}${release.extension}`)
+
+  let activeStream: { destroy?: (err?: Error) => void } | null = null
+  let activeFileStream: {
+    destroy: (err?: Error) => void
+    closed: boolean
+    once: (event: string, cb: () => void) => void
+  } | null = null
+
+  try {
+    const hash = createHash('sha256')
+    let bytes = 0
+    const createMeter = (length: number) =>
+      new Transform({
+        transform(chunk, _encoding, callback) {
+          bytes += chunk.length
+          if (bytes > MAX_INSTALLER) return callback(new Error('Installer is too large'))
+          hash.update(chunk)
+          if (deps.onProgress) {
+            deps.onProgress(length > 0 ? Math.min(99, Math.floor((bytes / length) * 100)) : 0)
+          }
+          callback(null, chunk)
+        },
+      })
+
+    const electronNet = net as unknown as {
+      request?: (options: {
+        method?: string
+        url: string
+        redirect?: 'follow' | 'error' | 'manual'
+      }) => ElectronClientRequestMock
+    }
+
+    const electronRequest = deps.netRequest ?? electronNet?.request
+
+    if (typeof electronRequest === 'function') {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false
+        let timer: NodeJS.Timeout | null = null
+        let req: ElectronClientRequestMock | null = null
+        let currentUrl = release.url
+
+        const cleanupAndSettle = (err?: Error | unknown) => {
+          if (settled) return
+          settled = true
+          if (timer) {
+            clearTimeout(timer)
+            timer = null
+          }
+          if (err) {
+            if (activeStream && typeof activeStream.destroy === 'function') {
+              try {
+                activeStream.destroy(err instanceof Error ? err : new Error(String(err)))
+              } catch {
+                // ignore stream destruction error
+              }
+            }
+            if (activeFileStream && typeof activeFileStream.destroy === 'function') {
+              try {
+                activeFileStream.destroy(err instanceof Error ? err : new Error(String(err)))
+              } catch {
+                // ignore file stream destruction error
+              }
+            }
+            if (req && typeof req.abort === 'function') {
+              try {
+                req.abort()
+              } catch {
+                // ignore request abort error
+              }
+            }
+            reject(err)
+          } else {
+            resolve()
+          }
+        }
+
+        timer = setTimeout(() => {
+          cleanupAndSettle(new Error('Download timeout'))
+        }, timeoutMs)
+
+        try {
+          req = electronRequest({
+            method: 'GET',
+            url: release.url,
+            redirect: 'manual',
+          })
+        } catch (createErr) {
+          cleanupAndSettle(createErr)
+          return
+        }
+
+        req.on('redirect', (_statusCode: number, _method: string, redirectUrl: string) => {
+          if (settled) return
+          try {
+            validateResolvedInstallerUrl(release.url, redirectUrl, source)
+            currentUrl = redirectUrl
+            req.followRedirect()
+          } catch (err) {
+            cleanupAndSettle(err)
+          }
+        })
+
+        req.on('response', (res: any) => {
+          if (settled) return
+          activeStream = res
+
+          res.on('aborted', () => {
+            cleanupAndSettle(new Error('Download aborted'))
+          })
+
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            return cleanupAndSettle(new Error(`HTTP ${res.statusCode}`))
+          }
+
+          try {
+            validateResolvedInstallerUrl(release.url, currentUrl, source)
+          } catch (err) {
+            return cleanupAndSettle(err)
+          }
+
+          const length = Number(res.headers?.['content-length'] || 0)
+          if (length > MAX_INSTALLER) {
+            return cleanupAndSettle(new Error('Installer is too large'))
+          }
+
+          const meter = createMeter(length)
+          const fileStream = createWriteStream(target, { flags: 'wx' })
+          activeFileStream = fileStream as any
+
+          pipeline(res, meter, fileStream)
+            .then(() => {
+              if (hash.digest('hex') !== release.sha256.toLowerCase()) {
+                throw new Error('Installer checksum mismatch')
+              }
+              cleanupAndSettle()
+            })
+            .catch((err) => {
+              cleanupAndSettle(err)
+            })
+        })
+
+        req.on('error', (err: unknown) => {
+          cleanupAndSettle(err)
+        })
+
+        req.end()
+      })
+    } else {
+      // Fallback for environments where net.request is not available (e.g. test runner)
+      const fetchFn = deps.netFetch ?? net.fetch
+      const res = await fetchFn(release.url, { signal: AbortSignal.timeout(timeoutMs) })
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+      if (res.url) {
+        validateResolvedInstallerUrl(release.url, res.url, source)
+      }
+      const length = Number(res.headers.get('content-length'))
+      if (length > MAX_INSTALLER) throw new Error('Installer is too large')
+      const meter = createMeter(length)
+      const fileStream = createWriteStream(target, { flags: 'wx' })
+      activeFileStream = fileStream as any
+      await pipeline(Readable.fromWeb(res.body as never), meter, fileStream)
+      if (hash.digest('hex') !== release.sha256.toLowerCase()) {
+        throw new Error('Installer checksum mismatch')
+      }
+    }
+
+    return target
+  } catch (err) {
+    if (activeFileStream && !activeFileStream.closed) {
+      await new Promise<void>((r) => {
+        activeFileStream!.once('close', () => r())
+        activeFileStream!.destroy()
+      })
+    }
+    await rm(folder, { recursive: true, force: true }).catch(() => {})
+    throw err
+  }
+}
+
 /** An explicit, checksum-verified installer flow for unsigned fork builds. It uses
  * the OS installer so macOS retains its normal trust checks and save prompts. */
 export async function checkForkUpdates(
@@ -232,116 +460,13 @@ export async function checkForkUpdates(
         downloading = true
         installer = null
         pushUpdateState({ phase: 'downloading', percent: 0 })
-        let folder: string | undefined
         try {
-          const root = join(app.getPath('userData'), 'updates')
-          await mkdir(root, { recursive: true })
-          folder = await mkdtemp(join(root, 'download-'))
-          const target = join(folder, `GenOffice-${release.version}${release.extension}`)
-
-          // 1. Validate original URL before issuing any network hop
-          validateOriginalInstallerUrl(release.url, source)
-
-          const hash = createHash('sha256')
-          let bytes = 0
-          const createMeter = (length: number) =>
-            new Transform({
-              transform(chunk, _encoding, callback) {
-                bytes += chunk.length
-                if (bytes > MAX_INSTALLER) return callback(new Error('Installer is too large'))
-                hash.update(chunk)
-                pushUpdateState({
-                  percent: length > 0 ? Math.min(99, Math.floor((bytes / length) * 100)) : 0,
-                })
-                callback(null, chunk)
-              },
-            })
-
-          const electronNet = net as unknown as {
-            request?: (url: string) => {
-              on(event: string, listener: (...args: any[]) => void): void
-              followRedirect(): void
-              abort(): void
-              end(): void
-            }
-          }
-
-          const electronRequest = electronNet.request
-          if (typeof electronRequest === 'function') {
-            await new Promise<void>((resolve, reject) => {
-              let resolvedUrl = release.url
-              const req = electronRequest(release.url)
-              const timer = setTimeout(() => {
-                req.abort()
-                reject(new Error('Download timeout'))
-              }, 15 * 60_000)
-
-              req.on('redirect', (_statusCode: number, _method: string, redirectUrl: string) => {
-                try {
-                  validateResolvedInstallerUrl(release.url, redirectUrl, source)
-                  resolvedUrl = redirectUrl
-                  req.followRedirect()
-                } catch (err) {
-                  clearTimeout(timer)
-                  req.abort()
-                  reject(err)
-                }
-              })
-
-              req.on('response', (res: any) => {
-                clearTimeout(timer)
-                if (res.statusCode < 200 || res.statusCode >= 300) {
-                  return reject(new Error(`HTTP ${res.statusCode}`))
-                }
-                try {
-                  validateResolvedInstallerUrl(release.url, resolvedUrl, source)
-                } catch (err) {
-                  return reject(err)
-                }
-                const length = Number(res.headers?.['content-length'] || 0)
-                if (length > MAX_INSTALLER) return reject(new Error('Installer is too large'))
-                const meter = createMeter(length)
-                pipeline(res, meter, createWriteStream(target, { flags: 'wx' }))
-                  .then(() => {
-                    if (hash.digest('hex') !== release.sha256) {
-                      throw new Error('Installer checksum mismatch')
-                    }
-                    resolve()
-                  })
-                  .catch(reject)
-              })
-
-              req.on('error', (err: unknown) => {
-                clearTimeout(timer)
-                reject(err)
-              })
-
-              req.end()
-            })
-          } else {
-            // Fallback for environments where net.request is not available (e.g. test runner)
-            const res = await net.fetch(release.url, { signal: AbortSignal.timeout(15 * 60_000) })
-            if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
-            if (res.url) {
-              validateResolvedInstallerUrl(release.url, res.url, source)
-            }
-            const length = Number(res.headers.get('content-length'))
-            if (length > MAX_INSTALLER) throw new Error('Installer is too large')
-            const meter = createMeter(length)
-            await pipeline(
-              Readable.fromWeb(res.body as never),
-              meter,
-              createWriteStream(target, { flags: 'wx' }),
-            )
-            if (hash.digest('hex') !== release.sha256) {
-              throw new Error('Installer checksum mismatch')
-            }
-          }
-
-          installer = target
+          installer = await downloadInstaller(release, source, {
+            onProgress: (percent) => pushUpdateState({ percent }),
+          })
           pushUpdateState({ phase: 'downloaded', percent: 100 })
         } catch {
-          if (folder) await rm(folder, { recursive: true, force: true }).catch(() => {})
+          installer = null
           pushUpdateState({ phase: 'error' })
         } finally {
           downloading = false
