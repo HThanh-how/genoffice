@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { closeAndSaveVideo, launchShell, waitForPageWithUrl } from './helpers'
 import type { TabsApi } from '../apps/shell/src/shared/tabs-api'
+import type { HtmlApi } from '../apps/html/src/shared/ipc'
 
 test('tab context menu saves current edits from a background tab and tooltip shows path', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'genoffice-tab-context-'))
@@ -88,6 +89,67 @@ test('tab context menu saves current edits from a background tab and tooltip sho
     expect(active?.filePath).toBe(target)
   } finally {
     await closeAndSaveVideo(launched, 'tab-context-actions')
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('Present tab has no enabled Save, Save As or Print commands', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'genoffice-tab-present-'))
+  const source = join(dir, 'preview.html')
+  await writeFile(source, '<!doctype html><html><body><h1>Present preview</h1></body></html>')
+  const launched = await launchShell({
+    onboardingSeen: true,
+    openFile: source,
+    videoDir: 'tab-present-menu',
+  })
+  try {
+    const home = await waitForPageWithUrl(launched.app, 'shell/out')
+    const editor = await waitForPageWithUrl(launched.app, '://html/')
+    await editor.evaluate(() =>
+      (window as unknown as { htmlApi: HtmlApi }).htmlApi.presentInNewTab('Preview'),
+    )
+    await expect
+      .poll(async () =>
+        home.evaluate(
+          async () =>
+            (await (window as unknown as { aiOfficeTabs: TabsApi }).aiOfficeTabs.list()).filter(
+              (tab) => tab.kind === 'html',
+            ).length,
+        ),
+      )
+      .toBe(2)
+    const previewId = await home.evaluate(
+      async () =>
+        (await (window as unknown as { aiOfficeTabs: TabsApi }).aiOfficeTabs.list()).find(
+          (tab) => tab.active && tab.kind === 'html',
+        )!.id,
+    )
+    await launched.app.evaluate(({ Menu }) => {
+      Menu.prototype.popup = function () {
+        ;(globalThis as typeof globalThis & { __tabContextMenu?: Electron.Menu }).__tabContextMenu =
+          this
+      }
+    })
+    await home.evaluate(
+      (id) => (window as unknown as { aiOfficeTabs: TabsApi }).aiOfficeTabs.showTabMenu(id, 20, 20),
+      previewId,
+    )
+    const commands = await launched.app.evaluate(() => {
+      const menu = (globalThis as typeof globalThis & { __tabContextMenu?: Electron.Menu })
+        .__tabContextMenu!
+      return ['save', 'saveAs', 'print', 'close'].map((id) => ({
+        id,
+        enabled: menu.getMenuItemById(id)!.enabled,
+      }))
+    })
+    expect(commands).toEqual([
+      { id: 'save', enabled: false },
+      { id: 'saveAs', enabled: false },
+      { id: 'print', enabled: false },
+      { id: 'close', enabled: true },
+    ])
+  } finally {
+    await closeAndSaveVideo(launched, 'tab-present-menu')
     await rm(dir, { recursive: true, force: true })
   }
 })
