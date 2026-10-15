@@ -190,7 +190,42 @@ function mapTableModel(model: TableModel, values: MergeValues, report: MergeRepo
  * insert a separate+result pair when the field carries no cached result at all
  * (the usual state of an unmerged main document).
  */
+/** Word's single-element field form: `<w:fldSimple w:instr=" MERGEFIELD Name ">result</w:fldSimple>`. */
+const FLD_SIMPLE_RE = /<w:fldSimple\b[^>]*?(?:\/>|>[\s\S]*?<\/w:fldSimple>)/g
+
+function patchSimpleFields(xml: string, values: MergeValues, report: MergeReport): string {
+  return xml.replace(FLD_SIMPLE_RE, (whole) => {
+    const instrMatch = /w:instr\s*=\s*"([^"]*)"/.exec(whole)
+    if (!instrMatch) return whole
+    const instr = decodeEntities(instrMatch[1])
+    const isMerge = isMergeField(instr)
+    const isIf = isConditionalField(instr)
+    if (!isMerge && !isIf) return whole
+    const name = isMerge ? mergeFieldName(instr) : null
+    const value = isIf
+      ? evaluateConditionalField(instr, values)
+      : name && name in values
+        ? values[name]
+        : null
+    if (value === null) {
+      if (name) report.missing.push(name)
+      else report.unsupported += 1
+      return whole
+    }
+    // keep the field itself (Word refreshes it on open) but write the recipient's
+    // value as its cached result, preserving the run's formatting
+    const rPr = /<w:rPr>[\s\S]*?<\/w:rPr>/.exec(whole)?.[0] ?? ''
+    const open = whole.slice(0, whole.indexOf('>') + 1).replace('/>', '>')
+    report.applied += 1
+    return `${open}<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(value)}</w:t></w:r></w:fldSimple>`
+  })
+}
+
 export function patchMergeFieldXml(xml: string, values: MergeValues, report: MergeReport): string {
+  return patchComplexFields(patchSimpleFields(xml, values, report), values, report)
+}
+
+function patchComplexFields(xml: string, values: MergeValues, report: MergeReport): string {
   let out = xml
   let cursor = 0
   for (;;) {

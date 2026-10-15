@@ -5,6 +5,7 @@
  */
 import { type MergeFieldRef } from '@genoffice/docx-engine'
 import type { Editor } from '@tiptap/core'
+import type { Block } from '@genoffice/docx-engine'
 import { fieldCodeText } from '../editor/field-codes'
 import type { MailMergeSource, MailMergeValidationIssue } from './types'
 
@@ -16,30 +17,33 @@ export function templateMergeFields(editor: Editor): MergeFieldRef[] {
     const mark = node.marks.find((m) => m.type.name === 'instrField')
     if (!mark) return
     const instr = String(mark.attrs.instr ?? '')
-    const name = instr.match(/^\s*MERGEFIELD\s+(?:"([^"]*)"|(\S+))/)?.[1] ?? instr.match(/^\s*MERGEFIELD\s+(?:"([^"]*)"|(\S+))/)?.[2]
+    const name =
+      instr.match(/^\s*MERGEFIELD\s+(?:"([^"]*)"|(\S+))/)?.[1] ??
+      instr.match(/^\s*MERGEFIELD\s+(?:"([^"]*)"|(\S+))/)?.[2]
     if (!name) return
     if (!found.has(name)) found.set(name, instr.trim())
   })
   return [...found].map(([name, instr]) => ({ name, instr }))
 }
 
-/** Merge fields the editor cannot model: they live in byte-preserved XML. */
-export function passthroughMergeFields(editor: Editor): string[] {
+/** Merge fields the editor cannot model: they live in byte-preserved blocks. */
+export function passthroughMergeFields(blocks: readonly Block[]): string[] {
   const names = new Set<string>()
-  editor.state.doc.descendants((node) => {
-    if (node.type.name !== 'docProtected') return
-    const xml = String(node.attrs?.genXml ?? '')
-    for (const match of xml.matchAll(/<w:instrText[^>]*>\s*MERGEFIELD\s+([^<]+)<\/w:instrText>/g)) {
+  for (const block of blocks) {
+    if (block.runs || block.table) continue
+    for (const match of (block.originalXml ?? '').matchAll(
+      /<w:(?:instrText|fldSimple)[^>]*>\s*MERGEFIELD\s+([^<]+?)(?:<\/w:instrText>|<\/w:fldSimple>)/g,
+    )) {
       names.add(match[1].trim().replace(/^"|"$/g, ''))
     }
-  })
+  }
   return [...names]
 }
 
 export function validateMergeSession(
   source: MailMergeSource | null,
   fields: MergeFieldRef[],
-  editor: Editor,
+  blocks: readonly Block[],
 ): MailMergeValidationIssue[] {
   const issues: MailMergeValidationIssue[] = []
   if (!source) {
@@ -72,7 +76,7 @@ export function validateMergeSession(
   if (unused > 0) {
     issues.push({ severity: 'warning', key: 'mailMergeUnusedColumns', detail: String(unused) })
   }
-  const passthrough = passthroughMergeFields(editor)
+  const passthrough = passthroughMergeFields(blocks)
   if (passthrough.length > 0) {
     issues.push({
       severity: 'warning',
@@ -85,7 +89,11 @@ export function validateMergeSession(
   for (const field of fields) {
     const empty = source.recipients.filter((r) => (r.values[field.name] ?? '').trim() === '').length
     if (empty > 0 && empty < source.recipients.length) {
-      issues.push({ severity: 'warning', key: 'mailMergeEmptyValues', detail: `${field.name}: ${empty}` })
+      issues.push({
+        severity: 'warning',
+        key: 'mailMergeEmptyValues',
+        detail: `${field.name}: ${empty}`,
+      })
     }
   }
   return issues

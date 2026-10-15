@@ -211,7 +211,7 @@ describe('merge fields in the editor', () => {
       label: 'list.csv',
       hasHeader: true,
     })
-    const issues = validateMergeSession(source, templateMergeFields(editor), editor)
+    const issues = validateMergeSession(source, templateMergeFields(editor), [])
     const errors = issues.filter((i) => i.severity === 'error')
     expect(errors.map((i) => i.key)).toContain('mailMergeMissingColumn')
     expect(errors.some((i) => i.detail === 'Postal Department')).toBe(true)
@@ -227,7 +227,7 @@ describe('merge fields in the editor', () => {
       ],
       { kind: 'csv', label: 'list.csv', hasHeader: true },
     )
-    const issues = validateMergeSession(source, templateMergeFields(editor), editor)
+    const issues = validateMergeSession(source, templateMergeFields(editor), [])
     expect(issues.filter((i) => i.severity === 'error')).toEqual([])
   })
 })

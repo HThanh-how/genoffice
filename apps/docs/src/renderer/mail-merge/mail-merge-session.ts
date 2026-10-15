@@ -159,7 +159,8 @@ export function useMailMergeSession(
 
     checkErrors: () => {
       if (!editor) return
-      setIssues(validateMergeSession(source, templateMergeFields(editor), editor))
+      const blocks = getCtx().doc?.parsed.blocks ?? []
+      setIssues(validateMergeSession(source, templateMergeFields(editor), blocks))
       setDialog('validate')
     },
 

@@ -185,6 +185,43 @@ describe('applyMergeValues', () => {
       '<w:t xml:space="preserve">A &amp; B &lt;x&gt;</w:t>',
     )
   })
+  it("patches Word's single-element fldSimple form", () => {
+    const xml =
+      '<w:p><w:fldSimple w:instr=" MERGEFIELD Name "><w:r><w:t>«Name»</w:t></w:r></w:fldSimple></w:p>'
+    const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
+    const patched = patchMergeFieldXml(xml, { Name: 'Huy' }, report)
+    expect(patched).toContain('<w:t xml:space="preserve">Huy</w:t>')
+    expect(patched).not.toContain('«Name»')
+    expect(report.applied).toBe(1)
+  })
+
+  it('keeps the run formatting of a fldSimple field it resolves', () => {
+    const xml =
+      '<w:p><w:fldSimple w:instr=" MERGEFIELD Name "><w:r><w:rPr><w:b/></w:rPr><w:t>«Name»</w:t></w:r></w:fldSimple></w:p>'
+    const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
+    expect(patchMergeFieldXml(xml, { Name: 'Huy' }, report)).toContain('<w:rPr><w:b/></w:rPr>')
+  })
+
+  it('resolves every field of a passthrough paragraph, not just the first', () => {
+    const xml =
+      '<w:p>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD Name </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '<w:r><w:t xml:space="preserve"> / </w:t></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD City </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' +
+      '<w:r><w:t>«City»</w:t></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '</w:p>'
+    const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
+    const patched = patchMergeFieldXml(xml, { Name: 'Huy', City: 'Tokyo' }, report)
+    expect(patched).toContain('Huy')
+    expect(patched).toContain('Tokyo')
+    expect(patched).not.toContain('«City»')
+    expect(report.applied).toBe(2)
+  })
 })
 
 describe('output file naming', () => {
