@@ -480,11 +480,13 @@ import {
 import { setAiErrorLogger } from '@genoffice/ai-provider'
 import { checkForkUpdates } from './fork-updater'
 import {
+  applyUpdateSourceChange,
   DEFAULT_UPDATE_SOURCE,
   validateUpdateSource,
   type UpdateSource,
 } from '../shared/update-source'
 import { isUpdateChannel, type UpdateChannel } from '../shared/update-api'
+import { resolveWindowIcon } from './window-icon'
 
 /**
  * GenOffice unified shell: ONE Electron app, ONE BrowserWindow, hosting the
@@ -3473,6 +3475,7 @@ function openingNoticeUnlessCold(options: Parameters<typeof startOpeningNotice>[
 }
 
 function createShellWindow(): void {
+  const windowIcon = resolveWindowIcon()
   const win = new BrowserWindow({
     width: 1360,
     height: 900,
@@ -3481,6 +3484,7 @@ function createShellWindow(): void {
     minWidth: 720,
     minHeight: 550,
     title: 'GenOffice',
+    ...(windowIcon ? { icon: windowIcon } : {}),
     // vibrancy: editor modules punch translucent regions (e.g. the slides
     // thumbnail pane) through to the desktop
     ...(process.platform === 'darwin'
@@ -5305,9 +5309,9 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.getUpdateSource, () => currentUpdateSource())
   ipcMain.handle(HOME_CHANNELS.setUpdateSource, (_event, input: unknown) => {
-    const source = validateUpdateSource(input)
-    writeAppSetting(APP_SETTINGS_PATH(), 'updateSource', source)
-    return source
+    return applyUpdateSourceChange(input, currentUpdateSource(), (source) => {
+      writeAppSetting(APP_SETTINGS_PATH(), 'updateSource', source)
+    })
   })
   ipcMain.handle(HOME_CHANNELS.checkForUpdates, () => checkForUpdatesNow())
 

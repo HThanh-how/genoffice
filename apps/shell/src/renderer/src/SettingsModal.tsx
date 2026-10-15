@@ -1,7 +1,13 @@
 import { appNotify } from './ui-feedback'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
-import type { UpdateSource } from '../../shared/update-source'
+import appIcon from './assets/app-icon.png'
+import {
+  getUpdateErrorMessage,
+  resolveUpdateNotice,
+  validateUpdateSource,
+  type UpdateSource,
+} from '../../shared/update-source'
 import { OpeningEffectsSettings } from './fork/OpeningEffectsSettings'
 import { AiInstructionsSettings, aiInstructionsTitle } from './fork/AiInstructionsSettings'
 import {
@@ -163,27 +169,33 @@ function SetGroup({
   hint,
   fold,
   icon = 'ai',
+  brandIcon,
   children,
 }: {
   title: string
   hint?: string
   fold?: boolean
   icon?: GroupIconId
+  brandIcon?: boolean
   children: ReactNode
 }) {
   const heading = (
     <>
       <span className="set-group-icon" aria-hidden="true">
-        <svg width="18" height="18" viewBox="0 0 24 24">
-          <path
-            d={GROUP_ICONS[icon]}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
+        {brandIcon ? (
+          <img src={appIcon} alt="" width="20" height="20" className="set-group-brand-icon" />
+        ) : (
+          <svg width="18" height="18" viewBox="0 0 24 24">
+            <path
+              d={GROUP_ICONS[icon]}
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
       </span>
       <span className="set-group-text">
         <span>{title}</span>
@@ -2312,7 +2324,7 @@ export function SettingsModal({
                 <h3 className="set-pane-title">{t('setSecAbout')}</h3>
                 <SetGroup
                   title={lang === 'vi' ? 'Ứng dụng & cập nhật' : 'Application & updates'}
-                  icon="files"
+                  brandIcon
                 >
                   <Field
                     label={t('versionLabel')}
@@ -2330,7 +2342,14 @@ export function SettingsModal({
                           setUpdateNotice('')
                           void window.aiOffice
                             .checkForUpdates()
-                            .catch(() => setUpdateNotice(t('updateSourceError')))
+                            .then((res) => {
+                              const notice = resolveUpdateNotice(res, null, lang)
+                              if (notice) setUpdateNotice(notice)
+                            })
+                            .catch((err: unknown) => {
+                              const notice = resolveUpdateNotice(undefined, err, lang)
+                              if (notice) setUpdateNotice(notice)
+                            })
                             .finally(() => setUpdateBusy(false))
                         }}
                       >
@@ -2399,6 +2418,15 @@ export function SettingsModal({
                       onClick={() => {
                         setUpdateSaving(true)
                         setUpdateNotice('')
+                        try {
+                          validateUpdateSource(updateSource)
+                        } catch (err: unknown) {
+                          const errCode =
+                            (err as { code?: string })?.code || (err as Error)?.message || ''
+                          setUpdateNotice(getUpdateErrorMessage(errCode, lang))
+                          setUpdateSaving(false)
+                          return
+                        }
                         void window.aiOffice
                           .setUpdateSource(updateSource)
                           .then((source) => {
@@ -2406,7 +2434,11 @@ export function SettingsModal({
                             setSavedUpdateSource(`${source.kind}:${source.value}`)
                             setUpdateNotice(t('setAiSaved'))
                           })
-                          .catch(() => setUpdateNotice(t('updateSourceError')))
+                          .catch((err: unknown) => {
+                            const errCode =
+                              (err as { code?: string })?.code || (err as Error)?.message || ''
+                            setUpdateNotice(getUpdateErrorMessage(errCode, lang))
+                          })
                           .finally(() => setUpdateSaving(false))
                       }}
                     >

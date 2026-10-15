@@ -1,4 +1,5 @@
 import type { UpdateUiState, UpdateWindowApi } from '../../shared/update-api'
+import appIcon from './assets/app-icon.png'
 import './update-artwork.css'
 
 // exposed by src/preload/update.ts
@@ -16,6 +17,11 @@ const percentText = el('percent')
 const action = el('action') as HTMLButtonElement
 const later = el('later') as HTMLButtonElement
 const close = el('close') as HTMLButtonElement
+
+const appIconImg = document.querySelector<HTMLImageElement>('#hero img')
+if (appIconImg) {
+  appIconImg.src = appIcon
+}
 
 let phase: UpdateUiState['phase'] = 'available'
 let initialized = false

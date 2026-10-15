@@ -624,6 +624,10 @@ const config = {
         to: 'shell-new',
         filter: ['*.docx', '*.xlsx', '*.pptx'],
       },
+      {
+        from: 'build/icon.ico',
+        to: 'build/icon.ico',
+      },
     ],
   },
   // Unlike win (which cross-compiles the sidecar to an explicit target
