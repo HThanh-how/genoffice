@@ -1,6 +1,4 @@
-// A failed run marks the error bubble with a "Sign in to Genspark" button only
-// when Genspark is the active provider — a BYOK user's failure (their own
-// provider's rate limit, say) must not advertise a Genspark sign-in (genoffice#1948).
+// Fork error bubbles keep provider failures visible without offering disabled Genspark sign-in.
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, createElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
@@ -116,7 +114,7 @@ describe('AI error bubble sign-in button', () => {
         createElement(AiPanel, {
           editor,
           blocks: [],
-          settings: settingsWith('gemini'),
+          settings: settingsWith('openai'),
           open: true,
           onExpand: () => {},
           onCollapse: () => {},
