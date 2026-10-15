@@ -417,6 +417,21 @@ const MAX_REGEX_CACHE = 1000
 const evalCache = new Map<string, IgnoreMatchResult>()
 const MAX_EVAL_CACHE = 10000
 
+// Pruning-safety answers are memoized per directory and policy generation.
+// shouldSkipDirectory() calls mayContainExplicitAllow() for every pruned
+// directory on the main thread, so an uncached lookup is a traversal cost.
+interface AllowPrefix {
+  scope: string | null
+  scopeLower: string | null
+  prefix: string | null
+  prefixLower: string | null
+  prefixSegments: string[]
+}
+
+let allowPrefixes: AllowPrefix[] = []
+let allowPrefixesGeneration = -1
+const allowCheckCache = new Map<string, boolean>()
+
 function setEvalCache(key: string, res: IgnoreMatchResult): void {
   if (evalCache.has(key)) {
     evalCache.delete(key)
@@ -435,6 +450,8 @@ export function clearRegexCache(): void {
 function clearPolicyCaches(): void {
   regexCache.clear()
   evalCache.clear()
+  allowCheckCache.clear()
+  allowPrefixesGeneration = -1
   compiledRulesGeneration = -1
 }
 
@@ -1412,54 +1429,127 @@ export function resolveIndexedRoot(targetPath: string, explicitRoot?: string): s
 // ---------------------------------------------------------------------------
 
 /**
- * Determines whether a directory may contain an explicitly allowed descendant.
- * Prevents pruning directories that contain specifically allowed files.
+ * Literal leading path segments of a glob, up to the first wildcard.
+ * "2026/reports/**" => "2026/reports"; "**/target.docx" => null.
  */
-export function mayContainExplicitAllow(dirPath: string, root?: string): boolean {
-  const normDir = normalizePath(dirPath)
-  const isCI = isPathCaseInsensitive(dirPath)
-  const targetLower = isCI ? normDir.toLowerCase() : normDir
+function literalPatternPrefix(pattern: string): { prefix: string; segments: string[] } | null {
+  const p = pattern.trim().replace(/\\/g, '/').replace(/^\/+/, '')
+  if (!p.includes('*') && !p.includes('?') && !p.includes('[')) {
+    return { prefix: p, segments: p.split('/') }
+  }
 
-  // 1. Check active user rules for explicit allow
+  const segments: string[] = []
+  for (const part of p.split('/')) {
+    if (!part || part.includes('*') || part.includes('?') || part.includes('[')) break
+    segments.push(part)
+  }
+  return segments.length > 0 ? { prefix: segments.join('/'), segments } : null
+}
+
+/** Rebuild the allow-rule prefixes once per policy generation. */
+function ensureAllowPrefixes(): AllowPrefix[] {
+  if (allowPrefixesGeneration === policyGeneration) return allowPrefixes
+
+  const built: AllowPrefix[] = []
   for (const rule of activeRules) {
     if (!rule.enabled || rule.action !== 'allow') continue
-
-    // Scoped rule
-    if (rule.scope !== 'global') {
-      const scopeNorm = normalizePath(rule.scope)
-      const s = isCI ? scopeNorm.toLowerCase() : scopeNorm
-      if (s === targetLower || s.startsWith(targetLower + '/') || targetLower.startsWith(s + '/')) {
-        return true
-      }
-    } else {
-      // Global pattern containing path segments (e.g. "my-folder/**")
-      const pat = rule.pattern.replace(/\\/g, '/')
-      if (pat.includes('/')) {
-        const firstSegment = pat.split('/')[0]!.replace(/^\*+/, '')
-        if (firstSegment && targetLower.includes(firstSegment.toLowerCase())) {
-          return true
-        }
-      }
-    }
+    const scope = rule.scope !== 'global' ? normalizePath(rule.scope).replace(/\/+$/, '') : null
+    const literal = literalPatternPrefix(rule.pattern)
+    built.push({
+      scope,
+      scopeLower: scope ? scope.toLowerCase() : null,
+      prefix: literal ? literal.prefix : null,
+      prefixLower: literal ? literal.prefix.toLowerCase() : null,
+      prefixSegments: literal ? literal.segments : [],
+    })
   }
 
-  // 2. Check .genofficeignore in root
-  const resolvedRoot = resolveIndexedRoot(dirPath, root)
-  if (resolvedRoot) {
-    const rootDetails = readGenOfficeIgnoreDetailed(resolvedRoot)
-    for (const rule of rootDetails.rules) {
-      if (!rule.enabled || rule.action !== 'allow') continue
-      const pat = rule.pattern.replace(/\\/g, '/')
-      if (pat.includes('/')) {
-        const firstSegment = pat.split('/')[0]!.replace(/^\*+/, '')
-        if (firstSegment && targetLower.includes(firstSegment.toLowerCase())) {
-          return true
-        }
-      }
-    }
-  }
+  allowPrefixes = built
+  allowPrefixesGeneration = policyGeneration
+  return built
+}
 
+/**
+ * Does this directory sit on the path to (or inside) the subtree an allow rule
+ * can match? Decided on path-component boundaries: "2026/reports" rescues
+ * "/work/2026" and "/work/2026/reports", but not "/work/2026/.cache".
+ */
+function prefixRescuesDirectory(dirComp: string, prefix: string, segments: string[]): boolean {
+  if (dirComp === prefix) return true
+  // the directory is inside the allowed subtree
+  if (dirComp.startsWith(prefix + '/')) return true
+  // the allowed subtree is inside this directory
+  if (prefix.startsWith(dirComp + '/')) return true
+  // relative patterns match anywhere: the run may start deeper in the path
+  if (dirComp.includes('/' + prefix)) return true
+  // this directory ends with the leading components of the allowed subtree
+  for (let k = 1; k < segments.length; k++) {
+    if (dirComp.endsWith('/' + segments.slice(0, k).join('/'))) return true
+  }
   return false
+}
+
+/**
+ * Determines whether a directory may contain an explicitly allowed descendant,
+ * or is itself inside an allowed scope. Prevents pruning directories that hold
+ * specifically allowed files without re-walking the rule set per directory.
+ */
+export function mayContainExplicitAllow(dirPath: string, root?: string): boolean {
+  const normDir = normalizePath(dirPath).replace(/\/+$/, '')
+  const isCI = isPathCaseInsensitive(dirPath)
+  const dirComp = isCI ? normDir.toLowerCase() : normDir
+  const cacheKey = `${dirComp}::${policyGeneration}`
+
+  const cached = allowCheckCache.get(cacheKey)
+  if (cached !== undefined) return cached
+
+  let result = false
+
+  // 1. Active user rules: a scoped rule overlapping this directory, or a
+  //    global pattern whose literal prefix touches this directory.
+  for (const entry of ensureAllowPrefixes()) {
+    if (entry.scope) {
+      const s = isCI ? entry.scopeLower! : entry.scope
+      if (s === dirComp || s.startsWith(dirComp + '/') || dirComp.startsWith(s)) {
+        result = true
+        break
+      }
+    }
+    if (!result && entry.prefix) {
+      const p = isCI ? entry.prefixLower! : entry.prefix
+      if (prefixRescuesDirectory(dirComp, p, entry.prefixSegments)) {
+        result = true
+        break
+      }
+    }
+  }
+
+  // 2. .genofficeignore in the owning root (already cached by mtime/size/ino).
+  if (!result) {
+    const resolvedRoot = resolveIndexedRoot(dirPath, root)
+    if (resolvedRoot) {
+      for (const rule of readGenOfficeIgnoreDetailed(resolvedRoot).rules) {
+        if (!rule.enabled || rule.action !== 'allow') continue
+        const scope = normalizePath(rule.scope).replace(/\/+$/, '')
+        const s = isCI ? scope.toLowerCase() : scope
+        if (s === dirComp || s.startsWith(dirComp + '/') || dirComp.startsWith(s)) {
+          result = true
+          break
+        }
+        const literal = literalPatternPrefix(rule.pattern)
+        if (!literal) continue
+        const p = isCI ? literal.prefix.toLowerCase() : literal.prefix
+        if (prefixRescuesDirectory(dirComp, p, literal.segments)) {
+          result = true
+          break
+        }
+      }
+    }
+  }
+
+  if (allowCheckCache.size >= MAX_EVAL_CACHE) allowCheckCache.clear()
+  allowCheckCache.set(cacheKey, result)
+  return result
 }
 
 // ---------------------------------------------------------------------------
@@ -1540,7 +1630,7 @@ export function evaluateIgnore(targetPath: string, root?: string): IgnoreMatchRe
     scopeBase && isSubpathOrEqual(normTarget, scopeBase)
       ? isSubpathOrEqual(scopeBase, normTarget)
         ? ''
-        : normTarget.slice(scopeBase.length).replace(/^\//, '')
+        : normTarget.slice(scopeBase.length).replace(/^\/\//, '')
       : normTarget
 
   // Effective mode: .genofficeignore in root overrides global mode
