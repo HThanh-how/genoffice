@@ -46,6 +46,7 @@ describe('ignore evaluation during a large scan', () => {
     expect(regex.test('/docs/cache.tmp/report.docx')).toBe(true)
     expect(regex.test('/docs/cache.tmpx/report.docx')).toBe(false)
     expect(regex.test('report.tmp')).toBe(true)
+    expect(regex.test('/docs\narchive/report.tmp')).toBe(true)
 
     const path = `${'/long-directory-name'.repeat(100)}/report.docx`
     const start = performance.now()

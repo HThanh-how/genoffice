@@ -525,7 +525,7 @@ export function globToRegex(
   if (matchAnywhere) {
     // Anchor the search once; an unanchored alternation retries a failing glob
     // at every character of a long path, even between component boundaries.
-    regexStr = '^(?:.*/)?' + regexStr
+    regexStr = '^(?:[\\s\\S]*/)?' + regexStr
   } else if (regexStr.startsWith('/')) {
     regexStr = '^' + regexStr.slice(1)
   } else {
