@@ -13,6 +13,7 @@ import type {
   UpdateUiState,
   UpdateUiStrings,
 } from '../shared/update-api'
+import type { UpdateCheckResult } from '../shared/home-api'
 import {
   clearUpdateState,
   closeUpdateWindow,
@@ -536,12 +537,12 @@ export function applyUpdateChannel(channel: UpdateChannel): void {
  * up-to-date and failure each get a dialog, and installs with no self-update
  * mechanism (dev runs, Linux .deb) are pointed at the download page instead
  * of being told they're current. */
-let explicitUpdateCheck: (() => Promise<void>) | null = null
-export function setManualUpdateCheck(handler: () => Promise<void>): void {
+let explicitUpdateCheck: (() => Promise<UpdateCheckResult | void>) | null = null
+export function setManualUpdateCheck(handler: () => Promise<UpdateCheckResult | void>): void {
   explicitUpdateCheck = handler
 }
 
-export async function checkForUpdatesNow(): Promise<void> {
+export async function checkForUpdatesNow(): Promise<UpdateCheckResult | void> {
   if (explicitUpdateCheck) return explicitUpdateCheck()
   if (manualCheckInFlight) return
   manualCheckInFlight = true
@@ -549,7 +550,7 @@ export async function checkForUpdatesNow(): Promise<void> {
     const lang = getUiLang()
     if (fakeShowAgain) {
       fakeShowAgain()
-      return
+      return { upToDate: false }
     }
     if (!updaterActive) {
       const { response } = await showAppMessageBox({
@@ -582,7 +583,7 @@ export async function checkForUpdatesNow(): Promise<void> {
     }
     // an available update already opened the update window via the
     // 'update-available' handler; only "nothing new" needs a dialog here
-    if (result.isUpdateAvailable) return
+    if (result.isUpdateAvailable) return { upToDate: false }
     await showAppMessageBox({
       type: 'info',
       title: tUpd(lang, 'updTitle'),
@@ -591,6 +592,7 @@ export async function checkForUpdatesNow(): Promise<void> {
       defaultId: 0,
       cancelId: 0,
     })
+    return { upToDate: true }
   } finally {
     manualCheckInFlight = false
   }

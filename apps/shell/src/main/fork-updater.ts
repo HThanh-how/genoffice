@@ -4,18 +4,23 @@ import { createHash } from 'node:crypto'
 import { createWriteStream } from 'node:fs'
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
 import { join } from 'node:path'
-import { Readable, Transform } from 'node:stream'
+import { PassThrough, Readable, Transform } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { app, net, shell } from 'electron'
 import type { BrowserWindow } from 'electron'
 import { getUiLang } from '@genoffice/i18n'
 import {
   compareVersions,
-  secureUpdateUrl,
+  createUpdateCoordinator,
   selectInstaller,
+  UpdateSourceError,
+  validateOriginalInstallerUrl,
+  validateResolvedInstallerUrl,
+  validateResolvedMetadataUrl,
   type UpdateSource,
 } from '../shared/update-source'
 import type { UpdateChannel } from '../shared/update-api'
+import type { UpdateCheckResult } from '../shared/home-api'
 import { initialState } from './updater'
 import { closeUpdateWindow, pushUpdateState, showUpdateWindow } from './update-window'
 import { startUpdateProgress } from './fork/update-progress'
@@ -48,7 +53,7 @@ const RESTART_LABEL: Record<string, string> = {
   vi: 'Khởi động lại để cập nhật',
   en: 'Restart to update',
 }
-let checking = false
+export const forkUpdateCoordinator = createUpdateCoordinator()
 let downloading = false
 let installer: string | null = null
 let activeSource = ''
@@ -118,166 +123,300 @@ export async function checkForkUpdates(
   channel: UpdateChannel,
   getWindow: () => BrowserWindow | null,
   options: { background?: boolean } = {},
-): Promise<void> {
+): Promise<UpdateCheckResult | void> {
   const background = options.background === true
-  if (checking || downloading) return
-  checking = true
-  const vietnamese = getUiLang() === 'vi'
-  const title = vietnamese ? 'Cập nhật GenOffice' : 'GenOffice update'
-  try {
-    const endpoint =
-      source.kind === 'github'
-        ? `https://api.github.com/repos/${source.value}/releases?per_page=30`
-        : source.value
-    const response = await net.fetch(endpoint, {
-      headers: { Accept: 'application/json', 'User-Agent': 'GenOffice-update' },
-      signal: AbortSignal.timeout(30_000),
-    })
-    if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    if (response.url) secureUpdateUrl(response.url)
-    if (!response.body || Number(response.headers.get('content-length')) > 2_000_000)
-      throw new Error('Update metadata is too large or empty')
-    const chunks: Buffer[] = []
-    let metadataBytes = 0
-    for await (const chunk of Readable.fromWeb(response.body as never)) {
-      metadataBytes += chunk.length
-      if (metadataBytes > 2_000_000) throw new Error('Update metadata is too large')
-      chunks.push(Buffer.from(chunk))
-    }
-    const body = Buffer.concat(chunks).toString('utf8')
-    const release = selectInstaller(
-      JSON.parse(body),
-      source.kind,
-      process.platform,
-      process.arch,
-      channel,
-    )
-    if (!release) {
-      if (background) return
-      await showAppMessageBox({
-        type: 'info',
-        title,
-        message: vietnamese
-          ? 'Nguồn này chưa có bộ cài phù hợp cho máy của bạn. Hãy thử lại sau khi GitHub build xong.'
-          : 'This source has no compatible installer yet. Try again once the GitHub build finishes.',
-      })
-      return
-    }
-    if (compareVersions(release.version, app.getVersion()) <= 0) {
-      if (background) return
-      await showUpdateStatusMessageBox({
-        type: 'info',
-        title,
-        message: vietnamese
-          ? `Bạn đang dùng bản mới nhất (${app.getVersion()}).`
-          : `You are up to date (${app.getVersion()}).`,
-      })
-      return
-    }
-    const identity = `${source.kind}:${source.value}:${release.version}:${release.sha256}`
-    if (identity !== activeSource) installer = null
-    activeSource = identity
-    const state = initialState(release.version)
-    state.phase = installer ? 'downloaded' : 'available'
-    state.strings.install = INSTALL_LABEL[getUiLang()] ?? INSTALL_LABEL.en
-    // Downloading an unsigned build does not promise a silent restart/install, except on Windows,
-    // where the verified installer is run silently by a restart.
-    state.strings.desc = vietnamese
-      ? 'Tải bản mới từ nguồn bạn đã chọn. Khi tải xong, mở bộ cài để cập nhật ứng dụng.'
-      : 'Download from your selected source, then open the installer to update the app.'
-    if (process.platform === 'win32') {
-      state.strings.install = RESTART_LABEL[getUiLang()] ?? RESTART_LABEL.en
-      state.strings.desc = vietnamese
-        ? 'Bản mới đã được tải về nền. Khởi động lại GenOffice là cập nhật xong, không cần cài lại.'
-        : 'The update is downloaded in the background. Restart GenOffice to finish; nothing to reinstall.'
-    }
-    const download = async (): Promise<void> => {
-      if (downloading) return
-      downloading = true
-      installer = null
-      pushUpdateState({ phase: 'downloading', percent: 0 })
-      let folder: string | undefined
+  if (downloading) return
+  return await forkUpdateCoordinator.run(async () => {
+    const vietnamese = getUiLang() === 'vi'
+    const title = vietnamese ? 'Cập nhật GenOffice' : 'GenOffice update'
+    try {
+      const endpoint =
+        source.kind === 'github'
+          ? `https://api.github.com/repos/${source.value}/releases?per_page=30`
+          : source.value
+      let response: Response
       try {
-        const root = join(app.getPath('userData'), 'updates')
-        await mkdir(root, { recursive: true })
-        folder = await mkdtemp(join(root, 'download-'))
-        const target = join(folder, `GenOffice-${release.version}${release.extension}`)
-        const res = await net.fetch(release.url, { signal: AbortSignal.timeout(15 * 60_000) })
-        if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
-        if (res.url) secureUpdateUrl(res.url)
-        const length = Number(res.headers.get('content-length'))
-        if (length > MAX_INSTALLER) throw new Error('Installer is too large')
-        const hash = createHash('sha256')
-        let bytes = 0
-        const meter = new Transform({
-          transform(chunk, _encoding, callback) {
-            bytes += chunk.length
-            if (bytes > MAX_INSTALLER) return callback(new Error('Installer is too large'))
-            hash.update(chunk)
-            pushUpdateState({
-              percent: length > 0 ? Math.min(99, Math.floor((bytes / length) * 100)) : 0,
-            })
-            callback(null, chunk)
-          },
+        response = await net.fetch(endpoint, {
+          headers: { Accept: 'application/json', 'User-Agent': 'GenOffice-update' },
+          signal: AbortSignal.timeout(30_000),
         })
-        await pipeline(
-          Readable.fromWeb(res.body as never),
-          meter,
-          createWriteStream(target, { flags: 'wx' }),
-        )
-        if (hash.digest('hex') !== release.sha256) throw new Error('Installer checksum mismatch')
-        installer = target
-        pushUpdateState({ phase: 'downloaded', percent: 100 })
-      } catch {
-        if (folder) await rm(folder, { recursive: true, force: true }).catch(() => {})
-        pushUpdateState({ phase: 'error' })
-      } finally {
-        downloading = false
+      } catch (fetchErr: unknown) {
+        const err = fetchErr as Error
+        if (err?.name === 'TimeoutError' || String(err).toLowerCase().includes('timeout')) {
+          throw new UpdateSourceError('TIMEOUT', 'Connection timed out')
+        }
+        throw new UpdateSourceError('NETWORK_ERROR', 'Network connection failed')
       }
-    }
-    const actions = {
-      onDownload: () => {
-        void download()
-      },
-      onLater: () => closeUpdateWindow(),
-      onInstall: () => {
-        const ready = installer
-        if (!ready) return
-        void installAndRestart(ready).then((restarting) => {
-          if (restarting) return
-          void shell
-            .openPath(ready)
-            .then((error) => {
-              if (error) pushUpdateState({ phase: 'error' })
-              else closeUpdateWindow()
-            })
-            .catch(() => pushUpdateState({ phase: 'error' }))
+      if (!response.ok) {
+        if (response.status === 404) {
+          throw new UpdateSourceError('GITHUB_NOT_FOUND', 'Repository not found on GitHub')
+        }
+        if (response.status === 403) {
+          const remaining = response.headers.get('x-ratelimit-remaining')
+          const retryAfter = response.headers.get('retry-after')
+          if (remaining === '0' || retryAfter !== null) {
+            throw new UpdateSourceError('GITHUB_RATE_LIMITED', 'GitHub API rate limit reached')
+          }
+          throw new UpdateSourceError('ACCESS_DENIED', 'Access denied to repository')
+        }
+        if (response.status === 401) {
+          throw new UpdateSourceError('ACCESS_DENIED', 'Access denied to repository')
+        }
+        throw new UpdateSourceError('NETWORK_ERROR', `HTTP ${response.status}`)
+      }
+      if (response.url) {
+        validateResolvedMetadataUrl(endpoint, response.url, source)
+      }
+      if (!response.body || Number(response.headers.get('content-length')) > 2_000_000)
+        throw new UpdateSourceError(
+          'INVALID_RELEASE_METADATA',
+          'Update metadata is too large or empty',
+        )
+      const chunks: Buffer[] = []
+      let metadataBytes = 0
+      for await (const chunk of Readable.fromWeb(response.body as never)) {
+        metadataBytes += chunk.length
+        if (metadataBytes > 2_000_000)
+          throw new UpdateSourceError('INVALID_RELEASE_METADATA', 'Update metadata is too large')
+        chunks.push(Buffer.from(chunk))
+      }
+      const body = Buffer.concat(chunks).toString('utf8')
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(body)
+      } catch {
+        throw new UpdateSourceError('INVALID_RELEASE_METADATA', 'Invalid JSON metadata')
+      }
+      const release = selectInstaller(parsed, source.kind, process.platform, process.arch, channel)
+      if (!release) {
+        if (background) return
+        await showAppMessageBox({
+          type: 'info',
+          title,
+          message: vietnamese
+            ? 'Nguồn này hợp lệ nhưng chưa có bộ cài phù hợp cho thiết bị này. Hãy thử lại sau khi bản build hoàn tất.'
+            : 'The repository is valid, but no compatible installer is available for this device.',
         })
-      },
-      onOpenDownload: () => {
-        void shell.openExternal(release.url)
-      },
+        return
+      }
+      if (compareVersions(release.version, app.getVersion()) <= 0) {
+        if (background) return { upToDate: true }
+        await showUpdateStatusMessageBox({
+          type: 'info',
+          title,
+          message: vietnamese
+            ? `Bạn đang dùng bản mới nhất (${app.getVersion()}).`
+            : `You are up to date (${app.getVersion()}).`,
+        })
+        return { upToDate: true }
+      }
+      const identity = `${source.kind}:${source.value}:${release.version}:${release.sha256}`
+      if (identity !== activeSource) installer = null
+      activeSource = identity
+      const state = initialState(release.version)
+      state.phase = installer ? 'downloaded' : 'available'
+      state.strings.install = INSTALL_LABEL[getUiLang()] ?? INSTALL_LABEL.en
+      // Downloading an unsigned build does not promise a silent restart/install, except on Windows,
+      // where the verified installer is run silently by a restart.
+      state.strings.desc = vietnamese
+        ? 'Tải bản mới từ nguồn bạn đã chọn. Khi tải xong, mở bộ cài để cập nhật ứng dụng.'
+        : 'Download from your selected source, then open the installer to update the app.'
+      if (process.platform === 'win32') {
+        state.strings.install = RESTART_LABEL[getUiLang()] ?? RESTART_LABEL.en
+        state.strings.desc = vietnamese
+          ? 'Bản mới đã được tải về nền. Khởi động lại GenOffice là cập nhật xong, không cần cài lại.'
+          : 'The update is downloaded in the background. Restart GenOffice to finish; nothing to reinstall.'
+      }
+      const download = async (): Promise<void> => {
+        if (downloading) return
+        downloading = true
+        installer = null
+        pushUpdateState({ phase: 'downloading', percent: 0 })
+        let folder: string | undefined
+        try {
+          const root = join(app.getPath('userData'), 'updates')
+          await mkdir(root, { recursive: true })
+          folder = await mkdtemp(join(root, 'download-'))
+          const target = join(folder, `GenOffice-${release.version}${release.extension}`)
+
+          // 1. Validate original URL before issuing any network hop
+          validateOriginalInstallerUrl(release.url, source)
+
+          const hash = createHash('sha256')
+          let bytes = 0
+          const createMeter = (length: number) =>
+            new Transform({
+              transform(chunk, _encoding, callback) {
+                bytes += chunk.length
+                if (bytes > MAX_INSTALLER) return callback(new Error('Installer is too large'))
+                hash.update(chunk)
+                pushUpdateState({
+                  percent: length > 0 ? Math.min(99, Math.floor((bytes / length) * 100)) : 0,
+                })
+                callback(null, chunk)
+              },
+            })
+
+          if (typeof net.request === 'function') {
+            await new Promise<void>((resolve, reject) => {
+              let resolvedUrl = release.url
+              const req = net.request({ url: release.url, redirect: 'manual' })
+              let responseStream: PassThrough | undefined
+              const finish = (error?: unknown) => {
+                clearTimeout(timer)
+                if (error) {
+                  responseStream?.destroy()
+                  req.abort()
+                  reject(error)
+                } else {
+                  resolve()
+                }
+              }
+              const timer = setTimeout(() => finish(new Error('Download timeout')), 15 * 60_000)
+              req.on('redirect', (_statusCode, _method, redirectUrl) => {
+                try {
+                  validateResolvedInstallerUrl(release.url, redirectUrl, source)
+                  resolvedUrl = redirectUrl
+                  req.followRedirect()
+                } catch (err) {
+                  finish(err)
+                }
+              })
+              req.on('response', (res) => {
+                const stream = new PassThrough()
+                responseStream = stream
+                if (res.statusCode < 200 || res.statusCode >= 300) {
+                  finish(new Error(`HTTP ${res.statusCode}`))
+                  return
+                }
+                try {
+                  validateResolvedInstallerUrl(release.url, resolvedUrl, source)
+                  const length = Number(res.headers['content-length'] || 0)
+                  if (length > MAX_INSTALLER) throw new Error('Installer is too large')
+                  const meter = createMeter(length)
+                  const download = pipeline(
+                    stream,
+                    meter,
+                    createWriteStream(target, { flags: 'wx' }),
+                  )
+                    .then(() => {
+                      if (hash.digest('hex') !== release.sha256) {
+                        throw new Error('Installer checksum mismatch')
+                      }
+                      finish()
+                    })
+                    .catch(finish)
+                  res.on('data', (chunk) => stream.write(chunk))
+                  res.on('end', () => stream.end())
+                  res.on('error', finish)
+                  res.on('aborted', () => finish(new Error('Download aborted')))
+                  void download
+                } catch (err) {
+                  finish(err)
+                }
+              })
+              req.on('error', finish)
+              req.end()
+            })
+          } else {
+            // Fallback for environments where net.request is not available (e.g. test runner)
+            const res = await net.fetch(release.url, { signal: AbortSignal.timeout(15 * 60_000) })
+            if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+            if (res.url) {
+              validateResolvedInstallerUrl(release.url, res.url, source)
+            }
+            const length = Number(res.headers.get('content-length'))
+            if (length > MAX_INSTALLER) throw new Error('Installer is too large')
+            const meter = createMeter(length)
+            await pipeline(
+              Readable.fromWeb(res.body as never),
+              meter,
+              createWriteStream(target, { flags: 'wx' }),
+            )
+            if (hash.digest('hex') !== release.sha256) {
+              throw new Error('Installer checksum mismatch')
+            }
+          }
+
+          installer = target
+          pushUpdateState({ phase: 'downloaded', percent: 100 })
+        } catch {
+          if (folder) await rm(folder, { recursive: true, force: true }).catch(() => {})
+          pushUpdateState({ phase: 'error' })
+        } finally {
+          downloading = false
+        }
+      }
+      const actions = {
+        onDownload: () => {
+          void download()
+        },
+        onLater: () => closeUpdateWindow(),
+        onInstall: () => {
+          const ready = installer
+          if (!ready) return
+          void installAndRestart(ready).then((restarting) => {
+            if (restarting) return
+            void shell
+              .openPath(ready)
+              .then((error) => {
+                if (error) pushUpdateState({ phase: 'error' })
+                else closeUpdateWindow()
+              })
+              .catch(() => pushUpdateState({ phase: 'error' }))
+          })
+        },
+        onOpenDownload: () => {
+          void shell.openExternal(release.url)
+        },
+      }
+      if (background) {
+        // quiet: nothing is shown until the update is downloaded and verified, and then once per
+        // version. Only Windows can apply it by a restart; elsewhere the person asks for it.
+        if (process.platform !== 'win32' || promptedVersion === release.version) return
+        if (!installer) await download()
+        if (!installer) return
+        promptedVersion = release.version
+        state.phase = 'downloaded'
+      }
+      showUpdateWindow(getWindow(), state, actions)
+      return { upToDate: false }
+    } catch (err: unknown) {
+      if (background) return
+      const error = err as UpdateSourceError
+      const code = error?.code
+      let message: string
+      if (code === 'GITHUB_NOT_FOUND') {
+        message = vietnamese
+          ? 'Không tìm thấy kho mã nguồn trên GitHub. Kiểm tra lại tên owner/repository.'
+          : 'Repository not found on GitHub. Check the owner/repository name.'
+      } else if (code === 'GITHUB_RATE_LIMITED') {
+        message = vietnamese
+          ? 'Đã đạt giới hạn yêu cầu của GitHub API. Vui lòng thử lại sau.'
+          : 'GitHub API rate limit reached. Please try again later.'
+      } else if (code === 'ACCESS_DENIED') {
+        message = vietnamese
+          ? 'Không có quyền truy cập vào kho mã nguồn này.'
+          : 'Access denied to repository.'
+      } else if (code === 'TIMEOUT' || code === 'NETWORK_ERROR') {
+        message = vietnamese
+          ? 'Không thể kết nối đến GitHub. Nguồn cập nhật đã lưu không bị thay đổi.'
+          : 'Unable to contact GitHub. Your saved update source has not changed.'
+      } else if (code === 'INVALID_RELEASE_METADATA') {
+        message = vietnamese
+          ? 'Dữ liệu phiên bản phát hành từ nguồn cập nhật không hợp lệ.'
+          : 'Invalid release metadata from update source.'
+      } else {
+        message = vietnamese
+          ? 'Không kiểm tra được cập nhật. Kiểm tra mạng và nguồn cập nhật rồi thử lại.'
+          : 'Could not check for updates. Check your connection and update source, then try again.'
+      }
+      await showAppMessageBox({
+        type: 'warning',
+        title,
+        message,
+      })
+      return
     }
-    if (background) {
-      // quiet: nothing is shown until the update is downloaded and verified, and then once per
-      // version. Only Windows can apply it by a restart; elsewhere the person asks for it.
-      if (process.platform !== 'win32' || promptedVersion === release.version) return
-      if (!installer) await download()
-      if (!installer) return
-      promptedVersion = release.version
-      state.phase = 'downloaded'
-    }
-    showUpdateWindow(getWindow(), state, actions)
-  } catch {
-    if (background) return
-    await showAppMessageBox({
-      type: 'warning',
-      title,
-      message: vietnamese
-        ? 'Không kiểm tra được cập nhật. Kiểm tra mạng và nguồn cập nhật rồi thử lại.'
-        : 'Could not check for updates. Check your connection and update source, then try again.',
-    })
-  } finally {
-    checking = false
-  }
+  })
 }

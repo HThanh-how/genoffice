@@ -978,6 +978,8 @@ describe('streamForProvider: gemini', () => {
       onUsage,
     })
     expect(onUsage).toHaveBeenCalledWith({
+      inputTokens: 120,
+      outputTokens: 20,
       promptTokenCount: 120,
       candidatesTokenCount: 20,
       thoughtsTokenCount: 8,
@@ -999,6 +1001,8 @@ describe('streamForProvider: gemini', () => {
       onUsage,
     })
     expect(onUsage).toHaveBeenCalledWith({
+      inputTokens: 9,
+      outputTokens: 2,
       promptTokenCount: 9,
       candidatesTokenCount: 2,
       totalTokenCount: 11,

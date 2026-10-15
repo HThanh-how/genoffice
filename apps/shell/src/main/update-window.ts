@@ -2,6 +2,7 @@ import { join } from 'node:path'
 import { BrowserWindow, ipcMain } from 'electron'
 import type { UpdateUiState } from '../shared/update-api'
 import { UPDATE_CHANNELS } from '../shared/update-api'
+import { resolveWindowIcon } from './window-icon'
 
 /**
  * The update window: a frameless card centered over the shell window —
@@ -124,10 +125,12 @@ export function showUpdateWindow(
     return
   }
 
+  const windowIcon = resolveWindowIcon()
   const win = new BrowserWindow({
     width: 460,
     height: 440,
     ...(parent && !parent.isDestroyed() ? { parent } : {}),
+    ...(windowIcon ? { icon: windowIcon } : {}),
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',

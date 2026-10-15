@@ -4,6 +4,7 @@ import type { MessageBoxOptions, MessageBoxReturnValue } from 'electron'
 import { getUiLang } from '@genoffice/i18n'
 import { FEEDBACK_CHANNELS } from '../shared/feedback-api'
 import type { FeedbackWindowState, MessageBoxResult } from '../shared/feedback-api'
+import { resolveWindowIcon } from './window-icon'
 
 const nativeDialogShowMessageBox = dialog.showMessageBox
 const pending = new Map<
@@ -146,10 +147,12 @@ function openBox(
   const host = parent && !parent.isDestroyed() ? parent : null
   const area = (host ? screen.getDisplayMatching(host.getBounds()) : screen.getPrimaryDisplay())
     .workArea
+  const windowIcon = resolveWindowIcon()
   const win = new BrowserWindow({
     width: Math.min(toastTone ? 460 : 560, Math.max(280, area.width - 32)),
     height: Math.min(toastTone ? 220 : 480, Math.max(200, area.height - 48)),
     ...(host ? { parent: host, modal: !toastTone && !behavior?.dismissOnBlur } : {}),
+    ...(windowIcon ? { icon: windowIcon } : {}),
     frame: false,
     transparent: true,
     backgroundColor: '#00000000',

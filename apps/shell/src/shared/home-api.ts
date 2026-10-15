@@ -3,6 +3,7 @@ import type { IndexIssueReason } from '../main/document-memory/issues'
 import type { FolderScanStatus } from '../main/document-memory/folder-scan'
 import type {
   AiChatResponse,
+  AiCustomProtocol,
   AiMediaProviderConfig,
   AiMediaProviderId,
   AiMediaProviderMeta,
@@ -19,7 +20,8 @@ import type {
 import type { DocumentMemoryReadResult, DocumentMemorySearchResult } from '@genoffice/agent-core'
 import type { DocumentIndexProgress } from '@genoffice/agent-core'
 import type { UpdateChannel, UpdateUiState } from './update-api'
-import type { UpdateSource } from './update-source'
+import type { UpdateSource, UpdateCheckResult } from './update-source'
+export type { UpdateCheckResult }
 import type { KbFileInfo, KbReadPage, KbSearchHit } from '@genoffice/agent-core'
 import type { AiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
 import type { ForkHomeApi } from './fork/fork-home-api'
@@ -220,7 +222,7 @@ export interface FileSearchSettings {
   customModel: string
   /** `cloudflare` endpoint only: Workers AI account id */
   cloudflareAccountId: string
-  /** `cloudflare` endpoint only: Workers AI model path, e.g. @cf/cloudflare/clef */
+  /** `cloudflare` endpoint only: Workers AI model path, e.g. @cf/cloudflare/clef or @cf/cloudflare/clef-omni */
   cloudflareModel: string
 }
 
@@ -325,6 +327,12 @@ export interface HomeApi extends ForkHomeApi {
   kbSearch(query: { q: string; limit?: number }): Promise<KbSearchHit[]>
   /** one page of a corpus file's parsed text (path must be in kbList) */
   kbRead(path: string, offset: number): Promise<KbReadPage>
+  /** write the AI's markdown as a new .md / .docx in the save folder; resolves to its path */
+  kbCreateDocument(request: {
+    title: string
+    format: 'md' | 'docx'
+    content: string
+  }): Promise<{ path: string }>
   /** the user's AI provider settings (shared with every app's panel) */
   aiGetSettings(): Promise<AiSettings>
   /** authentication status for the knowledge-base ask panel */
@@ -389,7 +397,7 @@ export interface HomeApi extends ForkHomeApi {
   /** current update channel (persisted in userData/app-settings.json; default 'stable') */
   getUpdateSource(): Promise<UpdateSource>
   setUpdateSource(source: UpdateSource): Promise<UpdateSource>
-  checkForUpdates(): Promise<void>
+  checkForUpdates(): Promise<UpdateCheckResult | void>
   getUpdateChannel(): Promise<UpdateChannel>
   /** switch + persist the update channel; triggers an immediate update check */
   setUpdateChannel(channel: UpdateChannel): Promise<void>
@@ -568,8 +576,12 @@ export interface HomeApi extends ForkHomeApi {
   getAiProviders(): AiCatalogEntry[]
   /** live Codex model catalog discovered through the current or overridden app-server */
   getCodexModels(cliPath?: string): Promise<CodexModelCatalog>
-  /** live model list advertised by a user-hosted OpenAI-compatible endpoint; empty when it cannot answer */
-  getCustomModels(baseUrl: string, apiKey?: string): Promise<CodexModelCatalog>
+  /** live model list advertised by a user-hosted endpoint, probed on the route its declared protocol speaks; empty when it cannot answer */
+  getCustomModels(
+    baseUrl: string,
+    apiKey?: string,
+    api?: AiCustomProtocol,
+  ): Promise<CodexModelCatalog>
   /** live Gemini chat models the given API key can call; empty when it cannot answer */
   getGeminiModels?(apiKey: string): Promise<CodexModelCatalog>
   /** live models from the selected API provider, using the unsaved key and base URL */

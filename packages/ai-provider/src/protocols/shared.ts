@@ -1,4 +1,5 @@
 import type { AgentToolCall } from '@genoffice/agent-core'
+import type { AiTokenUsage } from '../types'
 
 // ---- endpoint URL composition ----
 
@@ -257,10 +258,10 @@ export interface StreamCallbacks {
   onReasoningDelta?: (text: string) => void
   /** normalized stop reason ('max_tokens' when the output was cut off by the token limit) */
   onStopReason?: (reason: string) => void
+  /** tokens the provider billed for this turn; fires once at stream end when the provider reports usage at all */
+  onUsage?: (usage: AiTokenUsage) => void
   /** bytes arrived on the wire (fires per network chunk, including SSE pings; used for keepalive) */
   onActivity?: () => void
-  /** Provider-reported cumulative token counts; repeated stream updates replace earlier counts. */
-  onUsage?: (usage: import('../types').AiTokenUsage) => void
   /** Safe provider metadata only; must never include prompts, outputs, or raw errors. */
   onDiagnostic?: (record: {
     provider: 'agy'
@@ -274,6 +275,12 @@ export interface StreamCallbacks {
   /** Transport request id for correlating live turn activity with the active request attempt. */
   requestId?: string
   signal: AbortSignal
+}
+
+/** Coerce a provider's usage figure (number on the wire, sometimes a numeric string) to a finite count. */
+export function usageCount(value: unknown): number | undefined {
+  const n = typeof value === 'string' ? Number(value) : value
+  return typeof n === 'number' && Number.isFinite(n) && n >= 0 ? n : undefined
 }
 
 /**
