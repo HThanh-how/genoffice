@@ -1648,15 +1648,38 @@ export function executeOps(editor: Editor, ops: unknown, ctx: OpContext = {}): E
           .filter((idx): idx is number => idx !== null)
         let mappedAfter = op.afterBlockIndex
         if (typeof op.afterBlockIndex === 'number' && op.afterBlockIndex >= 0) {
-          const afterMapped =
-            op.afterBlockIndex < currentOfOrig.length ? currentOfOrig[op.afterBlockIndex] : null
-          mappedAfter = afterMapped ?? -1
+          if (op.afterBlockIndex >= currentOfOrig.length) {
+            throw new Error(`moveBlocks: afterBlockIndex ${op.afterBlockIndex} is out of range`)
+          }
+          const afterMapped = currentOfOrig[op.afterBlockIndex]
+          if (afterMapped === null) {
+            throw new Error(
+              `moveBlocks: afterBlockIndex ${op.afterBlockIndex} was deleted by an earlier operation in this batch`,
+            )
+          }
+          mappedAfter = afterMapped
         }
         effectiveOp = { ...effectiveOp, blockIndexes: mapped, afterBlockIndex: mappedAfter }
       }
+      if (
+        op.op === 'insertToc' &&
+        typeof op.afterBlockIndex === 'number' &&
+        op.afterBlockIndex >= 0
+      ) {
+        if (op.afterBlockIndex >= currentOfOrig.length) {
+          throw new Error(`insertToc: afterBlockIndex ${op.afterBlockIndex} is out of range`)
+        }
+        const afterMapped = currentOfOrig[op.afterBlockIndex]
+        if (afterMapped === null) {
+          throw new Error(
+            `insertToc: afterBlockIndex ${op.afterBlockIndex} was deleted by an earlier operation in this batch`,
+          )
+        }
+        effectiveOp = { ...effectiveOp, afterBlockIndex: afterMapped }
+      }
       const res = def.apply(effectiveOp, { tr, schema, sel, ctx, editor })
       results.push(res)
-      if (res.deletedIndexes && res.deletedIndexes.length > 0) {
+      if (op.op === 'deleteBlocks' && res.deletedIndexes && res.deletedIndexes.length > 0) {
         const deletedSet = new Set(res.deletedIndexes)
         for (let i = 0; i < currentOfOrig.length; i++) {
           const cur = currentOfOrig[i]
@@ -1669,6 +1692,43 @@ export function executeOps(editor: Editor, ops: unknown, ctx: OpContext = {}): E
               if (d < cur) countBefore++
             }
             currentOfOrig[i] = cur - countBefore
+          }
+        }
+      } else if (
+        op.op === 'moveBlocks' &&
+        res.changed > 0 &&
+        Array.isArray(effectiveOp.blockIndexes)
+      ) {
+        const movedList = effectiveOp.blockIndexes as number[]
+        if (movedList.length > 0) {
+          const afterIdx =
+            typeof effectiveOp.afterBlockIndex === 'number' ? effectiveOp.afterBlockIndex : -1
+          const movedSet = new Set(movedList)
+          const sortedMoved = [...movedSet].sort((a, z) => a - z)
+          const docCount = tr.doc.childCount
+          const rest: number[] = []
+          for (let b = 0; b < docCount; b++) {
+            if (!movedSet.has(b)) rest.push(b)
+          }
+          const insertAt = afterIdx >= 0 ? rest.indexOf(afterIdx) + 1 : 0
+          const newOrder = [...rest.slice(0, insertAt), ...sortedMoved, ...rest.slice(insertAt)]
+          const newIndexOfOld = new Map<number, number>()
+          newOrder.forEach((oldIdx, newIdx) => newIndexOfOld.set(oldIdx, newIdx))
+          for (let i = 0; i < currentOfOrig.length; i++) {
+            const cur = currentOfOrig[i]
+            if (cur !== null && newIndexOfOld.has(cur)) {
+              currentOfOrig[i] = newIndexOfOld.get(cur)!
+            }
+          }
+        }
+      } else if (op.op === 'insertToc' && res.changed > 0) {
+        const afterIdx =
+          typeof effectiveOp.afterBlockIndex === 'number' ? effectiveOp.afterBlockIndex : -1
+        const insertAt = afterIdx === -1 ? 0 : afterIdx + 1
+        for (let i = 0; i < currentOfOrig.length; i++) {
+          const cur = currentOfOrig[i]
+          if (cur !== null && cur >= insertAt) {
+            currentOfOrig[i] = cur + res.changed
           }
         }
       }
