@@ -596,6 +596,67 @@ describe('Enterprise Indexing Policy Studio — Comprehensive Suite', () => {
       const skip = shouldSkipDirectory('node_modules', dirPath)
       expect(skip).toBe(true)
     })
+
+    it('does not rescue a pruned folder that only contains an allowed segment as a substring', () => {
+      setActiveIgnoreRules([
+        ...DEFAULT_IGNORE_RULES,
+        {
+          id: 'allow-2026-reports',
+          pattern: '2026/reports/**',
+          enabled: true,
+          scope: 'global',
+          action: 'allow',
+        },
+      ])
+
+      // ".cache/2026" shares the segment "2026" but is not on the path to the
+      // allowed subtree, so it must stay pruned. A substring match would have
+      // let the scanner walk into it.
+      expect(shouldSkipDirectory('.cache', join(rootA, 'work/2026/.cache'))).toBe(true)
+      expect(shouldSkipDirectory('dist', join(rootA, 'archive/2026/dist'))).toBe(true)
+      expect(shouldSkipDirectory('node_modules', join(rootA, 'app/2026/node_modules'))).toBe(true)
+
+      // Directories on the path to, or inside, the allowed subtree stay open.
+      expect(shouldSkipDirectory('2026', join(rootA, 'work/2026'))).toBe(false)
+      expect(shouldSkipDirectory('reports', join(rootA, 'work/2026/reports'))).toBe(false)
+      expect(shouldSkipDirectory('drafts', join(rootA, 'work/2026/reports/drafts'))).toBe(false)
+    })
+
+    it('rescues pruned folders inside an explicitly allowed scope only', () => {
+      setActiveIgnoreRules([
+        ...DEFAULT_IGNORE_RULES,
+        {
+          id: 'allow-vendor-scope',
+          pattern: '**/*.docx',
+          enabled: true,
+          scope: join(rootA, 'vendor'),
+          action: 'allow',
+        },
+      ])
+
+      expect(shouldSkipDirectory('.cache', join(rootA, 'vendor/.cache'))).toBe(false)
+      expect(shouldSkipDirectory('.cache', join(rootB, 'unrelated/.cache'))).toBe(true)
+    })
+
+    it('rescues folders allowed by a root .genofficeignore allow rule', () => {
+      setActiveIgnoreRules([...DEFAULT_IGNORE_RULES])
+      writeGenOfficeIgnoreFile(rootA, '!2026/reports/**\n')
+
+      expect(shouldSkipDirectory('.cache', join(rootA, 'work/2026/.cache'))).toBe(true)
+      expect(shouldSkipDirectory('reports', join(rootA, 'work/2026/reports'))).toBe(false)
+    })
+
+    it('invalidates the rescue memo when the policy generation changes', () => {
+      setActiveIgnoreRules([...DEFAULT_IGNORE_RULES])
+      const dir = join(rootA, 'work/2026/.cache')
+      expect(shouldSkipDirectory('.cache', dir)).toBe(true)
+
+      setActiveIgnoreRules([
+        ...DEFAULT_IGNORE_RULES,
+        { id: 'allow-2026', pattern: '2026/**', enabled: true, scope: 'global', action: 'allow' },
+      ])
+      expect(shouldSkipDirectory('.cache', dir)).toBe(false)
+    })
   })
 
   // =========================================================================
@@ -675,6 +736,30 @@ describe('Enterprise Indexing Policy Studio — Comprehensive Suite', () => {
       expect(res.ignored).toBe(false)
       expect(res.action).toBe('allow')
       expect(duration).toBeLessThan(50) // First compilation and match under 50ms
+    })
+
+    it('answers 20,000 pruned-directory checks in steady state under 400 ms', () => {
+      // This is the path shouldSkipDirectory() takes on every candidate folder
+      // during a traversal; the existing benchmarks only cover evaluateIgnore.
+      setActiveIgnoreRules([...DEFAULT_IGNORE_RULES])
+
+      const dirs: string[] = []
+      for (let i = 0; i < 20_000; i++) {
+        dirs.push(join(rootA, 'project_2026', `module_${i}`, 'node_modules'))
+      }
+
+      // Warm pass populates the per-directory memo.
+      for (const dir of dirs) shouldSkipDirectory('node_modules', dir)
+
+      const start = performance.now()
+      let pruned = 0
+      for (const dir of dirs) {
+        if (shouldSkipDirectory('node_modules', dir)) pruned++
+      }
+      const duration = performance.now() - start
+
+      expect(pruned).toBe(dirs.length)
+      expect(duration).toBeLessThan(400) // steady-state pruning, no rule re-walk
     })
   })
 })
