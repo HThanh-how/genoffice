@@ -1988,4 +1988,54 @@ describe('Defect L: Disambiguate comment locations, document topics, and quotati
       )
     })
   })
+
+  describe('verifyDocsResponse: document creation claims and fallback accuracy', () => {
+    it('C01: "I created the document." -> claimsDocModification true, getClaimedSpecificEffects has \'new_document\'', () => {
+      const claim = 'I created the document.'
+      expect(claimsDocModification(claim)).toBe(true)
+      expect(getClaimedSpecificEffects(claim).has('new_document')).toBe(true)
+    })
+
+    it('C02: "I created the requested file." -> claimsDocModification true, getClaimedSpecificEffects has \'new_document\'', () => {
+      const claim = 'I created the requested file.'
+      expect(claimsDocModification(claim)).toBe(true)
+      expect(getClaimedSpecificEffects(claim).has('new_document')).toBe(true)
+    })
+
+    it('C08: "Tôi đã tạo file đơn xin nghỉ phép." -> claimsDocModification true, getClaimedSpecificEffects has \'new_document\'', () => {
+      const claim = 'Tôi đã tạo file đơn xin nghỉ phép.'
+      expect(claimsDocModification(claim)).toBe(true)
+      expect(getClaimedSpecificEffects(claim).has('new_document')).toBe(true)
+    })
+
+    it('C13: "I created the requested file." with executed tool [{ name: \'set_watermark\', ok: true, mutated: false }] returns corrective prompt rejecting claim', () => {
+      const claim = 'I created the requested file.'
+      const tools = [{ name: 'set_watermark', ok: true, mutated: false }]
+      const res = verifyDocsResponse(claim, tools)
+      expect(res).not.toBeNull()
+      expect(res).toContain('set_watermark')
+      expect(res).toContain('new_document')
+    })
+
+    it('C16: "I created the document." with executed tool [{ name: \'create_document\', ok: true, mutated: false }] returns null', () => {
+      const claim = 'I created the document.'
+      const tools = [{ name: 'create_document', ok: true, mutated: false }]
+      expect(verifyDocsResponse(claim, tools)).toBeNull()
+    })
+
+    it('F05: Fallback response when apply_ops returns 0 changed due to pending tracked deletion includes tracked deletion note', () => {
+      const claim = 'I updated the document.'
+      const tools = [
+        {
+          name: 'apply_ops',
+          ok: true,
+          mutated: false,
+          output:
+            'deleteText: 0 (0 changed)\nNote: 1 matched target(s) were skipped because that text is a pending tracked deletion (already struck through). It is not current content — do not try to delete or replace it again; the user accepts/rejects revisions in the Review tab.',
+        },
+      ]
+      const fallback = fallbackDocsResponse(claim, tools)
+      expect(fallback).toMatch(/tracked deletion/i)
+    })
+  })
 })

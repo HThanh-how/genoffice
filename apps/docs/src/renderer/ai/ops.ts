@@ -1620,16 +1620,54 @@ export function executeOps(editor: Editor, ops: unknown, ctx: OpContext = {}): E
     { length: editor.state.doc.childCount },
     (_, i) => i,
   )
+  const initialBlocks = topLevelBlocks(editor.state.doc).map((b) => ({
+    index: b.index,
+    pos: b.pos,
+    size: b.node.nodeSize,
+  }))
+  let hasMovedBlocks = false
   const tr = editor.state.tr
   const schema = editor.schema
   const selection = frozenSelectionRange(editor, ctx.selection) ?? editor.state.selection
   const results: OpResult[] = []
   try {
     for (const [op, def] of planned) {
+      const mapPosition = (origPos: number, isEnd = false): number => {
+        if (!hasMovedBlocks) return tr.mapping.map(origPos)
+        let b =
+          isEnd && origPos > 0
+            ? initialBlocks.find((blk) => origPos > blk.pos && origPos <= blk.pos + blk.size)
+            : undefined
+        if (!b) {
+          b = initialBlocks.find((blk) => origPos >= blk.pos && origPos < blk.pos + blk.size)
+        }
+        if (!b) {
+          const last = initialBlocks[initialBlocks.length - 1]
+          if (last && origPos >= last.pos + last.size) {
+            return tr.doc.content.size
+          }
+          return tr.mapping.map(origPos)
+        }
+        const curIdx = currentOfOrig[b.index]
+        if (curIdx === null) return -1
+        const currentBlocks = topLevelBlocks(tr.doc)
+        if (curIdx >= currentBlocks.length) return -1
+        const curBlock = currentBlocks[curIdx]
+        const offset = origPos - b.pos
+        const clampedOffset = Math.min(Math.max(offset, 0), curBlock.node.nodeSize)
+        return curBlock.pos + clampedOffset
+      }
+
       // selection positions mapped through the steps applied so far
+      const selFrom = mapPosition(selection.from)
+      const selTo = mapPosition(selection.to, true)
       const sel: SelRange = {
-        from: tr.mapping.map(selection.from),
-        to: tr.mapping.map(selection.to),
+        from:
+          selFrom !== -1 && selTo !== -1 && selFrom <= selTo
+            ? selFrom
+            : tr.mapping.map(selection.from),
+        to:
+          selFrom !== -1 && selTo !== -1 && selFrom <= selTo ? selTo : tr.mapping.map(selection.to),
       }
       let effectiveOp = op
       if (op.target?.blockIndexes) {
@@ -1641,14 +1679,13 @@ export function executeOps(editor: Editor, ops: unknown, ctx: OpContext = {}): E
         effectiveOp = { ...effectiveOp, target: { ...op.target, blockIndexes: mapped } }
       }
       if (op.target?.range) {
+        const from = mapPosition(op.target.range.from)
+        const to = mapPosition(op.target.range.to, true)
         effectiveOp = {
           ...effectiveOp,
           target: {
             ...effectiveOp.target,
-            range: {
-              from: tr.mapping.map(op.target.range.from),
-              to: tr.mapping.map(op.target.range.to),
-            },
+            range: from !== -1 && to !== -1 && from <= to ? { from, to } : { from: -1, to: -1 },
           },
         }
       }
@@ -1711,6 +1748,7 @@ export function executeOps(editor: Editor, ops: unknown, ctx: OpContext = {}): E
         res.changed > 0 &&
         Array.isArray(effectiveOp.blockIndexes)
       ) {
+        hasMovedBlocks = true
         const movedList = effectiveOp.blockIndexes as number[]
         if (movedList.length > 0) {
           const afterIdx =

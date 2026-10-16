@@ -109,7 +109,7 @@ export function readStructuredToolTurn(
   for (const key of Object.keys(record)) {
     if (key !== 'text' && key !== 'tool_calls') return null
   }
-  if ('text' in record && typeof record.text !== 'string') return null
+  if (typeof record.text !== 'string') return null
   const rawCalls = record.tool_calls
   if (!Array.isArray(rawCalls)) return null
   if (rawCalls.length > AGY_MAX_TOOL_CALLS_PER_TURN) return null
@@ -125,7 +125,7 @@ export function readStructuredToolTurn(
     if (typeof args !== 'object' || args === null || Array.isArray(args)) return null
     calls.push({ name: resolved, input: args as Record<string, unknown> })
   }
-  return { text: typeof record.text === 'string' ? record.text.trim() : '', calls }
+  return { text: record.text.trim(), calls }
 }
 
 export type AgyStructuredTextResult =
@@ -197,7 +197,7 @@ export function parseAgyStructuredText(
     }
   }
 
-  if ('text' in record && typeof record.text !== 'string') {
+  if (typeof record.text !== 'string') {
     return { kind: 'malformed', reason: 'Field "text" in structured turn must be a string' }
   }
 

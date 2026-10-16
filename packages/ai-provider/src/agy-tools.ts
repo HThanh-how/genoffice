@@ -45,84 +45,78 @@ export function agyCallId(index: number): string {
   return `agy-${Date.now().toString(36)}-${index}`
 }
 
-function findFencedCodeBlockRanges(text: string): Array<{ start: number; end: number }> {
-  const ranges: Array<{ start: number; end: number }> = []
-  const fenceLineRegex = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*([a-zA-Z0-9_-]+)?[ \t]*\r?$/
-  const lines = text.split('\n')
-  let currentOffset = 0
-  let openFence: { char: string; len: number; start: number } | null = null
+/** Split a model reply into visible text and the tool calls it requested. */
+export function parseAgyToolCalls(
+  text: string,
+  known: ReadonlySet<string>,
+): { text: string; calls: AgentToolCall[]; invalidBlocks: number } {
+  const calls: AgentToolCall[] = []
+  let invalidBlocks = 0
+  let visible = ''
+  let i = 0
 
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!
-    const lineStart = currentOffset
-    const lineEnd = currentOffset + line.length
-    currentOffset = lineEnd + 1
+  const openFenceRegex = /^[ \t]{0,3}(`{3,}|~{3,})([^\r\n]*)(?:\r?\n|$)/
+  const closeFenceRegex = (char: string, len: number) =>
+    new RegExp(`^[ \\t]{0,3}${char === '`' ? '`' : '~'}{${len},}[ \\t]*(?:\\r?\\n|$)`)
 
-    if (!openFence) {
-      const match = fenceLineRegex.exec(line)
-      if (match) {
-        openFence = {
-          char: match[1]![0]!,
-          len: match[1]!.length,
-          start: lineStart,
+  while (i < text.length) {
+    // 1. Fenced code block at start of line (indented <= 3 spaces)
+    const isLineStart = i === 0 || text[i - 1] === '\n'
+    if (isLineStart) {
+      const rest = text.slice(i)
+      const fenceMatch = openFenceRegex.exec(rest)
+      if (fenceMatch) {
+        const fenceChars = fenceMatch[1]!
+        const infoString = fenceMatch[2]!
+        const fenceChar = fenceChars[0]!
+        // CommonMark: backtick fence info string cannot contain backticks
+        if (fenceChar !== '`' || !infoString.includes('`')) {
+          const fenceLen = fenceChars.length
+          const lineEnd = fenceMatch[0].length
+          const closeRegex = closeFenceRegex(fenceChar, fenceLen)
+
+          let searchOffset = i + lineEnd
+          let blockEnd = -1
+
+          while (searchOffset <= text.length) {
+            const nextNewline = text.indexOf('\n', searchOffset)
+            const currentLineEnd = nextNewline === -1 ? text.length : nextNewline + 1
+            const lineContent = text.slice(searchOffset, currentLineEnd)
+
+            if (closeRegex.test(lineContent)) {
+              blockEnd = currentLineEnd
+              break
+            }
+
+            if (nextNewline === -1) {
+              blockEnd = text.length
+              break
+            }
+            searchOffset = currentLineEnd
+          }
+
+          if (blockEnd === -1) {
+            blockEnd = text.length
+          }
+
+          // Protected fenced code block: keep in visible text, do not execute tool calls inside
+          visible += text.slice(i, blockEnd)
+          i = blockEnd
+          continue
         }
       }
-    } else {
-      const closeMatch = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*\r?$/.exec(line)
-      if (
-        closeMatch &&
-        closeMatch[1]![0] === openFence.char &&
-        closeMatch[1]!.length >= openFence.len
-      ) {
-        ranges.push({ start: openFence.start, end: lineEnd })
-        openFence = null
-      }
-    }
-  }
-
-  if (openFence) {
-    ranges.push({ start: openFence.start, end: text.length })
-  }
-
-  return ranges
-}
-
-/** Find all protected code ranges (fenced blocks and inline backtick spans) */
-function findProtectedCodeRanges(text: string): Array<{ start: number; end: number }> {
-  const fenced = findFencedCodeBlockRanges(text)
-  const ranges = [...fenced]
-
-  const isInsideFenced = (pos: number): boolean => {
-    for (const r of fenced) {
-      if (pos >= r.start && pos < r.end) return true
-    }
-    return false
-  }
-
-  // Scan for inline code spans outside fenced blocks
-  let i = 0
-  while (i < text.length) {
-    if (isInsideFenced(i)) {
-      const block = fenced.find((r) => i >= r.start && i < r.end)
-      i = block ? block.end : i + 1
-      continue
     }
 
+    // 2. Inline code span (`...`)
     if (text[i] === '`') {
       let delimLen = 1
       while (i + delimLen < text.length && text[i + delimLen] === '`') {
         delimLen++
       }
-      const delim = text.slice(i, i + delimLen)
-      const contentStart = i + delimLen
+
       let closeIdx = -1
-      let searchPos = contentStart
+      let searchPos = i + delimLen
       while (searchPos < text.length) {
-        if (isInsideFenced(searchPos)) {
-          const block = fenced.find((r) => searchPos >= r.start && searchPos < r.end)
-          searchPos = block ? block.end : searchPos + 1
-          continue
-        }
         if (text[searchPos] === '`') {
           let runLen = 1
           while (searchPos + runLen < text.length && text[searchPos + runLen] === '`') {
@@ -139,64 +133,38 @@ function findProtectedCodeRanges(text: string): Array<{ start: number; end: numb
       }
 
       if (closeIdx !== -1) {
-        ranges.push({ start: i, end: closeIdx + delimLen })
-        i = closeIdx + delimLen
-        continue
-      } else {
-        i += delimLen
+        const spanEnd = closeIdx + delimLen
+        visible += text.slice(i, spanEnd)
+        i = spanEnd
         continue
       }
     }
+
+    // 3. Tool call open tag in prose
+    if (text.startsWith(AGY_TOOL_OPEN, i)) {
+      const startContent = i + AGY_TOOL_OPEN.length
+      const closeIdx = text.indexOf(AGY_TOOL_CLOSE, startContent)
+
+      if (closeIdx < 0) {
+        // Cut-off tool call to EOF
+        const raw = text.slice(startContent)
+        const parsed = parseOne(raw, known, calls.length)
+        if (parsed) calls.push(parsed)
+        else invalidBlocks++
+        break
+      } else {
+        const raw = text.slice(startContent, closeIdx)
+        const parsed = parseOne(raw, known, calls.length)
+        if (parsed) calls.push(parsed)
+        else invalidBlocks++
+        i = closeIdx + AGY_TOOL_CLOSE.length
+        continue
+      }
+    }
+
+    // 4. Normal character: advance to next character of interest
+    visible += text[i]
     i++
-  }
-
-  return ranges
-}
-
-/** Split a model reply into visible text and the tool calls it requested. */
-export function parseAgyToolCalls(
-  text: string,
-  known: ReadonlySet<string>,
-): { text: string; calls: AgentToolCall[]; invalidBlocks: number } {
-  const codeRanges = findProtectedCodeRanges(text)
-  const isInsideCodeBlock = (pos: number): { inside: boolean; end: number } => {
-    for (const r of codeRanges) {
-      if (pos >= r.start && pos < r.end) return { inside: true, end: r.end }
-    }
-    return { inside: false, end: -1 }
-  }
-
-  const calls: AgentToolCall[] = []
-  let invalidBlocks = 0
-  let visible = ''
-  let cursor = 0
-
-  while (cursor < text.length) {
-    const start = text.indexOf(AGY_TOOL_OPEN, cursor)
-    if (start < 0) {
-      visible += text.slice(cursor)
-      break
-    }
-    const check = isInsideCodeBlock(start)
-    if (check.inside) {
-      visible += text.slice(cursor, check.end)
-      cursor = check.end
-      continue
-    }
-
-    visible += text.slice(cursor, start)
-    const end = text.indexOf(AGY_TOOL_CLOSE, start + AGY_TOOL_OPEN.length)
-    if (end < 0) {
-      // unterminated block: treat the tail as the JSON so a cut-off reply still works
-      const parsed = parseOne(text.slice(start + AGY_TOOL_OPEN.length), known, calls.length)
-      if (parsed) calls.push(parsed)
-      else invalidBlocks++
-      break
-    }
-    const parsed = parseOne(text.slice(start + AGY_TOOL_OPEN.length, end), known, calls.length)
-    if (parsed) calls.push(parsed)
-    else invalidBlocks++
-    cursor = end + AGY_TOOL_CLOSE.length
   }
 
   if (calls.length > AGY_MAX_TOOL_CALLS_PER_TURN) {
@@ -217,8 +185,12 @@ export function parseAgyToolCalls(
 
 function parseOne(raw: string, known: ReadonlySet<string>, index: number): AgentToolCall | null {
   let body = raw.trim()
-  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(body)
-  if (fence) body = fence[1]!
+  if (body.startsWith('```')) {
+    body = body.replace(/^```[a-z0-9_-]*\s*/i, '')
+    if (body.endsWith('```')) {
+      body = body.slice(0, -3).trim()
+    }
+  }
   const call = readToolCallBody(body, known)
   return call ? { id: agyCallId(index), name: call.name, input: call.input } : null
 }

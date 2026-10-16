@@ -1574,25 +1574,25 @@ describe('Issue 2: Structural block-index mapping and atomicity regressions', ()
         para([text('Second')]),
         para([text('Third to move')]),
       ])
-      // Move block 2 before block 0 (afterBlockIndex: -1 is not supported, so move after block 0)
+      // Move block 2 to document start with afterBlockIndex: -1
       const outcome = executeOps(editor, [
-        { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: 0 },
+        { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: -1 },
         { op: 'setFont', target: { blockIndexes: [2] }, bold: true },
       ])
       expect(outcome.ok).toBe(true)
       expect(editor.state.doc.childCount).toBe(3)
-      expect(editor.state.doc.child(0).textContent).toBe('First')
-      expect(editor.state.doc.child(1).textContent).toBe('Third to move')
+      expect(editor.state.doc.child(0).textContent).toBe('Third to move')
+      expect(editor.state.doc.child(1).textContent).toBe('First')
       expect(editor.state.doc.child(2).textContent).toBe('Second')
-      // Original block 2 is now child(1); verify bold landed on it
+      // Original block 2 is now child(0); verify bold landed on it
       expect(
         editor.state.doc
-          .child(1)
+          .child(0)
           .child(0)
           .marks.some((m) => m.type.name === 'bold'),
       ).toBe(true)
       // Other blocks untouched
-      expect(editor.state.doc.child(0).child(0).marks).toHaveLength(0)
+      expect(editor.state.doc.child(1).child(0).marks).toHaveLength(0)
       expect(editor.state.doc.child(2).child(0).marks).toHaveLength(0)
     })
 
@@ -1624,6 +1624,102 @@ describe('Issue 2: Structural block-index mapping and atomicity regressions', ()
           .child(0)
           .marks.some((m) => m.type.name === 'bold'),
       ).toBe(true)
+    })
+
+    it('M07: target.range within a block moved by moveBlocks maps accurately to its new location and applies formatting', () => {
+      const editor = createEditor([
+        para([text('First paragraph')]),
+        para([text('Second paragraph')]),
+        para([text('Third paragraph target text inside')]),
+      ])
+      // Third paragraph starts at position:
+      // child 0: pos 0, size = child(0).nodeSize
+      // child 1: pos = child(0).nodeSize, size = child(1).nodeSize
+      // child 2: pos = child0Size + child1Size
+      // "target text" inside child 2 is from targetFrom to targetTo
+      const child2Start = editor.state.doc.child(0).nodeSize + editor.state.doc.child(1).nodeSize
+      const targetFrom = child2Start + 1 + 'Third paragraph '.length
+      const targetTo = targetFrom + 'target text'.length
+
+      // Move block 2 to document start with afterBlockIndex: -1
+      const outcome = executeOps(editor, [
+        { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: -1 },
+        {
+          op: 'setFont',
+          target: { range: { from: targetFrom, to: targetTo } },
+          bold: true,
+        },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(3)
+      expect(editor.state.doc.child(0).textContent).toBe('Third paragraph target text inside')
+      expect(editor.state.doc.child(1).textContent).toBe('First paragraph')
+      expect(editor.state.doc.child(2).textContent).toBe('Second paragraph')
+
+      // Verify bold was applied to "target text" in child(0) at its new location
+      const movedBlock = editor.state.doc.child(0)
+      let foundBold = false
+      let prefixBold = false
+      movedBlock.descendants((node) => {
+        if (node.isText && node.text?.includes('target text')) {
+          if (node.marks.some((m) => m.type.name === 'bold')) foundBold = true
+        }
+        if (node.isText && node.text?.includes('Third paragraph')) {
+          if (node.marks.some((m) => m.type.name === 'bold')) prefixBold = true
+        }
+      })
+      expect(foundBold).toBe(true)
+      expect(prefixBold).toBe(false)
+      expect(editor.state.doc.child(1).child(0).marks).toHaveLength(0)
+      expect(editor.state.doc.child(2).child(0).marks).toHaveLength(0)
+    })
+
+    it('M08: target.range within an unmoved block whose position shifted due to moveBlocks maps accurately and applies formatting', () => {
+      const editor = createEditor([
+        para([text('First paragraph')]),
+        para([text('Second paragraph target text inside')]),
+        para([text('Third paragraph to move')]),
+      ])
+      // Second paragraph starts at position:
+      // child 0: pos 0, size = child(0).nodeSize
+      // child 1: pos = child0Size, size = child(1).nodeSize
+      // "target text" inside child 1 is from targetFrom to targetTo
+      const child1Start = editor.state.doc.child(0).nodeSize
+      const targetFrom = child1Start + 1 + 'Second paragraph '.length
+      const targetTo = targetFrom + 'target text'.length
+
+      // Move block 2 to document start with afterBlockIndex: -1
+      // Block 1 is unmoved, but shifts to index 2 (after original block 0)
+      const outcome = executeOps(editor, [
+        { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: -1 },
+        {
+          op: 'setFont',
+          target: { range: { from: targetFrom, to: targetTo } },
+          bold: true,
+        },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(3)
+      expect(editor.state.doc.child(0).textContent).toBe('Third paragraph to move')
+      expect(editor.state.doc.child(1).textContent).toBe('First paragraph')
+      expect(editor.state.doc.child(2).textContent).toBe('Second paragraph target text inside')
+
+      // Verify bold was applied to "target text" in the shifted unmoved block (child 2)
+      const shiftedBlock = editor.state.doc.child(2)
+      let foundBold = false
+      let prefixBold = false
+      shiftedBlock.descendants((node) => {
+        if (node.isText && node.text?.includes('target text')) {
+          if (node.marks.some((m) => m.type.name === 'bold')) foundBold = true
+        }
+        if (node.isText && node.text?.includes('Second paragraph')) {
+          if (node.marks.some((m) => m.type.name === 'bold')) prefixBold = true
+        }
+      })
+      expect(foundBold).toBe(true)
+      expect(prefixBold).toBe(false)
+      expect(editor.state.doc.child(0).child(0).marks).toHaveLength(0)
+      expect(editor.state.doc.child(1).child(0).marks).toHaveLength(0)
     })
   })
 })

@@ -1401,9 +1401,34 @@ describe('Defect D Regression Matrix: truncated AGY JSON and fail-closed protoco
       })
     })
 
-    it('K10: omitted text defaults to empty string', () => {
-      const turn = readStructuredToolTurn({ tool_calls: [] }, knownTools)
+    it('K10: omitted text field in readStructuredToolTurn is rejected', () => {
+      expect(readStructuredToolTurn({ tool_calls: [] }, knownTools)).toBeNull()
+    })
+
+    it('K11: readStructuredToolTurn with empty string text is valid', () => {
+      const turn = readStructuredToolTurn({ text: '', tool_calls: [] }, knownTools)
       expect(turn).toEqual({ text: '', calls: [] })
+    })
+
+    it('K12: parseAgyStructuredText with omitted text field returns malformed result', () => {
+      const res = parseAgyStructuredText(JSON.stringify({ tool_calls: [] }), knownTools)
+      expect(res.kind).toBe('malformed')
+      if (res.kind === 'malformed') {
+        expect(res.reason).toMatch(/text.*string/i)
+      }
+    })
+
+    it('K13: parseAgyStructuredText with non-string text returns malformed result', () => {
+      const res = parseAgyStructuredText(JSON.stringify({ text: 123, tool_calls: [] }), knownTools)
+      expect(res.kind).toBe('malformed')
+    })
+
+    it('K14: parseAgyStructuredText with empty string text returns valid turn', () => {
+      const res = parseAgyStructuredText(JSON.stringify({ text: '', tool_calls: [] }), knownTools)
+      expect(res.kind).toBe('valid')
+      if (res.kind === 'valid') {
+        expect(res.turn).toEqual({ text: '', calls: [] })
+      }
     })
   })
 })

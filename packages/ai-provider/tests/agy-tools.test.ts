@@ -575,4 +575,42 @@ describe('streamAgy with tools', () => {
       expect(res.invalidBlocks).toBe(0)
     })
   })
+
+  describe('Regression P: Code fence examples preserved as prose', () => {
+    it('P01: standard fenced example with LF is preserved as prose', () => {
+      const text =
+        '```xml\n<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>\n```'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('P02: standard fenced example with CRLF is preserved as prose', () => {
+      const text =
+        '```xml\r\n<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>\r\n```\r\n'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text.trim())
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('P03: fence with language and title metadata is preserved as prose', () => {
+      const text =
+        '```xml title="example"\n<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>\n```'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+  })
 })

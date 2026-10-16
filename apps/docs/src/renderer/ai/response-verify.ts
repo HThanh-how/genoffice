@@ -112,7 +112,7 @@ const ZH_MODIFICATION_CLAIM =
   /(?:已[^。．.!！?？，,;；:：\n]{0,8}?(?:修改|更新|删除|替換|替换|应用|格式化|完成|调整|調整|插入|设置|設置|排版|创建|建立)(?!的)|(?:文档|文本|段落|格式|水印|页边距|页面设置)\s*已(?:成功)?(?:更新|修改|调整|调整完成|排版完成|格式化|创建|添加|设置))/u
 
 const NEW_DOC_CLAIM_RE =
-  /(?:\b(?:I(?:'ve| have)?\s+(?:already\s+|just\s+|successfully\s+)?(?:created|generated|built)|(?:^|[.!?]\s*)(?:Created|Generated|Built))\s+(?:a\s+)?(?:new\s+)?(?:document|file)\b|\b(?:(?:the|this|a|an)\s+)?new\s+(?:document|file)\s+(?:has\s+been|was|is\s+now)\s+(?:created|generated|built)\b|\b(?:the|this)\s+(?:document|file)\s+(?:has\s+been|was)\s+(?:created|generated|built)\b|(?:(?:tôi|mình|chúng tôi)\s+)?(?:đã|vừa)\s+tạo\s+(?:một\s+)?(?:tài liệu|văn bản|file|tệp)(?:\s+mới)?|(?:tài liệu|văn bản|tệp|file)\s+mới\s+đã\s+(?:được\s+tạo|tạo\s+xong)|(?:(?:已|成功)(?:创建|建立)(?:了)?|(?:创建|建立)了)(?:新文档|新文件)|新文档已(?:成功)?(?:创建|建立))/iu
+  /(?:\b(?:I(?:'ve| have)?\s+(?:already\s+|just\s+|successfully\s+)?(?:created|generated|built)|(?:^|[.!?]\s*)(?:Created|Generated|Built))\s+(?:(?:a|an|the|this)\s+)?(?:(?:new|requested|blank)\s+)?(?:document|file|report|presentation|spreadsheet|deck)\b|\b(?:(?:the|this|a|an)\s+)?(?:(?:new|requested)\s+)?(?:document|file|report)\s+(?:has\s+been|was|is\s+now)\s+(?:created|generated|built)\b|(?:(?:tôi|mình|chúng tôi)\s+)?(?:đã|vừa)\s+(?:tạo|tạo\s+xong)\s+(?:một\s+)?(?:tài\s+liệu|văn\s+bản|file|tệp)\b|(?:tài\s+liệu|văn\s+bản|tệp|file)(?:\s+mới)?\s+đã\s+(?:được\s+tạo|tạo\s+xong)\b|(?:(?:已|成功)(?:创建|建立)(?:了)?|(?:创建|建立)了)(?:新文档|新文件|文档|文件)|(?:新)?(?:文档|文件)已(?:成功)?(?:创建|建立))/iu
 
 const PAGE_SETUP_CLAIM_RE =
   /(?:\b(?:page\s+setup|paper\s+size|page\s+orientation|margins?)\b|căn\s+lề\s+trang|lề\s+trang|khổ\s+giấy|hướng\s+giấy|thiết\s+lập\s+trang|页边距|页面设置|纸张大小|纸张方向)/iu
@@ -401,8 +401,20 @@ export function fallbackDocsResponse(
     return 'The operation was executed in dry-run mode; no changes were applied to the document.'
   }
 
-  // Case 4: 0 changed (distinguish target already matching vs no target found)
+  // Case 4: 0 changed (distinguish target already matching vs tracked deletion vs no target found)
   if (zeroChanged) {
+    const isTrackedDeletion =
+      zeroChanged.output?.toLowerCase().includes('tracked deletion') ||
+      zeroChanged.output?.toLowerCase().includes('pending tracked deletion')
+    if (isTrackedDeletion) {
+      if (isVi) {
+        return 'Không có thay đổi nào được áp dụng vì nội dung mục tiêu đang là phần xoá được theo dõi (tracked deletion) chưa được chấp nhận hoặc từ chối.'
+      }
+      if (isZh) {
+        return '未应用任何更改，因为目标内容属于待处理的修订删除内容（tracked deletion），尚未被接受或拒绝。'
+      }
+      return 'No changes were applied because the targeted content is a pending tracked deletion (already struck through).'
+    }
     const isAlreadyMatching =
       zeroChanged.output?.includes('already matched') ||
       zeroChanged.output?.includes('already correct')
