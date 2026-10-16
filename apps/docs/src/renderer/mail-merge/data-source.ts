@@ -108,30 +108,69 @@ function columnLabel(index: number): string {
   return label
 }
 
+/** `C5` → the 0-based column index of C, i.e. 2. */
+function columnIndex(letters: string): number {
+  let n = 0
+  for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64)
+  return n - 1
+}
+
+export interface RangeBounds {
+  firstCol: number
+  lastCol: number
+  firstRow: number
+  lastRow: number
+}
+
+/** The rectangle a range string selects, in 0-based column / 1-based row terms. */
+export function rangeBounds(range: string): RangeBounds | null {
+  const m = /^([A-Za-z]+)(\d+):([A-Za-z]+)(\d+)$/.exec(range.trim())
+  if (!m) return null
+  const firstCol = columnIndex(m[1])
+  const lastCol = columnIndex(m[3])
+  const firstRow = Math.max(1, parseInt(m[2], 10))
+  const lastRow = Math.min(1_048_576, parseInt(m[4], 10))
+  if (firstCol < 0 || lastCol < 0 || lastCol < firstCol || lastRow < firstRow) return null
+  return { firstCol, lastCol, firstRow, lastRow }
+}
+
 /** A1:F500 → every address in the rectangle, capped so a wild range cannot hang the tab. */
 export function addressesInRange(range: string, maxCells = 200_000): string[] {
-  const m = /^([A-Za-z]+)(\d+):([A-Za-z]+)(\d+)$/.exec(range.trim())
-  if (!m) return []
-  const toIndex = (letters: string) => {
-    let n = 0
-    for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64)
-    return n - 1
-  }
-  const c1 = toIndex(m[1])
-  const c2 = toIndex(m[3])
-  const r1 = Math.max(1, parseInt(m[2], 10))
-  const r2 = Math.min(1_048_576, parseInt(m[4], 10))
-  if (c2 < c1 || r2 < r1) return []
+  const b = rangeBounds(range)
+  if (!b) return []
   const out: string[] = []
-  for (let r = r1; r <= r2 && out.length < maxCells; r++) {
-    for (let c = c1; c <= c2 && out.length < maxCells; c++) out.push(`${columnLabel(c)}${r}`)
+  for (let r = b.firstRow; r <= b.lastRow && out.length < maxCells; r++) {
+    for (let c = b.firstCol; c <= b.lastCol && out.length < maxCells; c++) {
+      out.push(`${columnLabel(c)}${r}`)
+    }
   }
   return out
 }
 
+/** Anything outside the requested rectangle is ignored, however wide the sheet is. */
+function cellText(
+  cells: Record<string, { value?: unknown }>,
+  col: number,
+  row: number,
+): string {
+  const cell = cells[`${columnLabel(col)}${row}`]
+  return cell === undefined ? '' : String(cell.value ?? '')
+}
+
+export type SheetGridReader = (
+  wcId: number,
+  sheet: string,
+  addresses: string[],
+) => Promise<{ ok: boolean; result?: unknown; error?: string }>
+
 /**
  * Read the live workbook through the shell's spreadsheet bridge: no save, no
  * intermediate file, and the values are the ones the user sees on screen.
+ *
+ * The rows are walked from the range's first row to its last row — not until
+ * the first blank one — so a separator row in the middle of the selection does
+ * not truncate the list, and a column further right than A is read from where
+ * the user actually selected.
  */
 export async function loadSheetSource(
   wcId: number,
@@ -139,33 +178,26 @@ export async function loadSheetSource(
   sheet: string,
   range: string,
   hasHeader: boolean,
+  read: SheetGridReader = (id, s, addresses) => window.desktop.readSheetGrid(id, s, addresses),
 ): Promise<MailMergeSource> {
+  const bounds = rangeBounds(range)
+  if (!bounds) throw new Error('invalid range')
   const addresses = addressesInRange(range)
   if (addresses.length === 0) throw new Error('invalid range')
-  const response = await window.desktop.readSheetGrid(wcId, sheet, addresses)
+  const response = await read(wcId, sheet, addresses)
   if (!response.ok) throw new Error(response.error ?? 'the spreadsheet could not be read')
   const cells = (response.result as { cells?: Record<string, { value?: unknown }> } | undefined)
     ?.cells
   if (!cells) throw new Error('the spreadsheet returned no cells')
-  const m = /^([A-Za-z]+)(\d+):([A-Za-z]+)(\d+)$/.exec(range.trim())
-  if (!m) throw new Error('invalid range')
-  const firstRow = parseInt(m[2], 10)
-  const firstCol = m[1].toUpperCase()
-  const lastCol = m[3].toUpperCase()
-  const width = Math.min(
-    MAX_COLUMNS,
-    addressesInRange(`${firstCol}${firstRow}:${lastCol}${firstRow}`).length,
-  )
+  const width = Math.min(MAX_COLUMNS, bounds.lastCol - bounds.firstCol + 1)
   const rows: string[][] = []
-  for (let r = firstRow; ; r++) {
+  for (let r = bounds.firstRow; r <= bounds.lastRow && rows.length < MAX_RECIPIENTS + 1; r++) {
     const row: string[] = []
-    for (let c = 0; c < width; c++) {
-      const cell = cells[`${columnLabel(c)}${r}`]
-      row.push(cell === undefined ? '' : String(cell.value ?? ''))
-    }
-    if (row.every((v) => v.trim() === '')) break
+    for (let c = 0; c < width; c++) row.push(cellText(cells, bounds.firstCol + c, r))
     rows.push(row)
-    if (rows.length >= MAX_RECIPIENTS + 1) break
   }
+  // blank rows at the end of the selection are not recipients; blank rows in
+  // the middle are kept, exactly as a CSV or XLSX source keeps them
+  while (rows.length > 0 && rows[rows.length - 1].every((v) => v.trim() === '')) rows.pop()
   return sourceFromRows(rows, { kind: 'sheets', label, sheet, hasHeader })
 }

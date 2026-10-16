@@ -8,6 +8,7 @@ import type {
   MailMergeValidationIssue,
 } from '../../mail-merge/types'
 import { selectedCount } from '../../mail-merge/recipient-store'
+import { isFinished } from '../../mail-merge/progress'
 
 export function MailMergeExportDialog({
   source,
@@ -116,12 +117,24 @@ export function MailMergeProgressDialog({
 }) {
   const { t } = useI18n()
   const modalKeys = useModalKeys(onClose)
-  const finished = progress.done >= progress.total || progress.cancelled
+  // the terminal status, not the counters: a job that throws before the first
+  // recipient has done=0 and cancelled=false, so counting alone never ends
+  const finished = isFinished(progress)
+  const heading =
+    progress.status === 'completed'
+      ? t('mailMergeExportCompleted')
+      : progress.status === 'completed_with_errors'
+        ? t('mailMergeExportWithErrors')
+        : progress.status === 'cancelled'
+          ? t('mailMergeExportCancelled')
+          : progress.status === 'failed'
+            ? t('mailMergeExportFailed')
+            : t('mailMergeExporting')
   const percent = progress.total ? Math.round((progress.done / progress.total) * 100) : 0
   return (
     <div className="modal-backdrop" ref={modalKeys.ref} onKeyDown={modalKeys.onKeyDown}>
       <div className="modal mail-merge-progress">
-        <h2>{finished ? t('mailMergeExportCompleted') : t('mailMergeExporting')}</h2>
+        <h2>{heading}</h2>
         <p>{t('mailMergeProgressLine', { done: progress.done, total: progress.total, percent })}</p>
         <div
           className="mm-progress-bar"

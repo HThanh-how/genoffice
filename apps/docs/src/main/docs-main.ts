@@ -5749,11 +5749,16 @@ export function registerDocsIpc(): void {
   })
 
   ipcMain.handle('docs:pick-mail-merge-output-dir', async (event) => {
-    const result = await openDialog(event, {
-      title: tm('dlgMailMergeOutput'),
-      properties: ['openDirectory', 'createDirectory'],
-    })
-    const dir = result.canceled ? null : (result.filePaths[0] ?? null)
+    // the harness sets GENOFFICE_TEST_EXPORT_DIR so a batch export can land in a
+    // scratch directory without a native dialog (same affordance as the export
+    // directory picker above)
+    const picked = testExportDir
+      ? { canceled: false, filePaths: [testExportDir] }
+      : await openDialog(event, {
+          title: tm('dlgMailMergeOutput'),
+          properties: ['openDirectory', 'createDirectory'],
+        })
+    const dir = picked.canceled ? null : (picked.filePaths[0] ?? null)
     if (!dir) return null
     mailMergeDirs.set(event.sender.id, dir)
     mailMergePdfDirs.set(event.sender.id, dir)

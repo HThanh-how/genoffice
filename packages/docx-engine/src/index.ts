@@ -197,6 +197,7 @@ export {
   isConditionalField,
   isMergeField,
   mergeFieldName,
+  mergeFieldInstruction,
   mergePlaceholder,
   patchMergeFieldXml,
   sanitizeFileNamePart,

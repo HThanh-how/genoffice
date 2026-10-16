@@ -8,10 +8,11 @@
  */
 import { useCallback, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
-import { mergePlaceholder } from '@genoffice/docx-engine'
 import type { FileActionContext } from '../file-actions'
+import { insertMergeField } from '../editor/merge-doc'
 import { setMailMergeHighlight, setMailMergePreview } from '../editor/mail-merge-preview'
 import { runMailMergeExport, type CancelToken } from './export'
+import { initialProgress, applyJobFailure } from './progress'
 import { selectedCount } from './recipient-store'
 import { templateMergeFields, validateMergeSession } from './validation'
 import type {
@@ -123,7 +124,18 @@ export function useMailMergeSession(
 
     applySource,
 
-    closeDialog: () => setDialog(null),
+    /**
+     * Closing the progress dialog while a batch is still running does not hide
+     * it: it asks the job to stop, and the dialog stays open until the job
+     * reaches a terminal state, so the user can read the result.
+     */
+    closeDialog: () => {
+      if (dialog === 'progress' && runningRef.current) {
+        cancelRef.current.cancelled = true
+        return
+      }
+      setDialog(null)
+    },
 
     togglePreview: (on) => {
       setPreviewOn(on)
@@ -143,18 +155,10 @@ export function useMailMergeSession(
 
     insertField: (name) => {
       if (!editor) return
-      // Word inserts the field as a real MERGEFIELD, not as literal «text»:
-      // the run carries the instrField mark, so the engine round-trips it to
-      // <w:fldChar>…MERGEFIELD… and preview/export can resolve it.
-      editor
-        .chain()
-        .focus()
-        .insertContent({
-          type: 'text',
-          text: mergePlaceholder(name),
-          marks: [{ type: 'instrField', attrs: { instr: `MERGEFIELD ${name}` } }],
-        })
-        .run()
+      // Word inserts the field as a real MERGEFIELD, not as literal «text».
+      // insertMergeField quotes multi-word column names, so "Postal Address"
+      // round-trips as one field instead of merging the column "Postal".
+      insertMergeField(editor, name)
     },
 
     checkErrors: () => {
@@ -165,38 +169,30 @@ export function useMailMergeSession(
     },
 
     startExport: (options) => {
-      if (runningRef.current || !source) return
+      if (runningRef.current || !source || !editor) return
+      // Preflight: a template that references a column the source does not have
+      // would write «Name» into every output file. Word refuses to merge in that
+      // situation, and so does GenOffice — the user gets the error list instead
+      // of a folder of broken documents.
+      const blocks = getCtx().doc?.parsed.blocks ?? []
+      const issues = validateMergeSession(source, templateMergeFields(editor), blocks)
+      const blocking = issues.filter((issue) => issue.severity === 'error')
+      if (blocking.length > 0) {
+        setIssues(blocking)
+        setDialog('validate')
+        return
+      }
       runningRef.current = true
       setRunning(true)
       cancelRef.current = { cancelled: false }
-      setProgress({
-        total: selectedCount(source),
-        done: 0,
-        succeeded: 0,
-        failed: 0,
-        skipped: 0,
-        current: '',
-        errors: [],
-        cancelled: false,
-      })
+      const base = initialProgress(selectedCount(source))
+      setProgress(base)
       setDialog('progress')
       void runMailMergeExport(getCtx(), source, options, cancelRef.current, (p) => setProgress(p))
-        .then((final) => setProgress(final))
         .catch((error) =>
-          setProgress((prev) => ({
-            ...(prev ?? {
-              total: 0,
-              done: 0,
-              succeeded: 0,
-              failed: 0,
-              skipped: 0,
-              current: '',
-              errors: [],
-              cancelled: false,
-            }),
-            failed: (prev?.failed ?? 0) + 1,
-            errors: [...(prev?.errors ?? []), { recipient: 'export', message: String(error) }],
-          })),
+          // the job died before it could report a terminal state: say so, rather
+          // than leaving the dialog showing an export that never finishes
+          setProgress((prev) => applyJobFailure(prev, base, String(error))),
         )
         .finally(() => {
           runningRef.current = false

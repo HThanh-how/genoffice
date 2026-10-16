@@ -60,6 +60,22 @@ export function isMergeField(instr: string): boolean {
 }
 
 /**
+ * The instruction Word writes for a merge field.
+ *
+ * A field name is one token: everything after `MERGEFIELD` up to the next
+ * space is the name, so a column called `Postal Address` has to be quoted —
+ * `MERGEFIELD Postal Address` would merge the column `Postal` and silently
+ * swallow `Address`. Quoting is what Word itself emits for multi-word names,
+ * and MERGEFIELD_INSTR_RE round-trips it. A literal `"` cannot appear inside a
+ * field name (it would close the quoted token), so it is folded to `'`.
+ */
+export function mergeFieldInstruction(name: string): string {
+  const safe = name.trim().replace(/"/g, "'")
+  if (!safe) return 'MERGEFIELD ""'
+  return /\s/.test(safe) ? `MERGEFIELD "${safe}"` : `MERGEFIELD ${safe}`
+}
+
+/**
  * `IF` field: `IF «Name» "yes" "no"`, `IF «Name» = "Sales" "a" "b"`.
  * Only the forms a mail-merge template can actually express are recognised;
  * anything else stays untouched and is reported as unsupported.
@@ -185,99 +201,291 @@ function mapTableModel(model: TableModel, values: MergeValues, report: MergeRepo
 }
 
 /**
- * XML patch for a passthrough paragraph: rewrite the cached result of every
- * MERGEFIELD between `fldCharType="separate"` and `fldCharType="end"`, or
- * insert a separate+result pair when the field carries no cached result at all
- * (the usual state of an unmerged main document).
+ * XML patch for a passthrough paragraph — a block the run model cannot reach,
+ * so its merge fields have to be rewritten inside its own XML.
+ *
+ * A merged document must not still contain a field: Word re-evaluates fields
+ * when the file is opened, and a MERGEFIELD left in the output would fall back
+ * to «Name» the moment the field refreshes. The whole field — begin, instr,
+ * separate, cached result, end — is therefore replaced by one ordinary run
+ * carrying the recipient's value, with the field's own formatting kept.
+ *
+ * The patch is run-aware, not string-aware. `w:fldChar` sits *inside* a `w:r`,
+ * so cutting at a fldChar and pasting a `<w:r>` there nests runs, which is not
+ * valid WordprocessingML. Runs never nest, so a flat scan yields every run, and
+ * a field is exactly the run range from its `begin` to its `end`.
  */
-/** Word's single-element field form: `<w:fldSimple w:instr=" MERGEFIELD Name ">result</w:fldSimple>`. */
-const FLD_SIMPLE_RE = /<w:fldSimple\b[^>]*?(?:\/>|>[\s\S]*?<\/w:fldSimple>)/g
 
-function patchSimpleFields(xml: string, values: MergeValues, report: MergeReport): string {
-  return xml.replace(FLD_SIMPLE_RE, (whole) => {
-    const instrMatch = /w:instr\s*=\s*"([^"]*)"/.exec(whole)
-    if (!instrMatch) return whole
-    const instr = decodeEntities(instrMatch[1])
-    const isMerge = isMergeField(instr)
-    const isIf = isConditionalField(instr)
-    if (!isMerge && !isIf) return whole
-    const name = isMerge ? mergeFieldName(instr) : null
-    const value = isIf
-      ? evaluateConditionalField(instr, values)
-      : name && name in values
-        ? values[name]
-        : null
-    if (value === null) {
-      if (name) report.missing.push(name)
-      else report.unsupported += 1
-      return whole
+/** Index of the `>` that closes an opening tag, skipping `>` inside quoted attributes. */
+function tagEnd(xml: string, start: number): number {
+  let i = start + 1
+  while (i < xml.length) {
+    const ch = xml[i]
+    if (ch === '"') {
+      const close = xml.indexOf('"', i + 1)
+      if (close < 0) return -1
+      i = close + 1
+      continue
     }
-    // keep the field itself (Word refreshes it on open) but write the recipient's
-    // value as its cached result, preserving the run's formatting
-    const rPr = /<w:rPr>[\s\S]*?<\/w:rPr>/.exec(whole)?.[0] ?? ''
-    const open = whole.slice(0, whole.indexOf('>') + 1).replace('/>', '>')
-    report.applied += 1
-    return `${open}<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(value)}</w:t></w:r></w:fldSimple>`
-  })
+    if (ch === '>') return i
+    i += 1
+  }
+  return -1
+}
+
+interface RunSpan {
+  /** index of `<w:r` */
+  start: number
+  /** index just after the run's closing tag */
+  end: number
+  /** everything between the opening tag and `</w:r>` */
+  inner: string
+}
+
+/** Runs never nest in WordprocessingML, so one flat pass finds all of them. */
+function splitRuns(xml: string): RunSpan[] {
+  const runs: RunSpan[] = []
+  let i = 0
+  while (i < xml.length) {
+    const start = xml.indexOf('<w:r', i)
+    if (start < 0) break
+    const next = xml[start + 4]
+    // `<w:rPr>`, `<w:rules>`… are not runs
+    if (next !== ' ' && next !== '>' && next !== '/') {
+      i = start + 4
+      continue
+    }
+    const closeTag = tagEnd(xml, start)
+    if (closeTag < 0) break
+    if (xml[closeTag - 1] === '/') {
+      runs.push({ start, end: closeTag + 1, inner: '' })
+      i = closeTag + 1
+      continue
+    }
+    const close = xml.indexOf('</w:r>', closeTag)
+    if (close < 0) {
+      i = closeTag + 1
+      continue
+    }
+    runs.push({ start, end: close + 6, inner: xml.slice(closeTag + 1, close) })
+    i = close + 6
+  }
+  return runs
+}
+
+type FieldMarker =
+  | { kind: 'begin' | 'separate' | 'end'; offset: number; length: number }
+  | { kind: 'instr'; offset: number; length: number; text: string }
+
+/** Every field marker inside one run, in document order (a run may carry several). */
+function fieldMarkers(inner: string): FieldMarker[] {
+  const out: FieldMarker[] = []
+  const re = /<w:fldChar\b[^>]*>|<w:instrText\b[^>]*>[\s\S]*?<\/w:instrText>/g
+  let match: RegExpExecArray | null
+  while ((match = re.exec(inner)) !== null) {
+    const whole = match[0]
+    if (whole.startsWith('<w:fldChar')) {
+      const kind = /w:fldCharType="(begin|separate|end)"/.exec(whole)?.[1]
+      if (kind)
+        out.push({ kind: kind as 'begin' | 'separate' | 'end', offset: match.index, length: whole.length })
+      continue
+    }
+    out.push({
+      kind: 'instr',
+      offset: match.index,
+      length: whole.length,
+      text: decodeEntities(whole.slice(whole.indexOf('>') + 1, whole.lastIndexOf('</w:instrText>'))),
+    })
+  }
+  return out
+}
+
+function rPrOf(xml: string): string | null {
+  return /<w:rPr>[\s\S]*?<\/w:rPr>/.exec(xml)?.[0] ?? null
+}
+
+/** The formatting of the field's cached-result runs, when the begin run has none. */
+function firstRPr(runs: RunSpan[], from: number, to: number): string | null {
+  for (let i = from; i <= to; i++) {
+    const rpr = rPrOf(runs[i].inner)
+    if (rpr) return rpr
+  }
+  return null
+}
+
+interface Patch {
+  from: number
+  to: number
+  replacement: string
+}
+
+/** Spans are applied in document order; two fields sharing a run merge into one. */
+function addPatch(patches: Patch[], patch: Patch): void {
+  const last = patches[patches.length - 1]
+  if (last && patch.from < last.to) {
+    patches[patches.length - 1] = {
+      from: last.from,
+      to: Math.max(last.to, patch.to),
+      replacement: last.replacement + patch.replacement,
+    }
+    return
+  }
+  patches.push(patch)
+}
+
+function applyPatches(xml: string, patches: Patch[]): string {
+  let out = ''
+  let cursor = 0
+  for (const patch of patches) {
+    out += xml.slice(cursor, patch.from) + patch.replacement
+    cursor = patch.to
+  }
+  return out + xml.slice(cursor)
+}
+
+/** The recipient's value for one instruction, or null when it cannot be resolved. */
+function fieldResult(instr: string, values: MergeValues, report: MergeReport): string | null {
+  const isMerge = isMergeField(instr)
+  const isIf = isConditionalField(instr)
+  if (!isMerge && !isIf) return null
+  const name = isMerge ? mergeFieldName(instr) : null
+  const value = isIf
+    ? evaluateConditionalField(instr, values)
+    : name && name in values
+      ? values[name]
+      : null
+  if (value === null) {
+    if (name) report.missing.push(name)
+    else report.unsupported += 1
+    return null
+  }
+  return value
 }
 
 export function patchMergeFieldXml(xml: string, values: MergeValues, report: MergeReport): string {
   return patchComplexFields(patchSimpleFields(xml, values, report), values, report)
 }
 
-function patchComplexFields(xml: string, values: MergeValues, report: MergeReport): string {
-  let out = xml
-  let cursor = 0
+/** Word's single-element field form: `<w:fldSimple w:instr=" MERGEFIELD Name ">result</w:fldSimple>`. */
+function patchSimpleFields(xml: string, values: MergeValues, report: MergeReport): string {
+  const patches: Patch[] = []
+  const open: Array<{ start: number; instr: string; nested: boolean }> = []
+  let i = 0
   for (;;) {
-    const begin = out.indexOf('<w:fldChar', cursor)
-    if (begin < 0) break
-    if (!/w:fldCharType="begin"/.test(out.slice(begin, begin + 60))) {
-      cursor = begin + 1
+    const nextOpen = xml.indexOf('<w:fldSimple', i)
+    const nextClose = xml.indexOf('</w:fldSimple>', i)
+    if (nextOpen < 0 && nextClose < 0) break
+    if (nextOpen >= 0 && (nextClose < 0 || nextOpen < nextClose)) {
+      const end = tagEnd(xml, nextOpen)
+      if (end < 0) break
+      const openTag = xml.slice(nextOpen, end + 1)
+      const instrMatch = /w:instr\s*=\s*"([^"]*)"/.exec(openTag)
+      const instr = instrMatch ? decodeEntities(instrMatch[1]) : ''
+      if (openTag.endsWith('/>')) {
+        if (open.length > 0) report.unsupported += 1
+        else if (instr) addFieldPatch(patches, nextOpen, end + 1, '', instr, values, report)
+        i = end + 1
+        continue
+      }
+      open.push({ start: nextOpen, instr, nested: open.length > 0 })
+      i = end + 1
       continue
     }
-    const instrMatch = /<w:instrText[^>]*>([\s\S]*?)<\/w:instrText>/.exec(out.slice(begin))
-    if (!instrMatch) {
-      cursor = begin + 1
+    const field = open.pop()
+    if (!field) {
+      i = nextClose + 14
       continue
     }
-    const instr = decodeEntities(instrMatch[1])
-    const isMerge = isMergeField(instr)
-    const isIf = isConditionalField(instr)
-    if (!isMerge && !isIf) {
-      cursor = begin + instrMatch.index + instrMatch[0].length
-      continue
-    }
-    const name = isMerge ? mergeFieldName(instr) : null
-    const value = isIf
-      ? evaluateConditionalField(instr, values)
-      : name && name in values
-        ? values[name]
-        : null
-    if (value === null) {
-      if (name) report.missing.push(name)
-      else report.unsupported += 1
-      cursor = begin + instrMatch.index + instrMatch[0].length
-      continue
-    }
-    const instrEnd = begin + instrMatch.index + instrMatch[0].length
-    const endAt = out.indexOf('<w:fldChar w:fldCharType="end"', instrEnd)
-    if (endAt < 0) {
+    if (field.nested) {
       report.unsupported += 1
-      cursor = instrEnd
+      i = nextClose + 14
       continue
     }
-    const separateAt = out.indexOf('<w:fldChar w:fldCharType="separate"', instrEnd)
-    const resultRun = `<w:r><w:t xml:space="preserve">${escapeXml(value)}</w:t></w:r>`
-    if (separateAt >= 0 && separateAt < endAt) {
-      // drop the cached result runs and write the recipient's value in their place
-      out = out.slice(0, separateAt) + resultRun + out.slice(endAt)
-    } else {
-      out = out.slice(0, endAt) + resultRun + out.slice(endAt)
-    }
-    report.applied += 1
-    cursor = separateAt >= 0 && separateAt < endAt ? separateAt + resultRun.length : endAt
+    const inner = xml.slice(tagEnd(xml, field.start) + 1, nextClose)
+    addFieldPatch(patches, field.start, nextClose + 14, inner, field.instr, values, report)
+    i = nextClose + 14
   }
-  return out
+  return applyPatches(xml, patches)
+}
+
+/** A resolved fldSimple becomes a plain run: the field machinery is gone for good. */
+function addFieldPatch(
+  patches: Patch[],
+  from: number,
+  to: number,
+  inner: string,
+  instr: string,
+  values: MergeValues,
+  report: MergeReport,
+): void {
+  const value = fieldResult(instr, values, report)
+  if (value === null) return
+  const rPr = rPrOf(inner) ?? ''
+  addPatch(patches, {
+    from,
+    to,
+    replacement: `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(value)}</w:t></w:r>`,
+  })
+  report.applied += 1
+}
+
+function patchComplexFields(xml: string, values: MergeValues, report: MergeReport): string {
+  const runs = splitRuns(xml)
+  const patches: Patch[] = []
+  const open: Array<{
+    run: number
+    instr: string
+    nested: boolean
+    offset: number
+    length: number
+  }> = []
+  for (let i = 0; i < runs.length; i++) {
+    for (const marker of fieldMarkers(runs[i].inner)) {
+      if (marker.kind === 'begin') {
+        open.push({
+          run: i,
+          instr: '',
+          nested: open.length > 0,
+          offset: marker.offset,
+          length: marker.length,
+        })
+        continue
+      }
+      if (marker.kind === 'instr') {
+        // Word splits the instruction across several w:instrText runs
+        if (open.length > 0) open[open.length - 1].instr += marker.text
+        continue
+      }
+      if (marker.kind === 'separate') continue
+      const field = open.pop()
+      if (!field) continue
+      // a field inside another field: the outer span would have to be rewritten
+      // as a whole, which the merge model cannot do faithfully — leave it alone
+      if (field.nested) {
+        report.unsupported += 1
+        continue
+      }
+      const value = fieldResult(field.instr, values, report)
+      if (value === null) continue
+      const beginRun = runs[field.run]
+      const endRun = runs[i]
+      // keep whatever the two boundary runs hold outside the field markers
+      const before = beginRun.inner.slice(0, field.offset).replace(/<w:fldChar\b[^>]*>/g, '')
+      const after = endRun.inner.slice(marker.offset + marker.length).replace(/<w:fldChar\b[^>]*>/g, '')
+      const rPr = rPrOf(before) ?? firstRPr(runs, field.run, i) ?? ''
+      addPatch(patches, {
+        from: beginRun.start,
+        to: endRun.end,
+        replacement:
+          `<w:r>${rPr && !before.includes('<w:rPr>') ? rPr : ''}${before}` +
+          `<w:t xml:space="preserve">${escapeXml(value)}</w:t>${after}</w:r>`,
+      })
+      report.applied += 1
+    }
+  }
+  // a begin with no end is a broken field: it cannot be merged
+  report.unsupported += open.length
+  return applyPatches(xml, patches)
 }
 
 function escapeXml(text: string): string {

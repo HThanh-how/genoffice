@@ -59,6 +59,18 @@ export interface MailMergeExportError {
   message: string
 }
 
+/**
+ * The job's lifecycle. `done >= total` is not a reliable end signal: a job that
+ * throws before the first recipient is processed has done=0 and total>0, so the
+ * dialog would keep saying "exporting" forever. The status is the terminal flag.
+ */
+export type MailMergeExportStatus =
+  | 'running'
+  | 'completed'
+  | 'completed_with_errors'
+  | 'cancelled'
+  | 'failed'
+
 export interface MailMergeExportProgress {
   total: number
   done: number
@@ -68,6 +80,7 @@ export interface MailMergeExportProgress {
   current: string
   errors: MailMergeExportError[]
   cancelled: boolean
+  status: MailMergeExportStatus
 }
 
 export interface MailMergeValidationIssue {

@@ -8,6 +8,7 @@ import {
   collectMergeFields,
   evaluateConditionalField,
   mergeFieldName,
+  mergeFieldInstruction,
   patchMergeFieldXml,
   sanitizeFileNamePart,
   uniqueFileName,
@@ -221,6 +222,295 @@ describe('applyMergeValues', () => {
     expect(patched).toContain('Tokyo')
     expect(patched).not.toContain('«City»')
     expect(report.applied).toBe(2)
+  })
+})
+
+/**
+ * WordprocessingML sanity check. A generic XML parser cannot catch a run
+ * nested inside a run — `<w:r><w:r>…</w:r></w:r>` is perfectly well-formed XML
+ * and invalid OOXML — so the scanner checks tag balance and run nesting.
+ */
+function scanTags(xml: string): Array<{ name: string; closing: boolean; selfClosing: boolean }> {
+  const tags: Array<{ name: string; closing: boolean; selfClosing: boolean }> = []
+  let i = 0
+  while (i < xml.length) {
+    const lt = xml.indexOf('<', i)
+    if (lt < 0) break
+    let j = lt + 1
+    while (j < xml.length) {
+      const ch = xml[j]
+      if (ch === '"') {
+        j = xml.indexOf('"', j + 1) + 1
+        continue
+      }
+      if (ch === '>') break
+      j += 1
+    }
+    if (j >= xml.length) break
+    const raw = xml.slice(lt + 1, j)
+    const closing = raw.startsWith('/')
+    const selfClosing = raw.endsWith('/')
+    const name = (closing ? raw.slice(1) : raw).split(/[\s/]/)[0]
+    tags.push({ name, closing, selfClosing })
+    i = j + 1
+  }
+  return tags
+}
+
+function assertValidWordprocessing(xml: string): void {
+  const stack: string[] = []
+  for (const tag of scanTags(xml)) {
+    if (tag.closing) {
+      const open = stack.pop()
+      if (open !== tag.name) {
+        throw new Error(`mismatched tag </${tag.name}> closes <${open ?? 'nothing'}>`)
+      }
+      continue
+    }
+    if (tag.name === 'w:r' && stack[stack.length - 1] === 'w:r') {
+      throw new Error('a w:run nested inside another w:run')
+    }
+    if (!tag.selfClosing) stack.push(tag.name)
+  }
+  if (stack.length > 0) throw new Error(`unclosed tags: ${stack.join(', ')}`)
+}
+
+describe('merge field instruction', () => {
+  it('quotes a column name that contains spaces, the way Word writes it', () => {
+    expect(mergeFieldInstruction('Full Name')).toBe('MERGEFIELD "Full Name"')
+    expect(mergeFieldInstruction('Postal Address')).toBe('MERGEFIELD "Postal Address"')
+    expect(mergeFieldInstruction('Name')).toBe('MERGEFIELD Name')
+    expect(mergeFieldInstruction('  Department  ')).toBe('MERGEFIELD Department')
+  })
+
+  it('never lets a quote in a column name break the field token', () => {
+    // a bare `MERGEFIELD He said "hi"` would merge the column `He` and swallow
+    // the rest; the name is quoted and its quotes folded
+    expect(mergeFieldInstruction('He said "hi"')).toBe(`MERGEFIELD "He said 'hi'"`)
+    expect(mergeFieldName(mergeFieldInstruction('He said "hi"'))).toBe(`He said 'hi'`)
+  })
+
+  it('round-trips a multi-word column name through parse → merge → save → reopen', async () => {
+    const bytes = await buildDocx({
+      bodyXml:
+        '<w:p>' +
+        field(mergeFieldInstruction('Full Name'), null) +
+        '<w:r><w:t xml:space="preserve"> of </w:t></w:r>' +
+        field(mergeFieldInstruction('Postal Address'), null) +
+        '</w:p>',
+    })
+    const parsed = await parseDocx(bytes)
+    expect(collectMergeFields(parsed.blocks).map((f) => f.name)).toEqual([
+      'Full Name',
+      'Postal Address',
+    ])
+    const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
+    const merged = applyMergeValues(
+      parsed.blocks,
+      { 'Full Name': 'Nguyễn Văn A', 'Postal Address': '123 Nguyễn Huệ' },
+      report,
+    )
+    expect(report.applied).toBe(2)
+    expect(report.missing).toEqual([])
+    const finalBlocks = merged.map((block) =>
+      block.type === 'passthrough'
+        ? { kind: 'original' as const, docxIndex: block.docxIndex! }
+        : { kind: 'generated' as const, block: { ...block, type: 'paragraph' } as GeneratedBlock },
+    )
+    const out = await saveDocx(parsed, finalBlocks)
+    const xml = await documentXmlOf(out)
+    expect(xml).not.toContain('MERGEFIELD')
+    const reopened = await parseDocx(out)
+    expect(reopened.blocks[0].runs?.map((run) => run.text).join('')).toBe(
+      'Nguyễn Văn A of 123 Nguyễn Huệ',
+    )
+  })
+})
+
+describe('passthrough field patching', () => {
+  const report = () => ({ missing: [], unused: [], unsupported: 0, applied: 0 })
+
+  it('replaces a field that already has a cached result, keeping its formatting', () => {
+    const xml =
+      '<w:p>' +
+      '<w:r><w:rPr><w:b/></w:rPr><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD Amount </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' +
+      '<w:r><w:t>«Amount»</w:t></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '</w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { Amount: '1,500' }, r)
+    assertValidWordprocessing(patched)
+    expect(patched).not.toContain('fldChar')
+    expect(patched).not.toContain('instrText')
+    expect(patched).toContain('<w:t xml:space="preserve">1,500</w:t>')
+    expect(patched).toContain('<w:rPr><w:b/></w:rPr>')
+    expect(r.applied).toBe(1)
+  })
+
+  it('replaces a field with no cached result at all', () => {
+    const xml =
+      '<w:p>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD Name </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '</w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { Name: 'A & B <x>' }, r)
+    assertValidWordprocessing(patched)
+    expect(patched).not.toContain('fldChar')
+    expect(patched).toContain('<w:t xml:space="preserve">A &amp; B &lt;x&gt;</w:t>')
+    expect(r.applied).toBe(1)
+  })
+
+  it('takes the formatting from the cached-result run when the begin run has none', () => {
+    const xml =
+      '<w:p>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD Name </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' +
+      '<w:r><w:rPr><w:i/></w:rPr><w:t>«Name»</w:t></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '</w:p>'
+    const patched = patchMergeFieldXml(xml, { Name: 'Huy' }, report())
+    assertValidWordprocessing(patched)
+    expect(patched).toContain('<w:rPr><w:i/></w:rPr>')
+  })
+
+  it('resolves two fields in one paragraph and keeps the text between them', async () => {
+    const xml =
+      '<w:p>' +
+      '<w:r><w:t xml:space="preserve">Dear </w:t></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD Name </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '<w:r><w:t xml:space="preserve"> of </w:t></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD City </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' +
+      '<w:r><w:t>«City»</w:t></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '</w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { Name: 'Huy', City: 'Tokyo' }, r)
+    assertValidWordprocessing(patched)
+    expect(patched).not.toContain('fldChar')
+    expect(r.applied).toBe(2)
+    const reopened = await parseDocx(await buildDocx({ bodyXml: patched }))
+    expect(reopened.blocks[0].runs?.map((run) => run.text).join('')).toBe('Dear Huy of Tokyo')
+  })
+
+  it('handles adjacent fields that share nothing but their runs', async () => {
+    const xml =
+      '<w:p>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD First </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD Last </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '</w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { First: 'Huy', Last: 'Tran' }, r)
+    assertValidWordprocessing(patched)
+    expect(patched).not.toContain('fldChar')
+    expect(r.applied).toBe(2)
+    const reopened = await parseDocx(await buildDocx({ bodyXml: patched }))
+    expect(reopened.blocks[0].runs?.map((run) => run.text).join('')).toBe('HuyTran')
+  })
+
+  it('joins an instruction split across several w:instrText runs', () => {
+    const xml =
+      '<w:p>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD </w:instrText></w:r>' +
+      '<w:r><w:instrText xml:space="preserve">"Postal Address" </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '</w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { 'Postal Address': '123 Nguyễn Huệ' }, r)
+    assertValidWordprocessing(patched)
+    expect(patched).not.toContain('fldChar')
+    expect(patched).toContain('123 Nguyễn Huệ')
+    expect(r.applied).toBe(1)
+  })
+
+  it('leaves a field it cannot resolve in place and reports it', () => {
+    const xml =
+      '<w:p>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD City </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '</w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { Name: 'Huy' }, r)
+    expect(patched).toBe(xml)
+    expect(r.missing).toEqual(['City'])
+    expect(r.applied).toBe(0)
+  })
+
+  it('reports a field nested inside another field as unsupported instead of corrupting it', () => {
+    const xml =
+      '<w:p>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD Name </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '</w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { Name: 'Huy' }, r)
+    expect(patched).toBe(xml)
+    expect(r.unsupported).toBe(1)
+    assertValidWordprocessing(patched)
+  })
+
+  it('reports an unbalanced field as unsupported', () => {
+    const xml =
+      '<w:p>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> MERGEFIELD Name </w:instrText></w:r>' +
+      '</w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { Name: 'Huy' }, r)
+    expect(patched).toBe(xml)
+    expect(r.unsupported).toBe(1)
+  })
+
+  it('turns a fldSimple field into a plain run, so Word cannot re-evaluate it', async () => {
+    const xml =
+      '<w:p><w:fldSimple w:instr=" MERGEFIELD Name "><w:r><w:rPr><w:b/></w:rPr><w:t>«Name»</w:t></w:r></w:fldSimple></w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { Name: 'Huy' }, r)
+    assertValidWordprocessing(patched)
+    expect(patched).not.toContain('fldSimple')
+    expect(patched).not.toContain('«Name»')
+    expect(patched).toContain('<w:rPr><w:b/></w:rPr>')
+    expect(patched).toContain('<w:t xml:space="preserve">Huy</w:t>')
+    expect(r.applied).toBe(1)
+    const reopened = await parseDocx(await buildDocx({ bodyXml: patched }))
+    expect(reopened.blocks[0].runs?.map((run) => run.text).join('')).toBe('Huy')
+  })
+
+  it('resolves a self-closing fldSimple', () => {
+    const xml = '<w:p><w:fldSimple w:instr=" MERGEFIELD Name "/></w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { Name: 'Huy' }, r)
+    assertValidWordprocessing(patched)
+    expect(patched).toContain('Huy')
+    expect(r.applied).toBe(1)
+  })
+
+  it('leaves an unresolved fldSimple untouched', () => {
+    const xml =
+      '<w:p><w:fldSimple w:instr=" MERGEFIELD City "><w:r><w:t>«City»</w:t></w:r></w:fldSimple></w:p>'
+    const r = report()
+    const patched = patchMergeFieldXml(xml, { Name: 'Huy' }, r)
+    expect(patched).toBe(xml)
+    expect(r.missing).toEqual(['City'])
   })
 })
 

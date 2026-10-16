@@ -3,6 +3,7 @@ import '@genoffice/ui/index-progress.css'
 import { scriptFontHtml } from './editor/script-fonts'
 import { DOC_CSS_COMMITTED_EVENT } from './editor/cjk-punct-shrink'
 import { justifyShrinkPluginKey } from './editor/justify-shrink'
+import { mailMergePreviewKey } from './editor/mail-merge-preview'
 import {
   useCallback,
   useEffect,
@@ -3626,6 +3627,9 @@ export function App() {
     const mixedPaper = sections.some((s) => pageLeftOf(s.settings) > 0.5)
     const contentH = twipsToPx(section.pageHeight) - effTopSingle - effBottomSingle
     let slices: PageSlice[] = []
+    // passes that have committed: the only signal that says "the page gaps were
+    // measured after this document state", used by the mail-merge batch export
+    let layoutPass = 0
     let timer: number | null = null
     let suppressSig = ''
     let rowFillSig = ''
@@ -3842,6 +3846,7 @@ export function App() {
     const remeasure = () => {
       timer = null
       lastPassAt = performance.now()
+      layoutPass += 1
       const edited = fastEdits
       fastEdits = new Set()
       const dirty = dirtyFrom
@@ -3874,7 +3879,10 @@ export function App() {
         if (fast) {
           fastPasses++
           const dbg = (window as unknown as Record<string, Record<string, unknown>>).__pageDebug
-          if (dbg) dbg.fastPasses = fastPasses
+          if (dbg) {
+            dbg.fastPasses = fastPasses
+            dbg.rev = layoutPass
+          }
         }
         locate()
       } finally {
@@ -4983,6 +4991,7 @@ export function App() {
         // for real-device verification/troubleshooting: current slices and block geometry (read-only snapshot, no functional dependency)
         ;(window as unknown as Record<string, unknown>).__pageDebug = {
           slices,
+          rev: layoutPass,
           fastPasses,
           fastReject,
           carriedSamples,
@@ -5156,6 +5165,15 @@ export function App() {
       if (props.transaction.getMeta(floatFlowChangedMeta)) followUp('float-flow')
     }
     editor?.on('transaction', onShrinkTr)
+    // the mail-merge preview is decoration-only: tiptap's 'update' fires on doc
+    // changes only, so without this the page gaps keep the previous recipient's
+    // layout while the DOM already shows the new one — and the printed PDF would
+    // break pages on a stale measurement
+    const onMergePreviewTr = (props: { transaction: Transaction }) => {
+      if (props.transaction.getMeta(mailMergePreviewKey) === undefined) return
+      onUpdate(null, null, false)
+    }
+    editor?.on('transaction', onMergePreviewTr)
     return () => {
       if (timer) window.clearTimeout(timer)
       if (hfTimer) window.clearTimeout(hfTimer)
@@ -5163,6 +5181,7 @@ export function App() {
       scroller.removeEventListener('scroll', locate)
       editor?.off('update', onDocUpdate)
       editor?.off('transaction', onShrinkTr)
+      editor?.off('transaction', onMergePreviewTr)
     }
   }, [
     doc,

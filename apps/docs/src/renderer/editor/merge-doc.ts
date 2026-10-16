@@ -9,6 +9,7 @@
  * formatting and table structure, and the save pipeline then emits ordinary
  * runs — exactly what Word writes for a merged document.
  */
+import type { Editor } from '@tiptap/core'
 import type { Mark, Node as PmNode } from '@tiptap/pm/model'
 import { Transform } from '@tiptap/pm/transform'
 import {
@@ -16,6 +17,8 @@ import {
   isConditionalField,
   isMergeField,
   mergeFieldName,
+  mergeFieldInstruction,
+  mergePlaceholder,
   type MergeReport,
   type MergeValues,
 } from '@genoffice/docx-engine'
@@ -37,7 +40,12 @@ export function mergeFieldValue(
 ): string | null {
   if (isMergeField(instr)) {
     const name = mergeFieldName(instr)
-    if (name === null) return null
+    if (name === null) {
+      // `MERGEFIELD` with no parsable name: the field cannot be resolved, and
+      // leaving it in the output would silently write a raw field
+      report.unsupported += 1
+      return null
+    }
     if (!(name in values)) {
       report.missing.push(name)
       return null
@@ -53,6 +61,12 @@ export function mergeFieldValue(
     }
     report.applied += 1
     return result
+  }
+  // an IF/MERGEFIELD the merge model cannot parse is not recipient data, but it
+  // is still a field the merge was asked to resolve
+  if (/^\s*(MERGEFIELD|IF)\b/i.test(instr)) {
+    report.unsupported += 1
+    return null
   }
   return null
 }
@@ -86,7 +100,35 @@ export function applyMergeValuesToPmDoc(
   const tr = new Transform(doc)
   for (let i = replacements.length - 1; i >= 0; i--) {
     const r = replacements[i]
+    // ProseMirror rejects an empty text node: a field that merges to nothing
+    // (an empty address line, an IF with no else branch) is simply removed,
+    // which is what Word does with an empty merge result
+    if (!r.text) {
+      tr.delete(r.from, r.to)
+      continue
+    }
     tr.replaceWith(r.from, r.to, doc.type.schema.text(r.text, r.marks))
   }
   return tr.doc
+}
+
+/**
+ * Insert a real merge field at the cursor, the way Word's "Insert Merge Field"
+ * does: the run carries the `instrField` mark, so the engine round-trips it to
+ * `<w:fldChar>…MERGEFIELD…</w:fldChar>` and preview/export can resolve it.
+ * The instruction is built by `mergeFieldInstruction`, which quotes column
+ * names containing spaces — `MERGEFIELD Postal Address` would merge the column
+ * `Postal` and drop the rest of the name.
+ */
+export function insertMergeField(editor: Editor, name: string): void {
+  if (!editor.isEditable) return
+  editor
+    .chain()
+    .focus()
+    .insertContent({
+      type: 'text',
+      text: mergePlaceholder(name),
+      marks: [{ type: 'instrField', attrs: { instr: mergeFieldInstruction(name) } }],
+    })
+    .run()
 }

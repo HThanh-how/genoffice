@@ -26,6 +26,21 @@ export function templateMergeFields(editor: Editor): MergeFieldRef[] {
   return [...found].map(([name, instr]) => ({ name, instr }))
 }
 
+/**
+ * Every column a merge has to supply: the fields the editor models plus the
+ * ones hiding in byte-preserved blocks. Export uses this to refuse a recipient
+ * whose row is missing a column outright, instead of writing «Name» into the
+ * output file.
+ */
+export function requiredMergeFields(
+  editor: Editor,
+  blocks: readonly Block[],
+): string[] {
+  const names = new Set<string>(templateMergeFields(editor).map((field) => field.name))
+  for (const name of passthroughMergeFields(blocks)) names.add(name)
+  return [...names]
+}
+
 /** Merge fields the editor cannot model: they live in byte-preserved blocks. */
 export function passthroughMergeFields(blocks: readonly Block[]): string[] {
   const names = new Set<string>()
@@ -38,6 +53,26 @@ export function passthroughMergeFields(blocks: readonly Block[]): string[] {
     }
   }
   return [...names]
+}
+
+/**
+ * Field instructions sitting in a byte-preserved paragraph. The save pipeline
+ * copies those paragraphs verbatim, so a MERGEFIELD or IF inside one is not
+ * rewritten by the merge — the recipient's value would never appear. Export
+ * reports them instead of writing a document that still contains the raw field.
+ */
+export function passthroughFieldInstructions(blocks: readonly Block[]): string[] {
+  const found: string[] = []
+  for (const block of blocks) {
+    if (block.runs || block.table) continue
+    for (const match of (block.originalXml ?? '').matchAll(
+      /<w:(?:instrText|fldSimple)[^>]*>\s*(MERGEFIELD|IF)\s+([^<]*?)(?:<\/w:instrText>|<\/w:fldSimple>)/g,
+    )) {
+      const instr = `${match[1]} ${match[2].trim()}`
+      if (!found.includes(instr)) found.push(instr)
+    }
+  }
+  return found
 }
 
 export function validateMergeSession(
