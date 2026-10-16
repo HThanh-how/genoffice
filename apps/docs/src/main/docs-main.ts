@@ -3675,10 +3675,17 @@ function containedTarget(
  * write must state its policy explicitly; an absent or malformed one is refused
  * rather than defaulted to the most destructive option.
  */
-function pdfWriteTarget(wcId: number, filePath: string, overwrite: unknown): PdfWriteTarget | null {
+function pdfWriteTarget(
+  wcId: number,
+  filePath: string,
+  overwrite: unknown,
+  batch?: unknown,
+): PdfWriteTarget | null {
   return resolvePdfWriteTarget(filePath, overwrite, {
     tornDown: tornDownWcIds.has(wcId),
     batchDir: mailMergePdfDirs.get(wcId) ?? null,
+    currentBatch: mailMergeBatches.get(wcId) ?? null,
+    claimedBatch: batch,
     allocated: mailMergeAllocated.get(wcId) ?? new Set<string>(),
     testExportDir,
     isImageTemp: (candidate) => isImageExportTemp(wcId, candidate),
@@ -3687,8 +3694,13 @@ function pdfWriteTarget(wcId: number, filePath: string, overwrite: unknown): Pdf
   })
 }
 
-function canPdfWrite(wcId: number, filePath: string, overwrite?: unknown): boolean {
-  return pdfWriteTarget(wcId, filePath, overwrite) !== null
+function canPdfWrite(
+  wcId: number,
+  filePath: string,
+  overwrite?: unknown,
+  batch?: unknown,
+): boolean {
+  return pdfWriteTarget(wcId, filePath, overwrite, batch) !== null
 }
 
 // Export as images runs the regular PDF export against a temp file: that file must
@@ -5534,6 +5546,7 @@ export function registerDocsIpc(): void {
       scale?: number,
       links?: unknown,
       overwrite?: string,
+      batch?: unknown,
     ) => {
       // Renderer-supplied page geometry reaches Chromium printToPDF verbatim:
       // reject non-finite/out-of-range sizes (0.1in..50in) and scales (0.1..5),
@@ -5544,7 +5557,7 @@ export function registerDocsIpc(): void {
       }
       // renderer-supplied outPath is only honored when a save dialog authorized it before
       let filePath = outPath ?? null
-      if (filePath && !canPdfWrite(event.sender.id, filePath, overwrite)) {
+      if (filePath && !canPdfWrite(event.sender.id, filePath, overwrite, batch)) {
         return { ok: false, error: 'export target is not an authorized path' }
       }
       if (!filePath) {
@@ -5557,7 +5570,7 @@ export function registerDocsIpc(): void {
         filePath = result.filePath
         allowPdfWrite(event.sender.id, filePath)
       }
-      const target = pdfWriteTarget(event.sender.id, filePath, overwrite)
+      const target = pdfWriteTarget(event.sender.id, filePath, overwrite, batch)
       if (!target) return { ok: false, error: 'export target is not an authorized path' }
       // the batch that authorized this target, captured before the print. The
       // print is an await: a mail-merge batch cancelled while it runs releases
@@ -5778,9 +5791,10 @@ export function registerDocsIpc(): void {
       outPath?: string,
       links?: unknown,
       overwrite?: string,
+      batch?: unknown,
     ) => {
       let filePath = outPath ?? null
-      if (filePath && !canPdfWrite(event.sender.id, filePath, overwrite)) {
+      if (filePath && !canPdfWrite(event.sender.id, filePath, overwrite, batch)) {
         return { ok: false, error: 'export target is not an authorized path' }
       }
       if (!filePath) {
@@ -5793,7 +5807,7 @@ export function registerDocsIpc(): void {
         filePath = result.filePath
         allowPdfWrite(event.sender.id, filePath)
       }
-      const target = pdfWriteTarget(event.sender.id, filePath, overwrite)
+      const target = pdfWriteTarget(event.sender.id, filePath, overwrite, batch)
       if (!target) return { ok: false, error: 'export target is not an authorized path' }
       try {
         const { PDFDocument } = await import('pdf-lib')

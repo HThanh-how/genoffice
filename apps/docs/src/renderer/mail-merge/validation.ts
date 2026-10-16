@@ -42,7 +42,8 @@ export function templateFieldInstructions(editor: Editor): string[] {
     for (const mark of node.marks) {
       if (mark.type.name !== 'instrField') continue
       const instr = String(mark.attrs.instr ?? '')
-      if (/^\s*(MERGEFIELD|IF)\b/i.test(instr) && !found.includes(instr)) found.push(instr)
+      if (/^\s*(MERGEFIELD|IF|NEXT|SKIPIF)\b/i.test(instr) && !found.includes(instr))
+        found.push(instr)
     }
   })
   return found
@@ -112,7 +113,8 @@ export function passthroughFieldInstructions(blocks: readonly Block[]): string[]
     if (block.runs || block.table) continue
     for (const instr of blockFieldInstructions(block)) {
       const trimmed = instr.trim()
-      if (/^\s*(MERGEFIELD|IF)\b/i.test(trimmed) && !found.includes(trimmed)) found.push(trimmed)
+      if (/^\s*(MERGEFIELD|IF|NEXT|SKIPIF)\b/i.test(trimmed) && !found.includes(trimmed))
+        found.push(trimmed)
     }
   }
   return found
@@ -142,8 +144,10 @@ export function unmergeableHeaderFooterFields(parsed: ParsedDocFull): string[] {
   for (const part of Object.values(parsed.hfParts ?? {})) {
     for (const para of part.paras ?? []) for (const run of para.runs ?? []) push(run.instrField)
   }
-  for (const para of parsed.headerParas ?? []) for (const run of para.runs ?? []) push(run.instrField)
-  for (const para of parsed.footerParas ?? []) for (const run of para.runs ?? []) push(run.instrField)
+  for (const para of parsed.headerParas ?? [])
+    for (const run of para.runs ?? []) push(run.instrField)
+  for (const para of parsed.footerParas ?? [])
+    for (const run of para.runs ?? []) push(run.instrField)
   return found
 }
 

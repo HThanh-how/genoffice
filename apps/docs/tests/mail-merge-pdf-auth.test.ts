@@ -29,11 +29,40 @@ function context(overrides: Partial<PdfAuthContext> = {}): PdfAuthContext {
     isImageTemp: () => false,
     allowedPaths: new Set<string>(),
     contained,
+    currentBatch: null,
     ...overrides,
   }
 }
 
 describe('the PDF write gate', () => {
+  it('refuses a PDF print that claims a batch the tab no longer holds', async () => {
+    // batch A picked this folder, was cancelled, and batch B picked the same one.
+    // A print still in flight from A carries A's id; the directory string matches,
+    // the permission does not.
+    const dir = await freshDir()
+    const stale = pdfWriteTarget(
+      join(dir, '1_Bo Tran.pdf'),
+      'overwrite',
+      context({ batchDir: dir, currentBatch: 'batch-b', claimedBatch: 'batch-a' }),
+    )
+    expect(stale).toBeNull()
+    expect(await readdir(dir)).toEqual([])
+    // the batch that does hold the folder is still allowed
+    const live = pdfWriteTarget(
+      join(dir, '1_Bo Tran.pdf'),
+      'overwrite',
+      context({ batchDir: dir, currentBatch: 'batch-b', claimedBatch: 'batch-b' }),
+    )
+    expect(live?.name).toBe('1_Bo Tran.pdf')
+    // a request that names no batch (the File menu export) keeps its old behaviour
+    const ordinary = pdfWriteTarget(
+      join(dir, 'document.pdf'),
+      'overwrite',
+      context({ batchDir: dir, currentBatch: 'batch-b' }),
+    )
+    expect(ordinary?.path).toBe(join(realpathSync(dir), 'document.pdf'))
+  })
+
   it('accepts a batch target when the policy is stated', async () => {
     const dir = await freshDir()
     const target = pdfWriteTarget(join(dir, '0001_Huy.pdf'), 'rename', context({ batchDir: dir }))

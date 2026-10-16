@@ -99,8 +99,13 @@ function stubDesktop(existing: string[] = []) {
 function fakeLayout(rev = 1, pages = 1) {
   let current = rev
   const publish = () => {
-    ;(window as unknown as { __pageDebug: { rev: number; slices: unknown[] } }).__pageDebug = {
+    ;(
+      window as unknown as {
+        __pageDebug: { rev: number; passAt: number; slices: unknown[] }
+      }
+    ).__pageDebug = {
       rev: current,
+      passAt: Date.now(),
       slices: Array.from({ length: pages }, () => 1),
     }
   }
@@ -328,14 +333,20 @@ describe('pagination wait', () => {
 
   it('accepts a layout that is already measured and not moving, before any recipient is shown', async () => {
     const editor = editorWith('Dear «Name»')
-    // rev never advances: nothing has changed, so there is no new pass to wait for
-    ;(window as unknown as { __pageDebug: { rev: number; slices: unknown[] } }).__pageDebug = {
+    // the pass timestamp never advances: nothing has changed, so there is no new
+    // pass to wait for
+    ;(
+      window as unknown as {
+        __pageDebug: { rev: number; passAt: number; slices: unknown[] }
+      }
+    ).__pageDebug = {
       rev: 7,
+      passAt: 1_000,
       slices: [1, 1],
     }
-    expect(await waitForPagination(editor, 7, 1000, false)).toBe(true)
+    expect(await waitForPagination(editor, 1_000, 1000, false)).toBe(true)
     // the same state is still stale for a recipient whose values just went on screen
-    expect(await waitForPagination(editor, 7, 600, true)).toBe(false)
+    expect(await waitForPagination(editor, 2_000, 600, true)).toBe(false)
     editor.destroy()
   })
 })
@@ -436,7 +447,9 @@ describe("the PDF writer's real outcome reaches the batch", () => {
     expect(progress.succeeded).toBe(0)
     expect(progress.skipped).toBe(2)
     expect(progress.failed).toBe(0)
-    expect(progress.status).toBe('completed_with_errors')
+    // the user chose "skip existing files": a destination that already existed is
+    // not an error, so the batch is complete rather than "with errors"
+    expect(progress.status).toBe('completed')
   })
 
   it('records the name the writer actually used when it renames', async () => {

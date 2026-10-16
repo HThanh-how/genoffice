@@ -30,9 +30,13 @@ const W_NS = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'
 const splitField = (name: string) =>
   '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
   '<w:r><w:instrText xml:space="preserve"> MERGEFIELD </w:instrText></w:r>' +
-  '<w:r><w:instrText xml:space="preserve">' + name + ' \\* MERGEFORMAT</w:instrText></w:r>' +
+  '<w:r><w:instrText xml:space="preserve">' +
+  name +
+  ' \\* MERGEFORMAT</w:instrText></w:r>' +
   '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' +
-  '<w:r><w:t xml:space="preserve">«' + name + '»</w:t></w:r>' +
+  '<w:r><w:t xml:space="preserve">«' +
+  name +
+  '»</w:t></w:r>' +
   '<w:r><w:fldChar w:fldCharType="end"/></w:r>'
 
 const simpleField = (name: string) =>
@@ -195,7 +199,10 @@ describe('placements the merge cannot reach', () => {
       extraRels: hfRel('footer', 'rId101'),
       extraParts: [hfPart('footer', simpleField('City'))],
     })
-    const { written, progress } = await mergeOnce(bytes, [['Name', 'City'], ['Huy', 'Da Nang']])
+    const { written, progress } = await mergeOnce(bytes, [
+      ['Name', 'City'],
+      ['Huy', 'Da Nang'],
+    ])
     expect(written.length).toBe(0)
     const errors = progress.errors
     expect(errors.some((e) => e.message.includes('footer1.xml'))).toBe(true)
@@ -210,9 +217,12 @@ describe('placements the merge cannot reach', () => {
           xml:
             `${XML_DECL}<w:footnotes xmlns:w="${W_NS}">` +
             '<w:footnote w:id="-1"><w:p><w:r><w:footnoteRef/></w:r></w:p></w:footnote>' +
-            '<w:footnote w:id="1"><w:p>' + simpleField('Name') + '</w:p></w:footnote>' +
+            '<w:footnote w:id="1"><w:p>' +
+            simpleField('Name') +
+            '</w:p></w:footnote>' +
             '</w:footnotes>',
-          contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml',
+          contentType:
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml',
         },
       ],
     })
@@ -227,7 +237,9 @@ describe('placements the merge cannot reach', () => {
       bodyXml:
         '<w:p><w:r><w:t>note </w:t></w:r>' +
         '<w:r><w:drawing><wp:inline><wp:anchor><wp:content>' +
-        '<w:txbxContent><w:p>' + simpleField('City') + '</w:p></w:txbxContent>' +
+        '<w:txbxContent><w:p>' +
+        simpleField('City') +
+        '</w:p></w:txbxContent>' +
         '</wp:content></wp:anchor></wp:inline></w:drawing></w:r></w:p>',
     })
     const { written, progress } = await mergeOnce(bytes, [['City'], ['Da Nang']])
@@ -247,6 +259,25 @@ describe('placements the merge cannot reach', () => {
     expect(check.ok).toBe(false)
     expect(check.templateParts).toEqual(['word/header1.xml'])
     expect(check.unresolved).toEqual(['MERGEFIELD Name'])
+  })
+})
+
+describe('the zip gate the output has to pass', () => {
+  it('refuses a file that is not a readable zip before scanning any part', async () => {
+    const check = await checkMergedDocx(Buffer.from('PK not a zip at all'))
+    expect(check.ok).toBe(false)
+    expect(check.error).toContain('not a readable .docx')
+  })
+
+  it('refuses a zip whose declared part sizes exceed the shared inflation gate', async () => {
+    // the gate is the one every other .docx in the app goes through; a merged
+    // output that trips it is refused here rather than inflated into memory
+    const zip = new JSZip()
+    zip.file('word/document.xml', 'a'.repeat(64 * 1024 * 1024))
+    const bytes = await zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE' })
+    const check = await checkMergedDocx(bytes)
+    expect(check.ok).toBe(false)
+    expect(check.error).toMatch(/readable|too large/)
   })
 })
 
@@ -272,7 +303,12 @@ describe('media and encryption', () => {
     const bytes = await buildDocx({
       bodyXml: '<w:p><w:r><w:t xml:space="preserve">body</w:t></w:r></w:p>',
       binaryParts: [
-        { path: 'word/media/photo.png', base64: TINY_PNG_BASE64, extension: 'png', contentType: 'image/png' },
+        {
+          path: 'word/media/photo.png',
+          base64: TINY_PNG_BASE64,
+          extension: 'png',
+          contentType: 'image/png',
+        },
       ],
     })
     const check = await checkMergedDocx(bytes)

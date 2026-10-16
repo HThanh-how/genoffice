@@ -54,24 +54,34 @@ const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve,
 
 /**
  * The editor publishes its pagination state on `window.__pageDebug` (App.tsx):
- * the slice list plus `rev`, the number of layout passes that have committed.
- * `rev` is the only signal that says "the pages were measured *after* this
- * recipient's values went on screen" — a slice count can be identical for two
- * recipients, so counting pages alone cannot tell a fresh layout from a stale
- * one.
+ * the slice list, `rev` (passes committed by the pagination effect) and `passAt`
+ * (the wall clock of the pass that committed the current slices).
+ * `passAt` is the signal that says "the pages were measured *after* this
+ * recipient's values went on screen": `rev` is local to the pagination effect and
+ * restarts at 0 when that effect re-runs, so comparing it across recipients can
+ * make a fresh layout look older than the one it is being compared to. A slice
+ * count alone cannot tell a fresh layout from a stale one either — two recipients
+ * can fit on the same number of pages.
  */
-function layoutState(): { rev: number; pages: number } {
-  const debug = (window as unknown as { __pageDebug?: { rev?: number; slices?: unknown[] } })
-    .__pageDebug
-  return { rev: debug?.rev ?? 0, pages: Array.isArray(debug?.slices) ? debug.slices.length : 0 }
+function layoutState(): { rev: number; pages: number; passAt: number } {
+  const debug = (
+    window as unknown as {
+      __pageDebug?: { rev?: number; passAt?: number; slices?: unknown[] }
+    }
+  ).__pageDebug
+  return {
+    rev: debug?.rev ?? 0,
+    passAt: debug?.passAt ?? 0,
+    pages: Array.isArray(debug?.slices) ? debug.slices.length : 0,
+  }
 }
 
 /**
- * Wait for a pagination pass that ran after `sinceRev` and whose page count has
+ * Wait for a pagination pass that ran after `sincePassAt` and whose page count has
  * stopped moving. Returns false when the layout never settled: the caller must
  * not print a page layout that predates the recipient.
  *
- * `requireNewRev` is false only for the very first wait of a batch, before any
+ * `requireNewPass` is false only for the very first wait of a batch, before any
  * recipient has been put on screen. Nothing has changed then, so there is no new
  * pass to wait for — a layout that is already measured and not moving is settled.
  * For every recipient after that a pass must commit, because the values arrive
@@ -80,16 +90,16 @@ function layoutState(): { rev: number; pages: number } {
  */
 export async function waitForPagination(
   editor: Editor,
-  sinceRev: number,
+  sincePassAt: number,
   deadlineMs = 20_000,
-  requireNewRev = true,
+  requireNewPass = true,
 ): Promise<boolean> {
   const deadline = Date.now() + deadlineMs
   let lastPages = -1
   let stable = 0
   while (Date.now() < deadline) {
-    const { rev, pages } = layoutState()
-    if (pages >= 1 && (rev > sinceRev || !requireNewRev)) {
+    const { pages, passAt } = layoutState()
+    if (pages >= 1 && (passAt > sincePassAt || !requireNewPass)) {
       stable = pages === lastPages ? stable + 1 : 0
       lastPages = pages
       if (stable >= 2) return true
@@ -228,6 +238,9 @@ export async function runMailMergeExport(
   // batch happened to get the same name.
   const preExisting = new Set<string>(listing.names ?? [])
   const allocated = new Set<string>()
+  // a template-level problem stops the whole batch: the recipients after it were
+  // never attempted, so the job must not read as "completed"
+  let aborted = false
 
   // the PDF path needs the pagination preview; if the batch opened it, the batch
   // closes it again so the user's UI is left as it was
@@ -250,7 +263,7 @@ export async function runMailMergeExport(
     // nothing has been shown yet, so there is no new layout pass to wait for:
     // an already-measured, unmoving layout is settled. A layout that never
     // measures at all is not — printing it would break pages on a guess.
-    if (!(await waitForPagination(ctx.editor, layoutState().rev, 20_000, false))) {
+    if (!(await waitForPagination(ctx.editor, layoutState().passAt, 20_000, false))) {
       restorePreview()
       return failJob('the page layout never settled, so no PDF could be printed')
     }
@@ -380,6 +393,8 @@ export async function runMailMergeExport(
                 recipient: 'export',
                 message: `Mail Merge cannot reach merge fields in ${contract.templateParts.join(', ')}; move them into the document body`,
               })
+              progress.done += 1
+              aborted = true
               break
             }
             await sleep(0)
@@ -410,10 +425,10 @@ export async function runMailMergeExport(
       } else {
         // the preview decoration is what makes the printed DOM contain this
         // recipient's values; the template text itself is never modified
-        const revBefore = layoutState().rev
+        const passAtBefore = layoutState().passAt
         setMailMergePreview(ctx.editor, recipient.values)
         try {
-          if (!(await waitForPagination(ctx.editor, revBefore))) {
+          if (!(await waitForPagination(ctx.editor, passAtBefore))) {
             progress.failed += 1
             progress.errors.push({
               recipient: name,
@@ -428,7 +443,12 @@ export async function runMailMergeExport(
             // the writer's real outcome, not just "the print did not throw": a
             // skipped destination is not a produced file, and a renamed one is
             // not the name the renderer asked for
-            const result = await exportPdf(ctx, `${options.outputDir}/${name}`, options.overwrite)
+            const result = await exportPdf(
+              ctx,
+              `${options.outputDir}/${name}`,
+              options.overwrite,
+              options.batch,
+            )
             if (result.ok) {
               progress.succeeded += 1
               allocated.add(writtenName(result, name))
@@ -461,7 +481,7 @@ export async function runMailMergeExport(
   setMailMergePreview(ctx.editor, priorPreview)
   restorePreview()
   progress.cancelled = progress.cancelled || cancel.cancelled
-  progress.status = terminalStatus(progress)
+  progress.status = aborted ? 'failed' : terminalStatus(progress)
   onProgress({ ...progress })
   return progress
 }

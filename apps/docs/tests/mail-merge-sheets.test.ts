@@ -38,6 +38,19 @@ describe('range parsing', () => {
     expect(rangeBounds('B2:B8')).toEqual({ firstCol: 1, lastCol: 1, firstRow: 2, lastRow: 8 })
     expect(rangeBounds('10:20')).toBeNull()
     expect(rangeBounds('F5:C100')).toBeNull()
+    // a 30-letter column cannot exist in a worksheet, and the arithmetic would
+    // overflow to Infinity before any address was generated
+    expect(rangeBounds('ZZZZZZZZZZZZZZZZZZZZZZZZZZZZ1:ZZZZZZZZZZZZZZZZZZZZZZZZZZZZ2')).toBeNull()
+    expect(rangeBounds('XFE1:XFE2')).toBeNull()
+    expect(rangeBounds('A1:1000000000000000000000')).toBeNull()
+    // Excel's own row ceiling: a range past row 1,048,576 is not a range
+    expect(rangeBounds('A1:A1048577')).toBeNull()
+    expect(rangeBounds('A1:A1048576')).toEqual({
+      firstCol: 0,
+      lastCol: 0,
+      firstRow: 1,
+      lastRow: 1048576,
+    })
   })
 
   it('builds addresses that start at the selected column, not at A', () => {
@@ -173,7 +186,9 @@ describe('loading recipients from a range', () => {
  * address.
  */
 describe('recipient value semantics', () => {
-  const bridgeReader = (cells: Record<string, { value?: unknown; display?: unknown; formula?: string }>) => {
+  const bridgeReader = (
+    cells: Record<string, { value?: unknown; display?: unknown; formula?: string }>,
+  ) => {
     const requested: string[] = []
     const read = async (_wcId: number, _sheet: string, addresses: string[]) => {
       requested.push(...addresses)

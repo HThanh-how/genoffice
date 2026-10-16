@@ -107,6 +107,8 @@ export type PendingPdfExport = {
   outPath?: string
   /** overwrite policy for a mail-merge batch target, forwarded to the writer */
   overwrite?: string
+  /** batch identity of the mail-merge export that parked this request */
+  batch?: string
   resolve: (result: PdfExportResult) => void
   /** the export opened the preview itself and closes it once the PDF is written */
   closePreview: boolean
@@ -1374,6 +1376,7 @@ async function printGroupsMerged(
   outPath: string | undefined,
   links: PdfInternalLink[],
   overwrite?: string,
+  batch?: string,
 ): Promise<PdfExportResult> {
   const parts: string[] = []
   // every printToPDF flips the whole document between print and screen media;
@@ -1409,7 +1412,14 @@ async function printGroupsMerged(
     appRoot?.classList.remove('pv-exporting')
     pvPages.forEach((page) => page.classList.remove('pv-print-skip', 'pv-print-tail'))
   }
-  const result = await window.desktop.saveMergedPdf(fileName, parts, outPath, links, overwrite)
+  const result = await window.desktop.saveMergedPdf(
+    fileName,
+    parts,
+    outPath,
+    links,
+    overwrite,
+    batch,
+  )
   if (result.skipped) {
     // the writer honoured the batch's skip policy: nothing was written, and the
     // caller must not count this as a produced file
@@ -1434,10 +1444,11 @@ function deferExportToPreview(
   ctx: FileActionContext,
   outPath?: string,
   overwrite?: string,
+  batch?: string,
 ): Promise<PdfExportResult> {
   return new Promise<PdfExportResult>((resolve) => {
     const closePreview = !document.querySelector('.pagination-preview')
-    ctx.pendingMixedExportRef.current = { outPath, overwrite, resolve, closePreview }
+    ctx.pendingMixedExportRef.current = { outPath, overwrite, batch, resolve, closePreview }
     ctx.setShowPagePreview(true)
     ctx.bumpPendingExportTick()
   })
@@ -1456,6 +1467,7 @@ export async function exportPdf(
   ctx: FileActionContext,
   outPath?: string,
   overwrite?: string,
+  batch?: string,
 ): Promise<PdfExportResult> {
   const { doc } = ctx
   if (!doc) return { ok: false, error: 'the document is not open' }
@@ -1513,6 +1525,7 @@ export async function exportPdf(
           scale,
           links,
           overwrite,
+          batch,
         )
         if (result.ok) {
           ctx.setStatus(t('appExportedPdf', { path: result.path ?? '' }))
@@ -1541,6 +1554,7 @@ export async function exportPdf(
             retryPath,
             links,
             overwrite,
+            batch,
           )
         }
         ctx.setStatus(t('appExportPdfFailed', { error: result.error }))
@@ -1561,7 +1575,7 @@ export async function exportPdf(
       ).map((st) => `${st.pageWidth}x${st.pageHeight}`),
     )
     if (sizes.size > 1) ctx.setStatus(t('appMixedExportOpening'))
-    return deferExportToPreview(ctx, outPath, overwrite)
+    return deferExportToPreview(ctx, outPath, overwrite, batch)
   } finally {
     clearPrintZoom()
     printJobActive = false

@@ -41,7 +41,10 @@ export function applyJobFailure(
 /** Classify a job that has stopped from its counters. */
 export function terminalStatus(progress: MailMergeExportProgress): MailMergeExportStatus {
   if (progress.cancelled) return 'cancelled'
-  if (progress.failed > 0 || progress.skipped > 0) return 'completed_with_errors'
+  if (progress.failed > 0) return 'completed_with_errors'
+  // a recipient skipped by the overwrite policy the user chose is not an error:
+  // the batch still ended where the user asked it to. The dialog shows the skip
+  // count, so the two outcomes stay distinguishable without another state.
   return 'completed'
 }
 

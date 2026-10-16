@@ -1,5 +1,9 @@
 import JSZip from 'jszip'
-import { fieldInstructionsInXml } from '@genoffice/docx-engine'
+import {
+  assertZipInflatesWithinLimits,
+  assertZipWithinLimits,
+  fieldInstructionsInXml,
+} from '@genoffice/docx-engine'
 
 /**
  * The contract a merged .docx has to satisfy before it reaches the disk.
@@ -40,7 +44,12 @@ export async function checkMergedDocx(
 ): Promise<MergedDocxCheck> {
   let zip: JSZip
   try {
+    // the same metered gate every other .docx in the app goes through: the
+    // declared sizes are checked before anything is inflated, so a zip bomb is
+    // refused here instead of turning the scan below into a memory problem
+    await assertZipInflatesWithinLimits(bytes)
     zip = await JSZip.loadAsync(bytes)
+    assertZipWithinLimits(zip)
   } catch (error) {
     return {
       ok: false,
@@ -73,7 +82,7 @@ export async function checkMergedDocx(
     }
     for (const instr of fieldInstructionsInXml(xml)) {
       const trimmed = instr.trim()
-      if (/^\s*(MERGEFIELD|IF)\b/i.test(trimmed) && !unresolved.includes(trimmed)) {
+      if (/^\s*(MERGEFIELD|IF|NEXT|SKIPIF)\b/i.test(trimmed) && !unresolved.includes(trimmed)) {
         unresolved.push(trimmed)
         if (entry.name !== 'word/document.xml' && !templateParts.includes(entry.name)) {
           templateParts.push(entry.name)

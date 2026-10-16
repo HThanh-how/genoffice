@@ -55,10 +55,9 @@ describe('sparse and oddly shaped worksheets', () => {
         '<row r="3"><c r="C3"><v>3</v></c></row>',
     )
     const grids = await xlsxToGrid(bytes)
-    expect(grids[0].rows).toEqual([
-      ['1', '', '', '4'],
-      ['', '', '3'],
-    ])
+    // row 2 was never written, so it stays a row: the value in `<row r="3">`
+    // belongs to the third row of the worksheet, not the second
+    expect(grids[0].rows).toEqual([['1', '', '', '4'], [], ['', '', '3']])
   })
 
   it('reads a worksheet that carries no name rather than losing it', async () => {
@@ -93,13 +92,13 @@ describe('sparse and oddly shaped worksheets', () => {
     expect(grids).toEqual([])
   })
 
-  it('does not pad a row for an absurd column reference', async () => {
+  it('refuses a reference outside the worksheet instead of padding or re-placing it', async () => {
     const bytes = await workbook(
       '<row r="1"><c r="A1"><v>first</v></c><c r="ZZZZZZ99"><v>far</v></c></row>',
     )
-    const grids = await xlsxToGrid(bytes)
-    expect(grids[0].rows[0].length).toBeLessThan(100)
-    expect(grids[0].rows[0]).toContain('first')
-    expect(grids[0].rows[0]).toContain('far')
+    // ZZZZZZ99 names column 36,653,536. Padding to it would allocate millions of
+    // slots; appending the value to the next column would put it in a column the
+    // user never wrote it in. Neither is honest: the workbook is refused.
+    await expect(xlsxToGrid(bytes)).rejects.toThrow(/at most 16384 columns/)
   })
 })

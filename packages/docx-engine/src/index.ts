@@ -203,6 +203,8 @@ export {
   fieldInstructionsInXml,
   isRepresentableColumnName,
   mergeFieldName,
+  mergeFieldText,
+  isMergeControlField,
   mergeFieldInstruction,
   mergePlaceholder,
   MAX_FILE_NAME_BYTES,

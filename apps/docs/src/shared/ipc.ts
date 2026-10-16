@@ -596,6 +596,7 @@ export interface DesktopApi {
     scale?: number,
     links?: PdfInternalLink[],
     overwrite?: string,
+    batch?: string,
   ): Promise<{ ok: boolean; path?: string; name?: string; skipped?: boolean; error?: string }>
   exportHtml(
     defaultName: string,

@@ -23,6 +23,56 @@ const read = async (dir: string, name: string): Promise<string> =>
   (await readFile(join(dir, name))).toString()
 
 describe('batch writes to a real directory', () => {
+  it('keeps a name that differs only in case from overwriting another recipient', async () => {
+    // Windows and the default macOS volume treat `Notes.docx` and `NOTES.docx`
+    // as the same file. On a case-sensitive test filesystem both could coexist,
+    // but the writer must not assume it can: the second recipient gets a
+    // different name and both contents survive.
+    const dir = await freshDir()
+    const allocated = new Set<string>()
+    const first = await writeMailMergeOutput(
+      dir,
+      'Notes.docx',
+      Buffer.from('a'),
+      'overwrite',
+      allocated,
+    )
+    const second = await writeMailMergeOutput(
+      dir,
+      'NOTES.docx',
+      Buffer.from('b'),
+      'overwrite',
+      allocated,
+    )
+    expect(first.name).toBe('Notes.docx')
+    expect(second.name).not.toBe('NOTES.docx')
+    expect((await listing(dir)).length).toBe(2)
+    expect(await read(dir, first.name)).toBe('a')
+    expect(await read(dir, second.name)).toBe('b')
+  })
+
+  it('treats a name that only differs after Unicode normalisation as one name', async () => {
+    const dir = await freshDir()
+    const allocated = new Set<string>()
+    const composed = await writeMailMergeOutput(
+      dir,
+      'Nótes.docx',
+      Buffer.from('x'),
+      'overwrite',
+      allocated,
+    )
+    const decomposed = await writeMailMergeOutput(
+      dir,
+      'N\u006F\u0301tes.docx',
+      Buffer.from('y'),
+      'overwrite',
+      allocated,
+    )
+    expect(composed.name).toBe('Nótes.docx')
+    expect(decomposed.name).not.toBe(composed.name)
+    expect((await listing(dir)).length).toBe(2)
+  })
+
   it('gives two recipients with the same name two files under skip', async () => {
     const dir = await freshDir()
     const allocated = new Set<string>()

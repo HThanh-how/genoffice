@@ -192,11 +192,27 @@ function columnLabel(index: number): string {
 }
 
 /** `C5` → the 0-based column index of C, i.e. 2. */
+/**
+ * Column number of a range's letter run.
+ *
+ * `Z` is 25, `XFD` is 16383 — the last column a worksheet can have. The
+ * accumulator is checked against `Number.isSafeInteger` on every step, so a
+ * range like `ZZZZZZZZZZZZZZZZZZZZ1:ZZZZZZZZZZZZZZZZZZZZ2` is refused instead of
+ * turning into Infinity and looping forever in `addressesInRange`.
+ */
 function columnIndex(letters: string): number {
   let n = 0
-  for (const ch of letters.toUpperCase()) n = n * 26 + (ch.charCodeAt(0) - 64)
+  for (const ch of letters.toUpperCase()) {
+    if (ch < 'A' || ch > 'Z') return -1
+    n = n * 26 + (ch.charCodeAt(0) - 64)
+    if (!Number.isSafeInteger(n) || n > MAX_EXCEL_COLS) return -1
+  }
   return n - 1
 }
+
+/** Excel's own bounds: a worksheet cannot have more columns or rows than these. */
+const MAX_EXCEL_COLS = 16_384
+const MAX_EXCEL_ROWS = 1_048_576
 
 export interface RangeBounds {
   firstCol: number
@@ -211,9 +227,20 @@ export function rangeBounds(range: string): RangeBounds | null {
   if (!m) return null
   const firstCol = columnIndex(m[1])
   const lastCol = columnIndex(m[3])
-  const firstRow = Math.max(1, parseInt(m[2], 10))
-  const lastRow = Math.min(1_048_576, parseInt(m[4], 10))
+  // parseInt on a 40-digit row number is not a safe integer: it cannot name a
+  // real row, and letting it through would make the cell count NaN and the
+  // "is this range too big" test meaningless
+  const firstRowRaw = Number(m[2])
+  const lastRowRaw = Number(m[4])
+  if (!Number.isSafeInteger(firstRowRaw) || !Number.isSafeInteger(lastRowRaw)) return null
+  // a row past Excel's ceiling is not a row the sheet can hold: clamping it
+  // would silently read a different rectangle than the user typed
+  if (firstRowRaw < 1 || lastRowRaw > MAX_EXCEL_ROWS) return null
+  const firstRow = firstRowRaw
+  const lastRow = lastRowRaw
   if (firstCol < 0 || lastCol < 0 || lastCol < firstCol || lastRow < firstRow) return null
+  const cells = (lastCol - firstCol + 1) * (lastRow - firstRow + 1)
+  if (!Number.isSafeInteger(cells) || cells <= 0) return null
   return { firstCol, lastCol, firstRow, lastRow }
 }
 

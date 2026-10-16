@@ -151,7 +151,13 @@ test.describe('docs mailings tab', () => {
     await expect(page.locator('.ProseMirror')).toContainText('Dear Nguyễn Văn A')
 
     await page.getByRole('button', { name: 'Check for Errors' }).click()
-    await expect(page.locator('.mail-merge-validation')).toContainText('No problems')
+    // Bo Tran's address really is empty: Word reports empty values as a warning,
+    // not a blocker, so the batch may still continue
+    await expect(page.locator('.mm-issue.warning').first()).toContainText('Empty values')
+    await expect(page.locator('.mm-issue.warning').first()).toContainText('Postal Address')
+    await expect(
+      page.locator('.mail-merge-validation').getByRole('button', { name: 'Continue', exact: true }),
+    ).toBeEnabled()
     // the check dialog offers Cancel and Continue, not Close
     await page.getByRole('button', { name: 'Cancel' }).click()
 
@@ -235,6 +241,10 @@ test.describe('docs mailings tab', () => {
   })
 
   test('Finish & Merge writes one real PDF per recipient', async () => {
+    // every recipient is printed from a layout measured with that recipient's
+    // own text: two Chromium print jobs plus the pagination passes take longer
+    // than the default 90s budget
+    test.setTimeout(240_000)
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'genoffice-e2e-mailmerge-pdf-')))
     const outDir = join(dir, 'out')
     mkdirSync(outDir)
@@ -251,10 +261,13 @@ test.describe('docs mailings tab', () => {
       '<w:p><w:r><w:t xml:space="preserve">Account reference for the address above.</w:t></w:r></w:p>'
     writeFileSync(docPath, await templateDocx(body))
 
-    const csv =
+    const csvPath = join(dir, 'recipients.csv')
+    writeFileSync(
+      csvPath,
       '"Full Name","Postal Address"\n' +
-      '"Bo Tran",""\n' +
-      '"Nguyễn Văn A","123 Nguyễn Huệ, Da Nang, a deliberately long address that has to wrap onto another line to fit the page"\n'
+        '"Bo Tran",""\n' +
+        '"Nguyễn Văn A","123 Nguyễn Huệ, Da Nang, a deliberately long address that has to wrap onto another line to fit the page"\n',
+    )
 
     const launched = await launchShell({
       openFile: docPath,
@@ -262,7 +275,7 @@ test.describe('docs mailings tab', () => {
       videoDir: 'mail-merge-pdf',
       env: { GENOFFICE_TEST_EXPORT_DIR: outDir },
     })
-    await answerSourceDialog(launched.app, csv)
+    await answerSourceDialog(launched.app, csvPath)
     const page = await docsPage(launched.app)
 
     await page.locator('.ribbon-tab', { hasText: 'Mailings' }).click()
@@ -277,7 +290,11 @@ test.describe('docs mailings tab', () => {
     await page.getByRole('button', { name: 'Browse…' }).click()
     await page.getByRole('button', { name: 'Export 2 files' }).click()
 
-    await expect(page.locator('.mail-merge-progress h2')).toContainText('Export completed')
+    // each recipient's PDF is printed from a layout measured with that
+    // recipient's own text, so the batch takes a pagination pass per row
+    await expect(page.locator('.mail-merge-progress h2')).toContainText('Export completed', {
+      timeout: 90_000,
+    })
     await page.getByRole('button', { name: 'Close' }).click()
 
     // the default pattern is `{index}_{<first column>}`, and the index is padded

@@ -65,15 +65,24 @@ function sharedStringText(si: Record<string, unknown>): string {
 }
 
 /** "BC12" → zero-based column index 54 (cell refs are case-insensitive per ECMA-376) */
+/**
+ * Column of a cell reference: `A1` → 0, `XFD1` → 16383.
+ *
+ * Returns -1 for anything that is not a column letter run followed by digits.
+ * The accumulator is bounded by MAX_XLSX_COLS, so a reference with 30 letters
+ * cannot run the number past a safe integer and cannot be read as a column.
+ */
 function columnIndex(cellRef: string): number {
+  // a reference is column letters followed by a row number; `1A` or `A1x` is not one
+  if (!/^[A-Za-z]+\d+$/.test(cellRef)) return -1
   let index = 0
-  let letters = 0
   for (const ch of cellRef.toUpperCase()) {
     if (ch < 'A' || ch > 'Z') break
-    letters += 1
     index = index * 26 + (ch.charCodeAt(0) - 64)
+    // past XFD there is no column to put the value in, and the accumulator would
+    // run off the safe-integer range long before that
+    if (!Number.isSafeInteger(index) || index > MAX_XLSX_COLS) return MAX_XLSX_COLS
   }
-  if (letters === 0) return -1
   return index - 1
 }
 
@@ -479,7 +488,20 @@ function buildSheetGrid(
     const rows: string[][] = []
     const sharedFormulas: SharedFormulas = new Map()
     const uncachedFormulas: string[] = []
+    const sheetName = String(sheet['@_name'] ?? '')
     for (const row of rowNodes) {
+      // OOXML numbers the rows: `<row r="3">` is the third row of the worksheet,
+      // whether or not a `<row r="2">` element was written. Pushing in document
+      // order would slide row 3 into position 2 and merge the wrong person.
+      const declared = Number(row['@_r'])
+      const position = Number.isSafeInteger(declared) && declared > 0 ? declared : rows.length + 1
+      if (position > maxRows) {
+        throw new Error(
+          `worksheet "${sheetName}" declares row ${position}, beyond the ${maxRows} ` +
+            `rows this reader will take`,
+        )
+      }
+      while (rows.length < position - 1) rows.push([])
       const cells: string[] = []
       for (const cell of asArray(row.c as Cell | Cell[])) {
         const text = cellText(
@@ -491,17 +513,28 @@ function buildSheetGrid(
           uncachedFormulas,
         )
         const ref = cell['@_r']
+        // a cell with no reference is placed after the previous one; a cell that
+        // carries a reference is placed at that reference or the workbook is
+        // refused. Silently appending an unparseable reference would move a value
+        // into a column the user never put it in.
         const col = ref ? columnIndex(ref) : cells.length
-        if (col < 0 || col >= MAX_XLSX_COLS) {
-          cells.push(text)
-          continue
+        if (ref && col < 0) {
+          throw new Error(
+            `worksheet "${sheetName}" has a cell with the unreadable reference "${ref}"`,
+          )
+        }
+        if (col >= MAX_XLSX_COLS) {
+          throw new Error(
+            `worksheet "${sheetName}" has a cell in ${ref}: a worksheet has at most ` +
+              `${MAX_XLSX_COLS} columns`,
+          )
         }
         // padding a row out to `XFD` allocates 16 384 slots for one value; a
         // recipient list is never that wide, so the workbook is refused rather
         // than turned into a multi-hundred-megabyte array
         if (col >= MAX_GRID_COLS) {
           throw new Error(
-            `worksheet "${String(sheet['@_name'] ?? '')}" has a cell in ${ref ?? 'an unknown column'}; Mail Merge reads at most ${MAX_GRID_COLS} columns`,
+            `worksheet "${sheetName}" has a cell in ${ref ?? 'an unknown column'}; Mail Merge reads at most ${MAX_GRID_COLS} columns`,
           )
         }
         while (cells.length < col) cells.push('')
@@ -509,10 +542,17 @@ function buildSheetGrid(
         else if (cells[col] === '') cells[col] = text
         else cells.push(text)
       }
-      rows.push(cells)
+      if (position <= rows.length) {
+        // a duplicate or out-of-order `<row r>`: keep the data rather than
+        // dropping it, but never overwrite a row that already has values
+        if (rows[position - 1].length === 0) rows[position - 1] = cells
+        else rows.push(cells)
+      } else {
+        rows.push(cells)
+      }
     }
     return {
-      name: String(sheet['@_name'] ?? ''),
+      name: sheetName,
       rows,
       ...(uncachedFormulas.length > 0 ? { uncachedFormulas } : {}),
     }

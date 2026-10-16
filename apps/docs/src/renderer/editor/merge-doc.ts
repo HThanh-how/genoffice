@@ -18,6 +18,7 @@ import {
   isMergeField,
   mergeFieldName,
   mergeFieldInstruction,
+  mergeFieldText,
   mergePlaceholder,
   type MergeReport,
   type MergeValues,
@@ -51,7 +52,10 @@ export function mergeFieldValue(
       return null
     }
     report.applied += 1
-    return values[name]
+    // the switches (`\f " "`, `\* Upper`) are part of what Word would print;
+    // returning the raw column text here would preview one thing and write
+    // another
+    return mergeFieldText(instr, values)
   }
   if (isConditionalField(instr)) {
     const result = evaluateConditionalField(instr, values)

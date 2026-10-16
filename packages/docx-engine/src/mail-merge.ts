@@ -16,6 +16,7 @@
  * Everything here is pure and synchronous: no I/O, no AI, no network.
  */
 import { MERGEFIELD_INSTR_RE } from './parse-props'
+import { escapeXmlText } from './xml-utils'
 import type { Block, GeneratedBlock, HeaderFooter, HfParagraph, Run, TableModel } from './types'
 
 /** One merge field occurrence found in a template. */
@@ -40,6 +41,80 @@ export interface MergeReport {
   unsupported: number
   /** how many field occurrences were actually replaced */
   applied: number
+}
+
+/**
+ * Word's formatting switches on a MERGEFIELD.
+ *
+ * `\f " "` is what makes an Address Block read "Ada Lovelace" rather than
+ * "AdaLovelace": the text after the switch is written only when the value is
+ * non-empty. `\* Upper` / `\* Lower` / `\* FirstCap` / `\* Caps` change the
+ * case of the value. Ignoring them merges the wrong text into the document and
+ * still reports success, which is worse than not merging at all.
+ */
+export interface MergeFieldSwitches {
+  /** `\b "…"`: text placed before the value, only when the value is non-empty */
+  before: string
+  /** `\f "…"`: text placed after the value, only when the value is non-empty */
+  after: string
+  /** `\* Upper | Lower | FirstCap | Caps` */
+  caseFormat: string | null
+}
+
+const SWITCH_RE = /\\([bf*])\s+(?:"([^"]*)"|(\S+))/g
+
+export function mergeFieldSwitches(instr: string): MergeFieldSwitches {
+  const out: MergeFieldSwitches = { before: '', after: '', caseFormat: null }
+  for (const match of instr.matchAll(SWITCH_RE)) {
+    const argument = match[2] ?? match[3] ?? ''
+    if (match[1] === 'b') out.before = argument
+    else if (match[1] === 'f') out.after = argument
+    // `\* MERGEFORMAT` and `\* CHARFORMAT` are Word's own "keep the formatting"
+    // markers, not a case instruction
+    else if (!/^MERGEFORMAT$/i.test(argument) && !/^CHARFORMAT$/i.test(argument)) {
+      out.caseFormat = argument
+    }
+  }
+  return out
+}
+
+function applyCaseFormat(value: string, format: string | null): string {
+  switch (format?.toLowerCase()) {
+    case 'upper':
+      return value.toUpperCase()
+    case 'lower':
+      return value.toLowerCase()
+    case 'firstcap':
+      return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase()
+    case 'caps':
+      return value
+        .toLowerCase()
+        .replace(/(^|[\s-])(\p{L})/gu, (_, sep, ch) => sep + ch.toUpperCase())
+    default:
+      return value
+  }
+}
+
+/** the text a MERGEFIELD contributes for one row, switches applied */
+export function mergeFieldText(instr: string, values: MergeValues): string {
+  const name = mergeFieldName(instr)
+  const raw = name ? (values[name] ?? '') : ''
+  const value = applyCaseFormat(raw, mergeFieldSwitches(instr).caseFormat)
+  if (value === '') return ''
+  const { before, after } = mergeFieldSwitches(instr)
+  return before + value + after
+}
+
+/**
+ * NEXT and SKIPIF are control fields: they move the record cursor or drop a
+ * record. GenOffice writes one file per recipient, so there is no cursor to
+ * move — a template that uses them is refused before the batch starts rather
+ * than merged as if every recipient were the same record.
+ */
+const MERGE_CONTROL_RE = /^\s*(NEXT|SKIPIF)\b/i
+
+export function isMergeControlField(instr: string): boolean {
+  return MERGE_CONTROL_RE.test(instr)
 }
 
 /** Word's own placeholder for a field with no cached result. */
@@ -202,7 +277,7 @@ function mapRuns(runs: Run[], values: MergeValues, report: MergeReport): Run[] {
         continue
       }
       report.applied += 1
-      out.push(resolvedRun(run, values[name]))
+      out.push(resolvedRun(run, mergeFieldText(instr, values)))
       continue
     }
     if (isConditionalField(instr)) {
@@ -399,12 +474,17 @@ function applyPatches(xml: string, patches: Patch[]): string {
 function fieldResult(instr: string, values: MergeValues, report: MergeReport): string | null {
   const isMerge = isMergeField(instr)
   const isIf = isConditionalField(instr)
+  if (isMergeControlField(instr)) {
+    // NEXT/SKIPIF need a record cursor; one file per recipient has none
+    report.unsupported += 1
+    return null
+  }
   if (!isMerge && !isIf) return null
   const name = isMerge ? mergeFieldName(instr) : null
   const value = isIf
     ? evaluateConditionalField(instr, values)
     : name && name in values
-      ? values[name]
+      ? mergeFieldText(instr, values)
       : null
   if (value === null) {
     if (name) report.missing.push(name)
@@ -476,7 +556,7 @@ function addFieldPatch(
   addPatch(patches, {
     from,
     to,
-    replacement: `<w:r>${rPr}<w:t xml:space="preserve">${escapeXml(value)}</w:t></w:r>`,
+    replacement: `<w:r>${rPr}${runContentXml(value)}</w:r>`,
   })
   report.applied += 1
 }
@@ -532,7 +612,7 @@ function patchComplexFields(xml: string, values: MergeValues, report: MergeRepor
         to: endRun.end,
         replacement:
           `<w:r>${rPr && !before.includes('<w:rPr>') ? rPr : ''}${before}` +
-          `<w:t xml:space="preserve">${escapeXml(value)}</w:t>${after}</w:r>`,
+          `${runContentXml(value)}${after}</w:r>`,
       })
       report.applied += 1
     }
@@ -542,8 +622,26 @@ function patchComplexFields(xml: string, values: MergeValues, report: MergeRepor
   return applyPatches(xml, patches)
 }
 
-function escapeXml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+/**
+ * A recipient value as run content.
+ *
+ * `escapeXmlText` is the serializer the rest of the engine uses: it drops the
+ * characters XML 1.0 cannot carry (U+0000, U+0001, …) and escapes &, < and >.
+ * Tabs and line breaks are not text — Word prints them as elements — so a
+ * postal address spanning two lines becomes `<w:br/>` rather than a newline
+ * inside `<w:t>`, which Word renders as a space.
+ */
+function runContentXml(value: string): string {
+  return value
+    .replace(/\r\n?/g, '\n')
+    .split(/([\t\n])/g)
+    .map((segment) => {
+      if (segment === '') return ''
+      if (segment === '\t') return '<w:tab/>'
+      if (segment === '\n') return '<w:br/>'
+      return `<w:t xml:space="preserve">${escapeXmlText(segment)}</w:t>`
+    })
+    .join('')
 }
 
 function decodeEntities(text: string): string {

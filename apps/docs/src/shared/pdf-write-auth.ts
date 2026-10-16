@@ -30,6 +30,10 @@ export interface PdfAuthContext {
   allowedPaths: Set<string>
   /** resolve a candidate inside a grant, or null when it escapes it */
   contained: (dir: string, filePath: string) => string | null
+  /** the batch id this renderer currently holds, or null when it holds none */
+  currentBatch: string | null
+  /** the batch id the request claims; undefined when it is not a batch request */
+  claimedBatch?: unknown
 }
 
 export interface PdfWriteTarget {
@@ -54,6 +58,10 @@ export function pdfWriteTarget(
   ctx: PdfAuthContext,
 ): PdfWriteTarget | null {
   if (ctx.tornDown || typeof filePath !== 'string' || !filePath) return null
+  // A request that names a batch must name the batch the tab still holds. A print
+  // queued by a cancelled batch A would otherwise land in the folder batch B
+  // picked afterwards: the directory string matches, the permission does not.
+  if (ctx.claimedBatch !== undefined && ctx.currentBatch !== ctx.claimedBatch) return null
   // only PDFs may use the batch grant: the same directory must not become a
   // blanket authorization for Markdown or HTML export targets
   if (ctx.batchDir && /\.pdf$/i.test(filePath)) {

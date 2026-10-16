@@ -2720,7 +2720,8 @@ export function App() {
   }, [pgNumModal, sections, activeSection])
 
   const exportPdf = useCallback(
-    (outPath?: string, overwrite?: string) => exportPdfImpl(fileCtxRef.current, outPath, overwrite),
+    (outPath?: string, overwrite?: string, batch?: string) =>
+      exportPdfImpl(fileCtxRef.current, outPath, overwrite, batch),
     [],
   )
   const exportHtml = useCallback(
@@ -2811,10 +2812,12 @@ export function App() {
         return
       }
       setExportLocksPreview(true)
-      const result = await exportPdf(pending.outPath, pending.overwrite).catch((error) => ({
-        ok: false as const,
-        error: String(error),
-      }))
+      const result = await exportPdf(pending.outPath, pending.overwrite, pending.batch).catch(
+        (error) => ({
+          ok: false as const,
+          error: String(error),
+        }),
+      )
       setExportLocksPreview(false)
       // a Print the user started meanwhile owns the preview now
       if (pending.closePreview && !showPrintDialogRef.current) setShowPagePreview(false)
@@ -4999,6 +5002,11 @@ export function App() {
         ;(window as unknown as Record<string, unknown>).__pageDebug = {
           slices,
           rev: layoutPass,
+          // wall clock of the pass that committed these slices. `rev` is local to
+          // this effect and restarts at 0 whenever the effect re-runs, so a caller
+          // that compares rev across two documents/recipient rows can see it go
+          // backwards; the timestamp is the monotonic "measured after X" signal.
+          passAt: lastPassAt,
           fastPasses,
           fastReject,
           carriedSamples,

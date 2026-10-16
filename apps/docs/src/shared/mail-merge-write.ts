@@ -99,14 +99,14 @@ export async function writeMailMergeOutput(
   resolvePath: PathResolver = (candidate) => join(dir, candidate),
   write: WriteFn = writeEntirely,
   exists: (candidate: string) => boolean = (candidate) => existsSync(join(dir, candidate)),
-  caseInsensitive = process.platform === 'win32',
 ): Promise<WriteOutcome> {
-  // On Windows `notes.docx` and `NOTES.docx` are the same file. Two recipients
-  // whose names differ only in case would otherwise both be handed the "free"
-  // name and the second `overwrite` would erase the first. Folding the batch's
-  // claims makes the collision visible to the writer on the platform where it is
-  // real, and leaves exact names alone everywhere else.
-  const fold = (candidate: string) => (caseInsensitive ? candidate.toLowerCase() : candidate)
+  // `notes.docx` and `NOTES.docx` are the same file on Windows and on the
+  // case-insensitive volumes macOS ships with by default; `Nǫtes.docx` and
+  // `notes.docx` can collide once the filesystem normalises the name. Folding
+  // every claim the same way (NFC, then case) is conservative: on a
+  // case-sensitive filesystem it may rename a pair that could have coexisted,
+  // but it can never let one recipient's file erase another's.
+  const fold = (candidate: string) => candidate.normalize('NFC').toLowerCase()
   const claimed = new Set<string>()
   for (const entry of allocated ?? []) claimed.add(fold(entry))
   const isTaken = (candidate: string) => claimed.has(fold(candidate)) || exists(candidate)

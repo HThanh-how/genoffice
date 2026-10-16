@@ -237,3 +237,78 @@ describe('reading one worksheet only', () => {
     expect(sheet.rows[0]).toEqual(['001234', '2023-03-15'])
   })
 })
+
+describe('worksheet row and cell positions', () => {
+  it('keeps a value in the row the worksheet says it is in', async () => {
+    const bytes = await workbook([
+      {
+        name: 'Recipients',
+        xml:
+          '<row r="1"><c r="A1"><v>Name</v></c></row>' +
+          '<row r="3"><c r="A3"><v>Lan</v></c></row>',
+      },
+    ])
+    const sheet = await xlsxSheetGrid(bytes, 'Recipients')
+    // row 2 was never written; row 3 is still row 3
+    expect(sheet.rows).toEqual([['Name'], [], ['Lan']])
+  })
+
+  it('does not slide a value up when the first rows are missing', async () => {
+    const bytes = await workbook([
+      { name: 'S', xml: '<row r="4"><c r="A4"><v>fourth</v></c></row>' },
+    ])
+    const sheet = await xlsxSheetGrid(bytes, 'S')
+    expect(sheet.rows.length).toBe(4)
+    expect(sheet.rows[3]).toEqual(['fourth'])
+  })
+
+  it('places rows declared out of order at their declared position', async () => {
+    const bytes = await workbook([
+      {
+        name: 'S',
+        xml:
+          '<row r="3"><c r="A3"><v>third</v></c></row>' +
+          '<row r="1"><c r="A1"><v>first</v></c></row>',
+      },
+    ])
+    const sheet = await xlsxSheetGrid(bytes, 'S')
+    expect(sheet.rows).toEqual([['first'], [], ['third']])
+  })
+
+  it('refuses a distant row declaration instead of allocating a million blanks', async () => {
+    const bytes = await workbook([
+      { name: 'S', xml: '<row r="1000000000"><c r="A1"><v>far</v></c></row>' },
+    ])
+    await expect(xlsxSheetGrid(bytes, 'S', 10)).rejects.toThrow(/declares row 1000000000/)
+  })
+
+  it('refuses a malformed cell reference rather than appending it to the next column', async () => {
+    const bytes = await workbook([
+      {
+        name: 'S',
+        xml: '<row r="1"><c r="A1"><v>Name</v></c><c r="A1x"><v>stray</v></c></row>',
+      },
+    ])
+    await expect(xlsxSheetGrid(bytes, 'S')).rejects.toThrow(/unreadable reference "A1x"/)
+  })
+
+  it('refuses a column reference past the worksheet limit', async () => {
+    for (const ref of ['XFE1', 'AAAAAAAAAAAAAAAAAAAAAAAA1']) {
+      const bytes = await workbook([
+        { name: 'S', xml: `<row r="1"><c r="${ref}"><v>x</v></c></row>` },
+      ])
+      await expect(xlsxSheetGrid(bytes, 'S')).rejects.toThrow(/at most 16384 columns/)
+    }
+  })
+
+  it('accepts the last real column and a cell written without a reference', async () => {
+    const bytes = await workbook([
+      {
+        name: 'S',
+        xml: '<row r="1"><c r="A1"><v>Name</v></c><c><v>no ref</v></c></row>',
+      },
+    ])
+    const sheet = await xlsxSheetGrid(bytes, 'S')
+    expect(sheet.rows).toEqual([['Name', 'no ref']])
+  })
+})
