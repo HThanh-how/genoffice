@@ -2,6 +2,7 @@ import { CLI, FakeChild, runDeps, tick } from './helpers/agy-fake'
 import { describe, expect, it, vi } from 'vitest'
 import { AGY_REQUEST_TIMEOUT_MS, buildAgyPrompt, streamAgy } from '../src/agy-cli'
 import { agyToolNote, parseAgyToolCalls, renderAgyToolCalls } from '../src/agy-tools'
+import { readAgyTurnFromText } from '../src/agy-structured-turn'
 
 const tools = [
   {
@@ -403,5 +404,88 @@ describe('streamAgy with tools', () => {
         reason: 'malformed_host_tool_call',
       })
     }
+  })
+
+  describe('Defect I: Tool examples inside Markdown code fences must not execute', () => {
+    it('I01: xml code block containing tool call is preserved as prose', () => {
+      const text = '```xml\n<tool_call>{"name":"replace_text","arguments":{}}</tool_call>\n```'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('I02: json code block containing tool call is preserved as prose', () => {
+      const text = '```json\n<tool_call>{"name":"replace_text","arguments":{}}</tool_call>\n```'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+    })
+
+    it('I03: unlabeled code block containing tool call is preserved as prose', () => {
+      const text = '```\n<tool_call>{"name":"replace_text","arguments":{}}</tool_call>\n```'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+    })
+
+    it('I04: tilde code block containing tool call is preserved as prose', () => {
+      const text = '~~~xml\n<tool_call>{"name":"replace_text","arguments":{}}</tool_call>\n~~~'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+    })
+
+    it('I05: code block example followed by real tool call executes only the real tool call', () => {
+      const text =
+        'Here is how you call it:\n```xml\n<tool_call>{"name":"replace_text","arguments":{"find":"example"}}</tool_call>\n```\n' +
+        'Now executing real edit:\n<tool_call>{"name":"replace_text","arguments":{"find":"real"}}</tool_call>'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(1)
+      expect(res.calls[0]?.input).toEqual({ find: 'real' })
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toContain('```xml\n<tool_call>{"name":"replace_text"')
+    })
+  })
+
+  describe('Defect J: Tool call limit in tag protocol fails closed', () => {
+    it('J01: exactly 8 tool calls succeeds', () => {
+      const blocks = Array.from(
+        { length: 8 },
+        (_, i) => `<tool_call>{"name":"replace_text","arguments":{"find":"${i}"}}</tool_call>`,
+      ).join('\n')
+      const res = parseAgyToolCalls(blocks, known)
+      expect(res.calls).toHaveLength(8)
+      expect(res.invalidBlocks).toBe(0)
+    })
+
+    it('J02: 9 tool calls fails closed with invalidBlocks > 0 and 0 calls', () => {
+      const blocks = Array.from(
+        { length: 9 },
+        (_, i) => `<tool_call>{"name":"replace_text","arguments":{"find":"${i}"}}</tool_call>`,
+      ).join('\n')
+      const res = parseAgyToolCalls(blocks, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(1)
+
+      const turn = readAgyTurnFromText(blocks, known)
+      expect(turn.kind).toBe('malformed')
+    })
+
+    it('J03: 10 tool calls fails closed with invalidBlocks = 2', () => {
+      const blocks = Array.from(
+        { length: 10 },
+        (_, i) => `<tool_call>{"name":"replace_text","arguments":{"find":"${i}"}}</tool_call>`,
+      ).join('\n')
+      const res = parseAgyToolCalls(blocks, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(2)
+    })
   })
 })

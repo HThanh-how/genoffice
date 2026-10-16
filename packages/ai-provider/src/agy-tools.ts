@@ -45,38 +45,107 @@ export function agyCallId(index: number): string {
   return `agy-${Date.now().toString(36)}-${index}`
 }
 
+function findFencedCodeBlockRanges(text: string): Array<{ start: number; end: number }> {
+  const ranges: Array<{ start: number; end: number }> = []
+  const fenceLineRegex = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*([a-zA-Z0-9_-]+)?[ \t]*$/
+  const lines = text.split('\n')
+  let currentOffset = 0
+  let openFence: { char: string; len: number; start: number } | null = null
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i]!
+    const lineStart = currentOffset
+    const lineEnd = currentOffset + line.length
+    currentOffset = lineEnd + 1
+
+    if (!openFence) {
+      const match = fenceLineRegex.exec(line)
+      if (match) {
+        openFence = {
+          char: match[1]![0]!,
+          len: match[1]!.length,
+          start: lineStart,
+        }
+      }
+    } else {
+      const closeMatch = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)
+      if (
+        closeMatch &&
+        closeMatch[1]![0] === openFence.char &&
+        closeMatch[1]!.length >= openFence.len
+      ) {
+        ranges.push({ start: openFence.start, end: lineEnd })
+        openFence = null
+      }
+    }
+  }
+
+  if (openFence) {
+    ranges.push({ start: openFence.start, end: text.length })
+  }
+
+  return ranges
+}
+
 /** Split a model reply into visible text and the tool calls it requested. */
 export function parseAgyToolCalls(
   text: string,
   known: ReadonlySet<string>,
 ): { text: string; calls: AgentToolCall[]; invalidBlocks: number } {
+  const codeRanges = findFencedCodeBlockRanges(text)
+  const isInsideCodeBlock = (pos: number): { inside: boolean; end: number } => {
+    for (const r of codeRanges) {
+      if (pos >= r.start && pos < r.end) return { inside: true, end: r.end }
+    }
+    return { inside: false, end: -1 }
+  }
+
   const calls: AgentToolCall[] = []
   let invalidBlocks = 0
   let visible = ''
-  let rest = text
-  for (;;) {
-    const start = rest.indexOf(AGY_TOOL_OPEN)
+  let cursor = 0
+
+  while (cursor < text.length) {
+    const start = text.indexOf(AGY_TOOL_OPEN, cursor)
     if (start < 0) {
-      visible += rest
+      visible += text.slice(cursor)
       break
     }
-    visible += rest.slice(0, start)
-    const end = rest.indexOf(AGY_TOOL_CLOSE, start + AGY_TOOL_OPEN.length)
+    const check = isInsideCodeBlock(start)
+    if (check.inside) {
+      visible += text.slice(cursor, check.end)
+      cursor = check.end
+      continue
+    }
+
+    visible += text.slice(cursor, start)
+    const end = text.indexOf(AGY_TOOL_CLOSE, start + AGY_TOOL_OPEN.length)
     if (end < 0) {
       // unterminated block: treat the tail as the JSON so a cut-off reply still works
-      const parsed = parseOne(rest.slice(start + AGY_TOOL_OPEN.length), known, calls.length)
+      const parsed = parseOne(text.slice(start + AGY_TOOL_OPEN.length), known, calls.length)
       if (parsed) calls.push(parsed)
       else invalidBlocks++
+      cursor = text.length
       break
     }
-    const parsed = parseOne(rest.slice(start + AGY_TOOL_OPEN.length, end), known, calls.length)
+    const parsed = parseOne(text.slice(start + AGY_TOOL_OPEN.length, end), known, calls.length)
     if (parsed) calls.push(parsed)
     else invalidBlocks++
-    rest = rest.slice(end + AGY_TOOL_CLOSE.length)
+    cursor = end + AGY_TOOL_CLOSE.length
   }
+
+  if (calls.length > AGY_MAX_TOOL_CALLS_PER_TURN) {
+    invalidBlocks += calls.length - AGY_MAX_TOOL_CALLS_PER_TURN
+    return {
+      text: visible.trim(),
+      calls: [],
+      invalidBlocks,
+    }
+  }
+
   return {
     text: visible.trim(),
-    calls: calls.slice(0, AGY_MAX_TOOL_CALLS_PER_TURN),
+    calls,
     invalidBlocks,
   }
 }

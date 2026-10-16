@@ -12,6 +12,7 @@ import {
   agyToolTurnSchema,
   parseAgyStructuredText,
   readAgyTurnFromText,
+  readStructuredToolTurn,
   renderAgyStructuredTurn,
   resolveAgyToolProtocol,
 } from '../src/agy-structured-turn'
@@ -1250,5 +1251,159 @@ describe('Defect D Regression Matrix: truncated AGY JSON and fail-closed protoco
     })
     await expect(t.pending).rejects.toThrow()
     expect(t.deltas).not.toContain('{"text":"Đang xử lý","tool_ca')
+  })
+
+  describe('Defect F: Early truncated structured JSON tokens fail closed', () => {
+    const truncatedCases = [
+      '{"text":"Done","tool_',
+      '{"text":"Done","tool',
+      '{"text":"Done",',
+      '{"text":"Done',
+      '{"text":',
+      '{"tool',
+      '{"tool_',
+      '{"tool_c',
+      '{"tool_calls',
+      '{"text":"Đang xử lý","tool_',
+    ]
+
+    for (const [index, raw] of truncatedCases.entries()) {
+      it(`F${String(index + 1).padStart(2, '0')}: '${raw}' recognized as malformed`, () => {
+        const res = parseAgyStructuredText(raw, knownTools)
+        expect(res.kind).toBe('malformed')
+        const turn = readAgyTurnFromText(raw, knownTools)
+        expect(turn.kind).toBe('malformed')
+      })
+    }
+
+    it('F11: early truncation does not execute tool or leak as prose in runTurn', async () => {
+      const t = await runTurn({
+        replies: [result({ response: '{"text":"Đang sửa","tool_' }), result({ response: '' })],
+      })
+      await expect(t.pending).rejects.toThrow()
+      expect(t.calls).toHaveLength(0)
+      expect(t.deltas).not.toContain('{"text":"Đang sửa","tool_')
+    })
+  })
+
+  describe('Defect G: Markdown fence variants for structured turn', () => {
+    const validTurn = { text: 'Done', tool_calls: [] }
+    const validJson = JSON.stringify(validTurn)
+
+    it('G01: ```json', () => {
+      const res = parseAgyStructuredText(`\`\`\`json\n${validJson}\n\`\`\``, knownTools)
+      expect(res.kind).toBe('valid')
+    })
+
+    it('G02: ```JSON (uppercase)', () => {
+      const res = parseAgyStructuredText(`\`\`\`JSON\n${validJson}\n\`\`\``, knownTools)
+      expect(res.kind).toBe('valid')
+    })
+
+    it('G03: ```Json (mixed case)', () => {
+      const res = parseAgyStructuredText(`\`\`\`Json\n${validJson}\n\`\`\``, knownTools)
+      expect(res.kind).toBe('valid')
+    })
+
+    it('G04: ``` json (space before json)', () => {
+      const res = parseAgyStructuredText(`\`\`\` json\n${validJson}\n\`\`\``, knownTools)
+      expect(res.kind).toBe('valid')
+    })
+
+    it('G05: ``` (unlabeled)', () => {
+      const res = parseAgyStructuredText(`\`\`\`\n${validJson}\n\`\`\``, knownTools)
+      expect(res.kind).toBe('valid')
+    })
+
+    it('G06: ````json (4 backticks)', () => {
+      const res = parseAgyStructuredText(`\`\`\`\`json\n${validJson}\n\`\`\`\``, knownTools)
+      expect(res.kind).toBe('valid')
+    })
+
+    it('G07: ~~~json (tildes)', () => {
+      const res = parseAgyStructuredText(`~~~json\n${validJson}\n~~~`, knownTools)
+      expect(res.kind).toBe('valid')
+    })
+
+    it('G08: ~~~JSON (uppercase tildes)', () => {
+      const res = parseAgyStructuredText(`~~~JSON\n${validJson}\n~~~`, knownTools)
+      expect(res.kind).toBe('valid')
+    })
+
+    it('G09: inline fence without newlines', () => {
+      const res = parseAgyStructuredText(`\`\`\`json${validJson}\`\`\``, knownTools)
+      expect(res.kind).toBe('valid')
+    })
+  })
+
+  describe('Defect K: readStructuredToolTurn schema bounds parity', () => {
+    it('K01: non-string text (number) is rejected', () => {
+      expect(readStructuredToolTurn({ text: 123, tool_calls: [] }, knownTools)).toBeNull()
+    })
+
+    it('K02: non-string text (boolean) is rejected', () => {
+      expect(readStructuredToolTurn({ text: true, tool_calls: [] }, knownTools)).toBeNull()
+    })
+
+    it('K03: non-string text (null) is rejected', () => {
+      expect(readStructuredToolTurn({ text: null, tool_calls: [] }, knownTools)).toBeNull()
+    })
+
+    it('K04: unrecognized top-level field is rejected', () => {
+      expect(
+        readStructuredToolTurn({ text: 'ok', tool_calls: [], extra_prop: 1 }, knownTools),
+      ).toBeNull()
+    })
+
+    it('K05: unrecognized tool_call property is rejected', () => {
+      expect(
+        readStructuredToolTurn(
+          {
+            text: 'ok',
+            tool_calls: [{ name: 'replace_text', arguments: {}, extra_field: 2 }],
+          },
+          knownTools,
+        ),
+      ).toBeNull()
+    })
+
+    it('K06: non-object arguments is rejected', () => {
+      expect(
+        readStructuredToolTurn(
+          { text: 'ok', tool_calls: [{ name: 'replace_text', arguments: 'str' }] },
+          knownTools,
+        ),
+      ).toBeNull()
+    })
+
+    it('K07: unknown tool name is rejected', () => {
+      expect(
+        readStructuredToolTurn(
+          { text: 'ok', tool_calls: [{ name: 'nonexistent_tool', arguments: {} }] },
+          knownTools,
+        ),
+      ).toBeNull()
+    })
+
+    it('K08: tool call count exceeding 8 is rejected', () => {
+      const calls = Array.from({ length: 9 }, () => ({ name: 'replace_text', arguments: {} }))
+      expect(readStructuredToolTurn({ text: 'ok', tool_calls: calls }, knownTools)).toBeNull()
+    })
+
+    it('K09: valid structured turn produces parsed result', () => {
+      const turn = readStructuredToolTurn(
+        { text: '  Done  ', tool_calls: [{ name: 'replace_text', arguments: { find: 'a' } }] },
+        knownTools,
+      )
+      expect(turn).toEqual({
+        text: 'Done',
+        calls: [{ name: 'replace_text', input: { find: 'a' } }],
+      })
+    })
+
+    it('K10: omitted text defaults to empty string', () => {
+      const turn = readStructuredToolTurn({ tool_calls: [] }, knownTools)
+      expect(turn).toEqual({ text: '', calls: [] })
+    })
   })
 })

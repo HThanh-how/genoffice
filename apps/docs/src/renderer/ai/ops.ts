@@ -1640,6 +1640,18 @@ export function executeOps(editor: Editor, ops: unknown, ctx: OpContext = {}): E
           .filter((idx): idx is number => idx !== null)
         effectiveOp = { ...effectiveOp, target: { ...op.target, blockIndexes: mapped } }
       }
+      if (op.target?.range) {
+        effectiveOp = {
+          ...effectiveOp,
+          target: {
+            ...effectiveOp.target,
+            range: {
+              from: tr.mapping.map(op.target.range.from),
+              to: tr.mapping.map(op.target.range.to),
+            },
+          },
+        }
+      }
       if (Array.isArray(op.blockIndexes)) {
         const mapped = op.blockIndexes
           .map((origIdx) =>

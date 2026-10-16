@@ -145,13 +145,34 @@ export const DOCS_CLAIM_CORRECTION =
   'Either invoke the required tool now to actually perform the action, ' +
   'or rewrite your reply so it accurately reflects what occurred without claiming changes that did not happen.'
 
+/** Strip quoted strings, inline code, and quotation blocks so quoted text is not mistaken for assistant claims */
+export function stripQuotesAndCode(text: string): string {
+  return text
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`[^`\n]*`/g, ' ')
+    .replace(/"[^"\\]*(?:\\.[^"\\]*)*"/g, ' ')
+    .replace(/'[^'\\]*(?:\\.[^'\\]*)*'/g, ' ')
+    .replace(/“[^”]*”/g, ' ')
+    .replace(/‘[^’]*’/g, ' ')
+    .replace(/「[^」]*」/g, ' ')
+    .replace(/『[^』]*』/g, ' ')
+}
+
+const CONTENT_ACTION_IN_COMMENT_RE =
+  /\b(?:and\s+)?(?:edited|updated|reformatted|modified|deleted|replaced|styled|changed)\s+(?:the\s+)?(?:content|text|paragraphs?|headings?|blocks?)\b|(?:và\s+)?(?:chỉnh\s+sửa|định\s+dạng(?:\s+lại)?|cập\s+nhật|thay\s+đổi|xóa)\s+(?:nội\s+dung|văn\s+bản|đoạn|tiêu\s+đề)/iu
+
+const CONTENT_ACTION_ON_CURRENT_DOC_RE =
+  /\b(?:and\s+)?(?:edited|updated|reformatted|modified|changed)\s+(?:the\s+)?(?:current\s+document|existing\s+document|open\s+document)\b|(?:và\s+)?(?:chỉnh\s+sửa|định\s+dạng(?:\s+lại)?|sửa)\s+(?:tài\s+liệu\s+hiện\s+tại|văn\s+bản\s+hiện\s+tại)/iu
+
 export function claimsDocModification(text: string): boolean {
+  const unquoted = stripQuotesAndCode(text)
+  if (!unquoted.trim()) return false
   return (
-    NEW_DOC_CLAIM_RE.test(text) ||
-    STYLE_DEF_CLAIM_RE.test(text) ||
-    EN_MODIFICATION_CLAIM.test(text) ||
-    VI_MODIFICATION_CLAIM.test(text) ||
-    ZH_MODIFICATION_CLAIM.test(text)
+    NEW_DOC_CLAIM_RE.test(unquoted) ||
+    STYLE_DEF_CLAIM_RE.test(unquoted) ||
+    EN_MODIFICATION_CLAIM.test(unquoted) ||
+    VI_MODIFICATION_CLAIM.test(unquoted) ||
+    ZH_MODIFICATION_CLAIM.test(unquoted)
   )
 }
 
@@ -168,7 +189,8 @@ function splitIntoClauses(text: string): string[] {
 /** Extract specific action effects affirmatively claimed in the reply */
 export function getClaimedSpecificEffects(text: string): Set<DocsEffectCategory> {
   const claimed = new Set<DocsEffectCategory>()
-  const clauses = splitIntoClauses(text)
+  const unquoted = stripQuotesAndCode(text)
+  const clauses = splitIntoClauses(unquoted)
 
   for (const clause of clauses) {
     if (FAILURE_INDICATOR_RE.test(clause)) {
@@ -201,12 +223,44 @@ export function getClaimedSpecificEffects(text: string): Set<DocsEffectCategory>
       if (CONTENT_ACTION_IN_STYLE_RE.test(clause)) {
         claimed.add('content')
       }
+    } else if (hasComment) {
+      // In comment actions (e.g. "added comment to paragraph 1"), paragraphs/headings
+      // are comment locations unless an explicit content editing action was stated.
+      if (CONTENT_ACTION_IN_COMMENT_RE.test(clause)) {
+        claimed.add('content')
+      }
+    } else if (hasNewDoc) {
+      // When creating a new document (e.g. "created a new document about paragraph formatting"),
+      // mentions of paragraphs/headings are document topics/titles, not edits to the current document.
+      if (CONTENT_ACTION_ON_CURRENT_DOC_RE.test(clause)) {
+        claimed.add('content')
+      }
     } else if (hasContentSpecific || (hasGenericFormatting && !hasOtherTarget)) {
       claimed.add('content')
     }
   }
 
   return claimed
+}
+
+/** Construct dynamic truthful corrective prompt acknowledging executed tools */
+export function buildDocsClaimCorrection(
+  unverified: readonly DocsEffectCategory[],
+  executed: readonly ExecutedToolCall[],
+): string {
+  const effectiveSucceeded = executed.filter(isCallEffective)
+  if (effectiveSucceeded.length === 0) {
+    return DOCS_CLAIM_CORRECTION
+  }
+  const succList = [...new Set(effectiveSucceeded.map((c) => c.name))].join(', ')
+  const missingList = unverified.join(', ')
+  return (
+    `[System check] Your reply claims that document editing, formatting, or styling was completed. ` +
+    `While the following tool(s) completed successfully: ${succList}, ` +
+    `the claimed modification(s) (${missingList}) have not been performed or verified. ` +
+    `Either invoke the required tool now to actually perform the remaining action, ` +
+    `or rewrite your reply so it accurately reflects what occurred without claiming changes that did not happen.`
+  )
 }
 
 /** verifyResponse implementation for the docs skill; returns corrective string or null. */
@@ -222,10 +276,14 @@ export function verifyDocsResponse(
   // If specific modification effects were claimed, every claimed specific effect
   // must have corresponding evidence in verified effects.
   if (claimedSpecific.size > 0) {
+    const missing: DocsEffectCategory[] = []
     for (const cat of claimedSpecific) {
       if (!verified.has(cat)) {
-        return DOCS_CLAIM_CORRECTION
+        missing.push(cat)
       }
+    }
+    if (missing.length > 0) {
+      return buildDocsClaimCorrection(missing, executed)
     }
     return null
   }

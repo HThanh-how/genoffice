@@ -106,12 +106,19 @@ export function readStructuredToolTurn(
 ): StructuredToolTurn | null {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
   const record = value as Record<string, unknown>
+  for (const key of Object.keys(record)) {
+    if (key !== 'text' && key !== 'tool_calls') return null
+  }
+  if ('text' in record && typeof record.text !== 'string') return null
   const rawCalls = record.tool_calls
   if (!Array.isArray(rawCalls)) return null
   if (rawCalls.length > AGY_MAX_TOOL_CALLS_PER_TURN) return null
   const calls: StructuredToolTurn['calls'] = []
   for (const raw of rawCalls) {
     if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+    for (const key of Object.keys(raw as Record<string, unknown>)) {
+      if (key !== 'name' && key !== 'arguments') return null
+    }
     const { name, arguments: args } = raw as { name?: unknown; arguments?: unknown }
     const resolved = typeof name === 'string' ? resolveToolName(name, known) : null
     if (!resolved) return null
@@ -128,12 +135,11 @@ export type AgyStructuredTextResult =
 
 function stripOuterFence(text: string): string {
   const trimmed = text.trim()
-  const match = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(trimmed)
-  return match ? match[1]!.trim() : trimmed
+  const match = /^(`{3,}|~{3,})[ \t]*(?:json)?[ \t]*\r?\n?([\s\S]*?)\r?\n?\1$/i.exec(trimmed)
+  return match ? match[2]!.trim() : trimmed
 }
 
-const TRUNCATED_STRUCTURED_ENVELOPE_RE =
-  /^\s*\{\s*(?:"text"\s*:\s*(?:"(?:[^"\\]|\\.)*")?\s*,\s*|(?:"text"\s*:\s*(?:"(?:[^"\\]|\\.)*)?)?)?["']tool_c(?:a(?:l(?:l(?:s)?)?)?)?["']?/is
+const TRUNCATED_STRUCTURED_ENVELOPE_RE = /^\s*\{\s*(?:["']?tool|["']?text\b)/i
 
 /**
  * Recover a complete standalone structured turn from raw text (e.g. when result.structured_output

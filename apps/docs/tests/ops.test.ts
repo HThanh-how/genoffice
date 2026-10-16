@@ -1463,4 +1463,57 @@ describe('Issue 2: Structural block-index mapping and atomicity regressions', ()
     expect(editor.state.doc.child(1).textContent).toBe('B')
     expect(editor.state.doc.child(2).textContent).toBe('C')
   })
+  describe('Defect M: target range mapping across structural and content operations', () => {
+    it('M01: target.range shifts accurately after earlier block deletion', () => {
+      const editor = createEditor([
+        para([text('First paragraph')]),
+        para([text('Second paragraph to delete')]),
+        para([text('Third paragraph target text')]),
+      ])
+      // Third paragraph starts at position:
+      // doc (0) -> child 0: pos 0, size 17 (1 + 15 + 1)
+      // child 1: pos 17, size 27 (1 + 25 + 1)
+      // child 2: pos 44, size 28 (1 + 26 + 1)
+      // "target text" inside child 2 is from pos 60 to 71.
+      const child2Start = editor.state.doc.child(0).nodeSize + editor.state.doc.child(1).nodeSize
+      const targetFrom = child2Start + 1 + 'Third paragraph '.length
+      const targetTo = targetFrom + 'target text'.length
+
+      const outcome = executeOps(editor, [
+        { op: 'deleteBlocks', target: { blockIndexes: [1] } },
+        {
+          op: 'setFont',
+          target: { range: { from: targetFrom, to: targetTo } },
+          bold: true,
+        },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(2)
+      expect(editor.state.doc.child(1).textContent).toBe('Third paragraph target text')
+      // Verify that bold was applied to "target text" in the new child(1)
+      const targetTextNode = editor.state.doc.child(1)
+      let foundBold = false
+      targetTextNode.descendants((node) => {
+        if (node.isText && node.text?.includes('target text')) {
+          if (node.marks.some((m) => m.type.name === 'bold')) foundBold = true
+        }
+      })
+      expect(foundBold).toBe(true)
+    })
+
+    it('M02: target.range shifts accurately after insertToc in same batch', () => {
+      const editor = createEditor([heading([text('Heading 1')], 1), para([text('P1')])])
+      const p1Pos = editor.state.doc.child(0).nodeSize
+      const range = { from: p1Pos + 1, to: p1Pos + 3 }
+
+      const outcome = executeOps(editor, [
+        { op: 'insertToc', afterBlockIndex: -1 },
+        { op: 'setFont', target: { range }, italic: true },
+      ])
+      expect(outcome.ok).toBe(true)
+      const lastChild = editor.state.doc.child(editor.state.doc.childCount - 1)
+      expect(lastChild.textContent).toBe('P1')
+      expect(lastChild.child(0).marks.some((m) => m.type.name === 'italic')).toBe(true)
+    })
+  })
 })
