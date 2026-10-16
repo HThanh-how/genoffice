@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { Editor } from '@tiptap/core'
 import { AgentLoop, type AgentStreamCallbacks, type AgentTransport } from '@genoffice/agent-core'
 import { editorExtensions } from '../src/renderer/editor/extensions'
@@ -231,6 +231,122 @@ describe('verifyDocsResponse unit tests', () => {
     )
     expect(mismatchCorrection).toBe(DOCS_CLAIM_CORRECTION)
   })
+
+  it('accepts truthful new document creation claim when create_document succeeded', () => {
+    const viRes = verifyDocsResponse('Tôi đã tạo tài liệu mới.', [
+      { name: 'create_document', ok: true, mutated: false },
+    ])
+    expect(viRes).toBeNull()
+
+    const enRes = verifyDocsResponse('I created a new document.', [
+      { name: 'create_document', ok: true, mutated: false },
+    ])
+    expect(enRes).toBeNull()
+
+    const enRes2 = verifyDocsResponse('The new document has been created.', [
+      { name: 'create_document', ok: true, mutated: false },
+    ])
+    expect(enRes2).toBeNull()
+  })
+
+  it('rejects false new document creation claim when create_document failed', () => {
+    const viRes = verifyDocsResponse('Tôi đã tạo tài liệu mới.', [
+      { name: 'create_document', ok: false, mutated: false },
+    ])
+    expect(viRes).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('rejects false current document formatting claim when only create_document succeeded', () => {
+    const enRes = verifyDocsResponse('I formatted the current document.', [
+      { name: 'create_document', ok: true, mutated: false },
+    ])
+    expect(enRes).toBe(DOCS_CLAIM_CORRECTION)
+
+    const viRes = verifyDocsResponse('Tôi đã định dạng lại văn bản.', [
+      { name: 'create_document', ok: true, mutated: false },
+    ])
+    expect(viRes).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('rejects false new document creation claim when only apply_ops succeeded on current document', () => {
+    const viRes = verifyDocsResponse('Tôi đã tạo tài liệu mới.', [
+      { name: 'apply_ops', ok: true, mutated: true },
+    ])
+    expect(viRes).toBe(DOCS_CLAIM_CORRECTION)
+
+    const enRes = verifyDocsResponse('I created a new document.', [
+      { name: 'apply_ops', ok: true, mutated: true },
+    ])
+    expect(enRes).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('enforces specific claim-to-effect matching across metadata tools', () => {
+    // watermark success + false margins claim => rejected
+    const wmToMargins = verifyDocsResponse('I have updated the page margins.', [
+      { name: 'set_watermark', ok: true, mutated: false },
+    ])
+    expect(wmToMargins).toBe(DOCS_CLAIM_CORRECTION)
+
+    // margins success + truthful margins claim => accepted
+    const marginsTruth = verifyDocsResponse('I have updated the page margins.', [
+      { name: 'set_page_setup', ok: true, mutated: false },
+    ])
+    expect(marginsTruth).toBeNull()
+
+    // header/footer success + false watermark claim => rejected
+    const hfToWm = verifyDocsResponse('I added a watermark to the document.', [
+      { name: 'set_header_footer', ok: true, mutated: false },
+    ])
+    expect(hfToWm).toBe(DOCS_CLAIM_CORRECTION)
+
+    // style definition success + truthful style claim => accepted
+    const styleTruth = verifyDocsResponse('I defined a new style definition for headings.', [
+      { name: 'define_style', ok: true, mutated: false },
+    ])
+    expect(styleTruth).toBeNull()
+
+    // comment success + false formatting claim => rejected
+    const commentToFmt = verifyDocsResponse('Tôi đã định dạng lại các đoạn văn.', [
+      { name: 'reply_comment', ok: true, mutated: false },
+    ])
+    expect(commentToFmt).toBe(DOCS_CLAIM_CORRECTION)
+
+    // content change success + false page setup claim => rejected
+    const contentToMargins = verifyDocsResponse('Tôi đã căn lề trang thành 3cm.', [
+      { name: 'apply_ops', ok: true, mutated: true },
+    ])
+    expect(contentToMargins).toBe(DOCS_CLAIM_CORRECTION)
+
+    // multiple successful tools + accurate combined claim => accepted
+    const combinedTruth = verifyDocsResponse('I updated the page margins and added a watermark.', [
+      { name: 'set_page_setup', ok: true, mutated: false },
+      { name: 'set_watermark', ok: true, mutated: false },
+    ])
+    expect(combinedTruth).toBeNull()
+
+    // partial success + accurate partial completion message => accepted
+    const partialExplanation = verifyDocsResponse(
+      'I added the watermark, but updating the page margins failed.',
+      [
+        { name: 'set_watermark', ok: true, mutated: false },
+        { name: 'set_page_setup', ok: false, mutated: false },
+      ],
+    )
+    expect(partialExplanation).toBeNull()
+
+    const partialExplanationVi = verifyDocsResponse(
+      'Đã thêm hình mờ thành công, tuy nhiên căn lề trang thất bại.',
+      [
+        { name: 'set_watermark', ok: true, mutated: false },
+        { name: 'set_page_setup', ok: false, mutated: false },
+      ],
+    )
+    expect(partialExplanationVi).toBeNull()
+
+    // informational response mentioning margins without claiming a modification => accepted
+    const infoOnly = verifyDocsResponse('The current page margins are 2.5cm on all sides.', [])
+    expect(infoOnly).toBeNull()
+  })
 })
 
 describe('fallbackDocsResponse unit tests', () => {
@@ -257,6 +373,85 @@ describe('fallbackDocsResponse unit tests', () => {
       { name: 'apply_ops', ok: true, mutated: false },
     ])
     expect(fallback).toContain('Không có thay đổi nào được áp dụng')
+  })
+
+  it('handles Case 1: read_blocks succeeds, apply_ops fails => editing failed, not partial editing success', () => {
+    const fallback = fallbackDocsResponse('I updated the document.', [
+      { name: 'read_blocks', ok: true, mutated: false },
+      { name: 'apply_ops', ok: false, output: 'Syntax error in ops' },
+    ])
+    expect(fallback).not.toContain('partially completed')
+    expect(fallback).not.toContain('read_blocks')
+    expect(fallback).toContain('could not be completed')
+    expect(fallback).toContain('apply_ops')
+    expect(fallback).toContain('Syntax error in ops')
+  })
+
+  it('handles Case 2: apply_ops dryRun succeeds, apply_ops fails => no applied modification', () => {
+    const fallback = fallbackDocsResponse('I updated the document.', [
+      { name: 'apply_ops', ok: true, mutated: false, input: { dryRun: true } },
+      { name: 'apply_ops', ok: false, output: 'Invalid block target' },
+    ])
+    expect(fallback).not.toContain('partially completed')
+    expect(fallback).toContain('could not be completed')
+    expect(fallback).toContain('apply_ops')
+  })
+
+  it('handles Case 3: apply_ops changed=0, another apply_ops fails => no applied modification', () => {
+    const fallback = fallbackDocsResponse('I updated the document.', [
+      { name: 'apply_ops', ok: true, mutated: false },
+      { name: 'apply_ops', ok: false, output: 'Block out of range' },
+    ])
+    expect(fallback).not.toContain('partially completed')
+    expect(fallback).toContain('could not be completed')
+    expect(fallback).toContain('apply_ops')
+  })
+
+  it('handles Case 4: set_page_setup succeeds, apply_ops fails => legitimate partial success, identify both effects', () => {
+    const fallback = fallbackDocsResponse('I updated the document.', [
+      { name: 'set_page_setup', ok: true, mutated: false },
+      { name: 'apply_ops', ok: false, output: 'Failed to format paragraph' },
+    ])
+    expect(fallback).toContain('partially completed')
+    expect(fallback).toContain('set_page_setup')
+    expect(fallback).toContain('apply_ops')
+    expect(fallback).toContain('Failed to format paragraph')
+  })
+
+  it('handles Case 5: reply_comment succeeds, apply_ops fails => comment succeeded, formatting failed', () => {
+    const fallback = fallbackDocsResponse('I updated the document.', [
+      { name: 'reply_comment', ok: true, mutated: false },
+      { name: 'apply_ops', ok: false, output: 'No blocks matched' },
+    ])
+    expect(fallback).toContain('partially completed')
+    expect(fallback).toContain('reply_comment')
+    expect(fallback).toContain('apply_ops')
+  })
+
+  it('handles Case 6: create_document succeeds, apply_ops fails => new document created, current document edit failed', () => {
+    const fallback = fallbackDocsResponse('I updated the document.', [
+      { name: 'create_document', ok: true, mutated: false },
+      { name: 'apply_ops', ok: false, output: 'Failed to write content' },
+    ])
+    expect(fallback).toContain('partially completed')
+    expect(fallback).toContain('create_document')
+    expect(fallback).toContain('apply_ops')
+  })
+
+  it('handles Case 7: all modifying tools fail => clear failure', () => {
+    const fallback = fallbackDocsResponse('I updated the document.', [
+      { name: 'apply_ops', ok: false, output: 'Fatal execution error' },
+      { name: 'set_page_setup', ok: false, output: 'Invalid margin parameter' },
+    ])
+    expect(fallback).not.toContain('partially completed')
+    expect(fallback).toContain('could not be completed')
+    expect(fallback).toContain('apply_ops')
+    expect(fallback).toContain('set_page_setup')
+  })
+
+  it('handles Case 8: no tools executed => no modification claim permitted', () => {
+    const fallback = fallbackDocsResponse('I updated the document.', [])
+    expect(fallback).toContain('no document-modifying tools were invoked')
   })
 })
 
@@ -661,5 +856,161 @@ describe('AgentLoop + Docs skill completion claim guard integration', () => {
     expect(finalAnswer).toContain('partially completed')
     expect(finalAnswer).toContain('reply_comment')
     expect(finalAnswer).toContain('apply_ops')
+  })
+
+  it('allows truthful create_document completion without extra corrective turns', async () => {
+    const editor = createEditor([para('Nội dung')])
+    ;(window as any).desktop = {
+      createDocument: vi.fn(async () => ({ ok: true, path: '/tmp/new_doc.docx' })),
+    }
+
+    const transport = scriptedTransport([
+      // Turn 1: tool call create_document
+      (cb) => {
+        cb.onToolCall({
+          id: 'call_create',
+          name: 'create_document',
+          input: { type: 'docx', title: 'New Doc', content: '<p>Xin chào</p>' },
+        })
+        cb.onDone()
+      },
+      // Turn 2: Truthful creation claim
+      (cb) => {
+        cb.onDelta('Tôi đã tạo tài liệu mới.')
+        cb.onDone()
+      },
+    ])
+
+    let finalAnswer = ''
+    let onTextLast = ''
+    const loop = new AgentLoop({
+      transport,
+      skill: createDocsSkill(
+        () => editor,
+        () => NUM_IDS,
+      ),
+      events: {
+        onText: (t) => (onTextLast = t),
+        onDone: (r) => (finalAnswer = r.text),
+      },
+    })
+
+    loop.run('Tạo văn bản mới')
+    for (let i = 0; i < 8; i++) await flush()
+
+    expect(transport.requests.length).toBe(2)
+    expect(finalAnswer).toBe('Tôi đã tạo tài liệu mới.')
+    expect(onTextLast).toBe('Tôi đã tạo tài liệu mới.')
+  })
+
+  it('reports truthful partial completion when create_document succeeds but apply_ops fails', async () => {
+    const editor = createEditor([para('Nội dung')])
+    ;(window as any).desktop = {
+      createDocument: vi.fn(async () => ({ ok: true, path: '/tmp/new_doc.docx' })),
+    }
+
+    const transport = scriptedTransport([
+      // Turn 1: create_document succeeds, apply_ops fails
+      (cb) => {
+        cb.onToolCall({
+          id: 'call_create',
+          name: 'create_document',
+          input: { type: 'docx', title: 'New Doc', content: '<p>Xin chào</p>' },
+        })
+        cb.onToolCall({
+          id: 'call_fail',
+          name: 'apply_ops',
+          input: { ops: [{ op: 'unknown_op' }] },
+        })
+        cb.onDone()
+      },
+      // Turn 2: Model falsely claims formatting happened
+      (cb) => {
+        cb.onDelta('Tôi đã định dạng lại văn bản và tạo tài liệu mới.')
+        cb.onDone()
+      },
+      // Turn 3: Model repeats claim
+      (cb) => {
+        cb.onDelta('Tôi đã định dạng lại văn bản và tạo tài liệu mới.')
+        cb.onDone()
+      },
+    ])
+
+    let finalAnswer = ''
+    let onTextLast = ''
+    const loop = new AgentLoop({
+      transport,
+      skill: createDocsSkill(
+        () => editor,
+        () => NUM_IDS,
+      ),
+      events: {
+        onText: (t) => (onTextLast = t),
+        onDone: (r) => (finalAnswer = r.text),
+      },
+    })
+
+    loop.run('Tạo tài liệu mới và định dạng văn bản hiện tại')
+    for (let i = 0; i < 8; i++) await flush()
+
+    expect(transport.requests.length).toBe(3)
+    expect(finalAnswer).toContain('Thao tác được thực hiện một phần')
+    expect(finalAnswer).toContain('create_document')
+    expect(finalAnswer).toContain('apply_ops')
+    expect(onTextLast).toBe(finalAnswer)
+  })
+
+  it('does not report read_blocks as partial success when editing fails', async () => {
+    const editor = createEditor([para('Nội dung')])
+    const transport = scriptedTransport([
+      // Turn 1: read_blocks succeeds, apply_ops fails
+      (cb) => {
+        cb.onToolCall({
+          id: 'call_read',
+          name: 'read_blocks',
+          input: { startBlockIndex: 0, endBlockIndex: 0 },
+        })
+        cb.onToolCall({
+          id: 'call_fail',
+          name: 'apply_ops',
+          input: { ops: [{ op: 'unknown_op' }] },
+        })
+        cb.onDone()
+      },
+      // Turn 2: Model falsely claims formatting
+      (cb) => {
+        cb.onDelta('I have formatted the document as requested.')
+        cb.onDone()
+      },
+      // Turn 3: Model repeats false formatting claim
+      (cb) => {
+        cb.onDelta('I have formatted the document as requested.')
+        cb.onDone()
+      },
+    ])
+
+    let finalAnswer = ''
+    let onTextLast = ''
+    const loop = new AgentLoop({
+      transport,
+      skill: createDocsSkill(
+        () => editor,
+        () => NUM_IDS,
+      ),
+      events: {
+        onText: (t) => (onTextLast = t),
+        onDone: (r) => (finalAnswer = r.text),
+      },
+    })
+
+    loop.run('Read and format')
+    for (let i = 0; i < 8; i++) await flush()
+
+    expect(transport.requests.length).toBe(3)
+    expect(finalAnswer).not.toContain('partially completed')
+    expect(finalAnswer).not.toContain('read_blocks')
+    expect(finalAnswer).toContain('could not be completed')
+    expect(finalAnswer).toContain('apply_ops')
+    expect(onTextLast).toBe(finalAnswer)
   })
 })
