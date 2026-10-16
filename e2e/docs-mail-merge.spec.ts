@@ -448,4 +448,49 @@ test.describe('docs mailings tab', () => {
 
     await closeAndSaveVideo(launched, 'mail-merge-pdf-order')
   })
+
+  test('a cancelled batch writes nothing and releases the directory grant', async () => {
+    test.setTimeout(240_000)
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'genoffice-e2e-mailmerge-cancel-')))
+    const outDir = join(dir, 'out')
+    mkdirSync(outDir)
+    const docPath = join(dir, 'template.docx')
+    writeFileSync(docPath, await templateDocx(BODY))
+    const csvPath = join(dir, 'recipients.csv')
+    writeFileSync(csvPath, '"Full Name"\n"Alpha Recipient"\n"Beta Recipient"\n"Gamma Recipient"\n')
+
+    const launched = await launchShell({
+      openFile: docPath,
+      onboardingSeen: true,
+      videoDir: 'mail-merge-cancel',
+      env: { GENOFFICE_TEST_EXPORT_DIR: outDir },
+    })
+    await answerSourceDialog(launched.app, csvPath)
+    const page = await docsPage(launched.app)
+
+    await page.locator('.ribbon-tab', { hasText: 'Mailings' }).click()
+    await page.getByRole('button', { name: 'Start Mail Merge' }).click()
+    await page.getByRole('button', { name: 'Choose file…' }).click()
+    await page.getByRole('button', { name: 'Use selected (3)' }).click()
+
+    await page.getByRole('button', { name: 'Finish & Merge' }).click()
+    await page.getByRole('option', { name: 'Export as Word documents' }).click()
+    await page.getByRole('button', { name: 'Browse…' }).click()
+    await page.getByRole('button', { name: 'Export 3 files' }).click()
+    await page.getByRole('button', { name: 'Cancel' }).click()
+
+    // the batch stopped: nothing on disk, and the directory grant is gone with it
+    expect(readdirSync(outDir).filter((n) => n.endsWith('.docx')).length).toBe(0)
+
+    // the grant is released with the dialog: a late write to the same directory
+    // is refused by the main process
+    const late = await page.evaluate(
+      (out) => window.desktop.writeMailMergeFile(out, 'late.docx', btoa('x'), 'overwrite'),
+      outDir,
+    )
+    expect(late.ok).toBe(false)
+    expect(late.error).toContain('authorized')
+
+    await closeAndSaveVideo(launched, 'mail-merge-cancel')
+  })
 })
