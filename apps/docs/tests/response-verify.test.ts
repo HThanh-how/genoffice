@@ -1331,3 +1331,338 @@ describe('AgentLoop + Docs skill completion claim guard integration', () => {
     expect(finalAnswer).not.toBe('I formatted the headings.')
   })
 })
+
+describe('Defect A Regression Matrix: truthful fallback when tools succeeded but claim unverified', () => {
+  it('A01: watermark success + unsupported margins claim', () => {
+    const claim = 'I have updated the page margins.'
+    const tools = [{ name: 'set_watermark', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/set_watermark/)
+    expect(fb).not.toMatch(/no document-modifying tools were executed/i)
+    expect(fb).not.toMatch(/no changes were applied/i)
+    expect(fb).not.toMatch(/page margins have been updated/i)
+  })
+
+  it('A02: create_document success + unsupported formatting claim', () => {
+    const claim = 'I formatted the current document.'
+    const tools = [{ name: 'create_document', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/create_document/)
+    expect(fb).not.toMatch(/no document-modifying tools were executed/i)
+    expect(fb).not.toMatch(/no changes were applied/i)
+  })
+
+  it('A03: define_style success + unsupported paragraph-format claim', () => {
+    const claim = 'I reformatted all existing headings.'
+    const tools = [{ name: 'define_style', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/define_style/)
+    expect(fb).not.toMatch(/no document-modifying tools were executed/i)
+    expect(fb).not.toMatch(/no changes were applied/i)
+  })
+
+  it('A04: metadata success + unrelated tool failure', () => {
+    const claim = 'I updated the page margins and watermark.'
+    const tools = [
+      { name: 'set_watermark', ok: true, mutated: false },
+      { name: 'set_page_setup', ok: false, mutated: false, output: 'Page setup failed' },
+    ]
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/set_watermark/)
+    expect(fb).toMatch(/set_page_setup/)
+    expect(fb).not.toMatch(/no document-modifying tools were executed/i)
+  })
+
+  it('A05: content mutation success + false metadata claim', () => {
+    const claim = 'I added a watermark to the document.'
+    const tools = [{ name: 'apply_ops', ok: true, mutated: true }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/apply_ops/)
+    expect(fb).not.toMatch(/no document-modifying tools were executed/i)
+    expect(fb).not.toMatch(/no changes were applied/i)
+  })
+
+  it('A06: read_blocks success + failed apply_ops', () => {
+    const claim = 'I formatted the paragraphs.'
+    const tools = [
+      { name: 'read_blocks', ok: true },
+      { name: 'apply_ops', ok: false, output: 'Formatting error' },
+    ]
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/apply_ops/)
+    expect(fb).not.toMatch(/read_blocks/)
+  })
+
+  it('A07: dryRun + failed apply_ops', () => {
+    const claim = 'I reformatted the document.'
+    const tools = [
+      { name: 'apply_ops', ok: true, mutated: false, input: { dryRun: true } },
+      { name: 'apply_ops', ok: false, output: 'Execution failure' },
+    ]
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/apply_ops/)
+    expect(fb).toMatch(/failed/i)
+  })
+
+  it('A08: changed=0 + no actual content mutation', () => {
+    const claim = 'I updated the document paragraphs.'
+    const tools = [{ name: 'apply_ops', ok: true, mutated: false }]
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/no matching content or paragraphs/i)
+  })
+
+  it('A09: no tools at all', () => {
+    const claim = 'I edited the document.'
+    const fb = fallbackDocsResponse(claim, [])
+    expect(fb).toMatch(/no document-modifying tools were invoked/i)
+  })
+
+  it('A10: all tools failed', () => {
+    const claim = 'I updated the document.'
+    const tools = [
+      { name: 'apply_ops', ok: false, output: 'Op error' },
+      { name: 'set_page_setup', ok: false, output: 'Setup error' },
+    ]
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/tool execution failed/i)
+    expect(fb).toMatch(/apply_ops/)
+    expect(fb).toMatch(/set_page_setup/)
+  })
+
+  it('A11: multiple independent successful actions, followed by one unsupported claim', () => {
+    const claim = 'I updated the page margins.'
+    const tools = [
+      { name: 'set_watermark', ok: true, mutated: false },
+      { name: 'define_style', ok: true, mutated: false },
+    ]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/set_watermark/)
+    expect(fb).toMatch(/define_style/)
+    expect(fb).not.toMatch(/no document-modifying tools were executed/i)
+  })
+
+  it('A12: truthful partial-success reporting', () => {
+    const claim = 'I applied all requested changes.'
+    const tools = [
+      { name: 'set_watermark', ok: true, mutated: false },
+      { name: 'apply_ops', ok: false, output: 'Invalid op' },
+    ]
+    const fb = fallbackDocsResponse(claim, tools)
+    expect(fb).toMatch(/partially completed/i)
+    expect(fb).toMatch(/set_watermark/)
+    expect(fb).toMatch(/apply_ops/)
+  })
+})
+
+describe('Defect B Regression Matrix: style claims and content actions', () => {
+  it('B01: pure style definition + define_style success => ACCEPT', () => {
+    const claim = 'I defined a Heading 1 style for paragraphs.'
+    const tools = [{ name: 'define_style', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('B02: pure style definition + apply_ops only => REJECT', () => {
+    const claim = 'I defined a Heading 1 style for paragraphs.'
+    const tools = [{ name: 'apply_ops', ok: true, mutated: true }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('B03: pure content formatting + define_style only => REJECT', () => {
+    const claim = 'I formatted the existing headings.'
+    const tools = [{ name: 'define_style', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('B04: pure content formatting + apply_ops mutated:true => ACCEPT', () => {
+    const claim = 'I formatted the existing headings.'
+    const tools = [{ name: 'apply_ops', ok: true, mutated: true }]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('B05: combined style/content + define_style only => REJECT', () => {
+    const claim = 'I defined a Heading style and formatted the existing headings.'
+    const tools = [{ name: 'define_style', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('B06: combined style/content + apply_ops only => REJECT', () => {
+    const claim = 'I defined a Heading style and formatted the existing headings.'
+    const tools = [{ name: 'apply_ops', ok: true, mutated: true }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('B07: combined style/content + both effective tools => ACCEPT', () => {
+    const claim = 'I defined a Heading style and formatted the existing headings.'
+    const tools = [
+      { name: 'define_style', ok: true, mutated: false },
+      { name: 'apply_ops', ok: true, mutated: true },
+    ]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('B08: updated font size + define_style only => REJECT', () => {
+    const claim = 'I defined a Heading style and updated the font size of the document.'
+    const tools = [{ name: 'define_style', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('B09: updated font size + both effective tools => ACCEPT', () => {
+    const claim = 'I defined a Heading style and updated the font size of the document.'
+    const tools = [
+      { name: 'define_style', ok: true, mutated: false },
+      { name: 'apply_ops', ok: true, mutated: true },
+    ]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('B10: set paragraph alignment + define_style only => REJECT', () => {
+    const claim = 'I defined a Heading style and set the paragraph alignment to center.'
+    const tools = [{ name: 'define_style', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('B11: set paragraph alignment + both effective tools => ACCEPT', () => {
+    const claim = 'I defined a Heading style and set the paragraph alignment to center.'
+    const tools = [
+      { name: 'define_style', ok: true, mutated: false },
+      { name: 'apply_ops', ok: true, mutated: true },
+    ]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('B12: Vietnamese combined claim + define_style only => REJECT', () => {
+    const claim = 'Tôi đã định nghĩa kiểu định dạng Heading 1 và cập nhật cỡ chữ của các đoạn văn.'
+    const tools = [{ name: 'define_style', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('B13: Vietnamese combined claim + both effective tools => ACCEPT', () => {
+    const claim = 'Tôi đã định nghĩa kiểu định dạng Heading 1 và cập nhật cỡ chữ của các đoạn văn.'
+    const tools = [
+      { name: 'define_style', ok: true, mutated: false },
+      { name: 'apply_ops', ok: true, mutated: true },
+    ]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('B14: style definition updated only => ACCEPT with define_style', () => {
+    const claim = 'I updated the definition of the Heading style.'
+    const tools = [{ name: 'define_style', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('B15: style created but explicitly not applied => ACCEPT with define_style', () => {
+    const claim = 'I created a Heading style but did not apply it to the existing paragraphs.'
+    const tools = [{ name: 'define_style', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('B16: informational style guidance => ACCEPT without tools', () => {
+    const claim = 'To define a Heading style, open Styles in the toolbar.'
+    expect(verifyDocsResponse(claim, [])).toBeNull()
+  })
+
+  it('B17: successful watermark does not validate content formatting', () => {
+    const claim = 'I formatted the headings.'
+    const tools = [{ name: 'set_watermark', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('B18: successful page_setup does not validate style definition', () => {
+    const claim = 'I defined a Heading style.'
+    const tools = [{ name: 'set_page_setup', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+})
+
+describe('Defect C Regression Matrix: failure language and affirmative claims', () => {
+  it('C01: affirmative watermark + negative margins + unrelated success => REJECT', () => {
+    const claim = 'I added a watermark and could not update the page margins.'
+    const tools = [{ name: 'reply_comment', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('C02: affirmative watermark + negative margins + watermark success => ACCEPT', () => {
+    const claim = 'I added a watermark and could not update the page margins.'
+    const tools = [
+      { name: 'set_watermark', ok: true, mutated: false },
+      { name: 'set_page_setup', ok: false, mutated: false },
+    ]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('C03: negative margins + affirmative watermark + unrelated success => REJECT', () => {
+    const claim = 'I could not update the page margins, but I added the watermark.'
+    const tools = [{ name: 'reply_comment', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('C04: negative margins + affirmative watermark + watermark success => ACCEPT', () => {
+    const claim = 'I could not update the page margins, but I added the watermark.'
+    const tools = [{ name: 'set_watermark', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('C05: affirmative watermark + failed formatting + corresponding partial execution => ACCEPT', () => {
+    const claim = 'I added a watermark but failed to format the headings.'
+    const tools = [
+      { name: 'set_watermark', ok: true, mutated: false },
+      { name: 'apply_ops', ok: false, mutated: false },
+    ]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('C06: negative creation statement only => ACCEPT as failure report', () => {
+    const claim = 'The document was not created.'
+    expect(verifyDocsResponse(claim, [])).toBeNull()
+  })
+
+  it('C07: negative style definition only => ACCEPT as failure report', () => {
+    const claim = 'I could not define the style.'
+    expect(verifyDocsResponse(claim, [])).toBeNull()
+  })
+
+  it('C08: Vietnamese affirmative + negative mixed clause => correct classification', () => {
+    const claim = 'Tôi đã thêm hình mờ nhưng không thể cập nhật căn lề trang.'
+    const unrelated = [{ name: 'reply_comment', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, unrelated)).toBe(DOCS_CLAIM_CORRECTION)
+    const correct = [{ name: 'set_watermark', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, correct)).toBeNull()
+  })
+
+  it('C09: Vietnamese negative + affirmative mixed clause => correct classification', () => {
+    const claim = 'Tôi chưa cập nhật được căn lề, nhưng đã thêm hình mờ.'
+    const unrelated = [{ name: 'reply_comment', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, unrelated)).toBe(DOCS_CLAIM_CORRECTION)
+    const correct = [{ name: 'set_watermark', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, correct)).toBeNull()
+  })
+
+  it('C10: combined legitimate success claims without failure => require all effects', () => {
+    const claim = 'I added a watermark and updated the page margins.'
+    const onlyWatermark = [{ name: 'set_watermark', ok: true, mutated: false }]
+    expect(verifyDocsResponse(claim, onlyWatermark)).toBe(DOCS_CLAIM_CORRECTION)
+    const both = [
+      { name: 'set_watermark', ok: true, mutated: false },
+      { name: 'set_page_setup', ok: true, mutated: false },
+    ]
+    expect(verifyDocsResponse(claim, both)).toBeNull()
+  })
+
+  it('C11: "bold and italic" must not be treated as two unrelated tool effects', () => {
+    const claim = 'I formatted the text with bold and italic styling.'
+    const tools = [{ name: 'apply_ops', ok: true, mutated: true }]
+    expect(verifyDocsResponse(claim, tools)).toBeNull()
+  })
+
+  it('C12: informational response mentioning a previous failure => no unnecessary retry', () => {
+    const claim =
+      'In the previous run, the watermark could not be applied because of a network error.'
+    expect(verifyDocsResponse(claim, [])).toBeNull()
+  })
+})

@@ -103,10 +103,10 @@ export function getVerifiedEffects(executed: readonly ExecutedToolCall[]): Set<D
 }
 
 const EN_MODIFICATION_CLAIM =
-  /\b(?:I(?:'ve| have)? (?:now |already |just )?(?:updated|edited|formatted|deleted|replaced|applied|inserted|added|modified|styled|adjusted|completed|changed|configured|created|built)|(?:The|This) (?:document|text|paragraph|heading|formatting|document layout|watermark|page setup|page margins?|margins?|style|styles?) (?:has been|was|is now) (?:updated|edited|formatted|deleted|replaced|applied|inserted|added|modified|styled|changed|created|built)|I have (?:successfully )?(?:made|applied|created|added) the (?:requested )?(?:changes|formatting|edits|document|file|watermark))\b/i
+  /\b(?:I(?:'ve| have)? (?:now |already |just )?(?:updated|edited|formatted|reformatted|deleted|replaced|applied|inserted|added|modified|styled|adjusted|completed|changed|configured|created|built)|(?:The|This) (?:document|text|paragraph|heading|formatting|document layout|watermark|page setup|page margins?|margins?|style|styles?) (?:has been|was|is now) (?:updated|edited|formatted|reformatted|deleted|replaced|applied|inserted|added|modified|styled|changed|created|built)|I have (?:successfully )?(?:made|applied|created|added) the (?:requested )?(?:changes|formatting|edits|document|file|watermark))\b/i
 
 const VI_MODIFICATION_CLAIM =
-  /(?:(?:tôi|mình|chúng tôi)\s+(?:đã|vừa)\s+[^。．.!！?？,\n]{0,25}?(?:định dạng|chỉnh sửa|chỉnh|cập nhật|thay thế|xóa|áp dụng|thêm|chèn|tạo|thiết lập|căn lề|căn|đặt|hoàn tất|hoàn thành)|(?:văn bản|tài liệu|đoạn văn|tiêu đề|trang|hình mờ|watermark|lề trang)\s+đã\s+được\s+[^。．.!！?？,\n]{0,25}?(?:định dạng|chỉnh sửa|chỉnh|cập nhật|thay thế|xóa|áp dụng|thêm|chèn|thiết lập|căn|đặt|thay đổi|tạo)|(?:^|[^\p{L}\p{N}])(?:đã|vừa)\s+[^。．.!！?？,\n]{0,25}?(?:định dạng|cập nhật|chỉnh sửa|chỉnh|thay thế|áp dụng|thiết lập|căn|đặt|tạo)\s+xong)/iu
+  /(?:(?:tôi|mình|chúng tôi)\s+(?:đã|vừa)\s+[^。．.!！?？,\n]{0,25}?(?:định dạng|chỉnh sửa|chỉnh|cập nhật|thay thế|xóa|áp dụng|thêm|chèn|tạo|thiết lập|căn lề|căn|đặt|hoàn tất|hoàn thành)|(?:văn bản|tài liệu|đoạn văn|tiêu đề|trang|hình mờ|watermark|lề trang)\s+đã\s+được\s+[^。．.!！?？,\n]{0,25}?(?:định dạng|chỉnh sửa|chỉnh|cập nhật|thay thế|xóa|áp dụng|thêm|chèn|thiết lập|căn|đặt|thay đổi|tạo)|(?:^|[^\p{L}\p{N}])(?:đã|vừa)\s+[^。．.!！?？,\n]{0,25}?(?:định dạng|cập nhật|chỉnh sửa|chỉnh|thay thế|áp dụng|thiết lập|căn|đặt|tạo|thêm|chèn)(?:\s+xong|\s+(?:hình\s+mờ|watermark|lề|font|cỡ\s+chữ|phông|kiểu|nội\s+dung|đoạn|bảng|ảnh|tiêu\s+đề|văn\s+bản|tài\s+liệu)))/iu
 
 const ZH_MODIFICATION_CLAIM =
   /(?:已[^。．.!！?？，,;；:：\n]{0,8}?(?:修改|更新|删除|替換|替换|应用|格式化|完成|调整|調整|插入|设置|設置|排版|创建|建立)(?!的)|(?:文档|文本|段落|格式|水印|页边距|页面设置)\s*已(?:成功)?(?:更新|修改|调整|调整完成|排版完成|格式化|创建|添加|设置))/u
@@ -123,7 +123,7 @@ const HEADER_FOOTER_CLAIM_RE =
   /(?:\b(?:headers?|footers?|header\/footer)\b|đầu\s+trang|chân\s+trang|tiêu\s+đề\s+trang|页眉|页脚)/iu
 
 const STYLE_DEF_CLAIM_RE =
-  /(?:\b(?:I(?:'ve| have)?\s+(?:already\s+|just\s+|successfully\s+)?(?:defined|created|updated|configured|added)|(?:^|[.!?]\s*)(?:Defined|Created|Updated|Configured|Added))\s+(?:a\s+|the\s+)?(?:new\s+)?(?:[\p{L}\p{N}_-]+\s+){0,3}(?:style\s+definition|styles?\s+definition|style)\b|\bstyle\s+definitions?(?:\s+for\s+[\p{L}\p{N}_-]+)?\s+(?:has\s+been|was|is\s+now)\s+(?:updated|defined|created|added|configured)\b|\b(?:the\s+)?(?:[\p{L}\p{N}_-]+\s+){0,2}styles?\s+(?:has\s+been|was|is\s+now)\s+(?:defined|created|updated|configured)\b|(?:(?:tôi|mình|chúng tôi)\s+)?(?:đã|vừa)\s+định\s+nghĩa\s+kiểu(?:\s+định\s+dạng)?|(?:(?:tôi|mình|chúng tôi)\s+)?(?:đã|vừa)\s+tạo\s+kiểu(?:\s+định\s+dạng)?(?:\s+mới)?|kiểu(?:\s+định\s+dạng)?\s+(?:mới\s+)?đã\s+(?:được\s+tạo|được\s+định\s+nghĩa|được\s+cập\s+nhật|thiết\s+lập\s+xong)|(?:(?:已|成功)(?:定义|创建|设置)(?:了)?|(?:定义|创建|设置)了)(?:新样式|样式)|(?:新)?样式已(?:成功)?(?:定义|更新|创建|设置))/iu
+  /(?:\b(?:I(?:'ve| have)?\s+(?:already\s+|just\s+|successfully\s+)?(?:defined|created|updated|configured|added)|(?:^|[.!?]\s*)(?:Defined|Created|Updated|Configured|Added))\s+(?:a\s+|the\s+)?(?:new\s+)?(?:definition\s+of\s+(?:the\s+)?(?:[\p{L}\p{N}_-]+\s+){0,2}styles?|(?:[\p{L}\p{N}_-]+\s+){0,3}(?:style\s+definition|styles?\s+definition|style))\b|\bstyle\s+definitions?(?:\s+for\s+[\p{L}\p{N}_-]+)?\s+(?:has\s+been|was|is\s+now)\s+(?:updated|defined|created|added|configured)\b|\b(?:the\s+)?(?:[\p{L}\p{N}_-]+\s+){0,2}styles?\s+(?:has\s+been|was|is\s+now)\s+(?:defined|created|updated|configured)\b|(?:(?:tôi|mình|chúng tôi)\s+)?(?:đã|vừa)\s+định\s+nghĩa\s+kiểu(?:\s+định\s+dạng)?|(?:(?:tôi|mình|chúng tôi)\s+)?(?:đã|vừa)\s+tạo\s+kiểu(?:\s+định\s+dạng)?(?:\s+mới)?|kiểu(?:\s+định\s+dạng)?\s+(?:mới\s+)?đã\s+(?:được\s+tạo|được\s+định\s+nghĩa|được\s+cập\s+nhật|thiết\s+lập\s+xong)|(?:(?:已|成功)(?:定义|创建|设置)(?:了)?|(?:定义|创建|设置)了)(?:新样式|样式)|(?:新)?样式已(?:成功)?(?:定义|更新|创建|设置))/iu
 
 const COMMENT_CLAIM_RE = /(?:\bcomments?\b|bình\s+luận|nhận\s+xét|批注|评论)/iu
 
@@ -134,7 +134,7 @@ const GENERIC_FORMATTING_RE =
   /(?:\b(?:formatted|styled|reformatted)\b|định\s+dạng(?:\s+lại)?|排版)/iu
 
 const CONTENT_ACTION_IN_STYLE_RE =
-  /\b(?:formatted|reformatted|edited|applied(?:\s+it)?(?:\s+to)?|styled|inserted|deleted|replaced|modified|changed)\s+(?:the\s+|all\s+|existing\s+|requested\s+)?(?:[\p{L}\p{N}_-]+\s+){0,2}(?:paragraphs?|headings?|blocks?|text|content|document)\b|(?<!kiểu\s+)định\s+dạng(?:\s+lại)?(?!\s+kiểu)|áp\s+dụng(?:\s+kiểu)?\s+(?:cho|vào)|chỉnh\s+sửa\s+(?:nội\s+dung|đoạn|văn\s+bản|tiêu\s+đề)|thay\s+đổi\s+nội\s+dung|排版|应用到/iu
+  /\b(?:formatted|reformatted|edited|applied(?:\s+it)?(?:\s+to)?|styled|inserted|deleted|replaced|modified|changed|updated|set|adjusted)\s+(?:the\s+|all\s+|existing\s+|requested\s+)?(?:[\p{L}\p{N}_-]+\s+){0,2}(?:paragraphs?|headings?|blocks?|text|content|document|font\s+size|fonts?|align(?:ment)?|line\s+spacing)\b|(?<!kiểu\s+)định\s+dạng(?:\s+lại)?(?!\s+kiểu)|áp\s+dụng(?:\s+kiểu)?\s+(?:cho|vào)|chỉnh\s+sửa\s+(?:nội\s+dung|đoạn|văn\s+bản|tiêu\s+đề)|cập\s+nhật\s+(?:cỡ\s+chữ|phông\s+chữ|font|giãn\s+dòng|nội\s+dung|đoạn|văn\s+bản|tiêu\s+đề)|căn\s+(?:giữa|đều|trái|phải|lề\s+đoạn)|thay\s+đổi\s+nội\s+dung|排版|应用到/iu
 
 const FAILURE_INDICATOR_RE =
   /(?:\b(?:failed|fails?|could not|cannot|unable to|error|exception|unsuccessful|not applied|no changes|not\s+(?:created|applied|updated|modified|edited|defined|generated)|was\s+not|were\s+not|has\s+not\s+been|did\s+not)\b|thất bại|không thể|gặp lỗi|lỗi|chưa thể|chưa\s+(?:tạo|áp dụng|thực hiện|được|thể|định nghĩa)|không thành công|không áp dụng|chưa có thay đổi|失败|无法|不能|未能|未应用|未做修改)/i
@@ -159,7 +159,7 @@ export function claimsDocModification(text: string): boolean {
 function splitIntoClauses(text: string): string[] {
   return text
     .split(
-      /(?:[。．.!?！\n]+|;\s*|\b(?:however|but|yet)\b|(?:\s* tuy nhiên\s*|\s* nhưng\s*|\s* song\s*|，但是|但是))/iu,
+      /(?:[。．.!?！\n]+|;\s*|\b(?:however|but|yet)\b|(?:\s* tuy nhiên\s*|\s* nhưng\s*|\s* song\s*|，但是|但是)|\b(?:and|và|cũng\s+như|并且|而且)\s+(?=(?:could\s+not|cannot|failed|fails?|unable|did\s+not|was\s+not|were\s+not|not\s+|không\s+thể|chưa\s+|thất\s+bại|未能|无法|不能|未|(?:I(?:'ve| have)?\s+|tôi\s+|mình\s+)?(?:updated|edited|formatted|reformatted|styled|set|defined|created|added|deleted|inserted|cập nhật|định dạng|chỉnh sửa|thiết lập|tạo|thêm)\b)))/iu,
     )
     .map((s) => s.trim())
     .filter(Boolean)
@@ -294,6 +294,27 @@ export function fallbackDocsResponse(
       `The operation was partially completed:\n` +
       `- Succeeded: ${succList}\n` +
       `- Failed:\n${failList}`
+    )
+  }
+
+  // Case 1b: Meaningful modification(s) succeeded without tool errors, but the response claimed unverified action(s)
+  if (effectiveSucceeded.length > 0 && failed.length === 0) {
+    const succList = [...new Set(effectiveSucceeded.map((c) => c.name))].join(', ')
+    if (isVi) {
+      return (
+        `Các thao tác sau đã hoàn thành thành công: ${succList}.\n` +
+        `Tuy nhiên, các thay đổi bổ sung được tuyên bố chưa được xác minh hoặc không được thực hiện.`
+      )
+    }
+    if (isZh) {
+      return (
+        `以下操作已成功完成：${succList}。\n` +
+        `但声明的其他修改未通过验证或未执行。`
+      )
+    }
+    return (
+      `The following operation(s) completed successfully: ${succList}.\n` +
+      `However, the claimed modifications could not be verified.`
     )
   }
 
