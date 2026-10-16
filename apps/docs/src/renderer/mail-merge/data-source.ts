@@ -32,9 +32,14 @@ export function base64ToBytes(base64: string): Uint8Array {
  * other. The original header text is kept in `header` either way.
  */
 export function buildColumns(header: readonly string[]): MailMergeColumn[] {
+  if (header.length > MAX_COLUMNS) {
+    throw new Error(
+      `the source has ${header.length} columns; Mail Merge reads at most ${MAX_COLUMNS}`,
+    )
+  }
   const seen = new Map<string, number>()
   const taken = new Set<string>()
-  return header.slice(0, MAX_COLUMNS).map((raw, index) => {
+  return header.map((raw, index) => {
     const base = raw.trim() || `Column ${index + 1}`
     const count = (seen.get(base) ?? 0) + 1
     seen.set(base, count)
@@ -63,12 +68,21 @@ export function sourceFromRows(
     delimiter?: string
   },
 ): MailMergeSource {
-  const data = rows.slice(0, MAX_RECIPIENTS + 1)
-  const headerRow = options.hasHeader ? (data[0] ?? []) : []
+  // the limits are real, but they are enforced by refusing the source, never by
+  // quietly dropping rows or columns: a truncated list looks complete and the
+  // batch would merge for the wrong people
+  const recipientLimit = options.hasHeader ? MAX_RECIPIENTS + 1 : MAX_RECIPIENTS
+  if (rows.length > recipientLimit) {
+    const count = rows.length - (options.hasHeader ? 1 : 0)
+    throw new Error(
+      `the source has ${count} recipients, more than Mail Merge can handle (${MAX_RECIPIENTS}); narrow the range or split the list`,
+    )
+  }
+  const headerRow = options.hasHeader ? (rows[0] ?? []) : []
   const columns = options.hasHeader
     ? buildColumns(headerRow)
-    : buildColumns(Array.from({ length: Math.max(1, ...data.map((r) => r.length)) }, () => ''))
-  const body = options.hasHeader ? data.slice(1) : data
+    : buildColumns(Array.from({ length: Math.max(1, ...rows.map((r) => r.length)) }, () => ''))
+  const body = options.hasHeader ? rows.slice(1) : rows
   const recipients: MailMergeRecipient[] = body.map((row, id) => {
     const values: Record<string, string> = {}
     columns.forEach((column, i) => {
@@ -105,7 +119,10 @@ export async function loadXlsxSource(
   sheetName: string | null,
   hasHeader: boolean,
 ): Promise<MailMergeSource> {
-  const grids = await xlsxToGrid(base64ToBytes(base64))
+  // read only as far as the recipient ceiling plus the header: a workbook with
+  // more rows than Mail Merge can handle is refused below, never trimmed into a
+  // list that looks complete
+  const grids = await xlsxToGrid(base64ToBytes(base64), MAX_RECIPIENTS + 2)
   if (grids.length === 0) throw new Error('the workbook has no worksheets')
   const sheet = sheetName ? (grids.find((g) => g.name === sheetName) ?? grids[0]) : grids[0]
   return sourceFromRows(sheet.rows, { kind: 'xlsx', label, sheet: sheet.name, hasHeader })
@@ -210,6 +227,23 @@ export async function loadSheetSource(
       `the range ${range} selects ${total} cells, more than one read can return (${MAX_RANGE_CELLS}); narrow the range, for example A1:D${Math.floor(MAX_RANGE_CELLS / (bounds.lastCol - bounds.firstCol + 1))}`,
     )
   }
+  // the column and row ceilings are checked before the workbook is touched: an
+  // oversized selection is refused outright, never read and then trimmed into a
+  // list that looks complete
+  const selectedColumns = bounds.lastCol - bounds.firstCol + 1
+  if (selectedColumns > MAX_COLUMNS) {
+    throw new Error(
+      `the range ${range} selects ${selectedColumns} columns; Mail Merge reads at most ${MAX_COLUMNS}`,
+    )
+  }
+  const selectedRows = bounds.lastRow - bounds.firstRow + 1
+  const recipientCount = hasHeader ? selectedRows - 1 : selectedRows
+  if (recipientCount > MAX_RECIPIENTS) {
+    const fits = hasHeader ? MAX_RECIPIENTS + 1 : MAX_RECIPIENTS
+    throw new Error(
+      `the range ${range} selects ${recipientCount} recipients, more than Mail Merge can handle (${MAX_RECIPIENTS}); narrow the range, for example ${columnLabel(bounds.firstCol)}${bounds.firstRow}:${columnLabel(bounds.lastCol)}${bounds.firstRow + fits - 1}`,
+    )
+  }
   const addresses = addressesInRange(range, MAX_RANGE_CELLS)
   if (addresses.length !== total) {
     throw new Error(
@@ -222,9 +256,9 @@ export async function loadSheetSource(
   const cells = (response.result as { cells?: Record<string, { value?: unknown }> } | undefined)
     ?.cells
   if (!cells) throw new Error('the spreadsheet returned no cells')
-  const width = Math.min(MAX_COLUMNS, bounds.lastCol - bounds.firstCol + 1)
+  const width = selectedColumns
   const rows: string[][] = []
-  for (let r = bounds.firstRow; r <= bounds.lastRow && rows.length < MAX_RECIPIENTS + 1; r++) {
+  for (let r = bounds.firstRow; r <= bounds.lastRow; r++) {
     const row: string[] = []
     for (let c = 0; c < width; c++) row.push(cellText(cells, bounds.firstCol + c, r))
     rows.push(row)

@@ -631,6 +631,42 @@ export function sanitizeFileNamePart(raw: string): string {
   return cleaned
 }
 
+/**
+ * A file name is limited in bytes, not characters. Two long recipient columns
+ * already exceed the ceiling, and slicing the whole name at the ceiling can cut
+ * off `.docx` / `.pdf` — a file Word cannot open. The extension is taken first,
+ * the base is fitted to the remaining budget, and the extension is put back.
+ */
+export const MAX_FILE_NAME_BYTES = 200
+
+const utf8Length = (value: string): number => new TextEncoder().encode(value).length
+
+/** Trim `base` so `base + extra + ext` still fits, without splitting a character. */
+function fitBase(base: string, ext: string, extra: string): string {
+  const budget = MAX_FILE_NAME_BYTES - utf8Length(ext) - utf8Length(extra)
+  if (budget <= 0) return ''
+  if (utf8Length(base) <= budget) return base
+  let out = ''
+  let used = 0
+  for (const ch of base) {
+    const size = utf8Length(ch)
+    if (used + size > budget) break
+    out += ch
+    used += size
+  }
+  // cutting a name short can leave a trailing space or dot, which is not a legal name
+  return out.replace(/[\s.]+$/g, '')
+}
+
+/** The name actually written: sanitized, extension-preserving, inside the limit. */
+export function safeFileName(name: string): string {
+  const extMatch = /\.(docx|pdf)$/i.exec(name)
+  const ext = extMatch ? extMatch[0].toLowerCase() : ''
+  const base = sanitizeFileNamePart(extMatch ? name.slice(0, extMatch.index) : name)
+  const fitted = fitBase(base, ext, '')
+  return fitted ? `${fitted}${ext}` : `merge${ext}`
+}
+
 export interface FileNamePatternOptions {
   /** `{index}`, `{name}`, `{field}` … */
   pattern: string
@@ -659,18 +695,33 @@ export function buildOutputFileName(options: FileNamePatternOptions): string {
   const base =
     expanded.replace(/\s+/g, ' ').trim() || `merge-${String(index).padStart(indexWidth, '0')}`
   const ext = extension.replace(/^\./, '').toLowerCase() || 'docx'
-  return `${base}.${ext}`
+  return safeFileName(`${base}.${ext}`)
 }
 
-/** Deterministic collision handling: `name.docx`, `name (2).docx`, … */
-export function uniqueFileName(name: string, taken: Set<string>): string {
-  if (!taken.has(name)) return name
+/**
+ * Deterministic collision handling: `name.docx`, `name (2).docx`, …
+ *
+ * `taken` may be a set of names or a predicate, so the caller can ask the
+ * filesystem directly. The suffix is part of the byte budget: a base already at
+ * the ceiling is shortened further rather than pushed over it.
+ */
+export function uniqueFileName(
+  name: string,
+  taken: Set<string> | ((candidate: string) => boolean),
+): string {
+  const has = typeof taken === 'function' ? taken : (candidate: string) => taken.has(candidate)
+  if (!has(name)) return name
   const dot = name.lastIndexOf('.')
   const base = dot > 0 ? name.slice(0, dot) : name
   const ext = dot > 0 ? name.slice(dot) : ''
   for (let n = 2; n < 10000; n++) {
-    const candidate = `${base} (${n})${ext}`
-    if (!taken.has(candidate)) return candidate
+    const suffix = ` (${n})`
+    const fitted = fitBase(base, ext, suffix)
+    if (!fitted) continue
+    const candidate = `${fitted}${suffix}${ext}`
+    if (!has(candidate)) return candidate
   }
-  return `${base}-${Date.now()}${ext}`
+  const suffix = `-${Date.now()}`
+  const fitted = fitBase(base, ext, suffix)
+  return fitted ? `${fitted}${suffix}${ext}` : `${Date.now()}${ext}`
 }

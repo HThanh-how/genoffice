@@ -95,35 +95,50 @@ export async function waitForPagination(
 
 /**
  * The file name to write for one recipient under the chosen policy.
- * `taken` is the listing of the destination directory, so "skip" and "rename"
- * act on files that really exist there.
+ *
+ * `taken` is the listing of the destination directory taken before the batch
+ * started, so "skip" and "rename" act on files that really existed there.
+ * `allocated` is what this batch has already written. The two are kept apart on
+ * purpose: a name an earlier recipient of the same batch received is not a file
+ * the user chose to skip or overwrite, it is that recipient's own output. So
+ * `skip` only ever skips pre-existing files, while every in-batch collision is
+ * renamed away from the name already handed to somebody else.
  */
 export function resolveOutputName(
   base: string,
   taken: Set<string>,
   policy: MailMergeExportOptions['overwrite'],
+  allocated?: Set<string>,
 ): { name: string; skipped: boolean } {
   if (policy === 'skip' && taken.has(base)) return { name: base, skipped: true }
-  if (policy === 'rename') return { name: uniqueFileName(base, taken), skipped: false }
+  if (policy === 'rename') {
+    return {
+      name: uniqueFileName(base, new Set([...taken, ...(allocated ?? [])])),
+      skipped: false,
+    }
+  }
+  if (allocated?.has(base)) {
+    return {
+      name: uniqueFileName(base, new Set([...taken, ...allocated])),
+      skipped: false,
+    }
+  }
   return { name: base, skipped: false }
-}
-
-/**
- * A name this batch already gave to another recipient is not a pre-existing
- * file: the overwrite policy governs files that were in the folder before the
- * batch started, not a recipient's own output. Collisions inside a batch are
- * always resolved by renaming, so every recipient gets a file of their own.
- */
-function withinBatch(
-  resolved: { name: string; skipped: boolean },
-  allocated: Set<string>,
-): { name: string; skipped: boolean } {
-  if (resolved.skipped || !allocated.has(resolved.name)) return resolved
-  return { name: uniqueFileName(resolved.name, allocated), skipped: false }
 }
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)]
+}
+
+/**
+ * The name the writer actually used. It can differ from the one the renderer
+ * asked for: the writer sanitizes, fits the name to the byte limit, and renames
+ * a collision that shortening created. Recording the real name is what keeps the
+ * batch's own allocations accurate.
+ */
+function writtenName(result: { path?: string; name?: string }, fallback: string): string {
+  const actual = result.name ?? (result.path ? result.path.split(/[\\/]/).pop() : undefined)
+  return actual || fallback
 }
 
 /**
@@ -189,11 +204,12 @@ export async function runMailMergeExport(
   const unmergeable = passthroughFieldInstructions(ctx.doc.parsed.blocks)
 
   const listing = await window.desktop.listMailMergeOutput(options.outputDir)
-  // two sets, on purpose: `existing` is what was already in the destination (the
-  // overwrite policy is about those files), `allocated` is what this batch has
-  // handed out so far. A later recipient must never overwrite a file an earlier
-  // recipient of the same batch just wrote, whatever the policy says.
-  const existing = new Set<string>(listing.ok ? (listing.names ?? []) : [])
+  // `preExisting` is frozen for the whole batch: the overwrite policy is about
+  // files that were in the folder before the batch started. `allocated` is what
+  // this batch has actually written. Keeping them apart is what stops a
+  // recipient from being "skipped" because an earlier recipient of the same
+  // batch happened to get the same name.
+  const preExisting = new Set<string>(listing.ok ? (listing.names ?? []) : [])
   const allocated = new Set<string>()
 
   if (options.format === 'pdf') {
@@ -223,17 +239,15 @@ export async function runMailMergeExport(
       values: recipient.values,
       extension: options.format,
     })
-    const resolved = withinBatch(resolveOutputName(base, existing, options.overwrite), allocated)
-    if (resolved.skipped) {
+    const decided = resolveOutputName(base, preExisting, options.overwrite, allocated)
+    if (decided.skipped) {
       progress.skipped += 1
       progress.done += 1
-      progress.current = resolved.name
+      progress.current = decided.name
       onProgress({ ...progress })
       continue
     }
-    const name = resolved.name
-    existing.add(name)
-    allocated.add(name)
+    const name = decided.name
     progress.current = name
     onProgress({ ...progress })
 
@@ -298,9 +312,13 @@ export async function runMailMergeExport(
             bytesToBase64(bytes),
             options.overwrite,
           )
-          if (result.ok) progress.succeeded += 1
-          else if (result.skipped) progress.skipped += 1
-          else {
+          if (result.ok) {
+            progress.succeeded += 1
+            allocated.add(writtenName(result, name))
+          } else if (result.skipped) {
+            progress.skipped += 1
+            allocated.add(writtenName(result, name))
+          } else {
             progress.failed += 1
             progress.errors.push({ recipient: name, message: result.error ?? 'write failed' })
           }
@@ -319,8 +337,10 @@ export async function runMailMergeExport(
             })
           } else {
             const ok = await exportPdf(ctx, `${options.outputDir}/${name}`)
-            if (ok) progress.succeeded += 1
-            else {
+            if (ok) {
+              progress.succeeded += 1
+              allocated.add(name)
+            } else {
               progress.failed += 1
               progress.errors.push({ recipient: name, message: 'PDF export failed' })
             }

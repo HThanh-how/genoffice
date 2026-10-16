@@ -28,6 +28,7 @@ import {
   type CancelToken,
 } from '../src/renderer/mail-merge/export'
 import { sourceFromRows } from '../src/renderer/mail-merge/data-source'
+import { resolveSafeFileName } from '../src/shared/mail-merge-names'
 import {
   applyJobFailure,
   initialProgress,
@@ -564,6 +565,153 @@ describe('duplicate file names inside one batch', () => {
     editor.destroy()
     expect(written.map((w) => w.name)).toEqual(['Huy.docx', 'Huy (2).docx'])
     expect(progress.succeeded).toBe(written.length)
+  })
+
+  it('never skips a recipient because an earlier recipient of the same batch got the same name', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const written = stubDesktop([])
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sameNameSource(),
+      pattern('skip'),
+      noCancel,
+      () => {},
+    )
+    editor.destroy()
+    expect(written.map((w) => w.name)).toEqual(['Huy.docx', 'Huy (2).docx'])
+    expect(progress.succeeded).toBe(2)
+    expect(progress.skipped).toBe(0)
+  })
+
+  it('handles three or more recipients with the same name', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const written = stubDesktop([])
+    const source = sourceFromRows([['Name'], ['Huy'], ['Huy'], ['Huy']], {
+      kind: 'csv',
+      label: 'list.csv',
+      hasHeader: true,
+    })
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      pattern('overwrite'),
+      noCancel,
+      () => {},
+    )
+    editor.destroy()
+    expect(written.map((w) => w.name)).toEqual(['Huy.docx', 'Huy (2).docx', 'Huy (3).docx'])
+    expect(progress.succeeded).toBe(written.length)
+  })
+
+  it('does not let a failed recipient destroy a later recipient of the same name', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + ' ' + field('MERGEFIELD City', null) + '</w:p>',
+    )
+    const written = stubDesktop([])
+    const source: MailMergeSource = {
+      kind: 'csv',
+      label: 'list.csv',
+      columns: [{ name: 'Name', header: 'Name' }],
+      recipients: [
+        { id: 0, values: { Name: 'Huy' }, selected: true },
+        { id: 1, values: { Name: 'Huy', City: 'Paris' }, selected: true },
+      ],
+      hasHeader: true,
+    }
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      pattern('overwrite'),
+      noCancel,
+      () => {},
+    )
+    editor.destroy()
+    expect(written.map((w) => w.name)).toEqual(['Huy.docx'])
+    expect(progress.failed).toBe(1)
+    expect(progress.succeeded).toBe(written.length)
+  })
+
+  it('renames around files that already exist in the destination', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const written = stubDesktop(['Huy.docx', 'Huy (2).docx'])
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sameNameSource(),
+      pattern('rename'),
+      noCancel,
+      () => {},
+    )
+    editor.destroy()
+    expect(written.map((w) => w.name)).toEqual(['Huy (3).docx', 'Huy (4).docx'])
+    expect(progress.succeeded).toBe(written.length)
+    expect(progress.skipped).toBe(0)
+  })
+
+  it("writes every recipient through the writer's own name policy", async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    // the stub mirrors the main process: it sanitizes, fits the name to the byte
+    // limit, and applies the policy to the name that will really land on disk
+    const files = new Set<string>()
+    const written: string[] = []
+    Object.assign(window, {
+      desktop: {
+        listMailMergeOutput: async () => ({ ok: true, names: [...files] }),
+        writeMailMergeFile: async (
+          dir: string,
+          name: string,
+          _base64: string,
+          overwrite: string,
+        ) => {
+          const decision = resolveSafeFileName(
+            name,
+            overwrite as 'skip' | 'rename' | 'overwrite',
+            (candidate) => files.has(candidate),
+          )
+          if (!decision.name) return { ok: false, error: 'invalid file name' }
+          if (decision.skipped) {
+            return {
+              ok: false,
+              skipped: true,
+              path: `${dir}/${decision.name}`,
+              name: decision.name,
+            }
+          }
+          files.add(decision.name)
+          written.push(decision.name)
+          return { ok: true, path: `${dir}/${decision.name}`, name: decision.name }
+        },
+      },
+    })
+    const source = sourceFromRows(
+      [
+        ['Name'],
+        ['x'.repeat(190) + '-first'],
+        ['x'.repeat(190) + '-second'],
+        ['x'.repeat(190) + '-third'],
+      ],
+      { kind: 'csv', label: 'list.csv', hasHeader: true },
+    )
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      pattern('overwrite'),
+      noCancel,
+      () => {},
+    )
+    editor.destroy()
+    expect(written.length).toBe(3)
+    expect(new Set(written).size).toBe(3)
+    expect(written.every((n) => n.endsWith('.docx'))).toBe(true)
+    expect(written.every((n) => Buffer.byteLength(n, 'utf8') <= 200)).toBe(true)
+    expect(progress.succeeded).toBe(3)
   })
 
   it('counts successes as the files actually written', async () => {

@@ -154,6 +154,7 @@ import type {
 } from '../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS, MARKDOWN_MEDIA_DIR_TOKEN, type MarkdownImage } from '../shared/ipc'
 import { ClickClaims } from '../shared/context-menu-claims'
+import { MailMergeOverwritePolicy, resolveSafeFileName } from '../shared/mail-merge-names'
 import {
   OPENABLE_DOC_EXTENSIONS,
   findOpenableDocPath,
@@ -5792,32 +5793,24 @@ export function registerDocsIpc(): void {
       if (typeof name !== 'string' || typeof base64 !== 'string') {
         return { ok: false, error: 'invalid write request' }
       }
-      const safeName = name
-        // eslint-disable-next-line no-control-regex -- a recipient value is user text; controls must not reach the filesystem
-        .replace(/[\\/:*?"<>|\u0000-\u001f\u007f]/g, '_')
-        .replace(/\s+/g, ' ')
-        .trim()
-        .replace(/^\.+|\.+$/g, '')
-        .slice(0, 200)
-      if (!safeName) return { ok: false, error: 'invalid file name' }
-      let target = join(authorized, safeName)
+      const policy: MailMergeOverwritePolicy =
+        overwrite === 'skip' ? 'skip' : overwrite === 'rename' ? 'rename' : 'overwrite'
+      // one policy for every write: sanitize, fit to the byte limit while keeping
+      // .docx/.pdf, then apply the chosen overwrite rule to the name that will
+      // really land in the directory
+      const decision = resolveSafeFileName(name, policy, (candidate) =>
+        existsSync(join(authorized, candidate)),
+      )
+      if (!decision.name) return { ok: false, error: 'invalid file name' }
+      const target = join(authorized, decision.name)
       // join() of a sanitized name cannot escape the directory, but verify anyway
       if (!target.startsWith(authorized + sep) && target !== authorized) {
         return { ok: false, error: 'output path is outside the chosen directory' }
       }
-      const policy = overwrite === 'skip' ? 'skip' : overwrite === 'rename' ? 'rename' : 'overwrite'
-      if (policy !== 'overwrite' && existsSync(target)) {
-        if (policy === 'skip') return { ok: false, skipped: true, path: target }
-        const dot = safeName.lastIndexOf('.')
-        const base = dot > 0 ? safeName.slice(0, dot) : safeName
-        const ext = dot > 0 ? safeName.slice(dot) : ''
-        let n = 2
-        while (n < 10000 && existsSync(join(authorized, `${base} (${n})${ext}`))) n += 1
-        target = join(authorized, `${base} (${n})${ext}`)
-      }
+      if (decision.skipped) return { ok: false, skipped: true, path: target, name: decision.name }
       try {
         await atomicWriteFile(target, Buffer.from(base64, 'base64'))
-        return { ok: true, path: target }
+        return { ok: true, path: target, name: decision.name }
       } catch (err) {
         return { ok: false, error: String(err), path: target }
       }

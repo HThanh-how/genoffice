@@ -8,9 +8,11 @@ import {
   collectMergeFields,
   evaluateConditionalField,
   isRepresentableColumnName,
+  MAX_FILE_NAME_BYTES,
   mergeFieldName,
   mergeFieldInstruction,
   patchMergeFieldXml,
+  safeFileName,
   sanitizeFileNamePart,
   uniqueFileName,
 } from '../src/mail-merge'
@@ -567,5 +569,41 @@ describe('output file naming', () => {
     expect(uniqueFileName('a.docx', taken)).toBe('a (2).docx')
     taken.add('a (2).docx')
     expect(uniqueFileName('a.docx', taken)).toBe('a (3).docx')
+  })
+
+  it('keeps the extension when the name is longer than the limit', () => {
+    const bytes = (value: string) => new TextEncoder().encode(value).length
+    const name = safeFileName(`${'a'.repeat(300)}.docx`)
+    expect(name.endsWith('.docx')).toBe(true)
+    expect(bytes(name)).toBeLessThanOrEqual(MAX_FILE_NAME_BYTES)
+  })
+
+  it('fits a name built from two long columns into the limit', () => {
+    const bytes = (value: string) => new TextEncoder().encode(value).length
+    const name = buildOutputFileName({
+      pattern: '{A}_{B}',
+      index: 1,
+      total: 1,
+      values: { A: 'a'.repeat(150), B: 'b'.repeat(150) },
+      extension: 'docx',
+    })
+    expect(name.endsWith('.docx')).toBe(true)
+    expect(bytes(name)).toBeLessThanOrEqual(MAX_FILE_NAME_BYTES)
+  })
+
+  it('fits a multi-byte name without splitting a character', () => {
+    const bytes = (value: string) => new TextEncoder().encode(value).length
+    const name = safeFileName(`${'日'.repeat(100)}.pdf`)
+    expect(name.endsWith('.pdf')).toBe(true)
+    expect(bytes(name)).toBeLessThanOrEqual(MAX_FILE_NAME_BYTES)
+  })
+
+  it('does not push a name over the limit when adding a collision suffix', () => {
+    const bytes = (value: string) => new TextEncoder().encode(value).length
+    const atLimit = 'a'.repeat(MAX_FILE_NAME_BYTES - 5)
+    const name = uniqueFileName(`${atLimit}.docx`, (n) => n === `${atLimit}.docx`)
+    expect(name).not.toBe(`${atLimit}.docx`)
+    expect(name.endsWith('.docx')).toBe(true)
+    expect(bytes(name)).toBeLessThanOrEqual(MAX_FILE_NAME_BYTES)
   })
 })
