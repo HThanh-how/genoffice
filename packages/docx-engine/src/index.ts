@@ -200,6 +200,7 @@ export {
   fieldReferencedColumns,
   patternTokens,
   isIndexToken,
+  fieldInstructionsInXml,
   isRepresentableColumnName,
   mergeFieldName,
   mergeFieldInstruction,

@@ -4,12 +4,15 @@
  * same problems up front rather than writing hundreds of wrong documents.
  */
 import {
+  fieldInstructionsInXml,
   fieldReferencedColumns,
   isIndexToken,
   isMergeableFieldInstruction,
   isRepresentableColumnName,
+  mergeFieldName,
   patternTokens,
   type MergeFieldRef,
+  type ParsedDocFull,
 } from '@genoffice/docx-engine'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@genoffice/docx-engine'
@@ -74,15 +77,24 @@ export function requiredMergeFields(editor: Editor, blocks: readonly Block[]): s
   return [...names]
 }
 
+/**
+ * The instructions in one byte-preserved paragraph, read with the engine's own
+ * OOXML walker. `<w:fldSimple w:instr=" MERGEFIELD Name ">` and a complex field
+ * whose instruction is split across several `w:instrText` runs are both found;
+ * a plain regex misses the first and truncates the second.
+ */
+function blockFieldInstructions(block: Block): string[] {
+  return fieldInstructionsInXml(block.originalXml ?? '')
+}
+
 /** Merge fields the editor cannot model: they live in byte-preserved blocks. */
 export function passthroughMergeFields(blocks: readonly Block[]): string[] {
   const names = new Set<string>()
   for (const block of blocks) {
     if (block.runs || block.table) continue
-    for (const match of (block.originalXml ?? '').matchAll(
-      /<w:(?:instrText|fldSimple)[^>]*>\s*MERGEFIELD\s+([^<]+?)(?:<\/w:instrText>|<\/w:fldSimple>)/g,
-    )) {
-      names.add(match[1].trim().replace(/^"|"$/g, ''))
+    for (const instr of blockFieldInstructions(block)) {
+      const name = mergeFieldName(instr)
+      if (name) names.add(name)
     }
   }
   return [...names]
@@ -98,13 +110,40 @@ export function passthroughFieldInstructions(blocks: readonly Block[]): string[]
   const found: string[] = []
   for (const block of blocks) {
     if (block.runs || block.table) continue
-    for (const match of (block.originalXml ?? '').matchAll(
-      /<w:(?:instrText|fldSimple)[^>]*>\s*(MERGEFIELD|IF)\s+([^<]*?)(?:<\/w:instrText>|<\/w:fldSimple>)/g,
-    )) {
-      const instr = `${match[1]} ${match[2].trim()}`
-      if (!found.includes(instr)) found.push(instr)
+    for (const instr of blockFieldInstructions(block)) {
+      const trimmed = instr.trim()
+      if (/^\s*(MERGEFIELD|IF)\b/i.test(trimmed) && !found.includes(trimmed)) found.push(trimmed)
     }
   }
+  return found
+}
+
+/**
+ * Merge fields in the parts the merge pipeline never touches: header/footer
+ * parts the user has not opened in the header editor, footnote/endnote bodies,
+ * and textboxes. Whatever the engine writes for those parts is copied from the
+ * template byte-for-byte, so a MERGEFIELD there is printed as «Name» in every
+ * output file.
+ */
+/**
+ * Merge fields sitting in parts the merge pipeline never rewrites: header and
+ * footer parts the user has not opened in the header editor. Those parts are
+ * copied from the template byte-for-byte, so a MERGEFIELD inside one would print
+ * as «Name» in every output file.
+ */
+export function unmergeableHeaderFooterFields(parsed: ParsedDocFull): string[] {
+  const found: string[] = []
+  const push = (instr: string | undefined): void => {
+    const trimmed = (instr ?? '').trim()
+    if (/^\s*(MERGEFIELD|IF)\b/i.test(trimmed) && !found.includes(trimmed)) found.push(trimmed)
+  }
+  // header/footer parts the user never opened in the header editor are copied
+  // from the template byte-for-byte: a field inside one is never rewritten
+  for (const part of Object.values(parsed.hfParts ?? {})) {
+    for (const para of part.paras ?? []) for (const run of para.runs ?? []) push(run.instrField)
+  }
+  for (const para of parsed.headerParas ?? []) for (const run of para.runs ?? []) push(run.instrField)
+  for (const para of parsed.footerParas ?? []) for (const run of para.runs ?? []) push(run.instrField)
   return found
 }
 
@@ -113,6 +152,8 @@ export function validateMergeSession(
   fields: MergeFieldRef[],
   blocks: readonly Block[],
   editor?: Editor | null,
+  scope?: 'selected' | 'all',
+  parsed?: ParsedDocFull | null,
 ): MailMergeValidationIssue[] {
   const issues: MailMergeValidationIssue[] = []
   if (!source) {
@@ -122,8 +163,15 @@ export function validateMergeSession(
   if (source.recipients.length === 0) {
     issues.push({ severity: 'error', key: 'mailMergeNoRecipients' })
   }
-  if (selected(source) === 0) {
-    issues.push({ severity: 'error', key: 'mailMergeNoneSelected' })
+  // "no recipient is ticked" only blocks an export that exports the ticked ones.
+  // With scope=all the batch runs over every row, so an unticked list is not an
+  // error there — it is just the user's selection, which they are not using.
+  const exported = scope === 'all' ? source.recipients.length : selected(source)
+  if (exported === 0) {
+    issues.push({
+      severity: scope === 'all' ? 'error' : scope === undefined ? 'warning' : 'error',
+      key: 'mailMergeNoneSelected',
+    })
   }
   const columns = new Set(source.columns.map((c) => c.name))
   for (const field of fields) {
@@ -168,6 +216,18 @@ export function validateMergeSession(
       key: 'mailMergeUnsupportedField',
       detail: unmergeable.join(', '),
     })
+  }
+  // a field in a header/footer part the user never opened is copied verbatim from
+  // the template: the merge cannot reach it, and the writer refuses the file
+  if (parsed) {
+    const unreachable = unmergeableHeaderFooterFields(parsed)
+    if (unreachable.length > 0) {
+      issues.push({
+        severity: 'error',
+        key: 'mailMergeUnsupportedField',
+        detail: `${unreachable.join(', ')} (header/footer)`,
+      })
+    }
   }
   // empty values in a field the template uses are a warning, not a blocker:
   // an optional address line being blank is normal

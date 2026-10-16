@@ -155,7 +155,12 @@ import type {
 } from '../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS, MARKDOWN_MEDIA_DIR_TOKEN, type MarkdownImage } from '../shared/ipc'
 import { ClickClaims } from '../shared/context-menu-claims'
-import { decideMailMergeWrite, type MailMergeGrant } from '../shared/mail-merge-ipc'
+import {
+  decideMailMergeWrite,
+  decodeMailMergePayload,
+  type MailMergeGrant,
+} from '../shared/mail-merge-ipc'
+import { checkMergedDocx } from '../shared/docx-output-contract'
 import {
   pdfWriteTarget as resolvePdfWriteTarget,
   type PdfWriteTarget,
@@ -5876,6 +5881,23 @@ export function registerDocsIpc(): void {
     return { dir }
   })
 
+  /**
+   * Give up the output directory a tab was granted.
+   *
+   * A grant survives the dialog that created it, so a tab that picked a folder
+   * and then cancelled still holds write permission on it. Releasing it when the
+   * export dialog closes means the permission lives exactly as long as the batch
+   * that needs it.
+   */
+  ipcMain.handle('docs:release-mail-merge-dir', (event) => {
+    const wcId = event.sender.id
+    if (tornDownWcIds.has(wcId)) return { ok: false, error: 'the tab is closed' }
+    mailMergeDirs.delete(wcId)
+    mailMergePdfDirs.delete(wcId)
+    mailMergeAllocated.delete(wcId)
+    return { ok: true }
+  })
+
   /** Names already present in the chosen directory, so the renderer can avoid
    *  clobbering them without touching the filesystem itself. */
   ipcMain.handle('docs:list-mail-merge-output', async (event, dir: unknown) => {
@@ -5911,13 +5933,27 @@ export function registerDocsIpc(): void {
         return { ok: false, error: 'output directory is no longer authorized' }
       }
       try {
+        const payload = decodeMailMergePayload(String(base64))
+        if (!payload) return { ok: false, error: 'the file content is not a complete base64 payload' }
+        // a template opened lazily keeps its pictures in the source file and
+        // writes `lazy://<hash>/word/media/…` placeholders into the saved bytes.
+        // A merged document is a brand-new file with no source to point at, so
+        // the media has to be spliced back in exactly as a normal save does —
+        // otherwise every merged document is a .docx with broken images.
+        const data = /\.docx$/i.test(decision.name)
+          ? (await materializeLazyDocx(payload)).bytes
+          : payload
+        if (/\.docx$/i.test(decision.name)) {
+          const contract = await checkMergedDocx(data)
+          if (!contract.ok) return { ok: false, error: contract.error }
+        }
         // the writer is the authority on the final name: the renderer's proposal
         // may have been sanitized, shortened or renamed by this point, and each
         // candidate it produces is re-contained before it is opened
         const outcome = await writeMailMergeOutput(
           decision.dir,
           decision.name,
-          Buffer.from(String(base64), 'base64'),
+          data,
           decision.policy,
           decision.allocated,
           decision.resolvePath,

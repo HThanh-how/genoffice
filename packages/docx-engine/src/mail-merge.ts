@@ -554,6 +554,73 @@ function decodeEntities(text: string): string {
     .replace(/&quot;/g, '"')
 }
 
+/**
+ * Every field instruction sitting in a piece of OOXML, found the same way the
+ * merge engine reads it.
+ *
+ * A regex cannot do this: `w:fldChar` lives *inside* a `w:r`, Word splits one
+ * instruction across several `w:instrText` elements, and `<w:fldSimple w:instr=
+ * " MERGEFIELD Name ">` carries the instruction in an attribute rather than as
+ * element text. Both forms are walked structurally here, so a validator that
+ * uses this list sees exactly the fields `patchMergeFieldXml` can and cannot
+ * rewrite — nothing that is left untouched can be reported as merged.
+ */
+function simpleFieldInstructions(xml: string): string[] {
+  const out: string[] = []
+  const open: string[] = []
+  let i = 0
+  for (;;) {
+    const nextOpen = xml.indexOf('<w:fldSimple', i)
+    const nextClose = xml.indexOf('</w:fldSimple>', i)
+    if (nextOpen < 0 && nextClose < 0) break
+    if (nextOpen >= 0 && (nextClose < 0 || nextOpen < nextClose)) {
+      const end = tagEnd(xml, nextOpen)
+      if (end < 0) break
+      const openTag = xml.slice(nextOpen, end + 1)
+      const instr = /w:instr\s*=\s*"([^"]*)"/.exec(openTag)?.[1] ?? ''
+      // the engine decodes entities in the instruction before matching it, so
+      // the validator has to see the same text
+      const decoded = decodeEntities(instr)
+      // a self-closing fldSimple has no body to rewrite, but it is still a field
+      if (openTag.endsWith('/>')) {
+        if (decoded) out.push(decoded)
+        i = end + 1
+        continue
+      }
+      open.push(decoded)
+      i = end + 1
+      continue
+    }
+    const instr = open.pop()
+    if (instr) out.push(instr)
+    i = nextClose + 14
+  }
+  return out
+}
+
+function complexFieldInstructions(xml: string): string[] {
+  const out: string[] = []
+  const open: string[] = []
+  for (const run of splitRuns(xml)) {
+    for (const marker of fieldMarkers(run.inner)) {
+      if (marker.kind === 'begin') open.push('')
+      else if (marker.kind === 'instr' && open.length > 0) open[open.length - 1] += marker.text
+      else if (marker.kind === 'end') {
+        const instr = open.pop()
+        if (instr && instr.trim()) out.push(instr)
+      }
+    }
+  }
+  // an unterminated begin is still a field the merge cannot rewrite
+  for (const instr of open) if (instr.trim()) out.push(instr)
+  return out
+}
+
+export function fieldInstructionsInXml(xml: string): string[] {
+  if (!xml) return []
+  return [...simpleFieldInstructions(xml), ...complexFieldInstructions(xml)]
+}
+
 /** Every merge field referenced by a block tree, in document order. */
 export function collectMergeFields(blocks: Block[]): MergeFieldRef[] {
   const found: MergeFieldRef[] = []
@@ -729,10 +796,17 @@ export function isIndexToken(token: string): boolean {
 
 export function buildOutputFileName(options: FileNamePatternOptions): string {
   const { pattern, index, total, values, extension } = options
+  // the widest index in the batch decides the padding, so 100 recipients produce
+  // 001..100 rather than 1, 2, … 100 (which would sort as text)
   const indexWidth = Math.max(1, String(total).length)
-  const name = pattern.replace(/\{(\d*)index\}/g, () => String(index).padStart(indexWidth, '0'))
-  const expanded = name.replace(/\{([^{}]*)\}/g, (_whole, key: string) => {
+  const expanded = pattern.replace(/\{([^{}]*)\}/g, (_whole, key: string) => {
     const trimmed = key.trim()
+    if (isIndexToken(trimmed)) {
+      // `{3index}` asks for at least three digits; the batch size can ask for more
+      const digits = /^(\d*)index$/i.exec(trimmed)?.[1] ?? ''
+      const requested = digits === '' ? 0 : Number(digits)
+      return String(index).padStart(Math.max(requested, indexWidth), '0')
+    }
     if (!trimmed) return ''
     const value = values[trimmed]
     if (value === undefined) return ''
