@@ -18,7 +18,7 @@
  */
 import type { Editor } from '@tiptap/core'
 import { buildOutputFileName, uniqueFileName, type MergeReport } from '@genoffice/docx-engine'
-import { buildDocBytes, exportPdf, type FileActionContext } from '../file-actions'
+import { buildDocBytes, exportPdf, currentDocGeneration, type FileActionContext } from '../file-actions'
 import { currentMailMergeValues, setMailMergePreview } from '../editor/mail-merge-preview'
 import { mergeFieldValue } from '../editor/merge-doc'
 import { exportRecipients } from './recipient-store'
@@ -30,6 +30,7 @@ import {
 } from './validation'
 import type { MailMergeExportOptions, MailMergeExportProgress, MailMergeSource } from './types'
 import type { MergeValues } from '@genoffice/docx-engine'
+import { checkMergedDocx } from '../../shared/docx-output-contract'
 
 export interface CancelToken {
   cancelled: boolean
@@ -231,6 +232,15 @@ export async function runMailMergeExport(
   }
 
   if (options.format === 'pdf') {
+    // the PDF is printed from the rendered DOM, and the recipient's values reach
+    // that DOM only through the preview decorations. A read-only editor refuses
+    // those decorations, so printing now would put «Name» on the page for every
+    // recipient. Refusing is better than printing placeholders.
+    if (!ctx.editor.isEditable) {
+      return failJob(
+        'the document is open in read mode, so Mail Merge cannot print it; open it in edit mode and try again',
+      )
+    }
     if (!previewWasOpen) ctx.setShowPagePreview(true)
     // nothing has been shown yet, so there is no new layout pass to wait for:
     // an already-measured, unmoving layout is settled. A layout that never
@@ -244,18 +254,24 @@ export async function runMailMergeExport(
   // whatever the user had on screen before the batch starts is restored at the
   // end of every recipient, so the editor never ends up showing a stranger's row
   const priorPreview = currentMailMergeValues(ctx.editor.state)
-  // the batch belongs to one document. If the tab opens another document (or
-  // closes this one) halfway through, continuing would write the new document's
-  // content under the old batch's names
+  // the batch belongs to one document. `currentDocGeneration()` is the app's own
+  // document identity: it is bumped by `noteDocumentSwapped()` every time a tab
+  // loads, creates or reopens a file, which is exactly the event that makes the
+  // rows being merged belong to a different document. Comparing the editor and
+  // doc object references alone is not enough — the app reuses one Editor
+  // instance across document opens, so the same object can hold a different file.
   const jobEditor = ctx.editor
   const jobDoc = ctx.doc
+  const jobGeneration = currentDocGeneration()
+  const documentMoved = () =>
+    ctx.editor !== jobEditor || ctx.doc !== jobDoc || currentDocGeneration() !== jobGeneration
 
   for (let i = 0; i < recipients.length; i++) {
     if (cancel.cancelled) {
       progress.cancelled = true
       break
     }
-    if (ctx.editor !== jobEditor || ctx.doc !== jobDoc) {
+    if (documentMoved()) {
       progress.cancelled = true
       progress.errors.push({
         recipient: 'export',
@@ -320,7 +336,7 @@ export async function runMailMergeExport(
       if (options.format === 'docx') {
         const report: MergeReport = { missing: [], unused: [], unsupported: 0, applied: 0 }
         const bytes = await buildDocBytes(ctx, { values: recipient.values, report })
-        if (cancel.cancelled) {
+        if (cancel.cancelled || documentMoved()) {
           // the document was serialized but never written: a cancel that lands
           // mid-serialization must not put a half-batch on disk
           progress.cancelled = true
@@ -342,6 +358,29 @@ export async function runMailMergeExport(
             message: `${report.unsupported} field(s) could not be merged (unsupported field form)`,
           })
         } else {
+          // the bytes are inspected before a single one of them is stored: a
+          // merge field the engine left in a header, footer, footnote or textbox
+          // is copied from the template and would print as «Name» in Word
+          const contract = await checkMergedDocx(bytes)
+          if (!contract.ok) {
+            progress.failed += 1
+            progress.errors.push({ recipient: name, message: contract.error ?? 'output contract failed' })
+            // a field in a part the pipeline never rewrites is a property of the
+            // template, not of this row: every recipient would fail the same way
+            if (contract.templateParts.length > 0) {
+              progress.errors.push({
+                recipient: 'export',
+                message: `Mail Merge cannot reach merge fields in ${contract.templateParts.join(', ')}; move them into the document body`,
+              })
+              break
+            }
+            await sleep(0)
+            continue
+          }
+          if (cancel.cancelled || documentMoved()) {
+            progress.cancelled = true
+            break
+          }
           const result = await window.desktop.writeMailMergeFile(
             options.outputDir,
             name,
@@ -371,7 +410,7 @@ export async function runMailMergeExport(
               recipient: name,
               message: 'the page layout did not settle for this recipient',
             })
-          } else if (cancel.cancelled) {
+          } else if (cancel.cancelled || documentMoved()) {
             // the batch stopped while this page layout was being measured: the
             // print never started, so nothing was written
             progress.cancelled = true

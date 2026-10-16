@@ -809,6 +809,13 @@ export async function buildDocBytes(
   merge?: DocMergeContext,
 ): Promise<Uint8Array | null> {
   const generation = docGeneration
+  // the same two guards a normal save has. A phased open still streaming its tail
+  // would serialize a truncated document, and an in-place table cell or textbox
+  // edit lives in the DOM until the commit event flushes it into the PM doc. Mail
+  // Merge calls this directly, so it must not skip them.
+  await waitForFullContent()
+  if (docGeneration !== generation) return null
+  window.dispatchEvent(new Event('ai-docs-commit-tables'))
   if (ctx.settleFontSettings) ctx = await ctx.settleFontSettings()
   if (docGeneration !== generation) return null
   const { doc, editor } = ctx

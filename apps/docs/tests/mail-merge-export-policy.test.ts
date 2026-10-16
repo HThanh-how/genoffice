@@ -20,7 +20,7 @@ import {
   setMailMergePreview,
 } from '../src/renderer/editor/mail-merge-preview'
 import { templateMergeFields } from '../src/renderer/mail-merge/validation'
-import type { FileActionContext } from '../src/renderer/file-actions'
+import { noteDocumentSwapped, type FileActionContext } from '../src/renderer/file-actions'
 import {
   resolveOutputName,
   runMailMergeExport,
@@ -809,7 +809,15 @@ describe('batch lifecycle', () => {
     expect(progress.status).toBe('cancelled')
   })
 
-  it('refuses to keep writing when the tab switched to another document mid-batch', async () => {
+  /**
+   * The tab keeps one Editor instance across document opens: `loadFileImpl`
+   * calls `setContent` on the existing editor and then `noteDocumentSwapped()`.
+   * The context object handed to `runMailMergeExport` is a snapshot taken during
+   * a render, so its `editor` and `doc` fields never change — an identity check
+   * on them can never see the swap. The batch has to notice the document through
+   * the app's own generation counter.
+   */
+  it('stops the batch when the same editor loads a different document', async () => {
     const first = await templateWith('<w:p>' + field('MERGEFIELD Name', null) + '</w:p>')
     const second = await templateWith(
       '<w:p><w:r><w:t xml:space="preserve">Other file</w:t></w:r></w:p>',
@@ -820,26 +828,55 @@ describe('batch lifecycle', () => {
       label: 'list.csv',
       hasHeader: true,
     })
+    // one editor, one context: exactly what the app has when a tab opens a file
     const ctx = makeCtx(first.editor, first.parsed)
     const progress = await runMailMergeExport(ctx, source, options('rename'), noCancel, (p) => {
-      // the user opened a different file in the same tab after the first write
-      if (p.done === 1) {
-        ctx.editor = second.editor
-        ctx.doc = {
-          parsed: second.parsed,
-          filePath: 'other.docx',
-          fileName: 'other.docx',
-          hash: '',
-        }
-      }
+      if (p.done !== 1) return
+      first.editor.commands.setContent(blocksToPmDoc(second.parsed.blocks) as never)
+      noteDocumentSwapped()
     })
     first.editor.destroy()
-    second.editor.destroy()
-    // only the document the batch started on produced output
     expect(written.length).toBe(1)
     expect(progress.succeeded).toBe(1)
     expect(progress.cancelled).toBe(true)
     expect(progress.errors.some((e) => e.message.includes('document changed'))).toBe(true)
+  })
+
+  it('stops the batch when the document is swapped before a write, not after', async () => {
+    const first = await templateWith('<w:p>' + field('MERGEFIELD Name', null) + '</w:p>')
+    const second = await templateWith(
+      '<w:p><w:r><w:t xml:space="preserve">Other file</w:t></w:r></w:p>',
+    )
+    const written: string[] = []
+    Object.assign(window, {
+      desktop: {
+        listMailMergeOutput: async () => ({ ok: true, names: [] }),
+        writeMailMergeFile: async (_dir: string, name: string) => {
+          written.push(name)
+          return { ok: true, path: `/out/${name}`, name }
+        },
+      },
+    })
+    const ctx = makeCtx(first.editor, first.parsed)
+    const source = sourceFromRows([['Name'], ['Huy'], ['An']], {
+      kind: 'csv',
+      label: 'list.csv',
+      hasHeader: true,
+    })
+    let swapped = false
+    const progress = await runMailMergeExport(ctx, source, options('rename'), noCancel, (p) => {
+      // the swap lands while the second document is being serialised: the bytes
+      // exist, but they belong to the wrong file and must never reach the disk
+      if (p.done === 1 && !swapped) {
+        swapped = true
+        first.editor.commands.setContent(blocksToPmDoc(second.parsed.blocks) as never)
+        noteDocumentSwapped()
+      }
+    })
+    first.editor.destroy()
+    expect(written.length).toBe(1)
+    expect(progress.done).toBe(1)
+    expect(progress.cancelled).toBe(true)
   })
 
   it('restores the preview the user had before the batch, even when a recipient fails', async () => {
