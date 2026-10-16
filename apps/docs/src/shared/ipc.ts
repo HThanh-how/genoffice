@@ -623,6 +623,7 @@ export interface DesktopApi {
     outPath?: string,
     links?: PdfInternalLink[],
     overwrite?: string,
+    batch?: string,
   ): Promise<{ ok: boolean; path?: string; name?: string; skipped?: boolean; error?: string }>
   /** Export as images: the folder picker plus a pre-authorized temp PDF path the
    *  regular PDF export writes to silently (no reveal, no open) */

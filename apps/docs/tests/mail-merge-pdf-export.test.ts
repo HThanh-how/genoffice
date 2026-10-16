@@ -16,11 +16,19 @@ import { parseDocx, type MergeValues, type ParsedDocFull } from '@genoffice/docx
 import { buildDocx } from '../../../packages/docx-engine/tests/helpers/build-docx'
 import { editorExtensions } from '../src/renderer/editor/extensions'
 import { blocksToPmDoc } from '../src/renderer/editor/convert'
-import { currentMailMergeValues } from '../src/renderer/editor/mail-merge-preview'
+import {
+  currentMailMergeValues,
+  mailMergePreviewGeneration,
+  setMailMergePreview,
+} from '../src/renderer/editor/mail-merge-preview'
+import { mergeFieldValue } from '../src/renderer/editor/merge-doc'
+import { templateFieldInstructions } from '../src/renderer/mail-merge/validation'
 import type { FileActionContext } from '../src/renderer/file-actions'
 import {
+  printablePreviewIsCurrent,
   runMailMergeExport,
-  waitForPagination,
+  waitForPrintablePreview,
+  waitForPreviewSheets,
   type CancelToken,
 } from '../src/renderer/mail-merge/export'
 import { sourceFromRows } from '../src/renderer/mail-merge/data-source'
@@ -93,28 +101,44 @@ function stubDesktop(existing: string[] = []) {
 }
 
 /**
- * The app re-measures pagination after every preview transaction; the test
- * runner has no layout engine, so the revision signal is simulated.
+ * The print sheets Chromium prints are clones of the editor DOM taken when the
+ * pagination preview measures. The test runner has no layout engine, so the
+ * clone is simulated: a `.pv-page` stack that re-clones the preview's value
+ * widgets when the preview generation changes.
+ *
+ * `reclone: false` reproduces the P0 shape — a snapshot taken when the preview
+ * opened and never refreshed — so the export must refuse to print it.
  */
-function fakeLayout(rev = 1, pages = 1) {
-  let current = rev
-  const publish = () => {
-    ;(
-      window as unknown as {
-        __pageDebug: { rev: number; passAt: number; slices: unknown[] }
-      }
-    ).__pageDebug = {
-      rev: current,
-      passAt: Date.now(),
-      slices: Array.from({ length: pages }, () => 1),
+function fakePrintSheets(editor: Editor, reclone = true) {
+  document.querySelectorAll('.pagination-preview').forEach((el) => el.remove())
+  const root = document.createElement('div')
+  root.className = 'pagination-preview'
+  const page = document.createElement('div')
+  page.className = 'pv-page'
+  root.appendChild(page)
+  document.body.appendChild(root)
+  const render = () => {
+    page.innerHTML = ''
+    const values = currentMailMergeValues(editor.state)
+    if (!values) return
+    for (const instr of templateFieldInstructions(editor)) {
+      const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
+      const value = mergeFieldValue(instr, values, report)
+      if (value === null) continue
+      const span = document.createElement('span')
+      span.className = 'mm-field-preview-value'
+      span.dataset.mmPreviewKey = String(mailMergePreviewGeneration())
+      span.textContent = value
+      page.appendChild(span)
     }
   }
-  publish()
-  const timer = setInterval(() => {
-    current += 1
-    publish()
-  }, 60)
-  return () => clearInterval(timer)
+  render()
+  if (!reclone) return () => root.remove()
+  editor.on('transaction', render)
+  return () => {
+    editor.off('transaction', render)
+    root.remove()
+  }
 }
 
 async function templateWith(xml: string) {
@@ -148,7 +172,7 @@ describe('pdf export validation', () => {
         '</w:p>',
     )
     stubDesktop([])
-    const stop = fakeLayout(1, 2)
+    const stop = fakePrintSheets(editor)
     const source = sourceFromRows([['Full Name'], ['Nguyễn Văn A'], ['Bo Tran']], {
       kind: 'csv',
       label: 'list.csv',
@@ -191,7 +215,7 @@ describe('pdf export validation', () => {
       })
       .run()
     stubDesktop([])
-    const stop = fakeLayout(1, 1)
+    const stop = fakePrintSheets(editor)
     const source = sourceFromRows(
       [
         ['Name', 'Status'],
@@ -233,7 +257,7 @@ describe('pdf export validation', () => {
       })
       .run()
     stubDesktop([])
-    const stop = fakeLayout(1, 1)
+    const stop = fakePrintSheets(editor)
     const source = sourceFromRows([['Name'], ['Huy']], {
       kind: 'csv',
       label: 'list.csv',
@@ -271,7 +295,7 @@ describe('pdf export validation', () => {
       })
       .run()
     stubDesktop([])
-    const stop = fakeLayout(1, 1)
+    const stop = fakePrintSheets(editor)
     const source = sourceFromRows([['Name'], ['Huy']], {
       kind: 'csv',
       label: 'list.csv',
@@ -293,17 +317,14 @@ describe('pdf export validation', () => {
     expect(progress.status).toBe('completed_with_errors')
   })
 
-  it('fails the job when the layout never settles, rather than printing unmeasured pages', async () => {
+  it('fails the job when the preview never produces print sheets', async () => {
     pdfWrites.length = 0
     const { parsed, editor } = await templateWith(
       '<w:p><w:r><w:t xml:space="preserve">Dear </w:t></w:r></w:p>',
     )
     stubDesktop([])
-    // no pagination preview, no slices: nothing has been measured
-    ;(window as unknown as { __pageDebug: { rev: number; slices: unknown[] } }).__pageDebug = {
-      rev: 0,
-      slices: [],
-    }
+    // no pagination preview: nothing has been cloned, so there is nothing to print
+    document.querySelectorAll('.pagination-preview').forEach((el) => el.remove())
     const source = sourceFromRows([['Name'], ['Huy']], {
       kind: 'csv',
       label: 'list.csv',
@@ -323,31 +344,65 @@ describe('pdf export validation', () => {
   }, 25_000)
 })
 
-describe('pagination wait', () => {
-  const editorWith = (text: string) =>
-    new Editor({
-      element: document.createElement('div'),
-      extensions: editorExtensions,
-      content: text,
-    })
+describe('printable preview readiness', () => {
+  /** A clone of the print sheets, exactly as the pagination preview builds them. */
+  function sheets(html: string) {
+    document.querySelectorAll('.pagination-preview').forEach((el) => el.remove())
+    const root = document.createElement('div')
+    root.className = 'pagination-preview'
+    const page = document.createElement('div')
+    page.className = 'pv-page'
+    page.innerHTML = html
+    root.appendChild(page)
+    document.body.appendChild(root)
+    return root
+  }
 
-  it('accepts a layout that is already measured and not moving, before any recipient is shown', async () => {
-    const editor = editorWith('Dear «Name»')
-    // the pass timestamp never advances: nothing has changed, so there is no new
-    // pass to wait for
-    ;(
-      window as unknown as {
-        __pageDebug: { rev: number; passAt: number; slices: unknown[] }
-      }
-    ).__pageDebug = {
-      rev: 7,
-      passAt: 1_000,
-      slices: [1, 1],
-    }
-    expect(await waitForPagination(editor, 1_000, 1000, false)).toBe(true)
-    // the same state is still stale for a recipient whose values just went on screen
-    expect(await waitForPagination(editor, 2_000, 600, true)).toBe(false)
+  it('refuses sheets that carry no recipient at all', () => {
+    sheets('')
+    expect(printablePreviewIsCurrent(1, true)).toBe(false)
+  })
+
+  it('refuses sheets stamped with the recipient that was on screen before', () => {
+    sheets('<span class="mm-field-preview-value" data-mm-preview-key="4">Bo Tran</span>')
+    expect(printablePreviewIsCurrent(5, true)).toBe(false)
+    expect(printablePreviewIsCurrent(4, true)).toBe(true)
+  })
+
+  it('accepts sheets stamped with the recipient being printed', () => {
+    sheets('<span class="mm-field-preview-value" data-mm-preview-key="5">Nguyễn Văn A</span>')
+    expect(printablePreviewIsCurrent(5, true)).toBe(true)
+  })
+
+  it('a sheet cloned before the preview opened never becomes current', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const stop = fakePrintSheets(editor, false)
+    const generation = setMailMergePreview(editor, { Name: 'Huy' })
+    expect(await waitForPrintablePreview(generation, true, 600)).toBe(false)
+    stop()
     editor.destroy()
+    void parsed
+  })
+
+  it('becomes current once the clone re-measures for the new recipient', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const stop = fakePrintSheets(editor)
+    const generation = setMailMergePreview(editor, { Name: 'Huy' })
+    expect(await waitForPrintablePreview(generation, true, 2000)).toBe(true)
+    stop()
+    editor.destroy()
+    void parsed
+  })
+
+  it('waits for the preview to mount before printing anything', async () => {
+    document.querySelectorAll('.pagination-preview').forEach((el) => el.remove())
+    expect(await waitForPreviewSheets(400)).toBe(false)
+    sheets('')
+    expect(await waitForPreviewSheets(1000)).toBe(true)
   })
 })
 
@@ -384,7 +439,7 @@ describe("the PDF writer's real outcome reaches the batch", () => {
         '</w:p>',
     )
     stubDesktop([])
-    const stop = fakeLayout(1, 1)
+    const stop = fakePrintSheets(editor)
     const progress = await runMailMergeExport(
       makeCtx(editor, parsed),
       sourceFromRows([['Name'], ...names.map((n) => [n])], {
@@ -421,7 +476,7 @@ describe("the PDF writer's real outcome reaches the batch", () => {
       '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
     )
     stubDesktop([])
-    const stop = fakeLayout(1, 1)
+    const stop = fakePrintSheets(editor)
     pdfBehaviour = (path) => ({
       ok: false,
       skipped: true,
@@ -461,7 +516,7 @@ describe("the PDF writer's real outcome reaches the batch", () => {
       '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
     )
     stubDesktop([])
-    const stop = fakeLayout(1, 1)
+    const stop = fakePrintSheets(editor)
     const progress = await runMailMergeExport(
       makeCtx(editor, parsed),
       sourceFromRows([['Name'], ['Huy'], ['Huy']], {
@@ -494,7 +549,7 @@ describe("the PDF writer's real outcome reaches the batch", () => {
       '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
     )
     stubDesktop([])
-    const stop = fakeLayout(1, 1)
+    const stop = fakePrintSheets(editor)
     pdfBehaviour = () => ({ ok: false, error: 'Chromium refused the print job' })
     const progress = await runMailMergeExport(
       makeCtx(editor, parsed),
@@ -524,7 +579,7 @@ describe("the PDF writer's real outcome reaches the batch", () => {
       '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
     )
     stubDesktop([])
-    const stop = fakeLayout(1, 1)
+    const stop = fakePrintSheets(editor)
     await runMailMergeExport(
       makeCtx(editor, parsed),
       sourceFromRows([['Name'], ['Huy']], { kind: 'csv', label: 'l.csv', hasHeader: true }),

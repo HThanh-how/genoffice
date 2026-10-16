@@ -922,6 +922,7 @@ export function PaginationPreview({
   revisionView,
   onExportPdf,
   onClose,
+  snapshotKey,
   suppressEscape,
 }: {
   /** Canvas geometry (final section): clone width, single-section fallbacks */
@@ -977,7 +978,12 @@ export function PaginationPreview({
   revisionView?: EditorView | null
   onExportPdf: () => void
   onClose: () => void
-  /** While true (e.g. the print dialog is stacked on top), Escape must not close the preview */
+  /**
+   * Mail-merge preview generation the clone was measured for. Changing it re-runs
+   * the snapshot: the print sheets are a clone of the editor DOM, so they must be
+   * re-cloned when the recipient on screen changes.
+   */
+  snapshotKey?: number
   suppressEscape?: boolean
 }) {
   const { t } = useI18n()
@@ -1438,13 +1444,22 @@ export function PaginationPreview({
         setCloneKids(null)
         setHtml(Array.from(pm.children, (c) => cloneBlockHtml(c as HTMLElement)).join(''))
       }
+      // Publish the identity of the clone that was just taken. The print sheets
+      // are a snapshot of the editor DOM, so "the preview is open" is not proof
+      // that the sheets carry the recipient an export is about to print.
+      ;(window as unknown as Record<string, unknown>).__pvSnapshot = {
+        key: snapshotKey,
+        pages: computed.length,
+        at: Date.now(),
+      }
     } finally {
       if (measureNeutralize) pm.classList.remove('measuring-columns')
       if (zoomHost) zoomHost.style.zoom = savedZoom
     }
-    // snapshot: measure once on open; deps intentionally empty
+    // snapshot: re-measured whenever the content the sheets clone changes (the
+    // mail-merge preview puts a different recipient's values on the pages)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [snapshotKey])
 
   useEffect(() => {
     // stopPropagation cannot shield this window-level listener from the print

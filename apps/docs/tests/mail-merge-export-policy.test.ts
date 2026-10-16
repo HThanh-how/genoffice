@@ -24,7 +24,6 @@ import { noteDocumentSwapped, type FileActionContext } from '../src/renderer/fil
 import {
   resolveOutputName,
   runMailMergeExport,
-  waitForPagination,
   type CancelToken,
 } from '../src/renderer/mail-merge/export'
 import { sourceFromRows } from '../src/renderer/mail-merge/data-source'
@@ -738,72 +737,6 @@ describe('duplicate file names inside one batch', () => {
     expect(written.map((w) => w.name)).toEqual(['Huy.docx', 'An.docx', 'An (2).docx'])
     expect(progress.succeeded).toBe(written.length)
     expect(progress.done).toBe(3)
-  })
-})
-
-describe('pagination signal', () => {
-  const editorWith = (text: string) =>
-    new Editor({
-      element: document.createElement('div'),
-      extensions: editorExtensions,
-      content: text,
-    })
-
-  it('never settles on a layout pass that predates the recipient', async () => {
-    const editor = editorWith('Dear «Name»')
-    // two recipients can have the same page count: a stable slice list alone
-    // is not proof the current recipient was measured
-    ;(
-      window as unknown as {
-        __pageDebug: { rev: number; passAt: number; slices: unknown[] }
-      }
-    ).__pageDebug = {
-      rev: 1,
-      passAt: 1_000,
-      slices: [1, 1],
-    }
-    const settled = await waitForPagination(editor, 2_000, 600)
-    expect(settled).toBe(false)
-    editor.destroy()
-  })
-
-  it('settles once a pass commits after the preview and the page count stops moving', async () => {
-    const editor = editorWith('Dear Nguyễn Văn A with a very long multiline address line')
-    const startedAt = Date.now()
-    let passAt = startedAt
-    const timer = setInterval(() => {
-      passAt = Date.now()
-      ;(
-        window as unknown as {
-          __pageDebug: { rev: number; passAt: number; slices: unknown[] }
-        }
-      ).__pageDebug = {
-        rev: 1,
-        passAt,
-        slices: [2, 2, 3],
-      }
-    }, 80)
-    const settled = await waitForPagination(editor, startedAt, 4000)
-    clearInterval(timer)
-    expect(settled).toBe(true)
-    editor.destroy()
-  })
-
-  it('settles when the pagination effect restarts and its local rev goes backwards', async () => {
-    // the real pagination effect keeps `rev` in a closure: when it re-runs the
-    // counter restarts at 0, so a layout measured *after* the recipient can look
-    // older than the one it is compared against. The pass timestamp is what the
-    // batch export has to trust.
-    const editor = editorWith('Dear Bo Tran of 123 Nguyễn Huệ')
-    const startedAt = Date.now()
-    ;(
-      window as unknown as {
-        __pageDebug: { rev: number; passAt: number; slices: unknown[] }
-      }
-    ).__pageDebug = { rev: 3, passAt: startedAt + 1, slices: [1] }
-    const settled = await waitForPagination(editor, startedAt, 4000)
-    expect(settled).toBe(true)
-    editor.destroy()
   })
 })
 

@@ -28,9 +28,30 @@ export interface MailMergePreviewState {
   decos: DecorationSet
 }
 
-type PreviewMeta = { values?: MergeValues | null; highlight?: boolean }
+type PreviewMeta = {
+  values?: MergeValues | null
+  highlight?: boolean
+  generation?: number
+}
 
 export const mailMergePreviewKey = new PluginKey<MailMergePreviewState>('mailMergePreview')
+
+/**
+ * Every preview change gets a generation number.
+ *
+ * The printable pages are a *clone* of the editor DOM taken when the pagination
+ * preview measures, so "the editor state has this recipient" is not the same
+ * claim as "the pages that Chromium prints have this recipient". The generation
+ * is stamped on the value widget the preview inserts; the clone carries that
+ * stamp, and an export can therefore prove the sheets it prints belong to the
+ * recipient it is printing rather than the one that was on screen when the
+ * preview was opened.
+ */
+let previewGeneration = 0
+
+export function mailMergePreviewGeneration(): number {
+  return previewGeneration
+}
 
 /** merge/IF fields only — PAGE, DATE, REF… are not recipient data */
 function mergeFields(doc: PmNode) {
@@ -58,10 +79,13 @@ function buildDecorations(
         () => {
           const el = document.createElement('span')
           el.className = 'mm-field-preview-value'
+          el.dataset.mmPreviewKey = String(previewGeneration)
           el.textContent = value
           return el
         },
-        { side: -1, key: `mm:${field.from}:${value}` },
+        // the generation is part of the key so a new recipient's value is a new
+        // widget rather than a reused element still carrying the previous stamp
+        { side: -1, key: `mm:${field.from}:${previewGeneration}:${value}` },
       ),
     )
   }
@@ -81,15 +105,28 @@ function applyState(tr: Transaction, old: MailMergePreviewState): MailMergePrevi
   return { values, highlight, decos: buildDecorations(tr.doc, values, highlight) }
 }
 
-/** Set (or clear) the recipient whose values the editor should show. */
-export function setMailMergePreview(editor: Editor, values: MergeValues | null): void {
-  if (!editor.isEditable) return
-  editor.view.dispatch(editor.state.tr.setMeta(mailMergePreviewKey, { values }))
+/**
+ * Set (or clear) the recipient whose values the editor should show.
+ *
+ * Returns the generation the preview now carries — the number the printable
+ * preview must be stamped with before an export may print it.
+ */
+export function setMailMergePreview(editor: Editor, values: MergeValues | null): number {
+  if (!editor.isEditable) return previewGeneration
+  previewGeneration += 1
+  editor.view.dispatch(
+    editor.state.tr.setMeta(mailMergePreviewKey, { values, generation: previewGeneration }),
+  )
+  return previewGeneration
 }
 
-export function setMailMergeHighlight(editor: Editor, on: boolean): void {
-  if (!editor.isEditable) return
-  editor.view.dispatch(editor.state.tr.setMeta(mailMergePreviewKey, { highlight: on }))
+export function setMailMergeHighlight(editor: Editor, on: boolean): number {
+  if (!editor.isEditable) return previewGeneration
+  previewGeneration += 1
+  editor.view.dispatch(
+    editor.state.tr.setMeta(mailMergePreviewKey, { highlight: on, generation: previewGeneration }),
+  )
+  return previewGeneration
 }
 
 export function mailMergePreviewActive(state: EditorState): boolean {

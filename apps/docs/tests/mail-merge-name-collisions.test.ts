@@ -29,7 +29,6 @@ describe('case-insensitive name collisions', () => {
       (candidate) => join(dir, candidate),
       (handle, data) => handle.write(data).then(() => undefined),
       () => false,
-      true,
     )
     const second = await writeMailMergeOutput(
       dir,
@@ -40,7 +39,6 @@ describe('case-insensitive name collisions', () => {
       (candidate) => join(dir, candidate),
       (handle, data) => handle.write(data).then(() => undefined),
       () => false,
-      true,
     )
     expect(first.name).toBe('Notes.docx')
     expect(second.name).not.toBe(first.name)

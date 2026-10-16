@@ -3,7 +3,7 @@ import '@genoffice/ui/index-progress.css'
 import { scriptFontHtml } from './editor/script-fonts'
 import { DOC_CSS_COMMITTED_EVENT } from './editor/cjk-punct-shrink'
 import { justifyShrinkPluginKey } from './editor/justify-shrink'
-import { mailMergePreviewKey } from './editor/mail-merge-preview'
+import { mailMergePreviewGeneration, mailMergePreviewKey } from './editor/mail-merge-preview'
 import {
   useCallback,
   useEffect,
@@ -952,6 +952,12 @@ export function App() {
   const [showGrid, setShowGrid] = useState(false)
   const [splitView, setSplitView] = useState(false)
   const [showPagePreview, setShowPagePreview] = useState(false)
+  /**
+   * Generation of the mail-merge preview the pagination preview was last measured
+   * for. The print sheets are clones of the editor DOM, so they have to be
+   * re-cloned whenever the recipient on screen changes.
+   */
+  const [previewSnapshotKey, setPreviewSnapshotKey] = useState(0)
   const [splitHtml, setSplitHtml] = useState('')
   const [showFind, setShowFind] = useState(false)
   const [imageDragOver, setImageDragOver] = useState(false)
@@ -5187,6 +5193,10 @@ export function App() {
     const onMergePreviewTr = (props: { transaction: Transaction }) => {
       if (props.transaction.getMeta(mailMergePreviewKey) === undefined) return
       onUpdate(null, null, false)
+      // the print sheets are clones of the editor DOM taken at measure time: a
+      // decoration-only preview change has to re-clone them, or a batch export
+      // prints the recipient that was on screen when the preview opened
+      setPreviewSnapshotKey(mailMergePreviewGeneration())
     }
     editor?.on('transaction', onMergePreviewTr)
     return () => {
@@ -8248,6 +8258,7 @@ export function App() {
           onClose={() => {
             if (!exportLocksPreview) setShowPagePreview(false)
           }}
+          snapshotKey={previewSnapshotKey}
           suppressEscape={showPrintDialog || exportLocksPreview}
         />
       )}

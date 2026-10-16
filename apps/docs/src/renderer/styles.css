@@ -7506,8 +7506,14 @@ body.docs-crop-active .doc-protected[data-doc-protected='image'] .doc-img-wrap {
 }
 
 .mm-recipient-row span {
+  /* a recipient cell can hold a whole paragraph: without a nowrap + width the
+     row grows to the length of the value and pushes the picker's own buttons
+     out of the dialog */
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+  max-width: 320px;
 }
 
 .mm-recipient-row.unselected {

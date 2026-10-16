@@ -53,57 +53,58 @@ function bytesToBase64(bytes: Uint8Array): string {
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
 
 /**
- * The editor publishes its pagination state on `window.__pageDebug` (App.tsx):
- * the slice list, `rev` (passes committed by the pagination effect) and `passAt`
- * (the wall clock of the pass that committed the current slices).
- * `passAt` is the signal that says "the pages were measured *after* this
- * recipient's values went on screen": `rev` is local to the pagination effect and
- * restarts at 0 when that effect re-runs, so comparing it across recipients can
- * make a fresh layout look older than the one it is being compared to. A slice
- * count alone cannot tell a fresh layout from a stale one either — two recipients
- * can fit on the same number of pages.
+ * What Chromium actually prints is the pagination preview's cloned `.pv-page`
+ * sheets, not the editor state. Those sheets are a snapshot of the editor DOM
+ * taken when the preview measures (PaginationPreview.tsx), and a recipient's
+ * values reach that DOM only through the preview's value widgets — every widget
+ * stamped with the generation of the preview that created it
+ * (`editor/mail-merge-preview.ts`).
+ *
+ * A print is therefore safe only when the sheets carry this recipient's stamp.
+ * A page count, a layout timestamp or "the preview is open" says nothing about
+ * which recipient the cloned sheets hold: two recipients can paginate identically,
+ * and a snapshot taken when the preview opened keeps its content however many
+ * passes the editor makes afterwards.
  */
-function layoutState(): { rev: number; pages: number; passAt: number } {
-  const debug = (
-    window as unknown as {
-      __pageDebug?: { rev?: number; passAt?: number; slices?: unknown[] }
-    }
-  ).__pageDebug
-  return {
-    rev: debug?.rev ?? 0,
-    passAt: debug?.passAt ?? 0,
-    pages: Array.isArray(debug?.slices) ? debug.slices.length : 0,
+function previewSheets(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>('.pv-page')]
+}
+
+export function printablePreviewIsCurrent(generation: number, hasMergeFields: boolean): boolean {
+  const sheets = previewSheets()
+  if (sheets.length === 0) return false
+  const stamped = sheets.flatMap((sheet) =>
+    [...sheet.querySelectorAll<HTMLElement>('.mm-field-preview-value')],
+  )
+  // a template with merge fields whose sheets show no value at all is a clone
+  // taken before this recipient was put on screen
+  if (hasMergeFields && stamped.length === 0) return false
+  return stamped.every((el) => el.dataset.mmPreviewKey === String(generation))
+}
+
+/** The preview mounted and measured its print sheets. */
+export async function waitForPreviewSheets(deadlineMs = 20_000): Promise<boolean> {
+  const deadline = Date.now() + deadlineMs
+  while (Date.now() < deadline) {
+    if (previewSheets().length > 0) return true
+    await sleep(120)
   }
+  return false
 }
 
 /**
- * Wait for a pagination pass that ran after `sincePassAt` and whose page count has
- * stopped moving. Returns false when the layout never settled: the caller must
- * not print a page layout that predates the recipient.
- *
- * `requireNewPass` is false only for the very first wait of a batch, before any
- * recipient has been put on screen. Nothing has changed then, so there is no new
- * pass to wait for — a layout that is already measured and not moving is settled.
- * For every recipient after that a pass must commit, because the values arrive
- * through a decoration-only transaction (App.tsx `onMergePreviewTr`) and the
- * page boxes have to be re-measured with that recipient's text.
+ * Wait until the cloned print sheets carry `generation`'s recipient. Returns false
+ * when they never do: printing then would put the previous recipient's text on
+ * paper, so the caller must fail the recipient instead.
  */
-export async function waitForPagination(
-  editor: Editor,
-  sincePassAt: number,
+export async function waitForPrintablePreview(
+  generation: number,
+  hasMergeFields: boolean,
   deadlineMs = 20_000,
-  requireNewPass = true,
 ): Promise<boolean> {
   const deadline = Date.now() + deadlineMs
-  let lastPages = -1
-  let stable = 0
   while (Date.now() < deadline) {
-    const { pages, passAt } = layoutState()
-    if (pages >= 1 && (passAt > sincePassAt || !requireNewPass)) {
-      stable = pages === lastPages ? stable + 1 : 0
-      lastPages = pages
-      if (stable >= 2) return true
-    }
+    if (printablePreviewIsCurrent(generation, hasMergeFields)) return true
     await sleep(120)
   }
   return false
@@ -218,6 +219,10 @@ export async function runMailMergeExport(
   // must not be reported as a successful merge: the output would still contain
   // the raw field and its «placeholder».
   const unmergeable = passthroughFieldInstructions(ctx.doc.parsed.blocks)
+  // whether the template has any merge field at all: the printable sheets of a
+  // template with fields must show this recipient's values, and a sheet that
+  // shows none is a clone taken before the recipient was put on screen
+  const hasMergeFields = templateFieldInstructions(ctx.editor).length > 0
 
   const listing = await window.desktop.listMailMergeOutput(options.outputDir, options.batch)
   // Skip/Rename/Overwrite can only be decided from a listing the writer can
@@ -260,10 +265,10 @@ export async function runMailMergeExport(
       )
     }
     if (!previewWasOpen) ctx.setShowPagePreview(true)
-    // nothing has been shown yet, so there is no new layout pass to wait for:
-    // an already-measured, unmoving layout is settled. A layout that never
-    // measures at all is not — printing it would break pages on a guess.
-    if (!(await waitForPagination(ctx.editor, layoutState().passAt, 20_000, false))) {
+    // the print sheets are clones of the editor DOM: nothing has been shown yet,
+    // so there is no recipient to isolate — but the sheets must exist, or the
+    // print would fall back to Chromium auto-paginating the continuous canvas
+    if (!(await waitForPreviewSheets(20_000))) {
       restorePreview()
       return failJob('the page layout never settled, so no PDF could be printed')
     }
@@ -424,15 +429,16 @@ export async function runMailMergeExport(
         }
       } else {
         // the preview decoration is what makes the printed DOM contain this
-        // recipient's values; the template text itself is never modified
-        const passAtBefore = layoutState().passAt
-        setMailMergePreview(ctx.editor, recipient.values)
+        // recipient's values; the template text itself is never modified. The
+        // returned generation is the stamp the cloned print sheets must carry
+        // before Chromium is allowed to print them.
+        const generation = setMailMergePreview(ctx.editor, recipient.values)
         try {
-          if (!(await waitForPagination(ctx.editor, passAtBefore))) {
+          if (!(await waitForPrintablePreview(generation, hasMergeFields))) {
             progress.failed += 1
             progress.errors.push({
               recipient: name,
-              message: 'the page layout did not settle for this recipient',
+              message: 'the printed pages did not update for this recipient',
             })
           } else if (cancel.cancelled || documentMoved()) {
             // the batch stopped while this page layout was being measured: the

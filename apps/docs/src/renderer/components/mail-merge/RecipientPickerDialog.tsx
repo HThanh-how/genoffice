@@ -436,7 +436,7 @@ export function RecipientPickerDialog({
                     }
                   />
                   {pending.columns.map((c) => (
-                    <span role="cell" key={c.name}>
+                    <span role="cell" key={c.name} title={recipient.values[c.name] ?? ''}>
                       {recipient.values[c.name] ?? ''}
                     </span>
                   ))}
