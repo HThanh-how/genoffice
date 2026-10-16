@@ -144,6 +144,7 @@ export const DOCS_CLAIM_CORRECTION =
 
 export function claimsDocModification(text: string): boolean {
   return (
+    NEW_DOC_CLAIM_RE.test(text) ||
     EN_MODIFICATION_CLAIM.test(text) ||
     VI_MODIFICATION_CLAIM.test(text) ||
     ZH_MODIFICATION_CLAIM.test(text)

@@ -72,6 +72,9 @@ describe('claimsDocModification', () => {
     )
     expect(claimsDocModification('Văn bản đã được chỉnh sửa theo yêu cầu của bạn.')).toBe(true)
     expect(claimsDocModification('Đã thiết lập xong căn lề trang.')).toBe(true)
+    expect(claimsDocModification('Đã tạo tài liệu mới.')).toBe(true)
+    expect(claimsDocModification('Tài liệu mới đã được tạo.')).toBe(true)
+    expect(claimsDocModification('Tôi đã tạo tài liệu mới.')).toBe(true)
   })
 
   it('detects English editing and formatting claims', () => {
@@ -83,6 +86,9 @@ describe('claimsDocModification', () => {
       true,
     )
     expect(claimsDocModification('I have applied the requested changes.')).toBe(true)
+    expect(claimsDocModification('The new document has been created.')).toBe(true)
+    expect(claimsDocModification('A new document was created.')).toBe(true)
+    expect(claimsDocModification('I created a new document.')).toBe(true)
   })
 
   it('detects Chinese editing and formatting claims', () => {
@@ -232,28 +238,77 @@ describe('verifyDocsResponse unit tests', () => {
     expect(mismatchCorrection).toBe(DOCS_CLAIM_CORRECTION)
   })
 
-  it('accepts truthful new document creation claim when create_document succeeded', () => {
-    const viRes = verifyDocsResponse('Tôi đã tạo tài liệu mới.', [
-      { name: 'create_document', ok: true, mutated: false },
-    ])
-    expect(viRes).toBeNull()
-
-    const enRes = verifyDocsResponse('I created a new document.', [
-      { name: 'create_document', ok: true, mutated: false },
-    ])
-    expect(enRes).toBeNull()
-
-    const enRes2 = verifyDocsResponse('The new document has been created.', [
-      { name: 'create_document', ok: true, mutated: false },
-    ])
-    expect(enRes2).toBeNull()
+  it('accepts all creation claim variants when create_document actually succeeded', () => {
+    const creationClaims = [
+      'The new document has been created.',
+      'A new document was created.',
+      'Đã tạo tài liệu mới.',
+      'Tài liệu mới đã được tạo.',
+      'Tôi đã tạo tài liệu mới.',
+      'I created a new document.',
+    ]
+    for (const claim of creationClaims) {
+      const res = verifyDocsResponse(claim, [{ name: 'create_document', ok: true, mutated: false }])
+      expect(res).toBeNull()
+    }
   })
 
-  it('rejects false new document creation claim when create_document failed', () => {
-    const viRes = verifyDocsResponse('Tôi đã tạo tài liệu mới.', [
-      { name: 'create_document', ok: false, mutated: false },
-    ])
-    expect(viRes).toBe(DOCS_CLAIM_CORRECTION)
+  it('rejects all creation claim variants when create_document failed', () => {
+    const creationClaims = [
+      'The new document has been created.',
+      'A new document was created.',
+      'Đã tạo tài liệu mới.',
+      'Tài liệu mới đã được tạo.',
+      'Tôi đã tạo tài liệu mới.',
+      'I created a new document.',
+    ]
+    for (const claim of creationClaims) {
+      const res = verifyDocsResponse(claim, [
+        { name: 'create_document', ok: false, mutated: false },
+      ])
+      expect(res).toBe(DOCS_CLAIM_CORRECTION)
+    }
+  })
+
+  it('rejects all creation claim variants when create_document was never called', () => {
+    const creationClaims = [
+      'The new document has been created.',
+      'A new document was created.',
+      'Đã tạo tài liệu mới.',
+      'Tài liệu mới đã được tạo.',
+      'Tôi đã tạo tài liệu mới.',
+      'I created a new document.',
+    ]
+    for (const claim of creationClaims) {
+      const res = verifyDocsResponse(claim, [])
+      expect(res).toBe(DOCS_CLAIM_CORRECTION)
+    }
+  })
+
+  it('rejects all creation claim variants when only unrelated tools succeeded', () => {
+    const creationClaims = [
+      'The new document has been created.',
+      'A new document was created.',
+      'Đã tạo tài liệu mới.',
+      'Tài liệu mới đã được tạo.',
+      'Tôi đã tạo tài liệu mới.',
+      'I created a new document.',
+    ]
+    for (const claim of creationClaims) {
+      // Unrelated metadata tool (set_watermark)
+      const resWm = verifyDocsResponse(claim, [{ name: 'set_watermark', ok: true, mutated: false }])
+      expect(resWm).toBe(DOCS_CLAIM_CORRECTION)
+
+      // Unrelated content tool (apply_ops)
+      const resOps = verifyDocsResponse(claim, [{ name: 'apply_ops', ok: true, mutated: true }])
+      expect(resOps).toBe(DOCS_CLAIM_CORRECTION)
+
+      // Unrelated comment tool (reply_comment)
+      const resComment = verifyDocsResponse(claim, [
+        { name: 'reply_comment', ok: true, mutated: false },
+      ])
+      expect(resComment).toBe(DOCS_CLAIM_CORRECTION)
+    }
   })
 
   it('rejects false current document formatting claim when only create_document succeeded', () => {
