@@ -6,13 +6,13 @@ export interface ExecutedToolCall {
   /** false when the execution returned an error result */
   ok: boolean
   /** true when the tool changed the underlying artifact (document / sheet / deck) */
-  mutated?: boolean
+  mutated?: boolean | undefined
   /** tool input arguments provided by the model */
-  input?: Record<string, unknown>
+  input?: Record<string, unknown> | undefined
   /** short human-readable summary of the execution */
-  summary?: string
+  summary?: string | undefined
   /** output text returned by the tool execution */
-  output?: string
+  output?: string | undefined
 }
 
 /**

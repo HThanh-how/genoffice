@@ -1366,10 +1366,10 @@ function createExecutedToolCall(
   name: string,
   ok: boolean,
   extra?: {
-    mutated?: boolean
-    input?: Record<string, unknown>
-    summary?: string
-    output?: string
+    mutated?: boolean | undefined
+    input?: Record<string, unknown> | undefined
+    summary?: string | undefined
+    output?: string | undefined
   },
 ): ExecutedToolCall {
   const call: ExecutedToolCall = { name, ok }
