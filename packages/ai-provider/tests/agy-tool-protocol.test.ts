@@ -10,6 +10,8 @@ import { buildAgyPrompt, streamAgy } from '../src/agy-cli'
 import {
   AGY_SCHEMA_TURN_NOTE,
   agyToolTurnSchema,
+  parseAgyStructuredText,
+  readAgyTurnFromText,
   renderAgyStructuredTurn,
   resolveAgyToolProtocol,
 } from '../src/agy-structured-turn'
@@ -1022,3 +1024,232 @@ describe('Issue 1: AGY retry and text-first structured JSON regressions', () => 
     expect(t.calls[0]?.name).toBe('read_document')
   })
 })
+
+describe('Defect D Regression Matrix: truncated AGY JSON and fail-closed protocol (D01-D20)', () => {
+  const knownTools = new Set(['replace_text', 'read_document', 'apply_ops', 'read_blocks'])
+
+  it('D01: valid structured_output object => normal execution', async () => {
+    const t = await runTurn({
+      replies: [structuredReply('Done', [{ name: 'read_document', arguments: {} }])],
+    })
+    await t.pending
+    expect(t.calls.length).toBe(1)
+    expect(t.calls[0]?.name).toBe('read_document')
+  })
+
+  it('D02: valid structured JSON in result.response => normal execution', async () => {
+    const t = await runTurn({
+      replies: [
+        result({
+          response: JSON.stringify({
+            text: 'Processing',
+            tool_calls: [{ name: 'replace_text', arguments: { find: 'foo' } }],
+          }),
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.calls.length).toBe(1)
+    expect(t.calls[0]?.name).toBe('replace_text')
+    expect(t.calls[0]?.input).toEqual({ find: 'foo' })
+  })
+
+  it('D03: multiple valid tool calls => all correctly executed', async () => {
+    const t = await runTurn({
+      replies: [
+        result({
+          response: JSON.stringify({
+            text: 'Batch ops',
+            tool_calls: [
+              { name: 'read_document', arguments: {} },
+              { name: 'replace_text', arguments: { find: 'bar' } },
+            ],
+          }),
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.calls.length).toBe(2)
+    expect(t.calls[0]?.name).toBe('read_document')
+    expect(t.calls[1]?.name).toBe('replace_text')
+  })
+
+  it('D04: malformed JSON with complete tool_calls key => FAIL CLOSED', () => {
+    const raw = '{"text":"Broken","tool_calls": [broken'
+    const res = parseAgyStructuredText(raw, knownTools)
+    expect(res.kind).toBe('malformed')
+    const turnRes = readAgyTurnFromText(raw, knownTools)
+    expect(turnRes.kind).toBe('malformed')
+  })
+
+  it('D05: truncated JSON before tool_calls key completes => FAIL CLOSED', () => {
+    const raw = '{"text":"Formatting complete","tool_c'
+    const res = parseAgyStructuredText(raw, knownTools)
+    expect(res.kind).toBe('malformed')
+    const turnRes = readAgyTurnFromText(raw, knownTools)
+    expect(turnRes.kind).toBe('malformed')
+  })
+
+  it('D06: truncated JSON at tool_ca => FAIL CLOSED', () => {
+    const raw = '{"text":"Đang xử lý","tool_ca'
+    const res = parseAgyStructuredText(raw, knownTools)
+    expect(res.kind).toBe('malformed')
+    const turnRes = readAgyTurnFromText(raw, knownTools)
+    expect(turnRes.kind).toBe('malformed')
+  })
+
+  it('D07: truncated JSON immediately after tool_calls => FAIL CLOSED', () => {
+    const raw = '{"text":"I updated the document","tool_calls":['
+    const res = parseAgyStructuredText(raw, knownTools)
+    expect(res.kind).toBe('malformed')
+    const turnRes = readAgyTurnFromText(raw, knownTools)
+    expect(turnRes.kind).toBe('malformed')
+  })
+
+  it('D08: truncated JSON inside tool arguments => FAIL CLOSED', () => {
+    const raw = '{"text":"I updated the document","tool_calls":[{"name":"replace_text","arguments":{'
+    const res = parseAgyStructuredText(raw, knownTools)
+    expect(res.kind).toBe('malformed')
+    const turnRes = readAgyTurnFromText(raw, knownTools)
+    expect(turnRes.kind).toBe('malformed')
+  })
+
+  it('D09: unknown tool name => REJECT', () => {
+    const raw = JSON.stringify({
+      text: 'Testing',
+      tool_calls: [{ name: 'unknown_host_tool', arguments: {} }],
+    })
+    const res = parseAgyStructuredText(raw, knownTools)
+    expect(res.kind).toBe('malformed')
+  })
+
+  it('D10: malformed argument object => REJECT', () => {
+    const raw = JSON.stringify({
+      text: 'Testing',
+      tool_calls: [{ name: 'replace_text', arguments: 'not-an-object' }],
+    })
+    const res = parseAgyStructuredText(raw, knownTools)
+    expect(res.kind).toBe('malformed')
+  })
+
+  it('D11: ordinary prose => PRESERVED', () => {
+    const raw = 'Hello, how can I help you today?'
+    const turnRes = readAgyTurnFromText(raw, knownTools)
+    expect(turnRes.kind).toBe('prose')
+    if (turnRes.kind === 'prose') {
+      expect(turnRes.text).toBe(raw)
+    }
+  })
+
+  it('D12: prose explaining JSON => PRESERVED', () => {
+    const raw = 'The configuration format is {"text":"hello"}.'
+    const turnRes = readAgyTurnFromText(raw, knownTools)
+    expect(turnRes.kind).toBe('prose')
+    if (turnRes.kind === 'prose') {
+      expect(turnRes.text).toBe(raw)
+    }
+  })
+
+  it('D13: valid non-tool JSON example => PRESERVED', () => {
+    const raw = '{"example":"ordinary JSON data"}'
+    const res = parseAgyStructuredText(raw, knownTools)
+    expect(res.kind).toBe('none')
+    const turnRes = readAgyTurnFromText(raw, knownTools)
+    expect(turnRes.kind).toBe('prose')
+  })
+
+  it('D14: complete fenced structured JSON => correctly parsed', () => {
+    const raw =
+      '```json\n{"text":"ok","tool_calls":[{"name":"read_document","arguments":{}}]}\n```'
+    const res = parseAgyStructuredText(raw, knownTools)
+    expect(res.kind).toBe('valid')
+    if (res.kind === 'valid') {
+      expect(res.turn.calls[0]?.name).toBe('read_document')
+    }
+  })
+
+  it('D15: plain text tool-call protocol => correctly parsed', () => {
+    const raw = 'Action: <tool_call>{"name":"read_document","arguments":{}}</tool_call>'
+    const turnRes = readAgyTurnFromText(raw, knownTools)
+    expect(turnRes.kind).toBe('valid')
+    if (turnRes.kind === 'valid') {
+      expect(turnRes.syntax).toBe('tags')
+      expect(turnRes.turn.calls[0]?.name).toBe('read_document')
+    }
+  })
+
+  it('D16: retry returns valid structured JSON => exactly one execution', async () => {
+    const t = await runTurn({
+      replies: [
+        result({ response: '{"text":"Đang xử lý","tool_ca' }),
+        result({
+          response: JSON.stringify({
+            text: 'Recovered',
+            tool_calls: [{ name: 'read_document', arguments: {} }],
+          }),
+        }),
+      ],
+    })
+    await t.pending
+    expect(t.spawnCount()).toBe(2)
+    expect(t.calls.length).toBe(1)
+    expect(t.calls[0]?.name).toBe('read_document')
+  })
+
+  it('D17: retry fails => no host execution, clear error', async () => {
+    const t = await runTurn({
+      replies: [
+        result({ response: '{"text":"Đang xử lý","tool_ca' }),
+        result({ response: '{"text":"Vẫn lỗi","tool_ca' }),
+      ],
+    })
+    await expect(t.pending).rejects.toThrow(/could not be read|malformed GenOffice tool request/)
+    expect(t.calls).toEqual([])
+  })
+
+  it('D18: cancellation before delivery => no tool execution', async () => {
+    const child = new FakeChild()
+    const { deps } = runDeps(child)
+    const controller = new AbortController()
+    controller.abort()
+
+    const calls: AgentToolCall[] = []
+    const pending = streamAgy(
+      { apiKey: '', cliPath: CLI, model: 'm' },
+      '',
+      [{ role: 'user', text: 'cancel me' }],
+      tools,
+      1000,
+      {
+        signal: controller.signal,
+        onDelta: () => {},
+        onToolCall: (call) => calls.push(call),
+      },
+      deps,
+    )
+    await expect(pending).rejects.toThrow(/aborted|cancelled/i)
+    expect(calls).toEqual([])
+  })
+
+  it('D19: Vietnamese Unicode preserved in structured turn', () => {
+    const raw = JSON.stringify({
+      text: 'Tiêu đề: Hợp đồng kinh tế và Biên bản nghiệm thu.',
+      tool_calls: [{ name: 'replace_text', arguments: { text: HARD } }],
+    })
+    const res = parseAgyStructuredText(raw, knownTools)
+    expect(res.kind).toBe('valid')
+    if (res.kind === 'valid') {
+      expect(res.turn.text).toBe('Tiêu đề: Hợp đồng kinh tế và Biên bản nghiệm thu.')
+      expect(res.turn.calls[0]?.input.text).toBe(HARD)
+    }
+  })
+
+  it('D20: no raw structured protocol fragment displayed as success in runTurn', async () => {
+    const t = await runTurn({
+      replies: [result({ response: '{"text":"Đang xử lý","tool_ca' }), result({ response: '' })],
+    })
+    await expect(t.pending).rejects.toThrow()
+    expect(t.deltas).not.toContain('{"text":"Đang xử lý","tool_ca')
+  })
+})
+

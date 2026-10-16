@@ -132,6 +132,9 @@ function stripOuterFence(text: string): string {
   return match ? match[1]!.trim() : trimmed
 }
 
+const TRUNCATED_STRUCTURED_ENVELOPE_RE =
+  /^\s*\{\s*(?:"text"\s*:\s*(?:"(?:[^"\\]|\\.)*")?\s*,\s*|(?:"text"\s*:\s*(?:"(?:[^"\\]|\\.)*)?)?)?["']tool_c(?:a(?:l(?:l(?:s)?)?)?)?["']?/is
+
 /**
  * Recover a complete standalone structured turn from raw text (e.g. when result.structured_output
  * is absent but the model returned serialized JSON). Enforces strict schema bounds and fail-closed
@@ -147,6 +150,7 @@ export function parseAgyStructuredText(
   const unwrapped = stripOuterFence(trimmed)
   const looksLikeObject = unwrapped.startsWith('{')
   const mentionsToolCalls = unwrapped.includes('"tool_calls"') || unwrapped.includes("'tool_calls'")
+  const isTruncatedStructuredTurn = looksLikeObject && TRUNCATED_STRUCTURED_ENVELOPE_RE.test(unwrapped)
 
   if (!looksLikeObject && !mentionsToolCalls) {
     return { kind: 'none' }
@@ -156,7 +160,7 @@ export function parseAgyStructuredText(
   try {
     parsed = JSON.parse(unwrapped)
   } catch (err) {
-    if (looksLikeObject && mentionsToolCalls) {
+    if ((looksLikeObject && mentionsToolCalls) || isTruncatedStructuredTurn) {
       const msg = err instanceof Error ? err.message : String(err)
       return { kind: 'malformed', reason: `Invalid JSON syntax or trailing content: ${msg}` }
     }
