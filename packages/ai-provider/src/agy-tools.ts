@@ -125,7 +125,6 @@ export function parseAgyToolCalls(
       const parsed = parseOne(text.slice(start + AGY_TOOL_OPEN.length), known, calls.length)
       if (parsed) calls.push(parsed)
       else invalidBlocks++
-      cursor = text.length
       break
     }
     const parsed = parseOne(text.slice(start + AGY_TOOL_OPEN.length, end), known, calls.length)
