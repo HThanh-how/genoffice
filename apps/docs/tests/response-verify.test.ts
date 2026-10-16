@@ -6,6 +6,7 @@ import { createDocsSkill } from '../src/renderer/ai/docs-skill'
 import {
   claimsDocModification,
   verifyDocsResponse,
+  fallbackDocsResponse,
   DOCS_CLAIM_CORRECTION,
   DOCS_MUTATING_TOOLS,
 } from '../src/renderer/ai/response-verify'
@@ -164,6 +165,98 @@ describe('verifyDocsResponse unit tests', () => {
     expect(DOCS_MUTATING_TOOLS.has('set_page_setup')).toBe(true)
     expect(DOCS_MUTATING_TOOLS.has('get_document_context')).toBe(false)
     expect(DOCS_MUTATING_TOOLS.has('read_blocks')).toBe(false)
+  })
+
+  it('rejects claim when apply_ops ran with dryRun: true (mutated: false)', () => {
+    const correction = verifyDocsResponse(
+      'Tôi đã định dạng lại văn bản theo chuẩn thể thức văn bản hành chính Việt Nam.',
+      [{ name: 'apply_ops', ok: true, mutated: false, input: { dryRun: true } }],
+    )
+    expect(correction).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('rejects claim when apply_ops matched zero blocks (mutated: false)', () => {
+    const correction = verifyDocsResponse(
+      'Tôi đã định dạng lại văn bản theo chuẩn thể thức văn bản hành chính Việt Nam.',
+      [{ name: 'apply_ops', ok: true, mutated: false }],
+    )
+    expect(correction).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('accepts claim when apply_ops actually mutated document (mutated: true)', () => {
+    const correction = verifyDocsResponse(
+      'Tôi đã định dạng lại văn bản theo chuẩn thể thức văn bản hành chính Việt Nam.',
+      [{ name: 'apply_ops', ok: true, mutated: true }],
+    )
+    expect(correction).toBeNull()
+  })
+
+  it('rejects paragraph formatting claim when only comments succeeded', () => {
+    const correction = verifyDocsResponse('I have formatted the paragraphs as requested.', [
+      { name: 'apply_ops', ok: false },
+      { name: 'reply_comment', ok: true, mutated: true },
+    ])
+    expect(correction).toBe(DOCS_CLAIM_CORRECTION)
+  })
+
+  it('accepts truthful page setup claim when set_page_setup succeeded', () => {
+    const viCorrection = verifyDocsResponse('Đã thiết lập xong căn lề trang.', [
+      { name: 'set_page_setup', ok: true, mutated: false },
+    ])
+    expect(viCorrection).toBeNull()
+
+    const enCorrection = verifyDocsResponse(
+      'The document has been formatted with Decree 30 margins.',
+      [{ name: 'set_page_setup', ok: true, mutated: false }],
+    )
+    expect(enCorrection).toBeNull()
+  })
+
+  it('accepts metadata-only changes when matching metadata tool succeeded', () => {
+    const wmCorrection = verifyDocsResponse('Watermark has been added to the document.', [
+      { name: 'set_watermark', ok: true, mutated: false },
+    ])
+    expect(wmCorrection).toBeNull()
+
+    const styleCorrection = verifyDocsResponse(
+      'Style definition for CustomHeading has been updated.',
+      [{ name: 'define_style', ok: true, mutated: false }],
+    )
+    expect(styleCorrection).toBeNull()
+
+    // Rejects content formatting claim if only metadata succeeded
+    const mismatchCorrection = verifyDocsResponse(
+      'I have formatted the paragraphs and updated fonts.',
+      [{ name: 'set_watermark', ok: true, mutated: false }],
+    )
+    expect(mismatchCorrection).toBe(DOCS_CLAIM_CORRECTION)
+  })
+})
+
+describe('fallbackDocsResponse unit tests', () => {
+  it('produces accurate partial success fallback message', () => {
+    const fallback = fallbackDocsResponse('I have updated the document.', [
+      { name: 'set_page_setup', ok: true, mutated: false },
+      { name: 'apply_ops', ok: false, output: 'op execution failed: target not found' },
+    ])
+    expect(fallback).toContain('partially completed')
+    expect(fallback).toContain('set_page_setup')
+    expect(fallback).toContain('apply_ops')
+    expect(fallback).toContain('target not found')
+  })
+
+  it('produces accurate dry-run fallback message', () => {
+    const fallback = fallbackDocsResponse('Tôi đã định dạng lại văn bản.', [
+      { name: 'apply_ops', ok: true, mutated: false, input: { dryRun: true } },
+    ])
+    expect(fallback).toContain('dryRun')
+  })
+
+  it('produces accurate zero-changed fallback message', () => {
+    const fallback = fallbackDocsResponse('Tôi đã định dạng lại văn bản.', [
+      { name: 'apply_ops', ok: true, mutated: false },
+    ])
+    expect(fallback).toContain('Không có thay đổi nào được áp dụng')
   })
 })
 
@@ -394,6 +487,7 @@ describe('AgentLoop + Docs skill completion claim guard integration', () => {
 
     let doneCount = 0
     let finalAnswer = ''
+    let lastStreamedText = ''
     const loop = new AgentLoop({
       transport,
       skill: createDocsSkill(
@@ -401,6 +495,9 @@ describe('AgentLoop + Docs skill completion claim guard integration', () => {
         () => NUM_IDS,
       ),
       events: {
+        onText: (t) => {
+          lastStreamedText = t
+        },
         onDone: (r) => {
           doneCount++
           finalAnswer = r.text
@@ -413,7 +510,156 @@ describe('AgentLoop + Docs skill completion claim guard integration', () => {
 
     // AgentLoop enforces verifyRetryUsed: only 1 corrective turn attempted
     expect(doneCount).toBe(1)
-    expect(finalAnswer).toBe('Tôi đã định dạng lại văn bản.')
     expect(transport.requests.length).toBe(3)
+    // The repeated false claim is replaced with truthful fallback
+    expect(finalAnswer).not.toBe('Tôi đã định dạng lại văn bản.')
+    expect(finalAnswer).toContain(
+      'Không thể hoàn tất thao tác do các công cụ thực hiện không thành công',
+    )
+    expect(finalAnswer).toContain('apply_ops')
+    expect(finalAnswer).toContain('unknown op "unknown_op"')
+    // Chat UI text was updated with final fallback
+    expect(lastStreamedText).toBe(finalAnswer)
+  })
+
+  it('intercepts apply_ops dryRun and produces truthful fallback on repeated claim', async () => {
+    const editor = createEditor([para('Nội dung')])
+    const transport = scriptedTransport([
+      // Turn 1: Tool runs with dryRun: true
+      (cb) => {
+        cb.onToolCall({
+          id: 'call_dry',
+          name: 'apply_ops',
+          input: {
+            dryRun: true,
+            ops: [{ op: 'setFont', target: { blockIndexes: [0] }, bold: true }],
+          },
+        })
+        cb.onDone()
+      },
+      // Turn 2: Model falsely claims formatting happened
+      (cb) => {
+        cb.onDelta('Tôi đã định dạng lại văn bản.')
+        cb.onDone()
+      },
+      // Turn 3: Model repeats claim after [System check]
+      (cb) => {
+        cb.onDelta('Tôi đã định dạng lại văn bản.')
+        cb.onDone()
+      },
+    ])
+
+    let finalAnswer = ''
+    const loop = new AgentLoop({
+      transport,
+      skill: createDocsSkill(
+        () => editor,
+        () => NUM_IDS,
+      ),
+      events: { onDone: (r) => (finalAnswer = r.text) },
+    })
+
+    loop.run('Format document')
+    for (let i = 0; i < 8; i++) await flush()
+
+    expect(transport.requests.length).toBe(3)
+    expect(finalAnswer).toContain('dryRun')
+  })
+
+  it('intercepts apply_ops changed=0 and forces corrective turn', async () => {
+    const editor = createEditor([para('Nội dung')])
+    const transport = scriptedTransport([
+      // Turn 1: Tool targets non-existent block index 99
+      (cb) => {
+        cb.onToolCall({
+          id: 'call_noop',
+          name: 'apply_ops',
+          input: {
+            ops: [{ op: 'setFont', target: { blockIndexes: [99] }, bold: true }],
+          },
+        })
+        cb.onDone()
+      },
+      // Turn 2: Model falsely claims formatting happened
+      (cb) => {
+        cb.onDelta('Tôi đã định dạng lại văn bản.')
+        cb.onDone()
+      },
+      // Turn 3: Model repeats claim
+      (cb) => {
+        cb.onDelta('Tôi đã định dạng lại văn bản.')
+        cb.onDone()
+      },
+    ])
+
+    let finalAnswer = ''
+    const loop = new AgentLoop({
+      transport,
+      skill: createDocsSkill(
+        () => editor,
+        () => NUM_IDS,
+      ),
+      events: { onDone: (r) => (finalAnswer = r.text) },
+    })
+
+    loop.run('Format document')
+    for (let i = 0; i < 8; i++) await flush()
+
+    expect(transport.requests.length).toBe(3)
+    expect(finalAnswer).toContain('Không có thay đổi nào được áp dụng')
+  })
+
+  it('rejects false formatting claim when only comments succeeded and formatting failed', async () => {
+    const editor = createEditor([para('Nội dung')])
+    const mockComments = {
+      list: () => [{ id: 'c1', parentId: null, text: 'Hello' }],
+      reply: () => true,
+    }
+    const transport = scriptedTransport([
+      // Turn 1: formatting fails, comment reply succeeds
+      (cb) => {
+        cb.onToolCall({
+          id: 'call_fail',
+          name: 'apply_ops',
+          input: { ops: [{ op: 'unknown_op' }] },
+        })
+        cb.onToolCall({
+          id: 'call_comment',
+          name: 'reply_comment',
+          input: { parentId: 'c1', text: 'My reply' },
+        })
+        cb.onDone()
+      },
+      // Turn 2: Model claims formatting succeeded
+      (cb) => {
+        cb.onDelta('I have formatted the paragraphs as requested.')
+        cb.onDone()
+      },
+      // Turn 3: Model repeats false formatting claim
+      (cb) => {
+        cb.onDelta('I have formatted the paragraphs as requested.')
+        cb.onDone()
+      },
+    ])
+
+    let finalAnswer = ''
+    const loop = new AgentLoop({
+      transport,
+      skill: createDocsSkill(
+        () => editor,
+        () => NUM_IDS,
+        undefined,
+        () => mockComments as any,
+      ),
+      events: { onDone: (r) => (finalAnswer = r.text) },
+    })
+
+    loop.run('Format document')
+    for (let i = 0; i < 8; i++) await flush()
+
+    expect(transport.requests.length).toBe(3)
+    expect(finalAnswer).toContain('partially completed')
+    expect(finalAnswer).toContain('reply_comment')
+    expect(finalAnswer).toContain('apply_ops')
   })
 })

@@ -1054,21 +1054,30 @@ export class AgentLoop<TSnapshot = unknown> {
     // A returned correction forces one more model turn (tools stay available,
     // so the model can perform the missing action or reword its claim).
     if (toolCalls.length === 0 && !this.cancelled && !this.finalizing) {
-      // snapshot copy: the live array keeps growing if the corrective turn
-      // runs more tools, and the hook must see the state at check time
-      const correction =
-        !this.verifyRetryUsed && this.turnText && skill.verifyResponse
-          ? skill.verifyResponse(this.turnText, [...this.executedCalls])
-          : null
-      if (correction) {
-        this.verifyRetryUsed = true
-        this.history.push({ role: 'assistant', text: this.turnText })
-        this.history.push({ role: 'user', text: correction })
-        // No onTurnEnd here: UIs use it to seal the current assistant bubble,
-        // which would keep the rejected claim visible. Without it, the
-        // corrective turn's cumulative onText overwrites the bubble in place.
-        this.startTurn()
-        return
+      if (!this.verifyRetryUsed) {
+        const correction =
+          this.turnText && skill.verifyResponse
+            ? skill.verifyResponse(this.turnText, [...this.executedCalls])
+            : null
+        if (correction) {
+          this.verifyRetryUsed = true
+          this.history.push({ role: 'assistant', text: this.turnText })
+          this.history.push({ role: 'user', text: correction })
+          // No onTurnEnd here: UIs use it to seal the current assistant bubble,
+          // which would keep the rejected claim visible. Without it, the
+          // corrective turn's cumulative onText overwrites the bubble in place.
+          this.startTurn()
+          return
+        }
+      } else if (skill.fallbackResponse && this.turnText && skill.verifyResponse) {
+        const correction = skill.verifyResponse(this.turnText, [...this.executedCalls])
+        if (correction) {
+          const fallback = skill.fallbackResponse(this.turnText, [...this.executedCalls])
+          if (fallback) {
+            this.turnText = fallback
+            this.options.events?.onText?.(fallback)
+          }
+        }
       }
     }
 
@@ -1170,6 +1179,14 @@ export class AgentLoop<TSnapshot = unknown> {
           call,
           execution: { output, isError: true, summary: call.name },
         })
+        this.executedCalls.push(
+          createExecutedToolCall(call.name, false, {
+            mutated: false,
+            input: call.input,
+            summary: call.name,
+            output,
+          }),
+        )
         continue
       }
       executedInTurn = true
@@ -1195,13 +1212,27 @@ export class AgentLoop<TSnapshot = unknown> {
           isError: true,
           summary: call.name,
         }
-        this.executedCalls.push({ name: call.name, ok: false })
+        this.executedCalls.push(
+          createExecutedToolCall(call.name, false, {
+            mutated: false,
+            input: call.input,
+            summary: call.name,
+            output: aborted.output,
+          }),
+        )
         results.push({ id: call.id, name: call.name, output: aborted.output, isError: true })
         events?.onToolExecuted?.({ call, execution: aborted })
         continue
       }
       const execution = raced
-      this.executedCalls.push({ name: call.name, ok: !execution.isError })
+      this.executedCalls.push(
+        createExecutedToolCall(call.name, !execution.isError, {
+          mutated: execution.mutated,
+          input: call.input,
+          summary: execution.summary,
+          output: execution.output,
+        }),
+      )
       const firstMutation = !!execution.mutated && !this.mutationSeen
       if (execution.mutated) {
         this.mutationSeen = true
@@ -1329,4 +1360,50 @@ export function sanitizeAgentPayload(payload: string): string {
         '$1$2[REDACTED_SECURE_TOKEN]',
       )
   )
+}
+
+function createExecutedToolCall(
+  name: string,
+  ok: boolean,
+  extra?: {
+    mutated?: boolean
+    input?: Record<string, unknown>
+    summary?: string
+    output?: string
+  },
+): ExecutedToolCall {
+  const call: ExecutedToolCall = { name, ok }
+  if (extra?.mutated !== undefined) {
+    Object.defineProperty(call, 'mutated', {
+      value: extra.mutated,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    })
+  }
+  if (extra?.input !== undefined) {
+    Object.defineProperty(call, 'input', {
+      value: extra.input,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    })
+  }
+  if (extra?.summary !== undefined) {
+    Object.defineProperty(call, 'summary', {
+      value: extra.summary,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    })
+  }
+  if (extra?.output !== undefined) {
+    Object.defineProperty(call, 'output', {
+      value: extra.output,
+      enumerable: false,
+      configurable: true,
+      writable: true,
+    })
+  }
+  return call
 }
