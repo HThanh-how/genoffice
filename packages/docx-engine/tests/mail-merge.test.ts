@@ -665,4 +665,27 @@ describe('output file naming', () => {
     expect(name.endsWith('.docx')).toBe(true)
     expect(bytes(name)).toBeLessThanOrEqual(MAX_FILE_NAME_BYTES)
   })
+
+  it('bounds the padding an index token asks for', () => {
+    // `{100000000index}` would pad to a hundred million characters before the
+    // name is fitted to the byte budget: the width is clamped, not honoured
+    const name = buildOutputFileName({
+      pattern: '{100000000index}',
+      index: 1,
+      total: 1,
+      values: {},
+      extension: 'docx',
+    })
+    expect(name.length).toBeLessThanOrEqual(MAX_FILE_NAME_BYTES)
+    expect(name.startsWith('0000000000')).toBe(true)
+    // a sane explicit width still wins over the batch width
+    const padded = buildOutputFileName({
+      pattern: '{5index}',
+      index: 7,
+      total: 100,
+      values: {},
+      extension: 'docx',
+    })
+    expect(padded).toBe('00007.docx')
+  })
 })

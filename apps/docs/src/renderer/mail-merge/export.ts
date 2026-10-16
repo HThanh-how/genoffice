@@ -224,6 +224,21 @@ export async function runMailMergeExport(
   // shows none is a clone taken before the recipient was put on screen
   const hasMergeFields = templateFieldInstructions(ctx.editor).length > 0
 
+  // the batch belongs to one document, and the identity is taken before the
+  // first await: a directory listing, a pagination pass or a lazy-media
+  // materialisation can all take long enough for another tab to load while the
+  // batch is still deciding what to write. `currentDocGeneration()` is the app's
+  // own document identity: it is bumped by `noteDocumentSwapped()` every time a
+  // tab loads, creates or reopens a file, which is exactly the event that makes
+  // the rows being merged belong to a different document. Comparing the editor
+  // and doc object references alone is not enough — the app reuses one Editor
+  // instance across document opens, so the same object can hold a different file.
+  const jobEditor = ctx.editor
+  const jobDoc = ctx.doc
+  const jobGeneration = currentDocGeneration()
+  const documentMoved = () =>
+    ctx.editor !== jobEditor || ctx.doc !== jobDoc || currentDocGeneration() !== jobGeneration
+
   const listing = await window.desktop.listMailMergeOutput(options.outputDir, options.batch)
   // Skip/Rename/Overwrite can only be decided from a listing the writer can
   // trust. A failed or truncated listing is not that, so the batch stops rather
@@ -277,17 +292,6 @@ export async function runMailMergeExport(
   // whatever the user had on screen before the batch starts is restored at the
   // end of every recipient, so the editor never ends up showing a stranger's row
   const priorPreview = currentMailMergeValues(ctx.editor.state)
-  // the batch belongs to one document. `currentDocGeneration()` is the app's own
-  // document identity: it is bumped by `noteDocumentSwapped()` every time a tab
-  // loads, creates or reopens a file, which is exactly the event that makes the
-  // rows being merged belong to a different document. Comparing the editor and
-  // doc object references alone is not enough — the app reuses one Editor
-  // instance across document opens, so the same object can hold a different file.
-  const jobEditor = ctx.editor
-  const jobDoc = ctx.doc
-  const jobGeneration = currentDocGeneration()
-  const documentMoved = () =>
-    ctx.editor !== jobEditor || ctx.doc !== jobDoc || currentDocGeneration() !== jobGeneration
 
   for (let i = 0; i < recipients.length; i++) {
     if (cancel.cancelled) {

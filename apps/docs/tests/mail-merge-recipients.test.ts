@@ -92,9 +92,16 @@ describe('CSV recipient source', () => {
   })
 
   it('detects an unterminated quote instead of pretending the row is normal', () => {
-    expect(unterminatedQuoteAt('Name,"Huy')).toBe(9)
-    expect(unterminatedQuoteAt('Name,"Huy",x')).toBeNull()
-    expect(unterminatedQuoteAt('"Name","Huy"')).toBeNull()
+    expect(unterminatedQuoteAt('Name,"Huy', ',')).toBe(9)
+    expect(unterminatedQuoteAt('Name,"Huy",x', ',')).toBeNull()
+    expect(unterminatedQuoteAt('"Name","Huy"', ',')).toBeNull()
+    // a quote in the middle of an unquoted field is data, not a broken quote
+    expect(unterminatedQuoteAt('City,Ha"noi', ',')).toBeNull()
+  })
+
+  it('keeps a quote that sits inside an unquoted value', () => {
+    expect(parseCsvRows('City,Ha"noi', ',')).toEqual([['City', 'Ha"noi']])
+    expect(parseCsvRows('Name,"Alice""Jones"', ',')).toEqual([['Name', 'Alice"Jones']])
   })
 
   it('refuses a file whose quote never closes rather than merging nonsense', () => {

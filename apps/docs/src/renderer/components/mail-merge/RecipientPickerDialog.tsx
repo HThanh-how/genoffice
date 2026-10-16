@@ -35,7 +35,9 @@ export function RecipientPickerDialog({
   const [error, setError] = useState('')
   const [sheets, setSheets] = useState<string[]>([])
   const [sheet, setSheet] = useState('')
-  const [hasHeader, setHasHeader] = useState(true)
+  // reopening a source the user already imported must show the header setting
+  // that source was read with, not the default
+  const [hasHeader, setHasHeader] = useState(source?.hasHeader ?? true)
   const [sheetTabs, setSheetTabs] = useState<Array<{ id: string; title: string }>>([])
   const [tabId, setTabId] = useState('')
   const [range, setRange] = useState('A1:F1000')
@@ -60,7 +62,7 @@ export function RecipientPickerDialog({
    */
   const requestSeq = useRef(0)
   /** the header setting as it is *now*, not as it was when a read started */
-  const hasHeaderRef = useRef(true)
+  const hasHeaderRef = useRef(source?.hasHeader ?? true)
   const commit = (seq: number, next: MailMergeSource) => {
     if (seq !== requestSeq.current) return
     setPending(next)

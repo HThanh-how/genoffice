@@ -126,7 +126,15 @@ export function parseCsvRows(input: string, delimiter: string): string[][] {
       continue
     }
     if (ch === '"') {
-      inQuotes = true
+      // A quote opens a quoted field only at the start of one. Anywhere else it
+      // is data: `Ha"noi` is a city name, and dropping the character would write
+      // a recipient's name that is not the one in the file.
+      if (field === '') {
+        inQuotes = true
+        i += 1
+        continue
+      }
+      field += ch
       i += 1
       continue
     }
@@ -183,9 +191,10 @@ export function trimEmptyRows(rows: string[][]): string[][] {
  * callers use this to tell the user the file is malformed rather than pretending
  * the last row is a normal recipient.
  */
-export function unterminatedQuoteAt(input: string): number | null {
+export function unterminatedQuoteAt(input: string, delimiter: string): number | null {
   const text = stripBom(input)
   let inQuotes = false
+  let field = ''
   let i = 0
   while (i < text.length) {
     const ch = text[i]
@@ -201,10 +210,18 @@ export function unterminatedQuoteAt(input: string): number | null {
       continue
     }
     if (ch === '"') {
-      inQuotes = true
+      // the same rule the row parser uses: a quote only opens a quoted field at
+      // the start of one, so `Ha"noi` is a value, not a broken quote
+      if (field === '') inQuotes = true
       i += 1
       continue
     }
+    if (ch === delimiter || ch === '\n' || ch === '\r') {
+      field = ''
+      i += ch === '\r' && text[i + 1] === '\n' ? 2 : 1
+      continue
+    }
+    field += ch
     i += 1
   }
   return inQuotes ? i : null

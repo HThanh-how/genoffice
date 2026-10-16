@@ -892,6 +892,14 @@ export function isIndexToken(token: string): boolean {
   return /^\d*index$/i.test(token)
 }
 
+/**
+ * `{3index}` asks for at least three digits. The padding is applied before the
+ * name is fitted to the byte budget, so an unbounded width — `{100000000index}` —
+ * would allocate a 100 MB string for every recipient. Word's own numbering never
+ * needs more than this, and anything larger is clamped rather than honoured.
+ */
+const MAX_INDEX_PADDING = 100
+
 export function buildOutputFileName(options: FileNamePatternOptions): string {
   const { pattern, index, total, values, extension } = options
   // the widest index in the batch decides the padding, so 100 recipients produce
@@ -903,7 +911,8 @@ export function buildOutputFileName(options: FileNamePatternOptions): string {
       // `{3index}` asks for at least three digits; the batch size can ask for more
       const digits = /^(\d*)index$/i.exec(trimmed)?.[1] ?? ''
       const requested = digits === '' ? 0 : Number(digits)
-      return String(index).padStart(Math.max(requested, indexWidth), '0')
+      const width = Math.min(Math.max(requested, indexWidth), MAX_INDEX_PADDING)
+      return String(index).padStart(width, '0')
     }
     if (!trimmed) return ''
     const value = values[trimmed]

@@ -133,15 +133,15 @@ export function sourceFromRows(
 
 export function loadCsvSource(base64: string, label: string, hasHeader: boolean): MailMergeSource {
   const text = decodeCsvText(base64ToBytes(base64))
+  const delimiter = sniffDelimiter(text)
   // an unclosed quote swallows the rest of the file: every row after it would be
   // read as one field, so the source is refused rather than parsed into nonsense
-  const broken = unterminatedQuoteAt(text)
+  const broken = unterminatedQuoteAt(text, delimiter)
   if (broken !== null) {
     throw new Error(
       `the file has a quote that never closes (near character ${broken}); the rows after it cannot be read`,
     )
   }
-  const delimiter = sniffDelimiter(text)
   const rows = trimEmptyRows(parseCsvRows(text, delimiter))
   return sourceFromRows(rows, { kind: 'csv', label, hasHeader, delimiter })
 }
