@@ -45,6 +45,7 @@ import {
   AGY_STRUCTURED_RETRY_NOTE,
   AGY_TEXT_RETRY_NOTE,
   agyToolTurnSchema,
+  readAgyTurnFromText,
   readStructuredToolTurn,
   renderAgyStructuredTurn,
   resolveAgyToolProtocol,
@@ -55,7 +56,6 @@ import {
   agyCallId,
   agyToolList,
   agyToolNote,
-  parseAgyToolCalls,
   renderAgyToolCalls,
   renderAgyToolResult,
 } from './agy-tools'
@@ -1326,7 +1326,13 @@ async function streamAgyTurn(
           'schema',
         )
         const retried = await run(retryPlan, remainingMs, agyToolTurnSchema(tools))
-        return readStructuredToolTurn(retried.structured, known)
+        const structured = readStructuredToolTurn(retried.structured, known)
+        if (structured) return structured
+        if (retried.structured === undefined) {
+          const fromText = readAgyTurnFromText(retried.text, known)
+          if (fromText.kind === 'valid') return fromText.turn
+        }
+        return null
       }
       const retryPlan = buildAgyPrompt(
         [system, AGY_TEXT_RETRY_NOTE].filter(Boolean).join('\n\n'),
@@ -1335,12 +1341,12 @@ async function streamAgyTurn(
         'text',
       )
       const retried = await run(retryPlan, remainingMs)
-      const parsed = parseAgyToolCalls(retried.text, known)
-      if (parsed.invalidBlocks > 0) return null
-      return {
-        text: parsed.text,
-        calls: parsed.calls.map((call) => ({ name: call.name, input: call.input })),
+      const fromText = readAgyTurnFromText(retried.text, known)
+      if (fromText.kind === 'valid') return fromText.turn
+      if (fromText.kind === 'prose') {
+        return { text: fromText.text, calls: [] }
       }
+      return null
     } catch (error) {
       if (isAbortError(error)) throw error
       return null
@@ -1408,12 +1414,24 @@ async function streamAgyTurn(
   if (tools.length && protocol === 'schema') {
     const structured = readStructuredToolTurn(result.structured, known)
     if (structured) return deliver(structured.text, withIds(structured.calls), 'cli_result')
-    // No usable object. Without any object, plain prose or readable <tool_call> blocks still
-    // make a reply; an object that names an unknown tool or has the wrong shape does not.
+    // No usable native object. When result.structured is undefined (e.g. CLI returned serialized
+    // JSON response without structured_output), recover the turn via readAgyTurnFromText.
     if (result.structured === undefined) {
-      const parsed = parseAgyToolCalls(result.text, known)
-      if (parsed.invalidBlocks === 0 && result.text.trim()) {
-        return deliver(parsed.text, parsed.calls, 'cli_result')
+      const fromText = readAgyTurnFromText(result.text, known)
+      if (fromText.kind === 'valid') {
+        return deliver(fromText.turn.text, withIds(fromText.turn.calls), 'cli_result')
+      }
+      if (fromText.kind === 'malformed') {
+        const retried = await retryOtherProtocol()
+        if (retried)
+          return deliver(retried.text, withIds(retried.calls), 'malformed_host_tool_call')
+        return unreadable(
+          `Antigravity returned a malformed GenOffice tool request: ${fromText.reason}`,
+        )
+      }
+      // fromText.kind === 'prose'
+      if (fromText.text.trim()) {
+        return deliver(fromText.text, [], 'cli_result')
       }
     }
     const retried = await retryOtherProtocol()
@@ -1430,15 +1448,19 @@ async function streamAgyTurn(
     throw new Error('Antigravity CLI returned no content')
   }
   if (tools.length) {
-    const parsed = parseAgyToolCalls(result.text, known)
-    if (parsed.invalidBlocks > 0) {
+    const fromText = readAgyTurnFromText(result.text, known)
+    if (fromText.kind === 'valid') {
+      return deliver(fromText.turn.text, withIds(fromText.turn.calls), 'cli_result')
+    }
+    if (fromText.kind === 'malformed') {
       const retried = await retryOtherProtocol()
       if (retried) return deliver(retried.text, withIds(retried.calls), 'malformed_host_tool_call')
       return unreadable(
-        `Antigravity returned ${parsed.invalidBlocks} malformed GenOffice <tool_call> block(s).`,
+        `Antigravity returned a malformed GenOffice tool request: ${fromText.reason}`,
       )
     }
-    return deliver(parsed.text, parsed.calls, 'cli_result')
+    // fromText.kind === 'prose'
+    return deliver(fromText.text, [], 'cli_result')
   }
   reportAgyDiagnostic(cb, {
     provider: 'agy',

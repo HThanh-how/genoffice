@@ -406,6 +406,21 @@ describe('deleteBlocks', () => {
     expect(editor.state.doc.childCount).toBe(1)
     expect(editor.state.doc.child(0).textContent).toBe('')
   })
+
+  it('preserves target blockIndexes after structural deleteBlocks in the same batch', () => {
+    const editor = createEditor(fixtureDoc())
+    const targetText = editor.state.doc.child(1).textContent
+    const outcome = executeOps(editor, [
+      { op: 'deleteBlocks', target: { blockIndexes: [0] } },
+      { op: 'setFont', target: { blockIndexes: [1] }, bold: true },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(editor.state.doc.child(0).textContent).toBe(targetText)
+    const runs = editor.state.doc.child(0).content
+    expect(runs.child(0).marks.some((m) => m.type.name === 'bold')).toBe(true)
+    const otherRuns = editor.state.doc.child(1).content
+    expect(otherRuns.child(0).marks.some((m) => m.type.name === 'bold')).toBe(false)
+  })
 })
 
 describe('moveBlocks', () => {
@@ -1207,5 +1222,504 @@ describe('font changes in table cells', () => {
         .child(0)
         .marks.some((m) => m.type.name === 'docTextStyle'),
     ).toBe(false)
+  })
+})
+
+describe('Issue 2: Structural block-index mapping and atomicity regressions', () => {
+  it('moveBlocks -> setFont', () => {
+    const editor = createEditor([
+      para([text('Paragraph A')]),
+      para([text('Paragraph B')]),
+      para([text('Paragraph C')]),
+    ])
+    const outcome = executeOps(editor, [
+      { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: -1 },
+      { op: 'setFont', target: { blockIndexes: [0] }, bold: true },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(editor.state.doc.childCount).toBe(3)
+    expect(editor.state.doc.child(0).textContent).toBe('Paragraph C')
+    expect(editor.state.doc.child(1).textContent).toBe('Paragraph A')
+    expect(editor.state.doc.child(2).textContent).toBe('Paragraph B')
+    // Target was original index 0 (Paragraph A, now at child 1)
+    expect(
+      editor.state.doc
+        .child(1)
+        .child(0)
+        .marks.some((m) => m.type.name === 'bold'),
+    ).toBe(true)
+    expect(
+      editor.state.doc
+        .child(0)
+        .child(0)
+        .marks.some((m) => m.type.name === 'bold'),
+    ).toBe(false)
+  })
+
+  it('moveBlocks -> setParagraphFormat', () => {
+    const editor = createEditor([
+      para([text('Paragraph A')]),
+      para([text('Paragraph B')]),
+      para([text('Paragraph C')]),
+    ])
+    const outcome = executeOps(editor, [
+      { op: 'moveBlocks', blockIndexes: [0], afterBlockIndex: 2 },
+      { op: 'setParagraphFormat', target: { blockIndexes: [0] }, align: 'center' },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(editor.state.doc.child(0).textContent).toBe('Paragraph B')
+    expect(editor.state.doc.child(1).textContent).toBe('Paragraph C')
+    expect(editor.state.doc.child(2).textContent).toBe('Paragraph A')
+    expect(editor.state.doc.child(2).attrs.align).toBe('center')
+    expect(editor.state.doc.child(0).attrs.align).not.toBe('center')
+  })
+
+  it('insertToc -> setFont', () => {
+    const editor = createEditor([
+      heading([text('Heading 1')], 1),
+      para([text('Paragraph A')]),
+      para([text('Paragraph B')]),
+    ])
+    const outcome = executeOps(editor, [
+      { op: 'insertToc', afterBlockIndex: -1 },
+      { op: 'setFont', target: { blockIndexes: [1] }, bold: true },
+    ])
+    expect(outcome.ok).toBe(true)
+    // TOC inserted at 0 (or multiple TOC fields), heading shifts, Paragraph A shifts
+    const lastPara = editor.state.doc.child(editor.state.doc.childCount - 2)
+    expect(lastPara.textContent).toBe('Paragraph A')
+    expect(lastPara.child(0).marks.some((m) => m.type.name === 'bold')).toBe(true)
+  })
+
+  it('insertToc -> setParagraphFormat', () => {
+    const editor = createEditor([heading([text('Chapter 1')], 1), para([text('Body Paragraph')])])
+    const outcome = executeOps(editor, [
+      { op: 'insertToc', afterBlockIndex: -1 },
+      { op: 'setParagraphFormat', target: { blockIndexes: [1] }, align: 'right' },
+    ])
+    expect(outcome.ok).toBe(true)
+    const body = editor.state.doc.child(editor.state.doc.childCount - 1)
+    expect(body.textContent).toBe('Body Paragraph')
+    expect(body.attrs.align).toBe('right')
+  })
+
+  it('deleteBlocks -> moveBlocks -> setFont', () => {
+    const editor = createEditor([
+      para([text('Alpha')]),
+      para([text('Beta')]),
+      para([text('Gamma')]),
+      para([text('Delta')]),
+    ])
+    const outcome = executeOps(editor, [
+      { op: 'deleteBlocks', target: { blockIndexes: [1] } },
+      { op: 'moveBlocks', blockIndexes: [3], afterBlockIndex: -1 },
+      { op: 'setFont', target: { blockIndexes: [0] }, italic: true },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(editor.state.doc.childCount).toBe(3)
+    expect(editor.state.doc.child(0).textContent).toBe('Delta')
+    expect(editor.state.doc.child(1).textContent).toBe('Alpha')
+    expect(editor.state.doc.child(2).textContent).toBe('Gamma')
+    expect(
+      editor.state.doc
+        .child(1)
+        .child(0)
+        .marks.some((m) => m.type.name === 'italic'),
+    ).toBe(true)
+    expect(
+      editor.state.doc
+        .child(0)
+        .child(0)
+        .marks.some((m) => m.type.name === 'italic'),
+    ).toBe(false)
+  })
+
+  it('repeated deleteBlocks', () => {
+    const editor = createEditor([
+      para([text('One')]),
+      para([text('Two')]),
+      para([text('Three')]),
+      para([text('Four')]),
+    ])
+    const outcome = executeOps(editor, [
+      { op: 'deleteBlocks', target: { blockIndexes: [0] } },
+      { op: 'deleteBlocks', target: { blockIndexes: [2] } },
+      { op: 'setFont', target: { blockIndexes: [3] }, bold: true },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(editor.state.doc.childCount).toBe(2)
+    expect(editor.state.doc.child(0).textContent).toBe('Two')
+    expect(editor.state.doc.child(1).textContent).toBe('Four')
+    expect(
+      editor.state.doc
+        .child(1)
+        .child(0)
+        .marks.some((m) => m.type.name === 'bold'),
+    ).toBe(true)
+    expect(
+      editor.state.doc
+        .child(0)
+        .child(0)
+        .marks.some((m) => m.type.name === 'bold'),
+    ).toBe(false)
+  })
+
+  it('targeting an already-deleted block safely makes 0 changes without error', () => {
+    const editor = createEditor([para([text('One')]), para([text('Two')]), para([text('Three')])])
+    const outcome = executeOps(editor, [
+      { op: 'deleteBlocks', target: { blockIndexes: [1] } },
+      { op: 'setFont', target: { blockIndexes: [1] }, bold: true },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(editor.state.doc.childCount).toBe(2)
+    expect(outcome.results[1]?.changed).toBe(0)
+  })
+
+  it('targeting the last remaining block', () => {
+    const editor = createEditor([para([text('A')]), para([text('B')]), para([text('C')])])
+    const outcome = executeOps(editor, [
+      { op: 'deleteBlocks', target: { blockIndexes: [0, 1] } },
+      { op: 'setFont', target: { blockIndexes: [2] }, bold: true },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(editor.state.doc.childCount).toBe(1)
+    expect(editor.state.doc.child(0).textContent).toBe('C')
+    expect(
+      editor.state.doc
+        .child(0)
+        .child(0)
+        .marks.some((m) => m.type.name === 'bold'),
+    ).toBe(true)
+  })
+
+  it('structural op followed by a dryRun', () => {
+    const editor = createEditor([
+      para([text('First')]),
+      para([text('Second')]),
+      para([text('Third')]),
+    ])
+    const moveRes = executeOps(editor, [
+      { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: -1 },
+    ])
+    expect(moveRes.ok).toBe(true)
+    expect(editor.state.doc.child(0).textContent).toBe('Third')
+
+    const dryRes = executeOps(
+      editor,
+      [{ op: 'setFont', target: { blockIndexes: [0] }, bold: true }],
+      { dryRun: true },
+    )
+    expect(dryRes.ok).toBe(true)
+    expect(dryRes.plan?.length).toBe(1)
+    // Document must not be modified by dryRun
+    expect(
+      editor.state.doc
+        .child(0)
+        .child(0)
+        .marks.some((m) => m.type.name === 'bold'),
+    ).toBe(false)
+  })
+
+  it('multiple structural operations in one batch', () => {
+    const editor = createEditor([
+      para([text('P0')]),
+      para([text('P1')]),
+      para([text('P2')]),
+      para([text('P3')]),
+      para([text('P4')]),
+    ])
+    const outcome = executeOps(editor, [
+      { op: 'deleteBlocks', target: { blockIndexes: [2] } },
+      { op: 'moveBlocks', blockIndexes: [4], afterBlockIndex: 0 },
+      { op: 'setFont', target: { blockIndexes: [4] }, bold: true },
+      { op: 'setParagraphFormat', target: { blockIndexes: [1] }, align: 'center' },
+    ])
+    expect(outcome.ok).toBe(true)
+    expect(editor.state.doc.childCount).toBe(4)
+    expect(editor.state.doc.child(0).textContent).toBe('P0')
+    expect(editor.state.doc.child(1).textContent).toBe('P4')
+    expect(editor.state.doc.child(2).textContent).toBe('P1')
+    expect(editor.state.doc.child(3).textContent).toBe('P3')
+    expect(
+      editor.state.doc
+        .child(1)
+        .child(0)
+        .marks.some((m) => m.type.name === 'bold'),
+    ).toBe(true)
+    expect(editor.state.doc.child(2).attrs.align).toBe('center')
+  })
+
+  it('atomically rejects batch if afterBlockIndex was deleted by earlier op', () => {
+    const editor = createEditor([para([text('A')]), para([text('B')]), para([text('C')])])
+    const outcome = executeOps(editor, [
+      { op: 'deleteBlocks', target: { blockIndexes: [1] } },
+      { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: 1 },
+    ])
+    expect(outcome.ok).toBe(false)
+    expect(outcome.error).toContain('was deleted by an earlier operation in this batch')
+    // Atomicity: document remains untouched
+    expect(editor.state.doc.childCount).toBe(3)
+    expect(editor.state.doc.child(0).textContent).toBe('A')
+    expect(editor.state.doc.child(1).textContent).toBe('B')
+    expect(editor.state.doc.child(2).textContent).toBe('C')
+  })
+  describe('Defect M: target range mapping across structural and content operations', () => {
+    it('M01: target.range shifts accurately after earlier block deletion', () => {
+      const editor = createEditor([
+        para([text('First paragraph')]),
+        para([text('Second paragraph to delete')]),
+        para([text('Third paragraph target text')]),
+      ])
+      // Third paragraph starts at position:
+      // doc (0) -> child 0: pos 0, size 17 (1 + 15 + 1)
+      // child 1: pos 17, size 27 (1 + 25 + 1)
+      // child 2: pos 44, size 28 (1 + 26 + 1)
+      // "target text" inside child 2 is from pos 60 to 71.
+      const child2Start = editor.state.doc.child(0).nodeSize + editor.state.doc.child(1).nodeSize
+      const targetFrom = child2Start + 1 + 'Third paragraph '.length
+      const targetTo = targetFrom + 'target text'.length
+
+      const outcome = executeOps(editor, [
+        { op: 'deleteBlocks', target: { blockIndexes: [1] } },
+        {
+          op: 'setFont',
+          target: { range: { from: targetFrom, to: targetTo } },
+          bold: true,
+        },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(2)
+      expect(editor.state.doc.child(1).textContent).toBe('Third paragraph target text')
+      // Verify that bold was applied to "target text" in the new child(1)
+      const targetTextNode = editor.state.doc.child(1)
+      let foundBold = false
+      targetTextNode.descendants((node) => {
+        if (node.isText && node.text?.includes('target text')) {
+          if (node.marks.some((m) => m.type.name === 'bold')) foundBold = true
+        }
+      })
+      expect(foundBold).toBe(true)
+    })
+
+    it('M02: target.range shifts accurately after insertToc in same batch', () => {
+      const editor = createEditor([heading([text('Heading 1')], 1), para([text('P1')])])
+      const p1Pos = editor.state.doc.child(0).nodeSize
+      const range = { from: p1Pos + 1, to: p1Pos + 3 }
+
+      const outcome = executeOps(editor, [
+        { op: 'insertToc', afterBlockIndex: -1 },
+        { op: 'setFont', target: { range }, italic: true },
+      ])
+      expect(outcome.ok).toBe(true)
+      const lastChild = editor.state.doc.child(editor.state.doc.childCount - 1)
+      expect(lastChild.textContent).toBe('P1')
+      expect(lastChild.child(0).marks.some((m) => m.type.name === 'italic')).toBe(true)
+    })
+
+    it('M03: deleted target skips subsequent formatting without crashing or corrupting other blocks', () => {
+      const editor = createEditor([
+        para([text('P0 Keep')]),
+        para([text('P1 Delete')]),
+        para([text('P2 Keep')]),
+      ])
+      const outcome = executeOps(editor, [
+        { op: 'deleteBlocks', target: { blockIndexes: [1] } },
+        { op: 'setFont', target: { blockIndexes: [1] }, bold: true },
+        { op: 'setFont', target: { blockIndexes: [2] }, italic: true },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(2)
+      expect(editor.state.doc.child(0).textContent).toBe('P0 Keep')
+      expect(editor.state.doc.child(1).textContent).toBe('P2 Keep')
+      // P2 (which became child 1) received italic
+      expect(
+        editor.state.doc
+          .child(1)
+          .child(0)
+          .marks.some((m) => m.type.name === 'italic'),
+      ).toBe(true)
+      // P0 remained untouched (no bold, no italic)
+      expect(editor.state.doc.child(0).child(0).marks).toHaveLength(0)
+    })
+
+    it('M04: multiple structural changes (delete + delete + move) correctly route to later target', () => {
+      const editor = createEditor([
+        para([text('B0')]),
+        para([text('B1 to delete')]),
+        para([text('B2')]),
+        para([text('B3 to delete')]),
+        para([text('B4 target')]),
+      ])
+      const outcome = executeOps(editor, [
+        { op: 'deleteBlocks', target: { blockIndexes: [1] } },
+        { op: 'deleteBlocks', target: { blockIndexes: [3] } },
+        { op: 'setFont', target: { blockIndexes: [4] }, bold: true },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(3)
+      expect(editor.state.doc.child(0).textContent).toBe('B0')
+      expect(editor.state.doc.child(1).textContent).toBe('B2')
+      expect(editor.state.doc.child(2).textContent).toBe('B4 target')
+      expect(
+        editor.state.doc
+          .child(2)
+          .child(0)
+          .marks.some((m) => m.type.name === 'bold'),
+      ).toBe(true)
+    })
+
+    it('M05: moveBlocks tracks target blockIndexes to new document location', () => {
+      const editor = createEditor([
+        para([text('First')]),
+        para([text('Second')]),
+        para([text('Third to move')]),
+      ])
+      // Move block 2 to document start with afterBlockIndex: -1
+      const outcome = executeOps(editor, [
+        { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: -1 },
+        { op: 'setFont', target: { blockIndexes: [2] }, bold: true },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(3)
+      expect(editor.state.doc.child(0).textContent).toBe('Third to move')
+      expect(editor.state.doc.child(1).textContent).toBe('First')
+      expect(editor.state.doc.child(2).textContent).toBe('Second')
+      // Original block 2 is now child(0); verify bold landed on it
+      expect(
+        editor.state.doc
+          .child(0)
+          .child(0)
+          .marks.some((m) => m.type.name === 'bold'),
+      ).toBe(true)
+      // Other blocks untouched
+      expect(editor.state.doc.child(1).child(0).marks).toHaveLength(0)
+      expect(editor.state.doc.child(2).child(0).marks).toHaveLength(0)
+    })
+
+    it('M06: scope:selection maps accurately through tr.mapping across deletions', () => {
+      const editor = createEditor([
+        para([text('Header paragraph to delete')]),
+        para([text('Selected text to format')]),
+      ])
+      // Set selection on child(1) text: pos of child(1) is child(0).nodeSize
+      const child0Size = editor.state.doc.child(0).nodeSize
+      const selFrom = child0Size + 1
+      const selTo = selFrom + 'Selected text to format'.length
+      editor.commands.setTextSelection({ from: selFrom, to: selTo })
+
+      const outcome = executeOps(
+        editor,
+        [
+          { op: 'deleteBlocks', target: { blockIndexes: [0] } },
+          { op: 'setFont', target: { scope: 'selection' }, bold: true },
+        ],
+        { selection: { startIndex: 1, endIndex: 1, from: selFrom, to: selTo } },
+      )
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(1)
+      expect(editor.state.doc.child(0).textContent).toBe('Selected text to format')
+      expect(
+        editor.state.doc
+          .child(0)
+          .child(0)
+          .marks.some((m) => m.type.name === 'bold'),
+      ).toBe(true)
+    })
+
+    it('M07: target.range within a block moved by moveBlocks maps accurately to its new location and applies formatting', () => {
+      const editor = createEditor([
+        para([text('First paragraph')]),
+        para([text('Second paragraph')]),
+        para([text('Third paragraph target text inside')]),
+      ])
+      // Third paragraph starts at position:
+      // child 0: pos 0, size = child(0).nodeSize
+      // child 1: pos = child(0).nodeSize, size = child(1).nodeSize
+      // child 2: pos = child0Size + child1Size
+      // "target text" inside child 2 is from targetFrom to targetTo
+      const child2Start = editor.state.doc.child(0).nodeSize + editor.state.doc.child(1).nodeSize
+      const targetFrom = child2Start + 1 + 'Third paragraph '.length
+      const targetTo = targetFrom + 'target text'.length
+
+      // Move block 2 to document start with afterBlockIndex: -1
+      const outcome = executeOps(editor, [
+        { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: -1 },
+        {
+          op: 'setFont',
+          target: { range: { from: targetFrom, to: targetTo } },
+          bold: true,
+        },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(3)
+      expect(editor.state.doc.child(0).textContent).toBe('Third paragraph target text inside')
+      expect(editor.state.doc.child(1).textContent).toBe('First paragraph')
+      expect(editor.state.doc.child(2).textContent).toBe('Second paragraph')
+
+      // Verify bold was applied to "target text" in child(0) at its new location
+      const movedBlock = editor.state.doc.child(0)
+      let foundBold = false
+      let prefixBold = false
+      movedBlock.descendants((node) => {
+        if (node.isText && node.text?.includes('target text')) {
+          if (node.marks.some((m) => m.type.name === 'bold')) foundBold = true
+        }
+        if (node.isText && node.text?.includes('Third paragraph')) {
+          if (node.marks.some((m) => m.type.name === 'bold')) prefixBold = true
+        }
+      })
+      expect(foundBold).toBe(true)
+      expect(prefixBold).toBe(false)
+      expect(editor.state.doc.child(1).child(0).marks).toHaveLength(0)
+      expect(editor.state.doc.child(2).child(0).marks).toHaveLength(0)
+    })
+
+    it('M08: target.range within an unmoved block whose position shifted due to moveBlocks maps accurately and applies formatting', () => {
+      const editor = createEditor([
+        para([text('First paragraph')]),
+        para([text('Second paragraph target text inside')]),
+        para([text('Third paragraph to move')]),
+      ])
+      // Second paragraph starts at position:
+      // child 0: pos 0, size = child(0).nodeSize
+      // child 1: pos = child0Size, size = child(1).nodeSize
+      // "target text" inside child 1 is from targetFrom to targetTo
+      const child1Start = editor.state.doc.child(0).nodeSize
+      const targetFrom = child1Start + 1 + 'Second paragraph '.length
+      const targetTo = targetFrom + 'target text'.length
+
+      // Move block 2 to document start with afterBlockIndex: -1
+      // Block 1 is unmoved, but shifts to index 2 (after original block 0)
+      const outcome = executeOps(editor, [
+        { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: -1 },
+        {
+          op: 'setFont',
+          target: { range: { from: targetFrom, to: targetTo } },
+          bold: true,
+        },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(3)
+      expect(editor.state.doc.child(0).textContent).toBe('Third paragraph to move')
+      expect(editor.state.doc.child(1).textContent).toBe('First paragraph')
+      expect(editor.state.doc.child(2).textContent).toBe('Second paragraph target text inside')
+
+      // Verify bold was applied to "target text" in the shifted unmoved block (child 2)
+      const shiftedBlock = editor.state.doc.child(2)
+      let foundBold = false
+      let prefixBold = false
+      shiftedBlock.descendants((node) => {
+        if (node.isText && node.text?.includes('target text')) {
+          if (node.marks.some((m) => m.type.name === 'bold')) foundBold = true
+        }
+        if (node.isText && node.text?.includes('Second paragraph')) {
+          if (node.marks.some((m) => m.type.name === 'bold')) prefixBold = true
+        }
+      })
+      expect(foundBold).toBe(true)
+      expect(prefixBold).toBe(false)
+      expect(editor.state.doc.child(0).child(0).marks).toHaveLength(0)
+      expect(editor.state.doc.child(1).child(0).marks).toHaveLength(0)
+    })
   })
 })

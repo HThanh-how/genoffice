@@ -5,6 +5,14 @@ export interface ExecutedToolCall {
   name: string
   /** false when the execution returned an error result */
   ok: boolean
+  /** true when the tool changed the underlying artifact (document / sheet / deck) */
+  mutated?: boolean | undefined
+  /** tool input arguments provided by the model */
+  input?: Record<string, unknown> | undefined
+  /** short human-readable summary of the execution */
+  summary?: string | undefined
+  /** output text returned by the tool execution */
+  output?: string | undefined
 }
 
 /**
@@ -37,6 +45,12 @@ export interface AgentSkill {
    * so a detector false-positive costs one extra turn and cannot loop.
    */
   verifyResponse?(finalText: string, executed: readonly ExecutedToolCall[]): string | null
+  /**
+   * Deterministic truthful fallback when the model repeats an unverified claim
+   * after the corrective retry turn. Replaces the unbacked claim without
+   * spending additional model turns.
+   */
+  fallbackResponse?(finalText: string, executed: readonly ExecutedToolCall[]): string | undefined
 }
 
 /**
@@ -82,6 +96,13 @@ export function composeSkills(id: string, intro: string, skills: AgentSkill[]): 
         if (correction) return correction
       }
       return null
+    },
+    fallbackResponse: (finalText, executed) => {
+      for (const skill of skills) {
+        const fallback = skill.fallbackResponse?.(finalText, executed)
+        if (fallback) return fallback
+      }
+      return undefined
     },
   }
 }

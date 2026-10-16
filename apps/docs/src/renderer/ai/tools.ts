@@ -2067,14 +2067,20 @@ function executeSyncTool(
         }
       }
       const changed = outcome.results.reduce((sum, r) => sum + r.changed, 0)
+      const matched = outcome.results.reduce((sum, r) => sum + (r.matched ?? 0), 0)
       const skippedDeleted = outcome.results.reduce((sum, r) => sum + (r.skippedDeleted ?? 0), 0)
       // explicit model-facing note so it stops retrying deletions of already-deleted text
       const deletedNote =
         skippedDeleted > 0
           ? `\nNote: ${skippedDeleted} matched target(s) were skipped because that text is a pending tracked deletion (already struck through). It is not current content — do not try to delete or replace it again; the user accepts/rejects revisions in the Review tab.`
           : ''
+      const activeMatched = Math.max(0, matched - skippedDeleted)
+      const alreadyCorrectNote =
+        changed === 0 && activeMatched > 0
+          ? ` (0 changed; ${activeMatched} target(s) already matched the requested formatting)`
+          : ''
       return {
-        output: outcome.summary + deletedNote,
+        output: outcome.summary + alreadyCorrectNote + deletedNote,
         mutated: changed > 0,
         summary: outcome.summary,
       }

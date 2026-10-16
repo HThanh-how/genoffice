@@ -2,6 +2,7 @@ import { CLI, FakeChild, runDeps, tick } from './helpers/agy-fake'
 import { describe, expect, it, vi } from 'vitest'
 import { AGY_REQUEST_TIMEOUT_MS, buildAgyPrompt, streamAgy } from '../src/agy-cli'
 import { agyToolNote, parseAgyToolCalls, renderAgyToolCalls } from '../src/agy-tools'
+import { readAgyTurnFromText } from '../src/agy-structured-turn'
 
 const tools = [
   {
@@ -403,5 +404,213 @@ describe('streamAgy with tools', () => {
         reason: 'malformed_host_tool_call',
       })
     }
+  })
+
+  describe('Defect I: Tool examples inside Markdown code fences must not execute', () => {
+    it('I01: xml code block containing tool call is preserved as prose', () => {
+      const text = '```xml\n<tool_call>{"name":"replace_text","arguments":{}}</tool_call>\n```'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('I02: json code block containing tool call is preserved as prose', () => {
+      const text = '```json\n<tool_call>{"name":"replace_text","arguments":{}}</tool_call>\n```'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+    })
+
+    it('I03: unlabeled code block containing tool call is preserved as prose', () => {
+      const text = '```\n<tool_call>{"name":"replace_text","arguments":{}}</tool_call>\n```'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+    })
+
+    it('I04: tilde code block containing tool call is preserved as prose', () => {
+      const text = '~~~xml\n<tool_call>{"name":"replace_text","arguments":{}}</tool_call>\n~~~'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+    })
+
+    it('I05: code block example followed by real tool call executes only the real tool call', () => {
+      const text =
+        'Here is how you call it:\n```xml\n<tool_call>{"name":"replace_text","arguments":{"find":"example"}}</tool_call>\n```\n' +
+        'Now executing real edit:\n<tool_call>{"name":"replace_text","arguments":{"find":"real"}}</tool_call>'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(1)
+      expect(res.calls[0]?.input).toEqual({ find: 'real' })
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toContain('```xml\n<tool_call>{"name":"replace_text"')
+    })
+  })
+
+  describe('Defect J: Tool call limit in tag protocol fails closed', () => {
+    it('J01: exactly 8 tool calls succeeds', () => {
+      const blocks = Array.from(
+        { length: 8 },
+        (_, i) => `<tool_call>{"name":"replace_text","arguments":{"find":"${i}"}}</tool_call>`,
+      ).join('\n')
+      const res = parseAgyToolCalls(blocks, known)
+      expect(res.calls).toHaveLength(8)
+      expect(res.invalidBlocks).toBe(0)
+    })
+
+    it('J02: 9 tool calls fails closed with invalidBlocks > 0 and 0 calls', () => {
+      const blocks = Array.from(
+        { length: 9 },
+        (_, i) => `<tool_call>{"name":"replace_text","arguments":{"find":"${i}"}}</tool_call>`,
+      ).join('\n')
+      const res = parseAgyToolCalls(blocks, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(1)
+
+      const turn = readAgyTurnFromText(blocks, known)
+      expect(turn.kind).toBe('malformed')
+    })
+
+    it('J03: 10 tool calls fails closed with invalidBlocks = 2', () => {
+      const blocks = Array.from(
+        { length: 10 },
+        (_, i) => `<tool_call>{"name":"replace_text","arguments":{"find":"${i}"}}</tool_call>`,
+      ).join('\n')
+      const res = parseAgyToolCalls(blocks, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(2)
+    })
+  })
+
+  describe('Regression R2: Inline Markdown code blocks remain prose', () => {
+    it('R2-01: inline tool example in single backticks is not parsed as executable call', () => {
+      const text =
+        'Example: `<tool_call>{"name":"replace_text","arguments":{"find":"A","replace":"B"}}</tool_call>`'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('R2-02: inline tool example in double backticks is not parsed as executable call', () => {
+      const text =
+        'Doc: ``<tool_call>{"name":"replace_text","arguments":{"find":"A","replace":"B"}}</tool_call>``'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+    })
+
+    it('R2-03: inline example before real tool call allows real call to execute while preserving inline example', () => {
+      const text =
+        'Check this: `<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>`\n' +
+        'Now run: <tool_call>{"name":"replace_text","arguments":{"find":"REAL"}}</tool_call>'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(1)
+      expect(res.calls[0]?.input).toEqual({ find: 'REAL' })
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toContain('`<tool_call>{"name":"replace_text"')
+    })
+
+    it('R2-04: real tool call before inline example executes real call and preserves inline example', () => {
+      const text =
+        '<tool_call>{"name":"replace_text","arguments":{"find":"REAL"}}</tool_call>\n' +
+        'Reference: `<tool_call>{"name":"replace_text","arguments":{"find":"EX"}}</tool_call>`'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(1)
+      expect(res.calls[0]?.input).toEqual({ find: 'REAL' })
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toContain('Reference: `<tool_call>')
+    })
+
+    it('R2-05: double backtick span containing single backticks is closed only by double backticks', () => {
+      const text = '``<tool_call> `example` {"name":"replace_text"} </tool_call>``'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+    })
+  })
+
+  describe('Regression R3: CRLF code fences are protected', () => {
+    it('R3-01: CRLF ```xml fence containing tool call is preserved as prose', () => {
+      const text =
+        '```xml\r\n<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>\r\n```\r\n'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('R3-02: CRLF ~~~json fence containing tool call is preserved as prose', () => {
+      const text =
+        '~~~json\r\n<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>\r\n~~~\r\n'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('R3-03: CRLF fence followed by real tool call executes only the real tool call', () => {
+      const text =
+        '```xml\r\n<tool_call>{"name":"replace_text","arguments":{"find":"FAKE"}}</tool_call>\r\n```\r\n' +
+        'Real: <tool_call>{"name":"replace_text","arguments":{"find":"REAL"}}</tool_call>'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(1)
+      expect(res.calls[0]?.input).toEqual({ find: 'REAL' })
+      expect(res.invalidBlocks).toBe(0)
+    })
+  })
+
+  describe('Regression P: Code fence examples preserved as prose', () => {
+    it('P01: standard fenced example with LF is preserved as prose', () => {
+      const text =
+        '```xml\n<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>\n```'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('P02: standard fenced example with CRLF is preserved as prose', () => {
+      const text =
+        '```xml\r\n<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>\r\n```\r\n'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text.trim())
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('P03: fence with language and title metadata is preserved as prose', () => {
+      const text =
+        '```xml title="example"\n<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>\n```'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
   })
 })

@@ -108,6 +108,8 @@ export interface OpResult {
   /** targets skipped because the text is a pending tracked deletion */
   skippedDeleted?: number
   detail?: string
+  /** 0-based block indexes in the pre-operation document that were deleted */
+  deletedIndexes?: number[]
 }
 
 export interface ExecuteOutcome {
@@ -1062,6 +1064,7 @@ function runDeleteBlocks(op: Op, env: RunEnv): OpResult {
     changed: matched.length,
     skippedProtected: 0,
     skippedDeleted,
+    deletedIndexes: matched.map((b) => b.index),
   }
 }
 
@@ -1613,18 +1616,172 @@ export function executeOps(editor: Editor, ops: unknown, ctx: OpContext = {}): E
   }
   if (ctx.dryRun) return { ok: true, results: [], summary: '', plan }
 
+  const currentOfOrig: Array<number | null> = Array.from(
+    { length: editor.state.doc.childCount },
+    (_, i) => i,
+  )
+  const initialBlocks = topLevelBlocks(editor.state.doc).map((b) => ({
+    index: b.index,
+    pos: b.pos,
+    size: b.node.nodeSize,
+  }))
+  let hasMovedBlocks = false
   const tr = editor.state.tr
   const schema = editor.schema
   const selection = frozenSelectionRange(editor, ctx.selection) ?? editor.state.selection
   const results: OpResult[] = []
   try {
     for (const [op, def] of planned) {
-      // selection positions mapped through the steps applied so far
-      const sel: SelRange = {
-        from: tr.mapping.map(selection.from),
-        to: tr.mapping.map(selection.to),
+      const mapPosition = (origPos: number, isEnd = false): number => {
+        if (!hasMovedBlocks) return tr.mapping.map(origPos)
+        let b =
+          isEnd && origPos > 0
+            ? initialBlocks.find((blk) => origPos > blk.pos && origPos <= blk.pos + blk.size)
+            : undefined
+        if (!b) {
+          b = initialBlocks.find((blk) => origPos >= blk.pos && origPos < blk.pos + blk.size)
+        }
+        if (!b) {
+          const last = initialBlocks[initialBlocks.length - 1]
+          if (last && origPos >= last.pos + last.size) {
+            return tr.doc.content.size
+          }
+          return tr.mapping.map(origPos)
+        }
+        const curIdx = currentOfOrig[b.index]
+        if (curIdx === null) return -1
+        const currentBlocks = topLevelBlocks(tr.doc)
+        if (curIdx >= currentBlocks.length) return -1
+        const curBlock = currentBlocks[curIdx]
+        const offset = origPos - b.pos
+        const clampedOffset = Math.min(Math.max(offset, 0), curBlock.node.nodeSize)
+        return curBlock.pos + clampedOffset
       }
-      results.push(def.apply(op, { tr, schema, sel, ctx, editor }))
+
+      // selection positions mapped through the steps applied so far
+      const selFrom = mapPosition(selection.from)
+      const selTo = mapPosition(selection.to, true)
+      const sel: SelRange = {
+        from:
+          selFrom !== -1 && selTo !== -1 && selFrom <= selTo
+            ? selFrom
+            : tr.mapping.map(selection.from),
+        to:
+          selFrom !== -1 && selTo !== -1 && selFrom <= selTo ? selTo : tr.mapping.map(selection.to),
+      }
+      let effectiveOp = op
+      if (op.target?.blockIndexes) {
+        const mapped = op.target.blockIndexes
+          .map((origIdx) =>
+            origIdx >= 0 && origIdx < currentOfOrig.length ? currentOfOrig[origIdx] : null,
+          )
+          .filter((idx): idx is number => idx !== null)
+        effectiveOp = { ...effectiveOp, target: { ...op.target, blockIndexes: mapped } }
+      }
+      if (op.target?.range) {
+        const from = mapPosition(op.target.range.from)
+        const to = mapPosition(op.target.range.to, true)
+        effectiveOp = {
+          ...effectiveOp,
+          target: {
+            ...effectiveOp.target,
+            range: from !== -1 && to !== -1 && from <= to ? { from, to } : { from: -1, to: -1 },
+          },
+        }
+      }
+      if (Array.isArray(op.blockIndexes)) {
+        const mapped = op.blockIndexes
+          .map((origIdx) =>
+            origIdx >= 0 && origIdx < currentOfOrig.length ? currentOfOrig[origIdx] : null,
+          )
+          .filter((idx): idx is number => idx !== null)
+        let mappedAfter = op.afterBlockIndex
+        if (typeof op.afterBlockIndex === 'number' && op.afterBlockIndex >= 0) {
+          if (op.afterBlockIndex >= currentOfOrig.length) {
+            throw new Error(`moveBlocks: afterBlockIndex ${op.afterBlockIndex} is out of range`)
+          }
+          const afterMapped = currentOfOrig[op.afterBlockIndex]
+          if (afterMapped === null) {
+            throw new Error(
+              `moveBlocks: afterBlockIndex ${op.afterBlockIndex} was deleted by an earlier operation in this batch`,
+            )
+          }
+          mappedAfter = afterMapped
+        }
+        effectiveOp = { ...effectiveOp, blockIndexes: mapped, afterBlockIndex: mappedAfter }
+      }
+      if (
+        op.op === 'insertToc' &&
+        typeof op.afterBlockIndex === 'number' &&
+        op.afterBlockIndex >= 0
+      ) {
+        if (op.afterBlockIndex >= currentOfOrig.length) {
+          throw new Error(`insertToc: afterBlockIndex ${op.afterBlockIndex} is out of range`)
+        }
+        const afterMapped = currentOfOrig[op.afterBlockIndex]
+        if (afterMapped === null) {
+          throw new Error(
+            `insertToc: afterBlockIndex ${op.afterBlockIndex} was deleted by an earlier operation in this batch`,
+          )
+        }
+        effectiveOp = { ...effectiveOp, afterBlockIndex: afterMapped }
+      }
+      const res = def.apply(effectiveOp, { tr, schema, sel, ctx, editor })
+      results.push(res)
+      if (op.op === 'deleteBlocks' && res.deletedIndexes && res.deletedIndexes.length > 0) {
+        const deletedSet = new Set(res.deletedIndexes)
+        for (let i = 0; i < currentOfOrig.length; i++) {
+          const cur = currentOfOrig[i]
+          if (cur === null) continue
+          if (deletedSet.has(cur)) {
+            currentOfOrig[i] = null
+          } else {
+            let countBefore = 0
+            for (const d of res.deletedIndexes) {
+              if (d < cur) countBefore++
+            }
+            currentOfOrig[i] = cur - countBefore
+          }
+        }
+      } else if (
+        op.op === 'moveBlocks' &&
+        res.changed > 0 &&
+        Array.isArray(effectiveOp.blockIndexes)
+      ) {
+        hasMovedBlocks = true
+        const movedList = effectiveOp.blockIndexes as number[]
+        if (movedList.length > 0) {
+          const afterIdx =
+            typeof effectiveOp.afterBlockIndex === 'number' ? effectiveOp.afterBlockIndex : -1
+          const movedSet = new Set(movedList)
+          const sortedMoved = [...movedSet].sort((a, z) => a - z)
+          const docCount = tr.doc.childCount
+          const rest: number[] = []
+          for (let b = 0; b < docCount; b++) {
+            if (!movedSet.has(b)) rest.push(b)
+          }
+          const insertAt = afterIdx >= 0 ? rest.indexOf(afterIdx) + 1 : 0
+          const newOrder = [...rest.slice(0, insertAt), ...sortedMoved, ...rest.slice(insertAt)]
+          const newIndexOfOld = new Map<number, number>()
+          newOrder.forEach((oldIdx, newIdx) => newIndexOfOld.set(oldIdx, newIdx))
+          for (let i = 0; i < currentOfOrig.length; i++) {
+            const cur = currentOfOrig[i]
+            if (cur !== null && newIndexOfOld.has(cur)) {
+              currentOfOrig[i] = newIndexOfOld.get(cur)!
+            }
+          }
+        }
+      } else if (op.op === 'insertToc' && res.changed > 0) {
+        const afterIdx =
+          typeof effectiveOp.afterBlockIndex === 'number' ? effectiveOp.afterBlockIndex : -1
+        const insertAt = afterIdx === -1 ? 0 : afterIdx + 1
+        for (let i = 0; i < currentOfOrig.length; i++) {
+          const cur = currentOfOrig[i]
+          if (cur !== null && cur >= insertAt) {
+            currentOfOrig[i] = cur + res.changed
+          }
+        }
+      }
     }
   } catch (e) {
     return failure(e instanceof Error ? e.message : String(e))

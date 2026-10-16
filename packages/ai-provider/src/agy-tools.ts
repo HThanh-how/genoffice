@@ -53,38 +53,144 @@ export function parseAgyToolCalls(
   const calls: AgentToolCall[] = []
   let invalidBlocks = 0
   let visible = ''
-  let rest = text
-  for (;;) {
-    const start = rest.indexOf(AGY_TOOL_OPEN)
-    if (start < 0) {
-      visible += rest
-      break
+  let i = 0
+
+  const openFenceRegex = /^[ \t]{0,3}(`{3,}|~{3,})([^\r\n]*)(?:\r?\n|$)/
+  const closeFenceRegex = (char: string, len: number) =>
+    new RegExp(`^[ \\t]{0,3}${char === '`' ? '`' : '~'}{${len},}[ \\t]*(?:\\r?\\n|$)`)
+
+  while (i < text.length) {
+    // 1. Fenced code block at start of line (indented <= 3 spaces)
+    const isLineStart = i === 0 || text[i - 1] === '\n'
+    if (isLineStart) {
+      const rest = text.slice(i)
+      const fenceMatch = openFenceRegex.exec(rest)
+      if (fenceMatch) {
+        const fenceChars = fenceMatch[1]!
+        const infoString = fenceMatch[2]!
+        const fenceChar = fenceChars[0]!
+        // CommonMark: backtick fence info string cannot contain backticks
+        if (fenceChar !== '`' || !infoString.includes('`')) {
+          const fenceLen = fenceChars.length
+          const lineEnd = fenceMatch[0].length
+          const closeRegex = closeFenceRegex(fenceChar, fenceLen)
+
+          let searchOffset = i + lineEnd
+          let blockEnd = -1
+
+          while (searchOffset <= text.length) {
+            const nextNewline = text.indexOf('\n', searchOffset)
+            const currentLineEnd = nextNewline === -1 ? text.length : nextNewline + 1
+            const lineContent = text.slice(searchOffset, currentLineEnd)
+
+            if (closeRegex.test(lineContent)) {
+              blockEnd = currentLineEnd
+              break
+            }
+
+            if (nextNewline === -1) {
+              blockEnd = text.length
+              break
+            }
+            searchOffset = currentLineEnd
+          }
+
+          if (blockEnd === -1) {
+            blockEnd = text.length
+          }
+
+          // Protected fenced code block: keep in visible text, do not execute tool calls inside
+          visible += text.slice(i, blockEnd)
+          i = blockEnd
+          continue
+        }
+      }
     }
-    visible += rest.slice(0, start)
-    const end = rest.indexOf(AGY_TOOL_CLOSE, start + AGY_TOOL_OPEN.length)
-    if (end < 0) {
-      // unterminated block: treat the tail as the JSON so a cut-off reply still works
-      const parsed = parseOne(rest.slice(start + AGY_TOOL_OPEN.length), known, calls.length)
-      if (parsed) calls.push(parsed)
-      else invalidBlocks++
-      break
+
+    // 2. Inline code span (`...`)
+    if (text[i] === '`') {
+      let delimLen = 1
+      while (i + delimLen < text.length && text[i + delimLen] === '`') {
+        delimLen++
+      }
+
+      let closeIdx = -1
+      let searchPos = i + delimLen
+      while (searchPos < text.length) {
+        if (text[searchPos] === '`') {
+          let runLen = 1
+          while (searchPos + runLen < text.length && text[searchPos + runLen] === '`') {
+            runLen++
+          }
+          if (runLen === delimLen) {
+            closeIdx = searchPos
+            break
+          }
+          searchPos += runLen
+          continue
+        }
+        searchPos++
+      }
+
+      if (closeIdx !== -1) {
+        const spanEnd = closeIdx + delimLen
+        visible += text.slice(i, spanEnd)
+        i = spanEnd
+        continue
+      }
     }
-    const parsed = parseOne(rest.slice(start + AGY_TOOL_OPEN.length, end), known, calls.length)
-    if (parsed) calls.push(parsed)
-    else invalidBlocks++
-    rest = rest.slice(end + AGY_TOOL_CLOSE.length)
+
+    // 3. Tool call open tag in prose
+    if (text.startsWith(AGY_TOOL_OPEN, i)) {
+      const startContent = i + AGY_TOOL_OPEN.length
+      const closeIdx = text.indexOf(AGY_TOOL_CLOSE, startContent)
+
+      if (closeIdx < 0) {
+        // Cut-off tool call to EOF
+        const raw = text.slice(startContent)
+        const parsed = parseOne(raw, known, calls.length)
+        if (parsed) calls.push(parsed)
+        else invalidBlocks++
+        break
+      } else {
+        const raw = text.slice(startContent, closeIdx)
+        const parsed = parseOne(raw, known, calls.length)
+        if (parsed) calls.push(parsed)
+        else invalidBlocks++
+        i = closeIdx + AGY_TOOL_CLOSE.length
+        continue
+      }
+    }
+
+    // 4. Normal character: advance to next character of interest
+    visible += text[i]
+    i++
   }
+
+  if (calls.length > AGY_MAX_TOOL_CALLS_PER_TURN) {
+    invalidBlocks += calls.length - AGY_MAX_TOOL_CALLS_PER_TURN
+    return {
+      text: visible.trim(),
+      calls: [],
+      invalidBlocks,
+    }
+  }
+
   return {
     text: visible.trim(),
-    calls: calls.slice(0, AGY_MAX_TOOL_CALLS_PER_TURN),
+    calls,
     invalidBlocks,
   }
 }
 
 function parseOne(raw: string, known: ReadonlySet<string>, index: number): AgentToolCall | null {
   let body = raw.trim()
-  const fence = /^```(?:json)?\s*([\s\S]*?)\s*```$/.exec(body)
-  if (fence) body = fence[1]!
+  if (body.startsWith('```')) {
+    body = body.replace(/^```[a-z0-9_-]*\s*/i, '')
+    if (body.endsWith('```')) {
+      body = body.slice(0, -3).trim()
+    }
+  }
   const call = readToolCallBody(body, known)
   return call ? { id: agyCallId(index), name: call.name, input: call.input } : null
 }

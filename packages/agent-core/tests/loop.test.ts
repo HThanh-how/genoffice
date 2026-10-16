@@ -2185,6 +2185,56 @@ describe('AgentLoop: verifyResponse (claimed-action guard)', () => {
       { name: 'do_thing', ok: false },
     ])
   })
+
+  it('Gap E: suppresses onTurnEnd during corrective turn so UI bubble is not prematurely sealed', async () => {
+    // Model claims success on turn 1 without executing tools;
+    // verifyResponse rejects it with a correction prompt.
+    // Turn 2 answers truthfully.
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onDelta('I have formatted everything successfully!')
+        cb.onDone()
+      },
+      (cb) => {
+        cb.onDelta('Apologies, no changes were actually made.')
+        cb.onDone()
+      },
+    ])
+    const verifyResponse = vi
+      .fn()
+      .mockReturnValueOnce('[System check] Claim rejected: no tools executed')
+    const onTurnEnd = vi.fn()
+    const streamedTexts: string[] = []
+    const onText = vi.fn((text: string) => {
+      streamedTexts.push(text)
+    })
+    const onDone = vi.fn()
+
+    const loop = new AgentLoop({
+      transport,
+      skill: { ...makeSkill(), verifyResponse },
+      events: { onTurnEnd, onText, onDone },
+    })
+
+    loop.run('format the document')
+    await flush()
+    await flush()
+
+    // 1. verifyResponse was invoked on turn 1's claim
+    expect(verifyResponse).toHaveBeenCalledWith('I have formatted everything successfully!', [])
+
+    // 2. onTurnEnd must NOT have been called when turn 1 finished,
+    // ensuring the UI does not seal the premature success bubble
+    expect(onTurnEnd).toHaveBeenCalledTimes(0)
+
+    // 3. onText streamed the correction in the same assistant turn
+    expect(streamedTexts).toContain('Apologies, no changes were actually made.')
+
+    // 4. onDone finalized with the truthful reply
+    expect(onDone).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'Apologies, no changes were actually made.' }),
+    )
+  })
 })
 
 describe('composeSkills', () => {
