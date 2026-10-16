@@ -23,22 +23,27 @@ export const uniqueSafeFileName = uniqueFileName
  * Decide which name the writer uses for one recipient.
  *
  * `exists` is the destination directory's view of the world, so the decision is
- * testable without touching a disk. Shortening a name is not the user's
- * "overwrite" choice: two recipients that collapse to the same shortened name
- * must not destroy the first one's file, so a shortened collision is renamed even
- * under `overwrite`.
+ * testable without touching a disk. `allocated` is the set of names this batch
+ * has already written: a name an earlier recipient of the same batch received is
+ * not a file the user chose to skip or overwrite, it is that recipient's own
+ * output, so it is always renamed away. Shortening a name is likewise not the
+ * user's "overwrite" choice: two recipients that collapse to the same shortened
+ * name must not destroy the first one's file.
  */
 export function resolveSafeFileName(
   name: string,
   policy: MailMergeOverwritePolicy,
   exists: (candidate: string) => boolean,
+  allocated?: Set<string>,
 ): { name: string; skipped: boolean } {
   const safe = safeFileName(name)
   if (!safe) return { name: '', skipped: true }
-  const collisionFromShortening = safe !== name
-  if ((policy !== 'overwrite' || collisionFromShortening) && exists(safe)) {
-    if (policy === 'skip') return { name: safe, skipped: true }
-    return { name: uniqueFileName(safe, exists), skipped: false }
-  }
-  return { name: safe, skipped: false }
+  if (!exists(safe)) return { name: safe, skipped: false }
+  // the file is there. Was it put there by this batch, or was it already there
+  // when the batch started? Only the second case is what the policy is about.
+  const takenByThisBatch = allocated?.has(safe) === true
+  if (takenByThisBatch) return { name: uniqueFileName(safe, exists), skipped: false }
+  if (policy === 'skip') return { name: safe, skipped: true }
+  if (policy === 'overwrite') return { name: safe, skipped: false }
+  return { name: uniqueFileName(safe, exists), skipped: false }
 }

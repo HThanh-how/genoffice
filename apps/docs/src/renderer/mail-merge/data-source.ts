@@ -84,7 +84,11 @@ export function sourceFromRows(
     : buildColumns(Array.from({ length: Math.max(1, ...rows.map((r) => r.length)) }, () => ''))
   const body = options.hasHeader ? rows.slice(1) : rows
   const recipients: MailMergeRecipient[] = body.map((row, id) => {
-    const values: Record<string, string> = {}
+    // a null prototype is not cosmetic: `values['__proto__'] = 'x'` on a plain
+    // object hits Object.prototype's setter and the column silently disappears.
+    // With no prototype every header is an own key, and `name in values` is an
+    // own-key test rather than a walk up an inheritance chain.
+    const values: Record<string, string> = Object.create(null) as Record<string, string>
     columns.forEach((column, i) => {
       values[column.name] = row[i] ?? ''
     })

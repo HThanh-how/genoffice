@@ -2720,7 +2720,7 @@ export function App() {
   }, [pgNumModal, sections, activeSection])
 
   const exportPdf = useCallback(
-    (outPath?: string) => exportPdfImpl(fileCtxRef.current, outPath),
+    (outPath?: string, overwrite?: string) => exportPdfImpl(fileCtxRef.current, outPath, overwrite),
     [],
   )
   const exportHtml = useCallback(
@@ -2807,7 +2807,7 @@ export function App() {
         return
       }
       setExportLocksPreview(true)
-      const ok = await exportPdf(pending.outPath).catch(() => false)
+      const ok = await exportPdf(pending.outPath, pending.overwrite).catch(() => false)
       setExportLocksPreview(false)
       // a Print the user started meanwhile owns the preview now
       if (pending.closePreview && !showPrintDialogRef.current) setShowPagePreview(false)

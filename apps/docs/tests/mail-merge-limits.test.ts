@@ -178,6 +178,21 @@ describe('recipient limits', () => {
 })
 
 describe('column limits', () => {
+  it('keeps a column named __proto__ as a real column', () => {
+    const source = sourceFromRows(
+      [
+        ['__proto__', 'Name'],
+        ['prototype-value', 'Huy'],
+      ],
+      { kind: 'csv', label: 'list.csv', hasHeader: true },
+    )
+    const values = source.recipients[0].values
+    expect(Object.keys(values)).toEqual(['__proto__', 'Name'])
+    expect(values['__proto__']).toBe('prototype-value')
+    expect('toString' in values).toBe(false)
+    expect(Object.getPrototypeOf(values)).toBeNull()
+  })
+
   it('accepts exactly the supported number of columns', () => {
     const header = Array.from({ length: MAX_COLUMNS }, (_, i) => `c${i + 1}`)
     expect(buildColumns(header).length).toBe(MAX_COLUMNS)

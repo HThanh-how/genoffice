@@ -204,20 +204,39 @@ export async function runMailMergeExport(
   const unmergeable = passthroughFieldInstructions(ctx.doc.parsed.blocks)
 
   const listing = await window.desktop.listMailMergeOutput(options.outputDir)
+  // Skip/Rename/Overwrite can only be decided from a listing the writer can
+  // trust. A failed or truncated listing is not that, so the batch stops rather
+  // than guessing which files are already there.
+  if (!listing.ok) {
+    return failJob(`the output directory could not be read: ${listing.error ?? 'unknown error'}`)
+  }
+  if (listing.truncated) {
+    return failJob(
+      `the output directory holds more files than Mail Merge can inspect; choose an emptier directory`,
+    )
+  }
   // `preExisting` is frozen for the whole batch: the overwrite policy is about
   // files that were in the folder before the batch started. `allocated` is what
   // this batch has actually written. Keeping them apart is what stops a
   // recipient from being "skipped" because an earlier recipient of the same
   // batch happened to get the same name.
-  const preExisting = new Set<string>(listing.ok ? (listing.names ?? []) : [])
+  const preExisting = new Set<string>(listing.names ?? [])
   const allocated = new Set<string>()
 
+  // the PDF path needs the pagination preview; if the batch opened it, the batch
+  // closes it again so the user's UI is left as it was
+  const previewWasOpen = Boolean(document.querySelector('.pagination-preview'))
+  const restorePreview = () => {
+    if (options.format === 'pdf' && !previewWasOpen) ctx.setShowPagePreview(false)
+  }
+
   if (options.format === 'pdf') {
-    if (!document.querySelector('.pagination-preview')) ctx.setShowPagePreview(true)
+    if (!previewWasOpen) ctx.setShowPagePreview(true)
     // nothing has been shown yet, so there is no new layout pass to wait for:
     // an already-measured, unmoving layout is settled. A layout that never
     // measures at all is not — printing it would break pages on a guess.
     if (!(await waitForPagination(ctx.editor, layoutState().rev, 20_000, false))) {
+      restorePreview()
       return failJob('the page layout never settled, so no PDF could be printed')
     }
   }
@@ -256,33 +275,31 @@ export async function runMailMergeExport(
     // but a column the row does not have would leave «Name» in the output, and
     // an IF or MERGEFIELD the merge model cannot parse would leave the raw field.
     const report = recipientMergeReport(ctx.editor, recipient.values)
-    if (report.missing.length > 0) {
+    // every processed recipient publishes progress, including one that produced
+    // no file: a batch of failures would otherwise look like a frozen export
+    const failRecipient = (message: string) => {
       progress.failed += 1
-      progress.errors.push({
-        recipient: name,
-        message: `missing column(s): ${report.missing.join(', ')}`,
-      })
+      progress.errors.push({ recipient: name, message })
       progress.done += 1
+      onProgress({ ...progress })
+    }
+    if (report.missing.length > 0) {
+      failRecipient(`missing column(s): ${report.missing.join(', ')}`)
+      await sleep(0)
       continue
     }
 
     if (report.unsupported.length > 0) {
-      progress.failed += 1
-      progress.errors.push({
-        recipient: name,
-        message: `${report.unsupported.length} field(s) could not be merged (unsupported field form)`,
-      })
-      progress.done += 1
+      failRecipient(
+        `${report.unsupported.length} field(s) could not be merged (unsupported field form)`,
+      )
+      await sleep(0)
       continue
     }
 
     if (unmergeable.length > 0) {
-      progress.failed += 1
-      progress.errors.push({
-        recipient: name,
-        message: `field(s) the merge cannot rewrite: ${unmergeable.join(', ')}`,
-      })
-      progress.done += 1
+      failRecipient(`field(s) the merge cannot rewrite: ${unmergeable.join(', ')}`)
+      await sleep(0)
       continue
     }
 
@@ -336,7 +353,7 @@ export async function runMailMergeExport(
               message: 'the page layout did not settle for this recipient',
             })
           } else {
-            const ok = await exportPdf(ctx, `${options.outputDir}/${name}`)
+            const ok = await exportPdf(ctx, `${options.outputDir}/${name}`, options.overwrite)
             if (ok) {
               progress.succeeded += 1
               allocated.add(name)
@@ -361,6 +378,7 @@ export async function runMailMergeExport(
 
   // the last recipient's values must not stay on screen after the batch
   setMailMergePreview(ctx.editor, priorPreview)
+  restorePreview()
   progress.cancelled = progress.cancelled || cancel.cancelled
   progress.status = terminalStatus(progress)
   onProgress({ ...progress })

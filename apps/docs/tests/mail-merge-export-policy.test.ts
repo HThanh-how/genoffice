@@ -660,6 +660,7 @@ describe('duplicate file names inside one batch', () => {
     // the stub mirrors the main process: it sanitizes, fits the name to the byte
     // limit, and applies the policy to the name that will really land on disk
     const files = new Set<string>()
+    const allocated = new Set<string>()
     const written: string[] = []
     Object.assign(window, {
       desktop: {
@@ -674,6 +675,7 @@ describe('duplicate file names inside one batch', () => {
             name,
             overwrite as 'skip' | 'rename' | 'overwrite',
             (candidate) => files.has(candidate),
+            allocated,
           )
           if (!decision.name) return { ok: false, error: 'invalid file name' }
           if (decision.skipped) {
@@ -685,6 +687,7 @@ describe('duplicate file names inside one batch', () => {
             }
           }
           files.add(decision.name)
+          allocated.add(decision.name)
           written.push(decision.name)
           return { ok: true, path: `${dir}/${decision.name}`, name: decision.name }
         },

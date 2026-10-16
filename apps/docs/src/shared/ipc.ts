@@ -571,7 +571,9 @@ export interface DesktopApi {
     overwrite?: 'skip' | 'rename' | 'overwrite',
   ): Promise<{ ok: boolean; path?: string; error?: string; skipped?: boolean }>
   /** File names already present in the chosen output directory. */
-  listMailMergeOutput(dir: string): Promise<{ ok: boolean; names?: string[]; error?: string }>
+  listMailMergeOutput(
+    dir: string,
+  ): Promise<{ ok: boolean; names?: string[]; truncated?: boolean; error?: string }>
   /** Open spreadsheets, for "Use an open spreadsheet" in the recipient picker. */
   listSheetTabs(): Promise<Array<{ id: string; title: string; active: boolean }>>
   /** Read a worksheet grid from the live workbook (values as displayed). */
@@ -587,7 +589,8 @@ export interface DesktopApi {
     outPath?: string,
     scale?: number,
     links?: PdfInternalLink[],
-  ): Promise<{ ok: boolean; path?: string; error?: string }>
+    overwrite?: string,
+  ): Promise<{ ok: boolean; path?: string; name?: string; skipped?: boolean; error?: string }>
   exportHtml(
     defaultName: string,
     html: string,
@@ -612,7 +615,8 @@ export interface DesktopApi {
     base64Parts: string[],
     outPath?: string,
     links?: PdfInternalLink[],
-  ): Promise<{ ok: boolean; path?: string; error?: string }>
+    overwrite?: string,
+  ): Promise<{ ok: boolean; path?: string; name?: string; skipped?: boolean; error?: string }>
   /** Export as images: the folder picker plus a pre-authorized temp PDF path the
    *  regular PDF export writes to silently (no reveal, no open) */
   pickExportImagesTarget(): Promise<{ dir: string; pdfPath: string } | null>

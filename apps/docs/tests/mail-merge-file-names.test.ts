@@ -94,9 +94,11 @@ describe("the writer's decision", () => {
     const first = `${'x'.repeat(190)}-first.docx`
     const second = `${'x'.repeat(190)}-second.docx`
     const written = new Set<string>()
-    const a = resolveSafeFileName(first, 'overwrite', (n) => written.has(n))
+    const allocated = new Set<string>()
+    const a = resolveSafeFileName(first, 'overwrite', (n) => written.has(n), allocated)
     written.add(a.name)
-    const b = resolveSafeFileName(second, 'overwrite', (n) => written.has(n))
+    allocated.add(a.name)
+    const b = resolveSafeFileName(second, 'overwrite', (n) => written.has(n), allocated)
     written.add(b.name)
     // shortening makes the two names identical — the point is that the second
     // write is moved aside instead of destroying the first
