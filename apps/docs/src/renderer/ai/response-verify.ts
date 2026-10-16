@@ -307,10 +307,7 @@ export function fallbackDocsResponse(
       )
     }
     if (isZh) {
-      return (
-        `以下操作已成功完成：${succList}。\n` +
-        `但声明的其他修改未通过验证或未执行。`
-      )
+      return `以下操作已成功完成：${succList}。\n` + `但声明的其他修改未通过验证或未执行。`
     }
     return (
       `The following operation(s) completed successfully: ${succList}.\n` +

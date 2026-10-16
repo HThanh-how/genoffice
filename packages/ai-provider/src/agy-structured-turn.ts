@@ -150,7 +150,8 @@ export function parseAgyStructuredText(
   const unwrapped = stripOuterFence(trimmed)
   const looksLikeObject = unwrapped.startsWith('{')
   const mentionsToolCalls = unwrapped.includes('"tool_calls"') || unwrapped.includes("'tool_calls'")
-  const isTruncatedStructuredTurn = looksLikeObject && TRUNCATED_STRUCTURED_ENVELOPE_RE.test(unwrapped)
+  const isTruncatedStructuredTurn =
+    looksLikeObject && TRUNCATED_STRUCTURED_ENVELOPE_RE.test(unwrapped)
 
   if (!looksLikeObject && !mentionsToolCalls) {
     return { kind: 'none' }

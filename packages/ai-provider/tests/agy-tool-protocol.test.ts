@@ -1107,7 +1107,8 @@ describe('Defect D Regression Matrix: truncated AGY JSON and fail-closed protoco
   })
 
   it('D08: truncated JSON inside tool arguments => FAIL CLOSED', () => {
-    const raw = '{"text":"I updated the document","tool_calls":[{"name":"replace_text","arguments":{'
+    const raw =
+      '{"text":"I updated the document","tool_calls":[{"name":"replace_text","arguments":{'
     const res = parseAgyStructuredText(raw, knownTools)
     expect(res.kind).toBe('malformed')
     const turnRes = readAgyTurnFromText(raw, knownTools)
@@ -1159,8 +1160,7 @@ describe('Defect D Regression Matrix: truncated AGY JSON and fail-closed protoco
   })
 
   it('D14: complete fenced structured JSON => correctly parsed', () => {
-    const raw =
-      '```json\n{"text":"ok","tool_calls":[{"name":"read_document","arguments":{}}]}\n```'
+    const raw = '```json\n{"text":"ok","tool_calls":[{"name":"read_document","arguments":{}}]}\n```'
     const res = parseAgyStructuredText(raw, knownTools)
     expect(res.kind).toBe('valid')
     if (res.kind === 'valid') {
@@ -1252,4 +1252,3 @@ describe('Defect D Regression Matrix: truncated AGY JSON and fail-closed protoco
     expect(t.deltas).not.toContain('{"text":"Đang xử lý","tool_ca')
   })
 })
-
