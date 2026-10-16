@@ -254,6 +254,8 @@ describe('verifyDocsResponse unit tests', () => {
       'Tài liệu mới đã được tạo.',
       'Tôi đã tạo tài liệu mới.',
       'I created a new document.',
+      '已创建新文档。',
+      '新文档已创建。',
     ]
     for (const claim of creationClaims) {
       const res = verifyDocsResponse(claim, [{ name: 'create_document', ok: true, mutated: false }])
@@ -269,6 +271,8 @@ describe('verifyDocsResponse unit tests', () => {
       'Tài liệu mới đã được tạo.',
       'Tôi đã tạo tài liệu mới.',
       'I created a new document.',
+      '已创建新文档。',
+      '新文档已创建。',
     ]
     for (const claim of creationClaims) {
       const res = verifyDocsResponse(claim, [
@@ -286,6 +290,8 @@ describe('verifyDocsResponse unit tests', () => {
       'Tài liệu mới đã được tạo.',
       'Tôi đã tạo tài liệu mới.',
       'I created a new document.',
+      '已创建新文档。',
+      '新文档已创建。',
     ]
     for (const claim of creationClaims) {
       const res = verifyDocsResponse(claim, [])
@@ -301,6 +307,8 @@ describe('verifyDocsResponse unit tests', () => {
       'Tài liệu mới đã được tạo.',
       'Tôi đã tạo tài liệu mới.',
       'I created a new document.',
+      '已创建新文档。',
+      '新文档已创建。',
     ]
     for (const claim of creationClaims) {
       // Unrelated metadata tool (set_watermark)
@@ -328,6 +336,9 @@ describe('verifyDocsResponse unit tests', () => {
       'Do you want me to create a new document?',
       'I can create a new document if you want.',
       'Để tạo tài liệu mới, hãy chọn File > New.',
+      '如何创建新文档：点击文件 > 新建。',
+      '你可以创建新文档。',
+      '要创建新文件，请选择模板。',
     ]
     for (const statement of instructional) {
       expect(verifyDocsResponse(statement, [])).toBeNull()
@@ -342,6 +353,9 @@ describe('verifyDocsResponse unit tests', () => {
       'Tôi đã định nghĩa kiểu định dạng Heading 1.',
       'Đã tạo kiểu định dạng mới cho tiêu đề.',
       'I defined a Heading 1 style for paragraphs.',
+      '已定义新样式。',
+      '新样式已成功创建。',
+      '定义了新样式。',
     ]
     for (const claim of styleClaims) {
       // Success => accepted
@@ -408,6 +422,13 @@ describe('verifyDocsResponse unit tests', () => {
     expect(verifyDocsResponse('To define a new style, open the Styles panel.', [])).toBeNull()
 
     expect(verifyDocsResponse('I can define a new style for your headings.', [])).toBeNull()
+
+    // Chinese instructional style explanations do not require tools
+    expect(verifyDocsResponse('若要在文档中设置样式，请打开样式面板。', [])).toBeNull()
+    expect(verifyDocsResponse('你可以为段落定义样式。', [])).toBeNull()
+    expect(verifyDocsResponse('如何创建样式：', [])).toBeNull()
+    expect(verifyDocsResponse('在 GenOffice 中，您可以轻松创建新样式。', [])).toBeNull()
+    expect(verifyDocsResponse('要定义新样式，请打开样式面板。', [])).toBeNull()
 
     // Explicit failure report does not claim completed modification
     expect(
