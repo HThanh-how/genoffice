@@ -133,9 +133,6 @@ const CONTENT_SPECIFIC_RE =
 const GENERIC_FORMATTING_RE =
   /(?:\b(?:formatted|styled|reformatted)\b|định\s+dạng(?:\s+lại)?|排版)/iu
 
-const CONTENT_ACTION_IN_STYLE_RE =
-  /\b(?:formatted|reformatted|edited|applied(?:\s+it)?(?:\s+to)?|styled|inserted|deleted|replaced|modified|changed|updated|set|adjusted)\s+(?:the\s+|all\s+|existing\s+|requested\s+)?(?:[\p{L}\p{N}_-]+\s+){0,2}(?:paragraphs?|headings?|blocks?|text|content|document|font\s+size|fonts?|align(?:ment)?|line\s+spacing)\b|(?<!kiểu\s+)định\s+dạng(?:\s+lại)?(?!\s+kiểu)|áp\s+dụng(?:\s+kiểu)?\s+(?:cho|vào)|chỉnh\s+sửa\s+(?:nội\s+dung|đoạn|văn\s+bản|tiêu\s+đề)|cập\s+nhật\s+(?:cỡ\s+chữ|phông\s+chữ|font|giãn\s+dòng|nội\s+dung|đoạn|văn\s+bản|tiêu\s+đề)|căn\s+(?:giữa|đều|trái|phải|lề\s+đoạn)|thay\s+đổi\s+nội\s+dung|排版|应用到/iu
-
 const FAILURE_INDICATOR_RE =
   /(?:\b(?:failed|fails?|could not|cannot|unable to|error|exception|unsuccessful|not applied|no changes|not\s+(?:created|applied|updated|modified|edited|defined|generated)|was\s+not|were\s+not|has\s+not\s+been|did\s+not)\b|thất bại|không thể|gặp lỗi|lỗi|chưa thể|chưa\s+(?:tạo|áp dụng|thực hiện|được|thể|định nghĩa)|không thành công|không áp dụng|chưa có thay đổi|失败|无法|不能|未能|未应用|未做修改)/i
 
@@ -147,22 +144,28 @@ export const DOCS_CLAIM_CORRECTION =
 
 /** Strip quoted strings, inline code, and quotation blocks so quoted text is not mistaken for assistant claims */
 export function stripQuotesAndCode(text: string): string {
-  return text
+  // Protect apostrophes in contractions/possessives (e.g. "I've", "it's", "haven't")
+  // using private sentinels so they are not mistaken for single-quote delimiters.
+  const STRAIGHT_APOSTROPHE_SENTINEL = '\uE000'
+  const CURLY_APOSTROPHE_SENTINEL = '\uE001'
+  const withProtectedContractions = text
+    .replace(/(?<=\p{L})'(?=\p{L})/gu, STRAIGHT_APOSTROPHE_SENTINEL)
+    .replace(/(?<=\p{L})’(?=\p{L})/gu, CURLY_APOSTROPHE_SENTINEL)
+
+  const stripped = withProtectedContractions
     .replace(/```[\s\S]*?```/g, ' ')
     .replace(/`[^`\n]*`/g, ' ')
     .replace(/"[^"\\]*(?:\\.[^"\\]*)*"/g, ' ')
-    .replace(/'[^'\\]*(?:\\.[^'\\]*)*'/g, ' ')
+    .replace(/(?<![\p{L}\p{N}])'[^'\\]*(?:\\.[^'\\]*)*'(?![\p{L}\p{N}])/gu, ' ')
     .replace(/“[^”]*”/g, ' ')
     .replace(/‘[^’]*’/g, ' ')
     .replace(/「[^」]*」/g, ' ')
     .replace(/『[^』]*』/g, ' ')
+
+  return stripped
+    .replace(new RegExp(STRAIGHT_APOSTROPHE_SENTINEL, 'g'), "'")
+    .replace(new RegExp(CURLY_APOSTROPHE_SENTINEL, 'g'), "'")
 }
-
-const CONTENT_ACTION_IN_COMMENT_RE =
-  /\b(?:and\s+)?(?:edited|updated|reformatted|modified|deleted|replaced|styled|changed)\s+(?:the\s+)?(?:content|text|paragraphs?|headings?|blocks?)\b|(?:và\s+)?(?:chỉnh\s+sửa|định\s+dạng(?:\s+lại)?|cập\s+nhật|thay\s+đổi|xóa)\s+(?:nội\s+dung|văn\s+bản|đoạn|tiêu\s+đề)/iu
-
-const CONTENT_ACTION_ON_CURRENT_DOC_RE =
-  /\b(?:and\s+)?(?:edited|updated|reformatted|modified|changed)\s+(?:the\s+)?(?:current\s+document|existing\s+document|open\s+document)\b|(?:và\s+)?(?:chỉnh\s+sửa|định\s+dạng(?:\s+lại)?|sửa)\s+(?:tài\s+liệu\s+hiện\s+tại|văn\s+bản\s+hiện\s+tại)/iu
 
 export function claimsDocModification(text: string): boolean {
   const unquoted = stripQuotesAndCode(text)
@@ -180,11 +183,20 @@ export function claimsDocModification(text: string): boolean {
 function splitIntoClauses(text: string): string[] {
   return text
     .split(
-      /(?:[。．.!?！\n]+|;\s*|\b(?:however|but|yet)\b|(?:\s* tuy nhiên\s*|\s* nhưng\s*|\s* song\s*|，但是|但是)|\b(?:and|và|cũng\s+như|并且|而且)\s+(?=(?:could\s+not|cannot|failed|fails?|unable|did\s+not|was\s+not|were\s+not|not\s+|không\s+thể|chưa\s+|thất\s+bại|未能|无法|不能|未|(?:I(?:'ve| have)?\s+|tôi\s+|mình\s+)?(?:updated|edited|formatted|reformatted|styled|set|defined|created|added|deleted|inserted|cập nhật|định dạng|chỉnh sửa|thiết lập|tạo|thêm)\b)))/iu,
+      /(?:[。．.!?！\n]+|;\s*|\b(?:however|but|yet)\b|(?:\s* tuy nhiên\s*|\s* nhưng\s*|\s* song\s*|，但是|但是)|(?:[，,]?\s*(?:而且|并且)\s*)|,?\s*\b(?:and|và|cũng\s+như|đồng\s+thời|plus|as\s+well\s+as)\s+(?=(?:(?:I(?:'ve| have)?|we|tôi|mình|chúng\s+tôi)\s+)?(?:[a-zA-Z]+(?:ed|d)\b|could\s+not|cannot|failed|fails?|unable|did\s+not|was\s+not|were\s+not|not\s+|đã|vừa|cập\s+nhật|định\s+dạng|chỉnh\s+sửa|thiết\s+lập|tạo|thêm|xóa|thay\s+đổi|áp\s+dụng|căn|thụt|in\s+đậm|in\s+nghiêng|không\s+thể|chưa\s+|thất\s+bại|set\b|bold\b|italic\b|highlight\b)\b)|,(?=\s*(?:(?:I(?:'ve| have)?|tôi|mình)\s+)?(?:updated|edited|formatted|reformatted|styled|set|defined|created|added|deleted|inserted|applied|changed|adjusted|bolded|italicized|underlined|highlighted|aligned|indented|increased|decreased|modified|built|configured|placed|moved|removed|cleared|replaced)\b))/iu,
     )
     .map((s) => s.trim())
     .filter(Boolean)
 }
+
+const CONTENT_ACTION_IN_STYLE_RE =
+  /\b(?:formatted|reformatted|edited|applied(?:\s+it)?(?:\s+to)?|styled|inserted|deleted|replaced|modified|changed|updated|set|adjusted)\s+(?:the\s+|all\s+|existing\s+|requested\s+)?(?:[\p{L}\p{N}_-]+\s+){0,2}(?:paragraphs?|headings?|blocks?|text|content|document|font\s+size|fonts?|align(?:ment)?|line\s+spacing)\b|(?<!kiểu\s+)định\s+dạng(?:\s+lại)?(?!\s+kiểu)|áp\s+dụng(?:\s+kiểu)?\s+(?:cho|vào)|chỉnh\s+sửa\s+(?:nội\s+dung|đoạn|văn\s+bản|tiêu\s+đề)|cập\s+nhật\s+(?:cỡ\s+chữ|phông\s+chữ|font|giãn\s+dòng|nội\s+dung|đoạn|văn\s+bản|tiêu\s+đề)|căn\s+(?:giữa|đều|trái|phải|lề\s+đoạn)|thay\s+đổi\s+nội\s+dung|排版|应用到/iu
+
+const CONTENT_ACTION_IN_COMMENT_RE =
+  /\b(?:and\s+)?(?:edited|updated|reformatted|modified|deleted|replaced|styled|changed|bolded|italicized|underlined|highlighted|aligned|indented|adjusted)\s+(?:the\s+)?(?:content|text|paragraphs?|headings?|blocks?|fonts?|font\s+size|line\s+spacing|indentation)\b|(?:và\s+)?(?:chỉnh\s+sửa|định\s+dạng(?:\s+lại)?|cập\s+nhật|thay\s+đổi|xóa|in\s+đậm|in\s+nghiêng|căn|thụt)\s+(?:nội\s+dung|văn\s+bản|đoạn|tiêu\s+đề|phông|cỡ\s+chữ|giãn\s+dòng)|(?:修改|更新|删除|替换|格式化|调整|加粗)(?:了)?(?:正文|内容|文字|字体|字号|段落)/iu
+
+const CONTENT_ACTION_ON_CURRENT_DOC_RE =
+  /\b(?:and\s+)?(?:edited|updated|reformatted|modified|changed|formatted|adjusted)\s+(?:the\s+)?(?:current\s+document|existing\s+document|open\s+document|content|text|font\s+size)\b|(?:và\s+)?(?:chỉnh\s+sửa|định\s+dạng(?:\s+lại)?|sửa|cập\s+nhật)\s+(?:tài\s+liệu\s+hiện\s+tại|văn\s+bản\s+hiện\s+tại|nội\s+dung)/iu
 
 /** Extract specific action effects affirmatively claimed in the reply */
 export function getClaimedSpecificEffects(text: string): Set<DocsEffectCategory> {
@@ -210,28 +222,20 @@ export function getClaimedSpecificEffects(text: string): Set<DocsEffectCategory>
     if (hasStyleDef) claimed.add('style_definition')
     if (hasComment) claimed.add('comment')
 
-    // Content modification is claimed if explicit content elements are mentioned,
-    // or if a generic formatting verb was used without being bound to a specific metadata target.
     const hasContentSpecific = CONTENT_SPECIFIC_RE.test(clause)
     const hasGenericFormatting = GENERIC_FORMATTING_RE.test(clause)
     const hasOtherTarget =
       hasNewDoc || hasPageSetup || hasWatermark || hasHeaderFooter || hasStyleDef || hasComment
 
     if (hasStyleDef) {
-      // When defining/creating a style (e.g. "defined a style for headings"),
-      // mentioning headings/paragraphs is the style target unless explicit content action was stated
       if (CONTENT_ACTION_IN_STYLE_RE.test(clause)) {
         claimed.add('content')
       }
     } else if (hasComment) {
-      // In comment actions (e.g. "added comment to paragraph 1"), paragraphs/headings
-      // are comment locations unless an explicit content editing action was stated.
       if (CONTENT_ACTION_IN_COMMENT_RE.test(clause)) {
         claimed.add('content')
       }
     } else if (hasNewDoc) {
-      // When creating a new document (e.g. "created a new document about paragraph formatting"),
-      // mentions of paragraphs/headings are document topics/titles, not edits to the current document.
       if (CONTENT_ACTION_ON_CURRENT_DOC_RE.test(clause)) {
         claimed.add('content')
       }
@@ -397,8 +401,20 @@ export function fallbackDocsResponse(
     return 'The operation was executed in dry-run mode; no changes were applied to the document.'
   }
 
-  // Case 4: No targets matched / 0 changed
+  // Case 4: 0 changed (distinguish target already matching vs no target found)
   if (zeroChanged) {
+    const isAlreadyMatching =
+      zeroChanged.output?.includes('already matched') ||
+      zeroChanged.output?.includes('already correct')
+    if (isAlreadyMatching) {
+      if (isVi) {
+        return 'Không có thay đổi nào được áp dụng vì nội dung được chọn đã có sẵn định dạng yêu cầu.'
+      }
+      if (isZh) {
+        return '未应用任何更改，因为目标内容已符合所请求的格式。'
+      }
+      return 'No changes were applied because the targeted content already has the requested formatting.'
+    }
     if (isVi) {
       return 'Không có thay đổi nào được áp dụng do không tìm thấy nội dung hoặc đoạn văn phù hợp trong tài liệu.'
     }

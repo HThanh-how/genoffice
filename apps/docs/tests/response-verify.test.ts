@@ -1828,4 +1828,164 @@ describe('Defect L: Disambiguate comment locations, document topics, and quotati
     const res = verifyDocsResponse('The user said: "Please help". I have updated the document.', [])
     expect(res).toBe(DOCS_CLAIM_CORRECTION)
   })
+
+  describe('Regression R1: apostrophes in contractions preserved and distinguished from quotes', () => {
+    it('R1-01: recognizes completion claim with contractions: I\'ve and it\'s', () => {
+      const claim = "I've updated the page margins, and it's done."
+      expect(claimsDocModification(claim)).toBe(true)
+      expect(verifyDocsResponse(claim, [])).toBe(DOCS_CLAIM_CORRECTION)
+    })
+
+    it('R1-02: recognizes watermark claim with contractions: I\'ve and it\'s', () => {
+      const claim = "I've added a watermark; it's visible."
+      expect(claimsDocModification(claim)).toBe(true)
+      expect(getClaimedSpecificEffects(claim).has('watermark')).toBe(true)
+      expect(verifyDocsResponse(claim, [])).toBe(DOCS_CLAIM_CORRECTION)
+      expect(
+        verifyDocsResponse(claim, [{ name: 'set_page_setup', ok: true, mutated: false }]),
+      ).toContain('watermark')
+    })
+
+    it('R1-03: recognizes headings formatting claim with haven\'t', () => {
+      const claim = "I've formatted the headings, and I haven't changed the footer."
+      expect(claimsDocModification(claim)).toBe(true)
+      expect(getClaimedSpecificEffects(claim).has('content')).toBe(true)
+      expect(verifyDocsResponse(claim, [])).toBe(DOCS_CLAIM_CORRECTION)
+      expect(
+        verifyDocsResponse(claim, [{ name: 'set_watermark', ok: true, mutated: false }]),
+      ).toContain('content')
+    })
+
+    it('R1-04: strips single-quoted examples containing contractions without treating them as assistant claims', () => {
+      const negative1 = "The user asked for: 'I\\'ve updated the margins' but I did not apply it."
+      expect(claimsDocModification(negative1)).toBe(false)
+      expect(verifyDocsResponse(negative1, [])).toBeNull()
+
+      const negative2 = "The guideline says 'don\\'t format the document' here."
+      expect(claimsDocModification(negative2)).toBe(false)
+      expect(verifyDocsResponse(negative2, [])).toBeNull()
+
+      const negative3 = "Note that 'it\\'s completed' was only a placeholder."
+      expect(claimsDocModification(negative3)).toBe(false)
+      expect(verifyDocsResponse(negative3, [])).toBeNull()
+    })
+
+    it('R1-05: verifies claim with contraction when matching tool executed', () => {
+      const claim = "I've added a watermark; it's visible."
+      const res = verifyDocsResponse(claim, [{ name: 'set_watermark', ok: true, mutated: false }])
+      expect(res).toBeNull()
+    })
+
+    it('R1-06: recognizes completion claim with typographic curly apostrophes (U+2019)', () => {
+      const claim = 'I’ve updated the page margins, and it’s done.'
+      expect(claimsDocModification(claim)).toBe(true)
+      expect(verifyDocsResponse(claim, [])).toBe(DOCS_CLAIM_CORRECTION)
+    })
+  })
+
+  describe('Regression R4: mixed claims preserve all affirmative effects', () => {
+    it('R4-01: comment and changed font size claims both comment and content', () => {
+      const effects = getClaimedSpecificEffects('I added a comment and changed the font size.')
+      expect(effects.has('comment')).toBe(true)
+      expect(effects.has('content')).toBe(true)
+
+      // Verified by add_comment alone must fail because content was also claimed
+      const resCommentOnly = verifyDocsResponse('I added a comment and changed the font size.', [
+        { name: 'add_comment', ok: true, mutated: false },
+      ])
+      expect(resCommentOnly).toContain('add_comment')
+      expect(resCommentOnly).toContain('content')
+
+      // Verified by both tools succeeds
+      const resBoth = verifyDocsResponse('I added a comment and changed the font size.', [
+        { name: 'add_comment', ok: true, mutated: false },
+        { name: 'apply_ops', ok: true, mutated: true },
+      ])
+      expect(resBoth).toBeNull()
+    })
+
+    it('R4-02: comment and bolded headings claims both comment and content', () => {
+      const effects = getClaimedSpecificEffects('I added a comment and bolded the headings.')
+      expect(effects.has('comment')).toBe(true)
+      expect(effects.has('content')).toBe(true)
+    })
+
+    it('R4-03: comment and adjusted paragraph indentation claims both comment and content', () => {
+      const effects = getClaimedSpecificEffects(
+        'I added a comment and adjusted paragraph indentation.',
+      )
+      expect(effects.has('comment')).toBe(true)
+      expect(effects.has('content')).toBe(true)
+    })
+
+    it('R4-04: new document and changed font size of current doc claims both new_doc and content', () => {
+      const effects = getClaimedSpecificEffects(
+        'I created a new document and changed the font size of the current document.',
+      )
+      expect(effects.has('new_document')).toBe(true)
+      expect(effects.has('content')).toBe(true)
+
+      // Only create_document must fail because content of current document was claimed
+      const resCreateOnly = verifyDocsResponse(
+        'I created a new document and changed the font size of the current document.',
+        [{ name: 'create_document', ok: true, mutated: false }],
+      )
+      expect(resCreateOnly).toContain('create_document')
+      expect(resCreateOnly).toContain('content')
+    })
+
+    it('R4-05: comment target location does not claim content', () => {
+      const effects = getClaimedSpecificEffects('I added a comment to paragraph 1.')
+      expect(effects.has('comment')).toBe(true)
+      expect(effects.has('content')).toBe(false)
+    })
+
+    it('R4-06: new document topic does not claim content', () => {
+      const effects = getClaimedSpecificEffects('I created a document about paragraph formatting.')
+      expect(effects.has('new_document')).toBe(true)
+      expect(effects.has('content')).toBe(false)
+    })
+
+    it('R4-07: style definition target scope does not claim content', () => {
+      const effects = getClaimedSpecificEffects('I defined a Heading style for paragraphs.')
+      expect(effects.has('style_definition')).toBe(true)
+      expect(effects.has('content')).toBe(false)
+    })
+
+    it('R4-08: Chinese compound claim with 并且 without spaces requires both comment and content', () => {
+      const effects = getClaimedSpecificEffects('我添加了批注并且修改了正文字体。')
+      expect(effects.has('comment')).toBe(true)
+      expect(effects.has('content')).toBe(true)
+    })
+
+    it('R4-09: Vietnamese comment target on tiêu đề does not claim content', () => {
+      const effects = getClaimedSpecificEffects('Tôi đã thêm nhận xét vào tiêu đề.')
+      expect(effects.has('comment')).toBe(true)
+      expect(effects.has('content')).toBe(false)
+    })
+  })
+
+  describe('Docs fallback: distinguishing already-matching target from no target', () => {
+    it('distinguishes target already matching formatting from no matching content in fallback', () => {
+      const callAlready = {
+        name: 'apply_ops',
+        ok: true,
+        mutated: false,
+        output: 'setFont: 0 (0 changed; 1 target(s) already matched the requested formatting)',
+      }
+      expect(fallbackDocsResponse('I formatted the document.', [callAlready])).toContain(
+        'already has the requested formatting',
+      )
+
+      const callNoTarget = {
+        name: 'apply_ops',
+        ok: true,
+        mutated: false,
+        output: 'setFont: 0',
+      }
+      expect(fallbackDocsResponse('I formatted the document.', [callNoTarget])).toContain(
+        'no matching content or paragraphs were found',
+      )
+    })
+  })
 })

@@ -488,4 +488,91 @@ describe('streamAgy with tools', () => {
       expect(res.invalidBlocks).toBe(2)
     })
   })
+
+  describe('Regression R2: Inline Markdown code blocks remain prose', () => {
+    it('R2-01: inline tool example in single backticks is not parsed as executable call', () => {
+      const text =
+        'Example: `<tool_call>{"name":"replace_text","arguments":{"find":"A","replace":"B"}}</tool_call>`'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('R2-02: inline tool example in double backticks is not parsed as executable call', () => {
+      const text =
+        'Doc: ``<tool_call>{"name":"replace_text","arguments":{"find":"A","replace":"B"}}</tool_call>``'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+    })
+
+    it('R2-03: inline example before real tool call allows real call to execute while preserving inline example', () => {
+      const text =
+        'Check this: `<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>`\n' +
+        'Now run: <tool_call>{"name":"replace_text","arguments":{"find":"REAL"}}</tool_call>'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(1)
+      expect(res.calls[0]?.input).toEqual({ find: 'REAL' })
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toContain('`<tool_call>{"name":"replace_text"')
+    })
+
+    it('R2-04: real tool call before inline example executes real call and preserves inline example', () => {
+      const text =
+        '<tool_call>{"name":"replace_text","arguments":{"find":"REAL"}}</tool_call>\n' +
+        'Reference: `<tool_call>{"name":"replace_text","arguments":{"find":"EX"}}</tool_call>`'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(1)
+      expect(res.calls[0]?.input).toEqual({ find: 'REAL' })
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toContain('Reference: `<tool_call>')
+    })
+
+    it('R2-05: double backtick span containing single backticks is closed only by double backticks', () => {
+      const text = '``<tool_call> `example` {"name":"replace_text"} </tool_call>``'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+      expect(res.text).toBe(text)
+    })
+  })
+
+  describe('Regression R3: CRLF code fences are protected', () => {
+    it('R3-01: CRLF ```xml fence containing tool call is preserved as prose', () => {
+      const text =
+        '```xml\r\n<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>\r\n```\r\n'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('R3-02: CRLF ~~~json fence containing tool call is preserved as prose', () => {
+      const text =
+        '~~~json\r\n<tool_call>{"name":"replace_text","arguments":{"find":"A"}}</tool_call>\r\n~~~\r\n'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(0)
+      expect(res.invalidBlocks).toBe(0)
+
+      const turn = readAgyTurnFromText(text, known)
+      expect(turn.kind).toBe('prose')
+    })
+
+    it('R3-03: CRLF fence followed by real tool call executes only the real tool call', () => {
+      const text =
+        '```xml\r\n<tool_call>{"name":"replace_text","arguments":{"find":"FAKE"}}</tool_call>\r\n```\r\n' +
+        'Real: <tool_call>{"name":"replace_text","arguments":{"find":"REAL"}}</tool_call>'
+      const res = parseAgyToolCalls(text, known)
+      expect(res.calls).toHaveLength(1)
+      expect(res.calls[0]?.input).toEqual({ find: 'REAL' })
+      expect(res.invalidBlocks).toBe(0)
+    })
+  })
 })

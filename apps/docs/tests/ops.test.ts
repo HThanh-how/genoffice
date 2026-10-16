@@ -1515,5 +1515,103 @@ describe('Issue 2: Structural block-index mapping and atomicity regressions', ()
       expect(lastChild.textContent).toBe('P1')
       expect(lastChild.child(0).marks.some((m) => m.type.name === 'italic')).toBe(true)
     })
+
+    it('M03: deleted target skips subsequent formatting without crashing or corrupting other blocks', () => {
+      const editor = createEditor([
+        para([text('P0 Keep')]),
+        para([text('P1 Delete')]),
+        para([text('P2 Keep')]),
+      ])
+      const outcome = executeOps(editor, [
+        { op: 'deleteBlocks', target: { blockIndexes: [1] } },
+        { op: 'setFont', target: { blockIndexes: [1] }, bold: true },
+        { op: 'setFont', target: { blockIndexes: [2] }, italic: true },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(2)
+      expect(editor.state.doc.child(0).textContent).toBe('P0 Keep')
+      expect(editor.state.doc.child(1).textContent).toBe('P2 Keep')
+      // P2 (which became child 1) received italic
+      expect(editor.state.doc.child(1).child(0).marks.some((m) => m.type.name === 'italic')).toBe(
+        true,
+      )
+      // P0 remained untouched (no bold, no italic)
+      expect(editor.state.doc.child(0).child(0).marks).toHaveLength(0)
+    })
+
+    it('M04: multiple structural changes (delete + delete + move) correctly route to later target', () => {
+      const editor = createEditor([
+        para([text('B0')]),
+        para([text('B1 to delete')]),
+        para([text('B2')]),
+        para([text('B3 to delete')]),
+        para([text('B4 target')]),
+      ])
+      const outcome = executeOps(editor, [
+        { op: 'deleteBlocks', target: { blockIndexes: [1] } },
+        { op: 'deleteBlocks', target: { blockIndexes: [3] } },
+        { op: 'setFont', target: { blockIndexes: [4] }, bold: true },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(3)
+      expect(editor.state.doc.child(0).textContent).toBe('B0')
+      expect(editor.state.doc.child(1).textContent).toBe('B2')
+      expect(editor.state.doc.child(2).textContent).toBe('B4 target')
+      expect(editor.state.doc.child(2).child(0).marks.some((m) => m.type.name === 'bold')).toBe(
+        true,
+      )
+    })
+
+    it('M05: moveBlocks tracks target blockIndexes to new document location', () => {
+      const editor = createEditor([
+        para([text('First')]),
+        para([text('Second')]),
+        para([text('Third to move')]),
+      ])
+      // Move block 2 before block 0 (afterBlockIndex: -1 is not supported, so move after block 0)
+      const outcome = executeOps(editor, [
+        { op: 'moveBlocks', blockIndexes: [2], afterBlockIndex: 0 },
+        { op: 'setFont', target: { blockIndexes: [2] }, bold: true },
+      ])
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(3)
+      expect(editor.state.doc.child(0).textContent).toBe('First')
+      expect(editor.state.doc.child(1).textContent).toBe('Third to move')
+      expect(editor.state.doc.child(2).textContent).toBe('Second')
+      // Original block 2 is now child(1); verify bold landed on it
+      expect(editor.state.doc.child(1).child(0).marks.some((m) => m.type.name === 'bold')).toBe(
+        true,
+      )
+      // Other blocks untouched
+      expect(editor.state.doc.child(0).child(0).marks).toHaveLength(0)
+      expect(editor.state.doc.child(2).child(0).marks).toHaveLength(0)
+    })
+
+    it('M06: scope:selection maps accurately through tr.mapping across deletions', () => {
+      const editor = createEditor([
+        para([text('Header paragraph to delete')]),
+        para([text('Selected text to format')]),
+      ])
+      // Set selection on child(1) text: pos of child(1) is child(0).nodeSize
+      const child0Size = editor.state.doc.child(0).nodeSize
+      const selFrom = child0Size + 1
+      const selTo = selFrom + 'Selected text to format'.length
+      editor.commands.setTextSelection({ from: selFrom, to: selTo })
+
+      const outcome = executeOps(
+        editor,
+        [
+          { op: 'deleteBlocks', target: { blockIndexes: [0] } },
+          { op: 'setFont', target: { scope: 'selection' }, bold: true },
+        ],
+        { selection: { startIndex: 1, endIndex: 1, from: selFrom, to: selTo } },
+      )
+      expect(outcome.ok).toBe(true)
+      expect(editor.state.doc.childCount).toBe(1)
+      expect(editor.state.doc.child(0).textContent).toBe('Selected text to format')
+      expect(editor.state.doc.child(0).child(0).marks.some((m) => m.type.name === 'bold')).toBe(
+        true,
+      )
+    })
   })
 })

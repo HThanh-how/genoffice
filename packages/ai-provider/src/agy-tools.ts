@@ -47,7 +47,7 @@ export function agyCallId(index: number): string {
 
 function findFencedCodeBlockRanges(text: string): Array<{ start: number; end: number }> {
   const ranges: Array<{ start: number; end: number }> = []
-  const fenceLineRegex = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*([a-zA-Z0-9_-]+)?[ \t]*$/
+  const fenceLineRegex = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*([a-zA-Z0-9_-]+)?[ \t]*\r?$/
   const lines = text.split('\n')
   let currentOffset = 0
   let openFence: { char: string; len: number; start: number } | null = null
@@ -68,7 +68,7 @@ function findFencedCodeBlockRanges(text: string): Array<{ start: number; end: nu
         }
       }
     } else {
-      const closeMatch = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/.exec(line)
+      const closeMatch = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*\r?$/.exec(line)
       if (
         closeMatch &&
         closeMatch[1]![0] === openFence.char &&
@@ -87,12 +87,78 @@ function findFencedCodeBlockRanges(text: string): Array<{ start: number; end: nu
   return ranges
 }
 
+/** Find all protected code ranges (fenced blocks and inline backtick spans) */
+function findProtectedCodeRanges(text: string): Array<{ start: number; end: number }> {
+  const fenced = findFencedCodeBlockRanges(text)
+  const ranges = [...fenced]
+
+  const isInsideFenced = (pos: number): boolean => {
+    for (const r of fenced) {
+      if (pos >= r.start && pos < r.end) return true
+    }
+    return false
+  }
+
+  // Scan for inline code spans outside fenced blocks
+  let i = 0
+  while (i < text.length) {
+    if (isInsideFenced(i)) {
+      const block = fenced.find((r) => i >= r.start && i < r.end)
+      i = block ? block.end : i + 1
+      continue
+    }
+
+    if (text[i] === '`') {
+      let delimLen = 1
+      while (i + delimLen < text.length && text[i + delimLen] === '`') {
+        delimLen++
+      }
+      const delim = text.slice(i, i + delimLen)
+      const contentStart = i + delimLen
+      let closeIdx = -1
+      let searchPos = contentStart
+      while (searchPos < text.length) {
+        if (isInsideFenced(searchPos)) {
+          const block = fenced.find((r) => searchPos >= r.start && searchPos < r.end)
+          searchPos = block ? block.end : searchPos + 1
+          continue
+        }
+        if (text[searchPos] === '`') {
+          let runLen = 1
+          while (searchPos + runLen < text.length && text[searchPos + runLen] === '`') {
+            runLen++
+          }
+          if (runLen === delimLen) {
+            closeIdx = searchPos
+            break
+          }
+          searchPos += runLen
+          continue
+        }
+        searchPos++
+      }
+
+      if (closeIdx !== -1) {
+        ranges.push({ start: i, end: closeIdx + delimLen })
+        i = closeIdx + delimLen
+        continue
+      } else {
+        i += delimLen
+        continue
+      }
+    }
+    i++
+  }
+
+  return ranges
+}
+
 /** Split a model reply into visible text and the tool calls it requested. */
 export function parseAgyToolCalls(
   text: string,
   known: ReadonlySet<string>,
 ): { text: string; calls: AgentToolCall[]; invalidBlocks: number } {
-  const codeRanges = findFencedCodeBlockRanges(text)
+  const codeRanges = findProtectedCodeRanges(text)
   const isInsideCodeBlock = (pos: number): { inside: boolean; end: number } => {
     for (const r of codeRanges) {
       if (pos >= r.start && pos < r.end) return { inside: true, end: r.end }
