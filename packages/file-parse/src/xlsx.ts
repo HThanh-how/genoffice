@@ -112,28 +112,58 @@ function formulaText(cell: Cell, sharedFormulas: SharedFormulas): string {
 
 /** cellXfs index → date/time parts, for the xf entries whose numFmt renders a calendar value */
 type DateStyles = Map<number, DateFormatParts>
+/** Style index → how many digits the displayed integer is padded to. */
+type PadStyles = Map<number, number>
+
+/**
+ * A number format such as `000000` displays 1234 as 001234. The stored value is the
+ * bare number, so a mail-merge read that returns "1234" is not what the user sees in
+ * Excel. Formats that are not pure digit padding (dates, currency, percentages, text
+ * prefixes) are left alone rather than guessed at.
+ */
+function zeroPadWidth(code: string): number {
+  const integerPart = code.split('.')[0].trim()
+  if (!/^[0]+$/.test(integerPart)) return 0
+  return integerPart.length
+}
+
+interface NumberStyles {
+  dates: DateStyles
+  pads: PadStyles
+}
 
 /**
  * A date cell is stored as a plain serial; without its style the model sees 45292 where the
- * sheet shows 1-Jan-24. Resolve each cellXfs entry's numFmt once per workbook.
+ * sheet shows 1-Jan-24. A zero-padded number is stored as a plain number too; without its
+ * style the model sees 1234 where the sheet shows 001234. Resolve each cellXfs entry's
+ * numFmt once per workbook.
  */
-async function loadDateStyles(zip: JSZip): Promise<DateStyles> {
-  const styles: DateStyles = new Map()
+async function loadNumberStyles(zip: JSZip): Promise<NumberStyles> {
+  const dates: DateStyles = new Map()
+  const pads: PadStyles = new Map()
   const xml = await zipText(zip, 'xl/styles.xml')
-  if (!xml) return styles
+  if (!xml) return { dates, pads }
   const sheet = (parser.parse(xml) as Record<string, any>).styleSheet
   const custom = new Map<number, DateFormatParts | null>()
+  const customPad = new Map<number, number>()
   for (const fmt of asArray(sheet?.numFmts?.numFmt) as Array<Record<string, unknown>>) {
     const id = Number(fmt['@_numFmtId'])
-    if (Number.isInteger(id)) custom.set(id, classifyFormatCode(String(fmt['@_formatCode'] ?? '')))
+    if (Number.isInteger(id)) {
+      const code = String(fmt['@_formatCode'] ?? '')
+      custom.set(id, classifyFormatCode(code))
+      const pad = zeroPadWidth(code)
+      if (pad > 1) customPad.set(id, pad)
+    }
   }
   const xfs = asArray(sheet?.cellXfs?.xf) as Array<Record<string, unknown>>
   xfs.forEach((xf, index) => {
     const id = Number(xf['@_numFmtId'] ?? 0)
     const parts = custom.has(id) ? custom.get(id) : builtinDateFormat(id)
-    if (parts) styles.set(index, parts)
+    if (parts) dates.set(index, parts)
+    const pad = customPad.get(id)
+    if (pad) pads.set(index, pad)
   })
-  return styles
+  return { dates, pads }
 }
 
 function isDate1904(workbook: Record<string, any>): boolean {
@@ -146,7 +176,7 @@ function isDate1904(workbook: Record<string, any>): boolean {
 function cellText(
   cell: Cell,
   shared: string[],
-  dates: DateStyles,
+  styles: NumberStyles,
   date1904: boolean,
   sharedFormulas: SharedFormulas,
 ): string {
@@ -160,10 +190,22 @@ function cellText(
   // scalar handle their own whitespace (Number tolerates it, the boolean compare strips it)
   const value = textOf(cell.v)
   if ((type === '' || type === 'n') && cell['@_s'] !== undefined) {
-    const parts = dates.get(Number(cell['@_s']))
+    const styleIndex = Number(cell['@_s'])
+    const parts = styles.dates.get(styleIndex)
     if (parts && value.trim() !== '') {
       const rendered = formatSerial(Number(value), parts, date1904)
       if (rendered !== null) return rendered
+    }
+    // a cell formatted `000000` displays 1234 as 001234; returning the bare number
+    // would claim a value the sheet never shows
+    const pad = styles.pads.get(styleIndex)
+    if (pad && value.trim() !== '') {
+      const trimmed = value.trim()
+      const negative = trimmed.startsWith('-')
+      const digits = negative ? trimmed.slice(1) : trimmed
+      if (/^\d+$/.test(digits) && digits.length < pad) {
+        return (negative ? '-' : '') + digits.padStart(pad, '0')
+      }
     }
   }
   if (type === 's') {
@@ -224,7 +266,7 @@ export async function xlsxToText(bytes: Uint8Array): Promise<string> {
   // Sheet order and names come from workbook.xml; r:id maps to the actual sheet path via the workbook rels
   const workbook = parser.parse(workbookXml) as Record<string, any>
   const sheets = asArray(workbook.workbook?.sheets?.sheet) as Array<Record<string, unknown>>
-  const dateStyles = await loadDateStyles(zip)
+  const numberStyles = await loadNumberStyles(zip)
   const date1904 = isDate1904(workbook)
 
   const relsXml = await zipText(zip, 'xl/_rels/workbook.xml.rels')
@@ -264,7 +306,7 @@ export async function xlsxToText(bytes: Uint8Array): Promise<string> {
       // Sparse by column; a slot holds several values only when refs collide.
       const slots: string[][] = []
       for (const cell of asArray(row.c as Cell | Cell[])) {
-        const text = cellText(cell, shared, dateStyles, date1904, sharedFormulas)
+        const text = cellText(cell, shared, numberStyles, date1904, sharedFormulas)
         const ref = cell['@_r']
         // A malformed ref (no leading column letters) yields -1; append in
         // document order instead of writing slots[-1] which would drop text.
@@ -328,10 +370,7 @@ export interface XlsxSheetGrid {
  * the identifier `001234` as text keeps its leading zeros, and a date cell
  * reads as the date it shows rather than its serial number.
  */
-export async function xlsxToGrid(
-  bytes: Uint8Array,
-  maxRows = 200_000,
-): Promise<XlsxSheetGrid[]> {
+export async function xlsxToGrid(bytes: Uint8Array, maxRows = 200_000): Promise<XlsxSheetGrid[]> {
   await assertZipInflatesWithinLimits(bytes)
   const zip = await JSZip.loadAsync(bytes)
   assertZipWithinLimits(zip)
@@ -340,7 +379,7 @@ export async function xlsxToGrid(
 
   const workbook = parser.parse(workbookXml) as Record<string, any>
   const sheetDefs = asArray(workbook.workbook?.sheets?.sheet) as Array<Record<string, unknown>>
-  const dateStyles = await loadDateStyles(zip)
+  const numberStyles = await loadNumberStyles(zip)
   const date1904 = isDate1904(workbook)
 
   const relsXml = await zipText(zip, 'xl/_rels/workbook.xml.rels')
@@ -376,7 +415,7 @@ export async function xlsxToGrid(
     for (const row of rowNodes.slice(0, maxRows)) {
       const cells: string[] = []
       for (const cell of asArray(row.c as Cell | Cell[])) {
-        const text = cellText(cell, shared, dateStyles, date1904, sharedFormulas)
+        const text = cellText(cell, shared, numberStyles, date1904, sharedFormulas)
         const ref = cell['@_r']
         const col = ref ? columnIndex(ref) : cells.length
         if (col < 0 || col >= MAX_XLSX_COLS) {

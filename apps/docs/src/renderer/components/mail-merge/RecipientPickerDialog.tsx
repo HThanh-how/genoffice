@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useModalKeys } from '../modal-keys'
 import { useI18n } from '../../i18n/locale'
 import {
@@ -52,44 +52,96 @@ export function RecipientPickerDialog({
   }, [kind])
 
   const [rawFile, setRawFile] = useState<{ base64: string; path: string } | null>(null)
-
-  async function applyXlsx(base64: string, path: string, sheetName: string) {
-    setRawFile({ base64, path })
-    setPending(await loadXlsxSource(base64, path, sheetName, hasHeader))
+  /**
+   * Every read is tagged with a generation number. A slow request that finishes
+   * after the user switched tab, worksheet or header setting must not overwrite
+   * the source the dialog is actually showing — otherwise the visible list and
+   * the data handed to Mail Merge are different things.
+   */
+  const requestSeq = useRef(0)
+  const commit = (seq: number, next: MailMergeSource) => {
+    if (seq !== requestSeq.current) return
+    setPending(next)
+    setError('')
     setPage(0)
   }
 
+  /**
+   * Abandon whatever read is still in flight.
+   *
+   * A source belongs to the tab and worksheet the user chose. When they move on
+   * before a slow read lands, committing it would put a list from the tab they
+   * left on screen — and Apply would submit it.
+   */
+  function invalidateInFlight() {
+    requestSeq.current += 1
+  }
+
+  async function applyXlsx(base64: string, path: string, sheetName: string, header: boolean) {
+    const seq = ++requestSeq.current
+    setRawFile({ base64, path })
+    commit(seq, await loadXlsxSource(base64, path, sheetName, header))
+  }
+
+  /**
+   * Re-derive the source from the file already in hand.
+   *
+   * "First row is a header" changes which row becomes the column list, so the
+   * recipients on screen have to be rebuilt from the same bytes. Without this the
+   * dialog would show one interpretation of the file and hand Mail Merge another.
+   */
+  function reparse(header: boolean) {
+    setHasHeader(header)
+    if (!rawFile) return
+    if (kind === 'csv') {
+      try {
+        commit(++requestSeq.current, loadCsvSource(rawFile.base64, rawFile.path, header))
+      } catch (err) {
+        setError(String(err))
+      }
+      return
+    }
+    void applyXlsx(rawFile.base64, rawFile.path, sheet, header).catch((err) =>
+      setError(String(err)),
+    )
+  }
+
   async function pickFile() {
+    const seq = ++requestSeq.current
     const result = await window.desktop.pickMailMergeSource()
-    if (!result) return
+    if (!result || seq !== requestSeq.current) return
     if (!result.ok || !result.base64) {
       setError(result.error ?? t('mailMergeReadFailed'))
       return
     }
     try {
+      setRawFile({ base64: result.base64, path: result.path ?? '' })
       if (kind === 'xlsx') {
         const names = await listXlsxSheets(result.base64)
+        if (seq !== requestSeq.current) return
         setSheets(names)
         const first = names[0] ?? ''
         setSheet(first)
-        setPending(await loadXlsxSource(result.base64, result.path ?? '', first, hasHeader))
+        commit(seq, await loadXlsxSource(result.base64, result.path ?? '', first, hasHeader))
       } else {
-        setPending(loadCsvSource(result.base64, result.path ?? '', hasHeader))
+        commit(seq, loadCsvSource(result.base64, result.path ?? '', hasHeader))
       }
-      setError('')
-      setPage(0)
     } catch (err) {
+      // a failed read leaves the previously confirmed source in place: the
+      // dialog never shows half-loaded data
       setError(String(err))
     }
   }
 
   async function readOpenSheet() {
+    const seq = ++requestSeq.current
     if (!tabId) {
       setError(t('mailMergeNoSheetOpen'))
       return
     }
     try {
       const context = await window.desktop.readSheetGrid(Number(tabId))
+      if (seq !== requestSeq.current) return
       const names = (
         context.result as { context?: { sheets?: Array<{ name: string }> } } | undefined
       )?.context?.sheets
@@ -97,7 +149,8 @@ export function RecipientPickerDialog({
       setSheets(list)
       const chosen = sheet || list[0] || ''
       setSheet(chosen)
-      setPending(
+      commit(
+        seq,
         await loadSheetSource(
           Number(tabId),
           t('mailMergeOpenSpreadsheet'),
@@ -106,8 +159,6 @@ export function RecipientPickerDialog({
           hasHeader,
         ),
       )
-      setError('')
-      setPage(0)
     } catch (err) {
       setError(String(err))
     }
@@ -142,7 +193,10 @@ export function RecipientPickerDialog({
               role="tab"
               aria-selected={kind === value}
               className={`mm-source-tab ${kind === value ? 'active' : ''}`}
-              onClick={() => setKind(value)}
+              onClick={() => {
+                invalidateInFlight()
+                setKind(value)
+              }}
             >
               {value === 'csv'
                 ? t('mailMergeFromCsv')
@@ -158,7 +212,13 @@ export function RecipientPickerDialog({
             <>
               <label>
                 {t('mailMergeWorkbook')}
-                <select value={tabId} onChange={(e) => setTabId(e.target.value)}>
+                <select
+                  value={tabId}
+                  onChange={(e) => {
+                    invalidateInFlight()
+                    setTabId(e.target.value)
+                  }}
+                >
                   {sheetTabs.length === 0 && <option value="">{t('mailMergeNoSheetOpen')}</option>}
                   {sheetTabs.map((tab) => (
                     <option key={tab.id} value={tab.id}>
@@ -202,9 +262,12 @@ export function RecipientPickerDialog({
                     onChange={(e) => {
                       setSheet(e.target.value)
                       if (rawFile)
-                        void applyXlsx(rawFile.base64, rawFile.path, e.target.value).catch((err) =>
-                          setError(String(err)),
-                        )
+                        void applyXlsx(
+                          rawFile.base64,
+                          rawFile.path,
+                          e.target.value,
+                          hasHeader,
+                        ).catch((err) => setError(String(err)))
                     }}
                   >
                     {sheets.map((name) => (
@@ -221,7 +284,7 @@ export function RecipientPickerDialog({
             <input
               type="checkbox"
               checked={hasHeader}
-              onChange={(e) => setHasHeader(e.target.checked)}
+              onChange={(e) => reparse(e.target.checked)}
             />
             {t('mailMergeFirstRowHeader')}
           </label>

@@ -9,6 +9,7 @@ import type {
 } from '../../mail-merge/types'
 import { selectedCount } from '../../mail-merge/recipient-store'
 import { isFinished } from '../../mail-merge/progress'
+import { validateFileNamePattern } from '../../mail-merge/validation'
 
 export function MailMergeExportDialog({
   source,
@@ -25,13 +26,19 @@ export function MailMergeExportDialog({
   const modalKeys = useModalKeys(onClose)
   const [scope, setScope] = useState<'selected' | 'all'>('selected')
   const [outputDir, setOutputDir] = useState('')
-  const [pattern, setPattern] = useState('{index}_{Name}')
+  // the default names follow the source's own first column: a literal `{Name}`
+  // would be an unknown token for a source whose columns are "Full Name" and
+  // "Postal Address", and an unknown token silently disappears from the file name
+  const defaultPattern = source.columns[0] ? `{index}_{${source.columns[0].name}}` : '{index}'
+  const [pattern, setPattern] = useState(defaultPattern)
   const [overwrite, setOverwrite] = useState<'skip' | 'rename' | 'overwrite'>('rename')
 
   const count = scope === 'selected' ? selectedCount(source) : source.recipients.length
   const knownColumns = source.columns.map((c) => c.name)
-  const patternValid =
-    /\{index\}/i.test(pattern) || knownColumns.some((c) => pattern.includes(`{${c}}`))
+  // the same token grammar the export engine uses, so the dialog never accepts a
+  // pattern that would silently lose a token on the way to the file name
+  const patternCheck = validateFileNamePattern(pattern, knownColumns)
+  const patternValid = patternCheck.valid
 
   return (
     <div
@@ -86,7 +93,12 @@ export function MailMergeExportDialog({
             <option value="overwrite">{t('mailMergeOverwriteReplace')}</option>
           </select>
         </label>
-        {!patternValid && <p className="modal-error">{t('mailMergePatternInvalid')}</p>}
+        {!patternValid && (
+          <p className="modal-error">
+            {t('mailMergePatternInvalid')}
+            {patternCheck.unknown.length > 0 ? `: {${patternCheck.unknown.join('}, {')}` : ''}
+          </p>
+        )}
         <div className="modal-actions">
           <button className="btn-ghost" onClick={onClose}>
             {t('mailMergeCancel')}

@@ -110,4 +110,113 @@ describe('Windows containment', () => {
     // "C:\Output2" starts with "C:\Output" as a string but is a different folder
     expect(isInsideDirectory('C:\\Output', 'C:\\Output2\\Huy.pdf', windowsRules)).toBe(false)
   })
+
+  it('accepts the same name in a different case', () => {
+    // Windows names are matched case-insensitively, so a grant for C:\Output
+    // authorises C:\output\Huy.pdf — a case-sensitive comparison would wrongly
+    // refuse the file the user actually chose
+    const anyCase = fakeFs(['C:\\output', 'C:\\output\\Huy.pdf'])
+    expect(
+      containedTarget(
+        'C:\\Output',
+        'C:\\output\\Huy.pdf',
+        windowsRules,
+        anyCase.exists,
+        anyCase.realpath,
+      ),
+    ).toBe('C:\\output\\Huy.pdf')
+    expect(isInsideDirectory('C:\\Output', 'C:\\OUTPUT\\Huy.pdf', windowsRules)).toBe(true)
+  })
+
+  it('rejects a path on a different drive even when the folder name matches', () => {
+    expect(check('C:\\Output\\..\\..\\D:\\Output\\Huy.pdf')).toBeNull()
+    const otherDrive = fakeFs(['C:\\Output', 'D:\\Output', 'D:\\Output\\Huy.pdf'])
+    expect(
+      containedTarget(
+        'C:\\Output',
+        'D:\\Output\\Huy.pdf',
+        windowsRules,
+        otherDrive.exists,
+        otherDrive.realpath,
+      ),
+    ).toBeNull()
+  })
+
+  it('rejects a sibling whose only difference is case', () => {
+    const sibling = fakeFs(['C:\\Output', 'C:\\Output2\\Huy.pdf'])
+    expect(
+      containedTarget(
+        'C:\\Output',
+        'C:\\Output2\\Huy.pdf',
+        windowsRules,
+        sibling.exists,
+        sibling.realpath,
+      ),
+    ).toBeNull()
+  })
+})
+
+describe('a chosen directory that is itself a symlink', () => {
+  it('follows the grant to the real directory instead of rejecting it', () => {
+    // the user picked /home/huy/merge, which is a link to /data/merge. Every
+    // file under the real directory is exactly what they authorized
+    const fs = fakeFs(['/home/huy/merge', '/data/merge', '/data/merge/Huy.docx'], {
+      '/home/huy/merge': '/data/merge',
+    })
+    expect(
+      containedTarget(
+        '/home/huy/merge',
+        '/home/huy/merge/Huy.docx',
+        posixRules,
+        fs.exists,
+        fs.realpath,
+      ),
+    ).toBe('/data/merge/Huy.docx')
+  })
+
+  it('still rejects a path that escapes the real directory', () => {
+    const fs = fakeFs(['/home/huy/merge', '/data/merge', '/data/other'], {
+      '/home/huy/merge': '/data/merge',
+    })
+    expect(
+      containedTarget(
+        '/home/huy/merge',
+        '/home/huy/merge/../other/x.pdf',
+        posixRules,
+        fs.exists,
+        fs.realpath,
+      ),
+    ).toBeNull()
+  })
+
+  it('rejects a symlink inside the grant that points outside it', () => {
+    const fs = fakeFs(['/data/merge', '/data/merge/link', '/data/elsewhere'], {
+      '/data/merge/link': '/data/elsewhere',
+    })
+    expect(
+      containedTarget(
+        '/home/huy/merge',
+        '/data/merge/link/Huy.pdf',
+        posixRules,
+        fs.exists,
+        fs.realpath,
+      ),
+    ).toBeNull()
+  })
+
+  it('allows a symlinked subdirectory that stays inside the grant', () => {
+    const fs = fakeFs(['/home/huy/merge', '/home/huy/merge/sub', '/data/merge/sub/Huy.pdf'], {
+      '/home/huy/merge': '/data/merge',
+      '/home/huy/merge/sub': '/data/merge/sub',
+    })
+    expect(
+      containedTarget(
+        '/home/huy/merge',
+        '/home/huy/merge/sub/Huy.pdf',
+        posixRules,
+        fs.exists,
+        fs.realpath,
+      ),
+    ).toBe('/data/merge/sub/Huy.pdf')
+  })
 })

@@ -779,6 +779,92 @@ describe('pagination signal', () => {
   })
 })
 
+describe('batch lifecycle', () => {
+  it('stops the batch when the user cancels, and writes nothing after the cancel', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const written = stubDesktop([])
+    const source = sourceFromRows([['Name'], ['Huy'], ['An'], ['Quynh']], {
+      kind: 'csv',
+      label: 'list.csv',
+      hasHeader: true,
+    })
+    const cancel: CancelToken = { cancelled: false }
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      options('rename'),
+      cancel,
+      (p) => {
+        // the user pressed Stop as soon as the first document landed
+        if (p.done === 1) cancel.cancelled = true
+      },
+    )
+    editor.destroy()
+    expect(written.length).toBe(1)
+    expect(progress.succeeded).toBe(1)
+    expect(progress.done).toBe(1)
+    expect(progress.cancelled).toBe(true)
+    expect(progress.status).toBe('cancelled')
+  })
+
+  it('refuses to keep writing when the tab switched to another document mid-batch', async () => {
+    const first = await templateWith('<w:p>' + field('MERGEFIELD Name', null) + '</w:p>')
+    const second = await templateWith(
+      '<w:p><w:r><w:t xml:space="preserve">Other file</w:t></w:r></w:p>',
+    )
+    const written = stubDesktop([])
+    const source = sourceFromRows([['Name'], ['Huy'], ['An']], {
+      kind: 'csv',
+      label: 'list.csv',
+      hasHeader: true,
+    })
+    const ctx = makeCtx(first.editor, first.parsed)
+    const progress = await runMailMergeExport(ctx, source, options('rename'), noCancel, (p) => {
+      // the user opened a different file in the same tab after the first write
+      if (p.done === 1) {
+        ctx.editor = second.editor
+        ctx.doc = {
+          parsed: second.parsed,
+          filePath: 'other.docx',
+          fileName: 'other.docx',
+          hash: '',
+        }
+      }
+    })
+    first.editor.destroy()
+    second.editor.destroy()
+    // only the document the batch started on produced output
+    expect(written.length).toBe(1)
+    expect(progress.succeeded).toBe(1)
+    expect(progress.cancelled).toBe(true)
+    expect(progress.errors.some((e) => e.message.includes('document changed'))).toBe(true)
+  })
+
+  it('restores the preview the user had before the batch, even when a recipient fails', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    setMailMergePreview(editor, { Name: 'Before the batch' })
+    const before = currentMailMergeValues(editor.state)
+    stubDesktop([])
+    const source: MailMergeSource = {
+      kind: 'csv',
+      label: 'list.csv',
+      columns: [{ name: 'Name', header: 'Name' }],
+      recipients: [
+        { id: 0, values: { Name: 'Huy' }, selected: true },
+        { id: 1, values: {}, selected: true },
+      ],
+      hasHeader: true,
+    }
+    await runMailMergeExport(makeCtx(editor, parsed), source, options('rename'), noCancel, () => {})
+    expect(currentMailMergeValues(editor.state)).toEqual(before)
+    editor.destroy()
+  })
+})
+
 describe('progress terminal states', () => {
   it('a job that dies before the first recipient is finished, not still running', () => {
     const base = initialProgress(5)

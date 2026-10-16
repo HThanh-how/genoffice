@@ -140,6 +140,40 @@ export function evaluateConditionalField(instr: string, values: MergeValues): st
   return truthy(value, expr[2], expr[3]) ? m[2] : (m[3] ?? '')
 }
 
+/**
+ * The columns an instruction actually reads.
+ *
+ * One instruction must have exactly one interpretation. An `IF` prints literal
+ * text, and that text may itself contain «guillemets» — Word's display form for a
+ * field name — which are not operands. `IF «Status» = "vip" "Xin chào «Khách
+ * VIP»" ""` reads the column `Status` only; requiring a column named `Khách VIP`
+ * would reject a template Word merges happily.
+ *
+ * Returns an empty list for an instruction the merge model cannot evaluate; the
+ * caller reports it as unsupported rather than guessing at its columns.
+ */
+export function fieldReferencedColumns(instr: string): string[] {
+  if (isMergeField(instr)) {
+    const name = mergeFieldName(instr)
+    return name ? [name] : []
+  }
+  if (isConditionalField(instr)) {
+    const whole = IF_INSTR_RE.exec(instr)
+    const expr = whole ? IF_EXPR_RE.exec(whole[1].trim()) : null
+    if (expr) return [expr[1].trim()]
+    // an IF whose comparison the model cannot fully parse still names its
+    // operand first; only the literal branches are excluded
+    const operand = whole?.[1].match(/^«([^»]+)»/)
+    return operand ? [operand[1].trim()] : []
+  }
+  return []
+}
+
+/** Can the merge model evaluate this instruction at all? */
+export function isMergeableFieldInstruction(instr: string): boolean {
+  return isMergeField(instr) || isConditionalField(instr)
+}
+
 /** A field run whose text is the recipient's value, with the field machinery gone. */
 function resolvedRun(run: Run, text: string): Run {
   const next: Run = { ...run, text, instrField: undefined, fldDirty: undefined }
@@ -618,13 +652,13 @@ const ILLEGAL_NAME_CHARS =
   // eslint-disable-next-line no-control-regex -- recipient values are user text: the C0 range and DEL must not reach the filesystem
   /[\\/:*?"<>|\u0000-\u001f\u007f]/g
 
-export function sanitizeFileNamePart(raw: string): string {
+export function sanitizeFileNamePart(raw: string, maxChars = 0): string {
   const cleaned = raw
     .replace(ILLEGAL_NAME_CHARS, '_')
     .replace(/\s+/g, ' ')
     .trim()
     .replace(/^\.+|\.+$/g, '')
-    .slice(0, 120)
+    .slice(0, maxChars > 0 ? maxChars : undefined)
   if (!cleaned) return ''
   // Windows reserved device names, with or without an extension
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i.test(cleaned)) return `_${cleaned}`
@@ -677,10 +711,22 @@ export interface FileNamePatternOptions {
 }
 
 /**
- * Expand a `{index}_{Name}_{Department}` style pattern. Unknown tokens are
- * dropped rather than left as literal braces, so a typo cannot produce a
- * filename full of `{}`.
+ * Expand a `{index}_{Name}_{Department}` style pattern.
+ *
+ * The token grammar is exported (`patternTokens`, `isIndexToken`) so the UI
+ * validates exactly what the engine expands: an unknown token is reported by the
+ * dialog instead of silently vanishing from the file name. Tokens are not
+ * truncated individually — the whole base is fitted to the byte budget once, so a
+ * long first token cannot delete a later one while the name still has room.
  */
+export function patternTokens(pattern: string): string[] {
+  return [...pattern.matchAll(/\{([^{}]*)\}/g)].map((match) => match[1].trim())
+}
+
+export function isIndexToken(token: string): boolean {
+  return /^\d*index$/i.test(token)
+}
+
 export function buildOutputFileName(options: FileNamePatternOptions): string {
   const { pattern, index, total, values, extension } = options
   const indexWidth = Math.max(1, String(total).length)
@@ -690,7 +736,7 @@ export function buildOutputFileName(options: FileNamePatternOptions): string {
     if (!trimmed) return ''
     const value = values[trimmed]
     if (value === undefined) return ''
-    return sanitizeFileNamePart(value)
+    return sanitizeFileNamePart(value, 0)
   })
   const base =
     expanded.replace(/\s+/g, ' ').trim() || `merge-${String(index).padStart(indexWidth, '0')}`

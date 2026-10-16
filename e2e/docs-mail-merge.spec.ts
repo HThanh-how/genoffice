@@ -180,4 +180,101 @@ test.describe('docs mailings tab', () => {
 
     await closeAndSaveVideo(app, page, 'mail-merge-error')
   })
+
+  test('Finish & Merge writes one real PDF per recipient', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'genoffice-e2e-mailmerge-pdf-')))
+    const outDir = join(dir, 'out')
+    mkdirSync(outDir)
+    const docPath = join(dir, 'template.docx')
+    // a short row and a row long enough to push the document onto a second page:
+    // the printed pages must be measured with that recipient's text, not the
+    // template's
+    const body =
+      '<w:p><w:r><w:t xml:space="preserve">Dear </w:t></w:r>' +
+      field('MERGEFIELD "Full Name"') +
+      '<w:r><w:t xml:space="preserve"> of </w:t></w:r>' +
+      field('MERGEFIELD "Postal Address"') +
+      '</w:p>' +
+      '<w:p><w:r><w:t xml:space="preserve">Account reference for the address above.</w:t></w:r></w:p>'
+    writeFileSync(docPath, await templateDocx(body))
+
+    const csv =
+      '"Full Name","Postal Address"\n' +
+      '"Bo Tran",""\n' +
+      '"Nguyễn Văn A","123 Nguyễn Huệ, Da Nang, a deliberately long address that has to wrap onto another line to fit the page"\n'
+
+    const { app, page } = await launchShell({
+      openFile: docPath,
+      onboardingSeen: true,
+      videoDir: 'mail-merge-pdf',
+      env: { GENOFFICE_TEST_EXPORT_DIR: outDir },
+    })
+
+    await page.evaluate((text) => {
+      const bytes = new TextEncoder().encode(text)
+      let bin = ''
+      for (const b of bytes) bin += String.fromCharCode(b)
+      window.desktop.pickMailMergeSource = async () => ({
+        ok: true,
+        path: '/tmp/recipients.csv',
+        base64: btoa(bin),
+      })
+    }, csv)
+
+    await page.locator('.ribbon-tab', { hasText: 'Mailings' }).click()
+    await page.getByRole('button', { name: 'Start Mail Merge' }).click()
+    await page.getByRole('button', { name: 'Choose file…' }).click()
+    await page.getByRole('button', { name: 'Use selected (2)' }).click()
+    await page.getByRole('button', { name: 'Preview Results' }).click()
+    await expect(page.locator('.mm-field-preview-value').first()).toContainText('Bo Tran')
+
+    await page.getByRole('button', { name: 'Finish & Merge' }).click()
+    await page.getByRole('option', { name: 'Export as PDF' }).click()
+    await page.getByRole('button', { name: 'Browse…' }).click()
+    await page.getByRole('button', { name: 'Export 2 files' }).click()
+
+    await expect(page.locator('.mail-merge-progress h2')).toContainText('Export completed')
+    await page.getByRole('button', { name: 'Close' }).click()
+
+    const names = readdirSync(outDir)
+      .filter((n) => n.endsWith('.pdf'))
+      .sort()
+    expect(names).toEqual(['0001_Bo Tran.pdf', '0002_Nguyễn Văn A.pdf'])
+
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
+    const texts: string[][] = []
+    for (const name of names) {
+      const doc = await pdfjs.getDocument({
+        data: new Uint8Array(readFileSync(join(outDir, name))),
+      }).promise
+      const pages: string[] = []
+      for (let i = 1; i <= doc.numPages; i++) {
+        const page = await doc.getPage(i)
+        const content = await page.getTextContent()
+        pages.push(
+          content.items
+            .filter((it) => typeof (it as { str?: string }).str === 'string')
+            .map((it) => String((it as { str: string }).str))
+            .join(' '),
+        )
+      }
+      texts.push(pages)
+    }
+
+    const [short, long] = texts
+    // Chromium wrote real pages, not a stub: each file is a PDF whose text is the
+    // recipient's own, and the long address changes the pagination
+    expect(short.length).toBe(1)
+    expect(long.length).toBeGreaterThanOrEqual(1)
+    expect(short.join(' ')).toContain('Dear Bo Tran')
+    expect(long.join(' ')).toContain('Nguyễn Văn A')
+    expect(long.join(' ')).toContain('123 Nguyễn Huệ')
+    // nothing of the template or the preview chrome reaches the printed page
+    for (const text of [...short, ...long]) {
+      expect(text).not.toContain('«Full Name»')
+      expect(text).not.toContain('MERGEFIELD')
+    }
+
+    await closeAndSaveVideo(app, page, 'mail-merge-pdf')
+  })
 })

@@ -81,21 +81,36 @@ export function applyMergeValuesToPmDoc(
   values: MergeValues,
   report: MergeReport,
 ): PmNode {
-  const replacements: Replacement[] = []
+  const spans: Array<{ from: number; to: number; instr: string; marks: readonly Mark[] }> = []
   doc.descendants((node, pos) => {
     if (!node.isText) return
     const mark = node.marks.find((m) => m.type.name === 'instrField')
     if (!mark) return
-    const value = mergeFieldValue(String(mark.attrs.instr ?? ''), values, report)
-    if (value === null) return
+    const instr = String(mark.attrs.instr ?? '')
+    const previous = spans[spans.length - 1]
+    // directly adjacent text nodes carrying the same instruction are one field:
+    // a MERGEFIELD whose placeholder was split by a style change is still one
+    // field, and replacing every fragment separately would print the recipient's
+    // name once per fragment
+    if (previous && previous.to === pos && previous.instr === instr) {
+      previous.to = pos + node.nodeSize
+      return
+    }
+    spans.push({ from: pos, to: pos + node.nodeSize, instr, marks: node.marks })
+  })
+  const replacements: Replacement[] = []
+  for (const span of spans) {
+    const value = mergeFieldValue(span.instr, values, report)
+    if (value === null) continue
+    const fieldMark = span.marks.find((m) => m.type.name === 'instrField')
     // the field mark goes away; the run's own formatting (bold, font, colour) stays
     replacements.push({
-      from: pos,
-      to: pos + node.nodeSize,
+      from: span.from,
+      to: span.to,
       text: value,
-      marks: mark.type.removeFromSet(node.marks),
+      marks: fieldMark ? fieldMark.removeFromSet(span.marks) : span.marks,
     })
-  })
+  }
   if (replacements.length === 0) return doc
   const tr = new Transform(doc)
   for (let i = replacements.length - 1; i >= 0; i--) {

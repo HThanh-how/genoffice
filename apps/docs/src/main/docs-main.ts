@@ -155,7 +155,11 @@ import type {
 } from '../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS, MARKDOWN_MEDIA_DIR_TOKEN, type MarkdownImage } from '../shared/ipc'
 import { ClickClaims } from '../shared/context-menu-claims'
-import { MailMergeOverwritePolicy } from '../shared/mail-merge-names'
+import { decideMailMergeWrite, type MailMergeGrant } from '../shared/mail-merge-ipc'
+import {
+  pdfWriteTarget as resolvePdfWriteTarget,
+  type PdfWriteTarget,
+} from '../shared/pdf-write-auth'
 import { containedTarget as resolveContainedPath, PathRules } from '../shared/output-containment'
 import { writeMailMergeOutput } from '../shared/mail-merge-write'
 import {
@@ -3605,8 +3609,24 @@ const mailMergeDirs = new Map<number, string>()
 /** Names this batch has already written, so the writer can tell "the user's
  *  pre-existing file" from "another recipient's output from this same batch". */
 const mailMergeAllocated = new Map<number, Set<string>>()
+/** Largest source file Mail Merge will read, checked before the bytes are loaded. */
+const MAIL_MERGE_SOURCE_LIMIT_BYTES = 64 * 1024 * 1024
 
-const platformRules: PathRules = { resolve, dirname, sep }
+/** The batch grant one renderer holds, or undefined once it has been torn down. */
+function mailMergeGrant(wcId: number): MailMergeGrant | undefined {
+  if (tornDownWcIds.has(wcId)) return undefined
+  const dir = mailMergeDirs.get(wcId)
+  if (!dir) return undefined
+  return { dir, allocated: mailMergeAllocated.get(wcId) ?? new Set<string>() }
+}
+
+const platformRules: PathRules = {
+  resolve,
+  dirname,
+  sep,
+  // Windows names are matched case-insensitively; POSIX paths are not
+  caseInsensitive: process.platform === 'win32',
+}
 
 /**
  * Is `filePath` really inside `dir`?
@@ -3626,66 +3646,36 @@ function containedTarget(
   return resolveContainedPath(dir, filePath, rules, existsSync, realpathSync)
 }
 
-/** Only PDFs may use the batch grant: the same directory must not become a
- *  blanket authorization for Markdown or HTML export targets. */
-function isMailMergeBatchPdf(wcId: number, filePath: string): boolean {
-  if (tornDownWcIds.has(wcId) || !/\.pdf$/i.test(filePath)) return false
-  const dir = mailMergePdfDirs.get(wcId)
-  return !!dir && containedTarget(dir, filePath) !== null
-}
-
-function canPdfWrite(wcId: number, filePath: string): boolean {
-  if (tornDownWcIds.has(wcId)) return false
-  if (testExportDir && /\.pdf$/i.test(filePath) && containedTarget(testExportDir, filePath))
-    return true
-  if (isMailMergeBatchPdf(wcId, filePath)) return true
-  return pdfWritablePaths.get(wcId)?.has(filePath) === true
-}
-
-const asOverwritePolicy = (value: unknown): MailMergeOverwritePolicy =>
-  value === 'skip' ? 'skip' : value === 'rename' ? 'rename' : 'overwrite'
-
 /**
- * Where a PDF export actually writes.
+ * Where a PDF export may actually write, and under what naming policy.
+ *
+ * The gate (`canPdfWrite`) and the writer (`pdfWriteTarget`) are the same
+ * function now. They used to answer the question with two different rule sets,
+ * so a path the gate accepted — the harness export directory, for instance —
+ * could be refused by the writer a moment later. One answer means the gate can
+ * never approve a target the writer then rejects.
  *
  * A path inside the sender's batch directory goes through the same naming policy
  * as a DOCX batch file: the renderer's name is only a proposal, the collision
- * rule is applied here, and skip/rename writes are exclusive so a file created
- * between choosing the name and writing it is never clobbered.
+ * rule is applied in the writer, and skip/rename writes are exclusive so a file
+ * created between choosing the name and writing it is never clobbered. A batch
+ * write must state its policy explicitly; an absent or malformed one is refused
+ * rather than defaulted to the most destructive option.
  */
-function authorizePdfWrite(
-  wcId: number,
-  filePath: string,
-  overwrite: unknown,
-): {
-  path: string
-  batchDir: string | null
-  name: string
-  policy: MailMergeOverwritePolicy
-  allocated: Set<string>
-} | null {
-  if (typeof filePath !== 'string' || !filePath) return null
-  const dir = mailMergePdfDirs.get(wcId)
-  const inside = dir ? containedTarget(dir, filePath) : null
-  if (inside) {
-    return {
-      path: inside,
-      batchDir: dir!,
-      name: basename(inside),
-      policy: asOverwritePolicy(overwrite),
-      allocated: mailMergeAllocated.get(wcId) ?? new Set<string>(),
-    }
-  }
-  if (isImageExportTemp(wcId, filePath) || pdfWritablePaths.get(wcId)?.has(filePath)) {
-    return {
-      path: filePath,
-      batchDir: null,
-      name: basename(filePath),
-      policy: 'overwrite',
-      allocated: new Set<string>(),
-    }
-  }
-  return null
+function pdfWriteTarget(wcId: number, filePath: string, overwrite: unknown): PdfWriteTarget | null {
+  return resolvePdfWriteTarget(filePath, overwrite, {
+    tornDown: tornDownWcIds.has(wcId),
+    batchDir: mailMergePdfDirs.get(wcId) ?? null,
+    allocated: mailMergeAllocated.get(wcId) ?? new Set<string>(),
+    testExportDir,
+    isImageTemp: (candidate) => isImageExportTemp(wcId, candidate),
+    allowedPaths: pdfWritablePaths.get(wcId) ?? new Set<string>(),
+    contained: containedTarget,
+  })
+}
+
+function canPdfWrite(wcId: number, filePath: string, overwrite?: unknown): boolean {
+  return pdfWriteTarget(wcId, filePath, overwrite) !== null
 }
 
 // Export as images runs the regular PDF export against a temp file: that file must
@@ -5541,7 +5531,7 @@ export function registerDocsIpc(): void {
       }
       // renderer-supplied outPath is only honored when a save dialog authorized it before
       let filePath = outPath ?? null
-      if (filePath && !canPdfWrite(event.sender.id, filePath)) {
+      if (filePath && !canPdfWrite(event.sender.id, filePath, overwrite)) {
         return { ok: false, error: 'export target is not an authorized path' }
       }
       if (!filePath) {
@@ -5554,7 +5544,7 @@ export function registerDocsIpc(): void {
         filePath = result.filePath
         allowPdfWrite(event.sender.id, filePath)
       }
-      const target = authorizePdfWrite(event.sender.id, filePath, overwrite)
+      const target = pdfWriteTarget(event.sender.id, filePath, overwrite)
       if (!target) return { ok: false, error: 'export target is not an authorized path' }
       try {
         const printed = await event.sender.printToPDF({
@@ -5767,7 +5757,7 @@ export function registerDocsIpc(): void {
       overwrite?: string,
     ) => {
       let filePath = outPath ?? null
-      if (filePath && !canPdfWrite(event.sender.id, filePath)) {
+      if (filePath && !canPdfWrite(event.sender.id, filePath, overwrite)) {
         return { ok: false, error: 'export target is not an authorized path' }
       }
       if (!filePath) {
@@ -5780,7 +5770,7 @@ export function registerDocsIpc(): void {
         filePath = result.filePath
         allowPdfWrite(event.sender.id, filePath)
       }
-      const target = authorizePdfWrite(event.sender.id, filePath, overwrite)
+      const target = pdfWriteTarget(event.sender.id, filePath, overwrite)
       if (!target) return { ok: false, error: 'export target is not an authorized path' }
       try {
         const { PDFDocument } = await import('pdf-lib')
@@ -5849,8 +5839,15 @@ export function registerDocsIpc(): void {
     const path = result.canceled ? null : (result.filePaths[0] ?? null)
     if (!path) return null
     try {
+      // the size limit is checked against the file itself, before its bytes are
+      // read into memory and again after base64 (which is ~33% larger)
+      const size = statSync(path).size
+      if (size > MAIL_MERGE_SOURCE_LIMIT_BYTES) {
+        return { ok: false, error: 'the source file is larger than Mail Merge can read' }
+      }
       const bytes = await readFile(path)
-      if (bytes.length > 64 * 1024 * 1024) return { ok: false, error: 'file too large' }
+      if (bytes.length > MAIL_MERGE_SOURCE_LIMIT_BYTES)
+        return { ok: false, error: 'file too large' }
       return { ok: true, path, base64: bytes.toString('base64') }
     } catch (err) {
       return { ok: false, error: String(err) }
@@ -5869,6 +5866,9 @@ export function registerDocsIpc(): void {
         })
     const dir = picked.canceled ? null : (picked.filePaths[0] ?? null)
     if (!dir) return null
+    // the grant is only meaningful for a directory that actually exists; a
+    // dangling path would make every containment check resolve against nothing
+    if (!existsSync(dir)) return null
     mailMergeDirs.set(event.sender.id, dir)
     mailMergePdfDirs.set(event.sender.id, dir)
     // a new batch starts with a fresh allocation set
@@ -5879,7 +5879,8 @@ export function registerDocsIpc(): void {
   /** Names already present in the chosen directory, so the renderer can avoid
    *  clobbering them without touching the filesystem itself. */
   ipcMain.handle('docs:list-mail-merge-output', async (event, dir: unknown) => {
-    const authorized = mailMergeDirs.get(event.sender.id)
+    const wcId = event.sender.id
+    const authorized = tornDownWcIds.has(wcId) ? undefined : mailMergeDirs.get(wcId)
     if (!authorized || typeof dir !== 'string' || dir !== authorized) {
       return { ok: false, error: 'output directory is not authorized' }
     }
@@ -5897,28 +5898,30 @@ export function registerDocsIpc(): void {
   ipcMain.handle(
     'docs:write-mail-merge-file',
     async (event, dir: unknown, name: unknown, base64: unknown, overwrite: unknown) => {
-      const authorized = mailMergeDirs.get(event.sender.id)
-      if (!authorized || typeof dir !== 'string' || dir !== authorized) {
-        return { ok: false, error: 'output directory is not authorized' }
+      const wcId = event.sender.id
+      const grant = mailMergeGrant(wcId)
+      // every check — directory, name, extension, payload, policy, containment —
+      // happens before a single byte is written, so a refused request creates
+      // nothing on disk
+      const decision = decideMailMergeWrite(grant, dir, name, base64, overwrite, containedTarget)
+      if (!decision.ok) return { ok: false, error: decision.error }
+      // the request crossed an await on the way here; a tab closed in that window
+      // must not get a write through on a grant it no longer holds
+      if (tornDownWcIds.has(wcId) || mailMergeDirs.get(wcId) !== decision.dir) {
+        return { ok: false, error: 'output directory is no longer authorized' }
       }
-      if (typeof name !== 'string' || typeof base64 !== 'string') {
-        return { ok: false, error: 'invalid write request' }
-      }
-      const policy = asOverwritePolicy(overwrite)
       try {
         // the writer is the authority on the final name: the renderer's proposal
-        // may have been sanitized, shortened or renamed by this point
+        // may have been sanitized, shortened or renamed by this point, and each
+        // candidate it produces is re-contained before it is opened
         const outcome = await writeMailMergeOutput(
-          authorized,
-          name,
-          Buffer.from(base64, 'base64'),
-          policy,
-          mailMergeAllocated.get(event.sender.id) ?? new Set<string>(),
+          decision.dir,
+          decision.name,
+          Buffer.from(String(base64), 'base64'),
+          decision.policy,
+          decision.allocated,
+          decision.resolvePath,
         )
-        if (!outcome.name) return { ok: false, error: 'invalid file name' }
-        if (!containedTarget(authorized, outcome.path)) {
-          return { ok: false, error: 'output path is outside the chosen directory' }
-        }
         if (outcome.skipped)
           return { ok: false, skipped: true, path: outcome.path, name: outcome.name }
         return { ok: true, path: outcome.path, name: outcome.name }

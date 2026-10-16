@@ -142,3 +142,149 @@ describe('batch writes to a real directory', () => {
     expect(decision.skipped).toBe(false)
   })
 })
+
+describe('a write that fails leaves nothing behind', () => {
+  /** A handle that only takes part of the buffer, then dies — the disk-full case. */
+  const partialWrite = async (handle: any, data: Buffer) => {
+    await handle.write(data.subarray(0, Math.min(64, data.length)))
+    throw new Error('ENOSPC: no space left on device')
+  }
+
+  /** A handle that accepts zero bytes: the short-write case `write` must not accept. */
+  const stalledWrite = async (handle: any, data: Buffer) => {
+    await handle.write(data.subarray(0, 0))
+    throw new Error('the write stalled after 0 of ' + data.length + ' bytes')
+  }
+
+  it('writes the whole buffer, not just the first chunk', async () => {
+    const dir = await freshDir()
+    const data = Buffer.from('x'.repeat(1_000_000))
+    const outcome = await writeMailMergeOutput(dir, 'big.docx', data, 'overwrite')
+    const written = await readFile(join(dir, outcome.name))
+    expect(written.length).toBe(data.length)
+    expect(written.toString()).toBe(data.toString())
+  })
+
+  it('removes the file it created when the write fails partway', async () => {
+    const dir = await freshDir()
+    const error = await writeMailMergeOutput(
+      dir,
+      'Huy.docx',
+      Buffer.from('x'.repeat(4096)),
+      'rename',
+      new Set<string>(),
+      undefined,
+      partialWrite,
+    ).catch((err) => err)
+    expect(String(error)).toContain('no space left')
+    expect(await listing(dir)).toEqual([])
+  })
+
+  it('does not leave a truncated file when a later recipient of the batch succeeds', async () => {
+    const dir = await freshDir()
+    const allocated = new Set<string>()
+    const failed = await writeMailMergeOutput(
+      dir,
+      'Huy.docx',
+      Buffer.from('x'.repeat(4096)),
+      'rename',
+      allocated,
+      undefined,
+      partialWrite,
+    ).catch(() => null)
+    expect(failed).toBeNull()
+    // the claim was released, so the next recipient can still use the name
+    const second = await writeMailMergeOutput(
+      dir,
+      'Huy.docx',
+      Buffer.from('good content'),
+      'rename',
+      allocated,
+    )
+    expect(second.name).toBe('Huy.docx')
+    expect(await listing(dir)).toEqual(['Huy.docx'])
+    expect(await read(dir, 'Huy.docx')).toBe('good content')
+  })
+
+  it('leaves a pre-existing destination untouched when the new write fails', async () => {
+    const dir = await freshDir()
+    await writeFile(join(dir, 'Huy.docx'), 'the user file')
+    const error = await writeMailMergeOutput(
+      dir,
+      'Huy.docx',
+      Buffer.from('x'.repeat(4096)),
+      'rename',
+      new Set<string>(),
+      undefined,
+      partialWrite,
+    ).catch((err) => err)
+    expect(String(error)).toContain('no space left')
+    expect(await listing(dir)).toEqual(['Huy.docx'])
+    expect(await read(dir, 'Huy.docx')).toBe('the user file')
+  })
+
+  it('rejects a write that makes no progress instead of reporting success', async () => {
+    const dir = await freshDir()
+    const error = await writeMailMergeOutput(
+      dir,
+      'Huy.docx',
+      Buffer.from('data'),
+      'skip',
+      new Set<string>(),
+      undefined,
+      stalledWrite,
+    ).catch((err) => err)
+    expect(String(error)).toContain('stalled')
+    expect(await listing(dir)).toEqual([])
+  })
+})
+
+describe('concurrent recipients of one batch under overwrite', () => {
+  it('gives two recipients the same name two different files', async () => {
+    const dir = await freshDir()
+    const allocated = new Set<string>()
+    const [a, b] = await Promise.all([
+      writeMailMergeOutput(dir, 'Huy.docx', Buffer.from('first'), 'overwrite', allocated),
+      writeMailMergeOutput(dir, 'Huy.docx', Buffer.from('second'), 'overwrite', allocated),
+    ])
+    expect(a.name).not.toBe(b.name)
+    const files = await listing(dir)
+    expect(files.length).toBe(2)
+    const contents = (await Promise.all(files.map((n) => read(dir, n)))).sort()
+    expect(contents).toEqual(['first', 'second'])
+  })
+
+  it('keeps the separation when the writes are staggered across awaits', async () => {
+    const dir = await freshDir()
+    const allocated = new Set<string>()
+    const names: string[] = []
+    for (const body of ['a', 'b', 'c']) {
+      const outcome = await writeMailMergeOutput(
+        dir,
+        'Huy.docx',
+        Buffer.from(body),
+        'overwrite',
+        allocated,
+      )
+      names.push(outcome.name)
+    }
+    expect(new Set(names).size).toBe(3)
+    expect((await listing(dir)).length).toBe(3)
+  })
+
+  it('does not let a concurrent overwrite clobber a file the user already had', async () => {
+    const dir = await freshDir()
+    await writeFile(join(dir, 'Huy.docx'), 'the user file')
+    const allocated = new Set<string>()
+    const [a, b] = await Promise.all([
+      writeMailMergeOutput(dir, 'Huy.docx', Buffer.from('first'), 'overwrite', allocated),
+      writeMailMergeOutput(dir, 'Huy.docx', Buffer.from('second'), 'overwrite', allocated),
+    ])
+    // the user's file is what "overwrite" means: the first recipient takes it,
+    // the second must not silently replace it
+    expect(a.name).toBe('Huy.docx')
+    expect(b.name).not.toBe('Huy.docx')
+    expect(await read(dir, 'Huy.docx')).toBe('first')
+    expect(await read(dir, b.name)).toBe('second')
+  })
+})

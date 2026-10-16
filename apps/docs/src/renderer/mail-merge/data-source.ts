@@ -4,7 +4,13 @@
  * pipeline work with.
  */
 import { xlsxToGrid } from '@genoffice/file-parse/xlsx'
-import { parseCsvRows, sniffDelimiter, trimEmptyRows } from './csv'
+import {
+  decodeCsvText,
+  parseCsvRows,
+  sniffDelimiter,
+  trimEmptyRows,
+  unterminatedQuoteAt,
+} from './csv'
 import type { MailMergeColumn, MailMergeRecipient, MailMergeSource } from './types'
 
 /** A hard ceiling keeps the picker and the export bounded on pathological files. */
@@ -31,30 +37,45 @@ export function base64ToBytes(base64: string): Uint8Array {
  * header "Name (2)" — the same key, so one recipient value would overwrite the
  * other. The original header text is kept in `header` either way.
  */
+/**
+ * Give every header a name a merge field can refer to.
+ *
+ * A repeated header gets `Name`, `Name (2)`, `Name (3)` … — but a generated alias
+ * may never take a name that belongs to a *different* header. With
+ * `Name | Name | Name (2)` the third column is literally named `Name (2)`, so the
+ * second `Name` must be renamed to `Name (3)`: otherwise the alias and the real
+ * column would be the same field, and one of the two columns' data would be
+ * unreachable. Names are reserved in two passes so a literal header is claimed
+ * before any alias is invented.
+ */
 export function buildColumns(header: readonly string[]): MailMergeColumn[] {
   if (header.length > MAX_COLUMNS) {
     throw new Error(
       `the source has ${header.length} columns; Mail Merge reads at most ${MAX_COLUMNS}`,
     )
   }
+  const bases = header.map((raw, index) => raw.trim() || `Column ${index + 1}`)
+  const occurrences = new Map<string, number>()
+  for (const base of bases) occurrences.set(base, (occurrences.get(base) ?? 0) + 1)
+  // a header that appears once owns its exact name; nothing may take it
+  const taken = new Set(bases.filter((base) => occurrences.get(base) === 1))
   const seen = new Map<string, number>()
-  const taken = new Set<string>()
   return header.map((raw, index) => {
-    const base = raw.trim() || `Column ${index + 1}`
+    const base = bases[index]
     const count = (seen.get(base) ?? 0) + 1
     seen.set(base, count)
-    let name = count > 1 ? `${base} (${count})` : base
+    if (occurrences.get(base) === 1) {
+      taken.add(base)
+      return { name: base, header: raw }
+    }
+    let name = count === 1 ? base : `${base} (${count})`
     let suffix = count
     while (taken.has(name)) {
       suffix += 1
       name = `${base} (${suffix})`
     }
     taken.add(name)
-    return {
-      name,
-      header: raw,
-      ...(count > 1 ? { duplicateOf: count } : {}),
-    }
+    return { name, header: raw, duplicateOf: count }
   })
 }
 
@@ -79,10 +100,15 @@ export function sourceFromRows(
     )
   }
   const headerRow = options.hasHeader ? (rows[0] ?? []) : []
-  const columns = options.hasHeader
-    ? buildColumns(headerRow)
-    : buildColumns(Array.from({ length: Math.max(1, ...rows.map((r) => r.length)) }, () => ''))
   const body = options.hasHeader ? rows.slice(1) : rows
+  // a row with more values than the header has columns is not a row to trim: the
+  // extra values are data the user put in the file, so the source grows columns
+  // to hold them rather than dropping them
+  const widest = body.reduce((max, row) => Math.max(max, row.length), 0)
+  const headerForColumns = options.hasHeader
+    ? Array.from({ length: Math.max(headerRow.length, widest) }, (_, i) => headerRow[i] ?? '')
+    : Array.from({ length: Math.max(1, widest) }, () => '')
+  const columns = buildColumns(headerForColumns)
   const recipients: MailMergeRecipient[] = body.map((row, id) => {
     // a null prototype is not cosmetic: `values['__proto__'] = 'x'` on a plain
     // object hits Object.prototype's setter and the column silently disappears.
@@ -106,7 +132,15 @@ export function sourceFromRows(
 }
 
 export function loadCsvSource(base64: string, label: string, hasHeader: boolean): MailMergeSource {
-  const text = new TextDecoder('utf-8').decode(base64ToBytes(base64))
+  const text = decodeCsvText(base64ToBytes(base64))
+  // an unclosed quote swallows the rest of the file: every row after it would be
+  // read as one field, so the source is refused rather than parsed into nonsense
+  const broken = unterminatedQuoteAt(text)
+  if (broken !== null) {
+    throw new Error(
+      `the file has a quote that never closes (near character ${broken}); the rows after it cannot be read`,
+    )
+  }
   const delimiter = sniffDelimiter(text)
   const rows = trimEmptyRows(parseCsvRows(text, delimiter))
   return sourceFromRows(rows, { kind: 'csv', label, hasHeader, delimiter })

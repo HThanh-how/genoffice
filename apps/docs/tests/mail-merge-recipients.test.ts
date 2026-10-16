@@ -14,8 +14,13 @@ import {
   setMailMergeHighlight,
   setMailMergePreview,
 } from '../src/renderer/editor/mail-merge-preview'
-import { parseCsvRows, sniffDelimiter, trimEmptyRows } from '../src/renderer/mail-merge/csv'
-import { buildColumns, sourceFromRows } from '../src/renderer/mail-merge/data-source'
+import {
+  parseCsvRows,
+  sniffDelimiter,
+  trimEmptyRows,
+  unterminatedQuoteAt,
+} from '../src/renderer/mail-merge/csv'
+import { buildColumns, loadCsvSource, sourceFromRows } from '../src/renderer/mail-merge/data-source'
 import {
   DEFAULT_FILTER,
   exportRecipients,
@@ -47,6 +52,78 @@ describe('CSV recipient source', () => {
   it('drops trailing blank rows so a stray newline is not a recipient', () => {
     const rows = trimEmptyRows([['Name'], ['Huy'], [''], ['   ']])
     expect(rows).toEqual([['Name'], ['Huy']])
+  })
+
+  it('keeps an interior blank row: it is a recipient with empty fields', () => {
+    // Word reads a blank line in the middle of the data as a record whose fields
+    // are all empty. Dropping it would silently lose a row the user counted.
+    const rows = trimEmptyRows([['Name'], ['Huy'], [''], ['An']])
+    expect(rows).toEqual([['Name'], ['Huy'], [''], ['An']])
+  })
+
+  it('does not discard values that sit beyond the declared header columns', () => {
+    const source = sourceFromRows(
+      [['Name'], ['Huy', 'extra city'], ['An', 'extra note', 'extra flag']],
+      { kind: 'csv', label: 'list.csv', hasHeader: true },
+    )
+    expect(source.columns.map((c) => c.name)).toEqual(['Name', 'Column 2', 'Column 3'])
+    expect(source.recipients[0].values).toEqual({
+      Name: 'Huy',
+      'Column 2': 'extra city',
+      'Column 3': '',
+    })
+    expect(source.recipients[1].values).toEqual({
+      Name: 'An',
+      'Column 2': 'extra note',
+      'Column 3': 'extra flag',
+    })
+  })
+
+  it('handles a quoted field with an embedded newline and delimiter', () => {
+    const rows = parseCsvRows('"Name","Address"\n"Huy","123 Lê Lai, Da Nang\nVietnam"', ',')
+    expect(rows[1][1]).toBe('123 Lê Lai, Da Nang\nVietnam')
+  })
+
+  it('reads a file whose last line has no closing newline', () => {
+    expect(parseCsvRows('Name,Huy\nAn,An', ',')).toEqual([
+      ['Name', 'Huy'],
+      ['An', 'An'],
+    ])
+  })
+
+  it('detects an unterminated quote instead of pretending the row is normal', () => {
+    expect(unterminatedQuoteAt('Name,"Huy')).toBe(9)
+    expect(unterminatedQuoteAt('Name,"Huy",x')).toBeNull()
+    expect(unterminatedQuoteAt('"Name","Huy"')).toBeNull()
+  })
+
+  it('refuses a file whose quote never closes rather than merging nonsense', () => {
+    // the parser would read everything after the open quote as one field, so the
+    // batch would write one document per line of the rest of the file
+    expect(() => loadCsvSource(btoa('Name,"Huy'), 'list.csv', true)).toThrow(/never closes/)
+  })
+
+  it('refuses bytes that are not UTF-8 instead of turning them into replacement chars', () => {
+    // 0xC3 0x28 is an invalid sequence; a silent U+FFFD would end up printed in
+    // the merged documents
+    const broken = Buffer.from([0x41, 0x42, 0xc3, 0x28]).toString('base64')
+    expect(() => loadCsvSource(broken, 'list.csv', false)).toThrow(/not valid UTF-8/)
+  })
+
+  it('strips a BOM and treats a whitespace-only header as unnamed columns', () => {
+    const withBom = loadCsvSource(
+      Buffer.from('\uFEFFName,City\nHuy,Tokyo', 'utf8').toString('base64'),
+      'list.csv',
+      true,
+    )
+    expect(withBom.columns.map((c) => c.name)).toEqual(['Name', 'City'])
+    const blankHeader = loadCsvSource(
+      Buffer.from('\nHuy,Tokyo', 'utf8').toString('base64'),
+      'list.csv',
+      true,
+    )
+    expect(blankHeader.columns.map((c) => c.name)).toEqual(['Column 1', 'Column 2'])
+    expect(blankHeader.recipients[0].values['Column 1']).toBe('Huy')
   })
 
   it('names columns from the header and never lets two merge fields collide', () => {

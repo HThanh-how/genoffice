@@ -91,8 +91,11 @@ describe("the writer's decision", () => {
   })
 
   it('two recipients whose long names shorten to the same name still get two files', () => {
-    const first = `${'x'.repeat(190)}-first.docx`
-    const second = `${'x'.repeat(190)}-second.docx`
+    // the two names differ only past the 200-byte ceiling, so the writer sees one
+    // destination for two recipients — the second must be moved aside, not written
+    // over the first
+    const first = `${'x'.repeat(195)}-first.docx`
+    const second = `${'x'.repeat(195)}-second.docx`
     const written = new Set<string>()
     const allocated = new Set<string>()
     const a = resolveSafeFileName(first, 'overwrite', (n) => written.has(n), allocated)

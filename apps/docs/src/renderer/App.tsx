@@ -2761,7 +2761,11 @@ export function App() {
           const doc = fileCtxRef.current.doc
           return { opened: typeof doc?.filePath === 'string', failed: doc?.filePath === null }
         },
-        target.format === 'html' ? exportHtml : target.format === 'md' ? exportMarkdown : exportPdf,
+        target.format === 'html'
+          ? exportHtml
+          : target.format === 'md'
+            ? exportMarkdown
+            : (path: string) => exportPdf(path).then((result) => result.ok),
       )
       window.desktop.headlessExportDone(report)
     })()
@@ -2773,7 +2777,7 @@ export function App() {
     if (!showPagePreview) {
       // preview dismissed while the export was parked: settle as canceled
       pendingMixedExportRef.current = false
-      pending.resolve(false)
+      pending.resolve({ ok: false, error: 'the pagination preview closed' })
       setStatus(t('appExportPdfCanceled'))
       return
     }
@@ -2795,23 +2799,26 @@ export function App() {
         if (pendingMixedExportRef.current !== pending) return
         if (!document.querySelector('.pagination-preview')) {
           if (!claim()) return
-          pending.resolve(false)
+          pending.resolve({ ok: false, error: 'the pagination preview closed' })
           setStatus(t('appExportPdfCanceled'))
           return
         }
       }
       if (!claim()) return
       if (!document.querySelector('.pv-page')) {
-        pending.resolve(false)
+        pending.resolve({ ok: false, error: 'pagination preview produced no pages' })
         setStatus(t('appExportPdfFailed', { error: 'pagination preview produced no pages' }))
         return
       }
       setExportLocksPreview(true)
-      const ok = await exportPdf(pending.outPath, pending.overwrite).catch(() => false)
+      const result = await exportPdf(pending.outPath, pending.overwrite).catch((error) => ({
+        ok: false as const,
+        error: String(error),
+      }))
       setExportLocksPreview(false)
       // a Print the user started meanwhile owns the preview now
       if (pending.closePreview && !showPrintDialogRef.current) setShowPagePreview(false)
-      pending.resolve(ok)
+      pending.resolve(result)
     }, 1200)
     return () => window.clearTimeout(timer)
   }, [showPagePreview, pendingExportTick, exportPdf])
@@ -6236,7 +6243,7 @@ export function App() {
       openPath: (path: string) => openRecent(path),
       save: () => save(false),
       getStatus: () => status,
-      exportPdfTo: (path: string) => exportPdf(path),
+      exportPdfTo: (path: string) => exportPdf(path).then((result) => result.ok),
       exportHtmlTo: (path: string) => exportHtml(path),
       exportMarkdownTo: (path: string) => exportMarkdown(path),
     }

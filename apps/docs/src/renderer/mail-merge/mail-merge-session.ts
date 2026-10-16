@@ -169,7 +169,7 @@ export function useMailMergeSession(
     checkErrors: () => {
       if (!editor) return
       const blocks = getCtx().doc?.parsed.blocks ?? []
-      setIssues(validateMergeSession(source, templateMergeFields(editor), blocks))
+      setIssues(validateMergeSession(source, templateMergeFields(editor), blocks, editor))
       setDialog('validate')
     },
 
@@ -180,7 +180,7 @@ export function useMailMergeSession(
       // situation, and so does GenOffice — the user gets the error list instead
       // of a folder of broken documents.
       const blocks = getCtx().doc?.parsed.blocks ?? []
-      const issues = validateMergeSession(source, templateMergeFields(editor), blocks)
+      const issues = validateMergeSession(source, templateMergeFields(editor), blocks, editor)
       const blocking = issues.filter((issue) => issue.severity === 'error')
       if (blocking.length > 0) {
         setIssues(blocking)

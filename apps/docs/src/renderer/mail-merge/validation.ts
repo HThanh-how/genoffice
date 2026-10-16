@@ -3,7 +3,14 @@
  * template references a column the source does not have; GenOffice reports the
  * same problems up front rather than writing hundreds of wrong documents.
  */
-import { isRepresentableColumnName, type MergeFieldRef } from '@genoffice/docx-engine'
+import {
+  fieldReferencedColumns,
+  isIndexToken,
+  isMergeableFieldInstruction,
+  isRepresentableColumnName,
+  patternTokens,
+  type MergeFieldRef,
+} from '@genoffice/docx-engine'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@genoffice/docx-engine'
 import { fieldCodeText } from '../editor/field-codes'
@@ -38,14 +45,21 @@ export function templateFieldInstructions(editor: Editor): string[] {
   return found
 }
 
-/** The columns one field instruction asks for: the MERGEFIELD name, or the
- *  «column» operands of an IF. */
+/**
+ * The columns one field instruction asks for.
+ *
+ * The engine owns the grammar (`fieldReferencedColumns`), so validation, the
+ * preview and the export all read the same instruction the same way. An IF's
+ * literal branches are not columns: `IF «Status» = "vip" "Xin chào «Khách VIP»" ""`
+ * needs `Status`, not `Khách VIP`.
+ */
 export function referencedColumnNames(instr: string): string[] {
-  const quoted = instr.match(/^\s*MERGEFIELD\s+"([^"]*)"/)?.[1]
-  const bare = instr.match(/^\s*MERGEFIELD\s+(\S+)/)?.[1]
-  const name = quoted ?? bare
-  if (name) return [name]
-  return [...instr.matchAll(/«([^»]+)»/g)].map((m) => m[1].trim()).filter(Boolean)
+  return fieldReferencedColumns(instr)
+}
+
+/** Instructions the merge model cannot evaluate — reported, never silently merged. */
+export function unmergeableEditorFields(editor: Editor): string[] {
+  return templateFieldInstructions(editor).filter((instr) => !isMergeableFieldInstruction(instr))
 }
 
 /**
@@ -98,6 +112,7 @@ export function validateMergeSession(
   source: MailMergeSource | null,
   fields: MergeFieldRef[],
   blocks: readonly Block[],
+  editor?: Editor | null,
 ): MailMergeValidationIssue[] {
   const issues: MailMergeValidationIssue[] = []
   if (!source) {
@@ -144,6 +159,16 @@ export function validateMergeSession(
       detail: passthrough.join(', '),
     })
   }
+  // an instruction the merge model cannot evaluate would stay in the output as a
+  // raw field; the export refuses such a recipient, so say so here too
+  const unmergeable = editor ? unmergeableEditorFields(editor) : []
+  if (unmergeable.length > 0) {
+    issues.push({
+      severity: 'error',
+      key: 'mailMergeUnsupportedField',
+      detail: unmergeable.join(', '),
+    })
+  }
   // empty values in a field the template uses are a warning, not a blocker:
   // an optional address line being blank is normal
   for (const field of fields) {
@@ -166,4 +191,23 @@ function selected(source: MailMergeSource): number {
 /** Field codes view helper for the validation panel (Word's { MERGEFIELD X }). */
 export function fieldCodePreview(instr: string): string {
   return fieldCodeText(instr)
+}
+
+/**
+ * Check a file-name pattern with the same grammar the engine expands.
+ *
+ * `{index}`, `{1index}` and `{ColumnName}` are the only tokens `buildOutputFileName`
+ * understands, so the dialog must not accept `{Name` or reject `{ Name }` that the
+ * engine would happily expand. An unknown token is reported by name: silently
+ * dropping it would produce a file name the user did not ask for.
+ */
+export function validateFileNamePattern(
+  pattern: string,
+  columns: readonly string[],
+): { valid: boolean; unknown: string[] } {
+  const known = new Set(columns)
+  const tokens = patternTokens(pattern)
+  if (tokens.length === 0) return { valid: false, unknown: [] }
+  const unknown = tokens.filter((token) => !isIndexToken(token) && !known.has(token))
+  return { valid: unknown.length === 0, unknown }
 }

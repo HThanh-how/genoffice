@@ -1,9 +1,10 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import { parseDocx, saveDocx } from '../src/index'
-import type { Block, GeneratedBlock } from '../src/types'
+import type { Block, GeneratedBlock, Run } from '../src/types'
 import {
   applyMergeValues,
+  applyMergeValuesToHeaderFooter,
   buildOutputFileName,
   collectMergeFields,
   evaluateConditionalField,
@@ -518,6 +519,64 @@ describe('passthrough field patching', () => {
     const patched = patchMergeFieldXml(xml, { Name: 'Huy' }, r)
     expect(patched).toBe(xml)
     expect(r.missing).toEqual(['City'])
+  })
+})
+
+describe('headers and footers', () => {
+  const run = (text: string, instr?: string, bold = false): Run => ({
+    text,
+    ...(instr ? { instrField: instr } : {}),
+    ...(bold ? { bold: true } : {}),
+  })
+
+  it('merges a header field and keeps the run formatting', () => {
+    const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
+    const hf = applyMergeValuesToHeaderFooter(
+      {
+        text: '«Name» — page',
+        paras: [{ runs: [run('«Name»', 'MERGEFIELD Name', true), run(' — page')] }],
+      },
+      { Name: 'Huy' },
+      report,
+    )
+    expect(hf.paras![0].runs[0].text).toBe('Huy')
+    expect(hf.paras![0].runs[0].instrField).toBeUndefined()
+    expect(hf.paras![0].runs[0].bold).toBe(true)
+    expect(hf.text).toBe('Huy — page')
+    expect(report.applied).toBe(1)
+  })
+
+  it('reports a header field the row has no column for instead of blanking it', () => {
+    const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
+    applyMergeValuesToHeaderFooter(
+      { text: '', paras: [{ runs: [run('«City»', 'MERGEFIELD City')] }] },
+      { Name: 'Huy' },
+      report,
+    )
+    expect(report.missing).toEqual(['City'])
+    expect(report.applied).toBe(0)
+  })
+
+  it('leaves a page-number field in the footer alone', () => {
+    const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
+    const hf = applyMergeValuesToHeaderFooter(
+      { text: 'Page 1', paras: [{ runs: [run('Page ', undefined), run('1', 'PAGE')] }] },
+      { Name: 'Huy' },
+      report,
+    )
+    expect(hf.paras![0].runs[1].instrField).toBe('PAGE')
+    expect(report.unsupported).toBe(0)
+    expect(report.applied).toBe(0)
+  })
+
+  it('counts an IF the merge model cannot evaluate as unsupported', () => {
+    const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
+    applyMergeValuesToHeaderFooter(
+      { text: '', paras: [{ runs: [run('x', 'IF «Status» = "vip"')] }] },
+      { Status: 'vip' },
+      report,
+    )
+    expect(report.unsupported).toBe(1)
   })
 })
 

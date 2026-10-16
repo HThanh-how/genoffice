@@ -24,21 +24,37 @@ import {
   type CancelToken,
 } from '../src/renderer/mail-merge/export'
 import { sourceFromRows } from '../src/renderer/mail-merge/data-source'
+import { resolveSafeFileName } from '../src/shared/mail-merge-names'
 import type { MailMergeExportOptions } from '../src/renderer/mail-merge/types'
 
 /** What the print bridge was asked to write, and what was on screen at that moment. */
-const pdfWrites: Array<{ path: string; values: MergeValues | null }> = []
+const pdfWrites: Array<{ path: string; values: MergeValues | null; overwrite?: string }> = []
+/**
+ * The print bridge's answer. Production returns a structured result — the writer
+ * may skip a destination or write it under a different name — so the stub can be
+ * swapped per test to exercise each outcome.
+ */
+let pdfBehaviour: (
+  path: string,
+  overwrite: string | undefined,
+) => { ok: boolean; path?: string; name?: string; skipped?: boolean; error?: string } = (path) => ({
+  ok: true,
+  path,
+  name: path.split('/').pop() ?? path,
+})
 
 vi.mock('../src/renderer/file-actions', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../src/renderer/file-actions')>()
   return {
     ...actual,
-    exportPdf: async (ctx: FileActionContext, outPath?: string) => {
+    exportPdf: async (ctx: FileActionContext, outPath?: string, overwrite?: string) => {
+      const path = outPath ?? ''
       pdfWrites.push({
-        path: outPath ?? '',
+        path,
         values: ctx.editor ? currentMailMergeValues(ctx.editor.state) : null,
+        overwrite,
       })
-      return true
+      return pdfBehaviour(path, overwrite)
     },
   }
 })
@@ -321,5 +337,197 @@ describe('pagination wait', () => {
     // the same state is still stale for a recipient whose values just went on screen
     expect(await waitForPagination(editor, 7, 600, true)).toBe(false)
     editor.destroy()
+  })
+})
+
+describe("the PDF writer's real outcome reaches the batch", () => {
+  /** A stub that mirrors the main process writer: same policy, same names. */
+  function writerBehaviour(files: string[], allocated: Set<string>) {
+    pdfBehaviour = (path: string, overwrite: string | undefined) => {
+      const name = path.split('/').pop() ?? path
+      const decision = resolveSafeFileName(
+        name,
+        overwrite === 'skip' || overwrite === 'rename' || overwrite === 'overwrite'
+          ? overwrite
+          : 'overwrite',
+        (candidate) => files.includes(candidate),
+        allocated,
+      )
+      if (!decision.name) return { ok: false, error: 'invalid file name' }
+      if (decision.skipped)
+        return { ok: false, skipped: true, path: `/out/${decision.name}`, name: decision.name }
+      files.push(decision.name)
+      allocated.add(decision.name)
+      return { ok: true, path: `/out/${decision.name}`, name: decision.name }
+    }
+  }
+
+  async function runPdfBatch(overwrite: MailMergeExportOptions['overwrite'], names: string[]) {
+    pdfWrites.length = 0
+    const files: string[] = []
+    const allocated = new Set<string>()
+    writerBehaviour(files, allocated)
+    const { parsed, editor } = await templateWith(
+      '<w:p><w:r><w:t xml:space="preserve">Dear </w:t></w:r>' +
+        field('MERGEFIELD Name', null) +
+        '</w:p>',
+    )
+    stubDesktop([])
+    const stop = fakeLayout(1, 1)
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sourceFromRows([['Name'], ...names.map((n) => [n])], {
+        kind: 'csv',
+        label: 'list.csv',
+        hasHeader: true,
+      }),
+      {
+        format: 'pdf',
+        scope: 'all',
+        outputDir: '/out',
+        pattern: '{Name}',
+        overwrite,
+        combined: false,
+      },
+      noCancel,
+      () => {},
+    )
+    stop()
+    editor.destroy()
+    return { progress, files }
+  }
+
+  it('counts a skipped destination as skipped, not as a produced file', async () => {
+    const { progress, files } = await runPdfBatch('skip', ['Huy', 'An'])
+    expect(progress.succeeded).toBe(2)
+    expect(progress.skipped).toBe(0)
+    expect(files).toEqual(['Huy.pdf', 'An.pdf'])
+  })
+
+  it('reports a writer skip as skipped and never as succeeded', async () => {
+    pdfWrites.length = 0
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    stubDesktop([])
+    const stop = fakeLayout(1, 1)
+    pdfBehaviour = (path) => ({
+      ok: false,
+      skipped: true,
+      path,
+      name: path.split('/').pop() ?? path,
+    })
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sourceFromRows([['Name'], ['Huy'], ['An']], { kind: 'csv', label: 'l.csv', hasHeader: true }),
+      {
+        format: 'pdf',
+        scope: 'all',
+        outputDir: '/out',
+        pattern: '{Name}',
+        overwrite: 'skip',
+        combined: false,
+      },
+      noCancel,
+      () => {},
+    )
+    stop()
+    editor.destroy()
+    expect(progress.succeeded).toBe(0)
+    expect(progress.skipped).toBe(2)
+    expect(progress.failed).toBe(0)
+    expect(progress.status).toBe('completed_with_errors')
+  })
+
+  it('records the name the writer actually used when it renames', async () => {
+    pdfWrites.length = 0
+    const files: string[] = []
+    const allocated = new Set<string>()
+    writerBehaviour(files, allocated)
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    stubDesktop([])
+    const stop = fakeLayout(1, 1)
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sourceFromRows([['Name'], ['Huy'], ['Huy']], {
+        kind: 'csv',
+        label: 'l.csv',
+        hasHeader: true,
+      }),
+      {
+        format: 'pdf',
+        scope: 'all',
+        outputDir: '/out',
+        pattern: '{Name}',
+        overwrite: 'overwrite',
+        combined: false,
+      },
+      noCancel,
+      () => {},
+    )
+    stop()
+    editor.destroy()
+    expect(progress.succeeded).toBe(2)
+    expect(progress.failed).toBe(0)
+    expect(files).toEqual(['Huy.pdf', 'Huy (2).pdf'])
+    expect(new Set(files).size).toBe(2)
+  })
+
+  it("reports the writer's error rather than a generic failure", async () => {
+    pdfWrites.length = 0
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    stubDesktop([])
+    const stop = fakeLayout(1, 1)
+    pdfBehaviour = () => ({ ok: false, error: 'Chromium refused the print job' })
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sourceFromRows([['Name'], ['Huy']], { kind: 'csv', label: 'l.csv', hasHeader: true }),
+      {
+        format: 'pdf',
+        scope: 'all',
+        outputDir: '/out',
+        pattern: '{Name}',
+        overwrite: 'overwrite',
+        combined: false,
+      },
+      noCancel,
+      () => {},
+    )
+    stop()
+    editor.destroy()
+    expect(progress.succeeded).toBe(0)
+    expect(progress.failed).toBe(1)
+    expect(progress.errors[0].message).toBe('Chromium refused the print job')
+  })
+
+  it('passes the batch overwrite policy through to the print bridge', async () => {
+    pdfWrites.length = 0
+    pdfBehaviour = (path) => ({ ok: true, path, name: path.split('/').pop() ?? path })
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    stubDesktop([])
+    const stop = fakeLayout(1, 1)
+    await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sourceFromRows([['Name'], ['Huy']], { kind: 'csv', label: 'l.csv', hasHeader: true }),
+      {
+        format: 'pdf',
+        scope: 'all',
+        outputDir: '/out',
+        pattern: '{Name}',
+        overwrite: 'rename',
+        combined: false,
+      },
+      noCancel,
+      () => {},
+    )
+    stop()
+    editor.destroy()
+    expect(pdfWrites[0].overwrite).toBe('rename')
   })
 })

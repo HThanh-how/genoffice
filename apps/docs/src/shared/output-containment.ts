@@ -7,9 +7,12 @@
  * normalized by a POSIX separator comparison. Both sides are resolved with the
  * platform's own path rules first, then compared as absolute paths.
  *
- * `fs` and `realpath` are injected so the POSIX and Windows semantics can be
- * exercised without claiming to run on those platforms, and so a symlink that
- * points out of the authorized directory is caught rather than trusted.
+ * `exists` and `realpath` are injected so the POSIX and Windows semantics can be
+ * exercised without claiming to run on those platforms. The authorized directory
+ * itself is canonicalized as well: a user who picks a symlinked folder is still
+ * picking a real folder, and the grant must follow that real folder rather than
+ * reject it. Symlinks *inside* the grant are still refused, because writing
+ * through them lands somewhere the user never authorized.
  */
 import { posix, win32 } from 'node:path'
 
@@ -17,17 +20,26 @@ export interface PathRules {
   resolve: (path: string) => string
   dirname: (path: string) => string
   sep: string
+  /** Windows filesystems match names case-insensitively; POSIX ones do not. */
+  caseInsensitive: boolean
 }
 
 export const posixRules: PathRules = {
   resolve: posix.resolve,
   dirname: posix.dirname,
   sep: posix.sep,
+  caseInsensitive: false,
 }
 export const windowsRules: PathRules = {
   resolve: win32.resolve,
   dirname: win32.dirname,
   sep: win32.sep,
+  caseInsensitive: true,
+}
+
+/** Names on a case-insensitive filesystem are the same name whatever their case. */
+function fold(path: string, rules: PathRules): string {
+  return rules.caseInsensitive ? path.toLowerCase() : path
 }
 
 /** `filePath` resolves to something strictly inside `dir`, after normalization. */
@@ -35,17 +47,20 @@ export function isInsideDirectory(dir: string, filePath: string, rules: PathRule
   if (!dir || !filePath) return false
   const root = rules.resolve(dir)
   const target = rules.resolve(filePath)
-  if (target === root) return false
+  if (fold(target, rules) === fold(root, rules)) return false
   const prefix = root.endsWith(rules.sep) ? root : root + rules.sep
-  return target.startsWith(prefix)
+  return fold(target, rules).startsWith(fold(prefix, rules))
 }
 
 /**
  * The real path a write may use, or null when it would escape `dir`.
  *
- * A symlink inside the directory is resolved too: `out/link -> /elsewhere` is
- * not inside `out`, so writing through it is refused. `exists` and `realpath`
- * are the filesystem's own answers, not the renderer's claim.
+ * The grant is canonicalized first, so a chosen symlink directory works: the
+ * user picked `/out` which is really `/real/out`, and `/real/out/x.pdf` is
+ * exactly what they authorized. A symlink *under* the grant is resolved too:
+ * `out/link -> /elsewhere` is not inside the grant, so writing through it is
+ * refused. `exists` and `realpath` are the filesystem's own answers, not the
+ * renderer's claim.
  */
 export function containedTarget(
   dir: string,
@@ -56,7 +71,10 @@ export function containedTarget(
 ): string | null {
   if (typeof dir !== 'string' || typeof filePath !== 'string') return null
   if (!isInsideDirectory(dir, filePath, rules)) return null
-  const root = rules.resolve(dir)
+  const logicalRoot = rules.resolve(dir)
+  // the authorized directory may itself be a symlink; the grant follows the real
+  // directory the user pointed at, and every target is compared against it
+  const root = exists(logicalRoot) ? realpath(logicalRoot) : logicalRoot
   let existing = rules.resolve(filePath)
   const tail: string[] = []
   while (!exists(existing)) {

@@ -108,6 +108,7 @@ const zh = {
   mailMergeFieldNotInserted: '无法插入合并域：列名 "{name}" 含有双引号',
   mailMergeUnusedColumns: '未使用的数据列',
   mailMergePassthroughFields: '模板中无法编辑的合并域',
+  mailMergeUnsupportedField: '无法合并的域',
   mailMergeEmptyValues: '空值',
 }
 
@@ -219,6 +220,7 @@ const en = {
     'Cannot insert a merge field: the column name "{name}" contains a double quote',
   mailMergeUnusedColumns: 'Unused data columns',
   mailMergePassthroughFields: 'Merge fields the editor cannot model',
+  mailMergeUnsupportedField: 'Field the merge cannot read',
   mailMergeEmptyValues: 'Empty values',
 }
 
@@ -329,6 +331,7 @@ const vi = {
   mailMergeFieldNotInserted: 'Không thể chèn trường trộn: tên cột "{name}" chứa dấu ngoặc kép',
   mailMergeUnusedColumns: 'Cột dữ liệu không dùng',
   mailMergePassthroughFields: 'Trường trộn không chỉnh sửa được',
+  mailMergeUnsupportedField: 'Trường trộn không đọc được',
   mailMergeEmptyValues: 'Giá trị trống',
 }
 

@@ -107,9 +107,26 @@ export type PendingPdfExport = {
   outPath?: string
   /** overwrite policy for a mail-merge batch target, forwarded to the writer */
   overwrite?: string
-  resolve: (ok: boolean) => void
+  resolve: (result: PdfExportResult) => void
   /** the export opened the preview itself and closes it once the PDF is written */
   closePreview: boolean
+}
+
+/**
+ * What a PDF export actually did.
+ *
+ * `ok` alone is not enough for a batch: the writer may have skipped the file
+ * because it already existed, or written it under a different name after a
+ * collision. Mail Merge needs the real outcome and the real name, while ordinary
+ * exports only ever look at `ok`.
+ */
+export interface PdfExportResult {
+  ok: boolean
+  path?: string
+  name?: string
+  /** the writer refused to touch a file that was already there */
+  skipped?: boolean
+  error?: string
 }
 
 /** The App state the file actions need; built fresh per call. */
@@ -1350,7 +1367,7 @@ async function printGroupsMerged(
   outPath: string | undefined,
   links: PdfInternalLink[],
   overwrite?: string,
-): Promise<boolean> {
+): Promise<PdfExportResult> {
   const parts: string[] = []
   // every printToPDF flips the whole document between print and screen media;
   // pv-exporting parks the covered editor's subtree layout for the export's
@@ -1379,13 +1396,19 @@ async function printGroupsMerged(
         continue
       }
       ctx.setStatus(t('appExportPdfFailed', { error: part.error ?? t('appPrintGroupFailed') }))
-      return false
+      return { ok: false, error: part.error ?? t('appPrintGroupFailed') }
     }
   } finally {
     appRoot?.classList.remove('pv-exporting')
     pvPages.forEach((page) => page.classList.remove('pv-print-skip', 'pv-print-tail'))
   }
   const result = await window.desktop.saveMergedPdf(fileName, parts, outPath, links, overwrite)
+  if (result.skipped) {
+    // the writer honoured the batch's skip policy: nothing was written, and the
+    // caller must not count this as a produced file
+    ctx.setStatus(t('mailMergeSkipped', { n: 1 }))
+    return { ok: false, skipped: true, path: result.path, name: result.name, error: result.error }
+  }
   const mixed = groups.some((g) => g.w !== groups[0].w || g.h !== groups[0].h)
   ctx.setStatus(
     result.ok
@@ -1396,7 +1419,7 @@ async function printGroupsMerged(
         ? t('appExportPdfFailed', { error: result.error })
         : t('appExportPdfCanceled'),
   )
-  return result.ok
+  return { ok: result.ok, path: result.path, name: result.name, error: result.error }
 }
 
 /** Park the export until the preview mounts; the App effect re-runs it and settles the promise. */
@@ -1404,8 +1427,8 @@ function deferExportToPreview(
   ctx: FileActionContext,
   outPath?: string,
   overwrite?: string,
-): Promise<boolean> {
-  return new Promise<boolean>((resolve) => {
+): Promise<PdfExportResult> {
+  return new Promise<PdfExportResult>((resolve) => {
     const closePreview = !document.querySelector('.pagination-preview')
     ctx.pendingMixedExportRef.current = { outPath, overwrite, resolve, closePreview }
     ctx.setShowPagePreview(true)
@@ -1421,18 +1444,18 @@ function deferExportToPreview(
 // in the meantime, and the resume call claims (clears) it before re-entering.
 let printJobActive = false
 
-/** Resolves true only when a PDF was written to disk. */
+/** Resolves with what the export actually did; `ok` is true only when a PDF was written to disk. */
 export async function exportPdf(
   ctx: FileActionContext,
   outPath?: string,
   overwrite?: string,
-): Promise<boolean> {
+): Promise<PdfExportResult> {
   const { doc } = ctx
-  if (!doc) return false
+  if (!doc) return { ok: false, error: 'the document is not open' }
   await waitForFullContent()
   if (printJobActive || ctx.pendingMixedExportRef.current) {
     ctx.setStatus(t('appExportingPdf'))
-    return false
+    return { ok: false, error: 'another export is already running' }
   }
   printJobActive = true
   try {
@@ -1486,11 +1509,16 @@ export async function exportPdf(
         )
         if (result.ok) {
           ctx.setStatus(t('appExportedPdf', { path: result.path ?? '' }))
-          return true
+          return { ok: true, path: result.path, name: result.name }
+        }
+        if (result.skipped) {
+          // the batch's skip policy refused this destination: no file was written
+          ctx.setStatus(t('mailMergeSkipped', { n: 1 }))
+          return { ok: false, skipped: true, path: result.path, name: result.name }
         }
         if (!result.error) {
           ctx.setStatus(t('appExportPdfCanceled'))
-          return false
+          return { ok: false }
         }
         // whole-document print job failed: retry the same pages in smaller jobs
         // and merge (the failed attempt already authorized result.path)
@@ -1509,8 +1537,9 @@ export async function exportPdf(
           )
         }
         ctx.setStatus(t('appExportPdfFailed', { error: result.error }))
-        return false
+        return { ok: false, error: result.error }
       }
+      return { ok: false, error: 'the pagination preview produced no pages' }
     }
     // Preview closed: open it and export its per-page sheets. Printing the
     // edit canvas directly hands Chromium one padded box to auto-paginate, so
@@ -1564,7 +1593,8 @@ export async function exportImages(ctx: FileActionContext): Promise<boolean> {
       if (!pdfDone.some((re) => re.test(s))) ctx.setStatus(s)
     },
   }
-  if (!(await exportPdf(staged, target.pdfPath))) {
+  const printed = await exportPdf(staged, target.pdfPath)
+  if (!printed.ok) {
     void window.desktop.takeExportPdf(target.pdfPath)
     return false
   }

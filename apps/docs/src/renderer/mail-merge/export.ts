@@ -244,10 +244,23 @@ export async function runMailMergeExport(
   // whatever the user had on screen before the batch starts is restored at the
   // end of every recipient, so the editor never ends up showing a stranger's row
   const priorPreview = currentMailMergeValues(ctx.editor.state)
+  // the batch belongs to one document. If the tab opens another document (or
+  // closes this one) halfway through, continuing would write the new document's
+  // content under the old batch's names
+  const jobEditor = ctx.editor
+  const jobDoc = ctx.doc
 
   for (let i = 0; i < recipients.length; i++) {
     if (cancel.cancelled) {
       progress.cancelled = true
+      break
+    }
+    if (ctx.editor !== jobEditor || ctx.doc !== jobDoc) {
+      progress.cancelled = true
+      progress.errors.push({
+        recipient: 'export',
+        message: 'the document changed while the batch was running',
+      })
       break
     }
     const recipient = recipients[i]
@@ -307,6 +320,12 @@ export async function runMailMergeExport(
       if (options.format === 'docx') {
         const report: MergeReport = { missing: [], unused: [], unsupported: 0, applied: 0 }
         const bytes = await buildDocBytes(ctx, { values: recipient.values, report })
+        if (cancel.cancelled) {
+          // the document was serialized but never written: a cancel that lands
+          // mid-serialization must not put a half-batch on disk
+          progress.cancelled = true
+          break
+        }
         if (!bytes) {
           progress.failed += 1
           progress.errors.push({ recipient: name, message: 'the document could not be serialized' })
@@ -352,14 +371,28 @@ export async function runMailMergeExport(
               recipient: name,
               message: 'the page layout did not settle for this recipient',
             })
+          } else if (cancel.cancelled) {
+            // the batch stopped while this page layout was being measured: the
+            // print never started, so nothing was written
+            progress.cancelled = true
+            break
           } else {
-            const ok = await exportPdf(ctx, `${options.outputDir}/${name}`, options.overwrite)
-            if (ok) {
+            // the writer's real outcome, not just "the print did not throw": a
+            // skipped destination is not a produced file, and a renamed one is
+            // not the name the renderer asked for
+            const result = await exportPdf(ctx, `${options.outputDir}/${name}`, options.overwrite)
+            if (result.ok) {
               progress.succeeded += 1
-              allocated.add(name)
+              allocated.add(writtenName(result, name))
+            } else if (result.skipped) {
+              progress.skipped += 1
+              allocated.add(writtenName(result, name))
             } else {
               progress.failed += 1
-              progress.errors.push({ recipient: name, message: 'PDF export failed' })
+              progress.errors.push({
+                recipient: name,
+                message: result.error ?? 'PDF export failed',
+              })
             }
           }
         } finally {
