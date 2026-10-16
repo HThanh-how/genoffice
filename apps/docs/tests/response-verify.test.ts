@@ -3,6 +3,7 @@ import { Editor } from '@tiptap/core'
 import { AgentLoop, type AgentStreamCallbacks, type AgentTransport } from '@genoffice/agent-core'
 import { editorExtensions } from '../src/renderer/editor/extensions'
 import { createDocsSkill } from '../src/renderer/ai/docs-skill'
+import type { AiDocExtras } from '../src/renderer/ai/tools'
 import {
   claimsDocModification,
   verifyDocsResponse,
@@ -114,6 +115,13 @@ describe('claimsDocModification', () => {
       ),
     ).toBe(false)
     expect(claimsDocModification('文档共有4个标题和12个段落。')).toBe(false)
+    expect(claimsDocModification('To create a new document, choose File > New.')).toBe(false)
+    expect(claimsDocModification('You can create a new document from the File menu.')).toBe(false)
+    expect(claimsDocModification('When you create a new document, choose a template.')).toBe(false)
+    expect(claimsDocModification('To generate a new file, open the export dialog.')).toBe(false)
+    expect(claimsDocModification('Do you want me to create a new document?')).toBe(false)
+    expect(claimsDocModification('I can create a new document if you want.')).toBe(false)
+    expect(claimsDocModification('Để tạo tài liệu mới, hãy chọn File > New.')).toBe(false)
   })
 })
 
@@ -309,6 +317,104 @@ describe('verifyDocsResponse unit tests', () => {
       ])
       expect(resComment).toBe(DOCS_CLAIM_CORRECTION)
     }
+  })
+
+  it('accepts instructional, hypothetical, and explanatory creation responses without tools', () => {
+    const instructional = [
+      'To create a new document, choose File > New.',
+      'You can create a new document from the File menu.',
+      'When you create a new document, choose a template.',
+      'To generate a new file, open the export dialog.',
+      'Do you want me to create a new document?',
+      'I can create a new document if you want.',
+      'Để tạo tài liệu mới, hãy chọn File > New.',
+    ]
+    for (const statement of instructional) {
+      expect(verifyDocsResponse(statement, [])).toBeNull()
+    }
+  })
+
+  it('verifies completed style-definition claims against define_style execution', () => {
+    const styleClaims = [
+      'I defined a new style definition for headings.',
+      'I have defined the CustomHeading style.',
+      'Style definition for CustomHeading has been updated.',
+      'Tôi đã định nghĩa kiểu định dạng Heading 1.',
+      'Đã tạo kiểu định dạng mới cho tiêu đề.',
+      'I defined a Heading 1 style for paragraphs.',
+    ]
+    for (const claim of styleClaims) {
+      // Success => accepted
+      expect(
+        verifyDocsResponse(claim, [{ name: 'define_style', ok: true, mutated: false }]),
+      ).toBeNull()
+
+      // Failure => rejected
+      expect(verifyDocsResponse(claim, [{ name: 'define_style', ok: false, mutated: false }])).toBe(
+        DOCS_CLAIM_CORRECTION,
+      )
+
+      // No tools => rejected
+      expect(verifyDocsResponse(claim, [])).toBe(DOCS_CLAIM_CORRECTION)
+
+      // Unrelated tool => rejected
+      expect(verifyDocsResponse(claim, [{ name: 'set_watermark', ok: true, mutated: false }])).toBe(
+        DOCS_CLAIM_CORRECTION,
+      )
+      expect(verifyDocsResponse(claim, [{ name: 'apply_ops', ok: true, mutated: true }])).toBe(
+        DOCS_CLAIM_CORRECTION,
+      )
+    }
+  })
+
+  it('distinguishes pure style definitions from content formatting and combined claims', () => {
+    // Formatting existing headings requires content mutation
+    expect(
+      verifyDocsResponse('I formatted the headings.', [
+        { name: 'define_style', ok: true, mutated: false },
+      ]),
+    ).toBe(DOCS_CLAIM_CORRECTION)
+
+    expect(
+      verifyDocsResponse('I formatted the headings.', [
+        { name: 'apply_ops', ok: true, mutated: true },
+      ]),
+    ).toBeNull()
+
+    expect(
+      verifyDocsResponse('I formatted the headings.', [
+        { name: 'apply_ops', ok: true, mutated: false },
+      ]),
+    ).toBe(DOCS_CLAIM_CORRECTION)
+
+    // Combined claim requires BOTH define_style AND content mutation
+    const combined = 'I defined a style and formatted paragraphs.'
+    expect(verifyDocsResponse(combined, [{ name: 'define_style', ok: true, mutated: false }])).toBe(
+      DOCS_CLAIM_CORRECTION,
+    )
+
+    expect(verifyDocsResponse(combined, [{ name: 'apply_ops', ok: true, mutated: true }])).toBe(
+      DOCS_CLAIM_CORRECTION,
+    )
+
+    expect(
+      verifyDocsResponse(combined, [
+        { name: 'define_style', ok: true, mutated: false },
+        { name: 'apply_ops', ok: true, mutated: true },
+      ]),
+    ).toBeNull()
+
+    // Informational style explanation does not require tools
+    expect(verifyDocsResponse('To define a new style, open the Styles panel.', [])).toBeNull()
+
+    expect(verifyDocsResponse('I can define a new style for your headings.', [])).toBeNull()
+
+    // Explicit failure report does not claim completed modification
+    expect(
+      verifyDocsResponse('I could not define the new style.', [
+        { name: 'define_style', ok: false, mutated: false },
+      ]),
+    ).toBeNull()
   })
 
   it('rejects false current document formatting claim when only create_document succeeded', () => {
@@ -1067,5 +1173,140 @@ describe('AgentLoop + Docs skill completion claim guard integration', () => {
     expect(finalAnswer).toContain('could not be completed')
     expect(finalAnswer).toContain('apply_ops')
     expect(onTextLast).toBe(finalAnswer)
+  })
+
+  it('allows instructional response on how to create a document without triggering claim guard', async () => {
+    const editor = createEditor([para('Nội dung')])
+    const transport = scriptedTransport([
+      (cb) => {
+        cb.onDelta('To create a new document, choose File > New from the menu.')
+        cb.onDone()
+      },
+    ])
+
+    let finalAnswer = ''
+    const loop = new AgentLoop({
+      transport,
+      skill: createDocsSkill(
+        () => editor,
+        () => NUM_IDS,
+      ),
+      events: { onDone: (r) => (finalAnswer = r.text) },
+    })
+
+    loop.run('How do I create a new document?')
+    for (let i = 0; i < 4; i++) await flush()
+
+    expect(transport.requests.length).toBe(1)
+    expect(finalAnswer).toBe('To create a new document, choose File > New from the menu.')
+  })
+
+  it('allows truthful define_style completion without extra corrective turns', async () => {
+    const editor = createEditor([para('Nội dung')])
+    const mockExtras: AiDocExtras = {
+      styles: {
+        list: () => [],
+        upsert: () => null,
+      },
+    }
+
+    const transport = scriptedTransport([
+      // Turn 1: define_style tool call
+      (cb) => {
+        cb.onToolCall({
+          id: 'call_style',
+          name: 'define_style',
+          input: {
+            styleId: 'CustomHeading',
+            type: 'paragraph',
+            paragraph: { align: 'center' },
+          },
+        })
+        cb.onDone()
+      },
+      // Turn 2: Model reports style defined
+      (cb) => {
+        cb.onDelta('I defined a new style definition for headings.')
+        cb.onDone()
+      },
+    ])
+
+    let finalAnswer = ''
+    const loop = new AgentLoop({
+      transport,
+      skill: createDocsSkill(
+        () => editor,
+        () => NUM_IDS,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => mockExtras,
+      ),
+      events: { onDone: (r) => (finalAnswer = r.text) },
+    })
+
+    loop.run('Define a new style')
+    for (let i = 0; i < 6; i++) await flush()
+
+    expect(transport.requests.length).toBe(2)
+    expect(finalAnswer).toBe('I defined a new style definition for headings.')
+  })
+
+  it('rejects false paragraph formatting claim when only define_style succeeded', async () => {
+    const editor = createEditor([para('Nội dung')])
+    const mockExtras: AiDocExtras = {
+      styles: {
+        list: () => [],
+        upsert: () => null,
+      },
+    }
+
+    const transport = scriptedTransport([
+      // Turn 1: define_style tool call
+      (cb) => {
+        cb.onToolCall({
+          id: 'call_style',
+          name: 'define_style',
+          input: { styleId: 'CustomHeading', type: 'paragraph' },
+        })
+        cb.onDone()
+      },
+      // Turn 2: Model falsely claims heading paragraphs were reformatted
+      (cb) => {
+        cb.onDelta('I formatted the headings.')
+        cb.onDone()
+      },
+      // Turn 3: Model receives [System check] and repeats claim
+      (cb) => {
+        cb.onDelta('I formatted the headings.')
+        cb.onDone()
+      },
+    ])
+
+    let finalAnswer = ''
+    const loop = new AgentLoop({
+      transport,
+      skill: createDocsSkill(
+        () => editor,
+        () => NUM_IDS,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        () => mockExtras,
+      ),
+      events: { onDone: (r) => (finalAnswer = r.text) },
+    })
+
+    loop.run('Define style and format headings')
+    for (let i = 0; i < 8; i++) await flush()
+
+    expect(transport.requests.length).toBe(3)
+    expect(finalAnswer).not.toBe('I formatted the headings.')
   })
 })

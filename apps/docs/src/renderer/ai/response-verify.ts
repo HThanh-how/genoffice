@@ -112,7 +112,7 @@ const ZH_MODIFICATION_CLAIM =
   /(?:已[^。．.!！?？，,;；:：\n]{0,8}?(?:修改|更新|删除|替換|替换|应用|格式化|完成|调整|調整|插入|设置|設置|排版|创建|建立)(?!的)|(?:文档|文本|段落|格式|水印|页边距|页面设置)\s*已(?:成功)?(?:更新|修改|调整|调整完成|排版完成|格式化|创建|添加|设置))/u
 
 const NEW_DOC_CLAIM_RE =
-  /(?:\b(?:I(?:'ve| have)? )?(?:created?|generated?|built)\s+(?:a\s+)?(?:new\s+)?(?:document|file)\b|\bnew\s+(?:document|file)\s+(?:has\s+been|was)\s+created\b|(?:tôi|mình|chúng tôi)?\s*(?:đã|vừa)\s+tạo\s+(?:một\s+)?(?:tài liệu|văn bản|file|tệp)(?:\s+mới)?|tài liệu mới đã được tạo|(?:已|成功)?(?:创建|建立)(?:了)?(?:新文档|新文件)|新文档已创建)/iu
+  /(?:\b(?:I(?:'ve| have)?\s+(?:already\s+|just\s+|successfully\s+)?(?:created|generated|built)|(?:^|[.!?]\s*)(?:Created|Generated|Built))\s+(?:a\s+)?(?:new\s+)?(?:document|file)\b|\b(?:(?:the|this|a|an)\s+)?new\s+(?:document|file)\s+(?:has\s+been|was|is\s+now)\s+(?:created|generated|built)\b|\b(?:the|this)\s+(?:document|file)\s+(?:has\s+been|was)\s+(?:created|generated|built)\b|(?:(?:tôi|mình|chúng tôi)\s+)?(?:đã|vừa)\s+tạo\s+(?:một\s+)?(?:tài liệu|văn bản|file|tệp)(?:\s+mới)?|(?:tài liệu|văn bản|tệp|file)\s+mới\s+đã\s+(?:được\s+tạo|tạo\s+xong)|(?:已|成功)(?:创建|建立)(?:了)?(?:新文档|新文件)|新文档已(?:成功)?(?:创建|建立))/iu
 
 const PAGE_SETUP_CLAIM_RE =
   /(?:\b(?:page\s+setup|paper\s+size|page\s+orientation|margins?)\b|căn\s+lề\s+trang|lề\s+trang|khổ\s+giấy|hướng\s+giấy|thiết\s+lập\s+trang|页边距|页面设置|纸张大小|纸张方向)/iu
@@ -123,7 +123,7 @@ const HEADER_FOOTER_CLAIM_RE =
   /(?:\b(?:headers?|footers?|header\/footer)\b|đầu\s+trang|chân\s+trang|tiêu\s+đề\s+trang|页眉|页脚)/iu
 
 const STYLE_DEF_CLAIM_RE =
-  /(?:\b(?:style\s+definitions?|defined\s+(?:a\s+)?style|styles?\s+defined|styles?\s+definition)\b|định\s+nghĩa\s+kiểu|kiểu\s+định\s+dạng|样式定义|定义样式)/iu
+  /(?:\b(?:I(?:'ve| have)?\s+(?:already\s+|just\s+|successfully\s+)?(?:defined|created|updated|configured|added)|(?:^|[.!?]\s*)(?:Defined|Created|Updated|Configured|Added))\s+(?:a\s+|the\s+)?(?:new\s+)?(?:[\p{L}\p{N}_-]+\s+){0,3}(?:style\s+definition|styles?\s+definition|style)\b|\bstyle\s+definitions?(?:\s+for\s+[\p{L}\p{N}_-]+)?\s+(?:has\s+been|was|is\s+now)\s+(?:updated|defined|created|added|configured)\b|\b(?:the\s+)?(?:[\p{L}\p{N}_-]+\s+){0,2}styles?\s+(?:has\s+been|was|is\s+now)\s+(?:defined|created|updated|configured)\b|(?:(?:tôi|mình|chúng tôi)\s+)?(?:đã|vừa)\s+định\s+nghĩa\s+kiểu(?:\s+định\s+dạng)?|(?:(?:tôi|mình|chúng tôi)\s+)?(?:đã|vừa)\s+tạo\s+kiểu(?:\s+định\s+dạng)?(?:\s+mới)?|kiểu(?:\s+định\s+dạng)?\s+(?:mới\s+)?đã\s+(?:được\s+tạo|được\s+định\s+nghĩa|được\s+cập\s+nhật|thiết\s+lập\s+xong)|(?:已|成功)?(?:定义|创建|设置)(?:了)?(?:新样式|样式)|(?:新)?样式已(?:成功)?(?:定义|更新|创建|设置))/iu
 
 const COMMENT_CLAIM_RE = /(?:\bcomments?\b|bình\s+luận|nhận\s+xét|批注|评论)/iu
 
@@ -133,8 +133,11 @@ const CONTENT_SPECIFIC_RE =
 const GENERIC_FORMATTING_RE =
   /(?:\b(?:formatted|styled|reformatted)\b|định\s+dạng(?:\s+lại)?|排版)/iu
 
+const CONTENT_ACTION_IN_STYLE_RE =
+  /\b(?:formatted|reformatted|edited|applied(?:\s+it)?(?:\s+to)?|styled|inserted|deleted|replaced|modified|changed)\s+(?:the\s+|all\s+|existing\s+|requested\s+)?(?:[\p{L}\p{N}_-]+\s+){0,2}(?:paragraphs?|headings?|blocks?|text|content|document)\b|(?<!kiểu\s+)định\s+dạng(?:\s+lại)?(?!\s+kiểu)|áp\s+dụng(?:\s+kiểu)?\s+(?:cho|vào)|chỉnh\s+sửa\s+(?:nội\s+dung|đoạn|văn\s+bản|tiêu\s+đề)|thay\s+đổi\s+nội\s+dung|排版|应用到/iu
+
 const FAILURE_INDICATOR_RE =
-  /(?:\b(?:failed|fails?|could not|cannot|unable to|error|exception|unsuccessful|not applied|no changes)\b|thất bại|không thể|gặp lỗi|lỗi|chưa thể|không thành công|không áp dụng|chưa có thay đổi|失败|无法|不能|未能|未应用|未做修改)/i
+  /(?:\b(?:failed|fails?|could not|cannot|unable to|error|exception|unsuccessful|not applied|no changes|not\s+(?:created|applied|updated|modified|edited|defined|generated)|was\s+not|were\s+not|has\s+not\s+been|did\s+not)\b|thất bại|không thể|gặp lỗi|lỗi|chưa thể|chưa\s+(?:tạo|áp dụng|thực hiện|được|thể|định nghĩa)|không thành công|không áp dụng|chưa có thay đổi|失败|无法|不能|未能|未应用|未做修改)/i
 
 export const DOCS_CLAIM_CORRECTION =
   '[System check] Your reply claims that document editing, formatting, or styling was completed, ' +
@@ -145,6 +148,7 @@ export const DOCS_CLAIM_CORRECTION =
 export function claimsDocModification(text: string): boolean {
   return (
     NEW_DOC_CLAIM_RE.test(text) ||
+    STYLE_DEF_CLAIM_RE.test(text) ||
     EN_MODIFICATION_CLAIM.test(text) ||
     VI_MODIFICATION_CLAIM.test(text) ||
     ZH_MODIFICATION_CLAIM.test(text)
@@ -191,7 +195,13 @@ export function getClaimedSpecificEffects(text: string): Set<DocsEffectCategory>
     const hasOtherTarget =
       hasNewDoc || hasPageSetup || hasWatermark || hasHeaderFooter || hasStyleDef || hasComment
 
-    if (hasContentSpecific || (hasGenericFormatting && !hasOtherTarget)) {
+    if (hasStyleDef) {
+      // When defining/creating a style (e.g. "defined a style for headings"),
+      // mentioning headings/paragraphs is the style target unless explicit content action was stated
+      if (CONTENT_ACTION_IN_STYLE_RE.test(clause)) {
+        claimed.add('content')
+      }
+    } else if (hasContentSpecific || (hasGenericFormatting && !hasOtherTarget)) {
       claimed.add('content')
     }
   }
