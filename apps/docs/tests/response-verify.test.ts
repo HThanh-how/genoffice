@@ -1830,13 +1830,13 @@ describe('Defect L: Disambiguate comment locations, document topics, and quotati
   })
 
   describe('Regression R1: apostrophes in contractions preserved and distinguished from quotes', () => {
-    it('R1-01: recognizes completion claim with contractions: I\'ve and it\'s', () => {
+    it("R1-01: recognizes completion claim with contractions: I've and it's", () => {
       const claim = "I've updated the page margins, and it's done."
       expect(claimsDocModification(claim)).toBe(true)
       expect(verifyDocsResponse(claim, [])).toBe(DOCS_CLAIM_CORRECTION)
     })
 
-    it('R1-02: recognizes watermark claim with contractions: I\'ve and it\'s', () => {
+    it("R1-02: recognizes watermark claim with contractions: I've and it's", () => {
       const claim = "I've added a watermark; it's visible."
       expect(claimsDocModification(claim)).toBe(true)
       expect(getClaimedSpecificEffects(claim).has('watermark')).toBe(true)
@@ -1846,7 +1846,7 @@ describe('Defect L: Disambiguate comment locations, document topics, and quotati
       ).toContain('watermark')
     })
 
-    it('R1-03: recognizes headings formatting claim with haven\'t', () => {
+    it("R1-03: recognizes headings formatting claim with haven't", () => {
       const claim = "I've formatted the headings, and I haven't changed the footer."
       expect(claimsDocModification(claim)).toBe(true)
       expect(getClaimedSpecificEffects(claim).has('content')).toBe(true)

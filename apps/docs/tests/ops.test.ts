@@ -1532,9 +1532,12 @@ describe('Issue 2: Structural block-index mapping and atomicity regressions', ()
       expect(editor.state.doc.child(0).textContent).toBe('P0 Keep')
       expect(editor.state.doc.child(1).textContent).toBe('P2 Keep')
       // P2 (which became child 1) received italic
-      expect(editor.state.doc.child(1).child(0).marks.some((m) => m.type.name === 'italic')).toBe(
-        true,
-      )
+      expect(
+        editor.state.doc
+          .child(1)
+          .child(0)
+          .marks.some((m) => m.type.name === 'italic'),
+      ).toBe(true)
       // P0 remained untouched (no bold, no italic)
       expect(editor.state.doc.child(0).child(0).marks).toHaveLength(0)
     })
@@ -1557,9 +1560,12 @@ describe('Issue 2: Structural block-index mapping and atomicity regressions', ()
       expect(editor.state.doc.child(0).textContent).toBe('B0')
       expect(editor.state.doc.child(1).textContent).toBe('B2')
       expect(editor.state.doc.child(2).textContent).toBe('B4 target')
-      expect(editor.state.doc.child(2).child(0).marks.some((m) => m.type.name === 'bold')).toBe(
-        true,
-      )
+      expect(
+        editor.state.doc
+          .child(2)
+          .child(0)
+          .marks.some((m) => m.type.name === 'bold'),
+      ).toBe(true)
     })
 
     it('M05: moveBlocks tracks target blockIndexes to new document location', () => {
@@ -1579,9 +1585,12 @@ describe('Issue 2: Structural block-index mapping and atomicity regressions', ()
       expect(editor.state.doc.child(1).textContent).toBe('Third to move')
       expect(editor.state.doc.child(2).textContent).toBe('Second')
       // Original block 2 is now child(1); verify bold landed on it
-      expect(editor.state.doc.child(1).child(0).marks.some((m) => m.type.name === 'bold')).toBe(
-        true,
-      )
+      expect(
+        editor.state.doc
+          .child(1)
+          .child(0)
+          .marks.some((m) => m.type.name === 'bold'),
+      ).toBe(true)
       // Other blocks untouched
       expect(editor.state.doc.child(0).child(0).marks).toHaveLength(0)
       expect(editor.state.doc.child(2).child(0).marks).toHaveLength(0)
@@ -1609,9 +1618,12 @@ describe('Issue 2: Structural block-index mapping and atomicity regressions', ()
       expect(outcome.ok).toBe(true)
       expect(editor.state.doc.childCount).toBe(1)
       expect(editor.state.doc.child(0).textContent).toBe('Selected text to format')
-      expect(editor.state.doc.child(0).child(0).marks.some((m) => m.type.name === 'bold')).toBe(
-        true,
-      )
+      expect(
+        editor.state.doc
+          .child(0)
+          .child(0)
+          .marks.some((m) => m.type.name === 'bold'),
+      ).toBe(true)
     })
   })
 })
