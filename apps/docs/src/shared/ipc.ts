@@ -561,18 +561,22 @@ export interface DesktopApi {
     base64?: string
     error?: string
   } | null>
-  /** Mail merge: choose the output directory; the write channel only accepts this one. */
-  pickMailMergeOutputDir(): Promise<{ dir: string } | null>
+  /** Mail merge: choose the output directory; the write channel only accepts this one.
+   *  `batch` identifies the export that holds the grant, so a released batch can
+   *  never write into the folder even if the same folder is picked again. */
+  pickMailMergeOutputDir(): Promise<{ dir: string; batch?: string } | null>
   /** Write one merged output file into the directory chosen above. */
   writeMailMergeFile(
     dir: string,
     name: string,
     base64: string,
     overwrite?: 'skip' | 'rename' | 'overwrite',
+    batch?: string,
   ): Promise<{ ok: boolean; path?: string; error?: string; skipped?: boolean }>
   /** File names already present in the chosen output directory. */
   listMailMergeOutput(
     dir: string,
+    batch?: string,
   ): Promise<{ ok: boolean; names?: string[]; truncated?: boolean; error?: string }>
   /** Give up the output directory grant when the export dialog closes. */
   releaseMailMergeDir(): Promise<{ ok: boolean; error?: string }>

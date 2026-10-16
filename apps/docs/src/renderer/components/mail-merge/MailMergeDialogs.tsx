@@ -26,6 +26,10 @@ export function MailMergeExportDialog({
   const modalKeys = useModalKeys(onClose)
   const [scope, setScope] = useState<'selected' | 'all'>('selected')
   const [outputDir, setOutputDir] = useState('')
+  // the grant the main process minted for this batch. Every write carries it, so
+  // a batch that released the folder cannot land a file in it even if the user
+  // picks the very same directory again afterwards.
+  const [batch, setBatch] = useState('')
   // the default names follow the source's own first column: a literal `{Name}`
   // would be an unknown token for a source whose columns are "Full Name" and
   // "Postal Address", and an unknown token silently disappears from the file name
@@ -66,7 +70,10 @@ export function MailMergeExportDialog({
               className="btn-ghost"
               onClick={async () => {
                 const picked = await window.desktop.pickMailMergeOutputDir()
-                if (picked) setOutputDir(picked.dir)
+                if (picked) {
+                  setOutputDir(picked.dir)
+                  setBatch(picked.batch ?? '')
+                }
               }}
             >
               {t('mailMergeBrowse')}
@@ -107,7 +114,7 @@ export function MailMergeExportDialog({
             className="btn-primary"
             disabled={!outputDir || count === 0 || !patternValid}
             onClick={() =>
-              onStart({ format, scope, outputDir, pattern, overwrite, combined: false })
+              onStart({ format, scope, outputDir, pattern, overwrite, combined: false, batch })
             }
           >
             {t('mailMergeStartExport', { n: count })}

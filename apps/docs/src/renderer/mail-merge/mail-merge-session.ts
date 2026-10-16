@@ -135,9 +135,11 @@ export function useMailMergeSession(
         cancelRef.current.cancelled = true
         return
       }
-      // the batch is over (or never started): the tab no longer needs write
-      // permission on the folder the user picked
-      if (dialog === 'export' || dialog === 'progress') void window.desktop.releaseMailMergeDir()
+      // no dialog is open: the tab no longer needs write permission on the
+      // folder the user picked. Preflight failures move the user to the
+      // validation dialog, so that path has to release the grant too —
+      // otherwise closing "Check for Errors" leaves a live grant behind.
+      void window.desktop.releaseMailMergeDir()
       setDialog(null)
     },
 
@@ -174,7 +176,14 @@ export function useMailMergeSession(
       const parsed = getCtx().doc?.parsed ?? null
       const blocks = parsed?.blocks ?? []
       setIssues(
-        validateMergeSession(source, templateMergeFields(editor), blocks, editor, undefined, parsed),
+        validateMergeSession(
+          source,
+          templateMergeFields(editor),
+          blocks,
+          editor,
+          undefined,
+          parsed,
+        ),
       )
       setDialog('validate')
     },

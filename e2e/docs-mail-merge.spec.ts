@@ -1,26 +1,31 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, type ElectronApplication, type Page } from '@playwright/test'
 import {
   mkdirSync,
   mkdtempSync,
-  realpathSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import JSZip from 'jszip'
-import { launchShell, closeAndSaveVideo } from './helpers'
+import { launchShell, closeAndSaveVideo, waitForPageWithUrl } from './helpers'
 
 /**
- * Mailings tab, end to end in the real app: a template whose merge fields name
- * columns containing spaces, a CSV source, live preview, the error check, and
- * Finish & Merge writing one .docx per recipient into the chosen directory.
+ * Mailings tab, end to end in the real app.
  *
- * The native OS file dialog cannot be driven by Playwright, so only the source
- * picker is stubbed. The output directory comes from GENOFFICE_TEST_EXPORT_DIR
- * (the same affordance the export-image picker already uses), and the writes go
- * through the real main-process handler — the assertions read the files off disk.
+ * The Docs editor is not the shell window: it is a separate WebContentsView at
+ * `genoffice-app://docs/index.html?mode=tab`, so every assertion here runs on
+ * the page `waitForPageWithUrl(app, '://docs/')` returns — the same helper the
+ * other Docs E2E tests use.
+ *
+ * The source picker is not stubbed in the renderer. `window.desktop` comes from
+ * `contextBridge.exposeInMainWorld`, so its properties cannot be reassigned from
+ * the page; instead the test answers the *native* open dialog with a real CSV
+ * fixture, which leaves `docs:pick-mail-merge-source` — the size check, the
+ * file read, the base64 — running exactly as production does. The output
+ * directory uses the harness affordance the export-image picker already has.
  */
 
 const field = (instr: string) =>
@@ -60,6 +65,49 @@ const CSV =
   '"Bo Tran",""\n' +
   '"An Nguyen","45 Lê Lai, a deliberately long address that wraps onto the next line"\n'
 
+/**
+ * Answer the native "open file" dialog with the fixture.
+ *
+ * Only the mail-merge source picker is intercepted (an `openFile` dialog whose
+ * filter offers csv); every other dialog keeps its real behaviour. The renderer
+ * still calls the real `docs:pick-mail-merge-source` IPC, and the main process
+ * still stats the file, enforces its size limit and reads it.
+ */
+async function answerSourceDialog(app: ElectronApplication, csvPath: string) {
+  await app.evaluate(({ dialog }, path) => {
+    const original = dialog.showOpenDialog.bind(dialog)
+    dialog.showOpenDialog = async (parentOrOptions: unknown, options?: unknown) => {
+      const opts = (options ?? parentOrOptions) as {
+        properties?: string[]
+        filters?: Array<{ extensions?: string[] }>
+      }
+      if (
+        opts?.properties?.includes('openFile') &&
+        opts?.filters?.[0]?.extensions?.includes('csv')
+      ) {
+        return { canceled: false, filePaths: [path] }
+      }
+      return original(parentOrOptions as never, options as never)
+    }
+  }, csvPath)
+}
+
+/** the Docs renderer page, ready for ribbon interaction */
+async function docsPage(app: ElectronApplication): Promise<Page> {
+  const page = await waitForPageWithUrl(app, '://docs/')
+  // prove the assertions are not running against the shell window
+  if (!page.url().includes('://docs/')) {
+    throw new Error(`expected the Docs renderer, got ${page.url()}`)
+  }
+  await page.waitForFunction(
+    () => Boolean((window as unknown as { __aidocs?: { editor?: unknown } }).__aidocs?.editor),
+    undefined,
+    { timeout: 30_000 },
+  )
+  await page.locator('.ribbon-tab', { hasText: 'Mailings' }).waitFor({ timeout: 30_000 })
+  return page
+}
+
 async function documentXml(path: string): Promise<string> {
   const zip = await JSZip.loadAsync(readFileSync(path))
   return await zip.file('word/document.xml')!.async('string')
@@ -70,26 +118,20 @@ test.describe('docs mailings tab', () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'genoffice-e2e-mailmerge-')))
     const outDir = join(dir, 'out')
     mkdirSync(outDir)
+    const csvPath = join(dir, 'recipients.csv')
+    writeFileSync(csvPath, CSV)
     const docPath = join(dir, 'template.docx')
     writeFileSync(docPath, await templateDocx(BODY))
+    const templateBefore = readFileSync(docPath)
 
-    const { app, page } = await launchShell({
+    const launched = await launchShell({
       openFile: docPath,
       onboardingSeen: true,
       videoDir: 'mail-merge',
       env: { GENOFFICE_TEST_EXPORT_DIR: outDir },
     })
-
-    await page.evaluate((csv) => {
-      const bytes = new TextEncoder().encode(csv)
-      let bin = ''
-      for (const b of bytes) bin += String.fromCharCode(b)
-      window.desktop.pickMailMergeSource = async () => ({
-        ok: true,
-        path: '/tmp/recipients.csv',
-        base64: btoa(bin),
-      })
-    }, CSV)
+    await answerSourceDialog(launched.app, csvPath)
+    const page = await docsPage(launched.app)
 
     await page.locator('.ribbon-tab', { hasText: 'Mailings' }).click()
     await page.getByRole('button', { name: 'Start Mail Merge' }).click()
@@ -126,37 +168,48 @@ test.describe('docs mailings tab', () => {
       .filter((n) => n.endsWith('.docx'))
       .sort()
     expect(names.length).toBe(3)
-    const xml = await documentXml(join(outDir, names[0]))
-    expect(xml).toContain('Nguyễn Văn A')
-    expect(xml).toContain('123 Nguyễn Huệ')
-    // a merged file carries plain runs, not a field Word would re-evaluate
-    expect(xml).not.toContain('MERGEFIELD')
-    expect(xml).not.toContain('fldChar')
+    for (const name of names) {
+      const xml = await documentXml(join(outDir, name))
+      // a merged file carries plain runs, not a field Word would re-evaluate
+      expect(xml).not.toContain('MERGEFIELD')
+      expect(xml).not.toContain('fldChar')
+    }
+    const first = await documentXml(join(outDir, names[0]))
+    expect(first).toContain('Nguyễn Văn A')
+    expect(first).toContain('123 Nguyễn Huệ')
 
-    await closeAndSaveVideo(app, page, 'mail-merge')
+    // the batch's directory grant is gone once the dialog closes: a late write
+    // from the same renderer is refused by the main process
+    const lateWrite = await page.evaluate(
+      (out) => window.desktop.writeMailMergeFile(out, 'late.docx', btoa('x'), 'overwrite'),
+      outDir,
+    )
+    expect(lateWrite.ok).toBe(false)
+    expect(lateWrite.error).toContain('authorized')
+
+    // the template on disk is untouched by the merge
+    expect(Buffer.compare(readFileSync(docPath), templateBefore)).toBe(0)
+
+    await closeAndSaveVideo(launched, 'mail-merge')
   })
 
   test('a missing column is reported and blocks the export', async () => {
     const dir = realpathSync(mkdtempSync(join(tmpdir(), 'genoffice-e2e-mailmerge-err-')))
     const outDir = join(dir, 'out')
     mkdirSync(outDir)
+    const csvPath = join(dir, 'partial.csv')
+    writeFileSync(csvPath, '"Full Name"\n"Huy"\n')
     const docPath = join(dir, 'template.docx')
     writeFileSync(docPath, await templateDocx(BODY))
 
-    const { app, page } = await launchShell({
+    const launched = await launchShell({
       openFile: docPath,
       onboardingSeen: true,
       videoDir: 'mail-merge-error',
       env: { GENOFFICE_TEST_EXPORT_DIR: outDir },
     })
-
-    await page.evaluate(() => {
-      window.desktop.pickMailMergeSource = async () => ({
-        ok: true,
-        path: '/tmp/partial.csv',
-        base64: btoa('"Full Name"\n"Huy"\n'),
-      })
-    })
+    await answerSourceDialog(launched.app, csvPath)
+    const page = await docsPage(launched.app)
 
     await page.locator('.ribbon-tab', { hasText: 'Mailings' }).click()
     await page.getByRole('button', { name: 'Start Mail Merge' }).click()
@@ -178,7 +231,7 @@ test.describe('docs mailings tab', () => {
     await page.getByRole('button', { name: 'Cancel' }).click()
     expect(readdirSync(outDir).filter((n) => n.endsWith('.docx')).length).toBe(0)
 
-    await closeAndSaveVideo(app, page, 'mail-merge-error')
+    await closeAndSaveVideo(launched, 'mail-merge-error')
   })
 
   test('Finish & Merge writes one real PDF per recipient', async () => {
@@ -203,23 +256,14 @@ test.describe('docs mailings tab', () => {
       '"Bo Tran",""\n' +
       '"Nguyễn Văn A","123 Nguyễn Huệ, Da Nang, a deliberately long address that has to wrap onto another line to fit the page"\n'
 
-    const { app, page } = await launchShell({
+    const launched = await launchShell({
       openFile: docPath,
       onboardingSeen: true,
       videoDir: 'mail-merge-pdf',
       env: { GENOFFICE_TEST_EXPORT_DIR: outDir },
     })
-
-    await page.evaluate((text) => {
-      const bytes = new TextEncoder().encode(text)
-      let bin = ''
-      for (const b of bytes) bin += String.fromCharCode(b)
-      window.desktop.pickMailMergeSource = async () => ({
-        ok: true,
-        path: '/tmp/recipients.csv',
-        base64: btoa(bin),
-      })
-    }, csv)
+    await answerSourceDialog(launched.app, csv)
+    const page = await docsPage(launched.app)
 
     await page.locator('.ribbon-tab', { hasText: 'Mailings' }).click()
     await page.getByRole('button', { name: 'Start Mail Merge' }).click()
@@ -236,10 +280,12 @@ test.describe('docs mailings tab', () => {
     await expect(page.locator('.mail-merge-progress h2')).toContainText('Export completed')
     await page.getByRole('button', { name: 'Close' }).click()
 
+    // the default pattern is `{index}_{<first column>}`, and the index is padded
+    // to the width of the largest index in the batch: two recipients, one digit
     const names = readdirSync(outDir)
       .filter((n) => n.endsWith('.pdf'))
       .sort()
-    expect(names).toEqual(['0001_Bo Tran.pdf', '0002_Nguyễn Văn A.pdf'])
+    expect(names).toEqual(['1_Bo Tran.pdf', '2_Nguyễn Văn A.pdf'])
 
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs')
     const texts: string[][] = []
@@ -275,6 +321,6 @@ test.describe('docs mailings tab', () => {
       expect(text).not.toContain('MERGEFIELD')
     }
 
-    await closeAndSaveVideo(app, page, 'mail-merge-pdf')
+    await closeAndSaveVideo(launched, 'mail-merge-pdf')
   })
 })

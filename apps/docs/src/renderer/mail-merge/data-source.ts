@@ -3,7 +3,7 @@
  * spreadsheet) into the normalized recipient list the picker and the export
  * pipeline work with.
  */
-import { xlsxSheetNames, xlsxToGrid } from '@genoffice/file-parse/xlsx'
+import { xlsxSheetGrid, xlsxSheetNames, xlsxToGrid } from '@genoffice/file-parse/xlsx'
 import {
   decodeCsvText,
   parseCsvRows,
@@ -161,9 +161,12 @@ export async function loadXlsxSource(
   // read only as far as the recipient ceiling plus the header: a workbook with
   // more rows than Mail Merge can handle is refused below, never trimmed into a
   // list that looks complete
-  const grids = await xlsxToGrid(base64ToBytes(base64), MAX_RECIPIENTS + 2)
-  if (grids.length === 0) throw new Error('the workbook has no worksheets')
-  const sheet = sheetName ? (grids.find((g) => g.name === sheetName) ?? grids[0]) : grids[0]
+  // only the requested worksheet is read: an unrelated wide or malformed sheet
+  // must not make a valid recipient list unusable
+  const sheet = sheetName
+    ? await xlsxSheetGrid(base64ToBytes(base64), sheetName, MAX_RECIPIENTS + 2)
+    : (await xlsxToGrid(base64ToBytes(base64), MAX_RECIPIENTS + 2))[0]
+  if (!sheet) throw new Error('the workbook has no worksheets')
   // a formula with no cached result has no value to merge. Writing the formula
   // text into a letter is not a recipient field, and writing nothing is silent,
   // so the workbook is refused and the user is told which cells to fix
@@ -269,7 +272,8 @@ function cellText(
     return ''
   }
   const display = cell.display
-  const text = display !== undefined && display !== null ? String(display) : String(cell.value ?? '')
+  const text =
+    display !== undefined && display !== null ? String(display) : String(cell.value ?? '')
   if (SPREADSHEET_ERRORS.has(text.trim().toUpperCase())) {
     throw new Error(
       `cell ${address} contains the spreadsheet error ${text.trim()}; fix the formula before merging`,

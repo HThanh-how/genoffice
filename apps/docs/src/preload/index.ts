@@ -210,9 +210,15 @@ const api: DesktopApi = {
   listPrinters: () => ipcRenderer.invoke('docs:printers'),
   pickMailMergeSource: () => ipcRenderer.invoke('docs:pick-mail-merge-source'),
   pickMailMergeOutputDir: () => ipcRenderer.invoke('docs:pick-mail-merge-output-dir'),
-  writeMailMergeFile: (dir: string, name: string, base64: string, overwrite?: string) =>
-    ipcRenderer.invoke('docs:write-mail-merge-file', dir, name, base64, overwrite),
-  listMailMergeOutput: (dir: string) => ipcRenderer.invoke('docs:list-mail-merge-output', dir),
+  writeMailMergeFile: (
+    dir: string,
+    name: string,
+    base64: string,
+    overwrite?: string,
+    batch?: string,
+  ) => ipcRenderer.invoke('docs:write-mail-merge-file', dir, name, base64, overwrite, batch),
+  listMailMergeOutput: (dir: string, batch?: string) =>
+    ipcRenderer.invoke('docs:list-mail-merge-output', dir, batch),
   releaseMailMergeDir: () => ipcRenderer.invoke('docs:release-mail-merge-dir'),
   listSheetTabs: () => ipcRenderer.invoke('docs:list-sheet-tabs'),
   readSheetGrid: (wcId: number, sheet?: string, addresses?: string[]) =>

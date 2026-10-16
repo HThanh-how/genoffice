@@ -36,11 +36,18 @@ const field = (instr: string) =>
   `<w:r><w:fldChar w:fldCharType="end"/></w:r>`
 
 describe('export scope', () => {
-  const source = sourceFromRows([['Name', 'City'], ['Huy', 'Da Nang'], ['An', 'Paris']], {
-    kind: 'csv',
-    label: 'list.csv',
-    hasHeader: true,
-  })
+  const source = sourceFromRows(
+    [
+      ['Name', 'City'],
+      ['Huy', 'Da Nang'],
+      ['An', 'Paris'],
+    ],
+    {
+      kind: 'csv',
+      label: 'list.csv',
+      hasHeader: true,
+    },
+  )
   source.recipients.forEach((r) => (r.selected = false))
 
   it('exports every row when the scope is all, even with nothing ticked', () => {
@@ -49,7 +56,9 @@ describe('export scope', () => {
   })
 
   it('does not block a scope=all batch for an unticked list', async () => {
-    const parsed = await parseDocx(await buildDocx({ bodyXml: '<w:p>' + field('MERGEFIELD Name') + '</w:p>' }))
+    const parsed = await parseDocx(
+      await buildDocx({ bodyXml: '<w:p>' + field('MERGEFIELD Name') + '</w:p>' }),
+    )
     const editor = new Editor({
       element: document.createElement('div'),
       extensions: editorExtensions,
@@ -57,13 +66,15 @@ describe('export scope', () => {
     })
     const issues = validateMergeSession(source, [], parsed.blocks, editor, 'all', parsed)
     editor.destroy()
-    expect(issues.some((issue) => issue.key === 'mailMergeNoneSelected' && issue.severity === 'error')).toBe(
-      false,
-    )
+    expect(
+      issues.some((issue) => issue.key === 'mailMergeNoneSelected' && issue.severity === 'error'),
+    ).toBe(false)
   })
 
   it('still blocks a scope=selected batch with nothing ticked', async () => {
-    const parsed = await parseDocx(await buildDocx({ bodyXml: '<w:p>' + field('MERGEFIELD Name') + '</w:p>' }))
+    const parsed = await parseDocx(
+      await buildDocx({ bodyXml: '<w:p>' + field('MERGEFIELD Name') + '</w:p>' }),
+    )
     const editor = new Editor({
       element: document.createElement('div'),
       extensions: editorExtensions,
@@ -71,15 +82,17 @@ describe('export scope', () => {
     })
     const issues = validateMergeSession(source, [], parsed.blocks, editor, 'selected', parsed)
     editor.destroy()
-    expect(issues.some((issue) => issue.key === 'mailMergeNoneSelected' && issue.severity === 'error')).toBe(
-      true,
-    )
+    expect(
+      issues.some((issue) => issue.key === 'mailMergeNoneSelected' && issue.severity === 'error'),
+    ).toBe(true)
   })
 })
 
 describe('a read-only editor and PDF export', () => {
   it('refuses to print a document it cannot decorate, instead of printing placeholders', async () => {
-    const parsed = await parseDocx(await buildDocx({ bodyXml: '<w:p>' + field('MERGEFIELD Name') + '</w:p>' }))
+    const parsed = await parseDocx(
+      await buildDocx({ bodyXml: '<w:p>' + field('MERGEFIELD Name') + '</w:p>' }),
+    )
     const editor = new Editor({
       element: document.createElement('div'),
       extensions: editorExtensions,
@@ -105,7 +118,14 @@ describe('a read-only editor and PDF export', () => {
     const progress = await runMailMergeExport(
       ctx,
       sourceFromRows([['Name'], ['Huy']], { kind: 'csv', label: 'x.csv', hasHeader: true }),
-      { format: 'pdf', scope: 'all', outputDir: '/out', pattern: '{index}', overwrite: 'rename', combined: false },
+      {
+        format: 'pdf',
+        scope: 'all',
+        outputDir: '/out',
+        pattern: '{index}',
+        overwrite: 'rename',
+        combined: false,
+      },
       { cancelled: false } as CancelToken,
       () => {},
     )
@@ -156,7 +176,7 @@ describe('byte-preserved fields are found, not missed', () => {
       '<w:fldSimple w:instr=" MERGEFIELD &quot;Postal Address&quot; "/>' +
       '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
       '<w:r><w:instrText xml:space="preserve"> MERGEFIELD </w:instrText></w:r>' +
-      '<w:r><w:instrText xml:space="preserve">City \* MERGEFORMAT</w:instrText></w:r>' +
+      '<w:r><w:instrText xml:space="preserve">City * MERGEFORMAT</w:instrText></w:r>' +
       '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
       '</w:p>'
     const instructions = fieldInstructionsInXml(xml).map((i) => i.trim())

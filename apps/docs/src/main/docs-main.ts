@@ -155,12 +155,8 @@ import type {
 } from '../shared/ipc'
 import { ATTACHMENT_IMAGE_EXTS, MARKDOWN_MEDIA_DIR_TOKEN, type MarkdownImage } from '../shared/ipc'
 import { ClickClaims } from '../shared/context-menu-claims'
-import {
-  decideMailMergeWrite,
-  decodeMailMergePayload,
-  type MailMergeGrant,
-} from '../shared/mail-merge-ipc'
-import { checkMergedDocx } from '../shared/docx-output-contract'
+import { type MailMergeGrant } from '../shared/mail-merge-ipc'
+import { commitMailMergeWrite } from '../shared/mail-merge-commit'
 import {
   pdfWriteTarget as resolvePdfWriteTarget,
   type PdfWriteTarget,
@@ -181,8 +177,8 @@ import {
   openLazyDocx,
   pointLazyMediaAt,
   readLazyMedia,
-  registerLazyMediaProtocol,
 } from './lazy-media'
+import { registerLazyMediaProtocol } from './lazy-media-protocol'
 import { inlineLazyMediaInHtml } from './lazy-media-inline'
 import {
   commitDocPasswordSave,
@@ -3614,6 +3610,11 @@ const mailMergeDirs = new Map<number, string>()
 /** Names this batch has already written, so the writer can tell "the user's
  *  pre-existing file" from "another recipient's output from this same batch". */
 const mailMergeAllocated = new Map<number, Set<string>>()
+/** Which batch currently owns the grant. A directory grant is not a standing
+ *  permission: it belongs to one export. Re-picking the same folder mints a new
+ *  batch id, so a write that started under the previous batch can never land in
+ *  it after that batch was released. */
+const mailMergeBatches = new Map<number, string>()
 /** Largest source file Mail Merge will read, checked before the bytes are loaded. */
 const MAIL_MERGE_SOURCE_LIMIT_BYTES = 64 * 1024 * 1024
 
@@ -3621,8 +3622,15 @@ const MAIL_MERGE_SOURCE_LIMIT_BYTES = 64 * 1024 * 1024
 function mailMergeGrant(wcId: number): MailMergeGrant | undefined {
   if (tornDownWcIds.has(wcId)) return undefined
   const dir = mailMergeDirs.get(wcId)
-  if (!dir) return undefined
-  return { dir, allocated: mailMergeAllocated.get(wcId) ?? new Set<string>() }
+  const batch = mailMergeBatches.get(wcId)
+  if (!dir || !batch) return undefined
+  return { dir, allocated: mailMergeAllocated.get(wcId) ?? new Set<string>(), batch }
+}
+
+/** Is the batch this request belongs to still the one holding the directory? */
+function mailMergeBatchLive(wcId: number, batch: unknown): boolean {
+  if (tornDownWcIds.has(wcId)) return false
+  return typeof batch === 'string' && mailMergeBatches.get(wcId) === batch
 }
 
 const platformRules: PathRules = {
@@ -5551,6 +5559,13 @@ export function registerDocsIpc(): void {
       }
       const target = pdfWriteTarget(event.sender.id, filePath, overwrite)
       if (!target) return { ok: false, error: 'export target is not an authorized path' }
+      // the batch that authorized this target, captured before the print. The
+      // print is an await: a mail-merge batch cancelled while it runs releases
+      // its grant, and a batch that picked the same folder again has a different
+      // id. Re-checking the id — not just the directory string — is what stops
+      // a cancelled recipient's PDF from landing in a folder the tab no longer
+      // holds.
+      const batchAtTarget = target.batchDir ? mailMergeBatches.get(event.sender.id) : undefined
       try {
         const printed = await event.sender.printToPDF({
           printBackground: true,
@@ -5564,6 +5579,9 @@ export function registerDocsIpc(): void {
         })
         const data = await withInternalLinks(printed, links)
         if (target.batchDir) {
+          if (mailMergeBatches.get(event.sender.id) !== batchAtTarget) {
+            return { ok: false, error: 'output directory is no longer authorized' }
+          }
           const outcome = await writeMailMergeOutput(
             target.batchDir,
             target.name,
@@ -5874,11 +5892,16 @@ export function registerDocsIpc(): void {
     // the grant is only meaningful for a directory that actually exists; a
     // dangling path would make every containment check resolve against nothing
     if (!existsSync(dir)) return null
-    mailMergeDirs.set(event.sender.id, dir)
-    mailMergePdfDirs.set(event.sender.id, dir)
-    // a new batch starts with a fresh allocation set
-    mailMergeAllocated.set(event.sender.id, new Set<string>())
-    return { dir }
+    const wcId = event.sender.id
+    mailMergeDirs.set(wcId, dir)
+    mailMergePdfDirs.set(wcId, dir)
+    // a new batch starts with a fresh allocation set and its own identity: every
+    // later write carries this id, so a released batch cannot write even if the
+    // same directory is picked again afterwards
+    const batch = randomUUID()
+    mailMergeAllocated.set(wcId, new Set<string>())
+    mailMergeBatches.set(wcId, batch)
+    return { dir, batch }
   })
 
   /**
@@ -5887,7 +5910,8 @@ export function registerDocsIpc(): void {
    * A grant survives the dialog that created it, so a tab that picked a folder
    * and then cancelled still holds write permission on it. Releasing it when the
    * export dialog closes means the permission lives exactly as long as the batch
-   * that needs it.
+   * that needs it. The batch id goes with it: a write that is mid-flight through
+   * materialisation or verification is invalidated before it can commit.
    */
   ipcMain.handle('docs:release-mail-merge-dir', (event) => {
     const wcId = event.sender.id
@@ -5895,14 +5919,18 @@ export function registerDocsIpc(): void {
     mailMergeDirs.delete(wcId)
     mailMergePdfDirs.delete(wcId)
     mailMergeAllocated.delete(wcId)
+    mailMergeBatches.delete(wcId)
     return { ok: true }
   })
 
   /** Names already present in the chosen directory, so the renderer can avoid
    *  clobbering them without touching the filesystem itself. */
-  ipcMain.handle('docs:list-mail-merge-output', async (event, dir: unknown) => {
+  ipcMain.handle('docs:list-mail-merge-output', async (event, dir: unknown, batch: unknown) => {
     const wcId = event.sender.id
-    const authorized = tornDownWcIds.has(wcId) ? undefined : mailMergeDirs.get(wcId)
+    if (!mailMergeBatchLive(wcId, batch)) {
+      return { ok: false, error: 'output directory is not authorized' }
+    }
+    const authorized = mailMergeDirs.get(wcId)
     if (!authorized || typeof dir !== 'string' || dir !== authorized) {
       return { ok: false, error: 'output directory is not authorized' }
     }
@@ -5919,51 +5947,27 @@ export function registerDocsIpc(): void {
 
   ipcMain.handle(
     'docs:write-mail-merge-file',
-    async (event, dir: unknown, name: unknown, base64: unknown, overwrite: unknown) => {
+    async (
+      event,
+      dir: unknown,
+      name: unknown,
+      base64: unknown,
+      overwrite: unknown,
+      batch: unknown,
+    ) => {
       const wcId = event.sender.id
-      const grant = mailMergeGrant(wcId)
-      // every check — directory, name, extension, payload, policy, containment —
-      // happens before a single byte is written, so a refused request creates
-      // nothing on disk
-      const decision = decideMailMergeWrite(grant, dir, name, base64, overwrite, containedTarget)
-      if (!decision.ok) return { ok: false, error: decision.error }
-      // the request crossed an await on the way here; a tab closed in that window
-      // must not get a write through on a grant it no longer holds
-      if (tornDownWcIds.has(wcId) || mailMergeDirs.get(wcId) !== decision.dir) {
-        return { ok: false, error: 'output directory is no longer authorized' }
-      }
-      try {
-        const payload = decodeMailMergePayload(String(base64))
-        if (!payload) return { ok: false, error: 'the file content is not a complete base64 payload' }
-        // a template opened lazily keeps its pictures in the source file and
-        // writes `lazy://<hash>/word/media/…` placeholders into the saved bytes.
-        // A merged document is a brand-new file with no source to point at, so
-        // the media has to be spliced back in exactly as a normal save does —
-        // otherwise every merged document is a .docx with broken images.
-        const data = /\.docx$/i.test(decision.name)
-          ? (await materializeLazyDocx(payload)).bytes
-          : payload
-        if (/\.docx$/i.test(decision.name)) {
-          const contract = await checkMergedDocx(data)
-          if (!contract.ok) return { ok: false, error: contract.error }
-        }
-        // the writer is the authority on the final name: the renderer's proposal
-        // may have been sanitized, shortened or renamed by this point, and each
-        // candidate it produces is re-contained before it is opened
-        const outcome = await writeMailMergeOutput(
-          decision.dir,
-          decision.name,
-          data,
-          decision.policy,
-          decision.allocated,
-          decision.resolvePath,
-        )
-        if (outcome.skipped)
-          return { ok: false, skipped: true, path: outcome.path, name: outcome.name }
-        return { ok: true, path: outcome.path, name: outcome.name }
-      } catch (err) {
-        return { ok: false, error: String(err) }
-      }
+      return commitMailMergeWrite(
+        mailMergeGrant(wcId),
+        dir,
+        name,
+        base64,
+        overwrite,
+        containedTarget,
+        {
+          materialize: async (bytes) => (await materializeLazyDocx(bytes)).bytes,
+          isAuthorized: () => mailMergeBatchLive(wcId, batch),
+        },
+      )
     },
   )
 

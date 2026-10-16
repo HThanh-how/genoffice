@@ -18,7 +18,12 @@
  */
 import type { Editor } from '@tiptap/core'
 import { buildOutputFileName, uniqueFileName, type MergeReport } from '@genoffice/docx-engine'
-import { buildDocBytes, exportPdf, currentDocGeneration, type FileActionContext } from '../file-actions'
+import {
+  buildDocBytes,
+  exportPdf,
+  currentDocGeneration,
+  type FileActionContext,
+} from '../file-actions'
 import { currentMailMergeValues, setMailMergePreview } from '../editor/mail-merge-preview'
 import { mergeFieldValue } from '../editor/merge-doc'
 import { exportRecipients } from './recipient-store'
@@ -204,7 +209,7 @@ export async function runMailMergeExport(
   // the raw field and its «placeholder».
   const unmergeable = passthroughFieldInstructions(ctx.doc.parsed.blocks)
 
-  const listing = await window.desktop.listMailMergeOutput(options.outputDir)
+  const listing = await window.desktop.listMailMergeOutput(options.outputDir, options.batch)
   // Skip/Rename/Overwrite can only be decided from a listing the writer can
   // trust. A failed or truncated listing is not that, so the batch stops rather
   // than guessing which files are already there.
@@ -361,10 +366,13 @@ export async function runMailMergeExport(
           // the bytes are inspected before a single one of them is stored: a
           // merge field the engine left in a header, footer, footnote or textbox
           // is copied from the template and would print as «Name» in Word
-          const contract = await checkMergedDocx(bytes)
+          const contract = await checkMergedDocx(bytes, { media: false })
           if (!contract.ok) {
             progress.failed += 1
-            progress.errors.push({ recipient: name, message: contract.error ?? 'output contract failed' })
+            progress.errors.push({
+              recipient: name,
+              message: contract.error ?? 'output contract failed',
+            })
             // a field in a part the pipeline never rewrites is a property of the
             // template, not of this row: every recipient would fail the same way
             if (contract.templateParts.length > 0) {
@@ -386,6 +394,7 @@ export async function runMailMergeExport(
             name,
             bytesToBase64(bytes),
             options.overwrite,
+            options.batch,
           )
           if (result.ok) {
             progress.succeeded += 1

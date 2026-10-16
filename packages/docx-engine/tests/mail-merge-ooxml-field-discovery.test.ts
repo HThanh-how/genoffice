@@ -26,7 +26,8 @@ const complexField = (instr: string) =>
 
 describe('field instructions found in OOXML', () => {
   it('finds a MERGEFIELD written as a simple field', () => {
-    const xml = '<w:p><w:fldSimple w:instr=" MERGEFIELD Name "><w:r><w:t>x</w:t></w:r></w:fldSimple></w:p>'
+    const xml =
+      '<w:p><w:fldSimple w:instr=" MERGEFIELD Name "><w:r><w:t>x</w:t></w:r></w:fldSimple></w:p>'
     const found = fieldInstructionsInXml(xml)
     expect(found).toEqual([' MERGEFIELD Name '])
     expect(mergeFieldName(found[0])).toBe('Name')
@@ -43,7 +44,7 @@ describe('field instructions found in OOXML', () => {
       run('<w:fldChar w:fldCharType="begin"/>') +
       run('<w:instrText xml:space="preserve"> MERGEFIELD </w:instrText>') +
       run('<w:instrText xml:space="preserve">"Postal Address"</w:instrText>') +
-      run('<w:instrText xml:space="preserve"> \* MERGEFORMAT</w:instrText>') +
+      run('<w:instrText xml:space="preserve"> * MERGEFORMAT</w:instrText>') +
       run('<w:fldChar w:fldCharType="end"/>') +
       '</w:p>'
     const found = fieldInstructionsInXml(xml)

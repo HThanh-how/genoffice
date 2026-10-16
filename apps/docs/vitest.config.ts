@@ -10,6 +10,8 @@ export default defineConfig({
   resolve: {
     alias: {
       '@genoffice/docx-engine/lazy-media': local('../../packages/docx-engine/src/lazy-media.ts'),
+      // subpath before the bare name: string aliases are prefix replacements
+      '@genoffice/docx-engine/zip-splice': local('../../packages/docx-engine/src/zip-splice.ts'),
       '@genoffice/docx-engine': local('../../packages/docx-engine/src/index.ts'),
       '@genoffice/font-metrics': local('../../packages/font-metrics/src/index.ts'),
       // subpath before the bare name: string aliases are prefix replacements

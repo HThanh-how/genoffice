@@ -450,15 +450,46 @@ export async function xlsxToGrid(bytes: Uint8Array, maxRows = 200_000): Promise<
     const path = relTargets.get(relationshipId(sheet))
     const sheetXml = path ? await zipText(zip, path) : undefined
     if (!sheetXml) continue
+    grids.push(buildSheetGrid(sheet, sheetXml, shared, numberStyles, date1904, maxRows))
+  }
+  return grids
+}
+
+/** One worksheet's grid, built from its own XML only. */
+function buildSheetGrid(
+  sheet: Record<string, unknown>,
+  sheetXml: string,
+  shared: string[],
+  numberStyles: NumberStyles,
+  date1904: boolean,
+  maxRows: number,
+): XlsxSheetGrid {
+  {
     const worksheet = parser.parse(sheetXml) as Record<string, any>
     const rowNodes = asArray(worksheet.worksheet?.sheetData?.row) as Array<Record<string, unknown>>
+    // the row ceiling is a refusal, not a trim: a caller that asks for at most
+    // `maxRows` rows must never be handed a list that looks complete but is
+    // missing the tail of the workbook
+    if (rowNodes.length > maxRows) {
+      throw new Error(
+        `worksheet "${String(sheet['@_name'] ?? '')}" has ${rowNodes.length} rows, ` +
+          `more than the ${maxRows} this reader will take`,
+      )
+    }
     const rows: string[][] = []
     const sharedFormulas: SharedFormulas = new Map()
     const uncachedFormulas: string[] = []
-    for (const row of rowNodes.slice(0, maxRows)) {
+    for (const row of rowNodes) {
       const cells: string[] = []
       for (const cell of asArray(row.c as Cell | Cell[])) {
-        const text = cellText(cell, shared, numberStyles, date1904, sharedFormulas, uncachedFormulas)
+        const text = cellText(
+          cell,
+          shared,
+          numberStyles,
+          date1904,
+          sharedFormulas,
+          uncachedFormulas,
+        )
         const ref = cell['@_r']
         const col = ref ? columnIndex(ref) : cells.length
         if (col < 0 || col >= MAX_XLSX_COLS) {
@@ -480,13 +511,69 @@ export async function xlsxToGrid(bytes: Uint8Array, maxRows = 200_000): Promise<
       }
       rows.push(cells)
     }
-    grids.push({
+    return {
       name: String(sheet['@_name'] ?? ''),
       rows,
       ...(uncachedFormulas.length > 0 ? { uncachedFormulas } : {}),
-    })
+    }
   }
-  return grids
+}
+
+/**
+ * One worksheet by name, without touching any other worksheet in the workbook.
+ *
+ * Mail Merge only ever needs the sheet the user selected. Parsing every sheet
+ * makes an unrelated wide or malformed worksheet able to break a perfectly good
+ * recipient list, so the read is scoped to the requested part.
+ */
+export async function xlsxSheetGrid(
+  bytes: Uint8Array,
+  sheetName: string,
+  maxRows = 200_000,
+): Promise<XlsxSheetGrid> {
+  await assertZipInflatesWithinLimits(bytes)
+  const zip = await JSZip.loadAsync(bytes)
+  assertZipWithinLimits(zip)
+  const workbookXml = await zipText(zip, 'xl/workbook.xml')
+  if (!workbookXml) throw new Error('Invalid xlsx: missing xl/workbook.xml')
+  const workbook = parser.parse(workbookXml) as Record<string, any>
+  const sheetDefs = asArray(workbook.workbook?.sheets?.sheet) as Array<Record<string, unknown>>
+  const sheet = sheetDefs.find((s) => String(s['@_name'] ?? '') === sheetName)
+  if (!sheet) {
+    const known = sheetDefs.map((s) => String(s['@_name'] ?? '')).join(', ')
+    throw new Error(
+      `worksheet "${sheetName}" is not in this workbook (available: ${known || 'none'})`,
+    )
+  }
+  const relsXml = await zipText(zip, 'xl/_rels/workbook.xml.rels')
+  const relTargets = new Map<string, string>()
+  if (relsXml) {
+    const rels = parser.parse(relsXml) as Record<string, any>
+    for (const rel of asArray(rels.Relationships?.Relationship) as Array<Record<string, unknown>>) {
+      const id = String(rel['@_Id'] ?? '')
+      const target = String(rel['@_Target'] ?? '')
+      const resolved = target.trim() === '' ? '' : resolveTarget('xl/workbook.xml', target)
+      if (id !== '' && resolved !== '') relTargets.set(id, resolved)
+    }
+  }
+  const path = relTargets.get(relationshipId(sheet))
+  const sheetXml = path ? await zipText(zip, path) : undefined
+  if (!sheetXml) throw new Error(`worksheet "${sheetName}" has no readable worksheet part`)
+  const shared: string[] = []
+  const sharedXml = await zipText(zip, 'xl/sharedStrings.xml')
+  if (sharedXml) {
+    const sst = parser.parse(sharedXml) as Record<string, any>
+    for (const si of asArray(sst.sst?.si) as Array<Record<string, unknown>>)
+      shared.push(sharedStringText(si))
+  }
+  return buildSheetGrid(
+    sheet,
+    sheetXml,
+    shared,
+    await loadNumberStyles(zip),
+    isDate1904(workbook),
+    maxRows,
+  )
 }
 
 function countElements(value: unknown, name: string): number {

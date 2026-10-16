@@ -20,6 +20,7 @@ import {
   base64ByteLength,
   decodeMailMergePayload,
   decideMailMergeWrite,
+  inspectMailMergePayload,
   isMailMergeOutputName,
   parseOverwritePolicy,
   MAX_MAIL_MERGE_PAYLOAD_BYTES,
@@ -35,6 +36,11 @@ const b64 = (text: string) => Buffer.from(text, 'utf8').toString('base64')
 /** The containment check the main process uses for a grant. */
 const contained = (dir: string, path: string) =>
   containedTarget(dir, path, posixRules, existsSync, realpathSync)
+/** the refusal message for a payload, empty when the payload is usable */
+const payloadError = (text: unknown) => {
+  const payload = inspectMailMergePayload(text)
+  return payload.ok ? '' : payload.error
+}
 
 /** Exactly what `docs:write-mail-merge-file` does. */
 async function runWrite(
@@ -120,9 +126,21 @@ describe('payload validation', () => {
     expect(base64ByteLength('AB==')).toBe(-1)
     expect(decodeMailMergePayload('AAAA')?.length).toBe(3)
     expect(base64ByteLength('')).toBe(0)
-    expect(base64ByteLength('a'.repeat(MAX_MAIL_MERGE_PAYLOAD_BYTES * 2))).toBeGreaterThan(
-      MAX_MAIL_MERGE_PAYLOAD_BYTES,
-    )
+    // an oversized payload is rejected on its encoded length, before any Buffer
+    // is allocated for it, and the reason is the size rather than the alphabet
+    const huge = 'a'.repeat(MAX_MAIL_MERGE_PAYLOAD_BYTES * 2)
+    expect(base64ByteLength(huge)).toBe(-1)
+    expect(decodeMailMergePayload(huge)).toBeNull()
+    expect(payloadError(huge)).toContain('larger than')
+    // exactly at the decoded ceiling, and one byte over it. Both strings are
+    // inside the encoded-length guard, so the refusal is the decoded size, not
+    // the character count
+    const fullGroups = Math.floor(MAX_MAIL_MERGE_PAYLOAD_BYTES / 3)
+    const atLimit = 'A'.repeat(fullGroups * 4) + 'AAA='
+    const overLimit = 'A'.repeat(fullGroups * 4 + 4)
+    expect(decodeMailMergePayload(atLimit)?.length).toBe(MAX_MAIL_MERGE_PAYLOAD_BYTES)
+    expect(decodeMailMergePayload(overLimit)).toBeNull()
+    expect(payloadError(overLimit)).toContain('larger than')
   })
 
   it('only accepts the two merge output types', () => {
@@ -139,7 +157,7 @@ describe('payload validation', () => {
 describe('authorization happens before anything is written', () => {
   it('writes a normal destination and reports the real path', async () => {
     const dir = await freshDir()
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, false, dir, 'Huy.docx', b64('first'), 'overwrite')
     expect(result.ok).toBe(true)
     expect(await listing(dir)).toEqual(['Huy.docx'])
@@ -148,7 +166,7 @@ describe('authorization happens before anything is written', () => {
 
   it('creates nothing outside the grant for a traversal name', async () => {
     const dir = await freshDir()
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, false, dir, '../../escaped.docx', b64('evil'), 'overwrite')
     // the name is sanitized into the folder rather than allowed to climb out of it
     expect(result.ok).toBe(true)
@@ -166,7 +184,7 @@ describe('authorization happens before anything is written', () => {
     // somewhere the user never authorized
     await symlink(evil, join(grant, 'Huy.docx'))
     const result = await runWrite(
-      { dir: grant, allocated: new Set<string>() },
+      { dir: grant, allocated: new Set<string>(), batch: 'batch-1' },
       false,
       grant,
       'Huy.docx',
@@ -182,7 +200,7 @@ describe('authorization happens before anything is written', () => {
   it('creates nothing when the renderer sends a directory it was not granted', async () => {
     const dir = await freshDir()
     const other = await mkdtemp(join(tmpdir(), 'genoffice-mm-other-'))
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, false, other, 'Huy.docx', b64('evil'), 'overwrite')
     expect(result.ok).toBe(false)
     expect(await listing(other)).toEqual([])
@@ -191,7 +209,7 @@ describe('authorization happens before anything is written', () => {
 
   it('refuses a grant that no longer exists (renderer torn down)', async () => {
     const dir = await freshDir()
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, true, dir, 'Huy.docx', b64('evil'), 'overwrite')
     expect(result.ok).toBe(false)
     expect(result.error).toContain('no longer authorized')
@@ -201,7 +219,7 @@ describe('authorization happens before anything is written', () => {
   it('refuses an unknown overwrite policy without touching the folder', async () => {
     const dir = await freshDir()
     await writeFile(join(dir, 'Huy.docx'), 'the user file')
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, false, dir, 'Huy.docx', b64('evil'), undefined)
     expect(result.ok).toBe(false)
     expect(result.error).toContain('overwrite policy')
@@ -211,7 +229,7 @@ describe('authorization happens before anything is written', () => {
 
   it('refuses an unsupported extension', async () => {
     const dir = await freshDir()
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, false, dir, 'Huy.exe', b64('payload'), 'overwrite')
     expect(result.ok).toBe(false)
     expect(result.error).toContain('.docx or .pdf')
@@ -220,7 +238,7 @@ describe('authorization happens before anything is written', () => {
 
   it('refuses an oversized payload before turning it into bytes', async () => {
     const dir = await freshDir()
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const huge = 'A'.repeat(MAX_MAIL_MERGE_PAYLOAD_BYTES * 2)
     const result = await runWrite(grant, false, dir, 'Huy.docx', huge, 'overwrite')
     expect(result.ok).toBe(false)
@@ -230,7 +248,7 @@ describe('authorization happens before anything is written', () => {
 
   it('refuses malformed base64', async () => {
     const dir = await freshDir()
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, false, dir, 'Huy.docx', '!!!not base64!!!', 'overwrite')
     expect(result.ok).toBe(false)
     expect(result.error).toContain('base64')
@@ -239,7 +257,7 @@ describe('authorization happens before anything is written', () => {
 
   it('refuses an empty file name', async () => {
     const dir = await freshDir()
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, false, dir, '   ', b64('x'), 'overwrite')
     expect(result.ok).toBe(false)
     expect(await listing(dir)).toEqual([])
@@ -249,7 +267,7 @@ describe('authorization happens before anything is written', () => {
     const dir = await freshDir()
     const elsewhere = await mkdtemp(join(tmpdir(), 'genoffice-mm-elsewhere-'))
     await symlink(elsewhere, join(dir, 'link'))
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, false, dir, 'link/Huy.docx', b64('evil'), 'overwrite')
     expect(result.ok).toBe(true)
     expect(await listing(dir)).toEqual(['link', 'link_Huy.docx'])
@@ -262,7 +280,7 @@ describe('authorization happens before anything is written', () => {
     const link = join(base, 'merge')
     await mkdir(real)
     await symlink(real, link)
-    const grant = { dir: link, allocated: new Set<string>() }
+    const grant = { dir: link, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, false, link, 'Huy.docx', b64('real'), 'overwrite')
     expect(result.ok).toBe(true)
     expect(await listing(real)).toEqual(['Huy.docx'])
@@ -271,7 +289,11 @@ describe('authorization happens before anything is written', () => {
 
   it('refuses a grant directory that does not exist', async () => {
     const base = await mkdtemp(join(tmpdir(), 'genoffice-mm-missing-'))
-    const grant = { dir: join(base, 'never-created'), allocated: new Set<string>() }
+    const grant = {
+      dir: join(base, 'never-created'),
+      allocated: new Set<string>(),
+      batch: 'batch-1',
+    }
     const result = await runWrite(
       grant,
       false,
@@ -286,7 +308,7 @@ describe('authorization happens before anything is written', () => {
 
   it('sanitizes a path-shaped name instead of creating a subdirectory', async () => {
     const dir = await freshDir()
-    const grant = { dir, allocated: new Set<string>() }
+    const grant = { dir, allocated: new Set<string>(), batch: 'batch-1' }
     const result = await runWrite(grant, false, dir, 'sub/../Huy.docx', b64('x'), 'overwrite')
     expect(result.ok).toBe(true)
     expect(await listing(dir)).toEqual(['sub_.._Huy.docx'])

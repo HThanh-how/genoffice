@@ -52,6 +52,8 @@ export interface MailMergeExportOptions {
   overwrite: 'skip' | 'rename' | 'overwrite'
   /** PDF only: merge every recipient's pages into one file */
   combined: boolean
+  /** the main-process batch this export owns the output directory through */
+  batch?: string
 }
 
 export interface MailMergeExportError {
@@ -65,11 +67,7 @@ export interface MailMergeExportError {
  * dialog would keep saying "exporting" forever. The status is the terminal flag.
  */
 export type MailMergeExportStatus =
-  | 'running'
-  | 'completed'
-  | 'completed_with_errors'
-  | 'cancelled'
-  | 'failed'
+  'running' | 'completed' | 'completed_with_errors' | 'cancelled' | 'failed'
 
 export interface MailMergeExportProgress {
   total: number
