@@ -476,6 +476,120 @@ describe('multi-word merge fields through the editor', () => {
   })
 })
 
+describe('duplicate file names inside one batch', () => {
+  const pattern = (overwrite: MailMergeExportOptions['overwrite']): MailMergeExportOptions => ({
+    format: 'docx',
+    scope: 'all',
+    outputDir: '/out',
+    // no {index}: two recipients with the same name resolve to the same file
+    pattern: '{Name}',
+    overwrite,
+    combined: false,
+  })
+
+  const sameNameSource = () =>
+    sourceFromRows([['Name'], ['Huy'], ['Huy']], {
+      kind: 'csv',
+      label: 'list.csv',
+      hasHeader: true,
+    })
+
+  it('gives two recipients with the same name two different files', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const written = stubDesktop([])
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sameNameSource(),
+      pattern('overwrite'),
+      noCancel,
+      () => {},
+    )
+    editor.destroy()
+    expect(written.map((w) => w.name)).toEqual(['Huy.docx', 'Huy (2).docx'])
+    // the second recipient did not overwrite the first, even though the policy
+    // says "overwrite": that policy is about files that were there before the batch
+    expect(progress.succeeded).toBe(2)
+    expect(progress.succeeded).toBe(written.length)
+  })
+
+  it('renames around a pre-existing file and still separates the recipients', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const written = stubDesktop(['Huy.docx'])
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sameNameSource(),
+      pattern('rename'),
+      noCancel,
+      () => {},
+    )
+    editor.destroy()
+    expect(written.map((w) => w.name)).toEqual(['Huy (2).docx', 'Huy (3).docx'])
+    expect(progress.succeeded).toBe(written.length)
+  })
+
+  it('skips a pre-existing file for every recipient that resolves to it', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const written = stubDesktop(['Huy.docx'])
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sameNameSource(),
+      pattern('skip'),
+      noCancel,
+      () => {},
+    )
+    editor.destroy()
+    expect(written.length).toBe(0)
+    expect(progress.skipped).toBe(2)
+    expect(progress.succeeded).toBe(0)
+  })
+
+  it('overwrites a file that predates the batch but never one the batch wrote', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const written = stubDesktop(['Huy.docx'])
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      sameNameSource(),
+      pattern('overwrite'),
+      noCancel,
+      () => {},
+    )
+    editor.destroy()
+    expect(written.map((w) => w.name)).toEqual(['Huy.docx', 'Huy (2).docx'])
+    expect(progress.succeeded).toBe(written.length)
+  })
+
+  it('counts successes as the files actually written', async () => {
+    const { parsed, editor } = await templateWith(
+      '<w:p>' + field('MERGEFIELD Name', null) + '</w:p>',
+    )
+    const written = stubDesktop([])
+    const source = sourceFromRows([['Name'], ['Huy'], ['An'], ['An']], {
+      kind: 'csv',
+      label: 'list.csv',
+      hasHeader: true,
+    })
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      pattern('rename'),
+      noCancel,
+      () => {},
+    )
+    editor.destroy()
+    expect(written.map((w) => w.name)).toEqual(['Huy.docx', 'An.docx', 'An (2).docx'])
+    expect(progress.succeeded).toBe(written.length)
+    expect(progress.done).toBe(3)
+  })
+})
+
 describe('pagination signal', () => {
   const editorWith = (text: string) =>
     new Editor({

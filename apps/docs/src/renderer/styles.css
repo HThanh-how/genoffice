@@ -11223,6 +11223,21 @@ body.docs-crop-active
     display: none !important;
   }
 
+  /* mail merge preview is an on-screen affordance. Chromium exports PDFs with
+     printBackground, so the green fill, the rounded corner and the highlight
+     would be baked into every merged PDF. The recipient's value itself must
+     print — only the decoration goes away. The padding stays: pagination sliced
+     the canvas with the padded box in the flow, and removing it in print would
+     re-flow lines the page boxes were measured for. */
+  .mm-field-preview-value {
+    background: none !important;
+    border-radius: 0 !important;
+  }
+
+  .mm-field-highlight {
+    background: none !important;
+  }
+
   /* degraded blocks (passthrough chips): no dashed box or chip fill in print.
      Geometry (padding/margin) must stay — pagination sliced the canvas with
      these boxes in the flow. */

@@ -4,7 +4,11 @@
  * rows it covers are the rows read, and nothing outside it can leak in.
  */
 import { describe, expect, it } from 'vitest'
-import { addressesInRange, loadSheetSource, rangeBounds } from '../src/renderer/mail-merge/data-source'
+import {
+  addressesInRange,
+  loadSheetSource,
+  rangeBounds,
+} from '../src/renderer/mail-merge/data-source'
 
 /** A stand-in for the shell's spreadsheet bridge: cells keyed by their A1 address. */
 function fakeReader(cells: Record<string, string>) {
@@ -25,7 +29,12 @@ describe('range parsing', () => {
   it('maps a range to the columns and rows it actually names', () => {
     expect(rangeBounds('A1:D10')).toEqual({ firstCol: 0, lastCol: 3, firstRow: 1, lastRow: 10 })
     expect(rangeBounds('C5:F100')).toEqual({ firstCol: 2, lastCol: 5, firstRow: 5, lastRow: 100 })
-    expect(rangeBounds('AA10:AC20')).toEqual({ firstCol: 26, lastCol: 28, firstRow: 10, lastRow: 20 })
+    expect(rangeBounds('AA10:AC20')).toEqual({
+      firstCol: 26,
+      lastCol: 28,
+      firstRow: 10,
+      lastRow: 20,
+    })
     expect(rangeBounds('B2:B8')).toEqual({ firstCol: 1, lastCol: 1, firstRow: 2, lastRow: 8 })
     expect(rangeBounds('10:20')).toBeNull()
     expect(rangeBounds('F5:C100')).toBeNull()
@@ -124,5 +133,28 @@ describe('loading recipients from a range', () => {
     await expect(loadSheetSource(1, 'book', 'Sheet1', 'not a range', true, read)).rejects.toThrow(
       'invalid range',
     )
+  })
+
+  it('refuses a range bigger than one read can return rather than reading part of it', async () => {
+    // A1:Z10000 selects 260,000 cells; a single read returns at most 200,000.
+    // Trimming it would produce a "complete" list of 7,692 rows and the batch
+    // would merge for a subset of the recipients without anyone being told.
+    const calls: string[][] = []
+    const read = async (_wcId: number, _sheet: string, addresses: string[]) => {
+      calls.push(addresses)
+      return { ok: true, result: { cells: { A1: { value: 'Name' }, A2: { value: 'Huy' } } } }
+    }
+    await expect(loadSheetSource(1, 'book', 'Sheet1', 'A1:Z10000', true, read)).rejects.toThrow(
+      /260000/,
+    )
+    // nothing was read at all: no partial dataset is ever handed to the picker
+    expect(calls.length).toBe(0)
+  })
+
+  it('reads a range that fits inside the cap in one pass', async () => {
+    const { read, requested } = fakeReader({ A1: 'Name', A2: 'Huy' })
+    const source = await loadSheetSource(1, 'book', 'Sheet1', 'A1:A7692', true, read)
+    expect(requested.length).toBe(7692)
+    expect(source.recipients.map((r) => r.values.Name)).toEqual(['Huy'])
   })
 })

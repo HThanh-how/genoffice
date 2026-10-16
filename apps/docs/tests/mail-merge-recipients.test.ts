@@ -54,6 +54,35 @@ describe('CSV recipient source', () => {
     expect(columns.map((c) => c.name)).toEqual(['Name', 'Column 2', 'Name (2)', 'City'])
   })
 
+  it('keeps every column distinct when a generated suffix matches a literal header', () => {
+    // "Name" twice plus a header that literally reads "Name (2)": the second
+    // "Name" would otherwise be named "Name (2)" and collide with the third
+    const columns = buildColumns(['Name', 'Name', 'Name (2)'])
+    const names = columns.map((c) => c.name)
+    expect(new Set(names).size).toBe(3)
+    expect(names[0]).toBe('Name')
+    // the header text the user typed is preserved, suffix or not
+    expect(columns.map((c) => c.header)).toEqual(['Name', 'Name', 'Name (2)'])
+
+    const source = sourceFromRows(
+      [
+        ['Name', 'Name', 'Name (2)'],
+        ['first', 'second', 'third'],
+      ],
+      { kind: 'csv', label: 'list.csv', hasHeader: true },
+    )
+    const values = source.recipients[0].values
+    expect(Object.keys(values).length).toBe(3)
+    expect(names.every((n) => n in values)).toBe(true)
+    expect(Object.values(values).sort()).toEqual(['first', 'second', 'third'])
+  })
+
+  it('does not let a generated suffix collide with an earlier literal header', () => {
+    const names = buildColumns(['Name (2)', 'Name', 'Name']).map((c) => c.name)
+    expect(new Set(names).size).toBe(3)
+    expect(names[0]).toBe('Name (2)')
+  })
+
   it('builds recipients with stable ids and one value per column', () => {
     const source = sourceFromRows(
       [

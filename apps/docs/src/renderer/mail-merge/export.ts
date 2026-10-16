@@ -108,6 +108,20 @@ export function resolveOutputName(
   return { name: base, skipped: false }
 }
 
+/**
+ * A name this batch already gave to another recipient is not a pre-existing
+ * file: the overwrite policy governs files that were in the folder before the
+ * batch started, not a recipient's own output. Collisions inside a batch are
+ * always resolved by renaming, so every recipient gets a file of their own.
+ */
+function withinBatch(
+  resolved: { name: string; skipped: boolean },
+  allocated: Set<string>,
+): { name: string; skipped: boolean } {
+  if (resolved.skipped || !allocated.has(resolved.name)) return resolved
+  return { name: uniqueFileName(resolved.name, allocated), skipped: false }
+}
+
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)]
 }
@@ -175,7 +189,12 @@ export async function runMailMergeExport(
   const unmergeable = passthroughFieldInstructions(ctx.doc.parsed.blocks)
 
   const listing = await window.desktop.listMailMergeOutput(options.outputDir)
-  const taken = new Set<string>(listing.ok ? (listing.names ?? []) : [])
+  // two sets, on purpose: `existing` is what was already in the destination (the
+  // overwrite policy is about those files), `allocated` is what this batch has
+  // handed out so far. A later recipient must never overwrite a file an earlier
+  // recipient of the same batch just wrote, whatever the policy says.
+  const existing = new Set<string>(listing.ok ? (listing.names ?? []) : [])
+  const allocated = new Set<string>()
 
   if (options.format === 'pdf') {
     if (!document.querySelector('.pagination-preview')) ctx.setShowPagePreview(true)
@@ -204,7 +223,7 @@ export async function runMailMergeExport(
       values: recipient.values,
       extension: options.format,
     })
-    const resolved = resolveOutputName(base, taken, options.overwrite)
+    const resolved = withinBatch(resolveOutputName(base, existing, options.overwrite), allocated)
     if (resolved.skipped) {
       progress.skipped += 1
       progress.done += 1
@@ -213,7 +232,8 @@ export async function runMailMergeExport(
       continue
     }
     const name = resolved.name
-    taken.add(name)
+    existing.add(name)
+    allocated.add(name)
     progress.current = name
     onProgress({ ...progress })
 
