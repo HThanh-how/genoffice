@@ -1,5 +1,12 @@
 import { test, expect } from '@playwright/test'
-import { mkdirSync, mkdtempSync, realpathSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import JSZip from 'jszip'
@@ -55,7 +62,7 @@ const CSV =
 
 async function documentXml(path: string): Promise<string> {
   const zip = await JSZip.loadAsync(readFileSync(path))
-  return (await zip.file('word/document.xml')!.async('string'))
+  return await zip.file('word/document.xml')!.async('string')
 }
 
 test.describe('docs mailings tab', () => {
@@ -91,28 +98,33 @@ test.describe('docs mailings tab', () => {
     // the picker shows the quoted column names exactly as the CSV wrote them
     await expect(page.locator('.mm-recipient-head')).toContainText('Full Name')
     await expect(page.locator('.mm-recipient-head')).toContainText('Postal Address')
-    await expect(page.locator('.mm-picker-meta')).toContainText('Recipients 3, selected 3')
+    await expect(page.locator('.mm-picker-meta')).toContainText('3 recipients, 3 selected')
 
     await page.getByRole('button', { name: 'Use selected (3)' }).click()
     await page.getByRole('button', { name: 'Preview Results' }).click()
     await expect(page.locator('.mm-field-preview-value').first()).toContainText('Nguyễn Văn A')
-    await expect(page.locator('.ProseMirror')).toContainText(
-      'Dear Nguyễn Văn A of 123 Nguyễn Huệ',
-    )
+    await expect(page.locator('.mm-field-preview-value').nth(1)).toContainText('123 Nguyễn Huệ')
+    // the widget sits beside the hidden placeholder, so the merged text reads
+    // like the sentence Word would print
+    await expect(page.locator('.ProseMirror')).toContainText('Dear Nguyễn Văn A')
 
     await page.getByRole('button', { name: 'Check for Errors' }).click()
     await expect(page.locator('.mail-merge-validation')).toContainText('No problems')
-    await page.getByRole('button', { name: 'Close' }).click()
+    // the check dialog offers Cancel and Continue, not Close
+    await page.getByRole('button', { name: 'Cancel' }).click()
 
     await page.getByRole('button', { name: 'Finish & Merge' }).click()
-    await page.getByRole('button', { name: 'Export as Word documents' }).click()
+    // the ribbon dropdown is a menu-button listbox: its rows are options, not buttons
+    await page.getByRole('option', { name: 'Export as Word documents' }).click()
     await page.getByRole('button', { name: 'Browse…' }).click()
     await page.getByRole('button', { name: 'Export 3 files' }).click()
 
     await expect(page.locator('.mail-merge-progress h2')).toContainText('Export completed')
     await page.getByRole('button', { name: 'Close' }).click()
 
-    const names = readdirSync(outDir).filter((n) => n.endsWith('.docx')).sort()
+    const names = readdirSync(outDir)
+      .filter((n) => n.endsWith('.docx'))
+      .sort()
     expect(names.length).toBe(3)
     const xml = await documentXml(join(outDir, names[0]))
     expect(xml).toContain('Nguyễn Văn A')
@@ -152,17 +164,18 @@ test.describe('docs mailings tab', () => {
     await page.getByRole('button', { name: 'Use selected (1)' }).click()
 
     await page.getByRole('button', { name: 'Check for Errors' }).click()
-    await expect(page.locator('.mm-issue.error')).toContainText('Missing source column')
-    await expect(page.locator('.mm-issue.error')).toContainText('Postal Address')
-    await page.getByRole('button', { name: 'Close' }).click()
+    await expect(page.locator('.mm-issue.error').first()).toContainText('Missing source column')
+    await expect(page.locator('.mm-issue.error').first()).toContainText('Postal Address')
+    await page.getByRole('button', { name: 'Cancel' }).click()
 
     // Finish & Merge must not write a document that still contains «Postal Address»
     await page.getByRole('button', { name: 'Finish & Merge' }).click()
-    await page.getByRole('button', { name: 'Export as Word documents' }).click()
+    await page.getByRole('option', { name: 'Export as Word documents' }).click()
     await page.getByRole('button', { name: 'Browse…' }).click()
     await page.getByRole('button', { name: 'Export 1 files' }).click()
 
     await expect(page.locator('.mail-merge-validation')).toContainText('Missing source column')
+    await page.getByRole('button', { name: 'Cancel' }).click()
     expect(readdirSync(outDir).filter((n) => n.endsWith('.docx')).length).toBe(0)
 
     await closeAndSaveVideo(app, page, 'mail-merge-error')

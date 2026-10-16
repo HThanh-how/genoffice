@@ -7,6 +7,7 @@ import {
   buildOutputFileName,
   collectMergeFields,
   evaluateConditionalField,
+  isRepresentableColumnName,
   mergeFieldName,
   mergeFieldInstruction,
   patchMergeFieldXml,
@@ -283,20 +284,24 @@ describe('merge field instruction', () => {
     expect(mergeFieldInstruction('  Department  ')).toBe('MERGEFIELD Department')
   })
 
-  it('never lets a quote in a column name break the field token', () => {
+  it('refuses a column name that cannot be a field name instead of renaming it', () => {
     // a bare `MERGEFIELD He said "hi"` would merge the column `He` and swallow
-    // the rest; the name is quoted and its quotes folded
-    expect(mergeFieldInstruction('He said "hi"')).toBe(`MERGEFIELD "He said 'hi'"`)
-    expect(mergeFieldName(mergeFieldInstruction('He said "hi"'))).toBe(`He said 'hi'`)
+    // the rest, and folding the quote to an apostrophe would name a column the
+    // source does not have — so the name is rejected, never rewritten
+    expect(mergeFieldInstruction('He said "hi"')).toBeNull()
+    expect(isRepresentableColumnName('He said "hi"')).toBe(false)
+    expect(isRepresentableColumnName('Full Name')).toBe(true)
+    expect(isRepresentableColumnName('')).toBe(false)
+    expect(isRepresentableColumnName('   ')).toBe(false)
   })
 
   it('round-trips a multi-word column name through parse → merge → save → reopen', async () => {
     const bytes = await buildDocx({
       bodyXml:
         '<w:p>' +
-        field(mergeFieldInstruction('Full Name'), null) +
+        field(mergeFieldInstruction('Full Name')!, null) +
         '<w:r><w:t xml:space="preserve"> of </w:t></w:r>' +
-        field(mergeFieldInstruction('Postal Address'), null) +
+        field(mergeFieldInstruction('Postal Address')!, null) +
         '</w:p>',
     })
     const parsed = await parseDocx(bytes)

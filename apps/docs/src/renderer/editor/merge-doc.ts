@@ -119,16 +119,22 @@ export function applyMergeValuesToPmDoc(
  * The instruction is built by `mergeFieldInstruction`, which quotes column
  * names containing spaces — `MERGEFIELD Postal Address` would merge the column
  * `Postal` and drop the rest of the name.
+ *
+ * Returns false when the column name cannot be a field name (one containing a
+ * double quote). Nothing is inserted in that case: the field would silently
+ * refer to a different, renamed column.
  */
-export function insertMergeField(editor: Editor, name: string): void {
-  if (!editor.isEditable) return
+export function insertMergeField(editor: Editor, name: string): boolean {
+  const instr = mergeFieldInstruction(name)
+  if (!instr || !editor.isEditable) return false
   editor
     .chain()
     .focus()
     .insertContent({
       type: 'text',
       text: mergePlaceholder(name),
-      marks: [{ type: 'instrField', attrs: { instr: mergeFieldInstruction(name) } }],
+      marks: [{ type: 'instrField', attrs: { instr } }],
     })
     .run()
+  return true
 }

@@ -3,7 +3,7 @@
  * template references a column the source does not have; GenOffice reports the
  * same problems up front rather than writing hundreds of wrong documents.
  */
-import { type MergeFieldRef } from '@genoffice/docx-engine'
+import { isRepresentableColumnName, type MergeFieldRef } from '@genoffice/docx-engine'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@genoffice/docx-engine'
 import { fieldCodeText } from '../editor/field-codes'
@@ -12,18 +12,40 @@ import type { MailMergeSource, MailMergeValidationIssue } from './types'
 /** Merge fields present in the editor (body) — the instrField mark is the model. */
 export function templateMergeFields(editor: Editor): MergeFieldRef[] {
   const found = new Map<string, string>()
+  for (const instr of templateFieldInstructions(editor)) {
+    for (const name of referencedColumnNames(instr)) {
+      if (!found.has(name)) found.set(name, instr.trim())
+    }
+  }
+  return [...found].map(([name, instr]) => ({ name, instr }))
+}
+
+/**
+ * Every MERGEFIELD/IF instruction the editor models, in document order.
+ * `IF` counts too: an IF whose operand names a column the source does not have
+ * is just as unresolvable as a MERGEFIELD with no column.
+ */
+export function templateFieldInstructions(editor: Editor): string[] {
+  const found: string[] = []
   editor.state.doc.descendants((node) => {
     if (!node.isText) return
-    const mark = node.marks.find((m) => m.type.name === 'instrField')
-    if (!mark) return
-    const instr = String(mark.attrs.instr ?? '')
-    const name =
-      instr.match(/^\s*MERGEFIELD\s+(?:"([^"]*)"|(\S+))/)?.[1] ??
-      instr.match(/^\s*MERGEFIELD\s+(?:"([^"]*)"|(\S+))/)?.[2]
-    if (!name) return
-    if (!found.has(name)) found.set(name, instr.trim())
+    for (const mark of node.marks) {
+      if (mark.type.name !== 'instrField') continue
+      const instr = String(mark.attrs.instr ?? '')
+      if (/^\s*(MERGEFIELD|IF)\b/i.test(instr) && !found.includes(instr)) found.push(instr)
+    }
   })
-  return [...found].map(([name, instr]) => ({ name, instr }))
+  return found
+}
+
+/** The columns one field instruction asks for: the MERGEFIELD name, or the
+ *  «column» operands of an IF. */
+export function referencedColumnNames(instr: string): string[] {
+  const quoted = instr.match(/^\s*MERGEFIELD\s+"([^"]*)"/)?.[1]
+  const bare = instr.match(/^\s*MERGEFIELD\s+(\S+)/)?.[1]
+  const name = quoted ?? bare
+  if (name) return [name]
+  return [...instr.matchAll(/«([^»]+)»/g)].map((m) => m[1].trim()).filter(Boolean)
 }
 
 /**
@@ -32,10 +54,7 @@ export function templateMergeFields(editor: Editor): MergeFieldRef[] {
  * whose row is missing a column outright, instead of writing «Name» into the
  * output file.
  */
-export function requiredMergeFields(
-  editor: Editor,
-  blocks: readonly Block[],
-): string[] {
+export function requiredMergeFields(editor: Editor, blocks: readonly Block[]): string[] {
   const names = new Set<string>(templateMergeFields(editor).map((field) => field.name))
   for (const name of passthroughMergeFields(blocks)) names.add(name)
   return [...names]
@@ -104,6 +123,12 @@ export function validateMergeSession(
   for (const column of source.columns) {
     if (column.duplicateOf !== undefined) {
       issues.push({ severity: 'warning', key: 'mailMergeDuplicateColumn', detail: column.header })
+    }
+    // a header containing a double quote can never be a MERGEFIELD name, so no
+    // field in the template can ever read it — say so instead of quietly
+    // renaming the column when a field is inserted
+    if (!isRepresentableColumnName(column.name)) {
+      issues.push({ severity: 'warning', key: 'mailMergeUnusableColumn', detail: column.name })
     }
   }
   const used = new Set(fields.map((f) => f.name))

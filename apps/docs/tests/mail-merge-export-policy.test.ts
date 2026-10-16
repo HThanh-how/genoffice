@@ -15,7 +15,10 @@ import { buildDocx } from '../../../packages/docx-engine/tests/helpers/build-doc
 import { editorExtensions } from '../src/renderer/editor/extensions'
 import { blocksToPmDoc, pmDocToSavePlan, type PmNode } from '../src/renderer/editor/convert'
 import { insertMergeField } from '../src/renderer/editor/merge-doc'
-import { currentMailMergeValues, setMailMergePreview } from '../src/renderer/editor/mail-merge-preview'
+import {
+  currentMailMergeValues,
+  setMailMergePreview,
+} from '../src/renderer/editor/mail-merge-preview'
 import { templateMergeFields } from '../src/renderer/mail-merge/validation'
 import type { FileActionContext } from '../src/renderer/file-actions'
 import {
@@ -107,12 +110,7 @@ function stubDesktop(existing: string[]) {
   Object.assign(window, {
     desktop: {
       listMailMergeOutput: async () => ({ ok: true, names: [...files] }),
-      writeMailMergeFile: async (
-        dir: string,
-        name: string,
-        base64: string,
-        overwrite: string,
-      ) => {
+      writeMailMergeFile: async (dir: string, name: string, base64: string, overwrite: string) => {
         if (files.includes(name)) {
           if (overwrite === 'skip') return { ok: false, skipped: true, path: `${dir}/${name}` }
           if (overwrite === 'rename') {
@@ -263,7 +261,13 @@ describe('fail-closed export', () => {
       ],
       hasHeader: true,
     }
-    const progress = await runMailMergeExport(makeCtx(editor, parsed), source, options('rename'), noCancel, () => {})
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      options('rename'),
+      noCancel,
+      () => {},
+    )
     editor.destroy()
     expect(written.map((w) => w.name)).toEqual(['2_An.docx'])
     expect(progress.failed).toBe(1)
@@ -287,7 +291,13 @@ describe('fail-closed export', () => {
       ],
       { kind: 'csv', label: 'list.csv', hasHeader: true },
     )
-    const progress = await runMailMergeExport(makeCtx(editor, parsed), source, options('rename'), noCancel, () => {})
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      options('rename'),
+      noCancel,
+      () => {},
+    )
     editor.destroy()
     expect(written.length).toBe(2)
     expect(progress.failed).toBe(0)
@@ -304,7 +314,13 @@ describe('fail-closed export', () => {
       label: 'list.csv',
       hasHeader: true,
     })
-    const progress = await runMailMergeExport(makeCtx(editor, parsed), source, options('rename'), noCancel, () => {})
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      options('rename'),
+      noCancel,
+      () => {},
+    )
     editor.destroy()
     expect(written.length).toBe(0)
     expect(progress.failed).toBe(1)
@@ -400,6 +416,19 @@ describe('preview state after a batch', () => {
 })
 
 describe('multi-word merge fields through the editor', () => {
+  it('refuses a column name that cannot be a merge field instead of renaming it', async () => {
+    const { editor } = await templateWith(
+      '<w:p><w:r><w:t xml:space="preserve">Dear </w:t></w:r></w:p>',
+    )
+    // a name containing a double quote cannot be a MERGEFIELD name; inserting a
+    // field for it would silently point at a different column, so nothing is
+    // inserted at all
+    expect(insertMergeField(editor, 'He said "hi"')).toBe(false)
+    expect(templateMergeFields(editor)).toEqual([])
+    expect(editor.state.doc.textContent).toBe('Dear ')
+    editor.destroy()
+  })
+
   it('inserts, saves, reopens and merges a column name containing spaces', async () => {
     const { parsed, editor } = await templateWith(
       '<w:p><w:r><w:t xml:space="preserve">Dear </w:t></w:r></w:p>',

@@ -60,18 +60,30 @@ export function isMergeField(instr: string): boolean {
 }
 
 /**
- * The instruction Word writes for a merge field.
+ * Can this column name be written as a MERGEFIELD at all?
  *
- * A field name is one token: everything after `MERGEFIELD` up to the next
- * space is the name, so a column called `Postal Address` has to be quoted —
- * `MERGEFIELD Postal Address` would merge the column `Postal` and silently
- * swallow `Address`. Quoting is what Word itself emits for multi-word names,
- * and MERGEFIELD_INSTR_RE round-trips it. A literal `"` cannot appear inside a
- * field name (it would close the quoted token), so it is folded to `'`.
+ * A field name is one token. Inside quotes it ends at the next `"`, so a name
+ * containing a quote — `He said "hi"` — cannot be expressed: Word would read
+ * the name as `He said ` and treat the rest as junk. Folding the quote to an
+ * apostrophe would name a column that does not exist in the source, so such a
+ * name is rejected rather than silently renamed.
  */
-export function mergeFieldInstruction(name: string): string {
-  const safe = name.trim().replace(/"/g, "'")
-  if (!safe) return 'MERGEFIELD ""'
+export function isRepresentableColumnName(name: string): boolean {
+  const trimmed = name.trim()
+  return trimmed.length > 0 && !trimmed.includes('"')
+}
+
+/**
+ * The instruction Word writes for a merge field, or null when the column name
+ * cannot be one (see `isRepresentableColumnName`).
+ *
+ * A multi-word name has to be quoted — `MERGEFIELD Postal Address` would merge
+ * the column `Postal` and silently swallow `Address`. Quoting is what Word
+ * itself emits, and MERGEFIELD_INSTR_RE round-trips it.
+ */
+export function mergeFieldInstruction(name: string): string | null {
+  const safe = name.trim()
+  if (!isRepresentableColumnName(safe)) return null
   return /\s/.test(safe) ? `MERGEFIELD "${safe}"` : `MERGEFIELD ${safe}`
 }
 
@@ -287,14 +299,20 @@ function fieldMarkers(inner: string): FieldMarker[] {
     if (whole.startsWith('<w:fldChar')) {
       const kind = /w:fldCharType="(begin|separate|end)"/.exec(whole)?.[1]
       if (kind)
-        out.push({ kind: kind as 'begin' | 'separate' | 'end', offset: match.index, length: whole.length })
+        out.push({
+          kind: kind as 'begin' | 'separate' | 'end',
+          offset: match.index,
+          length: whole.length,
+        })
       continue
     }
     out.push({
       kind: 'instr',
       offset: match.index,
       length: whole.length,
-      text: decodeEntities(whole.slice(whole.indexOf('>') + 1, whole.lastIndexOf('</w:instrText>'))),
+      text: decodeEntities(
+        whole.slice(whole.indexOf('>') + 1, whole.lastIndexOf('</w:instrText>')),
+      ),
     })
   }
   return out
@@ -471,7 +489,9 @@ function patchComplexFields(xml: string, values: MergeValues, report: MergeRepor
       const endRun = runs[i]
       // keep whatever the two boundary runs hold outside the field markers
       const before = beginRun.inner.slice(0, field.offset).replace(/<w:fldChar\b[^>]*>/g, '')
-      const after = endRun.inner.slice(marker.offset + marker.length).replace(/<w:fldChar\b[^>]*>/g, '')
+      const after = endRun.inner
+        .slice(marker.offset + marker.length)
+        .replace(/<w:fldChar\b[^>]*>/g, '')
       const rPr = rPrOf(before) ?? firstRPr(runs, field.run, i) ?? ''
       addPatch(patches, {
         from: beginRun.start,

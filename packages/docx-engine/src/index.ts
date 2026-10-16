@@ -196,6 +196,7 @@ export {
   evaluateConditionalField,
   isConditionalField,
   isMergeField,
+  isRepresentableColumnName,
   mergeFieldName,
   mergeFieldInstruction,
   mergePlaceholder,

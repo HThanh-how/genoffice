@@ -1,4 +1,5 @@
 import { Dropdown } from '@genoffice/ui'
+import { isRepresentableColumnName } from '@genoffice/docx-engine'
 import { BIG, TabProps } from '../ribbon-tabs'
 import { IconCaret, IconHighlight, IconSearch, IconTable } from '../icons'
 import { useI18n } from '../../i18n/locale'
@@ -93,6 +94,9 @@ export function MailingsTab({
                     ...source!.columns.map((column) => ({
                       value: column.name,
                       label: column.name,
+                      // a header with a double quote cannot be a MERGEFIELD name;
+                      // offering it would insert a field for a different column
+                      disabled: !isRepresentableColumnName(column.name),
                     })),
                   ]
                 : [{ value: 'insert-field', label: tr('mailMergeNoColumns'), disabled: true }]

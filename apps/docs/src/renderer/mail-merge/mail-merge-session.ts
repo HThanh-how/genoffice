@@ -9,6 +9,7 @@
 import { useCallback, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
 import type { FileActionContext } from '../file-actions'
+import { t } from '../i18n/locale'
 import { insertMergeField } from '../editor/merge-doc'
 import { setMailMergeHighlight, setMailMergePreview } from '../editor/mail-merge-preview'
 import { runMailMergeExport, type CancelToken } from './export'
@@ -42,7 +43,7 @@ export interface MailMergeSession {
   togglePreview: (on: boolean) => void
   stepPreview: (delta: number) => void
   toggleHighlight: (on: boolean) => void
-  insertField: (name: string) => void
+  insertField: (name: string) => boolean
   checkErrors: () => void
   startExport: (options: MailMergeExportOptions) => void
   cancelExport: () => void
@@ -154,11 +155,15 @@ export function useMailMergeSession(
     },
 
     insertField: (name) => {
-      if (!editor) return
+      if (!editor) return false
       // Word inserts the field as a real MERGEFIELD, not as literal «text».
       // insertMergeField quotes multi-word column names, so "Postal Address"
       // round-trips as one field instead of merging the column "Postal".
-      insertMergeField(editor, name)
+      // A name containing a double quote cannot be a field name at all: the
+      // insert is refused rather than the column being renamed.
+      const inserted = insertMergeField(editor, name)
+      if (!inserted) getCtx().setStatus(t('mailMergeFieldNotInserted', { name }))
+      return inserted
     },
 
     checkErrors: () => {
