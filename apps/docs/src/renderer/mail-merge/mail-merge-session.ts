@@ -14,7 +14,7 @@ import { insertMergeField } from '../editor/merge-doc'
 import { setMailMergeHighlight, setMailMergePreview } from '../editor/mail-merge-preview'
 import { runMailMergeExport, type CancelToken } from './export'
 import { initialProgress, applyJobFailure } from './progress'
-import { selectedCount } from './recipient-store'
+import { exportRecipients } from './recipient-store'
 import { templateMergeFields, validateMergeSession } from './validation'
 import type {
   MailMergeExportOptions,
@@ -135,6 +135,9 @@ export function useMailMergeSession(
         cancelRef.current.cancelled = true
         return
       }
+      // the batch is over (or never started): the tab no longer needs write
+      // permission on the folder the user picked
+      if (dialog === 'export' || dialog === 'progress') void window.desktop.releaseMailMergeDir()
       setDialog(null)
     },
 
@@ -168,8 +171,11 @@ export function useMailMergeSession(
 
     checkErrors: () => {
       if (!editor) return
-      const blocks = getCtx().doc?.parsed.blocks ?? []
-      setIssues(validateMergeSession(source, templateMergeFields(editor), blocks, editor))
+      const parsed = getCtx().doc?.parsed ?? null
+      const blocks = parsed?.blocks ?? []
+      setIssues(
+        validateMergeSession(source, templateMergeFields(editor), blocks, editor, undefined, parsed),
+      )
       setDialog('validate')
     },
 
@@ -179,8 +185,16 @@ export function useMailMergeSession(
       // would write «Name» into every output file. Word refuses to merge in that
       // situation, and so does GenOffice — the user gets the error list instead
       // of a folder of broken documents.
-      const blocks = getCtx().doc?.parsed.blocks ?? []
-      const issues = validateMergeSession(source, templateMergeFields(editor), blocks, editor)
+      const parsed = getCtx().doc?.parsed ?? null
+      const blocks = parsed?.blocks ?? []
+      const issues = validateMergeSession(
+        source,
+        templateMergeFields(editor),
+        blocks,
+        editor,
+        options.scope,
+        parsed,
+      )
       const blocking = issues.filter((issue) => issue.severity === 'error')
       if (blocking.length > 0) {
         setIssues(blocking)
@@ -190,7 +204,7 @@ export function useMailMergeSession(
       runningRef.current = true
       setRunning(true)
       cancelRef.current = { cancelled: false }
-      const base = initialProgress(selectedCount(source))
+      const base = initialProgress(exportRecipients(source, options.scope).length)
       setProgress(base)
       setDialog('progress')
       void runMailMergeExport(getCtx(), source, options, cancelRef.current, (p) => setProgress(p))

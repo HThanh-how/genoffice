@@ -59,6 +59,8 @@ export function RecipientPickerDialog({
    * the data handed to Mail Merge are different things.
    */
   const requestSeq = useRef(0)
+  /** the header setting as it is *now*, not as it was when a read started */
+  const hasHeaderRef = useRef(true)
   const commit = (seq: number, next: MailMergeSource) => {
     if (seq !== requestSeq.current) return
     setPending(next)
@@ -77,6 +79,17 @@ export function RecipientPickerDialog({
     requestSeq.current += 1
   }
 
+  /**
+   * A loaded source is only valid while the controls that produced it are
+   * unchanged. Switching from CSV to the spreadsheet tab does not load a
+   * spreadsheet; it leaves the CSV in `pending`. Applying then would merge the
+   * file the user stopped looking at, so the stale source is dropped instead.
+   */
+  function dropStaleSource(nextKind: MailMergeSourceKind) {
+    invalidateInFlight()
+    if (pending && pending.kind !== nextKind) setPending(null)
+  }
+
   async function applyXlsx(base64: string, path: string, sheetName: string, header: boolean) {
     const seq = ++requestSeq.current
     setRawFile({ base64, path })
@@ -91,7 +104,16 @@ export function RecipientPickerDialog({
    * dialog would show one interpretation of the file and hand Mail Merge another.
    */
   function reparse(header: boolean) {
+    hasHeaderRef.current = header
     setHasHeader(header)
+    if (kind === 'sheets') {
+      // the header setting decides which row becomes the column list, so the
+      // sheet is read again under the new setting rather than reinterpreted from
+      // a snapshot taken under the old one
+      if (tabId) void readOpenSheet(header).catch((err) => setError(String(err)))
+      else setPending(null)
+      return
+    }
     if (!rawFile) return
     if (kind === 'csv') {
       try {
@@ -115,16 +137,29 @@ export function RecipientPickerDialog({
       return
     }
     try {
-      setRawFile({ base64: result.base64, path: result.path ?? '' })
+      const path = result.path ?? ''
+      // the tab the user is on says how the file should be read; a spreadsheet
+      // picked on the CSV tab would be parsed as text and produce nonsense rows
+      const isSpreadsheet = /\.xlsx$/i.test(path)
+      if (kind === 'csv' && isSpreadsheet) {
+        setError('that file is a spreadsheet; use the Excel tab to read it')
+        return
+      }
+      if (kind === 'xlsx' && !isSpreadsheet) {
+        setError('the Excel tab reads .xlsx files; that file is not one')
+        return
+      }
+      setRawFile({ base64: result.base64, path })
+      const header = hasHeaderRef.current
       if (kind === 'xlsx') {
         const names = await listXlsxSheets(result.base64)
         if (seq !== requestSeq.current) return
         setSheets(names)
         const first = names[0] ?? ''
         setSheet(first)
-        commit(seq, await loadXlsxSource(result.base64, result.path ?? '', first, hasHeader))
+        commit(seq, await loadXlsxSource(result.base64, path, first, header))
       } else {
-        commit(seq, loadCsvSource(result.base64, result.path ?? '', hasHeader))
+        commit(seq, loadCsvSource(result.base64, path, header))
       }
     } catch (err) {
       // a failed read leaves the previously confirmed source in place: the
@@ -133,7 +168,7 @@ export function RecipientPickerDialog({
     }
   }
 
-  async function readOpenSheet() {
+  async function readOpenSheet(header: boolean = hasHeader) {
     const seq = ++requestSeq.current
     if (!tabId) {
       setError(t('mailMergeNoSheetOpen'))
@@ -156,7 +191,7 @@ export function RecipientPickerDialog({
           t('mailMergeOpenSpreadsheet'),
           chosen,
           range,
-          hasHeader,
+          header,
         ),
       )
     } catch (err) {
@@ -194,7 +229,7 @@ export function RecipientPickerDialog({
               aria-selected={kind === value}
               className={`mm-source-tab ${kind === value ? 'active' : ''}`}
               onClick={() => {
-                invalidateInFlight()
+                dropStaleSource(value)
                 setKind(value)
               }}
             >
@@ -217,6 +252,8 @@ export function RecipientPickerDialog({
                   onChange={(e) => {
                     invalidateInFlight()
                     setTabId(e.target.value)
+                    // the list on screen came from the workbook the user just left
+                    setPending(null)
                   }}
                 >
                   {sheetTabs.length === 0 && <option value="">{t('mailMergeNoSheetOpen')}</option>}
@@ -229,7 +266,13 @@ export function RecipientPickerDialog({
               </label>
               <label>
                 {t('mailMergeWorksheet')}
-                <select value={sheet} onChange={(e) => setSheet(e.target.value)}>
+                <select value={sheet} onChange={(e) => {
+                  invalidateInFlight()
+                  setSheet(e.target.value)
+                  // a different worksheet is a different source: the rows shown
+                  // belong to the one the user switched away from
+                  if (kind === 'sheets') setPending(null)
+                }}>
                   {sheets.map((name) => (
                     <option key={name} value={name}>
                       {name}
@@ -241,7 +284,11 @@ export function RecipientPickerDialog({
                 {t('mailMergeRange')}
                 <input
                   value={range}
-                  onChange={(e) => setRange(e.target.value)}
+                  onChange={(e) => {
+                    invalidateInFlight()
+                    setRange(e.target.value)
+                    if (kind === 'sheets') setPending(null)
+                  }}
                   placeholder="A1:F1000"
                 />
               </label>
@@ -440,7 +487,7 @@ export function RecipientPickerDialog({
           </button>
           <button
             className="btn-primary"
-            disabled={!pending || selected === 0}
+            disabled={!pending}
             onClick={() => pending && onApply(pending)}
           >
             {t('mailMergeUseSelected', { n: selected })}

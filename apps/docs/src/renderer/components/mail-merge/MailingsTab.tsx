@@ -35,7 +35,9 @@ export function MailingsTab({
   onExport,
 }: MailingsTabProps) {
   const { t: tr } = useI18n()
-  const ready = hasDoc && source !== null && selectedCount(source) > 0
+  // the batch runs over the ticked rows or over every row, depending on the
+  // scope chosen in the export dialog — a source with rows is enough to start
+  const ready = hasDoc && source !== null && source.recipients.length > 0
   const whyNotReady = !source ? tr('mailMergeTipNoSource') : tr('mailMergeTipNoneSelected')
 
   return (
