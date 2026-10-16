@@ -29,17 +29,69 @@ export function decodeCsvText(bytes: Uint8Array): string {
   }
 }
 
-/** Pick the delimiter that actually separates columns on the first data line. */
+/**
+ * The first `count` CSV records, quote-aware.
+ *
+ * A record is not a line: a quoted field may contain a newline, so
+ * `"Address line 1\nAddress line 2";Name` is one record spanning two physical
+ * lines. Delimiter detection that reads only physical lines sees the first half
+ * of that record and picks the wrong delimiter.
+ */
+function firstRecords(text: string, count: number): string[] {
+  const out: string[] = []
+  let current = ''
+  let inQuotes = false
+  for (let i = 0; i < text.length && out.length < count; i++) {
+    const ch = text[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (text[i + 1] === '"') {
+          current += '""'
+          i += 1
+          continue
+        }
+        inQuotes = false
+      }
+      current += ch
+      continue
+    }
+    if (ch === '"') {
+      inQuotes = true
+      current += ch
+      continue
+    }
+    if (ch === '\n' || ch === '\r') {
+      if (ch === '\r' && text[i + 1] === '\n') i += 1
+      if (current.trim() !== '') out.push(current)
+      current = ''
+      continue
+    }
+    current += ch
+  }
+  if (out.length < count && current.trim() !== '') out.push(current)
+  return out
+}
+
+/**
+ * Pick the delimiter that actually separates columns.
+ *
+ * The count is taken over up to three complete records rather than the first
+ * physical line, and only outside quoted fields — a comma inside an address is
+ * not a column separator. Three records are enough to break a tie between a
+ * header that happens to contain one delimiter and the body that uses another.
+ */
 export function sniffDelimiter(text: string): string {
-  const line = text.split(/\r?\n/).find((l) => l.trim() !== '') ?? ''
+  const records = firstRecords(stripBom(text), 3)
   let best: string | null = null
   let bestCount = 0
   for (const d of CANDIDATE_DELIMITERS) {
     let count = 0
-    let inQuotes = false
-    for (const ch of line) {
-      if (ch === '"') inQuotes = !inQuotes
-      else if (ch === d && !inQuotes) count += 1
+    for (const record of records) {
+      let inQuotes = false
+      for (const ch of record) {
+        if (ch === '"') inQuotes = !inQuotes
+        else if (ch === d && !inQuotes) count += 1
+      }
     }
     if (count > bestCount) {
       bestCount = count

@@ -3,7 +3,7 @@
  * spreadsheet) into the normalized recipient list the picker and the export
  * pipeline work with.
  */
-import { xlsxToGrid } from '@genoffice/file-parse/xlsx'
+import { xlsxSheetNames, xlsxToGrid } from '@genoffice/file-parse/xlsx'
 import {
   decodeCsvText,
   parseCsvRows,
@@ -147,8 +147,9 @@ export function loadCsvSource(base64: string, label: string, hasHeader: boolean)
 }
 
 export async function listXlsxSheets(base64: string): Promise<string[]> {
-  const grids = await xlsxToGrid(base64ToBytes(base64), 200)
-  return grids.map((sheet) => sheet.name)
+  // names come from workbook.xml alone: parsing every worksheet to fill a
+  // dropdown reads the whole workbook for a string the picker never uses
+  return xlsxSheetNames(base64ToBytes(base64))
 }
 
 export async function loadXlsxSource(
@@ -163,6 +164,14 @@ export async function loadXlsxSource(
   const grids = await xlsxToGrid(base64ToBytes(base64), MAX_RECIPIENTS + 2)
   if (grids.length === 0) throw new Error('the workbook has no worksheets')
   const sheet = sheetName ? (grids.find((g) => g.name === sheetName) ?? grids[0]) : grids[0]
+  // a formula with no cached result has no value to merge. Writing the formula
+  // text into a letter is not a recipient field, and writing nothing is silent,
+  // so the workbook is refused and the user is told which cells to fix
+  if (sheet.uncachedFormulas?.length) {
+    throw new Error(
+      `worksheet "${sheet.name}" has ${sheet.uncachedFormulas.length} formula cell(s) with no computed value (${sheet.uncachedFormulas.slice(0, 5).join(', ')}${sheet.uncachedFormulas.length > 5 ? ', …' : ''}); open the file in a spreadsheet app, let it recalculate, save it, and try again`,
+    )
+  }
   return sourceFromRows(sheet.rows, { kind: 'xlsx', label, sheet: sheet.name, hasHeader })
 }
 
@@ -226,10 +235,58 @@ export function addressesInRange(range: string, maxCells = MAX_RANGE_CELLS): str
 }
 
 /** Anything outside the requested rectangle is ignored, however wide the sheet is. */
-function cellText(cells: Record<string, { value?: unknown }>, col: number, row: number): string {
-  const cell = cells[`${columnLabel(col)}${row}`]
-  return cell === undefined ? '' : String(cell.value ?? '')
+interface BridgeCell {
+  /** the model value behind the cell */
+  value?: unknown
+  /** the text the number format renders, present when it differs from `value` */
+  display?: unknown
+  formula?: string
 }
+
+/**
+ * The value a recipient field should carry.
+ *
+ * The bridge reports the model value as `value` and, when a number format makes
+ * the cell look different from that model value, the text the user sees as
+ * `display`. Mail Merge writes what the user reads: an identifier formatted
+ * `000000` merges as `001234`, a date cell merges as `1-Jan-24` rather than its
+ * serial number 45292, and a currency cell merges as `$1,000.00`.
+ *
+ * A cell the bridge did not answer for is not a blank cell — it is a read that
+ * did not happen, and merging an empty string for it would silently drop an
+ * address. Those addresses are collected and reported.
+ */
+function cellText(
+  cells: Record<string, BridgeCell | undefined>,
+  col: number,
+  row: number,
+  missing: string[],
+): string {
+  const address = `${columnLabel(col)}${row}`
+  const cell = cells[address]
+  if (cell === undefined) {
+    missing.push(address)
+    return ''
+  }
+  const display = cell.display
+  const text = display !== undefined && display !== null ? String(display) : String(cell.value ?? '')
+  if (SPREADSHEET_ERRORS.has(text.trim().toUpperCase())) {
+    throw new Error(
+      `cell ${address} contains the spreadsheet error ${text.trim()}; fix the formula before merging`,
+    )
+  }
+  return text
+}
+
+const SPREADSHEET_ERRORS = new Set([
+  '#REF!',
+  '#DIV/0!',
+  '#VALUE!',
+  '#NAME?',
+  '#N/A',
+  '#NUM!',
+  '#NULL!',
+])
 
 export type SheetGridReader = (
   wcId: number,
@@ -291,15 +348,23 @@ export async function loadSheetSource(
   if (addresses.length === 0) throw new Error('invalid range')
   const response = await read(wcId, sheet, addresses)
   if (!response.ok) throw new Error(response.error ?? 'the spreadsheet could not be read')
-  const cells = (response.result as { cells?: Record<string, { value?: unknown }> } | undefined)
+  const cells = (response.result as { cells?: Record<string, BridgeCell | undefined> } | undefined)
     ?.cells
   if (!cells) throw new Error('the spreadsheet returned no cells')
   const width = selectedColumns
   const rows: string[][] = []
+  const missing: string[] = []
   for (let r = bounds.firstRow; r <= bounds.lastRow; r++) {
     const row: string[] = []
-    for (let c = 0; c < width; c++) row.push(cellText(cells, bounds.firstCol + c, r))
+    for (let c = 0; c < width; c++) row.push(cellText(cells, bounds.firstCol + c, r, missing))
     rows.push(row)
+  }
+  // the addresses were requested explicitly; an address the workbook did not
+  // answer for is a failed read, not an empty cell
+  if (missing.length > 0) {
+    throw new Error(
+      `the spreadsheet did not return ${missing.length} cell(s) in the range ${range} (${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''}); the list is incomplete and was not loaded`,
+    )
   }
   // blank rows at the end of the selection are not recipients; blank rows in
   // the middle are kept, exactly as a CSV or XLSX source keeps them

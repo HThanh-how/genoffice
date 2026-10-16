@@ -45,11 +45,34 @@ export function parseOverwritePolicy(value: unknown): MailMergeOverwritePolicy |
  * base64 at all. Checking the size before `Buffer.from` keeps an oversized
  * payload from being turned into a Buffer first.
  */
+/**
+ * Decode a payload the renderer sent.
+ *
+ * `Buffer.from(text, 'base64')` is forgiving: it ignores characters outside the
+ * alphabet, accepts padding in the middle, and silently discards the leftover
+ * bits of a non-canonical last group. A length computed from the string's
+ * character count therefore disagrees with the bytes actually written — "A"
+ * decodes to one byte, "AAAA=" to three, "A===" to one. The writer's size limit
+ * and the file on disk must describe the same buffer, so the payload is decoded
+ * first and only then measured, and anything that does not round-trip is refused.
+ */
+export function decodeMailMergePayload(text: unknown): Buffer | null {
+  if (typeof text !== 'string' || text.length === 0) return null
+  // canonical base64 comes in whole groups of four, with at most two '=' at the end
+  if (text.length % 4 !== 0) return null
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text)) return null
+  const decoded = Buffer.from(text, 'base64')
+  if (decoded.length === 0) return null
+  // stray padding or a last group with unused bits decodes to something the
+  // sender did not mean to send
+  if (Buffer.from(decoded).toString('base64') !== text) return null
+  return decoded
+}
+
 export function base64ByteLength(text: string): number {
   if (text === '') return 0
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text)) return -1
-  const padding = text.endsWith('==') ? 2 : text.endsWith('=') ? 1 : 0
-  return Math.floor((text.length * 3) / 4) - padding
+  const decoded = decodeMailMergePayload(text)
+  return decoded === null ? -1 : decoded.length
 }
 
 /** Only the two formats a mail-merge batch can produce. */

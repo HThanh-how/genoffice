@@ -574,6 +574,8 @@ export interface DesktopApi {
   listMailMergeOutput(
     dir: string,
   ): Promise<{ ok: boolean; names?: string[]; truncated?: boolean; error?: string }>
+  /** Give up the output directory grant when the export dialog closes. */
+  releaseMailMergeDir(): Promise<{ ok: boolean; error?: string }>
   /** Open spreadsheets, for "Use an open spreadsheet" in the recipient picker. */
   listSheetTabs(): Promise<Array<{ id: string; title: string; active: boolean }>>
   /** Read a worksheet grid from the live workbook (values as displayed). */

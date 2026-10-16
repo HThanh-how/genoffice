@@ -1670,28 +1670,41 @@ export function App({
     return getActiveSheetInfoImpl(readContext(), aiRunScopeRef.current)
   }
 
+  /**
+   * Make a range readable before it is read.
+   *
+   * A lazily streamed workbook only has the cells the viewport has pulled in;
+   * everything outside reads as empty. Both the built-in AI tools and the MCP
+   * bridge go through here so a read never snapshots a region that has not been
+   * loaded yet.
+   */
+  async function ensureWorkbookRangeLoaded(
+    range: { startRow: number; endRow: number; startColumn: number; endColumn: number },
+    sheetId?: string,
+  ): Promise<boolean> {
+    const state = lazyWorkbookRef.current
+    if (!state) return true
+    // Fully-loaded workbooks (formula mode) have every cell in the grid.
+    if (state.flags.preloadComplete) return true
+    const runtime = univerRef.current
+    const workbook = runtime?.univerAPI.getActiveWorkbook()
+    const worksheet =
+      sheetId === undefined ? workbook?.getActiveSheet() : workbook?.getSheetBySheetId(sheetId)
+    if (!runtime || !worksheet) return false
+    // A sheet added this session has no file part to stream from — the
+    // grid already holds everything.
+    if (!state.file.sheets.some((sheet) => sheet.id === worksheet.getSheetId())) return true
+    // Anything reaching here genuinely streams; refuse blocks too large
+    // to load in one request.
+    if (rangeCellCount(range) > MAX_READ_RANGE_CELLS) return false
+    return ensureLazyRangeLoaded(runtime, lazyWorkbookRef, worksheet, range, setMessage)
+  }
+
   function sheetsSkillDeps(): SheetsSkillDeps {
     return {
       getActiveSheetInfo,
       aggregateRange: (sheetId, bounds) => aggregateWorkbookRange(readContext(), sheetId, bounds),
-      ensureRangeLoaded: async (range, sheetId) => {
-        const state = lazyWorkbookRef.current
-        if (!state) return true
-        // Fully-loaded workbooks (formula mode) have every cell in the grid.
-        if (state.flags.preloadComplete) return true
-        const runtime = univerRef.current
-        const workbook = runtime?.univerAPI.getActiveWorkbook()
-        const worksheet =
-          sheetId === undefined ? workbook?.getActiveSheet() : workbook?.getSheetBySheetId(sheetId)
-        if (!runtime || !worksheet) return false
-        // A sheet added this session has no file part to stream from — the
-        // grid already holds everything.
-        if (!state.file.sheets.some((sheet) => sheet.id === worksheet.getSheetId())) return true
-        // Anything reaching here genuinely streams; refuse blocks too large
-        // to load in one request.
-        if (rangeCellCount(range) > MAX_READ_RANGE_CELLS) return false
-        return ensureLazyRangeLoaded(runtime, lazyWorkbookRef, worksheet, range, setMessage)
-      },
+      ensureRangeLoaded: ensureWorkbookRangeLoaded,
       readCells: (addresses, sheetId) => readCellsImpl(readContext(), addresses, sheetId),
       readFormats: (addresses, sheetId) => readFormatsImpl(readContext(), addresses, sheetId),
       readSheetFeatures: (sheetId) => readSheetFeaturesImpl(readContext(), sheetId),
@@ -4691,7 +4704,33 @@ export function App({
     // rendered text a number format or a narrow column produced. The rendered
     // text rides along as `display` when the two differ, so a caller can still
     // see what the user sees (see modelCellValue).
-    readCells: (addresses, sheetId) => {
+    readCells: async (addresses, sheetId) => {
+      // Unstreamed cells read as empty, so the box covering the requested
+      // addresses is loaded first — the same step the built-in AI read path
+      // performs. Without it a mail-merge read of a lazily opened workbook
+      // snapshots blanks and calls them recipients.
+      let box: { startRow: number; endRow: number; startColumn: number; endColumn: number } | null =
+        null
+      for (const address of addresses) {
+        let parsed: { row: number; column: number } | null = null
+        try {
+          parsed = parseAddress(address.trim().toUpperCase())
+        } catch {
+          continue
+        }
+        if (!parsed) continue
+        box = box === null
+          ? { startRow: parsed.row, endRow: parsed.row, startColumn: parsed.column, endColumn: parsed.column }
+          : {
+              startRow: Math.min(box.startRow, parsed.row),
+              endRow: Math.max(box.endRow, parsed.row),
+              startColumn: Math.min(box.startColumn, parsed.column),
+              endColumn: Math.max(box.endColumn, parsed.column),
+            }
+      }
+      if (box && !(await ensureWorkbookRangeLoaded(box, sheetId))) {
+        throw new Error('the requested range could not be loaded from this workbook')
+      }
       const cells = readCellsImpl(readContext(), addresses, sheetId)
       return Object.fromEntries(
         Object.entries(cells).map(([address, cell]) => {

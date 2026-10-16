@@ -35,13 +35,19 @@ export function resolveSafeFileName(
   policy: MailMergeOverwritePolicy,
   exists: (candidate: string) => boolean,
   allocated?: Set<string>,
+  fold: (candidate: string) => string = (candidate) => candidate,
 ): { name: string; skipped: boolean } {
   const safe = safeFileName(name)
   if (!safe) return { name: '', skipped: true }
   if (!exists(safe)) return { name: safe, skipped: false }
   // the file is there. Was it put there by this batch, or was it already there
   // when the batch started? Only the second case is what the policy is about.
-  const takenByThisBatch = allocated?.has(safe) === true
+  // `allocated` is the batch's own list of names, so it is folded with the same
+  // rule the filesystem uses: on Windows `Notes.docx` and `NOTES.docx` are one
+  // file, and a batch that already wrote the first cannot "overwrite" it with
+  // the second.
+  const foldedAllocated = new Set<string>([...(allocated ?? [])].map(fold))
+  const takenByThisBatch = foldedAllocated.has(fold(safe))
   if (takenByThisBatch) return { name: uniqueFileName(safe, exists), skipped: false }
   if (policy === 'skip') return { name: safe, skipped: true }
   if (policy === 'overwrite') return { name: safe, skipped: false }

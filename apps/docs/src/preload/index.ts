@@ -213,6 +213,7 @@ const api: DesktopApi = {
   writeMailMergeFile: (dir: string, name: string, base64: string, overwrite?: string) =>
     ipcRenderer.invoke('docs:write-mail-merge-file', dir, name, base64, overwrite),
   listMailMergeOutput: (dir: string) => ipcRenderer.invoke('docs:list-mail-merge-output', dir),
+  releaseMailMergeDir: () => ipcRenderer.invoke('docs:release-mail-merge-dir'),
   listSheetTabs: () => ipcRenderer.invoke('docs:list-sheet-tabs'),
   readSheetGrid: (wcId: number, sheet?: string, addresses?: string[]) =>
     ipcRenderer.invoke('docs:read-sheet-grid', wcId, sheet, addresses),

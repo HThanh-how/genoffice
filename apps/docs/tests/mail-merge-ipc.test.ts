@@ -18,6 +18,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   base64ByteLength,
+  decodeMailMergePayload,
   decideMailMergeWrite,
   isMailMergeOutputName,
   parseOverwritePolicy,
@@ -86,10 +87,39 @@ describe('overwrite policy parsing', () => {
 })
 
 describe('payload validation', () => {
-  it('measures base64 without decoding it', () => {
+  /**
+   * `Buffer.from(text, 'base64')` is forgiving in ways a size check cannot see:
+   * it ignores characters outside the alphabet, accepts padding in the middle,
+   * and drops the unused bits of a non-canonical last group. "A" decodes to one
+   * byte, "AAAA=" to three, "A===" to one. The writer's limit and the bytes it
+   * stores have to describe the same buffer, so the payload is decoded first and
+   * anything that does not round-trip is refused.
+   */
+  it('refuses a payload that does not decode to what it claims', () => {
+    expect(decodeMailMergePayload('A')).toBeNull()
+    expect(decodeMailMergePayload('AAAA=')).toBeNull()
+    expect(decodeMailMergePayload('A===')).toBeNull()
+    expect(decodeMailMergePayload('ABCD=')).toBeNull()
+    expect(decodeMailMergePayload('AA=A')).toBeNull()
+    expect(decodeMailMergePayload('')).toBeNull()
+    expect(decodeMailMergePayload('not base64!!!')).toBeNull()
+    expect(decodeMailMergePayload('A')).toBeNull()
+    // the character-count estimate would have said 1 byte for "A" and 3 for "AAAA="
+    expect(base64ByteLength('A')).toBe(-1)
+    expect(base64ByteLength('AAAA=')).toBe(-1)
+    expect(base64ByteLength('A===')).toBe(-1)
+  })
+
+  it('accepts canonical base64 and measures the decoded buffer', () => {
     expect(base64ByteLength(b64('hello'))).toBe(5)
+    expect(decodeMailMergePayload(b64('hello'))?.length).toBe(5)
+    expect(decodeMailMergePayload('AA==')?.length).toBe(1)
+    // "AB==" carries bits in the last group that no byte can hold: Node decodes
+    // it to "A==", so the sender did not send what the writer would store
+    expect(decodeMailMergePayload('AB==')).toBeNull()
+    expect(base64ByteLength('AB==')).toBe(-1)
+    expect(decodeMailMergePayload('AAAA')?.length).toBe(3)
     expect(base64ByteLength('')).toBe(0)
-    expect(base64ByteLength('not base64!!!')).toBe(-1)
     expect(base64ByteLength('a'.repeat(MAX_MAIL_MERGE_PAYLOAD_BYTES * 2))).toBeGreaterThan(
       MAX_MAIL_MERGE_PAYLOAD_BYTES,
     )

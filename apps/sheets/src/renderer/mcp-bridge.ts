@@ -33,7 +33,9 @@ export interface McpSheetHandlers {
   hasWorkbook: () => boolean
   /** workbook overview: sheets with ids/names/extents, active sheet */
   context: () => unknown
-  /** values + formulas for the requested A1 addresses */
+  /** values + formulas for the requested A1 addresses. The bridge awaits it:
+   *  a lazily streamed workbook has to load the range before it can be read,
+   *  so the handler may be async. A synchronous handler is still valid. */
   readCells: (addresses: string[], sheetId?: string) => unknown
   /** the workbook's worksheets, for resolving name-addressed ops */
   sheets: () => readonly SheetRef[]
@@ -144,7 +146,7 @@ export function installSheetsMcpBridge(handlers: McpSheetHandlers): () => void {
             return
           }
           if (addresses.length > 0) {
-            reply(true, { cells: handlers.readCells(addresses, resolved.sheetId) })
+            reply(true, { cells: await handlers.readCells(addresses, resolved.sheetId) })
           } else {
             reply(true, { context: handlers.context() })
           }

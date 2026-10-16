@@ -179,12 +179,24 @@ function cellText(
   styles: NumberStyles,
   date1904: boolean,
   sharedFormulas: SharedFormulas,
+  uncachedFormulas?: string[],
 ): string {
   const type = cell['@_t'] ?? ''
   if (type === 'inlineStr') return cell.is ? sharedStringText(cell.is) : ''
   if (cell.f !== undefined) {
     recordSharedFormula(cell, sharedFormulas)
-    if (textOf(cell.v).trim() === '') return formulaText(cell, sharedFormulas)
+    if (textOf(cell.v).trim() === '') {
+      // A formula with no cached result has no value. The prose reader shows the
+      // formula text — that is what "what is in this cell" means for a human —
+      // but the address is recorded so a caller that merges cells (Mail Merge)
+      // can refuse the sheet instead of writing `=SUM(A1:A9)` into a letter.
+      if (uncachedFormulas) {
+        const ref = cell['@_r'] ?? ''
+        const formula = formulaText(cell, sharedFormulas)
+        if (formula) uncachedFormulas.push(`${ref || '(unknown)'} ${formula}`)
+      }
+      return formulaText(cell, sharedFormulas)
+    }
   }
   // <v> is ST_Xstring so it reaches the caller verbatim; the two reads that need it as a
   // scalar handle their own whitespace (Number tolerates it, the boolean compare strips it)
@@ -230,6 +242,14 @@ async function zipText(zip: JSZip, path: string): Promise<string | undefined> {
 /** Malformed refs (e.g. XXXXXX99) would otherwise grow the cells array by
  *  millions via the padding loop below. */
 export const MAX_XLSX_COLS = 16_384
+
+/**
+ * A grid row is padded up to the column of the last cell that has one. Padding
+ * to `XFD` costs 16 384 slots per row, so a sparse workbook with a stray far-right
+ * cell is a memory problem before it is a data problem. A recipient list is never
+ * wider than this, and a sheet that is is not one.
+ */
+export const MAX_GRID_COLS = 1024
 
 /** Longest run of empty slots kept verbatim between two filled cells. */
 const MAX_EMPTY_RUN = 8
@@ -362,6 +382,28 @@ export async function xlsxToText(bytes: Uint8Array): Promise<string> {
 export interface XlsxSheetGrid {
   name: string
   rows: string[][]
+  /**
+   * Cells that carry a formula but no cached result. Their displayed text is
+   * empty: the value only exists once a spreadsheet app recalculates the file.
+   * Callers that merge these cells must know they are unreadable rather than
+   * blank.
+   */
+  uncachedFormulas?: string[]
+}
+
+/**
+ * The worksheet names, without reading a single cell.
+ *
+ * Listing the sheets by parsing every worksheet is O(workbook) work for a name
+ * the picker only needs to show a dropdown.
+ */
+export async function xlsxSheetNames(bytes: Uint8Array): Promise<string[]> {
+  const zip = await JSZip.loadAsync(bytes)
+  assertZipWithinLimits(zip)
+  const workbookXml = await zipText(zip, 'xl/workbook.xml')
+  if (!workbookXml) throw new Error('Invalid xlsx: missing xl/workbook.xml')
+  const workbook = parser.parse(workbookXml) as Record<string, any>
+  return asArray(workbook.workbook?.sheets?.sheet).map((sheet) => String(sheet['@_name'] ?? ''))
 }
 
 /**
@@ -412,15 +454,24 @@ export async function xlsxToGrid(bytes: Uint8Array, maxRows = 200_000): Promise<
     const rowNodes = asArray(worksheet.worksheet?.sheetData?.row) as Array<Record<string, unknown>>
     const rows: string[][] = []
     const sharedFormulas: SharedFormulas = new Map()
+    const uncachedFormulas: string[] = []
     for (const row of rowNodes.slice(0, maxRows)) {
       const cells: string[] = []
       for (const cell of asArray(row.c as Cell | Cell[])) {
-        const text = cellText(cell, shared, numberStyles, date1904, sharedFormulas)
+        const text = cellText(cell, shared, numberStyles, date1904, sharedFormulas, uncachedFormulas)
         const ref = cell['@_r']
         const col = ref ? columnIndex(ref) : cells.length
         if (col < 0 || col >= MAX_XLSX_COLS) {
           cells.push(text)
           continue
+        }
+        // padding a row out to `XFD` allocates 16 384 slots for one value; a
+        // recipient list is never that wide, so the workbook is refused rather
+        // than turned into a multi-hundred-megabyte array
+        if (col >= MAX_GRID_COLS) {
+          throw new Error(
+            `worksheet "${String(sheet['@_name'] ?? '')}" has a cell in ${ref ?? 'an unknown column'}; Mail Merge reads at most ${MAX_GRID_COLS} columns`,
+          )
         }
         while (cells.length < col) cells.push('')
         if (cells.length === col) cells.push(text)
@@ -429,7 +480,11 @@ export async function xlsxToGrid(bytes: Uint8Array, maxRows = 200_000): Promise<
       }
       rows.push(cells)
     }
-    grids.push({ name: String(sheet['@_name'] ?? ''), rows })
+    grids.push({
+      name: String(sheet['@_name'] ?? ''),
+      rows,
+      ...(uncachedFormulas.length > 0 ? { uncachedFormulas } : {}),
+    })
   }
   return grids
 }

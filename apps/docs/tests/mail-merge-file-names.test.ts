@@ -143,4 +143,65 @@ describe('names the renderer builds', () => {
     expect(name.endsWith('.pdf')).toBe(true)
     expect(fits(name)).toBe(true)
   })
+
+  /**
+   * `isIndexToken` accepts `{INDEX}` and `{3index}`, so the expander has to
+   * accept the same grammar: a token the dialog validated must not vanish from
+   * the name the writer receives.
+   */
+  it('expands every index token the validator accepts', () => {
+    const build = (pattern: string, index: number, total: number) =>
+      buildOutputFileName({ pattern, index, total, values: {}, extension: 'docx' })
+    expect(build('{index}', 7, 100)).toBe('007.docx')
+    expect(build('{INDEX}', 7, 100)).toBe('007.docx')
+    expect(build('{Index}', 7, 5)).toBe('7.docx')
+    expect(build('{3index}', 7, 5)).toBe('007.docx')
+    expect(build('{3index}', 7, 1000)).toBe('0007.docx')
+    expect(build('{1index}', 12, 20)).toBe('12.docx')
+  })
+
+  it('trims whitespace inside a token and ignores an unknown one', () => {
+    const name = buildOutputFileName({
+      pattern: '{ Name }-{Unknown}',
+      index: 1,
+      total: 1,
+      values: { Name: 'Huy' },
+      extension: 'docx',
+    })
+    expect(name).toBe('Huy-.docx')
+  })
+
+  it('keeps a malformed brace as literal text rather than dropping it', () => {
+    const name = buildOutputFileName({
+      pattern: '{First}_{Last',
+      index: 1,
+      total: 1,
+      values: { First: 'Huy' },
+      extension: 'docx',
+    })
+    expect(name).toBe('Huy_{Last.docx')
+  })
+
+  it('falls back to a numbered name when every token is empty', () => {
+    expect(
+      buildOutputFileName({
+        pattern: '{Missing}',
+        index: 3,
+        total: 10,
+        values: {},
+        extension: 'docx',
+      }),
+    ).toBe('merge-03.docx')
+  })
+
+  it('lets two recipients differing only in case produce distinct names', () => {
+    const a = buildOutputFileName({ pattern: '{Name}', index: 1, total: 2, values: { Name: 'Notes' }, extension: 'docx' })
+    const b = buildOutputFileName({ pattern: '{Name}', index: 2, total: 2, values: { Name: 'NOTES' }, extension: 'docx' })
+    expect(a).toBe('Notes.docx')
+    expect(b).toBe('NOTES.docx')
+    // the writer, not the renderer, is where the Windows folding rule applies
+    const decision = resolveSafeFileName(b, 'overwrite', (candidate) => candidate.toLowerCase() === 'notes.docx', new Set(['Notes.docx']), (candidate) => candidate.toLowerCase())
+    expect(decision.skipped).toBe(false)
+    expect(decision.name.toLowerCase()).not.toBe('notes.docx')
+  })
 })

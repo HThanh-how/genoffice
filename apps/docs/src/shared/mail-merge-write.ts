@@ -98,9 +98,19 @@ export async function writeMailMergeOutput(
   allocated?: Set<string>,
   resolvePath: PathResolver = (candidate) => join(dir, candidate),
   write: WriteFn = writeEntirely,
+  exists: (candidate: string) => boolean = (candidate) => existsSync(join(dir, candidate)),
+  caseInsensitive = process.platform === 'win32',
 ): Promise<WriteOutcome> {
-  const exists = (candidate: string) => existsSync(join(dir, candidate))
-  const decision = resolveSafeFileName(name, policy, exists, allocated)
+  // On Windows `notes.docx` and `NOTES.docx` are the same file. Two recipients
+  // whose names differ only in case would otherwise both be handed the "free"
+  // name and the second `overwrite` would erase the first. Folding the batch's
+  // claims makes the collision visible to the writer on the platform where it is
+  // real, and leaves exact names alone everywhere else.
+  const fold = (candidate: string) => (caseInsensitive ? candidate.toLowerCase() : candidate)
+  const claimed = new Set<string>()
+  for (const entry of allocated ?? []) claimed.add(fold(entry))
+  const isTaken = (candidate: string) => claimed.has(fold(candidate)) || exists(candidate)
+  const decision = resolveSafeFileName(name, policy, isTaken, claimed, fold)
   if (!decision.name) return { name: '', path: '', skipped: true }
   if (decision.skipped) {
     // the policy said "leave the file that is already there alone" — checked
@@ -113,13 +123,14 @@ export async function writeMailMergeOutput(
   // chose to overwrite or skip: it is that recipient's own output. Claiming the
   // name before writing is what makes two recipients of the same batch
   // collide-safe even when their writes start at the same moment.
-  const taken = (candidate: string) => allocated?.has(candidate) === true || exists(candidate)
-  let candidate = allocated?.has(decision.name)
+  const taken = isTaken
+  let candidate = claimed.has(fold(decision.name))
     ? uniqueSafeFileName(decision.name, taken)
     : decision.name
   for (let attempt = 0; attempt < 1000; attempt++) {
     const path = resolvePath(candidate)
     if (!path) throw new Error(`the output path for ${candidate} is outside the directory`)
+    claimed.add(fold(candidate))
     allocated?.add(candidate)
     try {
       if (policy === 'overwrite') await atomicWriteFile(path, data)
@@ -127,6 +138,7 @@ export async function writeMailMergeOutput(
       return { name: candidate, path, skipped: false }
     } catch (err) {
       // the attempt produced nothing, so the claim is released again
+      claimed.delete(fold(candidate))
       allocated?.delete(candidate)
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
       if (policy === 'skip') return { name: candidate, path, skipped: true }
