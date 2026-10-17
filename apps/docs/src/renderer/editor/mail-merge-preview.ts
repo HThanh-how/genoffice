@@ -25,6 +25,8 @@ export interface MailMergePreviewState {
   values: MergeValues | null
   /** outline every merge field so the author can see where they sit */
   highlight: boolean
+  /** the generation these decorations were built for */
+  generation: number
   decos: DecorationSet
 }
 
@@ -62,6 +64,7 @@ function buildDecorations(
   doc: PmNode,
   values: MergeValues | null,
   highlight: boolean,
+  generation: number,
 ): DecorationSet {
   const decos: Decoration[] = []
   for (const field of mergeFields(doc)) {
@@ -79,13 +82,16 @@ function buildDecorations(
         () => {
           const el = document.createElement('span')
           el.className = 'mm-field-preview-value'
-          el.dataset.mmPreviewKey = String(previewGeneration)
+          // the generation is captured when the decoration is built, not when the
+          // widget is later materialised: a delayed DOM construction must not
+          // stamp an older recipient's value with a newer generation
+          el.dataset.mmPreviewKey = String(generation)
           el.textContent = value
           return el
         },
         // the generation is part of the key so a new recipient's value is a new
         // widget rather than a reused element still carrying the previous stamp
-        { side: -1, key: `mm:${field.from}:${previewGeneration}:${value}` },
+        { side: -1, key: `mm:${field.from}:${generation}:${value}` },
       ),
     )
   }
@@ -96,13 +102,21 @@ function applyState(tr: Transaction, old: MailMergePreviewState): MailMergePrevi
   const meta = tr.getMeta(mailMergePreviewKey) as PreviewMeta | undefined
   let values = old.values
   let highlight = old.highlight
+  let generation = old.generation
   if (meta) {
     if ('values' in meta) values = meta.values ?? null
     if ('highlight' in meta) highlight = Boolean(meta.highlight)
+    if (typeof meta.generation === 'number') generation = meta.generation
   }
   if (!meta && !tr.docChanged) return old
-  if (!values && !highlight) return { values: null, highlight: false, decos: DecorationSet.empty }
-  return { values, highlight, decos: buildDecorations(tr.doc, values, highlight) }
+  if (!values && !highlight)
+    return { values: null, highlight: false, generation, decos: DecorationSet.empty }
+  return {
+    values,
+    highlight,
+    generation,
+    decos: buildDecorations(tr.doc, values, highlight, generation),
+  }
 }
 
 /**
@@ -145,7 +159,12 @@ export const MailMergePreviewExtension = Extension.create({
       new Plugin<MailMergePreviewState>({
         key: mailMergePreviewKey,
         state: {
-          init: () => ({ values: null, highlight: false, decos: DecorationSet.empty }),
+          init: () => ({
+            values: null,
+            highlight: false,
+            generation: 0,
+            decos: DecorationSet.empty,
+          }),
           apply: applyState,
         },
         props: {

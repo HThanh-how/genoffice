@@ -1503,6 +1503,9 @@ export async function exportPdf(
       const PRINT_CHUNK = 10
       if (pvPages.length > PRINT_CHUNK) groups = chunkPrintGroups(groups, PRINT_CHUNK)
       if (groups.length > 1) {
+        // the batch token has to travel every branch, not just the retry: a
+        // grouped export that drops it arrives at the writer as an unclaimed
+        // request and loses the batch it belongs to
         return await printGroupsMerged(
           ctx,
           doc.fileName,
@@ -1512,6 +1515,7 @@ export async function exportPdf(
           outPath,
           links,
           overwrite,
+          batch,
         )
       }
       // preview open but uniform paper: single export at the preview size

@@ -8,6 +8,9 @@ import {
   decodeCsvText,
   parseCsvRows,
   sniffDelimiter,
+  splitSepDeclaration,
+  strayQuoteAfterField,
+  stripBom,
   trimEmptyRows,
   unterminatedQuoteAt,
 } from './csv'
@@ -132,14 +135,25 @@ export function sourceFromRows(
 }
 
 export function loadCsvSource(base64: string, label: string, hasHeader: boolean): MailMergeSource {
-  const text = decodeCsvText(base64ToBytes(base64))
-  const delimiter = sniffDelimiter(text)
+  const decoded = decodeCsvText(base64ToBytes(base64))
+  // Excel writes `sep=;` as its first line; it is a delimiter declaration, not
+  // a header row, and must not become a recipient
+  const { text, delimiter: declared } = splitSepDeclaration(stripBom(decoded))
+  const delimiter = declared ?? sniffDelimiter(text)
   // an unclosed quote swallows the rest of the file: every row after it would be
   // read as one field, so the source is refused rather than parsed into nonsense
   const broken = unterminatedQuoteAt(text, delimiter)
   if (broken !== null) {
     throw new Error(
       `the file has a quote that never closes (near character ${broken}); the rows after it cannot be read`,
+    )
+  }
+  // `"Alice"Jones` is not a field: neither `Alice` nor `AliceJones` is what the
+  // file says, so the row is refused instead of being guessed
+  const glued = strayQuoteAfterField(text, delimiter)
+  if (glued !== null) {
+    throw new Error(
+      `the file has a quote in the middle of a field (near character ${glued}); check the row that starts there`,
     )
   }
   const rows = trimEmptyRows(parseCsvRows(text, delimiter))

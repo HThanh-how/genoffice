@@ -161,6 +161,7 @@ import {
   pdfWriteTarget as resolvePdfWriteTarget,
   type PdfWriteTarget,
 } from '../shared/pdf-write-auth'
+import { commitMergedPdf, validatePdfMergeParts } from '../shared/pdf-merge-commit'
 import { containedTarget as resolveContainedPath, PathRules } from '../shared/output-containment'
 import { writeMailMergeOutput } from '../shared/mail-merge-write'
 import {
@@ -5787,56 +5788,60 @@ export function registerDocsIpc(): void {
     async (
       event,
       defaultName: string,
-      base64Parts: string[],
+      base64Parts: unknown,
       outPath?: string,
       links?: unknown,
       overwrite?: string,
       batch?: unknown,
     ) => {
+      const wcId = event.sender.id
+      // the fragments come from the renderer and are decoded into pdf-lib before
+      // anything is written: bound them first so a flood of pages cannot exhaust
+      // the main process' memory
+      const fragments = validatePdfMergeParts(base64Parts, links)
+      if (!fragments.ok) return { ok: false, error: fragments.error }
       let filePath = outPath ?? null
-      if (filePath && !canPdfWrite(event.sender.id, filePath, overwrite, batch)) {
+      if (filePath && !canPdfWrite(wcId, filePath, overwrite, batch)) {
         return { ok: false, error: 'export target is not an authorized path' }
       }
       if (!filePath) {
         const result = await saveDialog(event, {
           title: tm('dlgExportPdf'),
-          defaultPath: defaultName.replace(/\.docx$/i, '') + '.pdf',
+          defaultPath:
+            typeof defaultName === 'string'
+              ? defaultName.replace(/\.docx$/i, '') + '.pdf'
+              : 'export.pdf',
           filters: [{ name: 'PDF', extensions: ['pdf'] }],
         })
         if (result.canceled || !result.filePath) return { ok: false }
         filePath = result.filePath
-        allowPdfWrite(event.sender.id, filePath)
+        allowPdfWrite(wcId, filePath)
       }
-      const target = pdfWriteTarget(event.sender.id, filePath, overwrite, batch)
+      const target = pdfWriteTarget(wcId, filePath, overwrite, batch)
       if (!target) return { ok: false, error: 'export target is not an authorized path' }
-      try {
-        const { PDFDocument } = await import('pdf-lib')
-        const merged = await PDFDocument.create()
-        for (const b64 of base64Parts) {
-          const part = await PDFDocument.load(Buffer.from(b64, 'base64'))
-          const pages = await merged.copyPages(part, part.getPageIndices())
-          for (const page of pages) merged.addPage(page)
-        }
-        if (Array.isArray(links) && links.length > 0) addPdfInternalLinks(merged, links)
-        const data = Buffer.from(await merged.save())
-        if (target.batchDir) {
-          const outcome = await writeMailMergeOutput(
-            target.batchDir,
-            target.name,
-            data,
-            target.policy,
-            target.allocated,
-          )
-          if (outcome.skipped)
-            return { ok: false, skipped: true, path: outcome.path, name: outcome.name }
-          return { ok: true, path: outcome.path, name: outcome.name }
-        }
-        await atomicWriteFile(target.path, data)
-        if (!isImageExportTemp(event.sender.id, target.path)) openGeneratedFile(target.path)
-        return { ok: true, path: target.path, name: basename(target.path) }
-      } catch (err) {
-        return { ok: false, error: String(err), path: target.path }
-      }
+      // the batch that authorized this target, captured before the merge. The
+      // merge is a chain of awaits: a batch cancelled while it runs releases its
+      // grant, and a batch that picked the same folder afterwards has a different
+      // id. Re-checking the id — not the directory string — is what stops a
+      // cancelled batch's PDF from landing in a folder the tab no longer holds.
+      const batchAtTarget = target.batchDir ? mailMergeBatches.get(wcId) : undefined
+      return commitMergedPdf(target, fragments.parts, fragments.links, {
+        assemble: async (parts, internalLinks) => {
+          const { PDFDocument } = await import('pdf-lib')
+          const merged = await PDFDocument.create()
+          for (const bytes of parts) {
+            const part = await PDFDocument.load(bytes)
+            const pages = await merged.copyPages(part, part.getPageIndices())
+            for (const page of pages) merged.addPage(page)
+          }
+          if (internalLinks.length > 0) addPdfInternalLinks(merged, internalLinks)
+          return Buffer.from(await merged.save())
+        },
+        batchStillLive: () => mailMergeBatchLive(wcId, batchAtTarget),
+        writeDirect: (path, data) => atomicWriteFile(path, data),
+        isImageTemp: (path) => isImageExportTemp(wcId, path),
+        openGenerated: openGeneratedFile,
+      })
     },
   )
 

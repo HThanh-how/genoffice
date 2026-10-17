@@ -9,6 +9,20 @@
 const BOM = '\uFEFF'
 const CANDIDATE_DELIMITERS = [',', ';', '\t', '|']
 
+/**
+ * Excel's own hint line: a first line of exactly `sep=<char>` names the
+ * delimiter and is not data. Excel writes it for CSV exports in locales that
+ * use ";" and honours it on open. Without it `sep=;` becomes a one-column
+ * header and every recipient is shifted by one row.
+ */
+const SEP_DECLARATION = /^sep=(.)\r?\n/i
+
+export function splitSepDeclaration(text: string): { text: string; delimiter?: string } {
+  const match = SEP_DECLARATION.exec(text)
+  if (!match) return { text }
+  return { text: text.slice(match[0].length), delimiter: match[1] ?? ',' }
+}
+
 export function stripBom(text: string): string {
   return text.startsWith(BOM) ? text.slice(1) : text
 }
@@ -81,7 +95,10 @@ function firstRecords(text: string, count: number): string[] {
  * header that happens to contain one delimiter and the body that uses another.
  */
 export function sniffDelimiter(text: string): string {
-  const records = firstRecords(stripBom(text), 3)
+  const stripped = stripBom(text)
+  const { text: body, delimiter: declared } = splitSepDeclaration(stripped)
+  if (declared) return declared
+  const records = firstRecords(body, 3)
   let best: string | null = null
   let bestCount = 0
   for (const d of CANDIDATE_DELIMITERS) {
@@ -181,6 +198,55 @@ export function trimEmptyRows(rows: string[][]): string[][] {
   const out = rows.slice()
   while (out.length > 0 && out[out.length - 1].every((cell) => cell.trim() === '')) out.pop()
   return out
+}
+
+/**
+ * Does a quoted field have junk glued to its closing quote?
+ *
+ * RFC 4180 allows only a delimiter, a line break or the end of the input after a
+ * closing quote. `"Alice"Jones` is not a field: reading it as `AliceJones`
+ * silently loses the quote the user typed, and reading it as `Alice` silently
+ * loses `Jones`. The row is refused instead, with the position of the quote, so
+ * the user fixes the file rather than mailing a name that is not in it.
+ */
+export function strayQuoteAfterField(input: string, delimiter: string): number | null {
+  const text = stripBom(input)
+  let field = ''
+  let i = 0
+  while (i < text.length) {
+    if (text[i] === '"' && field === '') {
+      const openedAt = i
+      i += 1
+      while (i < text.length) {
+        if (text[i] === '"') {
+          if (text[i + 1] === '"') {
+            i += 2
+            continue
+          }
+          i += 1
+          break
+        }
+        i += 1
+      }
+      if (i < text.length && text[i] !== delimiter && text[i] !== '\n' && text[i] !== '\r') {
+        return openedAt
+      }
+      // whatever follows belongs to the rest of this field, up to its end
+      while (i < text.length && text[i] !== delimiter && text[i] !== '\n' && text[i] !== '\r') {
+        i += 1
+      }
+      field = ''
+      continue
+    }
+    if (text[i] === delimiter || text[i] === '\n' || text[i] === '\r') {
+      field = ''
+      i += text[i] === '\r' && text[i + 1] === '\n' ? 2 : 1
+      continue
+    }
+    field += text[i]
+    i += 1
+  }
+  return null
 }
 
 /**

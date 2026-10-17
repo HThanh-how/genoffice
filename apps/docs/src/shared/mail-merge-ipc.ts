@@ -148,12 +148,6 @@ export function decideMailMergeWrite(
   }
   // the cheap rejections run first, so a request that is refused for its name or
   // its policy never pays for decoding a payload it was never going to write
-  if (typeof name !== 'string' || name.trim() === '') {
-    return { ok: false, error: 'invalid file name' }
-  }
-  if (!isMailMergeOutputName(name)) {
-    return { ok: false, error: 'only .docx or .pdf files can be written to a merge folder' }
-  }
   const policy = parseOverwritePolicy(overwrite)
   if (!policy)
     return { ok: false, error: 'the overwrite policy is not one of skip, rename, overwrite' }

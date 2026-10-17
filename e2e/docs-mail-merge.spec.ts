@@ -73,8 +73,10 @@ const CSV =
  * still calls the real `docs:pick-mail-merge-source` IPC, and the main process
  * still stats the file, enforces its size limit and reads it.
  */
-async function answerSourceDialog(app: ElectronApplication, csvPath: string) {
-  await app.evaluate(({ dialog }, path) => {
+async function answerSourceDialog(app: ElectronApplication, csvPath: string | string[]) {
+  const paths = Array.isArray(csvPath) ? csvPath : [csvPath]
+  await app.evaluate(({ dialog }, files) => {
+    let picked = 0
     const original = dialog.showOpenDialog.bind(dialog)
     dialog.showOpenDialog = async (parentOrOptions: unknown, options?: unknown) => {
       const opts = (options ?? parentOrOptions) as {
@@ -85,11 +87,40 @@ async function answerSourceDialog(app: ElectronApplication, csvPath: string) {
         opts?.properties?.includes('openFile') &&
         opts?.filters?.[0]?.extensions?.includes('csv')
       ) {
+        const path = files[Math.min(picked, files.length - 1)]
+        picked += 1
         return { canceled: false, filePaths: [path] }
       }
       return original(parentOrOptions as never, options as never)
     }
-  }, csvPath)
+  }, paths)
+}
+
+/**
+ * A payload the output contract will accept.
+ *
+ * A grant test that is refused because its bytes are not a .docx proves nothing
+ * about authorization: the request would have been refused with the grant live.
+ * The positive and negative writes in the lifecycle test differ only in whether
+ * the batch that owns the folder is still the batch the request names.
+ */
+async function docxBase64(text: string): Promise<string> {
+  const zip = new JSZip()
+  zip.file(
+    '[Content_Types].xml',
+    '<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>',
+  )
+  zip.file(
+    '_rels/.rels',
+    '<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>',
+  )
+  zip.file(
+    'word/document.xml',
+    '<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body><w:p><w:r><w:t xml:space="preserve">' +
+      text +
+      '</w:t></w:r></w:p></w:body></w:document>',
+  )
+  return (await zip.generateAsync({ type: 'base64' })) as string
 }
 
 /** the Docs renderer page, ready for ribbon interaction */
@@ -214,14 +245,85 @@ test.describe('docs mailings tab', () => {
     expect(first).toContain('Nguyễn Văn A')
     expect(first).toContain('123 Nguyễn Huệ')
 
-    // the batch's directory grant is gone once the dialog closes: a late write
-    // from the same renderer is refused by the main process
-    const lateWrite = await page.evaluate(
-      (out) => window.desktop.writeMailMergeFile(out, 'late.docx', btoa('x'), 'overwrite'),
-      outDir,
+    // The batch's directory grant is gone once the dialog closes. The check has
+    // to be a real lifecycle check: a write refused because its bytes are not a
+    // .docx would be refused with the grant live, so it proves nothing. Every
+    // request below uses a valid payload and a token minted by the real picker;
+    // only the liveness of the batch differs.
+    const payload = await docxBase64('Grant lifecycle probe')
+    const lifecycle = await page.evaluate(
+      async ([out, body]) => {
+        const pickA = await window.desktop.pickMailMergeOutputDir()
+        const first = await window.desktop.writeMailMergeFile(
+          out,
+          'grant-a.docx',
+          body,
+          'overwrite',
+          pickA?.batch,
+        )
+        await window.desktop.releaseMailMergeDir()
+        const afterRelease = await window.desktop.writeMailMergeFile(
+          out,
+          'grant-b.docx',
+          body,
+          'overwrite',
+          pickA?.batch,
+        )
+        const pickB = await window.desktop.pickMailMergeOutputDir()
+        const staleA = await window.desktop.writeMailMergeFile(
+          out,
+          'grant-c.docx',
+          body,
+          'overwrite',
+          pickA?.batch,
+        )
+        const liveB = await window.desktop.writeMailMergeFile(
+          out,
+          'grant-d.docx',
+          body,
+          'overwrite',
+          pickB?.batch,
+        )
+        await window.desktop.releaseMailMergeDir()
+        const staleB = await window.desktop.writeMailMergeFile(
+          out,
+          'grant-e.docx',
+          body,
+          'overwrite',
+          pickB?.batch,
+        )
+        return {
+          batchA: pickA?.batch,
+          batchB: pickB?.batch,
+          first,
+          afterRelease,
+          staleA,
+          liveB,
+          staleB,
+        }
+      },
+      [outDir, payload],
     )
-    expect(lateWrite.ok).toBe(false)
-    expect(lateWrite.error).toContain('authorized')
+
+    expect(typeof lifecycle.batchA).toBe('string')
+    expect(typeof lifecycle.batchB).toBe('string')
+    expect(lifecycle.batchA).not.toBe(lifecycle.batchB)
+    // the live batch writes, and it writes a real document
+    expect(lifecycle.first.ok).toBe(true)
+    expect(lifecycle.liveB.ok).toBe(true)
+    // released and superseded batches are refused for authorization, not for
+    // their payload
+    for (const refused of [lifecycle.afterRelease, lifecycle.staleA, lifecycle.staleB]) {
+      expect(refused.ok).toBe(false)
+      expect(refused.error).toContain('authorized')
+      expect(refused.error).not.toContain('docx')
+    }
+    const docxOnDisk = readdirSync(outDir).filter((n) => n.endsWith('.docx'))
+    expect(docxOnDisk).toContain('grant-a.docx')
+    expect(docxOnDisk).toContain('grant-d.docx')
+    for (const refused of ['grant-b.docx', 'grant-c.docx', 'grant-e.docx']) {
+      expect(docxOnDisk).not.toContain(refused)
+    }
 
     // the template on disk is untouched by the merge
     expect(Buffer.compare(readFileSync(docPath), templateBefore)).toBe(0)
@@ -336,7 +438,11 @@ test.describe('docs mailings tab', () => {
     const names = readdirSync(outDir)
       .filter((n) => n.endsWith('.pdf'))
       .sort()
-    expect(names).toEqual(['1_Alpha Recipient.pdf', '2_Beta Recipient.pdf', '3_Gamma Recipient.pdf'])
+    expect(names).toEqual([
+      '1_Alpha Recipient.pdf',
+      '2_Beta Recipient.pdf',
+      '3_Gamma Recipient.pdf',
+    ])
 
     const pages: Record<string, string[]> = {}
     for (const name of names) pages[name] = await pdfPages(join(outDir, name))
@@ -432,7 +538,11 @@ test.describe('docs mailings tab', () => {
     const names = readdirSync(outDir)
       .filter((n) => n.endsWith('.pdf'))
       .sort()
-    expect(names).toEqual(['1_Gamma Recipient.pdf', '2_Beta Recipient.pdf', '3_Alpha Recipient.pdf'])
+    expect(names).toEqual([
+      '1_Gamma Recipient.pdf',
+      '2_Beta Recipient.pdf',
+      '3_Alpha Recipient.pdf',
+    ])
 
     for (const [name, marker] of [
       ['1_Gamma Recipient.pdf', 'C-ONLY-703'],
@@ -447,6 +557,134 @@ test.describe('docs mailings tab', () => {
     }
 
     await closeAndSaveVideo(launched, 'mail-merge-pdf-order')
+  })
+
+  test('two genuine batches in one session, one folder, one renderer', async () => {
+    test.setTimeout(420_000)
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'genoffice-e2e-mailmerge-two-')))
+    const outDir = join(dir, 'out')
+    mkdirSync(outDir)
+    const docPath = join(dir, 'template.docx')
+    writeFileSync(docPath, await templateDocx(BODY))
+    const templateBefore = readFileSync(docPath)
+
+    const csvA = join(dir, 'recipients-a.csv')
+    writeFileSync(
+      csvA,
+      '"Full Name","Postal Address"\n' +
+        '"Alpha Recipient","A-ONLY-901"\n' +
+        '"Beta Recipient","B-ONLY-802"\n' +
+        '"Gamma Recipient","C-ONLY-703"\n',
+    )
+    const csvB = join(dir, 'recipients-b.csv')
+    writeFileSync(
+      csvB,
+      '"Full Name","Postal Address"\n' +
+        '"Gamma Recipient","C-ONLY-703"\n' +
+        '"Beta Recipient","B-ONLY-802"\n' +
+        '"Alpha Recipient","A-ONLY-901"\n',
+    )
+
+    const launched = await launchShell({
+      openFile: docPath,
+      onboardingSeen: true,
+      videoDir: 'mail-merge-two-batches',
+      env: { GENOFFICE_TEST_EXPORT_DIR: outDir },
+    })
+    await answerSourceDialog(launched.app, [csvA, csvB])
+    const page = await docsPage(launched.app)
+
+    await page.locator('.ribbon-tab', { hasText: 'Mailings' }).click()
+    await page.getByRole('button', { name: 'Start Mail Merge' }).click()
+    await page.getByRole('button', { name: 'Choose file…' }).click()
+    await page.getByRole('button', { name: 'Use selected (3)' }).click()
+    // batch 1 runs with the preview on screen
+    await page.getByRole('button', { name: 'Preview Results' }).click()
+    await expect(page.locator('.mm-field-preview-value').first()).toContainText('Alpha Recipient')
+
+    // a token minted before the export's own directory pick: the export supersedes
+    // it, so it must not authorise a write afterwards
+    const superseded = await page.evaluate(() =>
+      window.desktop.pickMailMergeOutputDir().then((p) => p?.batch),
+    )
+    expect(typeof superseded).toBe('string')
+
+    await page.getByRole('button', { name: 'Finish & Merge' }).click()
+    await page.getByRole('option', { name: 'Export as Word documents' }).click()
+    await page.getByRole('button', { name: 'Browse…' }).click()
+    await page.getByRole('button', { name: 'Export 3 files' }).click()
+    await expect(page.locator('.mail-merge-progress h2')).toContainText('Export completed', {
+      timeout: 120_000,
+    })
+    await page.getByRole('button', { name: 'Close' }).click()
+
+    const docxFirst = readdirSync(outDir)
+      .filter((n) => n.endsWith('.docx'))
+      .sort()
+    expect(docxFirst.length).toBe(3)
+    for (const name of docxFirst) {
+      const xml = await documentXml(join(outDir, name))
+      expect(xml).not.toContain('MERGEFIELD')
+    }
+
+    // the batch that just finished no longer owns the folder
+    const payload = await docxBase64('second batch probe')
+    const stale = await page.evaluate(
+      ([out, body, token]) =>
+        window.desktop.writeMailMergeFile(out, 'stale-batch.docx', body, 'overwrite', token),
+      [outDir, payload, superseded],
+    )
+    expect(stale.ok).toBe(false)
+    expect(stale.error).toContain('authorized')
+    expect(readdirSync(outDir)).not.toContain('stale-batch.docx')
+
+    // batch 2: a different source, the same folder, the same renderer, preview off
+    await page.getByRole('button', { name: 'Start Mail Merge' }).click()
+    // the picker says "Choose file…" for a first source and "Choose another file…"
+    // when one is already loaded
+    await page.getByRole('button', { name: /Choose (another )?file/ }).click()
+    await page.getByRole('button', { name: 'Use selected (3)' }).click()
+    await page.getByRole('button', { name: 'Preview Results' }).click() // turn the preview off
+    await page.getByRole('button', { name: 'Finish & Merge' }).click()
+    await page.getByRole('option', { name: 'Export as PDF' }).click()
+    await page.getByRole('button', { name: 'Browse…' }).click()
+    await page.getByRole('button', { name: 'Export 3 files' }).click()
+    await expect(page.locator('.mail-merge-progress h2')).toContainText('Export completed', {
+      timeout: 180_000,
+    })
+    await page.getByRole('button', { name: 'Close' }).click()
+
+    const pdfNames = readdirSync(outDir)
+      .filter((n) => n.endsWith('.pdf'))
+      .sort()
+    expect(pdfNames.length).toBe(3)
+    const markers: Record<string, string> = {
+      'Alpha Recipient': 'A-ONLY-901',
+      'Beta Recipient': 'B-ONLY-802',
+      'Gamma Recipient': 'C-ONLY-703',
+    }
+    for (const name of pdfNames) {
+      const who = name.replace(/^\d+_/, '').replace(/\.pdf$/, '')
+      const marker = markers[who]
+      const text = compact((await pdfPages(join(outDir, name))).join(' '))
+      expect(text).toContain(`Dear${who.replace(/\s+/g, '')}`)
+      expect(text).toContain(marker)
+      for (const other of Object.values(markers)) {
+        if (other !== marker) expect(text).not.toContain(other)
+      }
+    }
+
+    // both batches wrote into the same folder: the first batch's documents are
+    // still there, and the second batch did not overwrite them
+    expect(readdirSync(outDir).filter((n) => n.endsWith('.docx')).length).toBe(3)
+
+    // the editor is still usable after two batches, and the template is unchanged
+    await expect(page.locator('.ProseMirror')).toContainText('Dear')
+    await page.locator('.ribbon-tab', { hasText: 'Home' }).click()
+    await page.locator('.ribbon-tab', { hasText: 'Mailings' }).click()
+    expect(Buffer.compare(readFileSync(docPath), templateBefore)).toBe(0)
+
+    await closeAndSaveVideo(launched, 'mail-merge-two-batches')
   })
 
   test('a cancelled batch writes nothing and releases the directory grant', async () => {
@@ -482,14 +720,49 @@ test.describe('docs mailings tab', () => {
     // the batch stopped: nothing on disk, and the directory grant is gone with it
     expect(readdirSync(outDir).filter((n) => n.endsWith('.docx')).length).toBe(0)
 
-    // the grant is released with the dialog: a late write to the same directory
-    // is refused by the main process
-    const late = await page.evaluate(
-      (out) => window.desktop.writeMailMergeFile(out, 'late.docx', btoa('x'), 'overwrite'),
-      outDir,
+    // the grant is released with the dialog. Prove it with a write that would
+    // otherwise be accepted: same folder, same valid payload, only the batch's
+    // liveness changes.
+    const payload = await docxBase64('cancelled batch probe')
+    const grant = await page.evaluate(
+      ([out, body]) =>
+        window.desktop
+          .pickMailMergeOutputDir()
+          .then((p) =>
+            window.desktop.writeMailMergeFile(
+              out,
+              'before-release.docx',
+              body,
+              'overwrite',
+              p?.batch,
+            ),
+          ),
+      [outDir, payload],
     )
-    expect(late.ok).toBe(false)
-    expect(late.error).toContain('authorized')
+    expect(grant.ok).toBe(true)
+    const afterRelease = await page.evaluate(
+      ([out, body]) =>
+        window.desktop
+          .pickMailMergeOutputDir()
+          .then((p) =>
+            window.desktop
+              .releaseMailMergeDir()
+              .then(() =>
+                window.desktop.writeMailMergeFile(
+                  out,
+                  'after-release.docx',
+                  body,
+                  'overwrite',
+                  p?.batch,
+                ),
+              ),
+          ),
+      [outDir, payload],
+    )
+    expect(afterRelease.ok).toBe(false)
+    expect(afterRelease.error).toContain('authorized')
+    expect(readdirSync(outDir)).toContain('before-release.docx')
+    expect(readdirSync(outDir)).not.toContain('after-release.docx')
 
     await closeAndSaveVideo(launched, 'mail-merge-cancel')
   })

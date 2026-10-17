@@ -58,13 +58,22 @@ export function pdfWriteTarget(
   ctx: PdfAuthContext,
 ): PdfWriteTarget | null {
   if (ctx.tornDown || typeof filePath !== 'string' || !filePath) return null
-  // A request that names a batch must name the batch the tab still holds. A print
-  // queued by a cancelled batch A would otherwise land in the folder batch B
-  // picked afterwards: the directory string matches, the permission does not.
-  if (ctx.claimedBatch !== undefined && ctx.currentBatch !== ctx.claimedBatch) return null
+  // A batch grant belongs to one export. Two things have to be true for it to
+  // authorize anything: the request states a batch, and that batch is the one the
+  // tab still holds. A request that states no batch — the File menu export, an
+  // image-export temp — cannot borrow the folder a mail-merge dialog picked,
+  // however ordinary it looks: the directory string matching is not permission.
+  const claimsBatch = ctx.claimedBatch !== undefined
+  const batchIsLive =
+    typeof ctx.claimedBatch === 'string' &&
+    ctx.claimedBatch.length > 0 &&
+    ctx.claimedBatch === ctx.currentBatch
+  // a request that names a batch but names the wrong, empty or expired one is
+  // refused outright rather than being re-read as an ordinary export
+  if (claimsBatch && !batchIsLive) return null
   // only PDFs may use the batch grant: the same directory must not become a
   // blanket authorization for Markdown or HTML export targets
-  if (ctx.batchDir && /\.pdf$/i.test(filePath)) {
+  if (batchIsLive && ctx.batchDir && /\.pdf$/i.test(filePath)) {
     const inside = ctx.contained(ctx.batchDir, filePath)
     if (inside) {
       const policy = parseOverwritePolicy(overwrite)

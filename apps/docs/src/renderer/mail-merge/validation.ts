@@ -133,6 +133,16 @@ export function passthroughFieldInstructions(blocks: readonly Block[]): string[]
  * copied from the template byte-for-byte, so a MERGEFIELD inside one would print
  * as «Name» in every output file.
  */
+/**
+ * Merge fields in header/footer parts the merge cannot reach.
+ *
+ * This is an early warning, not the safety net. A part the user regenerated in
+ * the header editor is rebuilt from the edited content and its fields are
+ * resolved like the body; a part nobody opened is copied from the template
+ * byte-for-byte. Whatever the preflight misses, `checkMergedDocx` reads the
+ * finished bytes before a single one is written and refuses the batch, so an
+ * unresolved field never reaches the output folder.
+ */
 export function unmergeableHeaderFooterFields(parsed: ParsedDocFull): string[] {
   const found: string[] = []
   const push = (instr: string | undefined): void => {
