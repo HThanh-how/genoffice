@@ -227,10 +227,8 @@ describe('Opening Card Studio V2 - Unit Tests', () => {
         },
       })
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const originalEval = (globalThis as any).eval
       let evalCalled = false
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const mockEval = vi.fn((...args: any[]) => {
         evalCalled = true
         return typeof originalEval === 'function' ? originalEval(...args) : undefined
@@ -242,15 +240,12 @@ describe('Opening Card Studio V2 - Unit Tests', () => {
 
       let cleanup: (() => void) | undefined
       try {
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         globalThis.Function = functionProxy as any
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ;(globalThis as any).eval = mockEval
 
         cleanup = runGOScene(canvas, 'ocean')
       } finally {
         globalThis.Function = originalFunction
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         ;(globalThis as any).eval = originalEval
         rafSpy.mockRestore()
         cancelRafSpy.mockRestore()

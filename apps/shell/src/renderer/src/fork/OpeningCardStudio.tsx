@@ -252,14 +252,17 @@ export function OpeningCardStudio({
       if (savedState) {
         onUpdateState(savedState)
         setSelectedCard(newCard)
-      } else if (result.state) {
-        onUpdateState(result.state)
+        showStatus(
+          isVi
+            ? 'Đã nhập hình ảnh và tạo thẻ thành công!'
+            : 'Media imported and card created successfully!',
+        )
+      } else {
+        if (result.state) onUpdateState(result.state)
+        throw new Error(
+          isVi ? 'Không thể lưu thẻ sau khi tải ảnh' : 'Failed to save card after uploading media',
+        )
       }
-      showStatus(
-        isVi
-          ? 'Đã nhập hình ảnh và tạo thẻ thành công!'
-          : 'Media imported and card created successfully!',
-      )
     } else {
       throw new Error(result?.error || 'Failed to import media')
     }

@@ -24,12 +24,19 @@ test.describe('Opening Card Studio — Electron E2E Flows', () => {
       // Wait for Settings dialog
       await expect(page.locator('.set-dialog')).toBeVisible({ timeout: 15_000 })
 
-      // 2. Expand Opening effects section in General
-      const openingSummary = page.locator('summary', {
+      // 2. Navigate to Opening effects (sidebar button or fallback summary)
+      const openingNav = page.locator('.set-nav-item', {
         hasText: /Opening effects|Hiệu ứng mở tệp/i,
       })
-      await expect(openingSummary).toBeVisible({ timeout: 15_000 })
-      await openingSummary.click()
+      if ((await openingNav.count()) > 0) {
+        await openingNav.first().click()
+      } else {
+        const openingSummary = page.locator('summary', {
+          hasText: /Opening effects|Hiệu ứng mở tệp/i,
+        })
+        await expect(openingSummary).toBeVisible({ timeout: 15_000 })
+        await openingSummary.click()
+      }
 
       // 3. Studio is visible with cards
       await expect(page.locator('.ocs-container')).toBeVisible({ timeout: 15_000 })
@@ -489,12 +496,19 @@ test.describe('Opening Card Studio — Electron E2E Flows', () => {
       const settingsDialog = page.locator('.set-dialog')
       await expect(settingsDialog).toBeVisible({ timeout: 15_000 })
 
-      // 3. Expand Opening effects section in General
-      const openingSummary = page.locator('summary', {
+      // 3. Navigate to Opening effects (sidebar button or fallback summary)
+      const openingNav = page.locator('.set-nav-item', {
         hasText: /Opening effects|Hiệu ứng mở tệp/i,
       })
-      await expect(openingSummary).toBeVisible({ timeout: 15_000 })
-      await openingSummary.click()
+      if ((await openingNav.count()) > 0) {
+        await openingNav.first().click()
+      } else {
+        const openingSummary = page.locator('summary', {
+          hasText: /Opening effects|Hiệu ứng mở tệp/i,
+        })
+        await expect(openingSummary).toBeVisible({ timeout: 15_000 })
+        await openingSummary.click()
+      }
 
       // 4. Verify Studio is visible
       await expect(page.locator('.ocs-container')).toBeVisible({ timeout: 15_000 })

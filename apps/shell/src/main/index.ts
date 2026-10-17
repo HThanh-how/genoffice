@@ -5760,7 +5760,6 @@ function registerHomeIpc(): void {
     HOME_CHANNELS.removeOpeningHtml,
     (_event, target: unknown): OpeningEffectsState => {
       if (isOpeningApp(target)) {
-        rmSync(openingHtmlPath(target), { force: true })
         const prefs = openingPrefs()
         if (prefs.scenes[target] === 'custom') {
           writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
@@ -5768,6 +5767,7 @@ function registerHomeIpc(): void {
             scenes: { ...prefs.scenes, [target]: normalizeOpeningPrefs({}).scenes[target] },
           })
         }
+        rmSync(openingHtmlPath(target), { force: true })
       }
       return openingEffectsState()
     },
@@ -5911,18 +5911,6 @@ function registerHomeIpc(): void {
       const prefs = openingPrefs()
       const cardToDelete = (prefs.customCards || []).find((c) => c.id === cardId)
       const customCards = (prefs.customCards || []).filter((c) => c.id !== cardId)
-      if (cardToDelete?.htmlAssetId) {
-        const stillInUse = customCards.some((c) => c.htmlAssetId === cardToDelete.htmlAssetId)
-        if (!stillInUse) {
-          deleteHtmlCardAsset(app.getPath('userData'), cardToDelete.htmlAssetId)
-        }
-      }
-      if (cardToDelete?.mediaAssetId) {
-        const stillInUse = customCards.some((c) => c.mediaAssetId === cardToDelete.mediaAssetId)
-        if (!stillInUse) {
-          deleteMediaAsset(app.getPath('userData'), cardToDelete.mediaAssetId)
-        }
-      }
       const scenes = { ...prefs.scenes }
       for (const app of OPENING_APPS) {
         if (scenes[app] === cardId) {
@@ -5945,6 +5933,18 @@ function registerHomeIpc(): void {
         globalCard,
         favorites,
       })
+      if (cardToDelete?.htmlAssetId) {
+        const stillInUse = customCards.some((c) => c.htmlAssetId === cardToDelete.htmlAssetId)
+        if (!stillInUse) {
+          deleteHtmlCardAsset(app.getPath('userData'), cardToDelete.htmlAssetId)
+        }
+      }
+      if (cardToDelete?.mediaAssetId) {
+        const stillInUse = customCards.some((c) => c.mediaAssetId === cardToDelete.mediaAssetId)
+        if (!stillInUse) {
+          deleteMediaAsset(app.getPath('userData'), cardToDelete.mediaAssetId)
+        }
+      }
       return openingEffectsState()
     },
   )
@@ -6068,10 +6068,23 @@ function registerHomeIpc(): void {
     for (const card of result.importedCards) {
       mergedMap.set(card.id, card)
     }
-    writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
-      ...prefs,
-      customCards: Array.from(mergedMap.values()),
-    })
+    try {
+      writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+        ...prefs,
+        customCards: Array.from(mergedMap.values()),
+      })
+    } catch (err) {
+      for (const card of result.importedCards) {
+        if (card.mediaAssetId) deleteMediaAsset(app.getPath('userData'), card.mediaAssetId)
+        if (card.htmlAssetId) deleteHtmlCardAsset(app.getPath('userData'), card.htmlAssetId)
+      }
+      return {
+        ok: false,
+        count: 0,
+        error: `Failed to persist settings: ${err instanceof Error ? err.message : String(err)}`,
+        state: openingEffectsState(),
+      }
+    }
     return { ok: true, count: result.count, state: openingEffectsState() }
   })
   ipcMain.handle(HOME_CHANNELS.listLegacyRecovery, () =>

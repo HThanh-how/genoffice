@@ -59,9 +59,10 @@ interface CardThumbnailProps {
 
 export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const cacheKey = card.id || card.sceneId || ''
   const [cachedDataUrl, setCachedDataUrl] = useState<string | null>(() => {
-    if (card.sceneId && sceneThumbnailCache.has(card.sceneId)) {
-      return sceneThumbnailCache.get(card.sceneId)!
+    if (cacheKey && sceneThumbnailCache.has(cacheKey)) {
+      return sceneThumbnailCache.get(cacheKey)!
     }
     return null
   })
@@ -90,10 +91,39 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
     return null
   })
 
-  // Reset media error if media asset id changes
+  const [loadedMediaUrl, setLoadedMediaUrl] = useState<string | null>(null)
+
+  // Load personal media data URL if not available in mediaAssets prop
   useEffect(() => {
     setMediaError(false)
-  }, [card.mediaAssetId])
+    if (card.contentKind !== 'personal-media' || !card.mediaAssetId) {
+      setLoadedMediaUrl(null)
+      return
+    }
+    const fromProps = mediaAssets?.find((m) => m.assetId === card.mediaAssetId)
+    if (fromProps?.thumbnailUrl || fromProps?.dataUrl) {
+      setLoadedMediaUrl(fromProps.thumbnailUrl || fromProps.dataUrl || null)
+      return
+    }
+    let cancelled = false
+    const api = (
+      window as unknown as {
+        aiOffice?: {
+          readOpeningMedia?: (id: string) => Promise<string | null>
+        }
+      }
+    ).aiOffice
+    if (api?.readOpeningMedia) {
+      void api.readOpeningMedia(card.mediaAssetId).then((url) => {
+        if (!cancelled && url) {
+          setLoadedMediaUrl(url)
+        }
+      })
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [card.contentKind, card.mediaAssetId, mediaAssets])
 
   // Render canvas-scene frame to canvas with bounded concurrency
   useEffect(() => {
@@ -101,8 +131,9 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
     if (cachedDataUrl) return
 
     const sceneId = card.sceneId
-    if (sceneThumbnailCache.has(sceneId)) {
-      setCachedDataUrl(sceneThumbnailCache.get(sceneId)!)
+    const sceneKey = card.id || sceneId
+    if (sceneThumbnailCache.has(sceneKey)) {
+      setCachedDataUrl(sceneThumbnailCache.get(sceneKey)!)
       return
     }
 
@@ -125,7 +156,7 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
               try {
                 const url = canvas.toDataURL('image/png')
                 if (url && url.length > 50) {
-                  setBoundedCache(sceneThumbnailCache, sceneId, url)
+                  setBoundedCache(sceneThumbnailCache, sceneKey, url)
                   setCachedDataUrl(url)
                 }
               } catch {
@@ -166,7 +197,7 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
         resolveTask = null
       }
     }
-  }, [card.contentKind, card.sceneId, cachedDataUrl])
+  }, [card.contentKind, card.sceneId, card.id, cachedDataUrl])
 
   // Load HTML asset preview for AI HTML cards
   useEffect(() => {
@@ -334,7 +365,7 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
     const mediaAsset = card.mediaAssetId
       ? mediaAssets?.find((m) => m.assetId === card.mediaAssetId)
       : undefined
-    const thumbSrc = mediaAsset?.thumbnailUrl || mediaAsset?.dataUrl
+    const thumbSrc = loadedMediaUrl || mediaAsset?.thumbnailUrl || mediaAsset?.dataUrl
 
     return (
       <div

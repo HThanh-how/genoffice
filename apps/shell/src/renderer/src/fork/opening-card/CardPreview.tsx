@@ -98,7 +98,7 @@ export function CardPreview({
             isCardLayout: true,
           },
         )
-        setHtmlDoc(doc)
+        if (!cancelled) setHtmlDoc(doc)
       } catch {
         if (!cancelled) setHtmlDoc(null)
       }
@@ -107,7 +107,7 @@ export function CardPreview({
     return () => {
       cancelled = true
     }
-  }, [card?.id, card?.htmlAssetId, card?.contentKind, activeApp, fileName, isVi, prefs.tier])
+  }, [card, activeApp, fileName, isVi, prefs.tier])
 
   const [mediaDataUrl, setMediaDataUrl] = useState<string | null>(null)
 
@@ -158,7 +158,7 @@ export function CardPreview({
     return () => {
       cancelled = true
     }
-  }, [card?.id, card?.mediaAssetId, card?.contentKind])
+  }, [card])
 
   // Live motion scene rendering in preview
   useEffect(() => {
@@ -182,7 +182,7 @@ export function CardPreview({
     return () => {
       if (stop) stop()
     }
-  }, [card?.id, card?.sceneId, card?.contentKind, activeApp, prefs.tier])
+  }, [card, activeApp, prefs.tier])
 
   if (!card) {
     return (
@@ -307,7 +307,7 @@ export function CardPreview({
                 position: 'absolute',
                 inset: 0,
                 backgroundImage: `linear-gradient(rgba(0,0,0,${card.mediaDim ?? 0.25}), rgba(0,0,0,${card.mediaDim ?? 0.25})), url('${mediaDataUrl}')`,
-                backgroundSize: card.mediaFit ?? 'cover',
+                backgroundSize: card.mediaFit === 'center' ? 'auto' : (card.mediaFit ?? 'cover'),
                 backgroundPosition: 'center',
                 backgroundRepeat: 'no-repeat',
                 borderRadius: matCss.borderRadius,
