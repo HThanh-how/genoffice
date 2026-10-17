@@ -125,77 +125,96 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
           onPick={(value) => save({ ...prefs, enabled: value === 'on' })}
         />
       </div>
-      {prefs.enabled && (
-        <>
-          <div className="set-field">
-            <div className="set-field-text">
-              <div className="set-field-stack">
-                <div className="set-field-label">{c.tier}</div>
-                <div className="set-field-desc">{c.tierHint}</div>
+      {!prefs.enabled && (
+        <div className="ocs-disabled-banner" role="status">
+          <div className="ocs-disabled-banner-text">
+            <strong>
+              {lang === 'vi'
+                ? 'Hiệu ứng mở tệp đang tắt'
+                : 'Opening effects are currently turned off'}
+            </strong>
+            <span>
+              {lang === 'vi'
+                ? 'Bật hiệu ứng để hiển thị thẻ khi mở tài liệu. Bạn vẫn có thể tùy biến và xem thử thẻ bên dưới.'
+                : 'Turn on effects to display cards when documents open. You can still customize and preview cards below.'}
+            </span>
+          </div>
+          <button
+            type="button"
+            className="set-btn ocs-btn-primary"
+            onClick={() => save({ ...prefs, enabled: true })}
+          >
+            {lang === 'vi' ? 'Bật hiệu ứng ngay' : 'Turn on now'}
+          </button>
+        </div>
+      )}
+      <div className="set-field">
+        <div className="set-field-text">
+          <div className="set-field-stack">
+            <div className="set-field-label">{c.tier}</div>
+            <div className="set-field-desc">{c.tierHint}</div>
+          </div>
+        </div>
+        <Dropdown
+          className="set-dd"
+          value={prefs.tier}
+          ariaLabel={c.tier}
+          options={(['auto', 'full', 'lite', 'minimal'] as OpeningTierChoice[]).map((tier) => ({
+            value: tier,
+            label: c.tiers[tier],
+          }))}
+          onPick={(tier) => save({ ...prefs, tier })}
+        />
+      </div>
+      <OpeningCardStudio
+        state={state}
+        lang={lang}
+        onUpdateState={setState}
+        onPreview={(app, s) => void api.previewOpening(app, s)}
+      />
+
+      <details className="set-opening-advanced">
+        <summary>
+          {lang === 'vi'
+            ? 'Tùy chọn nâng cao (HTML tùy chỉnh cũ)'
+            : 'Advanced (Legacy Custom HTML)'}
+        </summary>
+        <div style={{ marginTop: '12px' }}>
+          <div className="set-field-desc set-opening-guide">{c.guide}</div>
+          {OPENING_APPS.map((app) => (
+            <div className="set-field set-opening-row" key={app} style={{ marginTop: '8px' }}>
+              <div className="set-field-text">
+                <div className="set-field-stack">
+                  <div className="set-field-label">{c.apps[app]}</div>
+                  {custom[app] && <div className="set-field-desc">{c.imported}</div>}
+                </div>
+              </div>
+              <div className="set-opening-controls">
+                <button
+                  type="button"
+                  className="set-btn"
+                  onClick={() => void api.previewOpening(app, 'custom')}
+                >
+                  {c.preview}
+                </button>
+                <button type="button" className="set-btn" onClick={() => importFor(app)}>
+                  {custom[app] ? c.replaceHtml : c.importHtml}
+                </button>
+                {custom[app] && (
+                  <button
+                    type="button"
+                    className="set-btn"
+                    onClick={() => void api.removeOpeningHtml(app).then(setState)}
+                  >
+                    {c.remove}
+                  </button>
+                )}
               </div>
             </div>
-            <Dropdown
-              className="set-dd"
-              value={prefs.tier}
-              ariaLabel={c.tier}
-              options={(['auto', 'full', 'lite', 'minimal'] as OpeningTierChoice[]).map((tier) => ({
-                value: tier,
-                label: c.tiers[tier],
-              }))}
-              onPick={(tier) => save({ ...prefs, tier })}
-            />
-          </div>
-          <OpeningCardStudio
-            state={state}
-            lang={lang}
-            onUpdateState={setState}
-            onPreview={(app, s) => void api.previewOpening(app, s)}
-          />
-
-          <details className="set-opening-advanced">
-            <summary>
-              {lang === 'vi'
-                ? 'Tùy chọn nâng cao (HTML tùy chỉnh cũ)'
-                : 'Advanced (Legacy Custom HTML)'}
-            </summary>
-            <div style={{ marginTop: '12px' }}>
-              <div className="set-field-desc set-opening-guide">{c.guide}</div>
-              {OPENING_APPS.map((app) => (
-                <div className="set-field set-opening-row" key={app} style={{ marginTop: '8px' }}>
-                  <div className="set-field-text">
-                    <div className="set-field-stack">
-                      <div className="set-field-label">{c.apps[app]}</div>
-                      {custom[app] && <div className="set-field-desc">{c.imported}</div>}
-                    </div>
-                  </div>
-                  <div className="set-opening-controls">
-                    <button
-                      type="button"
-                      className="set-btn"
-                      onClick={() => void api.previewOpening(app, 'custom')}
-                    >
-                      {c.preview}
-                    </button>
-                    <button type="button" className="set-btn" onClick={() => importFor(app)}>
-                      {custom[app] ? c.replaceHtml : c.importHtml}
-                    </button>
-                    {custom[app] && (
-                      <button
-                        type="button"
-                        className="set-btn"
-                        onClick={() => void api.removeOpeningHtml(app).then(setState)}
-                      >
-                        {c.remove}
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </details>
-          {error && <div className="set-field-desc set-opening-error">{error}</div>}
-        </>
-      )}
+          ))}
+        </div>
+      </details>
+      {error && <div className="set-field-desc set-opening-error">{error}</div>}
     </>
   )
 }

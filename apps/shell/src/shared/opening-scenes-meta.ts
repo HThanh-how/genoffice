@@ -186,7 +186,7 @@ export const isCardOrSceneAvailable = (id: unknown, prefs?: OpeningPrefs): id is
   if (id.startsWith('curated:')) {
     return true
   }
-  if (id.startsWith('custom:') || id.startsWith('ai:')) {
+  if (id.startsWith('custom:') || id.startsWith('ai:') || id.startsWith('media_')) {
     if (prefs && Array.isArray(prefs.customCards)) {
       return prefs.customCards.some((c) => c.id === id)
     }

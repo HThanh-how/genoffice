@@ -5779,22 +5779,22 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.saveOpeningCard, (_event, input: unknown): OpeningEffectsState => {
     const validation = validateCardDefinition(input)
     if (!validation.ok || !validation.card) {
-      return openingEffectsState()
+      throw new Error(validation.error ?? 'Invalid card definition')
     }
     const card = validation.card
     if (isBuiltInCard(card.id)) {
-      return openingEffectsState()
+      throw new Error('Cannot overwrite a built-in card')
     }
     if (card.mediaAssetId) {
       const assetPath = resolveSafeAssetPath(app.getPath('userData'), card.mediaAssetId)
       if (!existsSync(assetPath)) {
-        return openingEffectsState()
+        throw new Error(`Media asset "${card.mediaAssetId}" does not exist`)
       }
     }
     if (card.htmlAssetId) {
       const htmlPath = resolveSafeHtmlAssetPathFork(app.getPath('userData'), card.htmlAssetId)
       if (!existsSync(htmlPath)) {
-        return openingEffectsState()
+        throw new Error(`HTML asset "${card.htmlAssetId}" does not exist`)
       }
     }
     const prefs = openingPrefs()
@@ -5896,6 +5896,14 @@ function registerHomeIpc(): void {
       }
     },
   )
+  ipcMain.handle(HOME_CHANNELS.readOpeningMedia, (_event, assetId: unknown): string | null => {
+    if (typeof assetId !== 'string') return null
+    try {
+      return getAssetDataUrl(app.getPath('userData'), assetId)
+    } catch {
+      return null
+    }
+  })
   ipcMain.handle(
     HOME_CHANNELS.deleteOpeningCard,
     (_event, cardId: unknown): OpeningEffectsState => {
@@ -5907,6 +5915,12 @@ function registerHomeIpc(): void {
         const stillInUse = customCards.some((c) => c.htmlAssetId === cardToDelete.htmlAssetId)
         if (!stillInUse) {
           deleteHtmlCardAsset(app.getPath('userData'), cardToDelete.htmlAssetId)
+        }
+      }
+      if (cardToDelete?.mediaAssetId) {
+        const stillInUse = customCards.some((c) => c.mediaAssetId === cardToDelete.mediaAssetId)
+        if (!stillInUse) {
+          deleteMediaAsset(app.getPath('userData'), cardToDelete.mediaAssetId)
         }
       }
       const scenes = { ...prefs.scenes }
