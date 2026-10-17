@@ -24,6 +24,7 @@ import { markdownIsDirty, requestMarkdownClose } from '../../../markdown/src/mai
 import { htmlIsDirty, requestHtmlClose } from '../../../html/src/main/html-main'
 import { canonicalPath } from './tab-manager'
 import type { DetachedTab } from './tab-manager'
+import { quitCoordinator } from './quit-coordinator'
 import type { OpenDocumentTab, TabKind } from '../shared/tabs-api'
 import {
   DOCK_BAND_SLACK,
@@ -257,6 +258,24 @@ async function confirmDetachedClose(rec: DetachedRecord): Promise<boolean> {
     default:
       return true
   }
+}
+
+/**
+ * Prompts all dirty detached editor windows sequentially during application quit.
+ * Returns true if all windows were saved/discarded, or false if the user canceled.
+ */
+export async function promptAllDetachedWindows(): Promise<boolean> {
+  for (const rec of detached.values()) {
+    if (rec.window.isDestroyed() || rec.released) continue
+    if (await detachedIsDirty(rec)) {
+      if (rec.window.isMinimized()) rec.window.restore()
+      rec.window.show()
+      rec.window.focus()
+      const allowed = await confirmDetachedClose(rec)
+      if (!allowed) return false
+    }
+  }
+  return true
 }
 
 /** the detached editors in the same shape as TabManager.openDocuments (agent/MCP targets) */
@@ -531,20 +550,20 @@ export function createDetachedEditorWindow(options: {
   }
 
   // Unsaved-changes guard, same helpers as the tab close path.
-  // a second close event while the prompt is open must not re-enter the
-  // prompt (the same double-trigger the main window guards against)
+  // a second close event while the prompt is open must not re-enter the prompt
   let promptInFlight = false
   win.on('close', (event) => {
-    if (closeConfirmed || rec.released) return
+    if (closeConfirmed || rec.released || quitCoordinator.isConfirmed()) return
     event.preventDefault()
     if (promptInFlight) return
     promptInFlight = true
     void (async () => {
       try {
-        // a denied close vetoes any quit that was in flight: the sheets close
-        // guard must prompt again on later closes instead of silently proceeding
-        if (await confirmDetachedClose(rec)) tearDown()
-        else resetSheetsShuttingDown()
+        if (await confirmDetachedClose(rec)) {
+          tearDown()
+        } else {
+          resetSheetsShuttingDown()
+        }
       } catch (err) {
         console.error('[shell] detached window close prompt failed:', err)
         resetSheetsShuttingDown()

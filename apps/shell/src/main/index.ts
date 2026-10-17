@@ -461,13 +461,15 @@ import { createFileViaCli } from './mcp/headless-cli'
 import { sanitizeFileBase } from './mcp/tools/document-tools'
 import { runHeadlessExport, type HeadlessExporters } from './headless-export'
 import { TabManager } from './tab-manager'
-import { installShellCloseGuard } from './window-close-guard'
+import { installShellCloseGuard, promptDirtyTabs } from './window-close-guard'
+import { quitCoordinator } from './quit-coordinator'
 import {
   activateDetached,
   closeDetachedWithoutPrompt,
   createDetachedEditorWindow,
   detachedFilePaths,
   detachedOpenDocuments,
+  promptAllDetachedWindows,
   detachedRenameFile,
   detachedSetFileFor,
   detachedWebContentsFor,
@@ -5733,6 +5735,15 @@ function registerHomeIpc(): void {
       : await dialog.showOpenDialog(options)
     const file = picked.filePaths[0]
     if (picked.canceled || !file) return { ok: false, state: openingEffectsState() }
+    const targetPath = openingHtmlPath(target)
+    let previousContent: Buffer | null = null
+    if (existsSync(targetPath)) {
+      try {
+        previousContent = readFileSync(targetPath)
+      } catch {
+        previousContent = null
+      }
+    }
     try {
       const size = statSync(file).size
       if (size > MAX_OPENING_HTML_BYTES) {
@@ -5740,7 +5751,7 @@ function registerHomeIpc(): void {
       }
       const text = readFileSync(file, 'utf8')
       mkdirSync(join(app.getPath('userData'), 'opening-custom'), { recursive: true })
-      await atomicWriteFile(openingHtmlPath(target), Buffer.from(text, 'utf8'))
+      await atomicWriteFile(targetPath, Buffer.from(text, 'utf8'))
     } catch (error) {
       return {
         ok: false,
@@ -5750,17 +5761,33 @@ function registerHomeIpc(): void {
     }
     // an imported page is played as soon as it is imported
     const prefs = openingPrefs()
-    writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
-      ...prefs,
-      scenes: { ...prefs.scenes, [target]: 'custom' },
-    })
+    try {
+      writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+        ...prefs,
+        scenes: { ...prefs.scenes, [target]: 'custom' },
+      })
+    } catch (err) {
+      try {
+        if (previousContent !== null) {
+          await atomicWriteFile(targetPath, previousContent)
+        } else {
+          rmSync(targetPath, { force: true })
+        }
+      } catch {
+        // best-effort rollback
+      }
+      return {
+        ok: false,
+        error: `Failed to update preferences: ${err instanceof Error ? err.message : String(err)}`,
+        state: openingEffectsState(),
+      }
+    }
     return { ok: true, state: openingEffectsState() }
   })
   ipcMain.handle(
     HOME_CHANNELS.removeOpeningHtml,
     (_event, target: unknown): OpeningEffectsState => {
       if (isOpeningApp(target)) {
-        rmSync(openingHtmlPath(target), { force: true })
         const prefs = openingPrefs()
         if (prefs.scenes[target] === 'custom') {
           writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
@@ -5768,6 +5795,7 @@ function registerHomeIpc(): void {
             scenes: { ...prefs.scenes, [target]: normalizeOpeningPrefs({}).scenes[target] },
           })
         }
+        rmSync(openingHtmlPath(target), { force: true })
       }
       return openingEffectsState()
     },
@@ -5779,22 +5807,22 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.saveOpeningCard, (_event, input: unknown): OpeningEffectsState => {
     const validation = validateCardDefinition(input)
     if (!validation.ok || !validation.card) {
-      return openingEffectsState()
+      throw new Error(validation.error ?? 'Invalid card definition')
     }
     const card = validation.card
     if (isBuiltInCard(card.id)) {
-      return openingEffectsState()
+      throw new Error('Cannot overwrite a built-in card')
     }
     if (card.mediaAssetId) {
       const assetPath = resolveSafeAssetPath(app.getPath('userData'), card.mediaAssetId)
       if (!existsSync(assetPath)) {
-        return openingEffectsState()
+        throw new Error(`Media asset "${card.mediaAssetId}" does not exist`)
       }
     }
     if (card.htmlAssetId) {
       const htmlPath = resolveSafeHtmlAssetPathFork(app.getPath('userData'), card.htmlAssetId)
       if (!existsSync(htmlPath)) {
-        return openingEffectsState()
+        throw new Error(`HTML asset "${card.htmlAssetId}" does not exist`)
       }
     }
     const prefs = openingPrefs()
@@ -5858,16 +5886,30 @@ function registerHomeIpc(): void {
 
         const finalCard: OpeningCardDefinition = {
           ...validation.card,
-          contentKind: 'ai-html',
+          contentKind: validation.card.contentKind === 'custom-html' ? 'custom-html' : 'ai-html',
           htmlAssetId: stored.assetId,
         }
         const prefs = openingPrefs()
         const existing = prefs.customCards || []
         const idx = existing.findIndex((c) => c.id === finalCard.id)
+        const oldCard = idx >= 0 ? existing[idx] : undefined
         const customCards =
           idx >= 0 ? existing.map((c, i) => (i === idx ? finalCard : c)) : [...existing, finalCard]
         writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', { ...prefs, customCards })
         storedAssetId = undefined
+
+        // Clean up superseded HTML asset if no longer referenced by any card
+        if (oldCard?.htmlAssetId && oldCard.htmlAssetId !== stored.assetId) {
+          const stillUsed = customCards.some((c) => c.htmlAssetId === oldCard.htmlAssetId)
+          if (!stillUsed) {
+            try {
+              deleteHtmlCardAsset(app.getPath('userData'), oldCard.htmlAssetId)
+            } catch {
+              // best-effort cleanup
+            }
+          }
+        }
+
         const finalState = openingEffectsState()
         return { ok: true, state: finalState, ...finalState }
       } catch (err) {
@@ -5896,6 +5938,14 @@ function registerHomeIpc(): void {
       }
     },
   )
+  ipcMain.handle(HOME_CHANNELS.readOpeningMedia, (_event, assetId: unknown): string | null => {
+    if (typeof assetId !== 'string') return null
+    try {
+      return getAssetDataUrl(app.getPath('userData'), assetId)
+    } catch {
+      return null
+    }
+  })
   ipcMain.handle(
     HOME_CHANNELS.deleteOpeningCard,
     (_event, cardId: unknown): OpeningEffectsState => {
@@ -5903,12 +5953,6 @@ function registerHomeIpc(): void {
       const prefs = openingPrefs()
       const cardToDelete = (prefs.customCards || []).find((c) => c.id === cardId)
       const customCards = (prefs.customCards || []).filter((c) => c.id !== cardId)
-      if (cardToDelete?.htmlAssetId) {
-        const stillInUse = customCards.some((c) => c.htmlAssetId === cardToDelete.htmlAssetId)
-        if (!stillInUse) {
-          deleteHtmlCardAsset(app.getPath('userData'), cardToDelete.htmlAssetId)
-        }
-      }
       const scenes = { ...prefs.scenes }
       for (const app of OPENING_APPS) {
         if (scenes[app] === cardId) {
@@ -5931,6 +5975,18 @@ function registerHomeIpc(): void {
         globalCard,
         favorites,
       })
+      if (cardToDelete?.htmlAssetId) {
+        const stillInUse = customCards.some((c) => c.htmlAssetId === cardToDelete.htmlAssetId)
+        if (!stillInUse) {
+          deleteHtmlCardAsset(app.getPath('userData'), cardToDelete.htmlAssetId)
+        }
+      }
+      if (cardToDelete?.mediaAssetId) {
+        const stillInUse = customCards.some((c) => c.mediaAssetId === cardToDelete.mediaAssetId)
+        if (!stillInUse) {
+          deleteMediaAsset(app.getPath('userData'), cardToDelete.mediaAssetId)
+        }
+      }
       return openingEffectsState()
     },
   )
@@ -6054,10 +6110,33 @@ function registerHomeIpc(): void {
     for (const card of result.importedCards) {
       mergedMap.set(card.id, card)
     }
-    writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
-      ...prefs,
-      customCards: Array.from(mergedMap.values()),
-    })
+    try {
+      writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
+        ...prefs,
+        customCards: Array.from(mergedMap.values()),
+      })
+    } catch (err) {
+      for (const assetId of result.newlyCreatedMediaAssetIds) {
+        try {
+          deleteMediaAsset(app.getPath('userData'), assetId)
+        } catch {
+          // best-effort cleanup
+        }
+      }
+      for (const assetId of result.newlyCreatedHtmlAssetIds) {
+        try {
+          deleteHtmlCardAsset(app.getPath('userData'), assetId)
+        } catch {
+          // best-effort cleanup
+        }
+      }
+      return {
+        ok: false,
+        count: 0,
+        error: `Failed to persist settings: ${err instanceof Error ? err.message : String(err)}`,
+        state: openingEffectsState(),
+      }
+    }
     return { ok: true, count: result.count, state: openingEffectsState() }
   })
   ipcMain.handle(HOME_CHANNELS.listLegacyRecovery, () =>
@@ -8245,17 +8324,33 @@ app.on('window-all-closed', () => {
   // A headless export destroys its hidden window between documents; only
   // runHeadlessExportEntry decides when that run is over.
   if (headlessArgv.kind !== 'none') return
-  if (process.platform !== 'darwin') app.quit()
+  if (quitCoordinator.isQuitting() || process.platform !== 'darwin') {
+    app.quit()
+  }
 })
 
-app.on('before-quit', () => {
-  appShuttingDown = true
-  // No close prompt may fall through to "Save" during shutdown
-  markSheetsShuttingDown()
-  stopSheetsSidecar()
-  // release the MCP port synchronously (macOS keeps the process alive after
-  // the last window closes, so window-all-closed is not enough)
-  stopMcpSync()
+app.on('before-quit', (event) => {
+  if (quitCoordinator.isConfirmed()) {
+    appShuttingDown = true
+    markSheetsShuttingDown()
+    stopSheetsSidecar()
+    stopMcpSync()
+    return
+  }
+
+  // Intercept the quit event to coordinate save prompts sequentially across all windows
+  event.preventDefault()
+  void quitCoordinator
+    .coordinateQuit(
+      () => promptAllDetachedWindows(),
+      () =>
+        shellWindow && !shellWindow.isDestroyed() && tabManager
+          ? promptDirtyTabs(shellWindow, tabManager)
+          : Promise.resolve(true),
+    )
+    .catch((err) => {
+      console.error('[shell] quit coordination failed:', err)
+    })
 })
 
 let appShutdownState: 'idle' | 'shutting-down' | 'done' = 'idle'
@@ -8265,6 +8360,11 @@ app.on('will-quit', (event) => {
   event.preventDefault()
   if (appShutdownState === 'shutting-down') return
   appShutdownState = 'shutting-down'
+
+  appShuttingDown = true
+  markSheetsShuttingDown()
+  stopSheetsSidecar()
+  stopMcpSync()
 
   disposeDocumentIndexIpc?.()
   disposeDocumentIndexIpc = null

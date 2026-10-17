@@ -451,6 +451,9 @@ const homeApi: HomeApi = {
       htmlAssetId,
     )) as StoredHtmlAsset | null
   },
+  async readOpeningMedia(assetId) {
+    return (await ipcRenderer.invoke(HOME_CHANNELS.readOpeningMedia, assetId)) as string | null
+  },
   async deleteOpeningCard(cardId) {
     return (await ipcRenderer.invoke(
       HOME_CHANNELS.deleteOpeningCard,
