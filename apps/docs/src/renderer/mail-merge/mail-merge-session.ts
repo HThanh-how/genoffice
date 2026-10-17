@@ -39,6 +39,8 @@ export interface MailMergeSession {
   openExport: (format: 'docx' | 'pdf') => void
   pendingFormat: 'docx' | 'pdf'
   applySource: (source: MailMergeSource) => void
+  /** record the batch id the main process minted for the picked folder */
+  noteOutputBatch: (batch: string) => void
   closeDialog: () => void
   togglePreview: (on: boolean) => void
   stepPreview: (delta: number) => void
@@ -65,6 +67,9 @@ export function useMailMergeSession(
   const [running, setRunning] = useState(false)
   const cancelRef = useRef<CancelToken>({ cancelled: false })
   const runningRef = useRef(false)
+  // the batch this session currently owns. The release names it, so closing an
+  // old dialog cannot revoke a batch the user started afterwards.
+  const batchRef = useRef('')
   const [pendingFormat, setPendingFormat] = useState<'docx' | 'pdf'>('docx')
 
   const selectedRecipients = useCallback(
@@ -125,6 +130,10 @@ export function useMailMergeSession(
 
     applySource,
 
+    noteOutputBatch: (batch) => {
+      batchRef.current = batch
+    },
+
     /**
      * Closing the progress dialog while a batch is still running does not hide
      * it: it asks the job to stop, and the dialog stays open until the job
@@ -139,7 +148,10 @@ export function useMailMergeSession(
       // folder the user picked. Preflight failures move the user to the
       // validation dialog, so that path has to release the grant too —
       // otherwise closing "Check for Errors" leaves a live grant behind.
-      void window.desktop.releaseMailMergeDir()
+      // The release names this session's batch: a stale close cannot revoke a
+      // batch the user started after it.
+      if (batchRef.current) void window.desktop.releaseMailMergeDir(batchRef.current)
+      batchRef.current = ''
       setDialog(null)
     },
 
@@ -190,6 +202,7 @@ export function useMailMergeSession(
 
     startExport: (options) => {
       if (runningRef.current || !source || !editor) return
+      batchRef.current = options.batch || batchRef.current
       // Preflight: a template that references a column the source does not have
       // would write «Name» into every output file. Word refuses to merge in that
       // situation, and so does GenOffice — the user gets the error list instead

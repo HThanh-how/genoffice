@@ -157,13 +157,14 @@ import { ATTACHMENT_IMAGE_EXTS, MARKDOWN_MEDIA_DIR_TOKEN, type MarkdownImage } f
 import { ClickClaims } from '../shared/context-menu-claims'
 import { type MailMergeGrant } from '../shared/mail-merge-ipc'
 import { commitMailMergeWrite } from '../shared/mail-merge-commit'
+import { MailMergeGrantRegistry } from '../shared/mail-merge-grants'
+import { resolverInsideGrant } from '../shared/mail-merge-write'
 import {
   pdfWriteTarget as resolvePdfWriteTarget,
   type PdfWriteTarget,
 } from '../shared/pdf-write-auth'
-import { commitMergedPdf, validatePdfMergeParts } from '../shared/pdf-merge-commit'
+import { commitMergedPdf, commitPdfOutput, validatePdfMergeParts } from '../shared/pdf-merge-commit'
 import { containedTarget as resolveContainedPath, PathRules } from '../shared/output-containment'
-import { writeMailMergeOutput } from '../shared/mail-merge-write'
 import {
   OPENABLE_DOC_EXTENSIONS,
   findOpenableDocPath,
@@ -3604,34 +3605,22 @@ function allowPdfWrite(wcId: number, filePath: string): void {
 const testExportDir = process.env.GENOFFICE_TEST_EXPORT_DIR || null
 
 /** A mail-merge batch writes many files into one chosen directory; those paths
- *  are authorized by the directory pick, and must not each be opened in a tab. */
-const mailMergePdfDirs = new Map<number, string>()
-/** The directory the renderer picked for a batch, keyed by the renderer that picked it. */
-const mailMergeDirs = new Map<number, string>()
-/** Names this batch has already written, so the writer can tell "the user's
- *  pre-existing file" from "another recipient's output from this same batch". */
-const mailMergeAllocated = new Map<number, Set<string>>()
-/** Which batch currently owns the grant. A directory grant is not a standing
- *  permission: it belongs to one export. Re-picking the same folder mints a new
- *  batch id, so a write that started under the previous batch can never land in
- *  it after that batch was released. */
-const mailMergeBatches = new Map<number, string>()
+ *  are authorized by the directory pick, and must not each be opened in a tab.
+ *  The directory, the batch identity and the claimed names are one registry: a
+ *  grant is minted, released and revoked through the same object, so there is no
+ *  state left behind when a renderer is torn down. */
+const mailMergeGrants = new MailMergeGrantRegistry()
 /** Largest source file Mail Merge will read, checked before the bytes are loaded. */
 const MAIL_MERGE_SOURCE_LIMIT_BYTES = 64 * 1024 * 1024
 
 /** The batch grant one renderer holds, or undefined once it has been torn down. */
 function mailMergeGrant(wcId: number): MailMergeGrant | undefined {
-  if (tornDownWcIds.has(wcId)) return undefined
-  const dir = mailMergeDirs.get(wcId)
-  const batch = mailMergeBatches.get(wcId)
-  if (!dir || !batch) return undefined
-  return { dir, allocated: mailMergeAllocated.get(wcId) ?? new Set<string>(), batch }
+  return mailMergeGrants.grant(wcId)
 }
 
 /** Is the batch this request belongs to still the one holding the directory? */
 function mailMergeBatchLive(wcId: number, batch: unknown): boolean {
-  if (tornDownWcIds.has(wcId)) return false
-  return typeof batch === 'string' && mailMergeBatches.get(wcId) === batch
+  return mailMergeGrants.batchLive(wcId, batch)
 }
 
 const platformRules: PathRules = {
@@ -3683,11 +3672,11 @@ function pdfWriteTarget(
   batch?: unknown,
 ): PdfWriteTarget | null {
   return resolvePdfWriteTarget(filePath, overwrite, {
-    tornDown: tornDownWcIds.has(wcId),
-    batchDir: mailMergePdfDirs.get(wcId) ?? null,
-    currentBatch: mailMergeBatches.get(wcId) ?? null,
+    tornDown: mailMergeGrants.isTornDown(wcId) || tornDownWcIds.has(wcId),
+    batchDir: mailMergeGrants.pdfDir(wcId),
+    currentBatch: mailMergeGrants.currentBatch(wcId),
     claimedBatch: batch,
-    allocated: mailMergeAllocated.get(wcId) ?? new Set<string>(),
+    allocated: mailMergeGrants.allocatedNames(wcId),
     testExportDir,
     isImageTemp: (candidate) => isImageExportTemp(wcId, candidate),
     allowedPaths: pdfWritablePaths.get(wcId) ?? new Set<string>(),
@@ -3737,9 +3726,7 @@ function dropDocWriter(wcId: number): void {
   releaseSpellIgnores(wcId)
   docWritablePaths.delete(wcId)
   pdfWritablePaths.delete(wcId)
-  mailMergeDirs.delete(wcId)
-  mailMergePdfDirs.delete(wcId)
-  mailMergeAllocated.delete(wcId)
+  mailMergeGrants.teardown(wcId)
   openDocByWc.delete(wcId)
   for (const p of imageExportTemps.get(wcId) ?? []) void rm(p, { force: true })
   imageExportTemps.delete(wcId)
@@ -3802,9 +3789,7 @@ export function teardownDocsRenderer(contents: WebContents): void {
   // must also lose its dialog-authorized PDF targets and disk-state cache
   docWritablePaths.delete(contents.id)
   pdfWritablePaths.delete(contents.id)
-  mailMergeDirs.delete(contents.id)
-  mailMergePdfDirs.delete(contents.id)
-  mailMergeAllocated.delete(contents.id)
+  mailMergeGrants.teardown(contents.id)
   docDiskStates.delete(contents.id)
   forgetDocPasswords(contents.id)
   if (!contents.isDestroyed()) contents.send('docs:teardown')
@@ -5578,8 +5563,19 @@ export function registerDocsIpc(): void {
       // its grant, and a batch that picked the same folder again has a different
       // id. Re-checking the id — not just the directory string — is what stops
       // a cancelled recipient's PDF from landing in a folder the tab no longer
-      // holds.
-      const batchAtTarget = target.batchDir ? mailMergeBatches.get(event.sender.id) : undefined
+      // holds. The same predicate also covers a renderer that was closed while
+      // Chromium was printing: its grant is gone, so the write is refused.
+      const wcId = event.sender.id
+      const batchAtTarget = target.batchDir ? batch : undefined
+      const commitOptions = {
+        batchStillLive: () => mailMergeBatchLive(wcId, batchAtTarget),
+        resolvePath: target.batchDir
+          ? resolverInsideGrant(target.batchDir, containedTarget)
+          : () => null,
+        writeDirect: (path: string, data: Buffer) => atomicWriteFile(path, data),
+        isImageTemp: (path: string) => isImageExportTemp(wcId, path),
+        openGenerated: openGeneratedFile,
+      }
       try {
         const printed = await event.sender.printToPDF({
           printBackground: true,
@@ -5592,24 +5588,9 @@ export function registerDocsIpc(): void {
           ...pdfScale(scale),
         })
         const data = await withInternalLinks(printed, links)
-        if (target.batchDir) {
-          if (mailMergeBatches.get(event.sender.id) !== batchAtTarget) {
-            return { ok: false, error: 'output directory is no longer authorized' }
-          }
-          const outcome = await writeMailMergeOutput(
-            target.batchDir,
-            target.name,
-            data,
-            target.policy,
-            target.allocated,
-          )
-          if (outcome.skipped)
-            return { ok: false, skipped: true, path: outcome.path, name: outcome.name }
-          return { ok: true, path: outcome.path, name: outcome.name }
-        }
-        await atomicWriteFile(target.path, data)
-        if (!isImageExportTemp(event.sender.id, target.path)) openGeneratedFile(target.path)
-        return { ok: true, path: target.path, name: basename(target.path) }
+        const outcome = await commitPdfOutput(target, data, commitOptions)
+        if (!outcome.ok && outcome.path) return { ok: false, error: outcome.error, path: target.path }
+        return outcome
       } catch (err) {
         // path is already authorized, so the renderer can retry chunked to the same target
         return { ok: false, error: String(err), path: target.path }
@@ -5819,12 +5800,13 @@ export function registerDocsIpc(): void {
       }
       const target = pdfWriteTarget(wcId, filePath, overwrite, batch)
       if (!target) return { ok: false, error: 'export target is not an authorized path' }
-      // the batch that authorized this target, captured before the merge. The
-      // merge is a chain of awaits: a batch cancelled while it runs releases its
-      // grant, and a batch that picked the same folder afterwards has a different
-      // id. Re-checking the id — not the directory string — is what stops a
-      // cancelled batch's PDF from landing in a folder the tab no longer holds.
-      const batchAtTarget = target.batchDir ? mailMergeBatches.get(wcId) : undefined
+      // the batch that authorized this target. The merge is a chain of awaits: a
+      // batch cancelled while it runs releases its grant, and a batch that picked
+      // the same folder afterwards has a different id. Re-checking the id — not
+      // the directory string — is what stops a cancelled batch's PDF from landing
+      // in a folder the tab no longer holds, and covers a renderer that was torn
+      // down while pdf-lib was assembling the document.
+      const batchAtTarget = target.batchDir ? batch : undefined
       return commitMergedPdf(target, fragments.parts, fragments.links, {
         assemble: async (parts, internalLinks) => {
           const { PDFDocument } = await import('pdf-lib')
@@ -5838,6 +5820,9 @@ export function registerDocsIpc(): void {
           return Buffer.from(await merged.save())
         },
         batchStillLive: () => mailMergeBatchLive(wcId, batchAtTarget),
+        resolvePath: target.batchDir
+          ? resolverInsideGrant(target.batchDir, containedTarget)
+          : () => null,
         writeDirect: (path, data) => atomicWriteFile(path, data),
         isImageTemp: (path) => isImageExportTemp(wcId, path),
         openGenerated: openGeneratedFile,
@@ -5897,9 +5882,12 @@ export function registerDocsIpc(): void {
   })
 
   ipcMain.handle('docs:pick-mail-merge-output-dir', async (event) => {
-    // the harness sets GENOFFICE_TEST_EXPORT_DIR so a batch export can land in a
-    // scratch directory without a native dialog (same affordance as the export
-    // directory picker above)
+    const wcId = event.sender.id
+    // The dialog is an await. The tab can be closed, detached or replaced while
+    // it is open, and a second pick can be started before this one resolves. The
+    // token ties the result to this request: only the newest request from a
+    // renderer that is still alive can create a grant.
+    const token = mailMergeGrants.beginPick(wcId)
     const picked = testExportDir
       ? { canceled: false, filePaths: [testExportDir] }
       : await openDialog(event, {
@@ -5908,38 +5896,29 @@ export function registerDocsIpc(): void {
         })
     const dir = picked.canceled ? null : (picked.filePaths[0] ?? null)
     if (!dir) return null
+    if (event.sender.isDestroyed() || mailMergeGrants.isTornDown(wcId)) return null
     // the grant is only meaningful for a directory that actually exists; a
     // dangling path would make every containment check resolve against nothing
     if (!existsSync(dir)) return null
-    const wcId = event.sender.id
-    mailMergeDirs.set(wcId, dir)
-    mailMergePdfDirs.set(wcId, dir)
     // a new batch starts with a fresh allocation set and its own identity: every
     // later write carries this id, so a released batch cannot write even if the
     // same directory is picked again afterwards
-    const batch = randomUUID()
-    mailMergeAllocated.set(wcId, new Set<string>())
-    mailMergeBatches.set(wcId, batch)
-    return { dir, batch }
+    return mailMergeGrants.completePick(wcId, token, dir)
   })
 
   /**
-   * Give up the output directory a tab was granted.
+   * Give up the output directory a batch was granted.
    *
    * A grant survives the dialog that created it, so a tab that picked a folder
    * and then cancelled still holds write permission on it. Releasing it when the
    * export dialog closes means the permission lives exactly as long as the batch
-   * that needs it. The batch id goes with it: a write that is mid-flight through
-   * materialisation or verification is invalidated before it can commit.
+   * that needs it. The release names the batch it owns: a delayed close of an
+   * older dialog cannot revoke a batch the user started after it, and a write
+   * mid-flight through materialisation or verification is invalidated before it
+   * can commit.
    */
-  ipcMain.handle('docs:release-mail-merge-dir', (event) => {
-    const wcId = event.sender.id
-    if (tornDownWcIds.has(wcId)) return { ok: false, error: 'the tab is closed' }
-    mailMergeDirs.delete(wcId)
-    mailMergePdfDirs.delete(wcId)
-    mailMergeAllocated.delete(wcId)
-    mailMergeBatches.delete(wcId)
-    return { ok: true }
+  ipcMain.handle('docs:release-mail-merge-dir', (event, batch: unknown) => {
+    return mailMergeGrants.release(event.sender.id, batch)
   })
 
   /** Names already present in the chosen directory, so the renderer can avoid
@@ -5949,8 +5928,8 @@ export function registerDocsIpc(): void {
     if (!mailMergeBatchLive(wcId, batch)) {
       return { ok: false, error: 'output directory is not authorized' }
     }
-    const authorized = mailMergeDirs.get(wcId)
-    if (!authorized || typeof dir !== 'string' || dir !== authorized) {
+    const grant = mailMergeGrant(wcId)
+    if (!grant || typeof dir !== 'string' || dir !== grant.dir) {
       return { ok: false, error: 'output directory is not authorized' }
     }
     try {

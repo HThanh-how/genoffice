@@ -64,6 +64,9 @@ function commit(
     // the identity captured when the target was authorized, checked against the
     // batch the tab still holds — exactly what the main process does
     batchStillLive: () => liveBatch.value === batch,
+    // the same containment resolver the DOCX batch path uses: every candidate
+    // name the writer might open is resolved inside the grant before it is opened
+    resolvePath: (candidate) => contained(target.batchDir!, join(target.batchDir!, candidate)),
     writeDirect: async (path, data) => {
       await writeFile(path, data)
     },
@@ -253,6 +256,8 @@ describe('the grouped PDF merge gate', () => {
     const result = await commitMergedPdf(target!, [Buffer.from('%PDF-1.4 normal')], [], {
       assemble: async () => Buffer.from('%PDF-1.4 normal'),
       batchStillLive: () => false,
+      // a non-batch target has no grant to contain it in
+      resolvePath: () => null,
       writeDirect: async (p, data) => {
         await writeFile(p, data)
       },

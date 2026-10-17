@@ -16,11 +16,14 @@ export function MailMergeExportDialog({
   format,
   onClose,
   onStart,
+  onBatch,
 }: {
   source: MailMergeSource
   format: 'docx' | 'pdf'
   onClose: () => void
   onStart: (options: MailMergeExportOptions) => void
+  /** tells the session which batch the main process minted for the picked folder */
+  onBatch: (batch: string) => void
 }) {
   const { t } = useI18n()
   const modalKeys = useModalKeys(onClose)
@@ -73,6 +76,7 @@ export function MailMergeExportDialog({
                 if (picked) {
                   setOutputDir(picked.dir)
                   setBatch(picked.batch ?? '')
+                  onBatch(picked.batch ?? '')
                 }
               }}
             >

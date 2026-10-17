@@ -7435,6 +7435,7 @@ export function App() {
           format={mailMerge.pendingFormat}
           onClose={() => mailMerge.closeDialog()}
           onStart={mailMerge.startExport}
+          onBatch={mailMerge.noteOutputBatch}
         />
       )}
       {mailMerge.dialog === 'validate' && (

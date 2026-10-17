@@ -39,6 +39,19 @@ export interface WriteOutcome {
  *  that name would land outside the authorized directory. */
 export type PathResolver = (candidate: string) => string | null
 
+/**
+ * A resolver for a granted directory: the writer proposes a bare name, the
+ * containment rule decides where it may land. Both the DOCX batch path and the
+ * PDF commit path build their resolver this way, so the identical operation
+ * cannot end up with two different rules.
+ */
+export function resolverInsideGrant(
+  dir: string,
+  contained: (dir: string, path: string) => string | null,
+): PathResolver {
+  return (candidate: string) => contained(dir, join(dir, candidate))
+}
+
 type WriteFn = (handle: FileHandle, data: Buffer) => Promise<void>
 
 /**

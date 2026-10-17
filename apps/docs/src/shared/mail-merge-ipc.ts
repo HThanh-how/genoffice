@@ -14,6 +14,7 @@
 import { join } from 'node:path'
 import { safeFileName } from '@genoffice/docx-engine'
 import { type MailMergeOverwritePolicy } from './mail-merge-names'
+import { resolverInsideGrant } from './mail-merge-write'
 
 /** A batch file is one document: anything larger is a mistake or an attack. */
 export const MAX_MAIL_MERGE_PAYLOAD_BYTES = 32 * 1024 * 1024
@@ -164,6 +165,6 @@ export function decideMailMergeWrite(
     payload: payload.bytes,
     policy,
     allocated: grant.allocated ?? new Set<string>(),
-    resolvePath: (candidate) => contained(grant.dir, join(grant.dir, candidate)),
+    resolvePath: resolverInsideGrant(grant.dir, contained),
   }
 }

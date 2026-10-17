@@ -30,6 +30,7 @@ function openDialog(source: MailMergeSource) {
         format: 'docx',
         onClose: () => {},
         onStart: () => {},
+        onBatch: () => {},
       }),
     )
   })

@@ -20,7 +20,7 @@
  */
 import { basename } from 'node:path'
 import type { PdfInternalLink } from './ipc'
-import { writeMailMergeOutput } from './mail-merge-write'
+import { writeMailMergeOutput, type PathResolver } from './mail-merge-write'
 import type { PdfWriteTarget } from './pdf-write-auth'
 
 /** One print job per group; the renderer chunks at 10 pages, so a few hundred
@@ -98,17 +98,73 @@ export interface PdfCommitResult {
   skipped?: boolean
 }
 
-export interface PdfMergeCommitOptions {
-  /** parse the fragments and join them into one PDF; the awaited boundary */
-  assemble: (parts: Buffer[], links: PdfInternalLink[]) => Promise<Buffer>
+export interface PdfCommitOptions {
   /** is the batch that authorized this target still the batch the tab holds? */
   batchStillLive: () => boolean
+  /**
+   * Resolve a candidate file name to the path the write would use, or null when
+   * it would leave the authorized directory. The writer renames a colliding name
+   * on its own, so every name it might open — the one proposed and every
+   * collision variant — has to pass through this resolver. Without it the writer
+   * falls back to joining the name onto the directory, which is a weaker rule than
+   * the one the DOCX batch path applies to the identical operation.
+   */
+  resolvePath: PathResolver
   /** write a non-batch target (save-dialog path, image-export temp) */
   writeDirect: (path: string, data: Buffer) => Promise<void>
   /** was this path staged by "Export as Images" rather than chosen by the user? */
   isImageTemp: (path: string) => boolean
   /** reveal a finished export the way a normal PDF export is revealed */
   openGenerated: (path: string) => void
+}
+
+export interface PdfMergeCommitOptions extends PdfCommitOptions {
+  /** parse the fragments and join them into one PDF; the awaited boundary */
+  assemble: (parts: Buffer[], links: PdfInternalLink[]) => Promise<Buffer>
+}
+
+/**
+ * Commit one finished PDF to an already-authorized target.
+ *
+ * Both PDF paths — the single print and the grouped merge — end here, so they
+ * share the same two guarantees: the batch must still be live at the moment of
+ * the commit, and every candidate name the writer could open must resolve inside
+ * the granted directory.
+ */
+export async function commitPdfOutput(
+  target: PdfWriteTarget,
+  data: Buffer,
+  options: PdfCommitOptions,
+): Promise<PdfCommitResult> {
+  // The work before this point crossed several awaits. A batch cancelled during
+  // it has released its grant, and a batch that picked the same folder afterwards
+  // has a different id; re-checking the identity rather than the directory string
+  // is what stops a cancelled batch's PDF from landing in a folder the tab no
+  // longer holds.
+  if (target.batchDir && !options.batchStillLive()) {
+    return { ok: false, error: 'output directory is no longer authorized' }
+  }
+  try {
+    if (target.batchDir) {
+      // the writer is the authority on the final name and on skip/rename/overwrite
+      const outcome = await writeMailMergeOutput(
+        target.batchDir,
+        target.name,
+        data,
+        target.policy,
+        target.allocated,
+        options.resolvePath,
+      )
+      if (outcome.skipped)
+        return { ok: false, skipped: true, path: outcome.path, name: outcome.name }
+      return { ok: true, path: outcome.path, name: outcome.name }
+    }
+    await options.writeDirect(target.path, data)
+    if (!options.isImageTemp(target.path)) options.openGenerated(target.path)
+    return { ok: true, path: target.path, name: basename(target.path) }
+  } catch (error) {
+    return { ok: false, error: String(error), path: target.path }
+  }
 }
 
 export async function commitMergedPdf(
@@ -123,31 +179,5 @@ export async function commitMergedPdf(
   } catch (error) {
     return { ok: false, error: String(error), path: target.path }
   }
-  // The merge crossed several awaits. A batch cancelled during it has released
-  // its grant, and a batch that picked the same folder afterwards has a different
-  // id; re-checking the identity rather than the directory string is what stops
-  // a cancelled batch's PDF from landing in a folder the tab no longer holds.
-  if (target.batchDir && !options.batchStillLive()) {
-    return { ok: false, error: 'output directory is no longer authorized' }
-  }
-  try {
-    if (target.batchDir) {
-      // the writer is the authority on the final name and on skip/rename/overwrite
-      const outcome = await writeMailMergeOutput(
-        target.batchDir,
-        target.name,
-        data,
-        target.policy,
-        target.allocated,
-      )
-      if (outcome.skipped)
-        return { ok: false, skipped: true, path: outcome.path, name: outcome.name }
-      return { ok: true, path: outcome.path, name: outcome.name }
-    }
-    await options.writeDirect(target.path, data)
-    if (!options.isImageTemp(target.path)) options.openGenerated(target.path)
-    return { ok: true, path: target.path, name: basename(target.path) }
-  } catch (error) {
-    return { ok: false, error: String(error), path: target.path }
-  }
+  return commitPdfOutput(target, data, options)
 }
