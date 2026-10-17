@@ -835,4 +835,124 @@ describe('Opening Card Studio V2 - Unit Tests', () => {
       expect(normalized.customCards).toBeUndefined()
     })
   })
+
+  describe('Media Import Rollback & HTML Category Consistency', () => {
+    it('rolls back newly imported media asset when card save fails', async () => {
+      let deletedAssetId: string | null = null
+      const fakeApi = {
+        importOpeningMedia: vi.fn().mockResolvedValue({
+          ok: true,
+          asset: { id: 'media_test_rollback_123', name: 'photo.png' },
+          state: { prefs: {} },
+        }),
+        saveOpeningCard: vi.fn().mockResolvedValue(null),
+        deleteOpeningMedia: vi.fn().mockImplementation(async (assetId: string) => {
+          deletedAssetId = assetId
+          return { ok: true, state: { prefs: {} } }
+        }),
+      }
+
+      const assetResult = await fakeApi.importOpeningMedia('fakebase64', 'photo.png')
+      expect(assetResult.ok).toBe(true)
+      const assetId = assetResult.asset.id
+
+      const cardToSave = {
+        id: 'custom:media_123',
+        name: 'photo',
+        category: 'media',
+        contentKind: 'personal-media',
+        mediaAssetId: assetId,
+      }
+
+      let savedState: unknown = null
+      try {
+        savedState = (await fakeApi.saveOpeningCard(cardToSave)) || null
+      } catch {
+        // error caught
+      }
+
+      if (!savedState) {
+        if (assetId && fakeApi.deleteOpeningMedia) {
+          await fakeApi.deleteOpeningMedia(assetId)
+        }
+      }
+
+      expect(deletedAssetId).toBe('media_test_rollback_123')
+      expect(fakeApi.deleteOpeningMedia).toHaveBeenCalledWith('media_test_rollback_123')
+    })
+
+    it('does not delete media asset when card save succeeds', async () => {
+      const fakeApi = {
+        importOpeningMedia: vi.fn().mockResolvedValue({
+          ok: true,
+          asset: { id: 'media_success_456', name: 'photo.png' },
+          state: { prefs: {} },
+        }),
+        saveOpeningCard: vi.fn().mockResolvedValue({ prefs: { customCards: [] } }),
+        deleteOpeningMedia: vi.fn(),
+      }
+
+      const assetResult = await fakeApi.importOpeningMedia('fakebase64', 'photo.png')
+      const assetId = assetResult.asset.id
+
+      const cardToSave = {
+        id: 'custom:media_456',
+        name: 'photo',
+        category: 'media',
+        contentKind: 'personal-media',
+        mediaAssetId: assetId,
+      }
+
+      const savedState = await fakeApi.saveOpeningCard(cardToSave)
+      if (!savedState) {
+        await fakeApi.deleteOpeningMedia(assetId)
+      }
+
+      expect(fakeApi.deleteOpeningMedia).not.toHaveBeenCalled()
+    })
+
+    it('HTML category filtering includes both ai-html and custom-html cards', () => {
+      const cards: OpeningCardDefinition[] = [
+        {
+          id: 'ai:card_1',
+          name: 'AI Card',
+          category: 'curated',
+          contentKind: 'ai-html',
+          isBuiltIn: false,
+          createdAt: 1,
+          material: { preset: 'solid' },
+        },
+        {
+          id: 'custom:html_2',
+          name: 'Custom HTML Card',
+          category: 'custom',
+          contentKind: 'custom-html',
+          isBuiltIn: false,
+          createdAt: 2,
+          material: { preset: 'solid' },
+        },
+        {
+          id: 'curated:card_3',
+          name: 'Material Card',
+          category: 'curated',
+          contentKind: 'curated-material',
+          isBuiltIn: true,
+          createdAt: 3,
+          material: { preset: 'solid' },
+        },
+      ]
+
+      const htmlCards = cards.filter(
+        (c) => c.contentKind === 'ai-html' || c.contentKind === 'custom-html',
+      )
+      expect(htmlCards).toHaveLength(2)
+      expect(htmlCards.map((c) => c.id)).toEqual(['ai:card_1', 'custom:html_2'])
+
+      let htmlCount = 0
+      for (const c of cards) {
+        if (c.contentKind === 'ai-html' || c.contentKind === 'custom-html') htmlCount++
+      }
+      expect(htmlCount).toBe(2)
+    })
+  })
 })

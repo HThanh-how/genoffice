@@ -250,7 +250,14 @@ export function OpeningCardStudio({
         },
         createdAt: Date.now(),
       }
-      const savedState = await api.saveOpeningCard?.(newCard)
+      let savedState: OpeningEffectsState | null = null
+      let saveError: unknown = null
+      try {
+        savedState = (await api.saveOpeningCard?.(newCard)) || null
+      } catch (err) {
+        saveError = err
+      }
+
       if (savedState) {
         onUpdateState(savedState)
         setSelectedCard(newCard)
@@ -260,7 +267,25 @@ export function OpeningCardStudio({
             : 'Media imported and card created successfully!',
         )
       } else {
-        if (result.state) onUpdateState(result.state)
+        // Rollback: delete the newly imported media asset since card persistence failed
+        const assetId =
+          (result.asset as unknown as { assetId?: string; id?: string }).assetId ||
+          (result.asset as unknown as { id?: string }).id
+        if (assetId && api.deleteOpeningMedia) {
+          try {
+            const rollbackRes = await api.deleteOpeningMedia(assetId)
+            if (rollbackRes?.state) {
+              onUpdateState(rollbackRes.state)
+            }
+          } catch {
+            // best-effort cleanup; preserve original persistence error
+          }
+        } else if (result.state) {
+          onUpdateState(result.state)
+        }
+        if (saveError) {
+          throw saveError
+        }
         throw new Error(
           isVi ? 'Không thể lưu thẻ sau khi tải ảnh' : 'Failed to save card after uploading media',
         )

@@ -53,7 +53,7 @@ export function CardGallery({
       if (card.contentKind === 'curated-material') c['curated-material']++
       if (card.contentKind === 'canvas-scene') c['canvas-scene']++
       if (card.contentKind === 'personal-media') c['personal-media']++
-      if (card.contentKind === 'ai-html') c['ai-html']++
+      if (card.contentKind === 'ai-html' || card.contentKind === 'custom-html') c['ai-html']++
       if (favSet.has(card.id)) c.favorites++
       if (!card.isBuiltIn || card.category === 'custom') c.custom++
     }
@@ -72,7 +72,7 @@ export function CardGallery({
     } else if (filterCategory === 'personal-media') {
       list = list.filter((c) => c.contentKind === 'personal-media')
     } else if (filterCategory === 'ai-html') {
-      list = list.filter((c) => c.contentKind === 'ai-html')
+      list = list.filter((c) => c.contentKind === 'ai-html' || c.contentKind === 'custom-html')
     } else if (filterCategory === 'favorites') {
       const favSet = new Set(prefs.favorites || [])
       list = list.filter((c) => favSet.has(c.id))
@@ -181,7 +181,7 @@ export function CardGallery({
               { key: 'curated-material', en: 'Materials', vi: 'Chất liệu' },
               { key: 'canvas-scene', en: 'Motion Scenes', vi: 'Cảnh động' },
               { key: 'personal-media', en: 'Media', vi: 'Phương tiện' },
-              { key: 'ai-html', en: 'AI HTML', vi: 'AI HTML' },
+              { key: 'ai-html', en: 'HTML Cards', vi: 'Thẻ HTML' },
               { key: 'favorites', en: 'Favorites', vi: 'Yêu thích' },
               { key: 'custom', en: 'Custom', vi: 'Tự tạo' },
             ] as const
