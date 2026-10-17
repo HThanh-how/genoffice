@@ -14,12 +14,13 @@
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import { Editor } from '@tiptap/core'
-import { parseDocx, type ParsedDocFull } from '@genoffice/docx-engine'
+import { parseDocx, readSections, type ParsedDocFull } from '@genoffice/docx-engine'
 import { buildDocx } from '../../../packages/docx-engine/tests/helpers/build-docx'
 import { editorExtensions } from '../src/renderer/editor/extensions'
 import { blocksToPmDoc } from '../src/renderer/editor/convert'
 import { buildDocBytes, type FileActionContext } from '../src/renderer/file-actions'
 import { editKey } from '../src/renderer/hf-sections'
+import { validateMergeSession, templateMergeFields } from '../src/renderer/mail-merge/validation'
 import { runMailMergeExport, type CancelToken } from '../src/renderer/mail-merge/export'
 import { sourceFromRows } from '../src/renderer/mail-merge/data-source'
 import type { MailMergeExportOptions } from '../src/renderer/mail-merge/types'
@@ -90,19 +91,12 @@ function ctxFor(
   parsed: ParsedDocFull,
   hfEdits: Record<string, unknown> = {},
 ): FileActionContext {
-  const sectBlock = parsed.blocks.find((b) => (b.originalXml ?? '').includes('<w:sectPr'))
-  const lastBlockIndex = sectBlock?.docxIndex ?? 0
   return {
     editor,
     doc: { parsed, filePath: null, fileName: 'template.docx', hash: '' },
-    sections: [
-      {
-        lastBlockIndex,
-        sectPrXml: sectBlock?.originalXml ?? '',
-        settings: { pageWidth: 11906, pageHeight: 16838 },
-        startType: 'continuous',
-      },
-    ],
+    // the real section model, so the preflight sees the same header/footer
+    // references the writer resolves
+    sections: readSections(parsed),
     section: null,
     sectionDirty: false,
     sectionsDirty: [],

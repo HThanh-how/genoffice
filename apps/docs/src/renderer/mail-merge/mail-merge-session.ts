@@ -12,10 +12,11 @@ import type { FileActionContext } from '../file-actions'
 import { t } from '../i18n/locale'
 import { insertMergeField } from '../editor/merge-doc'
 import { setMailMergeHighlight, setMailMergePreview } from '../editor/mail-merge-preview'
+import { hfSaveOptions } from '../hf-sections'
 import { runMailMergeExport, type CancelToken } from './export'
 import { initialProgress, applyJobFailure } from './progress'
 import { exportRecipients } from './recipient-store'
-import { templateMergeFields, validateMergeSession } from './validation'
+import { templateMergeFields, validateMergeSession, type HfPlan } from './validation'
 import type {
   MailMergeExportOptions,
   MailMergeExportProgress,
@@ -76,6 +77,27 @@ export function useMailMergeSession(
     (src: MailMergeSource | null) => (src ? src.recipients.filter((r) => r.selected) : []),
     [],
   )
+
+  /**
+   * The header/footer half of the save plan, in the exact shape `saveDocx`
+   * receives. The preflight needs it because "the template has a field in a
+   * header" and "the file we are about to write has a field in a header" are
+   * different claims: a header the user opened in the header editor is
+   * regenerated from that edit, and its fields are merged like the body's.
+   */
+  const hfPlan = (): HfPlan => {
+    const ctx = getCtx()
+    const sections = ctx.sections ?? []
+    return {
+      sections,
+      options: hfSaveOptions({
+        sections,
+        edits: ctx.sectionHfEdits ?? {},
+        links: ctx.hfLinks ?? {},
+      }),
+      watermarkDirty: Boolean(ctx.watermarkDirty),
+    }
+  }
 
   const showPreview = useCallback(
     (src: MailMergeSource | null, index: number) => {
@@ -195,6 +217,7 @@ export function useMailMergeSession(
           editor,
           undefined,
           parsed,
+          hfPlan(),
         ),
       )
       setDialog('validate')
@@ -216,6 +239,7 @@ export function useMailMergeSession(
         editor,
         options.scope,
         parsed,
+        hfPlan(),
       )
       const blocking = issues.filter((issue) => issue.severity === 'error')
       if (blocking.length > 0) {

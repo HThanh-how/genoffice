@@ -925,6 +925,10 @@ export interface HfPartInfo {
   paras: HfParagraph[]
   /** images in the part (display-only; text edits do not affect their bytes) */
   images?: HfImage[]
+  /** MERGEFIELD/IF/NEXT/SKIPIF instructions in the part's raw markup; the
+   *  display paras flatten fields to their cached text, so this is the only
+   *  faithful record of what the part actually contains */
+  fieldInstructions?: string[]
 }
 
 /** One display run of footnote/endnote body text (for page-bottom rendering; editing still uses plain text) */

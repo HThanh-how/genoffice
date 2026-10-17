@@ -13,10 +13,12 @@ import {
   patternTokens,
   type MergeFieldRef,
   type ParsedDocFull,
+  type SectionInfo,
 } from '@genoffice/docx-engine'
 import type { Editor } from '@tiptap/core'
 import type { Block } from '@genoffice/docx-engine'
 import { fieldCodeText } from '../editor/field-codes'
+import type { HfSaveOptions } from '../hf-sections'
 import type { MailMergeSource, MailMergeValidationIssue } from './types'
 
 /** Merge fields present in the editor (body) — the instrField mark is the model. */
@@ -128,11 +130,54 @@ export function passthroughFieldInstructions(blocks: readonly Block[]): string[]
  * output file.
  */
 /**
- * Merge fields sitting in parts the merge pipeline never rewrites: header and
- * footer parts the user has not opened in the header editor. Those parts are
- * copied from the template byte-for-byte, so a MERGEFIELD inside one would print
- * as «Name» in every output file.
+ * Which header/footer parts the save pipeline will rewrite.
+ *
+ * `hfSaveOptions` is precisely what `saveDocx` receives. A part with a pending
+ * edit is rebuilt from that edit, and `mergeHeaderFooterOptions` resolves its
+ * merge fields for the recipient exactly like the body. A part with no edit is
+ * copied from the template byte-for-byte, so a field inside it survives into
+ * every output file.
+ *
+ * The part an option writes to is the section's own header/footer reference —
+ * the same one `patch.ts` resolves. A watermark change forces the last section's
+ * default header part to be rewritten even when its text is untouched.
  */
+export function regeneratedHfParts(
+  sections: readonly SectionInfo[],
+  options: HfSaveOptions,
+  watermarkDirty: boolean,
+): Set<string> {
+  const out = new Set<string>()
+  const last = sections.length - 1
+  const slot = (kind: 'header' | 'footer', variant: 'default' | 'first' | 'even') =>
+    variant === 'default' ? kind : `${kind}${variant === 'first' ? 'First' : 'Even'}`
+  for (let i = 0; i < sections.length; i++) {
+    const sec = sections[i]
+    for (const kind of ['header', 'footer'] as const) {
+      const refs = kind === 'header' ? sec.headerRefs : sec.footerRefs
+      for (const variant of ['default', 'first', 'even'] as const) {
+        const rId = refs[variant]
+        if (!rId) continue
+        const edited =
+          i === last
+            ? options[slot(kind, variant) as keyof HfSaveOptions] !== undefined
+            : (options.sectionHf ?? []).some(
+                (e) =>
+                  e.lastBlockIndex === sec.lastBlockIndex &&
+                  e.kind === kind &&
+                  (e.variant ?? 'default') === variant,
+              )
+        if (edited) out.add(rId)
+      }
+    }
+  }
+  if (watermarkDirty) {
+    const defaultRef = sections[last]?.headerRefs.default
+    if (defaultRef) out.add(defaultRef)
+  }
+  return out
+}
+
 /**
  * Merge fields in header/footer parts the merge cannot reach.
  *
@@ -142,23 +187,48 @@ export function passthroughFieldInstructions(blocks: readonly Block[]): string[]
  * byte-for-byte. Whatever the preflight misses, `checkMergedDocx` reads the
  * finished bytes before a single one is written and refuses the batch, so an
  * unresolved field never reaches the output folder.
+ *
+ * `regenerated` has to come from the *current* header/footer state, not from the
+ * template as it was first parsed: a header the user edited in the header editor
+ * is merged, and refusing it because the original file still carries the field
+ * would block an export the serializer handles correctly.
  */
-export function unmergeableHeaderFooterFields(parsed: ParsedDocFull): string[] {
+export function unmergeableHeaderFooterFields(
+  parsed: ParsedDocFull,
+  regenerated: Set<string> | null = null,
+): string[] {
   const found: string[] = []
   const push = (instr: string | undefined): void => {
     const trimmed = (instr ?? '').trim()
     if (/^\s*(MERGEFIELD|IF)\b/i.test(trimmed) && !found.includes(trimmed)) found.push(trimmed)
   }
-  // header/footer parts the user never opened in the header editor are copied
-  // from the template byte-for-byte: a field inside one is never rewritten
-  for (const part of Object.values(parsed.hfParts ?? {})) {
-    for (const para of part.paras ?? []) for (const run of para.runs ?? []) push(run.instrField)
+  const parts = Object.entries(parsed.hfParts ?? {})
+  if (parts.length === 0) {
+    // a header/footer with no part of its own: the document-level strips are
+    // the same bytes the writer would copy
+    for (const para of parsed.headerParas ?? [])
+      for (const run of para.runs ?? []) push(run.instrField)
+    for (const para of parsed.footerParas ?? [])
+      for (const run of para.runs ?? []) push(run.instrField)
+    return found
   }
-  for (const para of parsed.headerParas ?? [])
-    for (const run of para.runs ?? []) push(run.instrField)
-  for (const para of parsed.footerParas ?? [])
-    for (const run of para.runs ?? []) push(run.instrField)
+  for (const [rId, part] of parts) {
+    if (regenerated?.has(rId)) continue
+    for (const instr of part.fieldInstructions ?? []) push(instr)
+  }
   return found
+}
+
+/**
+ * The header/footer half of the save plan, in the shape `saveDocx` will receive.
+ * The preflight needs it because "the template has a field in a header" and
+ * "the file we are about to write has a field in a header" are different claims:
+ * a header the user opened in the header editor is regenerated from that edit.
+ */
+export interface HfPlan {
+  sections: readonly SectionInfo[]
+  options: HfSaveOptions
+  watermarkDirty: boolean
 }
 
 export function validateMergeSession(
@@ -168,6 +238,7 @@ export function validateMergeSession(
   editor?: Editor | null,
   scope?: 'selected' | 'all',
   parsed?: ParsedDocFull | null,
+  hfPlan?: HfPlan | null,
 ): MailMergeValidationIssue[] {
   const issues: MailMergeValidationIssue[] = []
   if (!source) {
@@ -234,7 +305,10 @@ export function validateMergeSession(
   // a field in a header/footer part the user never opened is copied verbatim from
   // the template: the merge cannot reach it, and the writer refuses the file
   if (parsed) {
-    const unreachable = unmergeableHeaderFooterFields(parsed)
+    const regenerated = hfPlan
+      ? regeneratedHfParts(hfPlan.sections, hfPlan.options, hfPlan.watermarkDirty)
+      : null
+    const unreachable = unmergeableHeaderFooterFields(parsed, regenerated)
     if (unreachable.length > 0) {
       issues.push({
         severity: 'error',

@@ -22,6 +22,7 @@ import { findSourcesPart, parseSourcesXml } from './sources'
 import { decodeSymbolText, symbolGlyph } from './symbol-fonts'
 import { readZoteroDocumentData } from './zotero-doc-props'
 import { computeListMarkerInfos, type ListItemRef } from './list-markers'
+import { mergeFieldInstructionsInXml } from './mail-merge'
 import { FONT_TABLE_PART_PATH, parseFontTable, readEmbeddedFonts } from './font-table'
 import { DEFAULT_THEME_COLORS, THEME_PART_PATH, readThemeColors, readThemeFonts } from './theme'
 import { PAGE_MARK, TOTAL_PAGES_MARK } from './types'
@@ -6394,7 +6395,8 @@ async function parseAllHfParts(
     if (!path) continue
     const file = zip.file(path)
     if (!file) continue
-    const xml = stripHfDeletions(await file.async('string'))
+    const rawXml = await file.async('string')
+    const xml = stripHfDeletions(rawXml)
     const content = hfContentFromXml(
       xml,
       kind,
@@ -6406,11 +6408,13 @@ async function parseAllHfParts(
       docDefaults,
     )
     const images = bindHfImageAnchors(await hfImages(zip, path, xml, content.paras), content.paras)
+    const fields = mergeFieldInstructionsInXml(rawXml)
     out[rId] = {
       text: content.text,
       hasPageNumber: content.hasPageNumber,
       paras: content.paras,
       ...(images.length > 0 ? { images } : {}),
+      ...(fields.length > 0 ? { fieldInstructions: fields } : {}),
     }
   }
   return out
