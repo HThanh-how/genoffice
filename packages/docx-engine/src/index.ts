@@ -201,6 +201,7 @@ export {
   patternTokens,
   isIndexToken,
   fieldInstructionsInXml,
+  mergeFieldInstructionsInXml,
   isRepresentableColumnName,
   mergeFieldName,
   mergeFieldText,

@@ -18,9 +18,6 @@
 import { escapeXmlText } from './xml-utils'
 import type { Block, GeneratedBlock, HeaderFooter, HfParagraph, Run, TableModel } from './types'
 
-/** the guillemets Word puts around a field name in an unmerged template */
-const PLACEHOLDER = /«([^»]*)»/g
-
 /** One merge field occurrence found in a template. */
 export interface MergeFieldRef {
   /** the data-source column name the field asks for */
@@ -339,7 +336,12 @@ export function ifBranch(instr: string, record: MergeRecord): string {
   const [, rest] = splitInstruction(instr)
   const branches = branchesAfterCondition(rest)
   const chosen = conditionHolds(instr, record) ? (branches[0] ?? '') : (branches[1] ?? '')
-  return chosen.replace(/^"(.*)"$/s, '$1').replace(PLACEHOLDER, (_, name) => valueOf(record, name))
+  // the branch is literal text. Word evaluates a field inside an IF only when
+  // it is nested as its own field (`{ IF … "Hello { MERGEFIELD X }" … }`); a
+  // guillemet typed into the branch is just characters. Substituting here while
+  // `fieldReferencedColumns` refuses to count it as a column would silently
+  // blank out a name the source does not have.
+  return chosen.replace(/^"(.*)"$/s, '$1')
 }
 
 /** the two branch literals of an IF, with the condition stripped off the front */
@@ -433,26 +435,36 @@ export function fieldReferencedColumns(instr: string): string[] {
     const name = mergeFieldName(instr)
     return name ? [name] : []
   }
-  if (isConditionalField(instr)) {
-    const [, rest] = splitInstruction(instr)
-    const names: string[] = []
-    for (const token of tokenizeOperands(rest)) {
-      const operand = token.trim()
-      const guillemet = /^«([^»]*)»$/.exec(operand)
-      if (guillemet) {
-        const name = (guillemet[1] ?? '').trim()
-        if (name && !names.includes(name)) names.push(name)
-        continue
-      }
-      const instruction = /^MERGEFIELD\s+(?:"([^"]*)"|(\S+))/i.exec(operand)
-      if (instruction) {
-        const name = (instruction[1] ?? instruction[2] ?? '').trim()
-        if (name && !names.includes(name)) names.push(name)
-      }
-    }
-    return names
+  if (!isConditionalField(instr)) return []
+  const [, rest] = splitInstruction(instr)
+  // the condition's operands, taken with the same grammar `resolveOperand`
+  // uses. Tokenising the whole instruction by whitespace loses an operand that
+  // contains a space — `IF MERGEFIELD Amount > 10 "High" "Low"` would report no
+  // column at all while the evaluator reads `Amount`.
+  const cmp = parseComparison(rest)
+  const operands = cmp ? [cmp.left, cmp.right] : tokenizeOperands(rest).slice(0, 1)
+  const names: string[] = []
+  for (const token of operands) {
+    const name = operandColumn(token)
+    if (name && !names.includes(name)) names.push(name)
   }
-  return []
+  return names
+}
+
+/** the column one IF/SKIPIF operand names, or null when it is a literal */
+function operandColumn(token: string): string | null {
+  const trimmed = token.trim()
+  const guillemet = /^«([^»]*)»$/.exec(trimmed)
+  if (guillemet) {
+    const name = (guillemet[1] ?? '').trim()
+    return name || null
+  }
+  const instruction = /^MERGEFIELD\s+(?:"([^"]*)"|(\S+))/i.exec(trimmed)
+  if (instruction) {
+    const name = (instruction[1] ?? instruction[2] ?? '').trim()
+    return name || null
+  }
+  return null
 }
 
 /** Can the per-recipient merge model evaluate this instruction at all? */
@@ -1147,6 +1159,23 @@ function complexFieldInstructions(xml: string): string[] {
 export function fieldInstructionsInXml(xml: string): string[] {
   if (!xml) return []
   return [...simpleFieldInstructions(xml), ...complexFieldInstructions(xml)]
+}
+
+/**
+ * The merge-relevant field instructions in a part's raw OOXML.
+ *
+ * A header/footer part is parsed for *display*: its field spans collapse into
+ * the cached result text («Name»), so the paragraph model carries no
+ * `instrField`. Anything that has to know whether a part still contains a
+ * MERGEFIELD or an IF has to read the markup, not the display runs.
+ */
+export function mergeFieldInstructionsInXml(xml: string): string[] {
+  const out: string[] = []
+  for (const instr of fieldInstructionsInXml(xml)) {
+    const trimmed = instr.trim()
+    if (/^\s*(MERGEFIELD|IF|NEXT|SKIPIF)\b/i.test(trimmed) && !out.includes(trimmed)) out.push(trimmed)
+  }
+  return out
 }
 
 /** Every merge field referenced by a block tree, in document order. */
