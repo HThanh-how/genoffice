@@ -24,7 +24,11 @@ import {
   currentDocGeneration,
   type FileActionContext,
 } from '../file-actions'
-import { currentMailMergeValues, setMailMergePreview } from '../editor/mail-merge-preview'
+import {
+  currentMailMergeValues,
+  mergeFieldPositions,
+  setMailMergePreview,
+} from '../editor/mail-merge-preview'
 import { mergeFieldValue } from '../editor/merge-doc'
 import { exportRecipients } from './recipient-store'
 import { initialProgress, terminalStatus } from './progress'
@@ -70,16 +74,44 @@ function previewSheets(): HTMLElement[] {
   return [...document.querySelectorAll<HTMLElement>('.pv-page')]
 }
 
-export function printablePreviewIsCurrent(generation: number, hasMergeFields: boolean): boolean {
+/**
+ * The identity of every merge field the printed sheets have to carry.
+ *
+ * A merge field is one occurrence in the editor document, in document order.
+ * The count is not a global constant the export can guess: it is read from the
+ * same document the preview cloned, so a field that appears twice, in a table,
+ * or on a later page is expected twice.
+ */
+export function expectedPreviewFieldIds(editor: Editor): string[] {
+  return mergeFieldPositions(editor.state.doc).map((_, index) => String(index))
+}
+
+/**
+ * A print is safe only when the sheets carry *this* recipient's value for
+ * *every* field the template references.
+ *
+ * Two things have to hold: no widget on the sheets is stamped with an older
+ * generation (a mixture means the re-measure never finished), and every field
+ * the editor models has a widget on the sheets. The second half is what a
+ * "all found widgets are current" check misses: a clone that dropped two of
+ * three fields still has a current stamp on the one it kept, and Chromium would
+ * print the third field as the previous recipient's value or as «Name».
+ */
+export function printablePreviewIsCurrent(
+  generation: number,
+  expectedFieldIds: readonly string[],
+): boolean {
   const sheets = previewSheets()
   if (sheets.length === 0) return false
-  const stamped = sheets.flatMap((sheet) =>
-    [...sheet.querySelectorAll<HTMLElement>('.mm-field-preview-value')],
-  )
-  // a template with merge fields whose sheets show no value at all is a clone
-  // taken before this recipient was put on screen
-  if (hasMergeFields && stamped.length === 0) return false
-  return stamped.every((el) => el.dataset.mmPreviewKey === String(generation))
+  const seen = new Set<string>()
+  for (const sheet of sheets) {
+    for (const el of sheet.querySelectorAll<HTMLElement>('.mm-field-preview-value')) {
+      if (el.dataset.mmPreviewKey !== String(generation)) return false
+      const id = el.dataset.mmFieldId
+      if (id !== undefined) seen.add(id)
+    }
+  }
+  return expectedFieldIds.every((id) => seen.has(id))
 }
 
 /** The preview mounted and measured its print sheets. */
@@ -99,12 +131,12 @@ export async function waitForPreviewSheets(deadlineMs = 20_000): Promise<boolean
  */
 export async function waitForPrintablePreview(
   generation: number,
-  hasMergeFields: boolean,
+  expectedFieldIds: readonly string[],
   deadlineMs = 20_000,
 ): Promise<boolean> {
   const deadline = Date.now() + deadlineMs
   while (Date.now() < deadline) {
-    if (printablePreviewIsCurrent(generation, hasMergeFields)) return true
+    if (printablePreviewIsCurrent(generation, expectedFieldIds)) return true
     await sleep(120)
   }
   return false
@@ -222,7 +254,10 @@ export async function runMailMergeExport(
   // whether the template has any merge field at all: the printable sheets of a
   // template with fields must show this recipient's values, and a sheet that
   // shows none is a clone taken before the recipient was put on screen
-  const hasMergeFields = templateFieldInstructions(ctx.editor).length > 0
+  // every merge field the editor models has to appear on the printed sheets,
+  // identified individually: a clone that kept one of three fields is not a
+  // printable page for this recipient
+  const fieldIds = expectedPreviewFieldIds(ctx.editor)
 
   // the batch belongs to one document, and the identity is taken before the
   // first await: a directory listing, a pagination pass or a lazy-media
@@ -438,7 +473,7 @@ export async function runMailMergeExport(
         // before Chromium is allowed to print them.
         const generation = setMailMergePreview(ctx.editor, recipient.values)
         try {
-          if (!(await waitForPrintablePreview(generation, hasMergeFields))) {
+          if (!(await waitForPrintablePreview(generation, fieldIds))) {
             progress.failed += 1
             progress.errors.push({
               recipient: name,

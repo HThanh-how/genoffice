@@ -67,13 +67,13 @@ function buildDecorations(
   generation: number,
 ): DecorationSet {
   const decos: Decoration[] = []
-  for (const field of mergeFields(doc)) {
+  mergeFields(doc).forEach((field, index) => {
     if (highlight)
       decos.push(Decoration.inline(field.from, field.to, { class: 'mm-field-highlight' }))
-    if (!values) continue
+    if (!values) return
     const report: MergeReport = { missing: [], unused: [], unsupported: 0, applied: 0 }
     const value = mergeFieldValue(field.instr, values, report)
-    if (value === null) continue
+    if (value === null) return
     // the placeholder is hidden (font-size: 0) and the value is inserted beside it
     decos.push(Decoration.inline(field.from, field.to, { class: 'mm-field-preview-src' }))
     decos.push(
@@ -86,6 +86,10 @@ function buildDecorations(
           // widget is later materialised: a delayed DOM construction must not
           // stamp an older recipient's value with a newer generation
           el.dataset.mmPreviewKey = String(generation)
+          // which occurrence of a merge field this widget stands for. The stamp
+          // alone cannot prove the clone is complete: a sheet that lost two of
+          // three fields still has a current stamp on the one it kept.
+          el.dataset.mmFieldId = String(index)
           el.textContent = value
           return el
         },
@@ -94,7 +98,7 @@ function buildDecorations(
         { side: -1, key: `mm:${field.from}:${generation}:${value}` },
       ),
     )
-  }
+  })
   return decos.length ? DecorationSet.create(doc, decos) : DecorationSet.empty
 }
 

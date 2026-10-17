@@ -25,6 +25,7 @@ import { mergeFieldValue } from '../src/renderer/editor/merge-doc'
 import { templateFieldInstructions } from '../src/renderer/mail-merge/validation'
 import type { FileActionContext } from '../src/renderer/file-actions'
 import {
+  expectedPreviewFieldIds,
   printablePreviewIsCurrent,
   runMailMergeExport,
   waitForPrintablePreview,
@@ -109,7 +110,7 @@ function stubDesktop(existing: string[] = []) {
  * `reclone: false` reproduces the P0 shape — a snapshot taken when the preview
  * opened and never refreshed — so the export must refuse to print it.
  */
-function fakePrintSheets(editor: Editor, reclone = true) {
+function fakePrintSheets(editor: Editor, reclone = true, droppedFieldIds: string[] = []) {
   document.querySelectorAll('.pagination-preview').forEach((el) => el.remove())
   const root = document.createElement('div')
   root.className = 'pagination-preview'
@@ -121,13 +122,15 @@ function fakePrintSheets(editor: Editor, reclone = true) {
     page.innerHTML = ''
     const values = currentMailMergeValues(editor.state)
     if (!values) return
-    for (const instr of templateFieldInstructions(editor)) {
+    for (const [index, instr] of templateFieldInstructions(editor).entries()) {
+      if (droppedFieldIds.includes(String(index))) continue
       const report = { missing: [], unused: [], unsupported: 0, applied: 0 }
       const value = mergeFieldValue(instr, values, report)
       if (value === null) continue
       const span = document.createElement('span')
       span.className = 'mm-field-preview-value'
       span.dataset.mmPreviewKey = String(mailMergePreviewGeneration())
+      span.dataset.mmFieldId = String(index)
       span.textContent = value
       page.appendChild(span)
     }
@@ -403,18 +406,79 @@ describe('printable preview readiness', () => {
 
   it('refuses sheets that carry no recipient at all', () => {
     sheets('')
-    expect(printablePreviewIsCurrent(1, true)).toBe(false)
+    // a template with a merge field whose clone has no value widget is a clone
+    // taken before this recipient was put on screen
+    expect(printablePreviewIsCurrent(1, ['0'])).toBe(false)
+    // a template with no merge field at all needs no stamp: the sheets are the
+    // document, and printing it is not a recipient-isolation question
+    expect(printablePreviewIsCurrent(1, [])).toBe(true)
   })
 
   it('refuses sheets stamped with the recipient that was on screen before', () => {
-    sheets('<span class="mm-field-preview-value" data-mm-preview-key="4">Bo Tran</span>')
-    expect(printablePreviewIsCurrent(5, true)).toBe(false)
-    expect(printablePreviewIsCurrent(4, true)).toBe(true)
+    sheets(
+      '<span class="mm-field-preview-value" data-mm-preview-key="4" data-mm-field-id="0">Bo Tran</span>',
+    )
+    expect(printablePreviewIsCurrent(5, ['0'])).toBe(false)
+    expect(printablePreviewIsCurrent(4, ['0'])).toBe(true)
   })
 
   it('accepts sheets stamped with the recipient being printed', () => {
-    sheets('<span class="mm-field-preview-value" data-mm-preview-key="5">Nguyễn Văn A</span>')
-    expect(printablePreviewIsCurrent(5, true)).toBe(true)
+    sheets(
+      '<span class="mm-field-preview-value" data-mm-preview-key="5" data-mm-field-id="0">Nguyễn Văn A</span>',
+    )
+    expect(printablePreviewIsCurrent(5, ['0'])).toBe(true)
+  })
+
+  it('refuses a clone that kept only one of three fields', () => {
+    sheets(
+      '<span class="mm-field-preview-value" data-mm-preview-key="7" data-mm-field-id="0">Ada</span>',
+    )
+    // the old rule ("every widget found is current") accepted this: the single
+    // widget present is stamped 7. Address and AccountNumber never made it onto
+    // the sheet Chromium prints.
+    expect(printablePreviewIsCurrent(7, ['0', '1', '2'])).toBe(false)
+  })
+
+  it('refuses a clone with one current and one stale widget', () => {
+    sheets(
+      '<span class="mm-field-preview-value" data-mm-preview-key="7" data-mm-field-id="0">Ada</span>' +
+        '<span class="mm-field-preview-value" data-mm-preview-key="6" data-mm-field-id="1">Bo</span>',
+    )
+    expect(printablePreviewIsCurrent(7, ['0', '1'])).toBe(false)
+  })
+
+  it('refuses a clone whose only widget is stale even when nothing else is stamped', () => {
+    sheets(
+      '<span class="mm-field-preview-value" data-mm-preview-key="6" data-mm-field-id="0">Bo</span>',
+    )
+    expect(printablePreviewIsCurrent(7, ['0'])).toBe(false)
+  })
+
+  it('accepts a field that appears twice, and one repeated across sheets', () => {
+    document.querySelectorAll('.pagination-preview').forEach((el) => el.remove())
+    const root = document.createElement('div')
+    root.className = 'pagination-preview'
+    const first = document.createElement('div')
+    first.className = 'pv-page'
+    first.innerHTML =
+      '<span class="mm-field-preview-value" data-mm-preview-key="7" data-mm-field-id="0">Ada</span>'
+    const second = document.createElement('div')
+    second.className = 'pv-page'
+    second.innerHTML =
+      '<span class="mm-field-preview-value" data-mm-preview-key="7" data-mm-field-id="1">London</span>' +
+      '<span class="mm-field-preview-value" data-mm-preview-key="7" data-mm-field-id="1">London</span>'
+    root.appendChild(first)
+    root.appendChild(second)
+    document.body.appendChild(root)
+    expect(printablePreviewIsCurrent(7, ['0', '1'])).toBe(true)
+    expect(printablePreviewIsCurrent(7, ['0', '1', '2'])).toBe(false)
+  })
+
+  it('a field the clone hid is still a field the print carries', () => {
+    sheets(
+      '<span class="mm-field-preview-value" data-mm-preview-key="7" data-mm-field-id="0" style="visibility:hidden">Ada</span>',
+    )
+    expect(printablePreviewIsCurrent(7, ['0'])).toBe(true)
   })
 
   it('a sheet cloned before the preview opened never becomes current', async () => {
@@ -423,7 +487,9 @@ describe('printable preview readiness', () => {
     )
     const stop = fakePrintSheets(editor, false)
     const generation = setMailMergePreview(editor, { Name: 'Huy' })
-    expect(await waitForPrintablePreview(generation, true, 600)).toBe(false)
+    expect(await waitForPrintablePreview(generation, expectedPreviewFieldIds(editor), 600)).toBe(
+      false,
+    )
     stop()
     editor.destroy()
     void parsed
@@ -435,7 +501,9 @@ describe('printable preview readiness', () => {
     )
     const stop = fakePrintSheets(editor)
     const generation = setMailMergePreview(editor, { Name: 'Huy' })
-    expect(await waitForPrintablePreview(generation, true, 2000)).toBe(true)
+    expect(await waitForPrintablePreview(generation, expectedPreviewFieldIds(editor), 2000)).toBe(
+      true,
+    )
     stop()
     editor.destroy()
     void parsed
@@ -640,5 +708,82 @@ describe("the PDF writer's real outcome reaches the batch", () => {
     stop()
     editor.destroy()
     expect(pdfWrites[0].overwrite).toBe('rename')
+  })
+})
+
+describe('a print clone that lost a field is refused before Chromium prints', () => {
+  it('writes no PDF when only one of three fields reached the sheets', async () => {
+    pdfWrites.length = 0
+    const { parsed, editor } = await templateWith(
+      '<w:p>' +
+        field('MERGEFIELD Name', '«Name»') +
+        '</w:p>' +
+        '<w:p>' +
+        field('MERGEFIELD Address', '«Address»') +
+        '</w:p>' +
+        '<w:p>' +
+        field('MERGEFIELD AccountNumber', '«AccountNumber»') +
+        '</w:p>',
+    )
+    stubDesktop([])
+    // the clone re-measures for the recipient, but two of the three widgets never
+    // make it onto the printed sheets
+    const stop = fakePrintSheets(editor, true, ['1', '2'])
+    const source = sourceFromRows(
+      [
+        ['Name', 'Address', 'AccountNumber'],
+        ['Ada', '123 Nguyễn Huệ', 'A-1'],
+      ],
+      { kind: 'csv', label: 'list.csv', hasHeader: true },
+    )
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      pdfOptions('{index}_{Name}'),
+      noCancel,
+      () => {},
+    )
+    stop()
+    editor.destroy()
+
+    expect(pdfWrites.length).toBe(0)
+    expect(progress.succeeded).toBe(0)
+    expect(progress.failed).toBe(1)
+    expect(progress.errors.some((e) => e.message.includes('did not update'))).toBe(true)
+  }, 40_000)
+
+  it('prints when every field the template references is on the sheets', async () => {
+    pdfWrites.length = 0
+    const { parsed, editor } = await templateWith(
+      '<w:p>' +
+        field('MERGEFIELD Name', '«Name»') +
+        '</w:p>' +
+        '<w:p>' +
+        field('MERGEFIELD Address', '«Address»') +
+        '</w:p>' +
+        '<w:p>' +
+        field('MERGEFIELD AccountNumber', '«AccountNumber»') +
+        '</w:p>',
+    )
+    stubDesktop([])
+    const stop = fakePrintSheets(editor)
+    const source = sourceFromRows(
+      [
+        ['Name', 'Address', 'AccountNumber'],
+        ['Ada', '123 Nguyễn Huệ', 'A-1'],
+      ],
+      { kind: 'csv', label: 'list.csv', hasHeader: true },
+    )
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      pdfOptions('{index}_{Name}'),
+      noCancel,
+      () => {},
+    )
+    stop()
+    editor.destroy()
+    expect(progress.succeeded).toBe(1)
+    expect(pdfWrites.length).toBe(1)
   })
 })
