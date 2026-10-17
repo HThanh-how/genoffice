@@ -291,7 +291,10 @@ describe('pdf export validation', () => {
       .insertContent({
         type: 'text',
         text: '«Status»',
-        marks: [{ type: 'instrField', attrs: { instr: 'IF Status = "vip" "VIP guest"' } }],
+        // an operator with nothing after it: there is no branch to print, so the
+        // merge refuses the recipient instead of writing a field Word would
+        // re-evaluate on open
+        marks: [{ type: 'instrField', attrs: { instr: 'IF Status =' } }],
       })
       .run()
     stubDesktop([])
@@ -315,6 +318,46 @@ describe('pdf export validation', () => {
     expect(progress.failed).toBe(1)
     expect(progress.errors[0].message).toContain('could not be merged')
     expect(progress.status).toBe('completed_with_errors')
+  })
+
+  it('treats a bare word in an IF comparison as a literal, not a missing column', async () => {
+    pdfWrites.length = 0
+    const { parsed, editor } = await templateWith(
+      '<w:p><w:r><w:t xml:space="preserve">Status: </w:t></w:r></w:p>',
+    )
+    editor
+      .chain()
+      .focus()
+      .insertContent({
+        type: 'text',
+        text: '«Status»',
+        // Word writes `IF Status = "vip" "VIP guest"`: `Status` is the text
+        // "Status", not a column. The condition is false for every recipient, so
+        // the field prints nothing — it is not an error, and the export must not
+        // be refused for a template Word merges without complaint.
+        marks: [{ type: 'instrField', attrs: { instr: 'IF Status = "vip" "VIP guest"' } }],
+      })
+      .run()
+    stubDesktop([])
+    const stop = fakePrintSheets(editor)
+    const source = sourceFromRows([['Name'], ['Huy']], {
+      kind: 'csv',
+      label: 'list.csv',
+      hasHeader: true,
+    })
+    const progress = await runMailMergeExport(
+      makeCtx(editor, parsed),
+      source,
+      pdfOptions('{index}_{Name}'),
+      noCancel,
+      () => {},
+    )
+    stop()
+    editor.destroy()
+
+    expect(pdfWrites.length).toBe(1)
+    expect(progress.failed).toBe(0)
+    expect(progress.status).toBe('completed')
   })
 
   it('fails the job when the preview never produces print sheets', async () => {

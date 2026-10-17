@@ -69,7 +69,12 @@ describe('the batch must still be live when the PDF is committed', () => {
     const { gate, options } = wire(registry)
     const target = gate(1, join(dir, '1_Alpha.pdf'), 'overwrite', batch)
     expect(target).not.toBeNull()
-    const result = await commitMergedPdf(target!, [Buffer.from('%PDF-1.4 alpha')], [], options(1, batch, target!))
+    const result = await commitMergedPdf(
+      target!,
+      [Buffer.from('%PDF-1.4 alpha')],
+      [],
+      options(1, batch, target!),
+    )
     expect(result.ok).toBe(true)
     expect(result.name).toBe('1_Alpha.pdf')
     expect(await listing(dir)).toEqual(['1_Alpha.pdf'])
@@ -82,19 +87,14 @@ describe('the batch must still be live when the PDF is committed', () => {
     const { gate, options } = wire(registry)
     const target = gate(1, join(dir, '1_Alpha.pdf'), 'overwrite', batch)
     expect(target).not.toBeNull()
-    const result = await commitMergedPdf(
-      target!,
-      [Buffer.from('%PDF-1.4 alpha')],
-      [],
-      {
-        ...options(1, batch, target!),
-        // the tab dies inside the print/assembly await
-        assemble: async () => {
-          registry.teardown(1)
-          return Buffer.from('%PDF-1.4 alpha')
-        },
+    const result = await commitMergedPdf(target!, [Buffer.from('%PDF-1.4 alpha')], [], {
+      ...options(1, batch, target!),
+      // the tab dies inside the print/assembly await
+      assemble: async () => {
+        registry.teardown(1)
+        return Buffer.from('%PDF-1.4 alpha')
       },
-    )
+    })
     expect(result.ok).toBe(false)
     expect(result.error).toContain('no longer authorized')
     expect(await listing(dir)).toEqual([])
@@ -106,18 +106,13 @@ describe('the batch must still be live when the PDF is committed', () => {
     const batch = registry.completePick(1, registry.beginPick(1), dir)!.batch
     const { gate, options } = wire(registry)
     const target = gate(1, join(dir, '1_Alpha.pdf'), 'overwrite', batch)
-    const result = await commitMergedPdf(
-      target!,
-      [Buffer.from('%PDF-1.4 alpha')],
-      [],
-      {
-        ...options(1, batch, target!),
-        assemble: async () => {
-          registry.release(1, batch)
-          return Buffer.from('%PDF-1.4 alpha')
-        },
+    const result = await commitMergedPdf(target!, [Buffer.from('%PDF-1.4 alpha')], [], {
+      ...options(1, batch, target!),
+      assemble: async () => {
+        registry.release(1, batch)
+        return Buffer.from('%PDF-1.4 alpha')
       },
-    )
+    })
     expect(result.ok).toBe(false)
     expect(await listing(dir)).toEqual([])
   })
@@ -132,13 +127,21 @@ describe('the batch must still be live when the PDF is committed', () => {
     // the user cancels and picks the identical folder for a second export
     registry.release(1, batchA)
     const batchB = registry.completePick(1, registry.beginPick(1), dir)!.batch
-    const stale = await commitPdfOutput(staleTarget!, Buffer.from('%PDF-1.4 stale'), options(1, batchA, staleTarget!))
+    const stale = await commitPdfOutput(
+      staleTarget!,
+      Buffer.from('%PDF-1.4 stale'),
+      options(1, batchA, staleTarget!),
+    )
     expect(stale.ok).toBe(false)
     expect(stale.error).toContain('no longer authorized')
     expect(await listing(dir)).toEqual([])
     // the live batch writes into the same folder without difficulty
     const freshTarget = gate(1, join(dir, '1_Alpha.pdf'), 'overwrite', batchB)
-    const fresh = await commitPdfOutput(freshTarget!, Buffer.from('%PDF-1.4 fresh'), options(1, batchB, freshTarget!))
+    const fresh = await commitPdfOutput(
+      freshTarget!,
+      Buffer.from('%PDF-1.4 fresh'),
+      options(1, batchB, freshTarget!),
+    )
     expect(fresh.ok).toBe(true)
     expect(await listing(dir)).toEqual(['1_Alpha.pdf'])
   })
@@ -153,7 +156,11 @@ describe('the batch must still be live when the PDF is committed', () => {
     const target = gate(1, savePath, undefined, undefined)
     expect(target).not.toBeNull()
     expect(target!.batchDir).toBeNull()
-    const result = await commitPdfOutput(target!, Buffer.from('%PDF-1.4 report'), options(1, undefined, target!))
+    const result = await commitPdfOutput(
+      target!,
+      Buffer.from('%PDF-1.4 report'),
+      options(1, undefined, target!),
+    )
     expect(result.ok).toBe(true)
     expect(await listing(dir)).toEqual(['report.pdf'])
     // an ordinary export is revealed to the user; a batch output is not
@@ -164,11 +171,11 @@ describe('the batch must still be live when the PDF is committed', () => {
     const dir = await freshDir()
     const registry = new MailMergeGrantRegistry()
     const savePath = join(dir, 'report.pdf')
-    const { gate, options } = wire(registry, new Set([savePath]))
+    const { gate } = wire(registry, new Set([savePath]))
     registry.teardown(1)
     expect(gate(1, savePath, undefined, undefined)).toBeNull()
   })
-  })
+})
 
 describe('the final destination is contained at the moment of the write', () => {
   it('refuses a path that resolves out of the granted directory', async () => {
@@ -207,7 +214,11 @@ describe('the final destination is contained at the moment of the write', () => 
     const { gate, options } = wire(registry)
     const target = gate(1, join(link, 'Huy.pdf'), 'overwrite', batch)
     expect(target?.path).toBe(join(realpathSync(real), 'Huy.pdf'))
-    const result = await commitPdfOutput(target!, Buffer.from('%PDF-1.4 Huy'), options(1, batch, target!))
+    const result = await commitPdfOutput(
+      target!,
+      Buffer.from('%PDF-1.4 Huy'),
+      options(1, batch, target!),
+    )
     expect(result.ok).toBe(true)
     expect(await listing(real)).toEqual(['Huy.pdf'])
     expect(await listing(link)).toEqual(['Huy.pdf'])
@@ -266,7 +277,11 @@ describe('the final destination is contained at the moment of the write', () => 
     const second = gate(1, join(dir, 'Notes.pdf'), 'overwrite', batch)
     expect(first && second).toBeTruthy()
     await commitPdfOutput(first!, Buffer.from('%PDF-1.4 one'), options(1, batch, first!))
-    const again = await commitPdfOutput(second!, Buffer.from('%PDF-1.4 two'), options(1, batch, second!))
+    const again = await commitPdfOutput(
+      second!,
+      Buffer.from('%PDF-1.4 two'),
+      options(1, batch, second!),
+    )
     expect(again.ok).toBe(true)
     expect(again.name).not.toBe('Notes.pdf')
     const names = await listing(dir)
@@ -319,7 +334,11 @@ describe('the final destination is contained at the moment of the write', () => 
     const { gate, options } = wire(registry)
     const target = gate(1, existing, 'skip', batch)
     expect(target).not.toBeNull()
-    const result = await commitPdfOutput(target!, Buffer.from('%PDF-1.4 new'), options(1, batch, target!))
+    const result = await commitPdfOutput(
+      target!,
+      Buffer.from('%PDF-1.4 new'),
+      options(1, batch, target!),
+    )
     expect(result.ok).toBe(false)
     expect(result.skipped).toBe(true)
     const content = await (await import('node:fs/promises')).readFile(existing, 'utf8')
@@ -350,7 +369,11 @@ describe('the final destination is contained at the moment of the write', () => 
     const batch = registry.completePick(1, registry.beginPick(1), dir)!.batch
     const { gate, options } = wire(registry)
     const target = gate(1, join(dir, 'Done.pdf'), 'overwrite', batch)
-    const result = await commitPdfOutput(target!, Buffer.from('%PDF-1.4 done'), options(1, batch, target!))
+    const result = await commitPdfOutput(
+      target!,
+      Buffer.from('%PDF-1.4 done'),
+      options(1, batch, target!),
+    )
     expect(result.ok).toBe(true)
     registry.release(1, batch)
     expect(await listing(dir)).toEqual(['Done.pdf'])
@@ -364,8 +387,17 @@ describe('the final destination is contained at the moment of the write', () => 
     const single = gate(1, join(dir, 'single.pdf'), 'overwrite', batch)
     const grouped = gate(1, join(dir, 'grouped.pdf'), 'overwrite', batch)
     registry.teardown(1)
-    const a = await commitPdfOutput(single!, Buffer.from('%PDF-1.4 single'), options(1, batch, single!))
-    const b = await commitMergedPdf(grouped!, [Buffer.from('%PDF-1.4 grouped')], [], options(1, batch, grouped!))
+    const a = await commitPdfOutput(
+      single!,
+      Buffer.from('%PDF-1.4 single'),
+      options(1, batch, single!),
+    )
+    const b = await commitMergedPdf(
+      grouped!,
+      [Buffer.from('%PDF-1.4 grouped')],
+      [],
+      options(1, batch, grouped!),
+    )
     expect(a.ok).toBe(false)
     expect(b.ok).toBe(false)
     expect(a.error).toBe(b.error)
@@ -378,18 +410,13 @@ describe('the final destination is contained at the moment of the write', () => 
     const batch = registry.completePick(1, registry.beginPick(1), dir)!.batch
     const { gate, options } = wire(registry)
     const target = gate(1, join(dir, 'slow.pdf'), 'rename', batch)
-    const inFlight = commitMergedPdf(
-      target!,
-      [Buffer.from('%PDF-1.4 slow')],
-      [],
-      {
-        ...options(1, batch, target!),
-        assemble: async () => {
-          await sleep(40)
-          return Buffer.from('%PDF-1.4 slow')
-        },
+    const inFlight = commitMergedPdf(target!, [Buffer.from('%PDF-1.4 slow')], [], {
+      ...options(1, batch, target!),
+      assemble: async () => {
+        await sleep(40)
+        return Buffer.from('%PDF-1.4 slow')
       },
-    )
+    })
     setTimeout(() => registry.release(1, batch), 10)
     const result = await inFlight
     expect(result.ok).toBe(false)

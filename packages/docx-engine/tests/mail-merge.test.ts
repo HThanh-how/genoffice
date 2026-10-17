@@ -52,8 +52,14 @@ describe('merge field instructions', () => {
     expect(
       evaluateConditionalField('IF «Amount» > "1000" "large" "small"', { Amount: '500' }),
     ).toBe('small')
-    // an instruction the model cannot express is left alone rather than guessed
-    expect(evaluateConditionalField('IF «Name» = "x" "a"', { Name: 'x' })).toBeNull()
+    // Word writes an IF with a single branch: the value prints when the test
+    // holds and nothing when it does not. The model used to refuse this shape as
+    // "not expressible", which rejected templates Word merges without complaint.
+    expect(evaluateConditionalField('IF «Name» = "x" "a"', { Name: 'x' })).toBe('a')
+    expect(evaluateConditionalField('IF «Name» = "x" "a"', { Name: 'y' })).toBe('')
+    // a comparison with nothing after it has no branch to print at all
+    expect(evaluateConditionalField('IF «Name» = "x"', { Name: 'x' })).toBeNull()
+    expect(evaluateConditionalField('IF «Name» =', { Name: 'x' })).toBeNull()
   })
 })
 

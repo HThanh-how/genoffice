@@ -17,7 +17,7 @@
  *      longer owned the request.
  */
 import { existsSync, realpathSync } from 'node:fs'
-import { mkdtemp, readdir, symlink } from 'node:fs/promises'
+import { mkdtemp, readdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -97,9 +97,11 @@ describe('S4: a pick that resolves after its renderer is gone creates no grant',
     const dir = await freshDir()
     const registry = new MailMergeGrantRegistry()
     registry.beginPick(1)
-    // the user cancelled: completePick is never reached
+    // the user cancelled: completePick is never reached, so nothing is granted
+    // and nothing is written
     expect(registry.grant(1)).toBeUndefined()
     expect(registry.pdfDir(1)).toBeNull()
+    expect(await listing(dir)).toEqual([])
   })
 
   it('re-picking the same folder mints a distinct identity', async () => {
@@ -218,6 +220,7 @@ describe('S1: teardown invalidates every batch grant', () => {
     registry.teardown(1)
     expect(registry.pdfDir(1)).toBeNull()
     expect(registry.currentBatch(1)).toBeNull()
+    expect(registry.batchLive(1, batch)).toBe(false)
     expect(registry.allocatedNames(1)).toEqual(new Set<string>())
     expect(registry.grant(1)).toBeUndefined()
   })
@@ -230,5 +233,6 @@ describe('S1: teardown invalidates every batch grant', () => {
     // a destroyed webContents id is never reused, so nothing can re-grant it
     expect(registry.completePick(1, registry.beginPick(1), dir)).toBeNull()
     expect(registry.batchLive(1, batch)).toBe(false)
+    expect(await listing(dir)).toEqual([])
   })
 })
