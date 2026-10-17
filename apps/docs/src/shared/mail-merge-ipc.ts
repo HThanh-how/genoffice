@@ -13,6 +13,7 @@
  */
 import { join } from 'node:path'
 import { safeFileName } from '@genoffice/docx-engine'
+import { decodeCanonicalBase64 } from './base64-payload'
 import { type MailMergeOverwritePolicy } from './mail-merge-names'
 import { resolverInsideGrant } from './mail-merge-write'
 
@@ -64,45 +65,11 @@ export type MailMergePayload = { ok: true; bytes: Buffer } | { ok: false; error:
 /**
  * Decode a payload the renderer sent, or say precisely why it cannot be used.
  *
- * `Buffer.from(text, 'base64')` is forgiving: it ignores characters outside the
- * alphabet, accepts padding in the middle, and silently discards the leftover
- * bits of a non-canonical last group. A length computed from the string's
- * character count therefore disagrees with the bytes actually written — "A"
- * decodes to one byte, "AAAA=" to three, "A===" to one. The writer's size limit
- * and the file on disk must describe the same buffer, so the payload is decoded
- * first and only then measured, and anything that does not round-trip is refused.
- *
- * The encoded length is checked *before* `Buffer.from`: a gigabyte of base64 is
- * rejected on its character count, so refusing an oversized payload never
- * allocates the gigabyte Buffer it would have produced.
+ * The rules live in `base64-payload.ts` and are the same ones the grouped PDF
+ * merge applies to its fragments: one policy, two size limits.
  */
 export function inspectMailMergePayload(text: unknown): MailMergePayload {
-  if (typeof text !== 'string' || text.length === 0) {
-    return { ok: false, error: 'the file content is empty' }
-  }
-  // 32 MiB decoded needs exactly 4 * ceil(32MiB / 3) characters encoded; the
-  // ceiling has to be taken on the group count, not on the product, or a
-  // payload sitting exactly at the limit is rejected
-  const maxEncodedChars = 4 * Math.ceil(MAX_MAIL_MERGE_PAYLOAD_BYTES / 3)
-  if (text.length > maxEncodedChars) {
-    return { ok: false, error: 'the file content is larger than a merge document can be' }
-  }
-  // canonical base64 comes in whole groups of four, with at most two '=' at the end
-  if (text.length % 4 !== 0) return { ok: false, error: 'the file content is not valid base64' }
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(text)) {
-    return { ok: false, error: 'the file content is not valid base64' }
-  }
-  const decoded = Buffer.from(text, 'base64')
-  if (decoded.length === 0) return { ok: false, error: 'the file content is empty' }
-  if (decoded.length > MAX_MAIL_MERGE_PAYLOAD_BYTES) {
-    return { ok: false, error: 'the file content is larger than a merge document can be' }
-  }
-  // stray padding or a last group with unused bits decodes to something the
-  // sender did not mean to send
-  if (Buffer.from(decoded).toString('base64') !== text) {
-    return { ok: false, error: 'the file content is not valid base64' }
-  }
-  return { ok: true, bytes: decoded }
+  return decodeCanonicalBase64(text, MAX_MAIL_MERGE_PAYLOAD_BYTES, 'the file content')
 }
 
 /** The decoded payload, or null when it is malformed or oversized. */

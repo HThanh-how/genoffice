@@ -19,6 +19,7 @@
  * middle of the merge without launching Electron.
  */
 import { basename } from 'node:path'
+import { decodeCanonicalBase64 } from './base64-payload'
 import type { PdfInternalLink } from './ipc'
 import { writeMailMergeOutput, type PathResolver } from './mail-merge-write'
 import type { PdfWriteTarget } from './pdf-write-auth'
@@ -43,7 +44,15 @@ export type PdfPartsDecision =
  *
  * `Buffer.from(text, 'base64')` decodes whatever it can and never throws, so a
  * size ceiling has to be applied to the encoded string first: an attacker cannot
- * smuggle a gigabyte past a check that runs after the decode.
+ * smuggle a gigabyte past a check that runs after the decode. The fragments go
+ * through the same canonical-base64 policy as a merged DOCX payload, so the two
+ * PDF and DOCX paths cannot disagree about what a byte is.
+ *
+ * Internal links are shape-checked here and range-checked at assembly time by
+ * `sanitizePdfLinks`, which is the only place that knows the real page count.
+ * A malformed entry is an error, not something to drop quietly: a document that
+ * prints with its hyperlinks silently removed is a document the user did not ask
+ * for.
  */
 export function validatePdfMergeParts(parts: unknown, links: unknown): PdfPartsDecision {
   if (!Array.isArray(parts)) return { ok: false, error: 'the PDF fragments are not a list' }
@@ -54,40 +63,49 @@ export function validatePdfMergeParts(parts: unknown, links: unknown): PdfPartsD
       error: `the document printed ${parts.length} fragments; an export merges at most ${MAX_PDF_PARTS}`,
     }
   }
-  const maxEncodedChars = 4 * Math.ceil(MAX_PDF_PART_BYTES / 3)
   const decoded: Buffer[] = []
   let total = 0
   for (const part of parts) {
-    if (typeof part !== 'string' || part.length === 0) {
-      return { ok: false, error: 'a PDF fragment is not printable data' }
-    }
-    if (part.length > maxEncodedChars) {
-      return { ok: false, error: 'a PDF fragment is larger than a printed page can be' }
-    }
-    const bytes = Buffer.from(part, 'base64')
-    if (bytes.length === 0) return { ok: false, error: 'a PDF fragment is empty' }
-    if (bytes.length > MAX_PDF_PART_BYTES) {
-      return { ok: false, error: 'a PDF fragment is larger than a printed page can be' }
-    }
-    total += bytes.length
+    const payload = decodeCanonicalBase64(part, MAX_PDF_PART_BYTES, 'a PDF fragment')
+    if (!payload.ok) return { ok: false, error: payload.error }
+    total += payload.bytes.length
     if (total > MAX_PDF_TOTAL_BYTES) {
       return { ok: false, error: 'the printed document is larger than an export can be' }
     }
-    decoded.push(bytes)
+    decoded.push(payload.bytes)
   }
-  const linkList = Array.isArray(links)
-    ? links.filter(
-        (link) =>
-          link !== null &&
-          typeof link === 'object' &&
-          Number.isFinite((link as PdfInternalLink).page) &&
-          Number.isFinite((link as PdfInternalLink).toPage),
-      )
-    : []
-  if (linkList.length > MAX_PDF_LINKS) {
+  if (!Array.isArray(links)) return { ok: false, error: 'the PDF internal links are not a list' }
+  if (links.length > MAX_PDF_LINKS) {
     return { ok: false, error: 'the document has more internal links than an export can carry' }
   }
-  return { ok: true, parts: decoded, links: linkList }
+  for (const link of links) {
+    if (!isWellFormedLink(link)) {
+      return { ok: false, error: 'an internal link in the printed document is malformed' }
+    }
+  }
+  return { ok: true, parts: decoded, links: links as PdfInternalLink[] }
+}
+
+/** the shape a link must have; the page range is checked once the pages exist */
+function isWellFormedLink(link: unknown): boolean {
+  if (link === null || typeof link !== 'object') return false
+  const l = link as Record<string, unknown>
+  return (
+    Number.isInteger(l.page) &&
+    Number.isInteger(l.toPage) &&
+    (l.page as number) >= 0 &&
+    (l.toPage as number) >= 0 &&
+    typeof l.x === 'number' &&
+    typeof l.y === 'number' &&
+    typeof l.w === 'number' &&
+    typeof l.h === 'number' &&
+    typeof l.toY === 'number' &&
+    Number.isFinite(l.x) &&
+    Number.isFinite(l.y) &&
+    Number.isFinite(l.w) &&
+    Number.isFinite(l.h) &&
+    Number.isFinite(l.toY)
+  )
 }
 
 export interface PdfCommitResult {

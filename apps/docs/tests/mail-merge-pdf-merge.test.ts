@@ -290,10 +290,26 @@ describe('the grouped PDF fragment limits', () => {
 
   it('rejects a fragment that is not printable data', () => {
     for (const bad of [null, 12345, '']) {
-      expect(refusal([bad], [])).toMatch(/not printable data/)
+      expect(refusal([bad], [])).toMatch(/empty/)
     }
     // base64 that decodes to nothing is not a page either
-    expect(refusal(['===='], [])).toMatch(/empty/)
+    expect(refusal(['===='], [])).toMatch(/not valid base64/)
+  })
+
+  it('rejects base64 that does not round-trip', () => {
+    // Buffer.from accepts all of these; the writer would then store bytes the
+    // sender never sent, and the size limit would describe a different buffer
+    // than the file on disk
+    for (const bad of ['A', 'AAAA=', 'A===', 'a-b', 'AA A', 'AA\nA', 'AA==AA==']) {
+      expect(refusal([bad], [])).toMatch(/not valid base64/)
+    }
+  })
+
+  it('accepts a fragment whose encoding is canonical at the size boundary', () => {
+    const exact = Buffer.from('a'.repeat(MAX_PDF_PART_BYTES)).toString('base64')
+    const decision = validatePdfMergeParts([exact], [])
+    if (!decision.ok) throw new Error(`a legal fragment was refused: ${decision.error}`)
+    expect(decision.parts[0].length).toBe(MAX_PDF_PART_BYTES)
   })
 
   it('rejects more fragments than a print path can produce', () => {
@@ -303,7 +319,7 @@ describe('the grouped PDF fragment limits', () => {
 
   it('rejects an oversized fragment before decoding it', () => {
     const huge = 'a'.repeat(4 * Math.ceil((16 * 1024 * 1024) / 3) + 4)
-    expect(refusal([huge], [])).toMatch(/larger than a printed page/)
+    expect(refusal([huge], [])).toMatch(/larger than/)
   })
 
   it('bounds the aggregate well below the worst case of individually legal parts', () => {
@@ -319,11 +335,28 @@ describe('the grouped PDF fragment limits', () => {
     expect(refusal(parts, [])).toMatch(/larger than an export can be/)
   })
 
-  it('accepts a legitimate multi-fragment document and keeps its links', () => {
+  it('refuses a malformed internal link instead of dropping it quietly', () => {
     const links = [
       { page: 1, x: 0.1, y: 0.2, w: 0.3, h: 0.1, toPage: 2, toY: 0.5 },
       { page: 'x', x: 0, y: 0, w: 0, h: 0, toPage: 1, toY: 0 },
     ]
+    expect(refusal([fragment(100), fragment(200)], links)).toMatch(/malformed/)
+    for (const bad of [
+      { page: 1.5, x: 0, y: 0, w: 0.1, h: 0.1, toPage: 1, toY: 0 },
+      { page: -1, x: 0, y: 0, w: 0.1, h: 0.1, toPage: 1, toY: 0 },
+      { page: 1, x: Number.NaN, y: 0, w: 0.1, h: 0.1, toPage: 1, toY: 0 },
+      { page: 1, x: Number.POSITIVE_INFINITY, y: 0, w: 0.1, h: 0.1, toPage: 1, toY: 0 },
+      null,
+      'link',
+    ]) {
+      expect(refusal([fragment(100)], [bad])).toMatch(/malformed/)
+    }
+    // a non-list of links is not a document with no links, it is a broken request
+    expect(refusal([fragment(100)], undefined)).toMatch(/links are not a list/)
+  })
+
+  it('accepts a legitimate multi-fragment document and keeps its links', () => {
+    const links = [{ page: 1, x: 0.1, y: 0.2, w: 0.3, h: 0.1, toPage: 2, toY: 0.5 }]
     const decision = validatePdfMergeParts([fragment(100), fragment(200)], links)
     if (!decision.ok) throw new Error(`a legitimate document was refused: ${decision.error}`)
     expect(decision.parts.length).toBe(2)
