@@ -261,7 +261,10 @@ test.describe('docs mailings tab', () => {
           'overwrite',
           pickA?.batch,
         )
-        await window.desktop.releaseMailMergeDir()
+        // a release names the batch it owns; a release with no token is refused
+        // rather than revoking whatever the tab currently holds
+        const noToken = await window.desktop.releaseMailMergeDir()
+        const releasedA = await window.desktop.releaseMailMergeDir(pickA?.batch)
         const afterRelease = await window.desktop.writeMailMergeFile(
           out,
           'grant-b.docx',
@@ -270,6 +273,9 @@ test.describe('docs mailings tab', () => {
           pickA?.batch,
         )
         const pickB = await window.desktop.pickMailMergeOutputDir()
+        // releasing the batch that already let go of the folder is idempotent,
+        // and it cannot touch the batch that now owns it
+        const repeatRelease = await window.desktop.releaseMailMergeDir(pickA?.batch)
         const staleA = await window.desktop.writeMailMergeFile(
           out,
           'grant-c.docx',
@@ -284,7 +290,7 @@ test.describe('docs mailings tab', () => {
           'overwrite',
           pickB?.batch,
         )
-        await window.desktop.releaseMailMergeDir()
+        const releasedB = await window.desktop.releaseMailMergeDir(pickB?.batch)
         const staleB = await window.desktop.writeMailMergeFile(
           out,
           'grant-e.docx',
@@ -295,6 +301,10 @@ test.describe('docs mailings tab', () => {
         return {
           batchA: pickA?.batch,
           batchB: pickB?.batch,
+          noToken,
+          releasedA,
+          repeatRelease,
+          releasedB,
           first,
           afterRelease,
           staleA,
@@ -308,6 +318,15 @@ test.describe('docs mailings tab', () => {
     expect(typeof lifecycle.batchA).toBe('string')
     expect(typeof lifecycle.batchB).toBe('string')
     expect(lifecycle.batchA).not.toBe(lifecycle.batchB)
+    // release is batch-specific: without a token nothing is revoked, the owning
+    // batch releases cleanly, and releasing it again is a no-op rather than an error
+    expect(lifecycle.noToken.ok).toBe(false)
+    expect(lifecycle.noToken.error).toContain('batch')
+    expect(lifecycle.releasedA.ok).toBe(true)
+    // a stale release cannot revoke the batch that now owns the folder
+    expect(lifecycle.repeatRelease.ok).toBe(false)
+    expect(lifecycle.repeatRelease.error).toContain('no longer owns')
+    expect(lifecycle.releasedB.ok).toBe(true)
     // the live batch writes, and it writes a real document
     expect(lifecycle.first.ok).toBe(true)
     expect(lifecycle.liveB.ok).toBe(true)
@@ -746,7 +765,7 @@ test.describe('docs mailings tab', () => {
           .pickMailMergeOutputDir()
           .then((p) =>
             window.desktop
-              .releaseMailMergeDir()
+              .releaseMailMergeDir(p?.batch)
               .then(() =>
                 window.desktop.writeMailMergeFile(
                   out,
