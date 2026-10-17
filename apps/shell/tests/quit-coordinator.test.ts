@@ -10,6 +10,7 @@ vi.mock('electron', () => ({
   app: {
     quit: (...args: unknown[]) => appQuit(...args),
   },
+  ipcMain: { handle: vi.fn(), on: vi.fn(), removeHandler: vi.fn() },
 }))
 
 vi.mock('../../sheets/src/main/sheets-main', () => ({
@@ -17,6 +18,11 @@ vi.mock('../../sheets/src/main/sheets-main', () => ({
   resetSheetsShuttingDown: (...args: unknown[]) => resetSheetsShuttingDown(...args),
   setInteractiveQuitCoordination: (...args: unknown[]) => setInteractiveQuitCoordination(...args),
   requestSheetsClose: (...args: unknown[]) => requestSheetsClose(...args),
+}))
+
+vi.mock('../../docs/src/main/docs-main', () => ({
+  docsQueryDirty: vi.fn(() => Promise.resolve(false)),
+  requestDocsClose: vi.fn(() => Promise.resolve(true)),
 }))
 
 describe('QuitCoordinator — Lifecycle & Shutdown State Machine', () => {
