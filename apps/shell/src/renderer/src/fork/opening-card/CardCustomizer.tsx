@@ -35,7 +35,7 @@ export function CardCustomizer({
   onClose,
 }: CardCustomizerProps): React.JSX.Element {
   const isVi = lang === 'vi'
-  const isHtml = card.contentKind === 'ai-html'
+  const isHtml = card.contentKind === 'ai-html' || card.contentKind === 'custom-html'
 
   const [activeTab, setActiveTab] = useState<'material' | 'html'>('material')
   const [name, setName] = useState(`${card.name} (${isVi ? 'Tùy chỉnh' : 'Custom'})`.slice(0, 60))
@@ -200,6 +200,7 @@ export function CardCustomizer({
       id: `custom:card_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
       name: name.trim().slice(0, 60),
       category: 'custom',
+      contentKind: isHtml ? 'custom-html' : card.contentKind,
       isBuiltIn: false,
       createdAt: Date.now(),
       material: previewMaterial,
