@@ -311,17 +311,12 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
     scenes: Object.fromEntries(
       OPENING_APPS.map((app) => [
         app,
-        isAcceptableStoredCard(scenes[app])
-          ? (scenes[app] as string)
-          : DEFAULT_SCENE_FOR_APP[app],
+        isAcceptableStoredCard(scenes[app]) ? (scenes[app] as string) : DEFAULT_SCENE_FOR_APP[app],
       ]),
     ) as Record<OpeningApp, string>,
     ...(customCards !== undefined && customCards.length > 0 ? { customCards } : {}),
   }
-  if (
-    typeof value.globalCard === 'string' &&
-    isAcceptableStoredCard(value.globalCard)
-  ) {
+  if (typeof value.globalCard === 'string' && isAcceptableStoredCard(value.globalCard)) {
     res.globalCard = value.globalCard
   }
   if (value.appOverrides && typeof value.appOverrides === 'object') {
@@ -329,10 +324,7 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
     const appOverrides: Partial<Record<OpeningApp, string>> = {}
     for (const app of OPENING_APPS) {
       const val = rawOverrides[app]
-      if (
-        typeof val === 'string' &&
-        (val === 'inherit' || isAcceptableStoredCard(val))
-      ) {
+      if (typeof val === 'string' && (val === 'inherit' || isAcceptableStoredCard(val))) {
         appOverrides[app] = val
       }
     }

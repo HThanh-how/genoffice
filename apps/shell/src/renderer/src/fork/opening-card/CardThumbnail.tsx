@@ -114,11 +114,21 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
       }
     ).aiOffice
     if (api?.readOpeningMedia) {
-      void api.readOpeningMedia(card.mediaAssetId).then((url) => {
-        if (!cancelled && url) {
-          setLoadedMediaUrl(url)
-        }
-      })
+      void api
+        .readOpeningMedia(card.mediaAssetId)
+        .then((url) => {
+          if (!cancelled && url) {
+            setLoadedMediaUrl(url)
+          } else if (!cancelled && !url) {
+            setMediaError(true)
+          }
+        })
+        .catch((err) => {
+          if (!cancelled) {
+            console.warn('[CardThumbnail] Failed to read media asset:', err)
+            setMediaError(true)
+          }
+        })
     }
     return () => {
       cancelled = true

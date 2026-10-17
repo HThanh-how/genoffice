@@ -28,6 +28,17 @@ describe('Opening Card Studio: Selection Resolver Precedence & Global Default', 
   it('Tier 2: Explicit appOverrides[app] wins over globalCard', () => {
     const prefs: OpeningPrefs = {
       ...basePrefs,
+      customCards: [
+        {
+          id: 'custom:my_special_doc_card',
+          name: 'Special Doc Card',
+          category: 'custom',
+          contentKind: 'curated-material',
+          material: {
+            preset: 'frosted-glass',
+          },
+        },
+      ],
       globalCard: 'curated:frosted-blue',
       appOverrides: {
         docs: 'custom:my_special_doc_card',
@@ -43,13 +54,13 @@ describe('Opening Card Studio: Selection Resolver Precedence & Global Default', 
   it('Tier 3: When globalCard is configured and app has no override, globalCard applies to all apps', () => {
     const prefs: OpeningPrefs = {
       ...basePrefs,
-      globalCard: 'curated:emerald-frost',
+      globalCard: 'curated:midnight-glass',
     }
 
-    // Every app should inherit curated:emerald-frost
+    // Every app should inherit curated:midnight-glass
     for (const app of ['docs', 'sheets', 'slides', 'pdf', 'markdown', 'html'] as const) {
       const effective = resolveEffectiveOpeningCard(prefs, app)
-      expect(effective.id).toBe('curated:emerald-frost')
+      expect(effective.id).toBe('curated:midnight-glass')
       expect(effective.source).toBe('global')
       expect(effective.isOverride).toBe(false)
     }
@@ -71,10 +82,10 @@ describe('Opening Card Studio: Selection Resolver Precedence & Global Default', 
       ...basePrefs,
       globalCard: 'curated:frosted-blue',
       appOverrides: {
-        docs: 'curated:minimal-dark',
+        docs: 'curated:graphite',
       },
     }
-    expect(resolveEffectiveOpeningCard(prefsWithOverride, 'docs').id).toBe('curated:minimal-dark')
+    expect(resolveEffectiveOpeningCard(prefsWithOverride, 'docs').id).toBe('curated:graphite')
 
     // Reset override:
     const prefsReset: OpeningPrefs = {

@@ -55,6 +55,7 @@ export function CardCustomizer({
   // HTML / CSS state if HTML card
   const [htmlCode, setHtmlCode] = useState('')
   const [cssCode, setCssCode] = useState('')
+  const [loadingHtml, setLoadingHtml] = useState(Boolean(isHtml && card.htmlAssetId))
   const [busy, setBusy] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
 
@@ -62,6 +63,7 @@ export function CardCustomizer({
   useEffect(() => {
     let cancelled = false
     if (isHtml && card.htmlAssetId) {
+      setLoadingHtml(true)
       const api = (
         window as unknown as {
           aiOffice?: {
@@ -73,20 +75,39 @@ export function CardCustomizer({
         api
           .readOpeningHtmlCard(card.htmlAssetId)
           .then((asset) => {
-            if (!cancelled && asset) {
-              setHtmlCode(asset.html || '')
-              setCssCode(asset.css || '')
+            if (!cancelled) {
+              if (asset) {
+                setHtmlCode(asset.html || '')
+                setCssCode(asset.css || '')
+              } else {
+                setErrorMessage(
+                  isVi
+                    ? 'Không thể tải nội dung HTML của thẻ'
+                    : 'Failed to load HTML content for this card',
+                )
+              }
+              setLoadingHtml(false)
             }
           })
           .catch((err) => {
-            console.error('[CardCustomizer] Failed to read HTML asset:', err)
+            if (!cancelled) {
+              console.error('[CardCustomizer] Failed to read HTML asset:', err)
+              setErrorMessage(
+                isVi
+                  ? 'Lỗi khi đọc tài nguyên HTML của thẻ'
+                  : 'Error reading HTML asset for this card',
+              )
+              setLoadingHtml(false)
+            }
           })
+      } else {
+        setLoadingHtml(false)
       }
     }
     return () => {
       cancelled = true
     }
-  }, [isHtml, card.htmlAssetId])
+  }, [isHtml, card.htmlAssetId, isVi])
 
   const onCloseRef = useRef(onClose)
   onCloseRef.current = onClose
@@ -153,6 +174,19 @@ export function CardCustomizer({
   const matCss = useMemo(() => buildMaterialCss(previewMaterial), [previewMaterial])
 
   const handleSave = async () => {
+    if (loadingHtml) {
+      return
+    }
+
+    if (isHtml && card.htmlAssetId && !htmlCode && !cssCode) {
+      setErrorMessage(
+        isVi
+          ? 'Nội dung HTML chưa tải xong hoặc không khả dụng'
+          : 'HTML content has not finished loading or is unavailable',
+      )
+      return
+    }
+
     if (!name.trim()) {
       setErrorMessage(isVi ? 'Tên thẻ không được để trống' : 'Card name cannot be empty')
       return
@@ -499,9 +533,19 @@ export function CardCustomizer({
             type="button"
             className="set-btn ocs-btn-primary"
             onClick={handleSave}
-            disabled={busy}
+            disabled={busy || loadingHtml}
           >
-            {busy ? (isVi ? 'Đang lưu…' : 'Saving…') : isVi ? 'Lưu thẻ mới' : 'Save as Custom Card'}
+            {busy
+              ? isVi
+                ? 'Đang lưu…'
+                : 'Saving…'
+              : loadingHtml
+                ? isVi
+                  ? 'Đang tải HTML…'
+                  : 'Loading HTML…'
+                : isVi
+                  ? 'Lưu thẻ mới'
+                  : 'Save as Custom Card'}
           </button>
         </div>
       </div>

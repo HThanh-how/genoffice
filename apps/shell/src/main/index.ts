@@ -8340,38 +8340,17 @@ app.on('before-quit', (event) => {
 
   // Intercept the quit event to coordinate save prompts sequentially across all windows
   event.preventDefault()
-  if (quitCoordinator.isPromptInFlight()) return
-
-  quitCoordinator.setQuitInProgress(true)
-  quitCoordinator.setPromptInFlight(true)
-
-  void (async () => {
-    try {
-      // 1. Detached windows prompted first
-      const detachedOk = await promptAllDetachedWindows()
-      if (!detachedOk) {
-        quitCoordinator.abortQuit()
-        return
-      }
-
-      // 2. Shell window tabs prompted next
-      if (shellWindow && !shellWindow.isDestroyed() && tabManager) {
-        const shellOk = await promptDirtyTabs(shellWindow, tabManager)
-        if (!shellOk) {
-          quitCoordinator.abortQuit()
-          return
-        }
-      }
-
-      // 3. All prompts succeeded! Confirm quit and resume shutdown
-      quitCoordinator.confirmQuit()
-    } catch (err) {
+  void quitCoordinator
+    .coordinateQuit(
+      () => promptAllDetachedWindows(),
+      () =>
+        shellWindow && !shellWindow.isDestroyed() && tabManager
+          ? promptDirtyTabs(shellWindow, tabManager)
+          : Promise.resolve(true),
+    )
+    .catch((err) => {
       console.error('[shell] quit coordination failed:', err)
-      quitCoordinator.abortQuit()
-    } finally {
-      quitCoordinator.setPromptInFlight(false)
-    }
-  })()
+    })
 })
 
 let appShutdownState: 'idle' | 'shutting-down' | 'done' = 'idle'

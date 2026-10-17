@@ -64,6 +64,39 @@ export class QuitCoordinator {
     }
     app.quit()
   }
+
+  public async coordinateQuit(
+    promptDetached: () => Promise<boolean>,
+    promptShell: () => Promise<boolean>,
+  ): Promise<boolean> {
+    if (this.quitConfirmed) return true
+    if (this.promptInFlight) return false
+
+    this.setQuitInProgress(true)
+    this.setPromptInFlight(true)
+
+    try {
+      const detachedOk = await promptDetached()
+      if (!detachedOk) {
+        this.abortQuit()
+        return false
+      }
+
+      const shellOk = await promptShell()
+      if (!shellOk) {
+        this.abortQuit()
+        return false
+      }
+
+      this.confirmQuit()
+      return true
+    } catch (err) {
+      this.abortQuit()
+      throw err
+    } finally {
+      this.setPromptInFlight(false)
+    }
+  }
 }
 
 export const quitCoordinator = new QuitCoordinator()

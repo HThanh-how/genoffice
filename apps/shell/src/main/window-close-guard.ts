@@ -83,8 +83,9 @@ export function installShellCloseGuard(win: BrowserWindow, manager: TabManager):
     }
 
     event.preventDefault()
-    if (closePromptInFlight) return
+    if (closePromptInFlight || quitCoordinator.isPromptInFlight()) return
     closePromptInFlight = true
+    quitCoordinator.setPromptInFlight(true)
     void (async () => {
       try {
         const allowed = await promptDirtyTabs(win, manager)
@@ -93,12 +94,15 @@ export function installShellCloseGuard(win: BrowserWindow, manager: TabManager):
           if (!win.isDestroyed()) win.close()
         } else {
           resetSheetsShuttingDown()
+          quitCoordinator.abortQuit()
         }
       } catch (err) {
         console.error('[shell] window close prompt failed:', err)
         resetSheetsShuttingDown()
+        quitCoordinator.abortQuit()
       } finally {
         closePromptInFlight = false
+        quitCoordinator.setPromptInFlight(false)
       }
     })()
   })
