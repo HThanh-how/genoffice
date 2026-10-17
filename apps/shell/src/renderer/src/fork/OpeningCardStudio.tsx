@@ -2,7 +2,6 @@ import React, { useMemo, useRef, useState } from 'react'
 import type { OpeningEffectsState } from '../../../shared/home-api'
 import {
   DEFAULT_SCENE_FOR_APP,
-  OPENING_APPS,
   type OpeningApp,
   type OpeningPrefs,
 } from '../../../shared/opening-scenes-meta'
@@ -71,7 +70,11 @@ export function OpeningCardStudio({
   const handleToggleFavorite = async (cardId: string) => {
     try {
       const nextState = await api.toggleOpeningFavorite?.(cardId)
-      if (nextState) onUpdateState(nextState)
+      if (nextState) {
+        onUpdateState(nextState)
+      } else {
+        showError(isVi ? 'Không thể cập nhật yêu thích.' : 'Failed to update favorite.')
+      }
     } catch (err) {
       showError(err instanceof Error ? err.message : String(err))
     }
@@ -84,12 +87,16 @@ export function OpeningCardStudio({
     }
     try {
       const nextState = await api.setOpeningPrefs?.(nextPrefs)
-      if (nextState) onUpdateState(nextState)
-      showStatus(
-        isVi
-          ? 'Đã đặt làm Mặc định chung cho tất cả ứng dụng!'
-          : 'Set as Global Default for all applications!',
-      )
+      if (nextState) {
+        onUpdateState(nextState)
+        showStatus(
+          isVi
+            ? 'Đã đặt làm Mặc định chung cho tất cả ứng dụng!'
+            : 'Set as Global Default for all applications!',
+        )
+      } else {
+        showError(isVi ? 'Không thể lưu cài đặt chung.' : 'Failed to save global setting.')
+      }
     } catch (err) {
       showError(err instanceof Error ? err.message : String(err))
     }
@@ -105,12 +112,20 @@ export function OpeningCardStudio({
     }
     try {
       const nextState = await api.setOpeningPrefs?.(nextPrefs)
-      if (nextState) onUpdateState(nextState)
-      showStatus(
-        isVi
-          ? `Đã gán thẻ thành công cho ${app.toUpperCase()}`
-          : `Assigned card successfully to ${app.toUpperCase()}`,
-      )
+      if (nextState) {
+        onUpdateState(nextState)
+        showStatus(
+          isVi
+            ? `Đã gán thẻ thành công cho ${app.toUpperCase()}`
+            : `Assigned card successfully to ${app.toUpperCase()}`,
+        )
+      } else {
+        showError(
+          isVi
+            ? `Không thể gán thẻ cho ${app.toUpperCase()}`
+            : `Failed to assign card to ${app.toUpperCase()}`,
+        )
+      }
     } catch (err) {
       showError(err instanceof Error ? err.message : String(err))
     }
@@ -128,12 +143,20 @@ export function OpeningCardStudio({
     }
     try {
       const nextState = await api.setOpeningPrefs?.(nextPrefs)
-      if (nextState) onUpdateState(nextState)
-      showStatus(
-        isVi
-          ? `Đã xóa cấu hình riêng của ${app.toUpperCase()}`
-          : `Reset override for ${app.toUpperCase()}`,
-      )
+      if (nextState) {
+        onUpdateState(nextState)
+        showStatus(
+          isVi
+            ? `Đã xóa cấu hình riêng của ${app.toUpperCase()}`
+            : `Reset override for ${app.toUpperCase()}`,
+        )
+      } else {
+        showError(
+          isVi
+            ? `Không thể xóa cấu hình riêng của ${app.toUpperCase()}`
+            : `Failed to reset override for ${app.toUpperCase()}`,
+        )
+      }
     } catch (err) {
       showError(err instanceof Error ? err.message : String(err))
     }
@@ -148,6 +171,8 @@ export function OpeningCardStudio({
           setSelectedCard(allCards.find((c) => c.id !== cardId) || null)
         }
         showStatus(isVi ? 'Đã xóa thẻ tùy chỉnh.' : 'Custom card deleted.')
+      } else {
+        showError(isVi ? 'Không thể xóa thẻ này.' : 'Failed to delete card.')
       }
     } catch (err) {
       showError(err instanceof Error ? err.message : String(err))
@@ -183,6 +208,7 @@ export function OpeningCardStudio({
         showStatus(isVi ? 'Đã lưu thẻ tùy chỉnh!' : 'Custom card saved!')
       }
     } catch (err) {
+      showError(err instanceof Error ? err.message : String(err))
       throw err
     }
   }
@@ -357,6 +383,7 @@ export function OpeningCardStudio({
             selectedCard={selectedCard}
             prefs={prefs}
             lang={lang}
+            mediaAssets={state.mediaAssets}
             onSelectCard={setSelectedCard}
             onToggleFavorite={handleToggleFavorite}
           />

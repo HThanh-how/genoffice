@@ -62,7 +62,7 @@ export interface MaterialCssOutput {
  */
 export function buildMaterialCss(
   rawConfig: OpeningMaterialConfig | undefined | null,
-  options?: { appColor?: string },
+  options?: { appColor?: string; systemTheme?: 'light' | 'dark' },
 ): MaterialCssOutput {
   const cfg = rawConfig || { preset: 'frosted-glass' }
   const preset: OpeningMaterialPreset = cfg.preset || 'frosted-glass'
@@ -137,11 +137,20 @@ export function buildMaterialCss(
     }
   }
 
-  const effectiveBg = themeMode === 'light' ? bgLight : bgDark
-  const effectiveFilter = themeMode === 'light' ? filterLight : filterDark
-  const effectiveBorder = themeMode === 'light' ? borderLight : borderDark
-  const effectiveShadow = themeMode === 'light' ? shadowLight : shadowDark
-  const effectiveColor = themeMode === 'light' ? textLight : textDark
+  const isBrowserLight =
+    typeof window !== 'undefined' &&
+    (window.matchMedia?.('(prefers-color-scheme: light)').matches ||
+      document.documentElement?.getAttribute('data-theme') === 'light' ||
+      document.body?.classList.contains('light'))
+  const resolvedSystemTheme = options?.systemTheme || (isBrowserLight ? 'light' : 'dark')
+  const isLight =
+    themeMode === 'light' || (themeMode === 'system' && resolvedSystemTheme === 'light')
+
+  const effectiveBg = isLight ? bgLight : bgDark
+  const effectiveFilter = isLight ? filterLight : filterDark
+  const effectiveBorder = isLight ? borderLight : borderDark
+  const effectiveShadow = isLight ? shadowLight : shadowDark
+  const effectiveColor = isLight ? textLight : textDark
 
   const inlineRules = [
     `--card-accent: ${accentHex}`,

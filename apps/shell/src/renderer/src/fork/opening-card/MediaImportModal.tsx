@@ -1,4 +1,4 @@
-import React, { useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 
 interface MediaImportModalProps {
   lang: string
@@ -16,6 +16,27 @@ export function MediaImportModal({
   const [busy, setBusy] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
   const [dragOver, setDragOver] = useState(false)
+
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  // Handle Escape key with capture phase to prevent bubbling to parent SettingsModal
+  useEffect(() => {
+    const previousActive = document.activeElement as HTMLElement | null
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        e.preventDefault()
+        onCloseRef.current()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true)
+      previousActive?.focus?.()
+    }
+  }, [])
 
   const processFile = async (file: File) => {
     if (!file) return

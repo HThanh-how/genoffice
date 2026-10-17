@@ -94,15 +94,32 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
   if (!state) return null
   const { prefs, custom } = state
   const save = (next: OpeningPrefs) => {
+    const prevState = state
     setState({ ...state, prefs: next })
-    void api.setOpeningPrefs(next).then(setState)
+    setError('')
+    void api
+      .setOpeningPrefs(next)
+      .then((updated) => {
+        if (updated) setState(updated)
+      })
+      .catch((err) => {
+        setState(prevState)
+        setError(err instanceof Error ? err.message : String(err))
+      })
   }
   const importFor = (app: OpeningApp) => {
     setError('')
-    void api.importOpeningHtml(app).then((result) => {
-      setState(result.state)
-      if (!result.ok && result.error) setError(result.error)
-    })
+    const prevState = state
+    void api
+      .importOpeningHtml(app)
+      .then((result) => {
+        if (result?.state) setState(result.state)
+        if (!result?.ok && result?.error) setError(result.error)
+      })
+      .catch((err) => {
+        setState(prevState)
+        setError(err instanceof Error ? err.message : String(err))
+      })
   }
 
   return (
@@ -204,7 +221,14 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
                   <button
                     type="button"
                     className="set-btn"
-                    onClick={() => void api.removeOpeningHtml(app).then(setState)}
+                    onClick={() =>
+                      void api
+                        .removeOpeningHtml(app)
+                        .then((updated) => {
+                          if (updated) setState(updated)
+                        })
+                        .catch((err) => setError(err instanceof Error ? err.message : String(err)))
+                    }
                   >
                     {c.remove}
                   </button>

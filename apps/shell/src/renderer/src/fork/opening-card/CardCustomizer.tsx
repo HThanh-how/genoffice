@@ -5,6 +5,7 @@ import type {
   OpeningThemeMode,
 } from '../../../../shared/opening-card-types'
 import { buildMaterialCss } from '../../../../shared/opening-card-css'
+import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-html-sanitizer'
 
 const COLOR_PRESETS = [
   '#2b7cd3',
@@ -86,6 +87,44 @@ export function CardCustomizer({
       cancelled = true
     }
   }, [isHtml, card.htmlAssetId])
+
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  // Handle Escape key with capture phase to prevent bubbling to parent SettingsModal
+  useEffect(() => {
+    const previousActive = document.activeElement as HTMLElement | null
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        e.preventDefault()
+        onCloseRef.current()
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true)
+      previousActive?.focus?.()
+    }
+  }, [])
+
+  const liveHtmlDoc = useMemo(() => {
+    if (!isHtml || (!htmlCode && !cssCode)) return ''
+    return buildIsolatedHtmlHostDocument(
+      htmlCode,
+      cssCode,
+      {
+        fileName: name || 'Document.docx',
+        fileType: 'docx',
+        title: isVi ? 'Đang mở tài liệu…' : 'Opening document…',
+        hint: isVi ? 'Đang tải bố cục…' : 'Loading document layout…',
+        appName: 'DOCX',
+        accentColor,
+      },
+      { isCardLayout: true },
+    )
+  }, [isHtml, htmlCode, cssCode, name, isVi, accentColor])
 
   // Compute live CSS
   const previewMaterial = useMemo(
@@ -310,6 +349,23 @@ export function CardCustomizer({
                 <div className="ocs-form-group">
                   <div className="ocs-slider-header">
                     <label className="ocs-form-label">
+                      {isVi ? 'Độ dày viền (Border Width):' : 'Border Width:'}
+                    </label>
+                    <span className="ocs-slider-val">{borderWidthPx}px</span>
+                  </div>
+                  <input
+                    type="range"
+                    min="0"
+                    max="4"
+                    step="1"
+                    value={borderWidthPx}
+                    onChange={(e) => setBorderWidthPx(parseInt(e.target.value, 10))}
+                  />
+                </div>
+
+                <div className="ocs-form-group">
+                  <div className="ocs-slider-header">
+                    <label className="ocs-form-label">
                       {isVi ? 'Độ sâu đổ bóng (Shadow):' : 'Shadow Intensity:'}
                     </label>
                     <span className="ocs-slider-val">{Math.round(shadowIntensity * 100)}%</span>
@@ -383,39 +439,54 @@ export function CardCustomizer({
               {isVi ? 'Xem trước trực tiếp' : 'Live Preview'}
             </span>
             <div className="ocs-customizer-stage-box">
-              <div
-                className="ocs-customizer-stage-card"
-                style={{
-                  background: matCss.background,
-                  backdropFilter: matCss.backdropFilter,
-                  WebkitBackdropFilter: matCss.backdropFilter,
-                  border: matCss.border,
-                  borderRadius: matCss.borderRadius,
-                  boxShadow: matCss.boxShadow,
-                  color: matCss.color,
-                }}
-              >
-                <div className="ocs-wysiwyg-card-top">
-                  <div className="ocs-wysiwyg-app-badge" style={{ backgroundColor: accentColor }}>
-                    DOCX
-                  </div>
-                  <div className="ocs-wysiwyg-doc-info">
-                    <span className="ocs-wysiwyg-filename">{name || 'Document.docx'}</span>
-                    <span className="ocs-wysiwyg-status">
-                      {isVi ? 'Đang mở tài liệu…' : 'Opening document…'}
+              {isHtml && activeTab === 'html' && liveHtmlDoc ? (
+                <iframe
+                  title="Live HTML Card Preview"
+                  sandbox="allow-same-origin"
+                  srcDoc={liveHtmlDoc}
+                  className="ocs-customizer-html-iframe"
+                  style={{
+                    width: '100%',
+                    height: '100%',
+                    border: 'none',
+                    borderRadius: matCss.borderRadius,
+                  }}
+                />
+              ) : (
+                <div
+                  className="ocs-customizer-stage-card"
+                  style={{
+                    background: matCss.background,
+                    backdropFilter: matCss.backdropFilter,
+                    WebkitBackdropFilter: matCss.backdropFilter,
+                    border: matCss.border,
+                    borderRadius: matCss.borderRadius,
+                    boxShadow: matCss.boxShadow,
+                    color: matCss.color,
+                  }}
+                >
+                  <div className="ocs-wysiwyg-card-top">
+                    <div className="ocs-wysiwyg-app-badge" style={{ backgroundColor: accentColor }}>
+                      DOCX
+                    </div>
+                    <div className="ocs-wysiwyg-doc-info">
+                      <span className="ocs-wysiwyg-filename">{name || 'Document.docx'}</span>
+                      <span className="ocs-wysiwyg-status">
+                        {isVi ? 'Đang mở tài liệu…' : 'Opening document…'}
+                      </span>
+                    </div>
+                    <span className="ocs-wysiwyg-close-indicator" aria-hidden="true">
+                      &times;
                     </span>
                   </div>
-                  <button type="button" className="ocs-wysiwyg-close-btn">
-                    &times;
-                  </button>
+                  <div className="ocs-wysiwyg-progress-container">
+                    <div
+                      className="ocs-wysiwyg-progress-bar"
+                      style={{ backgroundColor: accentColor }}
+                    />
+                  </div>
                 </div>
-                <div className="ocs-wysiwyg-progress-container">
-                  <div
-                    className="ocs-wysiwyg-progress-bar"
-                    style={{ backgroundColor: accentColor }}
-                  />
-                </div>
-              </div>
+              )}
             </div>
           </div>
         </div>

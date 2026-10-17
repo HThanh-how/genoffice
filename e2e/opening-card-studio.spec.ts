@@ -470,4 +470,146 @@ test.describe('Opening Card Studio — Electron E2E Flows', () => {
       }
     }
   })
+
+  test('E2E-12: Opening Card Studio UI interaction — gallery filtering, card inspection, and modal Escape isolation', async () => {
+    const launched = await launchShell({
+      onboardingSeen: true,
+      settings: { starPrompt: { resolved: true }, lang: 'en' },
+      videoDir: 'opening-card-studio-e2e12',
+    })
+    const { page } = launched
+
+    try {
+      // 1. Open Settings modal
+      const settingsBtn = page.locator('.account-btn')
+      await expect(settingsBtn).toBeVisible({ timeout: 15_000 })
+      await settingsBtn.click()
+
+      // 2. Wait for Settings dialog
+      const settingsDialog = page.locator('.set-dialog')
+      await expect(settingsDialog).toBeVisible({ timeout: 15_000 })
+
+      // 3. Expand Opening effects section in General
+      const openingSummary = page.locator('summary', {
+        hasText: /Opening effects|Hiệu ứng mở tệp/i,
+      })
+      await expect(openingSummary).toBeVisible({ timeout: 15_000 })
+      await openingSummary.click()
+
+      // 4. Verify Studio is visible
+      await expect(page.locator('.ocs-container')).toBeVisible({ timeout: 15_000 })
+
+      // 5. Click category filter chip for Materials
+      const materialsChip = page
+        .locator('.ocs-filter-chip, .ocs-filter-pill')
+        .filter({ hasText: /Materials|Chất liệu/i })
+        .first()
+      await expect(materialsChip).toBeVisible({ timeout: 15_000 })
+      await materialsChip.click()
+
+      // 6. Verify the clicked chip has .active class
+      await expect(materialsChip).toHaveClass(/active/)
+
+      // 7. Click card tile in gallery (e.g. curated:frosted-blue)
+      const frostedBlueTile = page
+        .locator(
+          '[data-card-id="curated:frosted-blue"], .ocs-gallery-card-item:has-text("Frosted Blue")',
+        )
+        .first()
+      await expect(frostedBlueTile).toBeVisible({ timeout: 15_000 })
+      await frostedBlueTile.click()
+
+      // 8. Verify inspector title shows "Frosted Blue"
+      const previewTitle = page.locator('.ocs-preview-title, .ocs-inspector-name').first()
+      await expect(previewTitle).toBeVisible({ timeout: 15_000 })
+      await expect(previewTitle).toHaveText(/Frosted Blue/i)
+
+      // 9. Click "+ AI Card" button
+      const aiCardBtn = page
+        .locator('.ocs-action-btn, button:has-text("AI Card"), button:has-text("Thẻ AI")')
+        .first()
+      await expect(aiCardBtn).toBeVisible({ timeout: 15_000 })
+      await aiCardBtn.click()
+
+      // 10. Verify modal backdrop and modal card are visible
+      const modalBackdrop = page
+        .locator('.ocs-modal-backdrop, .ocs-customizer-dialog-overlay')
+        .first()
+      const modalCard = page
+        .locator('.ocs-modal-card, .ocs-ai-modal-dialog, .ocs-customizer-dialog')
+        .first()
+      await expect(modalBackdrop).toBeVisible({ timeout: 15_000 })
+      await expect(modalCard).toBeVisible({ timeout: 15_000 })
+
+      // 11. Press 'Escape'
+      await page.keyboard.press('Escape')
+
+      // 12. Verify modal backdrop is hidden/detached (modal closed)
+      await expect(modalBackdrop).toBeHidden({ timeout: 15_000 })
+
+      // 13. Verify parent .set-dialog is STILL visible (OCV2-P2-010 nested modal Escape capture)
+      await expect(settingsDialog).toBeVisible()
+    } finally {
+      await closeAndSaveVideo(launched, 'opening-e2e12')
+    }
+  })
+
+  test('E2E-13: AI Style Preset mode card generation and material persistence', async () => {
+    const launched = await launchShell({
+      onboardingSeen: true,
+      settings: { starPrompt: { resolved: true }, lang: 'en' },
+      videoDir: 'opening-card-studio-e2e13',
+    })
+    const { page } = launched
+
+    try {
+      // 1. Save declarative material AI card via window.aiOffice
+      const styleCard = {
+        id: `ai:card_${Date.now()}_style_e2e`,
+        name: 'Emerald Frost Style',
+        description: 'Frosted glass with emerald accent and refined shadow',
+        category: 'ai' as const,
+        contentKind: 'curated-material' as const,
+        material: {
+          preset: 'frosted-glass' as const,
+          themeMode: 'dark' as const,
+          opacity: 0.88,
+          blurPx: 20,
+          borderRadiusPx: 16,
+          borderWidthPx: 1,
+          accentColor: '#10b981',
+          shadowIntensity: 0.4,
+        },
+        createdAt: Date.now(),
+        isBuiltIn: false,
+        tags: ['ai', 'style', 'emerald'],
+      }
+
+      const saveRes = await page.evaluate(async (card) => {
+        return await window.aiOffice.saveOpeningCard(card)
+      }, styleCard)
+
+      // 2. Verify card exists in prefs.customCards
+      expect(saveRes.prefs.customCards?.some((c) => c.id === styleCard.id)).toBe(true)
+
+      // 3. Assign card to Docs via setOpeningPrefs with appOverrides: { docs: styleCard.id }
+      const state: OpeningEffectsState = await page.evaluate(async (cardId) => {
+        const api = window.aiOffice
+        const current = await api.getOpeningEffects()
+        return await api.setOpeningPrefs({
+          ...current.prefs,
+          appOverrides: {
+            ...current.prefs.appOverrides,
+            docs: cardId,
+          },
+        })
+      }, styleCard.id)
+
+      // 4. Verify effective scene for docs is resolved as an override with styleCard.id
+      expect(state.effectiveScenes?.docs.id).toBe(styleCard.id)
+      expect(state.effectiveScenes?.docs.source).toBe('override')
+    } finally {
+      await closeAndSaveVideo(launched, 'opening-e2e13')
+    }
+  })
 })

@@ -1,18 +1,63 @@
 import React, { useEffect, useRef, useState } from 'react'
-import type { OpeningCardDefinition } from '../../../../shared/opening-card-types'
+import type { OpeningCardDefinition, StoredMediaAsset } from '../../../../shared/opening-card-types'
 import { buildMaterialCss } from '../../../../shared/opening-card-css'
 import { runGOScene } from '../../../../shared/opening-scenes-runner'
 import { sceneMeta } from '../../../../shared/opening-scenes-meta'
+import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-html-sanitizer'
 
-// Cache of rendered scene snapshots so we don't re-render canvases repeatedly
+// Bounded concurrency queue for canvas scene thumbnail generation
+class ThumbnailRenderQueue {
+  private active = 0
+  private maxConcurrency = 2
+  private queue: Array<() => Promise<void>> = []
+
+  enqueue(task: (isCancelled: () => boolean) => Promise<void>): () => void {
+    let cancelled = false
+    const checkCancelled = () => cancelled
+    const wrappedTask = async () => {
+      if (cancelled) return
+      await task(checkCancelled)
+    }
+    this.queue.push(wrappedTask)
+    this.processNext()
+    return () => {
+      cancelled = true
+      const idx = this.queue.indexOf(wrappedTask)
+      if (idx >= 0) this.queue.splice(idx, 1)
+    }
+  }
+
+  private processNext() {
+    if (this.active >= this.maxConcurrency || this.queue.length === 0) return
+    const next = this.queue.shift()
+    if (!next) return
+    this.active++
+    next().finally(() => {
+      this.active--
+      this.processNext()
+    })
+  }
+}
+
+const thumbnailQueue = new ThumbnailRenderQueue()
 const sceneThumbnailCache = new Map<string, string>()
+const htmlThumbnailCache = new Map<string, { html: string; css: string }>()
+
+function setBoundedCache<K, V>(map: Map<K, V>, key: K, value: V, maxSize = 60): void {
+  if (map.size >= maxSize) {
+    const firstKey = map.keys().next().value
+    if (firstKey !== undefined) map.delete(firstKey)
+  }
+  map.set(key, value)
+}
 
 interface CardThumbnailProps {
   card: OpeningCardDefinition
   isVi?: boolean
+  mediaAssets?: StoredMediaAsset[]
 }
 
-export function CardThumbnail({ card, isVi }: CardThumbnailProps): React.JSX.Element {
+export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [cachedDataUrl, setCachedDataUrl] = useState<string | null>(() => {
     if (card.sceneId && sceneThumbnailCache.has(card.sceneId)) {
@@ -20,8 +65,37 @@ export function CardThumbnail({ card, isVi }: CardThumbnailProps): React.JSX.Ele
     }
     return null
   })
+  const [mediaError, setMediaError] = useState(false)
+  const [htmlDoc, setHtmlDoc] = useState<string | null>(() => {
+    if (
+      (card.contentKind === 'ai-html' || card.contentKind === 'custom-html') &&
+      card.htmlAssetId
+    ) {
+      const cached = htmlThumbnailCache.get(card.htmlAssetId)
+      if (cached) {
+        return buildIsolatedHtmlHostDocument(
+          cached.html,
+          cached.css,
+          {
+            fileName: 'Sample.docx',
+            title: card.name,
+            hint: 'Opening…',
+            appName: 'W',
+            accentColor: card.material?.accentColor || '#2b7cd3',
+          },
+          { reducedMotion: true, isCardLayout: true },
+        )
+      }
+    }
+    return null
+  })
 
-  // Render canvas-scene frame to canvas and cache snapshot
+  // Reset media error if media asset id changes
+  useEffect(() => {
+    setMediaError(false)
+  }, [card.mediaAssetId])
+
+  // Render canvas-scene frame to canvas with bounded concurrency
   useEffect(() => {
     if (card.contentKind !== 'canvas-scene' || !card.sceneId) return
     if (cachedDataUrl) return
@@ -36,30 +110,131 @@ export function CardThumbnail({ card, isVi }: CardThumbnailProps): React.JSX.Ele
     if (!canvas) return
 
     let stop: (() => void) | null = null
-    try {
-      stop = runGOScene(canvas, sceneId, 'lite', '43,124,211', '138,183,233')
-      // Allow a brief moment for scene initialization then capture snapshot
-      const timer = setTimeout(() => {
-        try {
-          const url = canvas.toDataURL('image/png')
-          if (url && url.length > 50) {
-            sceneThumbnailCache.set(sceneId, url)
-            setCachedDataUrl(url)
-          }
-        } catch {
-          // Canvas tainted or read failed; fallback is fine
-        }
-        if (stop) stop()
-      }, 120)
+    let timer: ReturnType<typeof setTimeout> | null = null
+    let isMounted = true
+    let resolveTask: (() => void) | null = null
 
-      return () => {
+    const cancelQueue = thumbnailQueue.enqueue(async (isCancelled) => {
+      if (!isMounted || isCancelled()) return
+      return new Promise<void>((resolve) => {
+        resolveTask = resolve
+        try {
+          stop = runGOScene(canvas, sceneId, 'lite', '43,124,211', '138,183,233')
+          timer = setTimeout(() => {
+            if (isMounted && !isCancelled()) {
+              try {
+                const url = canvas.toDataURL('image/png')
+                if (url && url.length > 50) {
+                  setBoundedCache(sceneThumbnailCache, sceneId, url)
+                  setCachedDataUrl(url)
+                }
+              } catch {
+                // Canvas tainted or read failed; fallback is fine
+              }
+            }
+            if (stop) {
+              stop()
+              stop = null
+            }
+            resolve()
+            resolveTask = null
+          }, 100)
+        } catch {
+          if (stop) {
+            stop()
+            stop = null
+          }
+          resolve()
+          resolveTask = null
+        }
+      })
+    })
+
+    return () => {
+      isMounted = false
+      cancelQueue()
+      if (timer) {
         clearTimeout(timer)
-        if (stop) stop()
+        timer = null
       }
-    } catch {
-      if (stop) stop()
+      if (stop) {
+        stop()
+        stop = null
+      }
+      if (resolveTask) {
+        resolveTask()
+        resolveTask = null
+      }
     }
   }, [card.contentKind, card.sceneId, cachedDataUrl])
+
+  // Load HTML asset preview for AI HTML cards
+  useEffect(() => {
+    let cancelled = false
+    if (
+      (card.contentKind === 'ai-html' || card.contentKind === 'custom-html') &&
+      card.htmlAssetId
+    ) {
+      const assetId = card.htmlAssetId
+      const cached = htmlThumbnailCache.get(assetId)
+      if (cached) {
+        setHtmlDoc(
+          buildIsolatedHtmlHostDocument(
+            cached.html,
+            cached.css,
+            {
+              fileName: 'Sample.docx',
+              title: card.name,
+              hint: 'Opening…',
+              appName: 'W',
+              accentColor: card.material?.accentColor || '#2b7cd3',
+            },
+            { reducedMotion: true, isCardLayout: true },
+          ),
+        )
+        return
+      }
+
+      setHtmlDoc(null)
+
+      const api = (
+        window as unknown as {
+          aiOffice?: {
+            readOpeningHtmlCard?: (id: string) => Promise<{ html: string; css: string } | null>
+          }
+        }
+      ).aiOffice
+      if (api?.readOpeningHtmlCard) {
+        api
+          .readOpeningHtmlCard(assetId)
+          .then((asset) => {
+            if (!cancelled && asset?.html) {
+              setBoundedCache(htmlThumbnailCache, assetId, asset)
+              setHtmlDoc(
+                buildIsolatedHtmlHostDocument(
+                  asset.html,
+                  asset.css,
+                  {
+                    fileName: 'Sample.docx',
+                    title: card.name,
+                    hint: 'Opening…',
+                    appName: 'W',
+                    accentColor: card.material?.accentColor || '#2b7cd3',
+                  },
+                  { reducedMotion: true, isCardLayout: true },
+                ),
+              )
+            }
+          })
+          .catch(() => {})
+      }
+    } else {
+      setHtmlDoc(null)
+    }
+    return () => {
+      cancelled = true
+    }
+  }, [card.contentKind, card.htmlAssetId, card.name, card.material?.accentColor])
 
   // 1. Motion scene thumbnail
   if (card.contentKind === 'canvas-scene' && card.sceneId) {
@@ -156,6 +331,11 @@ export function CardThumbnail({ card, isVi }: CardThumbnailProps): React.JSX.Ele
 
   // 3. Personal media thumbnail
   if (card.contentKind === 'personal-media') {
+    const mediaAsset = card.mediaAssetId
+      ? mediaAssets?.find((m) => m.assetId === card.mediaAssetId)
+      : undefined
+    const thumbSrc = mediaAsset?.thumbnailUrl || mediaAsset?.dataUrl
+
     return (
       <div
         className="ocs-thumb-box ocs-thumb-media"
@@ -165,20 +345,29 @@ export function CardThumbnail({ card, isVi }: CardThumbnailProps): React.JSX.Ele
             : 'linear-gradient(135deg, #182848 0%, #4b6cb7 100%)',
         }}
       >
-        <div className="ocs-thumb-media-center">
-          <svg
-            width="24"
-            height="24"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-          >
-            <rect x="3" y="3" width="18" height="18" rx="3" />
-            <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
-            <path d="m21 15-5-5L5 21" />
-          </svg>
-        </div>
+        {thumbSrc && !mediaError ? (
+          <img
+            src={thumbSrc}
+            alt={card.name}
+            className="ocs-thumb-media-img"
+            onError={() => setMediaError(true)}
+          />
+        ) : (
+          <div className="ocs-thumb-media-center">
+            <svg
+              width="24"
+              height="24"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.8"
+            >
+              <rect x="3" y="3" width="18" height="18" rx="3" />
+              <circle cx="8.5" cy="8.5" r="1.5" fill="currentColor" />
+              <path d="m21 15-5-5L5 21" />
+            </svg>
+          </div>
+        )}
         <div className="ocs-thumb-kind-pill">
           <span>{isVi ? 'Ảnh/Media' : 'Media'}</span>
         </div>
@@ -186,7 +375,7 @@ export function CardThumbnail({ card, isVi }: CardThumbnailProps): React.JSX.Ele
     )
   }
 
-  // 4. AI HTML thumbnail
+  // 4. AI HTML or Custom HTML thumbnail
   return (
     <div
       className="ocs-thumb-box ocs-thumb-html"
@@ -196,21 +385,34 @@ export function CardThumbnail({ card, isVi }: CardThumbnailProps): React.JSX.Ele
           : 'linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%)',
       }}
     >
-      <div className="ocs-thumb-html-code">
-        <svg
-          width="22"
-          height="22"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-        >
-          <polyline points="16 18 22 12 16 6" />
-          <polyline points="8 6 2 12 8 18" />
-        </svg>
-      </div>
+      {htmlDoc ? (
+        <div className="ocs-thumb-html-stage">
+          <iframe
+            srcDoc={htmlDoc}
+            title={card.name}
+            sandbox="allow-same-origin"
+            tabIndex={-1}
+            aria-hidden="true"
+            className="ocs-thumb-html-iframe"
+          />
+        </div>
+      ) : (
+        <div className="ocs-thumb-html-code">
+          <svg
+            width="22"
+            height="22"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+          >
+            <polyline points="16 18 22 12 16 6" />
+            <polyline points="8 6 2 12 8 18" />
+          </svg>
+        </div>
+      )}
       <div className="ocs-thumb-kind-pill">
-        <span>HTML</span>
+        <span>{card.contentKind === 'custom-html' ? 'HTML' : 'AI HTML'}</span>
       </div>
     </div>
   )

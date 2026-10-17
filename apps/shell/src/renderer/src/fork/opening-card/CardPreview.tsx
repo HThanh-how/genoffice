@@ -55,12 +55,6 @@ export function CardPreview({
   // Status computation
   const isGlobalDefault = prefs.globalCard === card?.id
   const hasAppOverride = Boolean(card && prefs.appOverrides?.[activeApp] === card.id)
-  const isAnyAssigned = Boolean(
-    card &&
-    (isGlobalDefault ||
-      Object.values(prefs.appOverrides || {}).includes(card.id) ||
-      Object.values(prefs.scenes || {}).includes(card.id)),
-  )
 
   const fileName = sampleFileName(activeApp, lang)
 
@@ -100,7 +94,7 @@ export function CardPreview({
             accentColor: card.material.accentColor || APP_INFO[activeApp].color,
           },
           {
-            reducedMotion: false,
+            reducedMotion: Boolean(prefs.tier === 'minimal'),
             isCardLayout: true,
           },
         )
@@ -113,7 +107,7 @@ export function CardPreview({
     return () => {
       cancelled = true
     }
-  }, [card?.id, card?.htmlAssetId, card?.contentKind, activeApp, fileName, isVi])
+  }, [card?.id, card?.htmlAssetId, card?.contentKind, activeApp, fileName, isVi, prefs.tier])
 
   const [mediaDataUrl, setMediaDataUrl] = useState<string | null>(null)
 
@@ -179,7 +173,8 @@ export function CardPreview({
 
     let stop: (() => void) | null = null
     try {
-      stop = runGOScene(canvas, card.sceneId, 'full', rgb, lt)
+      const tier = prefs.tier === 'auto' ? 'lite' : prefs.tier || 'lite'
+      stop = runGOScene(canvas, card.sceneId, tier, rgb, lt)
     } catch {
       // Ignored
     }
@@ -187,7 +182,7 @@ export function CardPreview({
     return () => {
       if (stop) stop()
     }
-  }, [card?.id, card?.sceneId, card?.contentKind, activeApp])
+  }, [card?.id, card?.sceneId, card?.contentKind, activeApp, prefs.tier])
 
   if (!card) {
     return (
@@ -365,13 +360,9 @@ export function CardPreview({
                     {isVi ? 'Đang mở tài liệu…' : 'Opening document…'}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  className="ocs-wysiwyg-close-btn"
-                  aria-label={isVi ? 'Hủy' : 'Cancel'}
-                >
+                <span className="ocs-wysiwyg-close-indicator" aria-hidden="true">
                   &times;
-                </button>
+                </span>
               </div>
 
               {/* Bottom Progress Bar */}
@@ -389,16 +380,52 @@ export function CardPreview({
       {/* Assignment Status Notice */}
       <div className="ocs-assignment-banner">
         {isGlobalDefault ? (
-          <div className="ocs-banner-chip ocs-banner-global">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-              <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.5 11.5L8 9.5l-3.5 2 1-4-3-3 4-.5L8 1l1.5 3 4 .5-3 3 1 4z" />
-            </svg>
-            <span>
-              {isVi
-                ? 'Đang là Mặc định chung cho tất cả ứng dụng'
-                : 'Current Global Default for all applications'}
-            </span>
-          </div>
+          (() => {
+            const isOverriddenForThisApp = Boolean(
+              prefs.appOverrides?.[activeApp] && prefs.appOverrides[activeApp] !== card.id,
+            )
+            const overridesCount = Object.keys(prefs.appOverrides || {}).length
+
+            if (isOverriddenForThisApp) {
+              return (
+                <div className="ocs-banner-chip ocs-banner-override">
+                  <span>
+                    {isVi
+                      ? `Mặc định chung (nhưng ${APP_INFO[activeApp].nameVi} đang dùng thẻ khác)`
+                      : `Global Default (but ${APP_INFO[activeApp].nameEn} has an app override)`}
+                  </span>
+                </div>
+              )
+            }
+
+            if (overridesCount > 0) {
+              return (
+                <div className="ocs-banner-chip ocs-banner-global">
+                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                    <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.5 11.5L8 9.5l-3.5 2 1-4-3-3 4-.5L8 1l1.5 3 4 .5-3 3 1 4z" />
+                  </svg>
+                  <span>
+                    {isVi
+                      ? `Đang là Mặc định chung (${overridesCount} ứng dụng có cấu hình riêng)`
+                      : `Current Global Default (${overridesCount} app overrides configured)`}
+                  </span>
+                </div>
+              )
+            }
+
+            return (
+              <div className="ocs-banner-chip ocs-banner-global">
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                  <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.5 11.5L8 9.5l-3.5 2 1-4-3-3 4-.5L8 1l1.5 3 4 .5-3 3 1 4z" />
+                </svg>
+                <span>
+                  {isVi
+                    ? 'Đang là Mặc định chung cho tất cả ứng dụng'
+                    : 'Current Global Default for all applications'}
+                </span>
+              </div>
+            )
+          })()
         ) : hasAppOverride ? (
           <div className="ocs-banner-chip ocs-banner-override">
             <span>
@@ -455,7 +482,7 @@ export function CardPreview({
         <button
           type="button"
           className="set-btn"
-          onClick={() => onPreviewWindow(activeApp, card.sceneId ?? card.id)}
+          onClick={() => onPreviewWindow(activeApp, card.id)}
         >
           {isVi ? 'Xem cửa sổ thật' : 'Preview in Window'}
         </button>

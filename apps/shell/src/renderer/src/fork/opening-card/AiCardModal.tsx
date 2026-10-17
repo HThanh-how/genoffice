@@ -1,15 +1,19 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { OpeningCardDefinition } from '../../../../shared/opening-card-types'
 import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-html-sanitizer'
+import { buildMaterialCss } from '../../../../shared/opening-card-css'
+
+export type AiCardGenerationMode = 'html' | 'style'
 
 interface AiCardModalProps {
   lang: string
-  onSave: (card: OpeningCardDefinition, asset: { html: string; css: string }) => Promise<void>
+  onSave: (card: OpeningCardDefinition, asset?: { html: string; css: string }) => Promise<void>
   onClose: () => void
 }
 
 export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.JSX.Element {
   const isVi = lang === 'vi'
+  const [mode, setMode] = useState<AiCardGenerationMode>('html')
   const [prompt, setPrompt] = useState('')
   const [loading, setLoading] = useState(false)
   const [errorMessage, setErrorMessage] = useState('')
@@ -18,22 +22,42 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
   const [draftCss, setDraftCss] = useState('')
   const [activeTab, setActiveTab] = useState<'preview' | 'html' | 'css'>('preview')
   const currentRequestIdRef = useRef<string | null>(null)
+  const promptInputRef = useRef<HTMLTextAreaElement | null>(null)
 
-  useEffect(() => {
-    return () => {
-      if (currentRequestIdRef.current) {
-        window.aiOffice?.cancelAiCardGeneration?.(currentRequestIdRef.current)
-      }
-    }
-  }, [])
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  const loadingRef = useRef(loading)
+  loadingRef.current = loading
 
   const handleCancelOrClose = () => {
-    if (loading && currentRequestIdRef.current) {
+    if (loadingRef.current && currentRequestIdRef.current) {
       window.aiOffice?.cancelAiCardGeneration?.(currentRequestIdRef.current)
       currentRequestIdRef.current = null
     }
-    onClose()
+    onCloseRef.current()
   }
+
+  // Focus prompt input on mount and handle Escape with capture phase to prevent closing parent SettingsModal
+  useEffect(() => {
+    const previousActive = document.activeElement as HTMLElement | null
+    promptInputRef.current?.focus()
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        e.stopImmediatePropagation()
+        e.preventDefault()
+        handleCancelOrClose()
+      }
+    }
+
+    window.addEventListener('keydown', handleKeyDown, true)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown, true)
+      previousActive?.focus?.()
+    }
+  }, [])
 
   const handleGenerate = async () => {
     if (!prompt.trim()) return
@@ -46,36 +70,49 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
     try {
       const res = await window.aiOffice?.generateAiCard?.({
         prompt: prompt.trim(),
-        mode: 'html',
+        mode,
         requestId: reqId,
       })
 
-      if (res && res.ok && res.htmlDraft) {
-        const d = res.htmlDraft
-        setDraftCard(
-          res.card || {
-            id: `custom:ai_html_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-            name: d.name || 'AI Generated Scene',
-            description: d.description,
-            category: 'custom',
-            contentKind: 'ai-html',
-            isBuiltIn: false,
-            createdAt: Date.now(),
-            material: {
-              preset: 'frosted-glass',
-              themeMode: d.themeMode ?? 'system',
-              opacity: 0.85,
-              blurPx: 22,
-              borderRadiusPx: 18,
-              shadowIntensity: 0.35,
-              accentColor: d.accentColor ?? '#2b7cd3',
+      if (res && res.ok) {
+        if (mode === 'html' && res.htmlDraft) {
+          const d = res.htmlDraft
+          setDraftCard(
+            res.card || {
+              id: `custom:ai_html_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+              name: d.name || 'AI Generated Scene',
+              description: d.description,
+              category: 'custom',
+              contentKind: 'ai-html',
+              isBuiltIn: false,
+              createdAt: Date.now(),
+              material: {
+                preset: 'frosted-glass',
+                themeMode: d.themeMode ?? 'system',
+                opacity: 0.85,
+                blurPx: 22,
+                borderRadiusPx: 18,
+                shadowIntensity: 0.35,
+                accentColor: d.accentColor ?? '#2b7cd3',
+              },
+              thumbnailColors: [d.accentColor ?? '#2b7cd3', '#181b22'],
+              tags: ['ai-html', 'custom'],
             },
-            thumbnailColors: [d.accentColor ?? '#2b7cd3', '#181b22'],
-            tags: ['ai-html', 'custom'],
-          },
-        )
-        setDraftHtml(d.html)
-        setDraftCss(d.css)
+          )
+          setDraftHtml(d.html)
+          setDraftCss(d.css)
+        } else if (mode === 'style' && res.card) {
+          setDraftCard(res.card)
+          setDraftHtml('')
+          setDraftCss('')
+        } else {
+          setErrorMessage(
+            res.error ||
+              (isVi
+                ? 'Không nhận được cấu hình thẻ từ AI. Vui lòng thử lại.'
+                : 'No card configuration returned by AI. Please try again.'),
+          )
+        }
       } else {
         setErrorMessage(
           res?.error ||
@@ -95,7 +132,11 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
     if (!draftCard) return
     setLoading(true)
     try {
-      await onSave(draftCard, { html: draftHtml, css: draftCss })
+      if (mode === 'html') {
+        await onSave(draftCard, { html: draftHtml, css: draftCss })
+      } else {
+        await onSave(draftCard)
+      }
       onClose()
     } catch (err) {
       setErrorMessage(err instanceof Error ? err.message : String(err))
@@ -104,21 +145,29 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
     }
   }
 
-  const previewDoc = draftHtml
-    ? buildIsolatedHtmlHostDocument(
-        draftHtml,
-        draftCss,
-        {
-          fileName: 'Sample_Document.docx',
-          fileType: 'docx',
-          title: isVi ? 'Đang mở tài liệu…' : 'Opening Document…',
-          hint: isVi ? 'Đang tải bố cục…' : 'Loading document layout…',
-          appName: 'Word (.docx)',
-          accentColor: draftCard?.material.accentColor ?? '#2b7cd3',
-        },
-        { isCardLayout: true },
-      )
-    : ''
+  const previewDoc = useMemo(() => {
+    if (mode !== 'html' || !draftHtml) return ''
+    return buildIsolatedHtmlHostDocument(
+      draftHtml,
+      draftCss,
+      {
+        fileName: 'Sample_Document.docx',
+        fileType: 'docx',
+        title: isVi ? 'Đang mở tài liệu…' : 'Opening Document…',
+        hint: isVi ? 'Đang tải bố cục…' : 'Loading document layout…',
+        appName: 'Word (.docx)',
+        accentColor: draftCard?.material.accentColor ?? '#2b7cd3',
+      },
+      { isCardLayout: true },
+    )
+  }, [mode, draftHtml, draftCss, isVi, draftCard?.material.accentColor])
+
+  const styleMatCss = useMemo(() => {
+    if (mode === 'style' && draftCard?.material) {
+      return buildMaterialCss(draftCard.material, { appColor: draftCard.material.accentColor })
+    }
+    return null
+  }, [mode, draftCard?.material])
 
   return (
     <div className="ocs-customizer-dialog-overlay" role="dialog" aria-modal="true">
@@ -145,6 +194,50 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
 
         <div className="ocs-customizer-body">
           <div className="ocs-customizer-controls">
+            {/* Mode Switcher: HTML Scene vs Style Preset vs Image (Disabled) */}
+            <div className="ocs-form-group">
+              <label className="ocs-form-label">
+                {isVi ? 'Chế độ sinh thẻ:' : 'Generation Mode:'}
+              </label>
+              <div className="ocs-preset-selector">
+                <button
+                  type="button"
+                  className={`ocs-preset-btn${mode === 'html' ? ' active' : ''}`}
+                  onClick={() => {
+                    setMode('html')
+                    setDraftCard(null)
+                  }}
+                  disabled={loading}
+                >
+                  {isVi ? 'Mã cảnh HTML' : 'HTML Scene'}
+                </button>
+                <button
+                  type="button"
+                  className={`ocs-preset-btn${mode === 'style' ? ' active' : ''}`}
+                  onClick={() => {
+                    setMode('style')
+                    setDraftCard(null)
+                  }}
+                  disabled={loading}
+                >
+                  {isVi ? 'Phong cách chất liệu' : 'Style Preset'}
+                </button>
+                <button
+                  type="button"
+                  className="ocs-preset-btn"
+                  disabled={true}
+                  title={
+                    isVi
+                      ? 'Tạo ảnh AI chưa được hỗ trợ bởi nhà cung cấp hiện tại'
+                      : 'AI image generation is not supported by current provider'
+                  }
+                  style={{ opacity: 0.5, cursor: 'not-allowed' }}
+                >
+                  {isVi ? 'Ảnh AI (Tắt)' : 'AI Image (Disabled)'}
+                </button>
+              </div>
+            </div>
+
             <div className="ocs-form-group">
               <label className="ocs-form-label" htmlFor="ocs-ai-prompt">
                 {isVi
@@ -152,13 +245,18 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
                   : 'Describe the scene and visual style you want:'}
               </label>
               <textarea
+                ref={promptInputRef}
                 id="ocs-ai-prompt"
                 rows={3}
                 className="ocs-form-input"
                 placeholder={
-                  isVi
-                    ? 'Ví dụ: Kính mờ với viền phát sáng màu xanh lam ngọc, hiệu ứng chuyển động sóng biển êm dịu…'
-                    : 'e.g. Floating frosted glass with cyan glowing borders and gentle wave animation…'
+                  mode === 'html'
+                    ? isVi
+                      ? 'Ví dụ: Cảnh đêm đầy sao với các đốm sáng lơ lửng, viền phát sáng màu ngọc lam, chuyển động mượt mà…'
+                      : 'e.g. Starry night scene with floating glow orbs, cyan luminescence, smooth animation…'
+                    : isVi
+                      ? 'Ví dụ: Kính mờ siêu mỏng tối giản, màu xanh lá đậm phong cách Bắc Âu, bóng đổ mềm mại…'
+                      : 'e.g. Minimalist frosted glass, deep Nordic emerald green accent, soft subtle shadow…'
                 }
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
@@ -197,7 +295,7 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
           <div className="ocs-customizer-preview-col">
             <span className="ocs-preview-label">{isVi ? 'Xem trước' : 'Preview'}</span>
             <div className="ocs-customizer-stage-box" style={{ height: '220px' }}>
-              {previewDoc ? (
+              {mode === 'html' && previewDoc ? (
                 <div style={{ width: '100%', height: '100%' }}>
                   <div className="ocs-filter-tabs" style={{ marginBottom: '8px' }}>
                     <button
@@ -225,7 +323,7 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
 
                   {activeTab === 'preview' ? (
                     <iframe
-                      sandbox=""
+                      sandbox="allow-same-origin"
                       srcDoc={previewDoc}
                       className="ocs-iframe-preview"
                       title="AI Card Preview"
@@ -251,6 +349,45 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
                       onChange={(e) => setDraftCss(e.target.value)}
                     />
                   )}
+                </div>
+              ) : mode === 'style' && styleMatCss ? (
+                <div
+                  className="ocs-customizer-stage-card"
+                  style={{
+                    background: styleMatCss.background,
+                    backdropFilter: styleMatCss.backdropFilter,
+                    WebkitBackdropFilter: styleMatCss.backdropFilter,
+                    border: styleMatCss.border,
+                    borderRadius: styleMatCss.borderRadius,
+                    boxShadow: styleMatCss.boxShadow,
+                    color: styleMatCss.color,
+                    width: '85%',
+                    margin: 'auto',
+                  }}
+                >
+                  <div className="ocs-wysiwyg-card-top">
+                    <div
+                      className="ocs-wysiwyg-app-badge"
+                      style={{ backgroundColor: styleMatCss.accentColor }}
+                    >
+                      DOCX
+                    </div>
+                    <div className="ocs-wysiwyg-doc-info">
+                      <span className="ocs-wysiwyg-filename">Document.docx</span>
+                      <span className="ocs-wysiwyg-status">
+                        {isVi ? 'Đang mở tài liệu…' : 'Opening document…'}
+                      </span>
+                    </div>
+                    <span className="ocs-wysiwyg-close-indicator" aria-hidden="true">
+                      &times;
+                    </span>
+                  </div>
+                  <div className="ocs-wysiwyg-progress-container">
+                    <div
+                      className="ocs-wysiwyg-progress-bar"
+                      style={{ backgroundColor: styleMatCss.accentColor }}
+                    />
+                  </div>
                 </div>
               ) : (
                 <div className="ocs-preview-empty">

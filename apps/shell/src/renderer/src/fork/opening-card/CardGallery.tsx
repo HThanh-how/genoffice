@@ -1,10 +1,6 @@
 import React, { useMemo, useRef, useState } from 'react'
-import type { OpeningCardDefinition } from '../../../../shared/opening-card-types'
-import {
-  OPENING_APPS,
-  type OpeningApp,
-  type OpeningPrefs,
-} from '../../../../shared/opening-scenes-meta'
+import type { OpeningCardDefinition, StoredMediaAsset } from '../../../../shared/opening-card-types'
+import { OPENING_APPS, type OpeningPrefs } from '../../../../shared/opening-scenes-meta'
 import { CardThumbnail } from './CardThumbnail'
 import { APP_INFO } from './CardPreview'
 
@@ -22,6 +18,7 @@ interface CardGalleryProps {
   selectedCard: OpeningCardDefinition | null
   prefs: OpeningPrefs
   lang: string
+  mediaAssets?: StoredMediaAsset[]
   onSelectCard: (card: OpeningCardDefinition) => void
   onToggleFavorite: (cardId: string) => void
 }
@@ -31,6 +28,7 @@ export function CardGallery({
   selectedCard,
   prefs,
   lang,
+  mediaAssets,
   onSelectCard,
   onToggleFavorite,
 }: CardGalleryProps): React.JSX.Element {
@@ -218,74 +216,78 @@ export function CardGallery({
             </p>
           </div>
         ) : (
-          filteredCards.map((card, idx) => {
-            const isSelected = selectedCard?.id === card.id
-            const isFav = favSet.has(card.id)
-            const assignments = cardAssignments.get(card.id) || []
+          (() => {
+            const hasSelectedInView = filteredCards.some((c) => c.id === selectedCard?.id)
+            return filteredCards.map((card, idx) => {
+              const isSelected = selectedCard?.id === card.id
+              const isFocusable = hasSelectedInView ? isSelected : idx === 0
+              const isFav = favSet.has(card.id)
+              const assignments = cardAssignments.get(card.id) || []
 
-            return (
-              <div
-                key={card.id}
-                ref={(el) => {
-                  cardElementsRef.current[idx] = el
-                }}
-                role="radio"
-                aria-checked={isSelected}
-                tabIndex={isSelected ? 0 : -1}
-                className={`ocs-gallery-card-item${isSelected ? ' is-selected' : ''}`}
-                onClick={() => onSelectCard(card)}
-                onKeyDown={(e) => handleKeyDown(e, idx)}
-              >
-                {/* Visual Thumbnail Surface */}
-                <div className="ocs-card-thumbnail-wrap">
-                  <CardThumbnail card={card} isVi={isVi} />
+              return (
+                <div
+                  key={card.id}
+                  ref={(el) => {
+                    cardElementsRef.current[idx] = el
+                  }}
+                  role="radio"
+                  aria-checked={isSelected}
+                  tabIndex={isFocusable ? 0 : -1}
+                  className={`ocs-gallery-card-item${isSelected ? ' is-selected' : ''}`}
+                  onClick={() => onSelectCard(card)}
+                  onKeyDown={(e) => handleKeyDown(e, idx)}
+                >
+                  {/* Visual Thumbnail Surface */}
+                  <div className="ocs-card-thumbnail-wrap">
+                    <CardThumbnail card={card} isVi={isVi} mediaAssets={mediaAssets} />
 
-                  {/* Favorite star toggle button */}
-                  <button
-                    type="button"
-                    className={`ocs-card-fav-btn${isFav ? ' is-favorite' : ''}`}
-                    aria-label={
-                      isFav
-                        ? isVi
-                          ? 'Bỏ yêu thích'
-                          : 'Remove from favorites'
-                        : isVi
-                          ? 'Thêm vào yêu thích'
-                          : 'Add to favorites'
-                    }
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onToggleFavorite(card.id)
-                    }}
-                  >
-                    <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                      <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z" />
-                    </svg>
-                  </button>
-                </div>
-
-                {/* Card Meta & Badges */}
-                <div className="ocs-card-meta">
-                  <div className="ocs-card-name-row">
-                    <span className="ocs-card-name" title={card.name}>
-                      {card.name}
-                    </span>
+                    {/* Favorite star toggle button */}
+                    <button
+                      type="button"
+                      className={`ocs-card-fav-btn${isFav ? ' is-favorite' : ''}`}
+                      aria-label={
+                        isFav
+                          ? isVi
+                            ? 'Bỏ yêu thích'
+                            : 'Remove from favorites'
+                          : isVi
+                            ? 'Thêm vào yêu thích'
+                            : 'Add to favorites'
+                      }
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        onToggleFavorite(card.id)
+                      }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z" />
+                      </svg>
+                    </button>
                   </div>
 
-                  {/* Badges for currently assigned applications */}
-                  {assignments.length > 0 && (
-                    <div className="ocs-card-assignment-tags">
-                      {assignments.map((label) => (
-                        <span key={label} className="ocs-assignment-tag">
-                          {label}
-                        </span>
-                      ))}
+                  {/* Card Meta & Badges */}
+                  <div className="ocs-card-meta">
+                    <div className="ocs-card-name-row">
+                      <span className="ocs-card-name" title={card.name}>
+                        {card.name}
+                      </span>
                     </div>
-                  )}
+
+                    {/* Badges for currently assigned applications */}
+                    {assignments.length > 0 && (
+                      <div className="ocs-card-assignment-tags">
+                        {assignments.map((label) => (
+                          <span key={label} className="ocs-assignment-tag">
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 </div>
-              </div>
-            )
-          })
+              )
+            })
+          })()
         )}
       </div>
     </div>
