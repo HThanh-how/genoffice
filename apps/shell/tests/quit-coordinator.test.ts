@@ -25,6 +25,22 @@ vi.mock('../../docs/src/main/docs-main', () => ({
   requestDocsClose: vi.fn(() => Promise.resolve(true)),
 }))
 
+vi.mock('../../slides/src/main/slides-main', () => ({
+  requestSlidesClose: vi.fn(() => Promise.resolve(true)),
+}))
+
+vi.mock('../../pdf/src/main/pdf-main', () => ({
+  requestPdfClose: vi.fn(() => Promise.resolve(true)),
+}))
+
+vi.mock('../../markdown/src/main/markdown-main', () => ({
+  requestMarkdownClose: vi.fn(() => Promise.resolve(true)),
+}))
+
+vi.mock('../../html/src/main/html-main', () => ({
+  requestHtmlClose: vi.fn(() => Promise.resolve(true)),
+}))
+
 describe('QuitCoordinator — Lifecycle & Shutdown State Machine', () => {
   let QuitCoordinator: typeof import('../src/main/quit-coordinator').QuitCoordinator
 
