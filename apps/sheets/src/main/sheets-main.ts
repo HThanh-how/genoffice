@@ -2656,7 +2656,19 @@ export function resetSheetsShuttingDown(): void {
   shutdownLatch.reset()
 }
 
-app.on('before-quit', markSheetsShuttingDown)
+let interactiveQuitCoordination = false
+export function setInteractiveQuitCoordination(enabled: boolean): void {
+  interactiveQuitCoordination = enabled
+}
+
+app.on('before-quit', () => {
+  if (!interactiveQuitCoordination) {
+    shutdownLatch.mark()
+  }
+})
+
+// OS signals trigger immediate non-interactive shutdown; interactive quit is
+// coordinated by the shell's QuitCoordinator so save prompts are not suppressed.
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
     shutdownLatch.mark()

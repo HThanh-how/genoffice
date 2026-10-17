@@ -461,13 +461,15 @@ import { createFileViaCli } from './mcp/headless-cli'
 import { sanitizeFileBase } from './mcp/tools/document-tools'
 import { runHeadlessExport, type HeadlessExporters } from './headless-export'
 import { TabManager } from './tab-manager'
-import { installShellCloseGuard } from './window-close-guard'
+import { installShellCloseGuard, promptDirtyTabs } from './window-close-guard'
+import { quitCoordinator } from './quit-coordinator'
 import {
   activateDetached,
   closeDetachedWithoutPrompt,
   createDetachedEditorWindow,
   detachedFilePaths,
   detachedOpenDocuments,
+  promptAllDetachedWindows,
   detachedRenameFile,
   detachedSetFileFor,
   detachedWebContentsFor,
@@ -8322,17 +8324,54 @@ app.on('window-all-closed', () => {
   // A headless export destroys its hidden window between documents; only
   // runHeadlessExportEntry decides when that run is over.
   if (headlessArgv.kind !== 'none') return
-  if (process.platform !== 'darwin') app.quit()
+  if (quitCoordinator.isQuitting() || process.platform !== 'darwin') {
+    app.quit()
+  }
 })
 
-app.on('before-quit', () => {
-  appShuttingDown = true
-  // No close prompt may fall through to "Save" during shutdown
-  markSheetsShuttingDown()
-  stopSheetsSidecar()
-  // release the MCP port synchronously (macOS keeps the process alive after
-  // the last window closes, so window-all-closed is not enough)
-  stopMcpSync()
+app.on('before-quit', (event) => {
+  if (quitCoordinator.isConfirmed()) {
+    appShuttingDown = true
+    markSheetsShuttingDown()
+    stopSheetsSidecar()
+    stopMcpSync()
+    return
+  }
+
+  // Intercept the quit event to coordinate save prompts sequentially across all windows
+  event.preventDefault()
+  if (quitCoordinator.isPromptInFlight()) return
+
+  quitCoordinator.setQuitInProgress(true)
+  quitCoordinator.setPromptInFlight(true)
+
+  void (async () => {
+    try {
+      // 1. Detached windows prompted first
+      const detachedOk = await promptAllDetachedWindows()
+      if (!detachedOk) {
+        quitCoordinator.abortQuit()
+        return
+      }
+
+      // 2. Shell window tabs prompted next
+      if (shellWindow && !shellWindow.isDestroyed() && tabManager) {
+        const shellOk = await promptDirtyTabs(shellWindow, tabManager)
+        if (!shellOk) {
+          quitCoordinator.abortQuit()
+          return
+        }
+      }
+
+      // 3. All prompts succeeded! Confirm quit and resume shutdown
+      quitCoordinator.confirmQuit()
+    } catch (err) {
+      console.error('[shell] quit coordination failed:', err)
+      quitCoordinator.abortQuit()
+    } finally {
+      quitCoordinator.setPromptInFlight(false)
+    }
+  })()
 })
 
 let appShutdownState: 'idle' | 'shutting-down' | 'done' = 'idle'
@@ -8342,6 +8381,11 @@ app.on('will-quit', (event) => {
   event.preventDefault()
   if (appShutdownState === 'shutting-down') return
   appShutdownState = 'shutting-down'
+
+  appShuttingDown = true
+  markSheetsShuttingDown()
+  stopSheetsSidecar()
+  stopMcpSync()
 
   disposeDocumentIndexIpc?.()
   disposeDocumentIndexIpc = null

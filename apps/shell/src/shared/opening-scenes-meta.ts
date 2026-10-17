@@ -178,18 +178,38 @@ export const DEFAULT_OPENING_PREFS: OpeningPrefs = {
 
 export const sceneMeta = (id: string): SceneMeta => SCENES.find((s) => s.id === id) ?? SCENES[0]!
 
-export const isCardOrSceneAvailable = (id: unknown, prefs?: OpeningPrefs): id is string => {
-  if (typeof id !== 'string' || !id) return false
+export const VALID_CUSTOM_CARD_ID_RE =
+  /^(?:ai:[a-zA-Z0-9_-]{1,80}|custom:[a-zA-Z0-9_-]{1,80}|media_[a-zA-Z0-9_-]{1,80})$/
+
+export const knownSceneOrCard = (id: unknown, prefs?: OpeningPrefs): id is string => {
+  if (typeof id !== 'string' || !id || id.length > 100) return false
   if (id === CUSTOM_SCENE || SCENES.some((s) => s.id === id) || isBuiltInCard(id)) {
     return true
+  }
+  // Curated cards are strictly built-in; non-built-in curated IDs are invalid
+  if (id.startsWith('curated:')) {
+    return false
+  }
+  if (prefs && Array.isArray(prefs.customCards)) {
+    return prefs.customCards.some((c) => c.id === id)
+  }
+  return VALID_CUSTOM_CARD_ID_RE.test(id)
+}
+
+export const isCardOrSceneAvailable = (id: unknown, prefs?: OpeningPrefs): id is string => {
+  if (typeof id !== 'string' || !id || id.length > 100) return false
+  if (id === CUSTOM_SCENE || SCENES.some((s) => s.id === id) || isBuiltInCard(id)) {
+    return true
+  }
+  // Curated cards are strictly built-in; non-built-in curated IDs are invalid
+  if (id.startsWith('curated:')) {
+    return false
   }
   if (prefs && Array.isArray(prefs.customCards)) {
     return prefs.customCards.some((c) => c.id === id)
   }
   return false
 }
-
-export const knownSceneOrCard = (id: unknown): id is string => isCardOrSceneAvailable(id)
 
 /**
  * Resolves the effective opening card or scene for a given app.
@@ -264,13 +284,20 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
   const value = (stored && typeof stored === 'object' ? stored : {}) as Record<string, unknown>
   const customCards = Array.isArray(value.customCards)
     ? value.customCards.filter(isSafeCardDefinition)
-    : []
+    : undefined
 
   const validationPrefs: OpeningPrefs = {
     enabled: value.enabled !== false,
     tier: 'auto',
     scenes: { ...DEFAULT_SCENE_FOR_APP },
-    customCards,
+    ...(customCards !== undefined ? { customCards } : {}),
+  }
+
+  const isAcceptableStoredCard = (id: unknown): id is string => {
+    if (typeof id !== 'string' || !id || id.length > 100) return false
+    if (isCardOrSceneAvailable(id, validationPrefs)) return true
+    if (customCards === undefined && VALID_CUSTOM_CARD_ID_RE.test(id)) return true
+    return false
   }
 
   const scenes = (value.scenes && typeof value.scenes === 'object' ? value.scenes : {}) as Record<
@@ -284,16 +311,16 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
     scenes: Object.fromEntries(
       OPENING_APPS.map((app) => [
         app,
-        isCardOrSceneAvailable(scenes[app], validationPrefs)
+        isAcceptableStoredCard(scenes[app])
           ? (scenes[app] as string)
           : DEFAULT_SCENE_FOR_APP[app],
       ]),
     ) as Record<OpeningApp, string>,
-    ...(customCards.length > 0 ? { customCards } : {}),
+    ...(customCards !== undefined && customCards.length > 0 ? { customCards } : {}),
   }
   if (
     typeof value.globalCard === 'string' &&
-    isCardOrSceneAvailable(value.globalCard, validationPrefs)
+    isAcceptableStoredCard(value.globalCard)
   ) {
     res.globalCard = value.globalCard
   }
@@ -304,7 +331,7 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
       const val = rawOverrides[app]
       if (
         typeof val === 'string' &&
-        (val === 'inherit' || isCardOrSceneAvailable(val, validationPrefs))
+        (val === 'inherit' || isAcceptableStoredCard(val))
       ) {
         appOverrides[app] = val
       }
@@ -317,7 +344,7 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
     res.favorites = Array.from(
       new Set(
         value.favorites.filter(
-          (f): f is string => typeof f === 'string' && isCardOrSceneAvailable(f, validationPrefs),
+          (f): f is string => typeof f === 'string' && isAcceptableStoredCard(f),
         ),
       ),
     )
