@@ -1,7 +1,24 @@
 // @vitest-environment jsdom
+import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import runGOScene from '../src/shared/opening-scenes-runner'
-import { sniffImageSignature, MAX_MEDIA_ASSET_BYTES } from '../src/main/fork/opening-media-storage'
+import * as mediaStorage from '../src/main/fork/opening-media-storage'
+import {
+  sniffImageSignature,
+  MAX_MEDIA_ASSET_BYTES,
+  listMediaAssets,
+  resolveSafeAssetPath,
+  storeMediaAssetFromBuffer,
+} from '../src/main/fork/opening-media-storage'
+import * as htmlStorage from '../src/main/fork/opening-html-storage'
+import {
+  listHtmlCardAssets,
+  readHtmlCardAsset,
+  storeHtmlCardAsset,
+} from '../src/main/fork/opening-html-storage'
+import { importCardsFromExportBundle } from '../src/main/fork/opening-card-export'
 import { sampleFileName } from '../src/main/fork/opening-window'
 import {
   buildMaterialCss,
@@ -9,8 +26,17 @@ import {
   sanitizeBorderColor,
   hexToRgb,
 } from '../src/shared/opening-card-css'
-import { OPENING_APPS, type OpeningApp } from '../src/shared/opening-scenes-meta'
+import {
+  OPENING_APPS,
+  type OpeningApp,
+  CUSTOM_SCENE,
+  DEFAULT_SCENE_FOR_APP,
+  isCardOrSceneAvailable,
+  normalizeOpeningPrefs,
+  type OpeningPrefs,
+} from '../src/shared/opening-scenes-meta'
 import { getAllBuiltInCards } from '../src/shared/opening-card-families'
+import type { OpeningCardDefinition } from '../src/shared/opening-card-types'
 
 describe('Opening Card Studio V2 - Unit Tests', () => {
   describe('sampleFileName', () => {
@@ -335,6 +361,478 @@ describe('Opening Card Studio V2 - Unit Tests', () => {
 
       const emptyBuffer = Buffer.alloc(0)
       expect(sniffImageSignature(emptyBuffer)).toBeNull()
+    })
+  })
+
+  describe('importCardsFromExportBundle — Data Integrity & Asset Lifecycle', () => {
+    let tmpDir: string
+
+    beforeEach(() => {
+      tmpDir = mkdtempSync(join(tmpdir(), 'genoffice-import-card-test-'))
+    })
+
+    afterEach(() => {
+      vi.restoreAllMocks()
+      try {
+        rmSync(tmpDir, { recursive: true, force: true })
+      } catch {}
+    })
+
+    const VALID_PNG_BASE64 =
+      'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+    const VALID_PNG_DATA_URL = `data:image/png;base64,${VALID_PNG_BASE64}`
+
+    const createValidCard = (
+      overrides?: Partial<OpeningCardDefinition>,
+    ): OpeningCardDefinition => ({
+      id: 'custom:card_default_test',
+      name: 'Studio Test Card',
+      category: 'custom',
+      contentKind: 'curated-material',
+      material: {
+        preset: 'frosted-glass',
+        themeMode: 'system',
+        opacity: 0.85,
+        blurPx: 20,
+        borderRadiusPx: 16,
+        accentColor: '#2b7cd3',
+      },
+      createdAt: 1700000000000,
+      isBuiltIn: false,
+      ...overrides,
+    })
+
+    it('Invariant A1: tracks newly allocated media and HTML assets and remaps them to imported cards', async () => {
+      const card: OpeningCardDefinition = createValidCard({
+        id: 'custom:card_with_bundle_assets',
+        mediaAssetId: 'bundle_asset_media_1',
+        htmlAssetId: 'bundle_asset_html_1',
+        contentKind: 'custom-html',
+      })
+
+      const bundle = {
+        version: 1,
+        cards: [card],
+        assets: [
+          {
+            assetId: 'bundle_asset_media_1',
+            mime: 'image/png',
+            dataUrl: VALID_PNG_DATA_URL,
+          },
+        ],
+        htmlAssets: [
+          {
+            assetId: 'bundle_asset_html_1',
+            html: '<div class="banner">Hello Asset</div>',
+            css: '.banner { color: #ffffff; }',
+          },
+        ],
+      }
+
+      const res = await importCardsFromExportBundle(JSON.stringify(bundle), tmpDir, [])
+      expect(res.ok).toBe(true)
+      expect(res.count).toBe(1)
+      expect(res.newlyCreatedMediaAssetIds).toHaveLength(1)
+      expect(res.newlyCreatedHtmlAssetIds).toHaveLength(1)
+
+      const newMediaId = res.newlyCreatedMediaAssetIds[0]
+      const newHtmlId = res.newlyCreatedHtmlAssetIds[0]
+      expect(newMediaId).not.toBe('bundle_asset_media_1')
+      expect(newHtmlId).not.toBe('bundle_asset_html_1')
+
+      const imported = res.importedCards[0]
+      expect(imported.mediaAssetId).toBe(newMediaId)
+      expect(imported.htmlAssetId).toBe(newHtmlId)
+
+      expect(existsSync(resolveSafeAssetPath(tmpDir, newMediaId))).toBe(true)
+      const storedHtml = readHtmlCardAsset(tmpDir, newHtmlId)
+      expect(storedHtml).not.toBeNull()
+      expect(storedHtml?.html).toBe('<div class="banner">Hello Asset</div>')
+    })
+
+    it('Invariant A2: rolls back newly created media and HTML assets on write failure and returns empty ID arrays', async () => {
+      const card: OpeningCardDefinition = createValidCard({
+        id: 'custom:rollback_card',
+        mediaAssetId: 'media_rollback_1',
+        htmlAssetId: 'html_rollback_1',
+        contentKind: 'custom-html',
+      })
+
+      const bundle = {
+        version: 1,
+        cards: [card],
+        assets: [
+          {
+            assetId: 'media_rollback_1',
+            mime: 'image/png',
+            dataUrl: VALID_PNG_DATA_URL,
+          },
+        ],
+        htmlAssets: [
+          {
+            assetId: 'html_rollback_1',
+            html: '<p>Will fail</p>',
+            css: 'p { margin: 0; }',
+          },
+        ],
+      }
+
+      const htmlSpy = vi
+        .spyOn(htmlStorage, 'storeHtmlCardAsset')
+        .mockRejectedValueOnce(new Error('Simulated atomic write failure for HTML asset'))
+
+      const res = await importCardsFromExportBundle(JSON.stringify(bundle), tmpDir, [])
+      htmlSpy.mockRestore()
+
+      expect(res.ok).toBe(false)
+      expect(res.importedCards).toEqual([])
+      expect(res.count).toBe(0)
+      expect(res.newlyCreatedMediaAssetIds).toEqual([])
+      expect(res.newlyCreatedHtmlAssetIds).toEqual([])
+      expect(res.error).toContain(
+        'Asset import failed: Simulated atomic write failure for HTML asset',
+      )
+
+      expect(listMediaAssets(tmpDir)).toEqual([])
+      expect(listHtmlCardAssets(tmpDir)).toEqual([])
+    })
+
+    it('Invariant A2: rolls back earlier media files when a subsequent media asset write fails', async () => {
+      const card1 = createValidCard({ id: 'custom:m1', mediaAssetId: 'media_first' })
+      const card2 = createValidCard({ id: 'custom:m2', mediaAssetId: 'media_second' })
+
+      const bundle = {
+        version: 1,
+        cards: [card1, card2],
+        assets: [
+          { assetId: 'media_first', mime: 'image/png', dataUrl: VALID_PNG_DATA_URL },
+          { assetId: 'media_second', mime: 'image/png', dataUrl: VALID_PNG_DATA_URL },
+        ],
+      }
+
+      const mediaSpy = vi
+        .spyOn(mediaStorage, 'storeMediaAssetFromBuffer')
+        .mockImplementationOnce((dir, buf) => mediaStorage.storeMediaAssetFromBuffer(dir, buf))
+        .mockRejectedValueOnce(new Error('Disk full during second media write'))
+
+      const res = await importCardsFromExportBundle(JSON.stringify(bundle), tmpDir, [])
+      mediaSpy.mockRestore()
+
+      expect(res.ok).toBe(false)
+      expect(res.newlyCreatedMediaAssetIds).toEqual([])
+      expect(res.newlyCreatedHtmlAssetIds).toEqual([])
+      expect(res.error).toContain('Disk full during second media write')
+      expect(listMediaAssets(tmpDir)).toEqual([])
+    })
+
+    it('Invariant A3: strips un-embedded mediaAssetId and htmlAssetId references that do not exist on disk', async () => {
+      const cardWithDangling: OpeningCardDefinition = createValidCard({
+        id: 'custom:dangling_assets_card',
+        mediaAssetId: 'asset_1700000000000_1111222233334444.png',
+        htmlAssetId: 'html_1700000000000_5555666677778888.json',
+      })
+
+      const bundle = {
+        version: 1,
+        cards: [cardWithDangling],
+      }
+
+      const res = await importCardsFromExportBundle(JSON.stringify(bundle), tmpDir, [])
+      expect(res.ok).toBe(true)
+      expect(res.count).toBe(1)
+      const imported = res.importedCards[0]
+      expect(imported.mediaAssetId).toBeUndefined()
+      expect(imported.htmlAssetId).toBeUndefined()
+    })
+
+    it('Invariant A3: preserves un-embedded references if the referenced asset file already exists on disk', async () => {
+      const validPngBuf = Buffer.from(VALID_PNG_BASE64, 'base64')
+      const existingMedia = await storeMediaAssetFromBuffer(tmpDir, validPngBuf)
+      const existingHtml = await storeHtmlCardAsset(
+        tmpDir,
+        '<div>Local</div>',
+        'div { color: #000; }',
+      )
+
+      const cardWithExisting: OpeningCardDefinition = createValidCard({
+        id: 'custom:existing_local_refs',
+        mediaAssetId: existingMedia.assetId,
+        htmlAssetId: existingHtml.assetId,
+      })
+
+      const bundle = {
+        version: 1,
+        cards: [cardWithExisting],
+      }
+
+      const res = await importCardsFromExportBundle(JSON.stringify(bundle), tmpDir, [])
+      expect(res.ok).toBe(true)
+      expect(res.count).toBe(1)
+      const imported = res.importedCards[0]
+      expect(imported.mediaAssetId).toBe(existingMedia.assetId)
+      expect(imported.htmlAssetId).toBe(existingHtml.assetId)
+    })
+
+    it('Invariant A4: disambiguates ID collisions with existing custom cards, built-in cards, and intra-bundle duplicates', async () => {
+      const existingCustom = createValidCard({
+        id: 'custom:existing_user_card',
+        name: 'Existing Card',
+      })
+
+      const collisionExisting = createValidCard({
+        id: 'custom:existing_user_card',
+        name: 'Collision With Existing',
+      })
+      const collisionCurated = createValidCard({
+        id: 'curated:frosted-blue',
+        name: 'Collision With Curated',
+      })
+      const collisionCanvasScene = createValidCard({
+        id: 'ocean',
+        name: 'Collision With Scene',
+      })
+      const intraDupe1 = createValidCard({
+        id: 'custom:intra_bundle_dupe',
+        name: 'Intra Dupe 1',
+      })
+      const intraDupe2 = createValidCard({
+        id: 'custom:intra_bundle_dupe',
+        name: 'Intra Dupe 2',
+      })
+
+      const bundle = {
+        version: 1,
+        cards: [collisionExisting, collisionCurated, collisionCanvasScene, intraDupe1, intraDupe2],
+      }
+
+      const res = await importCardsFromExportBundle(JSON.stringify(bundle), tmpDir, [
+        existingCustom,
+      ])
+      expect(res.ok).toBe(true)
+      expect(res.count).toBe(5)
+
+      const ids = res.importedCards.map((c) => c.id)
+      expect(new Set(ids).size).toBe(5)
+
+      expect(ids[0]).not.toBe('custom:existing_user_card')
+      expect(ids[0].startsWith('custom:imported_')).toBe(true)
+
+      expect(ids[1]).not.toBe('curated:frosted-blue')
+      expect(ids[1].startsWith('custom:imported_')).toBe(true)
+
+      expect(ids[2]).not.toBe('ocean')
+      expect(ids[2].startsWith('custom:imported_')).toBe(true)
+
+      expect(ids[3]).toBe('custom:intra_bundle_dupe')
+      expect(ids[4]).not.toBe('custom:intra_bundle_dupe')
+      expect(ids[4].startsWith('custom:imported_')).toBe(true)
+    })
+  })
+
+  describe('normalizeOpeningPrefs & isCardOrSceneAvailable — Data Integrity & Security Normalization', () => {
+    const createValidCustomCard = (
+      id: string,
+      name = 'Test Custom Card',
+    ): OpeningCardDefinition => ({
+      id,
+      name,
+      category: 'custom',
+      contentKind: 'curated-material',
+      material: {
+        preset: 'solid',
+        themeMode: 'system',
+        opacity: 0.9,
+      },
+      createdAt: 1700000000000,
+      isBuiltIn: false,
+    })
+
+    it('Invariant B1: isCardOrSceneAvailable accepts built-in curated cards, built-in canvas scenes, and custom scene', () => {
+      expect(isCardOrSceneAvailable('curated:frosted-blue')).toBe(true)
+      expect(isCardOrSceneAvailable('curated:midnight-glass')).toBe(true)
+      expect(isCardOrSceneAvailable('curated:crystal-white')).toBe(true)
+
+      expect(isCardOrSceneAvailable('ocean')).toBe(true)
+      expect(isCardOrSceneAvailable('waves')).toBe(true)
+      expect(isCardOrSceneAvailable('aurora')).toBe(true)
+      expect(isCardOrSceneAvailable('snow')).toBe(true)
+
+      expect(isCardOrSceneAvailable(CUSTOM_SCENE)).toBe(true)
+      expect(isCardOrSceneAvailable('custom')).toBe(true)
+    })
+
+    it('Invariant B2: isCardOrSceneAvailable rejects non-existent curated IDs, invalid types, and unlisted custom IDs', () => {
+      expect(isCardOrSceneAvailable('curated:fake')).toBe(false)
+      expect(isCardOrSceneAvailable('curated:non-existent')).toBe(false)
+
+      expect(isCardOrSceneAvailable('custom:non-existent-1')).toBe(false)
+      expect(
+        isCardOrSceneAvailable('custom:card-123', {
+          enabled: true,
+          tier: 'auto',
+          scenes: DEFAULT_SCENE_FOR_APP,
+          customCards: [],
+        }),
+      ).toBe(false)
+
+      const registeredCard = createValidCustomCard('custom:registered-card')
+      const prefsWithCard: OpeningPrefs = {
+        enabled: true,
+        tier: 'auto',
+        scenes: DEFAULT_SCENE_FOR_APP,
+        customCards: [registeredCard],
+      }
+      expect(isCardOrSceneAvailable('custom:unregistered-card', prefsWithCard)).toBe(false)
+      expect(isCardOrSceneAvailable('custom:registered-card', prefsWithCard)).toBe(true)
+
+      expect(isCardOrSceneAvailable('')).toBe(false)
+      expect(isCardOrSceneAvailable(null)).toBe(false)
+      expect(isCardOrSceneAvailable(undefined)).toBe(false)
+      expect(isCardOrSceneAvailable(12345)).toBe(false)
+      expect(isCardOrSceneAvailable({})).toBe(false)
+    })
+
+    it('Invariant B3: parses customCards first and preserves valid globalCard, appOverrides, scenes, and favorites', () => {
+      const validCard = createValidCustomCard('custom:user-palette')
+      const input = {
+        customCards: [validCard],
+        globalCard: 'custom:user-palette',
+        appOverrides: {
+          docs: 'custom:user-palette',
+          sheets: 'inherit',
+          slides: 'curated:frosted-blue',
+        },
+        scenes: {
+          docs: 'custom:user-palette',
+          markdown: 'ocean',
+        },
+        favorites: ['custom:user-palette', 'curated:frosted-blue', 'snow'],
+      }
+
+      const normalized = normalizeOpeningPrefs(input)
+      expect(normalized.customCards).toEqual([validCard])
+      expect(normalized.globalCard).toBe('custom:user-palette')
+      expect(normalized.appOverrides).toEqual({
+        docs: 'custom:user-palette',
+        sheets: 'inherit',
+        slides: 'curated:frosted-blue',
+      })
+      expect(normalized.scenes.docs).toBe('custom:user-palette')
+      expect(normalized.scenes.markdown).toBe('ocean')
+      expect(normalized.favorites).toEqual(['custom:user-palette', 'curated:frosted-blue', 'snow'])
+    })
+
+    it('Invariant B3: strips orphaned globalCard and appOverrides, falling back scenes to defaults and pruning favorites', () => {
+      const input = {
+        customCards: [],
+        globalCard: 'custom:orphaned-global',
+        appOverrides: {
+          docs: 'custom:orphaned-override',
+          sheets: 'inherit',
+          slides: 'curated:frosted-blue',
+        },
+        scenes: {
+          docs: 'custom:orphaned-scene',
+          sheets: 'curated:frosted-blue',
+        },
+        favorites: ['custom:orphaned-fav', 'curated:frosted-blue', 'waves'],
+      }
+
+      const normalized = normalizeOpeningPrefs(input)
+
+      expect(normalized.globalCard).toBeUndefined()
+      expect(normalized.appOverrides).toEqual({
+        sheets: 'inherit',
+        slides: 'curated:frosted-blue',
+      })
+      expect(normalized.scenes.docs).toBe(DEFAULT_SCENE_FOR_APP.docs)
+      expect(normalized.scenes.sheets).toBe('curated:frosted-blue')
+      expect(normalized.favorites).toEqual(['curated:frosted-blue', 'waves'])
+    })
+
+    it('Invariant B3: omits appOverrides entirely if all entries are orphaned', () => {
+      const normalized = normalizeOpeningPrefs({
+        customCards: [],
+        appOverrides: {
+          docs: 'custom:orphaned-1',
+          sheets: 'custom:orphaned-2',
+        },
+      })
+      expect(normalized.appOverrides).toBeUndefined()
+    })
+
+    it('Invariant B4: isSafeCardDefinition rejects cards with script tags or forbidden code patterns in card names', () => {
+      const xssScriptCard = {
+        id: 'custom:xss_script',
+        name: '<script>alert("pwned")</script>',
+        material: { preset: 'solid' },
+      }
+      const xssJsCard = {
+        id: 'custom:xss_js',
+        name: 'Cool Card javascript:steal()',
+        material: { preset: 'solid' },
+      }
+      const xssEventCard = {
+        id: 'custom:xss_event',
+        name: 'Logo <img src=x onerror=alert(1)>',
+        material: { preset: 'solid' },
+      }
+      const xssClosingCard = {
+        id: 'custom:xss_close',
+        name: 'Panel </div> Inject',
+        material: { preset: 'solid' },
+      }
+      const xssEvalCard = {
+        id: 'custom:xss_eval',
+        name: 'Dynamic eval(bad())',
+        material: { preset: 'solid' },
+      }
+      const xssExprCard = {
+        id: 'custom:xss_expr',
+        name: 'Style expression(bad())',
+        material: { preset: 'solid' },
+      }
+      const validCard = createValidCustomCard('custom:safe_card', 'Clean Card Name')
+
+      const normalized = normalizeOpeningPrefs({
+        customCards: [
+          xssScriptCard,
+          xssJsCard,
+          xssEventCard,
+          xssClosingCard,
+          xssEvalCard,
+          xssExprCard,
+          validCard,
+        ],
+        globalCard: 'custom:xss_script',
+        favorites: ['custom:xss_script', 'custom:safe_card'],
+      })
+
+      expect(normalized.customCards).toHaveLength(1)
+      expect(normalized.customCards?.[0].id).toBe('custom:safe_card')
+      expect(normalized.globalCard).toBeUndefined()
+      expect(normalized.favorites).toEqual(['custom:safe_card'])
+    })
+
+    it('Invariant B4: isSafeCardDefinition rejects structural card anomalies (empty/long name, invalid ID, missing material)', () => {
+      const invalidAnomalies = [
+        { id: '', name: 'Empty ID', material: { preset: 'solid' } },
+        { id: 'custom:' + 'x'.repeat(101), name: 'Overlong ID', material: { preset: 'solid' } },
+        { id: 'custom:empty_name', name: '', material: { preset: 'solid' } },
+        { id: 'custom:long_name', name: 'N'.repeat(61), material: { preset: 'solid' } },
+        { id: 'custom:null_mat', name: 'Null Material', material: null },
+        { id: 'custom:array_mat', name: 'Array Material', material: [1, 2] },
+        { id: 'custom:primitive_mat', name: 'Primitive Material', material: 'not-an-object' },
+        null,
+        'not a card object',
+        12345,
+      ]
+
+      const normalized = normalizeOpeningPrefs({
+        customCards: invalidAnomalies,
+      })
+
+      expect(normalized.customCards).toBeUndefined()
     })
   })
 })

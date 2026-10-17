@@ -28,14 +28,20 @@ test.describe('Opening Card Studio — Electron E2E Flows', () => {
       const openingNav = page.locator('.set-nav-item', {
         hasText: /Opening effects|Hiệu ứng mở tệp/i,
       })
-      if ((await openingNav.count()) > 0) {
+      try {
+        await expect(openingNav.first()).toBeVisible({ timeout: 5_000 })
         await openingNav.first().click()
-      } else {
+      } catch {
         const openingSummary = page.locator('summary', {
           hasText: /Opening effects|Hiệu ứng mở tệp/i,
         })
         await expect(openingSummary).toBeVisible({ timeout: 15_000 })
         await openingSummary.click()
+        const openSettingsBtn = page.locator('.set-field button.set-btn', {
+          hasText: /Open settings|Mở cài đặt/i,
+        })
+        await expect(openSettingsBtn).toBeVisible({ timeout: 15_000 })
+        await openSettingsBtn.click()
       }
 
       // 3. Studio is visible with cards
@@ -500,14 +506,20 @@ test.describe('Opening Card Studio — Electron E2E Flows', () => {
       const openingNav = page.locator('.set-nav-item', {
         hasText: /Opening effects|Hiệu ứng mở tệp/i,
       })
-      if ((await openingNav.count()) > 0) {
+      try {
+        await expect(openingNav.first()).toBeVisible({ timeout: 5_000 })
         await openingNav.first().click()
-      } else {
+      } catch {
         const openingSummary = page.locator('summary', {
           hasText: /Opening effects|Hiệu ứng mở tệp/i,
         })
         await expect(openingSummary).toBeVisible({ timeout: 15_000 })
         await openingSummary.click()
+        const openSettingsBtn = page.locator('.set-field button.set-btn', {
+          hasText: /Open settings|Mở cài đặt/i,
+        })
+        await expect(openSettingsBtn).toBeVisible({ timeout: 15_000 })
+        await openSettingsBtn.click()
       }
 
       // 4. Verify Studio is visible

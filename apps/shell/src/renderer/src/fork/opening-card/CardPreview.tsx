@@ -60,8 +60,8 @@ export function CardPreview({
 
   // HTML asset loader for ai-html and custom-html
   useEffect(() => {
+    setHtmlDoc(null)
     if (!card || (card.contentKind !== 'ai-html' && card.contentKind !== 'custom-html')) {
-      setHtmlDoc(null)
       return
     }
     let cancelled = false
@@ -74,12 +74,13 @@ export function CardPreview({
         }
       ).aiOffice
       if (!card.htmlAssetId || !api?.readOpeningHtmlCard) {
-        setHtmlDoc(null)
+        if (!cancelled) setHtmlDoc(null)
         return
       }
       try {
         const asset = await api.readOpeningHtmlCard(card.htmlAssetId)
-        if (cancelled || !asset) {
+        if (cancelled) return
+        if (!asset) {
           setHtmlDoc(null)
           return
         }
@@ -113,8 +114,8 @@ export function CardPreview({
 
   // Media asset loader for personal-media
   useEffect(() => {
+    setMediaDataUrl(null)
     if (!card || card.contentKind !== 'personal-media') {
-      setMediaDataUrl(null)
       return
     }
     let cancelled = false
@@ -130,21 +131,23 @@ export function CardPreview({
         }
       ).aiOffice
       if (!card.mediaAssetId) {
-        setMediaDataUrl(null)
+        if (!cancelled) setMediaDataUrl(null)
         return
       }
       try {
         if (api?.readOpeningMedia) {
           const url = await api.readOpeningMedia(card.mediaAssetId)
-          if (!cancelled && url) {
+          if (cancelled) return
+          if (url) {
             setMediaDataUrl(url)
             return
           }
         }
         if (api?.getOpeningEffects) {
           const state = await api.getOpeningEffects()
+          if (cancelled) return
           const found = state?.mediaAssets?.find((a) => a.assetId === card.mediaAssetId)
-          if (!cancelled && found?.dataUrl) {
+          if (found?.dataUrl) {
             setMediaDataUrl(found.dataUrl)
             return
           }

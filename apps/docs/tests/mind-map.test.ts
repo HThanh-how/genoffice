@@ -9,6 +9,7 @@ import {
   layoutMindMap,
   MIND_MAP_LIMITS,
   MIND_MAP_METRICS,
+  MIND_MAP_TOOL,
   parseMindMapTree,
   wrapLabel,
 } from '../src/renderer/ai/mind-map'
@@ -226,6 +227,24 @@ describe('layoutMindMap', () => {
     expect(layout.nodes).toHaveLength(1)
     expect(layout.edges).toHaveLength(0)
     expect(layout.width).toBe(MIND_MAP_METRICS.nodeWidth + MIND_MAP_METRICS.padding * 2)
+  })
+})
+
+describe('MIND_MAP_TOOL schema', () => {
+  it('gives every array an items schema (Gemini refuses the whole request without one)', () => {
+    // genoffice#2059: the leaf `children` array carried only a description,
+    // and the API answered "...properties[children].items: missing field".
+    const walk = (node: unknown): void => {
+      if (typeof node !== 'object' || node === null) return
+      if (Array.isArray(node)) {
+        node.forEach(walk)
+        return
+      }
+      const record = node as Record<string, unknown>
+      if (record.type === 'array') expect(record.items).toBeDefined()
+      for (const value of Object.values(record)) walk(value)
+    }
+    walk(MIND_MAP_TOOL.inputSchema)
   })
 })
 

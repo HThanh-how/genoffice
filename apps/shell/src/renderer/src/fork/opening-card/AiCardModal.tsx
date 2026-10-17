@@ -74,6 +74,8 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
         requestId: reqId,
       })
 
+      if (currentRequestIdRef.current !== reqId) return
+
       if (res && res.ok) {
         if (mode === 'html' && res.htmlDraft) {
           const d = res.htmlDraft
@@ -122,9 +124,13 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
         )
       }
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err))
+      if (currentRequestIdRef.current === reqId) {
+        setErrorMessage(err instanceof Error ? err.message : String(err))
+      }
     } finally {
-      setLoading(false)
+      if (currentRequestIdRef.current === reqId) {
+        setLoading(false)
+      }
     }
   }
 

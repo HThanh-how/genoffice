@@ -183,14 +183,8 @@ export const isCardOrSceneAvailable = (id: unknown, prefs?: OpeningPrefs): id is
   if (id === CUSTOM_SCENE || SCENES.some((s) => s.id === id) || isBuiltInCard(id)) {
     return true
   }
-  if (id.startsWith('curated:')) {
-    return true
-  }
-  if (id.startsWith('custom:') || id.startsWith('ai:') || id.startsWith('media_')) {
-    if (prefs && Array.isArray(prefs.customCards)) {
-      return prefs.customCards.some((c) => c.id === id)
-    }
-    return true
+  if (prefs && Array.isArray(prefs.customCards)) {
+    return prefs.customCards.some((c) => c.id === id)
   }
   return false
 }
@@ -246,6 +240,8 @@ export function resolveEffectiveOpeningCard(
   }
 }
 
+const FORBIDDEN_PATTERN = /<script|javascript:|on\w+=|<\/|<[a-z]|expression\(|eval\(/i
+
 const isSafeCardDefinition = (c: unknown): c is OpeningCardDefinition => {
   if (!c || typeof c !== 'object') return false
   const card = c as Record<string, unknown>
@@ -255,15 +251,28 @@ const isSafeCardDefinition = (c: unknown): c is OpeningCardDefinition => {
     card.id.length <= 100 &&
     typeof card.name === 'string' &&
     card.name.length > 0 &&
-    card.name.length <= 100 &&
+    card.name.length <= 60 &&
+    !FORBIDDEN_PATTERN.test(card.name) &&
     card.material !== null &&
-    typeof card.material === 'object'
+    typeof card.material === 'object' &&
+    !Array.isArray(card.material)
   )
 }
 
 /** Whatever was stored (possibly old, partial or hand-edited) as safe preferences. */
 export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
   const value = (stored && typeof stored === 'object' ? stored : {}) as Record<string, unknown>
+  const customCards = Array.isArray(value.customCards)
+    ? value.customCards.filter(isSafeCardDefinition)
+    : []
+
+  const validationPrefs: OpeningPrefs = {
+    enabled: value.enabled !== false,
+    tier: 'auto',
+    scenes: { ...DEFAULT_SCENE_FOR_APP },
+    customCards,
+  }
+
   const scenes = (value.scenes && typeof value.scenes === 'object' ? value.scenes : {}) as Record<
     string,
     unknown
@@ -275,11 +284,17 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
     scenes: Object.fromEntries(
       OPENING_APPS.map((app) => [
         app,
-        knownSceneOrCard(scenes[app]) ? (scenes[app] as string) : DEFAULT_SCENE_FOR_APP[app],
+        isCardOrSceneAvailable(scenes[app], validationPrefs)
+          ? (scenes[app] as string)
+          : DEFAULT_SCENE_FOR_APP[app],
       ]),
     ) as Record<OpeningApp, string>,
+    ...(customCards.length > 0 ? { customCards } : {}),
   }
-  if (typeof value.globalCard === 'string' && knownSceneOrCard(value.globalCard)) {
+  if (
+    typeof value.globalCard === 'string' &&
+    isCardOrSceneAvailable(value.globalCard, validationPrefs)
+  ) {
     res.globalCard = value.globalCard
   }
   if (value.appOverrides && typeof value.appOverrides === 'object') {
@@ -287,7 +302,10 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
     const appOverrides: Partial<Record<OpeningApp, string>> = {}
     for (const app of OPENING_APPS) {
       const val = rawOverrides[app]
-      if (typeof val === 'string' && (val === 'inherit' || knownSceneOrCard(val))) {
+      if (
+        typeof val === 'string' &&
+        (val === 'inherit' || isCardOrSceneAvailable(val, validationPrefs))
+      ) {
         appOverrides[app] = val
       }
     }
@@ -297,11 +315,12 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
   }
   if (Array.isArray(value.favorites)) {
     res.favorites = Array.from(
-      new Set(value.favorites.filter((f): f is string => typeof f === 'string' && f.length > 0)),
+      new Set(
+        value.favorites.filter(
+          (f): f is string => typeof f === 'string' && isCardOrSceneAvailable(f, validationPrefs),
+        ),
+      ),
     )
-  }
-  if (Array.isArray(value.customCards)) {
-    res.customCards = value.customCards.filter(isSafeCardDefinition)
   }
   return res
 }

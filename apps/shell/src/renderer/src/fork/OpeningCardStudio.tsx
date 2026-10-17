@@ -206,6 +206,8 @@ export function OpeningCardStudio({
         onUpdateState(res)
         setSelectedCard(customCard)
         showStatus(isVi ? 'Đã lưu thẻ tùy chỉnh!' : 'Custom card saved!')
+      } else {
+        throw new Error(isVi ? 'Không thể lưu thẻ tùy chỉnh' : 'Failed to save custom card')
       }
     } catch (err) {
       showError(err instanceof Error ? err.message : String(err))

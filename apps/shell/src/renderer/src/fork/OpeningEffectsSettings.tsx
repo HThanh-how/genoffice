@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Dropdown } from '@genoffice/ui'
 import type { OpeningEffectsState } from '../../../shared/home-api'
 import { OpeningCardStudio } from './OpeningCardStudio'
@@ -80,46 +80,58 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
   const api = window.aiOffice
   const [state, setState] = useState<OpeningEffectsState | null>(null)
   const [error, setError] = useState('')
+  const isMountedRef = useRef(true)
+  const saveQueueRef = useRef<Promise<void>>(Promise.resolve())
 
   useEffect(() => {
+    isMountedRef.current = true
     let alive = true
     void api.getOpeningEffects?.().then((next) => {
       if (alive && next) setState(next)
     })
     return () => {
       alive = false
+      isMountedRef.current = false
     }
   }, [api])
 
   if (!state) return null
   const { prefs, custom } = state
   const save = (next: OpeningPrefs) => {
-    const prevState = state
-    setState({ ...state, prefs: next })
+    setState((curr) => (curr ? { ...curr, prefs: next } : null))
     setError('')
-    void api
-      .setOpeningPrefs(next)
-      .then((updated) => {
-        if (updated) setState(updated)
-      })
-      .catch((err) => {
-        setState(prevState)
-        setError(err instanceof Error ? err.message : String(err))
-      })
+    saveQueueRef.current = saveQueueRef.current.then(async () => {
+      try {
+        const updated = await api.setOpeningPrefs(next)
+        if (isMountedRef.current && updated) setState(updated)
+      } catch (err) {
+        try {
+          const authoritative = await api.getOpeningEffects?.()
+          if (isMountedRef.current && authoritative) setState(authoritative)
+        } catch {
+          // ignore
+        }
+        if (isMountedRef.current) setError(err instanceof Error ? err.message : String(err))
+      }
+    })
   }
   const importFor = (app: OpeningApp) => {
     setError('')
-    const prevState = state
-    void api
-      .importOpeningHtml(app)
-      .then((result) => {
-        if (result?.state) setState(result.state)
-        if (!result?.ok && result?.error) setError(result.error)
-      })
-      .catch((err) => {
-        setState(prevState)
-        setError(err instanceof Error ? err.message : String(err))
-      })
+    saveQueueRef.current = saveQueueRef.current.then(async () => {
+      try {
+        const result = await api.importOpeningHtml(app)
+        if (isMountedRef.current && result?.state) setState(result.state)
+        if (isMountedRef.current && !result?.ok && result?.error) setError(result.error)
+      } catch (err) {
+        try {
+          const authoritative = await api.getOpeningEffects?.()
+          if (isMountedRef.current && authoritative) setState(authoritative)
+        } catch {
+          // ignore
+        }
+        if (isMountedRef.current) setError(err instanceof Error ? err.message : String(err))
+      }
+    })
   }
 
   return (
