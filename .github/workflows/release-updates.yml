@@ -10,9 +10,13 @@ permissions:
 jobs:
   prepare:
     runs-on: ubuntu-24.04
+    outputs:
+      has_windows: ${{ steps.check.outputs.has_windows }}
+      has_macos: ${{ steps.check.outputs.has_macos }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Verify release version and signing credentials
+      - name: Verify release version and platform signing credentials
+        id: check
         env:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
@@ -23,16 +27,37 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
           test "$GITHUB_REF_NAME" = "v$(node -p "require('./apps/shell/package.json').version")"
-          for name in WIN_CSC_LINK WIN_CSC_KEY_PASSWORD MAC_CSC_LINK MAC_CSC_KEY_PASSWORD APPLE_ID APPLE_APP_SPECIFIC_PASSWORD APPLE_TEAM_ID; do
-            test -n "${!name}" || { echo "Missing signing secret: $name"; exit 1; }
-          done
-      - name: Create private draft until both platform builds pass
+          has_win=false
+          has_mac=false
+          if [ -n "$WIN_CSC_LINK" ] && [ -n "$WIN_CSC_KEY_PASSWORD" ]; then
+            has_win=true
+          fi
+          if [ -n "$MAC_CSC_LINK" ] && [ -n "$MAC_CSC_KEY_PASSWORD" ] && [ -n "$APPLE_ID" ] && [ -n "$APPLE_APP_SPECIFIC_PASSWORD" ] && [ -n "$APPLE_TEAM_ID" ]; then
+            has_mac=true
+          fi
+          if [ "$has_win" != "true" ] && [ "$has_mac" != "true" ]; then
+            echo "::error::No platform has complete signing credentials configured. Windows requires WIN_CSC_LINK and WIN_CSC_KEY_PASSWORD. macOS requires MAC_CSC_LINK, MAC_CSC_KEY_PASSWORD, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, and APPLE_TEAM_ID."
+            exit 1
+          fi
+          echo "has_windows=$has_win" >> "$GITHUB_OUTPUT"
+          echo "has_macos=$has_mac" >> "$GITHUB_OUTPUT"
+      - name: Create private draft until platform builds pass and validate
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" --draft --title "GenOffice $GITHUB_REF_NAME" --generate-notes
+        run: |
+          if draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft'); then
+            if [ "$draft" != "true" ]; then
+              echo "::error::Release $GITHUB_REF_NAME is already published; refusing to modify it."
+              exit 1
+            fi
+            echo "Reusing existing draft $GITHUB_REF_NAME."
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --draft --title "GenOffice $GITHUB_REF_NAME" --generate-notes
+          fi
 
   windows:
     needs: prepare
+    if: needs.prepare.outputs.has_windows == 'true'
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
@@ -73,6 +98,7 @@ jobs:
 
   macos:
     needs: prepare
+    if: needs.prepare.outputs.has_macos == 'true'
     runs-on: macos-15
     timeout-minutes: 120
     steps:
@@ -84,10 +110,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable branch, 2026-07
         with:
           toolchain: stable
-          targets: aarch64-apple-darwin
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
       - run: npm ci
       - run: npm run fixtures
-      - name: Build and publish signed Apple Silicon update
+      - name: Build and package signed Apple Silicon update
         env:
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
@@ -96,25 +122,39 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           GENOFFICE_UPDATE_REPOSITORY: ${{ github.repository }}
           GH_TOKEN: ${{ github.token }}
-        run: npm run dist:mac -w @genoffice/shell -- --publish always
-      - name: Verify app signing and notarization
         run: |
-          app_path=$(find apps/shell/release -path '*/mac-arm64/GenOffice.app' -type d -print -quit)
-          test -n "$app_path"
-          codesign --verify --deep --strict --verbose=2 "$app_path"
-          dmg_path=$(find apps/shell/release -maxdepth 1 -name '*.dmg' -print -quit)
-          test -n "$dmg_path"
-          xcrun stapler validate "$dmg_path"
-
-  publish:
-    needs: [windows, macos]
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Verify both update feeds and publish release
+          npm run notices
+          npm run build:all
+          npm run native:build:universal -w @genoffice/sheets
+          npm run dist:mac -w @genoffice/shell -- --publish never
+      - name: Verify app codesign, notarization, staple, and feed hashes
+        env:
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: node tools/verify-mac-release.mjs apps/shell/release
+      - name: Upload verified original Mac artifacts
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          cd apps/shell/release
+          shasum -a 256 -- *.dmg *-mac.zip latest-mac.yml > macos-SHA256SUMS
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" -- *.dmg *-mac.zip latest-mac.yml macos-SHA256SUMS
+
+  publish:
+    needs: [prepare, windows, macos]
+    if: always() && needs.prepare.result == 'success' && !contains(needs.*.result, 'failure') && !cancelled() && (needs.windows.result == 'success' || needs.macos.result == 'success')
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Verify update feeds and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HAS_WINDOWS: ${{ needs.prepare.outputs.has_windows }}
+          HAS_MACOS: ${{ needs.prepare.outputs.has_macos }}
+        run: |
           assets=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')
-          printf '%s\n' "$assets" | grep -qx latest.yml
-          printf '%s\n' "$assets" | grep -qx latest-mac.yml
+          if [ "$HAS_WINDOWS" = "true" ]; then
+            printf '%s\n' "$assets" | grep -qx latest.yml || { echo "Missing latest.yml in release assets"; exit 1; }
+          fi
+          if [ "$HAS_MACOS" = "true" ]; then
+            printf '%s\n' "$assets" | grep -qx latest-mac.yml || { echo "Missing latest-mac.yml in release assets"; exit 1; }
+          fi
           gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
