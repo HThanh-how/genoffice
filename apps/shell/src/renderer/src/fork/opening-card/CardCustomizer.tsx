@@ -28,7 +28,11 @@ interface CardCustomizerProps {
   onClose: () => void
 }
 
-export function CardCustomizer({
+export function CardCustomizer(props: CardCustomizerProps): React.JSX.Element {
+  return <CardCustomizerSession key={props.card.id} {...props} />
+}
+
+function CardCustomizerSession({
   card,
   lang,
   onSave,
@@ -110,10 +114,12 @@ export function CardCustomizer({
   }, [isHtml, card.htmlAssetId, isVi])
 
   const onCloseRef = useRef(onClose)
+  const mountedRef = useRef(false)
   onCloseRef.current = onClose
 
   // Handle Escape key with capture phase to prevent bubbling to parent SettingsModal
   useEffect(() => {
+    mountedRef.current = true
     const previousActive = document.activeElement as HTMLElement | null
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -125,6 +131,7 @@ export function CardCustomizer({
     }
     window.addEventListener('keydown', handleKeyDown, true)
     return () => {
+      mountedRef.current = false
       window.removeEventListener('keydown', handleKeyDown, true)
       previousActive?.focus?.()
     }
@@ -212,11 +219,11 @@ export function CardCustomizer({
 
     try {
       await onSave(updatedCard, htmlPayload)
-      onClose()
+      if (mountedRef.current) onCloseRef.current()
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err))
+      if (mountedRef.current) setErrorMessage(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusy(false)
+      if (mountedRef.current) setBusy(false)
     }
   }
 

@@ -18,10 +18,13 @@ export function MediaImportModal({
   const [dragOver, setDragOver] = useState(false)
 
   const onCloseRef = useRef(onClose)
+  const mountedRef = useRef(false)
+  const importingRef = useRef(false)
   onCloseRef.current = onClose
 
   // Handle Escape key with capture phase to prevent bubbling to parent SettingsModal
   useEffect(() => {
+    mountedRef.current = true
     const previousActive = document.activeElement as HTMLElement | null
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -33,13 +36,14 @@ export function MediaImportModal({
     }
     window.addEventListener('keydown', handleKeyDown, true)
     return () => {
+      mountedRef.current = false
       window.removeEventListener('keydown', handleKeyDown, true)
       previousActive?.focus?.()
     }
   }, [])
 
   const processFile = async (file: File) => {
-    if (!file) return
+    if (!file || importingRef.current) return
     setBusy(true)
     setErrorMessage('')
 
@@ -63,13 +67,15 @@ export function MediaImportModal({
       return
     }
 
+    importingRef.current = true
     try {
       await onImport(file)
-      onClose()
+      if (mountedRef.current) onCloseRef.current()
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err))
+      if (mountedRef.current) setErrorMessage(err instanceof Error ? err.message : String(err))
     } finally {
-      setBusy(false)
+      importingRef.current = false
+      if (mountedRef.current) setBusy(false)
     }
   }
 

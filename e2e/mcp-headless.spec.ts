@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 import { launchShell, closeAndSaveVideo } from './helpers'
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseDocx } from '@genoffice/docx-engine'
@@ -74,6 +74,16 @@ test.describe('MCP headless generation', () => {
     )
     const launched = await launchShell({ videoDir: 'mcp-headless', userDataDir })
     try {
+      await expect
+        .poll(
+          async () => {
+            const status = await launched.page.evaluate(() => window.aiOffice?.getMcpStatus?.())
+            return Boolean(status?.running && status?.port === port)
+          },
+          { timeout: 30_000, intervals: [200, 500, 1_000] },
+        )
+        .toBe(true)
+
       const init = await postMcp(port, null, {
         jsonrpc: '2.0',
         id: 1,
@@ -150,6 +160,8 @@ test.describe('MCP headless generation', () => {
       expect(sheetXml).toContain('<v>12</v>')
     } finally {
       await closeAndSaveVideo(launched, 'mcp-headless')
+      await rm(outDir, { recursive: true, force: true })
+      await rm(userDataDir, { recursive: true, force: true })
     }
   })
 })

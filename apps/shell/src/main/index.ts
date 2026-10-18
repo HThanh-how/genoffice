@@ -38,6 +38,7 @@ import { generateAiCardWithRealProvider } from './fork/opening-card-ai'
 import {
   createOpeningCardExportBundle,
   importCardsFromExportBundle,
+  mergeImportedOpeningCards,
   validateCardDefinition,
 } from './fork/opening-card-export'
 import {
@@ -5740,8 +5741,12 @@ function registerHomeIpc(): void {
     if (existsSync(targetPath)) {
       try {
         previousContent = readFileSync(targetPath)
-      } catch {
-        previousContent = null
+      } catch (error) {
+        return {
+          ok: false,
+          error: `Cannot preserve the existing HTML: ${error instanceof Error ? error.message : String(error)}`,
+          state: openingEffectsState(),
+        }
       }
     }
     try {
@@ -6105,15 +6110,15 @@ function registerHomeIpc(): void {
     if (!result.ok) {
       return { ok: false, count: 0, error: result.error, state: openingEffectsState() }
     }
-    const existing = prefs.customCards || []
-    const mergedMap = new Map(existing.map((c) => [c.id, c]))
-    for (const card of result.importedCards) {
-      mergedMap.set(card.id, card)
-    }
+    const latestPrefs = openingPrefs()
+    const updatedCustomCards = mergeImportedOpeningCards(
+      latestPrefs.customCards || [],
+      result.importedCards,
+    )
     try {
       writeAppSetting(APP_SETTINGS_PATH(), 'openingEffects', {
-        ...prefs,
-        customCards: Array.from(mergedMap.values()),
+        ...latestPrefs,
+        customCards: updatedCustomCards,
       })
     } catch (err) {
       for (const assetId of result.newlyCreatedMediaAssetIds) {

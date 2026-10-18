@@ -167,9 +167,17 @@ export function OpeningCardStudio({
       const nextState = await api.deleteOpeningCard?.(cardId)
       if (nextState) {
         onUpdateState(nextState)
-        if (selectedCard?.id === cardId) {
-          setSelectedCard(allCards.find((c) => c.id !== cardId) || null)
-        }
+        setSelectedCard((current) => {
+          if (current?.id !== cardId) return current
+          const builtIn = nextState.builtInCards?.length
+            ? nextState.builtInCards
+            : getAllBuiltInCards()
+          return (
+            [...builtIn, ...(nextState.prefs.customCards || [])].find(
+              (card) => card.id !== cardId,
+            ) || null
+          )
+        })
         showStatus(isVi ? 'Đã xóa thẻ tùy chỉnh.' : 'Custom card deleted.')
       } else {
         showError(isVi ? 'Không thể xóa thẻ này.' : 'Failed to delete card.')

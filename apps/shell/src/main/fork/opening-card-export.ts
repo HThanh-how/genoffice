@@ -640,3 +640,22 @@ export async function importCardsFromExportBundle(
     newlyCreatedHtmlAssetIds,
   }
 }
+
+/**
+ * Merges newly imported custom cards into the latest preferences' custom cards.
+ * Preserves intervening saved/deleted cards and generates unique IDs if collisions occur.
+ */
+export function mergeImportedOpeningCards(
+  existingCustomCards: readonly OpeningCardDefinition[],
+  importedCards: readonly OpeningCardDefinition[],
+): OpeningCardDefinition[] {
+  const mergedMap = new Map(existingCustomCards.map((c) => [c.id, c]))
+  for (const card of importedCards) {
+    let id = card.id
+    while (mergedMap.has(id) || isBuiltInCard(id)) {
+      id = `custom:imported_${Date.now()}_${randomBytes(4).toString('hex')}`
+    }
+    mergedMap.set(id, { ...card, id })
+  }
+  return Array.from(mergedMap.values())
+}

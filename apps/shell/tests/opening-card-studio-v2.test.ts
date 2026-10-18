@@ -2,6 +2,8 @@
 import { existsSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { act, createElement, useState } from 'react'
+import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import runGOScene from '../src/shared/opening-scenes-runner'
 import * as mediaStorage from '../src/main/fork/opening-media-storage'
@@ -18,7 +20,10 @@ import {
   readHtmlCardAsset,
   storeHtmlCardAsset,
 } from '../src/main/fork/opening-html-storage'
-import { importCardsFromExportBundle } from '../src/main/fork/opening-card-export'
+import {
+  importCardsFromExportBundle,
+  mergeImportedOpeningCards,
+} from '../src/main/fork/opening-card-export'
 import { sampleFileName } from '../src/main/fork/opening-window'
 import {
   buildMaterialCss,
@@ -37,6 +42,646 @@ import {
 } from '../src/shared/opening-scenes-meta'
 import { getAllBuiltInCards } from '../src/shared/opening-card-families'
 import type { OpeningCardDefinition } from '../src/shared/opening-card-types'
+import type { OpeningEffectsState } from '../src/shared/home-api'
+import { CardCustomizer } from '../src/renderer/src/fork/opening-card/CardCustomizer'
+import { MediaImportModal } from '../src/renderer/src/fork/opening-card/MediaImportModal'
+import { AiCardModal } from '../src/renderer/src/fork/opening-card/AiCardModal'
+import { OpeningCardStudio } from '../src/renderer/src/fork/OpeningCardStudio'
+
+describe('CardCustomizer actual React runtime', () => {
+  let host: HTMLDivElement
+  let root: Root
+  let oldApi: typeof window.aiOffice
+  const original = {
+    html: '<section class="original">Original card</section>',
+    css: '.original { color: #123456; }',
+  }
+  const card = (id: string): OpeningCardDefinition => ({
+    id: `custom:${id}`,
+    name: `Card ${id}`,
+    category: 'custom',
+    contentKind: 'custom-html',
+    htmlAssetId: `html_${id}`,
+    material: { preset: 'solid' },
+    isBuiltIn: false,
+    createdAt: 1,
+  })
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void
+    const promise = new Promise<T>((done) => {
+      resolve = done
+    })
+    return { promise, resolve }
+  }
+  const onClose = vi.fn()
+  const onSave = vi.fn<(...args: unknown[]) => Promise<void>>()
+
+  beforeEach(() => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    oldApi = window.aiOffice
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    onClose.mockReset()
+    onSave.mockReset().mockResolvedValue(undefined)
+  })
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    host.remove()
+    window.aiOffice = oldApi
+    vi.unstubAllGlobals()
+  })
+
+  async function show(value = card('a')) {
+    await act(async () =>
+      root.render(createElement(CardCustomizer, { card: value, lang: 'en', onClose, onSave })),
+    )
+  }
+  async function htmlTab() {
+    const button = [...host.querySelectorAll('button')].find(
+      (node) => node.textContent === 'HTML & CSS',
+    )!
+    await act(async () => button.click())
+  }
+  const saveButton = () =>
+    host.querySelector<HTMLButtonElement>('.ocs-customizer-footer .ocs-btn-primary')!
+
+  it('keeps a failed HTML read visible and never saves an empty replacement', async () => {
+    window.aiOffice = {
+      readOpeningHtmlCard: vi.fn().mockRejectedValue(new Error('Read denied')),
+    } as unknown as typeof window.aiOffice
+    await show()
+    expect(host.querySelector('[role="alert"]')?.textContent).toMatch(/read|load/i)
+    await act(async () => saveButton().click())
+    expect(onSave).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('keeps loaded HTML/CSS and the dialog open after save failure', async () => {
+    window.aiOffice = {
+      readOpeningHtmlCard: vi.fn().mockResolvedValue(original),
+    } as unknown as typeof window.aiOffice
+    onSave.mockRejectedValueOnce(new Error('Disk full; original preserved'))
+    await show()
+    await htmlTab()
+    await act(async () => saveButton().click())
+    expect(onSave).toHaveBeenCalledWith(
+      expect.objectContaining({ contentKind: 'custom-html' }),
+      original,
+    )
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain('Disk full')
+    expect([...host.querySelectorAll('textarea')].map((node) => node.value)).toEqual([
+      original.html,
+      original.css,
+    ])
+    expect(onClose).not.toHaveBeenCalled()
+    expect(saveButton().disabled).toBe(false)
+  })
+
+  it('can close during loading and ignores the late read after unmount', async () => {
+    const read = deferred<typeof original>()
+    window.aiOffice = {
+      readOpeningHtmlCard: vi.fn().mockReturnValue(read.promise),
+    } as unknown as typeof window.aiOffice
+    await show()
+    expect(saveButton().disabled).toBe(true)
+    await act(async () => host.querySelector<HTMLButtonElement>('.ocs-customizer-close')!.click())
+    expect(onClose).toHaveBeenCalledTimes(1)
+    await act(async () => root.render(null))
+    await act(async () => read.resolve(original))
+    expect(host.childElementCount).toBe(0)
+    expect(onSave).not.toHaveBeenCalled()
+  })
+
+  it('retains card B when an older card A read completes last', async () => {
+    const first = deferred<typeof original>()
+    const second = deferred<typeof original>()
+    const current = { html: '<p>Card B only</p>', css: 'p { color: blue; }' }
+    const read = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+    window.aiOffice = { readOpeningHtmlCard: read } as unknown as typeof window.aiOffice
+    await show(card('a'))
+    await show(card('b'))
+    await act(async () => second.resolve(current))
+    await act(async () => first.resolve(original))
+    await htmlTab()
+    expect([...host.querySelectorAll('textarea')].map((node) => node.value)).toEqual([
+      current.html,
+      current.css,
+    ])
+    expect(host.querySelector<HTMLInputElement>('#ocs-edit-name')!.value).toContain('Card b')
+    expect(read.mock.calls).toEqual([['html_a'], ['html_b']])
+  })
+
+  it('does not close card B when a previous save for card A completes', async () => {
+    const saved = deferred<void>()
+    window.aiOffice = {
+      readOpeningHtmlCard: vi.fn().mockResolvedValue(original),
+    } as unknown as typeof window.aiOffice
+    onSave.mockReturnValueOnce(saved.promise)
+    await show(card('a'))
+    await act(async () => saveButton().click())
+    await show(card('b'))
+    await act(async () => saved.resolve(undefined))
+    expect(onClose).not.toHaveBeenCalled()
+    expect(host.querySelector<HTMLInputElement>('#ocs-edit-name')!.value).toContain('Card b')
+  })
+})
+
+describe('MediaImportModal actual React runtime', () => {
+  let host: HTMLDivElement
+  let root: Root
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<T>((done, fail) => {
+      resolve = done
+      reject = fail
+    })
+    return { promise, resolve, reject }
+  }
+  const onClose = vi.fn()
+  const onImport = vi.fn<(...args: unknown[]) => Promise<void>>()
+
+  beforeEach(() => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    onClose.mockReset()
+    onImport.mockReset().mockResolvedValue(undefined)
+  })
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    host.remove()
+    vi.unstubAllGlobals()
+  })
+
+  it('does not call onClose twice or update state after close during in-flight import', async () => {
+    const importDeferred = deferred<void>()
+    onImport.mockReturnValueOnce(importDeferred.promise)
+    await act(async () => {
+      root.render(createElement(MediaImportModal, { lang: 'en', onClose, onImport }))
+    })
+
+    const file = new File(['image bytes'], 'sample.png', { type: 'image/png' })
+    const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+    await act(async () => {
+      Object.defineProperty(input, 'files', { value: [file], writable: true })
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(onImport).toHaveBeenCalledTimes(1)
+    const closeBtn = host.querySelector<HTMLButtonElement>('.ocs-customizer-close')!
+    await act(async () => closeBtn.click())
+    expect(onClose).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      root.render(null)
+    })
+
+    await act(async () => {
+      importDeferred.resolve()
+    })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not trigger close or error on newly reopened modal when older import finishes', async () => {
+    const importDeferred1 = deferred<void>()
+    const importDeferred2 = deferred<void>()
+    const onClose1 = vi.fn()
+    const onClose2 = vi.fn()
+    const onImportLocal = vi
+      .fn<(...args: unknown[]) => Promise<void>>()
+      .mockReturnValueOnce(importDeferred1.promise)
+      .mockReturnValueOnce(importDeferred2.promise)
+
+    await act(async () => {
+      root.render(
+        createElement(MediaImportModal, { lang: 'en', onClose: onClose1, onImport: onImportLocal }),
+      )
+    })
+
+    const file1 = new File(['img 1'], 'first.png', { type: 'image/png' })
+    const input1 = host.querySelector<HTMLInputElement>('input[type="file"]')!
+    await act(async () => {
+      Object.defineProperty(input1, 'files', { value: [file1], writable: true })
+      input1.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(onImportLocal).toHaveBeenCalledTimes(1)
+
+    const closeBtn = host.querySelector<HTMLButtonElement>('.ocs-customizer-close')!
+    await act(async () => closeBtn.click())
+    expect(onClose1).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      root.render(null)
+    })
+
+    await act(async () => {
+      root.render(
+        createElement(MediaImportModal, { lang: 'en', onClose: onClose2, onImport: onImportLocal }),
+      )
+    })
+
+    await act(async () => {
+      importDeferred1.resolve()
+    })
+
+    expect(onClose2).not.toHaveBeenCalled()
+    expect(host.querySelector('.ocs-customizer-dialog')).not.toBeNull()
+
+    const file2 = new File(['img 2'], 'second.png', { type: 'image/png' })
+    const input2 = host.querySelector<HTMLInputElement>('input[type="file"]')!
+    await act(async () => {
+      Object.defineProperty(input2, 'files', { value: [file2], writable: true })
+      input2.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(onImportLocal).toHaveBeenCalledTimes(2)
+
+    await act(async () => {
+      importDeferred2.resolve()
+    })
+    expect(onClose2).toHaveBeenCalledTimes(1)
+  })
+
+  it('handles late failure after unmount without crashing or duplicate close', async () => {
+    const importDeferred = deferred<void>()
+    onImport.mockReturnValueOnce(importDeferred.promise)
+    await act(async () => {
+      root.render(createElement(MediaImportModal, { lang: 'en', onClose, onImport }))
+    })
+
+    const file = new File(['image bytes'], 'sample.png', { type: 'image/png' })
+    const input = host.querySelector<HTMLInputElement>('input[type="file"]')!
+    await act(async () => {
+      Object.defineProperty(input, 'files', { value: [file], writable: true })
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(onImport).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      root.render(null)
+    })
+    await act(async () => {
+      importDeferred.reject(new Error('Network aborted'))
+    })
+    expect(onClose).not.toHaveBeenCalled()
+  })
+})
+
+describe('AiCardModal actual React runtime', () => {
+  let host: HTMLDivElement
+  let root: Root
+  const deferred = <T>() => {
+    let resolve!: (value: T) => void
+    let reject!: (reason?: unknown) => void
+    const promise = new Promise<T>((done, fail) => {
+      resolve = done
+      reject = fail
+    })
+    return { promise, resolve, reject }
+  }
+  const onClose = vi.fn()
+  const onSave = vi.fn<(...args: unknown[]) => Promise<void>>()
+
+  beforeEach(() => {
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+    host = document.createElement('div')
+    document.body.append(host)
+    root = createRoot(host)
+    onClose.mockReset()
+    onSave.mockReset().mockResolvedValue(undefined)
+  })
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    host.remove()
+    vi.unstubAllGlobals()
+  })
+
+  function typePrompt(textarea: HTMLTextAreaElement, text: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!
+    act(() => {
+      setter.call(textarea, text)
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  it('does not call onClose twice when unmounted during in-flight save', async () => {
+    const saveDeferred = deferred<void>()
+    onSave.mockReturnValueOnce(saveDeferred.promise)
+    window.aiOffice = {
+      generateAiCard: vi.fn().mockResolvedValue({
+        ok: true,
+        htmlDraft: {
+          name: 'AI Card',
+          description: 'AI Card description',
+          html: '<section>AI Card</section>',
+          css: 'section { color: red; }',
+          themeMode: 'light',
+          accentColor: '#123456',
+        },
+      }),
+      cancelAiCardGeneration: vi.fn(),
+    } as unknown as typeof window.aiOffice
+
+    await act(async () => {
+      root.render(createElement(AiCardModal, { lang: 'en', onClose, onSave }))
+    })
+
+    const textarea = host.querySelector<HTMLTextAreaElement>('#ocs-ai-prompt')!
+    typePrompt(textarea, 'A starry night')
+
+    const genBtn = [...host.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+      /Generate Card|Bắt đầu sinh thẻ/i.test(b.textContent || ''),
+    )!
+    expect(genBtn).toBeDefined()
+    await act(async () => genBtn.click())
+
+    const saveBtn = host.querySelector<HTMLButtonElement>(
+      '.ocs-customizer-footer .ocs-btn-primary',
+    )!
+    expect(saveBtn).not.toBeNull()
+    await act(async () => saveBtn.click())
+    expect(onSave).toHaveBeenCalledTimes(1)
+
+    const closeBtn = host.querySelector<HTMLButtonElement>('.ocs-customizer-close')!
+    await act(async () => closeBtn.click())
+    expect(onClose).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      root.render(null)
+    })
+
+    await act(async () => {
+      saveDeferred.resolve()
+    })
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
+
+  it('calls cancelAiCardGeneration and ignores success after unmount during generation', async () => {
+    const genDeferred = deferred<any>()
+    const cancelAiCardGeneration = vi.fn()
+    window.aiOffice = {
+      generateAiCard: vi.fn().mockReturnValue(genDeferred.promise),
+      cancelAiCardGeneration,
+    } as unknown as typeof window.aiOffice
+
+    await act(async () => {
+      root.render(createElement(AiCardModal, { lang: 'en', onClose, onSave }))
+    })
+
+    const textarea = host.querySelector<HTMLTextAreaElement>('#ocs-ai-prompt')!
+    typePrompt(textarea, 'A futuristic cyber matrix')
+
+    const genBtn = [...host.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+      /Generate Card|Bắt đầu sinh thẻ/i.test(b.textContent || ''),
+    )!
+    expect(genBtn).toBeDefined()
+    await act(async () => genBtn.click())
+    expect(window.aiOffice.generateAiCard).toHaveBeenCalled()
+
+    await act(async () => {
+      root.render(null)
+    })
+    expect(cancelAiCardGeneration).toHaveBeenCalledWith(expect.stringMatching(/^aicard_/))
+
+    await act(async () => {
+      genDeferred.resolve({
+        ok: true,
+        htmlDraft: {
+          name: 'Cyber Matrix',
+          description: 'Cyber matrix card',
+          html: '<div>Cyber</div>',
+          css: 'div { color: cyan; }',
+          themeMode: 'dark',
+          accentColor: '#00ffff',
+        },
+      })
+    })
+
+    expect(host.childElementCount).toBe(0)
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('calls cancelAiCardGeneration and ignores error after unmount during generation', async () => {
+    const genDeferred = deferred<any>()
+    const cancelAiCardGeneration = vi.fn()
+    window.aiOffice = {
+      generateAiCard: vi.fn().mockReturnValue(genDeferred.promise),
+      cancelAiCardGeneration,
+    } as unknown as typeof window.aiOffice
+
+    await act(async () => {
+      root.render(createElement(AiCardModal, { lang: 'en', onClose, onSave }))
+    })
+
+    const textarea = host.querySelector<HTMLTextAreaElement>('#ocs-ai-prompt')!
+    typePrompt(textarea, 'Failed prompt')
+
+    const genBtn = [...host.querySelectorAll<HTMLButtonElement>('button')].find((b) =>
+      /Generate Card|Bắt đầu sinh thẻ/i.test(b.textContent || ''),
+    )!
+    await act(async () => genBtn.click())
+
+    await act(async () => {
+      root.render(null)
+    })
+    expect(cancelAiCardGeneration).toHaveBeenCalled()
+
+    await act(async () => {
+      genDeferred.reject(new Error('AI generation timed out'))
+    })
+    expect(host.childElementCount).toBe(0)
+  })
+})
+
+describe('OpeningCardStudio selection retention on late delete', () => {
+  function StudioHarness({ initialState }: { initialState: OpeningEffectsState }) {
+    const [state, setState] = useState(initialState)
+    return createElement(OpeningCardStudio, {
+      state,
+      lang: 'en',
+      onUpdateState: (next) => setState(next),
+      onPreview: () => {},
+    })
+  }
+
+  it('retains selection B when delete for card A finishes late', async () => {
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    vi.stubGlobal('IS_REACT_ACT_ENVIRONMENT', true)
+
+    const cardA: OpeningCardDefinition = {
+      id: 'custom:card_a',
+      name: 'Card A',
+      category: 'custom',
+      contentKind: 'curated-material',
+      material: { preset: 'solid' },
+      isBuiltIn: false,
+      createdAt: 1,
+    }
+    const cardB: OpeningCardDefinition = {
+      id: 'custom:card_b',
+      name: 'Card B',
+      category: 'custom',
+      contentKind: 'curated-material',
+      material: { preset: 'solid' },
+      isBuiltIn: false,
+      createdAt: 2,
+    }
+
+    let resolveDelete!: (v: OpeningEffectsState) => void
+    const deletePromise = new Promise<OpeningEffectsState>((done) => {
+      resolveDelete = done
+    })
+
+    const initialPrefs: OpeningPrefs = {
+      globalCard: 'custom:card_a',
+      customCards: [cardA, cardB],
+    }
+    const state: OpeningEffectsState = {
+      prefs: initialPrefs,
+      builtInCards: [],
+      effectiveScenes: {},
+      mediaAssets: [],
+    }
+
+    window.aiOffice = {
+      deleteOpeningCard: vi.fn().mockReturnValue(deletePromise),
+      saveOpeningCard: vi.fn().mockResolvedValue(state),
+      getOpeningEffects: vi.fn().mockResolvedValue(state),
+    } as unknown as typeof window.aiOffice
+
+    await act(async () => {
+      root.render(createElement(StudioHarness, { initialState: state }))
+    })
+
+    const deleteBtn = host.querySelector<HTMLButtonElement>('.ocs-btn-danger')!
+    expect(deleteBtn).not.toBeNull()
+    await act(async () => deleteBtn.click())
+    expect(window.aiOffice.deleteOpeningCard).toHaveBeenCalledWith('custom:card_a')
+
+    const cardBElement = [...host.querySelectorAll<HTMLDivElement>('.ocs-gallery-card-item')].find(
+      (el) => el.textContent?.includes('Card B'),
+    )!
+    expect(cardBElement).toBeDefined()
+    await act(async () => cardBElement.click())
+
+    const nextState: OpeningEffectsState = {
+      prefs: { globalCard: 'custom:card_b', customCards: [cardB] },
+      builtInCards: [],
+      effectiveScenes: {},
+      mediaAssets: [],
+    }
+    await act(async () => resolveDelete(nextState))
+
+    const activeItem = host.querySelector<HTMLDivElement>('.ocs-gallery-card-item.is-selected')
+    expect(activeItem?.textContent).toContain('Card B')
+    expect(activeItem?.getAttribute('aria-checked')).toBe('true')
+
+    await act(async () => root.unmount())
+    host.remove()
+    vi.unstubAllGlobals()
+  })
+})
+
+describe('mergeImportedOpeningCards — Production commit helper for IPC import', () => {
+  it('preserves intervening saved custom cards when import finishes after a concurrent save', () => {
+    const initialPrefs: OpeningPrefs = {
+      customCards: [
+        {
+          id: 'custom:card_existing',
+          name: 'Existing Card',
+          category: 'custom',
+          contentKind: 'curated-material',
+          material: { preset: 'solid' },
+          isBuiltIn: false,
+          createdAt: 1,
+        },
+      ],
+    }
+
+    const importedCard: OpeningCardDefinition = {
+      id: 'custom:card_imported',
+      name: 'Imported Card',
+      category: 'custom',
+      contentKind: 'curated-material',
+      material: { preset: 'solid' },
+      isBuiltIn: false,
+      createdAt: 2,
+    }
+
+    const currentPrefs: OpeningPrefs = {
+      customCards: [
+        ...initialPrefs.customCards!,
+        {
+          id: 'custom:card_intervening',
+          name: 'Intervening Card',
+          category: 'custom',
+          contentKind: 'curated-material',
+          material: { preset: 'solid' },
+          isBuiltIn: false,
+          createdAt: 3,
+        },
+      ],
+    }
+
+    const result = mergeImportedOpeningCards(currentPrefs.customCards!, [importedCard])
+    expect(result.map((c) => c.id)).toContain('custom:card_existing')
+    expect(result.map((c) => c.id)).toContain('custom:card_intervening')
+    expect(result.map((c) => c.id)).toContain('custom:card_imported')
+    expect(result).toHaveLength(3)
+  })
+
+  it('remaps IDs to avoid collision with existing custom cards or built-in cards', () => {
+    const existingCards: OpeningCardDefinition[] = [
+      {
+        id: 'custom:collision',
+        name: 'My Card',
+        category: 'custom',
+        contentKind: 'curated-material',
+        material: { preset: 'solid' },
+        isBuiltIn: false,
+        createdAt: 1,
+      },
+    ]
+
+    const collidingCards: OpeningCardDefinition[] = [
+      {
+        id: 'custom:collision',
+        name: 'Colliding Card',
+        category: 'custom',
+        contentKind: 'curated-material',
+        material: { preset: 'solid' },
+        isBuiltIn: false,
+        createdAt: 2,
+      },
+      {
+        id: 'curated:frosted-blue',
+        name: 'Fake Built-in Card',
+        category: 'custom',
+        contentKind: 'curated-material',
+        material: { preset: 'solid' },
+        isBuiltIn: false,
+        createdAt: 3,
+      },
+    ]
+
+    const result = mergeImportedOpeningCards(existingCards, collidingCards)
+    expect(result).toHaveLength(3)
+    const existing = result.find((c) => c.name === 'My Card')
+    expect(existing?.id).toBe('custom:collision')
+
+    const remapped1 = result.find((c) => c.name === 'Colliding Card')
+    expect(remapped1?.id).toMatch(/^custom:imported_/)
+    expect(remapped1?.id).not.toBe('custom:collision')
+
+    const remapped2 = result.find((c) => c.name === 'Fake Built-in Card')
+    expect(remapped2?.id).toMatch(/^custom:imported_/)
+    expect(remapped2?.id).not.toBe('curated:frosted-blue')
+  })
+})
 
 describe('Opening Card Studio V2 - Unit Tests', () => {
   describe('sampleFileName', () => {

@@ -93,6 +93,14 @@
   width: 100%;
 }
 
+.ocs-layout-right {
+  position: sticky;
+  top: 8px;
+  /* Leave room for the Settings header and legacy options below the gallery. */
+  max-height: calc(min(720px, 90vh) - 144px);
+  overflow-y: auto;
+}
+
 @container ocs-container (max-width: 640px) {
   .ocs-studio-layout {
     display: flex;
@@ -100,6 +108,10 @@
   }
   .ocs-layout-right {
     margin-top: 14px;
+    position: static;
+    max-height: none;
+    overflow: visible;
+    width: 100%;
   }
   .ocs-preview-inspector {
     position: static;
@@ -114,6 +126,10 @@
   }
   .ocs-layout-right {
     margin-top: 14px;
+    position: static;
+    max-height: none;
+    overflow: visible;
+    width: 100%;
   }
   .ocs-preview-inspector {
     position: static;
@@ -491,8 +507,6 @@
    ============================================================ */
 
 .ocs-preview-inspector {
-  position: sticky;
-  top: 8px;
   background: var(--surface-subtle);
   border: 1px solid var(--border);
   border-radius: 12px;

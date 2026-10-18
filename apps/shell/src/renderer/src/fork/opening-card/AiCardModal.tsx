@@ -25,6 +25,8 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
   const promptInputRef = useRef<HTMLTextAreaElement | null>(null)
 
   const onCloseRef = useRef(onClose)
+  const mountedRef = useRef(false)
+  const savingRef = useRef(false)
   onCloseRef.current = onClose
 
   const loadingRef = useRef(loading)
@@ -40,6 +42,7 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
 
   // Focus prompt input on mount and handle Escape with capture phase to prevent closing parent SettingsModal
   useEffect(() => {
+    mountedRef.current = true
     const previousActive = document.activeElement as HTMLElement | null
     promptInputRef.current?.focus()
 
@@ -54,6 +57,11 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
 
     window.addEventListener('keydown', handleKeyDown, true)
     return () => {
+      mountedRef.current = false
+      if (currentRequestIdRef.current) {
+        window.aiOffice?.cancelAiCardGeneration?.(currentRequestIdRef.current)
+        currentRequestIdRef.current = null
+      }
       window.removeEventListener('keydown', handleKeyDown, true)
       previousActive?.focus?.()
     }
@@ -74,7 +82,7 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
         requestId: reqId,
       })
 
-      if (currentRequestIdRef.current !== reqId) return
+      if (!mountedRef.current || currentRequestIdRef.current !== reqId) return
 
       if (res && res.ok) {
         if (mode === 'html' && res.htmlDraft) {
@@ -124,18 +132,19 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
         )
       }
     } catch (err) {
-      if (currentRequestIdRef.current === reqId) {
+      if (currentRequestIdRef.current === reqId && mountedRef.current) {
         setErrorMessage(err instanceof Error ? err.message : String(err))
       }
     } finally {
-      if (currentRequestIdRef.current === reqId) {
+      if (currentRequestIdRef.current === reqId && mountedRef.current) {
         setLoading(false)
       }
     }
   }
 
   const handleSave = async () => {
-    if (!draftCard) return
+    if (!draftCard || savingRef.current) return
+    savingRef.current = true
     setLoading(true)
     try {
       if (mode === 'html') {
@@ -143,11 +152,12 @@ export function AiCardModal({ lang, onSave, onClose }: AiCardModalProps): React.
       } else {
         await onSave(draftCard)
       }
-      onClose()
+      if (mountedRef.current) onCloseRef.current()
     } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err))
+      if (mountedRef.current) setErrorMessage(err instanceof Error ? err.message : String(err))
     } finally {
-      setLoading(false)
+      savingRef.current = false
+      if (mountedRef.current) setLoading(false)
     }
   }
 
