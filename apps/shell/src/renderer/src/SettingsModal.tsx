@@ -310,17 +310,40 @@ function CustomFontSizeInput({
   )
 }
 
-export type SectionId = 'aiModel' | 'aiMedia' | 'general' | 'integrations' | 'about'
+export type SectionId =
+  'aiModel' | 'aiMedia' | 'openingEffects' | 'general' | 'integrations' | 'about'
 
-const SECTIONS: readonly { id: SectionId; labelKey: StringKey }[] = [
+const SECTIONS: readonly {
+  id: SectionId
+  labelKey: StringKey
+  customLabel?: (lang: string) => string
+}[] = [
   { id: 'aiModel', labelKey: 'setSecAiModel' },
   { id: 'aiMedia', labelKey: 'setSecAiMedia' },
+  {
+    id: 'openingEffects',
+    labelKey: 'setSecGeneral',
+    customLabel: (l: string) => groupText(l, 'opening'),
+  },
   { id: 'general', labelKey: 'setSecGeneral' },
   { id: 'integrations', labelKey: 'setSecIntegrations' },
   { id: 'about', labelKey: 'setSecAbout' },
 ]
 
 function SectionIcon({ id }: { id: SectionId }) {
+  if (id === 'openingEffects') {
+    return (
+      <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <path
+          d="m8 2 1.8 4.2L14 8l-4.2 1.8L8 14l-1.8-4.2L2 8l4.2-1.8z"
+          stroke="currentColor"
+          strokeWidth="1.3"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      </svg>
+    )
+  }
   if (id === 'aiModel') {
     return (
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
@@ -2142,7 +2165,7 @@ export function SettingsModal({
                 onClick={() => setSection(s.id)}
               >
                 <SectionIcon id={s.id} />
-                {t(s.labelKey)}
+                {s.customLabel ? s.customLabel(lang) : t(s.labelKey)}
                 {s.id === 'integrations' && updateDue && (
                   <span className="set-nav-dot" role="img" aria-label={t('intgUpdateDue')} />
                 )}
@@ -2160,6 +2183,12 @@ export function SettingsModal({
                 onFileSearchChange={onFileSearchChange}
                 focusBlock={target?.block}
               />
+            )}
+            {section === 'openingEffects' && (
+              <>
+                <h3 className="set-pane-title">{groupText(lang, 'opening')}</h3>
+                <OpeningEffectsSettings lang={lang} />
+              </>
             )}
             {section === 'general' && (
               <>
@@ -2545,7 +2574,29 @@ export function SettingsModal({
                   hint={groupText(lang, 'openingHint')}
                   fold
                 >
-                  <OpeningEffectsSettings lang={lang} />
+                  <div className="set-field" style={{ padding: '8px 0' }}>
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <div className="set-field-label">
+                          {lang === 'vi'
+                            ? 'Hiệu ứng mở tệp & Thẻ cá nhân'
+                            : 'Opening Effects & Studio'}
+                        </div>
+                        <div className="set-field-desc">
+                          {lang === 'vi'
+                            ? 'Cấu hình và tùy chỉnh thẻ hiệu ứng mở tệp đã được chuyển thành mục riêng trong Cài đặt.'
+                            : 'Opening effects and card studio configuration is available in its dedicated section.'}
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      className="set-btn"
+                      onClick={() => setSection('openingEffects')}
+                    >
+                      {lang === 'vi' ? 'Mở cài đặt' : 'Open settings'}
+                    </button>
+                  </div>
                 </SetGroup>
                 <SetGroup
                   title={groupText(lang, 'privacy')}

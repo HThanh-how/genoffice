@@ -8,6 +8,7 @@ import {
   sceneMeta,
 } from '../../shared/opening-scenes-meta'
 import type { OpeningApp, OpeningPrefs } from '../../shared/opening-scenes-meta'
+import { sampleFileName } from '../../shared/opening-card-css'
 import { SCENE_BOOT, SCENE_LIB } from './opening-scenes'
 
 /**
@@ -497,6 +498,8 @@ export function startOpeningNotice(options: {
   }
 }
 
+export { sampleFileName }
+
 /** Plays a scene in a small window for a few seconds, for the settings page's "Preview". It closes by itself, or when you click elsewhere. */
 export function previewOpeningScene(options: {
   app: SplashApp
@@ -527,11 +530,12 @@ export function previewOpeningScene(options: {
   window.webContents.on('will-navigate', (event) => event.preventDefault())
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   const html = buildOpeningPage({
-    fileName: options.lang === 'vi' ? 'Bảng tính của tôi.xlsx' : 'My document.xlsx',
+    fileName: sampleFileName(options.app, options.lang),
     lang: options.lang,
     kind: 'open',
     app: options.app,
     scene: options.scene,
+    layout: 'card',
   })
   void window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
   const timer = setTimeout(() => {

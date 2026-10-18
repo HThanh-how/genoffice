@@ -1,10 +1,9 @@
-import { test, expect } from '@playwright/test'
-import { mkdtemp, writeFile } from 'node:fs/promises'
+import { test, expect, type Page } from '@playwright/test'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import JSZip from 'jszip'
-import type { Page } from '@playwright/test'
-import { launchShell, waitForPageWithUrl } from './helpers'
+import { closeAndSaveVideo, launchShell, waitForPageWithUrl } from './helpers'
 
 /** Minimal single-sheet workbook with three "apple" hits in column A. */
 async function buildWorkbook(): Promise<Buffer> {
@@ -83,13 +82,14 @@ test('sheets: Excel-style Find & Replace panel', async () => {
     const sheets = await waitForPageWithUrl(launched.app, '://sheets/')
     await waitForWorkbook(sheets)
 
-    const grid = await sheets.locator('canvas').first().boundingBox()
-    if (!grid) throw new Error('no grid canvas')
+    await sheets.bringToFront()
     // click well inside the cell area — a header click does not focus the unit
-    await sheets.mouse.click(grid.x + 300, grid.y + 150)
+    await sheets
+      .locator('canvas[id^="univer-sheet-main-canvas"]')
+      .click({ position: { x: 300, y: 150 } })
     await sheets.waitForTimeout(400)
 
-    await sheets.keyboard.press('Control+f')
+    await sheets.keyboard.press('ControlOrMeta+f')
     const panel = sheets.locator('.find-replace-panel')
     await expect(panel).toBeVisible({ timeout: 10_000 })
     // the stock Univer dialog must stay invisible
@@ -126,6 +126,8 @@ test('sheets: Excel-style Find & Replace panel', async () => {
     await sheets.keyboard.press('Escape')
     await expect(panel).toHaveCount(0, { timeout: 5_000 })
   } finally {
-    await launched.app.close().catch(() => {})
+    await closeAndSaveVideo(launched, 'sheets-find-replace')
+    await rm(scratch, { recursive: true, force: true })
+    await rm(launched.userDataDir, { recursive: true, force: true })
   }
 })

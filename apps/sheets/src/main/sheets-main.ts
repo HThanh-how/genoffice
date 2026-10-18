@@ -2624,7 +2624,13 @@ const closeSaveWaiters = new Map<number, (ok: boolean) => void>()
 const trackedEditSenders = new Set<number>()
 
 export function sheetsPendingEditCount(webContentsId: number): number {
-  return pendingEditCounts.get(webContentsId) ?? 0
+  const autosavedNew = [...(sheetsTabs.get(webContentsId)?.sessions.values() ?? [])].filter(
+    (s) =>
+      s.unsavedNew &&
+      s.suggestSaveAs !== undefined &&
+      pendingUnsavedNewRecoveryFor(s.suggestSaveAs),
+  ).length
+  return (pendingEditCounts.get(webContentsId) ?? 0) + autosavedNew
 }
 
 /**
@@ -2656,7 +2662,19 @@ export function resetSheetsShuttingDown(): void {
   shutdownLatch.reset()
 }
 
-app.on('before-quit', markSheetsShuttingDown)
+let interactiveQuitCoordination = false
+export function setInteractiveQuitCoordination(enabled: boolean): void {
+  interactiveQuitCoordination = enabled
+}
+
+app.on('before-quit', () => {
+  if (!interactiveQuitCoordination) {
+    shutdownLatch.mark()
+  }
+})
+
+// OS signals trigger immediate non-interactive shutdown; interactive quit is
+// coordinated by the shell's QuitCoordinator so save prompts are not suppressed.
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.on(signal, () => {
     shutdownLatch.mark()
@@ -2668,15 +2686,7 @@ export async function requestSheetsClose(
   contents: WebContents,
   parent?: BrowserWindow | null,
 ): Promise<boolean> {
-  // A quiet AutoSave leaves an unsaved new workbook's journal empty, but its
-  // work still sits on no user-visible path: closing it is discarding it.
-  const autosavedNew = [...(sheetsTabs.get(contents.id)?.sessions.values() ?? [])].filter(
-    (s) =>
-      s.unsavedNew &&
-      s.suggestSaveAs !== undefined &&
-      pendingUnsavedNewRecoveryFor(s.suggestSaveAs),
-  ).length
-  const count = (pendingEditCounts.get(contents.id) ?? 0) + autosavedNew
+  const count = sheetsPendingEditCount(contents.id)
   const decision = closeGuardDecision({
     pendingEdits: count,
     destroyed: contents.isDestroyed(),

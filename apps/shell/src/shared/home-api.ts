@@ -447,6 +447,7 @@ export interface HomeApi extends ForkHomeApi {
     css: string
   }): Promise<SaveOpeningHtmlCardResult>
   readOpeningHtmlCard?(htmlAssetId: string): Promise<StoredHtmlAsset | null>
+  readOpeningMedia?(assetId: string): Promise<string | null>
   deleteOpeningCard(cardId: string): Promise<OpeningEffectsState>
   importOpeningMedia(
     bufferBase64: string,
@@ -806,6 +807,7 @@ export const HOME_CHANNELS = {
   readOpeningHtmlCard: 'home:read-opening-html-card',
   deleteOpeningCard: 'home:delete-opening-card',
   importOpeningMedia: 'home:import-opening-media',
+  readOpeningMedia: 'home:read-opening-media',
   deleteOpeningMedia: 'home:delete-opening-media',
   generateAiCard: 'home:generate-ai-card',
   cancelAiCardGeneration: 'home:cancel-ai-card-generation',

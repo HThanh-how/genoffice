@@ -176,7 +176,7 @@ export function validateCardDefinition(raw: unknown): {
   // Validate optional mediaAssetId
   let mediaAssetId: string | undefined
   if (obj.mediaAssetId !== undefined) {
-    if (typeof obj.mediaAssetId === 'string' && isSafeAssetId(obj.mediaAssetId)) {
+    if (typeof obj.mediaAssetId === 'string' && SAFE_ID_PATTERN.test(obj.mediaAssetId)) {
       mediaAssetId = obj.mediaAssetId
     } else {
       return { ok: false, error: 'Invalid mediaAssetId format' }
@@ -186,7 +186,7 @@ export function validateCardDefinition(raw: unknown): {
   // Validate optional htmlAssetId
   let htmlAssetId: string | undefined
   if (obj.htmlAssetId !== undefined) {
-    if (typeof obj.htmlAssetId === 'string' && isSafeHtmlAssetId(obj.htmlAssetId)) {
+    if (typeof obj.htmlAssetId === 'string' && SAFE_ID_PATTERN.test(obj.htmlAssetId)) {
       htmlAssetId = obj.htmlAssetId
     } else {
       return { ok: false, error: 'Invalid htmlAssetId format' }
@@ -332,17 +332,28 @@ export async function importCardsFromExportBundle(
   ok: boolean
   importedCards: OpeningCardDefinition[]
   count: number
+  newlyCreatedMediaAssetIds: string[]
+  newlyCreatedHtmlAssetIds: string[]
   error?: string
 }> {
   // Phase 1: Preflight Validation
   if (typeof jsonContent !== 'string' || !jsonContent.trim()) {
-    return { ok: false, importedCards: [], count: 0, error: 'Empty import payload' }
+    return {
+      ok: false,
+      importedCards: [],
+      count: 0,
+      newlyCreatedMediaAssetIds: [],
+      newlyCreatedHtmlAssetIds: [],
+      error: 'Empty import payload',
+    }
   }
   if (jsonContent.length > MAX_IMPORT_BUNDLE_JSON_CHARS) {
     return {
       ok: false,
       importedCards: [],
       count: 0,
+      newlyCreatedMediaAssetIds: [],
+      newlyCreatedHtmlAssetIds: [],
       error: 'Bundle exceeds maximum size limit of 50 MB',
     }
   }
@@ -351,7 +362,14 @@ export async function importCardsFromExportBundle(
   try {
     parsed = JSON.parse(jsonContent)
   } catch {
-    return { ok: false, importedCards: [], count: 0, error: 'Invalid JSON payload' }
+    return {
+      ok: false,
+      importedCards: [],
+      count: 0,
+      newlyCreatedMediaAssetIds: [],
+      newlyCreatedHtmlAssetIds: [],
+      error: 'Invalid JSON payload',
+    }
   }
 
   let rawCards: unknown[]
@@ -366,7 +384,14 @@ export async function importCardsFromExportBundle(
   ) {
     const bundle = parsed as OpeningCardExportBundle
     if (!Array.isArray(bundle.cards)) {
-      return { ok: false, importedCards: [], count: 0, error: 'Bundle missing cards array' }
+      return {
+        ok: false,
+        importedCards: [],
+        count: 0,
+        newlyCreatedMediaAssetIds: [],
+        newlyCreatedHtmlAssetIds: [],
+        error: 'Bundle missing cards array',
+      }
     }
     rawCards = bundle.cards
     if (Array.isArray(bundle.assets)) {
@@ -382,6 +407,8 @@ export async function importCardsFromExportBundle(
       ok: false,
       importedCards: [],
       count: 0,
+      newlyCreatedMediaAssetIds: [],
+      newlyCreatedHtmlAssetIds: [],
       error: 'Unsupported import format. Expected version 1 card bundle or card array.',
     }
   }
@@ -391,6 +418,8 @@ export async function importCardsFromExportBundle(
       ok: false,
       importedCards: [],
       count: 0,
+      newlyCreatedMediaAssetIds: [],
+      newlyCreatedHtmlAssetIds: [],
       error: `Bundle exceeds maximum card limit of ${MAX_IMPORT_CARDS} cards`,
     }
   }
@@ -399,6 +428,8 @@ export async function importCardsFromExportBundle(
       ok: false,
       importedCards: [],
       count: 0,
+      newlyCreatedMediaAssetIds: [],
+      newlyCreatedHtmlAssetIds: [],
       error: `Bundle exceeds maximum asset limit of ${MAX_IMPORT_ASSETS} assets`,
     }
   }
@@ -407,6 +438,8 @@ export async function importCardsFromExportBundle(
       ok: false,
       importedCards: [],
       count: 0,
+      newlyCreatedMediaAssetIds: [],
+      newlyCreatedHtmlAssetIds: [],
       error: `Bundle exceeds maximum HTML asset limit of ${MAX_IMPORT_ASSETS} assets`,
     }
   }
@@ -425,6 +458,8 @@ export async function importCardsFromExportBundle(
       ok: false,
       importedCards: [],
       count: 0,
+      newlyCreatedMediaAssetIds: [],
+      newlyCreatedHtmlAssetIds: [],
       error: 'No valid card definitions found in import',
     }
   }
@@ -436,7 +471,7 @@ export async function importCardsFromExportBundle(
       a &&
       typeof a === 'object' &&
       typeof (a as StoredMediaAsset).assetId === 'string' &&
-      isSafeAssetId((a as StoredMediaAsset).assetId) &&
+      SAFE_ID_PATTERN.test((a as StoredMediaAsset).assetId) &&
       typeof (a as StoredMediaAsset).dataUrl === 'string'
     ) {
       const asset = a as StoredMediaAsset
@@ -445,6 +480,8 @@ export async function importCardsFromExportBundle(
           ok: false,
           importedCards: [],
           count: 0,
+          newlyCreatedMediaAssetIds: [],
+          newlyCreatedHtmlAssetIds: [],
           error: `Embedded asset ${asset.assetId} exceeds single asset size limit`,
         }
       }
@@ -459,7 +496,7 @@ export async function importCardsFromExportBundle(
       h &&
       typeof h === 'object' &&
       typeof (h as StoredHtmlAsset).assetId === 'string' &&
-      isSafeHtmlAssetId((h as StoredHtmlAsset).assetId) &&
+      SAFE_ID_PATTERN.test((h as StoredHtmlAsset).assetId) &&
       typeof (h as StoredHtmlAsset).html === 'string' &&
       typeof (h as StoredHtmlAsset).css === 'string'
     ) {
@@ -471,6 +508,8 @@ export async function importCardsFromExportBundle(
           ok: false,
           importedCards: [],
           count: 0,
+          newlyCreatedMediaAssetIds: [],
+          newlyCreatedHtmlAssetIds: [],
           error: `Embedded HTML asset ${hAsset.assetId} contains prohibited or unsafe code`,
         }
       }
@@ -545,23 +584,49 @@ export async function importCardsFromExportBundle(
       ok: false,
       importedCards: [],
       count: 0,
+      newlyCreatedMediaAssetIds: [],
+      newlyCreatedHtmlAssetIds: [],
       error: `Asset import failed: ${err instanceof Error ? err.message : String(err)}`,
     }
   }
 
-  // Remap media and HTML asset IDs on accepted cards
+  // Remap media and HTML asset IDs on accepted cards and validate un-embedded local references
   const finalCards: OpeningCardDefinition[] = preparedCards.map((card) => {
     let remappedCard = card
     if (remappedCard.mediaAssetId) {
       const remappedMedia = importedAssetMap.get(remappedCard.mediaAssetId)
       if (remappedMedia) {
         remappedCard = { ...remappedCard, mediaAssetId: remappedMedia }
+      } else {
+        let localExists: boolean
+        try {
+          localExists =
+            isSafeAssetId(remappedCard.mediaAssetId) &&
+            existsSync(resolveSafeAssetPath(userDataPath, remappedCard.mediaAssetId))
+        } catch {
+          localExists = false
+        }
+        if (!localExists) {
+          remappedCard = { ...remappedCard, mediaAssetId: undefined }
+        }
       }
     }
     if (remappedCard.htmlAssetId) {
       const remappedHtml = importedHtmlAssetMap.get(remappedCard.htmlAssetId)
       if (remappedHtml) {
         remappedCard = { ...remappedCard, htmlAssetId: remappedHtml }
+      } else {
+        let localExists: boolean
+        try {
+          localExists =
+            isSafeHtmlAssetId(remappedCard.htmlAssetId) &&
+            Boolean(readHtmlCardAsset(userDataPath, remappedCard.htmlAssetId))
+        } catch {
+          localExists = false
+        }
+        if (!localExists) {
+          remappedCard = { ...remappedCard, htmlAssetId: undefined }
+        }
       }
     }
     return remappedCard
@@ -571,5 +636,26 @@ export async function importCardsFromExportBundle(
     ok: true,
     importedCards: finalCards,
     count: finalCards.length,
+    newlyCreatedMediaAssetIds: newlyCreatedAssetIds,
+    newlyCreatedHtmlAssetIds,
   }
+}
+
+/**
+ * Merges newly imported custom cards into the latest preferences' custom cards.
+ * Preserves intervening saved/deleted cards and generates unique IDs if collisions occur.
+ */
+export function mergeImportedOpeningCards(
+  existingCustomCards: readonly OpeningCardDefinition[],
+  importedCards: readonly OpeningCardDefinition[],
+): OpeningCardDefinition[] {
+  const mergedMap = new Map(existingCustomCards.map((c) => [c.id, c]))
+  for (const card of importedCards) {
+    let id = card.id
+    while (mergedMap.has(id) || isBuiltInCard(id)) {
+      id = `custom:imported_${Date.now()}_${randomBytes(4).toString('hex')}`
+    }
+    mergedMap.set(id, { ...card, id })
+  }
+  return Array.from(mergedMap.values())
 }
