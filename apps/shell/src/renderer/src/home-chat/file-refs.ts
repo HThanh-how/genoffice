@@ -4,6 +4,7 @@ import type {
   DocumentMemoryReadResult,
   DocumentMemorySearchResult,
 } from '@genoffice/agent-core'
+import { parseFileNavHref } from '@genoffice/ui'
 import type { HomeChatSource } from '../../../shared/fork/home-chat-types'
 
 /**
@@ -112,10 +113,16 @@ export class FileRefTable {
     return source
   }
 
-  /** Adds a file found by name only (no document id). */
-  addFile(file: { path: string; name: string; mtimeMs?: number }): HomeChatSource {
+  /** Adds a file found by name only (no document id), optionally recording its folder location. */
+  addFile(file: {
+    path: string
+    name: string
+    mtimeMs?: number
+    location?: string
+  }): HomeChatSource {
     const existing = this.lookup(0, file.path)
     if (existing) {
+      if (!existing.location && file.location) existing.location = clean(file.location)
       if (existing.modifiedAt === undefined && typeof file.mtimeMs === 'number')
         existing.modifiedAt = file.mtimeMs
       return existing
@@ -125,7 +132,7 @@ export class FileRefTable {
       ref: this.next++,
       path: file.path,
       name: clean(file.name),
-      location: '',
+      location: file.location ? clean(file.location) : '',
       ...(typeof file.mtimeMs === 'number' ? { modifiedAt: file.mtimeMs } : {}),
     }
     this.byRef.set(source.ref!, source)
@@ -330,6 +337,18 @@ function markNotes(markdown: string): string {
     .join('\n')
 }
 
+/** Resolve knowledge-base citations only through this message's trusted source table. */
+function normalizeFileCitations(text: string, sources: readonly HomeChatSource[]): string {
+  return text.replace(
+    /\[([^\]\n]+)\]\((filenav:\/\/[^)\s]+)\)/g,
+    (_match, label: string, href: string) => {
+      const path = parseFileNavHref(href)
+      const source = sources.find((entry) => entry.path === path && entry.ref !== undefined)
+      return source ? `[[file:${source.ref}]]` : label
+    },
+  )
+}
+
 /**
  * Rewrites the answer so every file it mentions is a link the renderer turns into a chip.
  * `streaming` keeps the pass cheap and stable: only explicit markers are linked (plain names
@@ -340,7 +359,7 @@ export function linkAnswer(
   sources: readonly HomeChatSource[],
   options: { streaming?: boolean } = {},
 ): LinkedAnswer {
-  let text = rawText.normalize('NFC')
+  let text = normalizeFileCitations(rawText.normalize('NFC'), sources)
   if (options.streaming) text = hidePartialMarker(text)
   const known = new Set<number>()
   for (const source of sources) if (source.ref !== undefined) known.add(source.ref)
@@ -386,7 +405,7 @@ export function linkAnswer(
 export function plainAnswer(text: string, sources: readonly HomeChatSource[]): string {
   const known = new Set<number>()
   for (const source of sources) if (source.ref !== undefined) known.add(source.ref)
-  const normalized = text.normalize('NFC')
+  const normalized = normalizeFileCitations(text.normalize('NFC'), sources)
   let out = ''
   let cursor = 0
   for (const span of markerSpans(normalized, known)) {
@@ -447,8 +466,8 @@ export function refBridge(
   const { documentMemorySearch, documentMemoryRead, documentMemoryOpen } = bridge
   if (documentMemorySearch) {
     out.documentMemorySearch = async (query, limit) => {
-      const result = await documentMemorySearch(query, limit)
       const files = table()
+      const result = await documentMemorySearch(query, limit)
       const hits = (result.hits ?? []).map((hit) => {
         const usable = Number.isSafeInteger(hit.documentId) && (hit.documentId > 0 || !!hit.path)
         return usable ? { ...hit, ref: files.addHit(hit).ref } : hit
@@ -458,8 +477,9 @@ export function refBridge(
   }
   if (documentMemoryRead) {
     out.documentMemoryRead = async (chunkId): Promise<DocumentMemoryReadResult> => {
+      const files = table()
       const result = await documentMemoryRead(chunkId)
-      const ref = table().refForPath(result.path)
+      const ref = files.refForPath(result.path)
       return ref === undefined ? result : ({ ...result, ref } as DocumentMemoryReadResult)
     }
   }

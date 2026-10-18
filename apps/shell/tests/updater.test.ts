@@ -189,6 +189,117 @@ afterEach(() => {
 })
 
 describe('initAutoUpdater', () => {
+  it('uses the bundled self-updater only for the default source in packaged supported builds', async () => {
+    const { hasNativeUpdateProvider } = await loadUpdater()
+    const source = { kind: 'github', value: 'HThanh-how/genoffice' } as const
+    expect(hasNativeUpdateProvider(source)).toBe(true)
+    expect(hasNativeUpdateProvider({ kind: 'github', value: 'another/fork' })).toBe(false)
+    expect(
+      hasNativeUpdateProvider({ kind: 'manifest', value: 'https://example.com/update.json' }),
+    ).toBe(false)
+    existsSyncMock.mockReturnValue(false)
+    expect(hasNativeUpdateProvider(source)).toBe(false)
+    existsSyncMock.mockReturnValue(true)
+    appState.isPackaged = false
+    expect(hasNativeUpdateProvider(source)).toBe(false)
+  })
+
+  it('suspends bundled checks and discards downloaded updates when a custom source is selected', async () => {
+    let selected = true
+    const { initAutoUpdater, applyUpdateChannel } = await loadUpdater()
+    initAutoUpdater(
+      () => null,
+      'stable',
+      () => selected,
+    )
+    updaterState.listeners.get('update-available')!({ version: '0.2.0' })
+    lastShownActions().onDownload()
+    updaterState.listeners.get('update-downloaded')!({ version: '0.2.0' })
+    const stale = lastShownActions()
+    selected = false
+    applyUpdateChannel('stable')
+    vi.advanceTimersByTime(FIRST_CHECK_DELAY_MS)
+    stale.onInstall()
+    stale.onDownload()
+    vi.advanceTimersByTime(0)
+    expect(checkForUpdates).not.toHaveBeenCalled()
+    expect(quitAndInstall).not.toHaveBeenCalled()
+    expect(downloadUpdate).toHaveBeenCalledTimes(1)
+    expect(updaterState.autoInstallOnAppQuit).toBe(false)
+    showUpdateWindow.mockClear()
+    updaterState.listeners.get('update-available')!({ version: '0.3.0' })
+    updaterState.listeners.get('update-downloaded')!({ version: '0.2.0' })
+    expect(showUpdateWindow).not.toHaveBeenCalled()
+    selected = true
+    applyUpdateChannel('stable')
+    expect(checkForUpdates).toHaveBeenCalledOnce()
+  })
+
+  it('reopens an actionable manual-install explanation for native apply errors after download', async () => {
+    const { initAutoUpdater } = await loadUpdater()
+    initAutoUpdater(() => null)
+    updaterState.listeners.get('update-available')!({ version: '0.2.0' })
+    lastShownActions().onDownload()
+    updaterState.listeners.get('update-downloaded')!({ version: '0.2.0' })
+    lastShownActions().onInstall()
+    updaterState.listeners.get('error')!(new Error('Code signature does not match'))
+    vi.advanceTimersByTime(0)
+    expect(lastShownState().phase).toBe('manual')
+    expect(lastShownState().strings.manualDesc).toMatch(/manual|thủ công|手动/i)
+    expect(updaterState.autoInstallOnAppQuit).toBe(false)
+    expect(quitAndInstall).not.toHaveBeenCalled()
+    lastShownActions().onOpenDownload()
+    expect(openExternal).toHaveBeenCalledWith(
+      'https://github.com/HThanh-how/genoffice/releases/latest',
+    )
+  })
+
+  it('handles Squirrel preparation failure after the public downloaded event and before Restart', async () => {
+    const { initAutoUpdater } = await loadUpdater()
+    initAutoUpdater(() => null)
+    updaterState.listeners.get('update-available')!({ version: '0.2.0' })
+    lastShownActions().onDownload()
+    // MacUpdater.doDownloadUpdate dispatches this before calling the native
+    // updater. Its native error listener forwards only the Error to this emitter.
+    updaterState.listeners.get('update-downloaded')!({ version: '0.2.0' })
+    expect(updaterState.autoInstallOnAppQuit).toBe(true)
+    updaterState.listeners.get('error')!(new Error('The application has an invalid signature'))
+    expect(lastShownState().phase).toBe('manual')
+    expect(updaterState.autoInstallOnAppQuit).toBe(false)
+    lastShownActions().onInstall()
+    vi.advanceTimersByTime(0)
+    expect(quitAndInstall).not.toHaveBeenCalled()
+    lastShownActions().onOpenDownload()
+    expect(openExternal).toHaveBeenCalledWith(
+      'https://github.com/HThanh-how/genoffice/releases/latest',
+    )
+  })
+
+  it('keeps a verified download ready if only a later background check fails', async () => {
+    const { initAutoUpdater } = await loadUpdater()
+    initAutoUpdater(() => null)
+    updaterState.listeners.get('update-available')!({ version: '0.2.0' })
+    lastShownActions().onDownload()
+    updaterState.listeners.get('update-downloaded')!({ version: '0.2.0' })
+    updaterState.listeners.get('error')!(
+      new Error('Network unavailable during recheck'),
+      'Cannot check for updates: Error: Network unavailable during recheck',
+    )
+    expect(showUpdateWindow).toHaveBeenCalledTimes(1)
+    expect(pushUpdateState.mock.calls.at(-1)?.[0].phase).toBe('downloaded')
+    expect(updaterState.autoInstallOnAppQuit).toBe(true)
+  })
+
+  it('does not quit or install before the package is downloaded', async () => {
+    const { initAutoUpdater } = await loadUpdater()
+    initAutoUpdater(() => null)
+    updaterState.listeners.get('update-available')!({ version: '0.2.0' })
+    lastShownActions().onInstall()
+    vi.advanceTimersByTime(0)
+    expect(closeUpdateWindow).not.toHaveBeenCalled()
+    expect(quitAndInstall).not.toHaveBeenCalled()
+  })
+
   it('leaves unsigned CI installers without an update feed inactive', async () => {
     existsSyncMock.mockReturnValue(false)
     const { initAutoUpdater } = await loadUpdater()
@@ -290,6 +401,8 @@ describe('initAutoUpdater', () => {
     const { initAutoUpdater } = await loadUpdater()
     initAutoUpdater(() => null)
     updaterState.listeners.get('update-available')!({ version: '0.2.0' })
+    lastShownActions().onDownload()
+    updaterState.listeners.get('update-downloaded')!({ version: '0.2.0' })
     lastShownActions().onInstall()
     expect(closeUpdateWindow).toHaveBeenCalledTimes(1)
     // quitAndInstall is deferred so the window can finish closing first

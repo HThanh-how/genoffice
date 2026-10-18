@@ -11,6 +11,8 @@ import { ProviderLogo } from './provider-logos'
 import { useDismissablePopover } from './popover-dismiss'
 import { AI_MODEL_PICKER_STRINGS } from './strings-ai-model-picker'
 
+import type { AgyBarApi, AgyBarState } from './AgyChatBar'
+
 /** Each app's preload exposes these under its own namespace; the panel adapts them. */
 export interface AiModelPickerBridge {
   readonly getSettings: () => Promise<AiSettings>
@@ -37,6 +39,7 @@ export function AiModelPicker({
 }): React.JSX.Element | null {
   const strings = AI_MODEL_PICKER_STRINGS[lang] ?? AI_MODEL_PICKER_STRINGS.en
   const [settings, setSettings] = useState<AiSettings | null>(null)
+  const [agyState, setAgyState] = useState<AgyBarState | null>(null)
   const [loggedIn, setLoggedIn] = useState(false)
   const [open, setOpen] = useState(false)
   const [popStyle, setPopStyle] = useState<React.CSSProperties>({})
@@ -51,11 +54,21 @@ export function AiModelPicker({
     Promise.resolve()
       .then(() => bridge.gskLoggedIn?.() ?? false)
       .then(setLoggedIn, () => {})
+    const agy =
+      typeof window !== 'undefined'
+        ? (window as unknown as { agyChat?: AgyBarApi }).agyChat
+        : undefined
+    if (agy?.getAgyChatState) {
+      Promise.resolve()
+        .then(() => agy.getAgyChatState())
+        .then(setAgyState, () => {})
+    }
   }, [bridge])
 
   useEffect(() => {
     refresh()
     window.addEventListener('focus', refresh)
+    window.addEventListener('genoffice-agy-model-changed', refresh)
     let off: (() => void) | undefined
     try {
       off = bridge.onSettingsChanged?.(refresh)
@@ -64,9 +77,17 @@ export function AiModelPicker({
     }
     return () => {
       window.removeEventListener('focus', refresh)
+      window.removeEventListener('genoffice-agy-model-changed', refresh)
       off?.()
     }
   }, [bridge, refresh])
+
+  useEffect(() => {
+    if (open)
+      popRef.current
+        ?.querySelector<HTMLButtonElement>('[aria-selected="true"], [role="option"]')
+        ?.focus()
+  }, [open])
 
   const close = useCallback(() => setOpen(false), [])
   useDismissablePopover(open, close, {
@@ -74,8 +95,8 @@ export function AiModelPicker({
   })
 
   const groups = useMemo(
-    () => (settings ? aiModelPickerGroups(settings, loggedIn) : []),
-    [settings, loggedIn],
+    () => (settings ? aiModelPickerGroups(settings, loggedIn, agyState?.models) : []),
+    [settings, loggedIn, agyState?.models],
   )
   const current = settings ? aiModelPickerSelection(settings) : null
   const sameGroup = (g: { id: string; endpoint?: string | undefined }) =>
@@ -86,17 +107,30 @@ export function AiModelPicker({
     if (!open) {
       const rect = chipRef.current?.getBoundingClientRect()
       // the composer sits at the panel bottom: open upwards, pinned to the chip
-      if (rect) setPopStyle({ left: rect.left, bottom: window.innerHeight - rect.top + 6 })
+      if (rect)
+        setPopStyle({
+          left: Math.max(12, Math.min(rect.left, window.innerWidth - 287)),
+          bottom: window.innerHeight - rect.top + 6,
+          maxHeight: Math.min(420, Math.max(100, rect.top - 18)),
+        })
     }
     setOpen((v) => !v)
   }
 
-  const pick = (sel: AiModelPickerSelection) => {
+  const pick = async (sel: AiModelPickerSelection) => {
     setOpen(false)
     if (!settings) return
+    const prev = settings
     const next = withAiModelSelection(settings, sel)
     setSettings(next)
-    void bridge.setSettings(next).catch(() => {})
+    try {
+      await bridge.setSettings(next)
+      refresh()
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    } catch {
+      setSettings(prev)
+      refresh()
+    }
   }
 
   const manage = () => {
@@ -105,15 +139,35 @@ export function AiModelPicker({
   }
 
   if (!settings) return null
+  const agyModelLabel =
+    current?.provider === 'agy'
+      ? agyState?.models?.find((m) => m.id === current.model)?.label
+      : undefined
   const chipText =
     currentUsable && current
-      ? current.model || (groups.find(sameGroup)?.label ?? '')
+      ? agyModelLabel || current.model || (groups.find(sameGroup)?.label ?? '')
       : strings.choose
 
   return (
     <div
       className="ai-model-picker"
       onKeyDown={(e) => {
+        if (open && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
+          const options = Array.from(
+            popRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? [],
+          )
+          if (options.length) {
+            const at = options.indexOf(document.activeElement as HTMLButtonElement)
+            const next =
+              e.key === 'Home'
+                ? 0
+                : e.key === 'End'
+                  ? options.length - 1
+                  : (at + (e.key === 'ArrowUp' ? -1 : 1) + options.length) % options.length
+            options[next]?.focus()
+            e.preventDefault()
+          }
+        }
         if (e.key === 'Escape' && open) {
           e.stopPropagation()
           setOpen(false)
@@ -161,6 +215,8 @@ export function AiModelPicker({
                 </div>
                 {(g.models.length > 0 ? g.models : ['']).map((m) => {
                   const selected = sameGroup(g) && current?.model === m
+                  const itemLabel =
+                    g.modelItems?.find((item) => item.id === m)?.label || m || g.label
                   return (
                     <button
                       key={`${g.id}:${g.endpoint ?? ''}:${m}`}
@@ -170,7 +226,7 @@ export function AiModelPicker({
                       className={`ai-model-item${selected ? ' selected' : ''}`}
                       onClick={() => pick({ provider: g.id, endpoint: g.endpoint, model: m })}
                     >
-                      <span className="ai-model-item-text">{m || g.label}</span>
+                      <span className="ai-model-item-text">{itemLabel}</span>
                       {selected && (
                         <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
                           <path

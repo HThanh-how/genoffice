@@ -16,6 +16,8 @@ export type ChatItem = {
   sources?: HomeChatSource[]
   /** every file the model was given an id for in this turn; lets `[[file:N]]` resolve while it streams */
   candidates?: HomeChatSource[]
+  /** document export state */
+  saved?: { path: string; name: string } | { error: string } | 'saving'
 }
 
 export type ChatLabels = {
@@ -42,6 +44,10 @@ export type ChatLabels = {
   sourceSkeletonHint: string
   copy: string
   copied: string
+  saveMd?: string
+  saveDocx?: string
+  savedAs?: (name: string) => string
+  saveFailed?: (error: string) => string
 }
 
 type Props = {
@@ -54,6 +60,8 @@ type Props = {
   onOpenSource: (source: HomeChatSource) => void
   onRevealSource: (source: HomeChatSource) => void
   onRetry: () => void
+  onSaveAnswer?: (id: number, format: 'md' | 'docx') => Promise<void>
+  onOpenPath?: (path: string) => void
 }
 
 /**
@@ -88,6 +96,8 @@ function AssistantMessage({
   onOpenSource,
   onRevealSource,
   onRetry,
+  onSaveAnswer,
+  onOpenPath,
 }: Props) {
   const showTyping = item.streaming && !item.text
   // While streaming, ids resolve against every file the model was given; afterwards against the
@@ -161,7 +171,56 @@ function AssistantMessage({
       {!item.streaming && item.sources && item.sources.length > 0 && (
         <FilesPanel sources={item.sources} related={related} {...handlers} />
       )}
-      {!item.streaming && item.text && <CopyButton text={plain || item.text} labels={labels} />}
+      {!item.streaming && item.text && (
+        <div className="hc-msg-actions">
+          <CopyButton text={plain || item.text} labels={labels} />
+          {onSaveAnswer &&
+            (item.saved && typeof item.saved === 'object' && 'path' in item.saved ? (
+              <button
+                type="button"
+                className="hc-text-button hc-save-btn hc-save-btn-saved"
+                onClick={() => onOpenPath?.((item.saved as { path: string }).path)}
+              >
+                <IconFileText />
+                <span>
+                  {labels.savedAs
+                    ? labels.savedAs((item.saved as { name: string }).name)
+                    : `Saved as ${(item.saved as { name: string }).name}`}
+                </span>
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="hc-text-button hc-save-btn"
+                  disabled={item.saved === 'saving'}
+                  onClick={() => void onSaveAnswer(item.id, 'md')}
+                  title={labels.saveMd ?? 'Save as Markdown'}
+                >
+                  <IconFilePlus />
+                  <span>{labels.saveMd ?? 'Save as Markdown'}</span>
+                </button>
+                <button
+                  type="button"
+                  className="hc-text-button hc-save-btn"
+                  disabled={item.saved === 'saving'}
+                  onClick={() => void onSaveAnswer(item.id, 'docx')}
+                  title={labels.saveDocx ?? 'Save as Word (.docx)'}
+                >
+                  <IconFilePlus />
+                  <span>{labels.saveDocx ?? 'Save as Word (.docx)'}</span>
+                </button>
+                {item.saved && typeof item.saved === 'object' && 'error' in item.saved && (
+                  <span className="hc-save-error" role="status">
+                    {labels.saveFailed
+                      ? labels.saveFailed(item.saved.error)
+                      : `Save failed: ${item.saved.error}`}
+                  </span>
+                )}
+              </>
+            ))}
+        </div>
+      )}
     </article>
   )
 }
@@ -482,38 +541,76 @@ function CopyButton({ text, labels }: { text: string; labels: ChatLabels }) {
     timer.current = window.setTimeout(() => setCopied(false), 1600)
   }, [text])
   return (
-    <div className="hc-msg-actions">
-      <button type="button" className="hc-text-button" onClick={() => void copy()}>
-        <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-          {copied ? (
-            <path
-              d="m4.5 10.5 3.5 3.5 7.5-8"
+    <button type="button" className="hc-text-button" onClick={() => void copy()}>
+      <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+        {copied ? (
+          <path
+            d="m4.5 10.5 3.5 3.5 7.5-8"
+            stroke="currentColor"
+            strokeWidth="1.7"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ) : (
+          <>
+            <rect
+              x="7"
+              y="7"
+              width="9"
+              height="9.5"
+              rx="2"
               stroke="currentColor"
-              strokeWidth="1.7"
-              strokeLinecap="round"
-              strokeLinejoin="round"
+              strokeWidth="1.5"
             />
-          ) : (
-            <>
-              <rect
-                x="7"
-                y="7"
-                width="9"
-                height="9.5"
-                rx="2"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              />
-              <path
-                d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7"
-                stroke="currentColor"
-                strokeWidth="1.5"
-              />
-            </>
-          )}
-        </svg>
-        <span aria-live="polite">{copied ? labels.copied : labels.copy}</span>
-      </button>
-    </div>
+            <path
+              d="M13 7V5.5A1.5 1.5 0 0 0 11.5 4h-6A1.5 1.5 0 0 0 4 5.5v6A1.5 1.5 0 0 0 5.5 13H7"
+              stroke="currentColor"
+              strokeWidth="1.5"
+            />
+          </>
+        )}
+      </svg>
+      <span aria-live="polite">{copied ? labels.copied : labels.copy}</span>
+    </button>
+  )
+}
+
+function IconFilePlus(): React.JSX.Element {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <polyline points="14 2 14 8 20 8" />
+      <line x1="12" y1="18" x2="12" y2="12" />
+      <line x1="9" y1="15" x2="15" y2="15" />
+    </svg>
+  )
+}
+
+function IconFileText(): React.JSX.Element {
+  return (
+    <svg
+      width="13"
+      height="13"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+      <path d="M14 3v5h5M9 13h6M9 17h6" />
+    </svg>
   )
 }

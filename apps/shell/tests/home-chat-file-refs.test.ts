@@ -74,6 +74,26 @@ describe('FileRefTable', () => {
     expect(table.get(1)?.stale).toBe(true)
     expect(table.get(2)).toMatchObject({ missing: true, skeletonIndex: true })
   })
+
+  it('registers starred files with folder location and ref via addFile()', () => {
+    const table = new FileRefTable()
+    const s1 = table.addFile({
+      path: '/corp/contract.docx',
+      name: 'contract.docx',
+      location: 'Legal',
+    })
+    expect(s1.ref).toBe(1)
+    expect(s1.name).toBe('contract.docx')
+    expect(s1.location).toBe('Legal')
+    // deduplicates by path
+    const s2 = table.addFile({
+      path: '/corp/contract.docx',
+      name: 'contract.docx',
+      location: 'Legal',
+    })
+    expect(s2.ref).toBe(1)
+    expect(table.size).toBe(1)
+  })
 })
 
 describe('model-facing context', () => {
@@ -283,5 +303,66 @@ describe('plain text and history', () => {
     expect(withRefs(old)?.[0]?.ref).toBe(1000)
     expect(linkAnswer('mở a.docx', withRefs(old)!).cited).toEqual([1000])
     expect(linkAnswer('lạ [[file:1000]]', withRefs(old)!).cited).toEqual([])
+  })
+})
+
+describe('knowledge-base citations in the unified conversation', () => {
+  const sources = [
+    {
+      documentId: 0,
+      path: '/Starred/Report (final).md',
+      name: 'Report (final).md',
+      location: '',
+      ref: 1,
+    },
+  ]
+  it('turns a validated encoded path into the existing source chip and export text', () => {
+    const answer = 'Evidence: [report](filenav:///Starred/Report%20%28final%29.md)'
+    expect(linkAnswer(answer, sources)).toEqual({
+      markdown: 'Evidence: [file](genoffice-file:1)',
+      cited: [1],
+    })
+    expect(pickSources(answer, sources).sources).toEqual(sources)
+    expect(plainAnswer(answer, sources)).toBe('Evidence: Report (final).md')
+  })
+  it('keeps unknown and case-distinct paths inert rather than opening model-supplied paths', () => {
+    for (const path of ['/secret/private.md', '/starred/Report%20%28final%29.md']) {
+      const linked = linkAnswer(`See [source](filenav://${path})`, sources)
+      expect(linked).toEqual({ markdown: 'See source', cited: [] })
+    }
+  })
+})
+
+describe('refBridge pending IPC ownership', () => {
+  it('keeps delayed search results and read refs in the table from invocation time', async () => {
+    const original = new FileRefTable()
+    original.addFile({ path: '/old.docx', name: 'old.docx' })
+    const replacement = new FileRefTable()
+    replacement.addFile({ path: '/new.docx', name: 'new.docx' })
+    let current = original
+    let resolveSearch!: (value: { hits: DocumentMemoryHit[] }) => void
+    let resolveRead!: (value: { path: string; text: string }) => void
+    const bridge = refBridge(
+      {
+        documentMemorySearch: () =>
+          new Promise((resolve) => {
+            resolveSearch = resolve
+          }),
+        documentMemoryRead: () =>
+          new Promise((resolve) => {
+            resolveRead = resolve as typeof resolveRead
+          }),
+      },
+      () => current,
+    )
+    const pendingSearch = bridge.documentMemorySearch!('old', 8)
+    const pendingRead = bridge.documentMemoryRead!(101)
+    current = replacement
+    resolveSearch({ hits: [{ ...hit(11, A, 101, 'Chunk 5'), path: '/late.docx' }] })
+    resolveRead({ path: '/old.docx', text: 'Old content' })
+    expect((await pendingSearch).hits[0]).toMatchObject({ ref: 2 })
+    expect(await pendingRead).toMatchObject({ ref: 1 })
+    expect(replacement.list().map((file) => file.path)).toEqual(['/new.docx'])
+    expect(original.list().map((file) => file.path)).toEqual(['/old.docx', '/late.docx'])
   })
 })

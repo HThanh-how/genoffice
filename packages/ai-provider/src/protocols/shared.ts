@@ -272,6 +272,8 @@ export interface StreamCallbacks {
   }) => void
   /** Stable renderer transport id for providers with native sessions. */
   sessionId?: string
+  /** Trusted sender scope (e.g. event.sender.id from Electron main), not renderer-controlled. */
+  sessionScope?: string | number
   /** Transport request id for correlating live turn activity with the active request attempt. */
   requestId?: string
   signal: AbortSignal

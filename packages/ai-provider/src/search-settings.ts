@@ -60,8 +60,11 @@ export function resolveAiSearchSettings(
 
 /** Parallel can run keylessly; a missing key never routes a query through Genspark. */
 export function activeSearchProvider(
-  settings: Pick<AiSettings, 'search'>,
+  settings: Pick<AiSettings, 'search'> & Partial<Pick<AiSettings, 'provider'>>,
 ): Exclude<AiSearchProviderId, 'genspark'> {
+  if (settings.provider === 'agy') {
+    return 'agy'
+  }
   const search = settings.search
   if (!search || search.provider === 'genspark') return 'parallel'
   if (!AI_SEARCH_PROVIDERS.some((m) => m.id === search.provider)) return 'parallel'

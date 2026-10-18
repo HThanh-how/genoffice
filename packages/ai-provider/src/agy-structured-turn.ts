@@ -94,6 +94,33 @@ export function agyToolTurnSchema(tools: readonly AgentToolDef[]): Record<string
   }
 }
 
+/**
+ * Generic structured turn schema used by resident AGY sessions.
+ * Matches agyToolTurnSchema exactly except name has no enum constraint,
+ * allowing prewarmed workers to serve variable tool sets safely (validated host-side).
+ */
+export function agyGenericToolTurnSchema(): Record<string, unknown> {
+  return {
+    type: 'object',
+    properties: {
+      text: { type: 'string', description: 'visible reply for the user, may be empty' },
+      tool_calls: {
+        type: 'array',
+        maxItems: AGY_MAX_TOOL_CALLS_PER_TURN,
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+            arguments: { type: 'object' },
+          },
+          required: ['name', 'arguments'],
+        },
+      },
+    },
+    required: ['text', 'tool_calls'],
+  }
+}
+
 export interface StructuredToolTurn {
   text: string
   calls: Array<{ name: string; input: Record<string, unknown> }>
@@ -125,7 +152,21 @@ export function readStructuredToolTurn(
     if (typeof args !== 'object' || args === null || Array.isArray(args)) return null
     calls.push({ name: resolved, input: args as Record<string, unknown> })
   }
-  return { text: record.text.trim(), calls }
+  // A serialized protocol envelope in visible text needs format correction, not execution.
+  // Never promote its embedded calls into host actions (it could be a quoted example).
+  if (hasAgyToolEnvelopeInText(value, known)) return null
+  return { text: record.text.replace(/^\s*<ctrl94>\s*thought\s*<ctrl95>\s*/, '').trim(), calls }
+}
+
+export function hasAgyToolEnvelopeInText(value: unknown, known: ReadonlySet<string>): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return (
+    typeof record.text === 'string' &&
+    Array.isArray(record.tool_calls) &&
+    record.tool_calls.length === 0 &&
+    parseAgyStructuredText(record.text, known).kind !== 'none'
+  )
 }
 
 export type AgyStructuredTextResult =

@@ -331,37 +331,73 @@ export function mediaConfigUsable(
  * half-filled setup degrades to the signed-in default.
  */
 export function activeMediaProvider(
-  settings: Pick<AiSettings, 'media'>,
+  settings: Pick<AiSettings, 'media'> & Partial<Pick<AiSettings, 'provider'>>,
   capability: MediaCapability,
 ): AiMediaProviderId {
+  // When Antigravity is selected, all supported media capabilities default to AGY
+  if (settings.provider === 'agy') {
+    const agyMeta = getMediaProviderMeta('agy')
+    if (agyMeta && providerHasCapability(agyMeta, capability)) {
+      return 'agy'
+    }
+  }
+
   const media = settings.media
-  if (!media) return 'genspark'
-  const id =
-    capability === 'image'
+  const preferred = media
+    ? capability === 'image'
       ? media.imageProvider
       : capability === 'video'
         ? media.videoAnalysisProvider
         : media.analysisProvider
-  if (!id || id === 'genspark') return 'genspark'
-  const meta = getMediaProviderMeta(id)
-  if (!meta || !providerHasCapability(meta, capability)) return 'genspark'
-  if (!mediaConfigUsable(meta, media.providers?.[id])) return 'genspark'
-  return id
+    : undefined
+
+  if (preferred && preferred !== 'genspark') {
+    const meta = getMediaProviderMeta(preferred)
+    if (
+      meta &&
+      providerHasCapability(meta, capability) &&
+      mediaConfigUsable(meta, media?.providers?.[preferred])
+    ) {
+      return preferred
+    }
+  }
+
+  if (preferred === 'agy') {
+    const agyMeta = getMediaProviderMeta('agy')
+    if (agyMeta && providerHasCapability(agyMeta, capability)) {
+      return 'agy'
+    }
+  }
+
+  return 'genspark'
 }
 
 /** the active BYOK config for one capability, or null when it runs through Genspark */
 export function activeMediaConfig(
-  settings: Pick<AiSettings, 'media'> & Partial<Pick<AiSettings, 'providers'>>,
+  settings: Pick<AiSettings, 'media'> & Partial<Pick<AiSettings, 'providers' | 'provider'>>,
   capability: MediaCapability,
 ): { provider: Exclude<AiMediaProviderId, 'genspark'>; config: AiMediaProviderConfig } | null {
   const provider = activeMediaProvider(settings, capability)
   if (provider === 'genspark') return null
-  const config = settings.media!.providers[provider]
-  // one Antigravity path for chat and media: the media override wins, else the chat provider's
+  const meta = getMediaProviderMeta(provider)!
+  const config = settings.media?.providers?.[provider] ?? {
+    apiKey: '',
+    imageModel: meta.defaultImageModel,
+    analysisModel: meta.defaultAnalysisModel,
+  }
+  // One Antigravity path: when AGY is forced from the chat provider (settings.provider === 'agy'),
+  // use the shared chat cliPath even if an old media path remains. When switching away or setting
+  // an intentional media override, config.cliPath wins if present.
   const sharedPath = provider === 'agy' ? settings.providers?.agy?.cliPath?.trim() : undefined
+  const resolvedConfig =
+    provider === 'agy' && settings.provider === 'agy' && sharedPath
+      ? { ...config, cliPath: sharedPath }
+      : sharedPath && !config.cliPath?.trim()
+        ? { ...config, cliPath: sharedPath }
+        : config
   return {
     provider,
-    config: sharedPath && !config.cliPath?.trim() ? { ...config, cliPath: sharedPath } : config,
+    config: resolvedConfig,
   }
 }
 

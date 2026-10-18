@@ -224,7 +224,7 @@ const homeApi: HomeApi = {
   },
   async openPath(path) {
     if (typeof path !== 'string' || !path) throw new Error('Invalid path.')
-    await ipcRenderer.invoke(HOME_CHANNELS.openPath, path)
+    return ipcRenderer.invoke(HOME_CHANNELS.openPath, path)
   },
   async browse() {
     await ipcRenderer.invoke(HOME_CHANNELS.browse)

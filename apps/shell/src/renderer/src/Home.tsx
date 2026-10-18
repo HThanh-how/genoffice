@@ -7,7 +7,6 @@ import { folderMenuWords } from './fork/folder-menu-words'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
-import { KbAskPanel } from './KbAskPanel'
 import iconDocx from './assets/file-docx.svg'
 import iconXlsx from './assets/file-xlsx.svg'
 import iconPptx from './assets/file-pptx.svg'
@@ -807,13 +806,22 @@ function AccountEntry({
   onStatusChange,
   onFileSearchSettingsChange,
   openRequest,
+  onSettingsOpenChange,
 }: {
   onStatusChange?: (status: AccountStatus | null) => void
   onFileSearchSettingsChange?: () => void
   openRequest?: SettingsTarget | null
+  onSettingsOpenChange?: (open: boolean) => void
 }) {
   const { t } = useI18n()
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [settingsOpen, setSettingsOpenState] = useState(false)
+  const setSettingsOpen = useCallback(
+    (open: boolean) => {
+      setSettingsOpenState(open)
+      onSettingsOpenChange?.(open)
+    },
+    [onSettingsOpenChange],
+  )
   const [target, setTarget] = useState<SettingsTarget | null>(null)
   const [skillUpdate, setSkillUpdate] = useState(false)
 
@@ -828,10 +836,13 @@ function AccountEntry({
       alive = false
     }
   }, [settingsOpen])
-  const openSettings = useCallback((to: SettingsTarget | null) => {
-    setTarget(to)
-    setSettingsOpen(true)
-  }, [])
+  const openSettings = useCallback(
+    (to: SettingsTarget | null) => {
+      setTarget(to)
+      setSettingsOpen(true)
+    },
+    [setSettingsOpen],
+  )
   useEffect(() => {
     if (openRequest) openSettings(openRequest)
   }, [openRequest, openSettings])
@@ -1299,6 +1310,7 @@ export function Home() {
   // bumped when the Jev settings change so the current results are judged again (or the order dropped)
   const [rerankSettingsTick, setRerankSettingsTick] = useState(0)
   const [settingsRequest, setSettingsRequest] = useState<SettingsTarget | null>(null)
+  const openModelSettings = useCallback(() => setSettingsRequest({ section: 'aiModel' }), [])
   useEffect(
     () =>
       window.aiOffice.onOpenSettings?.((target) =>
@@ -1339,6 +1351,7 @@ export function Home() {
   const [greetAskKey] = useState(
     () => GREET_ASK_KEYS[Math.floor(Math.random() * GREET_ASK_KEYS.length)]!,
   )
+  const [settingsModalOpen, setSettingsModalOpen] = useState(false)
 
   // ── Folder tree state ──
   // the default save folder first, then the folders the user added; `root` is the default one
@@ -1740,6 +1753,15 @@ export function Home() {
     setRowMenu(null)
     setGroupFilter(null)
   }
+
+  const openAskWorkspace = useCallback(() => {
+    setIndexOpen(false)
+    setAskMode(true)
+    setSelectedFolder(null)
+    setCloudMode(false)
+    setSelected(new Set())
+    setRowMenu(null)
+  }, [])
 
   const changeFilter = (key: string) => {
     setFilter(key)
@@ -3352,14 +3374,7 @@ export function Home() {
           />
           <button
             className={`nav-item${askMode && !selectedFolder && !cloudMode ? ' active' : ''}`}
-            onClick={() => {
-              setIndexOpen(false)
-              setAskMode(true)
-              setSelectedFolder(null)
-              setCloudMode(false)
-              setSelected(new Set())
-              setRowMenu(null)
-            }}
+            onClick={openAskWorkspace}
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
@@ -3423,6 +3438,7 @@ export function Home() {
           onStatusChange={handleAccountStatus}
           onFileSearchSettingsChange={() => setRerankSettingsTick((n) => n + 1)}
           openRequest={settingsRequest}
+          onSettingsOpenChange={setSettingsModalOpen}
         />
       </aside>
       {indexOpen && !selectedFolder ? (
@@ -3430,10 +3446,7 @@ export function Home() {
       ) : selectedFolder && rootOf(selectedFolder, roots)?.readable ? (
         renderFolderContent()
       ) : askMode ? (
-        <KbAskPanel
-          onOpenPath={(path) => void window.aiOffice.openPath(path)}
-          onGoToRecents={() => changeView('recent')}
-        />
+        <div id="home-ask-workspace" className="home-ask-workspace" />
       ) : cloudMode ? (
         <CloudProjectsView />
       ) : (
@@ -3578,6 +3591,12 @@ export function Home() {
         api={window.aiOffice}
         i18n={i18n}
         dockLocation={!selectedFolder && !cloudMode && !indexOpen && !askMode ? 'home' : 'floating'}
+        workspaceActive={askMode}
+        suppressDock={askMode || settingsModalOpen}
+        onNavigateToRecents={() => changeView('recent')}
+        onOpenPath={(path) => window.aiOffice.openPath(path)}
+        onOpenAskWorkspace={openAskWorkspace}
+        onOpenModelSettings={openModelSettings}
       />
       <ClipboardSuggest api={window.aiOffice} i18n={i18n} />
       <IndexingActivity api={window.aiOffice} lang={lang} />

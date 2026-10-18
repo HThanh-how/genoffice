@@ -2,8 +2,11 @@ import {
   AgentLoop,
   composeSkills,
   createDocumentMemorySkill,
+  createDocumentSkill,
   createIpcTransport,
+  createKnowledgeBaseSkill,
   type IpcStreamChunk,
+  type KbFileInfo,
 } from '@genoffice/agent-core'
 import { agyErrorText, createGeminiRouter } from '@genoffice/ai-provider/browser'
 import { createPortal } from 'react-dom'
@@ -31,7 +34,8 @@ import {
   type ChatLaunchIntent,
 } from './chat-events'
 import { ChatMessage, type ChatItem, type ChatLabels } from './home-chat/ChatMessage'
-import { AgyChatBar } from '@genoffice/ui'
+import { AgyChatBar, AiModelPicker, type AiModelPickerBridge } from '@genoffice/ui'
+import '@genoffice/ui/ai-model-picker.css'
 import { AskDock } from './home-chat/AskDock'
 import { findFilesByName } from './fork/file-name-search'
 import './ask-dock.css'
@@ -66,6 +70,7 @@ import {
   FILE_CITATION_RULES_TOOLS,
   FileRefTable,
   pickSources,
+  plainAnswer,
   refBridge,
   type PickedSources,
 } from './home-chat/file-refs'
@@ -83,7 +88,17 @@ import type { I18n } from './locale'
 import './home-chat.css'
 import { fitChatPanel } from './home-chat/panel-size'
 
-type Props = { api: HomeApi; i18n: I18n; dockLocation?: 'home' | 'floating' }
+type Props = {
+  api: HomeApi
+  i18n: I18n
+  dockLocation?: 'home' | 'floating'
+  workspaceActive?: boolean
+  suppressDock?: boolean
+  onNavigateToRecents?: () => void
+  onOpenPath?: (path: string) => boolean | Promise<boolean> | void
+  onOpenAskWorkspace?: () => void
+  onOpenModelSettings?: () => void
+}
 
 type Conversation = { id: string | null; dead: boolean; requested: boolean }
 type Toast = { kind: 'deleted'; session: HomeChatSession } | { kind: 'cleared' }
@@ -163,18 +178,48 @@ const rafSchedule = (run: () => void) => {
 }
 
 /** Floating Home assistant with a persistent history rail. It has no layout footprint. */
-export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
+export function HomeChat({
+  api: homeApi,
+  i18n,
+  dockLocation = 'home',
+  workspaceActive = false,
+  suppressDock = false,
+  onNavigateToRecents,
+  onOpenPath,
+  onOpenAskWorkspace,
+  onOpenModelSettings,
+}: Props) {
   const api = homeApi
+  const modelBridge = useMemo<AiModelPickerBridge>(
+    () => ({
+      getSettings: () => api.getAiSettings(),
+      setSettings: (settings) => api.setAiSettings(settings),
+      onSettingsChanged: (handler) => api.onAiSettingsChanged(handler),
+      openModelSettings: onOpenModelSettings,
+    }),
+    [api, onOpenModelSettings],
+  )
+  const isWorkspace = workspaceActive
   const [open, setOpen] = useState(false)
   const [dockTarget, setDockTarget] = useState<HTMLElement | null>(null)
+  const [workspaceTarget, setWorkspaceTarget] = useState<HTMLElement | null>(null)
+
+  useLayoutEffect(() => {
+    const target = isWorkspace ? document.getElementById('home-ask-workspace') : null
+    setWorkspaceTarget((previous) => (previous === target ? previous : target))
+  }, [isWorkspace])
+
   useLayoutEffect(() => {
     const target = dockLocation === 'home' ? document.getElementById('home-assistant-slot') : null
     setDockTarget((previous) => (previous === target ? previous : target))
   }, [dockLocation])
+
+  const panelVisible = isWorkspace || open
+
   useEffect(() => {
-    announceChatPanel(open)
+    announceChatPanel(panelVisible)
     return () => announceChatPanel(false)
-  }, [open])
+  }, [panelVisible])
   const [input, setInput] = useState('')
   const [items, setItems] = useState<ChatItem[]>([])
   const [busy, setBusy] = useState(false)
@@ -239,12 +284,156 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
   /** the files the model has been given ids for; per turn for agy, per conversation otherwise */
   const toolTableRef = useRef<FileRefTable | null>(null)
   if (!toolTableRef.current) toolTableRef.current = new FileRefTable()
+  const savingKeysRef = useRef(new Set<string>())
   /** the table of the running (or last) turn: the conversation's for tool providers, a fresh one for agy */
   const fileTableRef = useRef<FileRefTable>(toolTableRef.current)
   /** first id handed out in the running turn: only these are offered as "related" */
   const turnStartRef = useRef(1)
-  /** retrieval-first context for the current turn when the provider cannot call tools (agy) */
+  /** prefetched evidence for the current AGY turn, alongside the available tools */
   const agyContextRef = useRef<RetrievalContext | null>(null)
+
+  useLayoutEffect(() => {
+    const panel = panelRef.current
+    if (!panelVisible || !panel) return
+    const collapse = () => {
+      if (panel.clientWidth < NARROW) setRailOpen(false)
+    }
+    collapse()
+    if (typeof ResizeObserver === 'undefined') return
+    const observer = new ResizeObserver(collapse)
+    observer.observe(panel)
+    return () => observer.disconnect()
+  }, [panelVisible, workspaceTarget])
+
+  // ---- knowledge-base (starred corpus) state and skills -------------------
+  const corpusRef = useRef<KbFileInfo[]>([])
+  const corpusRequestRef = useRef(0)
+  const createdPathsRef = useRef(new Set<string>())
+  const [corpusCount, setCorpusCount] = useState<number | null>(null)
+  const docSkillRef = useRef<ReturnType<typeof createDocumentSkill> | null>(null)
+  if (!docSkillRef.current) {
+    docSkillRef.current = createDocumentSkill({
+      create: async (request) => {
+        const owner = convRef.current
+        const table = fileTableRef.current
+        const generation = runGenerationRef.current
+        const run = activeRunRef.current
+        const result = await api.kbCreateDocument({
+          title: request.title,
+          format: request.format,
+          content: request.content,
+        })
+        let opened = false
+        if (
+          mountedRef.current &&
+          convRef.current === owner &&
+          !owner.dead &&
+          generation === runGenerationRef.current &&
+          activeRunRef.current !== 0 &&
+          activeRunRef.current === run
+        ) {
+          createdPathsRef.current.add(result.path)
+          table.addFile({
+            path: result.path,
+            name: result.path.split(/[\\/]/).pop() ?? result.path,
+          })
+          const shouldAutoOpen = request.open ?? request.format === 'docx'
+          if (shouldAutoOpen) {
+            try {
+              if (onOpenPath) {
+                const res = await onOpenPath(result.path)
+                opened = typeof res === 'boolean' ? res : true
+              } else if (typeof api.openPath === 'function') {
+                opened = await api.openPath(result.path)
+              }
+            } catch (err) {
+              console.error('Failed to open created document:', err)
+              opened = false
+            }
+          }
+        }
+        return { path: result.path, opened }
+      },
+    })
+  }
+
+  const refreshCorpus = useCallback(async () => {
+    const request = ++corpusRequestRef.current
+    if (typeof api.kbList !== 'function') {
+      corpusRef.current = []
+      setCorpusCount(0)
+      return
+    }
+    try {
+      const files = await api.kbList()
+      if (!mountedRef.current || request !== corpusRequestRef.current) return
+      corpusRef.current = files
+      setCorpusCount(files.length)
+    } catch {
+      if (!mountedRef.current || request !== corpusRequestRef.current) return
+      corpusRef.current = []
+      setCorpusCount(null)
+    }
+  }, [api])
+
+  useEffect(() => {
+    void refreshCorpus()
+  }, [refreshCorpus])
+
+  const handleSaveAnswer = useCallback(
+    async (itemId: number, format: 'md' | 'docx') => {
+      const sessionId = activeSessionIdRef.current
+      const saveKey = `${sessionId}:${itemId}`
+      if (savingKeysRef.current.has(saveKey)) return
+      savingKeysRef.current.add(saveKey)
+
+      try {
+        const currentItems = itemsRef.current
+        const itemIndex = currentItems.findIndex((it) => it.id === itemId)
+        if (itemIndex === -1) return
+        const answer = currentItems[itemIndex]
+        if (!answer || answer.role !== 'assistant' || answer.saved === 'saving') return
+
+        // Mark item as saving in UI state
+        setItems((prev) => prev.map((it) => (it.id === itemId ? { ...it, saved: 'saving' } : it)))
+
+        // Snapshot answer and question before await
+        const question = [...currentItems.slice(0, itemIndex)]
+          .reverse()
+          .find((m) => m.role === 'user')
+        const title = (question?.text ?? '').replace(/\s+/g, ' ').trim().slice(0, 60) || 'Answer'
+
+        // Clean exported content: strip internal [[file:N]] artifacts
+        const cleanContent = plainAnswer(answer.text, answer.sources ?? [])
+
+        try {
+          const { path } = await api.kbCreateDocument({
+            title,
+            format,
+            content: cleanContent,
+          })
+          const name = path.split(/[\\/]/).pop() ?? path
+
+          // Guard late success: ensure still mounted and session hasn't changed
+          if (!mountedRef.current || activeSessionIdRef.current !== sessionId) return
+          setItems((prev) =>
+            prev.map((it) => (it.id === itemId ? { ...it, saved: { path, name } } : it)),
+          )
+        } catch (error) {
+          // Guard late error: ensure still mounted and session hasn't changed
+          if (!mountedRef.current || activeSessionIdRef.current !== sessionId) return
+          const msg = error instanceof Error ? error.message : String(error)
+          setItems((prev) =>
+            prev.map((it) => (it.id === itemId ? { ...it, saved: { error: msg } } : it)),
+          )
+        }
+      } finally {
+        savingKeysRef.current.delete(saveKey)
+      }
+    },
+    [api],
+  )
+
   const tRef = useRef<(key: ChatKey, params?: Params) => string>(() => '')
   const langRef = useRef(i18n.lang)
   tRef.current = (key, params) => translateChat(i18n, key, params)
@@ -282,6 +471,10 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
         sourceSkeletonHint: tr('homeChatSourceSkeletonHint'),
         copy: tr('homeChatCopy'),
         copied: tr('homeChatCopied'),
+        saveMd: tr('askSaveMd'),
+        saveDocx: tr('askSaveDocx'),
+        savedAs: (name) => tr('askSavedAs', { name }),
+        saveFailed: (error) => tr('askSaveFailed', { error }),
       },
       history: {
         history: tr('homeChatHistory'),
@@ -460,22 +653,92 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     // Events from a run that was stopped or replaced (conversation switch) are ignored.
     const live = () =>
       activeRunRef.current !== 0 && activeRunRef.current === runGenerationRef.current
+    // IPC work can outlive an aborted run. Keep its citations attached to its owner.
+    const captureCitationOwner = () => {
+      const table = fileTableRef.current
+      const owner = convRef.current
+      const generation = runGenerationRef.current
+      return {
+        table,
+        isCurrent: () =>
+          mountedRef.current &&
+          !owner.dead &&
+          convRef.current === owner &&
+          generation === runGenerationRef.current &&
+          live() &&
+          fileTableRef.current === table,
+      }
+    }
     loopRef.current = new AgentLoop({
       transport,
-      skill: composeSkills('home+remembered-documents', '', [
-        createDocumentMemorySkill(refBridge(api, () => toolTableRef.current!)),
+      skill: composeSkills('home+remembered-documents+kb', '', [
+        createDocumentMemorySkill(refBridge(api, () => fileTableRef.current)),
+        createKnowledgeBaseSkill({
+          listFiles: () => {
+            const list = corpusRef.current
+            for (const f of list) {
+              fileTableRef.current.addFile({
+                path: f.path,
+                name: f.name,
+                location: f.folder,
+              })
+            }
+            return list
+          },
+          search: async (query, limit) => {
+            const citationOwner = captureCitationOwner()
+            const hits = await api.kbSearch({ q: query, limit })
+            if (!citationOwner.isCurrent()) return hits
+            for (const hit of hits) {
+              citationOwner.table.addFile({
+                path: hit.path,
+                name: hit.name,
+                location: hit.folder,
+              })
+            }
+            return hits
+          },
+          read: async (path, offset) => {
+            const citationOwner = captureCitationOwner()
+            const f = corpusRef.current.find((file) => file.path === path)
+            const page = await api.kbRead(path, offset)
+            if (!citationOwner.isCurrent()) return page
+            citationOwner.table.addFile({
+              path,
+              name: f?.name ?? path.split(/[\\/]/).pop() ?? 'Document',
+              location: f?.folder ?? '',
+            })
+            return page
+          },
+          alsoCitable: () => [...createdPathsRef.current],
+        }),
+        docSkillRef.current!,
       ]),
       maxTurns: 12,
+      formatUserMessage: (instruction, context) =>
+        [instruction, context, agyContextRef.current?.block].filter(Boolean).join('\n\n'),
       systemSuffix: () =>
         agyContextRef.current
-          ? agySystemSuffix(LANGUAGE_NAMES[langRef.current] ?? 'English', agyContextRef.current)
-          : `Reply in ${LANGUAGE_NAMES[langRef.current] ?? 'English'}. This is a home assistant: answer questions and help find files the user has opened before. Use remembered-document tools when relevant. Never guess document contents or source identifiers. ${FILE_CITATION_RULES_TOOLS}`,
+          ? agySystemSuffix(LANGUAGE_NAMES[langRef.current] ?? 'English', {
+              ...agyContextRef.current,
+              block: '',
+            })
+          : `Reply in ${LANGUAGE_NAMES[langRef.current] ?? 'English'}. This is a home assistant: answer questions, search knowledge base and help find files the user has opened or starred. Use remembered-document and knowledge-base tools when relevant. Never guess document contents or source identifiers. ${FILE_CITATION_RULES_TOOLS}`,
       events: {
         onText: (text) => {
           if (live()) batcherRef.current?.push(text)
         },
         onToolExecuted: ({ call }) => {
-          if (!live() || call.name !== 'search_remembered_documents') return
+          if (
+            !live() ||
+            ![
+              'search_remembered_documents',
+              'search_knowledge_base',
+              'read_knowledge_file',
+              'create_document',
+            ].includes(call.name)
+          )
+            return
           // the hits were numbered while the tool ran (refBridge): make them resolvable at once
           updateLastAssistant((last) => ({ ...last, candidates: fileTableRef.current.list() }))
         },
@@ -768,6 +1031,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
 
   const adopt = (conv: Conversation, nextItems: ChatItem[], nextTitle: string) => {
     convRef.current = conv
+    createdPathsRef.current = new Set()
     const nextSessionId = conv.id ?? crypto.randomUUID()
     setActiveSessionId(nextSessionId)
     activeSessionIdRef.current = nextSessionId
@@ -982,6 +1246,12 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     [focusInput, launcherCtl, loadSettings, openSession, restoreLast, startNew],
   )
 
+  useEffect(() => {
+    if (workspaceActive && !initRef.current) {
+      openPanel('resume')
+    }
+  }, [workspaceActive, openPanel])
+
   // ---- sending ------------------------------------------------------------
 
   const submit = useCallback(
@@ -1072,12 +1342,14 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
         setBusy(false)
         return
       }
+      await refreshCorpus()
+      if (generation !== runGenerationRef.current || !mountedRef.current) return
       agyContextRef.current = null
       fileTableRef.current = toolTableRef.current!
       turnStartRef.current = fileTableRef.current.peekNext()
       try {
         if (settingsRef.current?.provider === 'agy') {
-          // agy cannot call GenOffice tools: search remembered documents first and inject the hits.
+          // Prefetch remembered passages for AGY; tools remain available for follow-up evidence and actions.
           let hits: Awaited<ReturnType<HomeApi['documentMemorySearch']>>['hits'] = []
           try {
             const query = buildRetrievalQuery(message, toMessages(base))
@@ -1116,6 +1388,33 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
           }
           if (generation !== runGenerationRef.current || !mountedRef.current) return
           const byName = namedFilesBlock(named, table)
+          if (corpusRef.current.length > 0) {
+            for (const file of corpusRef.current) {
+              if (table.refForPath(file.path) === undefined) {
+                table.addFile({
+                  path: file.path,
+                  name: file.name,
+                  location: file.folder,
+                })
+              }
+            }
+            if (typeof api.kbSearch === 'function') {
+              try {
+                const kbHits = await api.kbSearch({ q: message, limit: 4 })
+                for (const hit of kbHits) {
+                  if (table.refForPath(hit.path) === undefined) {
+                    table.addFile({
+                      path: hit.path,
+                      name: hit.name,
+                      location: hit.folder,
+                    })
+                  }
+                }
+              } catch {
+                // best effort
+              }
+            }
+          }
           if (byName.block) context.block = `${context.block}\n\n${byName.block}`
           agyContextRef.current = context
           // not shown as chips yet: the answer decides which of these files it relies on
@@ -1152,7 +1451,7 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
         setBusy(false)
       }
     },
-    [api, loadSettings, settingsReady],
+    [api, loadSettings, refreshCorpus, settingsReady],
   )
   const submitRef = useRef(submit)
   submitRef.current = submit
@@ -1296,14 +1595,316 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
     prependHeightRef.current = scrollRef.current?.scrollHeight ?? null
     setVisibleCount((count) => count + WINDOW_PAGE)
   }
-  const dock = (
-    <AskDock lang={i18n.lang} api={api} away={open} inline={!!dockTarget}>
-      <AgyChatBar lang={i18n.lang} part="bar" />
-    </AskDock>
+  const showDock = !isWorkspace && !suppressDock
+  const modelControls = (
+    <div className="hc-model-controls">
+      <AiModelPicker bridge={modelBridge} lang={i18n.lang} />
+      <AgyChatBar lang={i18n.lang} part="bar" showModel={false} />
+    </div>
   )
+  const dock = showDock ? (
+    <AskDock lang={i18n.lang} api={api} away={open} inline={!!dockTarget}>
+      {modelControls}
+    </AskDock>
+  ) : null
+
+  const panelNode = panelVisible ? (
+    <section
+      ref={panelRef}
+      className={`home-chat-panel${railOpen ? ' rail-open' : ''}${isWorkspace ? ' is-workspace' : ''}`}
+      style={
+        isWorkspace
+          ? undefined
+          : ({ '--hc-w': `${size.w}px`, '--hc-h': `${size.h}px` } as React.CSSProperties)
+      }
+      role={isWorkspace ? 'region' : 'dialog'}
+      aria-modal={isWorkspace ? undefined : 'false'}
+      aria-label={t('homeChatTitle')}
+    >
+      {!isWorkspace && (
+        <div
+          className="hc-resize"
+          role="separator"
+          tabIndex={0}
+          aria-label={t('homeChatResize')}
+          aria-orientation="vertical"
+          aria-valuenow={size.w}
+          aria-valuemin={1}
+          aria-valuemax={Math.max(1, window.innerWidth - 32)}
+          aria-valuetext={`${size.w} × ${size.h}`}
+          onPointerDown={onResizeStart}
+          onKeyDown={onResizeKey}
+        />
+      )}
+      {railOpen && (
+        <div className="hc-rail-wrap">
+          <header className="hc-brand">
+            <span className="hc-mark" aria-hidden="true">
+              <svg viewBox="0 0 20 20" fill="none">
+                <path
+                  d="M10 2.5 11.8 8.2 17.5 10l-5.7 1.8L10 17.5l-1.8-5.7L2.5 10l5.7-1.8L10 2.5Z"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </span>
+            <h2>{t('homeChatTitle')}</h2>
+          </header>
+          <HistoryRail
+            sessions={sessions}
+            activeId={activeId}
+            locale={i18n.dateLocale}
+            labels={labels.history}
+            onOpen={(id) => void openSession(id)}
+            onNew={startNew}
+            onRename={(id, next) => void renameSession(id, next)}
+            onDelete={(id) => void deleteSession(id)}
+            onClear={() => void clearHistory()}
+          />
+        </div>
+      )}
+      <div className="hc-main">
+        <header className="hc-header">
+          <button
+            type="button"
+            className="hc-icon-button"
+            aria-label={t('homeChatToggleHistory')}
+            title={t('homeChatToggleHistory')}
+            aria-pressed={railOpen}
+            onClick={toggleRail}
+          >
+            <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+              <rect
+                x="3"
+                y="4"
+                width="14"
+                height="12"
+                rx="2.5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+              />
+              <path d="M8 4.5v11" stroke="currentColor" strokeWidth="1.5" />
+            </svg>
+          </button>
+          <div className="hc-head-text">
+            <h3 className="hc-title" title={heading}>
+              {heading}
+            </h3>
+            {corpusCount !== null && corpusCount > 0 && (
+              <span
+                className="hc-corpus-badge"
+                title={t('askCorpusCount', { n: String(corpusCount) })}
+              >
+                {t('askCorpusCount', { n: String(corpusCount) })}
+              </span>
+            )}
+          </div>
+          <div className="home-chat-header-actions">
+            <button
+              type="button"
+              className="hc-icon-button"
+              aria-label={t('homeChatNew')}
+              title={t('homeChatNew')}
+              onClick={startNew}
+            >
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path
+                  d="M10 4.5v11M4.5 10h11"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                />
+              </svg>
+            </button>
+            {!isWorkspace && (
+              <button
+                type="button"
+                className="hc-icon-button"
+                aria-label={t('homeChatClose')}
+                title={t('homeChatClose')}
+                onClick={() => closePanel()}
+              >
+                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                  <path
+                    d="m5.5 5.5 9 9m0-9-9 9"
+                    stroke="currentColor"
+                    strokeWidth="1.7"
+                    strokeLinecap="round"
+                  />
+                </svg>
+              </button>
+            )}
+          </div>
+        </header>
+        <div className="hc-stage">
+          <div
+            className="hc-scroll"
+            ref={scrollRef}
+            onScroll={onScroll}
+            role="log"
+            aria-live={busy ? 'off' : 'polite'}
+            aria-relevant="additions"
+          >
+            {items.length === 0 ? (
+              isWorkspace && corpusCount === 0 ? (
+                <div className="kb-ask-hero">
+                  <div className="kb-ask-hero-icon" aria-hidden="true">
+                    <IconBookOpen />
+                  </div>
+                  <h3>{t('askTitle')}</h3>
+                  <p>{t('askHeroTagline')}</p>
+                  <div className="kb-ask-steps">
+                    <div className="kb-ask-step">
+                      <span className="kb-ask-step-num">1</span>
+                      <div>
+                        <b>{t('askStep1Title')}</b>
+                        <span>{t('askStep1Desc')}</span>
+                      </div>
+                    </div>
+                    <div className="kb-ask-step">
+                      <span className="kb-ask-step-num">2</span>
+                      <div>
+                        <b>{t('askStep2Title')}</b>
+                        <span>{t('askStep2Desc')}</span>
+                      </div>
+                    </div>
+                    <div className="kb-ask-step">
+                      <span className="kb-ask-step-num">3</span>
+                      <div>
+                        <b>{t('askStep3Title')}</b>
+                        <span>{t('askStep3Desc')}</span>
+                      </div>
+                    </div>
+                  </div>
+                  {onNavigateToRecents && (
+                    <button className="kb-ask-cta" type="button" onClick={onNavigateToRecents}>
+                      <IconStar />
+                      {t('askCtaRecents')}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <EmptyState
+                  title={t('homeChatWelcome')}
+                  body={t('homeChatWelcomeBody')}
+                  suggestions={suggestions}
+                  disabled={composerDisabled}
+                  onPick={handleSend}
+                />
+              )
+            ) : (
+              <div className="hc-thread">
+                {hidden > 0 && (
+                  <button type="button" className="hc-earlier" onClick={showEarlier}>
+                    {t('homeChatShowEarlier', { n: hidden })}
+                  </button>
+                )}
+                {shown.map((item) => (
+                  <ChatMessage
+                    key={item.id}
+                    item={item}
+                    labels={labels.chat}
+                    canRetry={!busy && item.id === items[lastIndex]?.id}
+                    activity={
+                      item.streaming && !item.text ? (
+                        <AgyChatBar
+                          lang={i18n.lang}
+                          part="steps"
+                          mode="home-chat"
+                          busy={busy}
+                          sessionId={activeSessionId}
+                          activeRequestId={activeRequestId}
+                          getActiveRequestId={() => activeRequestIdRef.current}
+                        />
+                      ) : undefined
+                    }
+                    onOpenSource={openSource}
+                    onRevealSource={revealSource}
+                    onRetry={retry}
+                    onSaveAnswer={handleSaveAnswer}
+                    onOpenPath={onOpenPath ?? ((p) => void api.openPath(p))}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+          {showJump && items.length > 0 && (
+            <button type="button" className="hc-jump" onClick={scrollToBottom}>
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
+                <path
+                  d="M10 4.5v10m0 0-4-4m4 4 4-4"
+                  stroke="currentColor"
+                  strokeWidth="1.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              {t('homeChatJumpLatest')}
+            </button>
+          )}
+        </div>
+        {(notice || toast) && (
+          <div className="hc-status" role="status">
+            {toast ? (
+              <p className="hc-toast">
+                <span>
+                  {toast.kind === 'deleted' ? t('homeChatDeleted') : t('homeChatCleared')}
+                </span>
+                {toast.kind === 'deleted' && (
+                  <button
+                    type="button"
+                    className="hc-text-button strong"
+                    onClick={() => void undoDelete(toast.session)}
+                  >
+                    {t('homeChatUndo')}
+                  </button>
+                )}
+              </p>
+            ) : (
+              <div className="hc-notice">
+                <span>{notice}</span>
+                {settingsFailed && (
+                  <button
+                    type="button"
+                    className="hc-text-button strong"
+                    onClick={() => void loadSettings()}
+                  >
+                    {t('homeChatRetry')}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="hc-icon-button"
+                  aria-label={t('homeChatClose')}
+                  onClick={() => setNotice('')}
+                >
+                  ×
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+        <Composer
+          value={input}
+          busy={busy}
+          disabled={composerDisabled}
+          labels={composerLabels}
+          inputRef={inputRef}
+          onChange={setInput}
+          onSend={handleSend}
+          onStop={handleStop}
+        />
+        <div className="hc-agy">{modelControls}</div>
+      </div>
+    </section>
+  ) : null
+
+  const target =
+    workspaceTarget ?? (isWorkspace ? document.getElementById('home-ask-workspace') : null)
 
   return (
-    <div ref={rootRef} className="home-chat-root">
+    <>
       <span className="home-chat-sr-only" role="status" aria-live="polite">
         {!busy && lastItem?.role === 'assistant'
           ? lastItem.error
@@ -1313,257 +1914,76 @@ export function HomeChat({ api: homeApi, i18n, dockLocation = 'home' }: Props) {
               : ''
           : ''}
       </span>
-      {open && (
-        <section
-          ref={panelRef}
-          className={`home-chat-panel${railOpen ? ' rail-open' : ''}`}
-          style={{ '--hc-w': `${size.w}px`, '--hc-h': `${size.h}px` } as React.CSSProperties}
-          role="dialog"
-          aria-modal="false"
-          aria-label={t('homeChatTitle')}
-        >
-          <div
-            className="hc-resize"
-            role="separator"
-            tabIndex={0}
-            aria-label={t('homeChatResize')}
-            aria-orientation="vertical"
-            aria-valuenow={size.w}
-            aria-valuemin={1}
-            aria-valuemax={Math.max(1, window.innerWidth - 32)}
-            aria-valuetext={`${size.w} × ${size.h}`}
-            onPointerDown={onResizeStart}
-            onKeyDown={onResizeKey}
-          />
-          {railOpen && (
-            <div className="hc-rail-wrap">
-              <header className="hc-brand">
-                <span className="hc-mark" aria-hidden="true">
-                  <svg viewBox="0 0 20 20" fill="none">
-                    <path
-                      d="M10 2.5 11.8 8.2 17.5 10l-5.7 1.8L10 17.5l-1.8-5.7L2.5 10l5.7-1.8L10 2.5Z"
-                      stroke="currentColor"
-                      strokeWidth="1.5"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                </span>
-                <h2>{t('homeChatTitle')}</h2>
-              </header>
-              <HistoryRail
-                sessions={sessions}
-                activeId={activeId}
-                locale={i18n.dateLocale}
-                labels={labels.history}
-                onOpen={(id) => void openSession(id)}
-                onNew={startNew}
-                onRename={(id, next) => void renameSession(id, next)}
-                onDelete={(id) => void deleteSession(id)}
-                onClear={() => void clearHistory()}
-              />
-            </div>
-          )}
-          <div className="hc-main">
-            <header className="hc-header">
-              <button
-                type="button"
-                className="hc-icon-button"
-                aria-label={t('homeChatToggleHistory')}
-                title={t('homeChatToggleHistory')}
-                aria-pressed={railOpen}
-                onClick={toggleRail}
-              >
-                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                  <rect
-                    x="3"
-                    y="4"
-                    width="14"
-                    height="12"
-                    rx="2.5"
-                    stroke="currentColor"
-                    strokeWidth="1.5"
-                  />
-                  <path d="M8 4.5v11" stroke="currentColor" strokeWidth="1.5" />
-                </svg>
-              </button>
-              <h3 className="hc-title" title={heading}>
-                {heading}
-              </h3>
-              <div className="home-chat-header-actions">
-                <button
-                  type="button"
-                  className="hc-icon-button"
-                  aria-label={t('homeChatNew')}
-                  title={t('homeChatNew')}
-                  onClick={startNew}
-                >
-                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                    <path
-                      d="M10 4.5v11M4.5 10h11"
-                      stroke="currentColor"
-                      strokeWidth="1.7"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                </button>
-                <button
-                  type="button"
-                  className="hc-icon-button"
-                  aria-label={t('homeChatClose')}
-                  title={t('homeChatClose')}
-                  onClick={() => closePanel()}
-                >
-                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                    <path
-                      d="m5.5 5.5 9 9m0-9-9 9"
-                      stroke="currentColor"
-                      strokeWidth="1.7"
-                      strokeLinecap="round"
-                    />
-                  </svg>
-                </button>
-              </div>
-            </header>
-            <div className="hc-stage">
-              <div
-                className="hc-scroll"
-                ref={scrollRef}
-                onScroll={onScroll}
-                role="log"
-                aria-live={busy ? 'off' : 'polite'}
-                aria-relevant="additions"
-              >
-                {items.length === 0 ? (
-                  <EmptyState
-                    title={t('homeChatWelcome')}
-                    body={t('homeChatWelcomeBody')}
-                    suggestions={suggestions}
-                    disabled={composerDisabled}
-                    onPick={handleSend}
-                  />
-                ) : (
-                  <div className="hc-thread">
-                    {hidden > 0 && (
-                      <button type="button" className="hc-earlier" onClick={showEarlier}>
-                        {t('homeChatShowEarlier', { n: hidden })}
-                      </button>
-                    )}
-                    {shown.map((item) => (
-                      <ChatMessage
-                        key={item.id}
-                        item={item}
-                        labels={labels.chat}
-                        canRetry={!busy && item.id === items[lastIndex]?.id}
-                        activity={
-                          item.streaming && !item.text ? (
-                            <AgyChatBar
-                              lang={i18n.lang}
-                              part="steps"
-                              mode="home-chat"
-                              busy={busy}
-                              sessionId={activeSessionId}
-                              activeRequestId={activeRequestId}
-                              getActiveRequestId={() => activeRequestIdRef.current}
-                            />
-                          ) : undefined
-                        }
-                        onOpenSource={openSource}
-                        onRevealSource={revealSource}
-                        onRetry={retry}
-                      />
-                    ))}
-                  </div>
-                )}
-              </div>
-              {showJump && items.length > 0 && (
-                <button type="button" className="hc-jump" onClick={scrollToBottom}>
-                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                    <path
-                      d="M10 4.5v10m0 0-4-4m4 4 4-4"
-                      stroke="currentColor"
-                      strokeWidth="1.6"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                    />
-                  </svg>
-                  {t('homeChatJumpLatest')}
-                </button>
-              )}
-            </div>
-            {(notice || toast) && (
-              <div className="hc-status" role="status">
-                {toast ? (
-                  <p className="hc-toast">
-                    <span>
-                      {toast.kind === 'deleted' ? t('homeChatDeleted') : t('homeChatCleared')}
-                    </span>
-                    {toast.kind === 'deleted' && (
-                      <button
-                        type="button"
-                        className="hc-text-button strong"
-                        onClick={() => void undoDelete(toast.session)}
-                      >
-                        {t('homeChatUndo')}
-                      </button>
-                    )}
-                  </p>
-                ) : (
-                  <div className="hc-notice">
-                    <span>{notice}</span>
-                    {settingsFailed && (
-                      <button
-                        type="button"
-                        className="hc-text-button strong"
-                        onClick={() => void loadSettings()}
-                      >
-                        {t('homeChatRetry')}
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      className="hc-icon-button"
-                      aria-label={t('homeChatClose')}
-                      onClick={() => setNotice('')}
-                    >
-                      ×
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-            <Composer
-              value={input}
-              busy={busy}
-              disabled={composerDisabled}
-              labels={composerLabels}
-              inputRef={inputRef}
-              onChange={setInput}
-              onSend={handleSend}
+      {isWorkspace && target ? (
+        createPortal(panelNode, target)
+      ) : !isWorkspace ? (
+        <div ref={rootRef} className="home-chat-root">
+          {panelNode}
+          {dockTarget ? createPortal(dock, dockTarget) : dock}
+          {!suppressDock && (
+            <Launcher
+              state={launcherState}
+              open={open}
+              invitation={invitation}
+              starting={
+                lastItem?.role === 'assistant' && lastItem.streaming && !lastItem.text
+                  ? (lastItem.status ?? '')
+                  : ''
+              }
+              labels={launcherLabels}
+              buttonRef={launcherRef}
+              onToggle={() => {
+                if (open) {
+                  closePanel()
+                } else if (onOpenAskWorkspace) {
+                  onOpenAskWorkspace()
+                } else {
+                  openPanel()
+                }
+              }}
               onStop={handleStop}
+              onInvitation={setInvitation}
+              onHold={launcherCtl.setHovered}
             />
-            <div className="hc-agy">
-              <AgyChatBar lang={i18n.lang} part="bar" />
-            </div>
-          </div>
-        </section>
-      )}
-      {dockTarget ? createPortal(dock, dockTarget) : dock}
-      <Launcher
-        state={launcherState}
-        open={open}
-        invitation={invitation}
-        starting={
-          lastItem?.role === 'assistant' && lastItem.streaming && !lastItem.text
-            ? (lastItem.status ?? '')
-            : ''
-        }
-        labels={launcherLabels}
-        buttonRef={launcherRef}
-        onToggle={() => (open ? closePanel() : openPanel())}
-        onStop={handleStop}
-        onInvitation={setInvitation}
-        onHold={launcherCtl.setHovered}
-      />
-    </div>
+          )}
+        </div>
+      ) : null}
+    </>
+  )
+}
+
+function IconBookOpen(): React.JSX.Element {
+  return (
+    <svg
+      width="26"
+      height="26"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 6.8C10.2 5.4 7.9 4.7 5.5 4.7c-.4 0-.8 0-1.2.1v12.9c.4-.1.8-.1 1.2-.1 2.4 0 4.7.7 6.5 2.1 1.8-1.4 4.1-2.1 6.5-2.1.4 0 .8 0 1.2.1V4.8c-.4-.1-.8-.1-1.2-.1-2.4 0-4.7.7-6.5 2.1z" />
+      <path d="M12 6.8v12.9" />
+    </svg>
+  )
+}
+
+function IconStar(): React.JSX.Element {
+  return (
+    <svg
+      width="15"
+      height="15"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M12 3.6l2.6 5.2 5.8.9-4.2 4.1 1 5.8-5.2-2.7-5.2 2.7 1-5.8L3.6 9.7l5.8-.9z" />
+    </svg>
   )
 }

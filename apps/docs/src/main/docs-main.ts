@@ -113,6 +113,9 @@ import {
   type AiStreamRequest,
   type GenSparkAccountStatus,
   type LegacyAiSettings,
+  prewarmAgy,
+  shutdownAgyResidentServers,
+  retireAgyResidentScope,
 } from '@genoffice/ai-provider'
 import { listCodexModels, shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
 import { isCliProvider } from '@genoffice/ai-provider/agy-cli'
@@ -4035,11 +4038,29 @@ function broadcastAiSettingsChanged(): void {
 const webSearchAborts = createSearchAbortRegistry()
 
 export function registerAiIpc(): void {
-  app.once('before-quit', shutdownCodexAppServers)
+  app.once('before-quit', () => {
+    shutdownCodexAppServers()
+    shutdownAgyResidentServers()
+  })
+  const watchedResidentSenders = new Set<number>()
+  const maybePrewarmAgy = (settings: AiSettings) => {
+    if (settings.provider === 'agy') {
+      const config = settings.providers?.agy
+      if (config) void prewarmAgy(config).catch(() => undefined)
+    } else {
+      shutdownAgyResidentServers()
+    }
+  }
   // Which defaults apply (agy or the old ones) depends on whether Antigravity is usable: find out
   // once the app is up, and tell every window when the answer changes.
   onAgyUsableChange(broadcastAiSettingsChanged)
-  void app.whenReady().then(() => probeAgyUsable())
+  void app.whenReady().then(async () => {
+    await probeAgyUsable()
+    const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
+    const settings = resolveAiSettings(stored, defaultAiSettings())
+    settings.provider = activeProvider(settings)
+    maybePrewarmAgy(settings)
+  })
   ipcMain.handle('ai:get-settings', async (): Promise<AiSettings> => {
     const stored = readJson<Partial<AiSettings> & LegacyAiSettings>(SETTINGS_PATH(), {})
     // pre-lock legacy file: genspark selected with cloud tools opted out. The
@@ -4056,6 +4077,7 @@ export function registerAiIpc(): void {
     const settings = resolveAiSettings(stored, defaultAiSettings())
     // a stored BYOK provider is honored when usable; half-filled configs fall back to genspark
     settings.provider = activeProvider(settings)
+    maybePrewarmAgy(settings)
     return settings
   })
 
@@ -4088,6 +4110,7 @@ export function registerAiIpc(): void {
     }
     writeJsonAtomic(SETTINGS_PATH(), sanitized)
     broadcastAiSettingsChanged()
+    maybePrewarmAgy(sanitized)
   })
 
   ipcMain.handle('ai:codex-models', async (_event, cliPath: unknown) => {
@@ -4155,6 +4178,14 @@ export function registerAiIpc(): void {
     const controller = new AbortController()
     activeAiStreams.set(requestId, controller)
     const unwatchSender = abortOnDestroyed(event.sender, controller)
+    const senderId = event.sender.id
+    if (!watchedResidentSenders.has(senderId)) {
+      watchedResidentSenders.add(senderId)
+      event.sender.once('destroyed', () => {
+        watchedResidentSenders.delete(senderId)
+        retireAgyResidentScope(String(senderId))
+      })
+    }
     // wire-activity keepalive: lets the renderer's silence watchdog tell a slow turn from a dead one
     let lastPing = 0
     const ping = () => {
@@ -4179,6 +4210,7 @@ export function registerAiIpc(): void {
       await streamForProvider(provider, config, system, messages, tools, maxTokens, {
         ...(requestId ? { requestId } : {}),
         ...(request.sessionId ? { sessionId: request.sessionId } : {}),
+        sessionScope: String(event.sender.id),
         signal: controller.signal,
         onDelta: (text) => {
           trace?.onDelta(text)

@@ -9,12 +9,20 @@ import {
   type AiSettings,
 } from '@genoffice/ai-provider/browser'
 
+export interface AiModelItemMeta {
+  readonly id: string
+  readonly label: string
+  readonly speed?: 'fast' | 'balanced' | 'slow' | undefined
+  readonly relativeCost?: number | undefined
+}
+
 export interface AiModelPickerGroup {
   readonly id: AiProviderId
   /** set on custom groups: one group per saved endpoint */
   readonly endpoint?: string | undefined
   readonly label: string
   readonly models: readonly string[]
+  readonly modelItems?: readonly AiModelItemMeta[] | undefined
 }
 
 export interface AiModelPickerSelection {
@@ -28,14 +36,22 @@ export interface AiModelPickerSelection {
  * (a base URL for custom endpoints, which accept anonymous requests); CLI vendors need a model or
  * a path. This build never routes through Genspark, so it is never offered here, signed in or not.
  */
-function pickerProviderUsable(settings: AiSettings, meta: AiProviderMeta): boolean {
+function pickerProviderUsable(
+  settings: AiSettings,
+  meta: AiProviderMeta,
+  liveAgyModels?: readonly AiModelItemMeta[],
+): boolean {
   if (meta.id === 'genspark') return false
   const config = settings.providers?.[meta.id]
   const stored = config?.model?.trim() ?? ''
   if (meta.needsCliPath) {
     // a CLI vendor's seeded default model proves nothing: list it once a path, a chosen model
-    // or an explicit selection says the person set it up
+    // or an explicit selection says the person set it up. Live models only apply to Antigravity.
+    const agyLive =
+      meta.id === 'agy' &&
+      Boolean((liveAgyModels && liveAgyModels.length > 0) || settings.provider === 'agy')
     return Boolean(
+      agyLive ||
       config?.cliPath?.trim() ||
       (stored && stored !== meta.defaultModel) ||
       (stored && settings.provider === meta.id),
@@ -49,11 +65,12 @@ function pickerProviderUsable(settings: AiSettings, meta: AiProviderMeta): boole
 /**
  * Providers the composer chip may switch to: every vendor whose settings are usable, so picking a
  * row never lands on a 401. A model typed into the settings page that is not in the catalog is
- * listed first.
+ * listed first. Live AGY models from the CLI can be passed in to enrich the Antigravity group.
  */
 export function aiModelPickerGroups(
   input: AiSettings,
   _gskLoggedIn: boolean,
+  liveAgyModels?: readonly AiModelItemMeta[],
 ): AiModelPickerGroup[] {
   const settings = resolveCustomEndpoints(input)
   const groups: AiModelPickerGroup[] = []
@@ -81,7 +98,19 @@ export function aiModelPickerGroups(
       }
       continue
     }
-    if (!pickerProviderUsable(settings, meta)) continue
+    if (!pickerProviderUsable(settings, meta, liveAgyModels)) continue
+    if (meta.id === 'agy' && liveAgyModels && liveAgyModels.length > 0) {
+      const stored = settings.providers?.agy?.model?.trim() ?? ''
+      const ids = liveAgyModels.map((m) => m.id)
+      const models = stored && !ids.includes(stored) ? [stored, ...ids] : ids
+      groups.push({
+        id: meta.id,
+        label: meta.label,
+        models,
+        modelItems: liveAgyModels,
+      })
+      continue
+    }
     const stored = settings.providers?.[meta.id]?.model?.trim() ?? ''
     const models = stored && !meta.models.includes(stored) ? [stored, ...meta.models] : meta.models
     if (models.length === 0 && !meta.needsCliPath) continue

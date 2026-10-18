@@ -17,7 +17,7 @@ import { agyImageSearchWithFallback } from './agy-image-search'
 
 export function searchOptionsFromSettings(settings: AiSettings): SearchOptions {
   const provider = activeSearchProvider(settings)
-  const key = settings.search!.providers?.[provider]?.apiKey?.trim() ?? ''
+  const key = settings.search?.providers?.[provider]?.apiKey?.trim() ?? ''
   // The keyless source chain (Parallel, then DuckDuckGo): imageSearchTool asks Antigravity first
   // and falls back to this chain when it cannot name verifiable image URLs.
   if (provider === 'agy') return { useGsk: false, parallelKey: '', prefer: 'parallel' }
@@ -34,6 +34,16 @@ export function searchOptionsFromSettings(settings: AiSettings): SearchOptions {
  * `signal` stops an Antigravity search in flight (the agy process tree is killed and its
  * concurrency slot freed). The keyed HTTP providers are quick and ignore it.
  */
+function agySearchConfig(settings: AiSettings) {
+  const search = settings.search?.providers.agy
+  const chat = settings.providers.agy
+  const [primary, fallback] = settings.provider === 'agy' ? [chat, search] : [search, chat]
+  return {
+    cliPath: primary?.cliPath?.trim() || fallback?.cliPath?.trim(),
+    model: primary?.model?.trim() || fallback?.model?.trim(),
+  }
+}
+
 export function webSearchTool(
   settingsPath: string,
   query: string,
@@ -42,17 +52,7 @@ export function webSearchTool(
 ) {
   const settings = readAiSettingsFile(settingsPath)
   if (activeSearchProvider(settings) === 'agy') {
-    const searchConfig = settings.search?.providers.agy
-    const chatConfig = settings.providers.agy
-    return agyWebSearch(
-      query,
-      maxResults,
-      {
-        cliPath: searchConfig?.cliPath?.trim() || chatConfig?.cliPath?.trim(),
-        model: searchConfig?.model?.trim() || chatConfig?.model?.trim(),
-      },
-      { signal },
-    )
+    return agyWebSearch(query, maxResults, agySearchConfig(settings), { signal })
   }
   return webSearch(query, maxResults, searchOptionsFromSettings(settings))
 }
@@ -62,16 +62,7 @@ export function imageSearchTool(settingsPath: string, query: string, maxResults 
   const keyless = () => imageSearch(query, maxResults, searchOptionsFromSettings(settings))
   if (activeSearchProvider(settings) !== 'agy') return keyless()
   // same CLI path / model resolution as the agy web search
-  return agyImageSearchWithFallback(
-    query,
-    maxResults,
-    {
-      cliPath:
-        settings.search?.providers.agy?.cliPath?.trim() || settings.providers.agy?.cliPath?.trim(),
-      model: settings.search?.providers.agy?.model?.trim() || settings.providers.agy?.model?.trim(),
-    },
-    keyless,
-  )
+  return agyImageSearchWithFallback(query, maxResults, agySearchConfig(settings), keyless)
 }
 
 /** settings-UI test: the selected backend (keyed or free) must answer one minimal query. */

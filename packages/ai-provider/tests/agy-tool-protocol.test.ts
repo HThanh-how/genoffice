@@ -123,6 +123,18 @@ const structuredReply = (text: string, toolCalls: unknown[]) =>
     structured_output: { text, tool_calls: toolCalls },
   })
 
+it('does not replay or execute an envelope embedded in one-shot schema text', async () => {
+  const embedded = JSON.stringify({
+    text: '',
+    tool_calls: [{ name: 'replace_text', arguments: { find: 'old' } }],
+  })
+  const run = await runTurn({ replies: [structuredReply(embedded, [])] })
+  await expect(run.pending).rejects.toThrow(/no embedded action was executed/i)
+  expect(run.calls).toEqual([])
+  expect(run.deltas).toEqual([])
+  expect(run.spawnCount()).toBe(1)
+})
+
 describe('resolveAgyToolProtocol', () => {
   it('uses the schema whenever tools are present and the flag exists', () => {
     expect(resolveAgyToolProtocol({ hasTools: true, schemaSupported: true })).toBe('schema')
@@ -1337,6 +1349,31 @@ describe('Defect D Regression Matrix: truncated AGY JSON and fail-closed protoco
   })
 
   describe('Defect K: readStructuredToolTurn schema bounds parity', () => {
+    it('removes a leading CLI thought sentinel without changing tool arguments or quoted prose', () => {
+      const marker = '<ctrl94>thought\n<ctrl95>'
+      expect(
+        readStructuredToolTurn(
+          { text: marker, tool_calls: [{ name: 'replace_text', arguments: { find: marker } }] },
+          knownTools,
+        ),
+      ).toEqual({ text: '', calls: [{ name: 'replace_text', input: { find: marker } }] })
+      expect(
+        readStructuredToolTurn({ text: `Example: ${marker}`, tool_calls: [] }, knownTools)?.text,
+      ).toBe(`Example: ${marker}`)
+    })
+    it('rejects a protocol envelope embedded in visible text instead of executing it', () => {
+      const text = JSON.stringify({
+        text: '',
+        tool_calls: [{ name: 'replace_text', arguments: { find: 'old' } }],
+      })
+      expect(readStructuredToolTurn({ text, tool_calls: [] }, knownTools)).toBeNull()
+      expect(
+        readStructuredToolTurn(
+          { text: `Here is a JSON example: ${text}`, tool_calls: [] },
+          knownTools,
+        ),
+      ).toEqual({ text: `Here is a JSON example: ${text}`, calls: [] })
+    })
     it('K01: non-string text (number) is rejected', () => {
       expect(readStructuredToolTurn({ text: 123, tool_calls: [] }, knownTools)).toBeNull()
     })

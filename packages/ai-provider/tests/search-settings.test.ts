@@ -211,3 +211,48 @@ describe('exa and firecrawl providers', () => {
     expect(s.provider).toBe('exa')
   })
 })
+
+describe('effective AGY search routing and provider retention', () => {
+  it('automatically routes search to agy when chat provider is agy', () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'agy'
+    settings.search = {
+      ...settings.search!,
+      provider: 'serper',
+      providers: {
+        ...settings.search!.providers,
+        serper: { apiKey: 'serper-secret-key' },
+      },
+    }
+    // When AGY is selected for chat, effective search provider is agy:
+    expect(activeSearchProvider(settings)).toBe('agy')
+  })
+
+  it('restores stored BYOK search choices immediately upon switching away from agy', () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'openai'
+    settings.search = {
+      ...settings.search!,
+      provider: 'serper',
+      providers: {
+        ...settings.search!.providers,
+        serper: { apiKey: 'serper-secret-key' },
+      },
+    }
+    expect(activeSearchProvider(settings)).toBe('serper')
+  })
+
+  it('falls back to parallel when switching away from agy without keys', () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'openai'
+    settings.search = {
+      ...settings.search!,
+      provider: 'serper',
+      providers: {
+        ...settings.search!.providers,
+        serper: { apiKey: '   ' },
+      },
+    }
+    expect(activeSearchProvider(settings)).toBe('parallel')
+  })
+})

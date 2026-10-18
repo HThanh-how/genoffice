@@ -49,6 +49,21 @@
   margin-left: auto;
   flex: none;
   font-variant-numeric: tabular-nums;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.agy-bar-usage:hover,
+.agy-bar-usage[aria-expanded='true'] {
+  background: var(--hover, rgba(0, 0, 0, 0.05));
+  color: var(--text-primary, #253047);
+  border-color: var(--border-subtle, rgba(0, 0, 0, 0.08));
+}
+.agy-bar-usage:focus-visible {
+  outline: 2px solid var(--accent, #596cdb);
+  outline-offset: 1px;
 }
 .agy-bar-gauge {
   --agy-color: var(--text-secondary, #8a93a6);
@@ -72,22 +87,49 @@
   --agy-color: var(--danger, #d93025);
 }
 
-/* details panel and model menu float above the strip */
-.agy-bar-drawer,
-.agy-bar-menu {
+/* details panel and model menu float above the strip with narrow responsive bounds */
+.agy-bar-drawer {
   position: absolute;
-  left: 0;
   right: 0;
-  bottom: calc(100% - 2px);
-  z-index: 60;
+  left: auto;
+  width: 290px;
+  max-width: calc(100vw - 20px);
+  bottom: calc(100% + 4px);
+  z-index: 70;
   display: flex;
   flex-direction: column;
   gap: 10px;
   padding: 12px 14px;
-  border: 1px solid var(--border, #d9dfe9);
-  border-radius: 14px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: 12px;
   background: var(--surface, #fff);
-  box-shadow: var(--shadow-menu, 0 10px 30px rgba(20, 30, 60, 0.16));
+  box-shadow: var(
+    --shadow-menu,
+    0 10px 30px rgba(15, 23, 42, 0.18),
+    0 2px 6px rgba(15, 23, 42, 0.06)
+  );
+  animation: agy-bar-rise 0.16s ease-out;
+}
+.agy-bar-menu {
+  position: absolute;
+  left: 0;
+  right: auto;
+  width: 260px;
+  max-width: calc(100vw - 20px);
+  bottom: calc(100% + 4px);
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px;
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: 10px;
+  background: var(--surface, #fff);
+  box-shadow: var(
+    --shadow-menu,
+    0 10px 30px rgba(15, 23, 42, 0.18),
+    0 2px 6px rgba(15, 23, 42, 0.06)
+  );
   animation: agy-bar-rise 0.16s ease-out;
 }
 @keyframes agy-bar-rise {

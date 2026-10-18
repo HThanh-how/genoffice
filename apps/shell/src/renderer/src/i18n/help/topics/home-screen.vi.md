@@ -60,7 +60,7 @@ Từng thẻ dùng để làm gì:
 
 - Đánh sao tệp trước (loại nào ứng dụng đọc được đều được); đầu bảng đếm kho, và kho rỗng sẽ mời bạn đi đánh sao thứ gì đó.
 - Câu trả lời trích dẫn tệp nguồn; bấm vào trích dẫn để mở tệp trong trình soạn của nó.
-- Cần đăng nhập Genspark. Hội thoại chỉ sống trong bộ nhớ — đóng ứng dụng là hết.
+- Dùng nhà cung cấp AI đã chọn, gồm Antigravity và các nhà cung cấp dùng khóa riêng; không cần đăng nhập Genspark. Lịch sử hội thoại được giữ lại sau khi khởi động lại ứng dụng. Có thể lưu câu trả lời thành Word hoặc Markdown.
 - Tìm kiếm chạy trên chỉ mục tệp cục bộ, như tìm kiếm của Trang chủ; tệp đã biến mất tự rời khỏi kho.
 - Nhóm chỉ để sắp danh sách Đánh sao — cơ sở tri thức luôn bao mọi tệp được đánh sao.
 
