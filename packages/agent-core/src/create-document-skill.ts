@@ -147,8 +147,11 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
       const sessionId = typeof call.input.sessionId === 'string' ? call.input.sessionId : undefined
       const userTurnId =
         typeof call.input.userTurnId === 'string' ? call.input.userTurnId : undefined
-      const documentSlot =
-        typeof call.input.documentSlot === 'string' ? call.input.documentSlot : 'primary'
+      const rawSlot =
+        typeof call.input.documentSlot === 'string' && call.input.documentSlot.trim()
+          ? call.input.documentSlot.trim()
+          : undefined
+      const documentSlot = rawSlot ?? 'primary'
       const documentType =
         typeof call.input.documentType === 'string'
           ? (call.input.documentType as DocumentType)
@@ -192,7 +195,7 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         ...(open !== undefined ? { open } : {}),
         ...(sessionId ? { sessionId } : {}),
         ...(userTurnId ? { userTurnId } : {}),
-        ...(documentSlot ? { documentSlot } : {}),
+        ...(rawSlot ? { documentSlot: rawSlot } : {}),
         ...(documentType ? { documentType } : {}),
       })
 
