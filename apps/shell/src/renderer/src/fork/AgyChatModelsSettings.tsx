@@ -9,7 +9,7 @@ import { useI18n } from '../locale'
 
 const EN = {
   title: 'Models in the chat box',
-  desc: 'Only the models switched on here appear in the chat box. All available Gemini models are on by default, with Gemini 3.8 Flash High as the default chat model. Lower-effort models use less quota. Claude and GPT models remain off by default.',
+  desc: 'Only the models switched on here appear in the chat box. On a first run every Gemini model the Antigravity CLI reports is switched on, with Gemini 3.8 Flash High as the chat model. Lower-effort models use less quota. Claude and GPT models stay off until you turn them on; a list you have already changed is kept as it is.',
   geminiGroup: 'Gemini',
   otherGroup: 'Claude and GPT',
   otherNote:
@@ -25,7 +25,7 @@ const EN = {
 }
 const VI: typeof EN = {
   title: 'Model trong khung chat',
-  desc: 'Chỉ các model được bật ở đây mới hiện trong khung chat. Tất cả các model Gemini khả dụng được bật theo mặc định, với Gemini 3.8 Flash High là model chat mặc định. Các model mức reasoning thấp hơn dùng ít quota hơn. Các model Claude và GPT mặc định tắt.',
+  desc: 'Chỉ các model được bật ở đây mới hiện trong khung chat. Khi dùng lần đầu, mọi model Gemini mà Antigravity CLI báo là được bật, với Gemini 3.8 Flash High là model chat. Model mức reasoning thấp hơn dùng ít quota hơn. Model Claude và GPT tắt cho tới khi bạn bật; danh sách bạn đã thay đổi sẽ được giữ nguyên.',
   geminiGroup: 'Gemini',
   otherGroup: 'Claude và GPT',
   otherNote:
@@ -41,7 +41,7 @@ const VI: typeof EN = {
 }
 const ZH: typeof EN = {
   title: '聊天框中的模型',
-  desc: '只有在此开启的模型才会出现在聊天框中。所有可用的 Gemini 模型默认开启，并将 Gemini 3.8 Flash High 作为默认聊天模型。较低思考档位的模型消耗更少额度。Claude 和 GPT 模型默认保持关闭。',
+  desc: '只有在此开启的模型才会出现在聊天框中。首次使用时，Antigravity CLI 报告的所有 Gemini 模型都会开启，聊天模型为 Gemini 3.8 Flash High。较低思考档位的模型消耗更少额度。Claude 和 GPT 模型默认关闭，需手动开启；已修改过的列表保持不变。',
   geminiGroup: 'Gemini',
   otherGroup: 'Claude 和 GPT',
   otherNote: '这些模型使用单独的额度池，完成同样的工作要多消耗数倍额度。默认关闭。',

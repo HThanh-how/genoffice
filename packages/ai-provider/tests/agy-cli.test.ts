@@ -1,4 +1,6 @@
 import { CLI, FakeChild, fsDeps, runDeps, tick } from './helpers/agy-fake'
+import { AGY_OCR_DEFAULT_MODEL } from '../src/agy-ocr'
+import { resolveAgyEffort } from '../src/agy-effort'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentMessage } from '@genoffice/agent-core'
 import {
@@ -886,5 +888,60 @@ describe('registry wiring', () => {
     })) as { models: string[]; error?: string }
     expect(reply.models).toEqual([])
     expect(reply.error).toMatch(/absolute/)
+  })
+})
+
+describe('chat model sent to the CLI', () => {
+  it('T16: a chat turn with no stored model sends the High default', async () => {
+    const child = new FakeChild()
+    const { deps, spawned } = runDeps(child)
+    const promise = chatAgy(
+      { apiKey: '', model: '', cliPath: CLI },
+      'sys',
+      'hi',
+      new AbortController().signal,
+      deps,
+    )
+    await tick()
+    child.emitLines([
+      '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"ok"}}',
+    ])
+    child.exit(0)
+    await promise
+    const args = spawned[0]!.args
+    expect(args[args.indexOf('--model') + 1]).toBe(AGY_CHAT_DEFAULT_MODEL)
+  })
+
+  it('T21: a model whose id already carries its effort is not sent with --effort', async () => {
+    const child = new FakeChild()
+    const { deps, spawned } = runDeps(child, {
+      capabilities: async () => ({ jsonSchema: false, effort: true }),
+    })
+    const promise = chatAgy(
+      { apiKey: '', model: 'gemini-3.8-flash-high', cliPath: CLI },
+      'sys',
+      'hi',
+      new AbortController().signal,
+      deps,
+    )
+    await tick()
+    child.emitLines([
+      '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"ok"}}',
+    ])
+    child.exit(0)
+    await promise
+    expect(spawned[0]!.args).not.toContain('--effort')
+  })
+
+  it('T19: an OCR run keeps its own Low model and is not affected by the chat default', () => {
+    const args = buildAgyArgs({
+      model: AGY_OCR_DEFAULT_MODEL,
+      stagingDir: 'C:\\tmp\\s',
+      timeoutMs: 60_000,
+      effort: resolveAgyEffort({ task: 'ocr', model: AGY_OCR_DEFAULT_MODEL }),
+    })
+    expect(args[args.indexOf('--model') + 1]).toBe('gemini-3.8-flash-low')
+    // the id already says "low", so no --effort is sent to override it
+    expect(args).not.toContain('--effort')
   })
 })

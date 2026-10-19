@@ -1422,7 +1422,10 @@ function AiMediaPane({
           window.aiOffice.testAiSearchSettings?.({
             provider: search.provider,
             ...(search.provider === 'agy'
-              ? { cliPath: settings.providers.agy?.cliPath, model: settings.providers.agy?.model }
+              ? {
+                  cliPath: settings.providers.agy?.cliPath,
+                  model: settings.search?.providers.agy?.model,
+                }
               : {}),
             apiKey:
               search.provider === 'genspark'

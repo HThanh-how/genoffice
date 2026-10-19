@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { agyDefaultsUsable, onAgyUsableChange, setAgyUsable } from '../src/agy-default'
+import {
+  agyChatDefaultModel,
+  agyDefaultsUsable,
+  onAgyUsableChange,
+  setAgyChatDefault,
+  setAgyUsable,
+} from '../src/agy-default'
 import {
   AGY_USABLE_FRESH_MS,
   agyUsableForDefaults,
@@ -12,6 +18,7 @@ import {
   defaultAiMediaSettings,
   resolveAiMediaSettings,
 } from '../src/media'
+import { AGY_OCR_DEFAULT_MODEL } from '../src/agy-ocr'
 import { activeProvider, defaultAiSettings, resolveAiSettings } from '../src/providers'
 import {
   activeSearchProvider,
@@ -19,7 +26,10 @@ import {
   resolveAiSearchSettings,
 } from '../src/search-settings'
 
-afterEach(() => setAgyUsable(null))
+afterEach(() => {
+  setAgyUsable(null)
+  setAgyChatDefault(null)
+})
 
 describe('agy-first defaults', () => {
   it("keeps today's fallbacks while agy is not known to be usable", () => {
@@ -267,5 +277,44 @@ describe('agy usability detection', () => {
   it('answers the first read from the probe when it is quick', async () => {
     const quick = deps(async () => ({ models: ['m'] }))
     await expect(agyUsableForDefaults(undefined, quick, 1_000)).resolves.toBe(true)
+  })
+})
+
+describe('first-run chat model', () => {
+  it('seeds the model the installed CLI actually offers when High is absent', async () => {
+    const deps: AgyDetectDeps = {
+      list: async () => ({ models: ['gemini-3.1-pro-low', 'gemini-3.8-flash-medium'] }),
+      now: () => 0,
+    }
+    await probeAgyUsable(undefined, deps)
+    expect(agyChatDefaultModel()).toBe('gemini-3.1-pro-low')
+    expect(defaultAiSettings().providers.agy.model).toBe('gemini-3.1-pro-low')
+  })
+
+  it('prefers High when the CLI reports it', async () => {
+    const deps: AgyDetectDeps = {
+      list: async () => ({ models: ['gemini-3.8-flash-low', 'gemini-3.8-flash-high'] }),
+      now: () => 0,
+    }
+    await probeAgyUsable(undefined, deps)
+    expect(defaultAiSettings().providers.agy.model).toBe('gemini-3.8-flash-high')
+  })
+
+  it('keeps the seed and does not invent availability when the CLI cannot be reached', async () => {
+    const deps: AgyDetectDeps = {
+      list: async () => ({ models: [], error: 'agy not found' }),
+      now: () => 0,
+    }
+    await probeAgyUsable(undefined, deps)
+    expect(agyChatDefaultModel()).toBe('gemini-3.8-flash-high')
+    expect(defaultAiSettings().providers.agy.model).toBe('gemini-3.8-flash-high')
+  })
+
+  it('does not change search or OCR defaults', () => {
+    setAgyUsable(true)
+    const settings = defaultAiSettings()
+    // retrieval work keeps its own empty model, which resolves to the Low task default
+    expect(settings.search?.providers.agy.model).toBe('')
+    expect(AGY_OCR_DEFAULT_MODEL).toBe('gemini-3.8-flash-low')
   })
 })

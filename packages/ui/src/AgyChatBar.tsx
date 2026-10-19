@@ -14,6 +14,8 @@ export interface AgyBarState {
   models: AgyBarModel[]
   selected: string
   active: boolean
+  /** set when `agy models` could not be read, so the list is unverified */
+  catalogError?: string
 }
 export interface AgyBarUsage {
   groups: Array<{
@@ -178,6 +180,8 @@ const EN = {
   cost: 'Uses about {n}× the quota',
   costBase: 'Lightest on quota',
   more: 'More models can be turned on in Settings → AI model.',
+  unverified:
+    'The Antigravity CLI did not return a model list, so these models are not confirmed as available.',
   usage: 'Antigravity usage',
   fiveHour: '5-hour limit',
   weekly: 'Weekly limit',
@@ -249,6 +253,7 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     cost: 'Tốn quota khoảng {n} lần',
     costBase: 'Tiết kiệm quota nhất',
     more: 'Có thể bật thêm model trong Cài đặt → Mô hình AI.',
+    unverified: 'Antigravity CLI không trả danh sách model, nên chưa xác nhận được model khả dụng.',
     usage: 'Mức dùng Antigravity',
     fiveHour: 'Hạn mức 5 giờ',
     weekly: 'Hạn mức tuần',
@@ -316,6 +321,7 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     cost: '约消耗 {n} 倍额度',
     costBase: '最省额度',
     more: '可在 设置 → AI 模型 中启用更多模型。',
+    unverified: 'Antigravity CLI 未返回模型列表，因此这些模型未被确认可用。',
     usage: 'Antigravity 用量',
     fiveHour: '5 小时额度',
     weekly: '每周额度',
@@ -1100,7 +1106,7 @@ export function AgyChatBar({
               className="agy-bar-chip agy-bar-model"
               aria-haspopup="listbox"
               aria-expanded={menu}
-              title={d.model}
+              title={state.catalogError ? d.unverified : d.model}
               onClick={() => {
                 setMenu((value) => !value)
               }}

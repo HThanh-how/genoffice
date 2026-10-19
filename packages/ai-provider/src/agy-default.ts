@@ -1,3 +1,5 @@
+import { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
+
 /**
  * Browser-safe memory of whether the Antigravity CLI is usable (installed and signed in). The
  * settings defaults read it so a fresh install starts on `agy` without any I/O at import time or
@@ -7,6 +9,8 @@
 
 let usable: boolean | null = null
 let checkedAt = 0
+/** the chat model the probe found the installed CLI actually offers (null = not known yet) */
+let chatDefault: string | null = null
 const listeners = new Set<(usable: boolean) => void>()
 
 /** True only after a probe confirmed `agy` is installed and signed in. */
@@ -37,4 +41,17 @@ export function setAgyUsable(next: boolean | null, now: number = Date.now()): vo
 export function onAgyUsableChange(listener: (usable: boolean) => void): () => void {
   listeners.add(listener)
   return () => listeners.delete(listener)
+}
+
+/**
+ * Record which chat model the installed CLI really offers, so a fresh installation starts on a
+ * model that exists rather than on a hardcoded id.
+ */
+export function setAgyChatDefault(model: string | null): void {
+  chatDefault = model
+}
+
+/** The chat model to seed for a first run; the High default until a probe says otherwise. */
+export function agyChatDefaultModel(): string {
+  return chatDefault ?? AGY_CHAT_DEFAULT_MODEL
 }

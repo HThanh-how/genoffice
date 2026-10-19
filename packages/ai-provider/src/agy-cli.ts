@@ -39,7 +39,8 @@ import { agyMachineSemaphore, type AgyMachineSemaphore } from './agy-lock'
  */
 
 import { AGY_DEFAULT_MODEL } from './agy-meta'
-import { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
+import { AGY_CHAT_DEFAULT_MODEL, resolveChatModel } from './agy-chat'
+import { agyChatDefaultModel } from './agy-default'
 import {
   AGY_SCHEMA_NATIVE_RETRY_NOTE,
   AGY_SCHEMA_TURN_NOTE,
@@ -1067,6 +1068,16 @@ export async function runAgy(
 // ---------------------------------------------------------------------------
 
 /**
+ * The model a chat turn uses. Anything other than the app's own seeded default is the person's
+ * choice and is kept as-is; otherwise the model the installed CLI was found to offer is used, so
+ * a first run never sends an id that executable cannot serve. No I/O: the answer comes from the
+ * startup probe recorded in agy-default.ts.
+ */
+export function chatModelFor(config: AiProviderConfig): string {
+  return resolveChatModel(config.model, { models: [agyChatDefaultModel()] })
+}
+
+/**
  * Streaming turn. With tools, agy answers either as one object under `--json-schema` (default
  * whenever the installed agy has the flag) or through <tool_call> text blocks (agy-tools.ts);
  * see agy-structured-turn.ts. Either way the reply is shown once complete, so a tool request
@@ -1084,7 +1095,7 @@ export async function streamAgy(
   const runId = randomUUID()
   const requestId = cb.requestId
   const sessionId = cb.sessionId
-  const model = config.model?.trim() || AGY_CHAT_DEFAULT_MODEL
+  const model = chatModelFor(config)
   const say: AgySay = (activity) =>
     publishAgyActivity({
       runId,
@@ -1096,7 +1107,7 @@ export async function streamAgy(
     })
   say({ phase: 'start' })
   try {
-    await streamAgyTurn(config, system, messages, tools, maxTokens, cb, deps, say)
+    await streamAgyTurn(config, model, system, messages, tools, maxTokens, cb, deps, say)
     say({ phase: 'done' })
   } catch (error) {
     say({
@@ -1151,6 +1162,7 @@ async function chooseToolProtocol(
 
 async function streamAgyTurn(
   config: AiProviderConfig,
+  model: string,
   system: string,
   messages: AgentMessage[],
   tools: AgentToolDef[],
@@ -1191,7 +1203,7 @@ async function streamAgyTurn(
         },
         onFirstText: () => say({ phase: 'writing' }),
         cliPath: config.cliPath,
-        model: config.model?.trim() || AGY_CHAT_DEFAULT_MODEL,
+        model,
         prompt: prompt.prompt,
         files: prompt.files,
         signal: cb.signal,
@@ -1245,7 +1257,8 @@ async function streamAgyTurn(
   ) {
     try {
       const turn = await agyResidentManager.executeTurn({
-        config,
+        // the model resolved for this turn, so a resident worker never runs a different one
+        config: { ...config, model },
         system,
         messages,
         tools,
@@ -1496,7 +1509,7 @@ export async function chatAgy(
     const result = await runAgy(
       {
         cliPath: config.cliPath,
-        model: config.model?.trim() || AGY_CHAT_DEFAULT_MODEL,
+        model: chatModelFor(config),
         prompt: plan.prompt,
         signal,
         task: 'chat',

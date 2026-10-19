@@ -11,38 +11,109 @@ import type { AgyActivity } from './agy-activity'
  * reasoning only costs time and quota.
  */
 
-/** The default chat model: Gemini 3.8 Flash High. */
+/** The chat model a fresh installation starts with: Gemini 3.8 Flash High. */
 export const AGY_CHAT_DEFAULT_MODEL = 'gemini-3.8-flash-high'
-export const AGY_CHAT_DEFAULT_ENABLED: readonly string[] = [
-  AGY_CHAT_DEFAULT_MODEL,
-  'gemini-3.8-flash-medium',
-  'gemini-3.8-flash-low',
-]
 
 /**
- * Enables all available Gemini model IDs from the catalog by default.
- * Non-Gemini models (Claude, GPT, other) are not enabled by default.
- * If catalog is unavailable or contains no Gemini models, falls back to the safe default list.
+ * The list used only when the installed CLI's model catalog cannot be read at all. It is a seed
+ * that keeps the chat box usable offline, not a claim that these models are installed: callers
+ * that show it also report the catalog error.
+ */
+export const AGY_CHAT_DEFAULT_ENABLED: readonly string[] = [AGY_CHAT_DEFAULT_MODEL]
+
+/**
+ * Every Gemini model the installed CLI reported, in catalog order, without duplicates. Claude,
+ * GPT and anything else stay off until the person turns them on. An empty or failed catalog
+ * yields nothing: it is not evidence that any model exists.
  */
 export function defaultEnabledChatModels(catalogModels?: readonly string[]): string[] {
-  if (Array.isArray(catalogModels) && catalogModels.length > 0) {
-    const gemini = catalogModels.filter((id) => {
-      const lower = id.toLowerCase().trim()
-      return lower.startsWith('gemini-')
-    })
-    if (gemini.length > 0) {
-      const seen = new Set<string>()
-      const out: string[] = []
-      for (const id of gemini) {
-        if (!seen.has(id)) {
-          seen.add(id)
-          out.push(id)
-        }
-      }
-      return out
-    }
+  if (!Array.isArray(catalogModels)) return []
+  const out: string[] = []
+  for (const raw of catalogModels) {
+    const id = typeof raw === 'string' ? raw.trim() : ''
+    if (!/^gemini-/i.test(id) || out.includes(id)) continue
+    out.push(id)
   }
-  return [...AGY_CHAT_DEFAULT_ENABLED]
+  return out
+}
+
+/** A stored model id, or undefined when the person never chose one. */
+export function normalizeChatModel(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+/**
+ * The model a chat turn really uses.
+ *  - an explicit selection always wins, even when the CLI no longer lists it;
+ *  - the app's own seeded default is re-resolved against the catalog, so a first run never sends
+ *    a model id the installed CLI cannot serve;
+ *  - a catalog failure is never read as "the model is missing": the stored choice is kept.
+ */
+export function resolveChatModel(
+  storedModel: unknown,
+  catalog: { models?: readonly string[]; error?: string },
+): string {
+  const stored = normalizeChatModel(storedModel)
+  // Anything other than the app's own seeded default is the person's choice and is kept, even
+  // when the CLI no longer lists it.
+  if (stored && stored !== AGY_CHAT_DEFAULT_MODEL) return stored
+  return firstRunChatModel(catalog)
+}
+
+/**
+ * The chat model a first run should use: the High default when the installed CLI offers it,
+ * otherwise the first Gemini model it offers, otherwise the seed (availability reported separately).
+ */
+export function firstRunChatModel(catalog: { models?: readonly string[]; error?: string }): string {
+  if (catalog?.error || !Array.isArray(catalog.models) || catalog.models.length === 0)
+    return AGY_CHAT_DEFAULT_MODEL
+  if (catalog.models.includes(AGY_CHAT_DEFAULT_MODEL)) return AGY_CHAT_DEFAULT_MODEL
+  return defaultEnabledChatModels(catalog.models)[0] ?? AGY_CHAT_DEFAULT_MODEL
+}
+
+/**
+ * Which models the chat box offers and which one requests use, decided from stored settings and
+ * the live catalog without writing anything.
+ *  - a saved enabled list is the person's choice and is never rewritten;
+ *  - with no saved list, every Gemini model the CLI reports is enabled;
+ *  - a selection that is not in the enabled list is kept and shown, so the UI never disagrees
+ *    with what the CLI is sent.
+ */
+export function resolveChatModels(input: {
+  /** the `agyChatModels` app setting; undefined means the person never touched it */
+  savedEnabled: unknown
+  /** `providers.agy.model` as stored */
+  savedModel?: string | null
+  catalog: { models: readonly string[]; error?: string }
+  provider?: string
+}): {
+  models: AgyChatModelInfo[]
+  selected: string
+  enabled: string[]
+  /** the enabled list came from the live catalog rather than from a saved preference */
+  fromCatalog: boolean
+  /** the CLI could not be reached, so availability is unverified */
+  catalogError?: string
+} {
+  const catalogError =
+    typeof input.catalog.error === 'string' && input.catalog.error.trim()
+      ? input.catalog.error.trim()
+      : undefined
+  const fromCatalog = input.savedEnabled === undefined && input.catalog.models.length > 0
+  const enabled =
+    input.savedEnabled === undefined
+      ? defaultEnabledChatModels(input.catalog.models)
+      : sanitizeEnabledChatModels(input.savedEnabled)
+  const list = enabled.length ? enabled : [...AGY_CHAT_DEFAULT_ENABLED]
+  const selected = resolveChatModel(input.savedModel, input.catalog)
+  const ids = list.includes(selected) ? list : [selected, ...list]
+  return {
+    models: ids.map(agyChatModelInfo),
+    selected,
+    enabled: list,
+    fromCatalog,
+    ...(catalogError ? { catalogError } : {}),
+  }
 }
 
 export type AgyQuotaGroup = 'Gemini Models' | 'Claude and GPT models'
@@ -216,6 +287,8 @@ export interface AgyChatState {
   selected: string
   /** whether Antigravity is the active chat provider */
   active: boolean
+  /** set when `agy models` could not be read, so the list is unverified */
+  catalogError?: string
 }
 
 export interface AgyChatCatalog {

@@ -19,9 +19,9 @@ import {
 } from '@genoffice/ai-provider/agy-usage'
 import {
   AGY_CHAT_CHANNELS,
-  AGY_CHAT_DEFAULT_MODEL,
   agyChatModelInfo,
-  defaultEnabledChatModels,
+  normalizeChatModel,
+  resolveChatModels,
   sanitizeEnabledChatModels,
   type AgyChatCatalog,
   type AgyChatState,
@@ -140,34 +140,24 @@ export class AgyUsageCache {
 }
 
 /**
- * Chat model chooser for the Antigravity provider: which models appear in the chat box (default
- * only Gemini 3.8 Flash Low), picking one, and the quota readout shown beside it.
+ * Chat model chooser for the Antigravity provider: which models appear in the chat box, picking
+ * one, and the quota readout shown beside it.
  */
 export function registerAgyChat(deps: AgyChatDeps): void {
   const aiSettings = (): AiSettingsFile => readJson<AiSettingsFile>(deps.aiSettingsPath(), {})
+  /** the CLI the person configured, or undefined for "auto-detect" (the same rule the chat uses) */
   const getCliPath = (): string | undefined => {
     const p = aiSettings().providers?.agy?.cliPath
     return typeof p === 'string' && p.trim() ? p.trim() : undefined
   }
-  const enabled = async (catalogModels?: string[]): Promise<string[]> => {
-    const raw = readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY]
-    if (raw !== undefined) {
-      return sanitizeEnabledChatModels(raw)
-    }
-    if (catalogModels && catalogModels.length > 0) {
-      return defaultEnabledChatModels(catalogModels)
-    }
-    try {
-      const catalog = await listAgyModels(getCliPath())
-      return defaultEnabledChatModels(catalog.models)
-    } catch {
-      return defaultEnabledChatModels()
-    }
+  /** `agy models` for the configured executable; listAgyModels caches it and never throws. */
+  const catalog = async (): Promise<{ models: string[]; error?: string }> => {
+    const result = await listAgyModels(getCliPath())
+    return { models: result.models, ...(result.error ? { error: result.error } : {}) }
   }
-  const selectedModel = (): string => {
-    const saved = aiSettings().providers?.agy?.model
-    return typeof saved === 'string' && saved.trim() ? saved.trim() : AGY_CHAT_DEFAULT_MODEL
-  }
+  /** the model chat requests use, read at the moment of a mutation so a newer choice wins */
+  const selectedModel = (): string | undefined =>
+    normalizeChatModel(aiSettings().providers?.agy?.model)
 
   const usage = new AgyUsageCache(
     readAgyUsage,
@@ -179,51 +169,78 @@ export function registerAgyChat(deps: AgyChatDeps): void {
     },
   )
 
+  // Reading the chat box must not change anything: the enabled list and the selection are
+  // resolved from what is already stored, and a catalog failure is reported rather than
+  // repaired by writing a fallback over the user's choice.
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.state, async (): Promise<AgyChatState> => {
+    // Resolve the catalog first, then read the settings, so a choice made while the catalog was
+    // in flight is reported rather than an older snapshot.
+    const models = await catalog()
     const settings = aiSettings()
-    const ids = await enabled()
-    let current = selectedModel()
-    // A saved model that is not in the chat list (left over from before the list existed, or
-    // switched off since) gives way to the list's first model, and that choice is saved so the
-    // requests really use it.
-    if (!ids.includes(current) && ids[0] && settings.provider === 'agy') {
-      current = ids[0]
-      const providers = { ...(settings.providers ?? {}) }
-      providers.agy = { ...(providers.agy ?? {}), model: current }
-      writeJsonAtomic(deps.aiSettingsPath(), { ...settings, providers })
-    }
-    if (!ids.includes(current)) ids.unshift(current)
+    const resolved = resolveChatModels({
+      savedEnabled: readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY],
+      savedModel: settings.providers?.agy?.model,
+      catalog: models,
+    })
     return {
-      models: ids.map(agyChatModelInfo),
-      selected: current,
+      models: resolved.models,
+      selected: resolved.selected,
       active: settings.provider === 'agy',
+      ...(resolved.catalogError ? { catalogError: resolved.catalogError } : {}),
     }
   })
 
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.catalog, async (): Promise<AgyChatCatalog> => {
-    const catalog = await listAgyModels(getCliPath())
-    const enabledIds = await enabled(catalog.models)
+    const models = await catalog()
+    const resolved = resolveChatModels({
+      savedEnabled: readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY],
+      savedModel: selectedModel(),
+      catalog: models,
+    })
     return {
-      all: catalog.models.map(agyChatModelInfo),
-      enabled: enabledIds,
-      ...(catalog.error ? { error: catalog.error } : {}),
+      all: models.models.map(agyChatModelInfo),
+      enabled: resolved.enabled,
+      ...(models.error ? { error: models.error } : {}),
     }
   })
 
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.setEnabled, (_event, ids: unknown): string[] => {
     const next = sanitizeEnabledChatModels(ids)
     writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, next)
+    // Turning off the model in use is an explicit choice, so the next one is decided here,
+    // deterministically: the first model still switched on. A read-only state query never does
+    // this.
+    const current = selectedModel()
+    if (current && !next.includes(current)) {
+      const settings = aiSettings()
+      const providers = { ...(settings.providers ?? {}) }
+      providers.agy = { ...(providers.agy ?? {}), model: next[0] }
+      writeJsonAtomic(deps.aiSettingsPath(), { ...settings, providers })
+      for (const window of BrowserWindow.getAllWindows())
+        if (!window.isDestroyed()) window.webContents.send('ai:settings-changed')
+    }
     return next
   })
 
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.select, async (_event, id: unknown): Promise<boolean> => {
-    if (typeof id !== 'string') return false
-    const currentEnabled = await enabled()
-    if (!currentEnabled.includes(id)) return false
+    if (typeof id !== 'string' || !id.trim()) return false
+    const model = id.trim()
+    const models = await catalog()
+    const resolved = resolveChatModels({
+      savedEnabled: readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY],
+      savedModel: model,
+      catalog: models,
+    })
+    // Only models the person switched on can be chosen; a model the CLI cannot be reached for
+    // keeps the seed list, so the chat box still has something to offer.
+    if (!resolved.enabled.includes(model)) return false
+    // Re-read right before writing so a choice made while the catalog was pending is not lost.
     const settings = aiSettings()
     const providers = { ...(settings.providers ?? {}) }
-    providers.agy = { ...(providers.agy ?? {}), model: id }
+    providers.agy = { ...(providers.agy ?? {}), model }
     writeJsonAtomic(deps.aiSettingsPath(), { ...settings, providers })
+    for (const window of BrowserWindow.getAllWindows())
+      if (!window.isDestroyed()) window.webContents.send('ai:settings-changed')
     return true
   })
 

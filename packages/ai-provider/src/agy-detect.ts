@@ -1,8 +1,10 @@
 import { listAgyModels, type AgyModelCatalog } from './agy-cli'
+import { firstRunChatModel } from './agy-chat'
 import {
   agyDefaultsUsable,
   agyUsabilityCheckedAt,
   agyUsabilityKnown,
+  setAgyChatDefault,
   setAgyUsable,
 } from './agy-default'
 
@@ -37,6 +39,9 @@ export function probeAgyUsable(cliPath?: string, deps: AgyDetectDeps = realDeps)
     try {
       const catalog = await deps.list(cliPath?.trim() || undefined)
       ok = !catalog.error && catalog.models.length > 0
+      // remember which chat model this installation really has, so a first run starts on one
+      // the CLI can serve instead of a hardcoded id
+      setAgyChatDefault(firstRunChatModel(catalog))
     } catch {
       ok = false
     }

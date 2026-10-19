@@ -42,14 +42,19 @@ it.each(['agy', 'openai'] as const)(
     settings.provider = provider
     settings.providers.agy = { apiKey: '', cliPath: '/chat/agy', model: 'chat-model' }
     settings.search!.provider = 'agy'
-    settings.search!.providers.agy = { apiKey: '', cliPath: '/search/agy', model: 'search-model' }
+    // the CLI path is shared, the model is not: retrieval keeps its own task model
+    settings.search!.providers.agy = {
+      apiKey: '',
+      cliPath: provider === 'agy' ? '' : '/search/agy',
+      model: 'search-model',
+    }
     const before = structuredClone(settings)
     vi.mocked(readAiSettingsFile).mockReturnValue(settings)
     vi.mocked(runAgy).mockResolvedValue({ text: '[]' })
     await webSearchTool('/settings', `routing-${provider}`)
     expect(vi.mocked(runAgy).mock.calls.at(-1)?.[0]).toMatchObject({
       cliPath: provider === 'agy' ? '/chat/agy' : '/search/agy',
-      model: provider === 'agy' ? 'chat-model' : 'search-model',
+      model: 'search-model',
     })
     expect(settings).toEqual(before)
   },
