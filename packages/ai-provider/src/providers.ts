@@ -1,4 +1,4 @@
-import { agyChatDefaultModel, agyDefaultsUsable } from './agy-default'
+import { agyDefaultsUsable } from './agy-default'
 import { AGY_PROVIDER_META } from './agy-meta'
 import { normalizeCustomProfile } from './custom-profile'
 import { resolveCustomEndpoints } from './custom-endpoints'
@@ -432,8 +432,10 @@ export function defaultAiSettings(
   for (const meta of AI_PROVIDERS) {
     providers[meta.id] = {
       apiKey: defaultApiKeys?.[meta.id] ?? '',
-      // the Antigravity CLI is a local executable: seed the model its own catalog reported
-      model: meta.id === AGY_PROVIDER_META.id ? agyChatDefaultModel() : meta.defaultModel,
+      // Antigravity is a local executable with its own model catalog: it is seeded empty on
+      // purpose, so a model stored in the settings file is always a real choice (the first run
+      // picks one from `agy models`, see chatModelFor) and never a value the app invented.
+      model: meta.id === AGY_PROVIDER_META.id ? '' : meta.defaultModel,
       baseUrl: meta.needsBaseUrl ? '' : undefined,
       cliPath: meta.needsCliPath ? '' : undefined,
     }

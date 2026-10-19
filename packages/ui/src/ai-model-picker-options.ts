@@ -119,11 +119,20 @@ export function aiModelPickerGroups(
   return groups
 }
 
-export function aiModelPickerSelection(input: AiSettings): AiModelPickerSelection {
+/**
+ * What the composer chip should show. For Antigravity the live chat selection wins over the
+ * stored model: the CLI decides the first-run model, and the picker must not display a model the
+ * chat box is not actually using.
+ */
+export function aiModelPickerSelection(
+  input: AiSettings,
+  liveAgySelected?: string | undefined,
+): AiModelPickerSelection {
   const settings = resolveCustomEndpoints(input)
   const provider = activeProvider(settings)
   const meta = AI_PROVIDERS.find((m) => m.id === provider)
-  const model = settings.providers?.[provider]?.model?.trim() || meta?.defaultModel || ''
+  const live = provider === 'agy' ? (liveAgySelected?.trim() ?? '') : ''
+  const model = live || settings.providers?.[provider]?.model?.trim() || meta?.defaultModel || ''
   if (provider === 'custom' && settings.customEndpoint) {
     return { provider, endpoint: settings.customEndpoint, model }
   }

@@ -39,8 +39,8 @@ import { agyMachineSemaphore, type AgyMachineSemaphore } from './agy-lock'
  */
 
 import { AGY_DEFAULT_MODEL } from './agy-meta'
-import { AGY_CHAT_DEFAULT_MODEL, resolveChatModel } from './agy-chat'
-import { agyChatDefaultModel } from './agy-default'
+import { AGY_CHAT_DEFAULT_MODEL, firstRunChatModel, normalizeChatModel } from './agy-chat'
+import { agyChatDefaultRecord, recordAgyChatDefault } from './agy-default'
 import {
   AGY_SCHEMA_NATIVE_RETRY_NOTE,
   AGY_SCHEMA_TURN_NOTE,
@@ -1068,13 +1068,25 @@ export async function runAgy(
 // ---------------------------------------------------------------------------
 
 /**
- * The model a chat turn uses. Anything other than the app's own seeded default is the person's
- * choice and is kept as-is; otherwise the model the installed CLI was found to offer is used, so
- * a first run never sends an id that executable cannot serve. No I/O: the answer comes from the
- * startup probe recorded in agy-default.ts.
+ * The model a chat turn really uses.
+ *  - a model stored in the settings is the person's choice and is sent as-is, even when the CLI
+ *    no longer lists it (the UI reports it as unavailable rather than silently swapping it);
+ *  - a first run with nothing stored uses the model the CLI at this path was last seen to offer,
+ *    so the command never names an id that executable cannot serve;
+ *  - when that CLI answered and has no usable chat model, this throws instead of inventing one.
+ * No I/O: the answer comes from the catalog reads already recorded in agy-default.ts.
  */
 export function chatModelFor(config: AiProviderConfig): string {
-  return resolveChatModel(config.model, { models: [agyChatDefaultModel()] })
+  const stored = normalizeChatModel(config.model)
+  if (stored) return stored
+  const cliPath = typeof config.cliPath === 'string' ? config.cliPath.trim() : ''
+  const known = agyChatDefaultRecord(cliPath)
+  if (known?.model) return known.model
+  if (known && known.verified)
+    throw new Error(
+      'The Antigravity CLI does not offer a chat model GenOffice can use. Check the Antigravity connection in Settings, or pick another chat provider.',
+    )
+  return AGY_CHAT_DEFAULT_MODEL
 }
 
 /**
@@ -1628,9 +1640,16 @@ export async function listAgyModels(
     if (models.length === 0)
       throw new Error('Antigravity CLI returned no models. Are you signed in?')
     modelsCache.set(resolved, { at: deps.now(), models })
+    // every successful catalog read refreshes the first-run chat model for the configured path
+    recordAgyChatDefault(cliPath, { models }, deps.now())
     return catalogOf(models)
   } catch (error) {
     const aborted = error instanceof Error && error.name === 'AbortError'
+    recordAgyChatDefault(
+      cliPath,
+      { models: [], error: aborted ? 'timeout' : 'catalog read failed' },
+      deps.now(),
+    )
     return {
       models: [],
       defaultModel: '',
@@ -1646,11 +1665,8 @@ export async function listAgyModels(
 function catalogOf(models: string[]): AgyModelCatalog {
   return {
     models,
-    defaultModel: models.includes(AGY_CHAT_DEFAULT_MODEL)
-      ? AGY_CHAT_DEFAULT_MODEL
-      : models.includes(AGY_DEFAULT_MODEL)
-        ? AGY_DEFAULT_MODEL
-        : (models[0] ?? ''),
+    // what the CLI can actually serve, never a hardcoded id it did not report
+    defaultModel: firstRunChatModel({ models }) ?? models[0] ?? '',
   }
 }
 

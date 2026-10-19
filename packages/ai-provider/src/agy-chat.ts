@@ -11,7 +11,7 @@ import type { AgyActivity } from './agy-activity'
  * reasoning only costs time and quota.
  */
 
-/** The chat model a fresh installation starts with: Gemini 3.8 Flash High. */
+/** The chat model a fresh installation starts with, when the installed CLI can serve it. */
 export const AGY_CHAT_DEFAULT_MODEL = 'gemini-3.8-flash-high'
 
 /**
@@ -20,6 +20,12 @@ export const AGY_CHAT_DEFAULT_MODEL = 'gemini-3.8-flash-high'
  * that show it also report the catalog error.
  */
 export const AGY_CHAT_DEFAULT_ENABLED: readonly string[] = [AGY_CHAT_DEFAULT_MODEL]
+
+/** What `agy models` answered: the ids it reported, or `error` when it could not be read. */
+export interface ChatCatalog {
+  models?: readonly string[]
+  error?: string
+}
 
 /**
  * Every Gemini model the installed CLI reported, in catalog order, without duplicates. Claude,
@@ -37,61 +43,86 @@ export function defaultEnabledChatModels(catalogModels?: readonly string[]): str
   return out
 }
 
-/** A stored model id, or undefined when the person never chose one. */
+/** Ids in catalog order, without duplicates; identity is never rewritten. */
+export function dedupeModelIds(models: readonly string[]): string[] {
+  const out: string[] = []
+  for (const raw of models) {
+    const id = typeof raw === 'string' ? raw.trim() : ''
+    if (id && !out.includes(id)) out.push(id)
+  }
+  return out
+}
+
+/** A stored model id, or undefined when nothing was persisted for it. */
 export function normalizeChatModel(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
 /**
- * The model a chat turn really uses.
- *  - an explicit selection always wins, even when the CLI no longer lists it;
- *  - the app's own seeded default is re-resolved against the catalog, so a first run never sends
- *    a model id the installed CLI cannot serve;
- *  - a catalog failure is never read as "the model is missing": the stored choice is kept.
+ * The model a first run should use, decided only from what the CLI actually reported: the High
+ * default when it is there, otherwise the first Gemini model the CLI offers, otherwise nothing.
+ * A failed or empty catalog is not evidence that any model exists, so it answers undefined rather
+ * than inventing one.
  */
-export function resolveChatModel(
-  storedModel: unknown,
-  catalog: { models?: readonly string[]; error?: string },
-): string {
+export function firstRunChatModel(catalog: ChatCatalog): string | undefined {
+  if (typeof catalog?.error === 'string' && catalog.error.trim()) return undefined
+  if (!Array.isArray(catalog?.models)) return undefined
+  const gemini = defaultEnabledChatModels(catalog.models)
+  if (gemini.length === 0) return undefined
+  return gemini.includes(AGY_CHAT_DEFAULT_MODEL) ? AGY_CHAT_DEFAULT_MODEL : gemini[0]
+}
+
+/**
+ * The model a chat turn really uses.
+ *  - a persisted selection is the person's choice and is kept as-is, even when the CLI no longer
+ *    lists it: nothing here ever rewrites a stored model;
+ *  - only a genuinely unconfigured first run is resolved from the catalog;
+ *  - undefined means no model was found and none can be verified, so the caller must not invent
+ *    one.
+ */
+export function resolveChatModel(storedModel: unknown, catalog: ChatCatalog): string | undefined {
   const stored = normalizeChatModel(storedModel)
-  // Anything other than the app's own seeded default is the person's choice and is kept, even
-  // when the CLI no longer lists it.
-  if (stored && stored !== AGY_CHAT_DEFAULT_MODEL) return stored
+  if (stored) return stored
   return firstRunChatModel(catalog)
 }
 
 /**
- * The chat model a first run should use: the High default when the installed CLI offers it,
- * otherwise the first Gemini model it offers, otherwise the seed (availability reported separately).
+ * Where the selected model stands with respect to the CLI that is configured right now:
+ *  - `verified`: the CLI listed it;
+ *  - `unavailable`: a successful catalog read did not list it;
+ *  - `unverified`: the catalog could not be read, so nothing is known either way;
+ *  - `none`: nothing is selected and nothing could be resolved.
  */
-export function firstRunChatModel(catalog: { models?: readonly string[]; error?: string }): string {
-  if (catalog?.error || !Array.isArray(catalog.models) || catalog.models.length === 0)
-    return AGY_CHAT_DEFAULT_MODEL
-  if (catalog.models.includes(AGY_CHAT_DEFAULT_MODEL)) return AGY_CHAT_DEFAULT_MODEL
-  return defaultEnabledChatModels(catalog.models)[0] ?? AGY_CHAT_DEFAULT_MODEL
-}
+export type ChatModelStatus = 'verified' | 'unavailable' | 'unverified' | 'none'
 
 /**
  * Which models the chat box offers and which one requests use, decided from stored settings and
- * the live catalog without writing anything.
- *  - a saved enabled list is the person's choice and is never rewritten;
- *  - with no saved list, every Gemini model the CLI reports is enabled;
- *  - a selection that is not in the enabled list is kept and shown, so the UI never disagrees
- *    with what the CLI is sent.
+ * the live catalog without writing anything. The concepts stay separate on purpose:
+ *  - `available`: ids the CLI confirmed it can serve right now (empty when unverified);
+ *  - `enabled`: ids the person lets appear in the chat box;
+ *  - `selected`: the id a chat turn will send ('' when there is none);
+ *  - `selectedStatus`: how well that id is supported by the current CLI.
+ * A saved enabled list is the person's choice and is never rewritten; with no saved list every
+ * Gemini the CLI reports is enabled; a selection outside the enabled list is kept and shown, so
+ * the UI never disagrees with what the CLI is sent.
  */
 export function resolveChatModels(input: {
   /** the `agyChatModels` app setting; undefined means the person never touched it */
   savedEnabled: unknown
   /** `providers.agy.model` as stored */
   savedModel?: string | null
-  catalog: { models: readonly string[]; error?: string }
-  provider?: string
+  catalog: ChatCatalog
 }): {
   models: AgyChatModelInfo[]
   selected: string
   enabled: string[]
+  /** ids the current CLI confirmed it can serve; empty when availability is unverified */
+  available: string[]
   /** the enabled list came from the live catalog rather than from a saved preference */
   fromCatalog: boolean
+  /** a successful catalog read determined availability */
+  verified: boolean
+  selectedStatus: ChatModelStatus
   /** the CLI could not be reached, so availability is unverified */
   catalogError?: string
 } {
@@ -99,19 +130,40 @@ export function resolveChatModels(input: {
     typeof input.catalog.error === 'string' && input.catalog.error.trim()
       ? input.catalog.error.trim()
       : undefined
-  const fromCatalog = input.savedEnabled === undefined && input.catalog.models.length > 0
+  const available = catalogError ? [] : dedupeModelIds(input.catalog.models ?? [])
+  const verified = available.length > 0
+  const fromCatalog = input.savedEnabled === undefined && verified
   const enabled =
     input.savedEnabled === undefined
-      ? defaultEnabledChatModels(input.catalog.models)
+      ? defaultEnabledChatModels(available)
       : sanitizeEnabledChatModels(input.savedEnabled)
-  const list = enabled.length ? enabled : [...AGY_CHAT_DEFAULT_ENABLED]
-  const selected = resolveChatModel(input.savedModel, input.catalog)
-  const ids = list.includes(selected) ? list : [selected, ...list]
+  const selected = resolveChatModel(input.savedModel, input.catalog) ?? ''
+  // With nothing switched on there is nothing to offer: a verified catalog that had no eligible
+  // model is reported as such instead of being padded with a hardcoded seed. Only an unreadable
+  // catalog falls back to the seed, and the caller reports it as unverified.
+  const list = enabled.length
+    ? enabled
+    : selected
+      ? [selected]
+      : verified
+        ? []
+        : [...AGY_CHAT_DEFAULT_ENABLED]
+  const ids = list.includes(selected) ? list : selected ? [selected, ...list] : list
+  const selectedStatus: ChatModelStatus = !selected
+    ? 'none'
+    : verified
+      ? available.includes(selected)
+        ? 'verified'
+        : 'unavailable'
+      : 'unverified'
   return {
-    models: ids.map(agyChatModelInfo),
+    models: ids.map((id) => ({ ...agyChatModelInfo(id), enabled: list.includes(id) })),
     selected,
     enabled: list,
+    available,
     fromCatalog,
+    verified,
+    selectedStatus,
     ...(catalogError ? { catalogError } : {}),
   }
 }
@@ -130,6 +182,8 @@ export interface AgyChatModelInfo {
   relativeCost: number
   /** one-line guidance, plain language */
   speed: 'fast' | 'balanced' | 'slow'
+  /** set by resolveChatModels only: whether the person has this model switched on */
+  enabled?: boolean
 }
 
 const COSTS: Array<[RegExp, number]> = [
@@ -268,6 +322,8 @@ export const AGY_CHAT_CHANNELS = {
   catalog: 'agyChat:catalog',
   select: 'agyChat:select',
   setEnabled: 'agyChat:set-enabled',
+  /** broadcast to every window whenever the chat model or the enabled list changes */
+  modelChanged: 'agyChat:model-changed',
   usage: 'agyChat:usage',
   refreshUsage: 'agyChat:refresh-usage',
   usageUpdated: 'agyChat:usage-updated',
@@ -283,10 +339,14 @@ export const AGY_CHAT_CHANNELS = {
 export interface AgyChatState {
   /** models the user lets appear in the chat box, with metadata */
   models: AgyChatModelInfo[]
-  /** the model chat requests use now (the saved agy model) */
+  /** the model chat requests use now; '' when there is nothing usable */
   selected: string
   /** whether Antigravity is the active chat provider */
   active: boolean
+  /** ids the installed CLI confirmed it can serve (empty when the catalog could not be read) */
+  available: string[]
+  /** how well the selected model is supported by the CLI configured now */
+  selectedStatus: ChatModelStatus
   /** set when `agy models` could not be read, so the list is unverified */
   catalogError?: string
 }
@@ -304,6 +364,8 @@ export interface AgyChatApi {
   getAgyChatCatalog(): Promise<AgyChatCatalog>
   selectAgyChatModel(id: string): Promise<boolean>
   setAgyChatEnabledModels(ids: string[]): Promise<string[]>
+  /** every window hears this after a model selection or an enabled-list change */
+  onAgyChatModelChanged(handler: () => void): () => void
   getAgyChatUsage(): Promise<AgyChatUsageState>
   refreshAgyChatUsage(): Promise<AgyChatUsageState>
   onAgyChatUsage(handler: (state: AgyChatUsageState) => void): () => void

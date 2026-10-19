@@ -1,4 +1,4 @@
-import { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
+import { AGY_CHAT_DEFAULT_MODEL, firstRunChatModel, type ChatCatalog } from './agy-chat'
 
 /**
  * Browser-safe memory of whether the Antigravity CLI is usable (installed and signed in). The
@@ -9,9 +9,27 @@ import { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
 
 let usable: boolean | null = null
 let checkedAt = 0
-/** the chat model the probe found the installed CLI actually offers (null = not known yet) */
-let chatDefault: string | null = null
+/**
+ * The chat model each configured Antigravity executable was last seen to offer, keyed by the CLI
+ * path the person configured ('' = auto-detect). Keying by path keeps a model discovered from one
+ * executable from being used as the first-run default of another, and records whether the answer
+ * came from a catalog that actually answered.
+ */
+interface ChatDefaultRecord {
+  /** the model to seed a first run with, or null when the CLI has no eligible one */
+  model: string | null
+  /** a successful `agy models` read confirmed it (false after a confirmed failure) */
+  verified: boolean
+  /** epoch ms of the last read that touched this record */
+  at: number
+}
+const chatDefaults = new Map<string, ChatDefaultRecord>()
 const listeners = new Set<(usable: boolean) => void>()
+
+/** The key a CLI path resolves to; the unconfigured (auto-detect) path is the empty string. */
+export function agyChatDefaultKey(cliPath?: string): string {
+  return typeof cliPath === 'string' ? cliPath.trim() : ''
+}
 
 /** True only after a probe confirmed `agy` is installed and signed in. */
 export function agyDefaultsUsable(): boolean {
@@ -44,14 +62,45 @@ export function onAgyUsableChange(listener: (usable: boolean) => void): () => vo
 }
 
 /**
- * Record which chat model the installed CLI really offers, so a fresh installation starts on a
- * model that exists rather than on a hardcoded id.
+ * Record which chat model the CLI at `cliPath` really offers. A catalog that answered sets the
+ * answer, including "this CLI has no eligible chat model". A catalog that failed keeps the last
+ * answer but marks it unverified: a temporary CLI problem never erases what was learned, and never
+ * gets presented as confirmed.
  */
-export function setAgyChatDefault(model: string | null): void {
-  chatDefault = model
+export function recordAgyChatDefault(
+  cliPath: string | undefined,
+  catalog: ChatCatalog,
+  now: number = Date.now(),
+): void {
+  const key = agyChatDefaultKey(cliPath)
+  const failed = typeof catalog.error === 'string' && catalog.error.trim() !== ''
+  if (failed) {
+    const previous = chatDefaults.get(key)
+    chatDefaults.set(key, { model: previous?.model ?? null, verified: false, at: now })
+    return
+  }
+  chatDefaults.set(key, { model: firstRunChatModel(catalog) ?? null, verified: true, at: now })
 }
 
-/** The chat model to seed for a first run; the High default until a probe says otherwise. */
-export function agyChatDefaultModel(): string {
-  return chatDefault ?? AGY_CHAT_DEFAULT_MODEL
+/** What is known about the chat model for one CLI path: nothing, or a model plus its verification. */
+export function agyChatDefaultRecord(
+  cliPath?: string,
+): { model: string | null; verified: boolean } | undefined {
+  const record = chatDefaults.get(agyChatDefaultKey(cliPath))
+  return record ? { model: record.model, verified: record.verified } : undefined
+}
+
+/**
+ * The chat model to seed for a first run on this CLI path, or undefined when nothing usable is
+ * known. The High default until a probe for this path says otherwise.
+ */
+export function agyChatDefaultModel(cliPath?: string): string | undefined {
+  const record = agyChatDefaultRecord(cliPath)
+  if (record === undefined) return AGY_CHAT_DEFAULT_MODEL
+  return record.model ?? undefined
+}
+
+/** Forget every recorded chat default (used by tests and when the CLI configuration is reset). */
+export function clearAgyChatDefaults(): void {
+  chatDefaults.clear()
 }

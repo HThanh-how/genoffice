@@ -15,6 +15,7 @@ import {
 } from '../src/agy-resident'
 import type { AgyRunDeps } from '../src/agy-cli'
 import { streamAgy } from '../src/agy-cli'
+import { clearAgyChatDefaults, recordAgyChatDefault } from '../src/agy-default'
 
 class FakeResidentChild extends EventEmitter {
   stdout = new PassThrough()
@@ -781,6 +782,21 @@ describe('agy resident transport', () => {
         }),
       ])
       await turn
+      shutdownAgyResidentServers(mock.deps)
+    })
+
+    it('T40: a resident turn sends a stored High even when this CLI only reported Low', async () => {
+      const mock = createMockDeps()
+      shutdownAgyResidentServers(mock.deps)
+      clearAgyChatDefaults()
+      recordAgyChatDefault('/nonexistent/agy', { models: ['gemini-3.8-flash-low'] }, 0)
+      const modelOf = (args: string[]) => args[args.indexOf('--model') + 1]
+      await prewarmAgy(
+        { apiKey: '', model: 'gemini-3.8-flash-high', cliPath: '/nonexistent/agy' },
+        mock.deps,
+      )
+      expect(modelOf(mock.spawned[0]!.args)).toBe('gemini-3.8-flash-high')
+      clearAgyChatDefaults()
       shutdownAgyResidentServers(mock.deps)
     })
 

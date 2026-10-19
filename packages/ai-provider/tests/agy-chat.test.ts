@@ -4,6 +4,7 @@ import {
   AGY_CHAT_DEFAULT_MODEL,
   agyChatModelInfo,
   defaultEnabledChatModels,
+  dedupeModelIds,
   firstRunChatModel,
   resolveChatModel,
   resolveChatModels,
@@ -93,31 +94,63 @@ describe('defaultEnabledChatModels', () => {
 })
 
 describe('resolveChatModel', () => {
-  it('keeps an explicit selection even when the catalog no longer lists it', () => {
-    expect(resolveChatModel('gemini-3.1-pro-high', { models: ['gemini-3.8-flash-low'] })).toBe(
+  it('T04/T05/T06/T38: keeps every persisted selection, even when the catalog no longer lists it', () => {
+    for (const model of [
+      'gemini-3.8-flash-low',
+      'gemini-3.8-flash-medium',
+      'gemini-3.8-flash-high',
       'gemini-3.1-pro-high',
-    )
-    expect(resolveChatModel('claude-sonnet-4-6', { models: [] })).toBe('claude-sonnet-4-6')
+      'claude-sonnet-4-6',
+    ]) {
+      expect(resolveChatModel(model, { models: ['gemini-3.8-flash-low'] })).toBe(model)
+    }
   })
 
-  it('uses the High default when nothing was chosen', () => {
-    expect(resolveChatModel(undefined, { models: [] })).toBe(AGY_CHAT_DEFAULT_MODEL)
+  it('T40: a saved High is never replaced just because High disappears from the catalog', () => {
+    expect(resolveChatModel('gemini-3.8-flash-high', { models: ['gemini-3.8-flash-low'] })).toBe(
+      'gemini-3.8-flash-high',
+    )
+    expect(resolveChatModel('gemini-3.8-flash-high', { models: [] })).toBe('gemini-3.8-flash-high')
+  })
+
+  it('T01: nothing stored and the CLI offers High -> High', () => {
+    expect(
+      resolveChatModel(undefined, {
+        models: ['gemini-3.8-flash-low', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-high'],
+      }),
+    ).toBe(AGY_CHAT_DEFAULT_MODEL)
     expect(resolveChatModel('', { models: ['gemini-3.8-flash-high'] })).toBe(AGY_CHAT_DEFAULT_MODEL)
   })
 
-  it('falls back to a model the CLI really has when the seeded default is absent', () => {
-    expect(resolveChatModel(AGY_CHAT_DEFAULT_MODEL, { models: ['gemini-3.1-pro-low'] })).toBe(
-      'gemini-3.1-pro-low',
-    )
+  it('T08: nothing stored and High is absent -> the first Gemini the CLI actually reports', () => {
+    expect(
+      resolveChatModel(undefined, { models: ['gemini-3.1-pro-low', 'gemini-3.8-flash-medium'] }),
+    ).toBe('gemini-3.1-pro-low')
   })
 
-  it('does not treat a catalog failure as evidence that the model is missing', () => {
+  it('T09/T39: a catalog with no Gemini yields nothing rather than a fabricated model', () => {
     expect(
-      resolveChatModel(AGY_CHAT_DEFAULT_MODEL, {
+      resolveChatModel(undefined, { models: ['claude-sonnet-4-6', 'gpt-oss-120b-medium'] }),
+    ).toBe(undefined)
+  })
+
+  it('T10: a catalog that answered with an empty list confirms no model', () => {
+    expect(resolveChatModel(undefined, { models: [] })).toBeUndefined()
+  })
+
+  it('T11/T12/T13: a catalog failure is never read as "the model is missing"', () => {
+    expect(
+      resolveChatModel('gemini-3.8-flash-high', {
         models: [],
         error: 'Timed out waiting for `agy models`',
       }),
-    ).toBe(AGY_CHAT_DEFAULT_MODEL)
+    ).toBe('gemini-3.8-flash-high')
+    expect(resolveChatModel(undefined, { models: [], error: 'agy not found' })).toBeUndefined()
+  })
+
+  it('malformed stored values are not treated as a selection', () => {
+    for (const junk of [null, undefined, '', '   ', 0, {}, [], true])
+      expect(resolveChatModel(junk, { models: [] })).toBeUndefined()
   })
 })
 
@@ -129,30 +162,32 @@ describe('resolveChatModels', () => {
   it('T01/T02: a fresh install defaults to High and enables every Gemini the CLI reports', () => {
     const state = resolveChatModels({
       savedEnabled: undefined,
-      savedModel: AGY_CHAT_DEFAULT_MODEL,
-      catalog: {
-        models: ['gemini-3.8-flash-low', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-high'],
-      },
+      savedModel: '',
+      catalog: geminiCatalog,
     })
     expect(state.selected).toBe('gemini-3.8-flash-high')
-    expect(state.enabled).toEqual([
-      'gemini-3.8-flash-low',
-      'gemini-3.8-flash-medium',
-      'gemini-3.8-flash-high',
-    ])
+    expect(state.enabled).toEqual(geminiCatalog.models)
+    expect(state.available).toEqual(geminiCatalog.models)
+    expect(state.verified).toBe(true)
+    expect(state.selectedStatus).toBe('verified')
     expect(state.fromCatalog).toBe(true)
   })
 
   it('T03: Claude and GPT stay off for an unset preference', () => {
     const state = resolveChatModels({
       savedEnabled: undefined,
-      savedModel: AGY_CHAT_DEFAULT_MODEL,
+      savedModel: '',
       catalog: { models: [...geminiCatalog.models, 'claude-sonnet-4-6', 'gpt-oss-120b-medium'] },
     })
     expect(state.enabled).toEqual(geminiCatalog.models)
+    expect(state.available).toEqual([
+      ...geminiCatalog.models,
+      'claude-sonnet-4-6',
+      'gpt-oss-120b-medium',
+    ])
   })
 
-  it('T04/T05/T06/T07: a saved preference is preserved exactly as stored', () => {
+  it('T04/T05/T06/T07/T38: a saved enabled list is preserved exactly as stored', () => {
     for (const saved of [
       ['gemini-3.8-flash-low'],
       ['gemini-3.1-pro-high'],
@@ -172,53 +207,85 @@ describe('resolveChatModels', () => {
   it('T08: a first run with a catalog that lacks High uses a model the CLI has', () => {
     const state = resolveChatModels({
       savedEnabled: undefined,
-      savedModel: AGY_CHAT_DEFAULT_MODEL,
+      savedModel: '',
       catalog: { models: ['gemini-3.1-pro-low', 'gemini-3.8-flash-medium'] },
     })
     expect(state.selected).toBe('gemini-3.1-pro-low')
     expect(state.models.map((m) => m.id)).toContain('gemini-3.1-pro-low')
   })
 
-  it('T09/T10: a failed or empty catalog changes nothing and is reported', () => {
+  it('T09/T39: a catalog with no Gemini advertises nothing and selects nothing', () => {
+    const state = resolveChatModels({
+      savedEnabled: undefined,
+      savedModel: '',
+      catalog: { models: ['claude-sonnet-4-6', 'gpt-oss-120b-medium'] },
+    })
+    expect(state.selected).toBe('')
+    expect(state.selectedStatus).toBe('none')
+    expect(state.enabled).toEqual([])
+    expect(state.models.map((m) => m.id)).toEqual([])
+    expect(state.available).toEqual(['claude-sonnet-4-6', 'gpt-oss-120b-medium'])
+    expect(state.verified).toBe(true)
+  })
+
+  it('T10/T11/T12/T13: a failed catalog preserves stored choices and reports itself', () => {
     const state = resolveChatModels({
       savedEnabled: undefined,
       savedModel: 'gemini-3.1-pro-high',
       catalog: { models: [], error: 'Antigravity CLI returned no models. Are you signed in?' },
     })
     expect(state.selected).toBe('gemini-3.1-pro-high')
+    expect(state.selectedStatus).toBe('unverified')
+    expect(state.available).toEqual([])
+    expect(state.verified).toBe(false)
     expect(state.catalogError).toBe('Antigravity CLI returned no models. Are you signed in?')
     expect(state.fromCatalog).toBe(false)
   })
 
-  it('T24: duplicate catalog ids produce one picker entry each', () => {
+  it('T24/T32: duplicate catalog ids produce one entry each without changing identity', () => {
     const state = resolveChatModels({
       savedEnabled: undefined,
-      savedModel: AGY_CHAT_DEFAULT_MODEL,
+      savedModel: '',
       catalog: {
         models: ['gemini-3.8-flash-high', 'gemini-3.8-flash-high', 'gemini-3.8-flash-low'],
       },
     })
     expect(state.models.map((m) => m.id)).toEqual(['gemini-3.8-flash-high', 'gemini-3.8-flash-low'])
+    expect(dedupeModelIds(['a', 'a', 'b', ' b ']).length).toBe(2)
   })
 
   it('T26: a corrupted saved list falls back to the seed without inventing availability', () => {
     const state = resolveChatModels({
       savedEnabled: ['   ', 7, null],
-      savedModel: AGY_CHAT_DEFAULT_MODEL,
+      savedModel: '',
       catalog: { models: [], error: 'agy not found' },
     })
     expect(state.enabled).toEqual([AGY_CHAT_DEFAULT_MODEL])
     expect(state.catalogError).toBe('agy not found')
   })
 
-  it('keeps a stored selection visible even when it is not in the enabled list', () => {
+  it('T33: a model the person switched off is shown but flagged as not enabled', () => {
     const state = resolveChatModels({
       savedEnabled: ['gemini-3.8-flash-low'],
       savedModel: 'gemini-3.1-pro-high',
       catalog: geminiCatalog,
     })
     expect(state.selected).toBe('gemini-3.1-pro-high')
-    expect(state.models.map((m) => m.id)).toEqual(['gemini-3.1-pro-high', 'gemini-3.8-flash-low'])
+    expect(state.enabled).toEqual(['gemini-3.8-flash-low'])
+    const entries = Object.fromEntries(state.models.map((m) => [m.id, m.enabled]))
+    expect(entries['gemini-3.1-pro-high']).toBe(false)
+    expect(entries['gemini-3.8-flash-low']).toBe(true)
+  })
+
+  it('T34: a selected model absent from a verified catalog stays selected but is flagged unavailable', () => {
+    const state = resolveChatModels({
+      savedEnabled: ['gemini-3.8-flash-low'],
+      savedModel: 'gemini-3.8-flash-high',
+      catalog: { models: ['gemini-3.8-flash-low'] },
+    })
+    expect(state.selected).toBe('gemini-3.8-flash-high')
+    expect(state.selectedStatus).toBe('unavailable')
+    expect(state.available).toEqual(['gemini-3.8-flash-low'])
   })
 })
 
@@ -251,8 +318,10 @@ describe('firstRunChatModel', () => {
       'gemini-3.1-pro-low',
     )
   })
-  it('T09/T10: an unavailable catalog keeps the seed without claiming availability', () => {
-    expect(firstRunChatModel({ models: [], error: 'agy not found' })).toBe('gemini-3.8-flash-high')
-    expect(firstRunChatModel({ models: [] })).toBe('gemini-3.8-flash-high')
+  it('T09/T10/T39: nothing is invented when the catalog has no Gemini or could not be read', () => {
+    expect(firstRunChatModel({ models: [], error: 'agy not found' })).toBeUndefined()
+    expect(firstRunChatModel({ models: [] })).toBeUndefined()
+    expect(firstRunChatModel({ models: ['claude-sonnet-4-6'] })).toBeUndefined()
+    expect(firstRunChatModel({})).toBeUndefined()
   })
 })

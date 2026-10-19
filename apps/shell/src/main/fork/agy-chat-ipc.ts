@@ -186,9 +186,39 @@ export function registerAgyChat(deps: AgyChatDeps): void {
       models: resolved.models,
       selected: resolved.selected,
       active: settings.provider === 'agy',
+      available: resolved.available,
+      selectedStatus: resolved.selectedStatus,
       ...(resolved.catalogError ? { catalogError: resolved.catalogError } : {}),
     }
   })
+
+  // Every mutation carries a stamp taken when the person made it. A delayed request may only
+  // write while it is still the newest one, so an older action can never undo a newer one.
+  let mutationStamp = 0
+  let lastModelStamp = 0
+
+  /** Persist the chat model, unless a newer mutation already wrote one. Returns whether it landed. */
+  function applySelectedModel(model: string, stamp: number): boolean {
+    if (stamp < lastModelStamp) return false
+    const settings = aiSettings()
+    const providers = { ...(settings.providers ?? {}) }
+    providers.agy = { ...(providers.agy ?? {}), model }
+    writeJsonAtomic(deps.aiSettingsPath(), { ...settings, providers })
+    lastModelStamp = stamp
+    return true
+  }
+
+  /**
+   * Tell every window that the chat model or the enabled list changed. `ai:settings-changed` is
+   * sent as well whenever ai-settings.json itself moved, so the model pickers re-read it too.
+   */
+  function notifyModelChange(settingsAlsoChanged: boolean): void {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (window.isDestroyed()) continue
+      window.webContents.send(AGY_CHAT_CHANNELS.modelChanged)
+      if (settingsAlsoChanged) window.webContents.send('ai:settings-changed')
+    }
+  }
 
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.catalog, async (): Promise<AgyChatCatalog> => {
     const models = await catalog()
@@ -205,26 +235,37 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   })
 
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.setEnabled, (_event, ids: unknown): string[] => {
+    const stamp = ++mutationStamp
     const next = sanitizeEnabledChatModels(ids)
-    writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, next)
+    try {
+      writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, next)
+    } catch {
+      // nothing was saved: report failure instead of a list the person did not get
+      return []
+    }
     // Turning off the model in use is an explicit choice, so the next one is decided here,
     // deterministically: the first model still switched on. A read-only state query never does
-    // this.
+    // this, and a model the person left on is never switched off by a catalog change.
     const current = selectedModel()
+    let settingsAlsoChanged = false
     if (current && !next.includes(current)) {
-      const settings = aiSettings()
-      const providers = { ...(settings.providers ?? {}) }
-      providers.agy = { ...(providers.agy ?? {}), model: next[0] }
-      writeJsonAtomic(deps.aiSettingsPath(), { ...settings, providers })
-      for (const window of BrowserWindow.getAllWindows())
-        if (!window.isDestroyed()) window.webContents.send('ai:settings-changed')
+      try {
+        settingsAlsoChanged = applySelectedModel(next[0], stamp)
+      } catch {
+        // the enabled list is saved; the selection just could not be moved
+      }
     }
+    // Enabling or disabling any model changes what the chat box offers in every window, even
+    // when the selected model is untouched.
+    notifyModelChange(settingsAlsoChanged)
     return next
   })
 
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.select, async (_event, id: unknown): Promise<boolean> => {
     if (typeof id !== 'string' || !id.trim()) return false
     const model = id.trim()
+    // the stamp is taken when the request arrives, before the catalog read
+    const stamp = ++mutationStamp
     const models = await catalog()
     const resolved = resolveChatModels({
       savedEnabled: readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY],
@@ -234,13 +275,13 @@ export function registerAgyChat(deps: AgyChatDeps): void {
     // Only models the person switched on can be chosen; a model the CLI cannot be reached for
     // keeps the seed list, so the chat box still has something to offer.
     if (!resolved.enabled.includes(model)) return false
-    // Re-read right before writing so a choice made while the catalog was pending is not lost.
-    const settings = aiSettings()
-    const providers = { ...(settings.providers ?? {}) }
-    providers.agy = { ...(providers.agy ?? {}), model }
-    writeJsonAtomic(deps.aiSettingsPath(), { ...settings, providers })
-    for (const window of BrowserWindow.getAllWindows())
-      if (!window.isDestroyed()) window.webContents.send('ai:settings-changed')
+    try {
+      // Re-read right before writing so a choice made while the catalog was pending is not lost.
+      if (!applySelectedModel(model, stamp)) return false
+    } catch {
+      return false
+    }
+    notifyModelChange(true)
     return true
   })
 

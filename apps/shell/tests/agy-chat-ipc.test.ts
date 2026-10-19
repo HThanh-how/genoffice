@@ -1,13 +1,27 @@
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', () => ({
-  BrowserWindow: { getAllWindows: () => [] },
+  BrowserWindow: { getAllWindows: () => windows },
   app: { whenReady: () => new Promise(() => {}) },
   shell: { openExternal: () => undefined },
 }))
+
+/** fake windows so the tests can see what the main process broadcasts */
+const windows: Array<{
+  isDestroyed: () => boolean
+  webContents: { send: (channel: string, ...args: unknown[]) => void }
+}> = []
+function fakeWindow(sent: Array<[string, unknown[]]>): void {
+  windows.push({
+    isDestroyed: () => false,
+    webContents: {
+      send: (channel: string, ...args: unknown[]) => sent.push([channel, args]),
+    },
+  })
+}
 
 const catalogCall = vi.fn(async () => ({
   models: [] as string[],
@@ -34,6 +48,7 @@ function paths(initialAi: Record<string, unknown> = {}, initialApp: Record<strin
 afterEach(() => {
   while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true })
   catalogCall.mockReset()
+  windows.length = 0
 })
 
 function wire(p: { dir: string; settingsPath: string; aiSettingsPath: string; cachePath: string }) {
@@ -66,6 +81,19 @@ describe('agy chat IPC: read-only state', () => {
     const state = await call(AGY_CHAT_CHANNELS.state)
     expect(state.selected).toBe('gemini-3.8-flash-high')
     expect(state.models.map((m: { id: string }) => m.id)).toEqual(GEMINI_CATALOG)
+  })
+
+  it('T01/T02: a settings file with no Antigravity model resolves High from the catalog', async () => {
+    const p = paths({ provider: 'agy', providers: { agy: { cliPath: '' } } })
+    const before = readFileSync(p.aiSettingsPath, 'utf8')
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const { call } = wire(p)
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    expect(state.selected).toBe('gemini-3.8-flash-high')
+    expect(state.selectedStatus).toBe('verified')
+    expect(state.models.map((m: { id: string }) => m.id)).toEqual(GEMINI_CATALOG)
+    // reading the chat state never writes a model into the settings
+    expect(readFileSync(p.aiSettingsPath, 'utf8')).toBe(before)
   })
 
   it('T03: Claude and GPT are not enabled for an unset preference', async () => {
@@ -242,5 +270,166 @@ describe('agy chat IPC: explicit mutations', () => {
     const second = wire(p)
     const state = await second.call(AGY_CHAT_CHANNELS.state)
     expect(state.selected).toBe('gemini-3.1-pro-high')
+  })
+
+  it('T36: a customized enabled list and selection survive a restart', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.1-pro-high' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.1-pro-high', 'claude-sonnet-4-6'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const state = await wire(p).call(AGY_CHAT_CHANNELS.state)
+    expect(state.selected).toBe('gemini-3.1-pro-high')
+    expect(state.models.map((m: { id: string }) => m.id)).toEqual([
+      'gemini-3.1-pro-high',
+      'claude-sonnet-4-6',
+    ])
+  })
+})
+
+describe('agy chat IPC: a stored choice is never silently replaced', () => {
+  it('T40: saved High stays saved when the catalog no longer lists it', async () => {
+    const p = paths({ provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } })
+    const before = readFileSync(p.aiSettingsPath, 'utf8')
+    catalogCall.mockImplementation(async () => ({ models: ['gemini-3.8-flash-low'] }))
+    const { call } = wire(p)
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    expect(state.selected).toBe('gemini-3.8-flash-high')
+    expect(state.selectedStatus).toBe('unavailable')
+    expect(state.available).toEqual(['gemini-3.8-flash-low'])
+    expect(readFileSync(p.aiSettingsPath, 'utf8')).toBe(before)
+  })
+
+  it('T34: an unavailable selection is kept and reported, not swapped for a verified model', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.1-pro-high' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-low'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: ['gemini-3.8-flash-low'] }))
+    const state = await wire(p).call(AGY_CHAT_CHANNELS.state)
+    expect(state.selected).toBe('gemini-3.1-pro-high')
+    expect(state.selectedStatus).toBe('unavailable')
+    expect(state.models.map((m: { id: string }) => m.id)).toEqual([
+      'gemini-3.1-pro-high',
+      'gemini-3.8-flash-low',
+    ])
+  })
+
+  it('T39: a CLI that reports no Gemini advertises nothing and selects nothing', async () => {
+    const p = paths({ provider: 'agy', providers: { agy: { cliPath: '/opt/agy' } } })
+    catalogCall.mockImplementation(async () => ({
+      models: ['claude-sonnet-4-6', 'gpt-oss-120b-medium'],
+    }))
+    const { call } = wire(p)
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    expect(state.selected).toBe('')
+    expect(state.selectedStatus).toBe('none')
+    expect(state.models.map((m: { id: string }) => m.id)).toEqual([])
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBeUndefined()
+  })
+
+  it('T10: a catalog that answered with an empty list is not read as "High exists"', async () => {
+    const p = paths({ provider: 'agy', providers: { agy: {} } })
+    catalogCall.mockImplementation(async () => ({ models: [] }))
+    const state = await wire(p).call(AGY_CHAT_CHANNELS.state)
+    expect(state.selected).toBe('')
+    expect(state.selectedStatus).toBe('none')
+  })
+})
+
+describe('agy chat IPC: notifications and races', () => {
+  it('T19: enabling or disabling a model notifies every window, even when the selection is unchanged', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'] },
+    )
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    fakeWindow(sent)
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const { call } = wire(p)
+    await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-high'])
+    expect(sent.map(([channel]) => channel)).toEqual([
+      AGY_CHAT_CHANNELS.modelChanged,
+      AGY_CHAT_CHANNELS.modelChanged,
+    ])
+  })
+
+  it('T19: moving the selection when a model is switched off also notifies the settings listeners', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'] },
+    )
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    await wire(p).call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])
+    expect(sent.map(([channel]) => channel)).toEqual([
+      AGY_CHAT_CHANNELS.modelChanged,
+      'ai:settings-changed',
+    ])
+  })
+
+  it('T19: selecting a model notifies every window', async () => {
+    const p = paths({ provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } })
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    fakeWindow(sent)
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    await wire(p).call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-low')
+    expect(sent.map(([channel]) => channel)).toEqual([
+      AGY_CHAT_CHANNELS.modelChanged,
+      'ai:settings-changed',
+      AGY_CHAT_CHANNELS.modelChanged,
+      'ai:settings-changed',
+    ])
+  })
+
+  it('T20: two rapid selections leave the newer one in effect', async () => {
+    const p = paths({ provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } })
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const { call } = wire(p)
+    const first = call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-low')
+    const second = call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high')
+    await Promise.all([first, second])
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.1-pro-high')
+  })
+
+  it('T21: an older selection request cannot undo a newer one', async () => {
+    const p = paths({ provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } })
+    let releaseSlow: (value: { models: string[] }) => void = () => undefined
+    const slow = new Promise<{ models: string[] }>((resolve) => {
+      releaseSlow = resolve
+    })
+    catalogCall.mockImplementation(() => slow)
+    const { call } = wire(p)
+    const older = call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-low')
+    // a newer request resolves immediately and lands first
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const newer = call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high')
+    await newer
+    releaseSlow({ models: GEMINI_CATALOG })
+    const olderOk = await older
+    expect(olderOk).toBe(false)
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.1-pro-high')
+  })
+
+  it('T22: a settings write that fails is reported as a failure, not as success', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-chat-ipc-fail-'))
+    dirs.push(dir)
+    // both "settings files" are directories: every atomic write to them fails
+    const aiSettingsPath = join(dir, 'ai-settings.json')
+    const settingsPath = join(dir, 'app-settings.json')
+    mkdirSync(aiSettingsPath)
+    mkdirSync(settingsPath)
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const { call } = wire({
+      dir,
+      settingsPath,
+      aiSettingsPath,
+      cachePath: join(dir, 'usage.json'),
+    })
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-low')).toBe(false)
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
   })
 })

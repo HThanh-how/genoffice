@@ -19,7 +19,9 @@ describe('defaultAiSettings', () => {
     expect(settings.provider).toBe('gemini')
     for (const meta of AI_PROVIDERS) {
       expect(settings.providers[meta.id].apiKey).toBe('')
-      expect(settings.providers[meta.id].model).toBe(meta.defaultModel)
+      // Antigravity is seeded empty on purpose: its first-run model comes from `agy models`,
+      // so a model in the settings file is always a choice, never an app-generated default.
+      expect(settings.providers[meta.id].model).toBe(meta.id === 'agy' ? '' : meta.defaultModel)
     }
     expect(settings.providers.custom.baseUrl).toBe('')
     expect(settings.providers.codex.cliPath).toBe('')

@@ -75,10 +75,22 @@ export function AiModelPicker({
     } catch {
       off = undefined
     }
+    // a model or enabled-list change made in another window also lands here
+    let offAgy: (() => void) | undefined
+    try {
+      const agy =
+        typeof window !== 'undefined'
+          ? (window as unknown as { agyChat?: AgyBarApi }).agyChat
+          : undefined
+      offAgy = agy?.onAgyChatModelChanged?.(refresh)
+    } catch {
+      offAgy = undefined
+    }
     return () => {
       window.removeEventListener('focus', refresh)
       window.removeEventListener('genoffice-agy-model-changed', refresh)
       off?.()
+      offAgy?.()
     }
   }, [bridge, refresh])
 
@@ -98,7 +110,7 @@ export function AiModelPicker({
     () => (settings ? aiModelPickerGroups(settings, loggedIn, agyState?.models) : []),
     [settings, loggedIn, agyState?.models],
   )
-  const current = settings ? aiModelPickerSelection(settings) : null
+  const current = settings ? aiModelPickerSelection(settings, agyState?.selected) : null
   const sameGroup = (g: { id: string; endpoint?: string | undefined }) =>
     g.id === current?.provider && (g.id !== 'custom' || g.endpoint === current?.endpoint)
   const currentUsable = groups.some(sameGroup)

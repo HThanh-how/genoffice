@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   agyChatDefaultModel,
+  agyChatDefaultRecord,
   agyDefaultsUsable,
+  clearAgyChatDefaults,
   onAgyUsableChange,
-  setAgyChatDefault,
+  recordAgyChatDefault,
   setAgyUsable,
 } from '../src/agy-default'
 import {
@@ -19,6 +21,7 @@ import {
   resolveAiMediaSettings,
 } from '../src/media'
 import { AGY_OCR_DEFAULT_MODEL } from '../src/agy-ocr'
+import { AGY_PROVIDER_META } from '../src/agy-meta'
 import { activeProvider, defaultAiSettings, resolveAiSettings } from '../src/providers'
 import {
   activeSearchProvider,
@@ -28,7 +31,7 @@ import {
 
 afterEach(() => {
   setAgyUsable(null)
-  setAgyChatDefault(null)
+  clearAgyChatDefaults()
 })
 
 describe('agy-first defaults', () => {
@@ -280,34 +283,68 @@ describe('agy usability detection', () => {
   })
 })
 
-describe('first-run chat model', () => {
-  it('seeds the model the installed CLI actually offers when High is absent', async () => {
+describe('first-run chat model, scoped to the CLI that was configured', () => {
+  it('T01: a CLI that reports High leaves chat on High', () => {
+    recordAgyChatDefault('', { models: ['gemini-3.8-flash-low', 'gemini-3.8-flash-high'] }, 0)
+    expect(agyChatDefaultModel('')).toBe('gemini-3.8-flash-high')
+  })
+
+  it('T08: a CLI without High seeds a model it really has', async () => {
     const deps: AgyDetectDeps = {
       list: async () => ({ models: ['gemini-3.1-pro-low', 'gemini-3.8-flash-medium'] }),
       now: () => 0,
     }
-    await probeAgyUsable(undefined, deps)
-    expect(agyChatDefaultModel()).toBe('gemini-3.1-pro-low')
-    expect(defaultAiSettings().providers.agy.model).toBe('gemini-3.1-pro-low')
+    await probeAgyUsable('/cli/a', deps)
+    expect(agyChatDefaultRecord('/cli/a')).toEqual({ model: 'gemini-3.1-pro-low', verified: true })
   })
 
-  it('prefers High when the CLI reports it', async () => {
-    const deps: AgyDetectDeps = {
-      list: async () => ({ models: ['gemini-3.8-flash-low', 'gemini-3.8-flash-high'] }),
-      now: () => 0,
-    }
-    await probeAgyUsable(undefined, deps)
-    expect(defaultAiSettings().providers.agy.model).toBe('gemini-3.8-flash-high')
+  it('T14: a model discovered for one CLI is never the default of another', () => {
+    recordAgyChatDefault('/cli/a', { models: ['gemini-3.8-flash-high'] }, 0)
+    recordAgyChatDefault('/cli/b', { models: ['gemini-3.1-pro-low'] }, 1)
+    expect(agyChatDefaultRecord('/cli/a')?.model).toBe('gemini-3.8-flash-high')
+    expect(agyChatDefaultRecord('/cli/b')?.model).toBe('gemini-3.1-pro-low')
+    expect(agyChatDefaultRecord('/cli/removed')).toBeUndefined()
   })
 
-  it('keeps the seed and does not invent availability when the CLI cannot be reached', async () => {
-    const deps: AgyDetectDeps = {
-      list: async () => ({ models: [], error: 'agy not found' }),
-      now: () => 0,
-    }
-    await probeAgyUsable(undefined, deps)
-    expect(agyChatDefaultModel()).toBe('gemini-3.8-flash-high')
-    expect(defaultAiSettings().providers.agy.model).toBe('gemini-3.8-flash-high')
+  it('T15: an older probe finishing late cannot overwrite the newer configured path', async () => {
+    let releaseOld: (value: { models: string[] }) => void = () => undefined
+    const oldProbe = probeAgyUsable('/cli/old', {
+      list: () => new Promise((resolve) => (releaseOld = resolve)),
+      now: () => 5,
+    })
+    // the person switches to a different CLI while the first probe is still running
+    await probeAgyUsable('/cli/new', {
+      list: async () => ({ models: ['gemini-3.8-flash-high'] }),
+      now: () => 1,
+    })
+    releaseOld({ models: ['gemini-3.1-pro-low'] })
+    await oldProbe
+    expect(agyChatDefaultRecord('/cli/new')?.model).toBe('gemini-3.8-flash-high')
+    expect(agyChatDefaultRecord('/cli/old')?.model).toBe('gemini-3.1-pro-low')
+  })
+
+  it('T13: a later failure keeps the last answer but marks it unverified', () => {
+    recordAgyChatDefault('/cli/a', { models: ['gemini-3.8-flash-high'] }, 0)
+    recordAgyChatDefault('/cli/a', { models: [], error: 'agy not found' }, 1)
+    expect(agyChatDefaultRecord('/cli/a')).toEqual({
+      model: 'gemini-3.8-flash-high',
+      verified: false,
+    })
+  })
+
+  it('T39: a CLI with no Gemini is recorded as having no chat model, not as having High', () => {
+    recordAgyChatDefault('/cli/c', { models: ['claude-sonnet-4-6', 'gpt-oss-120b-medium'] }, 0)
+    expect(agyChatDefaultRecord('/cli/c')).toEqual({ model: null, verified: true })
+    expect(agyChatDefaultModel('/cli/c')).toBeUndefined()
+  })
+
+  it('fresh settings store no Antigravity model, so a stored one is always a real choice', () => {
+    setAgyUsable(true)
+    const settings = defaultAiSettings()
+    expect(settings.providers.agy.model).toBe('')
+    expect(settings.provider).toBe('agy')
+    // the picker still has something to offer for a provider nobody configured
+    expect(AGY_PROVIDER_META.defaultModel).toBe('gemini-3.8-flash-high')
   })
 
   it('does not change search or OCR defaults', () => {

@@ -14,6 +14,10 @@ export interface AgyBarState {
   models: AgyBarModel[]
   selected: string
   active: boolean
+  /** ids the installed CLI confirmed it can serve (empty when the catalog could not be read) */
+  available?: string[]
+  /** how well the selected model is supported by the CLI configured now */
+  selectedStatus?: 'verified' | 'unavailable' | 'unverified' | 'none'
   /** set when `agy models` could not be read, so the list is unverified */
   catalogError?: string
 }
@@ -63,6 +67,7 @@ export interface AgyBarApi {
   refreshAgyChatUsage(): Promise<AgyBarUsage>
   onAgyChatUsage(handler: (state: AgyBarUsage) => void): () => void
   onAgyChatActivity?(handler: (activity: AgyBarActivity) => void): () => void
+  onAgyChatModelChanged?(handler: () => void): () => void
 }
 
 interface RunStep {
@@ -182,6 +187,11 @@ const EN = {
   more: 'More models can be turned on in Settings → AI model.',
   unverified:
     'The Antigravity CLI did not return a model list, so these models are not confirmed as available.',
+  unavailableModel:
+    'The model you chose is not in the Antigravity CLI list any more. Pick one below.',
+  noModel: 'No chat model available',
+  noModelHint:
+    'The Antigravity CLI reported no chat model it can serve. Check the Antigravity connection in Settings, or choose another chat provider.',
   usage: 'Antigravity usage',
   fiveHour: '5-hour limit',
   weekly: 'Weekly limit',
@@ -254,6 +264,11 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     costBase: 'Tiết kiệm quota nhất',
     more: 'Có thể bật thêm model trong Cài đặt → Mô hình AI.',
     unverified: 'Antigravity CLI không trả danh sách model, nên chưa xác nhận được model khả dụng.',
+    unavailableModel:
+      'Model bạn đã chọn không còn trong danh sách của Antigravity CLI. Hãy chọn model bên dưới.',
+    noModel: 'Không có model chat khả dụng',
+    noModelHint:
+      'Antigravity CLI không báo model chat nào có thể dùng. Hãy kiểm tra kết nối Antigravity trong Cài đặt, hoặc chọn provider chat khác.',
     usage: 'Mức dùng Antigravity',
     fiveHour: 'Hạn mức 5 giờ',
     weekly: 'Hạn mức tuần',
@@ -322,6 +337,10 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     costBase: '最省额度',
     more: '可在 设置 → AI 模型 中启用更多模型。',
     unverified: 'Antigravity CLI 未返回模型列表，因此这些模型未被确认可用。',
+    unavailableModel: '你选择的模型已不在 Antigravity CLI 列表中。请在下方选择另一个模型。',
+    noModel: '无可用聊天模型',
+    noModelHint:
+      'Antigravity CLI 未报告可使用的聊天模型。请在设置中检查 Antigravity 连接，或选择其他聊天提供商。',
     usage: 'Antigravity 用量',
     fiveHour: '5 小时额度',
     weekly: '每周额度',
@@ -685,12 +704,20 @@ export function AgyChatBar({
     const onFocus = () => void loadState()
     window.addEventListener('focus', onFocus)
     window.addEventListener(MODEL_CHANGED, onFocus)
+    // a change made in another window reaches this one through the main process
+    let offModel: (() => void) | undefined
+    try {
+      offModel = source.onAgyChatModelChanged?.(onFocus)
+    } catch {
+      offModel = undefined
+    }
     const clock = setInterval(() => tick((n) => n + 1), 30_000)
     return () => {
       off()
       offLogin?.()
       offInstall?.()
       offRun?.()
+      offModel?.()
       window.removeEventListener('focus', onFocus)
       window.removeEventListener(MODEL_CHANGED, onFocus)
       clearInterval(clock)
@@ -1106,12 +1133,22 @@ export function AgyChatBar({
               className="agy-bar-chip agy-bar-model"
               aria-haspopup="listbox"
               aria-expanded={menu}
-              title={state.catalogError ? d.unverified : d.model}
+              title={
+                state.selectedStatus === 'none'
+                  ? d.noModelHint
+                  : state.selectedStatus === 'unavailable'
+                    ? d.unavailableModel
+                    : state.catalogError
+                      ? d.unverified
+                      : d.model
+              }
               onClick={() => {
                 setMenu((value) => !value)
               }}
             >
-              <span className="agy-bar-model-name">{current?.label ?? state.selected}</span>
+              <span className="agy-bar-model-name">
+                {state.selectedStatus === 'none' ? d.noModel : (current?.label ?? state.selected)}
+              </span>
               <span aria-hidden="true" className="agy-bar-caret">
                 ▾
               </span>

@@ -41,6 +41,11 @@ export function createAgyChatPreloadApi(ipcRenderer: IpcRenderer): AgyChatApi {
       const result: unknown = await ipcRenderer.invoke(AGY_CHAT_CHANNELS.setEnabled, ids)
       return Array.isArray(result) ? result.filter((x): x is string => typeof x === 'string') : []
     },
+    onAgyChatModelChanged(handler) {
+      const listener = () => handler()
+      ipcRenderer.on(AGY_CHAT_CHANNELS.modelChanged, listener)
+      return () => ipcRenderer.removeListener(AGY_CHAT_CHANNELS.modelChanged, listener)
+    },
     async getAgyChatUsage() {
       return usageFrom(await ipcRenderer.invoke(AGY_CHAT_CHANNELS.usage))
     },
