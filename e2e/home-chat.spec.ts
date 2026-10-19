@@ -67,19 +67,16 @@ test('home chat finds remembered content, opens its source and preserves the hom
     }, `http://127.0.0.1:${address.port}/v1`)
     await home.locator('.tab-item.tab-home').click()
     await expect(home.locator('.home-hero')).toBeVisible()
-    const before = await home.locator('.home-hero').boundingBox()
-    await home.locator('.home-chat-launcher').click()
-    await expect(home.locator('.home-chat-panel')).toBeVisible()
-    await expect(home.locator('.home-chat-launcher')).toHaveAttribute('aria-expanded', 'true')
-    const headerButtons = home.locator('.home-chat-header-actions button')
-    await expect(headerButtons).toHaveCount(2)
-    for (const button of await headerButtons.all()) {
-      await expect(button).toHaveAttribute('aria-label', /.+/)
-      await expect(button.locator('svg')).toHaveCount(1)
-    }
-    expect(await home.locator('.home-hero').boundingBox()).toEqual(before)
+    await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
+
+    const askBtn = home.locator('.sidebar').getByRole('button', { name: 'Ask AI', exact: true })
+    await askBtn.click()
+    await expect(home.locator('.home-chat-panel.is-workspace')).toBeVisible()
+    await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
+
     const input = home.locator('.home-chat-panel textarea')
     await input.fill('draft should remain after collapsing')
+
     const homeTab = home.locator('.tab-item.tab-home')
     await homeTab.evaluate((node) =>
       node.addEventListener('click', () => node.setAttribute('data-test-click-received', 'true'), {
@@ -87,10 +84,16 @@ test('home chat finds remembered content, opens its source and preserves the hom
       }),
     )
     await homeTab.click()
-    await expect(home.locator('.home-chat-panel')).toBeHidden()
+    await expect(home.locator('.home-chat-panel.is-workspace')).toBeHidden()
     await expect(homeTab).toHaveAttribute('data-test-click-received', 'true')
-    await home.locator('.home-chat-launcher').click()
+    await expect(home.locator('.home-hero')).toBeVisible()
+    await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
+
+    await askBtn.click()
+    await expect(home.locator('.home-chat-panel.is-workspace')).toBeVisible()
+    await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
     await expect(input).toHaveValue('draft should remain after collapsing')
+
     await input.fill('Find the phone in the Moonstone class 2/1 file')
     await input.press('Enter')
     await expect(home.locator('.home-chat-panel')).toContainText('The phone is 0912345678', {

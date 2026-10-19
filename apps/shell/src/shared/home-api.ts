@@ -332,6 +332,10 @@ export interface HomeApi extends ForkHomeApi {
     title: string
     format: 'md' | 'docx'
     content: string
+    sessionId?: string
+    userTurnId?: string
+    documentSlot?: string
+    documentType?: string
   }): Promise<{ path: string }>
   /** the user's AI provider settings (shared with every app's panel) */
   aiGetSettings(): Promise<AiSettings>

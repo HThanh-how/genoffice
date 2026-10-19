@@ -3,6 +3,7 @@ import { join, resolve } from 'node:path'
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import { run, tempDir } from './helpers'
+import { validateGeneratedDocx } from '../src/formats/docx-validation'
 
 const REPO = resolve(__dirname, '../../..')
 const DOCX = join(REPO, 'apps/docs/tests/pagination-corpus/docx/01-simple-english.docx')
@@ -1299,5 +1300,69 @@ describe('genoffice docs: comments, revisions, header/footer, images, charts', (
     const rejected = await run(['docs', 'apply', path, '--ops', bad, '--json'])
     expect(rejected.code).toBe(1)
     expect(rejected.json().message).toContain('no style "Nope"')
+  })
+
+  it('creates docx with document profile and validates OOXML structure and stats', async () => {
+    const dir = tempDir()
+    const md = join(dir, 'paper.md')
+    writeFileSync(
+      md,
+      '# Scientific Research Report\n\n' +
+        '## Abstract\n\n' +
+        'This study investigates local-first document processing workflows.\n\n' +
+        '## Methodology\n\n' +
+        '| Phase | Target | Result |\n' +
+        '| --- | --- | --- |\n' +
+        '| 1 | Baseline | Validated |\n' +
+        '| 2 | Stress | Passed |\n\n' +
+        '## References\n\n' +
+        '1. GenOffice Engineering Team, 2026.\n',
+    )
+    const outDocx = join(dir, 'paper.docx')
+    const res = await run([
+      'create',
+      '--type',
+      'docx',
+      '--from',
+      md,
+      '--profile',
+      'scientific-report',
+      '--out',
+      outDocx,
+      '--json',
+    ])
+    expect(res.code).toBe(0)
+    const detail = res.json().detail
+    expect(detail.profile).toBe('scientific-report')
+    expect(detail.stats.headings).toBeGreaterThanOrEqual(3)
+    expect(detail.stats.tables).toBe(1)
+    expect(detail.stats.paragraphs).toBeGreaterThanOrEqual(5)
+
+    const bytes = readFileSync(outDocx)
+    const validation = await validateGeneratedDocx(bytes, {
+      requireHeading: true,
+      requireTable: true,
+      minParagraphs: 5,
+      expectedText: 'Scientific Research Report',
+    })
+    expect(validation.ok).toBe(true)
+    expect(validation.errors).toHaveLength(0)
+
+    // Check footer page number in ZIP package
+    const zip = await JSZip.loadAsync(bytes)
+    const footerFiles = Object.keys(zip.files).filter((f) => /^word\/footer\d*\.xml$/.test(f))
+    expect(footerFiles.length).toBeGreaterThan(0)
+    const footerXml = await zip.file(footerFiles[0]!)!.async('string')
+    expect(footerXml).toMatch(/PAGE|fldSimple/)
+  })
+
+  it('validateGeneratedDocx catches empty files and missing package parts', async () => {
+    const emptyResult = await validateGeneratedDocx(new Uint8Array(0))
+    expect(emptyResult.ok).toBe(false)
+    expect(emptyResult.errors[0]).toContain('empty')
+
+    const corruptResult = await validateGeneratedDocx(new Uint8Array([1, 2, 3, 4]))
+    expect(corruptResult.ok).toBe(false)
+    expect(corruptResult.errors[0]).toContain('Invalid ZIP/OOXML package')
   })
 })

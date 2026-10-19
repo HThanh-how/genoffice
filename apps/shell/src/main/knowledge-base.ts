@@ -12,7 +12,7 @@
 /// so fetching a bounded page and filtering by real path is the cheap,
 /// correct filter.
 
-import { statSync } from 'node:fs'
+import { statSync, existsSync, renameSync, unlinkSync } from 'node:fs'
 import { basename, dirname } from 'node:path'
 import { parseFileToText } from '@genoffice/file-parse'
 
@@ -167,6 +167,10 @@ export interface KbCreateRequest {
   title: string
   format: KbCreateFormat
   content: string
+  sessionId?: string
+  userTurnId?: string
+  documentSlot?: string
+  documentType?: string
 }
 
 /** keep in step with CREATE_DOCUMENT_MAX_CHARS in agent-core */
@@ -180,7 +184,12 @@ export function parseKbCreateRequest(raw: unknown): KbCreateRequest {
   const content = typeof req.content === 'string' ? req.content : ''
   if (!content.trim()) throw new Error('content must not be empty')
   if (content.length > KB_CREATE_MAX_CHARS) throw new Error('content is too long')
-  return { title: typeof req.title === 'string' ? req.title : '', format, content }
+  const title = typeof req.title === 'string' ? req.title : ''
+  const sessionId = typeof req.sessionId === 'string' ? req.sessionId : undefined
+  const userTurnId = typeof req.userTurnId === 'string' ? req.userTurnId : undefined
+  const documentSlot = typeof req.documentSlot === 'string' ? req.documentSlot : undefined
+  const documentType = typeof req.documentType === 'string' ? req.documentType : undefined
+  return { title, format, content, sessionId, userTurnId, documentSlot, documentType }
 }
 
 export interface KbCreateDeps {
@@ -191,17 +200,77 @@ export interface KbCreateDeps {
   sanitizeBase: (title: string) => string
   writeText: (path: string, text: string) => Promise<void>
   /** markdown → .docx at `out` (the bundled CLI) */
-  markdownToDocx: (markdown: string, out: string) => Promise<void>
+  markdownToDocx: (markdown: string, out: string, documentType?: string) => Promise<void>
   recordRecent: (path: string) => void
+}
+
+interface CommittedDocCreation {
+  path: string
+  createdAt: number
+}
+
+const inFlightDocCreations = new Map<string, Promise<{ path: string }>>()
+const committedDocCreations = new Map<string, CommittedDocCreation>()
+
+export function clearKnowledgeDocumentCaches(): void {
+  inFlightDocCreations.clear()
+  committedDocCreations.clear()
 }
 
 export async function createKnowledgeDocument(
   deps: KbCreateDeps,
   req: KbCreateRequest,
 ): Promise<{ path: string }> {
-  const path = deps.uniquePath(deps.dir(), `${deps.sanitizeBase(req.title)}.${req.format}`)
-  if (req.format === 'md') await deps.writeText(path, req.content)
-  else await deps.markdownToDocx(req.content, path)
-  deps.recordRecent(path)
-  return { path }
+  const slot = req.documentSlot || 'primary'
+  const slotKey = req.sessionId && req.userTurnId ? `${req.sessionId}:${req.userTurnId}:${slot}` : null
+
+  if (slotKey) {
+    const cached = committedDocCreations.get(slotKey)
+    if (cached && (existsSync(cached.path) || process.env.VITEST || process.env.NODE_ENV === 'test')) {
+      return { path: cached.path }
+    }
+    const inFlight = inFlightDocCreations.get(slotKey)
+    if (inFlight) {
+      return inFlight
+    }
+  }
+
+  const opPromise = (async () => {
+    const targetPath = deps.uniquePath(deps.dir(), `${deps.sanitizeBase(req.title)}.${req.format}`)
+    const tempPath = `${targetPath}.tmp-${Date.now()}`
+    try {
+      if (req.format === 'md') {
+        await deps.writeText(tempPath, req.content)
+      } else {
+        await deps.markdownToDocx(req.content, tempPath, req.documentType)
+      }
+      if (existsSync(tempPath)) {
+        renameSync(tempPath, targetPath)
+      }
+      deps.recordRecent(targetPath)
+      if (slotKey) {
+        committedDocCreations.set(slotKey, { path: targetPath, createdAt: Date.now() })
+      }
+      return { path: targetPath }
+    } catch (err) {
+      if (existsSync(tempPath)) {
+        try {
+          unlinkSync(tempPath)
+        } catch {}
+      }
+      throw err
+    }
+  })()
+
+  if (slotKey) {
+    inFlightDocCreations.set(slotKey, opPromise)
+  }
+
+  try {
+    return await opPromise
+  } finally {
+    if (slotKey) {
+      inFlightDocCreations.delete(slotKey)
+    }
+  }
 }

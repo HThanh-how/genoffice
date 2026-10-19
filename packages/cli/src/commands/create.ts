@@ -23,6 +23,7 @@ import {
 import { exportViaApp } from '../formats/app-export'
 import { blankDocument, closeDocument, fillFromHtml, saveDocument } from '../formats/docx'
 import { markdownToDocx } from '../formats/markdown'
+import { validateGeneratedDocx } from '../formats/docx-validation'
 import { runWorkbookDsl } from '../formats/xlsx-dsl'
 import { columnLabel } from '@genoffice/xlsx-gateway/domain/cell-address'
 import { sheetNameFromStem } from '../formats/csv'
@@ -383,16 +384,37 @@ async function createDocx(
   const text = readFileSync(source, 'utf-8')
   const ext = extname(source).toLowerCase()
   if (ext === '.md' || ext === '.markdown') {
+    const documentType = flagString(args, 'profile') || flagString(args, 'document-type')
+    const bytes = await markdownToDocx(text, { file: source, ctx }, { documentType })
+    const validation = await validateGeneratedDocx(bytes)
+    if (!validation.ok) {
+      throw new CliError(
+        EXIT.conversion,
+        `Generated DOCX failed validation: ${validation.errors.join('; ')}`,
+        undefined,
+        { reason: 'conversion_failed' },
+      )
+    }
     return {
-      bytes: await markdownToDocx(text, { file: source, ctx }),
-      detail: { source: 'markdown' },
+      bytes,
+      detail: { source: 'markdown', profile: documentType || 'general', stats: validation.stats },
     }
   }
   if (ext === '.html' || ext === '.htm') {
     const doc = await blankDocument()
     try {
       const blocks = fillFromHtml(doc, text)
-      return { bytes: await saveDocument(doc), detail: { source: 'html', blocks } }
+      const bytes = await saveDocument(doc)
+      const validation = await validateGeneratedDocx(bytes)
+      if (!validation.ok) {
+        throw new CliError(
+          EXIT.conversion,
+          `Generated DOCX failed validation: ${validation.errors.join('; ')}`,
+          undefined,
+          { reason: 'conversion_failed' },
+        )
+      }
+      return { bytes, detail: { source: 'html', blocks, stats: validation.stats } }
     } finally {
       closeDocument(doc)
     }

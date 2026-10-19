@@ -5406,11 +5406,12 @@ function registerHomeIpc(): void {
         uniquePath: uniquePathIn,
         sanitizeBase: sanitizeFileBase,
         writeText: (path, text) => atomicWriteFile(path, Buffer.from(text, 'utf8')),
-        markdownToDocx: async (markdown, out) => {
+        markdownToDocx: async (markdown, out, documentType) => {
           await createFileViaCli(bundledCliRunner(), {
             type: 'docx',
             input: { name: 'content.md', content: markdown },
             out,
+            documentType,
           })
         },
         recordRecent: recordRecentFile,

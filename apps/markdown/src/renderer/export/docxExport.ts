@@ -345,8 +345,25 @@ export async function exportDocxBytes(
   doc: JSONContent,
   loadImage: ImageLoader,
   renderDiagram?: DiagramRenderer,
+  extraOptions?: SaveOptions,
 ): Promise<Uint8Array> {
   const mapping = await mapDocToSaveBlocks(doc, loadImage, renderDiagram)
+  const mergedOptions: SaveOptions = {
+    ...mapping.options,
+    ...extraOptions,
+    ...(mapping.options.numbering || extraOptions?.numbering
+      ? {
+          numbering: {
+            ...mapping.options.numbering,
+            ...extraOptions?.numbering,
+            restartNums: [
+              ...(mapping.options.numbering?.restartNums ?? []),
+              ...(extraOptions?.numbering?.restartNums ?? []),
+            ],
+          },
+        }
+      : {}),
+  }
   const parsed = await parseDocx(await buildBlankDocx())
-  return saveDocx(parsed, mapping.blocks, mapping.options)
+  return saveDocx(parsed, mapping.blocks, mergedOptions)
 }

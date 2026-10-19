@@ -1,4 +1,4 @@
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { realpathSync } from 'node:fs'
 import { BrowserWindow, shell, WebContentsView } from 'electron'
 import type { Rectangle, WebContents } from 'electron'
@@ -459,6 +459,13 @@ export class TabManager {
     openPath?: string,
     options?: { newBlank?: boolean; aiContent?: AiDocContent },
   ): string {
+    if (openPath && !options?.newBlank) {
+      const existing = this.findDocsTabByPath(openPath)
+      if (existing) {
+        this.activateTab(existing)
+        return existing
+      }
+    }
     const view = createDocsView(openPath)
     const id = `t${this.nextId++}`
     if (options?.newBlank) markDocsNewBlank(view.webContents.id)
@@ -1008,9 +1015,15 @@ export class TabManager {
 export function canonicalPath(path: string | undefined): string | undefined {
   if (path === undefined) return undefined
   try {
-    return realpathSync.native(path)
+    const real = realpathSync.native(path)
+    return process.platform === 'win32' || process.platform === 'darwin'
+      ? real.toLowerCase()
+      : real
   } catch {
-    return path
+    const res = resolve(path)
+    return process.platform === 'win32' || process.platform === 'darwin'
+      ? res.toLowerCase()
+      : res
   }
 }
 

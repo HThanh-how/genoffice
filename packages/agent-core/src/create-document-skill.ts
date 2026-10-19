@@ -1,6 +1,7 @@
 import type { AgentToolDef } from './types'
 import type { AgentSkill, ExecutedToolCall } from './skill'
 import { kbCiteHref } from './knowledge-base-skill'
+import type { DocumentType } from './rich-document-spec'
 
 /**
  * Lets a chat that has no open document write its result to disk: the model
@@ -23,6 +24,10 @@ export interface CreateDocumentRequest {
   /** the whole document as markdown */
   content: string
   open?: boolean
+  sessionId?: string
+  userTurnId?: string
+  documentSlot?: string
+  documentType?: DocumentType
 }
 
 export interface CreateDocumentDeps {
@@ -42,12 +47,19 @@ export const CREATE_DOCUMENT_MAX_CHARS = 2_000_000
 const CREATE_SYSTEM_PROMPT = `## Creating documents
 When the user asks for a file — a report, summary, memo, notes, "save this",
 "export this", "make a document / markdown / Word file" — write the complete
-content and call create_document; do not paste the document into the chat and
-do not describe what the file would contain.
-- Write the content in Markdown (headings, lists, tables, bold). format "docx"
-  gives a Word document (.docx, văn bản / tài liệu Word), "md" a Markdown file (.md);
-  pick what the user asked for, default to "docx" when they only said "document" /
-  "Word" / "tài liệu" / "văn bản" and "md" when they said Markdown.
+content and call create_document ONCE; do not paste the document into the chat and
+do not describe what the file would contain. Never call create_document repeatedly
+or in a loop for the same document request.
+- Always read existing sources thoroughly first using available search and read tools
+  before synthesizing the document content.
+- Write the content in Markdown (headings #/##, bullet/numbered lists, tables with
+  pipes, bold). format "docx" gives a Word document (.docx, văn bản / tài liệu Word),
+  "md" a Markdown file (.md); pick what the user asked for, default to "docx" when
+  they only said "document" / "Word" / "tài liệu" / "văn bản" and "md" when they said Markdown.
+- Specify "documentType" if applicable: "scientific-report", "report", "memo", "proposal",
+  "letter", or "general".
+- In tables, use real columns and headers. Do not collapse tabular data into unstructured text.
+- Include a References or Sources section citing source files where applicable.
 - Keep the knowledge-base citations inside the document as plain text (file
   name and folder), not as cite links.
 - The tool returns the saved path with a cite link: reply briefly and link the
@@ -61,6 +73,9 @@ const CLAIMS_SAVED =
 
 export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSkill {
   const created: string[] = []
+  const inFlightOps = new Map<string, Promise<{ path: string; opened?: boolean }>>()
+  const committedSlots = new Map<string, { path: string; opened?: boolean }>()
+
   const tool: AgentToolDef = {
     name: CREATE_DOCUMENT_TOOL,
     description:
@@ -81,6 +96,15 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         open: {
           type: 'boolean',
           description: 'whether to open the document immediately in the editor after saving',
+        },
+        documentType: {
+          type: 'string',
+          enum: ['general', 'report', 'scientific-report', 'memo', 'proposal', 'letter'],
+          description: 'Document profile/type for layout and formatting',
+        },
+        documentSlot: {
+          type: 'string',
+          description: 'Logical document slot (default: "primary")',
         },
       },
       required: ['title', 'format', 'content'],
@@ -119,19 +143,65 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
           summary: 'content too long',
         }
       }
-      try {
-        const open = typeof call.input.open === 'boolean' ? call.input.open : undefined
-        const { path, opened } = await deps.create({
-          title: title || 'Untitled',
-          format,
-          content,
-          ...(open !== undefined ? { open } : {}),
-        })
-        created.push(path)
-        const name = path.split(/[\\/]/).pop() ?? path
-        const status = opened ? 'opened in editor' : 'saved to disk (not opened)'
+
+      const sessionId = typeof call.input.sessionId === 'string' ? call.input.sessionId : undefined
+      const userTurnId = typeof call.input.userTurnId === 'string' ? call.input.userTurnId : undefined
+      const documentSlot =
+        typeof call.input.documentSlot === 'string' ? call.input.documentSlot : 'primary'
+      const documentType =
+        typeof call.input.documentType === 'string' ? (call.input.documentType as DocumentType) : undefined
+      const slotKey = sessionId && userTurnId ? `${sessionId}:${userTurnId}:${documentSlot}` : null
+
+      if (slotKey && committedSlots.has(slotKey)) {
+        const cached = committedSlots.get(slotKey)!
+        const name = cached.path.split(/[\\/]/).pop() ?? cached.path
+        const status = cached.opened ? 'opened in editor' : 'saved to disk (not opened)'
         return {
-          output: `saved ${name} (${status})\n  path: ${path}\n  cite: ${kbCiteHref(path)}\n  opened: ${Boolean(opened)}`,
+          output: `saved ${name} (${status})\n  path: ${cached.path}\n  cite: ${kbCiteHref(cached.path)}\n  opened: ${Boolean(cached.opened)}`,
+          summary: name,
+        }
+      }
+
+      if (slotKey && inFlightOps.has(slotKey)) {
+        try {
+          const cached = await inFlightOps.get(slotKey)!
+          const name = cached.path.split(/[\\/]/).pop() ?? cached.path
+          const status = cached.opened ? 'opened in editor' : 'saved to disk (not opened)'
+          return {
+            output: `saved ${name} (${status})\n  path: ${cached.path}\n  cite: ${kbCiteHref(cached.path)}\n  opened: ${Boolean(cached.opened)}`,
+            summary: name,
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          return {
+            output: `could not save the document: ${message}`,
+            isError: true,
+            summary: 'save failed',
+          }
+        }
+      }
+
+      const open = typeof call.input.open === 'boolean' ? call.input.open : undefined
+      const opPromise = deps.create({
+        title: title || 'Untitled',
+        format,
+        content,
+        ...(open !== undefined ? { open } : {}),
+        ...(sessionId ? { sessionId } : {}),
+        ...(userTurnId ? { userTurnId } : {}),
+        ...(documentSlot ? { documentSlot } : {}),
+        ...(documentType ? { documentType } : {}),
+      })
+
+      if (slotKey) inFlightOps.set(slotKey, opPromise)
+      try {
+        const res = await opPromise
+        if (slotKey) committedSlots.set(slotKey, res)
+        if (!created.includes(res.path)) created.push(res.path)
+        const name = res.path.split(/[\\/]/).pop() ?? res.path
+        const status = res.opened ? 'opened in editor' : 'saved to disk (not opened)'
+        return {
+          output: `saved ${name} (${status})\n  path: ${res.path}\n  cite: ${kbCiteHref(res.path)}\n  opened: ${Boolean(res.opened)}`,
           summary: name,
         }
       } catch (error) {
@@ -141,6 +211,8 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
           isError: true,
           summary: 'save failed',
         }
+      } finally {
+        if (slotKey) inFlightOps.delete(slotKey)
       }
     },
     verifyResponse: (finalText, executed: readonly ExecutedToolCall[]) => {

@@ -142,4 +142,88 @@ describe('createDocumentSkill', () => {
     expect(r2.output).toContain('saved to disk (not opened)')
     expect(r2.output).toContain('opened: false')
   })
+
+  it('deduplicates concurrent in-flight calls with the same identity key', async () => {
+    let callCount = 0
+    let resolveFirst!: (value: { path: string }) => void
+    const barrier = new Promise<{ path: string }>((res) => {
+      resolveFirst = res
+    })
+
+    const { skill } = makeSkill(async () => {
+      callCount++
+      return barrier
+    })
+
+    const callPayload = {
+      title: 'Report',
+      format: 'docx',
+      content: '# Content',
+      sessionId: 'sess-1',
+      userTurnId: 'turn-1',
+      documentSlot: 'primary',
+    }
+
+    const p1 = skill.executeTool(call(callPayload))
+    const p2 = skill.executeTool(call(callPayload))
+
+    resolveFirst({ path: '/Users/me/GenOffice/Report.docx' })
+    const [r1, r2] = await Promise.all([p1, p2])
+
+    expect(callCount).toBe(1)
+    expect(r1.output).toContain('/Users/me/GenOffice/Report.docx')
+    expect(r2.output).toContain('/Users/me/GenOffice/Report.docx')
+  })
+
+  it('returns committed result for repeated calls with same identity key', async () => {
+    let callCount = 0
+    const { skill } = makeSkill(async () => {
+      callCount++
+      return { path: '/Users/me/GenOffice/Report.docx' }
+    })
+
+    const callPayload = {
+      title: 'Report',
+      format: 'docx',
+      content: '# Content',
+      sessionId: 'sess-1',
+      userTurnId: 'turn-1',
+      documentSlot: 'primary',
+    }
+
+    const r1 = await skill.executeTool(call(callPayload))
+    expect(callCount).toBe(1)
+    expect(r1.output).toContain('/Users/me/GenOffice/Report.docx')
+
+    const r2 = await skill.executeTool(call(callPayload))
+    expect(callCount).toBe(1)
+    expect(r2.output).toContain('/Users/me/GenOffice/Report.docx')
+
+    // Different slot should execute
+    const r3 = await skill.executeTool(call({ ...callPayload, documentSlot: 'annex' }))
+    expect(callCount).toBe(2)
+  })
+
+  it('forwards documentType and documentSlot to deps.create', async () => {
+    const { skill, requests } = makeSkill()
+    await skill.executeTool(
+      call({
+        title: 'Science Report',
+        format: 'docx',
+        content: '# Research',
+        documentType: 'scientific-report',
+        documentSlot: 'primary',
+        sessionId: 's1',
+        userTurnId: 't1',
+      }),
+    )
+    expect(requests[0]).toMatchObject({
+      title: 'Science Report',
+      format: 'docx',
+      documentType: 'scientific-report',
+      documentSlot: 'primary',
+      sessionId: 's1',
+      userTurnId: 't1',
+    })
+  })
 })
