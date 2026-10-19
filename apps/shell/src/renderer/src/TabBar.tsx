@@ -539,7 +539,10 @@ export function TabBar() {
                 // Chrome-style: pressing a tab activates it immediately, so
                 // activation never depends on the click that a drag would eat
                 if (!tab.active) void window.aiOfficeTabs.activate(tab.id)
-                if (tab.id === 'home') return
+                if (tab.id === 'home') {
+                  window.dispatchEvent(new CustomEvent('genoffice:home-tab-clicked'))
+                  return
+                }
                 const strip = stripRef.current
                 if (!strip) return
                 const rects = tabRects()
@@ -559,6 +562,11 @@ export function TabBar() {
                   torn: false,
                 }
                 strip.setPointerCapture(event.pointerId)
+              }}
+              onClick={() => {
+                if (tab.id === 'home') {
+                  window.dispatchEvent(new CustomEvent('genoffice:home-tab-clicked'))
+                }
               }}
             >
               {/* highlight plate behind the content — hover capsule / active white body */}

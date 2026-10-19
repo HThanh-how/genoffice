@@ -1295,6 +1295,16 @@ export function Home() {
     window.addEventListener(OPEN_INDEX_EVENT, open)
     return () => window.removeEventListener(OPEN_INDEX_EVENT, open)
   }, [])
+  useEffect(() => {
+    const handleHomeActivated = () => {
+      setAskMode(false)
+      setIndexOpen(false)
+      setCloudMode(false)
+      setSelectedFolder(null)
+    }
+    window.addEventListener('genoffice:home-tab-clicked', handleHomeActivated)
+    return () => window.removeEventListener('genoffice:home-tab-clicked', handleHomeActivated)
+  }, [])
   const [filter, setFilter] = useState('all')
   // ── Starred groups (named buckets the Starred view can filter on) ──
   // groups that currently have at least one starred file (drives the pills)
