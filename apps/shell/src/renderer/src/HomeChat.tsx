@@ -315,6 +315,17 @@ export function HomeChat({
     docSkillRef.current = createDocumentSkill({
       getSessionId: () => convRef.current?.executionId || activeSessionIdRef.current || undefined,
       getUserTurnId: () => currentUserTurnIdRef.current || undefined,
+      fileExists: async (path: string) => {
+        try {
+          if (typeof api.statPaths === 'function') {
+            const entries = await api.statPaths([path])
+            return Boolean(entries[0] && !entries[0].missing)
+          }
+          return true
+        } catch {
+          return false
+        }
+      },
       create: async (request) => {
         const owner = convRef.current
         const table = fileTableRef.current

@@ -35,7 +35,7 @@ export interface CreateDocumentDeps {
   create(request: CreateDocumentRequest): Promise<{ path: string; opened?: boolean }>
   getSessionId?: () => string | undefined
   getUserTurnId?: () => string | undefined
-  fileExists?: (path: string) => boolean
+  fileExists?: (path: string) => boolean | Promise<boolean>
 }
 
 export interface CreateDocumentSkill extends AgentSkill {
@@ -166,7 +166,8 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
           : undefined
       const providerCallId =
         call.id && typeof call.id === 'string' && call.id.trim() ? call.id.trim() : undefined
-      const hostOpId = rawSlot || hostCallId || providerCallId
+      const hostOpId = hostCallId || providerCallId || rawSlot
+      const effectiveCallId = hostCallId || providerCallId
       const documentType =
         typeof call.input.documentType === 'string'
           ? (call.input.documentType as DocumentType)
@@ -176,7 +177,7 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
 
       if (slotKey && committedSlots.has(slotKey)) {
         const cached = committedSlots.get(slotKey)!
-        const exists = deps.fileExists ? deps.fileExists(cached.path) : true
+        const exists = deps.fileExists ? await deps.fileExists(cached.path) : true
         if (exists) {
           const name = cached.path.split(/[\\/]/).pop() ?? cached.path
           const status = cached.opened ? 'opened in editor' : 'saved to disk (not opened)'
@@ -217,7 +218,7 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         ...(sessionId ? { sessionId } : {}),
         ...(userTurnId ? { userTurnId } : {}),
         ...(rawSlot ? { documentSlot: rawSlot } : {}),
-        ...(hostCallId ? { callId: hostCallId } : {}),
+        ...(effectiveCallId ? { callId: effectiveCallId } : {}),
         ...(documentType ? { documentType } : {}),
       })
 

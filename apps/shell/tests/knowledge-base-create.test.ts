@@ -204,4 +204,45 @@ describe('createKnowledgeDocument', () => {
     expect(res2.path).toBe('/save/Contract.docx')
     expect(disk.has(res2.path)).toBe(true)
   })
+
+  it('allocates distinct target paths concurrently for same-title documents', async () => {
+    const { deps, recent } = makeDeps()
+    let resolveFirst!: () => void
+    const barrier = new Promise<void>((res) => {
+      resolveFirst = res
+    })
+    let calls = 0
+    deps.markdownToDocx = async (_md, _out) => {
+      calls++
+      if (calls === 1) await barrier
+    }
+
+    const req1 = {
+      title: 'Parallel Report',
+      format: 'docx' as const,
+      content: '# Version 1',
+      sessionId: 'sess-1',
+      userTurnId: 'turn-1',
+      callId: 'call-p1',
+    }
+    const req2 = {
+      title: 'Parallel Report',
+      format: 'docx' as const,
+      content: '# Version 2',
+      sessionId: 'sess-1',
+      userTurnId: 'turn-1',
+      callId: 'call-p2',
+    }
+
+    const p1 = createKnowledgeDocument(deps, req1)
+    const p2 = createKnowledgeDocument(deps, req2)
+
+    resolveFirst()
+    const [res1, res2] = await Promise.all([p1, p2])
+
+    expect(calls).toBe(2)
+    expect(res1.path).not.toBe(res2.path)
+    expect(recent).toContain(res1.path)
+    expect(recent).toContain(res2.path)
+  })
 })

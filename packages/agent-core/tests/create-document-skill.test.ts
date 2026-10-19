@@ -17,15 +17,8 @@ function makeSkill(create?: (r: CreateDocumentRequest) => Promise<{ path: string
   return { skill, requests }
 }
 
-let callSeq = 0
 const call = (input: Record<string, unknown>, id?: string) => ({
-  id:
-    id ||
-    (typeof input.callId === 'string'
-      ? input.callId
-      : typeof input.documentSlot === 'string'
-        ? input.documentSlot
-        : `call-${++callSeq}`),
+  id: id !== undefined ? id : typeof input.callId === 'string' ? input.callId : '',
   name: 'create_document',
   input,
 })
@@ -108,6 +101,20 @@ describe('createDocumentSkill', () => {
       open: true,
       documentSlot: 'plan-slot',
       callId: 'call-plan',
+    })
+  })
+
+  it('forwards provider call.id as callId to deps.create when input.callId is omitted', async () => {
+    const { skill, requests } = makeSkill()
+    const r = await skill.executeTool(
+      call({ title: 'Plan', format: 'docx', content: '# Plan' }, 'provider-call-999'),
+    )
+    expect(r.isError).toBeUndefined()
+    expect(requests[0]).toEqual({
+      title: 'Plan',
+      format: 'docx',
+      content: '# Plan',
+      callId: 'provider-call-999',
     })
   })
 
@@ -635,5 +642,186 @@ describe('createDocumentSkill', () => {
       ),
     )
     expect(createCalls).toBe(102)
+  })
+
+  describe('mandatory document operation identity precedence & collision prevention', () => {
+    it('1. two different call IDs with the same documentSlot produce two distinct documents', async () => {
+      let callCount = 0
+      const created: string[] = []
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          callCount++
+          const path = `/Users/me/GenOffice/${r.title}.docx`
+          created.push(path)
+          return { path }
+        },
+      })
+      const r1 = await skill.executeTool(
+        call(
+          { title: 'Vietnamese Report', format: 'docx', content: '# VI', documentSlot: 'primary' },
+          'call-A',
+        ),
+      )
+      const r2 = await skill.executeTool(
+        call(
+          { title: 'English Report', format: 'docx', content: '# EN', documentSlot: 'primary' },
+          'call-B',
+        ),
+      )
+      expect(callCount).toBe(2)
+      expect(created).toEqual([
+        '/Users/me/GenOffice/Vietnamese Report.docx',
+        '/Users/me/GenOffice/English Report.docx',
+      ])
+      expect(r1.output).toContain('Vietnamese Report.docx')
+      expect(r2.output).toContain('English Report.docx')
+    })
+
+    it('2. two different call IDs with different documentSlots produce two distinct documents', async () => {
+      let callCount = 0
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          callCount++
+          return { path: `/Users/me/GenOffice/${r.title}.docx` }
+        },
+      })
+      const r1 = await skill.executeTool(
+        call({ title: 'Report', format: 'docx', content: '# A', documentSlot: 'slot-1' }, 'call-A'),
+      )
+      const r2 = await skill.executeTool(
+        call(
+          { title: 'Appendix', format: 'docx', content: '# B', documentSlot: 'slot-2' },
+          'call-B',
+        ),
+      )
+      expect(callCount).toBe(2)
+      expect(r1.output).toContain('Report.docx')
+      expect(r2.output).toContain('Appendix.docx')
+    })
+
+    it('3. two different call IDs with identical titles produce two distinct documents', async () => {
+      let callCount = 0
+      const created: string[] = []
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          callCount++
+          const path =
+            callCount === 1
+              ? `/Users/me/GenOffice/${r.title}.docx`
+              : `/Users/me/GenOffice/${r.title} (1).docx`
+          created.push(path)
+          return { path }
+        },
+      })
+      const r1 = await skill.executeTool(
+        call({ title: 'Summary', format: 'docx', content: '# Part 1' }, 'call-id-1'),
+      )
+      const r2 = await skill.executeTool(
+        call({ title: 'Summary', format: 'docx', content: '# Part 2' }, 'call-id-2'),
+      )
+      expect(callCount).toBe(2)
+      expect(created).toEqual([
+        '/Users/me/GenOffice/Summary.docx',
+        '/Users/me/GenOffice/Summary (1).docx',
+      ])
+      expect(r1.output).toContain('Summary.docx')
+      expect(r2.output).toContain('Summary (1).docx')
+    })
+
+    it('4. the same call ID delivered twice returns committed result without duplicate creation', async () => {
+      let callCount = 0
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          callCount++
+          return { path: `/Users/me/GenOffice/${r.title}.docx` }
+        },
+      })
+      const opCall = call({ title: 'Report', format: 'docx', content: '# Content' }, 'call-id-dup')
+      const r1 = await skill.executeTool(opCall)
+      expect(callCount).toBe(1)
+      const r2 = await skill.executeTool(opCall)
+      expect(callCount).toBe(1)
+      expect(r2.output).toBe(r1.output)
+    })
+
+    it('5. concurrent duplicate delivery of the same call deduplicates to a single flight', async () => {
+      let callCount = 0
+      let resolveBarrier!: (res: { path: string }) => void
+      const barrier = new Promise<{ path: string }>((res) => {
+        resolveBarrier = res
+      })
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async () => {
+          callCount++
+          return barrier
+        },
+      })
+      const opCall = call(
+        { title: 'Report', format: 'docx', content: '# Content' },
+        'call-id-barrier',
+      )
+      const p1 = skill.executeTool(opCall)
+      const p2 = skill.executeTool(opCall)
+      resolveBarrier({ path: '/Users/me/GenOffice/Report.docx' })
+      const [r1, r2] = await Promise.all([p1, p2])
+      expect(callCount).toBe(1)
+      expect(r1.output).toBe(r2.output)
+    })
+
+    it('6. different user turns using the same call ID produce distinct documents', async () => {
+      let callCount = 0
+      let currentTurn = 'turn-1'
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => currentTurn,
+        create: async (r) => {
+          callCount++
+          return { path: `/Users/me/GenOffice/${r.title}_${currentTurn}.docx` }
+        },
+      })
+      const r1 = await skill.executeTool(
+        call({ title: 'Report', format: 'docx', content: '# Content' }, 'reused-call-id'),
+      )
+      expect(callCount).toBe(1)
+      expect(r1.output).toContain('Report_turn-1.docx')
+
+      currentTurn = 'turn-2'
+      const r2 = await skill.executeTool(
+        call({ title: 'Report', format: 'docx', content: '# Content' }, 'reused-call-id'),
+      )
+      expect(callCount).toBe(2)
+      expect(r2.output).toContain('Report_turn-2.docx')
+    })
+
+    it('7. explicit requests for identical document copies produce two files', async () => {
+      let callCount = 0
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async () => {
+          callCount++
+          return { path: `/Users/me/GenOffice/Copy_${callCount}.docx` }
+        },
+      })
+      const r1 = await skill.executeTool(
+        call({ title: 'Invoice', format: 'docx', content: '# Invoice 101' }, 'copy-call-1'),
+      )
+      const r2 = await skill.executeTool(
+        call({ title: 'Invoice', format: 'docx', content: '# Invoice 101' }, 'copy-call-2'),
+      )
+      expect(callCount).toBe(2)
+      expect(r1.output).toContain('Copy_1.docx')
+      expect(r2.output).toContain('Copy_2.docx')
+    })
   })
 })

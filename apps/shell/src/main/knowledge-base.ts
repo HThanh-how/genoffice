@@ -214,10 +214,32 @@ interface CommittedDocCreation {
 
 const inFlightDocCreations = new Map<string, Promise<{ path: string }>>()
 const committedDocCreations = new Map<string, CommittedDocCreation>()
+const reservedPaths = new Set<string>()
 
 export function clearKnowledgeDocumentCaches(): void {
   inFlightDocCreations.clear()
   committedDocCreations.clear()
+  reservedPaths.clear()
+}
+
+function allocateUniquePath(deps: KbCreateDeps, title: string, format: string): string {
+  const dir = deps.dir()
+  const base = deps.sanitizeBase(title)
+  let candidate = deps.uniquePath(dir, `${base}.${format}`)
+  let i = 2
+  while (reservedPaths.has(candidate)) {
+    candidate = deps.uniquePath(dir, `${base}-${i}.${format}`)
+    if (reservedPaths.has(candidate)) {
+      const altCandidate = deps.uniquePath(dir, `${base} (${i}).${format}`)
+      if (!reservedPaths.has(altCandidate)) {
+        candidate = altCandidate
+        break
+      }
+    }
+    i++
+  }
+  reservedPaths.add(candidate)
+  return candidate
 }
 
 export async function createKnowledgeDocument(
@@ -245,21 +267,25 @@ export async function createKnowledgeDocument(
   }
 
   const opPromise = (async () => {
-    const targetPath = deps.uniquePath(deps.dir(), `${deps.sanitizeBase(req.title)}.${req.format}`)
-    if (req.format === 'md') {
-      await deps.writeText(targetPath, req.content)
-    } else {
-      await deps.markdownToDocx(req.content, targetPath, req.documentType)
-    }
-    deps.recordRecent(targetPath)
-    if (slotKey) {
-      if (committedDocCreations.size >= 100) {
-        const oldest = committedDocCreations.keys().next().value
-        if (oldest !== undefined) committedDocCreations.delete(oldest)
+    const targetPath = allocateUniquePath(deps, req.title, req.format)
+    try {
+      if (req.format === 'md') {
+        await deps.writeText(targetPath, req.content)
+      } else {
+        await deps.markdownToDocx(req.content, targetPath, req.documentType)
       }
-      committedDocCreations.set(slotKey, { path: targetPath, createdAt: Date.now() })
+      deps.recordRecent(targetPath)
+      if (slotKey) {
+        if (committedDocCreations.size >= 100) {
+          const oldest = committedDocCreations.keys().next().value
+          if (oldest !== undefined) committedDocCreations.delete(oldest)
+        }
+        committedDocCreations.set(slotKey, { path: targetPath, createdAt: Date.now() })
+      }
+      return { path: targetPath }
+    } finally {
+      reservedPaths.delete(targetPath)
     }
-    return { path: targetPath }
   })()
 
   if (slotKey) {
