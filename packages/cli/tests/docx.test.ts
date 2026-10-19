@@ -1364,5 +1364,9 @@ describe('genoffice docs: comments, revisions, header/footer, images, charts', (
     const corruptResult = await validateGeneratedDocx(new Uint8Array([1, 2, 3, 4]))
     expect(corruptResult.ok).toBe(false)
     expect(corruptResult.errors[0]).toContain('Invalid ZIP/OOXML package')
+
+    const docxBytes = readFileSync(DOCX)
+    const cleanResult = await validateGeneratedDocx(docxBytes, { checkPlaceholders: true })
+    expect(cleanResult.ok).toBe(true)
   })
 })

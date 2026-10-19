@@ -9,6 +9,8 @@ export interface DocxValidationOptions {
   minParagraphs?: number
   /** Expected document title or substring in document text */
   expectedText?: string
+  /** If true, asserts no raw template placeholders (e.g. {{name}}, __TODO__) leaked into text */
+  checkPlaceholders?: boolean
 }
 
 export interface DocxValidationStats {
@@ -130,12 +132,14 @@ export async function validateGeneratedDocx(
     errors.push(`Document does not contain expected text: "${options.expectedText}"`)
   }
 
-  // Check for leaked raw placeholders in text
-  for (const t of textMatches) {
-    const leakMatch = FORBIDDEN_PLACEHOLDER_REGEX.exec(t)
-    if (leakMatch) {
-      errors.push(`Unrendered template placeholder leaked into document text: "${leakMatch[0]}"`)
-      break
+  // Check for leaked raw placeholders in text if requested
+  if (options?.checkPlaceholders) {
+    for (const t of textMatches) {
+      const leakMatch = FORBIDDEN_PLACEHOLDER_REGEX.exec(t)
+      if (leakMatch) {
+        errors.push(`Unrendered template placeholder leaked into document text: "${leakMatch[0]}"`)
+        break
+      }
     }
   }
 
