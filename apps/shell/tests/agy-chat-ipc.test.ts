@@ -460,7 +460,7 @@ describe('agy chat IPC: notifications and races', () => {
       cachePath: join(dir, 'usage.json'),
     })
     expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-low')).toBe(false)
-    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toBeNull()
   })
 })
 
@@ -520,7 +520,7 @@ describe('agy chat IPC: an enabled-list change is written consistently (T1-T10)'
       aiSettingsPath,
       cachePath: join(dir, 'usage.json'),
     })
-    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toBeNull()
     // T9 and T10: no notification, and no model was chosen behind the person's back
     expect(sent.length).toBe(0)
     expect(readAi(aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-high')
@@ -548,7 +548,7 @@ describe('agy chat IPC: an enabled-list change is written consistently (T1-T10)'
       aiSettingsPath,
       cachePath: join(dir, 'usage.json'),
     })
-    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toBeNull()
     // T9: no false success notification; T10: no silent re-selection
     expect(sent.length).toBe(0)
     // T7: the next read reports exactly what is on disk - both files back to the pre-mutation state
@@ -637,7 +637,7 @@ describe('agy chat IPC: an enabled-list change is written consistently (T1-T10)'
       aiSettingsPath,
       cachePath: join(dir, 'usage.json'),
     })
-    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toBeNull()
     expect(sent.length).toBe(0)
     const state = await call(AGY_CHAT_CHANNELS.state)
     // detectable recovery condition: the stored selection is High while High is switched off
@@ -673,7 +673,7 @@ describe('agy chat IPC: an enabled-list change is written consistently (T1-T10)'
       cachePath: join(dir, 'usage.json'),
     })
     mkdirSync(join(dir, 'blocked'))
-    expect(await failing.call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
+    expect(await failing.call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toBeNull()
     const afterRestart = wire({
       dir,
       settingsPath,

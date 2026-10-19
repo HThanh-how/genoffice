@@ -38,8 +38,10 @@ export function createAgyChatPreloadApi(ipcRenderer: IpcRenderer): AgyChatApi {
       return (await ipcRenderer.invoke(AGY_CHAT_CHANNELS.select, id)) === true
     },
     async setAgyChatEnabledModels(ids) {
+      // null means the write failed; an empty array is a real "nothing switched on" list
       const result: unknown = await ipcRenderer.invoke(AGY_CHAT_CHANNELS.setEnabled, ids)
-      return Array.isArray(result) ? result.filter((x): x is string => typeof x === 'string') : []
+      if (result === null) return null
+      return Array.isArray(result) ? result.filter((x): x is string => typeof x === 'string') : null
     },
     onAgyChatModelChanged(handler) {
       const listener = () => handler()

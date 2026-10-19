@@ -370,7 +370,7 @@ export interface AgyChatApi {
   getAgyChatState(): Promise<AgyChatState>
   getAgyChatCatalog(): Promise<AgyChatCatalog>
   selectAgyChatModel(id: string): Promise<boolean>
-  setAgyChatEnabledModels(ids: string[]): Promise<string[]>
+  setAgyChatEnabledModels(ids: string[]): Promise<string[] | null>
   /** every window hears this after a model selection or an enabled-list change */
   onAgyChatModelChanged(handler: () => void): () => void
   getAgyChatUsage(): Promise<AgyChatUsageState>

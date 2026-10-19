@@ -88,10 +88,15 @@ export function AgyChatModelsSettings() {
     if (on && catalog.enabled.length === 1) return
     const ids = on ? catalog.enabled.filter((x) => x !== id) : [...catalog.enabled, id]
     const saved = await api()?.setAgyChatEnabledModels(ids)
-    if (saved) {
-      setCatalog({ ...catalog, enabled: saved })
-      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    if (saved === null || saved === undefined) {
+      // the write did not land: re-read so the switches show what is really stored instead of
+      // pretending the change was saved
+      void load()
+      return
     }
+    setFailed(false)
+    setCatalog({ ...catalog, enabled: saved })
+    window.dispatchEvent(new Event('genoffice-agy-model-changed'))
   }
 
   const row = (model: AgyChatModelInfo) => {

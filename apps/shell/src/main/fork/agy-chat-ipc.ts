@@ -234,7 +234,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
     }
   })
 
-  deps.ipcMain.handle(AGY_CHAT_CHANNELS.setEnabled, (_event, ids: unknown): string[] => {
+  deps.ipcMain.handle(AGY_CHAT_CHANNELS.setEnabled, (_event, ids: unknown): string[] | null => {
     const stamp = ++mutationStamp
     const next = sanitizeEnabledChatModels(ids)
     const previous = readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY]
@@ -242,7 +242,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
       writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, next)
     } catch {
       // nothing was saved: report failure instead of a list the person did not get
-      return []
+      return null
     }
     // Turning off the model in use is an explicit choice, so the next one is decided here,
     // deterministically: the first model still switched on. A read-only state query never does
@@ -266,7 +266,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
           }
         }
         // Nothing was reported as changed: no notification, no list, no silent re-selection.
-        return []
+        return null
       }
     }
     // Enabling or disabling any model changes what the chat box offers in every window, even
