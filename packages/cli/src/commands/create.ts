@@ -91,6 +91,17 @@ export const createCommand: CommandDef = {
       description:
         'pptx: run the geometry audit on the written deck and report it under detail.audit (advisory findings, with setTransform suggestions)',
     },
+    {
+      name: 'profile',
+      value: 'profile',
+      description:
+        'docx: document layout/typography profile: general, report, scientific-report, memo, proposal, letter',
+    },
+    {
+      name: 'document-type',
+      value: 'type',
+      description: 'docx: alias for --profile',
+    },
   ],
   async run(args, ctx) {
     const type = flagString(args, 'type')?.toLowerCase()
