@@ -12,7 +12,7 @@ test('home chat finds remembered content, opens its source and preserves the hom
   await writeFile(source, '# Moonstone\nClass 2/1 guardian phone 0912345678\n')
   const requests: Array<{
     messages: Array<{ role: string; content?: string }>
-    tools?: unknown[]
+    tools?: Array<{ type: string; function: { name: string } }>
   }> = []
   const server = createServer(async (req, res) => {
     let body = ''
@@ -100,7 +100,15 @@ test('home chat finds remembered content, opens its source and preserves the hom
       timeout: 30_000,
     })
     expect(requests).toHaveLength(3)
-    expect(requests[0]!.tools).toHaveLength(3)
+    expect(requests[0]!.tools).toHaveLength(6)
+    expect(requests[0]!.tools?.map((t) => t.function.name)).toEqual([
+      'search_remembered_documents',
+      'read_remembered_document',
+      'open_remembered_document',
+      'read_knowledge_file',
+      'search_knowledge_base',
+      'create_document',
+    ])
     const evidence = JSON.parse(
       requests[2]!.messages.filter((m) => m.role === 'tool').at(-1)!.content!,
     )
