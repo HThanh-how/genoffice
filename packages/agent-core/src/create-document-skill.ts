@@ -36,6 +36,10 @@ export interface CreateDocumentDeps {
   getSessionId?: () => string | undefined
   getUserTurnId?: () => string | undefined
   fileExists?: (path: string) => boolean | Promise<boolean>
+  open?: (path: string) => boolean | Promise<boolean>
+  openDocument?: (path: string) => boolean | Promise<boolean>
+  isOpen?: (path: string) => boolean | Promise<boolean>
+  isDocumentOpen?: (path: string) => boolean | Promise<boolean>
 }
 
 export interface CreateDocumentSkill extends AgentSkill {
@@ -79,6 +83,9 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
   const created: string[] = []
   const inFlightOps = new Map<string, Promise<{ path: string; opened?: boolean }>>()
   const committedSlots = new Map<string, { path: string; opened?: boolean }>()
+
+  const openFn = deps.open ?? deps.openDocument
+  const isOpenFn = deps.isOpen ?? deps.isDocumentOpen
 
   const tool: AgentToolDef = {
     name: CREATE_DOCUMENT_TOOL,
@@ -179,10 +186,36 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         const cached = committedSlots.get(slotKey)!
         const exists = deps.fileExists ? await deps.fileExists(cached.path) : true
         if (exists) {
+          const shouldAutoOpen =
+            typeof call.input.open === 'boolean' ? call.input.open : format === 'docx'
+          let opened = false
+          if (shouldAutoOpen) {
+            if (isOpenFn) {
+              try {
+                const alreadyOpen = await isOpenFn(cached.path)
+                if (alreadyOpen) {
+                  opened = true
+                } else if (openFn) {
+                  opened = Boolean(await openFn(cached.path))
+                }
+              } catch {
+                opened = false
+              }
+            } else if (openFn) {
+              try {
+                opened = Boolean(await openFn(cached.path))
+              } catch {
+                opened = false
+              }
+            } else {
+              opened = Boolean(cached.opened)
+            }
+          }
+          cached.opened = opened
           const name = cached.path.split(/[\\/]/).pop() ?? cached.path
-          const status = cached.opened ? 'opened in editor' : 'saved to disk (not opened)'
+          const status = opened ? 'opened in editor' : 'saved to disk (not opened)'
           return {
-            output: `saved ${name} (${status})\n  path: ${cached.path}\n  cite: ${kbCiteHref(cached.path)}\n  opened: ${Boolean(cached.opened)}`,
+            output: `saved ${name} (${status})\n  path: ${cached.path}\n  cite: ${kbCiteHref(cached.path)}\n  opened: ${Boolean(opened)}`,
             summary: name,
           }
         } else {
@@ -210,17 +243,49 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
       }
 
       const open = typeof call.input.open === 'boolean' ? call.input.open : undefined
-      const opPromise = deps.create({
-        title: title || 'Untitled',
-        format,
-        content,
-        ...(open !== undefined ? { open } : {}),
-        ...(sessionId ? { sessionId } : {}),
-        ...(userTurnId ? { userTurnId } : {}),
-        ...(rawSlot ? { documentSlot: rawSlot } : {}),
-        ...(effectiveCallId ? { callId: effectiveCallId } : {}),
-        ...(documentType ? { documentType } : {}),
-      })
+      const shouldAutoOpen =
+        typeof call.input.open === 'boolean' ? call.input.open : format === 'docx'
+
+      const opPromise = (async () => {
+        const res = await deps.create({
+          title: title || 'Untitled',
+          format,
+          content,
+          ...(open !== undefined ? { open } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          ...(userTurnId ? { userTurnId } : {}),
+          ...(rawSlot ? { documentSlot: rawSlot } : {}),
+          ...(effectiveCallId ? { callId: effectiveCallId } : {}),
+          ...(documentType ? { documentType } : {}),
+        })
+
+        let opened = Boolean(res.opened)
+        if (openFn) {
+          if (shouldAutoOpen) {
+            if (isOpenFn) {
+              try {
+                const alreadyOpen = await isOpenFn(res.path)
+                if (alreadyOpen) {
+                  opened = true
+                } else {
+                  opened = Boolean(await openFn(res.path))
+                }
+              } catch {
+                opened = false
+              }
+            } else {
+              try {
+                opened = Boolean(await openFn(res.path))
+              } catch {
+                opened = false
+              }
+            }
+          } else {
+            opened = false
+          }
+        }
+        return { path: res.path, opened }
+      })()
 
       if (slotKey) inFlightOps.set(slotKey, opPromise)
       try {

@@ -824,4 +824,224 @@ describe('createDocumentSkill', () => {
       expect(r2.output).toContain('Copy_2.docx')
     })
   })
+
+  describe('editor open and retry integration (open / isOpen deps)', () => {
+    it('Create succeeds, open fails, retry succeeds', async () => {
+      let createCount = 0
+      let openCount = 0
+      const openedPaths: string[] = []
+
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          createCount++
+          return { path: `/Users/me/GenOffice/${r.title}.${r.format}` }
+        },
+        open: async (filePath) => {
+          openCount++
+          openedPaths.push(filePath)
+          return openCount > 1
+        },
+      })
+
+      const req = call({ title: 'Doc', format: 'docx', content: '# Content' }, 'call-retry-open')
+
+      // Initial call: create succeeds, open fails
+      const r1 = await skill.executeTool(req)
+      expect(r1.isError).toBeUndefined()
+      expect(createCount).toBe(1)
+      expect(openCount).toBe(1)
+      expect(openedPaths).toEqual(['/Users/me/GenOffice/Doc.docx'])
+      expect(r1.output).toContain('saved to disk (not opened)')
+      expect(r1.output).toContain('opened: false')
+
+      // Replay/retry call with same identity: create is NOT called, open is called again and succeeds
+      const r2 = await skill.executeTool(req)
+      expect(r2.isError).toBeUndefined()
+      expect(createCount).toBe(1)
+      expect(openCount).toBe(2)
+      expect(openedPaths).toEqual(['/Users/me/GenOffice/Doc.docx', '/Users/me/GenOffice/Doc.docx'])
+      expect(r2.output).toContain('opened in editor')
+      expect(r2.output).toContain('opened: true')
+    })
+
+    it('Open returns false', async () => {
+      let createCount = 0
+      let openCount = 0
+
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          createCount++
+          return { path: `/Users/me/GenOffice/${r.title}.${r.format}` }
+        },
+        open: async () => {
+          openCount++
+          return false
+        },
+      })
+
+      const result = await skill.executeTool(
+        call({ title: 'Doc', format: 'docx', content: '# Content' }, 'call-open-false'),
+      )
+
+      expect(createCount).toBe(1)
+      expect(openCount).toBe(1)
+      expect(result.isError).toBeUndefined()
+      expect(result.output).toContain('saved to disk (not opened)')
+      expect(result.output).toContain('opened: false')
+    })
+
+    it('Open throws', async () => {
+      let createCount = 0
+      let openCount = 0
+
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          createCount++
+          return { path: `/Users/me/GenOffice/${r.title}.${r.format}` }
+        },
+        open: () => {
+          openCount++
+          throw new Error('editor unavailable')
+        },
+      })
+
+      const result = await skill.executeTool(
+        call({ title: 'Doc', format: 'docx', content: '# Content' }, 'call-open-throws'),
+      )
+
+      expect(createCount).toBe(1)
+      expect(openCount).toBe(1)
+      expect(result.isError).toBeUndefined()
+      expect(result.output).toContain('saved to disk (not opened)')
+      expect(result.output).toContain('opened: false')
+    })
+
+    it('Open succeeds, tab closes, reopen succeeds', async () => {
+      let createCount = 0
+      let openCount = 0
+      let isTabOpen = false
+
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          createCount++
+          return { path: `/Users/me/GenOffice/${r.title}.${r.format}` }
+        },
+        open: async () => {
+          openCount++
+          isTabOpen = true
+          return true
+        },
+        isOpen: async () => isTabOpen,
+      })
+
+      const req = call({ title: 'Doc', format: 'docx', content: '# Content' }, 'call-tab-cycle')
+
+      // Initial call: opens successfully
+      const r1 = await skill.executeTool(req)
+      expect(r1.isError).toBeUndefined()
+      expect(createCount).toBe(1)
+      expect(openCount).toBe(1)
+      expect(isTabOpen).toBe(true)
+      expect(r1.output).toContain('opened in editor')
+      expect(r1.output).toContain('opened: true')
+
+      // Tab closes: isOpen returns false
+      isTabOpen = false
+
+      // Replay when tab is closed: invokes open to reopen, create is NOT called
+      const r2 = await skill.executeTool(req)
+      expect(r2.isError).toBeUndefined()
+      expect(createCount).toBe(1)
+      expect(openCount).toBe(2)
+      expect(isTabOpen).toBe(true)
+      expect(r2.output).toContain('opened in editor')
+      expect(r2.output).toContain('opened: true')
+    })
+
+    it('Retry creates zero additional physical documents', async () => {
+      let createCount = 0
+      const createdPaths: string[] = []
+
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          createCount++
+          const path = `/Users/me/GenOffice/${r.title}.${r.format}`
+          createdPaths.push(path)
+          return { path }
+        },
+        open: async () => true,
+      })
+
+      const req = call(
+        { title: 'PhysicalDoc', format: 'docx', content: '# Content' },
+        'call-id-triple',
+      )
+
+      const r1 = await skill.executeTool(req)
+      const r2 = await skill.executeTool(req)
+      const r3 = await skill.executeTool(req)
+
+      expect(createCount).toBe(1)
+      expect(createdPaths).toEqual(['/Users/me/GenOffice/PhysicalDoc.docx'])
+      expect(r1.isError).toBeUndefined()
+      expect(r2.isError).toBeUndefined()
+      expect(r3.isError).toBeUndefined()
+      expect(r1.output).toContain('PhysicalDoc.docx')
+      expect(r2.output).toContain('PhysicalDoc.docx')
+      expect(r3.output).toContain('PhysicalDoc.docx')
+      expect(skill.createdPaths()).toEqual(['/Users/me/GenOffice/PhysicalDoc.docx'])
+    })
+
+    it('supports openDocument and isDocumentOpen aliases', async () => {
+      let createCount = 0
+      let openCount = 0
+      let isTabOpen = false
+
+      const skill = createDocumentSkill({
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          createCount++
+          return { path: `/Users/me/GenOffice/${r.title}.${r.format}` }
+        },
+        openDocument: async () => {
+          openCount++
+          isTabOpen = true
+          return true
+        },
+        isDocumentOpen: () => isTabOpen,
+      })
+
+      const req = call(
+        { title: 'AliasDoc', format: 'docx', content: '# Content' },
+        'call-alias-test',
+      )
+
+      const r1 = await skill.executeTool(req)
+      expect(r1.isError).toBeUndefined()
+      expect(createCount).toBe(1)
+      expect(openCount).toBe(1)
+      expect(r1.output).toContain('opened in editor')
+      expect(r1.output).toContain('opened: true')
+
+      isTabOpen = false
+
+      const r2 = await skill.executeTool(req)
+      expect(r2.isError).toBeUndefined()
+      expect(createCount).toBe(1)
+      expect(openCount).toBe(2)
+      expect(r2.output).toContain('opened in editor')
+      expect(r2.output).toContain('opened: true')
+    })
+  })
 })

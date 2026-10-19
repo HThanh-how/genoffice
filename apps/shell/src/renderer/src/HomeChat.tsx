@@ -89,6 +89,7 @@ type Props = {
   suppressDock?: boolean
   onNavigateToRecents?: () => void
   onOpenPath?: (path: string) => boolean | Promise<boolean> | void
+  isOpenPath?: (path: string) => boolean | Promise<boolean>
   onOpenAskWorkspace?: () => void
   onOpenModelSettings?: () => void
 }
@@ -184,6 +185,7 @@ export function HomeChat({
   suppressDock = false,
   onNavigateToRecents,
   onOpenPath,
+  isOpenPath,
   onOpenAskWorkspace,
   onOpenModelSettings,
 }: Props) {
@@ -310,6 +312,85 @@ export function HomeChat({
   const corpusRequestRef = useRef(0)
   const createdPathsRef = useRef(new Set<string>())
   const [corpusCount, setCorpusCount] = useState<number | null>(null)
+  const onOpenPathRef = useRef(onOpenPath)
+  onOpenPathRef.current = onOpenPath
+  const isOpenPathRef = useRef(isOpenPath)
+  isOpenPathRef.current = isOpenPath
+
+  const openDocumentPath = useCallback(
+    async (path: string): Promise<boolean> => {
+      const existing = inFlightOpenRef.current.get(path)
+      if (existing) {
+        return existing
+      }
+
+      if (isOpenPathRef.current) {
+        try {
+          if (await isOpenPathRef.current(path)) {
+            return true
+          }
+        } catch {
+          // ignore error and proceed with opening
+        }
+      }
+
+      const owner = convRef.current
+      const generation = runGenerationRef.current
+
+      openStatesRef.current.set(path, 'opening')
+      let cleanup = () => {}
+      const openPromise = (async () => {
+        try {
+          let success = false
+          if (onOpenPathRef.current) {
+            const res = await onOpenPathRef.current(path)
+            success = typeof res === 'boolean' ? res : true
+          } else if (typeof api.openPath === 'function') {
+            success = await api.openPath(path)
+          }
+
+          if (
+            mountedRef.current &&
+            convRef.current === owner &&
+            !owner.dead &&
+            generation === runGenerationRef.current
+          ) {
+            if (success) {
+              openStatesRef.current.set(path, 'opened')
+              openedPathsRef.current.add(path)
+            } else {
+              openStatesRef.current.set(path, 'failed')
+            }
+          }
+          return success
+        } catch (err) {
+          console.error('Failed to open document:', err)
+          if (
+            mountedRef.current &&
+            convRef.current === owner &&
+            !owner.dead &&
+            generation === runGenerationRef.current
+          ) {
+            openStatesRef.current.set(path, 'failed')
+          }
+          return false
+        } finally {
+          cleanup()
+        }
+      })()
+
+      cleanup = () => {
+        if (inFlightOpenRef.current.get(path) === openPromise) {
+          inFlightOpenRef.current.delete(path)
+        }
+      }
+
+      inFlightOpenRef.current.set(path, openPromise)
+      return openPromise
+    },
+    [api],
+  )
+
   const docSkillRef = useRef<ReturnType<typeof createDocumentSkill> | null>(null)
   if (!docSkillRef.current) {
     docSkillRef.current = createDocumentSkill({
@@ -339,8 +420,6 @@ export function HomeChat({
         const userTurnId = request.userTurnId || currentUserTurnIdRef.current || undefined
         const hostOpId = request.callId || request.documentSlot || undefined
         const documentSlot = request.documentSlot || hostOpId
-        const slotKey =
-          sessionId && userTurnId && hostOpId ? `${sessionId}:${userTurnId}:${hostOpId}` : undefined
 
         const result = await api.kbCreateDocument({
           title: request.title,
@@ -352,7 +431,7 @@ export function HomeChat({
           callId: hostOpId,
           documentType: request.documentType,
         })
-        let opened = false
+
         if (
           mountedRef.current &&
           convRef.current === owner &&
@@ -366,47 +445,13 @@ export function HomeChat({
             path: result.path,
             name: result.path.split(/[\\/]/).pop() ?? result.path,
           })
-          const shouldAutoOpen = request.open ?? request.format === 'docx'
-          if (shouldAutoOpen) {
-            const state = openStatesRef.current.get(result.path)
-            if (state === 'opened') {
-              opened = true
-            } else {
-              let openPromise = inFlightOpenRef.current.get(result.path)
-              if (!openPromise) {
-                openStatesRef.current.set(result.path, 'opening')
-                openPromise = (async () => {
-                  try {
-                    let success = false
-                    if (onOpenPath) {
-                      const res = await onOpenPath(result.path)
-                      success = typeof res === 'boolean' ? res : true
-                    } else if (typeof api.openPath === 'function') {
-                      success = await api.openPath(result.path)
-                    }
-                    if (success) {
-                      openStatesRef.current.set(result.path, 'opened')
-                      if (slotKey) openedSlotsRef.current.add(slotKey)
-                      openedPathsRef.current.add(result.path)
-                    } else {
-                      openStatesRef.current.set(result.path, 'failed')
-                    }
-                    return success
-                  } catch (err) {
-                    console.error('Failed to open created document:', err)
-                    openStatesRef.current.set(result.path, 'failed')
-                    return false
-                  } finally {
-                    inFlightOpenRef.current.delete(result.path)
-                  }
-                })()
-                inFlightOpenRef.current.set(result.path, openPromise)
-              }
-              opened = await openPromise
-            }
-          }
         }
-        return { path: result.path, opened }
+        return { path: result.path }
+      },
+      open: (path) => openDocumentPath(path),
+      isOpen: (path) => {
+        if (isOpenPathRef.current) return isOpenPathRef.current(path)
+        return false
       },
     })
   }
@@ -1862,7 +1907,7 @@ export function HomeChat({
                     onRevealSource={revealSource}
                     onRetry={retry}
                     onSaveAnswer={handleSaveAnswer}
-                    onOpenPath={onOpenPath ?? ((p) => void api.openPath(p))}
+                    onOpenPath={(p) => void openDocumentPath(p)}
                   />
                 ))}
               </div>
