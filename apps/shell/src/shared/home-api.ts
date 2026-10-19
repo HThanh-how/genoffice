@@ -339,7 +339,7 @@ export interface HomeApi extends ForkHomeApi {
   aiGskStatus(): Promise<{ loggedIn: boolean; email?: string }>
   /** open an existing file, routing to the right module by extension */
   openHelp(): Promise<void>
-  openPath(path: string): Promise<void>
+  openPath(path: string): Promise<boolean>
   /** file picker accepting every supported extension, then routes */
   browse(): Promise<void>
   /** open a docs window at its start screen; `dir` = folder the first save should land in */

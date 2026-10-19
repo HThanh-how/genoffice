@@ -10,32 +10,33 @@
 .ai-model-chip {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   height: 24px;
-  max-width: 200px;
+  max-width: 210px;
   min-width: 0;
-  padding: 0 7px 0 6px;
+  padding: 0 8px 0 6px;
   flex: 0 1 auto;
-  border: 1px solid transparent;
-  border-radius: var(--radius-30);
-  background: none;
-  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.08));
+  border-radius: var(--radius-30, 999px);
+  background: var(--surface-secondary, rgba(0, 0, 0, 0.02));
+  color: var(--text-secondary, #475569);
   font-family: inherit;
-  font-size: var(--text-caption);
+  font-size: var(--text-caption, 11px);
   font-weight: 500;
   cursor: pointer;
-  transition: all var(--transition-fast);
+  transition: all var(--transition-fast, 0.15s ease);
 }
 
 .ai-model-chip:hover,
 .ai-model-chip.open {
-  background: var(--hover);
-  color: var(--text);
+  background: var(--hover, rgba(0, 0, 0, 0.06));
+  color: var(--text, #1e293b);
+  border-color: var(--border, rgba(0, 0, 0, 0.15));
 }
 
 .ai-model-chip:focus-visible {
-  outline: none;
-  border-color: var(--accent);
+  outline: 2px solid var(--accent, #596cdb);
+  outline-offset: 1px;
 }
 
 .ai-model-chip-text {
@@ -47,7 +48,12 @@
 
 .ai-model-chip-caret {
   flex-shrink: 0;
-  color: var(--text-dim);
+  color: var(--text-dim, #94a3b8);
+  transition: transform 0.15s ease;
+}
+
+.ai-model-chip.open .ai-model-chip-caret {
+  transform: rotate(180deg);
 }
 
 .gs-provider-logo {
@@ -55,7 +61,7 @@
   display: inline-flex;
   width: 14px;
   height: 14px;
-  color: var(--text);
+  color: var(--text, currentColor);
 }
 
 .gs-provider-logo svg {
@@ -68,14 +74,27 @@
   z-index: 80;
   display: flex;
   flex-direction: column;
-  width: 260px;
+  width: 275px;
+  max-width: min(340px, calc(100vw - 24px));
   max-height: min(420px, 70vh);
-  padding: 4px;
-  background: var(--surface);
-  border: 1px solid var(--border-strong);
-  border-radius: var(--radius-8);
-  box-shadow: var(--shadow-menu);
+  padding: 5px;
+  background: var(--surface, #ffffff);
+  border: 1px solid var(--border-strong, #cbd5e1);
+  border-radius: var(--radius-10, 10px);
+  box-shadow: var(
+    --shadow-menu,
+    0 10px 30px rgba(15, 23, 42, 0.16),
+    0 2px 6px rgba(15, 23, 42, 0.06)
+  );
   font-size: 12px;
+  animation: ai-model-pop-in 0.15s ease-out;
+}
+
+@keyframes ai-model-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
 }
 
 .ai-model-pop-list {
@@ -87,17 +106,18 @@
 .ai-model-group + .ai-model-group {
   margin-top: 4px;
   padding-top: 4px;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.06));
 }
 
 .ai-model-group-head {
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 5px 8px 3px;
-  color: var(--text-dim);
+  padding: 6px 8px 4px;
+  color: var(--text-dim, #64748b);
   font-size: 11px;
   font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .ai-model-item {
@@ -105,25 +125,33 @@
   align-items: center;
   gap: 8px;
   width: 100%;
-  padding: 5px 8px 5px 28px;
+  padding: 6px 8px 6px 26px;
   border: none;
-  border-radius: var(--radius-6);
+  border-radius: var(--radius-6, 6px);
   background: none;
-  color: var(--text);
+  color: var(--text, #1e293b);
   font-family: inherit;
   font-size: 12px;
+  line-height: 1.4;
   text-align: left;
   cursor: pointer;
+  transition: background 0.12s ease;
 }
 
-.ai-model-item:hover,
+.ai-model-item:hover {
+  background: var(--hover, rgba(0, 0, 0, 0.05));
+}
+
 .ai-model-item:focus-visible {
-  background: var(--hover);
-  outline: none;
+  background: var(--hover, rgba(0, 0, 0, 0.05));
+  outline: 2px solid var(--accent, #596cdb);
+  outline-offset: -1px;
 }
 
 .ai-model-item.selected {
-  background: var(--accent-soft);
+  background: var(--accent-soft, rgba(89, 108, 219, 0.12));
+  font-weight: 500;
+  color: var(--accent, #4255c9);
 }
 
 .ai-model-item-text {
@@ -137,8 +165,9 @@
 .ai-model-manage {
   flex-shrink: 0;
   margin-top: 4px;
-  padding-left: 8px;
-  border-top: 1px solid var(--border-subtle);
-  border-radius: 0 0 var(--radius-6) var(--radius-6);
-  color: var(--text-secondary);
+  padding: 7px 8px;
+  border-top: 1px solid var(--border-subtle, rgba(0, 0, 0, 0.06));
+  border-radius: 0 0 var(--radius-6, 6px) var(--radius-6, 6px);
+  color: var(--text-secondary, #64748b);
+  font-weight: 500;
 }

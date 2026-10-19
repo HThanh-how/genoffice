@@ -22,10 +22,11 @@ export interface CreateDocumentRequest {
   format: CreateDocumentFormat
   /** the whole document as markdown */
   content: string
+  open?: boolean
 }
 
 export interface CreateDocumentDeps {
-  create(request: CreateDocumentRequest): Promise<{ path: string }>
+  create(request: CreateDocumentRequest): Promise<{ path: string; opened?: boolean }>
 }
 
 export interface CreateDocumentSkill extends AgentSkill {
@@ -44,9 +45,9 @@ When the user asks for a file — a report, summary, memo, notes, "save this",
 content and call create_document; do not paste the document into the chat and
 do not describe what the file would contain.
 - Write the content in Markdown (headings, lists, tables, bold). format "docx"
-  gives a Word document, "md" a Markdown file; pick what the user asked for,
-  default to "docx" when they only said "document" and "md" when they said
-  Markdown.
+  gives a Word document (.docx, văn bản / tài liệu Word), "md" a Markdown file (.md);
+  pick what the user asked for, default to "docx" when they only said "document" /
+  "Word" / "tài liệu" / "văn bản" and "md" when they said Markdown.
 - Keep the knowledge-base citations inside the document as plain text (file
   name and folder), not as cite links.
 - The tool returns the saved path with a cite link: reply briefly and link the
@@ -64,14 +65,23 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
     name: CREATE_DOCUMENT_TOOL,
     description:
       'Save a new document in the user’s save folder from Markdown content. ' +
-      'format "docx" writes a Word document, "md" a Markdown file. ' +
+      'format "docx" writes a Word document (.docx), "md" a Markdown file (.md). ' +
+      'Use format "docx" for Word documents / văn bản Word. ' +
       'Returns the saved path and its cite link; link it in the reply.',
     inputSchema: {
       type: 'object',
       properties: {
         title: { type: 'string', description: 'file name without extension' },
-        format: { type: 'string', enum: ['md', 'docx'], description: 'output format' },
+        format: {
+          type: 'string',
+          enum: ['md', 'docx'],
+          description: 'output format ("docx" for Word, "md" for Markdown)',
+        },
         content: { type: 'string', description: 'the complete document as Markdown' },
+        open: {
+          type: 'boolean',
+          description: 'whether to open the document immediately in the editor after saving',
+        },
       },
       required: ['title', 'format', 'content'],
     },
@@ -86,9 +96,17 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         return { output: `unknown tool: ${call.name}`, isError: true, summary: call.name }
       }
       const title = typeof call.input.title === 'string' ? call.input.title.trim() : ''
-      const format = call.input.format
+      const rawFormat = call.input.format ?? call.input.type
+      const normalizedFormat =
+        typeof rawFormat === 'string' ? rawFormat.trim().toLowerCase().replace(/^\./, '') : ''
+      const format: CreateDocumentFormat | '' =
+        normalizedFormat === 'docx' || normalizedFormat === 'word' || normalizedFormat === 'doc'
+          ? 'docx'
+          : normalizedFormat === 'md' || normalizedFormat === 'markdown'
+            ? 'md'
+            : ''
       const content = typeof call.input.content === 'string' ? call.input.content : ''
-      if (format !== 'md' && format !== 'docx') {
+      if (!format) {
         return { output: 'format must be "md" or "docx"', isError: true, summary: 'bad format' }
       }
       if (!content.trim()) {
@@ -102,11 +120,18 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         }
       }
       try {
-        const { path } = await deps.create({ title: title || 'Untitled', format, content })
+        const open = typeof call.input.open === 'boolean' ? call.input.open : undefined
+        const { path, opened } = await deps.create({
+          title: title || 'Untitled',
+          format,
+          content,
+          ...(open !== undefined ? { open } : {}),
+        })
         created.push(path)
         const name = path.split(/[\\/]/).pop() ?? path
+        const status = opened ? 'opened in editor' : 'saved to disk (not opened)'
         return {
-          output: `saved ${name}\n  path: ${path}\n  cite: ${kbCiteHref(path)}`,
+          output: `saved ${name} (${status})\n  path: ${path}\n  cite: ${kbCiteHref(path)}\n  opened: ${Boolean(opened)}`,
           summary: name,
         }
       } catch (error) {

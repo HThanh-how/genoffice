@@ -13,8 +13,23 @@ Configure these GitHub Actions repository secrets before tagging:
 | Windows  | `WIN_CSC_LINK`, `WIN_CSC_KEY_PASSWORD`                                                             |
 | macOS    | `MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`, `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` |
 
-The release workflow checks the tag and credentials before creating a draft. Both builders embed the fork's GitHub Releases provider, upload the installer and matching `latest*.yml`, and verify signing. The release becomes public only when both platform jobs succeed. Never mix an installer with metadata from another build. Keep the same signing identities across releases; changing either identity requires a deliberate migration.
+The release workflow checks the tag and validates platform credentials before creating a private draft release. Platform builds run independently: macOS signing does not depend on Windows credentials, and Windows signing does not depend on macOS credentials. The release remains as a draft until validation succeeds.
 
-To publish the next signed version, configure the signing secrets and set `GENOFFICE_SIGNED_RELEASES=true` before merging. Bump `apps/shell/package.json` and its lockfile entry to an unused version, merge and verify on `main`, then push a matching version tag. Release assets must include `latest.yml`, `latest-mac.yml`, the signed Windows NSIS installer, and the signed/notarized macOS ZIP and DMG. The ZIP serves macOS updates; the DMG is for first installation.
+For macOS signed releases:
+
+- Full workspace assets are built before packaging: `npm run notices`, `npm run build:all`, and `npm run native:build:universal -w @genoffice/sheets` (which compiles `x86_64-apple-darwin` and `aarch64-apple-darwin` slices and lipo-merges them into a fat sidecar).
+- Packaging produces the signed `.app` bundle, `.dmg` installer, and original electron-builder auto-update ZIP (`GenOffice-<version>-arm64-mac.zip` / `latest-mac.yml`).
+- Verification via `tools/verify-mac-release.mjs` enforces:
+  - Developer ID Application code signing and `AppleTeamID` match (ad-hoc signatures are strictly rejected).
+  - Gatekeeper execution assessment (`spctl --assess --type execute`).
+  - Notarization ticket stapling on both `.app` and `.dmg`.
+  - Feed integrity: original ZIP names preserved, and `latest-mac.yml` file sizes and base64 SHA-512 hashes exactly match assets on disk.
+- If validation fails, the release remains in draft state and is never published.
+- Only when all enabled platform builds and verifications pass does the publish job mark the release as public (`--draft=false --latest`) and verify update feed presence.
+
+> [!WARNING]
+> **Credential Blocker**: macOS signed release and notarization require an active Apple Developer Program membership, a Developer ID Application signing certificate (`MAC_CSC_LINK`, `MAC_CSC_KEY_PASSWORD`), App Store Connect API / app-specific credentials (`APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`), and the organization's `APPLE_TEAM_ID`. As audited, no Apple Developer account or signing secrets are configured on this repository, so signed macOS release publication is currently BLOCKED. Signing must not be faked, unsigned builds must not be published to the signed feed, and Gatekeeper must not be bypassed.
+
+To publish the next signed version once credentials are provided, configure the signing secrets and set `GENOFFICE_SIGNED_RELEASES=true` before merging. Bump `apps/shell/package.json` and its lockfile entry to an unused version (e.g. 0.11.117), merge and verify on `main`, then push a matching version tag. Release assets must include `latest.yml` (for Windows), `latest-mac.yml` (for macOS), the signed Windows NSIS installer, and the signed/notarized macOS ZIP and DMG. The ZIP serves macOS updates; the DMG is for first installation.
 
 Users of older unsigned CI installers must manually install the first signed release. Later signed releases are checked in the app shortly after launch and periodically; installation requires the user's explicit restart action. Rollback is a new, higher-version signed release. Do not republish a different build under an existing version.

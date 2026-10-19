@@ -4,6 +4,7 @@ import { Onboarding } from './Onboarding'
 import { StarPromptCard } from './StarPromptCard'
 import { StorageStartupBanner } from './StorageStartupBanner'
 import { TabBar } from './TabBar'
+import { CHAT_PANEL_EVENT, type ChatPanelDetail } from './chat-events'
 
 interface AppFrameProps {
   /** resolved before first paint (main.tsx) so home never flashes under the overlay */
@@ -12,6 +13,13 @@ interface AppFrameProps {
 
 export function AppFrame({ initialOnboardingSeen }: AppFrameProps) {
   const [homeActive, setHomeActive] = useState(true)
+  const [chatOpen, setChatOpen] = useState(false)
+  useEffect(() => {
+    const onChat = (event: Event) =>
+      setChatOpen((event as CustomEvent<ChatPanelDetail>).detail.open)
+    window.addEventListener(CHAT_PANEL_EVENT, onChat)
+    return () => window.removeEventListener(CHAT_PANEL_EVENT, onChat)
+  }, [])
   const [showOnboarding, setShowOnboarding] = useState(!initialOnboardingSeen)
   const [starPromptDocOpens, setStarPromptDocOpens] = useState<number | null>(null)
 
@@ -61,7 +69,7 @@ export function AppFrame({ initialOnboardingSeen }: AppFrameProps) {
        * renders while the home tab is active — it comes back when home does */}
       {showOnboarding && homeActive && <Onboarding onDone={finishOnboarding} />}
       {homeActive && <StorageStartupBanner />}
-      {starPromptDocOpens !== null && !showOnboarding && homeActive && (
+      {starPromptDocOpens !== null && !showOnboarding && homeActive && !chatOpen && (
         <StarPromptCard docOpens={starPromptDocOpens} onClose={() => setStarPromptDocOpens(null)} />
       )}
     </div>

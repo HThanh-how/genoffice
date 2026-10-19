@@ -18,7 +18,7 @@ import {
   resetAgySearchCache,
 } from '../src/agy-search'
 import { createSearchAbortRegistry } from '../src/search-abort'
-import { testSearchProvider, webSearchTool } from '../src/search-tools'
+import { searchOptionsFromSettings, testSearchProvider, webSearchTool } from '../src/search-tools'
 
 const rows = [
   { title: 'One', url: 'https://example.com/a', snippet: 'first' },
@@ -33,6 +33,36 @@ beforeEach(() => {
 afterEach(() => {
   vi.clearAllMocks()
   resetAgySearchCache()
+})
+
+it.each(['agy', 'openai'] as const)(
+  'resolves search model for global %s without changing preferences',
+  async (provider) => {
+    const settings = defaultAiSettings()
+    settings.provider = provider
+    settings.providers.agy = { apiKey: '', cliPath: '/chat/agy', model: 'chat-model' }
+    settings.search!.provider = 'agy'
+    settings.search!.providers.agy = { apiKey: '', cliPath: '/search/agy', model: 'search-model' }
+    const before = structuredClone(settings)
+    vi.mocked(readAiSettingsFile).mockReturnValue(settings)
+    vi.mocked(runAgy).mockResolvedValue({ text: '[]' })
+    await webSearchTool('/settings', `routing-${provider}`)
+    expect(vi.mocked(runAgy).mock.calls.at(-1)?.[0]).toMatchObject({
+      cliPath: provider === 'agy' ? '/chat/agy' : '/search/agy',
+      model: provider === 'agy' ? 'chat-model' : 'search-model',
+    })
+    expect(settings).toEqual(before)
+  },
+)
+
+it('uses keyless options when search settings are absent', () => {
+  const settings = defaultAiSettings()
+  delete settings.search
+  expect(searchOptionsFromSettings(settings)).toEqual({
+    useGsk: false,
+    parallelKey: '',
+    prefer: 'parallel',
+  })
 })
 
 describe('agy web search: structured results and the summary', () => {

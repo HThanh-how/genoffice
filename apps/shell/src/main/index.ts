@@ -493,6 +493,8 @@ import {
 import {
   applyUpdateChannel,
   checkForUpdatesNow,
+  checkForNativeUpdatesNow,
+  hasNativeUpdateProvider,
   initAutoUpdater,
   setManualUpdateCheck,
 } from './updater'
@@ -5493,10 +5495,11 @@ function registerHomeIpc(): void {
     if (typeof path === 'string') toggleStarredFile(path)
   })
 
-  ipcMain.handle(HOME_CHANNELS.openPath, (_event, path: unknown) => {
-    if (typeof path !== 'string' || !path || path.length > 4096) return
-    openDocumentPath(path)
+  ipcMain.handle(HOME_CHANNELS.openPath, (_event, path: unknown): boolean => {
+    if (typeof path !== 'string' || !path || path.length > 4096) return false
+    const opened = openDocumentPath(path)
     fileIndexer?.refresh()
+    return opened
   })
 
   ipcMain.handle(HOME_CHANNELS.browse, async (event) => {
@@ -5681,6 +5684,8 @@ function registerHomeIpc(): void {
   ipcMain.handle(HOME_CHANNELS.setUpdateSource, (_event, input: unknown) => {
     return applyUpdateSourceChange(input, currentUpdateSource(), (source) => {
       writeAppSetting(APP_SETTINGS_PATH(), 'updateSource', source)
+      // Retire a download from the previous source before checking the selected one.
+      applyUpdateChannel(currentUpdateChannel())
     })
   })
   ipcMain.handle(HOME_CHANNELS.checkForUpdates, () => checkForUpdatesNow())
@@ -8257,16 +8262,22 @@ app.whenReady().then(async () => {
   if (process.env.GENOFFICE_FAKE_UPDATE && !app.isPackaged) {
     initAutoUpdater(() => shellWindow, currentUpdateChannel())
   } else {
+    const nativeSourceSelected = (): boolean => hasNativeUpdateProvider(currentUpdateSource())
+    initAutoUpdater(() => shellWindow, currentUpdateChannel(), nativeSourceSelected)
     setManualUpdateCheck(() =>
-      checkForkUpdates(currentUpdateSource(), currentUpdateChannel(), () => shellWindow),
+      nativeSourceSelected()
+        ? checkForNativeUpdatesNow()
+        : checkForkUpdates(currentUpdateSource(), currentUpdateChannel(), () => shellWindow),
     )
     // Windows: look for a newer version in the background and download it quietly, so updating is
     // only a restart; the person is asked once, when it is ready
     if (app.isPackaged && process.platform === 'win32') {
-      const backgroundCheck = (): void =>
+      const backgroundCheck = (): void => {
+        if (nativeSourceSelected()) return
         void checkForkUpdates(currentUpdateSource(), currentUpdateChannel(), () => shellWindow, {
           background: true,
         })
+      }
       setTimeout(backgroundCheck, 60_000).unref()
       setInterval(backgroundCheck, 6 * 60 * 60_000).unref()
     }

@@ -45,6 +45,7 @@ import {
   AGY_STRUCTURED_RETRY_NOTE,
   AGY_TEXT_RETRY_NOTE,
   agyToolTurnSchema,
+  hasAgyToolEnvelopeInText,
   readAgyTurnFromText,
   readStructuredToolTurn,
   renderAgyStructuredTurn,
@@ -59,6 +60,9 @@ import {
   renderAgyToolCalls,
   renderAgyToolResult,
 } from './agy-tools'
+import { createAgyLimiter, Limiter } from './agy-limiter'
+export { createAgyLimiter, Limiter }
+import { agyResidentManager, isResidentEligible } from './agy-resident'
 
 export {
   AGY_CAPABILITIES,
@@ -786,7 +790,7 @@ export function killProcessTree(
   setTimeout(() => send('SIGKILL'), AGY_KILL_GRACE_MS).unref()
 }
 
-const realRunDeps: AgyRunDeps = {
+export const realRunDeps: AgyRunDeps = {
   ...realFsDeps,
   spawn: (command, args, options) =>
     spawn(command, args, {
@@ -815,43 +819,7 @@ function abortError(): Error {
   return error
 }
 
-/** FIFO semaphore; queued waiters leave on abort. */
-class Limiter {
-  private active = 0
-  private readonly waiters: Array<() => void> = []
-  constructor(private readonly max: number) {}
-  async acquire(signal?: AbortSignal): Promise<() => void> {
-    if (signal?.aborted) throw abortError()
-    if (this.active >= this.max) {
-      await new Promise<void>((resolve, reject) => {
-        const waiter = () => {
-          signal?.removeEventListener('abort', onAbort)
-          resolve()
-        }
-        const onAbort = () => {
-          const i = this.waiters.indexOf(waiter)
-          if (i >= 0) this.waiters.splice(i, 1)
-          reject(abortError())
-        }
-        this.waiters.push(waiter)
-        signal?.addEventListener('abort', onAbort, { once: true })
-      })
-    }
-    this.active++
-    let released = false
-    return () => {
-      if (released) return
-      released = true
-      this.active--
-      this.waiters.shift()?.()
-    }
-  }
-}
-
-export function createAgyLimiter(max = AGY_MAX_CONCURRENCY): Limiter {
-  return new Limiter(max)
-}
-const requestLimiter = createAgyLimiter()
+const requestLimiter = createAgyLimiter(AGY_MAX_CONCURRENCY)
 
 export interface AgyRunOptions {
   cliPath?: string | undefined
@@ -1236,6 +1204,68 @@ async function streamAgyTurn(
     )
 
   let attempts = 1
+
+  /** Hand a finished turn (visible text plus tool calls) to the caller. */
+  const deliver = (
+    text: string,
+    calls: AgentToolCall[],
+    reason: 'cli_result' | 'malformed_host_tool_call',
+  ): void => {
+    if (!text && calls.length === 0) {
+      reportAgyDiagnostic(cb, {
+        provider: 'agy',
+        status: 'failure',
+        reason: 'cli_result',
+        attempts,
+      })
+      throw new Error('Antigravity CLI returned no content')
+    }
+    if (text) cb.onDelta(text)
+    for (const call of calls) cb.onToolCall(call)
+    reportAgyDiagnostic(cb, {
+      provider: 'agy',
+      status: 'success',
+      reason,
+      attempts,
+      toolCallCount: calls.length,
+    })
+    cb.onStopReason?.(calls.length ? 'tool_use' : 'end_turn')
+  }
+
+  const d = deps ?? realRunDeps
+  if (
+    isResidentEligible({
+      sessionId: cb.sessionId,
+      tools,
+      protocol,
+      messages,
+    })
+  ) {
+    try {
+      const turn = await agyResidentManager.executeTurn({
+        config,
+        system,
+        messages,
+        tools,
+        cb,
+        deps: d,
+        say,
+      })
+      deliver(turn.text, turn.calls, 'cli_result')
+      return
+    } catch (error) {
+      if (!isAbortError(error)) {
+        reportAgyDiagnostic(cb, {
+          provider: 'agy',
+          status: 'failure',
+          reason: 'cli_result',
+          attempts,
+        })
+      }
+      throw error
+    }
+  }
+
   let result: AgyRunResult
 
   const retryMalformedNativeCall = async (): Promise<AgyRunResult> => {
@@ -1353,32 +1383,6 @@ async function streamAgyTurn(
     }
   }
 
-  /** Hand a finished turn (visible text plus tool calls) to the caller. */
-  const deliver = (
-    text: string,
-    calls: AgentToolCall[],
-    reason: 'cli_result' | 'malformed_host_tool_call',
-  ): void => {
-    if (!text && calls.length === 0) {
-      reportAgyDiagnostic(cb, {
-        provider: 'agy',
-        status: 'failure',
-        reason: 'cli_result',
-        attempts,
-      })
-      throw new Error('Antigravity CLI returned no content')
-    }
-    if (text) cb.onDelta(text)
-    for (const call of calls) cb.onToolCall(call)
-    reportAgyDiagnostic(cb, {
-      provider: 'agy',
-      status: 'success',
-      reason,
-      attempts,
-      toolCallCount: calls.length,
-    })
-    cb.onStopReason?.(calls.length ? 'tool_use' : 'end_turn')
-  }
   const withIds = (calls: StructuredToolTurn['calls']): AgentToolCall[] =>
     calls.map((call, index) => ({ id: agyCallId(index), name: call.name, input: call.input }))
   const unreadable = (detail: string): never => {
@@ -1412,6 +1416,11 @@ async function streamAgyTurn(
     result = await retryMalformedNativeCall()
   }
   if (tools.length && protocol === 'schema') {
+    if (hasAgyToolEnvelopeInText(result.structured, known)) {
+      return unreadable(
+        'Antigravity placed a host-tool response in visible text; no embedded action was executed.',
+      )
+    }
     const structured = readStructuredToolTurn(result.structured, known)
     if (structured) return deliver(structured.text, withIds(structured.calls), 'cli_result')
     // No usable native object. When result.structured is undefined (e.g. CLI returned serialized

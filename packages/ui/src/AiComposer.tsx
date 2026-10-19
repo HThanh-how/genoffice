@@ -169,7 +169,7 @@ export function AiComposer({
           )}
         </div>
       </div>
-      <AgyChatBar lang={lang ?? pageLang()} />
+      <AgyChatBar lang={lang ?? pageLang()} showModel={false} />
     </>
   )
 }

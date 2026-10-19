@@ -44,7 +44,7 @@ function settings(imageProvider: string): string {
   writeFileSync(
     path,
     JSON.stringify({
-      provider: 'agy',
+      provider: imageProvider === 'agy' ? 'agy' : 'gemini',
       providers: { agy: { model: 'gemini-3.8-flash-low' } },
       media: {
         provider: imageProvider,

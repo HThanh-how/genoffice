@@ -93,6 +93,7 @@ describe('Antigravity CLI web search', () => {
     expect(inherited.prompt).toContain(`Query: ${'q'.repeat(700)}`)
 
     settings.search.providers.agy = { apiKey: '', cliPath: '/search/agy', model: 'search-model' }
+    settings.provider = 'openai'
     await webSearchTool('/settings.json', 'next')
     const overridden = vi.mocked(runAgy).mock.calls[1]![0]
     expect(overridden.cliPath).toBe('/search/agy')

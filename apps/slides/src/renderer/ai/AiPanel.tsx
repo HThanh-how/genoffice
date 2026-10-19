@@ -2563,7 +2563,7 @@ export function AiPanel({
               )}
             </div>
           </div>
-          <AgyChatBar lang={lang} />
+          <AgyChatBar lang={lang} showModel={false} />
         </div>
       )}
     </aside>

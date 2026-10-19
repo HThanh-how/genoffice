@@ -471,6 +471,7 @@ export function AgyChatBar({
   api,
   part = 'all',
   mode = 'default',
+  showModel = true,
   activeRunId,
   activeRequestId,
   getActiveRequestId,
@@ -483,6 +484,8 @@ export function AgyChatBar({
   part?: 'all' | 'bar' | 'steps'
   /** 'home-chat' uses calm single-line indicator, subtle timing, and unified activity states */
   mode?: 'default' | 'home-chat'
+  /** whether to render the model button; true by default, false when an external picker (AiModelPicker) owns selection */
+  showModel?: boolean
   activeRunId?: string
   activeRequestId?: string | null
   getActiveRequestId?: () => string | null | undefined
@@ -919,6 +922,7 @@ export function AgyChatBar({
             <>
               {bucketRow(d.fiveHour, five)}
               {bucketRow(d.weekly, week)}
+              {!five && !week && <p className="agy-bar-note">{d.none}</p>}
             </>
           )}
           {showBar && (usage?.cliMissing || install.phase !== 'idle') && source.startAgyInstall && (
@@ -1012,7 +1016,7 @@ export function AgyChatBar({
           </footer>
         </section>
       )}
-      {showBar && menu && (
+      {showBar && showModel && menu && (
         <div className="agy-bar-menu" role="listbox" aria-label={d.model}>
           {state.models.map((model) => (
             <button
@@ -1090,26 +1094,28 @@ export function AgyChatBar({
       )}
       {showBar && (
         <div className="agy-bar-row-main">
-          <button
-            type="button"
-            className="agy-bar-chip agy-bar-model"
-            aria-haspopup="listbox"
-            aria-expanded={menu}
-            title={d.model}
-            onClick={() => {
-              setMenu((value) => !value)
-            }}
-          >
-            <span className="agy-bar-model-name">{current?.label ?? state.selected}</span>
-            <span aria-hidden="true" className="agy-bar-caret">
-              ▾
-            </span>
-          </button>
+          {showModel && (
+            <button
+              type="button"
+              className="agy-bar-chip agy-bar-model"
+              aria-haspopup="listbox"
+              aria-expanded={menu}
+              title={d.model}
+              onClick={() => {
+                setMenu((value) => !value)
+              }}
+            >
+              <span className="agy-bar-model-name">{current?.label ?? state.selected}</span>
+              <span aria-hidden="true" className="agy-bar-caret">
+                ▾
+              </span>
+            </button>
+          )}
           <button
             type="button"
             className={`agy-bar-chip agy-bar-usage${worst === null ? '' : ` is-${tone(worst)}`}`}
             aria-expanded={open}
-            title={d.usage}
+            title={usage?.failed ? `${d.usage}. ${d.failed}` : d.usage}
             onClick={() => {
               pinned.current = !open
               setOpen((value) => !value)
@@ -1122,10 +1128,10 @@ export function AgyChatBar({
             />
             <span>
               {usage?.refreshing && worst === null
-                ? '…'
+                ? d.checking
                 : worst === null
-                  ? '–'
-                  : `${Math.round(worst * 100)}%`}
+                  ? d.none
+                  : fill(d.left, { p: Math.round(worst * 100) })}
             </span>
           </button>
         </div>

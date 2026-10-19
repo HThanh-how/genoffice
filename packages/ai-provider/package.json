@@ -18,7 +18,8 @@
     "./codex-app-server": "./src/codex-app-server.ts",
     "./custom-models": "./src/custom-models.ts",
     "./provider-models": "./src/provider-models.ts",
-    "./trace": "./src/trace.ts"
+    "./trace": "./src/trace.ts",
+    "./agy-resident": "./src/agy-resident.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",

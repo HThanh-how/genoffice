@@ -838,6 +838,9 @@ if (updateRepository) {
   if (!signed)
     throw new Error('GitHub auto-update releases require platform code-signing credentials')
   config.publish = [{ provider: 'github', owner: match[1], repo: match[2] }]
+  // DMGs are stapled after packaging. Keep their pre-staple blockmap/hash out of
+  // the update feed; macOS updates use the unchanged, already-notarized ZIP.
+  if (process.platform === 'darwin') config.dmg.writeUpdateInfo = false
 } else if (updateUrl) {
   config.publish = [
     {

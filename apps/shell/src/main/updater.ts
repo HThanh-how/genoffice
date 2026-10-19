@@ -14,6 +14,7 @@ import type {
   UpdateUiStrings,
 } from '../shared/update-api'
 import type { UpdateCheckResult } from '../shared/home-api'
+import { DEFAULT_UPDATE_SOURCE, type UpdateSource } from '../shared/update-source'
 import {
   clearUpdateState,
   closeUpdateWindow,
@@ -486,6 +487,21 @@ const CHANNEL_FEED: Record<UpdateChannel, string> = { stable: 'latest', beta: 'b
 // true once the packaged-run updater is configured; channel switches before
 // that (or in dev runs) must not touch electron-updater
 let updaterActive = false
+let nativeSourceSelected: () => boolean = () => true
+
+/** Only the bundled provider may drive a signed self-update. Custom sources retain
+ * their verified installer flow rather than silently checking a different feed. */
+export function hasNativeUpdateProvider(source: UpdateSource): boolean {
+  return (
+    app.isPackaged &&
+    (process.platform === 'darwin' ||
+      process.platform === 'win32' ||
+      (process.platform === 'linux' && Boolean(process.env.APPIMAGE))) &&
+    source.kind === DEFAULT_UPDATE_SOURCE.kind &&
+    source.value.toLowerCase() === DEFAULT_UPDATE_SOURCE.value.toLowerCase() &&
+    existsSync(path.join(process.resourcesPath, 'app-update.yml'))
+  )
+}
 
 function log(...args: unknown[]): void {
   console.log('[updater]', ...args)
@@ -527,6 +543,7 @@ export function applyUpdateChannel(channel: UpdateChannel): void {
   // back off since a beta user switching to stable must not downgrade
   autoUpdater.allowDowngrade = false
   log('channel switched:', channel)
+  if (!nativeSourceSelected()) return
   autoUpdater.checkForUpdates().catch((err) => log('check failed:', err?.message ?? err))
 }
 
@@ -544,6 +561,10 @@ export function setManualUpdateCheck(handler: () => Promise<UpdateCheckResult | 
 
 export async function checkForUpdatesNow(): Promise<UpdateCheckResult | void> {
   if (explicitUpdateCheck) return explicitUpdateCheck()
+  return checkForNativeUpdatesNow()
+}
+
+export async function checkForNativeUpdatesNow(): Promise<UpdateCheckResult | void> {
   if (manualCheckInFlight) return
   manualCheckInFlight = true
   try {
@@ -601,9 +622,11 @@ export async function checkForUpdatesNow(): Promise<UpdateCheckResult | void> {
 export function initAutoUpdater(
   getWindow: () => BrowserWindow | null,
   initialChannel: UpdateChannel = 'stable',
+  sourceSelected: () => boolean = () => true,
 ): void {
   if (started) return
   started = true
+  nativeSourceSelected = sourceSelected
   setUpdateParentWindow(getWindow)
 
   // dev preview of the update window with a simulated download
@@ -693,7 +716,7 @@ export function initAutoUpdater(
 
   const actions = {
     onDownload: () => {
-      if (phase === 'downloading' || phase === 'downloaded') return
+      if (!nativeSourceSelected() || phase === 'downloading' || phase === 'downloaded') return
       downloadInFlight = true
       setPhase({ phase: 'downloading', percent: 0 })
       const gen = ++downloadGen
@@ -705,10 +728,19 @@ export function initAutoUpdater(
       })
     },
     onInstall: () => {
+      if (latestSeenVersion === null || phase !== 'downloaded' || !nativeSourceSelected()) return
       closeUpdateWindow()
-      if (latestSeenVersion === null) return
       // let the window fully close before tearing the app down
-      setImmediate(() => autoUpdater.quitAndInstall(true, true))
+      setImmediate(() => {
+        if (latestSeenVersion !== null && phase === 'downloaded' && nativeSourceSelected()) {
+          try {
+            autoUpdater.quitAndInstall(true, true)
+          } catch (error) {
+            log('install failed:', error)
+            failInstall()
+          }
+        }
+      })
     },
     onLater: () => {
       dismissedVersion = latestSeenVersion
@@ -719,14 +751,31 @@ export function initAutoUpdater(
     },
   }
 
-  autoUpdater.on('error', (err) => {
-    // network failures during background checks are expected; only surface
-    // when the user is watching a download
+  const failInstall = (): void => {
+    if (!nativeSourceSelected() || latestSeenVersion === null) return
+    autoUpdater.autoInstallOnAppQuit = false
+    setPhase({ phase: 'manual' })
+    showUpdateWindow(
+      getWindow(),
+      { ...initialState(latestSeenVersion), phase: 'manual', percent },
+      actions,
+    )
+  }
+
+  autoUpdater.on('error', (err, context?: string) => {
     log('error:', err?.message ?? err)
-    failDownload()
+    // MacUpdater dispatches the public downloaded event BEFORE Squirrel prepares
+    // the ZIP. Its native error forwarding emits only the Error, so preparation
+    // failures must be handled even before the person clicks Restart. AppUpdater
+    // metadata-check failures supply this distinct context as the second argument;
+    // those must not invalidate an already downloaded update.
+    const metadataCheckFailed = context?.startsWith('Cannot check for updates:') === true
+    if (phase === 'downloaded' && !metadataCheckFailed) failInstall()
+    else failDownload()
   })
 
   autoUpdater.on('update-available', (info: UpdateInfo) => {
+    if (!nativeSourceSelected()) return
     if (info.version === dismissedVersion) return
     const sameVersionRecheck = info.version === latestSeenVersion
     // progress/downloaded/error events carry no version, so a newer release
@@ -765,7 +814,7 @@ export function initAutoUpdater(
   })
 
   autoUpdater.on('update-downloaded', (info: UpdateInfo) => {
-    if (info.version !== latestSeenVersion) {
+    if (!nativeSourceSelected() || info.version !== latestSeenVersion) {
       log('downloaded:', info.version, 'ignored (stale after channel switch)')
       return
     }
@@ -777,6 +826,7 @@ export function initAutoUpdater(
   })
 
   const check = (): void => {
+    if (!nativeSourceSelected()) return
     autoUpdater.checkForUpdates().catch((err) => log('check failed:', err?.message ?? err))
   }
   setTimeout(check, FIRST_CHECK_DELAY_MS)

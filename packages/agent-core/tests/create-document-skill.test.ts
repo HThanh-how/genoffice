@@ -58,6 +58,25 @@ describe('createDocumentSkill', () => {
     expect(skill.createdPaths()).toEqual([])
   })
 
+  it('normalizes Word formats and forwards open flag', async () => {
+    const { skill, requests } = makeSkill()
+    const r1 = await skill.executeTool(
+      call({ title: 'Plan', type: 'docx', content: '# Plan', open: true }),
+    )
+    expect(r1.isError).toBeUndefined()
+    expect(requests[0]).toEqual({ title: 'Plan', format: 'docx', content: '# Plan', open: true })
+
+    const r2 = await skill.executeTool(call({ title: 'Memo', format: 'word', content: '# Memo' }))
+    expect(r2.isError).toBeUndefined()
+    expect(requests[1]).toEqual({ title: 'Memo', format: 'docx', content: '# Memo' })
+
+    const r3 = await skill.executeTool(
+      call({ title: 'Notes', format: '.DOCX', content: '# Notes' }),
+    )
+    expect(r3.isError).toBeUndefined()
+    expect(requests[2]).toEqual({ title: 'Notes', format: 'docx', content: '# Notes' })
+  })
+
   it('verifyResponse pushes back on a saved claim without a successful call', () => {
     const { skill } = makeSkill()
     expect(skill.verifyResponse!('I have saved the summary as report.docx.', [])).toContain(
@@ -102,5 +121,25 @@ describe('createDocumentSkill', () => {
     expect(kb.verifyResponse!(`Saved: [notes.md](${href})`, [])).not.toBeNull()
     await skill.executeTool(call({ title: 'notes', format: 'md', content: '- a' }))
     expect(kb.verifyResponse!(`Saved: [notes.md](${href})`, [])).toBeNull()
+  })
+
+  it('reports created-vs-opened status in tool output', async () => {
+    const { skill } = makeSkill(async (r) => ({
+      path: `/Users/me/GenOffice/${r.title}.${r.format}`,
+      opened: true,
+    }))
+    const r1 = await skill.executeTool(call({ title: 'Doc', format: 'docx', content: '# Content' }))
+    expect(r1.output).toContain('opened in editor')
+    expect(r1.output).toContain('opened: true')
+
+    const { skill: skill2 } = makeSkill(async (r) => ({
+      path: `/Users/me/GenOffice/${r.title}.${r.format}`,
+      opened: false,
+    }))
+    const r2 = await skill2.executeTool(
+      call({ title: 'Doc', format: 'docx', content: '# Content' }),
+    )
+    expect(r2.output).toContain('saved to disk (not opened)')
+    expect(r2.output).toContain('opened: false')
   })
 })

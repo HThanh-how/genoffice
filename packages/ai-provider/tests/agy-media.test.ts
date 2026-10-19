@@ -207,3 +207,89 @@ describe('connection test (agy models, no quota)', () => {
     expect(vi.mocked(listAgyModels).mock.calls.at(-1)?.[0]).toBe('C:\\x\\agy.exe')
   })
 })
+
+describe('effective AGY media routing and provider retention', () => {
+  it('automatically routes media to agy when provider is agy (AGY takes priority)', () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'agy'
+    settings.media = {
+      ...settings.media!,
+      imageProvider: 'openai',
+      providers: {
+        ...settings.media!.providers,
+        openai: { apiKey: 'sk-real-key', imageModel: 'gpt-image-2', analysisModel: '' },
+      },
+    }
+    // When AGY is selected, supported features route to AGY:
+    expect(activeMediaProvider(settings, 'image')).toBe('agy')
+    expect(activeMediaProvider(settings, 'analysis')).toBe('agy')
+    expect(activeMediaProvider(settings, 'video')).toBe('agy')
+    expect(imageGenerationAvailable(settings, false)).toBe(true)
+    expect(mediaAnalysisAvailable(settings, false)).toBe(true)
+    expect(videoAnalysisAvailable(settings, false)).toBe(true)
+  })
+
+  it('restores stored BYOK media choices immediately upon switching away from agy', () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'openai'
+    settings.media = {
+      ...settings.media!,
+      imageProvider: 'openai',
+      providers: {
+        ...settings.media!.providers,
+        openai: { apiKey: 'sk-real-key', imageModel: 'gpt-image-2', analysisModel: '' },
+      },
+    }
+    // Switching away restores stored OpenAI choice:
+    expect(activeMediaProvider(settings, 'image')).toBe('openai')
+    // Analysis had no key, so it falls back to genspark:
+    expect(activeMediaProvider(settings, 'analysis')).toBe('genspark')
+  })
+
+  it('falls back cleanly to genspark when another provider is active and lacks a key', () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'openai' // no API key
+    expect(activeMediaProvider(settings, 'image')).toBe('genspark')
+    expect(activeMediaProvider(settings, 'analysis')).toBe('genspark')
+  })
+
+  it('provider=agy with usable gemini media still resolves AGY, and switching back restores Gemini', () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'agy'
+    settings.media = {
+      ...settings.media!,
+      imageProvider: 'gemini',
+      analysisProvider: 'gemini',
+      videoAnalysisProvider: 'gemini',
+      providers: {
+        ...settings.media!.providers,
+        gemini: {
+          apiKey: 'AIza-test-key',
+          imageModel: 'gemini-3.1-flash-image',
+          analysisModel: 'gemini-3.8-flash',
+        },
+      },
+    }
+    // Even with usable Gemini in media, selecting AGY for chat forces AGY for all supported media:
+    expect(activeMediaProvider(settings, 'image')).toBe('agy')
+    expect(activeMediaProvider(settings, 'analysis')).toBe('agy')
+    expect(activeMediaProvider(settings, 'video')).toBe('agy')
+
+    // Switch chat back to Gemini -> stored Gemini choices immediately restored:
+    settings.provider = 'gemini'
+    expect(activeMediaProvider(settings, 'image')).toBe('gemini')
+    expect(activeMediaProvider(settings, 'analysis')).toBe('gemini')
+    expect(activeMediaProvider(settings, 'video')).toBe('gemini')
+  })
+
+  it('uses shared chat cliPath for forced AGY even if old media path remains', () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'agy'
+    settings.providers.agy = { ...settings.providers.agy, cliPath: '/current/agy' }
+    settings.media!.providers.agy = {
+      ...settings.media!.providers.agy,
+      cliPath: '/old/stale/media/agy',
+    }
+    expect(activeMediaConfig(settings, 'image')?.config.cliPath).toBe('/current/agy')
+  })
+})

@@ -59,9 +59,9 @@ What each card does:
 ## Ask your knowledge base
 
 - Star files first (any type the app reads); the panel header counts the corpus, and an empty knowledge base tells you to go star something.
-- Answers cite the files they came from; click a citation to open the file in its editor.
-- Requires signing in to Genspark. The conversation lives in memory only — closing the app ends it.
-- Search runs on the local file index, like Home search; files that have disappeared quietly drop out of the corpus.
+- Conversations persist across restarts in your history list and support full session management (rename, delete, undo).
+- Uses your configured AI provider, including Antigravity CLI and BYOK providers, without requiring Genspark sign-in.
+- Save any answer directly as a Word (.docx) or Markdown (.md) document with a single click.
 - Groups organise the Starred list only — the knowledge base always spans every starred file.
 
 ## Cloud projects (Genspark Projects)
