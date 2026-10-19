@@ -26,7 +26,7 @@ export interface DocxValidationResult {
   stats: DocxValidationStats
 }
 
-const FORBIDDEN_PLACEHOLDER_REGEX = /(\{\{[^}]+\}\}|__TODO__|undefined|null|<TBD>)/i
+const FORBIDDEN_PLACEHOLDER_REGEX = /(\{\{[^}]+\}\}|__TODO__|<TBD>)/i
 
 /**
  * Validates that generated DOCX bytes represent a well-formed OOXML document

@@ -1369,4 +1369,28 @@ describe('genoffice docs: comments, revisions, header/footer, images, charts', (
     const cleanResult = await validateGeneratedDocx(docxBytes, { checkPlaceholders: true })
     expect(cleanResult.ok).toBe(true)
   })
+
+  it('validateGeneratedDocx allows legitimate terms like null hypothesis and undefined behavior', async () => {
+    const bytes = await markdownToDocx(
+      '# Statistical Analysis\n\nThe null hypothesis states that there is no relationship. In programming, undefined behavior must be avoided.',
+    )
+    const result = await validateGeneratedDocx(bytes, { checkPlaceholders: true })
+    expect(result.ok).toBe(true)
+    expect(result.errors).toHaveLength(0)
+  })
+
+  it('markdownToDocx applies profile typography (font, spacing, margins) into OOXML package', async () => {
+    const bytes = await markdownToDocx(
+      '# Scientific Research Report\n\nThis is paragraph content formatted with scientific profile.',
+      { documentType: 'scientific-report' },
+    )
+    const zip = await JSZip.loadAsync(bytes)
+    const stylesXml = await zip.file('word/styles.xml')!.async('string')
+    expect(stylesXml).toContain('Times New Roman')
+    expect(stylesXml).toContain('w:sz w:val="24"')
+    expect(stylesXml).toContain('w:line="360"')
+
+    const docXml = await zip.file('word/document.xml')!.async('string')
+    expect(docXml).toContain('w:pgMar')
+  })
 })

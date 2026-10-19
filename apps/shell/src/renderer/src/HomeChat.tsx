@@ -207,7 +207,7 @@ export function HomeChat({
     setDockTarget((previous) => (previous === target ? previous : target))
   }, [dockLocation])
 
-  const panelVisible = isWorkspace || open
+  const panelVisible = Boolean(isWorkspace)
 
   useEffect(() => {
     announceChatPanel(panelVisible)
@@ -301,14 +301,22 @@ export function HomeChat({
   const docSkillRef = useRef<ReturnType<typeof createDocumentSkill> | null>(null)
   if (!docSkillRef.current) {
     docSkillRef.current = createDocumentSkill({
+      getSessionId: () => convRef.current?.id || activeSessionIdRef.current || undefined,
+      getUserTurnId: () => currentUserTurnIdRef.current || undefined,
       create: async (request) => {
         const owner = convRef.current
         const table = fileTableRef.current
         const generation = runGenerationRef.current
         const run = activeRunRef.current
-        const sessionId = convRef.current?.id || undefined
-        const userTurnId = currentUserTurnIdRef.current || undefined
-        const documentSlot = request.documentSlot || 'primary'
+        const sessionId =
+          request.sessionId ||
+          convRef.current?.id ||
+          activeSessionIdRef.current ||
+          undefined
+        const userTurnId = request.userTurnId || currentUserTurnIdRef.current || undefined
+        const documentSlot =
+          request.documentSlot ||
+          (request.title ? request.title.trim().toLowerCase() : 'primary')
         const slotKey = `${sessionId ?? 'default'}:${userTurnId ?? 'turn'}:${documentSlot}`
 
         const result = await api.kbCreateDocument({
@@ -1224,10 +1232,14 @@ export function HomeChat({
   )
 
   useEffect(() => {
-    if (workspaceActive && !initRef.current) {
-      openPanel('resume')
+    if (workspaceActive) {
+      if (!initRef.current) {
+        openPanel('resume')
+      }
+    } else {
+      closePanel(false)
     }
-  }, [workspaceActive, openPanel])
+  }, [workspaceActive, openPanel, closePanel])
 
   // ---- sending ------------------------------------------------------------
 
@@ -1889,7 +1901,7 @@ export function HomeChat({
               : ''
           : ''}
       </span>
-      {target ? createPortal(panelNode, target) : panelNode}
+      {isWorkspace && target && panelNode ? createPortal(panelNode, target) : null}
       {dockTarget && dock ? createPortal(dock, dockTarget) : null}
     </>
   )

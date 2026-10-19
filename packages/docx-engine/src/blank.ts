@@ -36,14 +36,15 @@ function tocStyle(level: number): string {
   )
 }
 
-function headingStyle(level: number, sizeHalfPoints: number): string {
+function headingStyle(level: number, sizeHalfPoints: number, font?: string): string {
   // Word lists Heading 3+ in the gallery only once the document uses them
   const hidden = level >= 3 ? '<w:semiHidden/><w:unhideWhenUsed/>' : ''
+  const rFonts = font ? `<w:rFonts w:ascii="${font}" w:hAnsi="${font}"/>` : ''
   return (
     `<w:style w:type="paragraph" w:styleId="Heading${level}"><w:name w:val="heading ${level}"/>` +
     `<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="9"/>${hidden}<w:qFormat/>` +
     `<w:pPr><w:keepNext/><w:spacing w:before="${level <= 2 ? 240 : 160}" w:after="120"/><w:outlineLvl w:val="${level - 1}"/></w:pPr>` +
-    `<w:rPr><w:b/><w:sz w:val="${sizeHalfPoints}"/><w:szCs w:val="${sizeHalfPoints}"/></w:rPr></w:style>`
+    `<w:rPr>${rFonts}<w:b/><w:sz w:val="${sizeHalfPoints}"/><w:szCs w:val="${sizeHalfPoints}"/></w:rPr></w:style>`
   )
 }
 
@@ -117,25 +118,34 @@ const QUICK_STYLES_XML =
   '<w:style w:type="paragraph" w:styleId="ListParagraph"><w:name w:val="List Paragraph"/><w:basedOn w:val="Normal"/>' +
   '<w:uiPriority w:val="34"/><w:qFormat/><w:pPr><w:ind w:left="720"/><w:contextualSpacing/></w:pPr></w:style>'
 
-const stylesXml = (eastAsiaFont?: string): string =>
-  XML_DECL +
-  '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
-  '<w:docDefaults><w:rPrDefault><w:rPr>' +
-  `<w:rFonts w:ascii="Calibri"${eastAsiaFont ? ` w:eastAsia="${eastAsiaFont}"` : ''} w:hAnsi="Calibri"/><w:sz w:val="22"/><w:szCs w:val="22"/>` +
-  '</w:rPr></w:rPrDefault>' +
-  '<w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>' +
-  '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>' +
-  headingStyle(1, 32) +
-  headingStyle(2, 28) +
-  headingStyle(3, 26) +
-  headingStyle(4, 24) +
-  headingStyle(5, 22) +
-  headingStyle(6, 22) +
-  QUICK_STYLES_XML +
-  '<w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/>' +
-  '<w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr></w:style>' +
-  Array.from({ length: 9 }, (_, i) => tocStyle(i + 1)).join('') +
-  '</w:styles>'
+const stylesXml = (options?: BlankDocxOptions): string => {
+  const font = options?.font || 'Calibri'
+  const sz = options?.fontSizeHalfPoints || 22
+  const line = options?.lineSpacingMultiplier ? Math.round(options.lineSpacingMultiplier * 240) : 276
+  const spaceAfter =
+    options?.paragraphSpacingAfterTwips !== undefined ? options.paragraphSpacingAfterTwips : 120
+  const eastAsiaFont = options?.eastAsiaFont
+  return (
+    XML_DECL +
+    '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
+    '<w:docDefaults><w:rPrDefault><w:rPr>' +
+    `<w:rFonts w:ascii="${font}"${eastAsiaFont ? ` w:eastAsia="${eastAsiaFont}"` : ''} w:hAnsi="${font}"/><w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/>` +
+    '</w:rPr></w:rPrDefault>' +
+    `<w:pPrDefault><w:pPr><w:spacing w:after="${spaceAfter}" w:line="${line}" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>' +
+    '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>' +
+    headingStyle(1, 32, font) +
+    headingStyle(2, 28, font) +
+    headingStyle(3, 26, font) +
+    headingStyle(4, 24, font) +
+    headingStyle(5, 22, font) +
+    headingStyle(6, 22, font) +
+    QUICK_STYLES_XML +
+    '<w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/>' +
+    '<w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr></w:style>' +
+    Array.from({ length: 9 }, (_, i) => tocStyle(i + 1)).join('') +
+    '</w:styles>'
+  )
+}
 
 function bulletLevels(): string {
   let xml = ''
@@ -511,6 +521,12 @@ export interface BlankDocxOptions {
   eastAsiaFont?: string
   /** Page size of the single section; defaults to A4. */
   paperSize?: BlankPaperSize
+  font?: string
+  fontSizeHalfPoints?: number
+  lineSpacingMultiplier?: number
+  paragraphSpacingAfterTwips?: number
+  pageMarginsTwips?: { top: number; right: number; bottom: number; left: number }
+  includePageNumbers?: boolean
 }
 
 /** Build a minimal valid .docx: one empty paragraph, portrait page, standard styles. */
@@ -543,13 +559,14 @@ export async function buildBlankDocx(options?: BlankDocxOptions): Promise<Uint8A
       '</Relationships>',
   )
 
-  zip.file('word/styles.xml', stylesXml(options?.eastAsiaFont))
+  zip.file('word/styles.xml', stylesXml(options))
   zip.file('word/numbering.xml', NUMBERING_XML)
 
   const paper = PAPER_TWIPS[options?.paperSize ?? 'A4']
+  const margins = options?.pageMarginsTwips ?? { top: 1440, right: 1440, bottom: 1440, left: 1440 }
   const sectPr =
     `<w:sectPr><w:pgSz w:w="${paper.w}" w:h="${paper.h}"/>` +
-    '<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440" w:header="708" w:footer="708" w:gutter="0"/>' +
+    `<w:pgMar w:top="${margins.top}" w:right="${margins.right}" w:bottom="${margins.bottom}" w:left="${margins.left}" w:header="708" w:footer="708" w:gutter="0"/>` +
     '</w:sectPr>'
   zip.file(
     'word/document.xml',

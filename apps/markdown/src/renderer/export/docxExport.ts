@@ -1,4 +1,5 @@
 import type { JSONContent } from '@tiptap/core'
+import type { DocumentTypeProfile } from '@genoffice/agent-core'
 import {
   BLANK_BULLET_NUM_ID,
   TABLE_HEADER_FILL,
@@ -10,6 +11,7 @@ import {
   saveDocx,
 } from '@genoffice/docx-engine'
 import type {
+  BlankDocxOptions,
   GeneratedBlock,
   NewImage,
   ParaFormat,
@@ -49,7 +51,11 @@ const CODE_FILL = 'F2F3F5'
 
 // ── inline content → Run[] ──
 
-function runsFromInline(content: JSONContent[] | undefined): Run[] {
+function runsFromInline(
+  content: JSONContent[] | undefined,
+  defaultFont?: string,
+  defaultSize?: number,
+): Run[] {
   const runs: Run[] = []
   for (const child of content ?? []) {
     if (child.type === 'hardBreak') {
@@ -77,6 +83,8 @@ function runsFromInline(content: JSONContent[] | undefined): Run[] {
         run.link = { href: mark.attrs.href }
       }
     }
+    if (!run.font && defaultFont) run.font = defaultFont
+    if (!run.sizeHalfPoints && defaultSize) run.sizeHalfPoints = defaultSize
     runs.push(run)
   }
   return runs
@@ -120,15 +128,17 @@ function pushTextblock(
   ctx: WalkContext,
   content: JSONContent[] | undefined,
   block: (runs: Run[]) => GeneratedBlock,
+  defaultFont?: string,
+  defaultSize?: number,
 ): void {
   if (!content?.some((child) => child.type === 'image')) {
-    pushParagraph(ctx, block(runsFromInline(content)))
+    pushParagraph(ctx, block(runsFromInline(content, defaultFont, defaultSize)))
     return
   }
   let segment: JSONContent[] = []
   const flush = () => {
     if (segment.some((child) => child.type !== 'text' || child.text?.trim())) {
-      pushParagraph(ctx, block(runsFromInline(segment)))
+      pushParagraph(ctx, block(runsFromInline(segment, defaultFont, defaultSize)))
     }
     segment = []
   }
@@ -155,13 +165,16 @@ function walkList(
   ilvl: number,
   numId: string,
   base?: ParaFormat,
+  profile?: DocumentTypeProfile,
 ): void {
+  const defaultFont = profile?.typography.bodyFont
+  const defaultSize = profile ? Math.round(profile.typography.bodySizePt * 2) : undefined
   for (const item of node.content ?? []) {
     if (item.type !== 'listItem' && item.type !== 'taskItem') continue
     let firstPara = true
     for (const child of item.content ?? []) {
       if (child.type === 'paragraph') {
-        const runs = runsFromInline(child.content)
+        const runs = runsFromInline(child.content, defaultFont, defaultSize)
         if (item.type === 'taskItem') {
           runs.unshift({ text: item.attrs?.checked ? '☑ ' : '☐ ' })
         }
@@ -182,11 +195,11 @@ function walkList(
         }
         firstPara = false
       } else if (child.type === 'bulletList' || child.type === 'taskList') {
-        walkList(ctx, child, 'bullet', ilvl + 1, BLANK_BULLET_NUM_ID, base)
+        walkList(ctx, child, 'bullet', ilvl + 1, BLANK_BULLET_NUM_ID, base, profile)
       } else if (child.type === 'orderedList') {
-        walkList(ctx, child, 'ordered', ilvl + 1, allocOrderedNumId(ctx), base)
+        walkList(ctx, child, 'ordered', ilvl + 1, allocOrderedNumId(ctx), base, profile)
       } else {
-        walkBlock(ctx, child, mergeFormat(base, { indentLeft: INDENT_STEP * (ilvl + 1) }))
+        walkBlock(ctx, child, mergeFormat(base, { indentLeft: INDENT_STEP * (ilvl + 1) }), profile)
       }
     }
   }
@@ -202,15 +215,22 @@ function allocOrderedNumId(ctx: WalkContext): string {
   return numId
 }
 
-function tableParagraphs(cell: JSONContent): TableParagraph[] {
+function tableParagraphs(
+  cell: JSONContent,
+  defaultFont?: string,
+  defaultSize?: number,
+): TableParagraph[] {
   const paras: TableParagraph[] = []
   for (const child of cell.content ?? []) {
-    if (child.type === 'paragraph') paras.push({ runs: runsFromInline(child.content) })
+    if (child.type === 'paragraph')
+      paras.push({ runs: runsFromInline(child.content, defaultFont, defaultSize) })
   }
   return paras.length > 0 ? paras : [{ runs: [] }]
 }
 
-function mapTable(node: JSONContent): TableModel {
+function mapTable(node: JSONContent, profile?: DocumentTypeProfile): TableModel {
+  const defaultFont = profile?.typography.bodyFont
+  const defaultSize = profile ? Math.round(profile.typography.bodySizePt * 2) : undefined
   const rows: TableCell[][] = []
   for (const row of node.content ?? []) {
     if (row.type !== 'tableRow') continue
@@ -218,7 +238,7 @@ function mapTable(node: JSONContent): TableModel {
     for (const cell of row.content ?? []) {
       if (cell.type !== 'tableCell' && cell.type !== 'tableHeader') continue
       const isHeader = cell.type === 'tableHeader'
-      const rich = tableParagraphs(cell)
+      const rich = tableParagraphs(cell, defaultFont, defaultSize)
       cells.push({
         paras: rich.map((p) => p.runs.map((r) => r.text).join('')),
         richParas: rich,
@@ -231,28 +251,46 @@ function mapTable(node: JSONContent): TableModel {
   return { rows }
 }
 
-function walkBlock(ctx: WalkContext, node: JSONContent, base?: ParaFormat): void {
+function walkBlock(
+  ctx: WalkContext,
+  node: JSONContent,
+  base?: ParaFormat,
+  profile?: DocumentTypeProfile,
+): void {
+  const bodyFont = profile?.typography.bodyFont
+  const bodySize = profile ? Math.round(profile.typography.bodySizePt * 2) : undefined
   switch (node.type) {
     case 'paragraph':
-      pushTextblock(ctx, node.content, (runs) => ({ type: 'paragraph', runs, format: base }))
+      pushTextblock(
+        ctx,
+        node.content,
+        (runs) => ({ type: 'paragraph', runs, format: base }),
+        bodyFont,
+        bodySize,
+      )
       break
     case 'heading': {
       const level = Math.min(Math.max(Number(node.attrs?.level) || 1, 1), 6) as number
-      pushTextblock(ctx, node.content, (runs) => ({ type: 'heading', level, runs, format: base }))
+      pushTextblock(
+        ctx,
+        node.content,
+        (runs) => ({ type: 'heading', level, runs, format: base }),
+        bodyFont,
+      )
       break
     }
     case 'bulletList':
-      walkList(ctx, node, 'bullet', 0, BLANK_BULLET_NUM_ID, base)
+      walkList(ctx, node, 'bullet', 0, BLANK_BULLET_NUM_ID, base, profile)
       break
     case 'orderedList':
-      walkList(ctx, node, 'ordered', 0, allocOrderedNumId(ctx), base)
+      walkList(ctx, node, 'ordered', 0, allocOrderedNumId(ctx), base, profile)
       break
     case 'taskList':
-      walkList(ctx, node, 'bullet', 0, BLANK_BULLET_NUM_ID, base)
+      walkList(ctx, node, 'bullet', 0, BLANK_BULLET_NUM_ID, base, profile)
       break
     case 'blockquote':
       for (const child of node.content ?? []) {
-        walkBlock(ctx, child, mergeFormat(base, { indentLeft: INDENT_STEP, borders: 'l' }))
+        walkBlock(ctx, child, mergeFormat(base, { indentLeft: INDENT_STEP, borders: 'l' }), profile)
       }
       break
     case 'codeBlock': {
@@ -277,7 +315,7 @@ function walkBlock(ctx: WalkContext, node: JSONContent, base?: ParaFormat): void
       })
       break
     case 'table':
-      ctx.blocks.push({ kind: 'xml', xml: generateTableModelXml(mapTable(node)) })
+      ctx.blocks.push({ kind: 'xml', xml: generateTableModelXml(mapTable(node, profile)) })
       break
     case 'blockMath': {
       const latex = String(node.attrs?.latex ?? '')
@@ -296,7 +334,12 @@ function walkBlock(ctx: WalkContext, node: JSONContent, base?: ParaFormat): void
     default: {
       // unknown block: keep its text so nothing silently disappears
       const text = plainText(node)
-      if (text.trim()) pushParagraph(ctx, { type: 'paragraph', runs: [{ text }], format: base })
+      if (text.trim())
+        pushParagraph(ctx, {
+          type: 'paragraph',
+          runs: runsFromInline(node.content, bodyFont, bodySize),
+          format: base,
+        })
     }
   }
 }
@@ -306,6 +349,7 @@ export async function mapDocToSaveBlocks(
   doc: JSONContent,
   loadImage: ImageLoader,
   renderDiagram?: DiagramRenderer,
+  profile?: DocumentTypeProfile,
 ): Promise<DocxMapping> {
   const ctx: WalkContext = {
     blocks: [],
@@ -316,7 +360,13 @@ export async function mapDocToSaveBlocks(
     pendingImages: [],
     pendingDiagrams: [],
   }
-  for (const node of doc.content ?? []) walkBlock(ctx, node)
+  const base: ParaFormat | undefined = profile
+    ? {
+        lineSpacing: profile.typography.lineSpacing,
+        spaceAfter: Math.round(profile.typography.paragraphSpacingAfterPt * 20),
+      }
+    : undefined
+  for (const node of doc.content ?? []) walkBlock(ctx, node, base, profile)
 
   for (const pending of ctx.pendingDiagrams) {
     const image = await ctx.renderDiagram!(pending.source, pending.language).catch(() => null)
@@ -346,8 +396,9 @@ export async function exportDocxBytes(
   loadImage: ImageLoader,
   renderDiagram?: DiagramRenderer,
   extraOptions?: SaveOptions,
+  profile?: DocumentTypeProfile,
 ): Promise<Uint8Array> {
-  const mapping = await mapDocToSaveBlocks(doc, loadImage, renderDiagram)
+  const mapping = await mapDocToSaveBlocks(doc, loadImage, renderDiagram, profile)
   const mergedOptions: SaveOptions = {
     ...mapping.options,
     ...extraOptions,
@@ -364,6 +415,21 @@ export async function exportDocxBytes(
         }
       : {}),
   }
-  const parsed = await parseDocx(await buildBlankDocx())
+  const blankOptions: BlankDocxOptions | undefined = profile
+    ? {
+        font: profile.typography.bodyFont,
+        fontSizeHalfPoints: Math.round(profile.typography.bodySizePt * 2),
+        lineSpacingMultiplier: profile.typography.lineSpacing,
+        paragraphSpacingAfterTwips: Math.round(profile.typography.paragraphSpacingAfterPt * 20),
+        paperSize: profile.paperSize,
+        pageMarginsTwips: {
+          top: Math.round(profile.margins.top * 56.6929),
+          right: Math.round(profile.margins.right * 56.6929),
+          bottom: Math.round(profile.margins.bottom * 56.6929),
+          left: Math.round(profile.margins.left * 56.6929),
+        },
+      }
+    : undefined
+  const parsed = await parseDocx(await buildBlankDocx(blankOptions))
   return saveDocx(parsed, mapping.blocks, mergedOptions)
 }

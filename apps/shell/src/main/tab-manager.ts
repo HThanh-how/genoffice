@@ -1016,10 +1016,10 @@ export function canonicalPath(path: string | undefined): string | undefined {
   if (path === undefined) return undefined
   try {
     const real = realpathSync.native(path)
-    return process.platform === 'win32' || process.platform === 'darwin' ? real.toLowerCase() : real
+    return process.platform === 'win32' ? real.toLowerCase() : real
   } catch {
     const res = resolve(path)
-    return process.platform === 'win32' || process.platform === 'darwin' ? res.toLowerCase() : res
+    return process.platform === 'win32' ? res.toLowerCase() : res
   }
 }
 

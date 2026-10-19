@@ -226,4 +226,81 @@ describe('createDocumentSkill', () => {
       userTurnId: 't1',
     })
   })
+
+  it('creates multiple distinct documents in one turn without slot collision when slot is omitted', async () => {
+    let callCount = 0
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => 'turn-1',
+      create: async (r) => {
+        callCount++
+        return { path: `/Users/me/GenOffice/${r.title}.${r.format}` }
+      },
+    })
+
+    const r1 = await skill.executeTool(call({ title: 'Doc A', format: 'docx', content: '# A' }))
+    const r2 = await skill.executeTool(call({ title: 'Doc B', format: 'docx', content: '# B' }))
+
+    expect(callCount).toBe(2)
+    expect(r1.output).toContain('Doc A.docx')
+    expect(r2.output).toContain('Doc B.docx')
+  })
+
+  it('does not cache failed operations in committedSlots allowing subsequent retry', async () => {
+    let attempts = 0
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => 'turn-1',
+      create: async (r) => {
+        attempts++
+        if (attempts === 1) throw new Error('disk full')
+        return { path: `/Users/me/GenOffice/${r.title}.${r.format}` }
+      },
+    })
+
+    const r1 = await skill.executeTool(call({ title: 'Doc', format: 'docx', content: '# A' }))
+    expect(r1.isError).toBe(true)
+    expect(attempts).toBe(1)
+
+    const r2 = await skill.executeTool(call({ title: 'Doc', format: 'docx', content: '# A' }))
+    expect(r2.isError).toBeUndefined()
+    expect(attempts).toBe(2)
+    expect(r2.output).toContain('Doc.docx')
+  })
+
+  it('resolves sessionId and userTurnId from deps when omitted from call.input', async () => {
+    let recordedReq: CreateDocumentRequest | null = null
+    const skill = createDocumentSkill({
+      getSessionId: () => 'host-session-123',
+      getUserTurnId: () => 'host-turn-456',
+      create: async (r) => {
+        recordedReq = r
+        return { path: `/Users/me/GenOffice/${r.title}.${r.format}` }
+      },
+    })
+
+    await skill.executeTool(call({ title: 'AutoIdDoc', format: 'docx', content: '# Auto' }))
+    expect(recordedReq).not.toBeNull()
+    expect(recordedReq!.sessionId).toBe('host-session-123')
+    expect(recordedReq!.userTurnId).toBe('host-turn-456')
+  })
+
+  it('bounds committedSlots cache to 100 entries', async () => {
+    const skill = createDocumentSkill({
+      create: async (r) => ({ path: `/Users/me/GenOffice/${r.title}.${r.format}` }),
+    })
+    for (let i = 0; i < 105; i++) {
+      await skill.executeTool(
+        call({
+          title: `Doc ${i}`,
+          format: 'docx',
+          content: 'text',
+          sessionId: 's',
+          userTurnId: 't',
+          documentSlot: `slot-${i}`,
+        }),
+      )
+    }
+    expect(skill.createdPaths().length).toBe(105)
+  })
 })

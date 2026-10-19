@@ -32,6 +32,8 @@ export interface CreateDocumentRequest {
 
 export interface CreateDocumentDeps {
   create(request: CreateDocumentRequest): Promise<{ path: string; opened?: boolean }>
+  getSessionId?: () => string | undefined
+  getUserTurnId?: () => string | undefined
 }
 
 export interface CreateDocumentSkill extends AgentSkill {
@@ -144,14 +146,19 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         }
       }
 
-      const sessionId = typeof call.input.sessionId === 'string' ? call.input.sessionId : undefined
+      const sessionId =
+        (typeof call.input.sessionId === 'string' && call.input.sessionId.trim()) ||
+        deps.getSessionId?.() ||
+        undefined
       const userTurnId =
-        typeof call.input.userTurnId === 'string' ? call.input.userTurnId : undefined
+        (typeof call.input.userTurnId === 'string' && call.input.userTurnId.trim()) ||
+        deps.getUserTurnId?.() ||
+        undefined
       const rawSlot =
         typeof call.input.documentSlot === 'string' && call.input.documentSlot.trim()
           ? call.input.documentSlot.trim()
           : undefined
-      const documentSlot = rawSlot ?? 'primary'
+      const documentSlot = rawSlot ?? (title ? title.trim().toLowerCase() : 'primary')
       const documentType =
         typeof call.input.documentType === 'string'
           ? (call.input.documentType as DocumentType)
@@ -195,14 +202,20 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         ...(open !== undefined ? { open } : {}),
         ...(sessionId ? { sessionId } : {}),
         ...(userTurnId ? { userTurnId } : {}),
-        ...(rawSlot ? { documentSlot: rawSlot } : {}),
+        ...(documentSlot ? { documentSlot } : {}),
         ...(documentType ? { documentType } : {}),
       })
 
       if (slotKey) inFlightOps.set(slotKey, opPromise)
       try {
         const res = await opPromise
-        if (slotKey) committedSlots.set(slotKey, res)
+        if (slotKey) {
+          if (committedSlots.size >= 100) {
+            const oldest = committedSlots.keys().next().value
+            if (oldest !== undefined) committedSlots.delete(oldest)
+          }
+          committedSlots.set(slotKey, res)
+        }
         if (!created.includes(res.path)) created.push(res.path)
         const name = res.path.split(/[\\/]/).pop() ?? res.path
         const status = res.opened ? 'opened in editor' : 'saved to disk (not opened)'

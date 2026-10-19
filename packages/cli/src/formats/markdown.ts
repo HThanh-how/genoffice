@@ -121,6 +121,12 @@ export async function markdownToDocx(
   const options: MarkdownToDocxOptions =
     extraOptions ?? (optionsOrImages && !('file' in optionsOrImages) ? optionsOrImages : {})
 
+  const profileKey: DocumentType =
+    options.documentType && (options.documentType as DocumentType) in DOCUMENT_PROFILES
+      ? (options.documentType as DocumentType)
+      : 'general'
+  const profile = DOCUMENT_PROFILES[profileKey]
+
   const saveOptions = buildSaveOptionsFromProfile(options.documentType, {
     header: options.header,
     footer: options.footer,
@@ -134,6 +140,7 @@ export async function markdownToDocx(
       async (src) => loadLocalImage(src, images),
       undefined,
       saveOptions,
+      profile,
     ),
   )
 }

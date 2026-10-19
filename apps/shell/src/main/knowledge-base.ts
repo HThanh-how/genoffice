@@ -221,7 +221,7 @@ export async function createKnowledgeDocument(
   deps: KbCreateDeps,
   req: KbCreateRequest,
 ): Promise<{ path: string }> {
-  const slot = req.documentSlot || 'primary'
+  const slot = req.documentSlot || (req.title ? req.title.trim().toLowerCase() : 'primary')
   const slotKey =
     req.sessionId && req.userTurnId ? `${req.sessionId}:${req.userTurnId}:${slot}` : null
 
@@ -232,6 +232,8 @@ export async function createKnowledgeDocument(
       (existsSync(cached.path) || process.env.VITEST || process.env.NODE_ENV === 'test')
     ) {
       return { path: cached.path }
+    } else if (cached) {
+      committedDocCreations.delete(slotKey)
     }
     const inFlight = inFlightDocCreations.get(slotKey)
     if (inFlight) {
@@ -248,6 +250,10 @@ export async function createKnowledgeDocument(
     }
     deps.recordRecent(targetPath)
     if (slotKey) {
+      if (committedDocCreations.size >= 100) {
+        const oldest = committedDocCreations.keys().next().value
+        if (oldest !== undefined) committedDocCreations.delete(oldest)
+      }
       committedDocCreations.set(slotKey, { path: targetPath, createdAt: Date.now() })
     }
     return { path: targetPath }
