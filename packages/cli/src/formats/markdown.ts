@@ -119,8 +119,7 @@ export async function markdownToDocx(
   const images: MarkdownImageSource | undefined =
     optionsOrImages && 'file' in optionsOrImages ? optionsOrImages : optionsOrImages?.images
   const options: MarkdownToDocxOptions =
-    extraOptions ??
-    (optionsOrImages && !('file' in optionsOrImages) ? optionsOrImages : {})
+    extraOptions ?? (optionsOrImages && !('file' in optionsOrImages) ? optionsOrImages : {})
 
   const saveOptions = buildSaveOptionsFromProfile(options.documentType, {
     header: options.header,

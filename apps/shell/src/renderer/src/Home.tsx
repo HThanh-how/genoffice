@@ -3592,7 +3592,9 @@ export function Home() {
         i18n={i18n}
         dockLocation={!selectedFolder && !cloudMode && !indexOpen && !askMode ? 'home' : undefined}
         workspaceActive={askMode}
-        suppressDock={askMode || settingsModalOpen || Boolean(selectedFolder) || cloudMode || indexOpen}
+        suppressDock={
+          askMode || settingsModalOpen || Boolean(selectedFolder) || cloudMode || indexOpen
+        }
         onNavigateToRecents={() => changeView('recent')}
         onOpenPath={(path) => window.aiOffice.openPath(path)}
         onOpenAskWorkspace={openAskWorkspace}

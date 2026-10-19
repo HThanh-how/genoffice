@@ -145,11 +145,14 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
       }
 
       const sessionId = typeof call.input.sessionId === 'string' ? call.input.sessionId : undefined
-      const userTurnId = typeof call.input.userTurnId === 'string' ? call.input.userTurnId : undefined
+      const userTurnId =
+        typeof call.input.userTurnId === 'string' ? call.input.userTurnId : undefined
       const documentSlot =
         typeof call.input.documentSlot === 'string' ? call.input.documentSlot : 'primary'
       const documentType =
-        typeof call.input.documentType === 'string' ? (call.input.documentType as DocumentType) : undefined
+        typeof call.input.documentType === 'string'
+          ? (call.input.documentType as DocumentType)
+          : undefined
       const slotKey = sessionId && userTurnId ? `${sessionId}:${userTurnId}:${documentSlot}` : null
 
       if (slotKey && committedSlots.has(slotKey)) {

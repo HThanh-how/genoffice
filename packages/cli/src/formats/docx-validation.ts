@@ -74,7 +74,9 @@ export async function validateGeneratedDocx(
   try {
     xmlContent = await documentXmlFile.async('text')
   } catch (err) {
-    errors.push(`Failed to read word/document.xml: ${err instanceof Error ? err.message : String(err)}`)
+    errors.push(
+      `Failed to read word/document.xml: ${err instanceof Error ? err.message : String(err)}`,
+    )
     return { ok: false, errors, stats }
   }
 
@@ -106,7 +108,9 @@ export async function validateGeneratedDocx(
   }
 
   if (options?.minParagraphs !== undefined && stats.paragraphs < options.minParagraphs) {
-    errors.push(`Document has ${stats.paragraphs} paragraphs, expected at least ${options.minParagraphs}`)
+    errors.push(
+      `Document has ${stats.paragraphs} paragraphs, expected at least ${options.minParagraphs}`,
+    )
   }
 
   if (options?.requireTable && stats.tables === 0) {
@@ -114,10 +118,15 @@ export async function validateGeneratedDocx(
   }
 
   if (options?.requireHeading && stats.headings === 0) {
-    errors.push('Document requires at least one heading (<w:pStyle w:val="Heading..."/>), but none was found')
+    errors.push(
+      'Document requires at least one heading (<w:pStyle w:val="Heading..."/>), but none was found',
+    )
   }
 
-  if (options?.expectedText && !fullText.toLowerCase().includes(options.expectedText.toLowerCase())) {
+  if (
+    options?.expectedText &&
+    !fullText.toLowerCase().includes(options.expectedText.toLowerCase())
+  ) {
     errors.push(`Document does not contain expected text: "${options.expectedText}"`)
   }
 

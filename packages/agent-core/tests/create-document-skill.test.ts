@@ -200,7 +200,7 @@ describe('createDocumentSkill', () => {
     expect(r2.output).toContain('/Users/me/GenOffice/Report.docx')
 
     // Different slot should execute
-    const r3 = await skill.executeTool(call({ ...callPayload, documentSlot: 'annex' }))
+    const _r3 = await skill.executeTool(call({ ...callPayload, documentSlot: 'annex' }))
     expect(callCount).toBe(2)
   })
 

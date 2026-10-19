@@ -4,12 +4,7 @@
  */
 
 export type DocumentType =
-  | 'general'
-  | 'report'
-  | 'scientific-report'
-  | 'memo'
-  | 'proposal'
-  | 'letter'
+  'general' | 'report' | 'scientific-report' | 'memo' | 'proposal' | 'letter'
 
 export type PaperSize = 'A4' | 'Letter'
 export type Orientation = 'portrait' | 'landscape'
@@ -33,7 +28,13 @@ export interface Typography {
 }
 
 export type DocumentBlock =
-  | { type: 'paragraph'; text: string; bold?: boolean | undefined; italic?: boolean | undefined; align?: 'left' | 'center' | 'right' | 'justify' | undefined }
+  | {
+      type: 'paragraph'
+      text: string
+      bold?: boolean | undefined
+      italic?: boolean | undefined
+      align?: 'left' | 'center' | 'right' | 'justify' | undefined
+    }
   | { type: 'heading'; text: string; level: number }
   | { type: 'bullet-list'; items: string[] }
   | { type: 'numbered-list'; items: string[] }
@@ -113,7 +114,14 @@ export const DOCUMENT_PROFILES: Record<DocumentType, DocumentTypeProfile> = {
       lineSpacing: 1.2,
       paragraphSpacingAfterPt: 6,
     },
-    defaultSections: ['Executive Summary', 'Introduction', 'Key Findings', 'Analysis', 'Recommendations', 'Conclusion'],
+    defaultSections: [
+      'Executive Summary',
+      'Introduction',
+      'Key Findings',
+      'Analysis',
+      'Recommendations',
+      'Conclusion',
+    ],
     includeFooterPageNumber: true,
   },
   'scientific-report': {
@@ -214,7 +222,14 @@ export function validateRichDocumentSpec(raw: unknown): {
     errors.push('title is required and must be a non-empty string')
   }
 
-  const validTypes: DocumentType[] = ['general', 'report', 'scientific-report', 'memo', 'proposal', 'letter']
+  const validTypes: DocumentType[] = [
+    'general',
+    'report',
+    'scientific-report',
+    'memo',
+    'proposal',
+    'letter',
+  ]
   const docType = candidate.documentType
   if (docType !== undefined && !validTypes.includes(docType)) {
     errors.push(`documentType must be one of: ${validTypes.join(', ')}`)
@@ -287,7 +302,9 @@ export function validateRichDocumentSpec(raw: unknown): {
     sections: candidate.sections as RichDocumentSection[],
     sources: candidate.sources,
     headers: candidate.headers,
-    footers: candidate.footers || (profile.includeFooterPageNumber ? { pageNumber: true, align: 'right' } : undefined),
+    footers:
+      candidate.footers ||
+      (profile.includeFooterPageNumber ? { pageNumber: true, align: 'right' } : undefined),
   }
 
   return { valid: true, errors: [], spec }

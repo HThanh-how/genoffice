@@ -6,5 +6,8 @@ export type { CommandResult, ExitCode, JsonOk, JsonError } from './result'
 export { parseArgs } from './args'
 export type { ParsedArgs } from './args'
 export { validateGeneratedDocx } from './formats/docx-validation'
-export type { DocxValidationOptions, DocxValidationResult, DocxValidationStats } from './formats/docx-validation'
-
+export type {
+  DocxValidationOptions,
+  DocxValidationResult,
+  DocxValidationStats,
+} from './formats/docx-validation'

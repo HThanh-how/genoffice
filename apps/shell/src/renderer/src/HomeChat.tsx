@@ -216,7 +216,6 @@ export function HomeChat({
   const [input, setInput] = useState('')
   const [items, setItems] = useState<ChatItem[]>([])
   const [busy, setBusy] = useState(false)
-  const [invitation, setInvitation] = useState(true)
   const [settingsReady, setSettingsReady] = useState(false)
   const [settingsFailed, setSettingsFailed] = useState(false)
   const [notice, setNotice] = useState('')
@@ -269,7 +268,6 @@ export function HomeChat({
   const restoreTopRef = useRef<number | null>(null)
   const resizingRef = useRef(false)
   const stoppedRef = useRef(false)
-  const prevBusyRef = useRef(false)
   const settingsRef = useRef<Awaited<ReturnType<HomeApi['getAiSettings']>> | null>(null)
   /** the files the model has been given ids for; per turn for agy, per conversation otherwise */
   const toolTableRef = useRef<FileRefTable | null>(null)
@@ -502,11 +500,6 @@ export function HomeChat({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [i18n.lang])
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setInvitation(false), 8_000)
-    return () => window.clearTimeout(timer)
-  }, [])
 
   const loadSettings = useCallback(async () => {
     try {
@@ -1204,7 +1197,6 @@ export function HomeChat({
       stickRef.current = !resume
       restoreTopRef.current = resume ? memo!.top : null
       setOpen(true)
-      setInvitation(true)
       focusInput()
       void loadSettings()
 
@@ -1574,7 +1566,6 @@ export function HomeChat({
   const heading = title || t('homeChatNew')
   const lastItem = items.at(-1)
 
-
   const showEarlier = () => {
     prependHeightRef.current = scrollRef.current?.scrollHeight ?? null
     setVisibleCount((count) => count + WINDOW_PAGE)
@@ -1898,12 +1889,8 @@ export function HomeChat({
               : ''
           : ''}
       </span>
-      {isWorkspace && target ? (
-        createPortal(panelNode, target)
-      ) : null}
-      {!isWorkspace && dock && dockTarget ? (
-        createPortal(dock, dockTarget)
-      ) : null}
+      {isWorkspace && target ? createPortal(panelNode, target) : null}
+      {!isWorkspace && dock && dockTarget ? createPortal(dock, dockTarget) : null}
     </>
   )
 }

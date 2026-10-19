@@ -222,11 +222,15 @@ export async function createKnowledgeDocument(
   req: KbCreateRequest,
 ): Promise<{ path: string }> {
   const slot = req.documentSlot || 'primary'
-  const slotKey = req.sessionId && req.userTurnId ? `${req.sessionId}:${req.userTurnId}:${slot}` : null
+  const slotKey =
+    req.sessionId && req.userTurnId ? `${req.sessionId}:${req.userTurnId}:${slot}` : null
 
   if (slotKey) {
     const cached = committedDocCreations.get(slotKey)
-    if (cached && (existsSync(cached.path) || process.env.VITEST || process.env.NODE_ENV === 'test')) {
+    if (
+      cached &&
+      (existsSync(cached.path) || process.env.VITEST || process.env.NODE_ENV === 'test')
+    ) {
       return { path: cached.path }
     }
     const inFlight = inFlightDocCreations.get(slotKey)

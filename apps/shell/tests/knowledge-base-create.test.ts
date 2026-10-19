@@ -80,7 +80,7 @@ describe('createKnowledgeDocument', () => {
   })
 
   it('deduplicates concurrent calls with identical identity key to single flight', async () => {
-    const { deps, converted, recent } = makeDeps()
+    const { deps, recent } = makeDeps()
     let resolveConversion!: () => void
     const barrier = new Promise<void>((res) => {
       resolveConversion = res
@@ -113,7 +113,7 @@ describe('createKnowledgeDocument', () => {
   })
 
   it('returns committed path for repeated requests with same identity key', async () => {
-    const { deps, converted, recent } = makeDeps()
+    const { deps, recent } = makeDeps()
     let uniquePathCalls = 0
     let counter = 0
     deps.uniquePath = (dir, name) => {
