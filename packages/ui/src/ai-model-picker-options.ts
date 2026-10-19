@@ -77,6 +77,8 @@ export function aiModelPickerGroups(
   input: AiSettings,
   _gskLoggedIn: boolean,
   liveAgyModels?: readonly AiModelItemMeta[],
+  /** true when the Antigravity catalog could not be read, so nothing is confirmed */
+  agyCatalogFailed = false,
 ): AiModelPickerGroup[] {
   const settings = resolveCustomEndpoints(input)
   const groups: AiModelPickerGroup[] = []
@@ -115,7 +117,7 @@ export function aiModelPickerGroups(
       // unusable and cannot be clicked. With nothing usable and nothing stored the group is
       // omitted: the hardcoded provider seed is not evidence that a model exists.
       const usable = liveAgyModels
-        .filter((m) => m.enabled !== false && m.verified !== false)
+        .filter((m) => m.enabled !== false && (agyCatalogFailed || m.verified !== false))
         .map((m) => m.id)
       const stored = settings.providers?.agy?.model?.trim() ?? ''
       const unusable = stored && !usable.includes(stored) ? [stored] : []

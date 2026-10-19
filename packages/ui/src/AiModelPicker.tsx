@@ -108,8 +108,16 @@ export function AiModelPicker({
   })
 
   const groups = useMemo(
-    () => (settings ? aiModelPickerGroups(settings, loggedIn, agyState?.models) : []),
-    [settings, loggedIn, agyState?.models],
+    () =>
+      settings
+        ? aiModelPickerGroups(
+            settings,
+            loggedIn,
+            agyState?.models,
+            agyState?.catalogError !== undefined,
+          )
+        : [],
+    [settings, loggedIn, agyState?.models, agyState?.catalogError],
   )
   const current = settings ? aiModelPickerSelection(settings, agyState?.selected) : null
   const sameGroup = (g: { id: string; endpoint?: string | undefined }) =>

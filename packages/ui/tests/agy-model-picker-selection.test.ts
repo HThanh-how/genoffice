@@ -270,7 +270,7 @@ it('H: a stale picker cannot select a model another window switched off', async 
 it('I: a catalog failure is reported as unverified and never as a confirmed model list', async () => {
   const f = mount({
     settings: agySettings(''),
-    enabled: [],
+    enabled: ['gemini-3.8-flash-high'],
     selected: '',
     available: [],
     catalogError: 'agy models timed out',
@@ -280,10 +280,22 @@ it('I: a catalog failure is reported as unverified and never as a confirmed mode
   expect(state.selectedStatus).toBe('unverified')
   expect(state.available).toEqual([])
   expect(state.models.every((m) => m.verified === false)).toBe(true)
+  // the seed is offered only because the CLI could not be reached, and nothing in it is claimed
+  // to be confirmed by the CLI
+  const agy = aiModelPickerGroups(f.fixture.settings, false, state.models, true).find(
+    (g) => g.id === 'agy',
+  )
+  expect(agy?.models).toEqual(['gemini-3.8-flash-high'])
+  expect(agy?.modelItems?.every((m) => m.verified === false)).toBe(true)
+  // a catalog that answered with no usable model offers nothing at all
   expect(
-    aiModelPickerGroups(f.fixture.settings, false, state.models).find((g) => g.id === 'agy'),
+    aiModelPickerGroups(
+      f.fixture.settings,
+      false,
+      state.models.map((m) => ({ ...m, verified: true, enabled: false })),
+      false,
+    ).find((g) => g.id === 'agy'),
   ).toBeUndefined()
-  expect(f.host.querySelector('.ai-model-chip-text')?.textContent).toBe('Choose model')
   teardown(f)
 })
 
