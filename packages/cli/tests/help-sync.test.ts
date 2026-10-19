@@ -92,6 +92,8 @@ const README_FENCE_OPTION_OMISSIONS = new Set([
   'ref',
   'model',
   'block',
+  'profile',
+  'document-type',
 ])
 
 /**
