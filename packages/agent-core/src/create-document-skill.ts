@@ -156,21 +156,23 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         (typeof call.input.userTurnId === 'string' && call.input.userTurnId.trim()) ||
         deps.getUserTurnId?.() ||
         undefined
+      const hostCallId =
+        typeof call.input.callId === 'string' && call.input.callId.trim()
+          ? call.input.callId.trim()
+          : undefined
       const rawSlot =
         typeof call.input.documentSlot === 'string' && call.input.documentSlot.trim()
           ? call.input.documentSlot.trim()
           : undefined
-      const callId =
-        (typeof call.input.callId === 'string' && call.input.callId.trim()) ||
-        (call.id && typeof call.id === 'string' && call.id.trim()) ||
-        undefined
-      const hostOpId = callId || rawSlot || 'op-0'
-      const documentSlot = rawSlot || hostOpId
+      const providerCallId =
+        call.id && typeof call.id === 'string' && call.id.trim() ? call.id.trim() : undefined
+      const hostOpId = rawSlot || hostCallId || providerCallId
       const documentType =
         typeof call.input.documentType === 'string'
           ? (call.input.documentType as DocumentType)
           : undefined
-      const slotKey = sessionId && userTurnId ? `${sessionId}:${userTurnId}:${hostOpId}` : null
+      const slotKey =
+        sessionId && userTurnId && hostOpId ? `${sessionId}:${userTurnId}:${hostOpId}` : null
 
       if (slotKey && committedSlots.has(slotKey)) {
         const cached = committedSlots.get(slotKey)!
@@ -214,8 +216,8 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         ...(open !== undefined ? { open } : {}),
         ...(sessionId ? { sessionId } : {}),
         ...(userTurnId ? { userTurnId } : {}),
-        ...(documentSlot ? { documentSlot } : {}),
-        ...(hostOpId ? { callId: hostOpId } : {}),
+        ...(rawSlot ? { documentSlot: rawSlot } : {}),
+        ...(hostCallId ? { callId: hostCallId } : {}),
         ...(documentType ? { documentType } : {}),
       })
 

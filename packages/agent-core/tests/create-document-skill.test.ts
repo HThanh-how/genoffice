@@ -88,6 +88,29 @@ describe('createDocumentSkill', () => {
     expect(requests[2]).toEqual({ title: 'Notes', format: 'docx', content: '# Notes' })
   })
 
+  it('forwards explicit identity metadata (callId, documentSlot) when provided in call.input', async () => {
+    const { skill, requests } = makeSkill()
+    const r = await skill.executeTool(
+      call({
+        title: 'Plan',
+        format: 'docx',
+        content: '# Plan',
+        open: true,
+        documentSlot: 'plan-slot',
+        callId: 'call-plan',
+      }),
+    )
+    expect(r.isError).toBeUndefined()
+    expect(requests[0]).toEqual({
+      title: 'Plan',
+      format: 'docx',
+      content: '# Plan',
+      open: true,
+      documentSlot: 'plan-slot',
+      callId: 'call-plan',
+    })
+  })
+
   it('verifyResponse pushes back on a saved claim without a successful call', () => {
     const { skill } = makeSkill()
     expect(skill.verifyResponse!('I have saved the summary as report.docx.', [])).toContain(

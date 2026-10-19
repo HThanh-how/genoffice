@@ -224,9 +224,11 @@ export async function createKnowledgeDocument(
   deps: KbCreateDeps,
   req: KbCreateRequest,
 ): Promise<{ path: string }> {
-  const slot = req.callId || req.documentSlot || 'primary'
+  const hostOpId = req.callId || req.documentSlot || undefined
   const slotKey =
-    req.sessionId && req.userTurnId ? `${req.sessionId}:${req.userTurnId}:${slot}` : null
+    req.sessionId && req.userTurnId && hostOpId
+      ? `${req.sessionId}:${req.userTurnId}:${hostOpId}`
+      : null
 
   if (slotKey) {
     const cached = committedDocCreations.get(slotKey)

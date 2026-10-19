@@ -180,7 +180,7 @@ export function HomeChat({
   api: homeApi,
   i18n,
   dockLocation = 'home',
-  workspaceActive = false,
+  workspaceActive,
   suppressDock = false,
   onNavigateToRecents,
   onOpenPath,
@@ -245,6 +245,8 @@ export function HomeChat({
   const currentUserTurnIdRef = useRef<string>('')
   const openedSlotsRef = useRef<Set<string>>(new Set())
   const openedPathsRef = useRef<Set<string>>(new Set())
+  const openStatesRef = useRef<Map<string, 'opening' | 'opened' | 'failed'>>(new Map())
+  const inFlightOpenRef = useRef<Map<string, Promise<boolean>>>(new Map())
   const panelRef = useRef<HTMLElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -324,9 +326,10 @@ export function HomeChat({
           activeSessionIdRef.current ||
           undefined
         const userTurnId = request.userTurnId || currentUserTurnIdRef.current || undefined
-        const hostOpId = request.callId || request.documentSlot || 'op-0'
+        const hostOpId = request.callId || request.documentSlot || undefined
         const documentSlot = request.documentSlot || hostOpId
-        const slotKey = `${sessionId ?? 'default'}:${userTurnId ?? 'turn'}:${hostOpId}`
+        const slotKey =
+          sessionId && userTurnId && hostOpId ? `${sessionId}:${userTurnId}:${hostOpId}` : undefined
 
         const result = await api.kbCreateDocument({
           title: request.title,
@@ -353,23 +356,42 @@ export function HomeChat({
             name: result.path.split(/[\\/]/).pop() ?? result.path,
           })
           const shouldAutoOpen = request.open ?? request.format === 'docx'
-          if (
-            shouldAutoOpen &&
-            !openedSlotsRef.current.has(slotKey) &&
-            !openedPathsRef.current.has(result.path)
-          ) {
-            openedSlotsRef.current.add(slotKey)
-            openedPathsRef.current.add(result.path)
-            try {
-              if (onOpenPath) {
-                const res = await onOpenPath(result.path)
-                opened = typeof res === 'boolean' ? res : true
-              } else if (typeof api.openPath === 'function') {
-                opened = await api.openPath(result.path)
+          if (shouldAutoOpen) {
+            const state = openStatesRef.current.get(result.path)
+            if (state === 'opened') {
+              opened = true
+            } else {
+              let openPromise = inFlightOpenRef.current.get(result.path)
+              if (!openPromise) {
+                openStatesRef.current.set(result.path, 'opening')
+                openPromise = (async () => {
+                  try {
+                    let success = false
+                    if (onOpenPath) {
+                      const res = await onOpenPath(result.path)
+                      success = typeof res === 'boolean' ? res : true
+                    } else if (typeof api.openPath === 'function') {
+                      success = await api.openPath(result.path)
+                    }
+                    if (success) {
+                      openStatesRef.current.set(result.path, 'opened')
+                      if (slotKey) openedSlotsRef.current.add(slotKey)
+                      openedPathsRef.current.add(result.path)
+                    } else {
+                      openStatesRef.current.set(result.path, 'failed')
+                    }
+                    return success
+                  } catch (err) {
+                    console.error('Failed to open created document:', err)
+                    openStatesRef.current.set(result.path, 'failed')
+                    return false
+                  } finally {
+                    inFlightOpenRef.current.delete(result.path)
+                  }
+                })()
+                inFlightOpenRef.current.set(result.path, openPromise)
               }
-            } catch (err) {
-              console.error('Failed to open created document:', err)
-              opened = false
+              opened = await openPromise
             }
           }
         }
@@ -1028,6 +1050,8 @@ export function HomeChat({
   const adopt = (conv: Conversation, nextItems: ChatItem[], nextTitle: string) => {
     convRef.current = conv
     createdPathsRef.current = new Set()
+    openStatesRef.current.clear()
+    inFlightOpenRef.current.clear()
     const nextSessionId = conv.id ?? conv.executionId ?? crypto.randomUUID()
     conv.executionId = nextSessionId
     setActiveSessionId(nextSessionId)
@@ -1323,6 +1347,8 @@ export function HomeChat({
       currentUserTurnIdRef.current = crypto.randomUUID()
       openedSlotsRef.current.clear()
       openedPathsRef.current.clear()
+      openStatesRef.current.clear()
+      inFlightOpenRef.current.clear()
       clearActiveRequest()
       const userId = ++itemId.current
       const assistantId = ++itemId.current
