@@ -23,6 +23,7 @@ export {
 } from './create-document-skill'
 export type {
   CreateDocumentDeps,
+  CreateDocumentExecutionContext,
   CreateDocumentFormat,
   CreateDocumentRequest,
   CreateDocumentSkill,

@@ -6,6 +6,7 @@ import { assertAllowed, type PathContext } from '../fs'
 import { imageSize } from './image-size'
 import { DOCUMENT_PROFILES, type DocumentType } from '@genoffice/agent-core'
 import type { HeaderFooter, SaveOptions, SectionSettings } from '@genoffice/docx-engine'
+import { CliError, EXIT } from '../result'
 
 /**
  * Markdown → Word reuses the markdown app's editor: its Tiptap markdown parser
@@ -75,10 +76,15 @@ export function buildSaveOptionsFromProfile(
     title?: string
   },
 ): SaveOptions {
-  const profileKey: DocumentType =
-    documentType && (documentType as DocumentType) in DOCUMENT_PROFILES
-      ? (documentType as DocumentType)
-      : 'general'
+  if (documentType && !Object.prototype.hasOwnProperty.call(DOCUMENT_PROFILES, documentType)) {
+    throw new CliError(
+      EXIT.usage,
+      `unknown profile "${documentType}", expected one of: ${Object.keys(DOCUMENT_PROFILES).join(', ')}`,
+      { supported: Object.keys(DOCUMENT_PROFILES) },
+      { reason: 'invalid_argument' },
+    )
+  }
+  const profileKey: DocumentType = (documentType as DocumentType) || 'general'
   const profile = DOCUMENT_PROFILES[profileKey]
 
   const mmToTwips = (mm: number) => Math.round(mm * 56.6929)
@@ -121,10 +127,18 @@ export async function markdownToDocx(
   const options: MarkdownToDocxOptions =
     extraOptions ?? (optionsOrImages && !('file' in optionsOrImages) ? optionsOrImages : {})
 
-  const profileKey: DocumentType =
-    options.documentType && (options.documentType as DocumentType) in DOCUMENT_PROFILES
-      ? (options.documentType as DocumentType)
-      : 'general'
+  if (
+    options.documentType &&
+    !Object.prototype.hasOwnProperty.call(DOCUMENT_PROFILES, options.documentType)
+  ) {
+    throw new CliError(
+      EXIT.usage,
+      `unknown profile "${options.documentType}", expected one of: ${Object.keys(DOCUMENT_PROFILES).join(', ')}`,
+      { supported: Object.keys(DOCUMENT_PROFILES) },
+      { reason: 'invalid_argument' },
+    )
+  }
+  const profileKey: DocumentType = (options.documentType as DocumentType) || 'general'
   const profile = DOCUMENT_PROFILES[profileKey]
 
   const saveOptions = buildSaveOptionsFromProfile(options.documentType, {

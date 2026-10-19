@@ -540,7 +540,6 @@ export function TabBar() {
                 // activation never depends on the click that a drag would eat
                 if (!tab.active) void window.aiOfficeTabs.activate(tab.id)
                 if (tab.id === 'home') {
-                  window.dispatchEvent(new CustomEvent('genoffice:home-tab-clicked'))
                   return
                 }
                 const strip = stripRef.current

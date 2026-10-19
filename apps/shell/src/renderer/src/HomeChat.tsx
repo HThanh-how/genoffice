@@ -5,6 +5,7 @@ import {
   createDocumentSkill,
   createIpcTransport,
   createKnowledgeBaseSkill,
+  type CreateDocumentExecutionContext,
   type IpcStreamChunk,
   type KbFileInfo,
 } from '@genoffice/agent-core'
@@ -318,29 +319,49 @@ export function HomeChat({
   isOpenPathRef.current = isOpenPath
 
   const openDocumentPath = useCallback(
-    async (path: string): Promise<boolean> => {
+    (path: string, execContext?: CreateDocumentExecutionContext): Promise<boolean> => {
       const existing = inFlightOpenRef.current.get(path)
       if (existing) {
         return existing
       }
 
-      if (isOpenPathRef.current) {
-        try {
-          if (await isOpenPathRef.current(path)) {
-            return true
-          }
-        } catch {
-          // ignore error and proceed with opening
-        }
-      }
-
       const owner = convRef.current
       const generation = runGenerationRef.current
 
-      openStatesRef.current.set(path, 'opening')
       let cleanup = () => {}
       const openPromise = (async () => {
         try {
+          if (
+            !mountedRef.current ||
+            convRef.current !== owner ||
+            owner.dead ||
+            generation !== runGenerationRef.current ||
+            (execContext?.sessionId && convRef.current?.executionId !== execContext.sessionId)
+          ) {
+            return false
+          }
+
+          if (isOpenPathRef.current) {
+            try {
+              if (await isOpenPathRef.current(path)) {
+                return true
+              }
+            } catch {
+              // ignore error and proceed with opening
+            }
+          }
+
+          if (
+            !mountedRef.current ||
+            convRef.current !== owner ||
+            owner.dead ||
+            generation !== runGenerationRef.current ||
+            (execContext?.sessionId && convRef.current?.executionId !== execContext.sessionId)
+          ) {
+            return false
+          }
+
+          openStatesRef.current.set(path, 'opening')
           let success = false
           if (onOpenPathRef.current) {
             const res = await onOpenPathRef.current(path)
@@ -353,7 +374,8 @@ export function HomeChat({
             mountedRef.current &&
             convRef.current === owner &&
             !owner.dead &&
-            generation === runGenerationRef.current
+            generation === runGenerationRef.current &&
+            (!execContext?.sessionId || convRef.current?.executionId === execContext.sessionId)
           ) {
             if (success) {
               openStatesRef.current.set(path, 'opened')
@@ -369,7 +391,8 @@ export function HomeChat({
             mountedRef.current &&
             convRef.current === owner &&
             !owner.dead &&
-            generation === runGenerationRef.current
+            generation === runGenerationRef.current &&
+            (!execContext?.sessionId || convRef.current?.executionId === execContext.sessionId)
           ) {
             openStatesRef.current.set(path, 'failed')
           }
@@ -448,7 +471,22 @@ export function HomeChat({
         }
         return { path: result.path }
       },
-      open: (path) => openDocumentPath(path),
+      open: (path, context) => {
+        const owner = convRef.current
+        const generation = runGenerationRef.current
+        const run = activeRunRef.current
+        if (
+          !mountedRef.current ||
+          convRef.current !== owner ||
+          owner.dead ||
+          generation !== runGenerationRef.current ||
+          (run !== 0 && activeRunRef.current !== run) ||
+          (context?.sessionId && convRef.current?.executionId !== context.sessionId)
+        ) {
+          return false
+        }
+        return openDocumentPath(path, context)
+      },
       isOpen: (path) => {
         if (isOpenPathRef.current) return isOpenPathRef.current(path)
         return false

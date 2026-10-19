@@ -1773,6 +1773,18 @@ export function Home() {
     setRowMenu(null)
   }, [])
 
+  const isOpenPath = useCallback(async (path: string) => {
+    try {
+      if (typeof window.aiOfficeTabs?.list !== 'function') return false
+      const tabs = await window.aiOfficeTabs.list()
+      const norm = (p: string) => p.replace(/[\\/]+/g, '/').toLowerCase()
+      const target = norm(path)
+      return tabs.some((t) => t.filePath && norm(t.filePath) === target)
+    } catch {
+      return false
+    }
+  }, [])
+
   const changeFilter = (key: string) => {
     setFilter(key)
     setSelected(new Set())
@@ -3607,6 +3619,7 @@ export function Home() {
         }
         onNavigateToRecents={() => changeView('recent')}
         onOpenPath={(path) => window.aiOffice.openPath(path)}
+        isOpenPath={isOpenPath}
         onOpenAskWorkspace={openAskWorkspace}
         onOpenModelSettings={openModelSettings}
       />

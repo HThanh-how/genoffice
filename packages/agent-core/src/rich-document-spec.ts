@@ -198,7 +198,7 @@ export const DOCUMENT_PROFILES: Record<DocumentType, DocumentTypeProfile> = {
 }
 
 export function getProfile(type?: string): DocumentTypeProfile {
-  if (type && type in DOCUMENT_PROFILES) {
+  if (type && Object.prototype.hasOwnProperty.call(DOCUMENT_PROFILES, type)) {
     return DOCUMENT_PROFILES[type as DocumentType]
   }
   return DOCUMENT_PROFILES.general

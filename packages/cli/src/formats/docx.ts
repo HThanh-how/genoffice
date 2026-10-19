@@ -22,7 +22,9 @@ import {
   type StyleUpsert,
   type PictureWatermarkSpec,
   type WatermarkSpec,
+  type BlankDocxOptions,
 } from '@genoffice/docx-engine'
+import type { DocumentTypeProfile } from '@genoffice/agent-core'
 import type { FloatSpec } from '../../../../apps/docs/src/renderer/ai/floating-ops'
 import type { AiNotesAccess, NoteKind } from '../../../../apps/docs/src/renderer/ai/note-ops'
 import type { AiCommentsAccess } from '../../../../apps/docs/src/renderer/ai/tools'
@@ -204,8 +206,26 @@ export async function openDocument(bytes: Uint8Array): Promise<OpenDocument> {
   return { parsed, editor, numIds, mods, side: sideStateOf(parsed) }
 }
 
-export async function blankDocument(): Promise<OpenDocument> {
-  return openDocument(await buildBlankDocx())
+export function blankDocxOptionsFromProfile(profile: DocumentTypeProfile): BlankDocxOptions {
+  const mmToTwips = (mm: number) => Math.round(mm * 56.6929)
+  return {
+    paperSize: profile.paperSize,
+    font: profile.typography.bodyFont,
+    fontSizeHalfPoints: Math.round(profile.typography.bodySizePt * 2),
+    lineSpacingMultiplier: profile.typography.lineSpacing,
+    paragraphSpacingAfterTwips: Math.round(profile.typography.paragraphSpacingAfterPt * 20),
+    pageMarginsTwips: {
+      top: mmToTwips(profile.margins.top),
+      bottom: mmToTwips(profile.margins.bottom),
+      left: mmToTwips(profile.margins.left),
+      right: mmToTwips(profile.margins.right),
+    },
+    includePageNumbers: profile.includeFooterPageNumber,
+  }
+}
+
+export async function blankDocument(options?: BlankDocxOptions): Promise<OpenDocument> {
+  return openDocument(await buildBlankDocx(options))
 }
 
 export async function saveDocument(doc: OpenDocument): Promise<Uint8Array> {

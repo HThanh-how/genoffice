@@ -31,13 +31,23 @@ export interface CreateDocumentRequest {
   documentType?: DocumentType
 }
 
+export interface CreateDocumentExecutionContext {
+  sessionId?: string | undefined
+  userTurnId?: string | undefined
+  callId?: string | undefined
+  documentSlot?: string | undefined
+}
+
 export interface CreateDocumentDeps {
   create(request: CreateDocumentRequest): Promise<{ path: string; opened?: boolean }>
   getSessionId?: () => string | undefined
   getUserTurnId?: () => string | undefined
   fileExists?: (path: string) => boolean | Promise<boolean>
-  open?: (path: string) => boolean | Promise<boolean>
-  openDocument?: (path: string) => boolean | Promise<boolean>
+  open?: (path: string, context?: CreateDocumentExecutionContext) => boolean | Promise<boolean>
+  openDocument?: (
+    path: string,
+    context?: CreateDocumentExecutionContext,
+  ) => boolean | Promise<boolean>
   isOpen?: (path: string) => boolean | Promise<boolean>
   isDocumentOpen?: (path: string) => boolean | Promise<boolean>
 }
@@ -155,13 +165,15 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         }
       }
 
+      const hostSessionId = deps.getSessionId?.()
       const sessionId =
+        hostSessionId ||
         (typeof call.input.sessionId === 'string' && call.input.sessionId.trim()) ||
-        deps.getSessionId?.() ||
         undefined
+      const hostUserTurnId = deps.getUserTurnId?.()
       const userTurnId =
+        hostUserTurnId ||
         (typeof call.input.userTurnId === 'string' && call.input.userTurnId.trim()) ||
-        deps.getUserTurnId?.() ||
         undefined
       const hostCallId =
         typeof call.input.callId === 'string' && call.input.callId.trim()
@@ -173,14 +185,21 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
           : undefined
       const providerCallId =
         call.id && typeof call.id === 'string' && call.id.trim() ? call.id.trim() : undefined
-      const hostOpId = hostCallId || providerCallId || rawSlot
-      const effectiveCallId = hostCallId || providerCallId
+      const effectiveCallId = providerCallId || hostCallId
+      const hostOpId = effectiveCallId || rawSlot
       const documentType =
         typeof call.input.documentType === 'string'
           ? (call.input.documentType as DocumentType)
           : undefined
       const slotKey =
         sessionId && userTurnId && hostOpId ? `${sessionId}:${userTurnId}:${hostOpId}` : null
+
+      const execContext: CreateDocumentExecutionContext = {
+        sessionId,
+        userTurnId,
+        callId: effectiveCallId,
+        documentSlot: rawSlot,
+      }
 
       if (slotKey && committedSlots.has(slotKey)) {
         const cached = committedSlots.get(slotKey)!
@@ -196,14 +215,14 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
                 if (alreadyOpen) {
                   opened = true
                 } else if (openFn) {
-                  opened = Boolean(await openFn(cached.path))
+                  opened = Boolean(await openFn(cached.path, execContext))
                 }
               } catch {
                 opened = false
               }
             } else if (openFn) {
               try {
-                opened = Boolean(await openFn(cached.path))
+                opened = Boolean(await openFn(cached.path, execContext))
               } catch {
                 opened = false
               }
@@ -268,14 +287,14 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
                 if (alreadyOpen) {
                   opened = true
                 } else {
-                  opened = Boolean(await openFn(res.path))
+                  opened = Boolean(await openFn(res.path, execContext))
                 }
               } catch {
                 opened = false
               }
             } else {
               try {
-                opened = Boolean(await openFn(res.path))
+                opened = Boolean(await openFn(res.path, execContext))
               } catch {
                 opened = false
               }

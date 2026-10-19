@@ -116,6 +116,107 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
     }
   })
 
+  it('Two concurrent open requests with async isOpenPath deduplicate to single onOpenPath invocation', async () => {
+    let resolveOpen!: (value: boolean) => void
+    const openBarrier = new Promise<boolean>((res) => {
+      resolveOpen = res
+    })
+    const onOpenPath = vi.fn().mockImplementation(() => openBarrier)
+    const isOpenPath = vi.fn().mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 5))
+      return false
+    })
+
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const api = mockApi()
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(HomeChat, {
+            api,
+            i18n: mockI18n,
+            onOpenPath,
+            isOpenPath,
+          }),
+        )
+      })
+
+      expect(captured.docDeps).not.toBeNull()
+      expect(captured.docDeps!.open).toBeDefined()
+
+      // Launch two concurrent opens while isOpenPath probe is in flight
+      const p1 = captured.docDeps!.open!('/Users/me/GenOffice/ConcurrentAsync.docx')
+      const p2 = captured.docDeps!.open!('/Users/me/GenOffice/ConcurrentAsync.docx')
+
+      expect(isOpenPath).toHaveBeenCalledTimes(1)
+
+      resolveOpen(true)
+      const [r1, r2] = await Promise.all([p1, p2])
+
+      expect(r1).toBe(true)
+      expect(r2).toBe(true)
+      expect(onOpenPath).toHaveBeenCalledTimes(1)
+      expect(isOpenPath).toHaveBeenCalledTimes(1)
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+    }
+  })
+
+  it('Late document open attempt after conversation switch returns false with zero UI side effects', async () => {
+    const onOpenPath = vi.fn().mockResolvedValue(true)
+    const host = document.createElement('div')
+    document.body.append(host)
+    const root = createRoot(host)
+    const api = mockApi()
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(HomeChat, {
+            api,
+            i18n: mockI18n,
+            onOpenPath,
+          }),
+        )
+      })
+
+      // Initiate Conversation A
+      await act(async () => {
+        requestChatPrefill({ text: 'Draft A', intent: 'new', send: true })
+      })
+
+      const sessionA = captured.docDeps?.getSessionId?.()
+      expect(sessionA).toBeDefined()
+
+      // Switch to Conversation B
+      await act(async () => {
+        requestChatPrefill({ text: 'Draft B', intent: 'new', send: true })
+      })
+
+      const sessionB = captured.docDeps?.getSessionId?.()
+      expect(sessionB).not.toBe(sessionA)
+
+      // Late open call targeting session A must be rejected without opening
+      const result = await captured.docDeps!.open!('/Users/me/GenOffice/LateDoc.docx', {
+        sessionId: sessionA,
+      })
+
+      expect(result).toBe(false)
+      expect(onOpenPath).not.toHaveBeenCalled()
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+    }
+  })
+
   it('Late asynchronous open completion does not corrupt state after conversation switch', async () => {
     let resolveOpen!: (value: boolean) => void
     const pendingOpen = new Promise<boolean>((res) => {

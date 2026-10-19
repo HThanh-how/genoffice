@@ -1,4 +1,5 @@
 import JSZip from 'jszip'
+import { XMLValidator } from 'fast-xml-parser'
 
 export interface DocxValidationOptions {
   /** If true, asserts at least one table exists */
@@ -31,6 +32,8 @@ const FORBIDDEN_PLACEHOLDER_REGEX = /(\{\{[^}]+\}\}|__TODO__|<TBD>)/i
 /**
  * Validates that generated DOCX bytes represent a well-formed OOXML document
  * package containing expected structure, parts, and content without corruption.
+ * Note: This performs structural and package validation (well-formed XML, package relationships,
+ * mandatory parts, placeholder leaks); it does not assert visual layout or rendering fidelity.
  */
 export async function validateGeneratedDocx(
   bytes: Uint8Array,
@@ -67,6 +70,44 @@ export async function validateGeneratedDocx(
     }
   }
 
+  // Check document relationships and target integrity
+  const relsFile = zip.file('word/_rels/document.xml.rels')
+  if (relsFile) {
+    try {
+      const relsContent = await relsFile.async('text')
+      const relsValidation = XMLValidator.validate(relsContent)
+      if (relsValidation !== true) {
+        errors.push(
+          `word/_rels/document.xml.rels is not well-formed XML: ${relsValidation.err.msg}`,
+        )
+      } else {
+        const relMatches = Array.from(
+          relsContent.matchAll(/<Relationship\b([^>]+)\/?>/gi),
+          (m) => m[1],
+        )
+        for (const relAttrs of relMatches) {
+          const isExternal = /TargetMode=["']External["']/i.test(relAttrs)
+          const targetMatch = /Target=["']([^"']+)["']/.exec(relAttrs)
+          if (targetMatch && !isExternal) {
+            const target = targetMatch[1]
+            if (!/^[a-z]+:\/\//i.test(target) && !target.startsWith('mailto:')) {
+              const normalized = target.startsWith('/') ? target.slice(1) : `word/${target}`
+              if (!zip.file(normalized)) {
+                errors.push(
+                  `Broken package relationship: target "${target}" does not exist in DOCX package`,
+                )
+              }
+            }
+          }
+        }
+      }
+    } catch (err) {
+      errors.push(
+        `Failed to read word/_rels/document.xml.rels: ${err instanceof Error ? err.message : String(err)}`,
+      )
+    }
+  }
+
   const documentXmlFile = zip.file('word/document.xml')
   if (!documentXmlFile) {
     return { ok: false, errors, stats }
@@ -80,6 +121,14 @@ export async function validateGeneratedDocx(
       `Failed to read word/document.xml: ${err instanceof Error ? err.message : String(err)}`,
     )
     return { ok: false, errors, stats }
+  }
+
+  // Strict XML well-formedness validation using fast-xml-parser
+  const xmlValidation = XMLValidator.validate(xmlContent)
+  if (xmlValidation !== true) {
+    errors.push(
+      `word/document.xml is not well-formed XML: ${xmlValidation.err.msg} at line ${xmlValidation.err.line}`,
+    )
   }
 
   // Basic XML structure checks

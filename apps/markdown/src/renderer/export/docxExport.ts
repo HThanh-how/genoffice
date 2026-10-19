@@ -334,12 +334,26 @@ function walkBlock(
     default: {
       // unknown block: keep its text so nothing silently disappears
       const text = plainText(node)
-      if (text.trim())
-        pushParagraph(ctx, {
-          type: 'paragraph',
-          runs: runsFromInline(node.content, bodyFont, bodySize),
-          format: base,
-        })
+      if (text.trim()) {
+        const inlineRuns = runsFromInline(node.content, bodyFont, bodySize)
+        const inlineText = inlineRuns.map((r) => r.text).join('')
+        if (inlineRuns.length > 0 && inlineText.trim() === text.trim()) {
+          pushParagraph(ctx, {
+            type: 'paragraph',
+            runs: inlineRuns,
+            format: base,
+          })
+        } else {
+          const run: Run = { text }
+          if (bodyFont) run.font = bodyFont
+          if (bodySize) run.sizeHalfPoints = bodySize
+          pushParagraph(ctx, {
+            type: 'paragraph',
+            runs: [run],
+            format: base,
+          })
+        }
+      }
     }
   }
 }

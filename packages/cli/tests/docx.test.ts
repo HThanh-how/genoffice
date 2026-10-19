@@ -1505,4 +1505,73 @@ describe('genoffice docs: comments, revisions, header/footer, images, charts', (
     expect(stylesXml).toContain('w:sz w:val="22"')
     expect(stylesXml).toContain('w:line="276"')
   })
+
+  it('rejects unknown profile name with usage error', async () => {
+    const dir = tempDir()
+    const md = join(dir, 'test.md')
+    writeFileSync(md, '# Title\n\nContent.')
+    const out = join(dir, 'test.docx')
+    const r = await run([
+      'create',
+      '--type',
+      'docx',
+      '--from',
+      md,
+      '--profile',
+      'non-existent-profile',
+      '--out',
+      out,
+      '--json',
+    ])
+    expect(r.code).not.toBe(0)
+    expect(r.stderr).toContain('unknown profile "non-existent-profile"')
+  })
+
+  it('creates docx from HTML with custom document profile typography', async () => {
+    const dir = tempDir()
+    const html = join(dir, 'paper.html')
+    writeFileSync(html, '<h1>Research Findings</h1><p>Data analysis and conclusion.</p>')
+    const out = join(dir, 'paper.docx')
+    const r = await run([
+      'create',
+      '--type',
+      'docx',
+      '--from',
+      html,
+      '--profile',
+      'scientific-report',
+      '--out',
+      out,
+      '--json',
+    ])
+    expect(r.code).toBe(0)
+    const zip = await JSZip.loadAsync(readFileSync(out))
+    const stylesXml = await zip.file('word/styles.xml')!.async('string')
+    expect(stylesXml).toContain('w:ascii="Times New Roman"')
+    expect(stylesXml).toContain('w:sz w:val="24"')
+  })
+
+  it('validateGeneratedDocx detects malformed XML and broken relationship targets', async () => {
+    const validBytes = await markdownToDocx('# Valid Document\n\nSome paragraph.')
+    const zip = await JSZip.loadAsync(validBytes)
+
+    // 1. Corrupt XML in document.xml
+    zip.file('word/document.xml', '<w:document><w:body><unclosed-tag>')
+    const malformedBytes = await zip.generateAsync({ type: 'uint8array' })
+    const malformedResult = await validateGeneratedDocx(malformedBytes)
+    expect(malformedResult.ok).toBe(false)
+    expect(malformedResult.errors.some((e) => e.includes('not well-formed XML'))).toBe(true)
+
+    // 2. Add broken relationship target
+    const zip2 = await JSZip.loadAsync(validBytes)
+    const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdBroken" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/nonexistent.png"/>
+</Relationships>`
+    zip2.file('word/_rels/document.xml.rels', relsXml)
+    const brokenRelsBytes = await zip2.generateAsync({ type: 'uint8array' })
+    const brokenResult = await validateGeneratedDocx(brokenRelsBytes)
+    expect(brokenResult.ok).toBe(false)
+    expect(brokenResult.errors.some((e) => e.includes('Broken package relationship'))).toBe(true)
+  })
 })
