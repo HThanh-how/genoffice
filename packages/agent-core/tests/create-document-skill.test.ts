@@ -17,7 +17,18 @@ function makeSkill(create?: (r: CreateDocumentRequest) => Promise<{ path: string
   return { skill, requests }
 }
 
-const call = (input: Record<string, unknown>) => ({ id: 't1', name: 'create_document', input })
+let callSeq = 0
+const call = (input: Record<string, unknown>, id?: string) => ({
+  id:
+    id ||
+    (typeof input.callId === 'string'
+      ? input.callId
+      : typeof input.documentSlot === 'string'
+        ? input.documentSlot
+        : `call-${++callSeq}`),
+  name: 'create_document',
+  input,
+})
 
 describe('createDocumentSkill', () => {
   it('writes through deps and returns the path with its cite link', async () => {
@@ -285,22 +296,321 @@ describe('createDocumentSkill', () => {
     expect(recordedReq!.userTurnId).toBe('host-turn-456')
   })
 
-  it('bounds committedSlots cache to 100 entries', async () => {
-    const skill = createDocumentSkill({
-      create: async (r) => ({ path: `/Users/me/GenOffice/${r.title}.${r.format}` }),
+  it('TEST 1: same logical operation delivered twice concurrently returns one file', async () => {
+    let callCount = 0
+    let resolveFirst!: (res: { path: string }) => void
+    const barrier = new Promise<{ path: string }>((res) => {
+      resolveFirst = res
     })
-    for (let i = 0; i < 105; i++) {
+
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => 'turn-1',
+      create: async (_r) => {
+        callCount++
+        return barrier
+      },
+    })
+
+    const opCall = call({ title: 'Report', format: 'docx', content: '# Content' }, 'op-unique-1')
+    const p1 = skill.executeTool(opCall)
+    const p2 = skill.executeTool(opCall)
+
+    resolveFirst({ path: '/Users/me/GenOffice/Report.docx' })
+    const [r1, r2] = await Promise.all([p1, p2])
+
+    expect(callCount).toBe(1)
+    expect(r1.output).toContain('/Users/me/GenOffice/Report.docx')
+    expect(r2.output).toContain('/Users/me/GenOffice/Report.docx')
+  })
+
+  it('TEST 2: same logical operation replayed after completion returns committed file without duplicate', async () => {
+    let callCount = 0
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => 'turn-1',
+      create: async (r) => {
+        callCount++
+        return { path: `/Users/me/GenOffice/${r.title}.${r.format}` }
+      },
+    })
+
+    const opCall = call({ title: 'Report', format: 'docx', content: '# Content' }, 'op-unique-2')
+    const r1 = await skill.executeTool(opCall)
+    expect(callCount).toBe(1)
+
+    const r2 = await skill.executeTool(opCall)
+    expect(callCount).toBe(1)
+    expect(r1.output).toBe(r2.output)
+  })
+
+  it('TEST 3: three distinct documents in the same user turn produce three files', async () => {
+    let callCount = 0
+    const created: string[] = []
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => 'turn-1',
+      create: async (r) => {
+        callCount++
+        const path = `/Users/me/GenOffice/${r.title}.${r.format}`
+        created.push(path)
+        return { path }
+      },
+    })
+
+    const r1 = await skill.executeTool(call({ title: 'Doc 1', format: 'docx', content: '# 1' }))
+    const r2 = await skill.executeTool(call({ title: 'Doc 2', format: 'docx', content: '# 2' }))
+    const r3 = await skill.executeTool(call({ title: 'Doc 3', format: 'docx', content: '# 3' }))
+
+    expect(callCount).toBe(3)
+    expect(created).toHaveLength(3)
+    expect(r1.output).toContain('Doc 1.docx')
+    expect(r2.output).toContain('Doc 2.docx')
+    expect(r3.output).toContain('Doc 3.docx')
+  })
+
+  it('TEST 4: two distinct documents sharing the same title produce two files', async () => {
+    let callCount = 0
+    const created: string[] = []
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => 'turn-1',
+      create: async (r) => {
+        callCount++
+        const path =
+          callCount === 1
+            ? `/Users/me/GenOffice/${r.title}.docx`
+            : `/Users/me/GenOffice/${r.title} (1).docx`
+        created.push(path)
+        return { path }
+      },
+    })
+
+    const r1 = await skill.executeTool(
+      call({ title: 'Research Report', format: 'docx', content: '# Vietnamese version' }),
+    )
+    const r2 = await skill.executeTool(
+      call({ title: 'Research Report', format: 'docx', content: '# English version' }),
+    )
+
+    expect(callCount).toBe(2)
+    expect(created).toEqual([
+      '/Users/me/GenOffice/Research Report.docx',
+      '/Users/me/GenOffice/Research Report (1).docx',
+    ])
+    expect(r1.output).toContain('Research Report.docx')
+    expect(r2.output).toContain('Research Report (1).docx')
+  })
+
+  it('TEST 5: two explicitly requested copies with identical content produce two files', async () => {
+    let callCount = 0
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => 'turn-1',
+      create: async (_r) => {
+        callCount++
+        return { path: `/Users/me/GenOffice/Copy_${callCount}.docx` }
+      },
+    })
+
+    const r1 = await skill.executeTool(
+      call({ title: 'Invoice', format: 'docx', content: '# Invoice 101' }),
+    )
+    const r2 = await skill.executeTool(
+      call({ title: 'Invoice', format: 'docx', content: '# Invoice 101' }),
+    )
+
+    expect(callCount).toBe(2)
+    expect(r1.output).toContain('Copy_1.docx')
+    expect(r2.output).toContain('Copy_2.docx')
+  })
+
+  it('TEST 6: a new user turn requesting another document with same title and content produces a new file', async () => {
+    let callCount = 0
+    let currentTurn = 'turn-1'
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => currentTurn,
+      create: async (r) => {
+        callCount++
+        return { path: `/Users/me/GenOffice/${r.title}_${currentTurn}.docx` }
+      },
+    })
+
+    const r1 = await skill.executeTool(
+      call({ title: 'Report', format: 'docx', content: '# Content' }, 'op-fixed-id'),
+    )
+    expect(callCount).toBe(1)
+    expect(r1.output).toContain('Report_turn-1.docx')
+
+    currentTurn = 'turn-2'
+    const r2 = await skill.executeTool(
+      call({ title: 'Report', format: 'docx', content: '# Content' }, 'op-fixed-id'),
+    )
+    expect(callCount).toBe(2)
+    expect(r2.output).toContain('Report_turn-2.docx')
+  })
+
+  it('TEST 7: failed write followed by retry succeeds without cached failure', async () => {
+    let attempts = 0
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => 'turn-1',
+      create: async (r) => {
+        attempts++
+        if (attempts === 1) throw new Error('EACCES: permission denied')
+        return { path: `/Users/me/GenOffice/${r.title}.docx` }
+      },
+    })
+
+    const r1 = await skill.executeTool(
+      call({ title: 'Doc', format: 'docx', content: '# A' }, 'op-fail-retry'),
+    )
+    expect(r1.isError).toBe(true)
+    expect(r1.output).toContain('EACCES')
+
+    const r2 = await skill.executeTool(
+      call({ title: 'Doc', format: 'docx', content: '# A' }, 'op-fail-retry'),
+    )
+    expect(r2.isError).toBeUndefined()
+    expect(attempts).toBe(2)
+    expect(r2.output).toContain('Doc.docx')
+  })
+
+  it('TEST 8: deleted output followed by legitimate retry triggers re-creation', async () => {
+    let createCalls = 0
+    let fileExistsOnDisk = true
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => 'turn-1',
+      fileExists: () => fileExistsOnDisk,
+      create: async (r) => {
+        createCalls++
+        return { path: `/Users/me/GenOffice/${r.title}.docx` }
+      },
+    })
+
+    const r1 = await skill.executeTool(
+      call({ title: 'Memo', format: 'docx', content: '# Hi' }, 'memo-op'),
+    )
+    expect(createCalls).toBe(1)
+    expect(r1.output).toContain('Memo.docx')
+
+    // Delete output from disk
+    fileExistsOnDisk = false
+
+    // Retrying the same operation must re-create the missing document
+    const r2 = await skill.executeTool(
+      call({ title: 'Memo', format: 'docx', content: '# Hi' }, 'memo-op'),
+    )
+    expect(createCalls).toBe(2)
+    expect(r2.output).toContain('Memo.docx')
+  })
+
+  it('Section 5: session-identity race test (sequential and concurrent variants)', async () => {
+    // Sequential variant:
+    // 1. Conversation starts without persisted ID
+    let persistedId: string | null = null
+    const executionId = 'exec-stable-uuid'
+    let createCalls = 0
+    const skill = createDocumentSkill({
+      getSessionId: () => persistedId || executionId,
+      getUserTurnId: () => 'turn-1',
+      create: async () => {
+        createCalls++
+        return { path: '/Users/me/GenOffice/Report.docx' }
+      },
+    })
+
+    // 2. Document creation starts with executionId
+    const opCall = call({ title: 'Report', format: 'docx', content: '# Report' }, 'op-race-1')
+    const r1 = await skill.executeTool(opCall)
+    expect(createCalls).toBe(1)
+
+    // 3. History persistence assigns an ID
+    persistedId = 'persisted-server-id-456'
+
+    // 4. If executionId remains stable host-side, retry preserves single physical document
+    const r2 = await skill.executeTool({
+      ...opCall,
+      input: { ...opCall.input, sessionId: executionId },
+    })
+    expect(createCalls).toBe(1)
+    expect(r2.output).toBe(r1.output)
+
+    // Concurrent variant:
+    let concurrentCalls = 0
+    let resolveDelayedCreate!: (res: { path: string }) => void
+    const delayedBarrier = new Promise<{ path: string }>((res) => {
+      resolveDelayedCreate = res
+    })
+    const concurrentSkill = createDocumentSkill({
+      getSessionId: () => executionId,
+      getUserTurnId: () => 'turn-1',
+      create: async () => {
+        concurrentCalls++
+        return delayedBarrier
+      },
+    })
+
+    const p1 = concurrentSkill.executeTool(opCall)
+    // Mid-flight persistence completes
+    persistedId = 'persisted-server-id-789'
+    const p2 = concurrentSkill.executeTool({
+      ...opCall,
+      input: { ...opCall.input, sessionId: executionId },
+    })
+
+    resolveDelayedCreate({ path: '/Users/me/GenOffice/Report.docx' })
+    const [cr1, cr2] = await Promise.all([p1, p2])
+    expect(concurrentCalls).toBe(1)
+    expect(cr1.output).toBe(cr2.output)
+  })
+
+  it('Section 6: bounds committedSlots cache to 100 entries with FIFO eviction', async () => {
+    let createCalls = 0
+    const skill = createDocumentSkill({
+      getSessionId: () => 'sess-1',
+      getUserTurnId: () => 'turn-1',
+      create: async (r) => {
+        createCalls++
+        return { path: `/Users/me/GenOffice/${r.title}.docx` }
+      },
+    })
+
+    // Insert 100 entries: slot-0 to slot-99
+    for (let i = 0; i < 100; i++) {
       await skill.executeTool(
-        call({
-          title: `Doc ${i}`,
-          format: 'docx',
-          content: 'text',
-          sessionId: 's',
-          userTurnId: 't',
-          documentSlot: `slot-${i}`,
-        }),
+        call(
+          { title: `Doc ${i}`, format: 'docx', content: 'text', documentSlot: `slot-${i}` },
+          `slot-${i}`,
+        ),
       )
     }
-    expect(skill.createdPaths().length).toBe(105)
+    expect(createCalls).toBe(100)
+
+    // Insert 101st entry: slot-100. This must evict the oldest entry (slot-0)
+    await skill.executeTool(
+      call(
+        { title: 'Doc 100', format: 'docx', content: 'text', documentSlot: 'slot-100' },
+        'slot-100',
+      ),
+    )
+    expect(createCalls).toBe(101)
+
+    // Replaying slot-0 (evicted) must trigger create again
+    await skill.executeTool(
+      call({ title: 'Doc 0', format: 'docx', content: 'text', documentSlot: 'slot-0' }, 'slot-0'),
+    )
+    expect(createCalls).toBe(102)
+
+    // Replaying slot-100 (recent, in cache) must NOT trigger create again
+    await skill.executeTool(
+      call(
+        { title: 'Doc 100', format: 'docx', content: 'text', documentSlot: 'slot-100' },
+        'slot-100',
+      ),
+    )
+    expect(createCalls).toBe(102)
   })
 })

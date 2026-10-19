@@ -11,15 +11,23 @@ function makeDeps() {
   const written: Array<[string, string]> = []
   const converted: Array<[string, string]> = []
   const recent: string[] = []
+  const disk = new Set<string>()
   const deps: KbCreateDeps = {
     dir: () => '/save',
     uniquePath: (dir, name) => `${dir}/${name}`,
     sanitizeBase: (title) => title.replace(/[/:]/g, '_') || 'Untitled',
-    writeText: async (path, text) => void written.push([path, text]),
-    markdownToDocx: async (md, out) => void converted.push([md, out]),
+    writeText: async (path, text) => {
+      written.push([path, text])
+      disk.add(path)
+    },
+    markdownToDocx: async (md, out) => {
+      converted.push([md, out])
+      disk.add(out)
+    },
     recordRecent: (path) => void recent.push(path),
+    fileExists: (path) => disk.has(path),
   }
-  return { deps, written, converted, recent }
+  return { deps, written, converted, recent, disk }
 }
 
 describe('parseKbCreateRequest', () => {
@@ -141,5 +149,59 @@ describe('createKnowledgeDocument', () => {
     expect(uniquePathCalls).toBe(1)
     // Recent file is not duplicated
     expect(recent).toEqual(['/save/Report.docx'])
+  })
+
+  it('distinguishes distinct operations with same title using callId', async () => {
+    const { deps, recent } = makeDeps()
+    let counter = 0
+    deps.uniquePath = (dir, name) =>
+      counter++ === 0 ? `${dir}/${name}` : `${dir}/${name.replace('.docx', ' (1).docx')}`
+
+    const req1 = {
+      title: 'Research Report',
+      format: 'docx' as const,
+      content: '# Vietnamese version',
+      sessionId: 'sess-1',
+      userTurnId: 'turn-1',
+      callId: 'call-1',
+    }
+    const req2 = {
+      title: 'Research Report',
+      format: 'docx' as const,
+      content: '# English version',
+      sessionId: 'sess-1',
+      userTurnId: 'turn-1',
+      callId: 'call-2',
+    }
+
+    const res1 = await createKnowledgeDocument(deps, req1)
+    const res2 = await createKnowledgeDocument(deps, req2)
+
+    expect(res1.path).toBe('/save/Research Report.docx')
+    expect(res2.path).toBe('/save/Research Report (1).docx')
+    expect(recent).toHaveLength(2)
+  })
+
+  it('detects deleted output on retry and creates new file', async () => {
+    const { deps, disk } = makeDeps()
+    const req = {
+      title: 'Contract',
+      format: 'docx' as const,
+      content: '# Agreement',
+      sessionId: 'sess-1',
+      userTurnId: 'turn-1',
+      callId: 'op-contract',
+    }
+
+    const res1 = await createKnowledgeDocument(deps, req)
+    expect(res1.path).toBe('/save/Contract.docx')
+
+    // Simulate disk deletion
+    disk.delete(res1.path)
+
+    // Retry must not return stale success
+    const res2 = await createKnowledgeDocument(deps, req)
+    expect(res2.path).toBe('/save/Contract.docx')
+    expect(disk.has(res2.path)).toBe(true)
   })
 })

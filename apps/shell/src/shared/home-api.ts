@@ -335,6 +335,7 @@ export interface HomeApi extends ForkHomeApi {
     sessionId?: string
     userTurnId?: string
     documentSlot?: string
+    callId?: string
     documentType?: string
   }): Promise<{ path: string }>
   /** the user's AI provider settings (shared with every app's panel) */

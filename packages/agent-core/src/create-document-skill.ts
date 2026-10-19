@@ -27,6 +27,7 @@ export interface CreateDocumentRequest {
   sessionId?: string
   userTurnId?: string
   documentSlot?: string
+  callId?: string
   documentType?: DocumentType
 }
 
@@ -34,6 +35,7 @@ export interface CreateDocumentDeps {
   create(request: CreateDocumentRequest): Promise<{ path: string; opened?: boolean }>
   getSessionId?: () => string | undefined
   getUserTurnId?: () => string | undefined
+  fileExists?: (path: string) => boolean
 }
 
 export interface CreateDocumentSkill extends AgentSkill {
@@ -158,20 +160,30 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         typeof call.input.documentSlot === 'string' && call.input.documentSlot.trim()
           ? call.input.documentSlot.trim()
           : undefined
-      const documentSlot = rawSlot ?? (title ? title.trim().toLowerCase() : 'primary')
+      const callId =
+        (typeof call.input.callId === 'string' && call.input.callId.trim()) ||
+        (call.id && typeof call.id === 'string' && call.id.trim()) ||
+        undefined
+      const hostOpId = callId || rawSlot || 'op-0'
+      const documentSlot = rawSlot || hostOpId
       const documentType =
         typeof call.input.documentType === 'string'
           ? (call.input.documentType as DocumentType)
           : undefined
-      const slotKey = sessionId && userTurnId ? `${sessionId}:${userTurnId}:${documentSlot}` : null
+      const slotKey = sessionId && userTurnId ? `${sessionId}:${userTurnId}:${hostOpId}` : null
 
       if (slotKey && committedSlots.has(slotKey)) {
         const cached = committedSlots.get(slotKey)!
-        const name = cached.path.split(/[\\/]/).pop() ?? cached.path
-        const status = cached.opened ? 'opened in editor' : 'saved to disk (not opened)'
-        return {
-          output: `saved ${name} (${status})\n  path: ${cached.path}\n  cite: ${kbCiteHref(cached.path)}\n  opened: ${Boolean(cached.opened)}`,
-          summary: name,
+        const exists = deps.fileExists ? deps.fileExists(cached.path) : true
+        if (exists) {
+          const name = cached.path.split(/[\\/]/).pop() ?? cached.path
+          const status = cached.opened ? 'opened in editor' : 'saved to disk (not opened)'
+          return {
+            output: `saved ${name} (${status})\n  path: ${cached.path}\n  cite: ${kbCiteHref(cached.path)}\n  opened: ${Boolean(cached.opened)}`,
+            summary: name,
+          }
+        } else {
+          committedSlots.delete(slotKey)
         }
       }
 
@@ -203,6 +215,7 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         ...(sessionId ? { sessionId } : {}),
         ...(userTurnId ? { userTurnId } : {}),
         ...(documentSlot ? { documentSlot } : {}),
+        ...(hostOpId ? { callId: hostOpId } : {}),
         ...(documentType ? { documentType } : {}),
       })
 

@@ -121,7 +121,9 @@ const QUICK_STYLES_XML =
 const stylesXml = (options?: BlankDocxOptions): string => {
   const font = options?.font || 'Calibri'
   const sz = options?.fontSizeHalfPoints || 22
-  const line = options?.lineSpacingMultiplier ? Math.round(options.lineSpacingMultiplier * 240) : 276
+  const line = options?.lineSpacingMultiplier
+    ? Math.round(options.lineSpacingMultiplier * 240)
+    : 276
   const spaceAfter =
     options?.paragraphSpacingAfterTwips !== undefined ? options.paragraphSpacingAfterTwips : 120
   const eastAsiaFont = options?.eastAsiaFont
@@ -131,7 +133,7 @@ const stylesXml = (options?: BlankDocxOptions): string => {
     '<w:docDefaults><w:rPrDefault><w:rPr>' +
     `<w:rFonts w:ascii="${font}"${eastAsiaFont ? ` w:eastAsia="${eastAsiaFont}"` : ''} w:hAnsi="${font}"/><w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/>` +
     '</w:rPr></w:rPrDefault>' +
-    `<w:pPrDefault><w:pPr><w:spacing w:after="${spaceAfter}" w:line="${line}" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>' +
+    `<w:pPrDefault><w:pPr><w:spacing w:after="${spaceAfter}" w:line="${line}" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>` +
     '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>' +
     headingStyle(1, 32, font) +
     headingStyle(2, 28, font) +

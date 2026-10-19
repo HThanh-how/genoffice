@@ -4,6 +4,7 @@ import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import { run, tempDir } from './helpers'
 import { validateGeneratedDocx } from '../src/formats/docx-validation'
+import { markdownToDocx } from '../src/formats/markdown'
 
 const REPO = resolve(__dirname, '../../..')
 const DOCX = join(REPO, 'apps/docs/tests/pagination-corpus/docx/01-simple-english.docx')
@@ -1379,18 +1380,129 @@ describe('genoffice docs: comments, revisions, header/footer, images, charts', (
     expect(result.errors).toHaveLength(0)
   })
 
-  it('markdownToDocx applies profile typography (font, spacing, margins) into OOXML package', async () => {
-    const bytes = await markdownToDocx(
-      '# Scientific Research Report\n\nThis is paragraph content formatted with scientific profile.',
-      { documentType: 'scientific-report' },
-    )
+  it('markdownToDocx applies profile typography (font, spacing, margins) for all 6 profiles', async () => {
+    const testCases: Array<{
+      profile: 'general' | 'report' | 'scientific-report' | 'memo' | 'proposal' | 'letter'
+      font: string
+      sz: number
+      line: number
+      after: number
+      margins: { top: number; right: number; bottom: number; left: number }
+    }> = [
+      {
+        profile: 'general',
+        font: 'Calibri',
+        sz: 22,
+        line: 276,
+        after: 120,
+        margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+      },
+      {
+        profile: 'report',
+        font: 'Calibri',
+        sz: 22,
+        line: 288,
+        after: 120,
+        margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+      },
+      {
+        profile: 'scientific-report',
+        font: 'Times New Roman',
+        sz: 24,
+        line: 312,
+        after: 120,
+        margins: { top: 1417, right: 1417, bottom: 1417, left: 1417 },
+      },
+      {
+        profile: 'memo',
+        font: 'Arial',
+        sz: 22,
+        line: 276,
+        after: 120,
+        margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+      },
+      {
+        profile: 'proposal',
+        font: 'Calibri',
+        sz: 23,
+        line: 288,
+        after: 120,
+        margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+      },
+      {
+        profile: 'letter',
+        font: 'Times New Roman',
+        sz: 24,
+        line: 276,
+        after: 160,
+        margins: { top: 1701, right: 1440, bottom: 1440, left: 1440 },
+      },
+    ]
+
+    for (const tc of testCases) {
+      const markdown = [
+        `# ${tc.profile} Document Title`,
+        '',
+        'This is the executive summary paragraph.',
+        '',
+        '## Section 1: Data Analysis',
+        '',
+        '- First bullet observation',
+        '- Second bullet observation',
+        '',
+        '1. Ordered step alpha',
+        '2. Ordered step beta',
+        '',
+        '| Metric | Value | Status |',
+        '|---|---|---|',
+        '| Revenue | $10M | Target |',
+        '| Growth | 25% | On track |',
+        '',
+        'Final closing paragraph.',
+      ].join('\n')
+
+      const bytes = await markdownToDocx(markdown, { documentType: tc.profile })
+      const validation = await validateGeneratedDocx(bytes, {
+        requireHeading: true,
+        requireTable: true,
+        minParagraphs: 3,
+        expectedText: tc.profile,
+        checkPlaceholders: true,
+      })
+      expect(
+        validation.ok,
+        `${tc.profile} validation failed: ${validation.errors.join(', ')}`,
+      ).toBe(true)
+
+      const zip = await JSZip.loadAsync(bytes)
+      const stylesXml = await zip.file('word/styles.xml')!.async('string')
+      expect(stylesXml).toContain(`w:ascii="${tc.font}"`)
+      expect(stylesXml).toContain(`w:sz w:val="${tc.sz}"`)
+      expect(stylesXml).toContain(`w:line="${tc.line}"`)
+      expect(stylesXml).toContain(`w:after="${tc.after}"`)
+
+      const docXml = await zip.file('word/document.xml')!.async('string')
+      expect(docXml).toContain(`w:top="${tc.margins.top}"`)
+      expect(docXml).toContain(`w:right="${tc.margins.right}"`)
+      expect(docXml).toContain(`w:bottom="${tc.margins.bottom}"`)
+      expect(docXml).toContain(`w:left="${tc.margins.left}"`)
+    }
+  })
+
+  it('markdownToDocx preserves backward compatibility when no profile is requested', async () => {
+    const bytes = await markdownToDocx('# Standard Title\n\nDefault markdown content.')
+    const validation = await validateGeneratedDocx(bytes, {
+      requireHeading: true,
+      minParagraphs: 1,
+      expectedText: 'Standard Title',
+      checkPlaceholders: true,
+    })
+    expect(validation.ok).toBe(true)
+
     const zip = await JSZip.loadAsync(bytes)
     const stylesXml = await zip.file('word/styles.xml')!.async('string')
-    expect(stylesXml).toContain('Times New Roman')
-    expect(stylesXml).toContain('w:sz w:val="24"')
-    expect(stylesXml).toContain('w:line="360"')
-
-    const docXml = await zip.file('word/document.xml')!.async('string')
-    expect(docXml).toContain('w:pgMar')
+    expect(stylesXml).toContain('w:ascii="Calibri"')
+    expect(stylesXml).toContain('w:sz w:val="22"')
+    expect(stylesXml).toContain('w:line="276"')
   })
 })

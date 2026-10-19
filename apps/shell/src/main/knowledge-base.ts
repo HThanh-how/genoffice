@@ -170,6 +170,7 @@ export interface KbCreateRequest {
   sessionId?: string
   userTurnId?: string
   documentSlot?: string
+  callId?: string
   documentType?: string
 }
 
@@ -188,8 +189,9 @@ export function parseKbCreateRequest(raw: unknown): KbCreateRequest {
   const sessionId = typeof req.sessionId === 'string' ? req.sessionId : undefined
   const userTurnId = typeof req.userTurnId === 'string' ? req.userTurnId : undefined
   const documentSlot = typeof req.documentSlot === 'string' ? req.documentSlot : undefined
+  const callId = typeof req.callId === 'string' ? req.callId : undefined
   const documentType = typeof req.documentType === 'string' ? req.documentType : undefined
-  return { title, format, content, sessionId, userTurnId, documentSlot, documentType }
+  return { title, format, content, sessionId, userTurnId, documentSlot, callId, documentType }
 }
 
 export interface KbCreateDeps {
@@ -202,6 +204,7 @@ export interface KbCreateDeps {
   /** markdown → .docx at `out` (the bundled CLI) */
   markdownToDocx: (markdown: string, out: string, documentType?: string) => Promise<void>
   recordRecent: (path: string) => void
+  fileExists?: (path: string) => boolean
 }
 
 interface CommittedDocCreation {
@@ -221,16 +224,14 @@ export async function createKnowledgeDocument(
   deps: KbCreateDeps,
   req: KbCreateRequest,
 ): Promise<{ path: string }> {
-  const slot = req.documentSlot || (req.title ? req.title.trim().toLowerCase() : 'primary')
+  const slot = req.callId || req.documentSlot || 'primary'
   const slotKey =
     req.sessionId && req.userTurnId ? `${req.sessionId}:${req.userTurnId}:${slot}` : null
 
   if (slotKey) {
     const cached = committedDocCreations.get(slotKey)
-    if (
-      cached &&
-      (existsSync(cached.path) || process.env.VITEST || process.env.NODE_ENV === 'test')
-    ) {
+    const checkExists = deps.fileExists ?? existsSync
+    if (cached && checkExists(cached.path)) {
       return { path: cached.path }
     } else if (cached) {
       committedDocCreations.delete(slotKey)

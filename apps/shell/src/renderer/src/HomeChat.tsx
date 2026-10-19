@@ -93,7 +93,12 @@ type Props = {
   onOpenModelSettings?: () => void
 }
 
-type Conversation = { id: string | null; dead: boolean; requested: boolean }
+type Conversation = {
+  id: string | null
+  executionId?: string
+  dead: boolean
+  requested: boolean
+}
 type Toast = { kind: 'deleted'; session: HomeChatSession } | { kind: 'cleared' }
 
 const LS_LAST = 'genoffice.homeChat.last'
@@ -254,7 +259,12 @@ export function HomeChat({
   const stickRef = useRef(true)
   const prependHeightRef = useRef<number | null>(null)
   const needsSeedRef = useRef(false)
-  const convRef = useRef<Conversation>({ id: null, dead: false, requested: false })
+  const convRef = useRef<Conversation>({
+    id: null,
+    executionId: activeSessionId,
+    dead: false,
+    requested: false,
+  })
   const lastSavedRef = useRef<ChatItem[] | null>(null)
   const saveTimerRef = useRef(0)
   const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
@@ -301,7 +311,7 @@ export function HomeChat({
   const docSkillRef = useRef<ReturnType<typeof createDocumentSkill> | null>(null)
   if (!docSkillRef.current) {
     docSkillRef.current = createDocumentSkill({
-      getSessionId: () => convRef.current?.id || activeSessionIdRef.current || undefined,
+      getSessionId: () => convRef.current?.executionId || activeSessionIdRef.current || undefined,
       getUserTurnId: () => currentUserTurnIdRef.current || undefined,
       create: async (request) => {
         const owner = convRef.current
@@ -310,14 +320,13 @@ export function HomeChat({
         const run = activeRunRef.current
         const sessionId =
           request.sessionId ||
-          convRef.current?.id ||
+          convRef.current?.executionId ||
           activeSessionIdRef.current ||
           undefined
         const userTurnId = request.userTurnId || currentUserTurnIdRef.current || undefined
-        const documentSlot =
-          request.documentSlot ||
-          (request.title ? request.title.trim().toLowerCase() : 'primary')
-        const slotKey = `${sessionId ?? 'default'}:${userTurnId ?? 'turn'}:${documentSlot}`
+        const hostOpId = request.callId || request.documentSlot || 'op-0'
+        const documentSlot = request.documentSlot || hostOpId
+        const slotKey = `${sessionId ?? 'default'}:${userTurnId ?? 'turn'}:${hostOpId}`
 
         const result = await api.kbCreateDocument({
           title: request.title,
@@ -326,6 +335,7 @@ export function HomeChat({
           sessionId,
           userTurnId,
           documentSlot,
+          callId: hostOpId,
           documentType: request.documentType,
         })
         let opened = false
@@ -1018,7 +1028,8 @@ export function HomeChat({
   const adopt = (conv: Conversation, nextItems: ChatItem[], nextTitle: string) => {
     convRef.current = conv
     createdPathsRef.current = new Set()
-    const nextSessionId = conv.id ?? crypto.randomUUID()
+    const nextSessionId = conv.id ?? conv.executionId ?? crypto.randomUUID()
+    conv.executionId = nextSessionId
     setActiveSessionId(nextSessionId)
     activeSessionIdRef.current = nextSessionId
     clearActiveRequest()
@@ -1043,7 +1054,7 @@ export function HomeChat({
     openTokenRef.current++
     launchTokenRef.current++
     detachCurrent()
-    adopt({ id: null, dead: false, requested: false }, [], '')
+    adopt({ id: null, executionId: crypto.randomUUID(), dead: false, requested: false }, [], '')
     collapseRailWhenNarrow()
     focusInput()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1088,7 +1099,11 @@ export function HomeChat({
           error: tRef.current('homeChatInterrupted'),
         })
       }
-      adopt({ id: session.id, dead: false, requested: true }, restored, session.title)
+      adopt(
+        { id: session.id, executionId: session.id, dead: false, requested: true },
+        restored,
+        session.title,
+      )
       collapseRailWhenNarrow()
       focusInput()
     },
