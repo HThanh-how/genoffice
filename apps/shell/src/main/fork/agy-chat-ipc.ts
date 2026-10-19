@@ -21,6 +21,7 @@ import {
   AGY_CHAT_CHANNELS,
   AGY_CHAT_DEFAULT_MODEL,
   agyChatModelInfo,
+  defaultEnabledChatModels,
   sanitizeEnabledChatModels,
   type AgyChatCatalog,
   type AgyChatState,
@@ -143,9 +144,26 @@ export class AgyUsageCache {
  * only Gemini 3.8 Flash Low), picking one, and the quota readout shown beside it.
  */
 export function registerAgyChat(deps: AgyChatDeps): void {
-  const enabled = (): string[] =>
-    sanitizeEnabledChatModels(readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY])
   const aiSettings = (): AiSettingsFile => readJson<AiSettingsFile>(deps.aiSettingsPath(), {})
+  const getCliPath = (): string | undefined => {
+    const p = aiSettings().providers?.agy?.cliPath
+    return typeof p === 'string' && p.trim() ? p.trim() : undefined
+  }
+  const enabled = async (catalogModels?: string[]): Promise<string[]> => {
+    const raw = readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY]
+    if (raw !== undefined) {
+      return sanitizeEnabledChatModels(raw)
+    }
+    if (catalogModels && catalogModels.length > 0) {
+      return defaultEnabledChatModels(catalogModels)
+    }
+    try {
+      const catalog = await listAgyModels(getCliPath())
+      return defaultEnabledChatModels(catalog.models)
+    } catch {
+      return defaultEnabledChatModels()
+    }
+  }
   const selectedModel = (): string => {
     const saved = aiSettings().providers?.agy?.model
     return typeof saved === 'string' && saved.trim() ? saved.trim() : AGY_CHAT_DEFAULT_MODEL
@@ -161,9 +179,9 @@ export function registerAgyChat(deps: AgyChatDeps): void {
     },
   )
 
-  deps.ipcMain.handle(AGY_CHAT_CHANNELS.state, (): AgyChatState => {
+  deps.ipcMain.handle(AGY_CHAT_CHANNELS.state, async (): Promise<AgyChatState> => {
     const settings = aiSettings()
-    const ids = enabled()
+    const ids = await enabled()
     let current = selectedModel()
     // A saved model that is not in the chat list (left over from before the list existed, or
     // switched off since) gives way to the list's first model, and that choice is saved so the
@@ -183,10 +201,11 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   })
 
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.catalog, async (): Promise<AgyChatCatalog> => {
-    const catalog = await listAgyModels(undefined)
+    const catalog = await listAgyModels(getCliPath())
+    const enabledIds = await enabled(catalog.models)
     return {
       all: catalog.models.map(agyChatModelInfo),
-      enabled: enabled(),
+      enabled: enabledIds,
       ...(catalog.error ? { error: catalog.error } : {}),
     }
   })
@@ -197,8 +216,10 @@ export function registerAgyChat(deps: AgyChatDeps): void {
     return next
   })
 
-  deps.ipcMain.handle(AGY_CHAT_CHANNELS.select, (_event, id: unknown): boolean => {
-    if (typeof id !== 'string' || !enabled().includes(id)) return false
+  deps.ipcMain.handle(AGY_CHAT_CHANNELS.select, async (_event, id: unknown): Promise<boolean> => {
+    if (typeof id !== 'string') return false
+    const currentEnabled = await enabled()
+    if (!currentEnabled.includes(id)) return false
     const settings = aiSettings()
     const providers = { ...(settings.providers ?? {}) }
     providers.agy = { ...(providers.agy ?? {}), model: id }

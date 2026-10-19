@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   AGY_CHAT_DEFAULT_ENABLED,
+  AGY_CHAT_DEFAULT_MODEL,
   agyChatModelInfo,
+  defaultEnabledChatModels,
   sanitizeEnabledChatModels,
   usageForModel,
 } from '../src/agy-chat'
@@ -36,11 +38,27 @@ describe('agyChatModelInfo', () => {
 })
 
 describe('sanitizeEnabledChatModels', () => {
-  it('defaults to Gemini 3.8 Flash Low only', () => {
-    expect(AGY_CHAT_DEFAULT_ENABLED).toEqual(['gemini-3.8-flash-low'])
-    expect(sanitizeEnabledChatModels(undefined)).toEqual(['gemini-3.8-flash-low'])
-    expect(sanitizeEnabledChatModels([])).toEqual(['gemini-3.8-flash-low'])
-    expect(sanitizeEnabledChatModels(['  bad id', 5, null])).toEqual(['gemini-3.8-flash-low'])
+  it('defaults to Gemini Flash models fallback when empty or invalid', () => {
+    expect(AGY_CHAT_DEFAULT_ENABLED).toEqual([
+      'gemini-3.8-flash-high',
+      'gemini-3.8-flash-medium',
+      'gemini-3.8-flash-low',
+    ])
+    expect(sanitizeEnabledChatModels(undefined)).toEqual([
+      'gemini-3.8-flash-high',
+      'gemini-3.8-flash-medium',
+      'gemini-3.8-flash-low',
+    ])
+    expect(sanitizeEnabledChatModels([])).toEqual([
+      'gemini-3.8-flash-high',
+      'gemini-3.8-flash-medium',
+      'gemini-3.8-flash-low',
+    ])
+    expect(sanitizeEnabledChatModels(['  bad id', 5, null])).toEqual([
+      'gemini-3.8-flash-high',
+      'gemini-3.8-flash-medium',
+      'gemini-3.8-flash-low',
+    ])
   })
   it('keeps valid ids once, in order', () => {
     expect(
@@ -50,6 +68,32 @@ describe('sanitizeEnabledChatModels', () => {
         'gemini-3.7-flash-low',
       ]),
     ).toEqual(['gemini-3.7-flash-low', 'gemini-3.8-flash-low'])
+  })
+})
+
+describe('defaultEnabledChatModels', () => {
+  it('enables all Gemini models from catalog and excludes non-Gemini', () => {
+    const catalog = [
+      'gemini-3.8-flash-low',
+      'gemini-3.8-flash-medium',
+      'gemini-3.8-flash-high',
+      'gemini-3.1-pro-low',
+      'gemini-3.1-pro-high',
+      'claude-sonnet-4-6',
+      'gpt-oss-120b-medium',
+    ]
+    expect(defaultEnabledChatModels(catalog)).toEqual([
+      'gemini-3.8-flash-low',
+      'gemini-3.8-flash-medium',
+      'gemini-3.8-flash-high',
+      'gemini-3.1-pro-low',
+      'gemini-3.1-pro-high',
+    ])
+  })
+
+  it('falls back to AGY_CHAT_DEFAULT_ENABLED when catalog is empty or has no Gemini models', () => {
+    expect(defaultEnabledChatModels([])).toEqual([...AGY_CHAT_DEFAULT_ENABLED])
+    expect(defaultEnabledChatModels(['claude-sonnet-4-6'])).toEqual([...AGY_CHAT_DEFAULT_ENABLED])
   })
 })
 

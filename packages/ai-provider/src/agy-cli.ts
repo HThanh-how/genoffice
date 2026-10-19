@@ -39,6 +39,7 @@ import { agyMachineSemaphore, type AgyMachineSemaphore } from './agy-lock'
  */
 
 import { AGY_DEFAULT_MODEL } from './agy-meta'
+import { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
 import {
   AGY_SCHEMA_NATIVE_RETRY_NOTE,
   AGY_SCHEMA_TURN_NOTE,
@@ -64,6 +65,7 @@ import { createAgyLimiter, Limiter } from './agy-limiter'
 export { createAgyLimiter, Limiter }
 import { agyResidentManager, isResidentEligible } from './agy-resident'
 
+export { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
 export {
   AGY_CAPABILITIES,
   AGY_DEFAULT_MODEL,
@@ -1082,7 +1084,7 @@ export async function streamAgy(
   const runId = randomUUID()
   const requestId = cb.requestId
   const sessionId = cb.sessionId
-  const model = config.model?.trim() || AGY_DEFAULT_MODEL
+  const model = config.model?.trim() || AGY_CHAT_DEFAULT_MODEL
   const say: AgySay = (activity) =>
     publishAgyActivity({
       runId,
@@ -1189,7 +1191,7 @@ async function streamAgyTurn(
         },
         onFirstText: () => say({ phase: 'writing' }),
         cliPath: config.cliPath,
-        model: config.model?.trim() || AGY_DEFAULT_MODEL,
+        model: config.model?.trim() || AGY_CHAT_DEFAULT_MODEL,
         prompt: prompt.prompt,
         files: prompt.files,
         signal: cb.signal,
@@ -1494,7 +1496,7 @@ export async function chatAgy(
     const result = await runAgy(
       {
         cliPath: config.cliPath,
-        model: config.model?.trim() || AGY_DEFAULT_MODEL,
+        model: config.model?.trim() || AGY_CHAT_DEFAULT_MODEL,
         prompt: plan.prompt,
         signal,
         task: 'chat',
@@ -1631,7 +1633,11 @@ export async function listAgyModels(
 function catalogOf(models: string[]): AgyModelCatalog {
   return {
     models,
-    defaultModel: models.includes(AGY_DEFAULT_MODEL) ? AGY_DEFAULT_MODEL : (models[0] ?? ''),
+    defaultModel: models.includes(AGY_CHAT_DEFAULT_MODEL)
+      ? AGY_CHAT_DEFAULT_MODEL
+      : models.includes(AGY_DEFAULT_MODEL)
+        ? AGY_DEFAULT_MODEL
+        : (models[0] ?? ''),
   }
 }
 

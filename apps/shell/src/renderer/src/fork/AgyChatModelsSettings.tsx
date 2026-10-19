@@ -9,7 +9,7 @@ import { useI18n } from '../locale'
 
 const EN = {
   title: 'Models in the chat box',
-  desc: 'Only the models switched on here appear in the chat box. Gemini 3.8 Flash Low is on by default: it was as accurate as the slower levels in our tests while using the least quota.',
+  desc: 'Only the models switched on here appear in the chat box. All available Gemini models are on by default, with Gemini 3.8 Flash High as the default chat model. Lower-effort models use less quota. Claude and GPT models remain off by default.',
   geminiGroup: 'Gemini',
   otherGroup: 'Claude and GPT',
   otherNote:
@@ -25,7 +25,7 @@ const EN = {
 }
 const VI: typeof EN = {
   title: 'Model trong khung chat',
-  desc: 'Chỉ các model được bật ở đây mới hiện trong khung chat. Mặc định chỉ bật Gemini 3.8 Flash Low: khi thử, nó chính xác ngang các mức chậm hơn mà tốn ít quota nhất.',
+  desc: 'Chỉ các model được bật ở đây mới hiện trong khung chat. Tất cả các model Gemini khả dụng được bật theo mặc định, với Gemini 3.8 Flash High là model chat mặc định. Các model mức reasoning thấp hơn dùng ít quota hơn. Các model Claude và GPT mặc định tắt.',
   geminiGroup: 'Gemini',
   otherGroup: 'Claude và GPT',
   otherNote:
@@ -41,7 +41,7 @@ const VI: typeof EN = {
 }
 const ZH: typeof EN = {
   title: '聊天框中的模型',
-  desc: '只有在此开启的模型才会出现在聊天框中。默认只开启 Gemini 3.8 Flash Low：测试中它与更慢的档位一样准确，且最省额度。',
+  desc: '只有在此开启的模型才会出现在聊天框中。所有可用的 Gemini 模型默认开启，并将 Gemini 3.8 Flash High 作为默认聊天模型。较低思考档位的模型消耗更少额度。Claude 和 GPT 模型默认保持关闭。',
   geminiGroup: 'Gemini',
   otherGroup: 'Claude 和 GPT',
   otherNote: '这些模型使用单独的额度池，完成同样的工作要多消耗数倍额度。默认关闭。',
@@ -88,7 +88,10 @@ export function AgyChatModelsSettings() {
     if (on && catalog.enabled.length === 1) return
     const ids = on ? catalog.enabled.filter((x) => x !== id) : [...catalog.enabled, id]
     const saved = await api()?.setAgyChatEnabledModels(ids)
-    if (saved) setCatalog({ ...catalog, enabled: saved })
+    if (saved) {
+      setCatalog({ ...catalog, enabled: saved })
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    }
   }
 
   const row = (model: AgyChatModelInfo) => {

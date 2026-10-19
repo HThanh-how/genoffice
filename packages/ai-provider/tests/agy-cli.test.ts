@@ -2,6 +2,7 @@ import { CLI, FakeChild, fsDeps, runDeps, tick } from './helpers/agy-fake'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentMessage } from '@genoffice/agent-core'
 import {
+  AGY_CHAT_DEFAULT_MODEL,
   AGY_DEFAULT_MODEL,
   AGY_KILL_GRACE_MS,
   agyAutoDetectHint,
@@ -293,6 +294,17 @@ describe('listAgyModels', () => {
     expect(run).toHaveBeenCalledTimes(2)
     await listAgyModels(CLI, deps, { force: true })
     expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it('selects AGY_CHAT_DEFAULT_MODEL when present in the catalog', async () => {
+    clearAgyModelsCache()
+    const run = vi.fn(
+      async () =>
+        'gemini-3.8-flash-low\tLow\ngemini-3.8-flash-high\tHigh\nclaude-sonnet-4-6\tClaude\n',
+    )
+    const deps = { ...fsDeps('win32', files), run, now: () => 0 }
+    const res = await listAgyModels(CLI, deps)
+    expect(res.defaultModel).toBe(AGY_CHAT_DEFAULT_MODEL)
   })
 
   it('never throws: a missing binary, empty list or failing run yields an error string', async () => {

@@ -11,9 +11,39 @@ import type { AgyActivity } from './agy-activity'
  * reasoning only costs time and quota.
  */
 
-/** The only model offered in the chat box until the user enables more. */
-export const AGY_CHAT_DEFAULT_MODEL = 'gemini-3.8-flash-low'
-export const AGY_CHAT_DEFAULT_ENABLED: readonly string[] = [AGY_CHAT_DEFAULT_MODEL]
+/** The default chat model: Gemini 3.8 Flash High. */
+export const AGY_CHAT_DEFAULT_MODEL = 'gemini-3.8-flash-high'
+export const AGY_CHAT_DEFAULT_ENABLED: readonly string[] = [
+  AGY_CHAT_DEFAULT_MODEL,
+  'gemini-3.8-flash-medium',
+  'gemini-3.8-flash-low',
+]
+
+/**
+ * Enables all available Gemini model IDs from the catalog by default.
+ * Non-Gemini models (Claude, GPT, other) are not enabled by default.
+ * If catalog is unavailable or contains no Gemini models, falls back to the safe default list.
+ */
+export function defaultEnabledChatModels(catalogModels?: readonly string[]): string[] {
+  if (Array.isArray(catalogModels) && catalogModels.length > 0) {
+    const gemini = catalogModels.filter((id) => {
+      const lower = id.toLowerCase().trim()
+      return lower.startsWith('gemini-')
+    })
+    if (gemini.length > 0) {
+      const seen = new Set<string>()
+      const out: string[] = []
+      for (const id of gemini) {
+        if (!seen.has(id)) {
+          seen.add(id)
+          out.push(id)
+        }
+      }
+      return out
+    }
+  }
+  return [...AGY_CHAT_DEFAULT_ENABLED]
+}
 
 export type AgyQuotaGroup = 'Gemini Models' | 'Claude and GPT models'
 
