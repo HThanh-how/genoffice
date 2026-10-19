@@ -143,6 +143,7 @@ test.describe('AI Document Creation, Idempotency, and Tab Management', () => {
       expect(validation.ok, `Validation errors: ${validation.errors.join(', ')}`).toBe(true)
 
       // 8. Test Navigation Away: Navigating to Recent must unmount workspace and not leak floating panel
+      await home.locator('.tab-item.tab-home').click()
       await home.locator('.nav-item').filter({ hasText: 'Recent' }).click()
       await expect(home.locator('.home-chat-panel')).toHaveCount(0)
       await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
