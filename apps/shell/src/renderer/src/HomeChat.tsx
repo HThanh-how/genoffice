@@ -207,7 +207,7 @@ export function HomeChat({
     setDockTarget((previous) => (previous === target ? previous : target))
   }, [dockLocation])
 
-  const panelVisible = isWorkspace
+  const panelVisible = isWorkspace || open
 
   useEffect(() => {
     announceChatPanel(panelVisible)
@@ -1889,8 +1889,8 @@ export function HomeChat({
               : ''
           : ''}
       </span>
-      {isWorkspace && target ? createPortal(panelNode, target) : null}
-      {!isWorkspace && dock && dockTarget ? createPortal(dock, dockTarget) : null}
+      {target ? createPortal(panelNode, target) : panelNode}
+      {dockTarget && dock ? createPortal(dock, dockTarget) : null}
     </>
   )
 }

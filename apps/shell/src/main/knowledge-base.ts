@@ -12,7 +12,7 @@
 /// so fetching a bounded page and filtering by real path is the cheap,
 /// correct filter.
 
-import { statSync, existsSync, renameSync, unlinkSync } from 'node:fs'
+import { statSync, existsSync } from 'node:fs'
 import { basename, dirname } from 'node:path'
 import { parseFileToText } from '@genoffice/file-parse'
 
@@ -241,29 +241,16 @@ export async function createKnowledgeDocument(
 
   const opPromise = (async () => {
     const targetPath = deps.uniquePath(deps.dir(), `${deps.sanitizeBase(req.title)}.${req.format}`)
-    const tempPath = `${targetPath}.tmp-${Date.now()}`
-    try {
-      if (req.format === 'md') {
-        await deps.writeText(tempPath, req.content)
-      } else {
-        await deps.markdownToDocx(req.content, tempPath, req.documentType)
-      }
-      if (existsSync(tempPath)) {
-        renameSync(tempPath, targetPath)
-      }
-      deps.recordRecent(targetPath)
-      if (slotKey) {
-        committedDocCreations.set(slotKey, { path: targetPath, createdAt: Date.now() })
-      }
-      return { path: targetPath }
-    } catch (err) {
-      if (existsSync(tempPath)) {
-        try {
-          unlinkSync(tempPath)
-        } catch {}
-      }
-      throw err
+    if (req.format === 'md') {
+      await deps.writeText(targetPath, req.content)
+    } else {
+      await deps.markdownToDocx(req.content, targetPath, req.documentType)
     }
+    deps.recordRecent(targetPath)
+    if (slotKey) {
+      committedDocCreations.set(slotKey, { path: targetPath, createdAt: Date.now() })
+    }
+    return { path: targetPath }
   })()
 
   if (slotKey) {
