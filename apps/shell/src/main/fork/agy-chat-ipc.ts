@@ -237,6 +237,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.setEnabled, (_event, ids: unknown): string[] => {
     const stamp = ++mutationStamp
     const next = sanitizeEnabledChatModels(ids)
+    const previous = readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY]
     try {
       writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, next)
     } catch {
@@ -252,7 +253,20 @@ export function registerAgyChat(deps: AgyChatDeps): void {
       try {
         settingsAlsoChanged = applySelectedModel(next[0], stamp)
       } catch {
-        // the enabled list is saved; the selection just could not be moved
+        // The selection could not be moved, so the enabled list would point the chat box at a
+        // model it is not allowed to use. Undo the list while the selection is still the one this
+        // mutation was about to move, so the two files never disagree. A newer selection made in
+        // another window is left alone: rolling it back would lose that newer choice.
+        if (selectedModel() === current) {
+          try {
+            writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, previous)
+          } catch {
+            // Recovery failed as well. The next state read reports the real persisted state, and
+            // the selection is shown as unavailable rather than as a usable option.
+          }
+        }
+        // Nothing was reported as changed: no notification, no list, no silent re-selection.
+        return []
       }
     }
     // Enabling or disabling any model changes what the chat box offers in every window, even

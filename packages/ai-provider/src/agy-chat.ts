@@ -157,7 +157,12 @@ export function resolveChatModels(input: {
         : 'unavailable'
       : 'unverified'
   return {
-    models: ids.map((id) => ({ ...agyChatModelInfo(id), enabled: list.includes(id) })),
+    models: ids.map((id) => ({
+      ...agyChatModelInfo(id),
+      enabled: list.includes(id),
+      // a model the CLI could not be reached for is never presented as confirmed
+      verified: available.includes(id),
+    })),
     selected,
     enabled: list,
     available,
@@ -184,6 +189,8 @@ export interface AgyChatModelInfo {
   speed: 'fast' | 'balanced' | 'slow'
   /** set by resolveChatModels only: whether the person has this model switched on */
   enabled?: boolean
+  /** set by resolveChatModels only: the current CLI confirmed it can serve this model */
+  verified?: boolean
 }
 
 const COSTS: Array<[RegExp, number]> = [

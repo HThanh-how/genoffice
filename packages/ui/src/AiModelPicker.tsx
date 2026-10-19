@@ -11,6 +11,7 @@ import { ProviderLogo } from './provider-logos'
 import { useDismissablePopover } from './popover-dismiss'
 import { AI_MODEL_PICKER_STRINGS } from './strings-ai-model-picker'
 
+import type { AgyChatApi } from '@genoffice/ai-provider/agy-chat'
 import type { AgyBarApi, AgyBarState } from './AgyChatBar'
 
 /** Each app's preload exposes these under its own namespace; the panel adapts them. */
@@ -133,7 +134,49 @@ export function AiModelPicker({
     setOpen(false)
     if (!settings) return
     const prev = settings
-    const next = withAiModelSelection(settings, sel)
+    const agy =
+      typeof window !== 'undefined'
+        ? (window as unknown as { agyChat?: AgyChatApi }).agyChat
+        : undefined
+    // Antigravity models are only ever persisted through the validated Antigravity handler, so
+    // the composer chip, the chat box and the CLI agree on one model and a model that is switched
+    // off or absent from the catalog can never be written through the generic settings route.
+    // The generic write only moves the provider; the model is checked against the enabled list
+    // and the live catalog before it is stored.
+    // Re-read the settings at the moment of the write so a snapshot taken before another window
+    // changed the model is never written back over that newer change.
+    let base = settings
+    try {
+      const fresh = await bridge.getSettings()
+      if (fresh) base = fresh
+    } catch {
+      base = settings
+    }
+    if (sel.provider === 'agy' && agy?.selectAgyChatModel && agyState) {
+      const switched = withAiModelSelection(base, {
+        provider: 'agy',
+        model: base.providers?.agy?.model ?? '',
+      })
+      setSettings(switched)
+      try {
+        await bridge.setSettings(switched)
+      } catch {
+        setSettings(prev)
+        refresh()
+        return
+      }
+      let ok: boolean
+      try {
+        ok = await agy.selectAgyChatModel(sel.model)
+      } catch {
+        ok = false
+      }
+      // A rejected model is not claimed as chosen: the chip re-reads what is really stored.
+      refresh()
+      if (ok) window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+      return
+    }
+    const next = withAiModelSelection(base, sel)
     setSettings(next)
     try {
       await bridge.setSettings(next)
@@ -225,35 +268,55 @@ export function AiModelPicker({
                   <ProviderLogo id={g.id} />
                   <span>{g.label}</span>
                 </div>
-                {(g.models.length > 0 ? g.models : ['']).map((m) => {
-                  const selected = sameGroup(g) && current?.model === m
-                  const itemLabel =
-                    g.modelItems?.find((item) => item.id === m)?.label || m || g.label
-                  return (
-                    <button
-                      key={`${g.id}:${g.endpoint ?? ''}:${m}`}
-                      type="button"
-                      role="option"
-                      aria-selected={selected}
-                      className={`ai-model-item${selected ? ' selected' : ''}`}
-                      onClick={() => pick({ provider: g.id, endpoint: g.endpoint, model: m })}
-                    >
-                      <span className="ai-model-item-text">{itemLabel}</span>
-                      {selected && (
-                        <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
-                          <path
-                            d="M2.5 6.5 5 9l4.5-6"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="1.6"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                      )}
-                    </button>
-                  )
-                })}
+                {[...g.models, ...(g.unusable ?? [])].length > 0 ? (
+                  [...g.models, ...(g.unusable ?? [])].map((m) => {
+                    const selected = sameGroup(g) && current?.model === m
+                    // a stored Antigravity model that is switched off or unconfirmed is shown as
+                    // the current configuration, but it cannot be chosen
+                    const blocked = (g.unusable ?? []).includes(m)
+                    const itemLabel =
+                      g.modelItems?.find((item) => item.id === m)?.label || m || g.label
+                    return (
+                      <button
+                        key={`${g.id}:${g.endpoint ?? ''}:${m}`}
+                        type="button"
+                        role="option"
+                        aria-selected={selected}
+                        aria-disabled={blocked}
+                        disabled={blocked}
+                        title={blocked ? `${itemLabel} (${strings.unavailable})` : itemLabel}
+                        className={`ai-model-item${selected ? ' selected' : ''}${blocked ? ' unusable' : ''}`}
+                        onClick={() => {
+                          if (blocked) return
+                          void pick({ provider: g.id, endpoint: g.endpoint, model: m })
+                        }}
+                      >
+                        <span className="ai-model-item-text">{itemLabel}</span>
+                        {selected && (
+                          <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden>
+                            <path
+                              d="M2.5 6.5 5 9l4.5-6"
+                              fill="none"
+                              stroke="currentColor"
+                              strokeWidth="1.6"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                        )}
+                      </button>
+                    )
+                  })
+                ) : (
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={false}
+                    className="ai-model-item"
+                  >
+                    <span className="ai-model-item-text">{g.label}</span>
+                  </button>
+                )}
               </div>
             ))}
           </div>

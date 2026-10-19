@@ -5,7 +5,8 @@ import {
   agyUsabilityCheckedAt,
   agyUsabilityKnown,
   recordAgyChatDefault,
-  setAgyUsable,
+  recordAgyCliUsable,
+  setAgyActiveCli,
 } from './agy-default'
 /**
  * Async detection behind the agy-first defaults. "Usable" means the same thing the settings UI
@@ -37,6 +38,10 @@ export function probeAgyUsable(cliPath?: string, deps: AgyDetectDeps = realDeps)
   const running = inflight.get(key)
   if (running) return running
   const path = cliPath?.trim() || undefined
+  // The probe that starts now is the CLI the app is configured to use, so its answer is the one
+  // the defaults follow. A probe that started earlier for a path that has since been replaced may
+  // still finish, but it can no longer set the effective answer.
+  setAgyActiveCli(path)
   const run = (async () => {
     let ok: boolean
     try {
@@ -49,7 +54,7 @@ export function probeAgyUsable(cliPath?: string, deps: AgyDetectDeps = realDeps)
       ok = false
       recordAgyChatDefault(path, { models: [], error: 'probe failed' }, deps.now())
     }
-    setAgyUsable(ok, deps.now())
+    recordAgyCliUsable(path, ok, deps.now())
     return ok
   })().finally(() => {
     if (inflight.get(key) === run) inflight.delete(key)

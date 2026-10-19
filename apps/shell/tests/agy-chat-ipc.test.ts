@@ -1,4 +1,13 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -46,18 +55,39 @@ function paths(initialAi: Record<string, unknown> = {}, initialApp: Record<strin
 }
 
 afterEach(() => {
-  while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true })
+  while (dirs.length) {
+    const dir = dirs.pop()!
+    // a read-only settings directory would otherwise survive the cleanup
+    try {
+      chmodSync(dir, 0o755)
+      for (const entry of readdirSync(dir)) {
+        const path = join(dir, entry)
+        if (statSync(path).isDirectory()) chmodSync(path, 0o755)
+      }
+    } catch {
+      // best effort
+    }
+    rmSync(dir, { recursive: true, force: true })
+  }
   catalogCall.mockReset()
   windows.length = 0
 })
 
-function wire(p: { dir: string; settingsPath: string; aiSettingsPath: string; cachePath: string }) {
+type PathLike = string | (() => string)
+function wire(p: {
+  dir: string
+  settingsPath: PathLike
+  aiSettingsPath: PathLike
+  cachePath: PathLike
+}) {
+  const of = (value: PathLike): (() => string) =>
+    typeof value === 'function' ? value : () => value
   const handlers = new Map<string, (event: unknown, arg?: unknown) => unknown>()
   registerAgyChat({
     ipcMain: { handle: (channel, fn) => handlers.set(channel, fn) },
-    settingsPath: () => p.settingsPath,
-    aiSettingsPath: () => p.aiSettingsPath,
-    cachePath: () => p.cachePath,
+    settingsPath: of(p.settingsPath),
+    aiSettingsPath: of(p.aiSettingsPath),
+    cachePath: of(p.cachePath),
   })
   const call = (channel: string, arg?: unknown) => handlers.get(channel)!(undefined, arg)
   return { call, handlers }
@@ -431,5 +461,233 @@ describe('agy chat IPC: notifications and races', () => {
     })
     expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-low')).toBe(false)
     expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
+  })
+})
+
+const readApp = (path: string) => JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>
+
+/** a settings file that can be read but never rewritten: the directory is read-only */
+function unwritableSettings(dir: string, name: string, content: Record<string, unknown>): string {
+  const sub = join(dir, name)
+  mkdirSync(sub)
+  const path = join(sub, `${name}.json`)
+  writeFileSync(path, JSON.stringify(content), 'utf8')
+  chmodSync(sub, 0o555)
+  return path
+}
+
+describe('agy chat IPC: an enabled-list change is written consistently (T1-T10)', () => {
+  it('T1: both writes land, the selection moves, and every window is told', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([
+      'gemini-3.8-flash-low',
+    ])
+    expect(readApp(p.settingsPath)[AGY_CHAT_MODELS_KEY]).toEqual(['gemini-3.8-flash-low'])
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-low')
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    expect(state.selected).toBe('gemini-3.8-flash-low')
+    expect(state.selectedStatus).toBe('verified')
+    expect(sent.map(([channel]) => channel)).toEqual([
+      AGY_CHAT_CHANNELS.modelChanged,
+      'ai:settings-changed',
+    ])
+  })
+
+  it('T2: when the enabled list cannot be written, nothing is reported and nothing is broadcast', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-chat-ipc-appfail-'))
+    dirs.push(dir)
+    const settingsPath = join(dir, 'app-settings.json')
+    mkdirSync(settingsPath)
+    const aiSettingsPath = join(dir, 'ai-settings.json')
+    writeFileSync(
+      aiSettingsPath,
+      JSON.stringify({ provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } }),
+      'utf8',
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    const { call } = wire({
+      dir,
+      settingsPath,
+      aiSettingsPath,
+      cachePath: join(dir, 'usage.json'),
+    })
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
+    // T9 and T10: no notification, and no model was chosen behind the person's back
+    expect(sent.length).toBe(0)
+    expect(readAi(aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-high')
+  })
+
+  it('T3: when the selection write fails, the enabled list is rolled back and the call reports failure', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-chat-ipc-aifail-'))
+    dirs.push(dir)
+    const settingsPath = join(dir, 'app-settings.json')
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'] }),
+      'utf8',
+    )
+    const aiSettingsPath = unwritableSettings(dir, 'ai-settings', {
+      provider: 'agy',
+      providers: { agy: { model: 'gemini-3.8-flash-high' } },
+    })
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    const { call } = wire({
+      dir,
+      settingsPath,
+      aiSettingsPath,
+      cachePath: join(dir, 'usage.json'),
+    })
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
+    // T9: no false success notification; T10: no silent re-selection
+    expect(sent.length).toBe(0)
+    // T7: the next read reports exactly what is on disk - both files back to the pre-mutation state
+    expect(readApp(settingsPath)[AGY_CHAT_MODELS_KEY]).toEqual([
+      'gemini-3.8-flash-high',
+      'gemini-3.8-flash-low',
+    ])
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    expect(state.selected).toBe('gemini-3.8-flash-high')
+    expect(
+      state.models.find((m: { id: string }) => m.id === 'gemini-3.8-flash-high')?.enabled,
+    ).toBe(true)
+  })
+
+  it('T4: two changes in a row leave the newest one consistently persisted', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.1-pro-high'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const { call } = wire(p)
+    await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.1-pro-high'])
+    await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    expect(
+      state.models.filter((m: { enabled: boolean }) => m.enabled).map((m: { id: string }) => m.id),
+    ).toEqual(['gemini-3.8-flash-low'])
+    expect(state.selected).toBe('gemini-3.8-flash-low')
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-low')
+  })
+
+  it('T5: a selection made in another window while the list change is pending is not lost', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } },
+      {
+        [AGY_CHAT_MODELS_KEY]: [
+          'gemini-3.8-flash-high',
+          'gemini-3.8-flash-low',
+          'gemini-3.1-pro-high',
+        ],
+      },
+    )
+    let release: (value: { models: string[] }) => void = () => undefined
+    catalogCall.mockImplementation(() => new Promise((resolve) => (release = resolve)))
+    const { call } = wire(p)
+    const pending = call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high')
+    // the enabled list change happens while the other window's selection is still in flight
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([
+      'gemini-3.8-flash-low',
+    ])
+    release({ models: GEMINI_CATALOG })
+    expect(await pending).toBe(false)
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    expect(state.selected).toBe('gemini-3.8-flash-low')
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-low')
+  })
+
+  it('T6: when the rollback fails too, the failure is reported and the state read is honest', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-chat-ipc-rollback-'))
+    dirs.push(dir)
+    const good = join(dir, 'app-settings.json')
+    writeFileSync(
+      good,
+      JSON.stringify({ [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'] }),
+      'utf8',
+    )
+    const blocked = join(dir, 'app-settings-blocked.json')
+    mkdirSync(blocked)
+    const aiSettingsPath = unwritableSettings(dir, 'ai-settings', {
+      provider: 'agy',
+      providers: { agy: { model: 'gemini-3.8-flash-high' } },
+    })
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    // the read and the first write succeed; the recovery write hits an unwritable path
+    let calls = 0
+    const { call } = wire({
+      dir,
+      settingsPath: () => {
+        calls += 1
+        // the recovery write is the third touch of the settings file, and it fails
+        return calls === 3 ? blocked : good
+      },
+      aiSettingsPath,
+      cachePath: join(dir, 'usage.json'),
+    })
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
+    expect(sent.length).toBe(0)
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    // detectable recovery condition: the stored selection is High while High is switched off
+    expect(state.selected).toBe('gemini-3.8-flash-high')
+    expect(
+      state.models.find((m: { id: string }) => m.id === 'gemini-3.8-flash-high')?.enabled,
+    ).toBe(false)
+  })
+
+  it('T8: after a failed mutation a restart reads a consistent, or clearly detectable, state', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-chat-ipc-restart-'))
+    dirs.push(dir)
+    const settingsPath = join(dir, 'app-settings.json')
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'] }),
+      'utf8',
+    )
+    const aiSettingsPath = unwritableSettings(dir, 'ai-settings', {
+      provider: 'agy',
+      providers: { agy: { model: 'gemini-3.8-flash-high' } },
+    })
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    let calls = 0
+    const failing = wire({
+      dir,
+      settingsPath: () => {
+        calls += 1
+        // the recovery write is the third touch, and it fails
+        return calls === 3 ? join(dir, 'blocked') : settingsPath
+      },
+      aiSettingsPath,
+      cachePath: join(dir, 'usage.json'),
+    })
+    mkdirSync(join(dir, 'blocked'))
+    expect(await failing.call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([])
+    const afterRestart = wire({
+      dir,
+      settingsPath,
+      aiSettingsPath,
+      cachePath: join(dir, 'usage.json'),
+    })
+    const state = await afterRestart.call(AGY_CHAT_CHANNELS.state)
+    const enabledIds = state.models
+      .filter((m: { enabled: boolean }) => m.enabled)
+      .map((m: { id: string }) => m.id)
+    const consistent = enabledIds.includes(state.selected)
+    const detectable =
+      state.selected &&
+      state.models.find((m: { id: string }) => m.id === state.selected)?.enabled === false
+    expect(consistent || detectable).toBe(true)
   })
 })

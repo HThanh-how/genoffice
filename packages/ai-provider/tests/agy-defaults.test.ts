@@ -2,8 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   agyChatDefaultModel,
   agyChatDefaultRecord,
+  agyCliUsable,
+  agyActiveCliKey,
   agyDefaultsUsable,
+  agyUsabilityCheckedAt,
   clearAgyChatDefaults,
+  clearAgyCliUsability,
   onAgyUsableChange,
   recordAgyChatDefault,
   setAgyUsable,
@@ -31,6 +35,7 @@ import {
 
 afterEach(() => {
   setAgyUsable(null)
+  clearAgyCliUsability()
   clearAgyChatDefaults()
 })
 
@@ -353,5 +358,161 @@ describe('first-run chat model, scoped to the CLI that was configured', () => {
     // retrieval work keeps its own empty model, which resolves to the Low task default
     expect(settings.search?.providers.agy.model).toBe('')
     expect(AGY_OCR_DEFAULT_MODEL).toBe('gemini-3.8-flash-low')
+  })
+})
+
+describe('CLI usability is scoped to the configured CLI (U1-U12)', () => {
+  const high = { models: ['gemini-3.8-flash-high'] }
+  const broken = { models: [], error: 'agy not found' }
+
+  it('U1: a probe that answers makes that CLI the effective usable one', async () => {
+    const ok = await probeAgyUsable('/cli/a', { list: async () => high, now: () => 1 })
+    expect(ok).toBe(true)
+    expect(agyDefaultsUsable()).toBe(true)
+    expect(agyCliUsable('/cli/a')).toBe(true)
+    expect(agyActiveCliKey()).toBe('/cli/a')
+  })
+
+  it('U2: a probe that fails makes it the effective unusable one', async () => {
+    const ok = await probeAgyUsable('/cli/a', { list: async () => broken, now: () => 1 })
+    expect(ok).toBe(false)
+    expect(agyDefaultsUsable()).toBe(false)
+    expect(agyCliUsable('/cli/a')).toBe(false)
+  })
+
+  it('U3: an old failure finishing after a newer success cannot break the current CLI', async () => {
+    let releaseOld: (value: { models: string[]; error?: string }) => void = () => undefined
+    const old = probeAgyUsable('/cli/old', {
+      list: () => new Promise((resolve) => (releaseOld = resolve)),
+      now: () => 5,
+    })
+    await probeAgyUsable('/cli/new', { list: async () => high, now: () => 1 })
+    expect(agyDefaultsUsable()).toBe(true)
+    releaseOld(broken)
+    await old
+    expect(agyDefaultsUsable()).toBe(true)
+    expect(agyActiveCliKey()).toBe('/cli/new')
+    expect(agyCliUsable('/cli/old')).toBe(false)
+    expect(agyCliUsable('/cli/new')).toBe(true)
+  })
+
+  it('U4: an old success finishing after a newer failure cannot hide a broken CLI', async () => {
+    let releaseOld: (value: { models: string[]; error?: string }) => void = () => undefined
+    const old = probeAgyUsable('/cli/old', {
+      list: () => new Promise((resolve) => (releaseOld = resolve)),
+      now: () => 5,
+    })
+    await probeAgyUsable('/cli/new', { list: async () => broken, now: () => 1 })
+    expect(agyDefaultsUsable()).toBe(false)
+    releaseOld(high)
+    await old
+    expect(agyDefaultsUsable()).toBe(false)
+    expect(agyCliUsable('/cli/old')).toBe(true)
+  })
+
+  it('U5: two paths probing at the same time keep their own answers', async () => {
+    const both = Promise.all([
+      probeAgyUsable('/cli/a', { list: async () => high, now: () => 1 }),
+      probeAgyUsable('/cli/b', { list: async () => broken, now: () => 2 }),
+    ])
+    const [a, b] = await both
+    expect([a, b]).toEqual([true, false])
+    // whichever probe started last is the configured one; the other is only known for its path
+    expect(agyActiveCliKey()).toBe('/cli/b')
+    expect(agyDefaultsUsable()).toBe(false)
+    expect(agyCliUsable('/cli/a')).toBe(true)
+  })
+
+  it('U6: a second request for the same path joins the probe already running', async () => {
+    let calls = 0
+    const deps: AgyDetectDeps = {
+      list: () => {
+        calls += 1
+        return new Promise((resolve) => setTimeout(() => resolve(high), 5))
+      },
+      now: () => 1,
+    }
+    const first = probeAgyUsable('/cli/a', deps)
+    const second = probeAgyUsable('/cli/a', deps)
+    expect(first).toBe(second)
+    await first
+    expect(calls).toBe(1)
+  })
+
+  it('U7: changing the CLI path during an in-flight probe makes the new path the active one', async () => {
+    let releaseOld: (value: { models: string[]; error?: string }) => void = () => undefined
+    const old = probeAgyUsable('/cli/old', {
+      list: () => new Promise((resolve) => (releaseOld = resolve)),
+      now: () => 9,
+    })
+    expect(agyActiveCliKey()).toBe('/cli/old')
+    await probeAgyUsable('/cli/new', { list: async () => high, now: () => 3 })
+    expect(agyActiveCliKey()).toBe('/cli/new')
+    releaseOld(broken)
+    await old
+    expect(agyDefaultsUsable()).toBe(true)
+    expect(agyUsabilityCheckedAt()).toBe(3)
+  })
+
+  it('U8: an outdated answer cannot change what the defaults use', async () => {
+    let releaseOld: (value: { models: string[]; error?: string }) => void = () => undefined
+    const old = probeAgyUsable('/cli/old', {
+      list: () => new Promise((resolve) => (releaseOld = resolve)),
+      now: () => 9,
+    })
+    await agyUsableForDefaults('/cli/new', { list: async () => high, now: () => 3 })
+    releaseOld(broken)
+    await old
+    expect(await agyUsableForDefaults('/cli/new', { list: async () => high, now: () => 4 })).toBe(
+      true,
+    )
+    expect(agyDefaultsUsable()).toBe(true)
+  })
+
+  it('U9: a later refresh of the current CLI updates its usability honestly', async () => {
+    await probeAgyUsable('/cli/a', { list: async () => high, now: () => 1 })
+    expect(agyDefaultsUsable()).toBe(true)
+    await probeAgyUsable('/cli/a', { list: async () => broken, now: () => 2 })
+    expect(agyDefaultsUsable()).toBe(false)
+    expect(agyUsabilityCheckedAt()).toBe(2)
+    await probeAgyUsable('/cli/a', { list: async () => high, now: () => 3 })
+    expect(agyDefaultsUsable()).toBe(true)
+  })
+
+  it('U10: a failed probe keeps the model that was learned for that CLI, marked unverified', async () => {
+    await probeAgyUsable('/cli/a', { list: async () => high, now: () => 1 })
+    await probeAgyUsable('/cli/a', { list: async () => broken, now: () => 2 })
+    expect(agyChatDefaultRecord('/cli/a')).toEqual({
+      model: 'gemini-3.8-flash-high',
+      verified: false,
+    })
+    expect(agyChatDefaultModel('/cli/a')).toBe('gemini-3.8-flash-high')
+  })
+
+  it('U11: a successful catalog refresh records the model under the right CLI identity', async () => {
+    await probeAgyUsable('/cli/a', {
+      list: async () => ({ models: ['gemini-3.1-pro-low'] }),
+      now: () => 1,
+    })
+    await probeAgyUsable('/cli/b', { list: async () => high, now: () => 2 })
+    expect(agyChatDefaultRecord('/cli/a')).toEqual({ model: 'gemini-3.1-pro-low', verified: true })
+    expect(agyChatDefaultRecord('/cli/b')).toEqual({
+      model: 'gemini-3.8-flash-high',
+      verified: true,
+    })
+  })
+
+  it('U12: a first run uses the currently configured CLI, not a previous executable', async () => {
+    await probeAgyUsable('/cli/old', {
+      list: async () => ({ models: ['gemini-3.1-pro-low'] }),
+      now: () => 1,
+    })
+    await probeAgyUsable('/cli/new', { list: async () => ({ models: [] }), now: () => 2 })
+    setAgyUsable(true)
+    const settings = defaultAiSettings()
+    expect(settings.provider).toBe('agy')
+    expect(settings.providers.agy.model).toBe('')
+    expect(agyChatDefaultModel('/cli/new')).toBeUndefined()
+    expect(agyChatDefaultModel('/cli/old')).toBe('gemini-3.1-pro-low')
   })
 })
