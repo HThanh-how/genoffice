@@ -280,7 +280,9 @@ describe('R2: the quota cache cannot mix two CLI identities', () => {
     resolveA1(reading(0.9, 100))
     await a1
     expect(cache.get().groups?.[0]?.buckets[0]?.remaining).toBe(0.5)
-    const saved = JSON.parse(readFileSync(path, 'utf8')) as { groups: Array<{ buckets: Array<{ remaining: number }> }> }
+    const saved = JSON.parse(readFileSync(path, 'utf8')) as {
+      groups: Array<{ buckets: Array<{ remaining: number }> }>
+    }
     expect(saved.groups[0]!.buckets[0]!.remaining).toBe(0.5)
   })
 

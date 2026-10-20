@@ -30,8 +30,20 @@ afterEach(() => {
 describe('AgyChatModelsSettings UI consistency', () => {
   const sampleCatalog: AgyChatCatalog = {
     all: [
-      { id: 'gemini-3.8-flash-high', label: 'Flash High', family: 'gemini', relativeCost: 1, speed: 'fast' },
-      { id: 'gemini-3.8-flash-low', label: 'Flash Low', family: 'gemini', relativeCost: 0.5, speed: 'fast' },
+      {
+        id: 'gemini-3.8-flash-high',
+        label: 'Flash High',
+        family: 'gemini',
+        relativeCost: 1,
+        speed: 'fast',
+      },
+      {
+        id: 'gemini-3.8-flash-low',
+        label: 'Flash Low',
+        family: 'gemini',
+        relativeCost: 0.5,
+        speed: 'fast',
+      },
     ],
     enabled: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'],
   }
@@ -48,9 +60,7 @@ describe('AgyChatModelsSettings UI consistency', () => {
     vi.stubGlobal('agyChat', mockApi)
 
     await act(async () => {
-      root.render(
-        createElement(LocaleProvider, null, createElement(AgyChatModelsSettings, null)),
-      )
+      root.render(createElement(LocaleProvider, null, createElement(AgyChatModelsSettings, null)))
     })
     await act(async () => {})
     expect(host.querySelectorAll('.set-switch').length).toBe(2)
@@ -68,7 +78,13 @@ describe('AgyChatModelsSettings UI consistency', () => {
   it('keeps at least one model enabled and disables switch on the last model', async () => {
     const singleCatalog: AgyChatCatalog = {
       all: [
-        { id: 'gemini-3.8-flash-high', label: 'Flash High', family: 'gemini', relativeCost: 1, speed: 'fast' },
+        {
+          id: 'gemini-3.8-flash-high',
+          label: 'Flash High',
+          family: 'gemini',
+          relativeCost: 1,
+          speed: 'fast',
+        },
       ],
       enabled: ['gemini-3.8-flash-high'],
     }
@@ -81,9 +97,7 @@ describe('AgyChatModelsSettings UI consistency', () => {
     vi.stubGlobal('agyChat', mockApi)
 
     await act(async () => {
-      root.render(
-        createElement(LocaleProvider, null, createElement(AgyChatModelsSettings, null)),
-      )
+      root.render(createElement(LocaleProvider, null, createElement(AgyChatModelsSettings, null)))
     })
     await act(async () => {})
     const sw = host.querySelector('.set-switch') as HTMLButtonElement | null
@@ -112,9 +126,7 @@ describe('AgyChatModelsSettings UI consistency', () => {
     vi.stubGlobal('agyChat', mockApi)
 
     await act(async () => {
-      root.render(
-        createElement(LocaleProvider, null, createElement(AgyChatModelsSettings, null)),
-      )
+      root.render(createElement(LocaleProvider, null, createElement(AgyChatModelsSettings, null)))
     })
     await act(async () => {})
     const initialGets = getCalls

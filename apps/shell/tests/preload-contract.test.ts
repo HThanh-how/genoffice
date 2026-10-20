@@ -89,11 +89,16 @@ describe('shell preload contract', () => {
   it('setAiSettings: requires affirmative ok === true and rejects invalid/missing responses', async () => {
     // 1. Accepted write ({ ok: true }) -> resolves
     const { exposed: expSuccess } = await loadShellPreload({}, { 'ai:set-settings': { ok: true } })
-    const apiSuccess = expSuccess.aiOffice as { setAiSettings: (settings: unknown) => Promise<void> }
+    const apiSuccess = expSuccess.aiOffice as {
+      setAiSettings: (settings: unknown) => Promise<void>
+    }
     await expect(apiSuccess.setAiSettings({ provider: 'gemini' })).resolves.toBeUndefined()
 
     // 2. Rejected write ({ ok: false, reason: 'stale-model' }) -> throws
-    const { exposed: expFail } = await loadShellPreload({}, { 'ai:set-settings': { ok: false, reason: 'stale-model' } })
+    const { exposed: expFail } = await loadShellPreload(
+      {},
+      { 'ai:set-settings': { ok: false, reason: 'stale-model' } },
+    )
     const apiFail = expFail.aiOffice as { setAiSettings: (settings: unknown) => Promise<void> }
     await expect(apiFail.setAiSettings({ provider: 'gemini' })).rejects.toThrow('stale-model')
 
