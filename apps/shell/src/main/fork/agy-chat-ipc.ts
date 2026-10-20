@@ -74,7 +74,9 @@ function writeJsonAtomic(path: string, value: unknown): void {
 /** Stale-while-revalidate quota reader: always answers from memory, refreshes behind the scenes. */
 export class AgyUsageCache {
   private state: AgyChatUsageState = { groups: null, readAt: 0, refreshing: false, failed: false }
-  private inflight: Promise<AgyChatUsageState> | null = null
+  private inflight: { key: string; promise: Promise<AgyChatUsageState> } | null = null
+  /** bumped for every refresh so only the newest in-flight read may clear the record */
+  private generation = 0
   private busy = false
   /** which executable the numbers in `state` belong to; undefined until a read is taken */
   private cliKey: string | undefined
@@ -126,11 +128,20 @@ export class AgyUsageCache {
       this.state = { groups: null, readAt: 0, refreshing: false, failed: false }
     this.cliKey = key
     this.savedCliKey = key
-    if (this.inflight) return this.inflight
+    if (this.inflight && this.inflight.key === key) return this.inflight.promise
     this.busy = true
-    this.inflight = (async () => {
+    const cliPath = this.cliPath()
+    const generation = ++this.generation
+    const promise = (async (): Promise<AgyChatUsageState> => {
       this.onChange(this.snapshot())
-      const reading = await this.read(this.cliPath())
+      const reading = await this.read(cliPath)
+      // the person pointed Antigravity at a different executable while this read was running:
+      // its numbers are not this CLI's quota and must not be cached under its key
+      if (cliKeyOf(this.cliPath()) !== key) {
+        this.retire(generation)
+        this.busy = false
+        return this.snapshot()
+      }
       if (reading) {
         this.state = {
           groups: reading.groups.map((group) => ({
@@ -148,7 +159,7 @@ export class AgyUsageCache {
           cliMissing: false,
         }
         try {
-          writeJsonAtomic(this.cachePath, { ...this.state, cliKey: this.cliKey })
+          writeJsonAtomic(this.cachePath, { ...this.state, cliKey: key })
         } catch {
           // the cache only makes the next start faster
         }
@@ -160,13 +171,19 @@ export class AgyUsageCache {
           cliMissing: agyUsageCliMissing(),
         }
       }
-      this.inflight = null
+      this.retire(generation)
       this.busy = false
       const done = this.snapshot()
       this.onChange(done)
       return done
     })()
-    return this.inflight
+    this.inflight = { key, promise }
+    return promise
+  }
+
+  /** Drop the in-flight record only if it is still the one that just finished. */
+  private retire(generation: number): void {
+    if (generation === this.generation) this.inflight = null
   }
 }
 
@@ -242,6 +259,17 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   // write while it is still the newest one, so an older action can never undo a newer one.
   let mutationStamp = 0
   let lastModelStamp = 0
+  let lastEnabledStamp = 0
+
+  /** undo an enabled-list write, but only while this mutation is still the newest one */
+  function restoreEnabledList(stamp: number, previous: unknown): void {
+    if (stamp < lastEnabledStamp) return
+    try {
+      writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, previous)
+    } catch {
+      // recovery failed as well; the next state read reports the real persisted state
+    }
+  }
 
   /**
    * Persist the chat model - and, when the composer is switching providers, the provider itself -
@@ -301,7 +329,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
         // nothing was saved: report failure instead of a list the person did not get
         return null
       }
-      // Turning off the model in use is an explicit choice, so the next one is decided here,
+      lastEnabledStamp = stamp
       // deterministically: the first model still switched on *and* confirmed by the configured
       // CLI. A read-only state query never does this, and a model the person left on is never
       // switched off by a catalog change.
@@ -309,6 +337,9 @@ export function registerAgyChat(deps: AgyChatDeps): void {
       let settingsAlsoChanged = false
       if (current && !next.includes(current)) {
         const models = await catalog()
+        // another window changed the enabled list while this catalog read was in flight; rolling
+        // back now would overwrite that newer choice, so this request gives up
+        if (stamp < lastEnabledStamp) return null
         const replacement = next.find((id) => !models.error && models.models.includes(id))
         if (!replacement) {
           // The selection cannot be moved to a model the CLI has not confirmed, and leaving it
@@ -316,12 +347,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
           // list so the two files never disagree. A newer selection made in another window is
           // never rolled back: applySelectedModel refuses an older stamp, so this branch is
           // only reached while this mutation is still the newest one.
-          try {
-            writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, previous)
-          } catch {
-            // Recovery failed as well. The next state read reports the real persisted state,
-            // and the selection is shown as unavailable rather than as a usable option.
-          }
+          restoreEnabledList(stamp, previous)
           // Nothing was reported as changed: no notification, no list, no silent re-selection.
           return null
         }
@@ -332,12 +358,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
           // model it is not allowed to use. Undo the list so the two files never disagree. A
           // newer selection made in another window is left alone: an older stamp returns false
           // rather than throwing, so this rollback only runs while this mutation is the newest.
-          try {
-            writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, previous)
-          } catch {
-            // Recovery failed as well. The next state read reports the real persisted state, and
-            // the selection is shown as unavailable rather than as a usable option.
-          }
+          restoreEnabledList(stamp, previous)
           // Nothing was reported as changed: no notification, no list, no silent re-selection.
           return null
         }

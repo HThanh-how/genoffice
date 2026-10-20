@@ -102,7 +102,7 @@ import {
   resolveAiSettings,
   maxOutputTokensOf,
   sanitizeAiSettings,
-  decideSettingsWrite,
+  applySettingsWrite,
   sanitizeCliPath,
   setAiUserAgent,
   setRescueFetch,
@@ -4106,20 +4106,21 @@ export function registerAiIpc(): void {
     // so the renderer's copy is sanitized before it touches disk. Schema shape is
     // not live validation: an Antigravity chat model is only stored when the
     // configured CLI confirms it, exactly as the validated selection path requires.
-    const decision = await decideSettingsWrite(
+    const decision = await applySettingsWrite(
       settings,
-      readJson<AiSettings | null>(SETTINGS_PATH(), null),
+      () => readJson<AiSettings | null>(SETTINGS_PATH(), null),
+      (next) => writeJsonAtomic(SETTINGS_PATH(), next),
       (cliPath: string | undefined) => listAgyModels(cliPath),
       undefined,
+      false,
     )
-    if (!decision.settings) {
-      console.warn('[ai] rejected invalid ai:set-settings payload')
-      return { ok: false, reason: 'invalid' }
+    if (!decision.ok || !decision.settings) {
+      console.warn('[ai] rejected ai:set-settings payload:', decision.reason ?? 'invalid')
+      return { ok: false, reason: decision.reason ?? 'invalid' }
     }
-    writeJsonAtomic(SETTINGS_PATH(), decision.settings)
     broadcastAiSettingsChanged()
     maybePrewarmAgy(decision.settings)
-    return { ok: decision.ok, ...(decision.reason ? { reason: decision.reason } : {}) }
+    return { ok: true }
   })
 
   ipcMain.handle('ai:codex-models', async (_event, cliPath: unknown) => {

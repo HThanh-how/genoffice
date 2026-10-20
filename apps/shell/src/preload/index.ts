@@ -820,7 +820,19 @@ const homeApi: HomeApi = {
     return () => ipcRenderer.removeListener('ai:stream-chunk', listener)
   },
   async setAiSettings(settings) {
-    await ipcRenderer.invoke('ai:set-settings', settings)
+    // the main process refuses a write it could not validate; the caller must see that,
+    // otherwise the settings page would report a save that never happened
+    const result = (await ipcRenderer.invoke('ai:set-settings', settings)) as {
+      ok?: boolean
+      reason?: string
+    } | null
+    if (result?.ok === false) {
+      throw new Error(
+        result.reason === 'invalid'
+          ? 'The settings were not saved: the payload was invalid.'
+          : `The settings were not saved: Antigravity could not confirm that model (${result.reason ?? 'unknown'}).`,
+      )
+    }
   },
   getAiProviders() {
     return AI_PROVIDERS.map((meta) => {

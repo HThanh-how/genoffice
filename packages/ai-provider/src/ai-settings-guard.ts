@@ -252,8 +252,14 @@ export interface SettingsWriteDecision {
   settings: AiSettings | null
   /** true when the payload was accepted exactly as sent */
   ok: boolean
-  /** why an Antigravity model change was refused */
-  reason?: 'unverified' | 'not-confirmed' | 'not-enabled'
+  /** why an Antigravity model change was refused, or why the payload could not be committed */
+  reason?:
+    | 'unverified'
+    | 'not-confirmed'
+    | 'not-enabled'
+    | 'unknown-policy'
+    | 'stale-model'
+    | 'write-failed'
 }
 
 /**
@@ -265,6 +271,8 @@ export async function decideSettingsWrite(
   previous: AiSettings | null,
   catalogFor: (cliPath: string | undefined) => Promise<ChatCatalog>,
   savedEnabledModels: unknown,
+  /** false when this process cannot read the person's enabled-model list (a standalone editor) */
+  enabledPolicyKnown = true,
 ): Promise<SettingsWriteDecision> {
   const settings = sanitizeAiSettings(input)
   if (!settings) return { settings: null, ok: false }
@@ -273,8 +281,25 @@ export async function decideSettingsWrite(
   const stored = normalizeChatModel(previous?.providers?.agy?.model)
   // nothing changed, or the model was cleared: neither authorizes an unverified model
   if (incoming === stored || incoming === undefined) return { settings, ok: true }
+  // A process that cannot read the enabled list cannot prove a *new* choice is allowed, so it
+  // refuses the mutation instead of falling back to the seed list. Nothing else is touched.
+  if (!enabledPolicyKnown) {
+    const agy = settings.providers.agy ?? { apiKey: '', model: '' }
+    return {
+      settings: {
+        ...settings,
+        providers: { ...settings.providers, agy: { ...agy, model: stored ?? '' } },
+      },
+      ok: false,
+      reason: 'unknown-policy',
+    }
+  }
 
-  const catalog = await catalogFor(normalizeChatModel(settings.providers.agy?.cliPath))
+  const catalog = await catalogFor(
+    typeof settings.providers.agy?.cliPath === 'string' && settings.providers.agy.cliPath.trim()
+      ? settings.providers.agy.cliPath.trim()
+      : undefined,
+  )
   const resolved = resolveChatModels({
     savedEnabled: savedEnabledModels,
     savedModel: stored ?? '',
@@ -301,4 +326,64 @@ export async function decideSettingsWrite(
     }
   }
   return { settings, ok: true }
+}
+
+/**
+ * The write boundary every editor uses. Validation is asynchronous, so the file on disk may have
+ * been replaced by another window between reading the snapshot and committing. The decision is
+ * therefore re-taken against the newest committed state before anything is written, and the
+ * caller decides whether to persist: a refused transaction is not written at all.
+ */
+export async function applySettingsWrite(
+  input: unknown,
+  readSettings: () => AiSettings | null,
+  writeSettings: (settings: AiSettings) => void,
+  catalogFor: (cliPath: string | undefined) => Promise<ChatCatalog>,
+  enabledModels: unknown,
+  enabledPolicyKnown = true,
+): Promise<SettingsWriteDecision> {
+  const snapshot = readSettings()
+  let decision = await decideSettingsWrite(
+    input,
+    snapshot,
+    catalogFor,
+    enabledModels,
+    enabledPolicyKnown,
+  )
+  if (!decision.ok || !decision.settings) return decision
+
+  // Validation is asynchronous. If a verified selection landed in the file while this write was
+  // being decided, the payload was built from an older state: it may still commit everything
+  // else it carries, but it cannot roll back the newer Antigravity model.
+  const latest = readSettings()
+  const newestModel = normalizeChatModel(latest?.providers?.agy?.model)
+  if (newestModel !== normalizeChatModel(snapshot?.providers?.agy?.model)) {
+    decision = await decideSettingsWrite(
+      input,
+      latest,
+      catalogFor,
+      enabledModels,
+      enabledPolicyKnown,
+    )
+    if (!decision.settings) return decision
+    if (normalizeChatModel(decision.settings.providers.agy?.model) !== newestModel) {
+      const agy = decision.settings.providers.agy ?? { apiKey: '', model: '' }
+      decision = {
+        settings: {
+          ...decision.settings,
+          providers: { ...decision.settings.providers, agy: { ...agy, model: newestModel ?? '' } },
+        },
+        ok: true,
+        reason: 'stale-model',
+      }
+    }
+  }
+  if (!decision.settings) return decision
+  try {
+    writeSettings(decision.settings)
+  } catch {
+    // nothing was committed: report the failure instead of claiming the settings were saved
+    return { settings: null, ok: false, reason: 'write-failed' }
+  }
+  return decision
 }

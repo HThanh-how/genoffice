@@ -25,7 +25,7 @@ import {
   maxOutputTokensOf,
   resolveAiSettings,
   sanitizeAiSettings,
-  decideSettingsWrite,
+  applySettingsWrite,
   setAiUserAgent,
   setRescueFetch,
   resolveProfileCredential,
@@ -167,20 +167,21 @@ export function registerAiIpc(): void {
     // so the renderer's copy is sanitized before it touches disk. Schema shape is
     // not live validation: an Antigravity chat model is only stored when the
     // configured CLI confirms it, exactly as the validated selection path requires.
-    const decision = await decideSettingsWrite(
+    const decision = await applySettingsWrite(
       settings,
-      readJson<AiSettings | null>(AI_SETTINGS_PATH(), null),
-      (cliPath) => listAgyModels(cliPath),
+      () => readJson<AiSettings | null>(AI_SETTINGS_PATH(), null),
+      (next) => writeJsonAtomic(AI_SETTINGS_PATH(), next),
+      (cliPath: string | undefined) => listAgyModels(cliPath),
       undefined,
+      false,
     )
-    if (!decision.settings) {
-      console.warn('[ai] rejected invalid ai:set-settings payload')
-      return { ok: false, reason: 'invalid' }
+    if (!decision.ok || !decision.settings) {
+      console.warn('[ai] rejected ai:set-settings payload:', decision.reason ?? 'invalid')
+      return { ok: false, reason: decision.reason ?? 'invalid' }
     }
-    writeJsonAtomic(AI_SETTINGS_PATH(), decision.settings)
     for (const wc of webContents.getAllWebContents())
       if (!wc.isDestroyed()) wc.send('ai:settings-changed')
-    return { ok: decision.ok, ...(decision.reason ? { reason: decision.reason } : {}) }
+    return { ok: true }
   })
 
   ipcMain.handle('ai:gemini-chat-models', async () => {

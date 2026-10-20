@@ -75,7 +75,7 @@ import {
   probeAgyUsable,
   maxOutputTokensOf,
   resolveAiSettings,
-  decideSettingsWrite,
+  applySettingsWrite,
   setAiUserAgent,
   setRescueFetch,
   resolveProfileCredential,
@@ -3836,17 +3836,19 @@ export function registerSheetsAiIpc(): void {
     sessionFor(event)
     // Schema shape is not live validation: an Antigravity chat model is only stored
     // when the configured CLI confirms it, exactly as the validated selection path does.
-    const decision = await decideSettingsWrite(
+    const decision = await applySettingsWrite(
       aiSettingsInputSchema.parse(input),
-      readJson<AiSettings | null>(SETTINGS_PATH(), null),
-      (cliPath) => listAgyModels(cliPath),
+      () => readJson<AiSettings | null>(SETTINGS_PATH(), null),
+      (next) => writeJsonAtomic(SETTINGS_PATH(), next),
+      (cliPath: string | undefined) => listAgyModels(cliPath),
       undefined,
+      false,
     )
-    if (!decision.settings) return { ok: false, reason: 'invalid' }
-    writeJsonAtomic(SETTINGS_PATH(), decision.settings)
+    if (!decision.ok || !decision.settings)
+      return { ok: false, reason: decision.reason ?? 'invalid' }
     for (const wc of webContents.getAllWebContents())
       if (!wc.isDestroyed()) wc.send(IPC_CHANNELS.aiSettingsChanged)
-    return { ok: decision.ok, ...(decision.reason ? { reason: decision.reason } : {}) }
+    return { ok: true }
   })
 
   ipcMain.handle(IPC_CHANNELS.aiChat, async (event, input: unknown) => {

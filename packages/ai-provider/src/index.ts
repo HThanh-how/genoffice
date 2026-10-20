@@ -104,6 +104,7 @@ export type {
   ResolvedEndpoint,
 } from './registry'
 export {
+  applySettingsWrite,
   decideSettingsWrite,
   sanitizeAiSettings,
   sanitizeCliPath,
