@@ -25,7 +25,12 @@ function makeDeps() {
       disk.add(out)
     },
     recordRecent: (path) => void recent.push(path),
-    fileExists: (path) => disk.has(path),
+    fileExists: (path) => {
+      if (deps.isCaseSensitive === false) {
+        return Array.from(disk).some((p) => p.toLowerCase() === path.toLowerCase())
+      }
+      return disk.has(path)
+    },
   }
   return { deps, written, converted, recent, disk }
 }
