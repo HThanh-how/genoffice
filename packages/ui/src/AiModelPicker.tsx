@@ -107,6 +107,15 @@ export function AiModelPicker({
     inside: () => [chipRef.current, popRef.current],
   })
 
+  // An Antigravity model can only be chosen through the Antigravity handler, and that handler is
+  // only meaningful in a window whose main process registered it (the state read answers). Where
+  // it is not reachable, the picker offers nothing Antigravity instead of writing a model that
+  // nobody checked.
+  const agyApi =
+    typeof window !== 'undefined'
+      ? (window as unknown as { agyChat?: AgyChatApi }).agyChat
+      : undefined
+  const agySelectionAvailable = Boolean(agyApi?.selectAgyChatModel && agyState)
   const groups = useMemo(
     () =>
       settings
@@ -115,9 +124,10 @@ export function AiModelPicker({
             loggedIn,
             agyState?.models,
             agyState?.catalogError !== undefined,
+            agySelectionAvailable,
           )
         : [],
-    [settings, loggedIn, agyState?.models, agyState?.catalogError],
+    [settings, loggedIn, agyState?.models, agyState?.catalogError, agySelectionAvailable],
   )
   const current = settings ? aiModelPickerSelection(settings, agyState?.selected) : null
   const sameGroup = (g: { id: string; endpoint?: string | undefined }) =>
@@ -160,16 +170,11 @@ export function AiModelPicker({
     } catch {
       base = settings
     }
-    if (sel.provider === 'agy' && agy?.selectAgyChatModel && agyState) {
-      const switched = withAiModelSelection(base, {
-        provider: 'agy',
-        model: base.providers?.agy?.model ?? '',
-      })
-      setSettings(switched)
-      try {
-        await bridge.setSettings(switched)
-      } catch {
-        setSettings(prev)
+    // Every Antigravity model choice goes through the validated handler. There is no fallback to
+    // the generic settings route: if the handler is not reachable, nothing is written and the
+    // chip re-reads the real state so the person can try again.
+    if (sel.provider === 'agy') {
+      if (!agy?.selectAgyChatModel || !agyState) {
         refresh()
         return
       }
@@ -179,9 +184,29 @@ export function AiModelPicker({
       } catch {
         ok = false
       }
-      // A rejected model is not claimed as chosen: the chip re-reads what is really stored.
+      if (!ok) {
+        // the model was refused: the provider is not switched either, so the app never claims a
+        // provider/model combination that is not actually usable
+        refresh()
+        return
+      }
+      if (base.provider === 'agy') {
+        refresh()
+        window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+        return
+      }
+      // the model is confirmed; now move the provider, keeping every other provider's settings
+      const switched = withAiModelSelection(base, { provider: 'agy', model: sel.model })
+      setSettings(switched)
+      try {
+        await bridge.setSettings(switched)
+      } catch {
+        setSettings(prev)
+        refresh()
+        return
+      }
       refresh()
-      if (ok) window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
       return
     }
     const next = withAiModelSelection(base, sel)

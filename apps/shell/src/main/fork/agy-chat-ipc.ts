@@ -286,9 +286,11 @@ export function registerAgyChat(deps: AgyChatDeps): void {
       savedModel: model,
       catalog: models,
     })
-    // Only models the person switched on can be chosen; a model the CLI cannot be reached for
-    // keeps the seed list, so the chat box still has something to offer.
-    if (!resolved.enabled.includes(model)) return false
+    // A new choice must be both switched on by the person and confirmed by the CLI that is
+    // configured right now. A catalog that could not be read confirms nothing, so a new choice
+    // is refused rather than written as if it were verified. A model already stored is never
+    // rewritten by this handler: only an explicit selection changes it.
+    if (!resolved.enabled.includes(model) || !resolved.available.includes(model)) return false
     try {
       // Re-read right before writing so a choice made while the catalog was pending is not lost.
       if (!applySelectedModel(model, stamp)) return false

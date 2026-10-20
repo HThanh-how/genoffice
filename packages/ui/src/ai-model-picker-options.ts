@@ -79,6 +79,12 @@ export function aiModelPickerGroups(
   liveAgyModels?: readonly AiModelItemMeta[],
   /** true when the Antigravity catalog could not be read, so nothing is confirmed */
   agyCatalogFailed = false,
+  /**
+   * true when this window can reach the Antigravity selection handler. Without it an Antigravity
+   * model could only be written through the generic settings route, which checks nothing, so no
+   * Antigravity model is offered as selectable.
+   */
+  agySelectionAvailable = true,
 ): AiModelPickerGroup[] {
   const settings = resolveCustomEndpoints(input)
   const groups: AiModelPickerGroup[] = []
@@ -110,16 +116,32 @@ export function aiModelPickerGroups(
     // Once the chat box has answered, its list is the only truth about Antigravity: an empty
     // answer means "no model is selectable", not "use the hardcoded seed". The seed is only used
     // when there is no live state at all (no preload bridge).
-    if (meta.id === 'agy' && liveAgyModels !== undefined) {
+    if (meta.id === 'agy') {
+      const stored = settings.providers?.agy?.model?.trim() ?? ''
+      if (!agySelectionAvailable) {
+        // This window cannot reach the Antigravity selection handler, so no Antigravity model can
+        // be validated here. The group stays visible when Antigravity is already the provider (the
+        // chip then keeps naming it), but nothing in it is clickable.
+        if (stored || settings.provider === 'agy') {
+          groups.push({
+            id: meta.id,
+            label: meta.label,
+            models: [],
+            unusable: stored ? [stored] : [],
+            modelItems: liveAgyModels,
+          })
+        }
+        continue
+      }
       // Only models the person switched on and the CLI confirmed are selectable. A stored model
       // that is switched off, unconfirmed or absent from the verified catalog is still shown, as
       // the current configuration, so the chip never lies about what is saved - but it is marked
       // unusable and cannot be clicked. With nothing usable and nothing stored the group is
       // omitted: the hardcoded provider seed is not evidence that a model exists.
+      if (liveAgyModels === undefined) continue
       const usable = liveAgyModels
         .filter((m) => m.enabled !== false && (agyCatalogFailed || m.verified !== false))
         .map((m) => m.id)
-      const stored = settings.providers?.agy?.model?.trim() ?? ''
       const unusable = stored && !usable.includes(stored) ? [stored] : []
       if (usable.length === 0 && unusable.length === 0) continue
       groups.push({

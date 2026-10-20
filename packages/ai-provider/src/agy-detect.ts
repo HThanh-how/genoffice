@@ -1,6 +1,9 @@
 import { listAgyModels, type AgyModelCatalog } from './agy-cli'
 import {
   agyChatDefaultKey,
+  agyActiveCliKey,
+  agyCliCheckedAt,
+  agyCliUsable,
   agyDefaultsUsable,
   agyUsabilityCheckedAt,
   agyUsabilityKnown,
@@ -35,13 +38,12 @@ const inflight = new Map<string, Promise<boolean>>()
 /** Run (or join) one probe for a CLI path and record its answer. Never throws. */
 export function probeAgyUsable(cliPath?: string, deps: AgyDetectDeps = realDeps): Promise<boolean> {
   const key = agyChatDefaultKey(cliPath)
+  const path = cliPath?.trim() || undefined
+  // The CLI this request is about is the configured one, even when a probe for it is already
+  // running: joining an in-flight probe must not leave the active identity on an older path.
+  setAgyActiveCli(path)
   const running = inflight.get(key)
   if (running) return running
-  const path = cliPath?.trim() || undefined
-  // The probe that starts now is the CLI the app is configured to use, so its answer is the one
-  // the defaults follow. A probe that started earlier for a path that has since been replaced may
-  // still finish, but it can no longer set the effective answer.
-  setAgyActiveCli(path)
   const run = (async () => {
     let ok: boolean
     try {
@@ -73,10 +75,21 @@ export async function agyUsableForDefaults(
   deps: AgyDetectDeps = realDeps,
   waitMs: number = AGY_USABLE_FIRST_WAIT_MS,
 ): Promise<boolean> {
-  if (agyUsabilityKnown()) {
+  // The answer must belong to the CLI that is configured now: a fresh answer for another
+  // executable is never served as this one's verified usability.
+  if (
+    agyUsabilityKnown() &&
+    (agyActiveCliKey() === null || agyActiveCliKey() === agyChatDefaultKey(cliPath))
+  ) {
     if (deps.now() - agyUsabilityCheckedAt() > AGY_USABLE_FRESH_MS)
       void probeAgyUsable(cliPath, deps)
     return agyDefaultsUsable()
+  }
+  const knownForPath = agyCliUsable(cliPath)
+  if (knownForPath !== null) {
+    if (deps.now() - agyCliCheckedAt(cliPath) > AGY_USABLE_FRESH_MS)
+      void probeAgyUsable(cliPath, deps)
+    return knownForPath
   }
   const probe = probeAgyUsable(cliPath, deps)
   let timer: ReturnType<typeof setTimeout> | undefined

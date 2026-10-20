@@ -24,8 +24,8 @@ interface ChatDefaultRecord {
   at: number
 }
 const chatDefaults = new Map<string, ChatDefaultRecord>()
-/** Whether each CLI path the app has probed answered, keyed the same way as the chat defaults. */
-const cliUsable = new Map<string, boolean>()
+/** Whether each CLI path the app has probed answered, and when that answer was read. */
+const cliUsable = new Map<string, { usable: boolean; at: number }>()
 /**
  * The CLI the app is configured to use right now. Only this path's answer is the effective
  * usability the defaults follow, so a slow probe for a path that was replaced can never make the
@@ -76,9 +76,13 @@ export function agyActiveCliKey(): string | null {
 
 /** What is known about one CLI path's usability: true, false, or nothing yet. */
 export function agyCliUsable(cliPath?: string): boolean | null {
-  return cliUsable.has(agyChatDefaultKey(cliPath))
-    ? cliUsable.get(agyChatDefaultKey(cliPath))!
-    : null
+  const record = cliUsable.get(agyChatDefaultKey(cliPath))
+  return record ? record.usable : null
+}
+
+/** When the answer for one CLI path was last read (0 when never). */
+export function agyCliCheckedAt(cliPath?: string): number {
+  return cliUsable.get(agyChatDefaultKey(cliPath))?.at ?? 0
 }
 
 /**
@@ -92,7 +96,7 @@ export function recordAgyCliUsable(
   now: number = Date.now(),
 ): boolean {
   const key = agyChatDefaultKey(cliPath)
-  cliUsable.set(key, ok)
+  cliUsable.set(key, { usable: ok, at: now })
   if (activeCliKey !== null && key !== activeCliKey) return false
   setAgyUsable(ok, now)
   return true

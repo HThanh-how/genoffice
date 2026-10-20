@@ -4,6 +4,7 @@ import {
   agyChatDefaultRecord,
   agyCliUsable,
   agyActiveCliKey,
+  agyCliCheckedAt,
   agyDefaultsUsable,
   agyUsabilityCheckedAt,
   clearAgyChatDefaults,
@@ -514,5 +515,186 @@ describe('CLI usability is scoped to the configured CLI (U1-U12)', () => {
     expect(settings.providers.agy.model).toBe('')
     expect(agyChatDefaultModel('/cli/new')).toBeUndefined()
     expect(agyChatDefaultModel('/cli/old')).toBe('gemini-3.1-pro-low')
+  })
+})
+
+describe('CLI usability is scoped to the configured path (D1-D16)', () => {
+  const ok = { models: ['gemini-3.8-flash-high'] }
+  const bad = { models: [], error: 'not installed' }
+
+  it('D1/D2: each path keeps its own answer', async () => {
+    expect(await probeAgyUsable('/cli/a', { list: async () => ok, now: () => 1 })).toBe(true)
+    expect(await probeAgyUsable('/cli/b', { list: async () => bad, now: () => 2 })).toBe(false)
+    expect(agyCliUsable('/cli/a')).toBe(true)
+    expect(agyCliUsable('/cli/b')).toBe(false)
+    // each answer carries the time it was read, so a stale one can be recognised
+    expect(agyCliCheckedAt('/cli/a')).toBe(1)
+    expect(agyCliCheckedAt('/cli/b')).toBe(2)
+    expect(agyCliCheckedAt('/cli/never-probed')).toBe(0)
+  })
+
+  it('D6: A -> B -> A while A is still probing makes A the active CLI again', async () => {
+    let releaseA: (value: { models: string[]; error?: string }) => void = () => undefined
+    const a = probeAgyUsable('/cli/a', {
+      list: () => new Promise((resolve) => (releaseA = resolve)),
+      now: () => 5,
+    })
+    await probeAgyUsable('/cli/b', { list: async () => ok, now: () => 2 })
+    expect(agyActiveCliKey()).toBe('/cli/b')
+    // the user switches back to A while A's probe is still running: the request joins that probe
+    // instead of launching the CLI a second time
+    let relaunches = 0
+    const again = probeAgyUsable('/cli/a', {
+      list: () => {
+        relaunches += 1
+        return Promise.resolve(ok)
+      },
+      now: () => 3,
+    })
+    expect(again).toBe(a)
+    expect(relaunches).toBe(0)
+    expect(agyActiveCliKey()).toBe('/cli/a')
+    releaseA(bad)
+    await a
+    expect(agyDefaultsUsable()).toBe(false)
+    expect(agyCliUsable('/cli/b')).toBe(true)
+  })
+
+  it("D8: a fresh answer for one CLI is not served as another CLI's verified usability", async () => {
+    await probeAgyUsable('/cli/a', { list: async () => ok, now: () => 1 })
+    expect(await agyUsableForDefaults('/cli/b', { list: async () => bad, now: () => 2 })).toBe(
+      false,
+    )
+    expect(agyCliUsable('/cli/b')).toBe(false)
+  })
+
+  it('D9/D16: concurrent requests for one path share a single probe', async () => {
+    let calls = 0
+    const d: AgyDetectDeps = {
+      list: () => {
+        calls += 1
+        return Promise.resolve(ok)
+      },
+      now: () => 1,
+    }
+    await Promise.all([probeAgyUsable('/cli/a', d), probeAgyUsable('/cli/a', d)])
+    expect(calls).toBe(1)
+  })
+
+  it('D3: two CLIs probed at the same time answer for themselves only', async () => {
+    let releaseA: (value: { models: string[]; error?: string }) => void = () => undefined
+    let releaseB: (value: { models: string[]; error?: string }) => void = () => undefined
+    const a = probeAgyUsable('/cli/a', {
+      list: () => new Promise((resolve) => (releaseA = resolve)),
+      now: () => 1,
+    })
+    const b = probeAgyUsable('/cli/b', {
+      list: () => new Promise((resolve) => (releaseB = resolve)),
+      now: () => 2,
+    })
+    releaseB(bad)
+    releaseA(ok)
+    await Promise.all([a, b])
+    expect(agyCliUsable('/cli/a')).toBe(true)
+    expect(agyCliUsable('/cli/b')).toBe(false)
+    // B was the last configured path, so its answer is the effective one
+    expect(agyActiveCliKey()).toBe('/cli/b')
+    expect(agyDefaultsUsable()).toBe(false)
+  })
+
+  it('D5: an old CLI answering successfully after the new one failed does not make it usable', async () => {
+    let releaseOld: (value: { models: string[]; error?: string }) => void = () => undefined
+    const old = probeAgyUsable('/cli/old', {
+      list: () => new Promise((resolve) => (releaseOld = resolve)),
+      now: () => 9,
+    })
+    await probeAgyUsable('/cli/new', { list: async () => bad, now: () => 2 })
+    expect(agyDefaultsUsable()).toBe(false)
+    releaseOld(ok)
+    await old
+    expect(agyDefaultsUsable()).toBe(false)
+    expect(agyCliUsable('/cli/old')).toBe(true)
+    expect(agyCliUsable('/cli/new')).toBe(false)
+  })
+
+  it('D7: B -> A -> B while B is still probing makes B the active CLI again', async () => {
+    let relaunches = 0
+    let releaseB: (value: { models: string[]; error?: string }) => void = () => undefined
+    const b = probeAgyUsable('/cli/b', {
+      list: () => new Promise((resolve) => (releaseB = resolve)),
+      now: () => 7,
+    })
+    await probeAgyUsable('/cli/a', { list: async () => bad, now: () => 1 })
+    expect(agyActiveCliKey()).toBe('/cli/a')
+    expect(agyDefaultsUsable()).toBe(false)
+    const again = probeAgyUsable('/cli/b', {
+      list: () => {
+        relaunches += 1
+        return Promise.resolve(ok)
+      },
+      now: () => 3,
+    })
+    expect(again).toBe(b)
+    expect(relaunches).toBe(0)
+    expect(agyActiveCliKey()).toBe('/cli/b')
+    releaseB(ok)
+    await b
+    expect(agyDefaultsUsable()).toBe(true)
+    expect(agyCliUsable('/cli/a')).toBe(false)
+  })
+
+  it('D10/D11: only the configured path can move the effective answer', async () => {
+    let releaseStale: (value: { models: string[]; error?: string }) => void = () => undefined
+    const stale = probeAgyUsable('/cli/stale', {
+      list: () => new Promise((resolve) => (releaseStale = resolve)),
+      now: () => 1,
+    })
+    await probeAgyUsable('/cli/a', { list: async () => ok, now: () => 2 })
+    expect(agyDefaultsUsable()).toBe(true)
+    // the probe started for a path that has since been replaced answers late: it is kept for that
+    // path, but it cannot change what the defaults use
+    releaseStale(bad)
+    await stale
+    expect(agyDefaultsUsable()).toBe(true)
+    expect(agyCliUsable('/cli/stale')).toBe(false)
+    // a legitimate refresh of the configured path does
+    await probeAgyUsable('/cli/a', { list: async () => bad, now: () => 3 })
+    expect(agyDefaultsUsable()).toBe(false)
+    expect(agyUsabilityCheckedAt()).toBe(3)
+  })
+
+  it('D12: the auto-detected CLI (no configured path) is scoped like any other', async () => {
+    await probeAgyUsable(undefined, { list: async () => ok, now: () => 1 })
+    expect(agyActiveCliKey()).toBe('')
+    expect(agyCliUsable()).toBe(true)
+    expect(agyCliUsable(undefined)).toBe(true)
+    await probeAgyUsable('/cli/other', { list: async () => bad, now: () => 2 })
+    expect(agyCliUsable()).toBe(true)
+    expect(agyCliUsable('/cli/other')).toBe(false)
+    expect(await agyUsableForDefaults(undefined, { list: async () => ok, now: () => 3 })).toBe(true)
+  })
+
+  it('D15: two executables with different catalogs keep separate chat defaults', async () => {
+    await probeAgyUsable('/cli/a', {
+      list: async () => ({ models: ['gemini-3.1-pro-low', 'gemini-3.8-flash-low'] }),
+      now: () => 1,
+    })
+    await probeAgyUsable('/cli/b', {
+      list: async () => ({ models: ['gemini-3.8-flash-high'] }),
+      now: () => 2,
+    })
+    expect(agyChatDefaultModel('/cli/a')).toBe('gemini-3.1-pro-low')
+    expect(agyChatDefaultModel('/cli/b')).toBe('gemini-3.8-flash-high')
+    expect(agyChatDefaultModel('/cli/never-probed')).toBe('gemini-3.8-flash-high')
+  })
+
+  it('D13/D14: probing another path never rewrites stored model or provider choices', async () => {
+    await probeAgyUsable('/cli/a', { list: async () => ok, now: () => 1 })
+    await probeAgyUsable('/cli/b', { list: async () => bad, now: () => 2 })
+    const settings = defaultAiSettings()
+    expect(settings.provider).toBe('gemini')
+    expect(settings.providers.agy.model).toBe('')
+    expect(agyChatDefaultModel('/cli/a')).toBe('gemini-3.8-flash-high')
+    expect(agyChatDefaultModel('/cli/b')).toBeUndefined()
   })
 })

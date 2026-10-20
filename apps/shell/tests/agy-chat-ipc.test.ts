@@ -676,3 +676,92 @@ describe('agy chat IPC: an enabled-list change is written consistently (T1-T10)'
     expect(consistent || detectable).toBe(true)
   })
 })
+
+describe('agy chat IPC: a new selection must be enabled and confirmed (A1-A12)', () => {
+  it('A1/A12: a model that is enabled and confirmed by the CLI is selected', async () => {
+    const p = paths({ provider: 'agy', providers: { agy: { model: '' } } })
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high')).toBe(true)
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-high')
+  })
+
+  it('A2/A8: an enabled model the current CLI no longer reports is refused', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.1-pro-high'] },
+    )
+    const before = readFileSync(p.aiSettingsPath, 'utf8')
+    catalogCall.mockImplementation(async () => ({ models: ['gemini-3.8-flash-high'] }))
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high')).toBe(false)
+    expect(readFileSync(p.aiSettingsPath, 'utf8')).toBe(before)
+    expect(sent.length).toBe(0)
+  })
+
+  it('A3/A4: a model the person switched off is refused even when the CLI has it', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-low')).toBe(false)
+    catalogCall.mockImplementation(async () => ({ models: [] }))
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high')).toBe(false)
+  })
+
+  it('A5: a saved model the CLI no longer reports is preserved by a state read', async () => {
+    const p = paths({ provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } })
+    catalogCall.mockImplementation(async () => ({ models: ['gemini-3.8-flash-low'] }))
+    const { call } = wire(p)
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    expect(state.selected).toBe('gemini-3.8-flash-high')
+    expect(state.selectedStatus).toBe('unavailable')
+  })
+
+  it('A9: a catalog that changes while a selection is pending is the one that decides', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.1-pro-high'] },
+    )
+    const before = readFileSync(p.aiSettingsPath, 'utf8')
+    const { call } = wire(p)
+    let release: (value: { models: string[]; error?: string }) => void = () => undefined
+    catalogCall.mockImplementation(() => new Promise((resolve) => (release = resolve)))
+    const pending = call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high')
+    // the CLI answers only after the request was made, and it no longer has that model
+    release({ models: ['gemini-3.8-flash-high'] })
+    expect(await pending).toBe(false)
+    expect(readFileSync(p.aiSettingsPath, 'utf8')).toBe(before)
+    // the same request for a model the newer catalog does report still works
+    catalogCall.mockImplementation(async () => ({ models: ['gemini-3.8-flash-high'] }))
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high')).toBe(true)
+  })
+
+  it('A10: an explicitly enabled non-Gemini model the CLI reports is selectable', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['claude-sonnet-4-6'] },
+    )
+    catalogCall.mockImplementation(async () => ({
+      models: ['claude-sonnet-4-6', 'gemini-3.8-flash-high'],
+    }))
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'claude-sonnet-4-6')).toBe(true)
+  })
+
+  it('A11: a failed catalog preserves the old settings and claims no verified availability', async () => {
+    const p = paths({ provider: 'agy', providers: { agy: { model: 'gemini-3.8-flash-high' } } })
+    const before = readFileSync(p.aiSettingsPath, 'utf8')
+    catalogCall.mockImplementation(async () => ({ models: [], error: 'agy models timed out' }))
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-low')).toBe(false)
+    expect(readFileSync(p.aiSettingsPath, 'utf8')).toBe(before)
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    expect(state.selectedStatus).toBe('unverified')
+    expect(state.available).toEqual([])
+  })
+})

@@ -130,8 +130,11 @@ export function resolveChatModels(input: {
     typeof input.catalog.error === 'string' && input.catalog.error.trim()
       ? input.catalog.error.trim()
       : undefined
-  const available = catalogError ? [] : dedupeModelIds(input.catalog.models ?? [])
-  const verified = available.length > 0
+  // A CLI that answered is verified even when it answered with nothing: an empty list is a
+  // confirmed "this executable has no models", not an unknown. Only an unreadable catalog leaves
+  // availability genuinely unverified.
+  const verified = !catalogError
+  const available = verified ? dedupeModelIds(input.catalog.models ?? []) : []
   const fromCatalog = input.savedEnabled === undefined && verified
   const enabled =
     input.savedEnabled === undefined

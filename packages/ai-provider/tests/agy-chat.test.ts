@@ -242,6 +242,23 @@ describe('resolveChatModels', () => {
     expect(state.fromCatalog).toBe(false)
   })
 
+  it('T41: a CLI that answered with no models is confirmed empty, not merely unreadable', () => {
+    const state = resolveChatModels({
+      savedEnabled: undefined,
+      savedModel: 'gemini-3.8-flash-high',
+      catalog: { models: [] },
+    })
+    expect(state.verified).toBe(true)
+    expect(state.available).toEqual([])
+    expect(state.selectedStatus).toBe('unavailable')
+    // the stored model is still listed so the UI matches what is saved, but it is flagged as
+    // something this CLI cannot serve
+    expect(state.enabled).toEqual(['gemini-3.8-flash-high'])
+    expect(state.models.map((m) => [m.id, m.verified])).toEqual([['gemini-3.8-flash-high', false]])
+    expect(state.fromCatalog).toBe(true)
+    expect(state.catalogError).toBeUndefined()
+  })
+
   it('T24/T32: duplicate catalog ids produce one entry each without changing identity', () => {
     const state = resolveChatModels({
       savedEnabled: undefined,
