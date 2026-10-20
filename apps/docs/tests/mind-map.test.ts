@@ -389,6 +389,7 @@ describe('model-facing mind map text', () => {
     expect(systemPrompt).toContain('generate_mindmap')
     for (const line of systemPrompt.split('\n')) {
       expect(line, `CJK in prompt line: ${line}`).not.toMatch(HAN)
+    }
   })
 })
 

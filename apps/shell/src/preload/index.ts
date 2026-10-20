@@ -1033,13 +1033,6 @@ const tabsApi: TabsApi = {
     ipcRenderer.on('app:chrome-pressed', listener)
     return () => ipcRenderer.removeListener('app:chrome-pressed', listener)
   },
-  onStartRename(handler) {
-    const listener = (_event: IpcRendererEvent, id: unknown) => {
-      if (typeof id === 'string') handler(id)
-    }
-    ipcRenderer.on(TABS_CHANNELS.startRename, listener)
-    return () => ipcRenderer.removeListener(TABS_CHANNELS.startRename, listener)
-  },
 }
 
 contextBridge.exposeInMainWorld('aiOfficeTabs', tabsApi)

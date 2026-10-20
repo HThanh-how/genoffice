@@ -877,11 +877,6 @@ export class TabManager {
    *  hand it to the caller ("Open in New Window" — the live document, unsaved
    *  edits included, moves into a detached editor window). Null while a close
    *  prompt is pending on the tab. */
-  /** told when a tab with a file is closed (not detached), so it can be reopened */
-  setClosedListener(listener: ((tab: { kind: TabKind; filePath: string }) => void) | null): void {
-    this.closedListener = listener
-  }
-
   detachTab(id: string): DetachedTab | null {
     if (id === HOME_ID) return null
     const idx = this.tabs.findIndex((t) => t.id === id)

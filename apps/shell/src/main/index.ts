@@ -385,10 +385,6 @@ import { hiddenNamesIn } from './windows-hidden'
 import { readClipboardFiles, writeClipboardFiles } from './fork/clipboard-files'
 import { pasteFiles } from './fork/folder-paste'
 import { isInsidePath, outermostPaths } from '../shared/path-nesting'
-import { tabMenuTemplate, tabMenuWords, type TabMenuActions } from './fork/tab-menu'
-import { tabMenuIcons } from './fork/tab-menu-icons'
-import { runTabDocumentAction, type TabDocumentAction } from './fork/tab-document-actions'
-import { isProgramFile } from './everything/junk'
 import { applyPendingDbMove, isDbDirAccessible, resolveDbDir } from './document-memory/db-location'
 import { registerDbLocationIpc } from './fork/db-location-ipc'
 import { initClipboardSuggest, registerClipboardSuggest } from './fork/clipboard-suggest-ipc'
@@ -7058,8 +7054,6 @@ function ensureTabManager(): TabManager {
   if (!tabManager) throw new Error('the shell window could not be created')
   return tabManager
 }
-
-
 
 function detachTabToWindow(id: string): void {
   if (!tabManager) return
