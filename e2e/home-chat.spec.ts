@@ -106,12 +106,13 @@ test('home chat finds remembered content, opens its source and preserves the hom
       timeout: 30_000,
     })
     expect(requests).toHaveLength(3)
-    // 1. Empty knowledge base (no starred files): only 4 baseline tools are exposed
-    expect(requests[0]!.tools).toHaveLength(4)
+    expect(requests[0]!.tools).toHaveLength(6)
     expect(requests[0]!.tools?.map((t) => t.function.name)).toEqual([
       'search_remembered_documents',
       'read_remembered_document',
       'open_remembered_document',
+      'read_knowledge_file',
+      'search_knowledge_base',
       'create_document',
     ])
     const evidence = JSON.parse(
