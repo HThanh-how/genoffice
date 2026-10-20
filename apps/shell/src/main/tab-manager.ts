@@ -868,6 +868,11 @@ export class TabManager {
     }
   }
 
+  /** told when a tab with a file is closed (not detached), so it can be reopened */
+  setClosedListener(listener: ((tab: { kind: TabKind; filePath: string }) => void) | null): void {
+    this.closedListener = listener
+  }
+
   /** Remove a tab from the strip WITHOUT destroying its WebContentsView and
    *  hand it to the caller ("Open in New Window" — the live document, unsaved
    *  edits included, moves into a detached editor window). Null while a close

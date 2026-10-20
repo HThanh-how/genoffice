@@ -109,7 +109,9 @@ export const en = {
   aiErrEmptyOutput: 'Empty output',
   aiErrUnknown: 'Unknown error',
   aiErrStreamTimeout:
-    'The AI request exceeded its time limit and was stopped. Try again, or choose a faster model for a long request.',
+    'AI request timed out: no response from the network, so the run was stopped. Check your connection and try again',
+  aiErrRegion:
+    "This model's provider does not serve your current region — pick another model or change your network",
   aiErrOverloaded: 'The AI service is busy right now — please try again in a moment',
   aiErrNetwork:
     'Network problem: could not reach the AI service. Check your connection and try again',
@@ -223,5 +225,4 @@ export const en = {
   aiSumSaveTemplate: 'Saved style template "{name}"',
   aiSumTemplatesEmpty: 'Style templates (empty)',
   aiSumListTemplates: 'Listed {count} style templates',
-  aiPageCloudToLocal: 'cloud unavailable — generated locally',
 } satisfies Record<keyof typeof zh, string>

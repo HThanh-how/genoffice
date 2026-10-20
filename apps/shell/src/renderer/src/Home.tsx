@@ -41,10 +41,14 @@ import { HomeChat } from './HomeChat'
 import { ClipboardSuggest } from './ClipboardSuggest'
 import './home-workspace.css'
 
+import type { ProjectApi } from '@genoffice/project-store'
+
 declare global {
   interface Window {
     aiOffice: HomeApi
     aiOfficeIntegrations?: IntegrationsApi
+    /** Optional: a build without the project bridge keeps the panel in memory. */
+    projectApi?: ProjectApi
   }
 }
 
@@ -64,11 +68,17 @@ const GREET_ASK_KEYS = [
 const FILE_ICONS: Record<string, string> = {
   docx: iconDocx,
   doc: iconDocx,
+  odt: iconDocx,
+  ott: iconDocx,
   xlsx: iconXlsx,
   xlsm: iconXlsx,
   xls: iconXlsx,
+  ods: iconXlsx,
+  ots: iconXlsx,
   pptx: iconPptx,
   ppt: iconPptx,
+  odp: iconPptx,
+  otp: iconPptx,
   pdf: iconPdf,
   md: iconMd,
   markdown: iconMd,

@@ -112,7 +112,9 @@ export const fr = {
   aiTooManyImages: 'Au plus {max} images par message ; les images en trop ont été ignorées',
   aiUnknownError: 'Erreur inconnue',
   aiTimeoutError:
-    'La requête de l’IA a dépassé le délai imparti et a été arrêtée. Réessayez ou choisissez un modèle plus rapide pour une longue requête.',
+    "Délai de la requête IA dépassé : aucune réponse du réseau, l'exécution a été interrompue. Vérifiez votre connexion et réessayez",
+  aiRegionError:
+    'Le fournisseur de ce modèle ne dessert pas votre région actuelle — choisissez un autre modèle ou changez de réseau',
   aiOverloadedError: "Le service d'IA est actuellement surchargé — réessayez dans un instant",
   aiNetworkError:
     'Problème réseau : impossible de joindre le service IA. Vérifiez votre connexion et réessayez',

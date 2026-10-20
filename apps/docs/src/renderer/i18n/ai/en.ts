@@ -109,7 +109,9 @@ export const en = {
   aiTooManyImages: 'At most {max} images per message; extras were ignored',
   aiUnknownError: 'Unknown error',
   aiTimeoutError:
-    'The AI request exceeded its time limit and was stopped. Try again, or choose a faster model for a long request.',
+    'AI request timed out: no response from the network, so the run was stopped. Check your connection and try again',
+  aiRegionError:
+    "This model's provider does not serve your current region — pick another model or change your network",
   aiOverloadedError: 'The AI service is busy right now — please try again in a moment',
   aiNetworkError:
     'Network problem: could not reach the AI service. Check your connection and try again',
