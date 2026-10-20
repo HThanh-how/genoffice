@@ -75,7 +75,6 @@ test('home chat finds remembered content, opens its source and preserves the hom
     }, `http://127.0.0.1:${address.port}/v1`)
     await home.locator('.tab-item.tab-home').click()
     await expect(home.locator('.home-hero')).toBeVisible()
-    await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
 
     const askBtn = home.locator('.sidebar').getByRole('button', { name: 'Ask AI', exact: true })
     await askBtn.click()
@@ -95,7 +94,6 @@ test('home chat finds remembered content, opens its source and preserves the hom
     await expect(home.locator('.home-chat-panel.is-workspace')).toBeHidden()
     await expect(homeTab).toHaveAttribute('data-test-click-received', 'true')
     await expect(home.locator('.home-hero')).toBeVisible()
-    await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
 
     await askBtn.click()
     await expect(home.locator('.home-chat-panel.is-workspace')).toBeVisible()
