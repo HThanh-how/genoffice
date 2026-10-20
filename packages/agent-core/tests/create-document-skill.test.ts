@@ -6,13 +6,25 @@ import {
 } from '../src/create-document-skill'
 import { createKnowledgeBaseSkill, kbCiteHref } from '../src/knowledge-base-skill'
 
-function makeSkill(create?: (r: CreateDocumentRequest) => Promise<{ path: string }>) {
+interface MakeSkillOptions {
+  getSessionId?: () => string | undefined
+  getExecutionId?: () => string | undefined
+  getUserTurnId?: () => string | undefined
+}
+
+function makeSkill(
+  create?: (r: CreateDocumentRequest) => Promise<{ path: string }>,
+  options?: MakeSkillOptions,
+) {
   const requests: CreateDocumentRequest[] = []
   const skill = createDocumentSkill({
     create: async (r) => {
       requests.push(r)
       return create ? create(r) : { path: `/Users/me/GenOffice/${r.title}.${r.format}` }
     },
+    ...(options?.getSessionId ? { getSessionId: options.getSessionId } : {}),
+    ...(options?.getExecutionId ? { getExecutionId: options.getExecutionId } : {}),
+    ...(options?.getUserTurnId ? { getUserTurnId: options.getUserTurnId } : {}),
   })
   return { skill, requests }
 }
@@ -191,17 +203,21 @@ describe('createDocumentSkill', () => {
       resolveFirst = res
     })
 
-    const { skill } = makeSkill(async () => {
-      callCount++
-      return barrier
-    })
+    const { skill } = makeSkill(
+      async () => {
+        callCount++
+        return barrier
+      },
+      {
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+      },
+    )
 
     const callPayload = {
       title: 'Report',
       format: 'docx',
       content: '# Content',
-      sessionId: 'sess-1',
-      userTurnId: 'turn-1',
       documentSlot: 'primary',
     }
 
@@ -218,17 +234,21 @@ describe('createDocumentSkill', () => {
 
   it('returns committed result for repeated calls with same identity key', async () => {
     let callCount = 0
-    const { skill } = makeSkill(async () => {
-      callCount++
-      return { path: '/Users/me/GenOffice/Report.docx' }
-    })
+    const { skill } = makeSkill(
+      async () => {
+        callCount++
+        return { path: '/Users/me/GenOffice/Report.docx' }
+      },
+      {
+        getSessionId: () => 'sess-1',
+        getUserTurnId: () => 'turn-1',
+      },
+    )
 
     const callPayload = {
       title: 'Report',
       format: 'docx',
       content: '# Content',
-      sessionId: 'sess-1',
-      userTurnId: 'turn-1',
       documentSlot: 'primary',
     }
 
@@ -246,7 +266,10 @@ describe('createDocumentSkill', () => {
   })
 
   it('forwards documentType and documentSlot to deps.create', async () => {
-    const { skill, requests } = makeSkill()
+    const { skill, requests } = makeSkill(undefined, {
+      getSessionId: () => 's1',
+      getUserTurnId: () => 't1',
+    })
     await skill.executeTool(
       call({
         title: 'Science Report',
@@ -254,8 +277,6 @@ describe('createDocumentSkill', () => {
         content: '# Research',
         documentType: 'scientific-report',
         documentSlot: 'primary',
-        sessionId: 's1',
-        userTurnId: 't1',
       }),
     )
     expect(requests[0]).toMatchObject({
@@ -544,6 +565,7 @@ describe('createDocumentSkill', () => {
     const executionId = 'exec-stable-uuid'
     let createCalls = 0
     const skill = createDocumentSkill({
+      getExecutionId: () => executionId,
       getSessionId: () => persistedId || executionId,
       getUserTurnId: () => 'turn-1',
       create: async () => {
@@ -561,10 +583,7 @@ describe('createDocumentSkill', () => {
     persistedId = 'persisted-server-id-456'
 
     // 4. If executionId remains stable host-side, retry preserves single physical document
-    const r2 = await skill.executeTool({
-      ...opCall,
-      input: { ...opCall.input, sessionId: executionId },
-    })
+    const r2 = await skill.executeTool(opCall)
     expect(createCalls).toBe(1)
     expect(r2.output).toBe(r1.output)
 
@@ -575,7 +594,8 @@ describe('createDocumentSkill', () => {
       resolveDelayedCreate = res
     })
     const concurrentSkill = createDocumentSkill({
-      getSessionId: () => executionId,
+      getExecutionId: () => executionId,
+      getSessionId: () => persistedId || executionId,
       getUserTurnId: () => 'turn-1',
       create: async () => {
         concurrentCalls++
@@ -586,10 +606,7 @@ describe('createDocumentSkill', () => {
     const p1 = concurrentSkill.executeTool(opCall)
     // Mid-flight persistence completes
     persistedId = 'persisted-server-id-789'
-    const p2 = concurrentSkill.executeTool({
-      ...opCall,
-      input: { ...opCall.input, sessionId: executionId },
-    })
+    const p2 = concurrentSkill.executeTool(opCall)
 
     resolveDelayedCreate({ path: '/Users/me/GenOffice/Report.docx' })
     const [cr1, cr2] = await Promise.all([p1, p2])
@@ -1653,6 +1670,344 @@ describe('createDocumentSkill', () => {
         expect(r2.isError).toBe(true)
         expect(r2.output).toContain('Operation identity conflict')
         expect(createCalls).toBe(1)
+      })
+
+      describe('Super Prompt V9: Focus & Identity final validation', () => {
+        it('FOCUS-SKILL-01: Newly created file is already open; a valid request still activates its tab', async () => {
+          let openCalls = 0
+          const skill = createDocumentSkill({
+            getSessionId: () => 's-focus-1',
+            getUserTurnId: () => 't-focus-1',
+            create: async () => ({ path: '/Users/me/GenOffice/NewOpen.docx' }),
+            isOpen: async () => true,
+            open: async (p) => {
+              openCalls++
+              return p.endsWith('.docx')
+            },
+          })
+          const res = await skill.executeTool(
+            call({ title: 'NewOpen', format: 'docx', content: '# Hello', open: true }, 'c-1'),
+          )
+          expect(openCalls).toBe(1)
+          expect(res.output).toContain('opened: true')
+        })
+
+        it('FOCUS-SKILL-02: Cached file is already open; replay with open: true activates the existing tab', async () => {
+          let openCalls = 0
+          const skill = createDocumentSkill({
+            getSessionId: () => 's-focus-2',
+            getUserTurnId: () => 't-focus-2',
+            create: async () => ({ path: '/Users/me/GenOffice/CachedOpen.docx' }),
+            isOpen: async () => true,
+            open: async () => {
+              openCalls++
+              return true
+            },
+          })
+          const req = call(
+            { title: 'CachedOpen', format: 'docx', content: '# Hello', open: true },
+            'c-2',
+          )
+          await skill.executeTool(req)
+          expect(openCalls).toBe(1)
+
+          const r2 = await skill.executeTool(req)
+          expect(openCalls).toBe(2)
+          expect(r2.output).toContain('opened: true')
+        })
+
+        it('FOCUS-SKILL-03: Existing tab activation does not create duplicate tabs or files', async () => {
+          let createCalls = 0
+          let openCalls = 0
+          const skill = createDocumentSkill({
+            getSessionId: () => 's-focus-3',
+            getUserTurnId: () => 't-focus-3',
+            create: async () => {
+              createCalls++
+              return { path: '/Users/me/GenOffice/NoDup.docx' }
+            },
+            isOpen: async () => true,
+            open: async () => {
+              openCalls++
+              return true
+            },
+          })
+          const req = call(
+            { title: 'NoDup', format: 'docx', content: '# Hello', open: true },
+            'c-3',
+          )
+          await skill.executeTool(req)
+          await skill.executeTool(req)
+          expect(createCalls).toBe(1)
+          expect(openCalls).toBe(2)
+        })
+
+        it('FOCUS-SKILL-04: Stale automatic call cannot activate an existing tab after Stop', async () => {
+          const skill = createDocumentSkill({
+            getSessionId: () => 's-focus-4',
+            getUserTurnId: () => 't-focus-4',
+            create: async () => ({ path: '/Users/me/GenOffice/Stale.docx' }),
+            isOpen: async () => true,
+            open: async (_p, ctx) => {
+              if (ctx?.userTurnId !== 'active-turn') return false
+              return true
+            },
+          })
+          const res = await skill.executeTool(
+            call({ title: 'Stale', format: 'docx', content: '# Hello', open: true }, 'c-4'),
+          )
+          expect(res.output).toContain('opened: false')
+        })
+
+        it('FOCUS-SKILL-05: Manual click after Stop can still activate the existing tab', async () => {
+          let openCalls = 0
+          const skill = createDocumentSkill({
+            getSessionId: () => 's-focus-5',
+            getUserTurnId: () => 't-focus-5',
+            create: async () => ({ path: '/Users/me/GenOffice/Manual.docx' }),
+            isOpen: async () => true,
+            open: async () => {
+              openCalls++
+              return true
+            },
+          })
+          await skill.executeTool(
+            call({ title: 'Manual', format: 'docx', content: '# Hello', open: false }, 'c-5'),
+          )
+          expect(openCalls).toBe(0)
+
+          const res = await skill.executeTool(
+            call({ title: 'Manual', format: 'docx', content: '# Hello', open: true }, 'c-5'),
+          )
+          expect(openCalls).toBe(1)
+          expect(res.output).toContain('opened: true')
+        })
+
+        it('FOCUS-SKILL-06: Focus failure does not falsely report that the document was displayed', async () => {
+          const skill = createDocumentSkill({
+            getSessionId: () => 's-focus-6',
+            getUserTurnId: () => 't-focus-6',
+            create: async () => ({ path: '/Users/me/GenOffice/Fail.docx' }),
+            isOpen: async () => true,
+            open: async () => {
+              throw new Error('Focus failed')
+            },
+          })
+          const res = await skill.executeTool(
+            call({ title: 'Fail', format: 'docx', content: '# Hello', open: true }, 'c-6'),
+          )
+          expect(res.output).toContain('opened: false')
+        })
+
+        it('ID-FINAL-01: Two concurrent exact replays with the same trusted host identity result in exactly one create call', async () => {
+          let createCalls = 0
+          let resolveCreate!: (res: { path: string }) => void
+          const barrier = new Promise<{ path: string }>((res) => {
+            resolveCreate = res
+          })
+          const skill = createDocumentSkill({
+            getSessionId: () => 'sess-final-1',
+            getUserTurnId: () => 'turn-final-1',
+            create: async () => {
+              createCalls++
+              return barrier
+            },
+          })
+          const req = call({ title: 'Final1', format: 'docx', content: '# 1' }, 'call-final-1')
+          const p1 = skill.executeTool(req)
+          const p2 = skill.executeTool(req)
+          resolveCreate({ path: '/Users/me/GenOffice/Final1.docx' })
+          const [r1, r2] = await Promise.all([p1, p2])
+          expect(createCalls).toBe(1)
+          expect(r1.output).toBe(r2.output)
+        })
+
+        it('ID-FINAL-02: A sequential exact replay returns the original file without creating another file', async () => {
+          let createCalls = 0
+          const skill = createDocumentSkill({
+            getSessionId: () => 'sess-final-2',
+            getUserTurnId: () => 'turn-final-2',
+            create: async () => {
+              createCalls++
+              return { path: '/Users/me/GenOffice/Final2.docx' }
+            },
+          })
+          const req = call({ title: 'Final2', format: 'docx', content: '# 2' }, 'call-final-2')
+          const r1 = await skill.executeTool(req)
+          const r2 = await skill.executeTool(req)
+          expect(createCalls).toBe(1)
+          expect(r1.output).toBe(r2.output)
+        })
+
+        it('ID-FINAL-03: Two independent host sessions using identical call IDs and turn IDs do not share a document', async () => {
+          let currentSession = 'session-A'
+          let createCalls = 0
+          const skill = createDocumentSkill({
+            getSessionId: () => currentSession,
+            getExecutionId: () => currentSession,
+            getUserTurnId: () => 'turn-shared',
+            create: async (r) => {
+              createCalls++
+              return { path: `/Users/me/GenOffice/${r.title}_${currentSession}.docx` }
+            },
+          })
+          const req = call({ title: 'Doc', format: 'docx', content: '# C' }, 'call-same')
+          currentSession = 'session-A'
+          const rA = await skill.executeTool(req)
+          currentSession = 'session-B'
+          const rB = await skill.executeTool(req)
+          expect(createCalls).toBe(2)
+          expect(rA.output).toContain('Doc_session-A.docx')
+          expect(rB.output).toContain('Doc_session-B.docx')
+        })
+
+        it('ID-FINAL-04: A new user turn can legitimately create another file', async () => {
+          let currentTurn = 'turn-1'
+          let createCalls = 0
+          const skill = createDocumentSkill({
+            getSessionId: () => 'sess-final-4',
+            getUserTurnId: () => currentTurn,
+            create: async (r) => {
+              createCalls++
+              return { path: `/Users/me/GenOffice/${r.title}_${currentTurn}.docx` }
+            },
+          })
+          const req = call({ title: 'TurnDoc', format: 'docx', content: '# C' }, 'call-turn')
+          currentTurn = 'turn-1'
+          const r1 = await skill.executeTool(req)
+          currentTurn = 'turn-2'
+          const r2 = await skill.executeTool(req)
+          expect(createCalls).toBe(2)
+          expect(r1.output).toContain('TurnDoc_turn-1.docx')
+          expect(r2.output).toContain('TurnDoc_turn-2.docx')
+        })
+
+        it('ID-FINAL-05: documentType and documentSlot are forwarded unchanged', async () => {
+          let receivedReq!: CreateDocumentRequest
+          const skill = createDocumentSkill({
+            getSessionId: () => 's-5',
+            getUserTurnId: () => 't-5',
+            create: async (r) => {
+              receivedReq = r
+              return { path: '/Users/me/GenOffice/Doc.docx' }
+            },
+          })
+          await skill.executeTool(
+            call({
+              title: 'Doc',
+              format: 'docx',
+              content: '# C',
+              documentType: 'memo',
+              documentSlot: 'annex',
+            }),
+          )
+          expect(receivedReq.documentType).toBe('memo')
+          expect(receivedReq.documentSlot).toBe('annex')
+        })
+
+        it('ID-FINAL-06: Host identity is forwarded when provided by the host, regardless of model-supplied conflicting values', async () => {
+          let receivedReq!: CreateDocumentRequest
+          const skill = createDocumentSkill({
+            getSessionId: () => 'host-session-real',
+            getUserTurnId: () => 'host-turn-real',
+            create: async (r) => {
+              receivedReq = r
+              return { path: '/Users/me/GenOffice/Doc.docx' }
+            },
+          })
+          await skill.executeTool(
+            call({
+              title: 'Doc',
+              format: 'docx',
+              content: '# C',
+              sessionId: 'model-spoofed-session',
+              userTurnId: 'model-spoofed-turn',
+            }),
+          )
+          expect(receivedReq.sessionId).toBe('host-session-real')
+          expect(receivedReq.userTurnId).toBe('host-turn-real')
+        })
+
+        it('ID-FINAL-07: If host identity is unavailable, implementation has safe policy and does not promote model identity', async () => {
+          let receivedReq!: CreateDocumentRequest
+          const skill = createDocumentSkill({
+            create: async (r) => {
+              receivedReq = r
+              return { path: '/Users/me/GenOffice/Doc.docx' }
+            },
+          })
+          await skill.executeTool(
+            call({
+              title: 'Doc',
+              format: 'docx',
+              content: '# C',
+              sessionId: 'model-attempted-session',
+              userTurnId: 'model-attempted-turn',
+            }),
+          )
+          expect(receivedReq.sessionId).toBeUndefined()
+          expect(receivedReq.userTurnId).toBeUndefined()
+        })
+
+        it('ID-FINAL-08: A stable host execution ID preserves deduplication when persisted ID changes', async () => {
+          let persistedId = 'old-id'
+          let createCalls = 0
+          const skill = createDocumentSkill({
+            getExecutionId: () => 'stable-exec-id',
+            getSessionId: () => persistedId,
+            getUserTurnId: () => 'turn-1',
+            create: async () => {
+              createCalls++
+              return { path: '/Users/me/GenOffice/Doc.docx' }
+            },
+          })
+          const req = call({ title: 'Doc', format: 'docx', content: '# C' }, 'op-1')
+          await skill.executeTool(req)
+          persistedId = 'new-server-id'
+          await skill.executeTool(req)
+          expect(createCalls).toBe(1)
+        })
+
+        it('ID-FINAL-09: A conflicting payload under the same trusted operation key is rejected', async () => {
+          let createCalls = 0
+          const skill = createDocumentSkill({
+            getSessionId: () => 's-conflict',
+            getUserTurnId: () => 't-conflict',
+            create: async () => {
+              createCalls++
+              return { path: '/Users/me/GenOffice/Doc.docx' }
+            },
+          })
+          const req1 = call({ title: 'Doc1', format: 'docx', content: '# Content 1' }, 'slot-same')
+          const r1 = await skill.executeTool(req1)
+          expect(r1.isError).toBeUndefined()
+          const req2 = call({ title: 'Doc2', format: 'docx', content: '# Content 2' }, 'slot-same')
+          const r2 = await skill.executeTool(req2)
+          expect(r2.isError).toBe(true)
+          expect(r2.output).toContain('Operation identity conflict')
+          expect(createCalls).toBe(1)
+        })
+
+        it('ID-FINAL-10: Two independently requested documents with the same title remain possible', async () => {
+          let createCalls = 0
+          const skill = createDocumentSkill({
+            getSessionId: () => 's-multi',
+            getUserTurnId: () => 't-multi',
+            create: async (r) => {
+              createCalls++
+              return { path: `/Users/me/GenOffice/${r.title}_${r.callId}.docx` }
+            },
+          })
+          const r1 = await skill.executeTool(
+            call({ title: 'Report', format: 'docx', content: '# Part 1' }, 'call-part-1'),
+          )
+          const r2 = await skill.executeTool(
+            call({ title: 'Report', format: 'docx', content: '# Part 2' }, 'call-part-2'),
+          )
+          expect(createCalls).toBe(2)
+          expect(r1.output).toContain('Report_call-part-1.docx')
+          expect(r2.output).toContain('Report_call-part-2.docx')
+        })
       })
     })
   })

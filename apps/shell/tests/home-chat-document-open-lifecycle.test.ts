@@ -595,6 +595,7 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
     })
 
     it('OPEN-05: Manual open succeeds when agent is stopped / idle via UI click', async () => {
+      localStorage.setItem('home-chat-last-session', 'sess-manual')
       const onOpenPath = vi.fn().mockResolvedValue(true)
       const host = document.createElement('div')
       document.body.append(host)
@@ -602,7 +603,7 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
       const api = mockApi({
         openPath: onOpenPath,
         homeChatList: async () => [
-          { id: 'sess-manual', title: 'Manual', updatedAt: 100, messageCount: 1 },
+          { id: 'sess-manual', title: 'Manual', updatedAt: 100, messageCount: 2 },
         ],
         homeChatGet: async (id: string) => ({
           id,
@@ -610,13 +611,20 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
           messages: [
             {
               id: 1,
+              role: 'user',
+              text: 'Please create document',
+            },
+            {
+              id: 2,
               role: 'assistant',
               text: 'Document created',
-              saved: { path: '/Users/me/GenOffice/ManualDoc.docx', name: 'ManualDoc.docx' },
             },
           ],
           createdAt: 100,
           updatedAt: 100,
+        }),
+        kbCreateDocument: vi.fn().mockResolvedValue({
+          path: '/Users/me/GenOffice/ManualDoc.docx',
         }),
       })
 
@@ -625,7 +633,16 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
           root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
         })
 
-        // Agent is stopped / idle; click the saved document button in rendered chat message
+        // Agent is stopped / idle; click Save as Word button on the rendered assistant message
+        const saveWordBtn = host.querySelector<HTMLButtonElement>(
+          'button[title="Save as Word (.docx)"]',
+        )
+        expect(saveWordBtn).not.toBeNull()
+
+        await act(async () => {
+          saveWordBtn?.click()
+        })
+
         const saveBtn = host.querySelector<HTMLButtonElement>('button.hc-save-btn-saved')
         expect(saveBtn).not.toBeNull()
 
@@ -1207,26 +1224,34 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
       })
 
       it('OPEN-V8-08: Manual click while stopped opens the correct document', async () => {
+        localStorage.setItem('home-chat-last-session', 's8')
         const onOpenPath = vi.fn().mockResolvedValue(true)
         const host = document.createElement('div')
         document.body.append(host)
         const root = createRoot(host)
         const api = mockApi({
           openPath: onOpenPath,
-          homeChatList: async () => [{ id: 's8', title: 'S8', updatedAt: 100, messageCount: 1 }],
+          homeChatList: async () => [{ id: 's8', title: 'S8', updatedAt: 100, messageCount: 2 }],
           homeChatGet: async (id: string) => ({
             id,
             title: id,
             messages: [
               {
                 id: 1,
+                role: 'user',
+                text: 'Create',
+              },
+              {
+                id: 2,
                 role: 'assistant',
                 text: 'File ready',
-                saved: { path: '/Users/me/GenOffice/Doc8.docx', name: 'Doc8.docx' },
               },
             ],
             createdAt: 100,
             updatedAt: 100,
+          }),
+          kbCreateDocument: vi.fn().mockResolvedValue({
+            path: '/Users/me/GenOffice/Doc8.docx',
           }),
         })
         try {
@@ -1234,10 +1259,17 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
             root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
           })
           await act(async () => {
-            requestChatPrefill({ text: 'Start and stop', intent: 'new', send: true })
+            requestChatPrefill({ text: 'Start and stop', intent: 'ask', send: true })
           })
           await act(async () => {
             host.querySelector<HTMLButtonElement>('button.hc-send.stop')?.click()
+          })
+          const saveWordBtn = host.querySelector<HTMLButtonElement>(
+            'button[title="Save as Word (.docx)"]',
+          )
+          expect(saveWordBtn).not.toBeNull()
+          await act(async () => {
+            saveWordBtn?.click()
           })
           const saveBtn = host.querySelector<HTMLButtonElement>('button.hc-save-btn-saved')
           expect(saveBtn).not.toBeNull()
@@ -1254,31 +1286,46 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
       })
 
       it('OPEN-V8-09: Manual click while idle opens the correct document', async () => {
+        localStorage.setItem('home-chat-last-session', 's9')
         const onOpenPath = vi.fn().mockResolvedValue(true)
         const host = document.createElement('div')
         document.body.append(host)
         const root = createRoot(host)
         const api = mockApi({
           openPath: onOpenPath,
-          homeChatList: async () => [{ id: 's9', title: 'S9', updatedAt: 100, messageCount: 1 }],
+          homeChatList: async () => [{ id: 's9', title: 'S9', updatedAt: 100, messageCount: 2 }],
           homeChatGet: async (id: string) => ({
             id,
             title: id,
             messages: [
               {
                 id: 1,
+                role: 'user',
+                text: 'Create',
+              },
+              {
+                id: 2,
                 role: 'assistant',
                 text: 'Idle test file',
-                saved: { path: '/Users/me/GenOffice/Doc9.docx', name: 'Doc9.docx' },
               },
             ],
             createdAt: 100,
             updatedAt: 100,
           }),
+          kbCreateDocument: vi.fn().mockResolvedValue({
+            path: '/Users/me/GenOffice/Doc9.docx',
+          }),
         })
         try {
           await act(async () => {
             root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+          })
+          const saveWordBtn = host.querySelector<HTMLButtonElement>(
+            'button[title="Save as Word (.docx)"]',
+          )
+          expect(saveWordBtn).not.toBeNull()
+          await act(async () => {
+            saveWordBtn?.click()
           })
           const saveBtn = host.querySelector<HTMLButtonElement>('button.hc-save-btn-saved')
           expect(saveBtn).not.toBeNull()
@@ -1295,26 +1342,34 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
       })
 
       it('OPEN-V8-10: Auto-open failure does not permanently block a later manual open', async () => {
+        localStorage.setItem('home-chat-last-session', 's10')
         const onOpenPath = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
         const host = document.createElement('div')
         document.body.append(host)
         const root = createRoot(host)
         const api = mockApi({
           openPath: onOpenPath,
-          homeChatList: async () => [{ id: 's10', title: 'S10', updatedAt: 100, messageCount: 1 }],
+          homeChatList: async () => [{ id: 's10', title: 'S10', updatedAt: 100, messageCount: 2 }],
           homeChatGet: async (id: string) => ({
             id,
             title: id,
             messages: [
               {
                 id: 1,
+                role: 'user',
+                text: 'Create',
+              },
+              {
+                id: 2,
                 role: 'assistant',
                 text: 'Doc',
-                saved: { path: '/Users/me/GenOffice/Doc10.docx', name: 'Doc10.docx' },
               },
             ],
             createdAt: 100,
             updatedAt: 100,
+          }),
+          kbCreateDocument: vi.fn().mockResolvedValue({
+            path: '/Users/me/GenOffice/Doc10.docx',
           }),
         })
         try {
@@ -1322,7 +1377,7 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
             root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
           })
           await act(async () => {
-            requestChatPrefill({ text: 'Run 10', intent: 'new', send: true })
+            requestChatPrefill({ text: 'Run 10', intent: 'ask', send: true })
           })
           const session = captured.docDeps?.getSessionId?.()
           const turnId = captured.docDeps?.getUserTurnId?.()
@@ -1331,6 +1386,14 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
             userTurnId: turnId,
           })
           expect(autoRes).toBe(false)
+
+          const saveWordBtn = host.querySelector<HTMLButtonElement>(
+            'button[title="Save as Word (.docx)"]',
+          )
+          expect(saveWordBtn).not.toBeNull()
+          await act(async () => {
+            saveWordBtn?.click()
+          })
           const saveBtn = host.querySelector<HTMLButtonElement>('button.hc-save-btn-saved')
           expect(saveBtn).not.toBeNull()
           await act(async () => {
@@ -1599,7 +1662,11 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
           resolveOpen = res
         })
         const onOpenPath = vi.fn().mockImplementation(() => barrier)
-        const isOpenPath = vi.fn().mockResolvedValue(true)
+        let resolveIsOpen!: (v: boolean) => void
+        const isOpenBarrier = new Promise<boolean>((res) => {
+          resolveIsOpen = res
+        })
+        const isOpenPath = vi.fn().mockImplementation(() => isOpenBarrier)
         const host = document.createElement('div')
         document.body.append(host)
         const root = createRoot(host)
@@ -1616,6 +1683,11 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
           const ctx = { sessionId: session, userTurnId: turnId }
           const p1 = captured.docDeps!.open!('/Users/me/GenOffice/Dup.docx', ctx)
           const p2 = captured.docDeps!.open!('/Users/me/GenOffice/Dup.docx', ctx)
+
+          resolveIsOpen(true)
+          await Promise.resolve()
+          await Promise.resolve()
+
           expect(onOpenPath).toHaveBeenCalledTimes(1)
           resolveOpen(true)
           const [r1, r2] = await Promise.all([p1, p2])
@@ -1730,6 +1802,7 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
       })
 
       it('FOCUS-V8-06: A legitimate manual request can focus the existing tab after Stop', async () => {
+        localStorage.setItem('home-chat-last-session', 's-focus')
         const onOpenPath = vi.fn().mockResolvedValue(true)
         const isOpenPath = vi.fn().mockResolvedValue(true)
         const host = document.createElement('div')
@@ -1738,7 +1811,7 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
         const api = mockApi({
           openPath: onOpenPath,
           homeChatList: async () => [
-            { id: 's-focus', title: 'Focus', updatedAt: 100, messageCount: 1 },
+            { id: 's-focus', title: 'Focus', updatedAt: 100, messageCount: 2 },
           ],
           homeChatGet: async (id: string) => ({
             id,
@@ -1746,13 +1819,20 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
             messages: [
               {
                 id: 1,
+                role: 'user',
+                text: 'Create',
+              },
+              {
+                id: 2,
                 role: 'assistant',
                 text: 'Background file ready',
-                saved: { path: '/Users/me/GenOffice/Background.docx', name: 'Background.docx' },
               },
             ],
             createdAt: 100,
             updatedAt: 100,
+          }),
+          kbCreateDocument: vi.fn().mockResolvedValue({
+            path: '/Users/me/GenOffice/Background.docx',
           }),
         })
         try {
@@ -1760,10 +1840,17 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
             root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath, isOpenPath }))
           })
           await act(async () => {
-            requestChatPrefill({ text: 'Start and stop', intent: 'new', send: true })
+            requestChatPrefill({ text: 'Start and stop', intent: 'ask', send: true })
           })
           await act(async () => {
             host.querySelector<HTMLButtonElement>('button.hc-send.stop')?.click()
+          })
+          const saveWordBtn = host.querySelector<HTMLButtonElement>(
+            'button[title="Save as Word (.docx)"]',
+          )
+          expect(saveWordBtn).not.toBeNull()
+          await act(async () => {
+            saveWordBtn?.click()
           })
           const saveBtn = host.querySelector<HTMLButtonElement>('button.hc-save-btn-saved')
           expect(saveBtn).not.toBeNull()

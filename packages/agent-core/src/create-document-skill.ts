@@ -269,20 +269,15 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
             typeof call.input.open === 'boolean' ? call.input.open : format === 'docx'
           let opened = false
           if (shouldAutoOpen) {
-            if (isOpenFn) {
+            if (openFn) {
               try {
-                const alreadyOpen = await isOpenFn(cached.path)
-                if (alreadyOpen) {
-                  opened = true
-                } else if (openFn) {
-                  opened = Boolean(await openFn(cached.path, execContext))
-                }
+                opened = Boolean(await openFn(cached.path, execContext))
               } catch {
                 opened = false
               }
-            } else if (openFn) {
+            } else if (isOpenFn) {
               try {
-                opened = Boolean(await openFn(cached.path, execContext))
+                opened = Boolean(await isOpenFn(cached.path))
               } catch {
                 opened = false
               }
@@ -348,29 +343,22 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         })
 
         let opened = Boolean(res.opened)
-        if (openFn) {
-          if (shouldAutoOpen) {
-            if (isOpenFn) {
-              try {
-                const alreadyOpen = await isOpenFn(res.path)
-                if (alreadyOpen) {
-                  opened = true
-                } else {
-                  opened = Boolean(await openFn(res.path, execContext))
-                }
-              } catch {
-                opened = false
-              }
-            } else {
-              try {
-                opened = Boolean(await openFn(res.path, execContext))
-              } catch {
-                opened = false
-              }
+        if (shouldAutoOpen) {
+          if (openFn) {
+            try {
+              opened = Boolean(await openFn(res.path, execContext))
+            } catch {
+              opened = false
             }
-          } else {
-            opened = false
+          } else if (isOpenFn) {
+            try {
+              opened = Boolean(await isOpenFn(res.path))
+            } catch {
+              opened = false
+            }
           }
+        } else {
+          opened = false
         }
         return { path: res.path, opened }
       })()

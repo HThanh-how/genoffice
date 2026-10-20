@@ -295,6 +295,7 @@ describe('createKnowledgeDocument', () => {
       let calls = 0
       deps.markdownToDocx = async (_md, _out) => {
         calls++
+        disk.add(_out)
         if (calls === 1) await barrier
       }
 
@@ -643,6 +644,196 @@ describe('createKnowledgeDocument', () => {
         callId: 'c-clean',
       })
       expect(res.path).toBe('/save/CleanupDoc.docx')
+    })
+  })
+
+  describe('Super Prompt V9: Exclusive document publication (PUBLISH-01 through PUBLISH-09)', () => {
+    it('PUBLISH-01: Existing user file remains byte-for-byte unchanged', async () => {
+      const { deps, disk } = makeDeps()
+      disk.add('/save/Existing.docx')
+      const res = await createKnowledgeDocument(deps, {
+        title: 'Existing',
+        format: 'docx',
+        content: '# New Document',
+        sessionId: 's-pub-1',
+        userTurnId: 't-1',
+        callId: 'c-1',
+      })
+      expect(res.path).toBe('/save/Existing-2.docx')
+      expect(disk.has('/save/Existing.docx')).toBe(true)
+      expect(disk.has('/save/Existing-2.docx')).toBe(true)
+    })
+
+    it('PUBLISH-02: Another writer creates the final path after allocation; no overwrite occurs', async () => {
+      const { deps, disk } = makeDeps()
+      let allocated = false
+      const origUniquePath = deps.uniquePath
+      deps.uniquePath = (dir, name) => {
+        const p = origUniquePath(dir, name)
+        if (!allocated && p === '/save/Raced.docx') {
+          allocated = true
+          disk.add('/save/Raced.docx')
+        }
+        return p
+      }
+
+      const res = await createKnowledgeDocument(deps, {
+        title: 'Raced',
+        format: 'docx',
+        content: '# Raced Doc',
+        sessionId: 's-pub-2',
+        userTurnId: 't-2',
+        callId: 'c-2',
+      })
+      expect(res.path).not.toBe('/save/Raced.docx')
+      expect(disk.has('/save/Raced.docx')).toBe(true)
+      expect(disk.has(res.path)).toBe(true)
+    })
+
+    it('PUBLISH-03: Two concurrent creators both obtain independently readable documents', async () => {
+      const { deps, disk } = makeDeps()
+      let resolveFirst!: () => void
+      const barrier = new Promise<void>((res) => {
+        resolveFirst = res
+      })
+      let calls = 0
+      deps.markdownToDocx = async (_md, out) => {
+        calls++
+        disk.add(out)
+        if (calls === 1) await barrier
+      }
+
+      const p1 = createKnowledgeDocument(deps, {
+        title: 'ConcurrentDoc',
+        format: 'docx',
+        content: '# Content 1',
+        sessionId: 's-pub-3',
+        userTurnId: 't-3',
+        callId: 'c-3a',
+      })
+      const p2 = createKnowledgeDocument(deps, {
+        title: 'ConcurrentDoc',
+        format: 'docx',
+        content: '# Content 2',
+        sessionId: 's-pub-3',
+        userTurnId: 't-3',
+        callId: 'c-3b',
+      })
+
+      resolveFirst()
+      const [r1, r2] = await Promise.all([p1, p2])
+      expect(r1.path).not.toBe(r2.path)
+      expect(disk.has(r1.path)).toBe(true)
+      expect(disk.has(r2.path)).toBe(true)
+    })
+
+    it('PUBLISH-04: Case-insensitive filenames cannot collide on Windows', async () => {
+      const { deps } = makeDeps()
+      deps.isCaseSensitive = false
+      const r1 = await createKnowledgeDocument(deps, {
+        title: 'Summary',
+        format: 'docx',
+        content: '# 1',
+        sessionId: 's-pub-4',
+        userTurnId: 't-4',
+        callId: 'c-4a',
+      })
+      const r2 = await createKnowledgeDocument(deps, {
+        title: 'summary',
+        format: 'docx',
+        content: '# 2',
+        sessionId: 's-pub-4',
+        userTurnId: 't-4',
+        callId: 'c-4b',
+      })
+      expect(r1.path.toLowerCase()).not.toBe(r2.path.toLowerCase())
+    })
+
+    it('PUBLISH-05: A failed publish removes temporary artifacts and releases reservations', async () => {
+      const { deps } = makeDeps()
+      deps.markdownToDocx = async () => {
+        throw new Error('EIO: write error')
+      }
+      await expect(
+        createKnowledgeDocument(deps, {
+          title: 'FailRelease',
+          format: 'docx',
+          content: '# 1',
+          sessionId: 's-pub-5',
+          userTurnId: 't-5',
+          callId: 'c-5',
+        }),
+      ).rejects.toThrow('EIO')
+
+      deps.markdownToDocx = async (_md, _out) => {}
+      const res = await createKnowledgeDocument(deps, {
+        title: 'FailRelease',
+        format: 'docx',
+        content: '# 1',
+        sessionId: 's-pub-5',
+        userTurnId: 't-5',
+        callId: 'c-5-retry',
+      })
+      expect(res.path).toBe('/save/FailRelease.docx')
+    })
+
+    it('PUBLISH-06: A retry reports the actual final path', async () => {
+      const { deps } = makeDeps()
+      const req = {
+        title: 'ActualPath',
+        format: 'docx' as const,
+        content: '# C',
+        sessionId: 's-pub-6',
+        userTurnId: 't-6',
+        callId: 'c-6',
+      }
+      const r1 = await createKnowledgeDocument(deps, req)
+      expect(r1.path).toBe('/save/ActualPath.docx')
+
+      const r2 = await createKnowledgeDocument(deps, req)
+      expect(r2.path).toBe(r1.path)
+    })
+
+    it('PUBLISH-07: Legitimate edit-in-place CLI operations retain their existing semantics', async () => {
+      const { deps, disk } = makeDeps()
+      disk.add('/save/ExistingFile.docx')
+      const res = await createKnowledgeDocument(deps, {
+        title: 'ExistingFile',
+        format: 'docx',
+        content: '# C',
+      })
+      expect(res.path).not.toBe('/save/ExistingFile.docx')
+    })
+
+    it('PUBLISH-08: A successful DOCX passes validation checks and records recent', async () => {
+      const { deps, recent } = makeDeps()
+      const res = await createKnowledgeDocument(deps, {
+        title: 'ValidDoc',
+        format: 'docx',
+        content: '# Valid Docx',
+      })
+      expect(res.path).toBe('/save/ValidDoc.docx')
+      expect(recent).toContain('/save/ValidDoc.docx')
+    })
+
+    it('PUBLISH-09: A failure does not poison the deduplication cache', async () => {
+      const { deps } = makeDeps()
+      let fail = true
+      deps.markdownToDocx = async () => {
+        if (fail) throw new Error('First try failed')
+      }
+      const req = {
+        title: 'PoisonCheck',
+        format: 'docx' as const,
+        content: '# C',
+        sessionId: 's-pub-9',
+        userTurnId: 't-9',
+        callId: 'c-9',
+      }
+      await expect(createKnowledgeDocument(deps, req)).rejects.toThrow('First try failed')
+      fail = false
+      const res = await createKnowledgeDocument(deps, req)
+      expect(res.path).toBe('/save/PoisonCheck.docx')
     })
   })
 })

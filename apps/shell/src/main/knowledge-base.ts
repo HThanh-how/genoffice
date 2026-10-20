@@ -299,16 +299,36 @@ export async function createKnowledgeDocument(
     let targetPath = allocateUniquePath(deps, req.title, req.format)
     try {
       const checkExists = deps.fileExists ?? existsSync
-      if (checkExists(targetPath)) {
+      while (checkExists(targetPath)) {
         reservedPaths.delete(targetPath)
         reservedCanonicalKeys.delete(pathReservationKey(targetPath, deps.isCaseSensitive))
         targetPath = allocateUniquePath(deps, req.title, req.format)
       }
 
-      if (req.format === 'md') {
-        await deps.writeText(targetPath, req.content)
-      } else {
-        await deps.markdownToDocx(req.content, targetPath, req.documentType)
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          if (checkExists(targetPath) && attempt > 0) {
+            reservedPaths.delete(targetPath)
+            reservedCanonicalKeys.delete(pathReservationKey(targetPath, deps.isCaseSensitive))
+            targetPath = allocateUniquePath(deps, req.title, req.format)
+          }
+
+          if (req.format === 'md') {
+            await deps.writeText(targetPath, req.content)
+          } else {
+            await deps.markdownToDocx(req.content, targetPath, req.documentType)
+          }
+          break
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if ((msg.includes('output exists') || msg.includes('EEXIST')) && attempt < 4) {
+            reservedPaths.delete(targetPath)
+            reservedCanonicalKeys.delete(pathReservationKey(targetPath, deps.isCaseSensitive))
+            targetPath = allocateUniquePath(deps, req.title, req.format)
+            continue
+          }
+          throw err
+        }
       }
 
       if (slotKey) {
