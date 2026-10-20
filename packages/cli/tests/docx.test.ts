@@ -1524,7 +1524,22 @@ describe('genoffice docs: comments, revisions, header/footer, images, charts', (
       '--json',
     ])
     expect(r.code).not.toBe(0)
-    expect(r.stderr).toContain('unknown profile "non-existent-profile"')
+    expect(r.json().status).toBe('error')
+    expect(r.json().message).toContain('unknown profile "non-existent-profile"')
+
+    const rHuman = await run([
+      'create',
+      '--type',
+      'docx',
+      '--from',
+      md,
+      '--profile',
+      'non-existent-profile',
+      '--out',
+      out,
+    ])
+    expect(rHuman.code).not.toBe(0)
+    expect(rHuman.stderr).toContain('unknown profile "non-existent-profile"')
   })
 
   it('creates docx from HTML with custom document profile typography', async () => {
