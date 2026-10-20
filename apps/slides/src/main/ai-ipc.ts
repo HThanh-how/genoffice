@@ -18,7 +18,6 @@ import { join } from 'node:path'
 import {
   classifyAiStreamError,
   listGeminiModels,
-  isAiRegionBlockedError,
   defaultAiSettings,
   activeProvider,
   agyUsableForDefaults,

@@ -55,13 +55,7 @@ import type {
 } from '@genoffice/ai-provider'
 import { useI18n } from './locale'
 import type { StringKey, TFunc } from './locale'
-import type {
-  AccountStatus,
-  AiCatalogEntry,
-  AuthorNameSetting,
-  DocTheme,
-  UiTheme,
-} from '../../shared/home-api'
+import type { AiCatalogEntry, AuthorNameSetting, DocTheme, UiTheme } from '../../shared/home-api'
 import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import { DocumentMemorySettings } from './DocumentMemorySettings'
@@ -475,7 +469,6 @@ function AiModelPane({ t }: { t: TFunc }) {
   const [modelListCount, setModelListCount] = useState(0)
   const [modelRefresh, setModelRefresh] = useState(0)
   const [manualModel, setManualModel] = useState(false)
-  const builtInCatalog = useRef(catalog)
   /** free-typed value of the output-cap field; committed (and clamped) on blur */
   const [maxTokensDraft, setMaxTokensDraft] = useState<string | null>(null)
 
