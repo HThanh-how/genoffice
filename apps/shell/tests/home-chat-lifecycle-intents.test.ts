@@ -253,4 +253,67 @@ describe('home-chat lifecycle & launch intents (Phase 1)', () => {
       host.remove()
     }
   })
+
+  it('leaving the Ask AI workspace closes the panel instead of leaving it floating', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const workspace = document.createElement('div')
+    workspace.id = 'home-ask-workspace'
+    document.body.appendChild(workspace)
+    const root = createRoot(host)
+    const api = mockChatApi()
+
+    try {
+      // inside the workspace: the panel is hosted by the workspace, no launcher is drawn
+      await act(async () => {
+        root.render(createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: true }))
+      })
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      expect(workspace.querySelector('.home-chat-panel.is-workspace')).not.toBeNull()
+      expect(host.querySelector('.home-chat-launcher')).toBeNull()
+
+      // back to another home view: the panel is closed, the launcher is available again
+      await act(async () => {
+        root.render(createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: false }))
+      })
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      expect(host.querySelector('.home-chat-panel')).toBeNull()
+      expect(workspace.querySelector('.home-chat-panel')).toBeNull()
+      expect(host.querySelector('.home-chat-launcher')).not.toBeNull()
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+    }
+  })
+
+  it('a host that never uses the workspace keeps the floating panel when it is opened', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const api = mockChatApi()
+
+    try {
+      await act(async () => {
+        root.render(createElement(HomeChat, { api, i18n: mockI18n }))
+      })
+      const launcher = host.querySelector<HTMLButtonElement>('.home-chat-launcher')
+      expect(launcher).not.toBeNull()
+      await act(async () => {
+        launcher!.click()
+        await Promise.resolve()
+      })
+      expect(host.querySelector('.home-chat-panel')).not.toBeNull()
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+    }
+  })
 })

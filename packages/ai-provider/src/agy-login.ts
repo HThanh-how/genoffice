@@ -46,6 +46,8 @@ const realDeps = (
 export class AgyLogin {
   private current: AgyLoginState = { phase: 'idle' }
   private child: ChildProcess | null = null
+  /** bumped by every start/cancel so a superseded start can never spawn a process later */
+  private generation = 0
   private timer: ReturnType<typeof setTimeout> | null = null
   private readonly deps: AgyLoginDeps
 
@@ -75,20 +77,31 @@ export class AgyLogin {
 
   /** Start (or restart) a sign-in; the browser opens by itself once the CLI gives the URL. */
   async start(): Promise<AgyLoginState> {
+    // every start/cancel is a generation: a start whose CLI resolution is still pending when the
+    // person cancels or starts again must not spawn a process afterwards
+    const generation = ++this.generation
     this.stop()
     this.set({ phase: 'starting' })
     let cli: string
     try {
       cli = await this.deps.resolveCli(this.deps.cliPath?.())
     } catch {
+      if (this.generation !== generation) return this.state()
       this.set({ phase: 'failed', error: 'cli-missing' })
       return this.state()
     }
+    if (this.generation !== generation) return this.state()
     let child: ChildProcess
     try {
       child = this.deps.spawn(cli, LOGIN_ARGS)
     } catch {
+      if (this.generation !== generation) return this.state()
       this.set({ phase: 'failed', error: 'failed' })
+      return this.state()
+    }
+    if (this.generation !== generation) {
+      // cancelled or superseded while the process was being created
+      killProcessTree(child)
       return this.state()
     }
     this.child = child
@@ -155,6 +168,7 @@ export class AgyLogin {
   }
 
   cancel(): void {
+    this.generation++
     this.stop()
     this.set({ phase: 'idle' })
   }

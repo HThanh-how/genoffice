@@ -365,6 +365,35 @@ describe('R2: the quota cache cannot mix two CLI identities', () => {
     expect(notifications.some((n) => n.cli === '/cli/a' && n.remaining === 0.85)).toBe(true)
     expect(notifications.some((n) => n.cli === '/cli/b' && n.failed === true)).toBe(true)
   })
+
+  it('Q6: quota error flags are attributed to the executable that produced them', async () => {
+    const { agyUsageCliMissing, agyUsageNeedsLogin, readAgyUsage, resetAgyUsageSupport } =
+      await import('@genoffice/ai-provider/agy-usage')
+    resetAgyUsageSupport()
+    const deps = {
+      now: () => 1_000,
+      resolveCli: async (cliPath: string | undefined) => cliPath ?? '/cli/auto',
+      run: async (cliPath: string) => {
+        if (cliPath === '/cli/a') throw new Error('Authentication required: not signed in')
+        return JSON.stringify({
+          command: {
+            data: {
+              groups: [
+                { name: 'Gemini Models', buckets: [{ window: '5h', remaining_fraction: 0.5 }] },
+              ],
+            },
+          },
+        })
+      },
+    }
+    expect(await readAgyUsage('/cli/a', deps)).toBeNull()
+    expect(await readAgyUsage('/cli/b', deps)).not.toBeNull()
+    // CLI A is not signed in; that must not be reported as CLI B's problem
+    expect(agyUsageNeedsLogin('/cli/a')).toBe(true)
+    expect(agyUsageNeedsLogin('/cli/b')).toBe(false)
+    expect(agyUsageCliMissing('/cli/a')).toBe(false)
+    expect(agyUsageCliMissing('/cli/b')).toBe(false)
+  })
 })
 
 describe('R4 + R6: the generic settings write is validated against the file it commits to', () => {
@@ -453,7 +482,7 @@ describe('R4 + R6: the generic settings write is validated against the file it c
     expect((saved.providers as Record<string, { model: string }>).agy.model).toBe(HIGH)
   })
 
-  it('S2 (R4): Independent settings - A changes non-model settings while B commits HIGH. A succeeds preserving HIGH', async () => {
+  it('S2 (R4): a generic write applied after a newer selection keeps that selection', async () => {
     const p = paths(
       { provider: 'agy', providers: { agy: { apiKey: '', cliPath: '/cli/a', model: LOW } } },
       { [AGY_CHAT_MODELS_KEY]: GEM },
@@ -486,6 +515,33 @@ describe('R4 + R6: the generic settings write is validated against the file it c
         // latest state from disk where B committed HIGH
         return JSON.parse(readFileSync(p.aiSettingsPath, 'utf8')) as AiSettings
       },
+      (next) => writeFileSync(p.aiSettingsPath, JSON.stringify(next), 'utf8'),
+      (cliPath: string | undefined) => catalogCall(cliPath),
+      GEM,
+    )
+    expect(decision.ok).toBe(true)
+    const saved = readAi(p.aiSettingsPath)
+    expect(saved.provider).toBe('gemini')
+    expect((saved.providers as Record<string, { model: string }>).agy.model).toBe(HIGH)
+    expect(saved.maxOutputTokens).toBe(2048)
+  })
+
+  it('S2b: a generic write that changes no model keeps a newer selection and applies the rest', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { apiKey: '', cliPath: '/cli/a', model: HIGH } } },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    catalogCall.mockImplementation(() => Promise.resolve({ models: GEM }))
+    const decision = await applySettingsWrite(
+      {
+        provider: 'gemini',
+        providers: {
+          gemini: { apiKey: 'gk', model: 'gemini-2.5-flash' },
+          agy: { apiKey: '', cliPath: '/cli/a', model: HIGH },
+        },
+        maxOutputTokens: 2048,
+      },
+      () => JSON.parse(readFileSync(p.aiSettingsPath, 'utf8')) as AiSettings,
       (next) => writeFileSync(p.aiSettingsPath, JSON.stringify(next), 'utf8'),
       (cliPath: string | undefined) => catalogCall(cliPath),
       GEM,

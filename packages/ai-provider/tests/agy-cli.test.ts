@@ -300,6 +300,26 @@ describe('listAgyModels', () => {
     expect(run).toHaveBeenCalledTimes(3)
   })
 
+  it('two simultaneous probes of the same executable share one read (C01/C02)', async () => {
+    clearAgyModelsCache()
+    let now = 0
+    const run = vi.fn(
+      (_cli: string, _signal: AbortSignal) =>
+        new Promise<string>((resolve) =>
+          setTimeout(() => resolve('gemini-3.8-flash-low\tLow\n'), 40),
+        ),
+    )
+    const deps = { ...fsDeps('win32', files), run, now: () => now }
+    const [first, second] = await Promise.all([listAgyModels(CLI, deps), listAgyModels(CLI, deps)])
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(first.models).toEqual(['gemini-3.8-flash-low'])
+    expect(second.models).toEqual(first.models)
+    // the shared result is the one that is cached, so a later read does not re-probe
+    now += 1_000
+    expect((await listAgyModels(CLI, deps)).models).toEqual(['gemini-3.8-flash-low'])
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
   it('selects AGY_CHAT_DEFAULT_MODEL when present in the catalog', async () => {
     clearAgyModelsCache()
     const run = vi.fn(

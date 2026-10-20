@@ -178,8 +178,8 @@ export class AgyUsageCache {
           this.state = {
             ...this.state,
             failed: true,
-            needsLogin: agyUsageNeedsLogin(),
-            cliMissing: agyUsageCliMissing(),
+            needsLogin: agyUsageNeedsLogin(cliPath),
+            cliMissing: agyUsageCliMissing(cliPath),
           }
         }
       } catch {
@@ -274,19 +274,23 @@ export function registerAgyChat(deps: AgyChatDeps): void {
     }
   })
 
-  // Every mutation carries a stamp taken when the person made it. A delayed request may only
-  // write while it is still the newest one, so an older action can never undo a newer one.
+  // Every mutation carries a stamp taken when the person made it, and one shared commit stamp
+  // records the newest mutation of *any* kind. A delayed request may only write - or roll back -
+  // while it is still the newest one, so an older action can never undo a newer one, whether the
+  // newer action changed the enabled list or the selected model.
   let mutationStamp = 0
-  let lastModelStamp = 0
-  let lastEnabledStamp = 0
+  let lastCommittedStamp = 0
 
   /** undo an enabled-list write, but only while this mutation is still the newest one */
-  function restoreEnabledList(stamp: number, previous: unknown): void {
-    if (stamp < lastEnabledStamp) return
+  function restoreEnabledList(stamp: number, previous: unknown): boolean {
+    if (stamp < lastCommittedStamp) return false
     try {
       writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, previous)
+      lastCommittedStamp = stamp
+      return true
     } catch {
       // recovery failed as well; the next state read reports the real persisted state
+      return false
     }
   }
 
@@ -297,7 +301,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
    * whole switch is written at once and a failed write leaves the previous file untouched.
    */
   function applySelectedModel(model: string, stamp: number, activateProvider = false): boolean {
-    if (stamp < lastModelStamp) return false
+    if (stamp < lastCommittedStamp) return false
     const settings = aiSettings()
     const providers = { ...(settings.providers ?? {}) }
     providers.agy = { ...(providers.agy ?? {}), model }
@@ -306,7 +310,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
       ...(activateProvider ? { provider: 'agy' } : {}),
       providers,
     })
-    lastModelStamp = stamp
+    lastCommittedStamp = stamp
     return true
   }
 
@@ -348,7 +352,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
         // nothing was saved: report failure instead of a list the person did not get
         return null
       }
-      lastEnabledStamp = stamp
+      lastCommittedStamp = stamp
       // deterministically: the first model still switched on *and* confirmed by the configured
       // CLI. A read-only state query never does this, and a model the person left on is never
       // switched off by a catalog change.
@@ -356,9 +360,10 @@ export function registerAgyChat(deps: AgyChatDeps): void {
       let settingsAlsoChanged = false
       if (current && !next.includes(current)) {
         const models = await catalog()
-        // another window changed the enabled list while this catalog read was in flight; rolling
-        // back now would overwrite that newer choice, so this request gives up
-        if (stamp < lastEnabledStamp) return null
+        // another window committed a newer mutation (enabled list or selection) while this
+        // catalog read was in flight; rolling back now would undo that newer choice, so this
+        // request gives up and reports failure rather than a half-applied change
+        if (stamp < lastCommittedStamp) return null
         const replacement = next.find((id) => !models.error && models.models.includes(id))
         if (!replacement) {
           // The selection cannot be moved to a model the CLI has not confirmed, and leaving it
@@ -373,10 +378,13 @@ export function registerAgyChat(deps: AgyChatDeps): void {
         try {
           settingsAlsoChanged = applySelectedModel(replacement, stamp)
         } catch {
+          settingsAlsoChanged = false
+        }
+        if (!settingsAlsoChanged) {
           // The selection could not be moved, so the enabled list would point the chat box at a
           // model it is not allowed to use. Undo the list so the two files never disagree. A
-          // newer selection made in another window is left alone: an older stamp returns false
-          // rather than throwing, so this rollback only runs while this mutation is the newest.
+          // newer mutation is left alone: restoreEnabledList returns false for an older stamp,
+          // and this mutation then reports failure instead of a partial success.
           restoreEnabledList(stamp, previous)
           // Nothing was reported as changed: no notification, no list, no silent re-selection.
           return null

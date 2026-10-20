@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./agy-chat-preload": "./src/agy-chat-preload.ts",
+    "./ai-settings-result": "./src/ai-settings-result.ts",
     "./atomic-write": "./src/atomic-write.ts",
     "./clipboard-history-labels": "./src/clipboard-history-labels.ts",
     "./drop-open": "./src/drop-open.ts",

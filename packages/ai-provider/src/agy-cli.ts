@@ -1610,10 +1610,17 @@ const realModelsDeps: AgyModelsDeps = {
     }),
 }
 
-const modelsCache = new Map<string, { at: number; models: string[] }>()
+/**
+ * Catalog reads are keyed by the resolved executable. `startedAt` is when the read began, so a
+ * read that began earlier can never overwrite a newer catalog that already landed.
+ */
+const modelsCache = new Map<string, { at: number; startedAt: number; models: string[] }>()
+/** one in-flight `agy models` per executable: two simultaneous probes would race to the cache */
+const modelsInflight = new Map<string, Promise<AgyModelCatalog>>()
 
 export function clearAgyModelsCache(): void {
   modelsCache.clear()
+  modelsInflight.clear()
 }
 
 /** `agy models`, cached for a few minutes. Never throws: failures come back as `error`. */
@@ -1628,21 +1635,35 @@ export async function listAgyModels(
     if (!options.force && cached && deps.now() - cached.at < AGY_MODELS_CACHE_MS) {
       return catalogOf(cached.models)
     }
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), AGY_MODELS_TIMEOUT_MS)
-    let output: string
+    const pending = modelsInflight.get(resolved)
+    if (pending) return pending
+    const startedAt = deps.now()
+    const read = (async (): Promise<AgyModelCatalog> => {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), AGY_MODELS_TIMEOUT_MS)
+      let output: string
+      try {
+        output = await deps.run(resolved, controller.signal)
+      } finally {
+        clearTimeout(timer)
+      }
+      const models = parseAgyModels(output)
+      if (models.length === 0)
+        throw new Error('Antigravity CLI returned no models. Are you signed in?')
+      const existing = modelsCache.get(resolved)
+      // an older probe finishing later must not replace a newer catalog
+      if (!existing || existing.startedAt <= startedAt)
+        modelsCache.set(resolved, { at: deps.now(), startedAt, models })
+      // every successful catalog read refreshes the first-run chat model for the configured path
+      recordAgyChatDefault(cliPath, { models }, deps.now())
+      return catalogOf(models)
+    })()
+    modelsInflight.set(resolved, read)
     try {
-      output = await deps.run(resolved, controller.signal)
+      return await read
     } finally {
-      clearTimeout(timer)
+      if (modelsInflight.get(resolved) === read) modelsInflight.delete(resolved)
     }
-    const models = parseAgyModels(output)
-    if (models.length === 0)
-      throw new Error('Antigravity CLI returned no models. Are you signed in?')
-    modelsCache.set(resolved, { at: deps.now(), models })
-    // every successful catalog read refreshes the first-run chat model for the configured path
-    recordAgyChatDefault(cliPath, { models }, deps.now())
-    return catalogOf(models)
   } catch (error) {
     const aborted = error instanceof Error && error.name === 'AbortError'
     recordAgyChatDefault(

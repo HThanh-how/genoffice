@@ -9,6 +9,8 @@ export interface AgyBarModel {
   group: string | null
   relativeCost: number
   speed: 'fast' | 'balanced' | 'slow'
+  /** false when the person switched this model off in the AGY model settings */
+  enabled?: boolean
 }
 export interface AgyBarState {
   models: AgyBarModel[]
@@ -1091,7 +1093,9 @@ export function AgyChatBar({
             // the chat box lists what the person switched on, but only a model the CLI
             // confirmed can actually be chosen: the main process refuses the rest, so the
             // menu must not look like it accepts them
-            const blocked = state.available !== undefined && !state.available.includes(model.id)
+            const blocked =
+              (state.available !== undefined && !state.available.includes(model.id)) ||
+              model.enabled === false
             return (
               <button
                 key={model.id}

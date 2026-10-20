@@ -66,19 +66,25 @@ export function AgyChatModelsSettings() {
   const d = DICTS[lang] ?? EN
   const [catalog, setCatalog] = useState<AgyChatCatalog | null>(null)
   const [failed, setFailed] = useState(false)
-  const togglingRef = useRef(false)
+  // the newest catalog the panel has seen, so a queued toggle never starts from a stale list
+  const catalogRef = useRef<AgyChatCatalog | null>(null)
+  // toggles run one after another, each seeing the result of the previous one
+  const queueRef = useRef<Promise<void>>(Promise.resolve())
 
   const load = useCallback(async () => {
     try {
       const next = await api()?.getAgyChatCatalog()
       if (next && next.all.length > 0) {
+        catalogRef.current = next
         setCatalog(next)
         setFailed(false)
       } else {
+        catalogRef.current = null
         setCatalog(null)
         setFailed(true)
       }
     } catch {
+      catalogRef.current = null
       setCatalog(null)
       setFailed(true)
     }
@@ -94,28 +100,32 @@ export function AgyChatModelsSettings() {
     }
   }, [load])
 
-  const toggle = async (id: string) => {
-    if (!catalog || togglingRef.current) return
-    const on = catalog.enabled.includes(id)
-    if (on && catalog.enabled.length === 1) return
-    const ids = on ? catalog.enabled.filter((x) => x !== id) : [...catalog.enabled, id]
-    togglingRef.current = true
-    try {
-      const saved = await api()?.setAgyChatEnabledModels(ids)
-      if (saved === null || saved === undefined) {
-        // the write did not land: re-read so the switches show what is really stored instead of
-        // pretending the change was saved
+  const toggle = (id: string) => {
+    // toggles are serialised: two rapid clicks cannot both start from the same snapshot and
+    // silently drop one of them
+    queueRef.current = queueRef.current.then(async () => {
+      const current = catalogRef.current
+      if (!current) return
+      const on = current.enabled.includes(id)
+      if (on && current.enabled.length === 1) return
+      const ids = on ? current.enabled.filter((x) => x !== id) : [...current.enabled, id]
+      try {
+        const saved = await api()?.setAgyChatEnabledModels(ids)
+        if (saved === null || saved === undefined) {
+          // the write did not land: re-read so the switches show what is really stored instead of
+          // pretending the change was saved
+          void load()
+          return
+        }
+        const next = { ...current, enabled: saved }
+        catalogRef.current = next
+        setFailed(false)
+        setCatalog(next)
+        window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+      } catch {
         void load()
-        return
       }
-      setFailed(false)
-      setCatalog((prev) => (prev ? { ...prev, enabled: saved } : null))
-      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
-    } catch {
-      void load()
-    } finally {
-      togglingRef.current = false
-    }
+    })
   }
 
   const row = (model: AgyChatModelInfo) => {

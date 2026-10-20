@@ -253,6 +253,27 @@ describe('agy usability detection', () => {
     expect(seen).toEqual([true, false])
   })
 
+  it("a usability answer learned from one executable is not served as another's", async () => {
+    // the answer that was learned came from the auto-detected CLI (no configured path)
+    const auto = deps(async () => ({ models: ['m'] }))
+    await probeAgyUsable(undefined, auto)
+    expect(agyDefaultsUsable()).toBe(true)
+    // the person now points Antigravity at a different executable: the global answer belongs to
+    // the auto-detected one, so /cli/b has to be probed before it can count as usable
+    const configured = deps(async () => ({ models: [] }))
+    await expect(agyUsableForDefaults('/cli/b', configured)).resolves.toBe(false)
+    expect(configured.list).toHaveBeenCalledTimes(1)
+    expect(configured.list).toHaveBeenCalledWith('/cli/b')
+
+    // and an answer recorded for /cli/a is likewise never reused for an unprobed /cli/c
+    const a = deps(async () => ({ models: ['m'] }))
+    await probeAgyUsable('/cli/a', a)
+    expect(agyDefaultsUsable()).toBe(true)
+    const c = deps(async () => ({ models: [] }))
+    await expect(agyUsableForDefaults('/cli/c', c)).resolves.toBe(false)
+    expect(c.list).toHaveBeenCalledWith('/cli/c')
+  })
+
   it('serves a known answer at once and refreshes a stale one behind it', async () => {
     setAgyUsable(true, 0)
     const d = deps(

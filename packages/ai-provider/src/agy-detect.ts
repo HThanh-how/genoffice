@@ -76,10 +76,12 @@ export async function agyUsableForDefaults(
   waitMs: number = AGY_USABLE_FIRST_WAIT_MS,
 ): Promise<boolean> {
   // The answer must belong to the CLI that is configured now: a fresh answer for another
-  // executable is never served as this one's verified usability.
+  // executable is never served as this one's verified usability. `agyActiveCliKey() === null`
+  // alone is not enough - that global was learned from whichever executable was probed first.
   if (
     agyUsabilityKnown() &&
-    (agyActiveCliKey() === null || agyActiveCliKey() === agyChatDefaultKey(cliPath))
+    (agyActiveCliKey() === agyChatDefaultKey(cliPath) ||
+      (agyActiveCliKey() === null && agyChatDefaultKey(cliPath) === ''))
   ) {
     if (deps.now() - agyUsabilityCheckedAt() > AGY_USABLE_FRESH_MS)
       void probeAgyUsable(cliPath, deps)

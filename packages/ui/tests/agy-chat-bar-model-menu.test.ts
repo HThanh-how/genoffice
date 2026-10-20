@@ -266,3 +266,65 @@ describe('the chat box ignores a state read that finished too late (D9-D11)', ()
     f.host.remove()
   })
 })
+
+describe('a model the person switched off is never offered (G6)', () => {
+  it('G6: a disabled model is listed but cannot be clicked, even when the CLI serves it', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const selectCalls: string[] = []
+    await act(async () => {
+      root.render(
+        createElement(AgyChatBar, {
+          lang: 'en',
+          api: {
+            getAgyChatState: async () => ({
+              active: true,
+              selected: HIGH,
+              available: [HIGH, PRO],
+              selectedStatus: 'verified',
+              models: [
+                {
+                  id: HIGH,
+                  label: HIGH,
+                  group: 'Gemini Models',
+                  relativeCost: 1,
+                  speed: 'fast',
+                  enabled: true,
+                },
+                {
+                  id: PRO,
+                  label: PRO,
+                  group: 'Claude and GPT',
+                  relativeCost: 4,
+                  speed: 'slow',
+                  enabled: false,
+                },
+              ],
+            }),
+            selectAgyChatModel: async (id: string) => {
+              selectCalls.push(id)
+              return false
+            },
+            onAgyChatModelChanged: () => () => undefined,
+            getAgyChatUsage: async () => null,
+            refreshAgyChatUsage: async () => null,
+            onAgyChatUsage: () => () => undefined,
+          } as AgyBarApi,
+        }),
+      )
+    })
+    await act(async () => {})
+    const chip = host.querySelector<HTMLButtonElement>('.agy-bar-model')
+    await act(async () => chip?.click())
+    const options = Array.from(host.querySelectorAll<HTMLButtonElement>('.agy-bar-menu button'))
+    const pro = options.find((button) => button.textContent?.includes(PRO))
+    expect(pro).not.toBeNull()
+    expect(pro!.disabled).toBe(true)
+    expect(pro!.getAttribute('aria-disabled')).toBe('true')
+    await act(async () => pro!.click())
+    expect(selectCalls).toEqual([])
+    act(() => root.unmount())
+    host.remove()
+  })
+})
