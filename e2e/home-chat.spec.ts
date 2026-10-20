@@ -30,7 +30,7 @@ test('home chat finds remembered content, opens its source and preserves the hom
       res.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n')
     }
     res.writeHead(200, { 'content-type': 'text/event-stream' })
-    if (lastUserMsg === 'Check knowledge base') {
+    if (typeof lastUserMsg === 'string' && lastUserMsg.startsWith('Check knowledge base')) {
       res.write(
         'data: {"choices":[{"delta":{"content":"Knowledge base contains starred files."}}]}\n\n',
       )
