@@ -203,6 +203,166 @@ describe('R2: the quota cache cannot mix two CLI identities', () => {
     expect(failed.failed).toBe(true)
     expect(failed.groups).toBeNull()
   })
+
+  it('Q1: A pending, switch B, B pending, A finishes. B must still show refreshing', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'agy-usage-q1-')), 'cache.json')
+    dirs.push(path)
+    let cli = '/cli/a'
+    let resolveA: (value: unknown) => void = () => undefined
+    let resolveB: (value: unknown) => void = () => undefined
+    const read = vi.fn((cliPath?: string) =>
+      cliPath === '/cli/a'
+        ? new Promise((resolve) => {
+            resolveA = resolve
+          })
+        : new Promise((resolve) => {
+            resolveB = resolve
+          }),
+    )
+    const cache = new AgyUsageCache(
+      read,
+      path,
+      () => 100,
+      () => {},
+      () => cli,
+    )
+    const a = cache.refresh()
+    cli = '/cli/b'
+    const b = cache.refresh()
+    resolveA(reading(0.9, 150))
+    await a
+    expect(cache.snapshot().refreshing).toBe(true)
+    resolveB(reading(0.2, 200))
+    const doneB = await b
+    expect(doneB.refreshing).toBe(false)
+    expect(doneB.groups?.[0]?.buckets[0]?.remaining).toBe(0.2)
+  })
+
+  it('Q2: A pending, switch B, switch back A, new A starts, old A finishes last. Old A must not overwrite new A', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'agy-usage-q2-')), 'cache.json')
+    dirs.push(path)
+    let cli = '/cli/a'
+    let resolveA1: (value: unknown) => void = () => undefined
+    let _resolveB: (value: unknown) => void = () => undefined
+    let resolveA2: (value: unknown) => void = () => undefined
+    let aCalls = 0
+    const read = vi.fn((cliPath?: string) => {
+      if (cliPath === '/cli/b') {
+        return new Promise((resolve) => {
+          _resolveB = resolve
+        })
+      }
+      aCalls += 1
+      if (aCalls === 1) {
+        return new Promise((resolve) => {
+          resolveA1 = resolve
+        })
+      }
+      return new Promise((resolve) => {
+        resolveA2 = resolve
+      })
+    })
+    const cache = new AgyUsageCache(
+      read,
+      path,
+      () => 100,
+      () => {},
+      () => cli,
+    )
+    const a1 = cache.refresh()
+    cli = '/cli/b'
+    const _b = cache.refresh()
+    cli = '/cli/a'
+    const a2 = cache.refresh()
+    resolveA2(reading(0.5, 300))
+    await a2
+    expect(cache.get().groups?.[0]?.buckets[0]?.remaining).toBe(0.5)
+    resolveA1(reading(0.9, 100))
+    await a1
+    expect(cache.get().groups?.[0]?.buckets[0]?.remaining).toBe(0.5)
+    const saved = JSON.parse(readFileSync(path, 'utf8')) as { groups: Array<{ buckets: Array<{ remaining: number }> }> }
+    expect(saved.groups[0]!.buckets[0]!.remaining).toBe(0.5)
+  })
+
+  it('Q3: Cached quota from A is restored at startup; switch B before first refresh. B must not display A percentage', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-usage-q3-'))
+    dirs.push(dir)
+    const path = join(dir, 'cache.json')
+    writeFileSync(path, JSON.stringify({ ...reading(0.8, 100), cliKey: '/cli/a' }), 'utf8')
+    let cli = '/cli/a'
+    const read = vi.fn(async () => reading(0.3, 200))
+    const cache = new AgyUsageCache(
+      read,
+      path,
+      () => 100,
+      () => {},
+      () => cli,
+    )
+    cli = '/cli/b'
+    const snap = cache.snapshot()
+    expect(snap.groups).toBeNull()
+    const getResult = cache.get()
+    expect(getResult.groups).toBeNull()
+  })
+
+  it('Q4: Reader throws unexpectedly. The cache must recover and permit another refresh', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'agy-usage-q4-')), 'cache.json')
+    dirs.push(path)
+    let shouldThrow = true
+    const read = vi.fn(async () => {
+      if (shouldThrow) throw new Error('CLI crash')
+      return reading(0.7, 200)
+    })
+    const cache = new AgyUsageCache(
+      read,
+      path,
+      () => 100,
+      () => {},
+      () => '/cli/a',
+    )
+    const failed = await cache.refresh()
+    expect(failed.failed).toBe(true)
+    expect(cache.snapshot().refreshing).toBe(false)
+    shouldThrow = false
+    const recovered = await cache.refresh()
+    expect(recovered.failed).toBe(false)
+    expect(recovered.groups?.[0]?.buckets[0]?.remaining).toBe(0.7)
+  })
+
+  it('Q5: Failures, successes and notifications belong to the appropriate CLI. Verify cached JSON', async () => {
+    const path = join(mkdtempSync(join(tmpdir(), 'agy-usage-q5-')), 'cache.json')
+    dirs.push(path)
+    let cli = '/cli/a'
+    const notifications: Array<{ cli: string; remaining?: number; failed: boolean }> = []
+    const read = vi.fn(async (cliPath?: string) => {
+      if (cliPath === '/cli/a') return reading(0.85, 100)
+      return null
+    })
+    const cache = new AgyUsageCache(
+      read,
+      path,
+      () => 100,
+      (state) => {
+        notifications.push({
+          cli,
+          remaining: state.groups?.[0]?.buckets[0]?.remaining,
+          failed: state.failed,
+        })
+      },
+      () => cli,
+    )
+    await cache.refresh()
+    const saved = JSON.parse(readFileSync(path, 'utf8')) as { cliKey: string; groups: unknown[] }
+    expect(saved.cliKey).toBe('/cli/a')
+    expect(saved.groups).toHaveLength(1)
+
+    cli = '/cli/b'
+    const failed = await cache.refresh()
+    expect(failed.failed).toBe(true)
+    expect(failed.groups).toBeNull()
+    expect(notifications.some((n) => n.cli === '/cli/a' && n.remaining === 0.85)).toBe(true)
+    expect(notifications.some((n) => n.cli === '/cli/b' && n.failed === true)).toBe(true)
+  })
 })
 
 describe('R4 + R6: the generic settings write is validated against the file it commits to', () => {
@@ -252,7 +412,7 @@ describe('R4 + R6: the generic settings write is validated against the file it c
     expect((readAi(file).providers as Record<string, { model: string }>).agy.model).toBe(HIGH)
   })
 
-  it('R4: a newer selection made during a pending generic write survives it', async () => {
+  it('S1: Model conflict - A submits model PRO based on LOW while B commits HIGH. A fails with stale-model without rolling back HIGH', async () => {
     const p = paths(
       { provider: 'agy', providers: { agy: { apiKey: '', cliPath: '/cli/a', model: LOW } } },
       { [AGY_CHAT_MODELS_KEY]: GEM },
@@ -268,13 +428,52 @@ describe('R4 + R6: the generic settings write is validated against the file it c
       return Promise.resolve({ models: GEM })
     })
     const { call } = wire(p)
-    // the settings modal snapshot was taken while the stored model was LOW; it carries PRO
+    // A takes snapshot when model is LOW, submits PRO (changing model from LOW to PRO)
+    const generic = applySettingsWrite(
+      {
+        provider: 'agy',
+        providers: {
+          agy: { apiKey: '', cliPath: '/cli/a', model: PRO },
+        },
+      },
+      () => JSON.parse(readFileSync(p.aiSettingsPath, 'utf8')) as AiSettings,
+      (next) => writeFileSync(p.aiSettingsPath, JSON.stringify(next), 'utf8'),
+      (cliPath: string | undefined) => catalogCall(cliPath),
+      GEM,
+    )
+    // B commits HIGH while A is pending
+    expect(await call(AGY_CHAT_CHANNELS.select, HIGH, true)).toBe(true)
+    release({ models: GEM })
+    const decision = await generic
+    expect(decision.ok).toBe(false)
+    expect(decision.reason).toBe('stale-model')
+    const saved = readAi(p.aiSettingsPath)
+    expect((saved.providers as Record<string, { model: string }>).agy.model).toBe(HIGH)
+  })
+
+  it('S2 (R4): Independent settings - A changes non-model settings while B commits HIGH. A succeeds preserving HIGH', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { apiKey: '', cliPath: '/cli/a', model: LOW } } },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    let release: (value: { models: string[] }) => void = () => undefined
+    let probes = 0
+    catalogCall.mockImplementation(() => {
+      probes += 1
+      if (probes === 1)
+        return new Promise((resolve) => {
+          release = resolve
+        })
+      return Promise.resolve({ models: GEM })
+    })
+    const { call } = wire(p)
+    // the settings modal snapshot was taken while stored model was LOW; it keeps model: LOW unchanged
     const generic = applySettingsWrite(
       {
         provider: 'gemini',
         providers: {
           gemini: { apiKey: 'gk', model: 'gemini-2.5-flash' },
-          agy: { apiKey: '', cliPath: '/cli/a', model: PRO },
+          agy: { apiKey: '', cliPath: '/cli/a', model: LOW },
         },
         maxOutputTokens: 2048,
       },
@@ -292,6 +491,108 @@ describe('R4 + R6: the generic settings write is validated against the file it c
     expect(saved.provider).toBe('gemini')
     expect((saved.providers as Record<string, { model: string }>).agy.model).toBe(HIGH)
     expect(saved.maxOutputTokens).toBe(2048)
+  })
+
+  it('S3: CLI identity change - A validates against /cli/a while B changes configured CLI to /cli/b. A fails with conflict', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-s3-'))
+    dirs.push(dir)
+    const file = join(dir, 'ai-settings.json')
+    writeFileSync(file, JSON.stringify(settingsOf(HIGH)), 'utf8')
+    let release: (value: { models: string[] }) => void = () => undefined
+    let probes = 0
+    catalogCall.mockImplementation(() => {
+      probes += 1
+      if (probes === 1)
+        return new Promise((resolve) => {
+          release = resolve
+        })
+      return Promise.resolve({ models: GEM })
+    })
+    const decisionPromise = applySettingsWrite(
+      {
+        provider: 'agy',
+        providers: {
+          agy: { apiKey: '', cliPath: '/cli/a', model: LOW },
+        },
+      },
+      () => JSON.parse(readFileSync(file, 'utf8')) as AiSettings,
+      (next) => writeFileSync(file, JSON.stringify(next), 'utf8'),
+      (cliPath: string | undefined) => catalogCall(cliPath),
+      GEM,
+    )
+    // Concurrently B changes configured CLI to /cli/b
+    writeFileSync(
+      file,
+      JSON.stringify({
+        provider: 'agy',
+        providers: {
+          agy: { apiKey: '', cliPath: '/cli/b', model: HIGH },
+        },
+      }),
+      'utf8',
+    )
+    release({ models: GEM })
+    const decision = await decisionPromise
+    expect(decision.ok).toBe(false)
+    expect(decision.reason).toBe('conflict')
+    expect(readAi(file).providers.agy.cliPath).toBe('/cli/b')
+  })
+
+  it('S4: Other provider settings - concurrent change to openai rejects conflict', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-s4-'))
+    dirs.push(dir)
+    const file = join(dir, 'ai-settings.json')
+    writeFileSync(
+      file,
+      JSON.stringify({
+        provider: 'agy',
+        providers: {
+          agy: { apiKey: '', cliPath: '/cli/a', model: HIGH },
+          openai: { apiKey: 'key1', model: 'gpt-4o' },
+        },
+      }),
+      'utf8',
+    )
+    let release: (value: { models: string[] }) => void = () => undefined
+    let probes = 0
+    catalogCall.mockImplementation(() => {
+      probes += 1
+      if (probes === 1)
+        return new Promise((resolve) => {
+          release = resolve
+        })
+      return Promise.resolve({ models: GEM })
+    })
+    const decisionPromise = applySettingsWrite(
+      {
+        provider: 'agy',
+        providers: {
+          agy: { apiKey: '', cliPath: '/cli/a', model: HIGH },
+          openai: { apiKey: 'key-from-A', model: 'gpt-4o' },
+        },
+      },
+      () => JSON.parse(readFileSync(file, 'utf8')) as AiSettings,
+      (next) => writeFileSync(file, JSON.stringify(next), 'utf8'),
+      (cliPath: string | undefined) => catalogCall(cliPath),
+      GEM,
+    )
+    // Concurrently B updates openai apiKey to key-from-B
+    writeFileSync(
+      file,
+      JSON.stringify({
+        provider: 'agy',
+        providers: {
+          agy: { apiKey: '', cliPath: '/cli/a', model: HIGH },
+          openai: { apiKey: 'key-from-B', model: 'gpt-4o' },
+        },
+      }),
+      'utf8',
+    )
+    release({ models: GEM })
+    const decision = await decisionPromise
+    expect(decision.ok).toBe(false)
+    expect(decision.reason).toBe('conflict')
+    expect(readAi(file).providers.openai.apiKey).toBe('key-from-B')
   })
 
   it('R5: a process without the enabled-list policy cannot introduce a new AGY model', async () => {

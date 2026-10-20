@@ -214,7 +214,7 @@ export function HomeChat({
     setDockTarget((previous) => (previous === target ? previous : target))
   }, [dockLocation])
 
-  const panelVisible = isWorkspace || open
+  const panelVisible = Boolean(isWorkspace || (workspaceActive === undefined && open))
 
   useEffect(() => {
     announceChatPanel(panelVisible)
@@ -1247,10 +1247,14 @@ export function HomeChat({
   )
 
   useEffect(() => {
-    if (workspaceActive && !initRef.current) {
-      openPanel('resume')
+    if (workspaceActive) {
+      if (!initRef.current) {
+        openPanel('resume')
+      }
+    } else if (workspaceActive !== undefined) {
+      closePanel(false)
     }
-  }, [workspaceActive, openPanel])
+  }, [workspaceActive, openPanel, closePanel])
 
   // ---- sending ------------------------------------------------------------
 

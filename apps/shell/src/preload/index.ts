@@ -826,11 +826,11 @@ const homeApi: HomeApi = {
       ok?: boolean
       reason?: string
     } | null
-    if (result?.ok === false) {
+    if (result?.ok !== true) {
       throw new Error(
-        result.reason === 'invalid'
+        result?.reason === 'invalid'
           ? 'The settings were not saved: the payload was invalid.'
-          : `The settings were not saved: Antigravity could not confirm that model (${result.reason ?? 'unknown'}).`,
+          : `The settings were not saved: Antigravity could not confirm that model (${result?.reason ?? 'unknown'}).`,
       )
     }
   },

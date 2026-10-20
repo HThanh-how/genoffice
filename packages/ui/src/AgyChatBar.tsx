@@ -586,9 +586,30 @@ export function AgyChatBar({
       if (next) {
         stateRef.current = next
         setState(next)
+      } else {
+        setState((previous) => {
+          if (!previous) return previous
+          const updated: AgyBarState = {
+            ...previous,
+            selectedStatus: 'unverified',
+            catalogError: previous.catalogError ?? 'unavailable',
+          }
+          stateRef.current = updated
+          return updated
+        })
       }
     } catch {
-      // keep what is shown - a later refresh reports the real state
+      if (mine !== loadSeq.current || !alive.current) return
+      setState((previous) => {
+        if (!previous) return previous
+        const updated: AgyBarState = {
+          ...previous,
+          selectedStatus: 'unverified',
+          catalogError: previous.catalogError ?? 'unavailable',
+        }
+        stateRef.current = updated
+        return updated
+      })
     }
   }, [source])
 
@@ -1158,6 +1179,7 @@ export function AgyChatBar({
             <button
               type="button"
               className="agy-bar-chip agy-bar-model"
+              data-status={state.selectedStatus}
               aria-haspopup="listbox"
               aria-expanded={menu}
               title={

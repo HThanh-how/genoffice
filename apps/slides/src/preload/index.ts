@@ -400,7 +400,7 @@ const api: SlidesApi = {
       reason?: string
     } | null
     // a refused write must not look like a saved one to the renderer
-    if (result?.ok === false) throw new Error(`settings not saved: ${result.reason ?? 'invalid'}`)
+    if (result?.ok !== true) throw new Error(`settings not saved: ${result?.reason ?? 'invalid'}`)
   },
   onAiSettingsChanged: (handler: () => void) => {
     const listener = () => handler()

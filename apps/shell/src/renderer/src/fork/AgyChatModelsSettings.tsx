@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AGY_CHAT_DEFAULT_MODEL,
   type AgyChatApi,
@@ -66,37 +66,56 @@ export function AgyChatModelsSettings() {
   const d = DICTS[lang] ?? EN
   const [catalog, setCatalog] = useState<AgyChatCatalog | null>(null)
   const [failed, setFailed] = useState(false)
+  const togglingRef = useRef(false)
 
   const load = useCallback(async () => {
     try {
       const next = await api()?.getAgyChatCatalog()
-      if (next) {
+      if (next && next.all.length > 0) {
         setCatalog(next)
-        setFailed(next.all.length === 0)
+        setFailed(false)
+      } else {
+        setCatalog(null)
+        setFailed(true)
       }
     } catch {
+      setCatalog(null)
       setFailed(true)
     }
   }, [])
   useEffect(() => {
     void load()
+    const off = api()?.onAgyChatModelChanged?.(() => void load())
+    const onWindow = () => void load()
+    window.addEventListener('genoffice-agy-model-changed', onWindow)
+    return () => {
+      off?.()
+      window.removeEventListener('genoffice-agy-model-changed', onWindow)
+    }
   }, [load])
 
   const toggle = async (id: string) => {
-    if (!catalog) return
+    if (!catalog || togglingRef.current) return
     const on = catalog.enabled.includes(id)
     if (on && catalog.enabled.length === 1) return
     const ids = on ? catalog.enabled.filter((x) => x !== id) : [...catalog.enabled, id]
-    const saved = await api()?.setAgyChatEnabledModels(ids)
-    if (saved === null || saved === undefined) {
-      // the write did not land: re-read so the switches show what is really stored instead of
-      // pretending the change was saved
+    togglingRef.current = true
+    try {
+      const saved = await api()?.setAgyChatEnabledModels(ids)
+      if (saved === null || saved === undefined) {
+        // the write did not land: re-read so the switches show what is really stored instead of
+        // pretending the change was saved
+        void load()
+        return
+      }
+      setFailed(false)
+      setCatalog((prev) => (prev ? { ...prev, enabled: saved } : null))
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    } catch {
       void load()
-      return
+    } finally {
+      togglingRef.current = false
     }
-    setFailed(false)
-    setCatalog({ ...catalog, enabled: saved })
-    window.dispatchEvent(new Event('genoffice-agy-model-changed'))
   }
 
   const row = (model: AgyChatModelInfo) => {

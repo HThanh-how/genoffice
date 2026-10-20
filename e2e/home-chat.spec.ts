@@ -12,13 +12,16 @@ test('home chat finds remembered content, opens its source and preserves the hom
   await writeFile(source, '# Moonstone\nClass 2/1 guardian phone 0912345678\n')
   const requests: Array<{
     messages: Array<{ role: string; content?: string }>
-    tools?: unknown[]
+    tools?: Array<{ type: string; function: { name: string } }>
   }> = []
   const server = createServer(async (req, res) => {
     let body = ''
     for await (const bytes of req) body += bytes
     const payload = JSON.parse(body)
     requests.push(payload)
+    const lastUserMsg = payload.messages
+      .filter((m: { role: string }) => m.role === 'user')
+      .at(-1)?.content
     const tools = payload.messages.filter((m: { role: string }) => m.role === 'tool')
     const sendCall = (name: string, input: object) => {
       res.write(
@@ -27,7 +30,12 @@ test('home chat finds remembered content, opens its source and preserves the hom
       res.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n')
     }
     res.writeHead(200, { 'content-type': 'text/event-stream' })
-    if (tools.length === 0)
+    if (typeof lastUserMsg === 'string' && lastUserMsg.startsWith('Check knowledge base')) {
+      res.write(
+        'data: {"choices":[{"delta":{"content":"Knowledge base contains starred files."}}]}\n\n',
+      )
+      res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+    } else if (tools.length === 0)
       sendCall('search_remembered_documents', { query: 'Moonstone class 2/1', limit: 4 })
     else if (tools.length === 1) {
       const hit = JSON.parse(tools[0].content).hits[0]
@@ -67,19 +75,16 @@ test('home chat finds remembered content, opens its source and preserves the hom
     }, `http://127.0.0.1:${address.port}/v1`)
     await home.locator('.tab-item.tab-home').click()
     await expect(home.locator('.home-hero')).toBeVisible()
-    const before = await home.locator('.home-hero').boundingBox()
-    await home.locator('.home-chat-launcher').click()
-    await expect(home.locator('.home-chat-panel')).toBeVisible()
-    await expect(home.locator('.home-chat-launcher')).toHaveAttribute('aria-expanded', 'true')
-    const headerButtons = home.locator('.home-chat-header-actions button')
-    await expect(headerButtons).toHaveCount(2)
-    for (const button of await headerButtons.all()) {
-      await expect(button).toHaveAttribute('aria-label', /.+/)
-      await expect(button.locator('svg')).toHaveCount(1)
-    }
-    expect(await home.locator('.home-hero').boundingBox()).toEqual(before)
+    await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
+
+    const askBtn = home.locator('.sidebar').getByRole('button', { name: 'Ask AI', exact: true })
+    await askBtn.click()
+    await expect(home.locator('.home-chat-panel.is-workspace')).toBeVisible()
+    await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
+
     const input = home.locator('.home-chat-panel textarea')
     await input.fill('draft should remain after collapsing')
+
     const homeTab = home.locator('.tab-item.tab-home')
     await homeTab.evaluate((node) =>
       node.addEventListener('click', () => node.setAttribute('data-test-click-received', 'true'), {
@@ -87,21 +92,56 @@ test('home chat finds remembered content, opens its source and preserves the hom
       }),
     )
     await homeTab.click()
-    await expect(home.locator('.home-chat-panel')).toBeHidden()
+    await expect(home.locator('.home-chat-panel.is-workspace')).toBeHidden()
     await expect(homeTab).toHaveAttribute('data-test-click-received', 'true')
-    await home.locator('.home-chat-launcher').click()
+    await expect(home.locator('.home-hero')).toBeVisible()
+    await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
+
+    await askBtn.click()
+    await expect(home.locator('.home-chat-panel.is-workspace')).toBeVisible()
+    await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
     await expect(input).toHaveValue('draft should remain after collapsing')
+
     await input.fill('Find the phone in the Moonstone class 2/1 file')
     await input.press('Enter')
     await expect(home.locator('.home-chat-panel')).toContainText('The phone is 0912345678', {
       timeout: 30_000,
     })
     expect(requests).toHaveLength(3)
-    expect(requests[0]!.tools).toHaveLength(3)
+    // 1. Empty knowledge base (no starred files): only 4 baseline tools are exposed
+    expect(requests[0]!.tools).toHaveLength(4)
+    expect(requests[0]!.tools?.map((t) => t.function.name)).toEqual([
+      'search_remembered_documents',
+      'read_remembered_document',
+      'open_remembered_document',
+      'create_document',
+    ])
     const evidence = JSON.parse(
       requests[2]!.messages.filter((m) => m.role === 'tool').at(-1)!.content!,
     )
     expect(evidence.verified).toBe(true)
+
+    // 2. Nonempty knowledge base: star a file and verify all 6 tools are offered
+    await home.evaluate(async (p) => {
+      const api = (window as Window & { aiOffice: HomeApi }).aiOffice
+      await api.toggleStar(p)
+    }, source)
+    await input.fill('Check knowledge base')
+    await input.press('Enter')
+    await expect(home.locator('.home-chat-panel')).toContainText(
+      'Knowledge base contains starred files.',
+      { timeout: 30_000 },
+    )
+    const starredRequest = requests[3]!
+    expect(starredRequest.tools).toHaveLength(6)
+    expect(starredRequest.tools?.map((t) => t.function.name)).toEqual([
+      'search_remembered_documents',
+      'read_remembered_document',
+      'open_remembered_document',
+      'read_knowledge_file',
+      'search_knowledge_base',
+      'create_document',
+    ])
     await home.screenshot({ path: screenshotPath('home-chat-glass') })
     await home.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
     await home.screenshot({ path: screenshotPath('home-chat-glass-dark') })

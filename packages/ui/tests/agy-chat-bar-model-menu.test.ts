@@ -236,4 +236,33 @@ describe('the chat box ignores a state read that finished too late (D9-D11)', ()
     await act(async () => {})
     expect(f.host.querySelector('.agy-bar-model')).toBeNull()
   })
+
+  it('D12: a failed state read after a successful earlier read marks selectedStatus as unverified and sets catalogError', async () => {
+    let shouldFail = false
+    const f = mountBar({
+      getAgyChatState: async () => {
+        if (shouldFail) throw new Error('connection lost')
+        return {
+          ...stateOf(HIGH, [HIGH], [HIGH]),
+          selectedStatus: 'verified',
+        }
+      },
+    } as AgyBarApi)
+    await act(async () => f.root.render(createElement(AgyChatBar, { lang: 'en', api: f.bridge })))
+    await act(async () => {})
+    const chip = f.host.querySelector('.agy-bar-model')
+    expect(chip).not.toBeNull()
+    expect(chip?.getAttribute('data-status')).toBe('verified')
+
+    // Subsequent read fails
+    shouldFail = true
+    await act(async () => {
+      for (const listener of f.listeners) listener()
+    })
+    await act(async () => {})
+    // The bar model button should show unverified status
+    expect(chip?.getAttribute('data-status')).toBe('unverified')
+    act(() => f.root.unmount())
+    f.host.remove()
+  })
 })

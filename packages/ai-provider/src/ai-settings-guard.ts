@@ -259,6 +259,7 @@ export interface SettingsWriteDecision {
     | 'not-enabled'
     | 'unknown-policy'
     | 'stale-model'
+    | 'conflict'
     | 'write-failed'
 }
 
@@ -343,7 +344,7 @@ export async function applySettingsWrite(
   enabledPolicyKnown = true,
 ): Promise<SettingsWriteDecision> {
   const snapshot = readSettings()
-  let decision = await decideSettingsWrite(
+  const decision = await decideSettingsWrite(
     input,
     snapshot,
     catalogFor,
@@ -352,33 +353,114 @@ export async function applySettingsWrite(
   )
   if (!decision.ok || !decision.settings) return decision
 
-  // Validation is asynchronous. If a verified selection landed in the file while this write was
-  // being decided, the payload was built from an older state: it may still commit everything
-  // else it carries, but it cannot roll back the newer Antigravity model.
+  // Validation is asynchronous. Re-read the latest committed state before persisting.
   const latest = readSettings()
-  const newestModel = normalizeChatModel(latest?.providers?.agy?.model)
-  if (newestModel !== normalizeChatModel(snapshot?.providers?.agy?.model)) {
-    decision = await decideSettingsWrite(
-      input,
+  if (latest && snapshot) {
+    const incomingAgy = decision.settings.providers.agy
+    const snapshotAgy = snapshot.providers.agy
+    const latestAgy = latest.providers.agy
+
+    const incomingModel = normalizeChatModel(incomingAgy?.model)
+    const snapshotModel = normalizeChatModel(snapshotAgy?.model)
+    const latestModel = normalizeChatModel(latestAgy?.model)
+
+    // 1. Antigravity model conflict check
+    if (latestModel !== snapshotModel) {
+      // If the incoming payload was changing the model, this is an unresolvable stale model conflict.
+      if (incomingModel !== snapshotModel) {
+        return { settings: null, ok: false, reason: 'stale-model' }
+      }
+      // If the incoming payload was not changing the model, preserve the newer committed model.
+      decision.settings.providers.agy = {
+        ...(decision.settings.providers.agy ?? { apiKey: '', model: '' }),
+        model: latestModel ?? '',
+      }
+    }
+
+    // 2. CLI path conflict check (S3)
+    const incomingCli = sanitizeCliPath(incomingAgy?.cliPath)
+    const snapshotCli = sanitizeCliPath(snapshotAgy?.cliPath)
+    const latestCli = sanitizeCliPath(latestAgy?.cliPath)
+
+    if (latestCli !== snapshotCli) {
+      if (incomingCli !== snapshotCli || incomingModel !== snapshotModel) {
+        return { settings: null, ok: false, reason: 'conflict' }
+      }
+      if (decision.settings.providers.agy) {
+        decision.settings.providers.agy.cliPath = latestCli
+      }
+    }
+
+    // 3. Active provider conflict check
+    if (latest.provider !== snapshot.provider) {
+      if (decision.settings.provider !== snapshot.provider) {
+        return { settings: null, ok: false, reason: 'conflict' }
+      }
+      decision.settings.provider = latest.provider
+    }
+
+    // 4. Other provider configurations (S4)
+    for (const p of PROVIDER_IDS) {
+      if (p === 'agy') continue
+      const latestCfg = latest.providers[p]
+      const snapshotCfg = snapshot.providers[p]
+      const incomingCfg = decision.settings.providers[p]
+
+      if (JSON.stringify(latestCfg) !== JSON.stringify(snapshotCfg)) {
+        if (JSON.stringify(incomingCfg) !== JSON.stringify(snapshotCfg)) {
+          return { settings: null, ok: false, reason: 'conflict' }
+        }
+        if (latestCfg) {
+          decision.settings.providers[p] = latestCfg
+        } else {
+          delete decision.settings.providers[p]
+        }
+      }
+    }
+
+    // 5. Custom endpoints conflict check
+    if (JSON.stringify(latest.customEndpoints) !== JSON.stringify(snapshot.customEndpoints)) {
+      if (
+        JSON.stringify(decision.settings.customEndpoints) !==
+        JSON.stringify(snapshot.customEndpoints)
+      ) {
+        return { settings: null, ok: false, reason: 'conflict' }
+      }
+      decision.settings.customEndpoints = latest.customEndpoints
+    }
+
+    // 6. Media configuration conflict check
+    if (JSON.stringify(latest.media) !== JSON.stringify(snapshot.media)) {
+      if (JSON.stringify(decision.settings.media) !== JSON.stringify(snapshot.media)) {
+        return { settings: null, ok: false, reason: 'conflict' }
+      }
+      decision.settings.media = latest.media
+    }
+
+    // 7. Search configuration conflict check
+    if (JSON.stringify(latest.search) !== JSON.stringify(snapshot.search)) {
+      if (JSON.stringify(decision.settings.search) !== JSON.stringify(snapshot.search)) {
+        return { settings: null, ok: false, reason: 'conflict' }
+      }
+      decision.settings.search = latest.search
+    }
+
+    // Second validation against latest state
+    const rechecked = await decideSettingsWrite(
+      decision.settings,
       latest,
       catalogFor,
       enabledModels,
       enabledPolicyKnown,
     )
-    if (!decision.settings) return decision
-    if (normalizeChatModel(decision.settings.providers.agy?.model) !== newestModel) {
-      const agy = decision.settings.providers.agy ?? { apiKey: '', model: '' }
-      decision = {
-        settings: {
-          ...decision.settings,
-          providers: { ...decision.settings.providers, agy: { ...agy, model: newestModel ?? '' } },
-        },
-        ok: true,
-        reason: 'stale-model',
-      }
+    if (!rechecked.ok || !rechecked.settings) {
+      return rechecked
     }
+    decision.settings = rechecked.settings
   }
-  if (!decision.settings) return decision
+
+  if (!decision.ok || !decision.settings) return decision
+
   try {
     writeSettings(decision.settings)
   } catch {

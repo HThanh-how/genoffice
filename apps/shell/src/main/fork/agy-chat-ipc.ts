@@ -103,87 +103,108 @@ export class AgyUsageCache {
     if (saved && sameCli && Array.isArray(saved.groups) && typeof saved.readAt === 'number') {
       this.state = { groups: saved.groups, readAt: saved.readAt, refreshing: false, failed: false }
       this.savedCliKey = saved.cliKey ?? key
+      this.cliKey = this.savedCliKey
+    } else {
+      this.cliKey = key
+      this.savedCliKey = saved?.cliKey
     }
   }
 
+  private ensureCurrentCli(): string {
+    const key = cliKeyOf(this.cliPath())
+    if (this.cliKey !== undefined && key !== this.cliKey) {
+      this.state = { groups: null, readAt: 0, refreshing: false, failed: false }
+      this.cliKey = key
+      this.savedCliKey = key
+    } else if (this.cliKey === undefined) {
+      this.cliKey = key
+    }
+    return key
+  }
+
   snapshot(): AgyChatUsageState {
+    this.ensureCurrentCli()
     return { ...this.state, refreshing: this.busy }
   }
 
   /** Current numbers now; starts a refresh when they are older than the freshness window. */
   get(): AgyChatUsageState {
+    const key = this.ensureCurrentCli()
     if (
       this.state.readAt === 0 ||
       this.now() - this.state.readAt > AGY_USAGE_FRESH_MS ||
-      (this.savedCliKey !== undefined && this.savedCliKey !== cliKeyOf(this.cliPath()))
+      (this.savedCliKey !== undefined && this.savedCliKey !== key)
     )
       void this.refresh()
     return this.snapshot()
   }
 
   refresh(): Promise<AgyChatUsageState> {
-    const key = cliKeyOf(this.cliPath())
-    // the configured CLI changed: numbers from the old one are not this one's quota
-    if (this.cliKey !== undefined && key !== this.cliKey)
-      this.state = { groups: null, readAt: 0, refreshing: false, failed: false }
-    this.cliKey = key
-    this.savedCliKey = key
+    const key = this.ensureCurrentCli()
     if (this.inflight && this.inflight.key === key) return this.inflight.promise
     this.busy = true
     const cliPath = this.cliPath()
     const generation = ++this.generation
     const promise = (async (): Promise<AgyChatUsageState> => {
       this.onChange(this.snapshot())
-      const reading = await this.read(cliPath)
-      // the person pointed Antigravity at a different executable while this read was running:
-      // its numbers are not this CLI's quota and must not be cached under its key
-      if (cliKeyOf(this.cliPath()) !== key) {
-        this.retire(generation)
-        this.busy = false
-        return this.snapshot()
-      }
-      if (reading) {
-        this.state = {
-          groups: reading.groups.map((group) => ({
-            name: group.name,
-            buckets: group.buckets.map((bucket) => ({
-              window: bucket.window,
-              remaining: bucket.remaining,
-              ...(bucket.resetAt === undefined ? {} : { resetAt: bucket.resetAt }),
+      try {
+        const reading = await this.read(cliPath)
+        const isCurrent = generation === this.generation && cliKeyOf(this.cliPath()) === key
+        if (!isCurrent) {
+          return this.snapshot()
+        }
+        if (reading) {
+          this.state = {
+            groups: reading.groups.map((group) => ({
+              name: group.name,
+              buckets: group.buckets.map((bucket) => ({
+                window: bucket.window,
+                remaining: bucket.remaining,
+                ...(bucket.resetAt === undefined ? {} : { resetAt: bucket.resetAt }),
+              })),
             })),
-          })),
-          readAt: reading.readAt,
-          refreshing: false,
-          failed: false,
-          needsLogin: false,
-          cliMissing: false,
+            readAt: reading.readAt,
+            refreshing: false,
+            failed: false,
+            needsLogin: false,
+            cliMissing: false,
+          }
+          try {
+            writeJsonAtomic(this.cachePath, { ...this.state, cliKey: key })
+          } catch {
+            // the cache only makes the next start faster
+          }
+        } else {
+          this.state = {
+            ...this.state,
+            groups: null,
+            failed: true,
+            needsLogin: agyUsageNeedsLogin(),
+            cliMissing: agyUsageCliMissing(),
+          }
         }
-        try {
-          writeJsonAtomic(this.cachePath, { ...this.state, cliKey: key })
-        } catch {
-          // the cache only makes the next start faster
+      } catch {
+        const isCurrent = generation === this.generation && cliKeyOf(this.cliPath()) === key
+        if (isCurrent) {
+          this.state = {
+            ...this.state,
+            groups: null,
+            failed: true,
+            needsLogin: false,
+            cliMissing: false,
+          }
         }
-      } else {
-        this.state = {
-          ...this.state,
-          failed: true,
-          needsLogin: agyUsageNeedsLogin(),
-          cliMissing: agyUsageCliMissing(),
+      } finally {
+        if (generation === this.generation) {
+          this.busy = false
+          this.inflight = null
+          this.onChange(this.snapshot())
         }
       }
-      this.retire(generation)
-      this.busy = false
-      const done = this.snapshot()
-      this.onChange(done)
-      return done
+      return this.snapshot()
     })()
     this.inflight = { key, promise }
     return promise
-  }
-
-  /** Drop the in-flight record only if it is still the one that just finished. */
-  private retire(generation: number): void {
-    if (generation === this.generation) this.inflight = null
   }
 }
 
