@@ -328,19 +328,20 @@ export function HomeChat({
       if (!mountedRef.current) return false
       if (convRef.current !== owner || owner.dead) return false
       if (generation !== runGenerationRef.current) return false
-      if (context?.sessionId && convRef.current?.executionId !== context.sessionId) return false
-
-      if (context?.userTurnId || run !== 0) {
-        if (activeRunRef.current === 0) return false
-        if (run !== 0 && activeRunRef.current !== run) return false
-        if (context?.userTurnId) {
-          if (
-            !currentUserTurnIdRef.current ||
-            currentUserTurnIdRef.current !== context.userTurnId
-          ) {
-            return false
-          }
-        }
+      if (run === 0 || activeRunRef.current === 0 || activeRunRef.current !== run) return false
+      if (
+        !context?.sessionId ||
+        !convRef.current?.executionId ||
+        convRef.current.executionId !== context.sessionId
+      ) {
+        return false
+      }
+      if (
+        !context?.userTurnId ||
+        !currentUserTurnIdRef.current ||
+        currentUserTurnIdRef.current !== context.userTurnId
+      ) {
+        return false
       }
       return true
     },
@@ -367,9 +368,7 @@ export function HomeChat({
 
           if (isOpenPathRef.current) {
             try {
-              if (await isOpenPathRef.current(path)) {
-                return true
-              }
+              await isOpenPathRef.current(path)
             } catch {
               // ignore error and proceed with opening
             }
@@ -428,9 +427,7 @@ export function HomeChat({
       try {
         if (isOpenPathRef.current) {
           try {
-            if (await isOpenPathRef.current(path)) {
-              return true
-            }
+            await isOpenPathRef.current(path)
           } catch {
             // best effort
           }
@@ -455,6 +452,7 @@ export function HomeChat({
   if (!docSkillRef.current) {
     docSkillRef.current = createDocumentSkill({
       getSessionId: () => convRef.current?.executionId || activeSessionIdRef.current || undefined,
+      getExecutionId: () => convRef.current?.executionId || undefined,
       getUserTurnId: () => currentUserTurnIdRef.current || undefined,
       fileExists: async (path: string) => {
         try {
@@ -464,7 +462,7 @@ export function HomeChat({
           }
           return true
         } catch {
-          return false
+          return true
         }
       },
       create: async (request) => {

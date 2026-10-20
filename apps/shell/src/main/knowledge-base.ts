@@ -13,7 +13,7 @@
 /// correct filter.
 
 import { statSync, existsSync } from 'node:fs'
-import { basename, dirname } from 'node:path'
+import { basename, dirname, normalize, resolve } from 'node:path'
 import { parseFileToText } from '@genoffice/file-parse'
 
 /** characters of parsed text one read_knowledge_file page returns (aligned
@@ -205,6 +205,7 @@ export interface KbCreateDeps {
   markdownToDocx: (markdown: string, out: string, documentType?: string) => Promise<void>
   recordRecent: (path: string) => void
   fileExists?: (path: string) => boolean
+  isCaseSensitive?: boolean
 }
 
 interface CommittedDocCreation {
@@ -212,33 +213,61 @@ interface CommittedDocCreation {
   createdAt: number
 }
 
+export function pathReservationKey(filePath: string, caseSensitive?: boolean): string {
+  const isCaseSens =
+    caseSensitive !== undefined
+      ? caseSensitive
+      : process.platform !== 'win32' && process.platform !== 'darwin'
+  const normalized = normalize(resolve(filePath)).normalize('NFC')
+  return isCaseSens ? normalized : normalized.toLowerCase()
+}
+
 const inFlightDocCreations = new Map<string, Promise<{ path: string }>>()
 const committedDocCreations = new Map<string, CommittedDocCreation>()
 const reservedPaths = new Set<string>()
+const reservedCanonicalKeys = new Set<string>()
 
 export function clearKnowledgeDocumentCaches(): void {
   inFlightDocCreations.clear()
   committedDocCreations.clear()
   reservedPaths.clear()
+  reservedCanonicalKeys.clear()
 }
 
 function allocateUniquePath(deps: KbCreateDeps, title: string, format: string): string {
   const dir = deps.dir()
   const base = deps.sanitizeBase(title)
+  const isCaseSens = deps.isCaseSensitive
+  const checkExists = deps.fileExists ?? existsSync
+
+  const isAvailable = (candidate: string) => {
+    const key = pathReservationKey(candidate, isCaseSens)
+    if (reservedPaths.has(candidate) || reservedCanonicalKeys.has(key)) {
+      return false
+    }
+    if (checkExists(candidate)) {
+      return false
+    }
+    return true
+  }
+
   let candidate = deps.uniquePath(dir, `${base}.${format}`)
   let i = 2
-  while (reservedPaths.has(candidate)) {
+  while (!isAvailable(candidate)) {
     candidate = deps.uniquePath(dir, `${base}-${i}.${format}`)
-    if (reservedPaths.has(candidate)) {
+    if (!isAvailable(candidate)) {
       const altCandidate = deps.uniquePath(dir, `${base} (${i}).${format}`)
-      if (!reservedPaths.has(altCandidate)) {
+      if (isAvailable(altCandidate)) {
         candidate = altCandidate
         break
       }
+    } else {
+      break
     }
     i++
   }
   reservedPaths.add(candidate)
+  reservedCanonicalKeys.add(pathReservationKey(candidate, isCaseSens))
   return candidate
 }
 
@@ -267,14 +296,21 @@ export async function createKnowledgeDocument(
   }
 
   const opPromise = (async () => {
-    const targetPath = allocateUniquePath(deps, req.title, req.format)
+    let targetPath = allocateUniquePath(deps, req.title, req.format)
     try {
+      const checkExists = deps.fileExists ?? existsSync
+      if (checkExists(targetPath)) {
+        reservedPaths.delete(targetPath)
+        reservedCanonicalKeys.delete(pathReservationKey(targetPath, deps.isCaseSensitive))
+        targetPath = allocateUniquePath(deps, req.title, req.format)
+      }
+
       if (req.format === 'md') {
         await deps.writeText(targetPath, req.content)
       } else {
         await deps.markdownToDocx(req.content, targetPath, req.documentType)
       }
-      deps.recordRecent(targetPath)
+
       if (slotKey) {
         if (committedDocCreations.size >= 100) {
           const oldest = committedDocCreations.keys().next().value
@@ -282,9 +318,20 @@ export async function createKnowledgeDocument(
         }
         committedDocCreations.set(slotKey, { path: targetPath, createdAt: Date.now() })
       }
+
+      try {
+        deps.recordRecent(targetPath)
+      } catch (err) {
+        console.warn(
+          'Non-fatal: failed to record document in recent list:',
+          err instanceof Error ? err.message : String(err),
+        )
+      }
+
       return { path: targetPath }
     } finally {
       reservedPaths.delete(targetPath)
+      reservedCanonicalKeys.delete(pathReservationKey(targetPath, deps.isCaseSensitive))
     }
   })()
 

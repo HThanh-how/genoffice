@@ -23,12 +23,12 @@ export interface CreateDocumentRequest {
   format: CreateDocumentFormat
   /** the whole document as markdown */
   content: string
-  open?: boolean
-  sessionId?: string
-  userTurnId?: string
-  documentSlot?: string
-  callId?: string
-  documentType?: DocumentType
+  open?: boolean | undefined
+  sessionId?: string | undefined
+  userTurnId?: string | undefined
+  documentSlot?: string | undefined
+  callId?: string | undefined
+  documentType?: DocumentType | undefined
 }
 
 export interface CreateDocumentExecutionContext {
@@ -41,6 +41,7 @@ export interface CreateDocumentExecutionContext {
 export interface CreateDocumentDeps {
   create(request: CreateDocumentRequest): Promise<{ path: string; opened?: boolean }>
   getSessionId?: () => string | undefined
+  getExecutionId?: () => string | undefined
   getUserTurnId?: () => string | undefined
   fileExists?: (path: string) => boolean | Promise<boolean>
   open?: (path: string, context?: CreateDocumentExecutionContext) => boolean | Promise<boolean>
@@ -91,9 +92,15 @@ const CLAIMS_SAVED =
 
 export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSkill {
   const created: string[] = []
-  const inFlightOps = new Map<string, Promise<{ path: string; opened?: boolean }>>()
-  const committedSlots = new Map<string, { path: string; opened?: boolean }>()
-  const callBindings = new Map<string, { sessionId: string; userTurnId: string }>()
+  const inFlightOps = new Map<
+    string,
+    { promise: Promise<{ path: string; opened?: boolean }>; payloadFingerprint: string }
+  >()
+  const committedSlots = new Map<
+    string,
+    { path: string; opened?: boolean; payloadFingerprint: string }
+  >()
+  const callBindings = new Map<string, { sessionId?: string | undefined; userTurnId: string }>()
 
   const openFn = deps.open ?? deps.openDocument
   const isOpenFn = deps.isOpen ?? deps.isDocumentOpen
@@ -167,10 +174,13 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
       }
 
       const hasHostSession = typeof deps.getSessionId === 'function'
+      const hasHostExecution = typeof deps.getExecutionId === 'function'
       const hasHostUserTurn = typeof deps.getUserTurnId === 'function'
 
+      const hostExecId = hasHostExecution ? deps.getExecutionId?.() : undefined
       const hostSessionId = hasHostSession ? deps.getSessionId?.() : undefined
       const hostUserTurnId = hasHostUserTurn ? deps.getUserTurnId?.() : undefined
+      const hostConvId = hostExecId || hostSessionId
 
       const hostCallId =
         typeof call.input.callId === 'string' && call.input.callId.trim()
@@ -186,65 +196,73 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
       const hostOpId = effectiveCallId || rawSlot
 
       // Identity Authority & Stability:
-      // When authoritative host context getters exist, model-supplied arguments are never trusted.
-      // Operations capture their originating host identity once, preserving stability across history persistence and replays.
-      let sessionId: string | undefined
-      let userTurnId: string | undefined
+      // Host-owned getters are strictly authoritative. Model-supplied sessionId and userTurnId
+      // arguments are never trusted or promoted to authoritative context.
+      let sessionId: string | undefined = hostSessionId
+      let userTurnId: string | undefined = hostUserTurnId
 
-      if (effectiveCallId && callBindings.has(effectiveCallId)) {
-        const bound = callBindings.get(effectiveCallId)!
+      const bindingKey = effectiveCallId
+        ? hostConvId
+          ? `${hostConvId}:${effectiveCallId}`
+          : effectiveCallId
+        : undefined
+
+      if (bindingKey && callBindings.has(bindingKey)) {
+        const bound = callBindings.get(bindingKey)!
         if (!hasHostUserTurn || hostUserTurnId === bound.userTurnId) {
           sessionId = bound.sessionId
           userTurnId = bound.userTurnId
         } else {
           // Genuinely distinct user turn reusing call ID -> bind to new turn
-          sessionId = hasHostSession
-            ? hostSessionId
-            : typeof call.input.sessionId === 'string' && call.input.sessionId.trim()
-              ? call.input.sessionId.trim()
-              : undefined
+          sessionId = hostSessionId
           userTurnId = hostUserTurnId
-          if (sessionId && userTurnId) {
-            callBindings.set(effectiveCallId, { sessionId, userTurnId })
+          if (userTurnId) {
+            callBindings.set(bindingKey, { sessionId, userTurnId })
           }
         }
-      } else {
-        sessionId = hasHostSession
-          ? hostSessionId
-          : typeof call.input.sessionId === 'string' && call.input.sessionId.trim()
-            ? call.input.sessionId.trim()
-            : undefined
-        userTurnId = hasHostUserTurn
-          ? hostUserTurnId
-          : typeof call.input.userTurnId === 'string' && call.input.userTurnId.trim()
-            ? call.input.userTurnId.trim()
-            : undefined
-
-        if (effectiveCallId && sessionId && userTurnId) {
-          if (callBindings.size >= 100) {
-            const oldest = callBindings.keys().next().value
-            if (oldest !== undefined) callBindings.delete(oldest)
-          }
-          callBindings.set(effectiveCallId, { sessionId, userTurnId })
+      } else if (bindingKey && userTurnId) {
+        if (callBindings.size >= 100) {
+          const oldest = callBindings.keys().next().value
+          if (oldest !== undefined) callBindings.delete(oldest)
         }
+        callBindings.set(bindingKey, { sessionId, userTurnId })
       }
 
       const documentType =
         typeof call.input.documentType === 'string'
           ? (call.input.documentType as DocumentType)
           : undefined
+
+      const conversationKey = hostConvId || sessionId
       const slotKey =
-        sessionId && userTurnId && hostOpId ? `${sessionId}:${userTurnId}:${hostOpId}` : null
+        conversationKey && userTurnId && hostOpId
+          ? `${conversationKey}:${userTurnId}:${hostOpId}`
+          : null
 
       const execContext: CreateDocumentExecutionContext = {
-        sessionId,
+        sessionId: conversationKey,
         userTurnId,
         callId: effectiveCallId,
         documentSlot: rawSlot,
       }
 
+      const payloadFingerprint = JSON.stringify({
+        title,
+        format,
+        content,
+        documentType: documentType ?? null,
+      })
+
       if (slotKey && committedSlots.has(slotKey)) {
         const cached = committedSlots.get(slotKey)!
+        if (cached.payloadFingerprint !== payloadFingerprint) {
+          return {
+            output:
+              'could not save the document: Operation identity conflict: conflicting payload for slot',
+            isError: true,
+            summary: 'identity conflict',
+          }
+        }
         const exists = deps.fileExists ? await deps.fileExists(cached.path) : true
         if (exists) {
           const shouldAutoOpen =
@@ -285,8 +303,17 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
       }
 
       if (slotKey && inFlightOps.has(slotKey)) {
+        const inFlight = inFlightOps.get(slotKey)!
+        if (inFlight.payloadFingerprint !== payloadFingerprint) {
+          return {
+            output:
+              'could not save the document: Operation identity conflict: conflicting payload for slot',
+            isError: true,
+            summary: 'identity conflict',
+          }
+        }
         try {
-          const cached = await inFlightOps.get(slotKey)!
+          const cached = await inFlight.promise
           const name = cached.path.split(/[\\/]/).pop() ?? cached.path
           const status = cached.opened ? 'opened in editor' : 'saved to disk (not opened)'
           return {
@@ -348,7 +375,7 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         return { path: res.path, opened }
       })()
 
-      if (slotKey) inFlightOps.set(slotKey, opPromise)
+      if (slotKey) inFlightOps.set(slotKey, { promise: opPromise, payloadFingerprint })
       try {
         const res = await opPromise
         if (slotKey) {
@@ -356,7 +383,7 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
             const oldest = committedSlots.keys().next().value
             if (oldest !== undefined) committedSlots.delete(oldest)
           }
-          committedSlots.set(slotKey, res)
+          committedSlots.set(slotKey, { ...res, payloadFingerprint })
         }
         if (!created.includes(res.path)) created.push(res.path)
         const name = res.path.split(/[\\/]/).pop() ?? res.path
