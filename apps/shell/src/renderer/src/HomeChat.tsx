@@ -388,13 +388,15 @@ export function HomeChat({
             success = await api.openPath(path)
           }
 
-          if (isAutoOpenAuthorized(owner, generation, run, execContext)) {
-            if (success) {
-              openStatesRef.current.set(path, 'opened')
-              openedPathsRef.current.add(path)
-            } else {
-              openStatesRef.current.set(path, 'failed')
-            }
+          if (!isAutoOpenAuthorized(owner, generation, run, execContext)) {
+            return false
+          }
+
+          if (success) {
+            openStatesRef.current.set(path, 'opened')
+            openedPathsRef.current.add(path)
+          } else {
+            openStatesRef.current.set(path, 'failed')
           }
           return success
         } catch (err) {

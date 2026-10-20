@@ -492,6 +492,12 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
         const session = captured.docDeps?.getSessionId?.()
         const turnA = captured.docDeps?.getUserTurnId?.()
 
+        // Stop Turn A so that Turn B can start
+        await act(async () => {
+          const stopBtn = host.querySelector<HTMLButtonElement>('button.hc-send.stop')
+          stopBtn?.click()
+        })
+
         // Turn B in the same conversation
         await act(async () => {
           requestChatPrefill({ text: 'Turn B', intent: 'ask', send: true })
@@ -753,6 +759,12 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
         const openPromiseA = captured.docDeps!.open!(pathA, {
           sessionId: session,
           userTurnId: turnA,
+        })
+
+        // Stop Turn A so Turn B can start
+        await act(async () => {
+          const stopBtn = host.querySelector<HTMLButtonElement>('button.hc-send.stop')
+          stopBtn?.click()
         })
 
         // Turn B starts in the same conversation
