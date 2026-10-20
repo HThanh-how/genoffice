@@ -318,6 +318,35 @@ export function HomeChat({
   const isOpenPathRef = useRef(isOpenPath)
   isOpenPathRef.current = isOpenPath
 
+  const isAutoOpenAuthorized = useCallback(
+    (
+      owner: Conversation,
+      generation: number,
+      run: number,
+      context?: CreateDocumentExecutionContext,
+    ): boolean => {
+      if (!mountedRef.current) return false
+      if (convRef.current !== owner || owner.dead) return false
+      if (generation !== runGenerationRef.current) return false
+      if (context?.sessionId && convRef.current?.executionId !== context.sessionId) return false
+
+      if (context?.userTurnId || run !== 0) {
+        if (activeRunRef.current === 0) return false
+        if (run !== 0 && activeRunRef.current !== run) return false
+        if (context?.userTurnId) {
+          if (
+            !currentUserTurnIdRef.current ||
+            currentUserTurnIdRef.current !== context.userTurnId
+          ) {
+            return false
+          }
+        }
+      }
+      return true
+    },
+    [],
+  )
+
   const openDocumentPath = useCallback(
     (path: string, execContext?: CreateDocumentExecutionContext): Promise<boolean> => {
       const existing = inFlightOpenRef.current.get(path)
@@ -328,20 +357,11 @@ export function HomeChat({
       const owner = convRef.current
       const generation = runGenerationRef.current
       const run = activeRunRef.current
-      const turnId = execContext?.userTurnId
 
       let cleanup = () => {}
       const openPromise = (async () => {
         try {
-          if (
-            !mountedRef.current ||
-            convRef.current !== owner ||
-            owner.dead ||
-            generation !== runGenerationRef.current ||
-            (run !== 0 && activeRunRef.current !== run) ||
-            (execContext?.sessionId && convRef.current?.executionId !== execContext.sessionId) ||
-            (turnId && currentUserTurnIdRef.current && turnId !== currentUserTurnIdRef.current)
-          ) {
+          if (!isAutoOpenAuthorized(owner, generation, run, execContext)) {
             return false
           }
 
@@ -355,15 +375,7 @@ export function HomeChat({
             }
           }
 
-          if (
-            !mountedRef.current ||
-            convRef.current !== owner ||
-            owner.dead ||
-            generation !== runGenerationRef.current ||
-            (run !== 0 && activeRunRef.current !== run) ||
-            (execContext?.sessionId && convRef.current?.executionId !== execContext.sessionId) ||
-            (turnId && currentUserTurnIdRef.current && turnId !== currentUserTurnIdRef.current)
-          ) {
+          if (!isAutoOpenAuthorized(owner, generation, run, execContext)) {
             return false
           }
 
@@ -376,15 +388,7 @@ export function HomeChat({
             success = await api.openPath(path)
           }
 
-          if (
-            mountedRef.current &&
-            convRef.current === owner &&
-            !owner.dead &&
-            generation === runGenerationRef.current &&
-            (run === 0 || activeRunRef.current === run) &&
-            (!execContext?.sessionId || convRef.current?.executionId === execContext.sessionId) &&
-            (!turnId || !currentUserTurnIdRef.current || turnId === currentUserTurnIdRef.current)
-          ) {
+          if (isAutoOpenAuthorized(owner, generation, run, execContext)) {
             if (success) {
               openStatesRef.current.set(path, 'opened')
               openedPathsRef.current.add(path)
@@ -395,15 +399,7 @@ export function HomeChat({
           return success
         } catch (err) {
           console.error('Failed to open document:', err)
-          if (
-            mountedRef.current &&
-            convRef.current === owner &&
-            !owner.dead &&
-            generation === runGenerationRef.current &&
-            (run === 0 || activeRunRef.current === run) &&
-            (!execContext?.sessionId || convRef.current?.executionId === execContext.sessionId) &&
-            (!turnId || !currentUserTurnIdRef.current || turnId === currentUserTurnIdRef.current)
-          ) {
+          if (isAutoOpenAuthorized(owner, generation, run, execContext)) {
             openStatesRef.current.set(path, 'failed')
           }
           return false
@@ -420,6 +416,35 @@ export function HomeChat({
 
       inFlightOpenRef.current.set(path, openPromise)
       return openPromise
+    },
+    [api, isAutoOpenAuthorized],
+  )
+
+  const manualOpenPath = useCallback(
+    async (path: string): Promise<boolean> => {
+      if (!mountedRef.current) return false
+      try {
+        if (isOpenPathRef.current) {
+          try {
+            if (await isOpenPathRef.current(path)) {
+              return true
+            }
+          } catch {
+            // best effort
+          }
+        }
+        if (!mountedRef.current) return false
+        if (onOpenPathRef.current) {
+          const res = await onOpenPathRef.current(path)
+          return typeof res === 'boolean' ? res : true
+        } else if (typeof api.openPath === 'function') {
+          return await api.openPath(path)
+        }
+        return false
+      } catch (err) {
+        console.error('Failed to open document manually:', err)
+        return false
+      }
     },
     [api],
   )
@@ -485,17 +510,7 @@ export function HomeChat({
         const owner = convRef.current
         const generation = runGenerationRef.current
         const run = activeRunRef.current
-        if (
-          !mountedRef.current ||
-          convRef.current !== owner ||
-          owner.dead ||
-          generation !== runGenerationRef.current ||
-          (run !== 0 && activeRunRef.current !== run) ||
-          (context?.sessionId && convRef.current?.executionId !== context.sessionId) ||
-          (context?.userTurnId &&
-            currentUserTurnIdRef.current &&
-            context.userTurnId !== currentUserTurnIdRef.current)
-        ) {
+        if (!isAutoOpenAuthorized(owner, generation, run, context)) {
           return false
         }
         return openDocumentPath(path, context)
@@ -1601,6 +1616,7 @@ export function HomeChat({
     runGenerationRef.current++
     activeRunRef.current = 0
     currentUserTurnIdRef.current = ''
+    inFlightOpenRef.current.clear()
     batcherRef.current?.flush()
     loopRef.current?.reset()
     clearActiveRequest()
@@ -1960,7 +1976,7 @@ export function HomeChat({
                     onRevealSource={revealSource}
                     onRetry={retry}
                     onSaveAnswer={handleSaveAnswer}
-                    onOpenPath={(p) => void openDocumentPath(p)}
+                    onOpenPath={(p) => void manualOpenPath(p)}
                   />
                 ))}
               </div>

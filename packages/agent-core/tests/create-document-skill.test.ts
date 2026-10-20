@@ -1044,4 +1044,309 @@ describe('createDocumentSkill', () => {
       expect(r2.output).toContain('opened: true')
     })
   })
+
+  describe('P1-A: Host identity authority & stability (ID-01 through ID-12)', () => {
+    it('ID-01: host session is authoritative and model forged-session is rejected', async () => {
+      let recordedReq: CreateDocumentRequest | null = null
+      let createCalls = 0
+      const skill = createDocumentSkill({
+        getSessionId: () => 'real-session',
+        getUserTurnId: () => 'real-turn',
+        create: async (r) => {
+          createCalls++
+          recordedReq = r
+          return { path: `/Users/me/GenOffice/${r.title}.docx` }
+        },
+      })
+
+      const req = call(
+        { title: 'Doc', format: 'docx', content: '# Content', sessionId: 'forged-session' },
+        'call-id-01',
+      )
+      const res = await skill.executeTool(req)
+      expect(res.isError).toBeUndefined()
+      expect(createCalls).toBe(1)
+      expect(recordedReq!.sessionId).toBe('real-session')
+
+      // Replay with forged session hits the authoritative cache
+      const replay = await skill.executeTool(req)
+      expect(replay.isError).toBeUndefined()
+      expect(createCalls).toBe(1)
+    })
+
+    it('ID-02: host user turn is authoritative and model forged-turn is rejected', async () => {
+      let recordedReq: CreateDocumentRequest | null = null
+      let createCalls = 0
+      const skill = createDocumentSkill({
+        getSessionId: () => 'real-session',
+        getUserTurnId: () => 'real-turn',
+        create: async (r) => {
+          createCalls++
+          recordedReq = r
+          return { path: `/Users/me/GenOffice/${r.title}.docx` }
+        },
+      })
+
+      const req = call(
+        { title: 'Doc', format: 'docx', content: '# Content', userTurnId: 'forged-turn' },
+        'call-id-02',
+      )
+      const res = await skill.executeTool(req)
+      expect(res.isError).toBeUndefined()
+      expect(createCalls).toBe(1)
+      expect(recordedReq!.userTurnId).toBe('real-turn')
+    })
+
+    it('ID-03: sequential replay of the same operation creates exactly one physical document', async () => {
+      let createCalls = 0
+      const skill = createDocumentSkill({
+        getSessionId: () => 'session-id-03',
+        getUserTurnId: () => 'turn-id-03',
+        create: async (r) => {
+          createCalls++
+          return { path: `/Users/me/GenOffice/${r.title}.docx` }
+        },
+      })
+
+      const req = call({ title: 'Report', format: 'docx', content: '# Content' }, 'call-id-03')
+      const r1 = await skill.executeTool(req)
+      const r2 = await skill.executeTool(req)
+
+      expect(createCalls).toBe(1)
+      expect(r1.output).toBe(r2.output)
+    })
+
+    it('ID-04: concurrent replay of the same operation coalesces to one create call', async () => {
+      let createCalls = 0
+      let resolveCreate!: (res: { path: string }) => void
+      const barrier = new Promise<{ path: string }>((res) => {
+        resolveCreate = res
+      })
+
+      const skill = createDocumentSkill({
+        getSessionId: () => 'session-id-04',
+        getUserTurnId: () => 'turn-id-04',
+        create: async () => {
+          createCalls++
+          return barrier
+        },
+      })
+
+      const req = call({ title: 'Report', format: 'docx', content: '# Content' }, 'call-id-04')
+      const p1 = skill.executeTool(req)
+      const p2 = skill.executeTool(req)
+
+      resolveCreate({ path: '/Users/me/GenOffice/Report.docx' })
+      const [r1, r2] = await Promise.all([p1, p2])
+
+      expect(createCalls).toBe(1)
+      expect(r1.output).toBe(r2.output)
+    })
+
+    it('ID-05: operation under stable execution ID survives history persistence midway', async () => {
+      let persistedId: string | null = null
+      const executionId = 'stable-exec-id-05'
+      let createCalls = 0
+
+      const skill = createDocumentSkill({
+        getSessionId: () => persistedId || executionId,
+        getUserTurnId: () => 'turn-id-05',
+        create: async (r) => {
+          createCalls++
+          return { path: `/Users/me/GenOffice/${r.title}.docx` }
+        },
+      })
+
+      const req = call({ title: 'Memo', format: 'docx', content: '# Memo' }, 'call-id-05')
+      const r1 = await skill.executeTool(req)
+      expect(createCalls).toBe(1)
+
+      // History persistence runs and assigns an ID
+      persistedId = 'persisted-server-id-05'
+
+      // Replay must recognize stable bound identity and not re-create
+      const r2 = await skill.executeTool(req)
+      expect(createCalls).toBe(1)
+      expect(r1.output).toBe(r2.output)
+    })
+
+    it('ID-06: identical title and content in turn B after history persistence creates distinct file', async () => {
+      let currentTurn = 'turn-A'
+      let createCalls = 0
+
+      const skill = createDocumentSkill({
+        getSessionId: () => 'session-id-06',
+        getUserTurnId: () => currentTurn,
+        create: async (r) => {
+          createCalls++
+          return { path: `/Users/me/GenOffice/${r.title}_${currentTurn}.docx` }
+        },
+      })
+
+      const reqA = call({ title: 'Doc', format: 'docx', content: '# Content' }, 'call-A')
+      const r1 = await skill.executeTool(reqA)
+      expect(createCalls).toBe(1)
+      expect(r1.output).toContain('Doc_turn-A.docx')
+
+      // Turn B with identical content but new turn ID
+      currentTurn = 'turn-B'
+      const reqB = call({ title: 'Doc', format: 'docx', content: '# Content' }, 'call-B')
+      const r2 = await skill.executeTool(reqB)
+      expect(createCalls).toBe(2)
+      expect(r2.output).toContain('Doc_turn-B.docx')
+    })
+
+    it('ID-07: two genuinely distinct requested documents in the same turn produce two files', async () => {
+      let createCalls = 0
+      const skill = createDocumentSkill({
+        getSessionId: () => 'session-id-07',
+        getUserTurnId: () => 'turn-id-07',
+        create: async (r) => {
+          createCalls++
+          return { path: `/Users/me/GenOffice/${r.title}.docx` }
+        },
+      })
+
+      const doc1 = call({ title: 'Vietnamese_Report', format: 'docx', content: '# VN' }, 'call-vn')
+      const doc2 = call({ title: 'English_Report', format: 'docx', content: '# EN' }, 'call-en')
+
+      const r1 = await skill.executeTool(doc1)
+      const r2 = await skill.executeTool(doc2)
+
+      expect(createCalls).toBe(2)
+      expect(r1.output).toContain('Vietnamese_Report.docx')
+      expect(r2.output).toContain('English_Report.docx')
+    })
+
+    it('ID-08: same provider call ID reused in a new turn produces two distinct files', async () => {
+      let currentTurn = 'turn-1'
+      let createCalls = 0
+
+      const skill = createDocumentSkill({
+        getSessionId: () => 'session-id-08',
+        getUserTurnId: () => currentTurn,
+        create: async (r) => {
+          createCalls++
+          return { path: `/Users/me/GenOffice/${r.title}_${currentTurn}.docx` }
+        },
+      })
+
+      const req = call({ title: 'Shared', format: 'docx', content: '# Shared' }, 'call-reused')
+      const r1 = await skill.executeTool(req)
+      expect(createCalls).toBe(1)
+
+      currentTurn = 'turn-2'
+      const r2 = await skill.executeTool(req)
+      expect(createCalls).toBe(2)
+      expect(r1.output).toContain('Shared_turn-1.docx')
+      expect(r2.output).toContain('Shared_turn-2.docx')
+    })
+
+    it('ID-09: missing host identity with forged model identity does not promote forged context', async () => {
+      let recordedReq: CreateDocumentRequest | null = null
+      let createCalls = 0
+
+      const skill = createDocumentSkill({
+        getSessionId: () => undefined,
+        getUserTurnId: () => undefined,
+        create: async (r) => {
+          createCalls++
+          recordedReq = r
+          return { path: `/Users/me/GenOffice/${r.title}.docx` }
+        },
+      })
+
+      const req = call(
+        { title: 'Doc', format: 'docx', content: '# Content', sessionId: 'forged-session' },
+        'call-id-09',
+      )
+      const res = await skill.executeTool(req)
+      expect(res.isError).toBeUndefined()
+      expect(createCalls).toBe(1)
+      // Forged session is not promoted to authoritative request identity
+      expect(recordedReq!.sessionId).toBeUndefined()
+    })
+
+    it('ID-10: failed creation followed by legitimate retry succeeds without caching error', async () => {
+      let attempts = 0
+      const skill = createDocumentSkill({
+        getSessionId: () => 'session-id-10',
+        getUserTurnId: () => 'turn-id-10',
+        create: async (r) => {
+          attempts++
+          if (attempts === 1) throw new Error('EACCES: permission denied')
+          return { path: `/Users/me/GenOffice/${r.title}.docx` }
+        },
+      })
+
+      const req = call({ title: 'RetryDoc', format: 'docx', content: '# Retry' }, 'call-id-10')
+      const r1 = await skill.executeTool(req)
+      expect(r1.isError).toBe(true)
+      expect(r1.output).toContain('permission denied')
+
+      const r2 = await skill.executeTool(req)
+      expect(r2.isError).toBeUndefined()
+      expect(r2.output).toContain('RetryDoc.docx')
+      expect(attempts).toBe(2)
+    })
+
+    it('ID-11: deleted output followed by retry triggers re-creation', async () => {
+      let createCalls = 0
+      let fileExistsOnDisk = true
+
+      const skill = createDocumentSkill({
+        getSessionId: () => 'session-id-11',
+        getUserTurnId: () => 'turn-id-11',
+        fileExists: () => fileExistsOnDisk,
+        create: async (r) => {
+          createCalls++
+          return { path: `/Users/me/GenOffice/${r.title}.docx` }
+        },
+      })
+
+      const req = call({ title: 'Ephemeral', format: 'docx', content: '# E' }, 'call-id-11')
+      const r1 = await skill.executeTool(req)
+      expect(createCalls).toBe(1)
+      expect(r1.output).toContain('Ephemeral.docx')
+
+      // File is deleted on disk
+      fileExistsOnDisk = false
+
+      const r2 = await skill.executeTool(req)
+      expect(createCalls).toBe(2)
+      expect(r2.output).toContain('Ephemeral.docx')
+    })
+
+    it('ID-12: concurrent creations from two separate conversations do not collide', async () => {
+      let createCalls = 0
+      const createdPaths: string[] = []
+
+      let activeSession = 'conv-1'
+      const skill = createDocumentSkill({
+        getSessionId: () => activeSession,
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          createCalls++
+          const p = `/Users/me/GenOffice/${r.title}_${r.sessionId}.docx`
+          createdPaths.push(p)
+          return { path: p }
+        },
+      })
+
+      const req = call(
+        { title: 'SharedTitle', format: 'docx', content: '# Content' },
+        'call-same-id',
+      )
+
+      activeSession = 'conv-1'
+      const r1 = await skill.executeTool(req)
+
+      activeSession = 'conv-2'
+      const r2 = await skill.executeTool(req)
+
+      expect(createCalls).toBe(2)
+      expect(r1.output).toContain('SharedTitle_conv-1.docx')
+      expect(r2.output).toContain('SharedTitle_conv-2.docx')
+    })
+  })
 })

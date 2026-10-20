@@ -93,6 +93,7 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
   const created: string[] = []
   const inFlightOps = new Map<string, Promise<{ path: string; opened?: boolean }>>()
   const committedSlots = new Map<string, { path: string; opened?: boolean }>()
+  const callBindings = new Map<string, { sessionId: string; userTurnId: string }>()
 
   const openFn = deps.open ?? deps.openDocument
   const isOpenFn = deps.isOpen ?? deps.isDocumentOpen
@@ -165,16 +166,12 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         }
       }
 
-      const hostSessionId = deps.getSessionId?.()
-      const sessionId =
-        (typeof call.input.sessionId === 'string' && call.input.sessionId.trim()) ||
-        hostSessionId ||
-        undefined
-      const hostUserTurnId = deps.getUserTurnId?.()
-      const userTurnId =
-        (typeof call.input.userTurnId === 'string' && call.input.userTurnId.trim()) ||
-        hostUserTurnId ||
-        undefined
+      const hasHostSession = typeof deps.getSessionId === 'function'
+      const hasHostUserTurn = typeof deps.getUserTurnId === 'function'
+
+      const hostSessionId = hasHostSession ? deps.getSessionId?.() : undefined
+      const hostUserTurnId = hasHostUserTurn ? deps.getUserTurnId?.() : undefined
+
       const hostCallId =
         typeof call.input.callId === 'string' && call.input.callId.trim()
           ? call.input.callId.trim()
@@ -187,6 +184,51 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         call.id && typeof call.id === 'string' && call.id.trim() ? call.id.trim() : undefined
       const effectiveCallId = providerCallId || hostCallId
       const hostOpId = effectiveCallId || rawSlot
+
+      // Identity Authority & Stability:
+      // When authoritative host context getters exist, model-supplied arguments are never trusted.
+      // Operations capture their originating host identity once, preserving stability across history persistence and replays.
+      let sessionId: string | undefined
+      let userTurnId: string | undefined
+
+      if (effectiveCallId && callBindings.has(effectiveCallId)) {
+        const bound = callBindings.get(effectiveCallId)!
+        if (!hasHostUserTurn || hostUserTurnId === bound.userTurnId) {
+          sessionId = bound.sessionId
+          userTurnId = bound.userTurnId
+        } else {
+          // Genuinely distinct user turn reusing call ID -> bind to new turn
+          sessionId = hasHostSession
+            ? hostSessionId
+            : typeof call.input.sessionId === 'string' && call.input.sessionId.trim()
+              ? call.input.sessionId.trim()
+              : undefined
+          userTurnId = hostUserTurnId
+          if (sessionId && userTurnId) {
+            callBindings.set(effectiveCallId, { sessionId, userTurnId })
+          }
+        }
+      } else {
+        sessionId = hasHostSession
+          ? hostSessionId
+          : typeof call.input.sessionId === 'string' && call.input.sessionId.trim()
+            ? call.input.sessionId.trim()
+            : undefined
+        userTurnId = hasHostUserTurn
+          ? hostUserTurnId
+          : typeof call.input.userTurnId === 'string' && call.input.userTurnId.trim()
+            ? call.input.userTurnId.trim()
+            : undefined
+
+        if (effectiveCallId && sessionId && userTurnId) {
+          if (callBindings.size >= 100) {
+            const oldest = callBindings.keys().next().value
+            if (oldest !== undefined) callBindings.delete(oldest)
+          }
+          callBindings.set(effectiveCallId, { sessionId, userTurnId })
+        }
+      }
+
       const documentType =
         typeof call.input.documentType === 'string'
           ? (call.input.documentType as DocumentType)

@@ -363,4 +363,551 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
       host.remove()
     }
   })
+
+  describe('P1-B: Stop & stale auto-open lifecycle (OPEN-01 through OPEN-12)', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+      localStorage.clear()
+      captured.docDeps = null
+      captured.runs = 0
+    })
+
+    it('OPEN-01: Stop pressed before auto-open rejects open with zero onOpenPath invocation', async () => {
+      const onOpenPath = vi.fn().mockResolvedValue(true)
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+        })
+
+        await act(async () => {
+          requestChatPrefill({ text: 'Draft Doc', intent: 'new', send: true })
+        })
+
+        const session = captured.docDeps?.getSessionId?.()
+        const turnId = captured.docDeps?.getUserTurnId?.()
+        expect(session).toBeDefined()
+        expect(turnId).toBeDefined()
+
+        // Press Stop button
+        await act(async () => {
+          const stopBtn = host.querySelector<HTMLButtonElement>('button.hc-send.stop')
+          stopBtn?.click()
+        })
+
+        // Attempt delayed auto-open from the stopped turn
+        const opened = await act(async () => {
+          return await captured.docDeps!.open!('/Users/me/GenOffice/StoppedDoc.docx', {
+            sessionId: session,
+            userTurnId: turnId,
+          })
+        })
+
+        expect(opened).toBe(false)
+        expect(onOpenPath).not.toHaveBeenCalled()
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-02: Delay isOpenPath, press Stop, resolve isOpenPath(false) -> onOpenPath is never invoked', async () => {
+      let resolveIsOpen!: (v: boolean) => void
+      const isOpenBarrier = new Promise<boolean>((res) => {
+        resolveIsOpen = res
+      })
+      const isOpenPath = vi.fn().mockImplementation(() => isOpenBarrier)
+      const onOpenPath = vi.fn().mockResolvedValue(true)
+
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath, isOpenPath }))
+        })
+
+        await act(async () => {
+          requestChatPrefill({ text: 'Draft Doc', intent: 'new', send: true })
+        })
+
+        const session = captured.docDeps?.getSessionId?.()
+        const turnId = captured.docDeps?.getUserTurnId?.()
+
+        // Launch auto-open while isOpenPath is pending
+        const openPromise = captured.docDeps!.open!('/Users/me/GenOffice/DelayedOpen.docx', {
+          sessionId: session,
+          userTurnId: turnId,
+        })
+
+        expect(isOpenPath).toHaveBeenCalled()
+
+        // Press Stop while isOpenPath is in flight
+        await act(async () => {
+          const stopBtn = host.querySelector<HTMLButtonElement>('button.hc-send.stop')
+          stopBtn?.click()
+        })
+
+        // Resolve isOpenPath to false
+        await act(async () => {
+          resolveIsOpen(false)
+        })
+
+        const opened = await openPromise
+        expect(opened).toBe(false)
+        expect(onOpenPath).not.toHaveBeenCalled()
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-03: Starting turn B in the same conversation invalidates pending auto-open from turn A', async () => {
+      const onOpenPath = vi.fn().mockResolvedValue(true)
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+        })
+
+        // Turn A
+        await act(async () => {
+          requestChatPrefill({ text: 'Turn A', intent: 'new', send: true })
+        })
+
+        const session = captured.docDeps?.getSessionId?.()
+        const turnA = captured.docDeps?.getUserTurnId?.()
+
+        // Turn B in the same conversation
+        await act(async () => {
+          requestChatPrefill({ text: 'Turn B', intent: 'ask', send: true })
+        })
+
+        const turnB = captured.docDeps?.getUserTurnId?.()
+        expect(turnB).not.toBe(turnA)
+
+        // Turn A tries to late auto-open
+        const openedA = await captured.docDeps!.open!('/Users/me/GenOffice/TurnADoc.docx', {
+          sessionId: session,
+          userTurnId: turnA,
+        })
+
+        expect(openedA).toBe(false)
+        expect(onOpenPath).not.toHaveBeenCalled()
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-04: Conversation switch invalidates pending auto-open from previous conversation', async () => {
+      const onOpenPath = vi.fn().mockResolvedValue(true)
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+        })
+
+        await act(async () => {
+          requestChatPrefill({ text: 'Draft A', intent: 'new', send: true })
+        })
+
+        const sessionA = captured.docDeps?.getSessionId?.()
+        const turnA = captured.docDeps?.getUserTurnId?.()
+
+        await act(async () => {
+          requestChatPrefill({ text: 'Draft B', intent: 'new', send: true })
+        })
+
+        const sessionB = captured.docDeps?.getSessionId?.()
+        expect(sessionB).not.toBe(sessionA)
+
+        const opened = await captured.docDeps!.open!('/Users/me/GenOffice/LateSwitch.docx', {
+          sessionId: sessionA,
+          userTurnId: turnA,
+        })
+
+        expect(opened).toBe(false)
+        expect(onOpenPath).not.toHaveBeenCalled()
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-05: Manual open succeeds when agent is stopped / idle', async () => {
+      const onOpenPath = vi.fn().mockResolvedValue(true)
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi({
+        openPath: onOpenPath,
+      })
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+        })
+
+        await act(async () => {
+          requestChatPrefill({ text: 'Start and stop', intent: 'new', send: true })
+        })
+
+        await act(async () => {
+          const stopBtn = host.querySelector<HTMLButtonElement>('button.hc-send.stop')
+          stopBtn?.click()
+        })
+
+        // In idle/stopped state, manual open (no execContext) opens the document cleanly
+        const opened = await captured.docDeps!.open!('/Users/me/GenOffice/ManualDoc.docx')
+        expect(opened).toBe(true)
+        expect(onOpenPath).toHaveBeenCalledWith('/Users/me/GenOffice/ManualDoc.docx')
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-06: Two concurrent automatic opens for the same path deduplicate to one tab dispatch', async () => {
+      let resolveOpen!: (v: boolean) => void
+      const openBarrier = new Promise<boolean>((res) => {
+        resolveOpen = res
+      })
+      const onOpenPath = vi.fn().mockImplementation(() => openBarrier)
+
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+        })
+
+        await act(async () => {
+          requestChatPrefill({ text: 'Run Concurrent', intent: 'new', send: true })
+        })
+
+        const session = captured.docDeps?.getSessionId?.()
+        const turnId = captured.docDeps?.getUserTurnId?.()
+        const path = '/Users/me/GenOffice/ConcurrentReport.docx'
+
+        const p1 = captured.docDeps!.open!(path, { sessionId: session, userTurnId: turnId })
+        const p2 = captured.docDeps!.open!(path, { sessionId: session, userTurnId: turnId })
+
+        expect(onOpenPath).toHaveBeenCalledTimes(1)
+
+        resolveOpen(true)
+        const [r1, r2] = await Promise.all([p1, p2])
+        expect(r1).toBe(true)
+        expect(r2).toBe(true)
+        expect(onOpenPath).toHaveBeenCalledTimes(1)
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-07: Legitimate retry after open failure succeeds on second attempt', async () => {
+      const onOpenPath = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
+
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+        })
+
+        await act(async () => {
+          requestChatPrefill({ text: 'Run Retry', intent: 'new', send: true })
+        })
+
+        const session = captured.docDeps?.getSessionId?.()
+        const turnId = captured.docDeps?.getUserTurnId?.()
+        const path = '/Users/me/GenOffice/RetryOpenDoc.docx'
+
+        const r1 = await captured.docDeps!.open!(path, { sessionId: session, userTurnId: turnId })
+        expect(r1).toBe(false)
+        expect(onOpenPath).toHaveBeenCalledTimes(1)
+
+        const r2 = await captured.docDeps!.open!(path, { sessionId: session, userTurnId: turnId })
+        expect(r2).toBe(true)
+        expect(onOpenPath).toHaveBeenCalledTimes(2)
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-08: Closed tab allows subsequent intentional reopen', async () => {
+      let tabOpen = false
+      const onOpenPath = vi.fn().mockImplementation(async () => {
+        tabOpen = true
+        return true
+      })
+      const isOpenPath = vi.fn().mockImplementation(async () => tabOpen)
+
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath, isOpenPath }))
+        })
+
+        await act(async () => {
+          requestChatPrefill({ text: 'Run Tab Close', intent: 'new', send: true })
+        })
+
+        const session = captured.docDeps?.getSessionId?.()
+        const turnId = captured.docDeps?.getUserTurnId?.()
+        const docPath = '/Users/me/GenOffice/Reopenable.docx'
+
+        // First open
+        const r1 = await captured.docDeps!.open!(docPath, {
+          sessionId: session,
+          userTurnId: turnId,
+        })
+        expect(r1).toBe(true)
+        expect(onOpenPath).toHaveBeenCalledTimes(1)
+        expect(tabOpen).toBe(true)
+
+        // Tab closes in editor
+        tabOpen = false
+
+        // Second intentional open
+        const r2 = await captured.docDeps!.open!(docPath, {
+          sessionId: session,
+          userTurnId: turnId,
+        })
+        expect(r2).toBe(true)
+        expect(onOpenPath).toHaveBeenCalledTimes(2)
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-09: Old open resolving during new active turn does not corrupt new turn state', async () => {
+      let resolveOpenA!: (v: boolean) => void
+      const pendingOpenA = new Promise<boolean>((res) => {
+        resolveOpenA = res
+      })
+      const onOpenPath = vi.fn().mockImplementation(() => pendingOpenA)
+
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+        })
+
+        // Turn A starts
+        await act(async () => {
+          requestChatPrefill({ text: 'Turn A', intent: 'new', send: true })
+        })
+
+        const session = captured.docDeps?.getSessionId?.()
+        const turnA = captured.docDeps?.getUserTurnId?.()
+        const pathA = '/Users/me/GenOffice/DocA.docx'
+
+        const openPromiseA = captured.docDeps!.open!(pathA, {
+          sessionId: session,
+          userTurnId: turnA,
+        })
+
+        // Turn B starts in the same conversation
+        await act(async () => {
+          requestChatPrefill({ text: 'Turn B', intent: 'ask', send: true })
+        })
+
+        // Turn A resolves late
+        await act(async () => {
+          resolveOpenA(true)
+          await openPromiseA
+        })
+
+        // Under turn B, pathA is not marked as active open state
+        expect(onOpenPath).toHaveBeenCalledTimes(1)
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-10: One valid run creating two distinct files allows both to open', async () => {
+      const onOpenPath = vi.fn().mockResolvedValue(true)
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+        })
+
+        await act(async () => {
+          requestChatPrefill({ text: 'Two files', intent: 'new', send: true })
+        })
+
+        const session = captured.docDeps?.getSessionId?.()
+        const turnId = captured.docDeps?.getUserTurnId?.()
+
+        const r1 = await captured.docDeps!.open!('/Users/me/GenOffice/File1.docx', {
+          sessionId: session,
+          userTurnId: turnId,
+        })
+        const r2 = await captured.docDeps!.open!('/Users/me/GenOffice/File2.docx', {
+          sessionId: session,
+          userTurnId: turnId,
+        })
+
+        expect(r1).toBe(true)
+        expect(r2).toBe(true)
+        expect(onOpenPath).toHaveBeenCalledTimes(2)
+        expect(onOpenPath).toHaveBeenCalledWith('/Users/me/GenOffice/File1.docx')
+        expect(onOpenPath).toHaveBeenCalledWith('/Users/me/GenOffice/File2.docx')
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-11: Old and new runs referring to same path do not cross-suppress new operation', async () => {
+      const onOpenPath = vi.fn().mockResolvedValue(true)
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      try {
+        await act(async () => {
+          root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+        })
+
+        // Turn 1
+        await act(async () => {
+          requestChatPrefill({ text: 'Run 1', intent: 'new', send: true })
+        })
+
+        const session = captured.docDeps?.getSessionId?.()
+        const turn1 = captured.docDeps?.getUserTurnId?.()
+        const sharedPath = '/Users/me/GenOffice/SharedDoc.docx'
+
+        const r1 = await captured.docDeps!.open!(sharedPath, {
+          sessionId: session,
+          userTurnId: turn1,
+        })
+        expect(r1).toBe(true)
+
+        // Stop run 1
+        await act(async () => {
+          const stopBtn = host.querySelector<HTMLButtonElement>('button.hc-send.stop')
+          stopBtn?.click()
+        })
+
+        // Turn 2 in same conversation requesting same file path
+        await act(async () => {
+          requestChatPrefill({ text: 'Run 2', intent: 'ask', send: true })
+        })
+
+        const turn2 = captured.docDeps?.getUserTurnId?.()
+        const r2 = await captured.docDeps!.open!(sharedPath, {
+          sessionId: session,
+          userTurnId: turn2,
+        })
+        expect(r2).toBe(true)
+        expect(onOpenPath).toHaveBeenCalledTimes(2)
+      } finally {
+        await act(async () => {
+          root.unmount()
+        })
+        host.remove()
+      }
+    })
+
+    it('OPEN-12: Unmounting HomeChat while async open is in flight suppresses side effects', async () => {
+      let resolveOpen!: (v: boolean) => void
+      const openBarrier = new Promise<boolean>((res) => {
+        resolveOpen = res
+      })
+      const onOpenPath = vi.fn().mockImplementation(() => openBarrier)
+
+      const host = document.createElement('div')
+      document.body.append(host)
+      const root = createRoot(host)
+      const api = mockApi()
+
+      await act(async () => {
+        root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
+      })
+
+      await act(async () => {
+        requestChatPrefill({ text: 'Run Unmount', intent: 'new', send: true })
+      })
+
+      const session = captured.docDeps?.getSessionId?.()
+      const turnId = captured.docDeps?.getUserTurnId?.()
+
+      const openPromise = captured.docDeps!.open!('/Users/me/GenOffice/UnmountDoc.docx', {
+        sessionId: session,
+        userTurnId: turnId,
+      })
+
+      // Unmount before open resolves
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+
+      // Now resolve the open
+      resolveOpen(true)
+      const result = await openPromise
+      expect(result).toBe(false)
+    })
+  })
 })
