@@ -1321,9 +1321,8 @@ describe('createDocumentSkill', () => {
       let createCalls = 0
       const createdPaths: string[] = []
 
-      let activeSession = 'conv-1'
-      const skill = createDocumentSkill({
-        getSessionId: () => activeSession,
+      const skill1 = createDocumentSkill({
+        getSessionId: () => 'conv-1',
         getUserTurnId: () => 'turn-1',
         create: async (r) => {
           createCalls++
@@ -1333,20 +1332,35 @@ describe('createDocumentSkill', () => {
         },
       })
 
-      const req = call(
+      const skill2 = createDocumentSkill({
+        getSessionId: () => 'conv-2',
+        getUserTurnId: () => 'turn-1',
+        create: async (r) => {
+          createCalls++
+          const p = `/Users/me/GenOffice/${r.title}_${r.sessionId}.docx`
+          createdPaths.push(p)
+          return { path: p }
+        },
+      })
+
+      const req1 = call(
         { title: 'SharedTitle', format: 'docx', content: '# Content' },
-        'call-same-id',
+        'call-conv-1',
+      )
+      const req2 = call(
+        { title: 'SharedTitle', format: 'docx', content: '# Content' },
+        'call-conv-2',
       )
 
-      activeSession = 'conv-1'
-      const r1 = await skill.executeTool(req)
-
-      activeSession = 'conv-2'
-      const r2 = await skill.executeTool(req)
+      const [r1, r2] = await Promise.all([skill1.executeTool(req1), skill2.executeTool(req2)])
 
       expect(createCalls).toBe(2)
       expect(r1.output).toContain('SharedTitle_conv-1.docx')
       expect(r2.output).toContain('SharedTitle_conv-2.docx')
+      expect(createdPaths).toEqual([
+        '/Users/me/GenOffice/SharedTitle_conv-1.docx',
+        '/Users/me/GenOffice/SharedTitle_conv-2.docx',
+      ])
     })
   })
 })
