@@ -9,6 +9,7 @@
     ".": "./src/index.ts",
     "./agy-chat-preload": "./src/agy-chat-preload.ts",
     "./atomic-write": "./src/atomic-write.ts",
+    "./default-save-dir": "./src/default-save-dir.ts",
     "./clipboard-history-labels": "./src/clipboard-history-labels.ts",
     "./drop-open": "./src/drop-open.ts",
     "./font-catalog": "./src/font-catalog.ts",

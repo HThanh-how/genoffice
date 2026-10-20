@@ -24,7 +24,7 @@ import type {
 } from '../shared/home-api'
 import { isValidRenameName } from './rename-validation'
 import { statPathEntries } from './recent-files'
-import { mkdirDirs } from '@genoffice/electron-utils'
+import { mkdirDirs } from '@genoffice/electron-utils/default-save-dir'
 
 /** files the home tree shows; mirrors the shell's open-dialog filter */
 export const TREE_FILE_EXTENSIONS: ReadonlySet<string> = new Set([

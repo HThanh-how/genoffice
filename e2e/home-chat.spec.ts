@@ -19,6 +19,9 @@ test('home chat finds remembered content, opens its source and preserves the hom
     for await (const bytes of req) body += bytes
     const payload = JSON.parse(body)
     requests.push(payload)
+    const lastUserMsg = payload.messages
+      .filter((m: { role: string }) => m.role === 'user')
+      .at(-1)?.content
     const tools = payload.messages.filter((m: { role: string }) => m.role === 'tool')
     const sendCall = (name: string, input: object) => {
       res.write(
@@ -27,7 +30,12 @@ test('home chat finds remembered content, opens its source and preserves the hom
       res.write('data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n')
     }
     res.writeHead(200, { 'content-type': 'text/event-stream' })
-    if (tools.length === 0)
+    if (lastUserMsg === 'Check knowledge base') {
+      res.write(
+        'data: {"choices":[{"delta":{"content":"Knowledge base contains starred files."}}]}\n\n',
+      )
+      res.write('data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n')
+    } else if (tools.length === 0)
       sendCall('search_remembered_documents', { query: 'Moonstone class 2/1', limit: 4 })
     else if (tools.length === 1) {
       const hit = JSON.parse(tools[0].content).hits[0]
@@ -100,8 +108,33 @@ test('home chat finds remembered content, opens its source and preserves the hom
       timeout: 30_000,
     })
     expect(requests).toHaveLength(3)
-    expect(requests[0]!.tools).toHaveLength(6)
+    // 1. Empty knowledge base (no starred files): only 4 baseline tools are exposed
+    expect(requests[0]!.tools).toHaveLength(4)
     expect(requests[0]!.tools?.map((t) => t.function.name)).toEqual([
+      'search_remembered_documents',
+      'read_remembered_document',
+      'open_remembered_document',
+      'create_document',
+    ])
+    const evidence = JSON.parse(
+      requests[2]!.messages.filter((m) => m.role === 'tool').at(-1)!.content!,
+    )
+    expect(evidence.verified).toBe(true)
+
+    // 2. Nonempty knowledge base: star a file and verify all 6 tools are offered
+    await home.evaluate(async (p) => {
+      const api = (window as Window & { aiOffice: HomeApi }).aiOffice
+      await api.toggleStar(p)
+    }, source)
+    await input.fill('Check knowledge base')
+    await input.press('Enter')
+    await expect(home.locator('.home-chat-panel')).toContainText(
+      'Knowledge base contains starred files.',
+      { timeout: 30_000 },
+    )
+    const starredRequest = requests[3]!
+    expect(starredRequest.tools).toHaveLength(6)
+    expect(starredRequest.tools?.map((t) => t.function.name)).toEqual([
       'search_remembered_documents',
       'read_remembered_document',
       'open_remembered_document',
@@ -109,10 +142,6 @@ test('home chat finds remembered content, opens its source and preserves the hom
       'search_knowledge_base',
       'create_document',
     ])
-    const evidence = JSON.parse(
-      requests[2]!.messages.filter((m) => m.role === 'tool').at(-1)!.content!,
-    )
-    expect(evidence.verified).toBe(true)
     await home.screenshot({ path: screenshotPath('home-chat-glass') })
     await home.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))
     await home.screenshot({ path: screenshotPath('home-chat-glass-dark') })
