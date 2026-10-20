@@ -638,7 +638,7 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
         })
 
         await act(async () => {
-          requestChatPrefill({ text: '', intent: 'open-existing', targetSessionId: 'sess-manual' })
+          requestChatPrefill({ text: 'open', intent: 'open-existing', sessionId: 'sess-manual' })
         })
 
         // Agent is stopped / idle; click Save as Word button on the rendered assistant message
@@ -1267,7 +1267,7 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
             root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
           })
           await act(async () => {
-            requestChatPrefill({ text: '', intent: 'open-existing', targetSessionId: 's8' })
+            requestChatPrefill({ text: 'open', intent: 'open-existing', sessionId: 's8' })
           })
           await act(async () => {
             requestChatPrefill({ text: 'Start and stop', intent: 'ask', send: true })
@@ -1332,7 +1332,7 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
             root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
           })
           await act(async () => {
-            requestChatPrefill({ text: '', intent: 'open-existing', targetSessionId: 's9' })
+            requestChatPrefill({ text: 'open', intent: 'open-existing', sessionId: 's9' })
           })
           const saveWordBtn = host.querySelector<HTMLButtonElement>(
             'button[title="Save as Word (.docx)"]',
@@ -1391,7 +1391,7 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
             root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath }))
           })
           await act(async () => {
-            requestChatPrefill({ text: '', intent: 'open-existing', targetSessionId: 's10' })
+            requestChatPrefill({ text: 'open', intent: 'open-existing', sessionId: 's10' })
           })
           await act(async () => {
             requestChatPrefill({ text: 'Run 10', intent: 'ask', send: true })
@@ -1857,7 +1857,7 @@ describe('HomeChat document open lifecycle & concurrency isolation', () => {
             root.render(createElement(HomeChat, { api, i18n: mockI18n, onOpenPath, isOpenPath }))
           })
           await act(async () => {
-            requestChatPrefill({ text: '', intent: 'open-existing', targetSessionId: 's-focus' })
+            requestChatPrefill({ text: 'open', intent: 'open-existing', sessionId: 's-focus' })
           })
           await act(async () => {
             requestChatPrefill({ text: 'Start and stop', intent: 'ask', send: true })
