@@ -4,7 +4,11 @@ import { act, createElement } from 'react'
 import { createRoot } from 'react-dom/client'
 import { defaultAiSettings, type AiSettings } from '@genoffice/ai-provider'
 import { AiModelPicker } from '../src/AiModelPicker'
-import { aiModelPickerGroups, aiModelPickerSelection } from '../src/ai-model-picker-options'
+import {
+  aiModelPickerGroups,
+  aiModelPickerSelection,
+  type AiModelItemMeta,
+} from '../src/ai-model-picker-options'
 import type { AgyBarState } from '../src/AgyChatBar'
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
@@ -23,6 +27,12 @@ interface Fixture {
   selected: string
   available: string[]
   catalogError?: string
+  /** when set it replaces the fixture catalog, so a CLI that answered with nothing is testable */
+  models?: AiModelItemMeta[]
+  /** the chat box has not answered yet */
+  pending?: boolean
+  /** the state read itself fails (no IPC handler, main process gone, invoke rejected) */
+  stateThrows?: boolean
 }
 
 function agySettings(model: string): AiSettings {
@@ -39,7 +49,26 @@ function mount(fixture: Fixture, selectThrows = false) {
   const written: AiSettings[] = []
   const selectCalls: string[] = []
 
-  const state = () => {
+  const state = (): AgyBarState | null => {
+    if (fixture.pending) return null
+    if (fixture.models) {
+      const available = fixture.models.filter((m) => m.verified === true).map((m) => m.id)
+      const chosen = fixture.selected
+      return {
+        active: fixture.settings.provider === 'agy',
+        selected: chosen,
+        available,
+        selectedStatus: chosen
+          ? fixture.catalogError
+            ? 'unverified'
+            : available.includes(chosen)
+              ? 'verified'
+              : 'unavailable'
+          : 'none',
+        models: fixture.models,
+        ...(fixture.catalogError ? { catalogError: fixture.catalogError } : {}),
+      }
+    }
     const ids = [...CATALOG]
     if (fixture.selected && !ids.includes(fixture.selected)) ids.push(fixture.selected)
     return {
@@ -68,12 +97,19 @@ function mount(fixture: Fixture, selectThrows = false) {
 
   Object.assign(window, {
     agyChat: {
-      getAgyChatState: async () => state(),
+      getAgyChatState: async () => {
+        if (fixture.stateThrows) throw new Error('no Antigravity handler in this process')
+        return state()
+      },
       selectAgyChatModel: async (id: string) => {
         selectCalls.push(id)
         if (selectThrows) throw new Error('settings write failed')
-        if (!fixture.enabled.includes(id)) return false
-        if (!fixture.available.includes(id)) return false
+        const s = state()
+        if (!s) return false
+        // the same rule the main process applies: switched on *and* confirmed by the CLI
+        if (!s.available.includes(id)) return false
+        const item = s.models.find((m) => m.id === id)
+        if (!item || item.enabled === false) return false
         fixture.selected = id
         fixture.settings.providers.agy = {
           ...(fixture.settings.providers.agy ?? { apiKey: '', cliPath: '/fixture/agy' }),
@@ -282,13 +318,22 @@ it('I: a catalog failure is reported as unverified and never as a confirmed mode
   expect(state.selectedStatus).toBe('unverified')
   expect(state.available).toEqual([])
   expect(state.models.every((m) => m.verified === false)).toBe(true)
-  // the seed is offered only because the CLI could not be reached, and nothing in it is claimed
-  // to be confirmed by the CLI
+  // a catalog that could not be read is not a catalog: nothing is confirmed, so nothing is
+  // selectable, and the picker never falls back to the hardcoded provider seed
   const agy = aiModelPickerGroups(f.fixture.settings, false, state.models, true).find(
     (g) => g.id === 'agy',
   )
-  expect(agy?.models).toEqual(['gemini-3.8-flash-high'])
-  expect(agy?.modelItems?.every((m) => m.verified === false)).toBe(true)
+  expect(agy).toBeUndefined()
+  // with a model already saved, the group stays visible but only as the current configuration
+  const kept = aiModelPickerGroups(
+    agySettings('gemini-3.8-flash-high'),
+    false,
+    state.models,
+    true,
+  ).find((g) => g.id === 'agy')
+  expect(kept?.models).toEqual([])
+  expect(kept?.unusable).toEqual(['gemini-3.8-flash-high'])
+  expect(kept?.modelItems?.every((m) => m.verified === false)).toBe(true)
   // a catalog that answered with no usable model offers nothing at all
   expect(
     aiModelPickerGroups(
@@ -367,6 +412,7 @@ function mountEditor({
   state = 'ok',
   enabled = ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'],
   available = CATALOG,
+  error,
   shared,
 }: {
   settings: AiSettings
@@ -374,6 +420,7 @@ function mountEditor({
   state?: 'ok' | 'reject' | 'pending'
   enabled?: string[]
   available?: string[]
+  error?: string
   shared?: AiSettings
 }) {
   const host = document.createElement('div')
@@ -385,7 +432,7 @@ function mountEditor({
   // `shared` lets two mounted pickers act as two windows over one settings file
   const settings = shared ?? structuredClone(initial)
   // mutable so a test can move the CLI's answer between the render and the click
-  const live = { enabled, available }
+  const live = { enabled, available, error }
 
   const api: Record<string, unknown> = {}
   if (handler !== 'missing') {
@@ -417,7 +464,9 @@ function mountEditor({
   Object.assign(window, { agyChat: api })
 
   function stateOf(): AgyBarState {
-    const ids = [...live.available]
+    // the chat box reports every model the person switched on, plus whatever the CLI confirmed;
+    // a model that is switched on but not confirmed is exactly the case the picker must refuse
+    const ids = [...live.available, ...live.enabled.filter((id) => !live.available.includes(id))]
     const selected = settings.providers?.agy?.model ?? ''
     if (selected && !ids.includes(selected)) ids.push(selected)
     return {
@@ -425,9 +474,11 @@ function mountEditor({
       selected,
       available: live.available,
       selectedStatus: selected
-        ? live.available.includes(selected)
-          ? 'verified'
-          : 'unavailable'
+        ? live.error
+          ? 'unverified'
+          : live.available.includes(selected)
+            ? 'verified'
+            : 'unavailable'
         : 'none',
       models: ids.map((id) => ({
         id,
@@ -438,6 +489,7 @@ function mountEditor({
         enabled: live.enabled.includes(id),
         verified: live.available.includes(id),
       })),
+      ...(live.error ? { catalogError: live.error } : {}),
     }
   }
 
@@ -804,5 +856,378 @@ describe('a provider switch and a model choice succeed or fail together (C1-C12)
     act(() => f.root.unmount())
     f.host.remove()
     Reflect.deleteProperty(window, 'agyChat')
+  })
+})
+
+describe('M1-M20: only a positively confirmed Antigravity model can be chosen', () => {
+  const HIGH = 'gemini-3.8-flash-high'
+  const LOW = 'gemini-3.8-flash-low'
+  const PRO = 'gemini-3.1-pro-high'
+  const TIMEOUT = 'agy models timed out'
+
+  const cleanup = (f: { host: HTMLElement; root: ReturnType<typeof createRoot> }) => {
+    act(() => f.root.unmount())
+    f.host.remove()
+    Reflect.deleteProperty(window, 'agyChat')
+  }
+
+  const agyGroup = (f: { settings: AiSettings; stateOf: () => AgyBarState }) =>
+    aiModelPickerGroups(
+      f.settings,
+      false,
+      f.stateOf().models,
+      f.stateOf().catalogError !== undefined,
+    ).find((g) => g.id === 'agy')
+
+  it('M1: a confirmed, switched-on model is selectable and reaches the validated handler', async () => {
+    const f = mountEditor({ settings: agySettings(''), enabled: [HIGH], available: [HIGH] })
+    await renderPicker(f)
+    const high = await openPicker(f.host)
+    const row = high.find((b) => b.textContent?.includes(HIGH))
+    expect(row).not.toBeNull()
+    expect(row!.disabled).toBe(false)
+    await act(async () => row!.click())
+    expect(f.selectCalls).toEqual([HIGH])
+    expect(f.settings.providers.agy.model).toBe(HIGH)
+    cleanup(f)
+  })
+
+  it('M2: every confirmed, switched-on model is selectable and no seed model is invented', async () => {
+    const f = mountEditor({
+      settings: agySettings(''),
+      enabled: [HIGH, LOW, PRO],
+      available: [HIGH, LOW, PRO],
+    })
+    await renderPicker(f)
+    expect(agyGroup(f)?.models).toEqual([HIGH, LOW, PRO])
+    // nothing is selected yet, so the chip cannot claim a model the CLI never confirmed
+    expect(f.host.querySelector('.ai-model-chip-text')?.textContent ?? '').not.toBe(LOW)
+    cleanup(f)
+  })
+
+  it('M3: a confirmed model the person switched off stays unselectable', async () => {
+    const f = mountEditor({ settings: agySettings(''), enabled: [LOW], available: [HIGH, LOW] })
+    await renderPicker(f)
+    const options = await openPicker(f.host)
+    const high = options.find((b) => b.textContent?.includes(HIGH))
+    expect(high).toBeUndefined()
+    expect(agyGroup(f)?.models).toEqual([LOW])
+    cleanup(f)
+  })
+
+  it('M4: a catalog failure never makes an unconfirmed model selectable', async () => {
+    const f = mountEditor({
+      settings: agySettings(''),
+      enabled: [HIGH],
+      available: [],
+      error: TIMEOUT,
+    })
+    await renderPicker(f)
+    const state = f.stateOf()
+    expect(state.catalogError).toBe(TIMEOUT)
+    expect(state.available).toEqual([])
+    expect(state.models.every((m) => m.verified === false)).toBe(true)
+    expect(agyGroup(f)).toBeUndefined()
+    const options = await openPicker(f.host)
+    expect(options.some((b) => b.textContent?.includes(HIGH))).toBe(false)
+    cleanup(f)
+  })
+
+  it('M5: a saved model survives a catalog failure, shown as current but not selectable', async () => {
+    const f = mountEditor({
+      settings: agySettings(HIGH),
+      enabled: [HIGH],
+      available: [],
+      error: TIMEOUT,
+    })
+    await renderPicker(f)
+    expect(f.host.querySelector('.ai-model-chip-text')?.textContent).toBe(HIGH)
+    const group = agyGroup(f)
+    expect(group?.models).toEqual([])
+    expect(group?.unusable).toEqual([HIGH])
+    const options = await openPicker(f.host)
+    const row = options.find((b) => b.textContent?.includes(HIGH))
+    expect(row?.disabled).toBe(true)
+    await act(async () => row!.click())
+    expect(f.selectCalls).toEqual([])
+    expect(f.written.length).toBe(0)
+    expect(f.settings.providers.agy.model).toBe(HIGH)
+    cleanup(f)
+  })
+
+  it('M6: a failed catalog with nothing saved offers no Antigravity model at all', async () => {
+    const f = mountEditor({ settings: agySettings(''), enabled: [], available: [], error: TIMEOUT })
+    await renderPicker(f)
+    expect(agyGroup(f)).toBeUndefined()
+    const options = await openPicker(f.host)
+    expect(options.some((b) => b.textContent?.includes('Antigravity'))).toBe(false)
+    cleanup(f)
+  })
+
+  it('M7: a CLI that answered with an empty catalog is confirmed empty, not unreadable', async () => {
+    const f = mountEditor({ settings: agySettings(''), enabled: [], available: [] })
+    await renderPicker(f)
+    const state = f.stateOf()
+    expect(state.catalogError).toBeUndefined()
+    expect(state.models).toEqual([])
+    expect(state.selectedStatus).toBe('none')
+    expect(agyGroup(f)).toBeUndefined()
+    cleanup(f)
+  })
+
+  it('M8: a Claude/GPT-only catalog with no opt-in invents no Gemini and enables nothing', async () => {
+    const models: AiModelItemMeta[] = [
+      { id: 'claude-sonnet-4', label: 'Claude Sonnet 4', enabled: false, verified: true },
+      { id: 'gpt-5', label: 'GPT-5', enabled: false, verified: true },
+    ]
+    const groups = aiModelPickerGroups(agySettings(''), false, models, false)
+    expect(groups.find((g) => g.id === 'agy')).toBeUndefined()
+    expect(groups.some((g) => g.models.some((m) => m.includes('gemini')))).toBe(false)
+  })
+
+  it('M9: an explicitly opted-in non-Gemini model is selectable when the CLI confirms it', async () => {
+    const f = mountEditor({
+      settings: agySettings(''),
+      enabled: ['claude-sonnet-4'],
+      available: ['claude-sonnet-4'],
+    })
+    await renderPicker(f)
+    const group = agyGroup(f)
+    expect(group?.models).toEqual(['claude-sonnet-4'])
+    const options = await openPicker(f.host)
+    const row = options.find((b) => b.textContent?.includes('claude-sonnet-4'))
+    expect(row?.disabled).toBe(false)
+    await act(async () => row!.click())
+    expect(f.selectCalls).toEqual(['claude-sonnet-4'])
+    expect(f.settings.providers.agy.model).toBe('claude-sonnet-4')
+    cleanup(f)
+  })
+
+  it('M10: a confirmed catalog that no longer has the saved model keeps it, unselectable', async () => {
+    const f = mountEditor({ settings: agySettings(HIGH), enabled: [HIGH, LOW], available: [LOW] })
+    await renderPicker(f)
+    const group = agyGroup(f)
+    expect(group?.models).toEqual([LOW])
+    expect(group?.unusable).toEqual([HIGH])
+    const options = await openPicker(f.host)
+    const row = options.find((b) => b.textContent?.includes(HIGH))
+    expect(row?.disabled).toBe(true)
+    await act(async () => row!.click())
+    expect(f.selectCalls).toEqual([])
+    expect(f.settings.providers.agy.model).toBe(HIGH)
+    cleanup(f)
+  })
+
+  it('M11: without the Antigravity handler no Antigravity model can be chosen', async () => {
+    const f = mountEditor({ settings: agySettings(HIGH), handler: 'missing' })
+    await renderPicker(f)
+    const group = aiModelPickerGroups(f.settings, false, undefined, false, false).find(
+      (g) => g.id === 'agy',
+    )
+    expect(group?.models ?? []).toEqual([])
+    const options = await openPicker(f.host)
+    const row = options.find((b) => b.textContent?.includes(HIGH))
+    expect(row?.disabled).toBe(true)
+    await act(async () => row!.click())
+    expect(f.selectCalls).toEqual([])
+    expect(f.written.length).toBe(0)
+    cleanup(f)
+  })
+
+  it('M12: a pending state offers nothing clickable, and the answer renders when it arrives', async () => {
+    const f = mountEditor({ settings: agySettings(''), state: 'pending' })
+    await renderPicker(f)
+    const options = await openPicker(f.host)
+    expect(options.some((b) => b.textContent?.includes(HIGH))).toBe(false)
+    // close the popover so the next open reads the freshly arrived state
+    await act(async () => f.host.querySelector<HTMLButtonElement>('.ai-model-chip')!.click())
+    ;(window as unknown as { agyChat?: Record<string, unknown> }).agyChat!.getAgyChatState =
+      async () => f.stateOf()
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    const after = await openPicker(f.host)
+    const row = after.find((b) => b.textContent?.includes(HIGH))
+    expect(row?.disabled).toBe(false)
+    cleanup(f)
+  })
+
+  it('M13: a rejected state read does not leave stale confirmed options behind', async () => {
+    const f = mountEditor({ settings: agySettings(HIGH), state: 'reject' })
+    await renderPicker(f)
+    const options = await openPicker(f.host)
+    const row = options.find((b) => b.textContent?.includes(HIGH))
+    expect(row?.disabled).toBe(true)
+    await act(async () => row!.click())
+    expect(f.selectCalls).toEqual([])
+    expect(f.written.length).toBe(0)
+    expect(f.settings.providers.agy.model).toBe(HIGH)
+    cleanup(f)
+  })
+
+  it('M13b: a state read that fails after a good one does not keep the old list clickable', async () => {
+    const f = mountEditor({ settings: agySettings(HIGH), enabled: [HIGH], available: [HIGH] })
+    await renderPicker(f)
+    const before = await openPicker(f.host)
+    expect(before.find((b) => b.textContent?.includes(HIGH))?.disabled).toBe(false)
+    await act(async () => f.host.querySelector<HTMLButtonElement>('.ai-model-chip')!.click())
+    ;(window as unknown as { agyChat?: Record<string, unknown> }).agyChat!.getAgyChatState =
+      async () => {
+        throw new Error('No handler found for channel agyChat:state')
+      }
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    const after = await openPicker(f.host)
+    const stale = after.find((b) => b.textContent?.includes(HIGH))
+    expect(stale === undefined || stale.disabled).toBe(true)
+    if (stale) await act(async () => stale.click())
+    expect(f.selectCalls).toEqual([])
+    expect(f.written.length).toBe(0)
+    cleanup(f)
+  })
+
+  it('M14: a confirmed catalog that later fails stops advertising the old selection', async () => {
+    const f = mountEditor({ settings: agySettings(HIGH), enabled: [HIGH], available: [HIGH] })
+    await renderPicker(f)
+    const first = await openPicker(f.host)
+    expect(first.find((b) => b.textContent?.includes(HIGH))?.disabled).toBe(false)
+    await act(async () => f.host.querySelector<HTMLButtonElement>('.ai-model-chip')!.click())
+    f.live.available = []
+    f.live.error = TIMEOUT
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    const again = await openPicker(f.host)
+    const row = again.find((b) => b.textContent?.includes(HIGH))
+    expect(row === undefined || row.disabled).toBe(true)
+    if (row) await act(async () => row.click())
+    expect(f.selectCalls).toEqual([])
+    expect(f.written.length).toBe(0)
+    expect(f.settings.providers.agy.model).toBe(HIGH)
+    cleanup(f)
+  })
+
+  it('M15: when the catalog recovers the model becomes selectable again without a restart', async () => {
+    const f = mountEditor({
+      settings: agySettings(HIGH),
+      enabled: [HIGH],
+      available: [],
+      error: TIMEOUT,
+    })
+    await renderPicker(f)
+    expect(agyGroup(f)?.models).toEqual([])
+    f.live.available = [HIGH]
+    f.live.error = undefined
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    const options = await openPicker(f.host)
+    const row = options.find((b) => b.textContent?.includes(HIGH))
+    expect(row?.disabled).toBe(false)
+    await act(async () => row!.click())
+    expect(f.selectCalls).toEqual([HIGH])
+    cleanup(f)
+  })
+
+  it('M16: a model chosen in another window is reflected here instead of overwritten', async () => {
+    const shared = agySettings(HIGH)
+    const f = mountEditor({
+      settings: shared,
+      shared,
+      enabled: [HIGH, LOW],
+      available: [HIGH, LOW],
+    })
+    await renderPicker(f)
+    shared.providers.agy.model = LOW
+    f.live.enabled = [LOW]
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    expect(f.host.querySelector('.ai-model-chip-text')?.textContent).toBe(LOW)
+    const options = await openPicker(f.host)
+    const high = options.find((b) => b.textContent?.includes(HIGH))
+    expect(high === undefined || high.disabled).toBe(true)
+    cleanup(f)
+  })
+
+  it('M17: a stale click on an unselectable model changes nothing', async () => {
+    const f = mountEditor({ settings: agySettings(HIGH), enabled: [HIGH], available: [HIGH] })
+    await renderPicker(f)
+    const options = await openPicker(f.host)
+    const row = options.find((b) => b.textContent?.includes(HIGH))
+    expect(row).not.toBeNull()
+    // the CLI drops the model and the person switches it off before the click lands
+    f.live.available = []
+    f.live.enabled = []
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    const stale = await openPicker(f.host)
+    const staleRow = stale.find((b) => b.textContent?.includes(HIGH))
+    if (staleRow) await act(async () => staleRow.click())
+    expect(f.selectCalls).toEqual([])
+    expect(f.written.length).toBe(0)
+    expect(f.settings.providers.agy.model).toBe(HIGH)
+    cleanup(f)
+  })
+
+  it('M18: an unconfirmed Antigravity model cannot switch the provider away', async () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'openai'
+    settings.providers.openai = { apiKey: 'sk-test', model: 'gpt-4.1-mini' }
+    settings.providers.agy = { apiKey: '', cliPath: '/fixture/agy', model: HIGH }
+    const f = mountEditor({ settings, enabled: [HIGH], available: [], error: TIMEOUT })
+    await renderPicker(f)
+    const options = await openPicker(f.host)
+    const agyRow = options.find((b) => b.textContent?.includes(HIGH))
+    if (agyRow) await act(async () => agyRow.click())
+    expect(f.selectCalls).toEqual([])
+    expect(f.written.length).toBe(0)
+    expect(f.settings.provider).toBe('openai')
+    cleanup(f)
+  })
+
+  it('M19: a failed catalog and refresh leave every other setting untouched', async () => {
+    const settings = agySettings(HIGH)
+    settings.providers.gemini = { apiKey: 'gk-secret', model: 'gemini-2.5-flash' }
+    settings.search = {
+      provider: 'agy',
+      providers: { agy: { apiKey: '', cliPath: '/search/agy', model: 'search-model' } },
+    }
+    settings.maxOutputTokens = 4096
+    const snapshot = structuredClone(settings)
+    const f = mountEditor({
+      settings,
+      shared: settings,
+      enabled: [HIGH],
+      available: [],
+      error: TIMEOUT,
+    })
+    await renderPicker(f)
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    const options = await openPicker(f.host)
+    for (const row of options.filter((r) => r.textContent?.includes(HIGH)))
+      await act(async () => row.click())
+    expect(f.written.length).toBe(0)
+    expect(settings).toEqual(snapshot)
+    cleanup(f)
+  })
+
+  it('M20: two windows over one main process agree on what is selectable', async () => {
+    const shared = agySettings(HIGH)
+    const a = mountEditor({ settings: shared, shared, enabled: [HIGH], available: [HIGH] })
+    const b = mountEditor({ settings: shared, shared, enabled: [HIGH], available: [HIGH] })
+    await renderPicker(a)
+    await renderPicker(b)
+    expect(agyGroup(a)?.models).toEqual(agyGroup(b)?.models)
+    const rowA = await openPicker(a.host)
+    const rowB = await openPicker(b.host)
+    expect(rowA.find((x) => x.textContent?.includes(HIGH))?.disabled).toBe(false)
+    expect(rowB.find((x) => x.textContent?.includes(HIGH))?.disabled).toBe(false)
+    cleanup(a)
+    cleanup(b)
   })
 })

@@ -98,6 +98,8 @@ it('T37: the Antigravity chip shows the model the chat box is actually using, an
         relativeCost: 1,
         speed: 'fast',
         enabled: true,
+        // the real chat box state always says whether the CLI confirmed the model
+        verified: true,
       })),
     }),
     selectAgyChatModel: async () => true,
@@ -125,9 +127,9 @@ it('T37: the Antigravity chip shows the model the chat box is actually using, an
   })
   expect(host2.querySelector('.ai-model-chip-text')?.textContent).toBe('gemini-3.8-flash-low')
   expect(
-    aiModelPickerGroups(settings, false, [{ id: 'gemini-3.8-flash-low', label: 'Low' }]).map(
-      (g) => g.id,
-    ),
+    aiModelPickerGroups(settings, false, [
+      { id: 'gemini-3.8-flash-low', label: 'Low', enabled: true, verified: true },
+    ]).map((g) => g.id),
   ).toEqual(['agy'])
   await act(async () => root2.unmount())
   host2.remove()

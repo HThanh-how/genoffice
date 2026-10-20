@@ -62,7 +62,19 @@ export function AiModelPicker({
     if (agy?.getAgyChatState) {
       Promise.resolve()
         .then(() => agy.getAgyChatState())
-        .then(setAgyState, () => {})
+        .then(
+          setAgyState,
+          // a state read that failed is not evidence that the previous list is still good: keep
+          // the stored model visible as the current configuration, but stop advertising models
+          // the CLI has not confirmed right now
+          () =>
+            setAgyState({
+              models: [],
+              selected: '',
+              active: false,
+              catalogError: 'Antigravity model list could not be read',
+            }),
+        )
     }
   }, [bridge])
 

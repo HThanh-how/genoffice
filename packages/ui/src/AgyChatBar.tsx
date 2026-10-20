@@ -1051,24 +1051,36 @@ export function AgyChatBar({
       )}
       {showBar && showModel && menu && (
         <div className="agy-bar-menu" role="listbox" aria-label={d.model}>
-          {state.models.map((model) => (
-            <button
-              key={model.id}
-              type="button"
-              role="option"
-              aria-selected={model.id === state.selected}
-              className={model.id === state.selected ? 'is-selected' : ''}
-              onClick={() => void choose(model.id)}
-            >
-              <span className="agy-bar-menu-main">
-                <strong>{model.label}</strong>
-                <span className={`agy-bar-pill is-${model.speed}`}>{speedLabel(model)}</span>
-              </span>
-              <span className="agy-bar-menu-sub">
-                {model.relativeCost <= 1 ? d.costBase : fill(d.cost, { n: model.relativeCost })}
-              </span>
-            </button>
-          ))}
+          {state.models.map((model) => {
+            // the chat box lists what the person switched on, but only a model the CLI
+            // confirmed can actually be chosen: the main process refuses the rest, so the
+            // menu must not look like it accepts them
+            const blocked = state.available !== undefined && !state.available.includes(model.id)
+            return (
+              <button
+                key={model.id}
+                type="button"
+                role="option"
+                aria-selected={model.id === state.selected}
+                aria-disabled={blocked}
+                disabled={blocked}
+                title={blocked ? `${model.label} - ${d.unverified}` : model.label}
+                className={model.id === state.selected ? 'is-selected' : ''}
+                onClick={() => {
+                  if (blocked) return
+                  void choose(model.id)
+                }}
+              >
+                <span className="agy-bar-menu-main">
+                  <strong>{model.label}</strong>
+                  <span className={`agy-bar-pill is-${model.speed}`}>{speedLabel(model)}</span>
+                </span>
+                <span className="agy-bar-menu-sub">
+                  {model.relativeCost <= 1 ? d.costBase : fill(d.cost, { n: model.relativeCost })}
+                </span>
+              </button>
+            )
+          })}
           <p className="agy-bar-note">{d.more}</p>
         </div>
       )}

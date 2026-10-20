@@ -133,14 +133,16 @@ export function aiModelPickerGroups(
         }
         continue
       }
-      // Only models the person switched on and the CLI confirmed are selectable. A stored model
-      // that is switched off, unconfirmed or absent from the verified catalog is still shown, as
-      // the current configuration, so the chip never lies about what is saved - but it is marked
-      // unusable and cannot be clicked. With nothing usable and nothing stored the group is
-      // omitted: the hardcoded provider seed is not evidence that a model exists.
+      // Only models the person switched on *and* the CLI positively confirmed are selectable. A
+      // catalog that could not be read proves nothing, so it can never widen this list: an
+      // unconfirmed model is not the same as an empty catalog, and a failure is not permission.
+      // A stored model that is switched off, unconfirmed or absent from the verified catalog is
+      // still shown, as the current configuration, so the chip never lies about what is saved -
+      // but it is marked unusable and cannot be clicked. With nothing usable and nothing stored
+      // the group is omitted: the hardcoded provider seed is not evidence that a model exists.
       if (liveAgyModels === undefined) continue
       const usable = liveAgyModels
-        .filter((m) => m.enabled !== false && (agyCatalogFailed || m.verified !== false))
+        .filter((m) => m.enabled !== false && !agyCatalogFailed && m.verified === true)
         .map((m) => m.id)
       const unusable = stored && !usable.includes(stored) ? [stored] : []
       if (usable.length === 0 && unusable.length === 0) continue
