@@ -320,19 +320,52 @@ describe('listCustomModelsForIpc validates the payload', () => {
 /** trimmed from a real GET /v1beta/models answer (2026-09-27): one entry per kind the filter must handle */
 const GEMINI_BODY = JSON.stringify({
   models: [
-    { name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-2.5-flash-preview-tts', supportedGenerationMethods: ['countTokens', 'generateContent'] },
-    { name: 'models/gemma-4-31b-it', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-flash-latest', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-3.5-flash-lite', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-3.1-pro-preview', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-3.1-pro-preview-customtools', supportedGenerationMethods: ['generateContent'] },
-    { name: 'models/gemini-3.1-flash-image', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-3.8-flash', supportedGenerationMethods: ['generateContent', 'countTokens'] },
+    {
+      name: 'models/gemini-2.5-flash',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-2.5-flash-preview-tts',
+      supportedGenerationMethods: ['countTokens', 'generateContent'],
+    },
+    {
+      name: 'models/gemma-4-31b-it',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-flash-latest',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-3.5-flash-lite',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-3.1-pro-preview',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-3.1-pro-preview-customtools',
+      supportedGenerationMethods: ['generateContent'],
+    },
+    {
+      name: 'models/gemini-3.1-flash-image',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-3.8-flash',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
     { name: 'models/gemini-omni-flash-preview', supportedGenerationMethods: ['generateContent'] },
-    { name: 'models/gemini-embedding-2', supportedGenerationMethods: ['embedContent', 'countTokens'] },
+    {
+      name: 'models/gemini-embedding-2',
+      supportedGenerationMethods: ['embedContent', 'countTokens'],
+    },
     { name: 'models/gemini-3.8-live', supportedGenerationMethods: ['bidiGenerateContent'] },
-    { name: 'models/deep-research-preview-04-2026', supportedGenerationMethods: ['generateContent'] },
+    {
+      name: 'models/deep-research-preview-04-2026',
+      supportedGenerationMethods: ['generateContent'],
+    },
   ],
 })
 

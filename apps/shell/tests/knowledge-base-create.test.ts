@@ -977,7 +977,10 @@ describe('createKnowledgeDocument', () => {
             // Simulate external writer creating the target file while generation is happening
             if (!injected) {
               injected = true
-              await writeFile(join(dir, 'RacedDoc.md'), 'External user content written during generation')
+              await writeFile(
+                join(dir, 'RacedDoc.md'),
+                'External user content written during generation',
+              )
             }
             await writeFile(path, text, 'utf8')
           },

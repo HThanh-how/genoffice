@@ -372,7 +372,9 @@ export async function createKnowledgeDocument(
           } else if (deps.fileExists) {
             // Simulated / in-memory test environment: verify targetPath doesn't exist on mock disk before write
             if (deps.fileExists(targetPath)) {
-              const err = new Error(`EEXIST: file already exists, open '${targetPath}'`) as NodeJS.ErrnoException
+              const err = new Error(
+                `EEXIST: file already exists, open '${targetPath}'`,
+              ) as NodeJS.ErrnoException
               err.code = 'EEXIST'
               throw err
             }

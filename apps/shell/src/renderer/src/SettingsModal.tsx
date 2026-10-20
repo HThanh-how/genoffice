@@ -2250,7 +2250,9 @@ export function SettingsModal({
                       maxLength={AUTHOR_NAME_MAX}
                       spellCheck={false}
                       autoComplete="off"
-                      onChange={(e) => setAuthorName((prev) => ({ ...prev, value: e.target.value }))}
+                      onChange={(e) =>
+                        setAuthorName((prev) => ({ ...prev, value: e.target.value }))
+                      }
                       onBlur={commitAuthorName}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') e.currentTarget.blur()
