@@ -458,19 +458,14 @@ describe('R4 + R6: the generic settings write is validated against the file it c
       { provider: 'agy', providers: { agy: { apiKey: '', cliPath: '/cli/a', model: LOW } } },
       { [AGY_CHAT_MODELS_KEY]: GEM },
     )
-    let release: (value: { models: string[] }) => void = () => undefined
-    let probes = 0
-    catalogCall.mockImplementation(() => {
-      probes += 1
-      if (probes === 1)
-        return new Promise((resolve) => {
-          release = resolve
-        })
-      return Promise.resolve({ models: GEM })
-    })
+    catalogCall.mockImplementation(() => Promise.resolve({ models: GEM }))
     const { call } = wire(p)
-    // the settings modal snapshot was taken while stored model was LOW; it keeps model: LOW unchanged
-    const generic = applySettingsWrite(
+    // B commits HIGH
+    expect(await call(AGY_CHAT_CHANNELS.select, HIGH, true)).toBe(true)
+
+    // A submits form based on earlier snapshot where model was LOW, changing provider to gemini
+    let readCount = 0
+    const decision = await applySettingsWrite(
       {
         provider: 'gemini',
         providers: {
@@ -479,15 +474,22 @@ describe('R4 + R6: the generic settings write is validated against the file it c
         },
         maxOutputTokens: 2048,
       },
-      () => JSON.parse(readFileSync(p.aiSettingsPath, 'utf8')) as AiSettings,
+      () => {
+        readCount += 1
+        if (readCount === 1) {
+          // initial snapshot when A opened modal had LOW
+          return {
+            provider: 'agy',
+            providers: { agy: { apiKey: '', cliPath: '/cli/a', model: LOW } },
+          } as AiSettings
+        }
+        // latest state from disk where B committed HIGH
+        return JSON.parse(readFileSync(p.aiSettingsPath, 'utf8')) as AiSettings
+      },
       (next) => writeFileSync(p.aiSettingsPath, JSON.stringify(next), 'utf8'),
       (cliPath: string | undefined) => catalogCall(cliPath),
       GEM,
     )
-    // a newer, valid selection commits while the generic write is still validating
-    expect(await call(AGY_CHAT_CHANNELS.select, HIGH, true)).toBe(true)
-    release({ models: GEM })
-    const decision = await generic
     expect(decision.ok).toBe(true)
     const saved = readAi(p.aiSettingsPath)
     expect(saved.provider).toBe('gemini')

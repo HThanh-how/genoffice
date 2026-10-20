@@ -177,7 +177,6 @@ export class AgyUsageCache {
         } else {
           this.state = {
             ...this.state,
-            groups: null,
             failed: true,
             needsLogin: agyUsageNeedsLogin(),
             cliMissing: agyUsageCliMissing(),
@@ -188,7 +187,6 @@ export class AgyUsageCache {
         if (isCurrent) {
           this.state = {
             ...this.state,
-            groups: null,
             failed: true,
             needsLogin: false,
             cliMissing: false,
