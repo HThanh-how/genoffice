@@ -25,6 +25,7 @@ import {
   maxOutputTokensOf,
   resolveAiSettings,
   sanitizeAiSettings,
+  decideSettingsWrite,
   setAiUserAgent,
   setRescueFetch,
   resolveProfileCredential,
@@ -36,7 +37,7 @@ import {
   type LegacyAiSettings,
 } from '@genoffice/ai-provider'
 import { shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
-import { isCliProvider } from '@genoffice/ai-provider/agy-cli'
+import { isCliProvider, listAgyModels } from '@genoffice/ai-provider/agy-cli'
 import { startAiTrace } from '@genoffice/ai-provider/trace'
 import {
   abortOnDestroyed,
@@ -160,18 +161,26 @@ export function registerAiIpc(): void {
     ensureGenofficeLogin((url) => void shell.openExternal(url))
   })
 
-  ipcMain.handle('ai:set-settings', (_event, settings: AiSettings) => {
+  ipcMain.handle('ai:set-settings', async (_event, settings: AiSettings) => {
     // SECURITY.md: payloads are schema-checked in the main process. The settings
     // file feeds cliPath into spawn() and baseUrl receives the gsk bearer token,
-    // so the renderer's copy is sanitized before it touches disk.
-    const sanitized = sanitizeAiSettings(settings)
-    if (!sanitized) {
+    // so the renderer's copy is sanitized before it touches disk. Schema shape is
+    // not live validation: an Antigravity chat model is only stored when the
+    // configured CLI confirms it, exactly as the validated selection path requires.
+    const decision = await decideSettingsWrite(
+      settings,
+      readJson<AiSettings | null>(AI_SETTINGS_PATH(), null),
+      (cliPath) => listAgyModels(cliPath),
+      undefined,
+    )
+    if (!decision.settings) {
       console.warn('[ai] rejected invalid ai:set-settings payload')
-      return
+      return { ok: false, reason: 'invalid' }
     }
-    writeJsonAtomic(AI_SETTINGS_PATH(), sanitized)
+    writeJsonAtomic(AI_SETTINGS_PATH(), decision.settings)
     for (const wc of webContents.getAllWebContents())
       if (!wc.isDestroyed()) wc.send('ai:settings-changed')
+    return { ok: decision.ok, ...(decision.reason ? { reason: decision.reason } : {}) }
   })
 
   ipcMain.handle('ai:gemini-chat-models', async () => {

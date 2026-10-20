@@ -15,6 +15,7 @@ import { statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { normalizeChatModel, resolveChatModels, type ChatCatalog } from './agy-chat'
 import { normalizeCustomProfile } from './custom-profile'
 import { AI_PROVIDER_ADAPTERS, normalizeBaseUrl } from './registry'
 import type {
@@ -227,4 +228,77 @@ export function sanitizeAiSettings(input: unknown): AiSettings | null {
     settings.search = raw.search as AiSettings['search']
   }
   return settings
+}
+
+/**
+ * Schema checking is not the same as live validation. `sanitizeAiSettings` bounds the shape of a
+ * payload; it cannot know whether the Antigravity CLI that is configured right now can serve the
+ * chat model the renderer is asking to store.
+ *
+ * The rule the validated selection path already enforces is repeated here at the generic write
+ * boundary, so no renderer - Settings page, composer picker, or a direct IPC call - can persist an
+ * Antigravity chat model that the main process would refuse to use:
+ *
+ *   a new Antigravity model must be confirmed by the configured CLI's catalog
+ *   (read successfully) and switched on in the chat box's enabled list.
+ *
+ * Preserving what is already stored is not a new selection, so an unchanged model is never
+ * touched, and a failed catalog never erases a model the person already chose. Only the model
+ * field is rewritten; every other provider, key, endpoint, search and media setting is written
+ * through unchanged.
+ */
+export interface SettingsWriteDecision {
+  /** what may be persisted; null when the payload itself is not a settings object */
+  settings: AiSettings | null
+  /** true when the payload was accepted exactly as sent */
+  ok: boolean
+  /** why an Antigravity model change was refused */
+  reason?: 'unverified' | 'not-confirmed' | 'not-enabled'
+}
+
+/**
+ * `catalogFor` is only called when the payload actually changes the Antigravity chat model, so
+ * saving an unrelated setting never spawns `agy models`.
+ */
+export async function decideSettingsWrite(
+  input: unknown,
+  previous: AiSettings | null,
+  catalogFor: (cliPath: string | undefined) => Promise<ChatCatalog>,
+  savedEnabledModels: unknown,
+): Promise<SettingsWriteDecision> {
+  const settings = sanitizeAiSettings(input)
+  if (!settings) return { settings: null, ok: false }
+
+  const incoming = normalizeChatModel(settings.providers.agy?.model)
+  const stored = normalizeChatModel(previous?.providers?.agy?.model)
+  // nothing changed, or the model was cleared: neither authorizes an unverified model
+  if (incoming === stored || incoming === undefined) return { settings, ok: true }
+
+  const catalog = await catalogFor(normalizeChatModel(settings.providers.agy?.cliPath))
+  const resolved = resolveChatModels({
+    savedEnabled: savedEnabledModels,
+    savedModel: stored ?? '',
+    catalog,
+  })
+  if (
+    catalog.error ||
+    !resolved.available.includes(incoming) ||
+    !resolved.enabled.includes(incoming)
+  ) {
+    const agy = settings.providers.agy ?? { apiKey: '', model: '' }
+    const kept: AiSettings = {
+      ...settings,
+      providers: { ...settings.providers, agy: { ...agy, model: stored ?? '' } },
+    }
+    return {
+      settings: kept,
+      ok: false,
+      reason: catalog.error
+        ? 'unverified'
+        : resolved.enabled.includes(incoming)
+          ? 'not-confirmed'
+          : 'not-enabled',
+    }
+  }
+  return { settings, ok: true }
 }

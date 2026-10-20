@@ -11,10 +11,12 @@ import type { AgyLoginPhase, AgyLoginState } from './agy-chat'
 export type { AgyLoginPhase, AgyLoginState }
 
 export interface AgyLoginDeps {
-  resolveCli(): Promise<string>
+  resolveCli(configured?: string): Promise<string>
   spawn(cli: string, args: readonly string[]): ChildProcess
   openUrl(url: string): void
   onChange(state: AgyLoginState): void
+  /** the executable the person configured; undefined means "auto-detect" */
+  cliPath?(): string | undefined
   /** give up after this long (ms) */
   timeoutMs?: number
 }
@@ -25,8 +27,10 @@ const URL_PATTERN = /https:\/\/accounts\.google\.com\/[^\s"']+/
 const realDeps = (
   onChange: AgyLoginDeps['onChange'],
   openUrl: AgyLoginDeps['openUrl'],
+  cliPath: () => string | undefined = () => undefined,
 ): AgyLoginDeps => ({
-  resolveCli: () => resolveAgyCliPath(undefined),
+  resolveCli: (configured) => resolveAgyCliPath(configured),
+  cliPath,
   spawn: (cli, args) =>
     spawn(cli, [...args], {
       cwd: tmpdir(),
@@ -46,9 +50,18 @@ export class AgyLogin {
   private readonly deps: AgyLoginDeps
 
   constructor(deps: AgyLoginDeps)
-  constructor(onChange: AgyLoginDeps['onChange'], openUrl: AgyLoginDeps['openUrl'])
-  constructor(first: AgyLoginDeps | AgyLoginDeps['onChange'], openUrl?: AgyLoginDeps['openUrl']) {
-    this.deps = typeof first === 'function' ? realDeps(first, openUrl ?? (() => undefined)) : first
+  constructor(
+    onChange: AgyLoginDeps['onChange'],
+    openUrl: AgyLoginDeps['openUrl'],
+    cliPath?: () => string | undefined,
+  )
+  constructor(
+    first: AgyLoginDeps | AgyLoginDeps['onChange'],
+    openUrl?: AgyLoginDeps['openUrl'],
+    cliPath?: () => string | undefined,
+  ) {
+    this.deps =
+      typeof first === 'function' ? realDeps(first, openUrl ?? (() => undefined), cliPath) : first
   }
 
   state(): AgyLoginState {
@@ -66,7 +79,7 @@ export class AgyLogin {
     this.set({ phase: 'starting' })
     let cli: string
     try {
-      cli = await this.deps.resolveCli()
+      cli = await this.deps.resolveCli(this.deps.cliPath?.())
     } catch {
       this.set({ phase: 'failed', error: 'cli-missing' })
       return this.state()

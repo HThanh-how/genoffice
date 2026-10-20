@@ -48,6 +48,7 @@ function mount(fixture: Fixture, selectThrows = false) {
   const root = createRoot(host)
   const written: AiSettings[] = []
   const selectCalls: string[] = []
+  const activations: string[] = []
 
   const state = (): AgyBarState | null => {
     if (fixture.pending) return null
@@ -101,8 +102,9 @@ function mount(fixture: Fixture, selectThrows = false) {
         if (fixture.stateThrows) throw new Error('no Antigravity handler in this process')
         return state()
       },
-      selectAgyChatModel: async (id: string) => {
+      selectAgyChatModel: async (id: string, activate = false) => {
         selectCalls.push(id)
+        activations.push(id)
         if (selectThrows) throw new Error('settings write failed')
         const s = state()
         if (!s) return false
@@ -115,6 +117,8 @@ function mount(fixture: Fixture, selectThrows = false) {
           ...(fixture.settings.providers.agy ?? { apiKey: '', cliPath: '/fixture/agy' }),
           model: id,
         }
+        // a provider switch is part of the same commit, never a second write
+        if (activate) fixture.settings.provider = 'agy'
         return true
       },
       onAgyChatModelChanged: () => () => {},
@@ -136,7 +140,7 @@ function mount(fixture: Fixture, selectThrows = false) {
     },
   }
 
-  return { host, root, bridge, written, selectCalls, state, fixture }
+  return { host, root, bridge, written, selectCalls, activations, state, fixture }
 }
 
 async function renderPicker(f: ReturnType<typeof mount>) {
@@ -251,11 +255,15 @@ it('E: switching from another provider to Antigravity does not invent a model', 
   const high = options.find((b) => b.textContent?.includes('gemini-3.8-flash-high'))
   expect(high).not.toBeNull()
   await act(async () => high!.click())
-  expect(f.written.length).toBe(1)
-  expect(f.written[0].provider).toBe('agy')
+  await act(async () => {})
+  // the switch is committed by the validated Antigravity handler in one write; the generic
+  // settings bridge is never used for an Antigravity model
+  expect(f.written.length).toBe(0)
+  expect(f.activations).toEqual(['gemini-3.8-flash-high'])
+  expect(f.fixture.settings.provider).toBe('agy')
   // the model written with the provider is the one the validated handler just confirmed
-  expect(f.written[0].providers.agy.model).toBe('gemini-3.8-flash-high')
-  expect(f.written[0].providers.gemini.model).toBe('gemini-2.5-flash')
+  expect(f.fixture.settings.providers.agy.model).toBe('gemini-3.8-flash-high')
+  expect(f.fixture.settings.providers.gemini.model).toBe('gemini-2.5-flash')
   expect(f.fixture.selected).toBe('gemini-3.8-flash-high')
   teardown(f)
 })
@@ -428,6 +436,7 @@ function mountEditor({
   const root = createRoot(host)
   const written: AiSettings[] = []
   const selectCalls: string[] = []
+  const activations: string[] = []
   const unsubscribed: string[] = []
   // `shared` lets two mounted pickers act as two windows over one settings file
   const settings = shared ?? structuredClone(initial)
@@ -444,12 +453,14 @@ function mountEditor({
         : state === 'pending'
           ? () => new Promise<AgyBarState>(() => {})
           : async () => stateOf()
-    api.selectAgyChatModel = async (id: string) => {
+    api.selectAgyChatModel = async (id: string, activate = false) => {
       selectCalls.push(id)
+      activations.push(id)
       if (handler === 'throw') throw new Error('settings write failed')
       if (handler === 'reject') return false
       if (!live.enabled.includes(id) || !live.available.includes(id)) return false
       settings.providers.agy = { ...(settings.providers.agy ?? {}), model: id }
+      if (activate) settings.provider = 'agy'
       return true
     }
     api.onAgyChatModelChanged = (handler2: () => void) => {
@@ -500,7 +511,18 @@ function mountEditor({
       for (const key of Object.keys(next)) (settings as Record<string, unknown>)[key] = next[key]
     },
   }
-  return { host, root, bridge, written, selectCalls, unsubscribed, settings, stateOf, live }
+  return {
+    host,
+    root,
+    bridge,
+    written,
+    selectCalls,
+    activations,
+    unsubscribed,
+    settings,
+    stateOf,
+    live,
+  }
 }
 
 describe('the composer picker cannot bypass Antigravity validation (B1-B14)', () => {
@@ -711,6 +733,120 @@ describe('the composer picker cannot bypass Antigravity validation (B1-B14)', ()
   })
 })
 
+describe('D6-D8: refreshes that finish out of order still describe one real state', () => {
+  const HIGH = 'gemini-3.8-flash-high'
+  const LOW = 'gemini-3.8-flash-low'
+  const api = () => (window as unknown as { agyChat?: Record<string, unknown> }).agyChat
+  const cleanup = (f: { host: HTMLElement; root: ReturnType<typeof createRoot> }) => {
+    act(() => f.root.unmount())
+    f.host.remove()
+    Reflect.deleteProperty(window, 'agyChat')
+  }
+  const verified = (ids: string[]): AgyBarState => ({
+    active: true,
+    selected: ids[0] ?? '',
+    available: ids,
+    selectedStatus: ids.length ? 'verified' : 'none',
+    models: ids.map((id) => ({
+      id,
+      label: id,
+      group: 'Gemini Models',
+      relativeCost: 1,
+      speed: 'fast',
+      enabled: true,
+      verified: true,
+    })),
+  })
+
+  it('D6: three focus refreshes resolving in reverse order leave the newest answer', async () => {
+    const f = mountEditor({
+      settings: agySettings(HIGH),
+      enabled: [HIGH, LOW],
+      available: [HIGH, LOW],
+    })
+    await renderPicker(f)
+    const resolvers: Array<(value: AgyBarState) => void> = []
+    api()!.getAgyChatState = () => new Promise((resolve) => resolvers.push(resolve))
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      window.dispatchEvent(new Event('focus'))
+      window.dispatchEvent(new Event('focus'))
+    })
+    expect(resolvers.length).toBe(3)
+    // the oldest answers last
+    resolvers[0](verified([LOW]))
+    await act(async () => {})
+    resolvers[1](verified([HIGH]))
+    await act(async () => {})
+    resolvers[2](verified([HIGH, LOW]))
+    await act(async () => {})
+    const options = await openPicker(f.host)
+    const selectable = options
+      .filter((b) => !b.disabled)
+      .map((b) => b.textContent?.trim())
+      .filter((t) => t?.startsWith('gemini'))
+    expect(selectable.sort()).toEqual([HIGH, LOW].sort())
+    cleanup(f)
+  })
+
+  it('D7: the settings read landing after the Antigravity state read still shows one valid pair', async () => {
+    const f = mountEditor({ settings: agySettings(HIGH), enabled: [HIGH], available: [HIGH] })
+    await renderPicker(f)
+    const stateResolvers: Array<(value: AgyBarState) => void> = []
+    api()!.getAgyChatState = () => new Promise((resolve) => stateResolvers.push(resolve))
+    await act(async () => window.dispatchEvent(new Event('genoffice-agy-model-changed')))
+    // the CLI answers first: the saved model is no longer confirmed
+    stateResolvers[0]({
+      active: true,
+      selected: HIGH,
+      available: [],
+      selectedStatus: 'unverified',
+      models: [],
+      catalogError: 'agy models timed out',
+    })
+    await act(async () => {})
+    const options = await openPicker(f.host)
+    const row = options.find((b) => b.textContent?.includes(HIGH))
+    // the chip still reports what is stored, but nothing unconfirmed is clickable
+    expect(f.host.querySelector('.ai-model-chip-text')?.textContent).toBe(HIGH)
+    expect(row?.disabled).toBe(true)
+    cleanup(f)
+  })
+
+  it('D8: two asynchronous settings reads resolving out of order keep the newer provider', async () => {
+    const f = mountEditor({ settings: agySettings(HIGH), enabled: [HIGH], available: [HIGH] })
+    await renderPicker(f)
+    const resolvers: Array<(value: AiSettings) => void> = []
+    f.bridge.getSettings = () => new Promise<AiSettings>((resolve) => resolvers.push(resolve))
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    const newer: AiSettings = {
+      ...structuredClone(f.settings),
+      provider: 'openai',
+      providers: {
+        ...structuredClone(f.settings).providers,
+        openai: { apiKey: 'k', model: 'gpt-5' },
+      },
+    }
+    const older: AiSettings = {
+      ...structuredClone(f.settings),
+      provider: 'gemini',
+      providers: {
+        ...structuredClone(f.settings).providers,
+        gemini: { apiKey: 'gk', model: 'gemini-2.5-flash' },
+      },
+    }
+    resolvers[1](newer)
+    await act(async () => {})
+    resolvers[0](older)
+    await act(async () => {})
+    expect(f.host.querySelector('.ai-model-chip-text')?.textContent).toBe('gpt-5')
+    cleanup(f)
+  })
+})
+
 describe('a provider switch and a model choice succeed or fail together (C1-C12)', () => {
   const geminiFirst = (): AiSettings => {
     const settings = defaultAiSettings()
@@ -755,7 +891,7 @@ describe('a provider switch and a model choice succeed or fail together (C1-C12)
     }
   })
 
-  it('C6: a settings write that fails rolls the provider back and reports nothing as chosen', async () => {
+  it('C6: a provider switch is one validated commit, never a model write plus a settings write', async () => {
     const f = mountEditor({ settings: geminiFirst() })
     await renderPicker(f)
     f.bridge.setSettings = async () => {
@@ -765,8 +901,28 @@ describe('a provider switch and a model choice succeed or fail together (C1-C12)
     const high = options.find((b) => b.textContent?.includes('gemini-3.8-flash-high'))
     await act(async () => high!.click())
     await act(async () => {})
-    expect(f.settings.provider).toBe('gemini')
+    // the picker asked the main process to commit provider and model together, and it never
+    // touched the generic settings bridge, so a broken settings route cannot half-apply a switch
+    expect(f.activations).toEqual(['gemini-3.8-flash-high'])
+    expect(f.written.length).toBe(0)
+    expect(f.settings.provider).toBe('agy')
     expect(f.settings.providers.agy.model).toBe('gemini-3.8-flash-high')
+    expect(f.settings.providers.gemini.model).toBe('gemini-2.5-flash')
+    expect(f.host.querySelector('.ai-model-chip-text')?.textContent).toBe('gemini-3.8-flash-high')
+    act(() => f.root.unmount())
+    f.host.remove()
+    Reflect.deleteProperty(window, 'agyChat')
+  })
+
+  it('C6b: when the atomic commit itself fails, neither provider nor model moves', async () => {
+    const f = mountEditor({ settings: geminiFirst(), handler: 'throw' })
+    await renderPicker(f)
+    const options = await openPicker(f.host)
+    const high = options.find((b) => b.textContent?.includes('gemini-3.8-flash-high'))
+    await act(async () => high!.click())
+    await act(async () => {})
+    expect(f.settings.provider).toBe('gemini')
+    expect(f.settings.providers.agy.model).toBe('')
     expect(f.host.querySelector('.ai-model-chip-text')?.textContent).toBe('gemini-2.5-flash')
     act(() => f.root.unmount())
     f.host.remove()
@@ -1229,5 +1385,141 @@ describe('M1-M20: only a positively confirmed Antigravity model can be chosen', 
     expect(rowB.find((x) => x.textContent?.includes(HIGH))?.disabled).toBe(false)
     cleanup(a)
     cleanup(b)
+  })
+})
+
+describe('D1-D6: an older async refresh cannot overwrite a newer one', () => {
+  const HIGH = 'gemini-3.8-flash-high'
+  const api = () => (window as unknown as { agyChat?: Record<string, unknown> }).agyChat
+  const cleanup = (f: { host: HTMLElement; root: ReturnType<typeof createRoot> }) => {
+    act(() => f.root.unmount())
+    f.host.remove()
+    Reflect.deleteProperty(window, 'agyChat')
+  }
+
+  it('D1/D2: a stale success arriving after a newer failure does not resurrect old options', async () => {
+    const f = mountEditor({ settings: agySettings(HIGH), enabled: [HIGH], available: [HIGH] })
+    await renderPicker(f)
+    const resolvers: Array<(value: AgyBarState) => void> = []
+    api()!.getAgyChatState = () => new Promise((resolve) => resolvers.push(resolve))
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    // the newer refresh (2) fails first, the older one (1) answers afterwards with a good list
+    resolvers[1]({
+      active: true,
+      selected: HIGH,
+      available: [],
+      selectedStatus: 'unverified',
+      models: [],
+      catalogError: 'agy models timed out',
+    })
+    await act(async () => {})
+    resolvers[0]({
+      active: true,
+      selected: HIGH,
+      available: [HIGH],
+      selectedStatus: 'verified',
+      models: [
+        {
+          id: HIGH,
+          label: HIGH,
+          group: 'Gemini Models',
+          relativeCost: 1,
+          speed: 'fast',
+          enabled: true,
+          verified: true,
+        },
+      ],
+    })
+    await act(async () => {})
+    const options = await openPicker(f.host)
+    expect(options.some((b) => b.textContent?.includes(HIGH) && !b.disabled)).toBe(false)
+    cleanup(f)
+  })
+
+  it('D3: a newer success after an older failure restores the verified options', async () => {
+    const f = mountEditor({
+      settings: agySettings(HIGH),
+      enabled: [HIGH],
+      available: [],
+      error: 'agy models timed out',
+    })
+    await renderPicker(f)
+    const resolvers: Array<(value: AgyBarState) => void> = []
+    api()!.getAgyChatState = () => new Promise((resolve) => resolvers.push(resolve))
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    resolvers[1]({
+      active: true,
+      selected: HIGH,
+      available: [HIGH],
+      selectedStatus: 'verified',
+      models: [
+        {
+          id: HIGH,
+          label: HIGH,
+          group: 'Gemini Models',
+          relativeCost: 1,
+          speed: 'fast',
+          enabled: true,
+          verified: true,
+        },
+      ],
+    })
+    await act(async () => {})
+    resolvers[0]({
+      active: true,
+      selected: HIGH,
+      available: [],
+      selectedStatus: 'unverified',
+      models: [],
+      catalogError: 'agy models timed out',
+    })
+    await act(async () => {})
+    const options = await openPicker(f.host)
+    const row = options.find((b) => b.textContent?.includes(HIGH))
+    expect(row?.disabled).toBe(false)
+    cleanup(f)
+  })
+
+  it('D4/D5: a selection notification arriving during a pending refresh wins, and unmounting leaves nothing behind', async () => {
+    const f = mountEditor({ settings: agySettings(HIGH), enabled: [HIGH], available: [HIGH] })
+    await renderPicker(f)
+    const resolvers: Array<(value: AgyBarState) => void> = []
+    api()!.getAgyChatState = () => new Promise((resolve) => resolvers.push(resolve))
+    await act(async () => {
+      window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+    })
+    f.settings.provider = 'agy'
+    f.settings.providers.agy.model = 'gemini-3.8-flash-low'
+    f.live.available = ['gemini-3.8-flash-low']
+    f.live.enabled = ['gemini-3.8-flash-low']
+    resolvers[0]({
+      active: true,
+      selected: 'gemini-3.8-flash-low',
+      available: ['gemini-3.8-flash-low'],
+      selectedStatus: 'verified',
+      models: [
+        {
+          id: 'gemini-3.8-flash-low',
+          label: 'gemini-3.8-flash-low',
+          group: 'Gemini Models',
+          relativeCost: 1,
+          speed: 'fast',
+          enabled: true,
+          verified: true,
+        },
+      ],
+    })
+    await act(async () => {})
+    expect(f.host.querySelector('.ai-model-chip-text')?.textContent).toBe('gemini-3.8-flash-low')
+    act(() => f.root.unmount())
+    f.host.remove()
+    expect(f.unsubscribed.length).toBe(1)
+    Reflect.deleteProperty(window, 'agyChat')
   })
 })

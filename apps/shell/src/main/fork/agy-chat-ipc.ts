@@ -51,6 +51,11 @@ interface AiSettingsFile {
   [key: string]: unknown
 }
 
+/** Identity of the executable a quota reading belongs to; empty means "auto-detect". */
+function cliKeyOf(cliPath: string | undefined): string {
+  return cliPath?.trim() || ''
+}
+
 function readJson<T>(path: string, fallback: T): T {
   try {
     return JSON.parse(readFileSync(path, 'utf8')) as T
@@ -71,16 +76,32 @@ export class AgyUsageCache {
   private state: AgyChatUsageState = { groups: null, readAt: 0, refreshing: false, failed: false }
   private inflight: Promise<AgyChatUsageState> | null = null
   private busy = false
+  /** which executable the numbers in `state` belong to; undefined until a read is taken */
+  private cliKey: string | undefined
+  /** the executable a restored cache file was read from, when the file records one */
+  private savedCliKey: string | undefined
 
   constructor(
     private readonly read: typeof readAgyUsage,
     private readonly cachePath: string,
     private readonly now: () => number,
     private readonly onChange: (state: AgyChatUsageState) => void,
+    /** the CLI the person configured; quota is read from that executable, not from an auto-detected one */
+    private readonly cliPath: () => string | undefined = () => undefined,
   ) {
-    const saved = readJson<Partial<AgyChatUsageState> | null>(cachePath, null)
-    if (saved && Array.isArray(saved.groups) && typeof saved.readAt === 'number')
+    const saved = readJson<(Partial<AgyChatUsageState> & { cliKey?: string }) | null>(
+      cachePath,
+      null,
+    )
+    const key = cliKeyOf(cliPath())
+    // A reading taken from a different executable is not this CLI's quota. A file written before
+    // the cache recorded an identity is only trusted while the CLI is still auto-detected, which
+    // is exactly how that file was produced.
+    const sameCli = saved?.cliKey === key || (saved?.cliKey === undefined && key === '')
+    if (saved && sameCli && Array.isArray(saved.groups) && typeof saved.readAt === 'number') {
       this.state = { groups: saved.groups, readAt: saved.readAt, refreshing: false, failed: false }
+      this.savedCliKey = saved.cliKey ?? key
+    }
   }
 
   snapshot(): AgyChatUsageState {
@@ -89,17 +110,27 @@ export class AgyUsageCache {
 
   /** Current numbers now; starts a refresh when they are older than the freshness window. */
   get(): AgyChatUsageState {
-    if (this.state.readAt === 0 || this.now() - this.state.readAt > AGY_USAGE_FRESH_MS)
+    if (
+      this.state.readAt === 0 ||
+      this.now() - this.state.readAt > AGY_USAGE_FRESH_MS ||
+      (this.savedCliKey !== undefined && this.savedCliKey !== cliKeyOf(this.cliPath()))
+    )
       void this.refresh()
     return this.snapshot()
   }
 
   refresh(): Promise<AgyChatUsageState> {
+    const key = cliKeyOf(this.cliPath())
+    // the configured CLI changed: numbers from the old one are not this one's quota
+    if (this.cliKey !== undefined && key !== this.cliKey)
+      this.state = { groups: null, readAt: 0, refreshing: false, failed: false }
+    this.cliKey = key
+    this.savedCliKey = key
     if (this.inflight) return this.inflight
     this.busy = true
     this.inflight = (async () => {
       this.onChange(this.snapshot())
-      const reading = await this.read()
+      const reading = await this.read(this.cliPath())
       if (reading) {
         this.state = {
           groups: reading.groups.map((group) => ({
@@ -117,7 +148,7 @@ export class AgyUsageCache {
           cliMissing: false,
         }
         try {
-          writeJsonAtomic(this.cachePath, this.state)
+          writeJsonAtomic(this.cachePath, { ...this.state, cliKey: this.cliKey })
         } catch {
           // the cache only makes the next start faster
         }
@@ -150,10 +181,24 @@ export function registerAgyChat(deps: AgyChatDeps): void {
     const p = aiSettings().providers?.agy?.cliPath
     return typeof p === 'string' && p.trim() ? p.trim() : undefined
   }
-  /** `agy models` for the configured executable; listAgyModels caches it and never throws. */
-  const catalog = async (): Promise<{ models: string[]; error?: string }> => {
-    const result = await listAgyModels(getCliPath())
-    return { models: result.models, ...(result.error ? { error: result.error } : {}) }
+  /**
+   * `agy models` for the configured executable; listAgyModels caches it and never throws.
+   * The identity is part of the answer: if the person points Antigravity at a different
+   * executable while a probe is in flight, the catalog is retaken for the executable that is
+   * configured now, so an answer produced by one CLI can never authorize a model for another.
+   */
+  const catalog = async (): Promise<{
+    models: string[]
+    error?: string
+    cliPath: string | undefined
+  }> => {
+    let cliPath = getCliPath()
+    let result = await listAgyModels(cliPath)
+    if (getCliPath() !== cliPath) {
+      cliPath = getCliPath()
+      result = await listAgyModels(cliPath)
+    }
+    return { models: result.models, ...(result.error ? { error: result.error } : {}), cliPath }
   }
   /** the model chat requests use, read at the moment of a mutation so a newer choice wins */
   const selectedModel = (): string | undefined =>
@@ -167,6 +212,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
       for (const window of BrowserWindow.getAllWindows())
         if (!window.isDestroyed()) window.webContents.send(AGY_CHAT_CHANNELS.usageUpdated, state)
     },
+    getCliPath,
   )
 
   // Reading the chat box must not change anything: the enabled list and the selection are
@@ -197,13 +243,22 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   let mutationStamp = 0
   let lastModelStamp = 0
 
-  /** Persist the chat model, unless a newer mutation already wrote one. Returns whether it landed. */
-  function applySelectedModel(model: string, stamp: number): boolean {
+  /**
+   * Persist the chat model - and, when the composer is switching providers, the provider itself -
+   * in a single atomic write, unless a newer mutation already wrote one. A provider switch that
+   * is committed in two writes can leave the model moved while the provider stayed put, so the
+   * whole switch is written at once and a failed write leaves the previous file untouched.
+   */
+  function applySelectedModel(model: string, stamp: number, activateProvider = false): boolean {
     if (stamp < lastModelStamp) return false
     const settings = aiSettings()
     const providers = { ...(settings.providers ?? {}) }
     providers.agy = { ...(providers.agy ?? {}), model }
-    writeJsonAtomic(deps.aiSettingsPath(), { ...settings, providers })
+    writeJsonAtomic(deps.aiSettingsPath(), {
+      ...settings,
+      ...(activateProvider ? { provider: 'agy' } : {}),
+      providers,
+    })
     lastModelStamp = stamp
     return true
   }
@@ -234,72 +289,98 @@ export function registerAgyChat(deps: AgyChatDeps): void {
     }
   })
 
-  deps.ipcMain.handle(AGY_CHAT_CHANNELS.setEnabled, (_event, ids: unknown): string[] | null => {
-    const stamp = ++mutationStamp
-    const next = sanitizeEnabledChatModels(ids)
-    const previous = readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY]
-    try {
-      writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, next)
-    } catch {
-      // nothing was saved: report failure instead of a list the person did not get
-      return null
-    }
-    // Turning off the model in use is an explicit choice, so the next one is decided here,
-    // deterministically: the first model still switched on. A read-only state query never does
-    // this, and a model the person left on is never switched off by a catalog change.
-    const current = selectedModel()
-    let settingsAlsoChanged = false
-    if (current && !next.includes(current)) {
+  deps.ipcMain.handle(
+    AGY_CHAT_CHANNELS.setEnabled,
+    async (_event, ids: unknown): Promise<string[] | null> => {
+      const stamp = ++mutationStamp
+      const next = sanitizeEnabledChatModels(ids)
+      const previous = readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY]
       try {
-        settingsAlsoChanged = applySelectedModel(next[0], stamp)
+        writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, next)
       } catch {
-        // The selection could not be moved, so the enabled list would point the chat box at a
-        // model it is not allowed to use. Undo the list while the selection is still the one this
-        // mutation was about to move, so the two files never disagree. A newer selection made in
-        // another window is left alone: rolling it back would lose that newer choice.
-        if (selectedModel() === current) {
+        // nothing was saved: report failure instead of a list the person did not get
+        return null
+      }
+      // Turning off the model in use is an explicit choice, so the next one is decided here,
+      // deterministically: the first model still switched on *and* confirmed by the configured
+      // CLI. A read-only state query never does this, and a model the person left on is never
+      // switched off by a catalog change.
+      const current = selectedModel()
+      let settingsAlsoChanged = false
+      if (current && !next.includes(current)) {
+        const models = await catalog()
+        const replacement = next.find((id) => !models.error && models.models.includes(id))
+        if (!replacement) {
+          // The selection cannot be moved to a model the CLI has not confirmed, and leaving it
+          // on a list that no longer contains it would make the two files disagree. Undo the
+          // list so the two files never disagree. A newer selection made in another window is
+          // never rolled back: applySelectedModel refuses an older stamp, so this branch is
+          // only reached while this mutation is still the newest one.
+          try {
+            writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, previous)
+          } catch {
+            // Recovery failed as well. The next state read reports the real persisted state,
+            // and the selection is shown as unavailable rather than as a usable option.
+          }
+          // Nothing was reported as changed: no notification, no list, no silent re-selection.
+          return null
+        }
+        try {
+          settingsAlsoChanged = applySelectedModel(replacement, stamp)
+        } catch {
+          // The selection could not be moved, so the enabled list would point the chat box at a
+          // model it is not allowed to use. Undo the list so the two files never disagree. A
+          // newer selection made in another window is left alone: an older stamp returns false
+          // rather than throwing, so this rollback only runs while this mutation is the newest.
           try {
             writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, previous)
           } catch {
             // Recovery failed as well. The next state read reports the real persisted state, and
             // the selection is shown as unavailable rather than as a usable option.
           }
+          // Nothing was reported as changed: no notification, no list, no silent re-selection.
+          return null
         }
-        // Nothing was reported as changed: no notification, no list, no silent re-selection.
-        return null
       }
-    }
-    // Enabling or disabling any model changes what the chat box offers in every window, even
-    // when the selected model is untouched.
-    notifyModelChange(settingsAlsoChanged)
-    return next
-  })
+      // Enabling or disabling any model changes what the chat box offers in every window, even
+      // when the selected model is untouched.
+      notifyModelChange(settingsAlsoChanged)
+      return next
+    },
+  )
 
-  deps.ipcMain.handle(AGY_CHAT_CHANNELS.select, async (_event, id: unknown): Promise<boolean> => {
-    if (typeof id !== 'string' || !id.trim()) return false
-    const model = id.trim()
-    // the stamp is taken when the request arrives, before the catalog read
-    const stamp = ++mutationStamp
-    const models = await catalog()
-    const resolved = resolveChatModels({
-      savedEnabled: readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY],
-      savedModel: model,
-      catalog: models,
-    })
-    // A new choice must be both switched on by the person and confirmed by the CLI that is
-    // configured right now. A catalog that could not be read confirms nothing, so a new choice
-    // is refused rather than written as if it were verified. A model already stored is never
-    // rewritten by this handler: only an explicit selection changes it.
-    if (!resolved.enabled.includes(model) || !resolved.available.includes(model)) return false
-    try {
-      // Re-read right before writing so a choice made while the catalog was pending is not lost.
-      if (!applySelectedModel(model, stamp)) return false
-    } catch {
-      return false
-    }
-    notifyModelChange(true)
-    return true
-  })
+  deps.ipcMain.handle(
+    AGY_CHAT_CHANNELS.select,
+    async (_event, id: unknown, activateProvider: unknown): Promise<boolean> => {
+      if (typeof id !== 'string' || !id.trim()) return false
+      const model = id.trim()
+      // the stamp is taken when the request arrives, before the catalog read
+      const stamp = ++mutationStamp
+      const models = await catalog()
+      // The CLI path may have moved while the catalog was in flight. A model confirmed by the
+      // executable that is no longer configured is not a valid choice for the one that is, so
+      // the request is refused rather than retried forever.
+      if (getCliPath() !== models.cliPath) return false
+      const resolved = resolveChatModels({
+        savedEnabled: readAppSettings(deps.settingsPath())[AGY_CHAT_MODELS_KEY],
+        savedModel: model,
+        catalog: models,
+      })
+      // A new choice must be both switched on by the person and confirmed by the CLI that is
+      // configured right now. A catalog that could not be read confirms nothing, so a new choice
+      // is refused rather than written as if it were verified. A model already stored is never
+      // rewritten by this handler: only an explicit selection changes it.
+      if (!resolved.enabled.includes(model) || !resolved.available.includes(model)) return false
+      try {
+        // Re-read right before writing so a choice made while the catalog was pending is not lost.
+        if (!applySelectedModel(model, stamp, activateProvider === true)) return false
+      } catch {
+        return false
+      }
+      notifyModelChange(true)
+      return true
+    },
+  )
 
   // live steps of every Antigravity chat turn go to the windows for the thinking strip
   let lastTurnCheck = 0
@@ -318,6 +399,8 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.refreshUsage, () => usage.refresh())
 
   // Sign-in from the app: the CLI's Google page opens in the browser, the person pastes the code.
+  // The sign-in runs against the executable the person configured, the same one the catalog and
+  // the quota read use, so a login never belongs to a different Antigravity install.
   const login = new AgyLogin(
     (state) => {
       for (const window of BrowserWindow.getAllWindows())
@@ -325,6 +408,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
       if (state.phase === 'done') void usage.refresh()
     },
     (url) => void shell.openExternal(url),
+    getCliPath,
   )
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.loginStart, () => login.start())
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.loginCode, (_event, code: unknown) =>

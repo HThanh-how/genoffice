@@ -62,7 +62,7 @@ export interface AgyBarApi {
   cancelAgyLogin?(): Promise<void>
   onAgyLogin?(handler: (state: AgyBarLogin) => void): () => void
   getAgyChatState(): Promise<AgyBarState>
-  selectAgyChatModel(id: string): Promise<boolean>
+  selectAgyChatModel(id: string, activateProvider?: boolean): Promise<boolean>
   getAgyChatUsage(): Promise<AgyBarUsage>
   refreshAgyChatUsage(): Promise<AgyBarUsage>
   onAgyChatUsage(handler: (state: AgyBarUsage) => void): () => void
@@ -551,6 +551,17 @@ export function AgyChatBar({
   busyRef.current = busy
   const supersededRunIds = useRef(new Set<string>())
   const supersededRequestIds = useRef(new Set<string>())
+  /** generation of the last state read, and whether this component is still mounted */
+  const loadSeq = useRef(0)
+  const alive = useRef(true)
+  // the mount flag is tied to the component, not to the bridge: swapping the api (or re-rendering
+  // with a different source) must not mark a still-mounted bar as gone
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
 
   if (prevActiveRequestIdRef.current !== activeRequestId) {
     if (prevActiveRequestIdRef.current) {
@@ -566,14 +577,18 @@ export function AgyChatBar({
   const source = api ?? bridge()
 
   const loadState = useCallback(async () => {
+    // generation token: when two reads overlap (focus + model change + another window), the
+    // answer of an older request must never overwrite the state a newer one already produced
+    const mine = ++loadSeq.current
     try {
       const next = await source?.getAgyChatState()
+      if (mine !== loadSeq.current || !alive.current) return
       if (next) {
         stateRef.current = next
         setState(next)
       }
     } catch {
-      // keep what is shown
+      // keep what is shown - a later refresh reports the real state
     }
   }, [source])
 

@@ -67,7 +67,7 @@ function wire(p: {
     aiSettingsPath: of(p.aiSettingsPath),
     cachePath: of(p.cachePath),
   })
-  const call = (channel: string, arg?: unknown) => handlers.get(channel)!(undefined, arg)
+  const call = (channel: string, ...args: unknown[]) => handlers.get(channel)!(undefined, ...args)
   return { call, handlers }
 }
 
@@ -448,7 +448,7 @@ const readApp = (path: string) => JSON.parse(readFileSync(path, 'utf8')) as Reco
  * A settings path that behaves normally except on the `failOn`-th touch, which points at a
  * directory so the atomic write (rename onto a directory) fails on every platform.
  */
-function flakyPath(dir: string, name: string, content: Record<string, unknown>, failOn: number) {
+function flakyPath(dir: string, name: string, content: Record<string, unknown>, failFrom: number) {
   const good = join(dir, name)
   writeFileSync(good, JSON.stringify(content), 'utf8')
   const blocked = join(dir, `${name}-blocked`)
@@ -456,7 +456,9 @@ function flakyPath(dir: string, name: string, content: Record<string, unknown>, 
   let calls = 0
   return () => {
     calls += 1
-    return calls === failOn ? blocked : good
+    // sticky: once the write route is blocked it stays blocked, so the test does
+    // not depend on how many reads the handler makes before it writes
+    return calls >= failFrom ? blocked : good
   }
 }
 
@@ -583,15 +585,15 @@ describe('agy chat IPC: an enabled-list change is written consistently (T1-T10)'
         ],
       },
     )
-    let release: (value: { models: string[] }) => void = () => undefined
-    catalogCall.mockImplementation(() => new Promise((resolve) => (release = resolve)))
+    const resolvers: Array<(value: { models: string[] }) => void> = []
+    catalogCall.mockImplementation(() => new Promise((resolve) => resolvers.push(resolve)))
     const { call } = wire(p)
     const pending = call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high')
     // the enabled list change happens while the other window's selection is still in flight
-    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([
-      'gemini-3.8-flash-low',
-    ])
-    release({ models: GEMINI_CATALOG })
+    const listChange = call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])
+    resolvers[1]({ models: GEMINI_CATALOG })
+    expect(await listChange).toEqual(['gemini-3.8-flash-low'])
+    resolvers[0]({ models: GEMINI_CATALOG })
     expect(await pending).toBe(false)
     catalogCall.mockImplementation(async () => ({ models: GEMINI_CATALOG }))
     const state = await call(AGY_CHAT_CHANNELS.state)
@@ -763,5 +765,590 @@ describe('agy chat IPC: a new selection must be enabled and confirmed (A1-A12)',
     const state = await call(AGY_CHAT_CHANNELS.state)
     expect(state.selectedStatus).toBe('unverified')
     expect(state.available).toEqual([])
+  })
+})
+
+describe('agy chat IPC: CLI identity, atomic switches and enabled-list races (C1-C6, B1-B12, E1-E7)', () => {
+  const GEM = ['gemini-3.8-flash-high', 'gemini-3.8-flash-low', 'gemini-3.1-pro-high']
+
+  it('C1: a catalog answer for CLI A cannot authorize a model after the path moved to B', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { cliPath: '/cli/a', model: '' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high'] },
+    )
+    let release: (value: { models: string[]; error?: string }) => void = () => undefined
+    catalogCall.mockImplementation((cliPath: string | undefined) =>
+      cliPath === '/cli/a'
+        ? new Promise((resolve) => {
+            release = resolve
+          })
+        : Promise.resolve({ models: ['gemini-3.8-flash-low'] }),
+    )
+    const { call } = wire(p)
+    const pending = call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high')
+    // the person points Antigravity at a different executable while the probe is in flight
+    writeFileSync(
+      p.aiSettingsPath,
+      JSON.stringify({ provider: 'agy', providers: { agy: { cliPath: '/cli/b', model: '' } } }),
+      'utf8',
+    )
+    release({ models: ['gemini-3.8-flash-high'] })
+    expect(await pending).toBe(false)
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('')
+  })
+
+  it('C2: a model confirmed by both CLIs is validated against the one configured now', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { cliPath: '/cli/a', model: '' } } },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    let release: (value: { models: string[] }) => void = () => undefined
+    catalogCall.mockImplementation((cliPath: string | undefined) =>
+      cliPath === '/cli/a'
+        ? new Promise((resolve) => {
+            release = resolve
+          })
+        : Promise.resolve({ models: ['gemini-3.8-flash-high'] }),
+    )
+    const { call } = wire(p)
+    const pending = call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high')
+    writeFileSync(
+      p.aiSettingsPath,
+      JSON.stringify({ provider: 'agy', providers: { agy: { cliPath: '/cli/b', model: '' } } }),
+      'utf8',
+    )
+    release({ models: GEM })
+    expect(await pending).toBe(true)
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-high')
+  })
+
+  it('C3: A -> B -> A does not let the first, stale A answer win', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { cliPath: '/cli/a', model: '' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high'] },
+    )
+    let releaseFirst: (value: { models: string[] }) => void = () => undefined
+    let probes = 0
+    catalogCall.mockImplementation(() => {
+      probes += 1
+      if (probes === 1)
+        return new Promise((resolve) => {
+          releaseFirst = resolve
+        })
+      return Promise.resolve({ models: [] as string[], error: 'the CLI changed' })
+    })
+    const { call } = wire(p)
+    const pending = call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high')
+    writeFileSync(
+      p.aiSettingsPath,
+      JSON.stringify({ provider: 'agy', providers: { agy: { cliPath: '/cli/b', model: '' } } }),
+      'utf8',
+    )
+    writeFileSync(
+      p.aiSettingsPath,
+      JSON.stringify({ provider: 'agy', providers: { agy: { cliPath: '/cli/a', model: '' } } }),
+      'utf8',
+    )
+    releaseFirst({ models: ['gemini-3.8-flash-high'] })
+    // the path is A again, so the answer for A is applicable; nothing from the intermediate
+    // CLI (which reports a different model) ever authorized the choice
+    expect(await pending).toBe(true)
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-high')
+    expect(probes).toBe(1)
+  })
+
+  it('C4: a failed catalog for the new CLI leaves no stale selectable model behind', async () => {
+    const p = paths(
+      {
+        provider: 'agy',
+        providers: { agy: { cliPath: '/cli/a', model: 'gemini-3.8-flash-high' } },
+      },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    catalogCall.mockImplementation(async (cliPath: string | undefined) =>
+      cliPath === '/cli/a' ? { models: GEM } : { models: [], error: 'not installed' },
+    )
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-low')).toBe(true)
+    writeFileSync(
+      p.aiSettingsPath,
+      JSON.stringify({
+        provider: 'agy',
+        providers: { agy: { cliPath: '/cli/b', model: 'gemini-3.8-flash-low' } },
+      }),
+      'utf8',
+    )
+    const state = await call(AGY_CHAT_CHANNELS.state)
+    expect(state.catalogError).toBe('not installed')
+    expect(state.available).toEqual([])
+    expect(state.selected).toBe('gemini-3.8-flash-low')
+    expect(state.selectedStatus).toBe('unverified')
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high')).toBe(false)
+  })
+
+  it('C5: a selection and a CLI change in the same tick stay attributable to one identity', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { cliPath: '/cli/a', model: '' } } },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    catalogCall.mockImplementation(async (cliPath: string | undefined) => ({
+      models: cliPath === '/cli/a' ? ['gemini-3.8-flash-high'] : ['gemini-3.8-flash-low'],
+    }))
+    const { call } = wire(p)
+    const select = call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high')
+    writeFileSync(
+      p.aiSettingsPath,
+      JSON.stringify({ provider: 'agy', providers: { agy: { cliPath: '/cli/b', model: '' } } }),
+      'utf8',
+    )
+    expect(await select).toBe(false)
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('')
+  })
+
+  it('B1/B2: a provider switch is one atomic write of provider and model', async () => {
+    const p = paths(
+      {
+        provider: 'gemini',
+        providers: {
+          gemini: { apiKey: 'gk', model: 'gemini-2.5-flash' },
+          agy: { cliPath: '/cli/a', model: '' },
+        },
+      },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high', true)).toBe(true)
+    const saved = readAi(p.aiSettingsPath)
+    expect(saved.provider).toBe('agy')
+    expect(saved.providers.agy.model).toBe('gemini-3.8-flash-high')
+    expect(saved.providers.gemini).toEqual({ apiKey: 'gk', model: 'gemini-2.5-flash' })
+    expect(sent.map(([channel]) => channel)).toEqual([
+      AGY_CHAT_CHANNELS.modelChanged,
+      'ai:settings-changed',
+    ])
+  })
+
+  it('B3/B4: a refused model leaves provider and model exactly as they were', async () => {
+    const p = paths(
+      {
+        provider: 'gemini',
+        providers: {
+          gemini: { apiKey: 'gk', model: 'gemini-2.5-flash' },
+          agy: { cliPath: '/cli/a', model: '' },
+        },
+      },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-low'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high', true)).toBe(false)
+    const saved = readAi(p.aiSettingsPath)
+    expect(saved.provider).toBe('gemini')
+    expect(saved.providers.agy.model).toBe('')
+    expect(sent.length).toBe(0)
+  })
+
+  it('B5: a failed atomic write keeps the previously committed provider and model', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'agy-chat-ipc-atomicfail-'))
+    dirs.push(dir)
+    const settingsPath = join(dir, 'app-settings.json')
+    writeFileSync(settingsPath, JSON.stringify({ [AGY_CHAT_MODELS_KEY]: GEM }), 'utf8')
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    const { call } = wire({
+      dir,
+      settingsPath,
+      aiSettingsPath: flakyPath(
+        dir,
+        'ai-settings.json',
+        {
+          provider: 'gemini',
+          providers: {
+            gemini: { apiKey: 'gk', model: 'gemini-2.5-flash' },
+            agy: { cliPath: '/cli/a', model: 'gemini-3.8-flash-low' },
+          },
+        },
+        2,
+      ),
+      cachePath: join(dir, 'usage.json'),
+    })
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high', true)).toBe(false)
+    expect(sent.length).toBe(0)
+  })
+
+  it('B6: an older in-flight selection cannot overwrite a newer one', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { cliPath: '/cli/a', model: 'gemini-3.8-flash-low' } } },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    let release: (value: { models: string[] }) => void = () => undefined
+    let probes = 0
+    catalogCall.mockImplementation(() => {
+      probes += 1
+      if (probes === 1)
+        return new Promise((resolve) => {
+          release = resolve
+        })
+      return Promise.resolve({ models: GEM })
+    })
+    const slow = paths(
+      {
+        provider: 'agy',
+        providers: { agy: { cliPath: '/cli/slow', model: 'gemini-3.8-flash-low' } },
+      },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    const { call } = wire(slow)
+    const older = call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high')
+    // a newer selection lands while the first catalog is still in flight
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high')).toBe(true)
+    release({ models: GEM })
+    expect(await older).toBe(false)
+    expect(readAi(slow.aiSettingsPath).providers.agy.model).toBe('gemini-3.1-pro-high')
+    void p
+  })
+
+  it('B7: two windows selecting different models end on one real commit', async () => {
+    const p = paths(
+      {
+        provider: 'gemini',
+        providers: {
+          gemini: { apiKey: 'gk', model: 'gemini-2.5-flash' },
+          agy: { cliPath: '/cli/a', model: '' },
+        },
+      },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const { call } = wire(p)
+    const a = call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high', true)
+    const b = call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high', true)
+    await Promise.all([a, b])
+    const saved = readAi(p.aiSettingsPath)
+    expect(saved.provider).toBe('agy')
+    expect(['gemini-3.8-flash-high', 'gemini-3.1-pro-high']).toContain(saved.providers.agy.model)
+  })
+
+  it('C6: the catalog is read through the configured CLI, and through auto-detect when none is set', async () => {
+    const configured = paths(
+      { provider: 'agy', providers: { agy: { cliPath: '/cli/a', model: '' } } },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    catalogCall.mockImplementation(async (cliPath: string | undefined) => ({
+      models: cliPath === '/cli/a' ? ['gemini-3.8-flash-high'] : [],
+    }))
+    const { call: callConfigured } = wire(configured)
+    expect(await callConfigured(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high')).toBe(true)
+    expect(catalogCall.mock.calls.map(([cliPath]) => cliPath)).toEqual(['/cli/a'])
+
+    catalogCall.mockReset()
+    catalogCall.mockImplementation(async (cliPath: string | undefined) => ({
+      models: cliPath === undefined ? ['gemini-3.8-flash-high'] : [],
+    }))
+    const auto = paths(
+      { provider: 'agy', providers: { agy: { cliPath: '   ', model: '' } } },
+      {
+        [AGY_CHAT_MODELS_KEY]: GEM,
+      },
+    )
+    const { call: callAuto } = wire(auto)
+    expect(await callAuto(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high')).toBe(true)
+    expect(catalogCall.mock.calls.map(([cliPath]) => cliPath)).toEqual([undefined])
+  })
+
+  it('C7: a catalog retaken for an intermediate CLI cannot authorize a model for the CLI configured at commit time', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { cliPath: '/cli/a', model: '' } } },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.1-pro-high'] },
+    )
+    let releaseFirst: (value: { models: string[] }) => void = () => undefined
+    let releaseSecond: (value: { models: string[] }) => void = () => undefined
+    let probes = 0
+    catalogCall.mockImplementation(() => {
+      probes += 1
+      if (probes === 1)
+        return new Promise((resolve) => {
+          releaseFirst = resolve
+        })
+      return new Promise((resolve) => {
+        releaseSecond = resolve
+      })
+    })
+    const { call } = wire(p)
+    const pending = call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high')
+    // A is probed, the person switches to B, and switches back to A while B's probe is still open
+    writeFileSync(
+      p.aiSettingsPath,
+      JSON.stringify({ provider: 'agy', providers: { agy: { cliPath: '/cli/b', model: '' } } }),
+      'utf8',
+    )
+    releaseFirst({ models: ['gemini-3.1-pro-high'] })
+    // let the handler notice the path moved and start the probe for B before moving it back
+    await Promise.resolve()
+    writeFileSync(
+      p.aiSettingsPath,
+      JSON.stringify({ provider: 'agy', providers: { agy: { cliPath: '/cli/a', model: '' } } }),
+      'utf8',
+    )
+    releaseSecond({ models: ['gemini-3.1-pro-high'] })
+    // the answer that finally arrives belongs to B, not to the A that is configured now
+    expect(await pending).toBe(false)
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('')
+    expect(probes).toBe(2)
+  })
+
+  it('B8: after a successful switch a fresh process reads back the same committed pair', async () => {
+    const p = paths(
+      {
+        provider: 'gemini',
+        providers: {
+          gemini: { apiKey: 'gk', model: 'gemini-2.5-flash' },
+          agy: { cliPath: '/cli/a', model: '' },
+        },
+      },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const first = wire(p)
+    expect(await first.call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high', true)).toBe(true)
+    // a new process registers the handlers again and reads the same files
+    const second = wire(p)
+    const state = await second.call(AGY_CHAT_CHANNELS.state)
+    expect(state.active).toBe(true)
+    expect(state.selected).toBe('gemini-3.8-flash-high')
+    expect(state.selectedStatus).toBe('verified')
+  })
+
+  it('B9: after a failed switch a fresh process reads back the previous committed pair', async () => {
+    const p = paths(
+      {
+        provider: 'gemini',
+        providers: {
+          gemini: { apiKey: 'gk', model: 'gemini-2.5-flash' },
+          agy: { cliPath: '/cli/a', model: 'gemini-3.8-flash-low' },
+        },
+      },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-low'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const first = wire(p)
+    expect(await first.call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high', true)).toBe(false)
+    const second = wire(p)
+    const state = await second.call(AGY_CHAT_CHANNELS.state)
+    expect(state.active).toBe(false)
+    expect(readAi(p.aiSettingsPath).provider).toBe('gemini')
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-low')
+  })
+
+  it('B10: every window is told only after the new settings are durable on disk', async () => {
+    const p = paths(
+      { provider: 'gemini', providers: { agy: { cliPath: '/cli/a', model: '' } } },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const snapshots: string[] = []
+    windows.push({
+      isDestroyed: () => false,
+      webContents: {
+        send: (channel: string) => {
+          if (channel === 'ai:settings-changed')
+            snapshots.push(readFileSync(p.aiSettingsPath, 'utf8'))
+        },
+      },
+    })
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high', true)).toBe(true)
+    expect(snapshots.length).toBe(1)
+    const announced = JSON.parse(snapshots[0]!) as {
+      provider?: string
+      providers?: Record<string, { model?: string }>
+    }
+    expect(announced.provider).toBe('agy')
+    expect(announced.providers?.agy?.model).toBe('gemini-3.8-flash-high')
+  })
+
+  it('B11: a rejected switch broadcasts nothing, so no window is told a success happened', async () => {
+    const p = paths(
+      { provider: 'gemini', providers: { agy: { cliPath: '/cli/a', model: '' } } },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    catalogCall.mockImplementation(async () => ({ models: [], error: 'agy models timed out' }))
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high', true)).toBe(false)
+    expect(sent).toEqual([])
+  })
+
+  it('B12: an atomic switch leaves every unrelated setting byte-for-byte intact', async () => {
+    const p = paths(
+      {
+        provider: 'gemini',
+        maxOutputTokens: 8192,
+        gskToolsEnabled: true,
+        customEndpoints: [
+          {
+            id: 'local',
+            name: 'Local',
+            baseUrl: 'http://127.0.0.1:8000',
+            apiKey: 'k',
+            model: 'm1',
+          },
+        ],
+        media: { providers: { image: { baseUrl: 'https://img.example', apiKey: 'mk' } } },
+        search: { provider: 'agy', providers: { agy: { apiKey: '', model: 'search-model' } } },
+        providers: {
+          openai: { apiKey: 'sk-openai', model: 'gpt-5' },
+          gemini: { apiKey: 'gk', model: 'gemini-2.5-flash' },
+          agy: { apiKey: '', cliPath: '/cli/a', model: '' },
+        },
+      },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high', true)).toBe(true)
+    const saved = readAi(p.aiSettingsPath)
+    expect(saved.maxOutputTokens).toBe(8192)
+    expect(saved.gskToolsEnabled).toBe(true)
+    expect(saved.customEndpoints).toEqual([
+      { id: 'local', name: 'Local', baseUrl: 'http://127.0.0.1:8000', apiKey: 'k', model: 'm1' },
+    ])
+    expect(saved.search).toEqual({
+      provider: 'agy',
+      providers: { agy: { apiKey: '', model: 'search-model' } },
+    })
+    expect(saved.providers.openai).toEqual({ apiKey: 'sk-openai', model: 'gpt-5' })
+    expect(saved.providers.gemini).toEqual({ apiKey: 'gk', model: 'gemini-2.5-flash' })
+    expect(saved.providers.agy.cliPath).toBe('/cli/a')
+  })
+
+  it('E7: a stale selection request cannot undo a newer enabled-list change', async () => {
+    const p = paths(
+      {
+        provider: 'agy',
+        providers: { agy: { cliPath: '/cli/a', model: 'gemini-3.8-flash-high' } },
+      },
+      { [AGY_CHAT_MODELS_KEY]: GEM },
+    )
+    let release: (value: { models: string[] }) => void = () => undefined
+    let probes = 0
+    catalogCall.mockImplementation(() => {
+      probes += 1
+      if (probes === 1)
+        return new Promise((resolve) => {
+          release = resolve
+        })
+      return Promise.resolve({ models: GEM })
+    })
+    const { call } = wire(p)
+    const stale = call(AGY_CHAT_CHANNELS.select, 'gemini-3.1-pro-high')
+    // a newer, legitimate toggle turns High off and moves the selection to Low
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([
+      'gemini-3.8-flash-low',
+    ])
+    release({ models: GEM })
+    expect(await stale).toBe(false)
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-low')
+    expect(readApp(p.settingsPath)[AGY_CHAT_MODELS_KEY]).toEqual(['gemini-3.8-flash-low'])
+  })
+
+  it('E1/E2: concurrent enabled-list toggles never leave the selection outside the list', async () => {
+    const p = paths(
+      {
+        provider: 'agy',
+        providers: { agy: { cliPath: '/cli/a', model: 'gemini-3.8-flash-high' } },
+      },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const { call } = wire(p)
+    const first = call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])
+    const second = call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.1-pro-high'])
+    await Promise.all([first, second])
+    const enabled = readApp(p.settingsPath)[AGY_CHAT_MODELS_KEY]
+    const selected = readAi(p.aiSettingsPath).providers.agy.model
+    expect(enabled).toEqual(['gemini-3.1-pro-high'])
+    expect(enabled).toContain(selected)
+  })
+
+  it('E3: switching off the selected model moves it to a confirmed one', async () => {
+    const p = paths(
+      {
+        provider: 'agy',
+        providers: { agy: { cliPath: '/cli/a', model: 'gemini-3.8-flash-high' } },
+      },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toEqual([
+      'gemini-3.8-flash-low',
+    ])
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-low')
+  })
+
+  it('E4: with no confirmed replacement the toggle is not half-applied', async () => {
+    const p = paths(
+      {
+        provider: 'agy',
+        providers: { agy: { cliPath: '/cli/a', model: 'gemini-3.8-flash-high' } },
+      },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high', 'gemini-3.8-flash-low'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: [], error: 'agy models timed out' }))
+    const sent: Array<[string, unknown[]]> = []
+    fakeWindow(sent)
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-low'])).toBeNull()
+    expect(readApp(p.settingsPath)[AGY_CHAT_MODELS_KEY]).toEqual([
+      'gemini-3.8-flash-high',
+      'gemini-3.8-flash-low',
+    ])
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-high')
+    expect(sent.length).toBe(0)
+  })
+
+  it('E5: a catalog failure never disables a model the person had enabled', async () => {
+    const p = paths(
+      {
+        provider: 'agy',
+        providers: { agy: { cliPath: '/cli/a', model: 'gemini-3.8-flash-high' } },
+      },
+      { [AGY_CHAT_MODELS_KEY]: ['gemini-3.8-flash-high'] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: [], error: 'timeout' }))
+    const { call } = wire(p)
+    expect(await call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-high'])).toEqual([
+      'gemini-3.8-flash-high',
+    ])
+    expect(readApp(p.settingsPath)[AGY_CHAT_MODELS_KEY]).toEqual(['gemini-3.8-flash-high'])
+    expect(readAi(p.aiSettingsPath).providers.agy.model).toBe('gemini-3.8-flash-high')
+  })
+
+  it('E6: rapid operations on the same settings path stay consistent', async () => {
+    const p = paths(
+      { provider: 'agy', providers: { agy: { cliPath: '/cli/a', model: '' } } },
+      { [AGY_CHAT_MODELS_KEY]: [] },
+    )
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const { call } = wire(p)
+    const ops = [
+      call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-high']),
+      call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-high'),
+      call(AGY_CHAT_CHANNELS.setEnabled, ['gemini-3.8-flash-high', 'gemini-3.8-flash-low']),
+      call(AGY_CHAT_CHANNELS.select, 'gemini-3.8-flash-low'),
+    ]
+    await Promise.all(ops)
+    const saved = readAi(p.aiSettingsPath)
+    const enabled = readApp(p.settingsPath)[AGY_CHAT_MODELS_KEY]
+    expect(enabled).toEqual(['gemini-3.8-flash-high', 'gemini-3.8-flash-low'])
+    expect(enabled).toContain(saved.providers.agy.model)
   })
 })

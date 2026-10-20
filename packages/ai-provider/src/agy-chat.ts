@@ -372,7 +372,11 @@ export interface AgyChatCatalog {
 export interface AgyChatApi {
   getAgyChatState(): Promise<AgyChatState>
   getAgyChatCatalog(): Promise<AgyChatCatalog>
-  selectAgyChatModel(id: string): Promise<boolean>
+  /**
+   * Choose a chat model. `activateProvider` makes Antigravity the active provider in the same
+   * atomic write, so a provider switch can never be half-applied.
+   */
+  selectAgyChatModel(id: string, activateProvider?: boolean): Promise<boolean>
   setAgyChatEnabledModels(ids: string[]): Promise<string[] | null>
   /** every window hears this after a model selection or an enabled-list change */
   onAgyChatModelChanged(handler: () => void): () => void

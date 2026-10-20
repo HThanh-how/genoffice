@@ -47,14 +47,28 @@ export function AiModelPicker({
   const chipRef = useRef<HTMLButtonElement | null>(null)
   const popRef = useRef<HTMLDivElement | null>(null)
 
-  // tests render panels without a preload bridge: a throwing getter must not take the panel down
+  // Refreshes are asynchronous: a read started earlier must never overwrite the answer of a
+  // newer one, and the settings the chip shows must not be a mixture of two generations.
+  const refreshSeq = useRef(0)
   const refresh = useCallback(() => {
+    const mine = ++refreshSeq.current
+    const current = () => mine === refreshSeq.current
     Promise.resolve()
       .then(() => bridge.getSettings())
-      .then(setSettings, () => {})
+      .then(
+        (next) => {
+          if (current()) setSettings(next)
+        },
+        () => {},
+      )
     Promise.resolve()
       .then(() => bridge.gskLoggedIn?.() ?? false)
-      .then(setLoggedIn, () => {})
+      .then(
+        (next) => {
+          if (current()) setLoggedIn(next)
+        },
+        () => {},
+      )
     const agy =
       typeof window !== 'undefined'
         ? (window as unknown as { agyChat?: AgyBarApi }).agyChat
@@ -63,17 +77,21 @@ export function AiModelPicker({
       Promise.resolve()
         .then(() => agy.getAgyChatState())
         .then(
-          setAgyState,
+          (next) => {
+            if (current()) setAgyState(next)
+          },
           // a state read that failed is not evidence that the previous list is still good: keep
           // the stored model visible as the current configuration, but stop advertising models
           // the CLI has not confirmed right now
-          () =>
+          () => {
+            if (!current()) return
             setAgyState({
               models: [],
               selected: '',
               active: false,
               catalogError: 'Antigravity model list could not be read',
-            }),
+            })
+          },
         )
     }
   }, [bridge])
@@ -190,30 +208,18 @@ export function AiModelPicker({
         refresh()
         return
       }
+      // When this pick also changes the provider, the main process commits the model and the
+      // provider in one atomic write. There is no second, generic settings write that could
+      // succeed or fail on its own, so a switch is never half-applied.
       let ok: boolean
       try {
-        ok = await agy.selectAgyChatModel(sel.model)
+        ok = await agy.selectAgyChatModel(sel.model, base.provider !== 'agy')
       } catch {
         ok = false
       }
       if (!ok) {
         // the model was refused: the provider is not switched either, so the app never claims a
         // provider/model combination that is not actually usable
-        refresh()
-        return
-      }
-      if (base.provider === 'agy') {
-        refresh()
-        window.dispatchEvent(new Event('genoffice-agy-model-changed'))
-        return
-      }
-      // the model is confirmed; now move the provider, keeping every other provider's settings
-      const switched = withAiModelSelection(base, { provider: 'agy', model: sel.model })
-      setSettings(switched)
-      try {
-        await bridge.setSettings(switched)
-      } catch {
-        setSettings(prev)
         refresh()
         return
       }
