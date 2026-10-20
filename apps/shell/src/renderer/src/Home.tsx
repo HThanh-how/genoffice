@@ -4,6 +4,7 @@ import { IndexDashboard } from './fork/IndexDashboard'
 import { IndexNavItem } from './fork/IndexNavItem'
 import { FOLDER_ROOTS_CHANGED_EVENT } from './fork/DefaultFolderToggle'
 import { folderMenuWords } from './fork/folder-menu-words'
+import { RESET_HOME_EVENT } from './TabBar'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
@@ -1294,6 +1295,17 @@ export function Home() {
     }
     window.addEventListener(OPEN_INDEX_EVENT, open)
     return () => window.removeEventListener(OPEN_INDEX_EVENT, open)
+  }, [])
+  useEffect(() => {
+    const reset = () => {
+      setAskMode(false)
+      setIndexOpen(false)
+      setCloudMode(false)
+      setSelectedFolder(null)
+      setView('recent')
+    }
+    window.addEventListener(RESET_HOME_EVENT, reset)
+    return () => window.removeEventListener(RESET_HOME_EVENT, reset)
   }, [])
   const [filter, setFilter] = useState('all')
   // ── Starred groups (named buckets the Starred view can filter on) ──

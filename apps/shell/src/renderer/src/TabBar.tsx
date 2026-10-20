@@ -6,6 +6,8 @@ import { TEAR_OFF_SLACK, insertionIndexForX, isBeyondBand } from '../../shared/t
 import { notifyFilesChanged } from './file-events'
 import { useI18n } from './locale'
 
+export const RESET_HOME_EVENT = 'genoffice-reset-home'
+
 declare global {
   interface Window {
     aiOfficeTabs: TabsApi
@@ -539,7 +541,10 @@ export function TabBar() {
                 // Chrome-style: pressing a tab activates it immediately, so
                 // activation never depends on the click that a drag would eat
                 if (!tab.active) void window.aiOfficeTabs.activate(tab.id)
-                if (tab.id === 'home') return
+                if (tab.id === 'home') {
+                  window.dispatchEvent(new Event(RESET_HOME_EVENT))
+                  return
+                }
                 const strip = stripRef.current
                 if (!strip) return
                 const rects = tabRects()
@@ -559,6 +564,11 @@ export function TabBar() {
                   torn: false,
                 }
                 strip.setPointerCapture(event.pointerId)
+              }}
+              onClick={() => {
+                if (tab.id === 'home') {
+                  window.dispatchEvent(new Event(RESET_HOME_EVENT))
+                }
               }}
             >
               {/* highlight plate behind the content — hover capsule / active white body */}
