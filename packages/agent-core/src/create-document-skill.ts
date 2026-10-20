@@ -167,13 +167,13 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
 
       const hostSessionId = deps.getSessionId?.()
       const sessionId =
-        hostSessionId ||
         (typeof call.input.sessionId === 'string' && call.input.sessionId.trim()) ||
+        hostSessionId ||
         undefined
       const hostUserTurnId = deps.getUserTurnId?.()
       const userTurnId =
-        hostUserTurnId ||
         (typeof call.input.userTurnId === 'string' && call.input.userTurnId.trim()) ||
+        hostUserTurnId ||
         undefined
       const hostCallId =
         typeof call.input.callId === 'string' && call.input.callId.trim()

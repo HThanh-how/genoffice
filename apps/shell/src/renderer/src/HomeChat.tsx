@@ -327,6 +327,8 @@ export function HomeChat({
 
       const owner = convRef.current
       const generation = runGenerationRef.current
+      const run = activeRunRef.current
+      const turnId = execContext?.userTurnId
 
       let cleanup = () => {}
       const openPromise = (async () => {
@@ -336,7 +338,9 @@ export function HomeChat({
             convRef.current !== owner ||
             owner.dead ||
             generation !== runGenerationRef.current ||
-            (execContext?.sessionId && convRef.current?.executionId !== execContext.sessionId)
+            (run !== 0 && activeRunRef.current !== run) ||
+            (execContext?.sessionId && convRef.current?.executionId !== execContext.sessionId) ||
+            (turnId && currentUserTurnIdRef.current && turnId !== currentUserTurnIdRef.current)
           ) {
             return false
           }
@@ -356,7 +360,9 @@ export function HomeChat({
             convRef.current !== owner ||
             owner.dead ||
             generation !== runGenerationRef.current ||
-            (execContext?.sessionId && convRef.current?.executionId !== execContext.sessionId)
+            (run !== 0 && activeRunRef.current !== run) ||
+            (execContext?.sessionId && convRef.current?.executionId !== execContext.sessionId) ||
+            (turnId && currentUserTurnIdRef.current && turnId !== currentUserTurnIdRef.current)
           ) {
             return false
           }
@@ -375,7 +381,9 @@ export function HomeChat({
             convRef.current === owner &&
             !owner.dead &&
             generation === runGenerationRef.current &&
-            (!execContext?.sessionId || convRef.current?.executionId === execContext.sessionId)
+            (run === 0 || activeRunRef.current === run) &&
+            (!execContext?.sessionId || convRef.current?.executionId === execContext.sessionId) &&
+            (!turnId || !currentUserTurnIdRef.current || turnId === currentUserTurnIdRef.current)
           ) {
             if (success) {
               openStatesRef.current.set(path, 'opened')
@@ -392,7 +400,9 @@ export function HomeChat({
             convRef.current === owner &&
             !owner.dead &&
             generation === runGenerationRef.current &&
-            (!execContext?.sessionId || convRef.current?.executionId === execContext.sessionId)
+            (run === 0 || activeRunRef.current === run) &&
+            (!execContext?.sessionId || convRef.current?.executionId === execContext.sessionId) &&
+            (!turnId || !currentUserTurnIdRef.current || turnId === currentUserTurnIdRef.current)
           ) {
             openStatesRef.current.set(path, 'failed')
           }
@@ -481,7 +491,10 @@ export function HomeChat({
           owner.dead ||
           generation !== runGenerationRef.current ||
           (run !== 0 && activeRunRef.current !== run) ||
-          (context?.sessionId && convRef.current?.executionId !== context.sessionId)
+          (context?.sessionId && convRef.current?.executionId !== context.sessionId) ||
+          (context?.userTurnId &&
+            currentUserTurnIdRef.current &&
+            context.userTurnId !== currentUserTurnIdRef.current)
         ) {
           return false
         }
@@ -1586,6 +1599,8 @@ export function HomeChat({
   const stop = () => {
     stoppedRef.current = true
     runGenerationRef.current++
+    activeRunRef.current = 0
+    currentUserTurnIdRef.current = ''
     batcherRef.current?.flush()
     loopRef.current?.reset()
     clearActiveRequest()

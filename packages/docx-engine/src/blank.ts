@@ -535,6 +535,11 @@ export interface BlankDocxOptions {
 export async function buildBlankDocx(options?: BlankDocxOptions): Promise<Uint8Array> {
   const zip = new JSZip()
 
+  const includePageNumbers = Boolean(options?.includePageNumbers)
+  const footerOverride = includePageNumbers
+    ? '<Override PartName="/word/footer1.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml"/>'
+    : ''
+
   zip.file(
     '[Content_Types].xml',
     `${XML_DECL}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
@@ -543,6 +548,7 @@ export async function buildBlankDocx(options?: BlankDocxOptions): Promise<Uint8A
       '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>' +
       '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
       '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>' +
+      footerOverride +
       '</Types>',
   )
 
@@ -553,21 +559,40 @@ export async function buildBlankDocx(options?: BlankDocxOptions): Promise<Uint8A
       '</Relationships>',
   )
 
+  const footerRel = includePageNumbers
+    ? '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>'
+    : ''
+
   zip.file(
     'word/_rels/document.xml.rels',
     `${XML_DECL}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
       '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
       '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/numbering" Target="numbering.xml"/>' +
+      footerRel +
       '</Relationships>',
   )
 
   zip.file('word/styles.xml', stylesXml(options))
   zip.file('word/numbering.xml', NUMBERING_XML)
 
+  if (includePageNumbers) {
+    const footerXml =
+      `${XML_DECL}<w:ftr xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">` +
+      '<w:p><w:pPr><w:jc w:val="center"/></w:pPr>' +
+      '<w:r><w:fldChar w:fldCharType="begin"/></w:r>' +
+      '<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="separate"/></w:r>' +
+      '<w:r><w:t>1</w:t></w:r>' +
+      '<w:r><w:fldChar w:fldCharType="end"/></w:r>' +
+      '</w:p></w:ftr>'
+    zip.file('word/footer1.xml', footerXml)
+  }
+
   const paper = PAPER_TWIPS[options?.paperSize ?? 'A4']
   const margins = options?.pageMarginsTwips ?? { top: 1440, right: 1440, bottom: 1440, left: 1440 }
+  const footerRef = includePageNumbers ? '<w:footerReference w:type="default" r:id="rId3"/>' : ''
   const sectPr =
-    `<w:sectPr><w:pgSz w:w="${paper.w}" w:h="${paper.h}"/>` +
+    `<w:sectPr>${footerRef}<w:pgSz w:w="${paper.w}" w:h="${paper.h}"/>` +
     `<w:pgMar w:top="${margins.top}" w:right="${margins.right}" w:bottom="${margins.bottom}" w:left="${margins.left}" w:header="708" w:footer="708" w:gutter="0"/>` +
     '</w:sectPr>'
   zip.file(

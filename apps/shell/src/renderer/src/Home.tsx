@@ -1777,7 +1777,13 @@ export function Home() {
     try {
       if (typeof window.aiOfficeTabs?.list !== 'function') return false
       const tabs = await window.aiOfficeTabs.list()
-      const norm = (p: string) => p.replace(/[\\/]+/g, '/').toLowerCase()
+      const isWindows =
+        (typeof process !== 'undefined' && process.platform === 'win32') ||
+        (typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent))
+      const norm = (p: string) => {
+        const unified = p.replace(/[\\/]+/g, '/')
+        return isWindows ? unified.toLowerCase() : unified
+      }
       const target = norm(path)
       return tabs.some((t) => t.filePath && norm(t.filePath) === target)
     } catch {
