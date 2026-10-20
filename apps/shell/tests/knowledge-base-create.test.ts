@@ -1,4 +1,7 @@
 import { describe, expect, it, beforeEach } from 'vitest'
+import { mkdtemp, readFile, rm, writeFile, readdir } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   clearKnowledgeDocumentCaches,
   createKnowledgeDocument,
@@ -839,6 +842,169 @@ describe('createKnowledgeDocument', () => {
       fail = false
       const res = await createKnowledgeDocument(deps, req)
       expect(res.path).toBe('/save/PoisonCheck.docx')
+    })
+  })
+
+  describe('Phase D: Real filesystem atomic publication and collision verification', () => {
+    it('FS-01: Markdown creation does not overwrite an existing file and retries with -2 suffix', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kb-create-real-'))
+      try {
+        const originalPath = join(dir, 'Notes.md')
+        await writeFile(originalPath, 'Original content that must not be lost')
+
+        const deps: KbCreateDeps = {
+          dir: () => dir,
+          uniquePath: (d, name) => join(d, name),
+          sanitizeBase: (title) => title,
+          writeText: async (path, text) => {
+            await writeFile(path, text, 'utf8')
+          },
+          markdownToDocx: async () => {},
+          recordRecent: () => {},
+        }
+
+        const res = await createKnowledgeDocument(deps, {
+          title: 'Notes',
+          format: 'md',
+          content: 'New content from AI',
+          sessionId: 's-fs-1',
+          userTurnId: 't-1',
+          callId: 'c-1',
+        })
+
+        expect(res.path).toBe(join(dir, 'Notes-2.md'))
+        expect(await readFile(originalPath, 'utf8')).toBe('Original content that must not be lost')
+        expect(await readFile(res.path, 'utf8')).toBe('New content from AI')
+
+        const files = await readdir(dir)
+        expect(files.filter((f) => f.includes('.tmp'))).toHaveLength(0)
+      } finally {
+        await rm(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('FS-02: DOCX creation does not overwrite an existing file on disk', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kb-create-real-'))
+      try {
+        const originalPath = join(dir, 'Report.docx')
+        await writeFile(originalPath, 'Original DOCX bytes')
+
+        const deps: KbCreateDeps = {
+          dir: () => dir,
+          uniquePath: (d, name) => join(d, name),
+          sanitizeBase: (title) => title,
+          writeText: async () => {},
+          markdownToDocx: async (_md, out) => {
+            await writeFile(out, 'New DOCX bytes')
+          },
+          recordRecent: () => {},
+        }
+
+        const res = await createKnowledgeDocument(deps, {
+          title: 'Report',
+          format: 'docx',
+          content: '# New Report',
+          sessionId: 's-fs-2',
+          userTurnId: 't-1',
+          callId: 'c-2',
+        })
+
+        expect(res.path).toBe(join(dir, 'Report-2.docx'))
+        expect(await readFile(originalPath, 'utf8')).toBe('Original DOCX bytes')
+        expect(await readFile(res.path, 'utf8')).toBe('New DOCX bytes')
+
+        const files = await readdir(dir)
+        expect(files.filter((f) => f.includes('.tmp'))).toHaveLength(0)
+      } finally {
+        await rm(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('FS-03: Concurrent document creations on the real filesystem allocate distinct non-conflicting files', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kb-create-concurrent-'))
+      try {
+        const deps: KbCreateDeps = {
+          dir: () => dir,
+          uniquePath: (d, name) => join(d, name),
+          sanitizeBase: (title) => title,
+          writeText: async (path, text) => {
+            await writeFile(path, text, 'utf8')
+          },
+          markdownToDocx: async (_md, out) => {
+            await writeFile(out, 'Docx content')
+          },
+          recordRecent: () => {},
+        }
+
+        const count = 5
+        const promises = Array.from({ length: count }, (_, i) =>
+          createKnowledgeDocument(deps, {
+            title: 'SharedTitle',
+            format: 'md',
+            content: `Content from run ${i}`,
+            sessionId: `sess-concur-${i}`,
+            userTurnId: 't-1',
+            callId: `c-${i}`,
+          }),
+        )
+
+        const results = await Promise.all(promises)
+        const paths = results.map((r) => r.path)
+        const uniquePaths = new Set(paths)
+        expect(uniquePaths.size).toBe(count)
+
+        for (const p of paths) {
+          const content = await readFile(p, 'utf8')
+          expect(content).toMatch(/Content from run \d/)
+        }
+
+        const files = await readdir(dir)
+        expect(files.filter((f) => f.includes('.tmp'))).toHaveLength(0)
+      } finally {
+        await rm(dir, { recursive: true, force: true })
+      }
+    })
+
+    it('FS-04: External collision created concurrently during generation is handled atomically', async () => {
+      const dir = await mkdtemp(join(tmpdir(), 'kb-create-raced-'))
+      try {
+        let injected = false
+        const deps: KbCreateDeps = {
+          dir: () => dir,
+          uniquePath: (d, name) => join(d, name),
+          sanitizeBase: (title) => title,
+          writeText: async (path, text) => {
+            // Simulate external writer creating the target file while generation is happening
+            if (!injected) {
+              injected = true
+              await writeFile(join(dir, 'RacedDoc.md'), 'External user content written during generation')
+            }
+            await writeFile(path, text, 'utf8')
+          },
+          markdownToDocx: async () => {},
+          recordRecent: () => {},
+        }
+
+        const res = await createKnowledgeDocument(deps, {
+          title: 'RacedDoc',
+          format: 'md',
+          content: 'AI generated content',
+          sessionId: 's-race-fs',
+          userTurnId: 't-1',
+          callId: 'c-race-fs',
+        })
+
+        expect(res.path).toBe(join(dir, 'RacedDoc-2.md'))
+        expect(await readFile(join(dir, 'RacedDoc.md'), 'utf8')).toBe(
+          'External user content written during generation',
+        )
+        expect(await readFile(res.path, 'utf8')).toBe('AI generated content')
+
+        const files = await readdir(dir)
+        expect(files.filter((f) => f.includes('.tmp'))).toHaveLength(0)
+      } finally {
+        await rm(dir, { recursive: true, force: true })
+      }
     })
   })
 })

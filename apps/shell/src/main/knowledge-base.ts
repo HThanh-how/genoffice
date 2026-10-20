@@ -12,8 +12,8 @@
 /// so fetching a bounded page and filtering by real path is the cheap,
 /// correct filter.
 
-import { statSync, existsSync } from 'node:fs'
-import { basename, dirname, normalize, resolve } from 'node:path'
+import { statSync, existsSync, constants, promises as fsPromises } from 'node:fs'
+import { basename, dirname, join, normalize, resolve } from 'node:path'
 import { parseFileToText } from '@genoffice/file-parse'
 
 /** characters of parsed text one read_knowledge_file page returns (aligned
@@ -206,6 +206,7 @@ export interface KbCreateDeps {
   recordRecent: (path: string) => void
   fileExists?: (path: string) => boolean
   isCaseSensitive?: boolean
+  publishExclusive?: (tmpPath: string, destPath: string) => Promise<void>
 }
 
 interface CommittedDocCreation {
@@ -271,6 +272,44 @@ function allocateUniquePath(deps: KbCreateDeps, title: string, format: string): 
   return candidate
 }
 
+/**
+ * Atomically publishes `tmpPath` to `destPath` without replacing an existing file.
+ * Fails with EEXIST if `destPath` already exists.
+ * Uses hard link (`fs.promises.link`) where supported, which is atomic and fails if dest exists.
+ * Falls back to `fs.promises.copyFile(..., COPYFILE_EXCL)` on filesystems without hard link support.
+ * Cleans up `tmpPath` on completion.
+ */
+export async function publishFileExclusive(tmpPath: string, destPath: string): Promise<void> {
+  try {
+    await fsPromises.link(tmpPath, destPath)
+    await fsPromises.unlink(tmpPath).catch(() => {})
+  } catch (err: unknown) {
+    const error = err as NodeJS.ErrnoException
+    if (error && error.code === 'EEXIST') {
+      await fsPromises.unlink(tmpPath).catch(() => {})
+      throw error
+    }
+    if (
+      error &&
+      (error.code === 'EXDEV' ||
+        error.code === 'EPERM' ||
+        error.code === 'ENOTSUP' ||
+        error.code === 'ENOSYS')
+    ) {
+      try {
+        await fsPromises.copyFile(tmpPath, destPath, constants.COPYFILE_EXCL)
+        await fsPromises.unlink(tmpPath).catch(() => {})
+        return
+      } catch (copyErr) {
+        await fsPromises.unlink(tmpPath).catch(() => {})
+        throw copyErr
+      }
+    }
+    await fsPromises.unlink(tmpPath).catch(() => {})
+    throw error
+  }
+}
+
 export async function createKnowledgeDocument(
   deps: KbCreateDeps,
   req: KbCreateRequest,
@@ -305,7 +344,7 @@ export async function createKnowledgeDocument(
         targetPath = allocateUniquePath(deps, req.title, req.format)
       }
 
-      for (let attempt = 0; attempt < 5; attempt++) {
+      for (let attempt = 0; attempt < 10; attempt++) {
         try {
           if (checkExists(targetPath) && attempt > 0) {
             reservedPaths.delete(targetPath)
@@ -313,15 +352,57 @@ export async function createKnowledgeDocument(
             targetPath = allocateUniquePath(deps, req.title, req.format)
           }
 
-          if (req.format === 'md') {
-            await deps.writeText(targetPath, req.content)
+          if (deps.publishExclusive) {
+            const ext = req.format === 'docx' ? '.docx' : '.md'
+            const tmpName = `.${basename(targetPath, ext)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp${ext}`
+            const tmpPath = join(dirname(targetPath), tmpName)
+            try {
+              if (req.format === 'md') {
+                await deps.writeText(tmpPath, req.content)
+              } else {
+                await deps.markdownToDocx(req.content, tmpPath, req.documentType)
+              }
+              await deps.publishExclusive(tmpPath, targetPath)
+            } finally {
+              const exists = deps.fileExists ? deps.fileExists(tmpPath) : existsSync(tmpPath)
+              if (exists) {
+                await fsPromises.unlink(tmpPath).catch(() => {})
+              }
+            }
+          } else if (deps.fileExists) {
+            // Simulated / in-memory test environment: verify targetPath doesn't exist on mock disk before write
+            if (deps.fileExists(targetPath)) {
+              const err = new Error(`EEXIST: file already exists, open '${targetPath}'`) as NodeJS.ErrnoException
+              err.code = 'EEXIST'
+              throw err
+            }
+            if (req.format === 'md') {
+              await deps.writeText(targetPath, req.content)
+            } else {
+              await deps.markdownToDocx(req.content, targetPath, req.documentType)
+            }
           } else {
-            await deps.markdownToDocx(req.content, targetPath, req.documentType)
+            // Real filesystem environment (production): use exclusive same-directory temp file + atomic publish
+            const ext = req.format === 'docx' ? '.docx' : '.md'
+            const tmpName = `.${basename(targetPath, ext)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp${ext}`
+            const tmpPath = join(dirname(targetPath), tmpName)
+            try {
+              if (req.format === 'md') {
+                await deps.writeText(tmpPath, req.content)
+              } else {
+                await deps.markdownToDocx(req.content, tmpPath, req.documentType)
+              }
+              await publishFileExclusive(tmpPath, targetPath)
+            } finally {
+              if (existsSync(tmpPath)) {
+                await fsPromises.unlink(tmpPath).catch(() => {})
+              }
+            }
           }
           break
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err)
-          if ((msg.includes('output exists') || msg.includes('EEXIST')) && attempt < 4) {
+          if ((msg.includes('output exists') || msg.includes('EEXIST')) && attempt < 9) {
             reservedPaths.delete(targetPath)
             reservedCanonicalKeys.delete(pathReservationKey(targetPath, deps.isCaseSensitive))
             targetPath = allocateUniquePath(deps, req.title, req.format)
