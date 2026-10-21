@@ -110,7 +110,9 @@ export const id = {
   aiTooManyImages: 'Maksimal {max} gambar per pesan; kelebihannya diabaikan',
   aiUnknownError: 'Kesalahan tidak dikenal',
   aiTimeoutError:
-    'Permintaan AI melewati batas waktu dan dihentikan. Coba lagi, atau pilih model yang lebih cepat untuk permintaan panjang.',
+    'Permintaan AI habis waktu: jaringan tidak merespons sehingga proses dihentikan. Periksa koneksi Anda lalu coba lagi',
+  aiRegionError:
+    'Penyedia model ini tidak melayani wilayah Anda saat ini — pilih model lain atau ganti jaringan',
   aiOverloadedError: 'Layanan AI sedang sibuk — silakan coba lagi sebentar lagi',
   aiNetworkError:
     'Masalah jaringan: tidak dapat terhubung ke layanan AI. Periksa koneksi Anda lalu coba lagi',

@@ -56,12 +56,23 @@ describe('Worker Ignore Policy Integration (Real Worker & Production Ops)', () =
       target: 'node22',
       format: 'cjs',
       logLevel: 'error',
-      external: [
-        ...builtinModules,
-        ...builtinModules.map((m) => `node:${m}`),
-        'node:sqlite',
-        'electron',
+      plugins: [
+        {
+          name: 'stub-electron',
+          setup(b) {
+            b.onResolve({ filter: /^electron$/ }, () => ({
+              path: 'electron-stub',
+              namespace: 'stub',
+            }))
+            b.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
+              contents:
+                'module.exports = { app: { isPackaged: false, getPath: () => "" }, ipcMain: { handle: () => {}, on: () => {} } };',
+              loader: 'js',
+            }))
+          },
+        },
       ],
+      external: [...builtinModules, ...builtinModules.map((m) => `node:${m}`), 'node:sqlite'],
       define: { 'import.meta': '__genofficeWorkerImportMeta' },
       banner: {
         js: 'const __genofficeWorkerImportMeta = { url: require("node:url").pathToFileURL(__filename).href, filename: __filename, dirname: __dirname };',

@@ -111,7 +111,9 @@ export const cs = {
   aiTooManyImages: 'Nejvýše {max} obrázků na zprávu; ostatní byly ignorovány',
   aiUnknownError: 'Neznámá chyba',
   aiTimeoutError:
-    'Požadavek AI překročil časový limit a byl zastaven. Zkuste to znovu nebo pro dlouhý požadavek vyberte rychlejší model.',
+    'Časový limit požadavku AI vypršel: síť neodpověděla, běh byl zastaven. Zkontrolujte připojení a zkuste to znovu',
+  aiRegionError:
+    'Poskytovatel tohoto modelu neposkytuje služby ve vaší aktuální oblasti — vyberte jiný model nebo změňte síť',
   aiOverloadedError: 'Služba AI je právě zaneprázdněna – zkuste to prosím za chvíli znovu',
   aiNetworkError:
     'Problém se sítí: nepodařilo se připojit ke službě AI. Zkontrolujte připojení a zkuste to znovu',

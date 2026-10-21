@@ -18,5 +18,6 @@ export function createElectronTransport(getSettings: () => AiSettings): AgentTra
     overloadedErrorText: () => t('aiOverloadedError'),
     quotaErrorText: (resetAt) => agyErrorText(getLang(), 'quota', { resetAt }),
     authErrorText: () => agyErrorText(getLang(), 'auth'),
+    regionErrorText: () => t('aiRegionError'),
   })
 }

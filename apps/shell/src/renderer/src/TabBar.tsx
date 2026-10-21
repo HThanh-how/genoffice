@@ -12,6 +12,15 @@ declare global {
   }
 }
 
+/**
+ * Formats hover tooltip for document tab:
+ * - Tabs with a saved filePath show the full title on line 1, and the full absolute path on line 2.
+ * - Untitled or Home/Help tabs without a filePath show the title alone.
+ */
+export function formatTabTooltip(tab: TabSummary): string {
+  return tab.filePath ? `${tab.title}\n${tab.filePath}` : tab.title
+}
+
 function DocIcon() {
   return (
     <svg width="16" height="16" viewBox="0 0 240 240" fill="none" aria-hidden="true">
@@ -497,7 +506,7 @@ export function TabBar() {
               className={`tab-item ${tab.kind === 'home' ? 'tab-home' : ''} ${tab.active ? 'active' : ''} ${dragVisual?.id === tab.id ? 'drag-source' : ''}`}
               // long file names ellipsize in the strip — hover reveals the
               // full title and where the file is (the close button's own tooltip still wins there)
-              title={tab.filePath ? `${tab.title}\n${tab.filePath}` : tab.title}
+              title={formatTabTooltip(tab)}
               style={dragStyle}
               onContextMenu={(event) => {
                 event.preventDefault()
@@ -539,7 +548,9 @@ export function TabBar() {
                 // Chrome-style: pressing a tab activates it immediately, so
                 // activation never depends on the click that a drag would eat
                 if (!tab.active) void window.aiOfficeTabs.activate(tab.id)
-                if (tab.id === 'home') return
+                if (tab.id === 'home') {
+                  return
+                }
                 const strip = stripRef.current
                 if (!strip) return
                 const rects = tabRects()
@@ -559,6 +570,11 @@ export function TabBar() {
                   torn: false,
                 }
                 strip.setPointerCapture(event.pointerId)
+              }}
+              onClick={() => {
+                if (tab.id === 'home') {
+                  window.dispatchEvent(new CustomEvent('genoffice:home-tab-clicked'))
+                }
               }}
             >
               {/* highlight plate behind the content — hover capsule / active white body */}

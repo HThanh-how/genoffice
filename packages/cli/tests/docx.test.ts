@@ -3,6 +3,8 @@ import { join, resolve } from 'node:path'
 import JSZip from 'jszip'
 import { describe, expect, it } from 'vitest'
 import { run, tempDir } from './helpers'
+import { validateGeneratedDocx } from '../src/formats/docx-validation'
+import { markdownToDocx } from '../src/formats/markdown'
 
 const REPO = resolve(__dirname, '../../..')
 const DOCX = join(REPO, 'apps/docs/tests/pagination-corpus/docx/01-simple-english.docx')
@@ -734,6 +736,103 @@ describe('genoffice docs: comments, revisions, header/footer, images, charts', (
     expect(after.json().detail.revisions).toEqual([])
   })
 
+  it('accept_changes all: moves keep untouched text, paragraph marks merge, headers and footers are included (genoffice#2086)', async () => {
+    const { buildDocx } = await import(HELPERS)
+    const dir = tempDir()
+    const path = join(dir, 'tracked.docx')
+    const AT = 'w:author="X" w:date="2026-01-01T00:00:00Z"'
+    const R = (t: string) => `<w:r><w:t xml:space="preserve">${t}</w:t></w:r>`
+    const DR = (t: string) => `<w:r><w:delText xml:space="preserve">${t}</w:delText></w:r>`
+    const hfPart = (tag: string, inner: string) =>
+      `${XML_DECL}<w:${tag} ${W_NS}><w:p>${inner}</w:p></w:${tag}>`
+    writeFileSync(
+      path,
+      await buildDocx({
+        bodyXml:
+          `<w:p>${R('P0 intro')}</w:p>` +
+          `<w:p>${R('P1 alpha ')}<w:moveFromRangeStart w:id="1" ${AT} w:name="m"/><w:moveFrom w:id="2" ${AT}>${DR('MOVED ')}</w:moveFrom><w:moveFromRangeEnd w:id="1"/>${R('beta')}</w:p>` +
+          `<w:p>${R('P2 gamma ')}<w:moveToRangeStart w:id="3" ${AT} w:name="m"/><w:moveTo w:id="4" ${AT}>${R('MOVED ')}</w:moveTo><w:moveToRangeEnd w:id="3"/>${R('delta')}</w:p>` +
+          `<w:p><w:pPr><w:rPr><w:del w:id="5" ${AT}/></w:rPr></w:pPr>${R('P3 joins ')}</w:p>` +
+          `<w:p><w:pPr><w:rPr><w:ins w:id="6" ${AT}/></w:rPr></w:pPr>${R('P4 tail')}</w:p>`,
+        extraParts: [
+          {
+            path: 'word/header1.xml',
+            xml: hfPart(
+              'hdr',
+              `${R('H ')}<w:ins w:id="7" ${AT}>${R('new')}</w:ins><w:del w:id="8" ${AT}>${DR(' old')}</w:del>`,
+            ),
+            contentType:
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.header+xml',
+          },
+          {
+            path: 'word/footer1.xml',
+            xml: hfPart(
+              'ftr',
+              `${R('F ')}<w:del w:id="9" ${AT}>${DR('dropped ')}</w:del>${R('end')}`,
+            ),
+            contentType:
+              'application/vnd.openxmlformats-officedocument.wordprocessingml.footer+xml',
+          },
+        ],
+        extraRels:
+          '<Relationship Id="rId60" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/header" Target="header1.xml"/>' +
+          '<Relationship Id="rId61" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>',
+        sectPrExtra:
+          '<w:headerReference w:type="default" r:id="rId60"/><w:footerReference w:type="default" r:id="rId61"/>',
+      }),
+    )
+    const listed = await run(['docs', 'read', path, '--revisions', '--json'])
+    const detail = listed.json().detail
+    expect(detail.revisions.map((r: Record<string, unknown>) => [r.id, r.type, r.text])).toEqual([
+      ['r1', 'move', 'MOVED'],
+      ['r2', 'move', 'MOVED'],
+      ['r3', 'deletion', 'P3 joins'],
+      ['r4', 'insertion', 'P4 tail'],
+    ])
+    expect(detail.revisionsElsewhere.count).toBe(3)
+
+    // ids address the body only; the message says what is left elsewhere
+    const opsFile = join(dir, 'ops.json')
+    writeFileSync(opsFile, JSON.stringify([{ op: 'accept_changes', ids: ['r1'] }]))
+    const partial = await run([
+      'docs',
+      'apply',
+      path,
+      '--ops',
+      opsFile,
+      '--out',
+      join(dir, 'partial.docx'),
+      '--json',
+    ])
+    expect(partial.code).toBe(0)
+    expect(partial.json().detail.results[0].output).toMatch(
+      /Accepted 1 tracked change\(s\) \(r1\)\. Still 3 pending.*and 3 in headers, footers and notes \(ids address the body/,
+    )
+
+    writeFileSync(opsFile, JSON.stringify([{ op: 'accept_changes', all: true }]))
+    const applied = await run(['docs', 'apply', path, '--ops', opsFile, '--json'])
+    expect(applied.code).toBe(0)
+    expect(applied.json().detail.results[0].output).toBe(
+      'Accepted 4 tracked change(s) (r1, r2, r3, r4) and 3 in headers, footers and notes. No tracked changes remain.',
+    )
+    const zip = await JSZip.loadAsync(readFileSync(path))
+    const body = await zip.file('word/document.xml')!.async('string')
+    const texts = [...body.matchAll(/<w:p>[\s\S]*?<\/w:p>/g)].map((m) =>
+      [...m[0].matchAll(/<w:t[^>]*>([^<]*)</g)].map((t) => t[1]).join(''),
+    )
+    expect(texts).toEqual(['P0 intro', 'P1 alpha beta', 'P2 gamma MOVED delta', 'P3 joins P4 tail'])
+    const header = await zip.file('word/header1.xml')!.async('string')
+    const footer = await zip.file('word/footer1.xml')!.async('string')
+    for (const xml of [body, header, footer])
+      expect(xml).not.toMatch(/<w:(?:ins|del|moveFrom|moveTo|delText)\b/)
+    expect(header).toContain('new')
+    expect(header).not.toContain('old')
+    expect(footer).not.toContain('dropped')
+    const after = await run(['docs', 'read', path, '--revisions', '--json'])
+    expect(after.json().detail.revisions).toEqual([])
+    expect(after.json().detail.revisionsElsewhere).toBeUndefined()
+  })
+
   it('replies to and resolves comment threads, saving comments.xml', async () => {
     const dir = tempDir()
     const path = await reviewFixture(dir)
@@ -1299,5 +1398,292 @@ describe('genoffice docs: comments, revisions, header/footer, images, charts', (
     const rejected = await run(['docs', 'apply', path, '--ops', bad, '--json'])
     expect(rejected.code).toBe(1)
     expect(rejected.json().message).toContain('no style "Nope"')
+  })
+
+  it('creates docx with document profile and validates OOXML structure and stats', async () => {
+    const dir = tempDir()
+    const md = join(dir, 'paper.md')
+    writeFileSync(
+      md,
+      '# Scientific Research Report\n\n' +
+        '## Abstract\n\n' +
+        'This study investigates local-first document processing workflows.\n\n' +
+        '## Methodology\n\n' +
+        '| Phase | Target | Result |\n' +
+        '| --- | --- | --- |\n' +
+        '| 1 | Baseline | Validated |\n' +
+        '| 2 | Stress | Passed |\n\n' +
+        '## References\n\n' +
+        '1. GenOffice Engineering Team, 2026.\n',
+    )
+    const outDocx = join(dir, 'paper.docx')
+    const res = await run([
+      'create',
+      '--type',
+      'docx',
+      '--from',
+      md,
+      '--profile',
+      'scientific-report',
+      '--out',
+      outDocx,
+      '--json',
+    ])
+    expect(res.code).toBe(0)
+    const detail = res.json().detail
+    expect(detail.profile).toBe('scientific-report')
+    expect(detail.stats.headings).toBeGreaterThanOrEqual(3)
+    expect(detail.stats.tables).toBe(1)
+    expect(detail.stats.paragraphs).toBeGreaterThanOrEqual(5)
+
+    const bytes = readFileSync(outDocx)
+    const validation = await validateGeneratedDocx(bytes, {
+      requireHeading: true,
+      requireTable: true,
+      minParagraphs: 5,
+      expectedText: 'Scientific Research Report',
+    })
+    expect(validation.ok).toBe(true)
+    expect(validation.errors).toHaveLength(0)
+
+    // Check footer page number in ZIP package
+    const zip = await JSZip.loadAsync(bytes)
+    const footerFiles = Object.keys(zip.files).filter((f) => /^word\/footer\d*\.xml$/.test(f))
+    expect(footerFiles.length).toBeGreaterThan(0)
+    const footerXml = await zip.file(footerFiles[0]!)!.async('string')
+    expect(footerXml).toMatch(/PAGE|fldSimple/)
+  })
+
+  it('validateGeneratedDocx catches empty files and missing package parts', async () => {
+    const emptyResult = await validateGeneratedDocx(new Uint8Array(0))
+    expect(emptyResult.ok).toBe(false)
+    expect(emptyResult.errors[0]).toContain('empty')
+
+    const corruptResult = await validateGeneratedDocx(new Uint8Array([1, 2, 3, 4]))
+    expect(corruptResult.ok).toBe(false)
+    expect(corruptResult.errors[0]).toContain('Invalid ZIP/OOXML package')
+
+    const docxBytes = readFileSync(DOCX)
+    const cleanResult = await validateGeneratedDocx(docxBytes, { checkPlaceholders: true })
+    expect(cleanResult.ok).toBe(true)
+  })
+
+  it('validateGeneratedDocx allows legitimate terms like null hypothesis and undefined behavior', async () => {
+    const bytes = await markdownToDocx(
+      '# Statistical Analysis\n\nThe null hypothesis states that there is no relationship. In programming, undefined behavior must be avoided.',
+    )
+    const result = await validateGeneratedDocx(bytes, { checkPlaceholders: true })
+    expect(result.ok).toBe(true)
+    expect(result.errors).toHaveLength(0)
+  })
+
+  it('markdownToDocx applies profile typography (font, spacing, margins) for all 6 profiles', async () => {
+    const testCases: Array<{
+      profile: 'general' | 'report' | 'scientific-report' | 'memo' | 'proposal' | 'letter'
+      font: string
+      sz: number
+      line: number
+      after: number
+      margins: { top: number; right: number; bottom: number; left: number }
+    }> = [
+      {
+        profile: 'general',
+        font: 'Calibri',
+        sz: 22,
+        line: 276,
+        after: 120,
+        margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+      },
+      {
+        profile: 'report',
+        font: 'Calibri',
+        sz: 22,
+        line: 288,
+        after: 120,
+        margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+      },
+      {
+        profile: 'scientific-report',
+        font: 'Times New Roman',
+        sz: 24,
+        line: 312,
+        after: 120,
+        margins: { top: 1417, right: 1417, bottom: 1417, left: 1417 },
+      },
+      {
+        profile: 'memo',
+        font: 'Arial',
+        sz: 22,
+        line: 276,
+        after: 120,
+        margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+      },
+      {
+        profile: 'proposal',
+        font: 'Calibri',
+        sz: 23,
+        line: 288,
+        after: 120,
+        margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+      },
+      {
+        profile: 'letter',
+        font: 'Times New Roman',
+        sz: 24,
+        line: 276,
+        after: 160,
+        margins: { top: 1701, right: 1440, bottom: 1440, left: 1440 },
+      },
+    ]
+
+    for (const tc of testCases) {
+      const markdown = [
+        `# ${tc.profile} Document Title`,
+        '',
+        'This is the executive summary paragraph.',
+        '',
+        '## Section 1: Data Analysis',
+        '',
+        '- First bullet observation',
+        '- Second bullet observation',
+        '',
+        '1. Ordered step alpha',
+        '2. Ordered step beta',
+        '',
+        '| Metric | Value | Status |',
+        '|---|---|---|',
+        '| Revenue | $10M | Target |',
+        '| Growth | 25% | On track |',
+        '',
+        'Final closing paragraph.',
+      ].join('\n')
+
+      const bytes = await markdownToDocx(markdown, { documentType: tc.profile })
+      const validation = await validateGeneratedDocx(bytes, {
+        requireHeading: true,
+        requireTable: true,
+        minParagraphs: 3,
+        expectedText: tc.profile,
+        checkPlaceholders: true,
+      })
+      expect(
+        validation.ok,
+        `${tc.profile} validation failed: ${validation.errors.join(', ')}`,
+      ).toBe(true)
+
+      const zip = await JSZip.loadAsync(bytes)
+      const stylesXml = await zip.file('word/styles.xml')!.async('string')
+      expect(stylesXml).toContain(`w:ascii="${tc.font}"`)
+      expect(stylesXml).toContain(`w:sz w:val="${tc.sz}"`)
+      expect(stylesXml).toContain(`w:line="${tc.line}"`)
+      expect(stylesXml).toContain(`w:after="${tc.after}"`)
+
+      const docXml = await zip.file('word/document.xml')!.async('string')
+      expect(docXml).toContain(`w:top="${tc.margins.top}"`)
+      expect(docXml).toContain(`w:right="${tc.margins.right}"`)
+      expect(docXml).toContain(`w:bottom="${tc.margins.bottom}"`)
+      expect(docXml).toContain(`w:left="${tc.margins.left}"`)
+    }
+  })
+
+  it('markdownToDocx preserves backward compatibility when no profile is requested', async () => {
+    const bytes = await markdownToDocx('# Standard Title\n\nDefault markdown content.')
+    const validation = await validateGeneratedDocx(bytes, {
+      requireHeading: true,
+      minParagraphs: 1,
+      expectedText: 'Standard Title',
+      checkPlaceholders: true,
+    })
+    expect(validation.ok).toBe(true)
+
+    const zip = await JSZip.loadAsync(bytes)
+    const stylesXml = await zip.file('word/styles.xml')!.async('string')
+    expect(stylesXml).toContain('w:ascii="Calibri"')
+    expect(stylesXml).toContain('w:sz w:val="22"')
+    expect(stylesXml).toContain('w:line="276"')
+  })
+
+  it('rejects unknown profile name with usage error', async () => {
+    const dir = tempDir()
+    const md = join(dir, 'test.md')
+    writeFileSync(md, '# Title\n\nContent.')
+    const out = join(dir, 'test.docx')
+    const r = await run([
+      'create',
+      '--type',
+      'docx',
+      '--from',
+      md,
+      '--profile',
+      'non-existent-profile',
+      '--out',
+      out,
+      '--json',
+    ])
+    expect(r.code).not.toBe(0)
+    expect(r.json().status).toBe('error')
+    expect(r.json().message).toContain('unknown profile "non-existent-profile"')
+
+    const rHuman = await run([
+      'create',
+      '--type',
+      'docx',
+      '--from',
+      md,
+      '--profile',
+      'non-existent-profile',
+      '--out',
+      out,
+    ])
+    expect(rHuman.code).not.toBe(0)
+    expect(rHuman.stderr).toContain('unknown profile "non-existent-profile"')
+  })
+
+  it('creates docx from HTML with custom document profile typography', async () => {
+    const dir = tempDir()
+    const html = join(dir, 'paper.html')
+    writeFileSync(html, '<h1>Research Findings</h1><p>Data analysis and conclusion.</p>')
+    const out = join(dir, 'paper.docx')
+    const r = await run([
+      'create',
+      '--type',
+      'docx',
+      '--from',
+      html,
+      '--profile',
+      'scientific-report',
+      '--out',
+      out,
+      '--json',
+    ])
+    expect(r.code).toBe(0)
+    const zip = await JSZip.loadAsync(readFileSync(out))
+    const stylesXml = await zip.file('word/styles.xml')!.async('string')
+    expect(stylesXml).toContain('w:ascii="Times New Roman"')
+    expect(stylesXml).toContain('w:sz w:val="24"')
+  })
+
+  it('validateGeneratedDocx detects malformed XML and broken relationship targets', async () => {
+    const validBytes = await markdownToDocx('# Valid Document\n\nSome paragraph.')
+    const zip = await JSZip.loadAsync(validBytes)
+
+    // 1. Corrupt XML in document.xml
+    zip.file('word/document.xml', '<w:document><w:body><unclosed-tag>')
+    const malformedBytes = await zip.generateAsync({ type: 'uint8array' })
+    const malformedResult = await validateGeneratedDocx(malformedBytes)
+    expect(malformedResult.ok).toBe(false)
+    expect(malformedResult.errors.some((e) => e.includes('not well-formed XML'))).toBe(true)
+
+    // 2. Add broken relationship target
+    const zip2 = await JSZip.loadAsync(validBytes)
+    const relsXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rIdBroken" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/nonexistent.png"/>
+</Relationships>`
+    zip2.file('word/_rels/document.xml.rels', relsXml)
+    const brokenRelsBytes = await zip2.generateAsync({ type: 'uint8array' })
+    const brokenResult = await validateGeneratedDocx(brokenRelsBytes)
+    expect(brokenResult.ok).toBe(false)
+    expect(brokenResult.errors.some((e) => e.includes('Broken package relationship'))).toBe(true)
   })
 })

@@ -1,6 +1,7 @@
 import { agyErrorKindOf, AgyError } from './agy-errors'
 import { isAiNetworkError } from './network-error'
 import { isAiOverloadedError } from './overload-error'
+import { isAiRegionBlockedError } from './region-error'
 import { AiCreditsError } from './protocols/shared'
 import { AiTimeoutError } from './watchdog'
 import type { AiStreamChunk } from './types'
@@ -40,5 +41,6 @@ export function classifyAiStreamError(err: unknown): AiStreamErrorFields {
   if (err instanceof AiCreditsError) return { errorCode: 'credits' }
   if (isAiNetworkError(err)) return { errorCode: 'network' }
   if (isAiOverloadedError(err)) return { errorCode: 'overloaded' }
+  if (isAiRegionBlockedError(err)) return { errorCode: 'region' }
   return {}
 }

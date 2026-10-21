@@ -5,6 +5,7 @@ import {
   createDocumentSkill,
   createIpcTransport,
   createKnowledgeBaseSkill,
+  type CreateDocumentExecutionContext,
   type IpcStreamChunk,
   type KbFileInfo,
 } from '@genoffice/agent-core'
@@ -51,14 +52,7 @@ import {
 import { Composer, type ComposerLabels } from './home-chat/Composer'
 import { EmptyState } from './home-chat/EmptyState'
 import { HistoryRail, type HistoryLabels } from './home-chat/HistoryRail'
-import { Launcher, type LauncherLabels } from './home-chat/Launcher'
-import {
-  IDLE_STATE,
-  createLauncherController,
-  finishOf,
-  type LauncherController,
-  type LauncherState,
-} from './home-chat/launcher-status'
+
 import {
   agySystemSuffix,
   buildRetrievalContext,
@@ -96,11 +90,17 @@ type Props = {
   suppressDock?: boolean
   onNavigateToRecents?: () => void
   onOpenPath?: (path: string) => boolean | Promise<boolean> | void
+  isOpenPath?: (path: string) => boolean | Promise<boolean>
   onOpenAskWorkspace?: () => void
   onOpenModelSettings?: () => void
 }
 
-type Conversation = { id: string | null; dead: boolean; requested: boolean }
+type Conversation = {
+  id: string | null
+  executionId?: string
+  dead: boolean
+  requested: boolean
+}
 type Toast = { kind: 'deleted'; session: HomeChatSession } | { kind: 'cleared' }
 
 const LS_LAST = 'genoffice.homeChat.last'
@@ -182,10 +182,11 @@ export function HomeChat({
   api: homeApi,
   i18n,
   dockLocation = 'home',
-  workspaceActive = false,
+  workspaceActive,
   suppressDock = false,
   onNavigateToRecents,
   onOpenPath,
+  isOpenPath,
   onOpenAskWorkspace,
   onOpenModelSettings,
 }: Props) {
@@ -214,7 +215,7 @@ export function HomeChat({
     setDockTarget((previous) => (previous === target ? previous : target))
   }, [dockLocation])
 
-  const panelVisible = isWorkspace || open
+  const panelVisible = Boolean(isWorkspace || (workspaceActive === undefined && open))
 
   useEffect(() => {
     announceChatPanel(panelVisible)
@@ -223,7 +224,6 @@ export function HomeChat({
   const [input, setInput] = useState('')
   const [items, setItems] = useState<ChatItem[]>([])
   const [busy, setBusy] = useState(false)
-  const [invitation, setInvitation] = useState(true)
   const [settingsReady, setSettingsReady] = useState(false)
   const [settingsFailed, setSettingsFailed] = useState(false)
   const [notice, setNotice] = useState('')
@@ -245,12 +245,14 @@ export function HomeChat({
   const [visibleCount, setVisibleCount] = useState(WINDOW_PAGE)
   const [showJump, setShowJump] = useState(false)
   const [pendingSend, setPendingSend] = useState<string | null>(null)
-  const [launcherState, setLauncherState] = useState<LauncherState>(IDLE_STATE)
-  const rootRef = useRef<HTMLDivElement>(null)
+  const currentUserTurnIdRef = useRef<string>('')
+  const openedSlotsRef = useRef<Set<string>>(new Set())
+  const openedPathsRef = useRef<Set<string>>(new Set())
+  const openStatesRef = useRef<Map<string, 'opening' | 'opened' | 'failed'>>(new Map())
+  const inFlightOpenRef = useRef<Map<string, Promise<boolean>>>(new Map())
   const panelRef = useRef<HTMLElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const launcherRef = useRef<HTMLButtonElement>(null)
   const openRef = useRef(false)
   const mountedRef = useRef(false)
   const loopRef = useRef<AgentLoop | null>(null)
@@ -262,7 +264,12 @@ export function HomeChat({
   const stickRef = useRef(true)
   const prependHeightRef = useRef<number | null>(null)
   const needsSeedRef = useRef(false)
-  const convRef = useRef<Conversation>({ id: null, dead: false, requested: false })
+  const convRef = useRef<Conversation>({
+    id: null,
+    executionId: activeSessionId,
+    dead: false,
+    requested: false,
+  })
   const lastSavedRef = useRef<ChatItem[] | null>(null)
   const saveTimerRef = useRef(0)
   const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
@@ -276,10 +283,6 @@ export function HomeChat({
   const restoreTopRef = useRef<number | null>(null)
   const resizingRef = useRef(false)
   const stoppedRef = useRef(false)
-  const prevBusyRef = useRef(false)
-  const launcherCtlRef = useRef<LauncherController | null>(null)
-  if (!launcherCtlRef.current) launcherCtlRef.current = createLauncherController(setLauncherState)
-  const launcherCtl = launcherCtlRef.current
   const settingsRef = useRef<Awaited<ReturnType<HomeApi['getAiSettings']>> | null>(null)
   /** the files the model has been given ids for; per turn for agy, per conversation otherwise */
   const toolTableRef = useRef<FileRefTable | null>(null)
@@ -310,20 +313,183 @@ export function HomeChat({
   const corpusRequestRef = useRef(0)
   const createdPathsRef = useRef(new Set<string>())
   const [corpusCount, setCorpusCount] = useState<number | null>(null)
+  const onOpenPathRef = useRef(onOpenPath)
+  onOpenPathRef.current = onOpenPath
+  const isOpenPathRef = useRef(isOpenPath)
+  isOpenPathRef.current = isOpenPath
+
+  const isAutoOpenAuthorized = useCallback(
+    (
+      owner: Conversation,
+      generation: number,
+      run: number,
+      context?: CreateDocumentExecutionContext,
+    ): boolean => {
+      if (!mountedRef.current) return false
+      if (convRef.current !== owner || owner.dead) return false
+      if (generation !== runGenerationRef.current) return false
+      if (run === 0 || activeRunRef.current === 0 || activeRunRef.current !== run) return false
+      if (
+        !context?.sessionId ||
+        !convRef.current?.executionId ||
+        convRef.current.executionId !== context.sessionId
+      ) {
+        return false
+      }
+      if (
+        !context?.userTurnId ||
+        !currentUserTurnIdRef.current ||
+        currentUserTurnIdRef.current !== context.userTurnId
+      ) {
+        return false
+      }
+      return true
+    },
+    [],
+  )
+
+  const openDocumentPath = useCallback(
+    (path: string, execContext?: CreateDocumentExecutionContext): Promise<boolean> => {
+      const existing = inFlightOpenRef.current.get(path)
+      if (existing) {
+        return existing
+      }
+
+      const owner = convRef.current
+      const generation = runGenerationRef.current
+      const run = activeRunRef.current
+
+      let cleanup = () => {}
+      const openPromise = (async () => {
+        try {
+          if (!isAutoOpenAuthorized(owner, generation, run, execContext)) {
+            return false
+          }
+
+          if (isOpenPathRef.current) {
+            try {
+              await isOpenPathRef.current(path)
+            } catch {
+              // ignore error and proceed with opening
+            }
+          }
+
+          if (!isAutoOpenAuthorized(owner, generation, run, execContext)) {
+            return false
+          }
+
+          openStatesRef.current.set(path, 'opening')
+          let success = false
+          if (onOpenPathRef.current) {
+            const res = await onOpenPathRef.current(path)
+            success = typeof res === 'boolean' ? res : true
+          } else if (typeof api.openPath === 'function') {
+            success = await api.openPath(path)
+          }
+
+          if (!isAutoOpenAuthorized(owner, generation, run, execContext)) {
+            return false
+          }
+
+          if (success) {
+            openStatesRef.current.set(path, 'opened')
+            openedPathsRef.current.add(path)
+          } else {
+            openStatesRef.current.set(path, 'failed')
+          }
+          return success
+        } catch (err) {
+          console.error('Failed to open document:', err)
+          if (isAutoOpenAuthorized(owner, generation, run, execContext)) {
+            openStatesRef.current.set(path, 'failed')
+          }
+          return false
+        } finally {
+          cleanup()
+        }
+      })()
+
+      cleanup = () => {
+        if (inFlightOpenRef.current.get(path) === openPromise) {
+          inFlightOpenRef.current.delete(path)
+        }
+      }
+
+      inFlightOpenRef.current.set(path, openPromise)
+      return openPromise
+    },
+    [api, isAutoOpenAuthorized],
+  )
+
+  const manualOpenPath = useCallback(
+    async (path: string): Promise<boolean> => {
+      if (!mountedRef.current) return false
+      try {
+        if (isOpenPathRef.current) {
+          try {
+            await isOpenPathRef.current(path)
+          } catch {
+            // best effort
+          }
+        }
+        if (!mountedRef.current) return false
+        if (onOpenPathRef.current) {
+          const res = await onOpenPathRef.current(path)
+          return typeof res === 'boolean' ? res : true
+        } else if (typeof api.openPath === 'function') {
+          return await api.openPath(path)
+        }
+        return false
+      } catch (err) {
+        console.error('Failed to open document manually:', err)
+        return false
+      }
+    },
+    [api],
+  )
+
   const docSkillRef = useRef<ReturnType<typeof createDocumentSkill> | null>(null)
   if (!docSkillRef.current) {
     docSkillRef.current = createDocumentSkill({
+      getSessionId: () => convRef.current?.executionId || activeSessionIdRef.current || undefined,
+      getExecutionId: () => convRef.current?.executionId || undefined,
+      getUserTurnId: () => currentUserTurnIdRef.current || undefined,
+      fileExists: async (path: string) => {
+        try {
+          if (typeof api.statPaths === 'function') {
+            const entries = await api.statPaths([path])
+            return Boolean(entries[0] && !entries[0].missing)
+          }
+          return true
+        } catch {
+          return true
+        }
+      },
       create: async (request) => {
         const owner = convRef.current
         const table = fileTableRef.current
         const generation = runGenerationRef.current
         const run = activeRunRef.current
+        const sessionId =
+          request.sessionId ||
+          convRef.current?.executionId ||
+          activeSessionIdRef.current ||
+          undefined
+        const userTurnId = request.userTurnId || currentUserTurnIdRef.current || undefined
+        const hostOpId = request.callId || request.documentSlot || undefined
+        const documentSlot = request.documentSlot || hostOpId
+
         const result = await api.kbCreateDocument({
           title: request.title,
           format: request.format,
           content: request.content,
+          sessionId,
+          userTurnId,
+          documentSlot,
+          callId: hostOpId,
+          documentType: request.documentType,
         })
-        let opened = false
+
         if (
           mountedRef.current &&
           convRef.current === owner &&
@@ -337,22 +503,21 @@ export function HomeChat({
             path: result.path,
             name: result.path.split(/[\\/]/).pop() ?? result.path,
           })
-          const shouldAutoOpen = request.open ?? request.format === 'docx'
-          if (shouldAutoOpen) {
-            try {
-              if (onOpenPath) {
-                const res = await onOpenPath(result.path)
-                opened = typeof res === 'boolean' ? res : true
-              } else if (typeof api.openPath === 'function') {
-                opened = await api.openPath(result.path)
-              }
-            } catch (err) {
-              console.error('Failed to open created document:', err)
-              opened = false
-            }
-          }
         }
-        return { path: result.path, opened }
+        return { path: result.path }
+      },
+      open: (path, context) => {
+        const owner = convRef.current
+        const generation = runGenerationRef.current
+        const run = activeRunRef.current
+        if (!isAutoOpenAuthorized(owner, generation, run, context)) {
+          return false
+        }
+        return openDocumentPath(path, context)
+      },
+      isOpen: (path) => {
+        if (isOpenPathRef.current) return isOpenPathRef.current(path)
+        return false
       },
     })
   }
@@ -497,11 +662,6 @@ export function HomeChat({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [i18n.lang])
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setInvitation(false), 8_000)
-    return () => window.clearTimeout(timer)
-  }, [])
 
   const loadSettings = useCallback(async () => {
     try {
@@ -892,7 +1052,7 @@ export function HomeChat({
     if (el) scrollMemoRef.current = { top: el.scrollTop, stick: stickRef.current }
     openRef.current = false
     setOpen(false)
-    if (restoreFocus) window.setTimeout(() => launcherRef.current?.focus(), 0)
+    if (restoreFocus) window.setTimeout(() => inputRef.current?.focus(), 0)
   }, [])
 
   useEffect(() => {
@@ -905,7 +1065,7 @@ export function HomeChat({
     const onPointerDown = (event: PointerEvent) => {
       if (event.button !== 0 || resizingRef.current) return
       const path = event.composedPath()
-      if (rootRef.current && path.includes(rootRef.current)) return
+      if (panelRef.current && path.includes(panelRef.current)) return
       if (
         path.some((node) => node instanceof HTMLElement && node.classList.contains('clip-suggest'))
       )
@@ -919,26 +1079,6 @@ export function HomeChat({
       document.removeEventListener('pointerdown', onPointerDown, true)
     }
   }, [closePanel, open])
-
-  // Launcher status: the controller owns the working / answer-ready / error chip.
-  useEffect(() => {
-    launcherCtl.setPanelOpen(open)
-    if (!open) return
-    const onFocus = () => launcherCtl.acknowledge()
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [launcherCtl, open])
-  useEffect(() => {
-    if (busy && !prevBusyRef.current) {
-      stoppedRef.current = false
-      launcherCtl.runStarted()
-    } else if (!busy && prevBusyRef.current) {
-      launcherCtl.runFinished(finishOf(itemsRef.current.at(-1), stoppedRef.current))
-      stoppedRef.current = false
-    }
-    prevBusyRef.current = busy
-  }, [busy, launcherCtl])
-  useEffect(() => () => launcherCtl.dispose(), [launcherCtl])
 
   useEffect(() => {
     const onResize = () => setSize((previous) => clampSize(previous.w, previous.h))
@@ -1032,7 +1172,10 @@ export function HomeChat({
   const adopt = (conv: Conversation, nextItems: ChatItem[], nextTitle: string) => {
     convRef.current = conv
     createdPathsRef.current = new Set()
-    const nextSessionId = conv.id ?? crypto.randomUUID()
+    openStatesRef.current.clear()
+    inFlightOpenRef.current.clear()
+    const nextSessionId = conv.id ?? conv.executionId ?? crypto.randomUUID()
+    conv.executionId = nextSessionId
     setActiveSessionId(nextSessionId)
     activeSessionIdRef.current = nextSessionId
     clearActiveRequest()
@@ -1057,7 +1200,7 @@ export function HomeChat({
     openTokenRef.current++
     launchTokenRef.current++
     detachCurrent()
-    adopt({ id: null, dead: false, requested: false }, [], '')
+    adopt({ id: null, executionId: crypto.randomUUID(), dead: false, requested: false }, [], '')
     collapseRailWhenNarrow()
     focusInput()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1102,7 +1245,11 @@ export function HomeChat({
           error: tRef.current('homeChatInterrupted'),
         })
       }
-      adopt({ id: session.id, dead: false, requested: true }, restored, session.title)
+      adopt(
+        { id: session.id, executionId: session.id, dead: false, requested: true },
+        restored,
+        session.title,
+      )
       collapseRailWhenNarrow()
       focusInput()
     },
@@ -1215,11 +1362,10 @@ export function HomeChat({
       // Reopening from the "answer ready" chip lands on the latest message; a plain
       // restore returns to where the user was reading.
       const memo = scrollMemoRef.current
-      const resume = memo && !memo.stick && !launcherCtl.getState().unread
+      const resume = Boolean(memo && !memo.stick)
       stickRef.current = !resume
-      restoreTopRef.current = resume ? memo.top : null
+      restoreTopRef.current = resume ? memo!.top : null
       setOpen(true)
-      setInvitation(true)
       focusInput()
       void loadSettings()
 
@@ -1243,14 +1389,18 @@ export function HomeChat({
       // Pristine open: restore the last conversation
       void restoreLast(token)
     },
-    [focusInput, launcherCtl, loadSettings, openSession, restoreLast, startNew],
+    [focusInput, loadSettings, openSession, restoreLast, startNew],
   )
 
   useEffect(() => {
-    if (workspaceActive && !initRef.current) {
-      openPanel('resume')
+    if (workspaceActive) {
+      if (!initRef.current) {
+        openPanel('resume')
+      }
+    } else if (workspaceActive !== undefined) {
+      closePanel(false)
     }
-  }, [workspaceActive, openPanel])
+  }, [workspaceActive, openPanel, closePanel])
 
   // ---- sending ------------------------------------------------------------
 
@@ -1316,6 +1466,11 @@ export function HomeChat({
       }
       const generation = ++runGenerationRef.current
       activeRunRef.current = generation
+      currentUserTurnIdRef.current = crypto.randomUUID()
+      openedSlotsRef.current.clear()
+      openedPathsRef.current.clear()
+      openStatesRef.current.clear()
+      inFlightOpenRef.current.clear()
       clearActiveRequest()
       const userId = ++itemId.current
       const assistantId = ++itemId.current
@@ -1459,6 +1614,9 @@ export function HomeChat({
   const stop = () => {
     stoppedRef.current = true
     runGenerationRef.current++
+    activeRunRef.current = 0
+    currentUserTurnIdRef.current = ''
+    inFlightOpenRef.current.clear()
     batcherRef.current?.flush()
     loopRef.current?.reset()
     clearActiveRequest()
@@ -1524,6 +1682,8 @@ export function HomeChat({
   // Another part of the app (clipboard suggestions) can hand the assistant some text.
   const openPanelRef = useRef(openPanel)
   openPanelRef.current = openPanel
+  const onOpenAskWorkspaceRef = useRef(onOpenAskWorkspace)
+  onOpenAskWorkspaceRef.current = onOpenAskWorkspace
   useEffect(() => {
     const onPrefill = (event: Event) => {
       const detail = (event as CustomEvent<ChatPrefillDetail>).detail
@@ -1532,6 +1692,9 @@ export function HomeChat({
         detail.intent ?? (detail.continue === true ? 'resume' : 'new')
       touchedRef.current = true
       launchTokenRef.current++
+      if (onOpenAskWorkspaceRef.current) {
+        onOpenAskWorkspaceRef.current()
+      }
       openPanelRef.current(intent, detail.sessionId)
       setInput(detail.text)
       setPendingSend(detail.send === true ? detail.text : null)
@@ -1580,16 +1743,6 @@ export function HomeChat({
   const handleStop = useCallback(() => stopRef.current(), [])
   const heading = title || t('homeChatNew')
   const lastItem = items.at(-1)
-  const launcherLabels: LauncherLabels = {
-    launch: t('homeChatLaunch'),
-    close: t('homeChatClose'),
-    invite: t('homeChatInvite'),
-    working: t('homeChatWorking'),
-    done: t('homeChatDone'),
-    error: t('homeChatErrorChip'),
-    stop: t('homeChatStopChip'),
-    elapsed: (n) => t('homeChatElapsed', { n }),
-  }
 
   const showEarlier = () => {
     prependHeightRef.current = scrollRef.current?.scrollHeight ?? null
@@ -1823,7 +1976,7 @@ export function HomeChat({
                     onRevealSource={revealSource}
                     onRetry={retry}
                     onSaveAnswer={handleSaveAnswer}
-                    onOpenPath={onOpenPath ?? ((p) => void api.openPath(p))}
+                    onOpenPath={(p) => void manualOpenPath(p)}
                   />
                 ))}
               </div>
@@ -1914,40 +2067,8 @@ export function HomeChat({
               : ''
           : ''}
       </span>
-      {isWorkspace && target ? (
-        createPortal(panelNode, target)
-      ) : !isWorkspace ? (
-        <div ref={rootRef} className="home-chat-root">
-          {panelNode}
-          {dockTarget ? createPortal(dock, dockTarget) : dock}
-          {!suppressDock && (
-            <Launcher
-              state={launcherState}
-              open={open}
-              invitation={invitation}
-              starting={
-                lastItem?.role === 'assistant' && lastItem.streaming && !lastItem.text
-                  ? (lastItem.status ?? '')
-                  : ''
-              }
-              labels={launcherLabels}
-              buttonRef={launcherRef}
-              onToggle={() => {
-                if (open) {
-                  closePanel()
-                } else if (onOpenAskWorkspace) {
-                  onOpenAskWorkspace()
-                } else {
-                  openPanel()
-                }
-              }}
-              onStop={handleStop}
-              onInvitation={setInvitation}
-              onHold={launcherCtl.setHovered}
-            />
-          )}
-        </div>
-      ) : null}
+      {target ? createPortal(panelNode, target) : workspaceActive === false ? null : panelNode}
+      {dockTarget && dock ? createPortal(dock, dockTarget) : null}
     </>
   )
 }

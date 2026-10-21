@@ -26,6 +26,7 @@ import type {
   LegacyDocSettings,
   LegacyRecoveryEntry,
 } from '../../shared/home-api'
+import { AUTHOR_NAME_MAX, isCloudflareEndpoint } from '../../shared/home-api'
 import type { UpdateUiState } from '../../shared/update-api'
 import {
   DEFAULT_MAX_OUTPUT_TOKENS,
@@ -54,7 +55,7 @@ import type {
 } from '@genoffice/ai-provider'
 import { useI18n } from './locale'
 import type { StringKey, TFunc } from './locale'
-import type { AiCatalogEntry, DocTheme, UiTheme } from '../../shared/home-api'
+import type { AiCatalogEntry, AuthorNameSetting, DocTheme, UiTheme } from '../../shared/home-api'
 import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import { DocumentMemorySettings } from './DocumentMemorySettings'
@@ -468,7 +469,6 @@ function AiModelPane({ t }: { t: TFunc }) {
   const [modelListCount, setModelListCount] = useState(0)
   const [modelRefresh, setModelRefresh] = useState(0)
   const [manualModel, setManualModel] = useState(false)
-  const builtInCatalog = useRef(catalog)
   /** free-typed value of the output-cap field; committed (and clamped) on blur */
   const [maxTokensDraft, setMaxTokensDraft] = useState<string | null>(null)
 
@@ -536,6 +536,8 @@ function AiModelPane({ t }: { t: TFunc }) {
   const endpointConfig = settings ? settings.providers[settings.provider] : undefined
   const configuredBaseUrl = endpointConfig?.baseUrl?.trim() || ''
   const endpointBaseUrl = (configuredBaseUrl || selectedMeta?.defaultBaseUrl || '').trim()
+  /** the lists as shipped, restored when a live list is withdrawn */
+  const shippedModelsRef = useRef(new Map(catalog.map((entry) => [entry.id, entry.models])))
   const endpointApiKey = endpointConfig?.apiKey ?? ''
   // The probe speaks the endpoint's declared protocol: an Anthropic- or
   // Gemini-shaped gateway answers a different route, and the list it returns
@@ -561,8 +563,7 @@ function AiModelPane({ t }: { t: TFunc }) {
     if (previousBase !== undefined && previousBase !== endpointBaseUrl) {
       listedForRef.current.delete(endpointProvider)
       probedProfilesRef.current = undefined
-      const baseline = builtInCatalog.current.find((entry) => entry.id === endpointProvider)
-      setCatalog(foldModels(endpointProvider, baseline?.models ?? []))
+      setCatalog(foldModels(endpointProvider, shippedModelsRef.current.get(endpointProvider) ?? []))
     }
     if (endpointProvider === 'custom' && !endpointBaseUrl) return
     if (
@@ -905,6 +906,7 @@ function AiModelPane({ t }: { t: TFunc }) {
             ariaLabel={t('setAiModelId')}
             options={meta.models.map((m) => ({ value: m, label: m }))}
             onPick={(m) => updateConfig({ model: m })}
+            searchPlaceholder={meta.models.length > 12 ? t('setAiModelSearch') : undefined}
           />
         ) : (
           <input
@@ -1266,9 +1268,13 @@ type TestResult = { ok: boolean; error?: string }
 const DECISION_ENDPOINTS: { value: DecisionEndpoint; label: string }[] = [
   { value: 'openrouter', label: 'Jev (OpenRouter)' },
   { value: 'direct', label: 'Jev (TypeSafe API)' },
-  { value: 'perplexity', label: 'Perplexity' },
+  { value: 'perplexity', label: 'Perplexity (v1 27B)' },
+  { value: 'perplexity-v12', label: 'Perplexity (v1.2)' },
+  { value: 'perplexity-flash', label: 'Perplexity (Flash v1.2)' },
   { value: 'liquid', label: 'Liquid AI (d1)' },
-  { value: 'cloudflare', label: 'Cloudflare' },
+  { value: 'liquid-ultra', label: 'Liquid AI (d1-ultra)' },
+  { value: 'cloudflare', label: 'Cloudflare (Clef)' },
+  { value: 'cloudflare-flash', label: 'Cloudflare (Clef-flash)' },
   { value: 'kev', label: 'Kev (local)' },
   { value: 'rizzo', label: 'Rizzo Flow (local)' },
   { value: 'custom', label: 'Custom (/v1/systemone)' },
@@ -1838,15 +1844,16 @@ function AiMediaPane({
                   )}
                 </>
               )}
+              {isCloudflareEndpoint(fileSearch.endpoint) &&
+                textRow(
+                  'set-search-jev-account',
+                  'setSearchRerankAccount',
+                  fileSearch.cloudflareAccountId,
+                  '',
+                  (v) => setFileSearch({ ...fileSearch, cloudflareAccountId: v }),
+                )}
               {fileSearch.endpoint === 'cloudflare' && (
                 <>
-                  {textRow(
-                    'set-search-jev-account',
-                    'setSearchRerankAccount',
-                    fileSearch.cloudflareAccountId,
-                    '',
-                    (v) => setFileSearch({ ...fileSearch, cloudflareAccountId: v }),
-                  )}
                   {textRow(
                     'set-search-jev-cf-model',
                     'setSearchRerankCustomModel',
@@ -1961,6 +1968,7 @@ export function SettingsModal({
   const [updateBusy, setUpdateBusy] = useState(false)
   const [updateSaving, setUpdateSaving] = useState(false)
   const [updateNotice, setUpdateNotice] = useState('')
+  const [authorName, setAuthorName] = useState<AuthorNameSetting>({ value: '', fallback: '' })
   const [channel, setChannel] = useState<'stable' | 'beta'>('stable')
   const [legacyDoc, setLegacyDoc] = useState<LegacyDocSettings>({
     mode: 'online',
@@ -2009,6 +2017,9 @@ export function SettingsModal({
       .catch(() => {
         if (alive) setUpdateNotice('—')
       })
+    void window.aiOffice.getAuthorName?.().then((v) => {
+      if (alive) setAuthorName(v)
+    })
     void window.aiOffice.getUpdateChannel?.().then((ch) => {
       if (alive) setChannel(ch)
     })
@@ -2089,6 +2100,10 @@ export function SettingsModal({
   const applyDocumentTheme = (next: DocTheme) => {
     setDocTheme(next)
     void window.aiOffice.setDocumentTheme(next)
+  }
+
+  const commitAuthorName = () => {
+    void window.aiOffice.setAuthorName?.(authorName.value).then(setAuthorName)
   }
 
   const updateAiPrefs = (patch: Partial<AiPanelPrefs>) => {
@@ -2208,6 +2223,33 @@ export function SettingsModal({
                       ariaLabel={t('language')}
                       options={LANG_OPTIONS.map((opt) => ({ value: opt.value, label: opt.label }))}
                       onPick={(v) => setLang(v as typeof lang)}
+                    />
+                  </div>
+                  <div className="set-field">
+                    <div className="set-field-text">
+                      <div className="set-field-stack">
+                        <label className="set-field-label" htmlFor="set-author-name">
+                          {t('setAuthorName')}
+                        </label>
+                        <div className="set-field-desc">{t('setAuthorNameDesc')}</div>
+                      </div>
+                    </div>
+                    <input
+                      id="set-author-name"
+                      className="set-input"
+                      type="text"
+                      value={authorName.value}
+                      placeholder={authorName.fallback}
+                      maxLength={AUTHOR_NAME_MAX}
+                      spellCheck={false}
+                      autoComplete="off"
+                      onChange={(e) =>
+                        setAuthorName((prev) => ({ ...prev, value: e.target.value }))
+                      }
+                      onBlur={commitAuthorName}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') e.currentTarget.blur()
+                      }}
                     />
                   </div>
                   <div className="set-field">
