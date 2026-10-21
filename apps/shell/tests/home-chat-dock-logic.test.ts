@@ -4,6 +4,7 @@ import {
   canAutofocusDock,
   dockSearchQuery,
   showCreateCards,
+  showAskHint,
   showDockExtra,
   pickSuggestions,
   showIndexChip,
@@ -77,5 +78,15 @@ describe('dock search mode', () => {
   it('hides the model and usage row only while a search is on', () => {
     expect(showDockExtra(true)).toBe(false)
     expect(showDockExtra(false)).toBe(true)
+  })
+})
+
+describe('inline Ask AI hint', () => {
+  it('shows only while the text is a file search', () => {
+    expect(showAskHint(dockSearchQuery('budget', false))).toBe(true)
+    expect(showAskHint(dockSearchQuery('', false))).toBe(false)
+    expect(showAskHint(dockSearchQuery('budget?', false))).toBe(false)
+    expect(showAskHint(dockSearchQuery('pause indexing', true))).toBe(false)
+    expect(showAskHint(dockSearchQuery('summarise all of the contracts I signed last year', false))).toBe(false)
   })
 })

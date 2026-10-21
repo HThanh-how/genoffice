@@ -132,8 +132,9 @@ describe('Home dock', () => {
     try {
       await type('budget')
       expect(seen).toEqual([{ q: 'budget', source: 'dock' }])
-      // no results list of its own: Home shows them, the box only offers Ask AI
+      // no results list of its own: Home shows them, and the box has no popover during a search
       expect(slot.querySelector('.ask-hit')).toBeNull()
+      expect(slot.querySelector('.ask-pop')).toBeNull()
       await type('why is budget late?')
       expect(seen.at(-1)).toEqual({ q: '', source: 'dock' })
       await type('budget')
@@ -145,6 +146,44 @@ describe('Home dock', () => {
     } finally {
       window.removeEventListener(HOME_SEARCH_EVENT, listener)
     }
+  })
+
+  it('shows the inline Ask AI hint beside send only while a file search is typed, with no popover', async () => {
+    const slot = addSlot()
+    await mount()
+    const input = slot.querySelector<HTMLInputElement>('.ask-form input')!
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    await act(async () => input.focus())
+    const type = async (value: string) => {
+      await act(async () => {
+        setValue.call(input, value)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+    }
+    const hint = () => slot.querySelector<HTMLElement>('.ask-form .ask-hint')
+    const send = () => slot.querySelector<HTMLButtonElement>('.ask-form button.ask-send')!
+    const pop = () => slot.querySelector('.ask-pop')
+
+    await type('')
+    expect(hint()).toBeNull()
+    expect(pop()).toBeNull()
+
+    await type('giáo án')
+    expect(hint()!.textContent).toContain('↵')
+    expect(hint()!.textContent).toContain('Ask AI')
+    expect(hint()!.nextElementSibling).toBe(send())
+    expect(pop()).toBeNull()
+    expect(send().getAttribute('aria-label')).toBe('Ask AI (Enter)')
+    expect(send().getAttribute('title')).toBe('Ask AI (Enter)')
+
+    await type('giáo án?')
+    expect(hint()).toBeNull()
+    expect(pop()!.querySelector('.ask-act')!.textContent).toContain('Ask AI about')
+    expect(pop()!.querySelector('.ask-note')).toBeNull()
+
+    await type('help')
+    expect(hint()).toBeNull()
+    expect(pop()!.querySelector('.ask-act')!.textContent).toContain('Run:')
   })
 
   it('hides the model and usage row while a search is typed, and brings it back when cleared', async () => {

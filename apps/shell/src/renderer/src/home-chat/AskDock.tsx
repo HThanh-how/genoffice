@@ -9,6 +9,7 @@ import {
   HOME_SEARCH_EVENT,
   canAutofocusDock,
   dockSearchQuery,
+  showAskHint,
   showDockExtra,
   pickSuggestions,
   showIndexChip,
@@ -18,8 +19,8 @@ import {
 
 const EN = {
   placeholder: 'Find a file, ask AI, or give an order…',
-  send: 'Send',
-  enterHint: 'Enter to ask AI · results are below',
+  askHint: 'Ask AI',
+  askTitle: 'Ask AI (Enter)',
   askAbout: 'Ask AI about “{q}”',
   run: 'Run: “{q}”',
   runHint: 'Enter · runs here, no AI quota',
@@ -35,8 +36,8 @@ const WORDS: Record<string, Words> = {
   en: EN,
   vi: {
     placeholder: 'Tìm tệp, hỏi AI hoặc ra lệnh…',
-    send: 'Gửi',
-    enterHint: 'Enter để hỏi AI · kết quả tìm ở bên dưới',
+    askHint: 'Hỏi AI',
+    askTitle: 'Hỏi AI (Enter)',
     askAbout: 'Hỏi AI về “{q}”',
     run: 'Chạy: “{q}”',
     runHint: 'Enter · chạy ngay trên máy, không tốn quota AI',
@@ -50,7 +51,8 @@ const WORDS: Record<string, Words> = {
   zh: {
     ...EN,
     placeholder: '查找文件、问 AI 或下达指令…',
-    send: '发送',
+    askHint: '问 AI',
+    askTitle: '问 AI（Enter）',
     askAbout: '向 AI 询问“{q}”',
   },
 }
@@ -222,7 +224,8 @@ export function AskDock({
   }
 
   const showChips = !text && !answer && !commandBusy
-  const showPop = answer !== null || (focused && query.length > 0)
+  // A file search has its results below (Home), so it gets no popover; only the answer and questions/orders do.
+  const showPop = answer !== null || (focused && query.length > 0 && !searchQuery)
   return (
     <div
       ref={rootRef}
@@ -282,11 +285,18 @@ export function AskDock({
           autoComplete="off"
           spellCheck={false}
         />
+        {showAskHint(searchQuery) && (
+          <span className="ask-hint" aria-hidden="true">
+            <kbd>↵</kbd>
+            <span className="ask-hint-label">{w.askHint}</span>
+          </span>
+        )}
         <button
           type="submit"
           className="ask-send"
           disabled={commandBusy || !text.trim()}
-          aria-label={commandBusy ? working : w.send}
+          aria-label={commandBusy ? working : w.askTitle}
+          title={commandBusy ? working : w.askTitle}
         >
           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
             <path
@@ -363,12 +373,9 @@ export function AskDock({
                 <span>{w.runHint}</span>
               </button>
             ) : (
-              <>
-                <button type="button" className="ask-act" onClick={() => void submit(query)}>
-                  <strong>{fill(w.askAbout, { q: query })}</strong>
-                </button>
-                {searchQuery && <p className="ask-note">{w.enterHint}</p>}
-              </>
+              <button type="button" className="ask-act" onClick={() => void submit(query)}>
+                <strong>{fill(w.askAbout, { q: query })}</strong>
+              </button>
             ))}
         </div>
       )}

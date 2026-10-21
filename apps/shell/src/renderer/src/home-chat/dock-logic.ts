@@ -34,6 +34,14 @@ export function showDockExtra(searchActive: boolean): boolean {
   return !searchActive
 }
 
+/**
+ * The inline "↵ Ask AI" hint in the field: only while the text is a file search (`searchQuery` from
+ * `dockSearchQuery`), since Enter is not obvious there. Empty text, questions and index orders hide it.
+ */
+export function showAskHint(searchQuery: string): boolean {
+  return searchQuery.length > 0
+}
+
 export interface IndexBrief {
   percent: number | null
   waiting: number
