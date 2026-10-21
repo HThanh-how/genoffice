@@ -22,6 +22,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@genoffice/agent-core": "*",
     "@genoffice/ai-provider": "*",
     "@genoffice/ai-search": "*",
     "@genoffice/docx-engine": "*",
@@ -34,6 +35,7 @@
     "@genoffice/xlsx-gateway": "*",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@tiptap/core": "3.31.0",
+    "fast-xml-parser": "^5.3.4",
     "jsdom": "^28.0.0",
     "jszip": "^3.10.1",
     "numfmt": "^3.2.6",

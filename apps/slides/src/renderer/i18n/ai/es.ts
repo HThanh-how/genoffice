@@ -111,7 +111,9 @@ export const es = {
   aiErrEmptyOutput: 'Salida vacía',
   aiErrUnknown: 'Error desconocido',
   aiErrStreamTimeout:
-    'La solicitud de IA superó el límite de tiempo y se detuvo. Inténtalo de nuevo o elige un modelo más rápido para solicitudes largas.',
+    'La solicitud de IA agotó el tiempo de espera: no hubo respuesta de la red y se detuvo. Comprueba tu conexión e inténtalo de nuevo',
+  aiErrRegion:
+    'El proveedor de este modelo no da servicio en tu región actual — elige otro modelo o cambia de red',
   aiErrOverloaded:
     'El servicio de IA está saturado en este momento; inténtalo de nuevo en unos instantes',
   aiErrNetwork:
@@ -226,5 +228,4 @@ export const es = {
   aiSumSaveTemplate: 'Plantilla de estilo "{name}" guardada',
   aiSumTemplatesEmpty: 'Plantillas de estilo (vacío)',
   aiSumListTemplates: 'Se enumeraron {count} plantillas de estilo',
-  aiPageCloudToLocal: 'Nube no disponible — generado localmente',
 } satisfies Record<keyof typeof zh, string>

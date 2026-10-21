@@ -12,8 +12,8 @@
 /// so fetching a bounded page and filtering by real path is the cheap,
 /// correct filter.
 
-import { statSync } from 'node:fs'
-import { basename, dirname } from 'node:path'
+import { statSync, existsSync, constants, promises as fsPromises } from 'node:fs'
+import { basename, dirname, join, normalize, resolve } from 'node:path'
 import { parseFileToText } from '@genoffice/file-parse'
 
 /** characters of parsed text one read_knowledge_file page returns (aligned
@@ -167,6 +167,11 @@ export interface KbCreateRequest {
   title: string
   format: KbCreateFormat
   content: string
+  sessionId?: string
+  userTurnId?: string
+  documentSlot?: string
+  callId?: string
+  documentType?: string
 }
 
 /** keep in step with CREATE_DOCUMENT_MAX_CHARS in agent-core */
@@ -180,7 +185,13 @@ export function parseKbCreateRequest(raw: unknown): KbCreateRequest {
   const content = typeof req.content === 'string' ? req.content : ''
   if (!content.trim()) throw new Error('content must not be empty')
   if (content.length > KB_CREATE_MAX_CHARS) throw new Error('content is too long')
-  return { title: typeof req.title === 'string' ? req.title : '', format, content }
+  const title = typeof req.title === 'string' ? req.title : ''
+  const sessionId = typeof req.sessionId === 'string' ? req.sessionId : undefined
+  const userTurnId = typeof req.userTurnId === 'string' ? req.userTurnId : undefined
+  const documentSlot = typeof req.documentSlot === 'string' ? req.documentSlot : undefined
+  const callId = typeof req.callId === 'string' ? req.callId : undefined
+  const documentType = typeof req.documentType === 'string' ? req.documentType : undefined
+  return { title, format, content, sessionId, userTurnId, documentSlot, callId, documentType }
 }
 
 export interface KbCreateDeps {
@@ -191,17 +202,320 @@ export interface KbCreateDeps {
   sanitizeBase: (title: string) => string
   writeText: (path: string, text: string) => Promise<void>
   /** markdown → .docx at `out` (the bundled CLI) */
-  markdownToDocx: (markdown: string, out: string) => Promise<void>
+  markdownToDocx: (markdown: string, out: string, documentType?: string) => Promise<void>
   recordRecent: (path: string) => void
+  fileExists?: (path: string) => boolean
+  isCaseSensitive?: boolean
+  publishExclusive?: (tmpPath: string, destPath: string) => Promise<void>
+}
+
+interface CommittedDocCreation {
+  path: string
+  createdAt: number
+  payloadFingerprint: string
+  sessionId?: string | undefined
+  userTurnId?: string | undefined
+  slot?: string | undefined
+}
+
+interface InFlightDocCreation {
+  promise: Promise<{ path: string }>
+  payloadFingerprint: string
+  sessionId?: string | undefined
+  userTurnId?: string | undefined
+  slot?: string | undefined
+}
+
+export function pathReservationKey(filePath: string, caseSensitive?: boolean): string {
+  const isCaseSens =
+    caseSensitive !== undefined
+      ? caseSensitive
+      : process.platform !== 'win32' && process.platform !== 'darwin'
+  const normalized = normalize(resolve(filePath)).normalize('NFC')
+  return isCaseSens ? normalized : normalized.toLowerCase()
+}
+
+const inFlightDocCreations = new Map<string, InFlightDocCreation>()
+const committedDocCreations = new Map<string, CommittedDocCreation>()
+const reservedPaths = new Set<string>()
+const reservedCanonicalKeys = new Set<string>()
+
+export function clearKnowledgeDocumentCaches(): void {
+  inFlightDocCreations.clear()
+  committedDocCreations.clear()
+  reservedPaths.clear()
+  reservedCanonicalKeys.clear()
+}
+
+function allocateUniquePath(deps: KbCreateDeps, title: string, format: string): string {
+  const dir = deps.dir()
+  const base = deps.sanitizeBase(title)
+  const isCaseSens = deps.isCaseSensitive
+  const checkExists = deps.fileExists ?? existsSync
+
+  const isAvailable = (candidate: string) => {
+    const key = pathReservationKey(candidate, isCaseSens)
+    if (reservedPaths.has(candidate) || reservedCanonicalKeys.has(key)) {
+      return false
+    }
+    if (checkExists(candidate)) {
+      return false
+    }
+    return true
+  }
+
+  let candidate = deps.uniquePath(dir, `${base}.${format}`)
+  let i = 2
+  while (!isAvailable(candidate)) {
+    candidate = deps.uniquePath(dir, `${base}-${i}.${format}`)
+    if (!isAvailable(candidate)) {
+      const altCandidate = deps.uniquePath(dir, `${base} (${i}).${format}`)
+      if (isAvailable(altCandidate)) {
+        candidate = altCandidate
+        break
+      }
+    } else {
+      break
+    }
+    i++
+  }
+  reservedPaths.add(candidate)
+  reservedCanonicalKeys.add(pathReservationKey(candidate, isCaseSens))
+  return candidate
+}
+
+/**
+ * Atomically publishes `tmpPath` to `destPath` without replacing an existing file.
+ * Fails with EEXIST if `destPath` already exists.
+ * Uses hard link (`fs.promises.link`) where supported, which is atomic and fails if dest exists.
+ * Falls back to `fs.promises.copyFile(..., COPYFILE_EXCL)` on filesystems without hard link support.
+ * Cleans up `tmpPath` on completion.
+ */
+export async function publishFileExclusive(tmpPath: string, destPath: string): Promise<void> {
+  try {
+    await fsPromises.link(tmpPath, destPath)
+    await fsPromises.unlink(tmpPath).catch(() => {})
+  } catch (err: unknown) {
+    const error = err as NodeJS.ErrnoException
+    if (error && error.code === 'EEXIST') {
+      await fsPromises.unlink(tmpPath).catch(() => {})
+      throw error
+    }
+    if (
+      error &&
+      (error.code === 'EXDEV' ||
+        error.code === 'EPERM' ||
+        error.code === 'ENOTSUP' ||
+        error.code === 'ENOSYS')
+    ) {
+      try {
+        await fsPromises.copyFile(tmpPath, destPath, constants.COPYFILE_EXCL)
+        await fsPromises.unlink(tmpPath).catch(() => {})
+        return
+      } catch (copyErr) {
+        await fsPromises.unlink(tmpPath).catch(() => {})
+        throw copyErr
+      }
+    }
+    await fsPromises.unlink(tmpPath).catch(() => {})
+    throw error
+  }
 }
 
 export async function createKnowledgeDocument(
   deps: KbCreateDeps,
   req: KbCreateRequest,
 ): Promise<{ path: string }> {
-  const path = deps.uniquePath(deps.dir(), `${deps.sanitizeBase(req.title)}.${req.format}`)
-  if (req.format === 'md') await deps.writeText(path, req.content)
-  else await deps.markdownToDocx(req.content, path)
-  deps.recordRecent(path)
-  return { path }
+  const hostOpId = req.callId || req.documentSlot || undefined
+  const slotKey =
+    req.sessionId && req.userTurnId && hostOpId
+      ? `${req.sessionId}:${req.userTurnId}:${hostOpId}`
+      : null
+
+  const payloadFingerprint = JSON.stringify({
+    title: req.title || 'Untitled',
+    format: req.format,
+    content: req.content,
+    documentType: req.documentType ?? null,
+  })
+
+  if (slotKey) {
+    const cached = committedDocCreations.get(slotKey)
+    const checkExists = deps.fileExists ?? existsSync
+    if (cached) {
+      if (cached.payloadFingerprint !== payloadFingerprint) {
+        throw new Error('Operation identity conflict: conflicting payload for slot')
+      }
+      if (checkExists(cached.path)) {
+        return { path: cached.path }
+      } else {
+        committedDocCreations.delete(slotKey)
+      }
+    }
+    const inFlight = inFlightDocCreations.get(slotKey)
+    if (inFlight) {
+      if (inFlight.payloadFingerprint !== payloadFingerprint) {
+        throw new Error('Operation identity conflict: conflicting payload for slot')
+      }
+      return inFlight.promise
+    }
+  }
+
+  if (req.sessionId && req.userTurnId) {
+    const targetSlot = req.documentSlot || 'primary'
+    const checkExists = deps.fileExists ?? existsSync
+    for (const [key, cached] of committedDocCreations.entries()) {
+      if (
+        cached.sessionId === req.sessionId &&
+        cached.userTurnId === req.userTurnId &&
+        cached.slot === targetSlot &&
+        cached.payloadFingerprint === payloadFingerprint
+      ) {
+        if (checkExists(cached.path)) {
+          return { path: cached.path }
+        } else {
+          committedDocCreations.delete(key)
+        }
+      }
+    }
+    for (const inFlight of inFlightDocCreations.values()) {
+      if (
+        inFlight.sessionId === req.sessionId &&
+        inFlight.userTurnId === req.userTurnId &&
+        inFlight.slot === targetSlot &&
+        inFlight.payloadFingerprint === payloadFingerprint
+      ) {
+        return inFlight.promise
+      }
+    }
+  }
+
+  const opPromise = (async () => {
+    let targetPath = allocateUniquePath(deps, req.title, req.format)
+    try {
+      const checkExists = deps.fileExists ?? existsSync
+      while (checkExists(targetPath)) {
+        reservedPaths.delete(targetPath)
+        reservedCanonicalKeys.delete(pathReservationKey(targetPath, deps.isCaseSensitive))
+        targetPath = allocateUniquePath(deps, req.title, req.format)
+      }
+
+      for (let attempt = 0; attempt < 10; attempt++) {
+        try {
+          if (checkExists(targetPath) && attempt > 0) {
+            reservedPaths.delete(targetPath)
+            reservedCanonicalKeys.delete(pathReservationKey(targetPath, deps.isCaseSensitive))
+            targetPath = allocateUniquePath(deps, req.title, req.format)
+          }
+
+          if (deps.publishExclusive) {
+            const ext = req.format === 'docx' ? '.docx' : '.md'
+            const tmpName = `.${basename(targetPath, ext)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp${ext}`
+            const tmpPath = join(dirname(targetPath), tmpName)
+            try {
+              if (req.format === 'md') {
+                await deps.writeText(tmpPath, req.content)
+              } else {
+                await deps.markdownToDocx(req.content, tmpPath, req.documentType)
+              }
+              await deps.publishExclusive(tmpPath, targetPath)
+            } finally {
+              const exists = deps.fileExists ? deps.fileExists(tmpPath) : existsSync(tmpPath)
+              if (exists) {
+                await fsPromises.unlink(tmpPath).catch(() => {})
+              }
+            }
+          } else if (deps.fileExists) {
+            // Simulated / in-memory test environment: verify targetPath doesn't exist on mock disk before write
+            if (deps.fileExists(targetPath)) {
+              const err = new Error(
+                `EEXIST: file already exists, open '${targetPath}'`,
+              ) as NodeJS.ErrnoException
+              err.code = 'EEXIST'
+              throw err
+            }
+            if (req.format === 'md') {
+              await deps.writeText(targetPath, req.content)
+            } else {
+              await deps.markdownToDocx(req.content, targetPath, req.documentType)
+            }
+          } else {
+            // Real filesystem environment (production): use exclusive same-directory temp file + atomic publish
+            const ext = req.format === 'docx' ? '.docx' : '.md'
+            const tmpName = `.${basename(targetPath, ext)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp${ext}`
+            const tmpPath = join(dirname(targetPath), tmpName)
+            try {
+              if (req.format === 'md') {
+                await deps.writeText(tmpPath, req.content)
+              } else {
+                await deps.markdownToDocx(req.content, tmpPath, req.documentType)
+              }
+              await publishFileExclusive(tmpPath, targetPath)
+            } finally {
+              if (existsSync(tmpPath)) {
+                await fsPromises.unlink(tmpPath).catch(() => {})
+              }
+            }
+          }
+          break
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err)
+          if ((msg.includes('output exists') || msg.includes('EEXIST')) && attempt < 9) {
+            reservedPaths.delete(targetPath)
+            reservedCanonicalKeys.delete(pathReservationKey(targetPath, deps.isCaseSensitive))
+            targetPath = allocateUniquePath(deps, req.title, req.format)
+            continue
+          }
+          throw err
+        }
+      }
+
+      if (slotKey) {
+        if (committedDocCreations.size >= 100) {
+          const oldest = committedDocCreations.keys().next().value
+          if (oldest !== undefined) committedDocCreations.delete(oldest)
+        }
+        committedDocCreations.set(slotKey, {
+          path: targetPath,
+          createdAt: Date.now(),
+          payloadFingerprint,
+          sessionId: req.sessionId,
+          userTurnId: req.userTurnId,
+          slot: req.documentSlot || 'primary',
+        })
+      }
+
+      try {
+        deps.recordRecent(targetPath)
+      } catch (err) {
+        console.warn(
+          'Non-fatal: failed to record document in recent list:',
+          err instanceof Error ? err.message : String(err),
+        )
+      }
+
+      return { path: targetPath }
+    } finally {
+      reservedPaths.delete(targetPath)
+      reservedCanonicalKeys.delete(pathReservationKey(targetPath, deps.isCaseSensitive))
+    }
+  })()
+
+  if (slotKey) {
+    inFlightDocCreations.set(slotKey, {
+      promise: opPromise,
+      payloadFingerprint,
+      sessionId: req.sessionId,
+      userTurnId: req.userTurnId,
+      slot: req.documentSlot || 'primary',
+    })
+  }
+
+  try {
+    return await opPromise
+  } finally {
+    if (slotKey) {
+      inFlightDocCreations.delete(slotKey)
+    }
+  }
 }

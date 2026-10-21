@@ -51,6 +51,26 @@ function postMcp(
   })
 }
 
+async function waitForHealth(port: number, timeoutMs = 20_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    try {
+      const ok = await new Promise<boolean>((resolve) => {
+        const req = http.get({ hostname: '127.0.0.1', port, path: '/health' }, (res) => {
+          res.resume()
+          resolve(res.statusCode === 200)
+        })
+        req.on('error', () => resolve(false))
+      })
+      if (ok) return
+    } catch {
+      /* retry */
+    }
+    if (Date.now() > deadline) throw new Error('MCP server never became healthy')
+    await new Promise((r) => setTimeout(r, 250))
+  }
+}
+
 test.describe('MCP read_pdf', () => {
   test('extracts pdf text through the real app server', async () => {
     test.setTimeout(60_000)
@@ -73,6 +93,7 @@ test.describe('MCP read_pdf', () => {
     const launched = await launchShell({ videoDir: 'mcp-read-pdf', userDataDir })
     try {
       // health → initialize → tools/call, the minimal real-client handshake
+      await waitForHealth(port)
       const init = await postMcp(port, null, {
         jsonrpc: '2.0',
         id: 1,

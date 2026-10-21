@@ -97,8 +97,8 @@ export interface TabsApi {
    * triggers; the shell's own popovers subscribe so a title-bar drag — which
    * produces no DOM event — still dismisses them */
   onChromePressed(handler: () => void): () => void
-  /** the tab menu's "Rename": the strip should open the inline rename box for this tab */
-  onStartRename(handler: (id: string) => void): () => void
+  /** subscribe to main process requesting inline rename of a tab */
+  onStartRename?(handler: (id: string) => void): () => void
 }
 
 export const TABS_CHANNELS = {

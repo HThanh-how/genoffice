@@ -112,7 +112,9 @@ export const pt = {
   aiTooManyImages: 'No máximo {max} imagens por mensagem; as excedentes foram ignoradas',
   aiUnknownError: 'Erro desconhecido',
   aiTimeoutError:
-    'A solicitação de IA excedeu o limite de tempo e foi interrompida. Tente novamente ou escolha um modelo mais rápido para uma solicitação longa.',
+    'A solicitação de IA expirou: sem resposta da rede, a execução foi interrompida. Verifique sua conexão e tente novamente',
+  aiRegionError:
+    'O fornecedor deste modelo não atende à sua região atual — escolha outro modelo ou mude de rede',
   aiOverloadedError:
     'O serviço de IA está sobrecarregado no momento — tente novamente em instantes',
   aiNetworkError:

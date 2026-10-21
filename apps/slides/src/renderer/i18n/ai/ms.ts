@@ -109,7 +109,9 @@ export const ms = {
   aiErrEmptyOutput: 'Output kosong',
   aiErrUnknown: 'Ralat tidak diketahui',
   aiErrStreamTimeout:
-    'Permintaan AI melebihi had masa lalu dihentikan. Cuba lagi atau pilih model yang lebih pantas untuk permintaan panjang.',
+    'Permintaan AI tamat masa: rangkaian tidak memberi respons, proses dihentikan. Semak sambungan anda dan cuba lagi',
+  aiErrRegion:
+    'Penyedia model ini tidak memberi perkhidmatan di rantau semasa anda — pilih model lain atau tukar rangkaian',
   aiErrOverloaded: 'Perkhidmatan AI sedang sibuk — sila cuba lagi sebentar lagi',
   aiErrNetwork:
     'Masalah rangkaian: tidak dapat menghubungi perkhidmatan AI. Semak sambungan anda dan cuba lagi',
@@ -223,5 +225,4 @@ export const ms = {
   aiSumSaveTemplate: 'Menyimpan templat gaya "{name}"',
   aiSumTemplatesEmpty: 'Templat gaya (kosong)',
   aiSumListTemplates: 'Menyenaraikan {count} templat gaya',
-  aiPageCloudToLocal: 'Awan tidak tersedia — dijana secara setempat',
 } satisfies Record<keyof typeof zh, string>

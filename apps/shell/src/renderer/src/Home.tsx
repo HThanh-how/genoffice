@@ -4,7 +4,6 @@ import { IndexDashboard } from './fork/IndexDashboard'
 import { IndexNavItem } from './fork/IndexNavItem'
 import { FOLDER_ROOTS_CHANGED_EVENT } from './fork/DefaultFolderToggle'
 import { folderMenuWords } from './fork/folder-menu-words'
-import { RESET_HOME_EVENT } from './TabBar'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
@@ -42,10 +41,14 @@ import { HomeChat } from './HomeChat'
 import { ClipboardSuggest } from './ClipboardSuggest'
 import './home-workspace.css'
 
+import type { ProjectApi } from '@genoffice/project-store'
+
 declare global {
   interface Window {
     aiOffice: HomeApi
     aiOfficeIntegrations?: IntegrationsApi
+    /** Optional: a build without the project bridge keeps the panel in memory. */
+    projectApi?: ProjectApi
   }
 }
 
@@ -65,11 +68,17 @@ const GREET_ASK_KEYS = [
 const FILE_ICONS: Record<string, string> = {
   docx: iconDocx,
   doc: iconDocx,
+  odt: iconDocx,
+  ott: iconDocx,
   xlsx: iconXlsx,
   xlsm: iconXlsx,
   xls: iconXlsx,
+  ods: iconXlsx,
+  ots: iconXlsx,
   pptx: iconPptx,
   ppt: iconPptx,
+  odp: iconPptx,
+  otp: iconPptx,
   pdf: iconPdf,
   md: iconMd,
   markdown: iconMd,
@@ -1297,15 +1306,14 @@ export function Home() {
     return () => window.removeEventListener(OPEN_INDEX_EVENT, open)
   }, [])
   useEffect(() => {
-    const reset = () => {
+    const handleHomeActivated = () => {
       setAskMode(false)
       setIndexOpen(false)
       setCloudMode(false)
       setSelectedFolder(null)
-      setView('recent')
     }
-    window.addEventListener(RESET_HOME_EVENT, reset)
-    return () => window.removeEventListener(RESET_HOME_EVENT, reset)
+    window.addEventListener('genoffice:home-tab-clicked', handleHomeActivated)
+    return () => window.removeEventListener('genoffice:home-tab-clicked', handleHomeActivated)
   }, [])
   const [filter, setFilter] = useState('all')
   // ── Starred groups (named buckets the Starred view can filter on) ──
@@ -1773,6 +1781,24 @@ export function Home() {
     setCloudMode(false)
     setSelected(new Set())
     setRowMenu(null)
+  }, [])
+
+  const isOpenPath = useCallback(async (path: string) => {
+    try {
+      if (typeof window.aiOfficeTabs?.list !== 'function') return false
+      const tabs = await window.aiOfficeTabs.list()
+      const isWindows =
+        (typeof process !== 'undefined' && process.platform === 'win32') ||
+        (typeof navigator !== 'undefined' && /win/i.test(navigator.platform || navigator.userAgent))
+      const norm = (p: string) => {
+        const unified = p.replace(/[\\/]+/g, '/')
+        return isWindows ? unified.toLowerCase() : unified
+      }
+      const target = norm(path)
+      return tabs.some((t) => t.filePath && norm(t.filePath) === target)
+    } catch {
+      return false
+    }
   }, [])
 
   const changeFilter = (key: string) => {
@@ -3602,11 +3628,14 @@ export function Home() {
       <HomeChat
         api={window.aiOffice}
         i18n={i18n}
-        dockLocation={!selectedFolder && !cloudMode && !indexOpen && !askMode ? 'home' : 'floating'}
+        dockLocation={!selectedFolder && !cloudMode && !indexOpen && !askMode ? 'home' : undefined}
         workspaceActive={askMode}
-        suppressDock={askMode || settingsModalOpen}
+        suppressDock={
+          askMode || settingsModalOpen || Boolean(selectedFolder) || cloudMode || indexOpen
+        }
         onNavigateToRecents={() => changeView('recent')}
         onOpenPath={(path) => window.aiOffice.openPath(path)}
+        isOpenPath={isOpenPath}
         onOpenAskWorkspace={openAskWorkspace}
         onOpenModelSettings={openModelSettings}
       />

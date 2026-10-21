@@ -1,10 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { WebContents } from 'electron'
 import type { TabKind, TabSummary } from '../src/shared/tabs-api'
-import {
-  runTabDocumentAction,
-  type TabDocumentActionDeps,
-} from '../src/main/fork/tab-document-actions'
+import { runTabDocumentAction, type TabDocumentActionDeps } from '../src/main/tab-document-actions'
 
 function fixture(kind: TabKind) {
   const selected = {
@@ -27,6 +24,7 @@ function fixture(kind: TabKind) {
     tabs: {
       list: () => [selected, clicked],
       activateTab: vi.fn(),
+      canDetachTab: () => true,
       webContentsForTab: (id) => (id === clicked.id ? contents : undefined),
     },
     savePdf: vi.fn(),
@@ -94,6 +92,18 @@ describe('document actions from a background tab context menu', () => {
     expect(deps.tabs.activateTab).not.toHaveBeenCalled()
   })
 
+  it.each(['save', 'saveAs', 'print'] as const)(
+    'does not activate or send %s to a Present tab',
+    (action) => {
+      const { deps, contents } = fixture('html')
+      deps.tabs.canDetachTab = () => false
+      runTabDocumentAction(deps, 'clicked', action)
+      expect(deps.tabs.activateTab).not.toHaveBeenCalled()
+      expect(contents.send).not.toHaveBeenCalled()
+      expect(deps.saveHtml).not.toHaveBeenCalled()
+      expect(deps.printHtml).not.toHaveBeenCalled()
+    },
+  )
   it('ignores tabs closed while the context menu was open', () => {
     const { deps, contents } = fixture('docs')
     runTabDocumentAction(deps, 'gone', 'saveAs')

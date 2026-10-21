@@ -42,11 +42,19 @@ export async function createFileViaCli(
     input: { name: string; content: string }
     out: string
     overwrite?: boolean
+    documentType?: string
   },
 ): Promise<{ outcome: CliRunOutcome; summary: string; outputPath: string }> {
   return withTempDir(async (dir) => {
     const inputPath = await stage(dir, opts.input.name, opts.input.content)
-    const args = ['create', '--type', opts.type, '--from', inputPath]
+    const args = [
+      'create',
+      '--type',
+      opts.type,
+      '--from',
+      inputPath,
+      ...(opts.documentType ? ['--profile', opts.documentType] : []),
+    ]
     return runCreate(runner, args, opts.out, opts.overwrite)
   })
 }

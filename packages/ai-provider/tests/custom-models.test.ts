@@ -320,19 +320,52 @@ describe('listCustomModelsForIpc validates the payload', () => {
 /** trimmed from a real GET /v1beta/models answer (2026-09-27): one entry per kind the filter must handle */
 const GEMINI_BODY = JSON.stringify({
   models: [
-    { name: 'models/gemini-2.5-flash', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-2.5-flash-preview-tts', supportedGenerationMethods: ['countTokens', 'generateContent'] },
-    { name: 'models/gemma-4-31b-it', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-flash-latest', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-3.5-flash-lite', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-3.1-pro-preview', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-3.1-pro-preview-customtools', supportedGenerationMethods: ['generateContent'] },
-    { name: 'models/gemini-3.1-flash-image', supportedGenerationMethods: ['generateContent', 'countTokens'] },
-    { name: 'models/gemini-3.8-flash', supportedGenerationMethods: ['generateContent', 'countTokens'] },
+    {
+      name: 'models/gemini-2.5-flash',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-2.5-flash-preview-tts',
+      supportedGenerationMethods: ['countTokens', 'generateContent'],
+    },
+    {
+      name: 'models/gemma-4-31b-it',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-flash-latest',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-3.5-flash-lite',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-3.1-pro-preview',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-3.1-pro-preview-customtools',
+      supportedGenerationMethods: ['generateContent'],
+    },
+    {
+      name: 'models/gemini-3.1-flash-image',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
+    {
+      name: 'models/gemini-3.8-flash',
+      supportedGenerationMethods: ['generateContent', 'countTokens'],
+    },
     { name: 'models/gemini-omni-flash-preview', supportedGenerationMethods: ['generateContent'] },
-    { name: 'models/gemini-embedding-2', supportedGenerationMethods: ['embedContent', 'countTokens'] },
+    {
+      name: 'models/gemini-embedding-2',
+      supportedGenerationMethods: ['embedContent', 'countTokens'],
+    },
     { name: 'models/gemini-3.8-live', supportedGenerationMethods: ['bidiGenerateContent'] },
-    { name: 'models/deep-research-preview-04-2026', supportedGenerationMethods: ['generateContent'] },
+    {
+      name: 'models/deep-research-preview-04-2026',
+      supportedGenerationMethods: ['generateContent'],
+    },
   ],
 })
 
@@ -381,5 +414,52 @@ describe('listGeminiModels', () => {
     expect(await listGeminiModelsForIpc(null)).toEqual({ models: [], defaultModel: '' })
     expect(await listGeminiModelsForIpc({ apiKey: 42 })).toEqual({ models: [], defaultModel: '' })
     expect(mock).not.toHaveBeenCalled()
+  })
+})
+
+describe('OpenRouter asks for the account-filtered catalog first', () => {
+  const OR_BASE = 'https://openrouter.ai/api/v1'
+  const USER_BODY = '{"data":[{"id":"anthropic/claude-opus-5.5"},{"id":"openrouter/auto"}]}'
+  const PUBLIC_BODY = '{"data":[{"id":"openrouter/auto"},{"id":"x/y"},{"id":"a/b"}]}'
+
+  it('reads /models/user when a key is given', async () => {
+    const mock = stubFetch(jsonBody(USER_BODY))
+    const result = await listCustomModels(OR_BASE, 'sk-or-key')
+    expect(requestedUrl(mock)).toBe(`${OR_BASE}/models/user`)
+    expect(mock).toHaveBeenCalledTimes(1)
+    expect(result.models).toEqual(['anthropic/claude-opus-5.5', 'openrouter/auto'])
+  })
+
+  it('falls back to the public /models when the key is refused', async () => {
+    const mock = vi
+      .fn()
+      .mockResolvedValueOnce(jsonBody('{"error":"bad key"}', 401))
+      .mockResolvedValueOnce(jsonBody(PUBLIC_BODY))
+    vi.stubGlobal('fetch', mock)
+    const result = await listCustomModels(OR_BASE, 'sk-or-bad')
+    expect(mock.mock.calls.map((c) => c[0])).toEqual([
+      `${OR_BASE}/models/user`,
+      `${OR_BASE}/models`,
+    ])
+    expect(result.models).toEqual(['openrouter/auto', 'x/y', 'a/b'])
+  })
+
+  it('drops the asynchronous :batch variants and keeps the interactive ones', async () => {
+    stubFetch(
+      jsonBody(
+        '{"data":[{"id":"anthropic/claude-opus-5.5"},{"id":"anthropic/claude-opus-5.5:batch"},{"id":"openai/gpt-5.6-luna:BATCH"},{"id":"x/y:free"},{"id":"x/y:thinking"}]}',
+      ),
+    )
+    const result = await listCustomModels(OR_BASE, 'sk-or-key')
+    expect(result.models).toEqual(['anthropic/claude-opus-5.5', 'x/y:free', 'x/y:thinking'])
+  })
+
+  it('asks the public route straight away with no key, and never for other hosts', async () => {
+    let mock = stubFetch(jsonBody(PUBLIC_BODY))
+    await listCustomModels(OR_BASE)
+    expect(requestedUrl(mock)).toBe(`${OR_BASE}/models`)
+    mock = stubFetch(jsonBody(PUBLIC_BODY))
+    await listCustomModels(BASE_URL, 'key')
+    expect(requestedUrl(mock)).toBe(`${BASE_URL}/models`)
   })
 })

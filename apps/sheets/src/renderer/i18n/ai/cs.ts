@@ -61,7 +61,9 @@ export const cs = {
   aiSave: 'Uložit',
   aiUnknownError: 'Neznámá chyba',
   aiTimeoutError:
-    'Požadavek AI překročil časový limit a byl zastaven. Zkuste to znovu nebo pro dlouhý požadavek vyberte rychlejší model.',
+    'Časový limit požadavku AI vypršel: ze sítě nepřišla žádná odpověď, běh byl zastaven. Zkontrolujte připojení a zkuste to znovu',
+  aiRegionError:
+    'Poskytovatel tohoto modelu neposkytuje služby ve vaší aktuální oblasti — vyberte jiný model nebo změňte síť',
   aiOverloadedError: 'Služba AI je právě zaneprázdněná — zkuste to prosím za chvíli znovu',
   aiNetworkError:
     'Problém se sítí: službu AI se nepodařilo kontaktovat. Zkontrolujte připojení a zkuste to znovu',

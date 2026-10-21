@@ -114,7 +114,9 @@ export const it = {
   aiTooManyImages: 'Al massimo {max} immagini per messaggio; quelle in eccesso sono state ignorate',
   aiUnknownError: 'Errore sconosciuto',
   aiTimeoutError:
-    'La richiesta AI ha superato il limite di tempo ed è stata interrotta. Riprova oppure scegli un modello più veloce per una richiesta lunga.',
+    'Richiesta IA scaduta: nessuna risposta dalla rete, esecuzione interrotta. Controlla la connessione e riprova',
+  aiRegionError:
+    'Il fornitore di questo modello non serve la tua regione attuale — scegli un altro modello o cambia rete',
   aiOverloadedError: 'Il servizio IA è momentaneamente sovraccarico — riprova tra poco',
   aiNetworkError:
     'Problema di rete: impossibile raggiungere il servizio IA. Controlla la connessione e riprova',

@@ -20,8 +20,8 @@ export interface IpcStreamChunk {
   text?: string
   toolCall?: AgentToolCall
   error?: string
-  /** machine-readable error cause; maps to the localized timeout/credits/network/overloaded/quota/auth message */
-  errorCode?: 'timeout' | 'credits' | 'network' | 'overloaded' | 'quota' | 'auth'
+  /** machine-readable error cause; maps to the localized timeout/credits/network/overloaded/quota/auth/region message */
+  errorCode?: 'timeout' | 'credits' | 'network' | 'overloaded' | 'quota' | 'auth' | 'region'
   /** with errorCode 'quota': epoch ms when the exhausted quota is expected back, when known */
   errorResetAt?: number
   /** normalized stop reason on 'done' ('max_tokens' = cut off by the token limit) */
@@ -115,6 +115,8 @@ export interface IpcTransportOptions<S> {
   quotaErrorText?(resetAt?: number): string
   /** localized message for a signed-out / expired CLI session (errorCode 'auth') */
   authErrorText?(): string
+  /** localized message when the vendor refuses the request origin (errorCode 'region') */
+  regionErrorText?(): string
 }
 
 /**
@@ -185,12 +187,14 @@ export function createIpcTransport<S>(options: IpcTransportOptions<S>): AgentTra
               ? (options.networkErrorText?.() ?? (error || options.unknownErrorText()))
               : errorCode === 'overloaded'
                 ? (options.overloadedErrorText?.() ?? (error || options.unknownErrorText()))
-                : errorCode === 'quota'
-                  ? (options.quotaErrorText?.(errorResetAt) ??
-                    (error || options.unknownErrorText()))
-                  : errorCode === 'auth'
-                    ? (options.authErrorText?.() ?? (error || options.unknownErrorText()))
-                    : error || options.unknownErrorText()
+                : errorCode === 'region'
+                  ? (options.regionErrorText?.() ?? (error || options.unknownErrorText()))
+                  : errorCode === 'quota'
+                    ? (options.quotaErrorText?.(errorResetAt) ??
+                      (error || options.unknownErrorText()))
+                    : errorCode === 'auth'
+                      ? (options.authErrorText?.() ?? (error || options.unknownErrorText()))
+                      : error || options.unknownErrorText()
       const handleError = (
         error: string,
         emitted: boolean,

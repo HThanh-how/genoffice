@@ -4,6 +4,9 @@ import { fileURLToPath } from 'node:url'
 import { ensureDom } from '../dom'
 import { assertAllowed, type PathContext } from '../fs'
 import { imageSize } from './image-size'
+import { DOCUMENT_PROFILES, type DocumentType } from '@genoffice/agent-core'
+import type { HeaderFooter, SaveOptions, SectionSettings } from '@genoffice/docx-engine'
+import { CliError, EXIT } from '../result'
 
 /**
  * Markdown → Word reuses the markdown app's editor: its Tiptap markdown parser
@@ -55,12 +58,104 @@ export interface MarkdownImageSource {
   ctx: PathContext
 }
 
+export interface MarkdownToDocxOptions {
+  images?: MarkdownImageSource
+  documentType?: DocumentType | string
+  section?: SectionSettings
+  header?: HeaderFooter
+  footer?: HeaderFooter
+  title?: string
+}
+
+export function buildSaveOptionsFromProfile(
+  documentType?: DocumentType | string,
+  overrides?: {
+    header?: HeaderFooter
+    footer?: HeaderFooter
+    section?: SectionSettings
+    title?: string
+  },
+): SaveOptions {
+  if (documentType && !Object.prototype.hasOwnProperty.call(DOCUMENT_PROFILES, documentType)) {
+    throw new CliError(
+      EXIT.usage,
+      `unknown profile "${documentType}", expected one of: ${Object.keys(DOCUMENT_PROFILES).join(', ')}`,
+      { supported: Object.keys(DOCUMENT_PROFILES) },
+      { reason: 'invalid_argument' },
+    )
+  }
+  const profileKey: DocumentType = (documentType as DocumentType) || 'general'
+  const profile = DOCUMENT_PROFILES[profileKey]
+
+  const mmToTwips = (mm: number) => Math.round(mm * 56.6929)
+  const isA4 = profile.paperSize === 'A4'
+  const pageWidth = isA4 ? 11906 : 12240
+  const pageHeight = isA4 ? 16838 : 15840
+
+  const section: SectionSettings = overrides?.section ?? {
+    pageWidth: profile.orientation === 'landscape' ? pageHeight : pageWidth,
+    pageHeight: profile.orientation === 'landscape' ? pageWidth : pageHeight,
+    orientation: profile.orientation,
+    marginTop: mmToTwips(profile.margins.top),
+    marginBottom: mmToTwips(profile.margins.bottom),
+    marginLeft: mmToTwips(profile.margins.left),
+    marginRight: mmToTwips(profile.margins.right),
+    pageBorder: false,
+    columns: 1,
+  }
+
+  const header: HeaderFooter | undefined =
+    overrides?.header ?? (overrides?.title ? { text: overrides.title } : undefined)
+  const footer: HeaderFooter | undefined =
+    overrides?.footer ??
+    (profile.includeFooterPageNumber ? { text: '', pageNumber: true } : undefined)
+
+  return {
+    section,
+    ...(header ? { header } : {}),
+    ...(footer ? { footer } : {}),
+  }
+}
+
 export async function markdownToDocx(
   markdown: string,
-  images?: MarkdownImageSource,
+  optionsOrImages?: MarkdownImageSource | MarkdownToDocxOptions,
+  extraOptions?: MarkdownToDocxOptions,
 ): Promise<Uint8Array> {
+  const images: MarkdownImageSource | undefined =
+    optionsOrImages && 'file' in optionsOrImages ? optionsOrImages : optionsOrImages?.images
+  const options: MarkdownToDocxOptions =
+    extraOptions ?? (optionsOrImages && !('file' in optionsOrImages) ? optionsOrImages : {})
+
+  if (
+    options.documentType &&
+    !Object.prototype.hasOwnProperty.call(DOCUMENT_PROFILES, options.documentType)
+  ) {
+    throw new CliError(
+      EXIT.usage,
+      `unknown profile "${options.documentType}", expected one of: ${Object.keys(DOCUMENT_PROFILES).join(', ')}`,
+      { supported: Object.keys(DOCUMENT_PROFILES) },
+      { reason: 'invalid_argument' },
+    )
+  }
+  const profileKey: DocumentType = (options.documentType as DocumentType) || 'general'
+  const profile = DOCUMENT_PROFILES[profileKey]
+
+  const saveOptions = buildSaveOptionsFromProfile(options.documentType, {
+    header: options.header,
+    footer: options.footer,
+    section: options.section,
+    title: options.title,
+  })
+
   return withMarkdownEditor(markdown, (editor, mods) =>
-    mods.docxExport.exportDocxBytes(editor.getJSON(), async (src) => loadLocalImage(src, images)),
+    mods.docxExport.exportDocxBytes(
+      editor.getJSON(),
+      async (src) => loadLocalImage(src, images),
+      undefined,
+      saveOptions,
+      profile,
+    ),
   )
 }
 
