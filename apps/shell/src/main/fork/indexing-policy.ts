@@ -155,10 +155,8 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
       return paused('locked', 'screen is locked on a low battery', memoryTier)
   }
 
-  const allowHeavyEmbedding =
-    memoryTier !== 'low' && !input.onBattery && input.mode !== 'light'
-  const maxBatchTokens =
-    memoryTier === 'low' ? 1600 : memoryTier === 'normal' ? 3000 : 6000
+  const allowHeavyEmbedding = memoryTier !== 'low' && !input.onBattery && input.mode !== 'light'
+  const maxBatchTokens = memoryTier === 'low' ? 1600 : memoryTier === 'normal' ? 3000 : 6000
 
   if (input.onBattery) {
     const light = input.mode === 'light'

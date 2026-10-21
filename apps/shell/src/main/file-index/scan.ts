@@ -189,18 +189,7 @@ export async function scanFilesCooperative(
       }
 
       const path = join(dir, ent.name)
-
-      let isDir = ent.isDirectory()
-      if (!isDir && ent.isSymbolicLink()) {
-        try {
-          const st = statSync(path)
-          isDir = st.isDirectory()
-        } catch {
-          // unreadable symlink
-        }
-      }
-
-      if (isDir) {
+      if (ent.isDirectory()) {
         if (
           !shouldSkipDirectory(ent.name, path) &&
           !isPathIgnored(path, root) &&

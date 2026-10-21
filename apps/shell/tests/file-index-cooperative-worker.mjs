@@ -10,9 +10,21 @@ parentPort?.on('message', (req) => {
   }
   if (req.type === 'scan') {
     if (mode === 'incomplete') {
-      parentPort?.postMessage({ id: req.id, type: 'scan', files: [], complete: false, truncated: true })
+      parentPort?.postMessage({
+        id: req.id,
+        type: 'scan',
+        files: [],
+        complete: false,
+        truncated: true,
+      })
     } else if (mode === 'empty-complete') {
-      parentPort?.postMessage({ id: req.id, type: 'scan', files: [], complete: true, truncated: false })
+      parentPort?.postMessage({
+        id: req.id,
+        type: 'scan',
+        files: [],
+        complete: true,
+        truncated: false,
+      })
     } else {
       parentPort?.postMessage({ id: req.id, type: 'scan', files: req.files || [], complete: true })
     }
