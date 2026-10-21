@@ -261,7 +261,14 @@ const api: DesktopApi = {
   },
   getAiSettings: () => ipcRenderer.invoke('ai:get-settings'),
   getGeminiModels: () => ipcRenderer.invoke('ai:gemini-chat-models'),
-  setAiSettings: (settings: AiSettings) => ipcRenderer.invoke('ai:set-settings', settings),
+  setAiSettings: async (settings: AiSettings) => {
+    const result = (await ipcRenderer.invoke('ai:set-settings', settings)) as {
+      ok?: boolean
+      reason?: string
+    } | null
+    // a refused write must not look like a saved one to the renderer
+    if (result?.ok !== true) throw new Error(`settings not saved: ${result?.reason ?? 'invalid'}`)
+  },
   onAiSettingsChanged: (handler) => {
     const listener = () => handler()
     ipcRenderer.on('ai:settings-changed', listener)

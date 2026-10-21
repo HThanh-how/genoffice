@@ -253,4 +253,68 @@ describe('home-chat lifecycle & launch intents (Phase 1)', () => {
       host.remove()
     }
   })
+
+  it('leaving the Ask AI workspace closes the panel instead of leaving it floating', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const workspace = document.createElement('div')
+    workspace.id = 'home-ask-workspace'
+    document.body.appendChild(workspace)
+    const root = createRoot(host)
+    const api = mockChatApi()
+
+    try {
+      // inside the workspace: the panel is hosted by the workspace, nothing floats elsewhere
+      await act(async () => {
+        root.render(createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: true }))
+      })
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      expect(workspace.querySelector('.home-chat-panel.is-workspace')).not.toBeNull()
+      expect(host.querySelector('.home-chat-panel')).toBeNull()
+
+      // back to another home view: the panel is closed, the launcher is available again
+      await act(async () => {
+        root.render(createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: false }))
+      })
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      expect(host.querySelector('.home-chat-panel')).toBeNull()
+      expect(workspace.querySelector('.home-chat-panel')).toBeNull()
+      // nothing is left floating anywhere on the home page
+      expect(document.querySelector('.home-chat-panel')).toBeNull()
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+    }
+  })
+
+  it('a host that never uses the workspace keeps the floating panel when it is opened', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const api = mockChatApi()
+
+    try {
+      await act(async () => {
+        root.render(createElement(HomeChat, { api, i18n: mockI18n }))
+      })
+      // a host that never opens the workspace still gets the floating panel when a launch intent
+      // arrives, and it stays open rather than being closed by the workspace-exit rule
+      await act(async () => {
+        requestChatPrefill({ text: 'hello there', send: false, intent: 'resume' })
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      expect(host.querySelector('.home-chat-panel')).not.toBeNull()
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+    }
+  })
 })

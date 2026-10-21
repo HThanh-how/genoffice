@@ -70,6 +70,83 @@ describe('CLI vendors', () => {
   })
 })
 
+describe('Antigravity availability (S01-S05)', () => {
+  const HIGH = 'gemini-3.8-flash-high'
+  const LOW = 'gemini-3.8-flash-low'
+  const PRO = 'gemini-3.1-pro-high'
+  const agySettings = (model: string) => {
+    const settings = defaultAiSettings()
+    settings.provider = 'agy'
+    settings.providers.agy = { apiKey: '', model, cliPath: '/cli/agy' }
+    return settings
+  }
+  const live = (entries: Array<{ id: string; enabled?: boolean; verified?: boolean }>) =>
+    entries.map((entry) => ({ id: entry.id, label: entry.id, ...entry }))
+
+  it('S01: only a model that is switched on and confirmed by the CLI is selectable', () => {
+    const groups = aiModelPickerGroups(
+      agySettings(HIGH),
+      false,
+      live([
+        { id: HIGH, enabled: true, verified: true },
+        { id: LOW, enabled: true, verified: true },
+      ]),
+    )
+    const agy = groups.find((g) => g.id === 'agy')!
+    expect(agy.models).toEqual([HIGH, LOW])
+    expect(agy.unusable ?? []).toEqual([])
+  })
+
+  it('S02: a catalog that could not be read makes nothing selectable, but keeps the saved model visible', () => {
+    const groups = aiModelPickerGroups(
+      agySettings(HIGH),
+      false,
+      live([
+        { id: HIGH, enabled: true },
+        { id: PRO, enabled: true },
+      ]),
+      true,
+    )
+    const agy = groups.find((g) => g.id === 'agy')!
+    expect(agy.models).toEqual([])
+    expect(agy.unusable).toEqual([HIGH])
+  })
+
+  it('S03: a model the person switched off is never selectable, even when the CLI serves it', () => {
+    const groups = aiModelPickerGroups(
+      agySettings(HIGH),
+      false,
+      live([
+        { id: HIGH, enabled: true, verified: true },
+        { id: PRO, enabled: false, verified: true },
+      ]),
+    )
+    const agy = groups.find((g) => g.id === 'agy')!
+    expect(agy.models).toEqual([HIGH])
+    expect(agy.unusable ?? []).toEqual([])
+  })
+
+  it('S04: an unconfirmed model is not the same as an empty catalog', () => {
+    const groups = aiModelPickerGroups(
+      agySettings(HIGH),
+      false,
+      live([
+        { id: HIGH, enabled: true, verified: true },
+        { id: PRO, enabled: true, verified: false },
+      ]),
+    )
+    const agy = groups.find((g) => g.id === 'agy')!
+    expect(agy.models).toEqual([HIGH])
+  })
+
+  it('S05: with nothing usable and nothing saved the group is not offered at all', () => {
+    const settings = defaultAiSettings()
+    settings.providers.agy = { apiKey: '', model: '', cliPath: '/cli/agy' }
+    const groups = aiModelPickerGroups(settings, false, live([{ id: PRO, enabled: true }]), true)
+    expect(groups.find((g) => g.id === 'agy')).toBeUndefined()
+  })
+})
+
 describe('custom endpoints', () => {
   const settings = () => ({
     ...defaultAiSettings(),

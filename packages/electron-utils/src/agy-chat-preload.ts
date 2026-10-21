@@ -34,12 +34,19 @@ export function createAgyChatPreloadApi(ipcRenderer: IpcRenderer): AgyChatApi {
     async getAgyChatCatalog() {
       return (await ipcRenderer.invoke(AGY_CHAT_CHANNELS.catalog)) as AgyChatCatalog
     },
-    async selectAgyChatModel(id) {
-      return (await ipcRenderer.invoke(AGY_CHAT_CHANNELS.select, id)) === true
+    async selectAgyChatModel(id, activateProvider = false) {
+      return (await ipcRenderer.invoke(AGY_CHAT_CHANNELS.select, id, activateProvider)) === true
     },
     async setAgyChatEnabledModels(ids) {
+      // null means the write failed; an empty array is a real "nothing switched on" list
       const result: unknown = await ipcRenderer.invoke(AGY_CHAT_CHANNELS.setEnabled, ids)
-      return Array.isArray(result) ? result.filter((x): x is string => typeof x === 'string') : []
+      if (result === null) return null
+      return Array.isArray(result) ? result.filter((x): x is string => typeof x === 'string') : null
+    },
+    onAgyChatModelChanged(handler) {
+      const listener = () => handler()
+      ipcRenderer.on(AGY_CHAT_CHANNELS.modelChanged, listener)
+      return () => ipcRenderer.removeListener(AGY_CHAT_CHANNELS.modelChanged, listener)
     },
     async getAgyChatUsage() {
       return usageFrom(await ipcRenderer.invoke(AGY_CHAT_CHANNELS.usage))

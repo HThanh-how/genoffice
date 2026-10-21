@@ -1,7 +1,11 @@
 import { CLI, FakeChild, fsDeps, runDeps, tick } from './helpers/agy-fake'
+import { AGY_OCR_DEFAULT_MODEL } from '../src/agy-ocr'
+import { resolveAgyEffort } from '../src/agy-effort'
+import { clearAgyChatDefaults, recordAgyChatDefault } from '../src/agy-default'
 import { describe, expect, it, vi } from 'vitest'
 import type { AgentMessage } from '@genoffice/agent-core'
 import {
+  AGY_CHAT_DEFAULT_MODEL,
   AGY_DEFAULT_MODEL,
   AGY_KILL_GRACE_MS,
   agyAutoDetectHint,
@@ -11,6 +15,7 @@ import {
   buildAgyPrompt,
   buildAgyStdin,
   chatAgy,
+  chatModelFor,
   cleanAgyError,
   clearAgyModelsCache,
   createAgyLimiter,
@@ -293,6 +298,37 @@ describe('listAgyModels', () => {
     expect(run).toHaveBeenCalledTimes(2)
     await listAgyModels(CLI, deps, { force: true })
     expect(run).toHaveBeenCalledTimes(3)
+  })
+
+  it('two simultaneous probes of the same executable share one read (C01/C02)', async () => {
+    clearAgyModelsCache()
+    let now = 0
+    const run = vi.fn(
+      (_cli: string, _signal: AbortSignal) =>
+        new Promise<string>((resolve) =>
+          setTimeout(() => resolve('gemini-3.8-flash-low\tLow\n'), 40),
+        ),
+    )
+    const deps = { ...fsDeps('win32', files), run, now: () => now }
+    const [first, second] = await Promise.all([listAgyModels(CLI, deps), listAgyModels(CLI, deps)])
+    expect(run).toHaveBeenCalledTimes(1)
+    expect(first.models).toEqual(['gemini-3.8-flash-low'])
+    expect(second.models).toEqual(first.models)
+    // the shared result is the one that is cached, so a later read does not re-probe
+    now += 1_000
+    expect((await listAgyModels(CLI, deps)).models).toEqual(['gemini-3.8-flash-low'])
+    expect(run).toHaveBeenCalledTimes(1)
+  })
+
+  it('selects AGY_CHAT_DEFAULT_MODEL when present in the catalog', async () => {
+    clearAgyModelsCache()
+    const run = vi.fn(
+      async () =>
+        'gemini-3.8-flash-low\tLow\ngemini-3.8-flash-high\tHigh\nclaude-sonnet-4-6\tClaude\n',
+    )
+    const deps = { ...fsDeps('win32', files), run, now: () => 0 }
+    const res = await listAgyModels(CLI, deps)
+    expect(res.defaultModel).toBe(AGY_CHAT_DEFAULT_MODEL)
   })
 
   it('never throws: a missing binary, empty list or failing run yields an error string', async () => {
@@ -874,5 +910,150 @@ describe('registry wiring', () => {
     })) as { models: string[]; error?: string }
     expect(reply.models).toEqual([])
     expect(reply.error).toMatch(/absolute/)
+  })
+})
+
+describe('chat model sent to the CLI', () => {
+  it('T16: a chat turn with no stored model sends the High default', async () => {
+    const child = new FakeChild()
+    const { deps, spawned } = runDeps(child)
+    const promise = chatAgy(
+      { apiKey: '', model: '', cliPath: CLI },
+      'sys',
+      'hi',
+      new AbortController().signal,
+      deps,
+    )
+    await tick()
+    child.emitLines([
+      '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"ok"}}',
+    ])
+    child.exit(0)
+    await promise
+    const args = spawned[0]!.args
+    expect(args[args.indexOf('--model') + 1]).toBe(AGY_CHAT_DEFAULT_MODEL)
+  })
+
+  it('T21: a model whose id already carries its effort is not sent with --effort', async () => {
+    const child = new FakeChild()
+    const { deps, spawned } = runDeps(child, {
+      capabilities: async () => ({ jsonSchema: false, effort: true }),
+    })
+    const promise = chatAgy(
+      { apiKey: '', model: 'gemini-3.8-flash-high', cliPath: CLI },
+      'sys',
+      'hi',
+      new AbortController().signal,
+      deps,
+    )
+    await tick()
+    child.emitLines([
+      '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"ok"}}',
+    ])
+    child.exit(0)
+    await promise
+    expect(spawned[0]!.args).not.toContain('--effort')
+  })
+
+  it('T19: an OCR run keeps its own Low model and is not affected by the chat default', () => {
+    const args = buildAgyArgs({
+      model: AGY_OCR_DEFAULT_MODEL,
+      stagingDir: 'C:\\tmp\\s',
+      timeoutMs: 60_000,
+      effort: resolveAgyEffort({ task: 'ocr', model: AGY_OCR_DEFAULT_MODEL }),
+    })
+    expect(args[args.indexOf('--model') + 1]).toBe('gemini-3.8-flash-low')
+    // the id already says "low", so no --effort is sent to override it
+    expect(args).not.toContain('--effort')
+  })
+
+  it('T14: the first-run model comes from the CLI that is configured, not from another one', () => {
+    clearAgyChatDefaults()
+    recordAgyChatDefault('/cli/a', { models: ['gemini-3.8-flash-high'] }, 0)
+    recordAgyChatDefault('/cli/b', { models: ['gemini-3.1-pro-low'] }, 1)
+    expect(chatModelFor({ apiKey: '', model: '', cliPath: '/cli/a' })).toBe('gemini-3.8-flash-high')
+    expect(chatModelFor({ apiKey: '', model: '', cliPath: '/cli/b' })).toBe('gemini-3.1-pro-low')
+    // a path nobody has probed yet still gets the documented High default
+    expect(chatModelFor({ apiKey: '', model: '', cliPath: '/cli/new' })).toBe(
+      AGY_CHAT_DEFAULT_MODEL,
+    )
+    clearAgyChatDefaults()
+  })
+
+  it('T40: a stored High is sent to the CLI even when the catalog no longer lists it', async () => {
+    clearAgyChatDefaults()
+    recordAgyChatDefault(CLI, { models: ['gemini-3.8-flash-low'] }, 0)
+    const child = new FakeChild()
+    const { deps, spawned } = runDeps(child)
+    const promise = chatAgy(
+      { apiKey: '', model: 'gemini-3.8-flash-high', cliPath: CLI },
+      'sys',
+      'hi',
+      new AbortController().signal,
+      deps,
+    )
+    await tick()
+    child.emitLines([
+      '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"ok"}}',
+    ])
+    child.exit(0)
+    await promise
+    const args = spawned[0]!.args
+    expect(args[args.indexOf('--model') + 1]).toBe('gemini-3.8-flash-high')
+    clearAgyChatDefaults()
+  })
+
+  it('T39: a CLI with no eligible chat model is refused rather than sent a made-up one', () => {
+    clearAgyChatDefaults()
+    recordAgyChatDefault('/cli/none', { models: ['claude-sonnet-4-6', 'gpt-oss-120b-medium'] }, 0)
+    expect(() => chatModelFor({ apiKey: '', model: '', cliPath: '/cli/none' })).toThrow(
+      /chat model/,
+    )
+    // a failure to read the catalog is not the same as a catalog that answered "nothing"
+    recordAgyChatDefault('/cli/none', { models: [], error: 'agy not found' }, 1)
+    expect(chatModelFor({ apiKey: '', model: '', cliPath: '/cli/none' })).toBe(
+      AGY_CHAT_DEFAULT_MODEL,
+    )
+    clearAgyChatDefaults()
+  })
+
+  it('T31: a High model id is never downgraded by a task effort flag', () => {
+    const args = buildAgyArgs({
+      model: 'gemini-3.8-flash-high',
+      stagingDir: '/tmp/s',
+      timeoutMs: 60_000,
+      effort: resolveAgyEffort({ task: 'chat', model: 'gemini-3.8-flash-high' }),
+    })
+    expect(args[args.indexOf('--model') + 1]).toBe('gemini-3.8-flash-high')
+    expect(args).not.toContain('--effort')
+  })
+
+  it('T35: a turn keeps the model it started with when the settings change mid-flight', async () => {
+    const child = new FakeChild()
+    const { deps, spawned } = runDeps(child)
+    const config = { apiKey: '', model: 'gemini-3.8-flash-high', cliPath: CLI }
+    const promise = streamAgy(
+      config,
+      'sys',
+      [{ role: 'user', text: 'hi' }],
+      [],
+      1000,
+      {
+        onDelta: vi.fn(),
+        onToolCall: vi.fn(),
+        signal: new AbortController().signal,
+      },
+      deps,
+    )
+    // the person switches models while this request is already running
+    config.model = 'gemini-3.8-flash-low'
+    await tick()
+    child.emitLines([
+      '{"event":"result","result":{"conversation_id":"c1","status":"SUCCESS","response":"ok"}}',
+    ])
+    child.exit(0)
+    await promise
+    const args = spawned[0]!.args
+    expect(args[args.indexOf('--model') + 1]).toBe('gemini-3.8-flash-high')
   })
 })

@@ -103,6 +103,7 @@ import {
   resolveAiSettings,
   maxOutputTokensOf,
   sanitizeAiSettings,
+  applySettingsWrite,
   sanitizeCliPath,
   setAiUserAgent,
   setRescueFetch,
@@ -119,7 +120,7 @@ import {
   retireAgyResidentScope,
 } from '@genoffice/ai-provider'
 import { listCodexModels, shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
-import { isCliProvider } from '@genoffice/ai-provider/agy-cli'
+import { isCliProvider, listAgyModels } from '@genoffice/ai-provider/agy-cli'
 import { listProviderModelsForIpc } from '@genoffice/ai-provider/provider-models'
 import {
   listCustomModelsForIpc,
@@ -4139,18 +4140,27 @@ export function registerAiIpc(): void {
     ensureGenofficeLogin((url) => void shell.openExternal(url))
   })
 
-  ipcMain.handle('ai:set-settings', (_event, settings: AiSettings) => {
+  ipcMain.handle('ai:set-settings', async (_event, settings: AiSettings) => {
     // SECURITY.md: payloads are schema-checked in the main process. The settings
     // file feeds cliPath into spawn() and baseUrl receives the gsk bearer token,
-    // so the renderer's copy is sanitized before it touches disk.
-    const sanitized = sanitizeAiSettings(settings)
-    if (!sanitized) {
-      console.warn('[ai] rejected invalid ai:set-settings payload')
-      return
+    // so the renderer's copy is sanitized before it touches disk. Schema shape is
+    // not live validation: an Antigravity chat model is only stored when the
+    // configured CLI confirms it, exactly as the validated selection path requires.
+    const decision = await applySettingsWrite(
+      settings,
+      () => readJson<AiSettings | null>(SETTINGS_PATH(), null),
+      (next) => writeJsonAtomic(SETTINGS_PATH(), next),
+      (cliPath: string | undefined) => listAgyModels(cliPath),
+      undefined,
+      false,
+    )
+    if (!decision.ok || !decision.settings) {
+      console.warn('[ai] rejected ai:set-settings payload:', decision.reason ?? 'invalid')
+      return { ok: false, reason: decision.reason ?? 'invalid' }
     }
-    writeJsonAtomic(SETTINGS_PATH(), sanitized)
     broadcastAiSettingsChanged()
-    maybePrewarmAgy(sanitized)
+    maybePrewarmAgy(decision.settings)
+    return { ok: true }
   })
 
   ipcMain.handle('ai:codex-models', async (_event, cliPath: unknown) => {

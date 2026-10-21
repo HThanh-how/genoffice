@@ -65,7 +65,6 @@ const realDeps: AgyUsageDeps = {
       // comes from here. Stop at once instead of spinning until the timeout.
       const watchLogin = (chunk: Buffer) => {
         if (!/Authentication required/i.test(chunk.toString('utf8'))) return
-        needsLogin = true
         finish(() => {
           killProcessTree(child)
           reject(new Error('Antigravity is not signed in'))
@@ -85,23 +84,34 @@ const realDeps: AgyUsageDeps = {
     }),
 }
 
-let unsupported = false
-let needsLogin = false
-let cliMissing = false
+/**
+ * Usage errors are attributed to the executable that produced them. A CLI that has no `/usage`
+ * support, is missing, or is not signed in must not colour the quota read of a different CLI that
+ * is configured at the same time.
+ */
+const usageErrors = new Map<string, { needsLogin: boolean; cliMissing: boolean }>()
+const unsupportedClis = new Set<string>()
 
-/** True when the last usage read stopped because the CLI is not signed in. */
-export function agyUsageNeedsLogin(): boolean {
-  return needsLogin
+/** identity used for error attribution: the configured path, or '' for auto-detect */
+function usageKey(cliPath?: string): string {
+  return typeof cliPath === 'string' && cliPath.trim() ? cliPath.trim() : ''
 }
 
-/** True when the last usage read stopped because there is no `agy` on this computer. */
-export function agyUsageCliMissing(): boolean {
-  return cliMissing
+/** True when the last usage read for this CLI stopped because it is not signed in. */
+export function agyUsageNeedsLogin(cliPath?: string): boolean {
+  return usageErrors.get(usageKey(cliPath))?.needsLogin ?? false
 }
 
-/** Test seam: forget that `/usage` was found unsupported. */
-export function resetAgyUsageSupport(): void {
-  unsupported = false
+/** True when the last usage read for this CLI stopped because there is no `agy` on this computer. */
+export function agyUsageCliMissing(cliPath?: string): boolean {
+  return usageErrors.get(usageKey(cliPath))?.cliMissing ?? false
+}
+
+export type { AgyUsageReading } from './agy-ocr'
+
+/** Test seam: forget that `/usage` was found unsupported. */ export function resetAgyUsageSupport(): void {
+  unsupportedClis.clear()
+  usageErrors.clear()
 }
 
 /** The JSON object in the CLI's stdout (progress noise may surround it). */
@@ -121,17 +131,20 @@ export async function readAgyUsage(
   cliPath?: string,
   deps: AgyUsageDeps = realDeps,
 ): Promise<AgyUsageReading | null> {
-  if (unsupported) return null
-  needsLogin = false
-  cliMissing = false
+  const key = usageKey(cliPath)
+  if (unsupportedClis.has(key)) return null
+  usageErrors.set(key, { needsLogin: false, cliMissing: false })
   try {
     let cli: string
     try {
       cli = await deps.resolveCli(cliPath)
     } catch (error) {
-      cliMissing = /Antigravity CLI \(agy\) was not found|Antigravity CLI not found/i.test(
-        error instanceof Error ? error.message : '',
-      )
+      usageErrors.set(key, {
+        needsLogin: false,
+        cliMissing: /Antigravity CLI \(agy\) was not found|Antigravity CLI not found/i.test(
+          error instanceof Error ? error.message : '',
+        ),
+      })
       return null
     }
     const output = await deps.run(cli, AGY_USAGE_ARGS, AGY_USAGE_TIMEOUT_MS)
@@ -139,9 +152,14 @@ export async function readAgyUsage(
     const reading = parseAgyUsageJson(json, deps.now())
     if (reading) return reading
     const usage = (json as { usage?: { total_tokens?: unknown } } | null)?.usage
-    if (typeof usage?.total_tokens === 'number' && usage.total_tokens > 0) unsupported = true
+    if (typeof usage?.total_tokens === 'number' && usage.total_tokens > 0) unsupportedClis.add(key)
     return null
-  } catch {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ''
+    usageErrors.set(key, {
+      needsLogin: /not signed in|Authentication required/i.test(message),
+      cliMissing: false,
+    })
     return null
   }
 }

@@ -103,7 +103,14 @@ export type {
   ProviderCapabilities,
   ResolvedEndpoint,
 } from './registry'
-export { sanitizeAiSettings, sanitizeCliPath, validCliPath } from './ai-settings-guard'
+export {
+  applySettingsWrite,
+  decideSettingsWrite,
+  sanitizeAiSettings,
+  sanitizeCliPath,
+  validCliPath,
+  type SettingsWriteDecision,
+} from './ai-settings-guard'
 export { chatForProvider } from './chat'
 export { listGeminiModels } from './gemini-models'
 export type { GeminiModelInfo } from './gemini-models'

@@ -76,6 +76,7 @@ import {
   probeAgyUsable,
   maxOutputTokensOf,
   resolveAiSettings,
+  applySettingsWrite,
   setAiUserAgent,
   setRescueFetch,
   resolveProfileCredential,
@@ -87,7 +88,7 @@ import {
   type LegacyAiSettings,
 } from '@genoffice/ai-provider'
 import { shutdownCodexAppServers } from '@genoffice/ai-provider/codex-app-server'
-import { isCliProvider } from '@genoffice/ai-provider/agy-cli'
+import { isCliProvider, listAgyModels } from '@genoffice/ai-provider/agy-cli'
 import { convertLegacyXlsFile } from './disguised-xls'
 import {
   csvToXlsxBufferForOpen,
@@ -3869,10 +3870,21 @@ export function registerSheetsAiIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.aiSetSettings, async (event, input: unknown) => {
     sessionFor(event)
-    const settings = aiSettingsInputSchema.parse(input)
-    writeJsonAtomic(SETTINGS_PATH(), settings)
+    // Schema shape is not live validation: an Antigravity chat model is only stored
+    // when the configured CLI confirms it, exactly as the validated selection path does.
+    const decision = await applySettingsWrite(
+      aiSettingsInputSchema.parse(input),
+      () => readJson<AiSettings | null>(SETTINGS_PATH(), null),
+      (next) => writeJsonAtomic(SETTINGS_PATH(), next),
+      (cliPath: string | undefined) => listAgyModels(cliPath),
+      undefined,
+      false,
+    )
+    if (!decision.ok || !decision.settings)
+      return { ok: false, reason: decision.reason ?? 'invalid' }
     for (const wc of webContents.getAllWebContents())
       if (!wc.isDestroyed()) wc.send(IPC_CHANNELS.aiSettingsChanged)
+    return { ok: true }
   })
 
   ipcMain.handle(IPC_CHANNELS.aiChat, async (event, input: unknown) => {

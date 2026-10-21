@@ -24,7 +24,7 @@ import {
 } from './agy-cli'
 import { createAgyLimiter, type Limiter } from './agy-limiter'
 import { classifyAgyFailure, hasAgyPrintTimeoutWarning } from './agy-errors'
-import { AGY_DEFAULT_MODEL } from './agy-meta'
+import { chatModelFor } from './agy-cli'
 
 // ---------------------------------------------------------------------------
 // Constants & Limits
@@ -303,7 +303,7 @@ class AgyResidentManager {
 
   private async prewarmInternal(config: AiProviderConfig, deps: AgyRunDeps): Promise<void> {
     const cliPath = await resolveAgyCliPath(config.cliPath, deps)
-    const model = config.model?.trim() || AGY_DEFAULT_MODEL
+    const model = chatModelFor(config)
     const capabilities = deps.capabilities ? await deps.capabilities(cliPath) : undefined
     if (!capabilities?.jsonSchema) return // only schema protocol benefits from resident generic schema
 
@@ -423,7 +423,7 @@ class AgyResidentManager {
       }
 
       const cliPath = await resolveAgyCliPath(config.cliPath, deps)
-      const model = config.model?.trim() || AGY_DEFAULT_MODEL
+      const model = chatModelFor(config)
       const capabilities = deps.capabilities ? await deps.capabilities(cliPath) : undefined
       const effort = capabilities?.effort
         ? resolveAgyEffort({

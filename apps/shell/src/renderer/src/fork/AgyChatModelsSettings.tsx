@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AGY_CHAT_DEFAULT_MODEL,
   type AgyChatApi,
@@ -9,7 +9,7 @@ import { useI18n } from '../locale'
 
 const EN = {
   title: 'Models in the chat box',
-  desc: 'Only the models switched on here appear in the chat box. Gemini 3.8 Flash Low is on by default: it was as accurate as the slower levels in our tests while using the least quota.',
+  desc: 'Only the models switched on here appear in the chat box. On a first run every Gemini model the Antigravity CLI reports is switched on, and chat starts on Gemini 3.8 Flash High when that CLI has it. Lower-effort models use less quota. Claude and GPT models stay off until you turn them on; a list you have already changed is kept as it is.',
   geminiGroup: 'Gemini',
   otherGroup: 'Claude and GPT',
   otherNote:
@@ -25,7 +25,7 @@ const EN = {
 }
 const VI: typeof EN = {
   title: 'Model trong khung chat',
-  desc: 'Chỉ các model được bật ở đây mới hiện trong khung chat. Mặc định chỉ bật Gemini 3.8 Flash Low: khi thử, nó chính xác ngang các mức chậm hơn mà tốn ít quota nhất.',
+  desc: 'Chỉ các model được bật ở đây mới hiện trong khung chat. Khi dùng lần đầu, mọi model Gemini mà Antigravity CLI báo là được bật, và chat dùng Gemini 3.8 Flash High nếu CLI đó có. Model mức reasoning thấp hơn dùng ít quota hơn. Model Claude và GPT tắt cho tới khi bạn bật; danh sách bạn đã thay đổi sẽ được giữ nguyên.',
   geminiGroup: 'Gemini',
   otherGroup: 'Claude và GPT',
   otherNote:
@@ -41,7 +41,7 @@ const VI: typeof EN = {
 }
 const ZH: typeof EN = {
   title: '聊天框中的模型',
-  desc: '只有在此开启的模型才会出现在聊天框中。默认只开启 Gemini 3.8 Flash Low：测试中它与更慢的档位一样准确，且最省额度。',
+  desc: '只有在此开启的模型才会出现在聊天框中。首次使用时，Antigravity CLI 报告的所有 Gemini 模型都会开启，若该 CLI 提供 Gemini 3.8 Flash High，聊天默认使用它。较低思考档位的模型消耗更少额度。Claude 和 GPT 模型默认关闭，需手动开启；已修改过的列表保持不变。',
   geminiGroup: 'Gemini',
   otherGroup: 'Claude 和 GPT',
   otherNote: '这些模型使用单独的额度池，完成同样的工作要多消耗数倍额度。默认关闭。',
@@ -66,29 +66,66 @@ export function AgyChatModelsSettings() {
   const d = DICTS[lang] ?? EN
   const [catalog, setCatalog] = useState<AgyChatCatalog | null>(null)
   const [failed, setFailed] = useState(false)
+  // the newest catalog the panel has seen, so a queued toggle never starts from a stale list
+  const catalogRef = useRef<AgyChatCatalog | null>(null)
+  // toggles run one after another, each seeing the result of the previous one
+  const queueRef = useRef<Promise<void>>(Promise.resolve())
 
   const load = useCallback(async () => {
     try {
       const next = await api()?.getAgyChatCatalog()
-      if (next) {
+      if (next && next.all.length > 0) {
+        catalogRef.current = next
         setCatalog(next)
-        setFailed(next.all.length === 0)
+        setFailed(false)
+      } else {
+        catalogRef.current = null
+        setCatalog(null)
+        setFailed(true)
       }
     } catch {
+      catalogRef.current = null
+      setCatalog(null)
       setFailed(true)
     }
   }, [])
   useEffect(() => {
     void load()
+    const off = api()?.onAgyChatModelChanged?.(() => void load())
+    const onWindow = () => void load()
+    window.addEventListener('genoffice-agy-model-changed', onWindow)
+    return () => {
+      off?.()
+      window.removeEventListener('genoffice-agy-model-changed', onWindow)
+    }
   }, [load])
 
-  const toggle = async (id: string) => {
-    if (!catalog) return
-    const on = catalog.enabled.includes(id)
-    if (on && catalog.enabled.length === 1) return
-    const ids = on ? catalog.enabled.filter((x) => x !== id) : [...catalog.enabled, id]
-    const saved = await api()?.setAgyChatEnabledModels(ids)
-    if (saved) setCatalog({ ...catalog, enabled: saved })
+  const toggle = (id: string) => {
+    // toggles are serialised: two rapid clicks cannot both start from the same snapshot and
+    // silently drop one of them
+    queueRef.current = queueRef.current.then(async () => {
+      const current = catalogRef.current
+      if (!current) return
+      const on = current.enabled.includes(id)
+      if (on && current.enabled.length === 1) return
+      const ids = on ? current.enabled.filter((x) => x !== id) : [...current.enabled, id]
+      try {
+        const saved = await api()?.setAgyChatEnabledModels(ids)
+        if (saved === null || saved === undefined) {
+          // the write did not land: re-read so the switches show what is really stored instead of
+          // pretending the change was saved
+          void load()
+          return
+        }
+        const next = { ...current, enabled: saved }
+        catalogRef.current = next
+        setFailed(false)
+        setCatalog(next)
+        window.dispatchEvent(new Event('genoffice-agy-model-changed'))
+      } catch {
+        void load()
+      }
+    })
   }
 
   const row = (model: AgyChatModelInfo) => {

@@ -215,6 +215,9 @@ export function HomeChat({
     setDockTarget((previous) => (previous === target ? previous : target))
   }, [dockLocation])
 
+  // The panel is drawn where it is hosted: inside the Ask AI workspace while that view is open,
+  // and floating over the rest of the home page only for hosts that never use the workspace.
+  // Leaving the workspace closes the panel (below) so it never strands a floating copy.
   const panelVisible = Boolean(isWorkspace || (workspaceActive === undefined && open))
 
   useEffect(() => {

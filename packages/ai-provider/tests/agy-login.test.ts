@@ -81,4 +81,41 @@ describe('AgyLogin', () => {
     await login.start()
     expect(login.state()).toMatchObject({ phase: 'failed', error: 'cli-missing' })
   })
+
+  it('F7: the sign-in runs against the CLI the person configured', async () => {
+    const child = fakeChild()
+    const resolveCli = vi.fn(async (configured?: string) => configured ?? '/bin/agy-auto')
+    const login = new AgyLogin({
+      resolveCli,
+      spawn: (cli) => {
+        spawned.push(cli)
+        return child as never
+      },
+      openUrl: vi.fn(),
+      onChange: () => undefined,
+      cliPath: () => '/custom/agy',
+    })
+    const spawned: string[] = []
+    await login.start()
+    expect(resolveCli).toHaveBeenCalledWith('/custom/agy')
+    expect(spawned).toEqual(['/custom/agy'])
+  })
+
+  it('F8: with no configured path the sign-in auto-detects, exactly like the catalog and the quota', async () => {
+    const child = fakeChild()
+    const spawned: string[] = []
+    const resolveCli = vi.fn(async (configured?: string) => configured ?? '/bin/agy-auto')
+    const login = new AgyLogin({
+      resolveCli,
+      spawn: (cli) => {
+        spawned.push(cli)
+        return child as never
+      },
+      openUrl: vi.fn(),
+      onChange: () => undefined,
+    })
+    await login.start()
+    expect(resolveCli).toHaveBeenCalledWith(undefined)
+    expect(spawned).toEqual(['/bin/agy-auto'])
+  })
 })

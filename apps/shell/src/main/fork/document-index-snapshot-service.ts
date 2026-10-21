@@ -1,7 +1,11 @@
 import type { FolderScanManager } from '../document-memory/folder-scan'
 import type { DocumentMemoryManager } from '../document-memory/manager'
 import { foldFolderProgress } from '../document-memory/folder-progress'
-import { ALL_FOLDERS, type IndexIssueReader, type IndexIssueSummary } from '../document-memory/issue-reader'
+import {
+  ALL_FOLDERS,
+  type IndexIssueReader,
+  type IndexIssueSummary,
+} from '../document-memory/issue-reader'
 import { shortCause } from '../document-memory/issues'
 import { currentIndexingPolicy, effectiveStateOf } from './indexing-policy-bus'
 import { getEventLoopMetrics, getSqliteTimingSummary } from '../document-memory/sqlite-timing'
@@ -29,7 +33,9 @@ export interface SnapshotContext {
   getDocumentMemory: () => DocumentMemoryManager | null
   getFolderScan: () => FolderScanManager | null
   getIssueReader: () => IndexIssueReader
-  getFolderCounts: () => { get: (root: string, fetcher: () => FolderChunkProgress) => FolderChunkProgress }
+  getFolderCounts: () => {
+    get: (root: string, fetcher: () => FolderChunkProgress) => FolderChunkProgress
+  }
   dbPath: () => string
   settingsPath?: string | (() => string)
 }
@@ -37,6 +43,7 @@ export interface SnapshotContext {
 /** In-memory TTL cache with support for forced refresh and invalidation. */
 export class IndexStatusCache<T> {
   private entry: { data: T; expiresAt: number } | null = null
+  private inflight: Promise<T> | null = null
 
   constructor(public readonly ttlMs: number) {}
 
@@ -45,6 +52,14 @@ export class IndexStatusCache<T> {
       return this.entry.data
     }
     return null
+  }
+
+  getInflight(): Promise<T> | null {
+    return this.inflight
+  }
+
+  setInflight(promise: Promise<T> | null): void {
+    this.inflight = promise
   }
 
   latest(): T | null {
@@ -65,6 +80,7 @@ export class IndexStatusCache<T> {
 
   clear(): void {
     this.entry = null
+    this.inflight = null
   }
 }
 
@@ -72,7 +88,9 @@ export const SNAPSHOT_CACHE_TTL_MS = 2000
 export const DIAGNOSTICS_CACHE_TTL_MS = 60_000
 
 export const snapshotCache = new IndexStatusCache<DocumentIndexSnapshot>(SNAPSHOT_CACHE_TTL_MS)
-export const diagnosticsCache = new IndexStatusCache<DocumentIndexDiagnostics>(DIAGNOSTICS_CACHE_TTL_MS)
+export const diagnosticsCache = new IndexStatusCache<DocumentIndexDiagnostics>(
+  DIAGNOSTICS_CACHE_TTL_MS,
+)
 
 function emptyStorageDiagnostics(): DocumentIndexStorageDiagnostics {
   return {
@@ -135,7 +153,10 @@ function getSnapshotMode(ctx: SnapshotContext): IndexingModeState {
   }
 }
 
-export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: boolean): DocumentIndexSnapshot {
+export function getDocumentIndexSnapshot(
+  ctx: SnapshotContext,
+  forceRefresh?: boolean,
+): DocumentIndexSnapshot {
   const cached = snapshotCache.get(forceRefresh)
   if (cached) {
     return cached
@@ -147,21 +168,26 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
   // The aggregates are full passes over the documents table: they come from the reader thread, never from this one.
   const aggregates = documentMemory?.aggregates
   const stats = aggregates?.stats()
-  const memoryStatus: DocumentMemoryStatus = typeof documentMemory?.status === 'function' ? documentMemory.status(undefined, stats) : {
-    enabled: false,
-    modelState: 'not-loaded',
-    documents: 0,
-    chunks: 0,
-    vectors: 0,
-    pending: 0,
-    errors: 0,
-    dbPath: ctx.dbPath(),
-    files: [],
-  }
+  const memoryStatus: DocumentMemoryStatus =
+    typeof documentMemory?.status === 'function'
+      ? documentMemory.status(undefined, stats)
+      : {
+          enabled: false,
+          modelState: 'not-loaded',
+          documents: 0,
+          chunks: 0,
+          vectors: 0,
+          pending: 0,
+          errors: 0,
+          dbPath: ctx.dbPath(),
+          files: [],
+        }
   const actMem = documentMemory?.indexingActivityStatus?.(undefined, stats)
   const extractingPath = actMem?.activity?.extracting?.[0]?.path
   const modelError =
-    extractingPath && documentMemory?.lastIndexError ? shortCause(documentMemory.lastIndexError) : ''
+    extractingPath && documentMemory?.lastIndexError
+      ? shortCause(documentMemory.lastIndexError)
+      : ''
   const counts = aggregates
     ? aggregates.folder()
     : documentMemory && typeof documentMemory.getLibraryIndexCounts === 'function'
@@ -194,14 +220,17 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
     // ignore
   }
 
-  const nowState: IndexingNow = typeof documentMemory?.nowStatus === 'function' ? documentMemory.nowStatus() : {
-    extracting: [],
-    embedding: {},
-    positions: {},
-    pages: {},
-    queued: 0,
-    paused: true,
-  }
+  const nowState: IndexingNow =
+    typeof documentMemory?.nowStatus === 'function'
+      ? documentMemory.nowStatus()
+      : {
+          extracting: [],
+          embedding: {},
+          positions: {},
+          pages: {},
+          queued: 0,
+          paused: true,
+        }
 
   const timing = getSqliteTimingSummary()
   const eventLoop = getEventLoopMetrics()
@@ -233,24 +262,28 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
   const liveActiveBytes = safeGetFileSize(liveDbPath)
   const liveWalBytes = safeGetFileSize(`${liveDbPath}-wal`)
 
-  const liveBudgetSnapshot = typeof (documentMemory as any)?.getStorageBudgetSnapshot === 'function'
-    ? (documentMemory as any).getStorageBudgetSnapshot()
-    : null
+  const liveBudgetSnapshot =
+    typeof (documentMemory as any)?.getStorageBudgetSnapshot === 'function'
+      ? (documentMemory as any).getStorageBudgetSnapshot()
+      : null
 
-  const storageBudget = liveBudgetSnapshot ?? createStorageBudgetSnapshot({
-    activeDbSizeBytes: liveActiveBytes > 0 ? liveActiveBytes : storage.activeDbSizeBytes,
-    walSizeBytes: liveWalBytes > 0 ? liveWalBytes : storage.walSizeBytes,
-    budgetBytes: (documentMemory as any)?.getStorageBudget?.()?.maxDatabaseBytes ?? storage.budgetBytes,
-    chunksBytes: storage.breakdown?.chunksBytes ?? storage.chunksBytes,
-    embeddingsBytes: storage.breakdown?.embeddingsBytes ?? storage.embeddingsBytes,
-    ftsBytes: storage.breakdown?.ftsBytes ?? storage.ftsBytes,
-    ocrBytes: storage.breakdown?.ocrBytes ?? storage.ocrBytes,
-    backupBytes: storage.v2BackupSizeBytes ?? storage.backupBytes,
-    reclaimableBytes: storage.estimatedReclaimableBytes ?? storage.reclaimableBytes,
-    isDegraded: true,
-    measurementStatus: 'degraded',
-    measurementError: 'Live storage measurement not yet available; using conservative fallback',
-  })
+  const storageBudget =
+    liveBudgetSnapshot ??
+    createStorageBudgetSnapshot({
+      activeDbSizeBytes: liveActiveBytes > 0 ? liveActiveBytes : storage.activeDbSizeBytes,
+      walSizeBytes: liveWalBytes > 0 ? liveWalBytes : storage.walSizeBytes,
+      budgetBytes:
+        (documentMemory as any)?.getStorageBudget?.()?.maxDatabaseBytes ?? storage.budgetBytes,
+      chunksBytes: storage.breakdown?.chunksBytes ?? storage.chunksBytes,
+      embeddingsBytes: storage.breakdown?.embeddingsBytes ?? storage.embeddingsBytes,
+      ftsBytes: storage.breakdown?.ftsBytes ?? storage.ftsBytes,
+      ocrBytes: storage.breakdown?.ocrBytes ?? storage.ocrBytes,
+      backupBytes: storage.v2BackupSizeBytes ?? storage.backupBytes,
+      reclaimableBytes: storage.estimatedReclaimableBytes ?? storage.reclaimableBytes,
+      isDegraded: true,
+      measurementStatus: 'degraded',
+      measurementError: 'Live storage measurement not yet available; using conservative fallback',
+    })
 
   const modeState = getSnapshotMode(ctx)
 
@@ -270,28 +303,51 @@ export function getDocumentIndexSnapshot(ctx: SnapshotContext, forceRefresh?: bo
   return snapshotCache.set(snapshot)
 }
 
-export async function getDocumentIndexDiagnostics(ctx: SnapshotContext, forceRefresh?: boolean): Promise<DocumentIndexDiagnostics> {
-  const cached = diagnosticsCache.get(forceRefresh)
-  if (cached) {
-    return cached
+export async function getDocumentIndexDiagnostics(
+  ctx: SnapshotContext,
+  forceRefresh?: boolean,
+): Promise<DocumentIndexDiagnostics> {
+  if (!forceRefresh) {
+    const cached = diagnosticsCache.get(false)
+    if (cached) {
+      return cached
+    }
+    const inflight = diagnosticsCache.getInflight()
+    if (inflight) {
+      return inflight
+    }
   }
 
-  const now = Date.now()
-  const memory = ctx.getDocumentMemory()
-  const storage = (await memory?.getStorageDiagnosticsAsync?.()) ?? emptyStorageDiagnostics()
+  const promise = (async () => {
+    const now = Date.now()
+    const memory = ctx.getDocumentMemory()
+    const storage = (await memory?.getStorageDiagnosticsAsync?.()) ?? emptyStorageDiagnostics()
 
-  const migration: DocumentIndexMigrationDiagnostics = typeof memory?.getMigrationDiagnostics === 'function' ? memory.getMigrationDiagnostics() : {
-    activeEmbeddingSpace: 'standard',
-    state: 'idle',
-    totalChunks: 0,
-    completedChunks: 0,
+    const migration: DocumentIndexMigrationDiagnostics =
+      typeof memory?.getMigrationDiagnostics === 'function'
+        ? memory.getMigrationDiagnostics()
+        : {
+            activeEmbeddingSpace: 'standard',
+            state: 'idle',
+            totalChunks: 0,
+            completedChunks: 0,
+          }
+
+    const diagnostics: DocumentIndexDiagnostics = {
+      storage,
+      migration,
+      timestamp: now,
+    }
+
+    return diagnosticsCache.set(diagnostics)
+  })()
+
+  diagnosticsCache.setInflight(promise)
+  try {
+    return await promise
+  } finally {
+    if (diagnosticsCache.getInflight() === promise) {
+      diagnosticsCache.setInflight(null)
+    }
   }
-
-  const diagnostics: DocumentIndexDiagnostics = {
-    storage,
-    migration,
-    timestamp: now,
-  }
-
-  return diagnosticsCache.set(diagnostics)
 }

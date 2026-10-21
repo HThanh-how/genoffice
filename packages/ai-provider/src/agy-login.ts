@@ -11,10 +11,12 @@ import type { AgyLoginPhase, AgyLoginState } from './agy-chat'
 export type { AgyLoginPhase, AgyLoginState }
 
 export interface AgyLoginDeps {
-  resolveCli(): Promise<string>
+  resolveCli(configured?: string): Promise<string>
   spawn(cli: string, args: readonly string[]): ChildProcess
   openUrl(url: string): void
   onChange(state: AgyLoginState): void
+  /** the executable the person configured; undefined means "auto-detect" */
+  cliPath?(): string | undefined
   /** give up after this long (ms) */
   timeoutMs?: number
 }
@@ -25,8 +27,10 @@ const URL_PATTERN = /https:\/\/accounts\.google\.com\/[^\s"']+/
 const realDeps = (
   onChange: AgyLoginDeps['onChange'],
   openUrl: AgyLoginDeps['openUrl'],
+  cliPath: () => string | undefined = () => undefined,
 ): AgyLoginDeps => ({
-  resolveCli: () => resolveAgyCliPath(undefined),
+  resolveCli: (configured) => resolveAgyCliPath(configured),
+  cliPath,
   spawn: (cli, args) =>
     spawn(cli, [...args], {
       cwd: tmpdir(),
@@ -42,13 +46,24 @@ const realDeps = (
 export class AgyLogin {
   private current: AgyLoginState = { phase: 'idle' }
   private child: ChildProcess | null = null
+  /** bumped by every start/cancel so a superseded start can never spawn a process later */
+  private generation = 0
   private timer: ReturnType<typeof setTimeout> | null = null
   private readonly deps: AgyLoginDeps
 
   constructor(deps: AgyLoginDeps)
-  constructor(onChange: AgyLoginDeps['onChange'], openUrl: AgyLoginDeps['openUrl'])
-  constructor(first: AgyLoginDeps | AgyLoginDeps['onChange'], openUrl?: AgyLoginDeps['openUrl']) {
-    this.deps = typeof first === 'function' ? realDeps(first, openUrl ?? (() => undefined)) : first
+  constructor(
+    onChange: AgyLoginDeps['onChange'],
+    openUrl: AgyLoginDeps['openUrl'],
+    cliPath?: () => string | undefined,
+  )
+  constructor(
+    first: AgyLoginDeps | AgyLoginDeps['onChange'],
+    openUrl?: AgyLoginDeps['openUrl'],
+    cliPath?: () => string | undefined,
+  ) {
+    this.deps =
+      typeof first === 'function' ? realDeps(first, openUrl ?? (() => undefined), cliPath) : first
   }
 
   state(): AgyLoginState {
@@ -62,20 +77,31 @@ export class AgyLogin {
 
   /** Start (or restart) a sign-in; the browser opens by itself once the CLI gives the URL. */
   async start(): Promise<AgyLoginState> {
+    // every start/cancel is a generation: a start whose CLI resolution is still pending when the
+    // person cancels or starts again must not spawn a process afterwards
+    const generation = ++this.generation
     this.stop()
     this.set({ phase: 'starting' })
     let cli: string
     try {
-      cli = await this.deps.resolveCli()
+      cli = await this.deps.resolveCli(this.deps.cliPath?.())
     } catch {
+      if (this.generation !== generation) return this.state()
       this.set({ phase: 'failed', error: 'cli-missing' })
       return this.state()
     }
+    if (this.generation !== generation) return this.state()
     let child: ChildProcess
     try {
       child = this.deps.spawn(cli, LOGIN_ARGS)
     } catch {
+      if (this.generation !== generation) return this.state()
       this.set({ phase: 'failed', error: 'failed' })
+      return this.state()
+    }
+    if (this.generation !== generation) {
+      // cancelled or superseded while the process was being created
+      killProcessTree(child)
       return this.state()
     }
     this.child = child
@@ -83,6 +109,9 @@ export class AgyLogin {
     let opened = false
     let output = ''
     const read = (chunk: Buffer | string) => {
+      // a child that was cancelled or superseded must not move the login state, and must never
+      // open the Google URL it printed: only the active generation's child may do either
+      if (this.child !== child || this.generation !== generation) return
       const text = chunk.toString()
       output += text
       if (output.length > 200_000) output = output.slice(-100_000)
@@ -142,6 +171,7 @@ export class AgyLogin {
   }
 
   cancel(): void {
+    this.generation++
     this.stop()
     this.set({ phase: 'idle' })
   }
