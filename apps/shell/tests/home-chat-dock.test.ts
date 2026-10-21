@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createRoot, type Root } from 'react-dom/client'
 import { act, createElement } from 'react'
 import { HomeChat } from '../src/renderer/src/HomeChat'
+import { HOME_SEARCH_EVENT } from '../src/renderer/src/home-chat/dock-logic'
 import { pickSlot } from '../src/renderer/src/home-chat/dock-slot'
 import type { HomeApi } from '../src/shared/home-api'
 import type { I18n } from '../src/renderer/src/locale'
@@ -111,6 +112,39 @@ describe('Home dock', () => {
         .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
     expect(onOpenAskWorkspace).toHaveBeenCalledTimes(1)
+  })
+
+  it('runs the Home search as you type, offers Ask AI, and ends the search when cleared', async () => {
+    const slot = addSlot()
+    await mount()
+    const seen: Array<{ q: string; source?: string }> = []
+    const listener = (event: Event) => seen.push((event as CustomEvent).detail)
+    window.addEventListener(HOME_SEARCH_EVENT, listener)
+    const input = slot.querySelector<HTMLInputElement>('.ask-form input')!
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    const type = async (value: string) => {
+      await act(async () => {
+        setValue.call(input, value)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+      await act(async () => new Promise((resolve) => setTimeout(resolve, 300)))
+    }
+    try {
+      await type('budget')
+      expect(seen).toEqual([{ q: 'budget', source: 'dock' }])
+      // no results list of its own: Home shows them, the box only offers Ask AI
+      expect(slot.querySelector('.ask-hit')).toBeNull()
+      await type('why is budget late?')
+      expect(seen.at(-1)).toEqual({ q: '', source: 'dock' })
+      await type('budget')
+      await type('')
+      expect(seen.at(-1)).toEqual({ q: '', source: 'dock' })
+      const before = seen.length
+      await type('')
+      expect(seen).toHaveLength(before)
+    } finally {
+      window.removeEventListener(HOME_SEARCH_EVENT, listener)
+    }
   })
 
   it('shows the chat panel only on the Ask AI page', async () => {

@@ -1,5 +1,33 @@
-/** Window event: carries a file-search query from the Home input to the Home file search. */
+/**
+ * Window event: carries the file-search query typed in the Home input to the Home file search.
+ * `detail.q` is the query; an empty `q` from `source: 'dock'` ends the search the input started.
+ */
 export const HOME_SEARCH_EVENT = 'genoffice:home-search'
+
+export interface HomeSearchDetail {
+  q: string
+  source?: 'dock'
+}
+
+/** Longest typed text still taken for a file search; more words than this reads as a question. */
+const MAX_SEARCH_WORDS = 6
+
+/**
+ * The file-search query for what is typed in the Home input, or '' when it is not a search: too short,
+ * an index order (run here), or a question (trailing "?"/"？" or a long sentence), which goes to AI.
+ */
+export function dockSearchQuery(text: string, isCommand: boolean): string {
+  const q = text.trim()
+  if (q.length < 2 || isCommand) return ''
+  if (/[?？]\s*$/.test(q)) return ''
+  if (q.split(/\s+/).length > MAX_SEARCH_WORDS) return ''
+  return q
+}
+
+/** The create-document cards give way to the results while a search is on. */
+export function showCreateCards(searchActive: boolean): boolean {
+  return !searchActive
+}
 
 export interface IndexBrief {
   percent: number | null

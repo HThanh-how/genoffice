@@ -1,40 +1,27 @@
-import { appConfirm } from '../ui-feedback'
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import type { Lang } from '@genoffice/i18n'
 import type { HomeApi } from '../../../shared/home-api'
-import type { IndexedFileHit } from '../../../shared/fork/document-index-api'
 import { requestChatPrefill } from '../chat-events'
-import { FileTypeIcon } from './FileTypeIcon'
-import { activityCopy } from '../indexing-activity-copy'
 import { langFor, parseIndexCommand, runIndexCommand } from '../fork/index-assistant'
-import { findFilesByName, type NamedFile } from '../fork/file-name-search'
 import { chatString } from './strings'
 import {
   HOME_SEARCH_EVENT,
   canAutofocusDock,
+  dockSearchQuery,
   pickSuggestions,
   showIndexChip,
+  type HomeSearchDetail,
   type IndexBrief,
 } from './dock-logic'
 
 const EN = {
   placeholder: 'Find a file, ask AI, or give an order…',
   send: 'Send',
-  enterHint: 'Enter to ask AI',
-  searchAll: 'Search all files for “{q}”',
-  notIndexed: 'Not read yet',
+  enterHint: 'Enter to ask AI · results are below',
+  askAbout: 'Ask AI about “{q}”',
   run: 'Run: “{q}”',
   runHint: 'Enter · runs here, no AI quota',
-  indexed: 'Indexed',
-  unread: 'Content not read yet (scanned)',
-  onDisk: 'Name only, not indexed',
-  retry: 'Try again',
-  readNow: 'Read with Antigravity now',
-  readConfirm:
-    'Read this scanned PDF now with Antigravity? It uses Antigravity quota and ignores today’s limit.',
-  readDone: 'Read {n} pages. It is searchable shortly.',
   failed: 'Could not do it: {e}',
-  queued: 'Queued for another try.',
   status: 'Index {p}% · {w} waiting · {e} problems',
   statusIdle: 'Index up to date · {e} problems',
   statusOpen: 'Ask how far indexing is',
@@ -47,21 +34,11 @@ const WORDS: Record<string, Words> = {
   vi: {
     placeholder: 'Tìm tệp, hỏi AI hoặc ra lệnh…',
     send: 'Gửi',
-    enterHint: 'Enter để hỏi AI',
-    searchAll: 'Tìm “{q}” trong mọi tệp',
-    notIndexed: 'Chưa đọc nội dung',
+    enterHint: 'Enter để hỏi AI · kết quả tìm ở bên dưới',
+    askAbout: 'Hỏi AI về “{q}”',
     run: 'Chạy: “{q}”',
     runHint: 'Enter · chạy ngay trên máy, không tốn quota AI',
-    indexed: 'Đã index',
-    unread: 'Chưa đọc nội dung (PDF quét)',
-    onDisk: 'Chỉ có tên, chưa index',
-    retry: 'Thử lại',
-    readNow: 'Đọc bằng Antigravity ngay',
-    readConfirm:
-      'Đọc ngay tệp PDF quét này bằng Antigravity? Sẽ tốn quota Antigravity và bỏ qua giới hạn hôm nay.',
-    readDone: 'Đã đọc {n} trang. Lát nữa là tìm được.',
     failed: 'Không làm được: {e}',
-    queued: 'Đã xếp lại để thử lần nữa.',
     status: 'Index {p}% · {w} đang chờ · {e} lỗi',
     statusIdle: 'Index đã cập nhật · {e} lỗi',
     statusOpen: 'Hỏi index tới đâu rồi',
@@ -72,7 +49,7 @@ const WORDS: Record<string, Words> = {
     ...EN,
     placeholder: '查找文件、问 AI 或下达指令…',
     send: '发送',
-    searchAll: '在所有文件中搜索“{q}”',
+    askAbout: '向 AI 询问“{q}”',
   },
 }
 const fill = (text: string, values: Record<string, string | number>): string =>
@@ -94,14 +71,9 @@ export function AskDock({
   children?: ReactNode
 }) {
   const w = WORDS[lang] ?? EN
-  const copy = activityCopy(lang as Lang)
   const [focused, setFocused] = useState(false)
   const [text, setText] = useState('')
-  const [hits, setHits] = useState<IndexedFileHit[] | null>(null)
-  const [named, setNamed] = useState<NamedFile[]>([])
   const [answer, setAnswer] = useState<string | null>(null)
-  const [busyId, setBusyId] = useState<number | null>(null)
-  const readPending = useRef(false)
   const [commandBusy, setCommandBusy] = useState(false)
   const [brief, setBrief] = useState<IndexBrief | null>(null)
   const [briefTick, setBriefTick] = useState(0)
@@ -113,6 +85,8 @@ export function AskDock({
   const rootRef = useRef<HTMLDivElement>(null)
   const query = text.trim()
   const command = query ? parseIndexCommand(query) : null
+  const searchQuery = dockSearchQuery(text, !!command)
+  const searchPushed = useRef(false)
   const working = chatString(lang as Lang, 'homeChatWorking')
 
   useEffect(() => {
@@ -156,7 +130,6 @@ export function AskDock({
     const onDown = (event: PointerEvent) => {
       if (event.target instanceof Node && !rootRef.current?.contains(event.target)) {
         setAnswer(null)
-        setHits(null)
         setFocused(false)
       }
     }
@@ -194,28 +167,28 @@ export function AskDock({
     return () => window.clearInterval(timer)
   }, [indexActive])
 
-  // Typing finds files by name right away (a command is offered too, never run by itself).
+  // Typing a file query runs the Home search (below this box) as you type; an empty or non-search text ends
+  // it. Home owns the results, filters and ranking; this box only sends the words.
+  const pushSearch = useCallback((q: string) => {
+    if (!q && !searchPushed.current) return
+    searchPushed.current = !!q
+    const detail: HomeSearchDetail = { q, source: 'dock' }
+    window.dispatchEvent(new CustomEvent(HOME_SEARCH_EVENT, { detail }))
+  }, [])
   useEffect(() => {
-    if (query.length < 2 || !api.searchIndexedFiles) {
-      setHits(null)
-      setNamed([])
-      return
+    let timer = 0
+    const run = () => {
+      if (composingRef.current) {
+        timer = window.setTimeout(run, 150)
+        return
+      }
+      pushSearch(searchQuery)
     }
-    let alive = true
-    const timer = setTimeout(() => {
-      void api
-        .searchIndexedFiles(query)
-        .then((found) => alive && setHits(found.slice(0, 6)))
-        .catch(() => alive && setHits([]))
-      void findFilesByName(api, query, 6)
-        .then((files) => alive && setNamed(files))
-        .catch(() => alive && setNamed([]))
-    }, 180)
-    return () => {
-      alive = false
-      clearTimeout(timer)
-    }
-  }, [api, query])
+    timer = window.setTimeout(run, searchQuery ? 200 : 0)
+    return () => window.clearTimeout(timer)
+  }, [searchQuery, pushSearch])
+  // Leaving Home ends the search this box started.
+  useEffect(() => () => pushSearch(''), [pushSearch])
 
   const submit = async (value: string) => {
     const message = value.trim()
@@ -226,7 +199,6 @@ export function AskDock({
       setCommandBusy(true)
       const generation = ++commandGenerationRef.current
       setText('')
-      setHits(null)
       setAnswer(null)
       try {
         const result = await runIndexCommand(api, parsed, langFor(message, lang))
@@ -244,54 +216,8 @@ export function AskDock({
       return
     }
     setText('')
-    setHits(null)
     inputRef.current?.blur()
     requestChatPrefill({ text: message, send: true, intent: 'new' })
-  }
-
-  // Hands the query to the Home file search below (names and contents, filters, results list).
-  const searchAll = () => {
-    window.dispatchEvent(new CustomEvent(HOME_SEARCH_EVENT, { detail: { q: query } }))
-    setText('')
-    setHits(null)
-    setNamed([])
-    inputRef.current?.blur()
-  }
-
-  const refreshHits = async () => {
-    if (query.length >= 2) setHits((await api.searchIndexedFiles(query)).slice(0, 6))
-  }
-  const retry = async (hit: IndexedFileHit) => {
-    setBusyId(hit.id)
-    try {
-      const result = await api.retryDocumentIndex(hit.id)
-      setAnswer(result.ok ? w.queued : fill(w.failed, { e: result.error ?? '' }))
-      await refreshHits()
-    } catch (error) {
-      setAnswer(fill(w.failed, { e: error instanceof Error ? error.message : '' }))
-    } finally {
-      setBusyId(null)
-    }
-  }
-  const readNow = async (hit: IndexedFileHit) => {
-    if (readPending.current || busyId !== null) return
-    readPending.current = true
-    setBusyId(hit.id)
-    try {
-      if (!(await appConfirm(w.readConfirm))) return
-      const result = await api.readScannedPdfWithAgy(hit.id, true)
-      setAnswer(
-        result.ok
-          ? fill(w.readDone, { n: result.pages ?? 0 })
-          : fill(w.failed, { e: result.error ?? '' }),
-      )
-      await refreshHits()
-    } catch (error) {
-      setAnswer(fill(w.failed, { e: error instanceof Error ? error.message : '' }))
-    } finally {
-      readPending.current = false
-      setBusyId(null)
-    }
   }
 
   const showChips = !text && !answer && !commandBusy
@@ -425,99 +351,20 @@ export function AskDock({
               </button>
             </div>
           )}
-          {query.length > 0 && (
-            <>
-              {hits?.map((hit) => {
-                const queued = hit.reason === 'waiting'
-                const unread = hit.reason === 'no-text' || queued
-                const problem = !!hit.reason && !unread
-                const tag = hit.external
-                  ? w.onDisk
-                  : problem
-                    ? (copy.reasons[hit.reason!]?.title ?? hit.error ?? '')
-                    : unread
-                      ? queued
-                        ? copy.reasons.waiting.title
-                        : w.unread
-                      : w.indexed
-                return (
-                  <div className="ask-hit" key={hit.external ? hit.path : hit.id}>
-                    <button
-                      type="button"
-                      className="ask-hit-main"
-                      title={hit.path}
-                      onClick={() =>
-                        void (hit.external
-                          ? api.documentMemoryOpen(0, hit.path)
-                          : api.openPath(hit.path))
-                      }
-                    >
-                      <FileTypeIcon name={hit.name} size={20} />
-                      <span className="ask-hit-name">{hit.name}</span>
-                      <span className={`ask-tag${problem ? ' is-bad' : unread ? ' is-warn' : ''}`}>
-                        {tag}
-                      </span>
-                    </button>
-                    {hit.reason === 'no-text' && (
-                      <button
-                        type="button"
-                        className="ask-mini"
-                        title={w.readNow}
-                        aria-label={w.readNow}
-                        disabled={busyId === hit.id}
-                        onClick={() => void readNow(hit)}
-                      >
-                        ✦
-                      </button>
-                    )}
-                    {(problem || queued) && (
-                      <button
-                        type="button"
-                        className="ask-mini"
-                        title={w.retry}
-                        aria-label={w.retry}
-                        disabled={busyId === hit.id}
-                        onClick={() => void retry(hit)}
-                      >
-                        ↻
-                      </button>
-                    )}
-                  </div>
-                )
-              })}
-              {named
-                .filter((file) => !hits?.some((hit) => hit.path === file.path))
-                .map((file) => (
-                  <div className="ask-hit" key={file.path}>
-                    <button
-                      type="button"
-                      className="ask-hit-main"
-                      title={file.path}
-                      onClick={() => void api.openPath(file.path)}
-                    >
-                      <FileTypeIcon name={file.name} size={20} />
-                      <span className="ask-hit-name">{file.name}</span>
-                      <span className="ask-tag is-warn">{w.notIndexed}</span>
-                    </button>
-                  </div>
-                ))}
-              {command ? (
+          {query.length > 0 &&
+            (command ? (
+              <button type="button" className="ask-act" onClick={() => void submit(query)}>
+                <strong>{fill(w.run, { q: query })}</strong>
+                <span>{w.runHint}</span>
+              </button>
+            ) : (
+              <>
                 <button type="button" className="ask-act" onClick={() => void submit(query)}>
-                  <strong>{fill(w.run, { q: query })}</strong>
-                  <span>{w.runHint}</span>
+                  <strong>{fill(w.askAbout, { q: query })}</strong>
                 </button>
-              ) : (
-                <>
-                  {query.length >= 2 && (
-                    <button type="button" className="ask-act ask-search" onClick={searchAll}>
-                      <strong>{fill(w.searchAll, { q: query })}</strong>
-                    </button>
-                  )}
-                  <p className="ask-note">{w.enterHint}</p>
-                </>
-              )}
-            </>
-          )}
+                {searchQuery && <p className="ask-note">{w.enterHint}</p>}
+              </>
+            ))}
         </div>
       )}
     </div>

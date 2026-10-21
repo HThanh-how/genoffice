@@ -38,7 +38,7 @@ import type { SettingsTarget } from './SettingsModal'
 import { skillUpdateDue } from './IntegrationsPane'
 import { onFilesChanged } from './file-events'
 import { HomeChat } from './HomeChat'
-import { HOME_SEARCH_EVENT } from './home-chat/dock-logic'
+import { HOME_SEARCH_EVENT, showCreateCards, type HomeSearchDetail } from './home-chat/dock-logic'
 import { ClipboardSuggest } from './ClipboardSuggest'
 import './home-workspace.css'
 
@@ -1324,6 +1324,10 @@ export function Home() {
   const composingRef = useRef(false)
   const searchSeq = useRef(0)
   const searchActive = searchQuery.trim().length > 0
+  // true while the query comes from the Home input (AskDock), which then stands in for this box
+  const [dockSearch, setDockSearch] = useState(false)
+  const dockSearchRef = useRef(false)
+  dockSearchRef.current = dockSearch
   // modified-column sort (WPS-style header popover), shared by the global and folder tables
   const [fileSort, setFileSort] = useState<'recent' | 'oldest'>('recent')
   const [fileSortMenuOpen, setFileSortMenuOpen] = useState(false)
@@ -1580,7 +1584,10 @@ export function Home() {
       if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return
       const k = event.key.toLowerCase()
       if (k !== 'f' && k !== 'p' && event.code !== 'KeyF' && event.code !== 'KeyP') return
-      const input = searchInputRef.current
+      // while the Home input drives the search, it is the box to focus
+      const input =
+        searchInputRef.current ??
+        document.querySelector<HTMLInputElement>('.ask-dock .ask-form input')
       if (!input) return
       event.preventDefault()
       input.focus()
@@ -1590,16 +1597,21 @@ export function Home() {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [])
 
-  // The Home input (AskDock) hands a file query to this search. The box below stays: it carries the
-  // type filters, the Jev ranking settings and the full results list, which the input does not.
+  // The Home input (AskDock) drives this search as the user types: the create cards give way to the results
+  // list, and the box below (type filters, Jev ranking, results) does the work. Clearing the input ends it.
   useEffect(() => {
     const onHomeSearch = (event: Event) => {
-      const next = (event as CustomEvent<{ q?: string }>).detail?.q
-      if (typeof next !== 'string' || !next.trim()) return
-      setSearchQuery(next)
-      window.requestAnimationFrame(() =>
-        searchInputRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
-      )
+      const detail = (event as CustomEvent<HomeSearchDetail>).detail
+      if (!detail || typeof detail.q !== 'string') return
+      if (detail.q.trim()) {
+        setSearchQuery(detail.q)
+        setDockSearch(true)
+        return
+      }
+      if (detail.source !== 'dock') return
+      if (!dockSearchRef.current) return
+      setSearchQuery('')
+      setDockSearch(false)
     }
     window.addEventListener(HOME_SEARCH_EVENT, onHomeSearch)
     return () => window.removeEventListener(HOME_SEARCH_EVENT, onHomeSearch)
@@ -2906,6 +2918,7 @@ export function Home() {
 
   const clearSearch = () => {
     setSearchQuery('')
+    setDockSearch(false)
     searchInputRef.current?.focus()
   }
 
@@ -2933,48 +2946,49 @@ export function Home() {
     </button>
   )
 
-  const renderSearchBox = () => (
-    <div className={`file-search${searchActive ? ' active' : ''}`}>
-      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
-        <path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      </svg>
-      <input
-        ref={searchInputRef}
-        type="search"
-        value={searchQuery}
-        placeholder={t('searchFilesPlaceholder')}
-        aria-label={t('searchFilesPlaceholder')}
-        spellCheck={false}
-        onChange={(e) => setSearchQuery(e.target.value)}
-        onCompositionStart={() => {
-          composingRef.current = true
-        }}
-        onCompositionEnd={(e) => {
-          composingRef.current = false
-          setSearchQuery(e.currentTarget.value)
-        }}
-        onKeyDown={(e) => {
-          if (e.key === 'Escape' && searchQuery) {
-            e.stopPropagation()
-            clearSearch()
-          }
-        }}
-      />
-      {searchQuery && (
-        <button className="file-search-clear" aria-label={t('searchClear')} onClick={clearSearch}>
-          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
-            <path
-              d="M2 2l8 8M10 2l-8 8"
-              stroke="currentColor"
-              strokeWidth="1.6"
-              strokeLinecap="round"
-            />
-          </svg>
-        </button>
-      )}
-    </div>
-  )
+  const renderSearchBox = () =>
+    dockSearch && searchActive ? null : (
+      <div className={`file-search${searchActive ? ' active' : ''}`}>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="11" cy="11" r="7" stroke="currentColor" strokeWidth="2" />
+          <path d="M20 20l-3.5-3.5" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+        </svg>
+        <input
+          ref={searchInputRef}
+          type="search"
+          value={searchQuery}
+          placeholder={t('searchFilesPlaceholder')}
+          aria-label={t('searchFilesPlaceholder')}
+          spellCheck={false}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          onCompositionStart={() => {
+            composingRef.current = true
+          }}
+          onCompositionEnd={(e) => {
+            composingRef.current = false
+            setSearchQuery(e.currentTarget.value)
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape' && searchQuery) {
+              e.stopPropagation()
+              clearSearch()
+            }
+          }}
+        />
+        {searchQuery && (
+          <button className="file-search-clear" aria-label={t('searchClear')} onClick={clearSearch}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+              <path
+                d="M2 2l8 8M10 2l-8 8"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
+          </button>
+        )}
+      </div>
+    )
 
   const renderSearchRow = (hit: FileSearchHit) => (
     <li
@@ -3189,7 +3203,7 @@ export function Home() {
             </h1>
           </div>
           <div id="home-assistant-slot" className="home-assistant-slot" />
-          {renderQuickCards()}
+          {showCreateCards(searchActive) && renderQuickCards()}
         </section>
 
         <section
