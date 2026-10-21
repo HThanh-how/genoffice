@@ -278,6 +278,8 @@ export const DOCUMENT_INDEX_CHANNELS = {
   testIgnorePath: 'home:test-ignore-path',
   getIgnorePolicyConfig: 'home:get-ignore-policy-config',
   saveIgnorePolicyConfig: 'home:save-ignore-policy-config',
+  addFolderIgnore: 'home:add-folder-ignore',
+  removeFolderIgnore: 'home:remove-folder-ignore',
   getGenOfficeIgnoreFile: 'home:get-genofficeignore-file',
   saveGenOfficeIgnoreFile: 'home:save-genofficeignore-file',
   getPolicyPresets: 'home:get-policy-presets',
@@ -605,6 +607,10 @@ export interface DocumentIndexApi {
   saveIgnorePolicyConfig?(
     config: Partial<IgnorePolicyConfig>,
   ): Promise<{ ok: boolean; error?: string }>
+  /** Fork-only: atomically add the "Ignore this folder" rule for one folder (read-modify-write in main). */
+  addFolderIgnore?(path: string): Promise<{ ok: boolean; changed?: boolean; error?: string }>
+  /** Fork-only: atomically remove the folder-level ignore rule for one folder. */
+  removeFolderIgnore?(path: string): Promise<{ ok: boolean; changed?: boolean; error?: string }>
   /** Read .genofficeignore file content, parsed rules, and mode for a specific root. */
   getGenOfficeIgnoreFile?(root: string): Promise<GenOfficeIgnoreFileResult>
   /** Atomically save .genofficeignore file with validation and conflict checking. */

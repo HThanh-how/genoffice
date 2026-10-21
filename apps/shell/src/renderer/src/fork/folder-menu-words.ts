@@ -8,6 +8,17 @@ const EN = {
   pastedWithFailures: 'Pasted {n}; {f} could not be pasted: {e}',
   copyFailed: 'Could not copy to the clipboard.',
   deleteFailed: 'Moved {n} file(s) to trash; {f} could not be deleted.',
+  ignoreFolder: 'Ignore this folder',
+  stopIgnoring: 'Stop ignoring',
+  ignoreChecking: 'Checking index rules...',
+  ignoredByRule: 'Ignored by rule {rule}',
+  ignoredByRuleHint: 'Change it in Index settings.',
+  ignoreConfirmTitle: 'Ignore this folder?',
+  ignoreConfirmBody:
+    'Scanning stops and the folder is hidden from search. Original files are not deleted. The AI assistant also cannot read files in this folder through the knowledge base.',
+  ignoreConfirmAction: 'Ignore',
+  ignoreFailed: 'Could not update the ignore rule: {e}',
+  ignoreOverridden: 'An allow rule is overriding this, so the folder is still indexed.',
 }
 const VI: typeof EN = {
   openInExplorer: 'Mở trong File Explorer',
@@ -19,6 +30,17 @@ const VI: typeof EN = {
   pastedWithFailures: 'Đã dán {n}; {f} file không dán được: {e}',
   copyFailed: 'Không sao chép được vào clipboard.',
   deleteFailed: 'Đã chuyển {n} tệp vào thùng rác; không xóa được {f} tệp.',
+  ignoreFolder: 'Bỏ qua thư mục này',
+  stopIgnoring: 'Ngừng bỏ qua',
+  ignoreChecking: 'Đang kiểm tra luật chỉ mục...',
+  ignoredByRule: 'Bị bỏ qua bởi luật {rule}',
+  ignoredByRuleHint: 'Đổi trong cài đặt Chỉ mục.',
+  ignoreConfirmTitle: 'Bỏ qua thư mục này?',
+  ignoreConfirmBody:
+    'Dừng quét và ẩn khỏi tìm kiếm. Tệp gốc không bị xoá. Trợ lý AI cũng không đọc được tệp trong thư mục này qua kho tri thức.',
+  ignoreConfirmAction: 'Bỏ qua',
+  ignoreFailed: 'Không cập nhật được luật bỏ qua: {e}',
+  ignoreOverridden: 'Có luật cho phép đang ghi đè, nên thư mục vẫn được lập chỉ mục.',
 }
 
 export const folderMenuWords = (lang: string): typeof EN => (lang === 'vi' ? VI : EN)

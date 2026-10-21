@@ -6,6 +6,12 @@ import { FOLDER_ROOTS_CHANGED_EVENT } from './fork/DefaultFolderToggle'
 import { folderMenuWords } from './fork/folder-menu-words'
 import { placeFolderMenu } from './fork/folder-menu-position'
 import {
+  decideFolderIgnoreMenu,
+  isFolderIgnoreRuleFor,
+  normalizeFolderScope,
+} from '../../shared/fork/folder-ignore'
+import type { IgnoreRule, IgnoreTestResult } from '../../shared/fork/document-index-api'
+import {
   contentGroup,
   instantNameMatches,
   mergeNameGroup,
@@ -1401,6 +1407,16 @@ export function Home() {
     y: number
     above: number
   } | null>(null)
+  // fork-only: "Ignore this folder" state. The probe is the testIgnorePath answer for the open menu.
+  const ignoreCI = navigator.platform.startsWith('Win')
+  const ignoreKey = (path: string) =>
+    ignoreCI ? normalizeFolderScope(path).toLowerCase() : normalizeFolderScope(path)
+  const [ignoredFolderKeys, setIgnoredFolderKeys] = useState<Set<string>>(new Set())
+  const [ignoreProbe, setIgnoreProbe] = useState<{
+    path: string
+    result: IgnoreTestResult | null
+  } | null>(null)
+  const [confirmIgnoreFolder, setConfirmIgnoreFolder] = useState<string | null>(null)
   const menuOpenAt = (where: 'tree' | 'table', path: string) =>
     folderMenu?.where === where && folderMenu.path === path
   const folderMenuWrapRef = useRef<HTMLDivElement>(null)
@@ -1751,6 +1767,54 @@ export function Home() {
   useDismissablePopover(folderMenu !== null, () => setFolderMenu(null), {
     inside: () => [folderMenuWrapRef.current],
   })
+  const loadIgnoredFolders = useCallback(() => {
+    const api = window.aiOffice
+    if (!api.getIgnorePolicyConfig) return
+    void api
+      .getIgnorePolicyConfig()
+      .then((config) => {
+        const keys = new Set<string>()
+        for (const rule of (config?.rules ?? []) as IgnoreRule[]) {
+          if (
+            rule.enabled &&
+            rule.scope !== 'global' &&
+            isFolderIgnoreRuleFor(rule, rule.scope, ignoreCI)
+          )
+            keys.add(ignoreKey(rule.scope))
+        }
+        setIgnoredFolderKeys(keys)
+      })
+      .catch(() => {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ignoreCI])
+  useEffect(() => {
+    loadIgnoredFolders()
+  }, [loadIgnoredFolders])
+  // probe the index rules when a tree menu opens; the entry shows "checking" until it answers
+  const folderMenuPath = folderMenu?.where === 'tree' ? folderMenu.path : null
+  useEffect(() => {
+    if (!folderMenuPath) {
+      setIgnoreProbe(null)
+      return
+    }
+    const api = window.aiOffice
+    if (!api.testIgnorePath) return
+    let cancelled = false
+    const rootPath = rootOf(folderMenuPath, roots)?.path
+    setIgnoreProbe(null)
+    api
+      .testIgnorePath(folderMenuPath, rootPath)
+      .then((result) => {
+        if (!cancelled) setIgnoreProbe({ path: folderMenuPath, result: result ?? null })
+      })
+      .catch(() => {
+        if (!cancelled) setIgnoreProbe({ path: folderMenuPath, result: null })
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [folderMenuPath])
   // the fixed-position folder menu would detach from its row while the tree scrolls
   useEffect(() => {
     if (!folderMenu) return
@@ -2281,6 +2345,30 @@ export function Home() {
   }
 
   /** the folder leaves the list only; whatever it held on disk stays where it is */
+  const applyFolderIgnore = async (path: string, ignore: boolean) => {
+    setFolderMenu(null)
+    setConfirmIgnoreFolder(null)
+    const api = window.aiOffice
+    const call = ignore ? api.addFolderIgnore : api.removeFolderIgnore
+    if (!call) return
+    try {
+      const res = await call.call(api, path)
+      if (!res?.ok) throw new Error(res?.error ?? 'unknown')
+      if (ignore) {
+        // an allow rule can still win over the new ignore rule
+        const check = await api.testIgnorePath?.(path, rootOf(path, roots)?.path)
+        if (check && !check.ignored) appNotify(folderWords.ignoreOverridden, 'error')
+      }
+    } catch (e) {
+      appNotify(
+        folderWords.ignoreFailed.replace('{e}', e instanceof Error ? e.message : String(e)),
+        'error',
+      )
+    }
+    loadIgnoredFolders()
+    refresh()
+  }
+
   const removeFolderRoot = (path: string) => {
     setFolderMenu(null)
     if (selectedFolder && isUnder(path, selectedFolder)) setSelectedFolder(null)
@@ -2312,6 +2400,52 @@ export function Home() {
         if (added.length > 0) loadRoot()
       })
     },
+  }
+
+  const renderIgnoreMenuItem = (path: string, isRoot: boolean) => {
+    const state = decideFolderIgnoreMenu({
+      path,
+      isRoot,
+      result: ignoreProbe?.path === path ? ignoreProbe.result : undefined,
+      caseInsensitive: ignoreCI,
+    })
+    if (state.kind === 'hidden') return null
+    return (
+      <>
+        <div className="row-menu-divider" />
+        {state.kind === 'checking' && (
+          <button role="menuitem" disabled>
+            {folderWords.ignoreChecking}
+          </button>
+        )}
+        {state.kind === 'ignore' && (
+          <button
+            role="menuitem"
+            onClick={() => {
+              setFolderMenu(null)
+              setConfirmIgnoreFolder(path)
+            }}
+          >
+            {folderWords.ignoreFolder}
+          </button>
+        )}
+        {state.kind === 'stop' && (
+          <button role="menuitem" onClick={() => void applyFolderIgnore(path, false)}>
+            {folderWords.stopIgnoring}
+          </button>
+        )}
+        {state.kind === 'blocked' && (
+          <button
+            role="menuitem"
+            disabled
+            title={folderWords.ignoredByRuleHint}
+            aria-label={`${folderWords.ignoredByRule.replace('{rule}', state.reason)} ${folderWords.ignoredByRuleHint}`}
+          >
+            {folderWords.ignoredByRule.replace('{rule}', state.reason)}
+          </button>
+        )}
+      </>
+    )
   }
 
   const renderFolderMenu = (entry: { path: string; name: string }, rootEntry?: FolderRoot) => (
@@ -2419,6 +2553,7 @@ export function Home() {
               </button>
             </>
           )}
+          {renderIgnoreMenuItem(entry.path, !!rootEntry)}
           {rootEntry?.removable && (
             <>
               <div className="row-menu-divider" />
@@ -2475,7 +2610,7 @@ export function Home() {
     return (
       <li key={entry.path} className="tree-item">
         <div
-          className={`tree-row${isActive ? ' active' : ''}${dropTarget === entry.path ? ' drop-target' : ''}${unavailable ? ' unavailable' : ''}`}
+          className={`tree-row${isActive ? ' active' : ''}${dropTarget === entry.path ? ' drop-target' : ''}${unavailable ? ' unavailable' : ''}${ignoredFolderKeys.has(ignoreKey(entry.path)) ? ' ignored' : ''}`}
           style={{ paddingLeft: 8 + depth * 14 }}
           role="treeitem"
           aria-selected={isActive}
@@ -3672,6 +3807,36 @@ export function Home() {
               </button>
               <button className="btn btn-danger" onClick={confirmDeleteNow}>
                 {t('delete')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmIgnoreFolder && (
+        <div className="modal-overlay" onClick={() => setConfirmIgnoreFolder(null)}>
+          <div
+            className="modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={folderWords.ignoreConfirmTitle}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h3>{folderWords.ignoreConfirmTitle}</h3>
+            <p>{folderWords.ignoreConfirmBody}</p>
+            <div className="modal-buttons">
+              <button
+                className="btn btn-secondary"
+                autoFocus
+                onClick={() => setConfirmIgnoreFolder(null)}
+              >
+                {t('cancel')}
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={() => void applyFolderIgnore(confirmIgnoreFolder, true)}
+              >
+                {folderWords.ignoreConfirmAction}
               </button>
             </div>
           </div>

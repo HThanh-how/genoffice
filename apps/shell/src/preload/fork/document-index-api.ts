@@ -157,6 +157,12 @@ export function createDocumentIndexPreloadApi(
     async saveIgnorePolicyConfig(config) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.saveIgnorePolicyConfig, config)
     },
+    async addFolderIgnore(path) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, path)
+    },
+    async removeFolderIgnore(path) {
+      return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.removeFolderIgnore, path)
+    },
     async getGenOfficeIgnoreFile(root) {
       return ipcRenderer.invoke(DOCUMENT_INDEX_CHANNELS.getGenOfficeIgnoreFile, root)
     },

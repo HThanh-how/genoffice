@@ -19,6 +19,10 @@ import {
   type IndexRuleAction,
   type IndexingPreset,
 } from '../../shared/fork/document-index-api'
+import {
+  addFolderIgnoreToRules,
+  removeFolderIgnoreFromRules,
+} from '../../shared/fork/folder-ignore'
 
 export type { IndexRuleAction, IndexPolicyMode, IndexingPreset, IgnorePolicyConfig }
 
@@ -1997,6 +2001,31 @@ export function registerIgnoreIpcHandlers(
       return { ok: true }
     }
     return { ok: false, error: 'save-failed' }
+  })
+
+  // Fork-only: single-tick read-modify-write so the Home tree cannot clobber
+  // concurrent edits from the indexing rules Studio (which replaces the list).
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, (_event, path: unknown) => {
+    if (typeof path !== 'string' || path.trim().length === 0) return { ok: false, error: 'invalid-path' }
+    const next = addFolderIgnoreToRules(getActiveIgnoreRules(), path, process.platform === 'win32')
+    if (!next) return { ok: false, error: 'invalid-path' }
+    if (!next.changed) return { ok: true, changed: false }
+    if (!setActiveIgnoreRules(next.rules)) return { ok: false, error: 'save-failed' }
+    onInvalidate?.()
+    return { ok: true, changed: true }
+  })
+
+  ipcMain.handle(DOCUMENT_INDEX_CHANNELS.removeFolderIgnore, (_event, path: unknown) => {
+    if (typeof path !== 'string' || path.trim().length === 0) return { ok: false, error: 'invalid-path' }
+    const next = removeFolderIgnoreFromRules(
+      getActiveIgnoreRules(),
+      path,
+      process.platform === 'win32',
+    )
+    if (!next.changed) return { ok: true, changed: false }
+    if (!setActiveIgnoreRules(next.rules)) return { ok: false, error: 'save-failed' }
+    onInvalidate?.()
+    return { ok: true, changed: true }
   })
 
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.getGenOfficeIgnoreFile, (_event, root: unknown) => {

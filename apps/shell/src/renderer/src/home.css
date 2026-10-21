@@ -1159,6 +1159,13 @@ body.vib .home {
   color: var(--text-tertiary);
 }
 
+/* fork-only: folders ignored from Home are dimmed */
+.tree-row.ignored .tree-name,
+.tree-row.ignored .tree-icon {
+  color: var(--text-tertiary);
+  opacity: 0.6;
+}
+
 .tree-hint {
   margin-left: auto;
   padding-right: 4px;
