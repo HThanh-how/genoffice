@@ -212,6 +212,18 @@ export interface KbCreateDeps {
 interface CommittedDocCreation {
   path: string
   createdAt: number
+  payloadFingerprint: string
+  sessionId?: string | undefined
+  userTurnId?: string | undefined
+  slot?: string | undefined
+}
+
+interface InFlightDocCreation {
+  promise: Promise<{ path: string }>
+  payloadFingerprint: string
+  sessionId?: string | undefined
+  userTurnId?: string | undefined
+  slot?: string | undefined
 }
 
 export function pathReservationKey(filePath: string, caseSensitive?: boolean): string {
@@ -223,7 +235,7 @@ export function pathReservationKey(filePath: string, caseSensitive?: boolean): s
   return isCaseSens ? normalized : normalized.toLowerCase()
 }
 
-const inFlightDocCreations = new Map<string, Promise<{ path: string }>>()
+const inFlightDocCreations = new Map<string, InFlightDocCreation>()
 const committedDocCreations = new Map<string, CommittedDocCreation>()
 const reservedPaths = new Set<string>()
 const reservedCanonicalKeys = new Set<string>()
@@ -320,17 +332,61 @@ export async function createKnowledgeDocument(
       ? `${req.sessionId}:${req.userTurnId}:${hostOpId}`
       : null
 
+  const payloadFingerprint = JSON.stringify({
+    title: req.title || 'Untitled',
+    format: req.format,
+    content: req.content,
+    documentType: req.documentType ?? null,
+  })
+
   if (slotKey) {
     const cached = committedDocCreations.get(slotKey)
     const checkExists = deps.fileExists ?? existsSync
-    if (cached && checkExists(cached.path)) {
-      return { path: cached.path }
-    } else if (cached) {
-      committedDocCreations.delete(slotKey)
+    if (cached) {
+      if (cached.payloadFingerprint !== payloadFingerprint) {
+        throw new Error('Operation identity conflict: conflicting payload for slot')
+      }
+      if (checkExists(cached.path)) {
+        return { path: cached.path }
+      } else {
+        committedDocCreations.delete(slotKey)
+      }
     }
     const inFlight = inFlightDocCreations.get(slotKey)
     if (inFlight) {
-      return inFlight
+      if (inFlight.payloadFingerprint !== payloadFingerprint) {
+        throw new Error('Operation identity conflict: conflicting payload for slot')
+      }
+      return inFlight.promise
+    }
+  }
+
+  if (req.sessionId && req.userTurnId) {
+    const targetSlot = req.documentSlot || 'primary'
+    const checkExists = deps.fileExists ?? existsSync
+    for (const [key, cached] of committedDocCreations.entries()) {
+      if (
+        cached.sessionId === req.sessionId &&
+        cached.userTurnId === req.userTurnId &&
+        cached.slot === targetSlot &&
+        cached.payloadFingerprint === payloadFingerprint
+      ) {
+        if (checkExists(cached.path)) {
+          return { path: cached.path }
+        } else {
+          committedDocCreations.delete(key)
+        }
+      }
+    }
+    for (const inFlight of inFlightDocCreations.values()) {
+      if (
+        inFlight.sessionId === req.sessionId &&
+        inFlight.userTurnId === req.userTurnId &&
+        inFlight.slot === targetSlot &&
+        inFlight.payloadFingerprint === payloadFingerprint
+      ) {
+        return inFlight.promise
+      }
     }
   }
 
@@ -419,7 +475,14 @@ export async function createKnowledgeDocument(
           const oldest = committedDocCreations.keys().next().value
           if (oldest !== undefined) committedDocCreations.delete(oldest)
         }
-        committedDocCreations.set(slotKey, { path: targetPath, createdAt: Date.now() })
+        committedDocCreations.set(slotKey, {
+          path: targetPath,
+          createdAt: Date.now(),
+          payloadFingerprint,
+          sessionId: req.sessionId,
+          userTurnId: req.userTurnId,
+          slot: req.documentSlot || 'primary',
+        })
       }
 
       try {
@@ -439,7 +502,13 @@ export async function createKnowledgeDocument(
   })()
 
   if (slotKey) {
-    inFlightDocCreations.set(slotKey, opPromise)
+    inFlightDocCreations.set(slotKey, {
+      promise: opPromise,
+      payloadFingerprint,
+      sessionId: req.sessionId,
+      userTurnId: req.userTurnId,
+      slot: req.documentSlot || 'primary',
+    })
   }
 
   try {

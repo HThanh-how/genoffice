@@ -94,11 +94,24 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
   const created: string[] = []
   const inFlightOps = new Map<
     string,
-    { promise: Promise<{ path: string; opened?: boolean }>; payloadFingerprint: string }
+    {
+      promise: Promise<{ path: string; opened?: boolean }>
+      payloadFingerprint: string
+      conversationKey?: string | undefined
+      userTurnId?: string | undefined
+      slot?: string | undefined
+    }
   >()
   const committedSlots = new Map<
     string,
-    { path: string; opened?: boolean; payloadFingerprint: string }
+    {
+      path: string
+      opened?: boolean
+      payloadFingerprint: string
+      conversationKey?: string | undefined
+      userTurnId?: string | undefined
+      slot?: string | undefined
+    }
   >()
   const callBindings = new Map<string, { sessionId?: string | undefined; userTurnId: string }>()
 
@@ -253,9 +266,29 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         documentType: documentType ?? null,
       })
 
-      if (slotKey && committedSlots.has(slotKey)) {
-        const cached = committedSlots.get(slotKey)!
-        if (cached.payloadFingerprint !== payloadFingerprint) {
+      const targetSlot = rawSlot || 'primary'
+
+      let matchedCached =
+        slotKey && committedSlots.has(slotKey) ? committedSlots.get(slotKey) : undefined
+      let matchedKey = slotKey
+
+      if (!matchedCached && conversationKey && userTurnId) {
+        for (const [key, entry] of committedSlots.entries()) {
+          if (
+            entry.conversationKey === conversationKey &&
+            entry.userTurnId === userTurnId &&
+            entry.slot === targetSlot &&
+            entry.payloadFingerprint === payloadFingerprint
+          ) {
+            matchedCached = entry
+            matchedKey = key
+            break
+          }
+        }
+      }
+
+      if (matchedCached) {
+        if (matchedCached.payloadFingerprint !== payloadFingerprint) {
           return {
             output:
               'could not save the document: Operation identity conflict: conflicting payload for slot',
@@ -263,7 +296,7 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
             summary: 'identity conflict',
           }
         }
-        const exists = deps.fileExists ? await deps.fileExists(cached.path) : true
+        const exists = deps.fileExists ? await deps.fileExists(matchedCached.path) : true
         if (exists) {
           const shouldAutoOpen =
             typeof call.input.open === 'boolean' ? call.input.open : format === 'docx'
@@ -271,35 +304,51 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
           if (shouldAutoOpen) {
             if (openFn) {
               try {
-                opened = Boolean(await openFn(cached.path, execContext))
+                opened = Boolean(await openFn(matchedCached.path, execContext))
               } catch {
                 opened = false
               }
             } else if (isOpenFn) {
               try {
-                opened = Boolean(await isOpenFn(cached.path))
+                opened = Boolean(await isOpenFn(matchedCached.path))
               } catch {
                 opened = false
               }
             } else {
-              opened = Boolean(cached.opened)
+              opened = Boolean(matchedCached.opened)
             }
           }
-          cached.opened = opened
-          const name = cached.path.split(/[\\/]/).pop() ?? cached.path
+          matchedCached.opened = opened
+          const name = matchedCached.path.split(/[\\/]/).pop() ?? matchedCached.path
           const status = opened ? 'opened in editor' : 'saved to disk (not opened)'
           return {
-            output: `saved ${name} (${status})\n  path: ${cached.path}\n  cite: ${kbCiteHref(cached.path)}\n  opened: ${Boolean(opened)}`,
+            output: `saved ${name} (${status})\n  path: ${matchedCached.path}\n  cite: ${kbCiteHref(matchedCached.path)}\n  opened: ${Boolean(opened)}`,
             summary: name,
           }
-        } else {
-          committedSlots.delete(slotKey)
+        } else if (matchedKey) {
+          committedSlots.delete(matchedKey)
         }
       }
 
-      if (slotKey && inFlightOps.has(slotKey)) {
-        const inFlight = inFlightOps.get(slotKey)!
-        if (inFlight.payloadFingerprint !== payloadFingerprint) {
+      let matchedInFlight =
+        slotKey && inFlightOps.has(slotKey) ? inFlightOps.get(slotKey) : undefined
+
+      if (!matchedInFlight && conversationKey && userTurnId) {
+        for (const entry of inFlightOps.values()) {
+          if (
+            entry.conversationKey === conversationKey &&
+            entry.userTurnId === userTurnId &&
+            entry.slot === targetSlot &&
+            entry.payloadFingerprint === payloadFingerprint
+          ) {
+            matchedInFlight = entry
+            break
+          }
+        }
+      }
+
+      if (matchedInFlight) {
+        if (matchedInFlight.payloadFingerprint !== payloadFingerprint) {
           return {
             output:
               'could not save the document: Operation identity conflict: conflicting payload for slot',
@@ -308,7 +357,7 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
           }
         }
         try {
-          const cached = await inFlight.promise
+          const cached = await matchedInFlight.promise
           const name = cached.path.split(/[\\/]/).pop() ?? cached.path
           const status = cached.opened ? 'opened in editor' : 'saved to disk (not opened)'
           return {
@@ -363,7 +412,15 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         return { path: res.path, opened }
       })()
 
-      if (slotKey) inFlightOps.set(slotKey, { promise: opPromise, payloadFingerprint })
+      if (slotKey) {
+        inFlightOps.set(slotKey, {
+          promise: opPromise,
+          payloadFingerprint,
+          conversationKey,
+          userTurnId,
+          slot: targetSlot,
+        })
+      }
       try {
         const res = await opPromise
         if (slotKey) {
@@ -371,7 +428,13 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
             const oldest = committedSlots.keys().next().value
             if (oldest !== undefined) committedSlots.delete(oldest)
           }
-          committedSlots.set(slotKey, { ...res, payloadFingerprint })
+          committedSlots.set(slotKey, {
+            ...res,
+            payloadFingerprint,
+            conversationKey,
+            userTurnId,
+            slot: targetSlot,
+          })
         }
         if (!created.includes(res.path)) created.push(res.path)
         const name = res.path.split(/[\\/]/).pop() ?? res.path

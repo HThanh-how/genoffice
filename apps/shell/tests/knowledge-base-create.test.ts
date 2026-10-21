@@ -254,6 +254,157 @@ describe('createKnowledgeDocument', () => {
     expect(recent).toContain(res2.path)
   })
 
+  describe('storage-level payload conflict and operation identity', () => {
+    it('returns cached result for repeated call with same operation identity and identical payload', async () => {
+      const { deps, recent, written } = makeDeps()
+      const req = {
+        title: 'Report',
+        format: 'md' as const,
+        content: '# Version 1',
+        sessionId: 'sess-1',
+        userTurnId: 'turn-1',
+        callId: 'call-1',
+      }
+
+      const res1 = await createKnowledgeDocument(deps, req)
+      expect(res1.path).toBe('/save/Report.md')
+      expect(written.length).toBe(1)
+      expect(recent).toEqual(['/save/Report.md'])
+
+      const res2 = await createKnowledgeDocument(deps, req)
+      expect(res2.path).toBe('/save/Report.md')
+      expect(written.length).toBe(1)
+      expect(recent).toEqual(['/save/Report.md'])
+    })
+
+    it('throws error when same operation identity has different payload after completion', async () => {
+      const { deps, written } = makeDeps()
+      const req1 = {
+        title: 'Report',
+        format: 'md' as const,
+        content: '# Version 1',
+        sessionId: 'sess-1',
+        userTurnId: 'turn-1',
+        callId: 'call-1',
+      }
+      const req2 = {
+        title: 'Report',
+        format: 'md' as const,
+        content: '# Version 2',
+        sessionId: 'sess-1',
+        userTurnId: 'turn-1',
+        callId: 'call-1',
+      }
+
+      const res1 = await createKnowledgeDocument(deps, req1)
+      expect(res1.path).toBe('/save/Report.md')
+      expect(written.length).toBe(1)
+
+      await expect(createKnowledgeDocument(deps, req2)).rejects.toThrow(
+        'Operation identity conflict: conflicting payload for slot',
+      )
+      expect(written.length).toBe(1)
+    })
+
+    it('rejects in-flight call when same operation identity has different payload concurrently', async () => {
+      const { deps, written } = makeDeps()
+      let resolveFirst!: () => void
+      const barrier = new Promise<void>((res) => {
+        resolveFirst = res
+      })
+      let calls = 0
+      const origWriteText = deps.writeText
+      deps.writeText = async (path, text) => {
+        calls++
+        await barrier
+        return origWriteText(path, text)
+      }
+
+      const req1 = {
+        title: 'InFlightReport',
+        format: 'md' as const,
+        content: '# Version 1',
+        sessionId: 'sess-inflight',
+        userTurnId: 'turn-inflight',
+        callId: 'call-inflight',
+      }
+      const req2 = {
+        title: 'InFlightReport',
+        format: 'md' as const,
+        content: '# Version 2',
+        sessionId: 'sess-inflight',
+        userTurnId: 'turn-inflight',
+        callId: 'call-inflight',
+      }
+
+      const p1 = createKnowledgeDocument(deps, req1)
+      const p2 = createKnowledgeDocument(deps, req2)
+
+      await expect(p2).rejects.toThrow('Operation identity conflict: conflicting payload for slot')
+
+      resolveFirst()
+      const res1 = await p1
+      expect(res1.path).toBe('/save/InFlightReport.md')
+      expect(calls).toBe(1)
+      expect(written).toEqual([['/save/InFlightReport.md', '# Version 1']])
+    })
+
+    it('creates new file on retry when cached file is deleted on disk', async () => {
+      const { deps, disk, written } = makeDeps()
+      const req = {
+        title: 'DeletedDoc',
+        format: 'md' as const,
+        content: '# Persisted Content',
+        sessionId: 'sess-del',
+        userTurnId: 'turn-del',
+        callId: 'call-del',
+      }
+
+      const res1 = await createKnowledgeDocument(deps, req)
+      expect(res1.path).toBe('/save/DeletedDoc.md')
+      expect(disk.has(res1.path)).toBe(true)
+      expect(written.length).toBe(1)
+
+      disk.delete(res1.path)
+      expect(deps.fileExists!(res1.path)).toBe(false)
+
+      const res2 = await createKnowledgeDocument(deps, req)
+      expect(res2.path).toBe('/save/DeletedDoc.md')
+      expect(disk.has(res2.path)).toBe(true)
+      expect(written.length).toBe(2)
+    })
+
+    it('does not leave a cached entry on write failure so subsequent call can succeed', async () => {
+      const { deps, written } = makeDeps()
+      let shouldFail = true
+      const origWriteText = deps.writeText
+      deps.writeText = async (path, text) => {
+        if (shouldFail) {
+          throw new Error('EIO: write failure')
+        }
+        return origWriteText(path, text)
+      }
+
+      const req = {
+        title: 'WriteFailDoc',
+        format: 'md' as const,
+        content: '# Attempt Content',
+        sessionId: 'sess-wf',
+        userTurnId: 'turn-wf',
+        callId: 'call-wf',
+      }
+
+      await expect(createKnowledgeDocument(deps, req)).rejects.toThrow('EIO: write failure')
+      expect(written.length).toBe(0)
+
+      shouldFail = false
+      const res = await createKnowledgeDocument(deps, req)
+      expect(res.path).toBe('/save/WriteFailDoc.md')
+      expect(written.length).toBe(1)
+      expect(written[0]).toEqual(['/save/WriteFailDoc.md', '# Attempt Content'])
+    })
+  })
+
   describe('Super Prompt V8: Filesystem collision prevention (PATH-V8-01 through PATH-V8-08)', () => {
     it('PATH-V8-01: Concurrent Report.docx and report.docx on case-insensitive filesystem do not overwrite', async () => {
       const { deps } = makeDeps()
