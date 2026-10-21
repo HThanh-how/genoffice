@@ -464,6 +464,7 @@ function clearPolicyCaches(): void {
   regexCache.clear()
   evalCache.clear()
   evaluationRootCache.clear()
+  snapshotKnownRoots = null
   allowCheckCache.clear()
   allowRuleIndexGeneration = -1
   compiledRulesGeneration = -1
@@ -615,17 +616,54 @@ interface CachedIgnore {
 const genOfficeIgnoreCache = new Map<string, CachedIgnore>()
 const MAX_GENOFFICEIGNORE_CACHE = 150
 type RootIgnoreDetails = ReturnType<typeof readGenOfficeIgnoreDetailed>
-const evaluationRootCache = new Map<string, RootIgnoreDetails>()
+const evaluationRootCache = new Map<string, { details: RootIgnoreDetails; at: number }>()
+/** how long a scan snapshot may serve a root's `.genofficeignore` / the root list before re-reading */
+const ROOT_SNAPSHOT_TTL_MS = 10_000
+let rootSnapshotDepth = 0
+const unreachableSnapshotRoots = new Set<string>()
+let snapshotKnownRoots: { roots: string[]; at: number } | null = null
+
+/**
+ * While a scan is in flight the per-root `.genofficeignore` check and the known-root list are
+ * shared for the whole scan (bounded by a short TTL) instead of per event-loop turn: on a slow
+ * or offline volume each `existsSync` is a blocking main-thread call. Rule changes made inside
+ * the app clear this through `clearPolicyCaches`; the returned function ends the snapshot.
+ */
+/** Within a snapshot, serve this root from memory only (its last known rules) instead of sync disk checks. */
+export function markIgnoreRootUnreachable(root: string): void {
+  if (rootSnapshotDepth > 0) unreachableSnapshotRoots.add(root)
+}
+
+export function beginIgnoreRootSnapshot(): () => void {
+  rootSnapshotDepth++
+  let ended = false
+  return () => {
+    if (ended) return
+    ended = true
+    if (--rootSnapshotDepth === 0) {
+      evaluationRootCache.clear()
+      unreachableSnapshotRoots.clear()
+      snapshotKnownRoots = null
+    }
+  }
+}
 let evaluationRootCacheTurn: ReturnType<typeof setImmediate> | undefined
 const compiledRootRuleCache = new WeakMap<IgnoreRule[], CompiledRule[]>()
 
 /** Share a root's filesystem check within one turn of a scan, never across turns. */
 function evaluationRootDetails(root: string): RootIgnoreDetails {
+  if (rootSnapshotDepth > 0 && unreachableSnapshotRoots.has(root)) {
+    // never touch the disk of a root already found unreachable: the sync call can block for tens of seconds
+    const known = genOfficeIgnoreCache.get(root)
+    return { rules: known?.rules ?? [], mode: known?.mode }
+  }
   const cached = evaluationRootCache.get(root)
-  if (cached) return cached
+  if (cached && (rootSnapshotDepth === 0 || performance.now() - cached.at <= ROOT_SNAPSHOT_TTL_MS)) {
+    return cached.details
+  }
   const details = readGenOfficeIgnoreDetailed(root)
-  evaluationRootCache.set(root, details)
-  if (!evaluationRootCacheTurn) {
+  evaluationRootCache.set(root, { details, at: performance.now() })
+  if (rootSnapshotDepth === 0 && !evaluationRootCacheTurn) {
     evaluationRootCacheTurn = setImmediate(() => {
       evaluationRootCacheTurn = undefined
       evaluationRootCache.clear()
@@ -858,6 +896,7 @@ export function readGenOfficeIgnoreDetailed(dir: string): {
 }
 
 export function refreshGenOfficeIgnoreForRoot(dir: string): boolean {
+  evaluationRootCache.delete(dir)
   const filePath = resolve(dir, '.genofficeignore')
   try {
     const cached = genOfficeIgnoreCache.get(dir)
@@ -1462,7 +1501,16 @@ export function loadPersistedIgnoreRules(): IgnoreRule[] {
 export function resolveIndexedRoot(targetPath: string, explicitRoot?: string): string | undefined {
   if (explicitRoot) return explicitRoot
   try {
-    const roots = knownRootsResolver ? knownRootsResolver() : snapshotRoots
+    let roots: string[] | undefined
+    if (rootSnapshotDepth > 0 && knownRootsResolver) {
+      const now = performance.now()
+      if (!snapshotKnownRoots || now - snapshotKnownRoots.at > ROOT_SNAPSHOT_TTL_MS) {
+        snapshotKnownRoots = { roots: knownRootsResolver(), at: now }
+      }
+      roots = snapshotKnownRoots.roots
+    } else {
+      roots = knownRootsResolver ? knownRootsResolver() : snapshotRoots
+    }
     if (!roots || roots.length === 0) return undefined
     const matching = roots.filter((r) => isSubpathOrEqual(targetPath, r))
     if (matching.length === 0) return undefined

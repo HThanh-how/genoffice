@@ -15,6 +15,8 @@ import type { ScannedFile } from './scan'
 import type { FileIndexStore } from './store'
 import {
   isPathIgnored,
+  beginIgnoreRootSnapshot,
+  markIgnoreRootUnreachable,
   getIgnorePolicyGeneration,
   getIgnorePolicySnapshot,
   subscribeIgnorePolicyChanges,
@@ -38,6 +40,29 @@ export interface IndexerSources {
 }
 
 const RESCAN_DEBOUNCE_MS = 1500
+/** a root that does not answer a stat within this is treated as offline for the scan */
+const ROOT_PROBE_TIMEOUT_MS = 3000
+/** work done per turn while absorbing a worker's scan slices on the main thread */
+const SCAN_PART_SLICE_MS = 8
+
+/** Reachability check that cannot hang the caller: a stalled mount only ties up a pool thread. */
+async function probeRoot(root: string, timeoutMs = ROOT_PROBE_TIMEOUT_MS): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      stat(root).then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), timeoutMs)
+        timer.unref?.()
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
 /** New names per write request to the worker: ~20 ms of insertion there, no message large enough to stall this thread. */
 const PENDING_BATCH = 500
 /**
@@ -225,6 +250,8 @@ export class FileIndexer {
   /** scan now unless one ran within `maxAgeMs` */
   refreshIfStale(maxAgeMs: number): void {
     if (this.stopped) return
+    // a running scan stamps lastScanAt only when it ends; asking again would just queue a redundant pass
+    if (this.scanning) return
     if (Date.now() - this.lastScanAt >= maxAgeMs) void this.scan()
   }
 
@@ -235,6 +262,7 @@ export class FileIndexer {
       return
     }
     this.scanning = true
+    const endRootSnapshot = beginIgnoreRootSnapshot()
     try {
       const startPolicyGen = getIgnorePolicyGeneration()
       if (
@@ -252,21 +280,35 @@ export class FileIndexer {
       const roots = [...this.sources.roots()]
       const completeRoots: string[] = []
       for (const root of roots) {
+        if (this.stopped) return
+        if (!(await probeRoot(root))) {
+          // offline: nothing to walk, and no sync disk check may run against it on the main thread
+          markIgnoreRootUnreachable(root)
+          continue
+        }
         const rootStartGen = getIgnorePolicyGeneration()
-        const res = await this.ask({ id: 0, type: 'scan', root }, (files) => {
+        // slices are absorbed one after another in arrival order, each in ~8ms turns
+        const yieldIfNeeded = createYielder(SCAN_PART_SLICE_MS)
+        const absorb = async (files: readonly ScannedFile[]): Promise<void> => {
           for (const f of files) {
+            if (this.stopped) return
             if (!isPathIgnored(f.path, root)) seen.set(f.path, f)
+            await yieldIfNeeded()
           }
+        }
+        let partChain: Promise<void> = Promise.resolve()
+        const res = await this.ask({ id: 0, type: 'scan', root }, (files) => {
+          partChain = partChain.then(() => absorb(files))
         })
+        await partChain
+        if (res.type === 'scan') await absorb(res.files)
+        if (this.stopped) return
         const afterRootGen = getIgnorePolicyGeneration()
         if (afterRootGen !== rootStartGen || afterRootGen !== startPolicyGen) {
           this.scanRequested = true
         }
         // a crashed worker answers with an extract error; dropping the index on that would empty search
         if (res.type === 'scan') {
-          for (const f of res.files) {
-            if (!isPathIgnored(f.path, root)) seen.set(f.path, f)
-          }
           if (
             res.complete === true &&
             !res.truncated &&
@@ -285,6 +327,7 @@ export class FileIndexer {
         this.scanRequested = true
       }
     } finally {
+      endRootSnapshot()
       this.scanning = false
       if (!this.stopped) void this.drain()
     }
