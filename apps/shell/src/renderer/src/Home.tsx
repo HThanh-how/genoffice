@@ -3040,11 +3040,23 @@ export function Home() {
             {t('searchIndexing', { n: page.index.pending })}
           </div>
         )}
-        {page && page.hits.length === 0 && !busy
-          ? renderEmpty(t('searchNoResults', { q }))
-          : page && (
-              <ul className="search-list">{orderedSearchHits(page.hits).map(renderSearchRow)}</ul>
-            )}
+        {!page ? (
+          <ul className="search-skeleton" aria-hidden="true">
+            {[0, 1, 2, 3].map((i) => (
+              <li key={i} className="search-skeleton-row">
+                <span className="search-skeleton-icon" />
+                <span className="search-skeleton-lines">
+                  <span />
+                  <span />
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : page.hits.length === 0 && !busy ? (
+          renderEmpty(t('searchNoResults', { q }))
+        ) : (
+          <ul className="search-list">{orderedSearchHits(page.hits).map(renderSearchRow)}</ul>
+        )}
       </div>
     )
   }

@@ -4,6 +4,7 @@ import {
   canAutofocusDock,
   dockSearchQuery,
   showCreateCards,
+  showDockExtra,
   pickSuggestions,
   showIndexChip,
 } from '../src/renderer/src/home-chat/dock-logic'
@@ -72,5 +73,9 @@ describe('dock search mode', () => {
   it('hides the create cards only while a search is on', () => {
     expect(showCreateCards(true)).toBe(false)
     expect(showCreateCards(false)).toBe(true)
+  })
+  it('hides the model and usage row only while a search is on', () => {
+    expect(showDockExtra(true)).toBe(false)
+    expect(showDockExtra(false)).toBe(true)
   })
 })

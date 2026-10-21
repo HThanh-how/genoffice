@@ -29,6 +29,11 @@ export function showCreateCards(searchActive: boolean): boolean {
   return !searchActive
 }
 
+/** The model and usage row under the field gives way to the results while a search is on (kept mounted). */
+export function showDockExtra(searchActive: boolean): boolean {
+  return !searchActive
+}
+
 export interface IndexBrief {
   percent: number | null
   waiting: number

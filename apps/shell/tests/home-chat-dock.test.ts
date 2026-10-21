@@ -147,6 +147,27 @@ describe('Home dock', () => {
     }
   })
 
+  it('hides the model and usage row while a search is typed, and brings it back when cleared', async () => {
+    const slot = addSlot()
+    await mount()
+    const input = slot.querySelector<HTMLInputElement>('.ask-form input')!
+    const extra = () => slot.querySelector('.ask-extra')
+    const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    const type = async (value: string) => {
+      await act(async () => {
+        setValue.call(input, value)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      })
+    }
+    expect(extra()).not.toBeNull()
+    expect(extra()!.classList.contains('is-hidden')).toBe(false)
+    await type('budget')
+    expect(extra()).not.toBeNull()
+    expect(extra()!.classList.contains('is-hidden')).toBe(true)
+    await type('')
+    expect(extra()!.classList.contains('is-hidden')).toBe(false)
+  })
+
   it('shows the chat panel only on the Ask AI page', async () => {
     addSlot()
     await mount({ workspaceActive: true, suppressDock: true })

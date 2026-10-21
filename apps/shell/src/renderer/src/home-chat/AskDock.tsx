@@ -8,6 +8,7 @@ import {
   HOME_SEARCH_EVENT,
   canAutofocusDock,
   dockSearchQuery,
+  showDockExtra,
   pickSuggestions,
   showIndexChip,
   type HomeSearchDetail,
@@ -298,7 +299,11 @@ export function AskDock({
           </svg>
         </button>
       </form>
-      {children && <div className="ask-extra">{children}</div>}
+      {children && (
+        <div className={showDockExtra(!!searchQuery) ? 'ask-extra' : 'ask-extra is-hidden'}>
+          {children}
+        </div>
+      )}
       {commandBusy && (
         <p className="ask-working" role="status">
           {working}
