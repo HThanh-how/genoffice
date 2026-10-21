@@ -264,7 +264,7 @@ describe('home-chat lifecycle & launch intents (Phase 1)', () => {
     const api = mockChatApi()
 
     try {
-      // inside the workspace: the panel is hosted by the workspace, no launcher is drawn
+      // inside the workspace: the panel is hosted by the workspace, nothing floats elsewhere
       await act(async () => {
         root.render(createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: true }))
       })
@@ -272,7 +272,7 @@ describe('home-chat lifecycle & launch intents (Phase 1)', () => {
         await new Promise((r) => setTimeout(r, 50))
       })
       expect(workspace.querySelector('.home-chat-panel.is-workspace')).not.toBeNull()
-      expect(host.querySelector('.home-chat-launcher')).toBeNull()
+      expect(host.querySelector('.home-chat-panel')).toBeNull()
 
       // back to another home view: the panel is closed, the launcher is available again
       await act(async () => {
@@ -283,7 +283,8 @@ describe('home-chat lifecycle & launch intents (Phase 1)', () => {
       })
       expect(host.querySelector('.home-chat-panel')).toBeNull()
       expect(workspace.querySelector('.home-chat-panel')).toBeNull()
-      expect(host.querySelector('.home-chat-launcher')).not.toBeNull()
+      // nothing is left floating anywhere on the home page
+      expect(document.querySelector('.home-chat-panel')).toBeNull()
     } finally {
       await act(async () => {
         root.unmount()
@@ -302,11 +303,11 @@ describe('home-chat lifecycle & launch intents (Phase 1)', () => {
       await act(async () => {
         root.render(createElement(HomeChat, { api, i18n: mockI18n }))
       })
-      const launcher = host.querySelector<HTMLButtonElement>('.home-chat-launcher')
-      expect(launcher).not.toBeNull()
+      // a host that never opens the workspace still gets the floating panel when a launch intent
+      // arrives, and it stays open rather than being closed by the workspace-exit rule
       await act(async () => {
-        launcher!.click()
-        await Promise.resolve()
+        requestChatPrefill({ text: 'hello there', send: false, intent: 'resume' })
+        await new Promise((r) => setTimeout(r, 50))
       })
       expect(host.querySelector('.home-chat-panel')).not.toBeNull()
     } finally {
