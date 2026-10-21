@@ -1,4 +1,4 @@
-import { readdirSync, statSync } from 'node:fs'
+import { readdirSync, statSync, realpathSync } from 'node:fs'
 import { basename, extname, join } from 'node:path'
 import { isHiddenEntry } from '../folder-tree'
 import {
@@ -113,4 +113,124 @@ export function statOrNull(path: string): ScannedFile | null {
   } catch {
     return null
   }
+}
+
+export interface CooperativeScanOptions extends ScanLimits {
+  batchSize?: number
+  signal?: AbortSignal
+  onYield?: () => void
+}
+
+/**
+ * Cooperative time-sliced directory scanner that yields periodically to the event loop,
+ * respects cancellation via AbortSignal, and avoids symlink/junction cycles.
+ */
+export async function scanFilesCooperative(
+  root: string,
+  options: CooperativeScanOptions = {},
+): Promise<FileScanSnapshot> {
+  const maxDepth = options.maxDepth ?? SCAN_MAX_DEPTH
+  const maxFiles = options.maxFiles ?? SCAN_MAX_FILES
+  const batchSize = Math.max(1, options.batchSize ?? 100)
+  const signal = options.signal
+  const onYield = options.onYield
+  const out: ScannedFile[] = []
+  let truncated = false
+  let unreadable = false
+
+  if (signal?.aborted) {
+    return { files: [], complete: false }
+  }
+
+  const visitedDirs = new Set<string>()
+  try {
+    visitedDirs.add(realpathSync(root))
+  } catch {
+    return { files: [], complete: false }
+  }
+
+  const stack: { dir: string; depth: number }[] = [{ dir: root, depth: 0 }]
+  let filesSinceYield = 0
+
+  while (stack.length > 0) {
+    if (signal?.aborted) {
+      return { files: out, complete: false }
+    }
+
+    const { dir, depth } = stack.pop()!
+    if (depth > maxDepth) {
+      truncated = true
+      continue
+    }
+
+    let dirents: import('node:fs').Dirent[]
+    try {
+      dirents = readdirSync(dir, { withFileTypes: true })
+    } catch {
+      unreadable = true
+      continue
+    }
+
+    for (const ent of dirents) {
+      if (signal?.aborted) {
+        return { files: out, complete: false }
+      }
+
+      filesSinceYield++
+      if (filesSinceYield >= batchSize) {
+        filesSinceYield = 0
+        onYield?.()
+        await new Promise<void>((resolve) => setImmediate(resolve))
+      }
+
+      if (out.length >= maxFiles) {
+        truncated = true
+        break
+      }
+
+      const path = join(dir, ent.name)
+
+      let isDir = ent.isDirectory()
+      if (!isDir && ent.isSymbolicLink()) {
+        try {
+          const st = statSync(path)
+          isDir = st.isDirectory()
+        } catch {
+          // unreadable symlink
+        }
+      }
+
+      if (isDir) {
+        if (
+          !shouldSkipDirectory(ent.name, path) &&
+          !isPathIgnored(path, root) &&
+          !isHiddenEntry(dir, ent.name, true)
+        ) {
+          try {
+            const real = realpathSync(path)
+            if (!visitedDirs.has(real)) {
+              visitedDirs.add(real)
+              stack.push({ dir: path, depth: depth + 1 })
+            }
+          } catch {
+            unreadable = true
+          }
+        }
+      } else if (
+        ent.isFile() &&
+        isSupportedIndexFile(ent.name) &&
+        !isHiddenEntry(dir, ent.name, false)
+      ) {
+        if (isPathIgnored(path, root)) continue
+        const st = statOrNull(path)
+        if (st) {
+          out.push(st)
+        } else {
+          unreadable = true
+        }
+      }
+    }
+  }
+
+  return { files: out, complete: !truncated && !unreadable }
 }

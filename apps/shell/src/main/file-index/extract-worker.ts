@@ -4,7 +4,7 @@
  */
 import { parentPort, workerData } from 'node:worker_threads'
 import { extractText } from './extract'
-import { scanFileSnapshot, type ScannedFile } from './scan'
+import { scanFileSnapshot, scanFilesCooperative, type ScannedFile } from './scan'
 import { FileIndexStore } from './store'
 import { handleWriterRequest, isWriterRequest, type WriterResponse } from './worker-ops'
 import { applyPolicyMessage, isPolicyMessage } from '../fork/indexing-worker-policy'
@@ -78,7 +78,7 @@ parentPort?.on('message', async (req: WorkerRequest | Parameters<typeof isWriter
     const result = await withBackgroundBudget(() => extractText(request.path))
     parentPort?.postMessage({ id: request.id, type: 'extract', result } satisfies WorkerResponse)
   } else if (request.type === 'scan') {
-    const snapshot = scanFileSnapshot(request.root)
+    const snapshot = await scanFilesCooperative(request.root)
     for (let i = 0; i < snapshot.files.length; i += SCAN_PART_SIZE)
       parentPort?.postMessage({
         id: request.id,

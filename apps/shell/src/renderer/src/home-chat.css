@@ -522,6 +522,45 @@
   font-weight: 600;
 }
 
+.hc-row-spinner {
+  width: 13px;
+  height: 13px;
+  margin-right: 6px;
+  display: inline-block;
+  vertical-align: middle;
+  border: 2px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: hc-spin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes hc-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hc-row-spinner {
+    animation: none;
+    border-top-color: var(--accent);
+    opacity: 0.85;
+  }
+}
+
+.hc-row-queued {
+  width: 8px;
+  height: 8px;
+  margin-right: 6px;
+  display: inline-block;
+  vertical-align: middle;
+  border-radius: 50%;
+  background: var(--warning, #e67e22);
+  flex-shrink: 0;
+  opacity: 0.9;
+}
+
 .hc-row-time {
   color: var(--text-tertiary);
   font-size: 11px;
@@ -535,6 +574,15 @@
   padding-right: 5px;
   opacity: 0.55;
   transition: opacity 140ms ease;
+}
+
+.hc-row-actions .hc-row-stop {
+  color: var(--danger, #d83b01);
+}
+
+.hc-row-actions .hc-row-stop:hover {
+  color: var(--danger, #d83b01);
+  background: color-mix(in srgb, var(--danger, #d83b01) 15%, transparent);
 }
 
 .hc-group li:hover .hc-row-actions,

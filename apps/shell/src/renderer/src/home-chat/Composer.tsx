@@ -60,6 +60,7 @@ export const Composer = memo(function Composer({
           }}
           rows={1}
           value={value}
+          onInput={(event) => onChange(event.currentTarget.value)}
           onChange={(event) => onChange(event.target.value)}
           onCompositionStart={() => {
             composingRef.current = true

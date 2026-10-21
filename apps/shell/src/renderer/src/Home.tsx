@@ -1420,6 +1420,7 @@ export function Home() {
   const dragExpandTimer = useRef<number | null>(null)
 
   const loadRoot = useCallback(() => {
+    if (typeof window.aiOffice?.folderRoots !== 'function') return
     void window.aiOffice.folderRoots().then((next) => {
       setRoots((prev) => {
         if (prev[0] && prev[0].path !== next[0]?.path) {
@@ -1475,6 +1476,7 @@ export function Home() {
   }, [roots, selectedFolder, listings])
 
   useEffect(() => {
+    if (typeof window.aiOffice?.onFolderChanged !== 'function') return
     return window.aiOffice.onFolderChanged((dirs) => {
       invalidateFolders(dirs.filter(trackedFolder))
     })
@@ -3413,6 +3415,7 @@ export function Home() {
           <button
             className={`nav-item${askMode && !selectedFolder && !cloudMode ? ' active' : ''}`}
             onClick={openAskWorkspace}
+            aria-label="Ask AI"
           >
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
               <path
