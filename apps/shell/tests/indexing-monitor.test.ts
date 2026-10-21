@@ -235,7 +235,7 @@ describe('IndexingMonitor', () => {
     expect(t.last()).toMatchObject({ tier: 'light', threads: 1 })
     t.settings.mode = 'fast'
     t.monitor.tick()
-    expect(t.last()).toMatchObject({ tier: 'active', threads: 3 })
+    expect(t.last()).toMatchObject({ tier: 'active', threads: 2 })
   })
 
   it('treats an idle-time failure as an active user (Wayland / unsupported)', () => {

@@ -85,8 +85,13 @@ it.each(['search', 'read'] as const)(
         )
         await pending
       })
-      expect(additions).not.toHaveBeenCalled()
-      // A subsequent, genuinely current operation still publishes its citation.
+      // Under PR #24, Draft A continues in the background with its own isolated fileTable.
+      // Its citations are added to Draft A's table and NEVER leak into Draft B's table.
+      const tableA = additions.mock.instances[0] as FileRefTable | undefined
+      expect(tableA).toBeDefined()
+      expect(tableA?.list().some((f) => f.path === '/old.docx')).toBe(true)
+
+      // A subsequent operation in Draft B publishes citations strictly to Draft B's table.
       const current =
         operation === 'search' ? captured.kb!.search('B', 8) : captured.kb!.read('/new.docx', 0)
       await act(async () => {
@@ -97,7 +102,11 @@ it.each(['search', 'read'] as const)(
         )
         await current
       })
-      expect(additions).toHaveBeenCalledWith(expect.objectContaining({ path: '/new.docx' }))
+      const tableB = additions.mock.instances.at(-1) as FileRefTable | undefined
+      expect(tableB).toBeDefined()
+      expect(tableB).not.toBe(tableA)
+      expect(tableB?.list().some((f) => f.path === '/old.docx')).toBe(false)
+      expect(tableB?.list().some((f) => f.path === '/new.docx')).toBe(true)
     } finally {
       await act(async () => root.unmount())
       host.remove()

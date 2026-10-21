@@ -738,7 +738,9 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
     const reqNew = startedRequests[1]!
     expect(reqNew.requestId).not.toBe(reqOld.requestId)
     expect(reqNew.sessionId).not.toBe(reqOld.sessionId)
-    expect(cancelledRequestIds).toContain(reqOld.requestId)
+    // Under PR #24, New Chat preserves background runs and does not cancel the older in-flight request.
+    // Safety invariant preserved: Late events from reqOld are still rejected by the new session's view below.
+    expect(cancelledRequestIds).not.toContain(reqOld.requestId)
 
     // Late event from old chat is rejected
     await act(async () => {

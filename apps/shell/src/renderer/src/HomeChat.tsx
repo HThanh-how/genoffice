@@ -21,6 +21,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
+import { HomeChatRunManager, type SessionRunStatus } from './home-chat/run-manager'
 import type { HomeApi } from '../../shared/home-api'
 import type {
   HomeChatMessage,
@@ -211,9 +212,12 @@ export function HomeChat({
   }, [isWorkspace])
 
   useLayoutEffect(() => {
-    const target = dockLocation === 'home' ? document.getElementById('home-assistant-slot') : null
+    const target =
+      dockLocation === 'home' && typeof document !== 'undefined'
+        ? document.getElementById('home-assistant-slot')
+        : null
     setDockTarget((previous) => (previous === target ? previous : target))
-  }, [dockLocation])
+  })
 
   // The panel is drawn where it is hosted: inside the Ask AI workspace while that view is open,
   // and floating over the rest of the home page only for hosts that never use the workspace.
@@ -451,80 +455,6 @@ export function HomeChat({
     [api],
   )
 
-  const docSkillRef = useRef<ReturnType<typeof createDocumentSkill> | null>(null)
-  if (!docSkillRef.current) {
-    docSkillRef.current = createDocumentSkill({
-      getSessionId: () => convRef.current?.executionId || activeSessionIdRef.current || undefined,
-      getExecutionId: () => convRef.current?.executionId || undefined,
-      getUserTurnId: () => currentUserTurnIdRef.current || undefined,
-      fileExists: async (path: string) => {
-        try {
-          if (typeof api.statPaths === 'function') {
-            const entries = await api.statPaths([path])
-            return Boolean(entries[0] && !entries[0].missing)
-          }
-          return true
-        } catch {
-          return true
-        }
-      },
-      create: async (request) => {
-        const owner = convRef.current
-        const table = fileTableRef.current
-        const generation = runGenerationRef.current
-        const run = activeRunRef.current
-        const sessionId =
-          request.sessionId ||
-          convRef.current?.executionId ||
-          activeSessionIdRef.current ||
-          undefined
-        const userTurnId = request.userTurnId || currentUserTurnIdRef.current || undefined
-        const hostOpId = request.callId || request.documentSlot || undefined
-        const documentSlot = request.documentSlot || hostOpId
-
-        const result = await api.kbCreateDocument({
-          title: request.title,
-          format: request.format,
-          content: request.content,
-          sessionId,
-          userTurnId,
-          documentSlot,
-          callId: hostOpId,
-          documentType: request.documentType,
-        })
-
-        if (
-          mountedRef.current &&
-          convRef.current === owner &&
-          !owner.dead &&
-          generation === runGenerationRef.current &&
-          activeRunRef.current !== 0 &&
-          activeRunRef.current === run
-        ) {
-          createdPathsRef.current.add(result.path)
-          table.addFile({
-            path: result.path,
-            name: result.path.split(/[\\/]/).pop() ?? result.path,
-          })
-        }
-        return { path: result.path }
-      },
-      open: (path, context) => {
-        const owner = convRef.current
-        const generation = runGenerationRef.current
-        const run = activeRunRef.current
-        if (!isAutoOpenAuthorized(owner, generation, run, context)) {
-          return false
-        }
-        return openDocumentPath(path, context)
-      },
-      isOpen: (path) => {
-        if (isOpenPathRef.current) return isOpenPathRef.current(path)
-        return false
-      },
-    })
-  }
-
   const refreshCorpus = useCallback(async () => {
     const request = ++corpusRequestRef.current
     if (typeof api.kbList !== 'function') {
@@ -718,293 +648,79 @@ export function HomeChat({
     }
   }, [loadSettings, refreshList])
 
-  // Streamed tokens arrive far faster than the screen refreshes; apply at most one
-  // update per animation frame and only to the streaming message.
-  const batcherRef = useRef<ReturnType<typeof createFrameBatcher<string>> | null>(null)
-  if (!batcherRef.current) {
-    batcherRef.current = createFrameBatcher<string>((text) => {
-      setItems((previous) => {
-        const last = previous.at(-1)
-        if (last?.role !== 'assistant' || !last.streaming || last.text === text) return previous
-        const next = previous.slice()
-        next[next.length - 1] = { ...last, text }
-        return next
-      })
-    }, rafSchedule)
-  }
-
-  const updateLastAssistant = (patch: (last: ChatItem) => ChatItem) => {
-    setItems((previous) => {
-      const last = previous.at(-1)
-      if (last?.role !== 'assistant') return previous
-      const next = previous.slice()
-      next[next.length - 1] = patch(last)
-      return next
-    })
-  }
-
-  /**
-   * The files a finished answer relies on, offered under it: the ones it cites by id or by name
-   * (in order of citation); only when it cites none, the files retrieved for this turn as related.
-   * Never invents a file: everything comes from the table or from the file index.
-   */
-  const settleFiles = (text: string, fallback: boolean): PickedSources => {
-    const table = fileTableRef.current
-    const all = table.list()
-    return pickSources(text, all, {
-      fallback,
-      pool: all.filter((source) => (source.ref ?? 0) >= turnStartRef.current),
-    })
-  }
-
-  /** Names the answer wrote that are not in the table: looked up (exact name) in recents / the file index. */
-  const resolveUnlistedNames = async (answer: string, itemId: number, run: number) => {
-    const table = fileTableRef.current
-    const known = new Set(table.list().map((source) => source.name.normalize('NFC').toLowerCase()))
-    const unlisted = fileNamesIn(answer).filter(
-      (name) => !known.has(name.normalize('NFC').toLowerCase()),
-    )
-    for (const name of unlisted.slice(0, 6)) {
-      for (const variant of fileNameVariants(name)) {
-        const wanted = variant.normalize('NFC').toLowerCase()
-        const matches = await findFilesByName(api, variant, 12, 60).catch(() => [])
-        const file = matches.find((match) => match.name.normalize('NFC').toLowerCase() === wanted)
-        if (!file) continue
-        table.addFile(file)
-        break
-      }
-      if (!mountedRef.current || run !== runGenerationRef.current) return
-    }
-    const picked = settleFiles(answer, true)
-    updateLastAssistant((last) =>
-      last.id !== itemId
-        ? last
-        : { ...last, ...(picked.sources.length > 0 ? { sources: picked.sources } : {}) },
-    )
-  }
-
-  if (!loopRef.current) {
-    const transport = createIpcTransport({
-      route: createGeminiRouter(),
-      sessionId: () => activeSessionIdRef.current,
-      onAttemptStarted: ({ requestId }) => {
-        if (
-          !mountedRef.current ||
-          activeRunRef.current === 0 ||
-          activeRunRef.current !== runGenerationRef.current
-        ) {
-          return
+  const [executionStates, setExecutionStates] = useState<Map<string, SessionRunStatus>>(
+    () => new Map(),
+  )
+  const runManagerRef = useRef<HomeChatRunManager | null>(null)
+  if (!runManagerRef.current) {
+    runManagerRef.current = new HomeChatRunManager({
+      api,
+      getLang: () => langRef.current,
+      getAiSettings: async () => {
+        if (!settingsRef.current) {
+          await loadSettings()
         }
-        activeRequestIdRef.current = requestId
-        setActiveRequestId(requestId)
+        return settingsRef.current!
       },
-      onStream: (listener) => api.onAiStream(listener as (chunk: IpcStreamChunk) => void),
-      start: (request) => api.aiStream(request),
-      cancel: (requestId) => void api.aiStreamCancel(requestId),
-      getSettings: () => {
-        if (!settingsRef.current) throw new Error('AI settings are not ready')
-        return settingsRef.current
+      translate: (key, params) => tRef.current(key as ChatKey, params),
+      getActiveSessionId: () => activeSessionIdRef.current,
+      isMounted: () => mountedRef.current,
+      onOpenPath: (path) => onOpenPathRef.current?.(path),
+      isOpenPath: isOpenPath
+        ? (path) => (isOpenPathRef.current ? isOpenPathRef.current(path) : false)
+        : undefined,
+      onActiveRequestChange: (sessionId, reqId) => {
+        if (sessionId === activeSessionIdRef.current && mountedRef.current) {
+          activeRequestIdRef.current = reqId
+          setActiveRequestId(reqId)
+        }
       },
-      unknownErrorText: () => tRef.current('homeChatError'),
-      timeoutErrorText: () => tRef.current('homeChatError'),
-      creditsErrorText: () => tRef.current('homeChatCredits'),
-      networkErrorText: () => tRef.current('homeChatNetwork'),
-      overloadedErrorText: () => tRef.current('homeChatBusy'),
-      quotaErrorText: (resetAt) => agyErrorText(langRef.current, 'quota', { resetAt }),
-      authErrorText: () => agyErrorText(langRef.current, 'auth'),
-    })
-    // Events from a run that was stopped or replaced (conversation switch) are ignored.
-    const live = () =>
-      activeRunRef.current !== 0 && activeRunRef.current === runGenerationRef.current
-    // IPC work can outlive an aborted run. Keep its citations attached to its owner.
-    const captureCitationOwner = () => {
-      const table = fileTableRef.current
-      const owner = convRef.current
-      const generation = runGenerationRef.current
-      return {
-        table,
-        isCurrent: () =>
-          mountedRef.current &&
-          !owner.dead &&
-          convRef.current === owner &&
-          generation === runGenerationRef.current &&
-          live() &&
-          fileTableRef.current === table,
-      }
-    }
-    loopRef.current = new AgentLoop({
-      transport,
-      skill: composeSkills('home+remembered-documents+kb', '', [
-        createDocumentMemorySkill(refBridge(api, () => fileTableRef.current)),
-        createKnowledgeBaseSkill({
-          listFiles: () => {
-            const list = corpusRef.current
-            for (const f of list) {
-              fileTableRef.current.addFile({
-                path: f.path,
-                name: f.name,
-                location: f.folder,
-              })
-            }
-            return list
-          },
-          search: async (query, limit) => {
-            const citationOwner = captureCitationOwner()
-            const hits = await api.kbSearch({ q: query, limit })
-            if (!citationOwner.isCurrent()) return hits
-            for (const hit of hits) {
-              citationOwner.table.addFile({
-                path: hit.path,
-                name: hit.name,
-                location: hit.folder,
-              })
-            }
-            return hits
-          },
-          read: async (path, offset) => {
-            const citationOwner = captureCitationOwner()
-            const f = corpusRef.current.find((file) => file.path === path)
-            const page = await api.kbRead(path, offset)
-            if (!citationOwner.isCurrent()) return page
-            citationOwner.table.addFile({
-              path,
-              name: f?.name ?? path.split(/[\\/]/).pop() ?? 'Document',
-              location: f?.folder ?? '',
-            })
-            return page
-          },
-          alsoCitable: () => [...createdPathsRef.current],
-        }),
-        docSkillRef.current!,
-      ]),
-      maxTurns: 12,
-      formatUserMessage: (instruction, context) =>
-        [instruction, context, agyContextRef.current?.block].filter(Boolean).join('\n\n'),
-      systemSuffix: () =>
-        agyContextRef.current
-          ? agySystemSuffix(LANGUAGE_NAMES[langRef.current] ?? 'English', {
-              ...agyContextRef.current,
-              block: '',
-            })
-          : `Reply in ${LANGUAGE_NAMES[langRef.current] ?? 'English'}. This is a home assistant: answer questions, search knowledge base and help find files the user has opened or starred. Use remembered-document and knowledge-base tools when relevant. Never guess document contents or source identifiers. ${FILE_CITATION_RULES_TOOLS}`,
-      events: {
-        onText: (text) => {
-          if (live()) batcherRef.current?.push(text)
-        },
-        onToolExecuted: ({ call }) => {
-          if (
-            !live() ||
-            ![
-              'search_remembered_documents',
-              'search_knowledge_base',
-              'read_knowledge_file',
-              'create_document',
-            ].includes(call.name)
-          )
-            return
-          // the hits were numbered while the tool ran (refBridge): make them resolvable at once
-          updateLastAssistant((last) => ({ ...last, candidates: fileTableRef.current.list() }))
-        },
-        onDone: ({ text, cancelled }) => {
-          if (!live()) return
-          batcherRef.current?.cancel()
-          const finalText = text || itemsRef.current.at(-1)?.text || ''
-          const names = cancelled ? [] : fileNamesIn(finalText)
-          const known = new Set(
-            fileTableRef.current.list().map((source) => source.name.normalize('NFC').toLowerCase()),
-          )
-          const unlisted = names.some((name) => !known.has(name.normalize('NFC').toLowerCase()))
-          // with names still to look up, wait before falling back to "related" files
-          const picked = settleFiles(finalText, !cancelled && !unlisted)
-          const itemId = itemsRef.current.at(-1)?.id ?? 0
-          updateLastAssistant((last) => {
-            const answer = text || last.text
-            const { candidates: _candidates, ...rest } = last
-            return {
-              ...rest,
-              text: answer,
-              streaming: false,
-              ...(picked.sources.length > 0 ? { sources: picked.sources } : {}),
-              error: answer
-                ? undefined
-                : cancelled
-                  ? tRef.current('homeChatStopped')
-                  : tRef.current('homeChatNoReply'),
-            }
-          })
-          clearActiveRequest()
-          setBusy(false)
-          // names the answer wrote without an id become files to open, not only words
-          if (unlisted && finalText)
-            void resolveUnlistedNames(finalText, itemId, runGenerationRef.current)
-        },
-        onError: (error) => {
-          if (!live()) return
-          batcherRef.current?.cancel()
-          updateLastAssistant((last) => ({ ...last, error, streaming: false }))
-          clearActiveRequest()
-          setBusy(false)
-        },
+      onStatusChange: (sessionId, status) => {
+        setExecutionStates((prev) => {
+          const next = new Map(prev)
+          next.set(sessionId, status)
+          return next
+        })
+        if (sessionId === activeSessionIdRef.current) {
+          const isBusy = status === 'running' || status === 'queued'
+          setBusy(isBusy)
+          busyRef.current = isBusy
+          if (!isBusy) {
+            activeRequestIdRef.current = null
+            setActiveRequestId(null)
+          }
+        }
       },
-    })
-  }
-
-  // ---- persistence --------------------------------------------------------
-
-  const saveConversation = useCallback(
-    (conv: Conversation, snapshot: readonly ChatItem[]) => {
-      const messages = toMessages(snapshot)
-      if (messages.length === 0) return
-      // Serialized: the first save must return the generated id before the next one runs.
-      saveChainRef.current = saveChainRef.current.then(async () => {
-        if (conv.dead) return
-        try {
-          const summary = await api.homeChatSave({
-            ...(conv.id ? { id: conv.id } : {}),
-            messages,
-          })
-          if (!summary || conv.dead) return
-          conv.id = summary.id
-          if (convRef.current === conv && mountedRef.current) {
+      onItemsChange: (sessionId, nextItems) => {
+        if (sessionId === activeSessionIdRef.current && mountedRef.current) {
+          setItems(nextItems)
+          itemsRef.current = nextItems
+        }
+      },
+      onSessionUpdated: (summary) => {
+        if (mountedRef.current) {
+          upsertSummary(summary)
+          if (summary.id === activeSessionIdRef.current || summary.id === convRef.current.id) {
             setActiveId(summary.id)
             setTitle(summary.title)
+            convRef.current.id = summary.id
             writeStore(LS_LAST, summary.id)
           }
-          if (mountedRef.current) upsertSummary(summary)
-        } catch {
-          // History is a convenience; a failed save must never interrupt the conversation.
         }
-      })
-    },
-    [api, upsertSummary],
-  )
+      },
+    })
+  }
 
   useEffect(() => {
-    if (items.length === 0 || items === lastSavedRef.current) return
-    const streaming = items.some((item) => item.streaming)
-    const run = () => {
-      window.clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = 0
-      lastSavedRef.current = itemsRef.current
-      convRef.current.requested = true
-      saveConversation(convRef.current, itemsRef.current)
-    }
-    // the first save of a chat is immediate so it shows in the rail at once
-    if (!streaming || !convRef.current.requested) run()
-    else if (!saveTimerRef.current) saveTimerRef.current = window.setTimeout(run, SAVE_INTERVAL_MS)
-  }, [items, saveConversation])
+    runManagerRef.current?.setCorpus(corpusRef.current)
+  }, [corpusCount])
 
-  useEffect(
-    () => () => {
-      window.clearTimeout(saveTimerRef.current)
-      batcherRef.current?.cancel()
-      runGenerationRef.current++
-      loopRef.current?.reset()
-      if (itemsRef.current.length > 0 && itemsRef.current !== lastSavedRef.current)
-        saveConversation(convRef.current, itemsRef.current)
-    },
-    [saveConversation],
-  )
+  useEffect(() => {
+    return () => {
+      runManagerRef.current?.destroy()
+      runManagerRef.current = null
+    }
+  }, [])
 
   // ---- scrolling ----------------------------------------------------------
 
@@ -1143,34 +859,15 @@ export function HomeChat({
   // ---- conversation lifecycle --------------------------------------------
 
   const stopStreamingItems = (previous: ChatItem[]): ChatItem[] =>
-    previous.map((item, index) => {
-      if (index !== previous.length - 1 || item.role !== 'assistant' || !item.streaming) return item
-      const { candidates: _candidates, ...rest } = item
-      const picked = item.text ? settleFiles(item.text, false) : null
-      return {
-        ...rest,
-        streaming: false,
-        ...(picked && picked.sources.length > 0 ? { sources: picked.sources } : {}),
-        error: item.text ? undefined : tRef.current('homeChatStopped'),
-      }
-    })
-
-  /** Ends any in-flight run and keeps what has streamed so far. */
-  const detachCurrent = () => {
-    window.clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = 0
-    runGenerationRef.current++
-    batcherRef.current?.cancel()
-    loopRef.current?.reset()
-    clearActiveRequest()
-    needsSeedRef.current = true
-    if (busyRef.current) {
-      const settled = stopStreamingItems(itemsRef.current)
-      lastSavedRef.current = settled
-      saveConversation(convRef.current, settled)
-    }
-    setBusy(false)
-  }
+    previous.map((item, index) =>
+      index === previous.length - 1 && item.role === 'assistant' && item.streaming
+        ? {
+            ...item,
+            streaming: false,
+            error: item.text ? undefined : tRef.current('homeChatStopped'),
+          }
+        : item,
+    )
 
   const adopt = (conv: Conversation, nextItems: ChatItem[], nextTitle: string) => {
     convRef.current = conv
@@ -1188,6 +885,7 @@ export function HomeChat({
     scrollMemoRef.current = null
     restoreTopRef.current = null
     setItems(nextItems)
+    itemsRef.current = nextItems
     setActiveId(conv.id)
     setTitle(nextTitle)
     setInput('')
@@ -1202,8 +900,13 @@ export function HomeChat({
     initRef.current = true
     openTokenRef.current++
     launchTokenRef.current++
-    detachCurrent()
-    adopt({ id: null, executionId: crypto.randomUUID(), dead: false, requested: false }, [], '')
+    const nextSessionId = crypto.randomUUID()
+    runManagerRef.current?.ensureRun(nextSessionId, [], null, '')
+    adopt({ id: null, executionId: nextSessionId, dead: false, requested: false }, [], '')
+    setBusy(false)
+    busyRef.current = false
+    activeRequestIdRef.current = null
+    setActiveRequestId(null)
     collapseRailWhenNarrow()
     focusInput()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1213,14 +916,32 @@ export function HomeChat({
     async (id: string) => {
       touchedRef.current = true
       initRef.current = true
-      if (id === convRef.current.id) {
+      if (id === convRef.current.id && id === activeSessionIdRef.current) {
         collapseRailWhenNarrow()
         focusInput()
         return
       }
       const token = ++openTokenRef.current
       launchTokenRef.current++
-      detachCurrent()
+
+      const existingRun = runManagerRef.current?.getRun(id)
+      if (existingRun && !existingRun.dead) {
+        adopt(
+          { id: existingRun.persistedId || id, executionId: id, dead: false, requested: true },
+          existingRun.items,
+          existingRun.title,
+        )
+        const isBusy = existingRun.status === 'running' || existingRun.status === 'queued'
+        setBusy(isBusy)
+        busyRef.current = isBusy
+        const reqId = existingRun.activeRequestId ?? null
+        activeRequestIdRef.current = reqId
+        setActiveRequestId(reqId)
+        collapseRailWhenNarrow()
+        focusInput()
+        return
+      }
+
       let session: HomeChatSession | null
       try {
         session = await api.homeChatGet(id)
@@ -1248,11 +969,14 @@ export function HomeChat({
           error: tRef.current('homeChatInterrupted'),
         })
       }
+      runManagerRef.current?.ensureRun(session.id, restored, session.id, session.title)
       adopt(
         { id: session.id, executionId: session.id, dead: false, requested: true },
         restored,
         session.title,
       )
+      setBusy(false)
+      busyRef.current = false
       collapseRailWhenNarrow()
       focusInput()
     },
@@ -1268,7 +992,8 @@ export function HomeChat({
   useEffect(() => () => window.clearTimeout(toastTimerRef.current), [])
 
   const deleteSession = async (id: string) => {
-    if (id === convRef.current.id) {
+    runManagerRef.current?.delete(id)
+    if (id === convRef.current.id || id === activeSessionIdRef.current) {
       convRef.current.dead = true
       startNew()
     }
@@ -1323,6 +1048,9 @@ export function HomeChat({
 
   const clearHistory = async () => {
     convRef.current.dead = true
+    for (const s of sessions) {
+      runManagerRef.current?.delete(s.id)
+    }
     startNew()
     setSessions([])
     try {
@@ -1457,177 +1185,26 @@ export function HomeChat({
         }
         return
       }
-      if (!settingsReady || !loop) return
-      if (needsSeedRef.current) {
-        // New conversation, restored chat or a stopped run: rebuild the model context
-        // from the visible text turns (no tool-call blocks are ever persisted).
-        loop.reset()
-        // the model's memory of earlier ids is gone with its history: start numbering again
-        toolTableRef.current = new FileRefTable()
-        loop.restore(toSeedMessages(toMessages(base)))
-        needsSeedRef.current = false
+      if (!settingsReady) {
+        const ok = await loadSettings()
+        if (!ok) return
       }
-      const generation = ++runGenerationRef.current
-      activeRunRef.current = generation
-      currentUserTurnIdRef.current = crypto.randomUUID()
-      openedSlotsRef.current.clear()
-      openedPathsRef.current.clear()
-      openStatesRef.current.clear()
-      inFlightOpenRef.current.clear()
-      clearActiveRequest()
-      const userId = ++itemId.current
-      const assistantId = ++itemId.current
-      stickRef.current = true
-      busyRef.current = true
-      setItems([
-        ...base,
-        { id: userId, role: 'user', text: message },
-        { id: assistantId, role: 'assistant', text: '', streaming: true },
-      ])
-      setInput('')
       setBusy(true)
-      setNotice('')
-      const loaded = await loadSettings()
-      if (generation !== runGenerationRef.current || !mountedRef.current) return
-      if (!loaded) {
-        updateLastAssistant((last) => ({
-          ...last,
-          text: '',
-          error: tRef.current('homeChatSettingsFailed'),
-          streaming: false,
-        }))
-        clearActiveRequest()
-        setBusy(false)
-        return
-      }
-      await refreshCorpus()
-      if (generation !== runGenerationRef.current || !mountedRef.current) return
-      agyContextRef.current = null
-      fileTableRef.current = toolTableRef.current!
-      turnStartRef.current = fileTableRef.current.peekNext()
-      try {
-        if (settingsRef.current?.provider === 'agy') {
-          // Prefetch remembered passages for AGY; tools remain available for follow-up evidence and actions.
-          let hits: Awaited<ReturnType<HomeApi['documentMemorySearch']>>['hits'] = []
-          try {
-            const query = buildRetrievalQuery(message, toMessages(base))
-            hits = (await api.documentMemorySearch(query, 8)).hits
-            if (api.testIgnorePath && hits.length > 0) {
-              const testResults = await Promise.all(
-                hits.map((h) => api.testIgnorePath!(h.path).catch(() => ({ ignored: false }))),
-              )
-              hits = hits.filter((_, idx) => !testResults[idx]?.ignored)
-            }
-          } catch {
-            // search is best-effort; the answer then says nothing matched
-          }
-          if (generation !== runGenerationRef.current || !mountedRef.current) return
-          const table = new FileRefTable()
-          fileTableRef.current = table
-          turnStartRef.current = 1
-          const context = buildRetrievalContext(hits, { table })
-          if (mentionsIndex(message)) {
-            // Live index facts and the means to act on the index (the model cannot call tools here).
-            const facts = await indexFacts(api, langFor(message, langRef.current)).catch(() => '')
-            if (generation !== runGenerationRef.current || !mountedRef.current) return
-            if (facts)
-              context.block = `${context.block}\n\n<<<INDEX\n${facts}\nINDEX>>>\n${INDEX_DIRECTIVE_PROMPT}`
-          }
-          // Files recently opened, or in the folder index, that match by name: their content is
-          // not part of the search above, so they are offered as candidates by name (same id table).
-          let named = (await findFilesByName(api, message, 4).catch(() => [])).filter(
-            (file) => table.refForPath(file.path) === undefined,
-          )
-          if (api.testIgnorePath && named.length > 0) {
-            const testResults = await Promise.all(
-              named.map((f) => api.testIgnorePath!(f.path).catch(() => ({ ignored: false }))),
-            )
-            named = named.filter((_, idx) => !testResults[idx]?.ignored)
-          }
-          if (generation !== runGenerationRef.current || !mountedRef.current) return
-          const byName = namedFilesBlock(named, table)
-          if (corpusRef.current.length > 0) {
-            for (const file of corpusRef.current) {
-              if (table.refForPath(file.path) === undefined) {
-                table.addFile({
-                  path: file.path,
-                  name: file.name,
-                  location: file.folder,
-                })
-              }
-            }
-            if (typeof api.kbSearch === 'function') {
-              try {
-                const kbHits = await api.kbSearch({ q: message, limit: 4 })
-                for (const hit of kbHits) {
-                  if (table.refForPath(hit.path) === undefined) {
-                    table.addFile({
-                      path: hit.path,
-                      name: hit.name,
-                      location: hit.folder,
-                    })
-                  }
-                }
-              } catch {
-                // best effort
-              }
-            }
-          }
-          if (byName.block) context.block = `${context.block}\n\n${byName.block}`
-          agyContextRef.current = context
-          // not shown as chips yet: the answer decides which of these files it relies on
-          updateLastAssistant((last) => ({ ...last, candidates: table.list() }))
-        }
-        await loop.run(message)
-        if (generation !== runGenerationRef.current || !mountedRef.current) return
-        if (mentionsIndex(message) && settingsRef.current?.provider === 'agy') {
-          batcherRef.current?.flush()
-          const reply = itemsRef.current.at(-1)
-          if (reply?.role === 'assistant') {
-            const { text, commands } = extractIndexDirectives(reply.text)
-            if (commands.length > 0) {
-              const outcomes: string[] = []
-              for (const command of commands) {
-                if (generation !== runGenerationRef.current || !mountedRef.current) return
-                outcomes.push(
-                  await runIndexCommand(api, command, langFor(message, langRef.current)),
-                )
-              }
-              if (mountedRef.current && generation === runGenerationRef.current)
-                updateLastAssistant((last) => ({
-                  ...last,
-                  text: [text, ...outcomes].filter(Boolean).join('\n\n'),
-                }))
-            }
-          }
-        }
-      } catch (error) {
-        if (generation !== runGenerationRef.current) return
-        const detail = error instanceof Error ? error.message : tRef.current('homeChatError')
-        updateLastAssistant((last) => ({ ...last, error: detail, streaming: false }))
-        clearActiveRequest()
-        setBusy(false)
-      }
+      busyRef.current = true
+      await runManagerRef.current?.submit(activeSessionIdRef.current, message, base)
     },
-    [api, loadSettings, refreshCorpus, settingsReady],
+    [settingsReady],
   )
   const submitRef = useRef(submit)
   submitRef.current = submit
 
-  const stop = () => {
-    stoppedRef.current = true
-    runGenerationRef.current++
-    activeRunRef.current = 0
-    currentUserTurnIdRef.current = ''
-    inFlightOpenRef.current.clear()
-    batcherRef.current?.flush()
-    loopRef.current?.reset()
-    clearActiveRequest()
-    needsSeedRef.current = true
-    setItems(stopStreamingItems)
+  const stop = useCallback(() => {
+    runManagerRef.current?.stop(activeSessionIdRef.current)
+    activeRequestIdRef.current = null
+    setActiveRequestId(null)
     setBusy(false)
     busyRef.current = false
-  }
+  }, [])
 
   const retry = useCallback(() => {
     const current = itemsRef.current
@@ -1758,8 +1335,17 @@ export function HomeChat({
       <AgyChatBar lang={i18n.lang} part="bar" showModel={false} />
     </div>
   )
+  const activeDockTarget =
+    (dockTarget && typeof document !== 'undefined' && document.contains(dockTarget)
+      ? dockTarget
+      : null) ??
+    (dockLocation === 'home'
+      ? typeof document !== 'undefined'
+        ? document.getElementById('home-assistant-slot')
+        : null
+      : null)
   const dock = showDock ? (
-    <AskDock lang={i18n.lang} api={api} away={open} inline={!!dockTarget}>
+    <AskDock lang={i18n.lang} api={api} away={open} inline={!!activeDockTarget}>
       {modelControls}
     </AskDock>
   ) : null
@@ -1812,11 +1398,13 @@ export function HomeChat({
             activeId={activeId}
             locale={i18n.dateLocale}
             labels={labels.history}
+            executionStates={executionStates}
             onOpen={(id) => void openSession(id)}
             onNew={startNew}
             onRename={(id, next) => void renameSession(id, next)}
             onDelete={(id) => void deleteSession(id)}
             onClear={() => void clearHistory()}
+            onStop={(id) => runManagerRef.current?.stop(id)}
           />
         </div>
       )}
@@ -2071,7 +1659,7 @@ export function HomeChat({
           : ''}
       </span>
       {target ? createPortal(panelNode, target) : workspaceActive === false ? null : panelNode}
-      {dockTarget && dock ? createPortal(dock, dockTarget) : null}
+      {activeDockTarget && dock ? createPortal(dock, activeDockTarget) : null}
     </>
   )
 }

@@ -4,7 +4,7 @@
  */
 import { parentPort, workerData } from 'node:worker_threads'
 import { extractText } from './extract'
-import { scanFileSnapshot, type ScannedFile } from './scan'
+import { scanFileSnapshot, scanFilesCooperative, type ScannedFile } from './scan'
 import { FileIndexStore } from './store'
 import { handleWriterRequest, isWriterRequest, type WriterResponse } from './worker-ops'
 import { applyPolicyMessage, isPolicyMessage } from '../fork/indexing-worker-policy'
@@ -23,6 +23,7 @@ import {
 export type WorkerRequest =
   | { id: number; type: 'extract'; path: string; ignorePolicy?: IgnorePolicySnapshot }
   | { id: number; type: 'scan'; root: string; ignorePolicy?: IgnorePolicySnapshot }
+  | { id: number; type: 'cancel' }
   | IgnorePolicyWorkerMessage
 
 export type WorkerResponse =
@@ -48,9 +49,14 @@ function writerStore(): FileIndexStore {
   return (store ??= new FileIndexStore(dbPath))
 }
 
+let activeScanAbort: AbortController | null = null
+
 parentPort?.on('message', async (req: WorkerRequest | Parameters<typeof isWriterRequest>[0]) => {
   if (isPolicyMessage(req)) {
     applyPolicyMessage(req)
+    if ((req as { paused?: boolean }).paused) {
+      activeScanAbort?.abort()
+    }
     return
   }
   if (isIgnorePolicyMessage(req)) {
@@ -66,6 +72,10 @@ parentPort?.on('message', async (req: WorkerRequest | Parameters<typeof isWriter
     return
   }
   const request = req as WorkerRequest
+  if (request.type === 'cancel') {
+    activeScanAbort?.abort()
+    return
+  }
   if (request.type === 'extract') {
     if (isPathIgnored(request.path)) {
       parentPort?.postMessage({
@@ -78,18 +88,25 @@ parentPort?.on('message', async (req: WorkerRequest | Parameters<typeof isWriter
     const result = await withBackgroundBudget(() => extractText(request.path))
     parentPort?.postMessage({ id: request.id, type: 'extract', result } satisfies WorkerResponse)
   } else if (request.type === 'scan') {
-    const snapshot = scanFileSnapshot(request.root)
-    for (let i = 0; i < snapshot.files.length; i += SCAN_PART_SIZE)
+    activeScanAbort = new AbortController()
+    try {
+      const snapshot = await scanFilesCooperative(request.root, {
+        signal: activeScanAbort.signal,
+      })
+      for (let i = 0; i < snapshot.files.length; i += SCAN_PART_SIZE)
+        parentPort?.postMessage({
+          id: request.id,
+          type: 'scan-part',
+          files: snapshot.files.slice(i, i + SCAN_PART_SIZE),
+        } satisfies WorkerResponse)
       parentPort?.postMessage({
         id: request.id,
-        type: 'scan-part',
-        files: snapshot.files.slice(i, i + SCAN_PART_SIZE),
+        type: 'scan',
+        files: [],
+        complete: snapshot.complete,
       } satisfies WorkerResponse)
-    parentPort?.postMessage({
-      id: request.id,
-      type: 'scan',
-      files: [],
-      complete: snapshot.complete,
-    } satisfies WorkerResponse)
+    } finally {
+      activeScanAbort = null
+    }
   }
 })

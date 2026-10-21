@@ -93,7 +93,7 @@ export function batteryBand(percent: number | undefined): BatteryBand {
   return percent >= 80 ? 3 : percent >= 50 ? 2 : 1
 }
 const BALANCED_ACTIVE_SHARE = 0.5
-const FAST_ACTIVE_SHARE = 0.6
+const FAST_ACTIVE_SHARE = 0.5
 
 function paused(
   reason: IndexingPauseReason,
@@ -155,10 +155,8 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
       return paused('locked', 'screen is locked on a low battery', memoryTier)
   }
 
-  const allowHeavyEmbedding =
-    memoryTier !== 'low' && !input.onBattery && input.mode !== 'light'
-  const maxBatchTokens =
-    memoryTier === 'low' ? 1600 : memoryTier === 'normal' ? 3000 : 6000
+  const allowHeavyEmbedding = memoryTier !== 'low' && !input.onBattery && input.mode !== 'light'
+  const maxBatchTokens = memoryTier === 'low' ? 1600 : memoryTier === 'normal' ? 3000 : 6000
 
   if (input.onBattery) {
     const light = input.mode === 'light'
@@ -197,18 +195,18 @@ export function resolvePolicy(input: PolicyInput): ResolvedPolicy {
       return idle
         ? {
             paused: false,
-            threads: threads(8),
-            cpuShare: 1,
+            threads: threads(4),
+            cpuShare: 0.9,
             priority: 'below-normal',
             tier: 'idle',
-            reason: 'fast mode, idle on AC: uncapped',
+            reason: 'fast mode, idle on AC: bounded',
             memoryTier,
             allowHeavyEmbedding,
             maxBatchTokens,
           }
         : {
             paused: false,
-            threads: threads(3),
+            threads: threads(2),
             cpuShare: FAST_ACTIVE_SHARE,
             priority: 'below-normal',
             tier: 'active',
