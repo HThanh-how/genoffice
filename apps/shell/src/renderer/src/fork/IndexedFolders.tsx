@@ -9,10 +9,12 @@ import type {
 import type { HomeApi } from '../../../shared/home-api'
 import { useI18n } from '../locale'
 import { readIndexRequest } from './index-request'
-import { ReleasedChip } from './ReleasedChip'
+import { folderChips, folderDone, type FolderChip } from './index-folder-status'
 
 export interface IndexedFoldersProps {
   api?: HomeApi
+  /** a folder with problems offers a way to the list of problem files */
+  onOpenIssues?: () => void
 }
 
 const EN = {
@@ -26,7 +28,7 @@ const EN = {
   locDownloadsDesc: 'Watching for new downloads',
   locDesktop: 'Desktop',
   locDesktopDesc: 'Desktop files',
-  empty: 'No folder has been scanned yet. Use "Choose folder and scan" above.',
+  empty: 'No folder has been scanned yet. Use "Add folder" at the top of the page.',
   never: 'Never finished',
   last: 'Last scan {when}',
   refreshed: 'checked {when}',
@@ -57,6 +59,17 @@ const EN = {
   statusError: 'Error',
   statusDisabled: 'Disabled',
   sourceToggleFailed: 'Failed to update folder setting.',
+  quickAdd: 'Quick add',
+  quickAddTitle: 'Add a common folder',
+  filesOf: '{done} / {total} files',
+  chipIndexing: 'Indexing',
+  chipReady: 'Ready',
+  chipErrors: 'Has problems',
+  chipErrorsTip: 'Open the files that need attention',
+  moreActions: 'More actions',
+  loadingFolders: 'Loading folder progress…',
+  refreshFailed: 'Progress or the action could not be confirmed. Refresh before trying again.',
+  refreshButton: 'Refresh',
 }
 
 type Dict = Record<keyof typeof EN, string>
@@ -74,7 +87,7 @@ const STRINGS: Record<'en' | 'vi' | 'zh', Dict> = {
     locDownloadsDesc: 'Tự động theo dõi tệp tải về mới',
     locDesktop: 'Màn hình chính (Desktop)',
     locDesktopDesc: 'Màn hình chính',
-    empty: 'Chưa quét thư mục nào. Hãy dùng "Chọn thư mục và quét" ở trên.',
+    empty: 'Chưa quét thư mục nào. Hãy bấm "Thêm thư mục" ở đầu trang.',
     never: 'Chưa quét xong',
     last: 'Quét lần cuối {when}',
     refreshed: 'kiểm tra {when}',
@@ -105,6 +118,17 @@ const STRINGS: Record<'en' | 'vi' | 'zh', Dict> = {
     statusError: 'Lỗi',
     statusDisabled: 'Đã tắt',
     sourceToggleFailed: 'Không thể cập nhật thiết lập thư mục.',
+    quickAdd: 'Thêm nhanh',
+    quickAddTitle: 'Thêm một thư mục phổ biến',
+    filesOf: '{done} / {total} tệp',
+    chipIndexing: 'Đang index',
+    chipReady: 'Sẵn sàng',
+    chipErrors: 'Có lỗi',
+    chipErrorsTip: 'Mở các tệp cần xử lý',
+    moreActions: 'Thêm thao tác',
+    loadingFolders: 'Đang lấy tiến độ thư mục…',
+    refreshFailed: 'Chưa xác nhận được tiến độ hoặc thao tác. Kiểm tra lại trước khi thử tiếp.',
+    refreshButton: 'Tải lại',
   },
   zh: {
     title: '已索引的文件夹',
@@ -117,7 +141,7 @@ const STRINGS: Record<'en' | 'vi' | 'zh', Dict> = {
     locDownloadsDesc: '自动监视新下载的文件',
     locDesktop: '桌面',
     locDesktopDesc: '桌面文件',
-    empty: '尚未扫描任何文件夹。请使用上方的“选择文件夹并扫描”。',
+    empty: '尚未扫描任何文件夹。请使用页面顶部的“添加文件夹”。',
     never: '尚未完成',
     last: '上次扫描 {when}',
     refreshed: '检查于 {when}',
@@ -148,6 +172,17 @@ const STRINGS: Record<'en' | 'vi' | 'zh', Dict> = {
     statusError: '错误',
     statusDisabled: '已禁用',
     sourceToggleFailed: '无法更新文件夹设置。',
+    quickAdd: '快速添加',
+    quickAddTitle: '添加常用文件夹',
+    filesOf: '{done} / {total} 个文件',
+    chipIndexing: '正在索引',
+    chipReady: '已就绪',
+    chipErrors: '有问题',
+    chipErrorsTip: '打开需要处理的文件',
+    moreActions: '更多操作',
+    loadingFolders: '正在获取文件夹进度…',
+    refreshFailed: '无法确认进度或操作。请刷新后再试。',
+    refreshButton: '刷新',
   },
 }
 
@@ -239,7 +274,7 @@ function getStatusLabel(status: KnownSearchSourceStatus | undefined, d: Dict): s
   }
 }
 
-export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
+export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) {
   const effectiveApi =
     api ?? (typeof window !== 'undefined' ? (window as unknown as { aiOffice?: HomeApi }).aiOffice : undefined)
 
@@ -491,9 +526,7 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
 
   if (folders === null && !failed)
     return (
-      <p role="status">
-        {lang === 'vi' ? 'Đang lấy tiến độ thư mục…' : 'Loading folder progress…'}
-      </p>
+      <p role="status">{dict.loadingFolders}</p>
     )
 
   const customFolders =
@@ -502,190 +535,225 @@ export function IndexedFolders({ api }: IndexedFoldersProps = {}) {
       return folder.owners.includes('manual')
     }) ?? null
 
+  const chipLabel = (chip: FolderChip): string => {
+    switch (chip) {
+      case 'offline':
+        return dict.offline
+      case 'scanning':
+        return dict.running
+      case 'stopped':
+        return dict.stopped
+      case 'indexing':
+        return dict.chipIndexing
+      case 'errors':
+        return dict.chipErrors
+      default:
+        return dict.chipReady
+    }
+  }
+  const closeMenu = (target: HTMLElement) =>
+    target.closest('details')?.removeAttribute('open')
+
   return (
     <div className="set-folders">
-      {/* Vị trí phổ biến / Common locations */}
-      <section className="idx-common-sources-section" aria-label={dict.commonTitle}>
-        <div className="idx-common-sources-header">
-          <h4 className="set-field-label">{dict.commonTitle}</h4>
-          <p className="set-field-desc">{dict.commonDesc}</p>
+      <div className="idx-sources-head">
+        <div className="idx-custom-sources-header">
+          <h4 className="set-field-label">{dict.title}</h4>
+          <p className="set-field-desc">{dict.desc}</p>
         </div>
-        <div className="idx-common-sources-grid">
-          {commonLocations.map((loc) => {
-            const entry = knownSources.find((s) => s.id === loc.id)
-            const isChecked = !!entry?.enabled
-            const isBusy = !!busySources[loc.id]
-            const status: KnownSearchSourceStatus = entry?.status ?? (isChecked ? 'queued' : 'disabled')
-            const statusText = getStatusLabel(status, dict)
-            const inlineError = sourceErrors[loc.id] || entry?.error
-            const isUnavailable = status === 'unavailable'
+        {/* Common locations are a shortcut, not a section of their own. */}
+        <details className="idx-quick-add idx-common-sources-section">
+          <summary className="idx-btn" title={dict.quickAddTitle}>
+            {dict.quickAdd}
+          </summary>
+          <div className="idx-quick-add-panel" aria-label={dict.commonTitle}>
+            <p className="set-field-desc">{dict.commonDesc}</p>
+            <div className="idx-common-sources-grid">
+              {commonLocations.map((loc) => {
+                const entry = knownSources.find((s) => s.id === loc.id)
+                const isChecked = !!entry?.enabled
+                const isBusy = !!busySources[loc.id]
+                const status: KnownSearchSourceStatus =
+                  entry?.status ?? (isChecked ? 'queued' : 'disabled')
+                const statusText = getStatusLabel(status, dict)
+                const inlineError = sourceErrors[loc.id] || entry?.error
+                const isUnavailable = status === 'unavailable'
 
-            return (
-              <div
-                key={loc.id}
-                className={`idx-common-source-card${isChecked ? ' is-active' : ''}${isUnavailable ? ' is-unavailable' : ''}`}
-              >
-                <div className="idx-common-source-icon">{renderLocationIcon(loc.icon)}</div>
-                <div className="idx-common-source-info">
-                  <div className="idx-common-source-row">
-                    <span className="idx-common-source-name">{loc.name}</span>
-                    <span
-                      className={`idx-common-source-chip status-${status}`}
-                      data-status={status}
-                    >
-                      {statusText}
-                    </span>
+                return (
+                  <div
+                    key={loc.id}
+                    className={`idx-common-source-card${isChecked ? ' is-active' : ''}${isUnavailable ? ' is-unavailable' : ''}`}
+                  >
+                    <div className="idx-common-source-icon">{renderLocationIcon(loc.icon)}</div>
+                    <div className="idx-common-source-info">
+                      <div className="idx-common-source-row">
+                        <span className="idx-common-source-name">{loc.name}</span>
+                        <span
+                          className={`idx-common-source-chip status-${status}`}
+                          data-status={status}
+                        >
+                          {statusText}
+                        </span>
+                      </div>
+                      <span className="idx-common-source-desc">{loc.desc}</span>
+                      {entry?.path && (
+                        <span className="idx-common-source-path" title={entry.path}>
+                          {entry.path}
+                        </span>
+                      )}
+                      {inlineError && (
+                        <span className="idx-common-source-error" role="alert">
+                          {inlineError}
+                        </span>
+                      )}
+                    </div>
+                    <label className="idx-switch" aria-label={loc.name}>
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        disabled={isBusy}
+                        onChange={(e) => void toggleKnownSource(loc.id, e.target.checked)}
+                      />
+                      <span className="idx-switch-slider" />
+                    </label>
                   </div>
-                  <span className="idx-common-source-desc">{loc.desc}</span>
-                  {entry?.path && (
-                    <span className="idx-common-source-path" title={entry.path}>
-                      {entry.path}
-                    </span>
-                  )}
-                  {inlineError && (
-                    <span className="idx-common-source-error" role="alert">
-                      {inlineError}
-                    </span>
-                  )}
-                </div>
-                <label className="idx-switch" aria-label={loc.name}>
-                  <input
-                    type="checkbox"
-                    checked={isChecked}
-                    disabled={isBusy}
-                    onChange={(e) => void toggleKnownSource(loc.id, e.target.checked)}
-                  />
-                  <span className="idx-switch-slider" />
-                </label>
-              </div>
-            )
-          })}
-        </div>
-      </section>
-
-      <div className="idx-custom-sources-header" style={{ marginTop: 14 }}>
-        <h4 className="set-field-label">{dict.title}</h4>
-        <p className="set-field-desc">{dict.desc}</p>
+                )
+              })}
+            </div>
+          </div>
+        </details>
       </div>
       {failed && (
         <p role="status" className="set-field-desc">
-          {lang === 'vi'
-            ? 'Chưa xác nhận được tiến độ hoặc thao tác. Kiểm tra lại trước khi thử tiếp.'
-            : 'Progress or the action could not be confirmed. Refresh before trying again.'}{' '}
+          {dict.refreshFailed}{' '}
           <button type="button" className="set-btn" onClick={() => void refresh()}>
-            {lang === 'vi' ? 'Tải lại' : 'Refresh'}
+            {dict.refreshButton}
           </button>
         </p>
       )}
       {customFolders?.length === 0 && <p className="set-field-desc">{dict.empty}</p>}
       {customFolders?.map((folder) => {
         const isOpen = open === folder.root
-        const status = folder.unavailable
-          ? dict.offline
-          : folder.state === 'running'
-            ? dict.running
-            : folder.state === 'stopped'
-              ? dict.stopped
-              : null
+        const chips = folderChips(folder)
+        const { done, total } = folderDone(folder)
         const last = folder.completedAt
           ? fill(dict.last, { when: when(folder.completedAt) })
           : dict.never
+        const lastCheck = folder.reconciledAt
+          ? ` · ${fill(dict.refreshed, { when: when(folder.reconciledAt) })}`
+          : ''
+        const rowBusy = busy === folder.root
         return (
-          <div className={`set-folder${folder.unavailable ? ' is-offline' : ''}`} key={folder.root}>
-            <div className="set-folder-head">
-              <div className="set-folder-title">
+          <div
+            className={`set-folder idx-src${folder.unavailable ? ' is-offline' : ''}`}
+            key={folder.root}
+          >
+            <div className="idx-src-row">
+              <div className="idx-src-title">
                 <strong>{folderName(folder.root)}</strong>
                 <span title={folder.root}>{folder.root}</span>
               </div>
-              {status && <span className="set-folder-chip">{status}</span>}
+              <span className="idx-src-count" title={`${last}${lastCheck}`}>
+                {fill(dict.filesOf, {
+                  done: done.toLocaleString(lang),
+                  total: total.toLocaleString(lang),
+                })}
+              </span>
+              <span className="idx-src-chips">
+                {chips.map((chip) =>
+                  chip === 'errors' && onOpenIssues ? (
+                    <button
+                      key={chip}
+                      type="button"
+                      className={`idx-src-chip is-${chip}`}
+                      title={dict.chipErrorsTip}
+                      onClick={onOpenIssues}
+                    >
+                      {chipLabel(chip)} · {folder.errorFiles.toLocaleString(lang)}
+                    </button>
+                  ) : (
+                    <span key={chip} className={`idx-src-chip is-${chip}`}>
+                      {chipLabel(chip)}
+                    </span>
+                  ),
+                )}
+              </span>
+              <details className="idx-more idx-src-more">
+                <summary
+                  className="idx-btn idx-more-btn"
+                  aria-label={dict.moreActions}
+                  title={dict.moreActions}
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                    <circle cx="3.5" cy="8" r="1.3" />
+                    <circle cx="8" cy="8" r="1.3" />
+                    <circle cx="12.5" cy="8" r="1.3" />
+                  </svg>
+                </summary>
+                <div className="idx-more-menu" role="menu">
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={rowBusy || folder.state === 'running' || folder.unavailable}
+                    onClick={(event) => {
+                      closeMenu(event.currentTarget)
+                      void act(folder.root, () => window.aiOffice.rescanIndexedFolder(folder.root))
+                    }}
+                  >
+                    {dict.rescan}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitemcheckbox"
+                    aria-checked={folder.priority}
+                    disabled={rowBusy}
+                    onClick={(event) => {
+                      closeMenu(event.currentTarget)
+                      void act(folder.root, () =>
+                        window.aiOffice.setIndexedFolderPriority(folder.root, !folder.priority),
+                      )
+                    }}
+                  >
+                    {folder.priority ? `★ ${dict.priorityOn}` : `☆ ${dict.priority}`}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={(event) => {
+                      closeMenu(event.currentTarget)
+                      setOpen(isOpen ? null : folder.root)
+                    }}
+                  >
+                    {isOpen ? dict.hideHistory : dict.history}
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    title={dict.forgetTip}
+                    disabled={rowBusy || folder.state === 'running'}
+                    onClick={(event) => {
+                      closeMenu(event.currentTarget)
+                      void act(folder.root, () => window.aiOffice.forgetIndexedFolder(folder.root))
+                    }}
+                  >
+                    {dict.forget}
+                  </button>
+                </div>
+              </details>
             </div>
-            <div className="set-field-desc">
-              {last}
-              {folder.reconciledAt
-                ? ` · ${fill(dict.refreshed, { when: when(folder.reconciledAt) })}`
-                : ''}
-            </div>
-            <div className="set-field-desc">
-              {fill(dict.files, { n: folder.totalFiles })}
-              {` · ${folder.readyFiles.toLocaleString(lang)} ${lang === 'vi' ? 'đã xử lý' : 'processed'}`}
-              {!!folder.emptyFiles &&
-                ` (${folder.emptyFiles.toLocaleString(lang)} ${lang === 'vi' ? 'chưa có chữ' : 'without text'})`}
-              {folder.pendingFiles > 0
-                ? ` · ${fill(dict.waiting, { n: folder.pendingFiles })}`
-                : ''}
-              {folder.errorFiles > 0 ? ` · ${fill(dict.errors, { n: folder.errorFiles })}` : ''}
-              {!!folder.releasedFiles && (
-                <>
-                  {' · '}
-                  <ReleasedChip count={folder.releasedFiles} />
-                </>
-              )}
-            </div>
-            {folder.totalFiles > 0 && (
+            {total > 0 && done < total && !folder.unavailable && (
               <progress
-                style={{ width: '100%', height: 6, margin: '10px 0' }}
-                max={folder.totalFiles}
-                value={folder.readyFiles + folder.errorFiles + (folder.releasedFiles ?? 0)}
+                className="idx-src-progress"
+                max={total}
+                value={done}
                 aria-label={lang === 'vi' ? 'Tiến độ tệp' : 'File progress'}
               />
-            )}
-            {!!folder.totalChunks && (
-              <p className="set-field-desc">
-                {(folder.completedChunks ?? 0).toLocaleString(lang)} /{' '}
-                {folder.totalChunks.toLocaleString(lang)}{' '}
-                {lang === 'vi'
-                  ? 'đoạn đã sẵn sàng tìm theo nội dung'
-                  : 'passages ready for content search'}
-              </p>
             )}
             {folder.lastError && (
               <p className="set-field-desc" role="status">
                 {folder.lastError}
               </p>
             )}
-            <div className="set-folder-actions">
-              <button
-                type="button"
-                className={`set-btn${folder.priority ? ' primary' : ''}`}
-                aria-pressed={folder.priority}
-                disabled={busy === folder.root}
-                onClick={() =>
-                  void act(folder.root, () =>
-                    window.aiOffice.setIndexedFolderPriority(folder.root, !folder.priority),
-                  )
-                }
-              >
-                {folder.priority ? `★ ${dict.priorityOn}` : `☆ ${dict.priority}`}
-              </button>
-              <button
-                type="button"
-                className="set-btn"
-                disabled={busy === folder.root || folder.state === 'running' || folder.unavailable}
-                onClick={() =>
-                  void act(folder.root, () => window.aiOffice.rescanIndexedFolder(folder.root))
-                }
-              >
-                {dict.rescan}
-              </button>
-              <button
-                type="button"
-                className="set-btn"
-                onClick={() => setOpen(isOpen ? null : folder.root)}
-              >
-                {isOpen ? dict.hideHistory : dict.history}
-              </button>
-              <button
-                type="button"
-                className="set-btn"
-                title={dict.forgetTip}
-                disabled={busy === folder.root || folder.state === 'running'}
-                onClick={() =>
-                  void act(folder.root, () => window.aiOffice.forgetIndexedFolder(folder.root))
-                }
-              >
-                {dict.forget}
-              </button>
-            </div>
             {isOpen &&
               (folder.history.length === 0 ? (
                 <p className="set-field-desc">{dict.noHistory}</p>

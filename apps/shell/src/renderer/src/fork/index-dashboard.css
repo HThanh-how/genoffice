@@ -1111,17 +1111,19 @@
 .idx-search-hero-box {
   display: flex;
   align-items: center;
-  gap: 10px;
-  background: var(--surface);
-  border: 1.5px solid var(--border);
-  border-radius: 12px;
-  padding: 10px 16px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  gap: 8px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  padding: 6px 12px;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.idx-search-hero-box:hover {
+  border-color: var(--border-hover);
 }
 .idx-search-hero-box:focus-within {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(0, 102, 204, 0.12);
+  background: var(--surface);
 }
 .idx-search-hero-icon {
   color: var(--text-tertiary);
@@ -1132,7 +1134,7 @@
   border: none;
   background: transparent;
   outline: none;
-  font-size: 14.5px;
+  font-size: 13px;
   color: var(--text);
   line-height: 1.4;
 }
@@ -2041,4 +2043,269 @@
 .idx-more-menu button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+/* Index status sentence (overview) */
+.idx-status {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 18px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.idx-status-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.idx-status-text {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--text);
+}
+.idx-status-dot {
+  flex-shrink: 0;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--success);
+}
+.idx-status.is-working .idx-status-dot {
+  background: var(--accent);
+  animation: pulse 1.8s infinite;
+}
+.idx-status.is-paused .idx-status-dot {
+  background: var(--text-tertiary);
+}
+.idx-status-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.idx-status-sub code {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--surface-subtle);
+  color: var(--text);
+  font-size: 11.5px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .idx-status.is-working .idx-status-dot {
+    animation: none;
+  }
+}
+
+/* Issue groups (Issues tab) */
+.idx-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+.idx-issues-title {
+  margin: 0 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-secondary);
+}
+.idx-issue-list {
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.idx-issue + .idx-issue {
+  border-top: 1px solid var(--border-subtle);
+}
+.idx-issue-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding-right: 12px;
+}
+.idx-issue-main {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px 12px 12px 14px;
+  border: 0;
+  border-radius: 12px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.idx-issue-main:hover {
+  background: var(--hover);
+}
+.idx-issue-chev {
+  flex-shrink: 0;
+  color: var(--text-tertiary);
+  transition: transform 0.12s ease;
+}
+.idx-issue.is-open .idx-issue-chev {
+  transform: rotate(90deg);
+}
+.idx-issue-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.idx-issue-text strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.idx-issue-text span {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-secondary);
+}
+.idx-issue-count {
+  flex-shrink: 0;
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.idx-issue.is-muted .idx-issue-count,
+.idx-issue.is-muted .idx-issue-text strong {
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.idx-issue-body {
+  padding: 4px 14px 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+.idx-issue-body .ixp-title {
+  display: none;
+}
+.idx-view-options {
+  margin-bottom: 12px;
+}
+.idx-view-options > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.idx-view-options-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+/* Sources (indexed folders) */
+.idx-sources-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.idx-quick-add {
+  position: relative;
+  flex-shrink: 0;
+}
+.idx-quick-add > summary {
+  list-style: none;
+  cursor: pointer;
+}
+.idx-quick-add > summary::-webkit-details-marker {
+  display: none;
+}
+.idx-quick-add-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 20;
+  width: min(420px, 90vw);
+  padding: 12px;
+  border: 1px solid var(--border-strong, var(--border));
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: var(--shadow-menu);
+}
+.idx-src {
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border-subtle);
+}
+.idx-src-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.idx-src-title {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.idx-src-title strong {
+  font-size: 13px;
+}
+.idx-src-title span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--text-tertiary);
+}
+.idx-src-count {
+  flex-shrink: 0;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+.idx-src-chips {
+  display: flex;
+  flex-shrink: 0;
+  gap: 6px;
+}
+.idx-src-chip {
+  padding: 2px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 11.5px;
+}
+.idx-src-chip.is-ready {
+  border-color: var(--success-border);
+  background: var(--success-bg);
+  color: var(--success);
+}
+.idx-src-chip.is-errors,
+.idx-src-chip.is-offline {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+button.idx-src-chip {
+  cursor: pointer;
+}
+.idx-src-progress {
+  display: block;
+  width: 100%;
+  height: 4px;
+  margin-top: 8px;
+}
+.idx-src.is-offline .idx-src-title strong {
+  color: var(--text-secondary);
 }

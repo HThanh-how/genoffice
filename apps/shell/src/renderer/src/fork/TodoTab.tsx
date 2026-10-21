@@ -1,10 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { HomeApi, LegacyConvertState } from '../../../shared/home-api'
 import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
-import type { IndexIssueReason } from '../../../main/document-memory/issues'
+import { isRetryableReason, type IndexIssueReason } from '../../../main/document-memory/issues'
 import { useI18n } from '../locale'
+import { fill } from '../indexing-activity-copy'
 import { IndexProblems } from './IndexProblems'
-import { issueBucket, type IssueBucket } from './index-issue-view'
+import { runIndexMutation } from './index-mutation'
+import {
+  buildIssueSections,
+  narrowSummary,
+  sectionOf,
+  type IssueSection,
+  type IssueSectionRow,
+} from './index-issue-groups'
+import { TEXT, EN as DASH_EN } from './index-dashboard-i18n'
 import { isIndexIssueSummary, readIndexRequest } from './index-request'
 import { buildTodo, isLegacyConvertState, type TodoCard } from './todo-model'
 import type { IndexViewGroup, IndexViewSort } from './index-list-view'
@@ -33,12 +42,6 @@ const EN = {
   heading: 'To do',
   sub: 'Choose what to handle. GenOffice continues the background work for you.',
   ready: '{n} searchable files',
-  filters: {
-    attention: 'Needs attention',
-    background: 'In progress',
-    skipped: 'Skipped',
-    all: 'All',
-  },
   search: 'Search by file name or folder',
   clear: 'Clear search',
   sort: 'Sort files',
@@ -68,12 +71,6 @@ const EN = {
   working: 'Starting…',
   healthyTitle: 'Nothing needs your attention',
   healthyBody: 'Files that can be read are searchable. New files are picked up automatically.',
-  empty: {
-    attention: 'No files need your attention. Check In progress for background work.',
-    background: 'No files are waiting to be read.',
-    skipped: 'No files have been skipped.',
-    all: 'No pending files. Your index is up to date.',
-  },
   selectionHint: 'Select files with the checkboxes. Right-click or use ⋯ for more actions.',
 }
 type Dict = typeof EN
@@ -81,12 +78,6 @@ const VI: Dict = {
   heading: 'Cần xử lý',
   sub: 'Chọn việc cần làm. GenOffice tiếp tục xử lý các tác vụ nền giúp bạn.',
   ready: '{n} tệp sẵn sàng tìm kiếm',
-  filters: {
-    attention: 'Cần xử lý',
-    background: 'Đang chạy',
-    skipped: 'Đã bỏ qua',
-    all: 'Tất cả',
-  },
   search: 'Tìm theo tên tệp hoặc thư mục',
   clear: 'Xóa tìm kiếm',
   sort: 'Sắp xếp tệp',
@@ -113,12 +104,6 @@ const VI: Dict = {
   working: 'Đang bắt đầu…',
   healthyTitle: 'Không có việc cần bạn xử lý',
   healthyBody: 'Các tệp đọc được đã sẵn sàng tìm kiếm. Tệp mới sẽ được nhận tự động.',
-  empty: {
-    attention: 'Không có tệp cần bạn xử lý. Xem Đang chạy để theo dõi tác vụ nền.',
-    background: 'Không có tệp đang chờ đọc.',
-    skipped: 'Không có tệp nào bị bỏ qua.',
-    all: 'Không còn tệp chờ xử lý. Chỉ mục đã cập nhật.',
-  },
   selectionHint: 'Đánh dấu để chọn tệp. Bấm chuột phải hoặc ⋯ để xem thêm thao tác.',
 }
 
@@ -137,15 +122,76 @@ export interface TodoTabProps {
   onChanged(): void
 }
 
+
+function IssueRow({
+  row,
+  title,
+  hint,
+  num,
+  open,
+  onToggle,
+  action,
+  showLabel,
+  hideLabel,
+  muted,
+  children,
+}: {
+  row: IssueSectionRow
+  title: string
+  hint: string
+  num: (n: number) => string
+  open: boolean
+  onToggle: () => void
+  action?: ReactNode
+  showLabel: string
+  hideLabel: string
+  muted?: boolean
+  children?: ReactNode
+}) {
+  return (
+    <li
+      className={`idx-issue${muted ? ' is-muted' : ''}${open ? ' is-open' : ''}`}
+      data-section={row.id}
+    >
+      <div className="idx-issue-head">
+        <button
+          type="button"
+          className="idx-issue-main"
+          aria-expanded={open}
+          title={open ? hideLabel : showLabel}
+          onClick={onToggle}
+        >
+          <span className="idx-issue-chev" aria-hidden="true">
+            ›
+          </span>
+          <span className="idx-issue-text">
+            <strong>{title}</strong>
+            <span>{hint}</span>
+          </span>
+          <span className="idx-issue-count">{num(row.count)}</span>
+        </button>
+        {action}
+      </div>
+      {open && <div className="idx-issue-body">{children}</div>}
+    </li>
+  )
+}
+
 export function TodoTab(props: TodoTabProps) {
   const { api, onChanged } = props
   const { lang, dateLocale } = useI18n()
   const d = lang === 'vi' ? VI : EN
+  const g = (TEXT[lang] ?? DASH_EN).issues
   const num = (n: number) => n.toLocaleString(dateLocale)
   const [summary, setSummary] = useState<IndexIssueSummary | null>(null)
   const [legacy, setLegacy] = useState<LegacyConvertState | null>(null)
   const [query, setQuery] = useState('')
-  const [bucket, setBucket] = useState<IssueBucket | 'all'>('all')
+  const [openId, setOpenId] = useState<IssueSection | null>(() =>
+    props.focus ? sectionOf(props.focus) : null,
+  )
+  const [retrying, setRetrying] = useState<IssueSection | null>(null)
+  const retryInFlight = useRef(false)
+  const [retryNote, setRetryNote] = useState('')
   const [sort, setSort] = useState<IndexViewSort>(() => savedView().sort)
   const [grouping, setGrouping] = useState<IndexViewGroup>(() => savedView().grouping)
   const [descending, setDescending] = useState(() => savedView().descending)
@@ -162,7 +208,7 @@ export function TodoTab(props: TodoTabProps) {
   const [actionFailed, setActionFailed] = useState(false)
 
   useEffect(() => {
-    if (props.focus) setBucket(issueBucket(props.focus))
+    if (props.focus) setOpenId(sectionOf(props.focus))
   }, [props.focus])
 
   useEffect(() => {
@@ -206,11 +252,11 @@ export function TodoTab(props: TodoTabProps) {
   })
   // File-related work is shown once, in the grouped list. Only global operations need a banner.
   const cards = todo.cards.filter((card) => ['off', 'held', 'legacy'].includes(card.id))
-  const counts = { all: 0, attention: 0, background: 0, skipped: 0 }
-  for (const group of summary?.groups ?? []) {
-    counts.all += group.count
-    counts[issueBucket(group.reason)] += group.count
-  }
+  const sections = buildIssueSections(summary?.groups ?? [])
+  const total = (summary?.groups ?? []).reduce((n, group) => n + group.count, 0)
+  // Searching, or grouping by something other than the reason, lists files across all groups at once.
+  const flat = query.trim().length > 0 || grouping !== 'reason'
+
   const convert = async () => {
     if (working) return
     setWorking(true)
@@ -227,6 +273,30 @@ export function TodoTab(props: TodoTabProps) {
       setWorking(false)
     }
   }
+
+  const retryRow = async (row: IssueSectionRow) => {
+    if (retryInFlight.current) return
+    retryInFlight.current = true
+    setRetrying(row.id)
+    setRetryNote('')
+    try {
+      let queued = 0
+      for (const reason of row.reasons.filter(isRetryableReason)) {
+        const result = await runIndexMutation(() => api.retryDocumentIndexGroup('*', reason))
+        if (!result.ok) throw new Error(result.error ?? 'retry failed')
+        queued += result.retried
+      }
+      setRetryNote(fill(g.retried, { n: num(queued) }))
+      onChanged()
+      setRefresh((n) => n + 1)
+    } catch {
+      setRetryNote(g.retryFailed)
+    } finally {
+      retryInFlight.current = false
+      setRetrying(null)
+    }
+  }
+
   const cardView = (card: TodoCard) => {
     const [title, hint] = d.cards[card.id]
     return (
@@ -273,6 +343,56 @@ export function TodoTab(props: TodoTabProps) {
       </li>
     )
   }
+
+  const listFor = (row: IssueSectionRow) =>
+    summary ? (
+      <>
+        <IndexProblems
+          api={api}
+          root="*"
+          focus={props.focus && row.reasons.includes(props.focus) ? props.focus : null}
+          onChanged={onChanged}
+          hideEmpty
+          summary={narrowSummary(summary, row.reasons)}
+          bucket="all"
+          sort={sort}
+          grouping="reason"
+          descending={descending}
+        />
+        <p className="todo-selection-hint">{d.selectionHint}</p>
+      </>
+    ) : null
+
+  const toggle = (id: IssueSection) => setOpenId((current) => (current === id ? null : id))
+  const rowView = (row: IssueSectionRow, title: string, hint: string, muted = false) => (
+    <IssueRow
+      key={row.id}
+      row={row}
+      title={title}
+      hint={hint}
+      num={num}
+      open={openId === row.id}
+      onToggle={() => toggle(row.id)}
+      showLabel={g.show}
+      hideLabel={g.hide}
+      muted={muted}
+      action={
+        row.retryable ? (
+          <button
+            type="button"
+            className="idx-btn idx-btn-sm"
+            disabled={retrying !== null}
+            onClick={() => void retryRow(row)}
+          >
+            {retrying === row.id ? g.retrying : g.retry}
+          </button>
+        ) : undefined
+      }
+    >
+      {listFor(row)}
+    </IssueRow>
+  )
+
   return (
     <div className="todo">
       <header className="todo-head">
@@ -290,6 +410,11 @@ export function TodoTab(props: TodoTabProps) {
           {d.actionFailed}
         </p>
       )}
+      {retryNote && (
+        <p className="todo-status" role="status">
+          {retryNote}
+        </p>
+      )}
       {loadFailed && (
         <div className="todo-status" role="status">
           <span>{d.loadFailed}</span>
@@ -304,127 +429,158 @@ export function TodoTab(props: TodoTabProps) {
         </p>
       )}
       <div className="todo-workspace">
-        <div className="todo-controls">
-          <div className="todo-filters" role="group" aria-label={d.heading}>
-            {(['attention', 'background', 'skipped', 'all'] as const).map((key) => (
-              <button
-                type="button"
-                key={key}
-                aria-pressed={bucket === key}
-                className={bucket === key ? 'is-active' : ''}
-                onClick={() => setBucket(key)}
-              >
-                <span>{d.filters[key]}</span>
-                <span className="todo-filter-count">{summary ? num(counts[key]) : '–'}</span>
-              </button>
-            ))}
-          </div>
-          <div className="todo-search">
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
-              <circle cx="6.8" cy="6.8" r="4.3" stroke="currentColor" strokeWidth="1.4" />
-              <path
-                d="m10 10 3.5 3.5"
-                stroke="currentColor"
-                strokeWidth="1.4"
-                strokeLinecap="round"
+        <details className="idx-view-options">
+          <summary>
+            <span>{g.options}</span>
+            <span className="idx-view-options-hint">{g.optionsHint}</span>
+          </summary>
+          <div className="todo-controls">
+            <div className="todo-search">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <circle cx="6.8" cy="6.8" r="4.3" stroke="currentColor" strokeWidth="1.4" />
+                <path
+                  d="m10 10 3.5 3.5"
+                  stroke="currentColor"
+                  strokeWidth="1.4"
+                  strokeLinecap="round"
+                />
+              </svg>
+              <input
+                type="search"
+                value={query}
+                placeholder={d.search}
+                aria-label={d.search}
+                onChange={(event) => setQuery(event.target.value)}
+                onKeyDown={(event) => event.key === 'Escape' && setQuery('')}
               />
-            </svg>
-            <input
-              type="search"
-              value={query}
-              placeholder={d.search}
-              aria-label={d.search}
-              onChange={(event) => setQuery(event.target.value)}
-              onKeyDown={(event) => event.key === 'Escape' && setQuery('')}
-            />
-            {query && (
+              {query && (
+                <button
+                  type="button"
+                  className="ixp-icon"
+                  aria-label={d.clear}
+                  onClick={() => setQuery('')}
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <div className="todo-view-controls">
+              <select
+                value={sort}
+                aria-label={d.sort}
+                onChange={(event) => setSort(event.target.value as IndexViewSort)}
+              >
+                <option value="queue">{d.queue}</option>
+                <option value="name">{d.name}</option>
+                <option value="folder">{lang === 'vi' ? 'Thư mục' : 'Folder'}</option>
+                <option value="type">{lang === 'vi' ? 'Loại tệp' : 'File type'}</option>
+                <option value="progress">{lang === 'vi' ? 'Tiến độ' : 'Progress'}</option>
+                <option value="status">{lang === 'vi' ? 'Trạng thái' : 'Status'}</option>
+                <option value="connection">
+                  {lang === 'vi' ? 'Kết nối ổ' : 'Source connection'}
+                </option>
+              </select>
               <button
                 type="button"
-                className="ixp-icon"
-                aria-label={d.clear}
-                onClick={() => setQuery('')}
+                className="idx-btn todo-sort-direction"
+                aria-label={lang === 'vi' ? 'Đảo chiều sắp xếp' : 'Reverse sort direction'}
+                aria-pressed={descending}
+                title={
+                  lang === 'vi'
+                    ? descending
+                      ? 'Giảm dần'
+                      : 'Tăng dần'
+                    : descending
+                      ? 'Descending'
+                      : 'Ascending'
+                }
+                onClick={() => setDescending((value) => !value)}
               >
-                ×
+                {descending ? '↓' : '↑'}
               </button>
-            )}
+              <select
+                value={grouping}
+                aria-label={lang === 'vi' ? 'Gom nhóm tệp' : 'Group files'}
+                onChange={(event) => setGrouping(event.target.value as IndexViewGroup)}
+              >
+                <option value="reason">
+                  {lang === 'vi' ? 'Nhóm theo vấn đề' : 'Group by issue'}
+                </option>
+                <option value="folder">
+                  {lang === 'vi' ? 'Nhóm theo thư mục' : 'Group by folder'}
+                </option>
+                <option value="type">
+                  {lang === 'vi' ? 'Nhóm theo loại tệp' : 'Group by file type'}
+                </option>
+                <option value="none">{lang === 'vi' ? 'Không gom nhóm' : 'No grouping'}</option>
+              </select>
+            </div>
           </div>
-          <div className="todo-view-controls">
-            <select
-              value={sort}
-              aria-label={d.sort}
-              onChange={(event) => setSort(event.target.value as IndexViewSort)}
-            >
-              <option value="queue">{d.queue}</option>
-              <option value="name">{d.name}</option>
-              <option value="folder">{lang === 'vi' ? 'Thư mục' : 'Folder'}</option>
-              <option value="type">{lang === 'vi' ? 'Loại tệp' : 'File type'}</option>
-              <option value="progress">{lang === 'vi' ? 'Tiến độ' : 'Progress'}</option>
-              <option value="status">{lang === 'vi' ? 'Trạng thái' : 'Status'}</option>
-              <option value="connection">
-                {lang === 'vi' ? 'Kết nối ổ' : 'Source connection'}
-              </option>
-            </select>
-            <button
-              type="button"
-              className="idx-btn todo-sort-direction"
-              aria-label={lang === 'vi' ? 'Đảo chiều sắp xếp' : 'Reverse sort direction'}
-              aria-pressed={descending}
-              title={
-                lang === 'vi'
-                  ? descending
-                    ? 'Giảm dần'
-                    : 'Tăng dần'
-                  : descending
-                    ? 'Descending'
-                    : 'Ascending'
-              }
-              onClick={() => setDescending((value) => !value)}
-            >
-              {descending ? '↓' : '↑'}
-            </button>
-            <select
-              value={grouping}
-              aria-label={lang === 'vi' ? 'Gom nhóm tệp' : 'Group files'}
-              onChange={(event) => setGrouping(event.target.value as IndexViewGroup)}
-            >
-              <option value="reason">
-                {lang === 'vi' ? 'Nhóm theo vấn đề' : 'Group by issue'}
-              </option>
-              <option value="folder">
-                {lang === 'vi' ? 'Nhóm theo thư mục' : 'Group by folder'}
-              </option>
-              <option value="type">
-                {lang === 'vi' ? 'Nhóm theo loại tệp' : 'Group by file type'}
-              </option>
-              <option value="none">{lang === 'vi' ? 'Không gom nhóm' : 'No grouping'}</option>
-            </select>
-          </div>
-        </div>
-        {summary && !loadFailed && counts[bucket] === 0 && (
+        </details>
+
+        {summary && !loadFailed && total === 0 && (
           <section className="todo-empty">
             <span className="todo-empty-mark" aria-hidden="true">
               ✓
             </span>
-            <strong>{counts.all === 0 && todo.healthy ? d.healthyTitle : d.filters[bucket]}</strong>
-            <p>{counts.all === 0 && todo.healthy ? d.healthyBody : d.empty[bucket]}</p>
+            <strong>{d.healthyTitle}</strong>
+            <p>{d.healthyBody}</p>
           </section>
         )}
-        {summary && (
-          <IndexProblems
-            api={api}
-            root="*"
-            focus={props.focus}
-            onChanged={onChanged}
-            query={query}
-            hideEmpty
-            summary={summary}
-            bucket={bucket}
-            sort={sort}
-            grouping={grouping}
-            descending={descending}
-          />
+
+        {summary && total > 0 && flat && (
+          <>
+            <IndexProblems
+              api={api}
+              root="*"
+              focus={props.focus}
+              onChanged={onChanged}
+              query={query}
+              hideEmpty
+              summary={summary}
+              bucket="all"
+              sort={sort}
+              grouping={grouping}
+              descending={descending}
+            />
+            <p className="todo-selection-hint">{d.selectionHint}</p>
+          </>
         )}
-        {summary && counts[bucket] > 0 && <p className="todo-selection-hint">{d.selectionHint}</p>}
+
+        {summary && total > 0 && !flat && (
+          <div className="idx-issues">
+            {sections.needs.length > 0 && (
+              <section aria-label={g.needs}>
+                <h3 className="idx-issues-title">{g.needs}</h3>
+                <ul className="idx-issue-list">
+                  {sections.needs.map((row) =>
+                    rowView(
+                      row,
+                      g.cat[row.id as keyof typeof g.cat].title,
+                      g.cat[row.id as keyof typeof g.cat].hint,
+                    ),
+                  )}
+                </ul>
+              </section>
+            )}
+            {sections.waiting && (
+              <section aria-label={g.queue}>
+                <h3 className="idx-issues-title">{g.queue}</h3>
+                <ul className="idx-issue-list">
+                  {rowView(sections.waiting, g.waitingTitle, g.waitingHint, true)}
+                </ul>
+              </section>
+            )}
+            {sections.auto && (
+              <section aria-label={g.auto}>
+                <h3 className="idx-issues-title">{g.auto}</h3>
+                <ul className="idx-issue-list">
+                  {rowView(sections.auto, g.autoTitle, g.autoHint, true)}
+                </ul>
+              </section>
+            )}
+          </div>
+        )}
       </div>
     </div>
   )

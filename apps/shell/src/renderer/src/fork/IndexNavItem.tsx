@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import { fill } from '../indexing-activity-copy'
 import { TEXT, EN } from './index-dashboard-i18n'
-import { compactCount, loadIndexSummary, type IndexSummary } from './index-summary'
+import { capBadge, loadIndexSummary, navIndicator, type IndexSummary } from './index-summary'
 
 // zh keeps its own short label; the other languages use the dashboard dictionary (en / vi).
 const LABEL: Record<string, string> = { zh: '索引', 'zh-TW': '索引' }
@@ -44,15 +44,22 @@ export function IndexNavItem({
   }, [api])
 
   const d = TEXT[lang] ?? EN
-  const count = summary ? compactCount(summary) : null
-  const running = !!summary && summary.enabled && summary.active
-  const countTitle = count
-    ? fill(count.kind === 'waiting' ? d.summary.waiting : d.summary.problems, {
-        n: count.n.toLocaleString(),
-      })
-    : undefined
+  const indicator = summary ? navIndicator(summary) : null
+  // The queue is background work: it only shows in the tooltip, never as a number.
+  const parts: string[] = []
+  if (indicator?.kind === 'problems')
+    parts.push(fill(d.summary.problems, { n: indicator.n.toLocaleString() }))
+  if (summary && summary.enabled && summary.waiting > 0)
+    parts.push(fill(d.summary.navWorking, { n: summary.waiting.toLocaleString() }))
+  const hint = parts.join(' · ') || undefined
+  const label = LABEL[lang] ?? d.summary.navLabel
   return (
-    <button className={`nav-item${active ? ' active' : ''}`} onClick={onOpen}>
+    <button
+      className={`nav-item${active ? ' active' : ''}`}
+      onClick={onOpen}
+      title={hint}
+      aria-label={hint ? `${label}: ${hint}` : label}
+    >
       <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
         <ellipse cx="8" cy="4" rx="5.2" ry="2.1" stroke="currentColor" strokeWidth="1.3" />
         <path
@@ -61,15 +68,25 @@ export function IndexNavItem({
           strokeWidth="1.3"
         />
       </svg>
-      <span className="nav-label">{LABEL[lang] ?? d.summary.navLabel}</span>
-      {count && (
+      <span className="nav-label">{label}</span>
+      {indicator?.kind === 'problems' && (
+        <span className="nav-count" style={{ color: 'var(--text)', fontWeight: 600 }}>
+          {capBadge(indicator.n)}
+        </span>
+      )}
+      {indicator?.kind === 'working' && (
         <span
           className="nav-count"
-          title={countTitle}
-          style={count.kind === 'waiting' && running ? { color: 'var(--accent)' } : undefined}
-        >
-          {count.n > 999 ? '999+' : count.n}
-        </span>
+          aria-hidden="true"
+          style={{
+            width: 6,
+            height: 6,
+            minWidth: 6,
+            borderRadius: '50%',
+            background: 'var(--text-tertiary)',
+            marginRight: 8,
+          }}
+        />
       )}
     </button>
   )

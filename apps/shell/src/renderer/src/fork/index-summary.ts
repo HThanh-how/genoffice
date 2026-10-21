@@ -85,9 +85,22 @@ export async function loadIndexSummary(api: HomeApi): Promise<IndexSummary | nul
   })
 }
 
-/** The single number a compact surface shows: the queue first, otherwise the real problems. */
-export function compactCount(s: IndexSummary): { kind: 'waiting' | 'problems'; n: number } | null {
-  if (s.waiting > 0) return { kind: 'waiting', n: s.waiting }
+/** Largest number a badge prints; beyond it the badge says "99+". */
+export const BADGE_CAP = 99
+
+export function capBadge(n: number): string {
+  return n > BADGE_CAP ? `${BADGE_CAP}+` : String(n)
+}
+
+/**
+ * What the sidebar entry shows next to its name. A number is reserved for real problems the person
+ * can act on; a long queue is background work, so it only gets a quiet "working" mark and never a
+ * count. Nothing at all when the index is calm.
+ */
+export type NavIndicator = { kind: 'problems'; n: number } | { kind: 'working' } | null
+
+export function navIndicator(s: IndexSummary): NavIndicator {
   if (s.problems > 0) return { kind: 'problems', n: s.problems }
+  if (s.enabled && s.active) return { kind: 'working' }
   return null
 }

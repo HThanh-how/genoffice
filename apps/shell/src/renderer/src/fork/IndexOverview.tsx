@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from 'react'
 import type { DocumentMemoryStatus, HomeApi, HomeIndexingActivity } from '../../../shared/home-api'
 import type { IndexingNow } from '../../../shared/fork/document-index-api'
 import type { IndexingModeState } from '../../../shared/fork/indexing-mode'
@@ -7,8 +8,10 @@ import { useI18n } from '../locale'
 import { activityCopy, fill } from '../indexing-activity-copy'
 import { TEXT, EN } from './index-dashboard-i18n'
 import { deriveIndexSummary } from './index-summary'
+import { deriveIndexStatus, statusSentence } from './index-status'
+import { IndexProgressTracker, type IndexProgressReading } from './index-progress-model'
+import { buildIssueSections } from './index-issue-groups'
 import { RecentFiles } from './RecentFiles'
-import { ReleasedChip } from './ReleasedChip'
 import type { IndexTabId } from './IndexNav'
 
 export interface IndexOverviewProps {
@@ -18,8 +21,7 @@ export interface IndexOverviewProps {
   mode: IndexingModeState | null
   now: IndexingNow | null
   attention: IndexIssueSummary | null
-  actionBusy: boolean
-  onTogglePause: () => void
+  /** the header owns the one Pause/Resume button; the status card only reports */
   onNavigateTab: (tab: IndexTabId, reason?: IndexIssueReason) => void
   onOpened?: () => void
 }
@@ -31,8 +33,6 @@ export function IndexOverview({
   mode,
   now,
   attention,
-  actionBusy,
-  onTogglePause,
   onNavigateTab,
   onOpened,
 }: IndexOverviewProps) {
@@ -40,154 +40,88 @@ export function IndexOverview({
   const d = TEXT[lang] ?? EN
   const o = d.overview
   const copy = activityCopy(lang)
+  const num = (n: number) => n.toLocaleString(dateLocale)
 
-  const progress = activity?.folderProgress ?? null
   const folder = activity?.folder ?? null
-  const paused = !!mode?.effective?.paused || memory?.enabled === false
-  const pauseReason = mode?.effective?.pauseReason
+  const progress = activity?.folderProgress ?? null
+  const switchedOff = memory?.enabled === false
+  const held = !!mode?.effective?.paused
   const modelState = activity?.memory.modelState ?? memory?.modelState ?? 'not-loaded'
   const summary = deriveIndexSummary({ activity, memoryPending: memory?.pending, attention })
-  const pending = summary.waiting
-  const readyFiles = progress?.readyFiles ?? memory?.documents ?? 0
 
-  // 1. Trạng thái Blocked (Neutral): khi pin yếu / RAM thấp / chế độ tiết kiệm năng lượng
-  const isBlocked =
-    modelState === 'blocked' ||
-    pauseReason === 'low-battery' ||
-    pauseReason === 'battery-saver' ||
-    pauseReason === 'battery' ||
-    pauseReason === 'low-memory' ||
-    pauseReason === 'suspended'
+  // Time left comes from the rolling tracker; it stays silent until the evidence is solid.
+  const tracker = useRef(new IndexProgressTracker())
+  const [reading, setReading] = useState<IndexProgressReading | null>(null)
+  useEffect(() => {
+    setReading(tracker.current.record(Date.now(), activity, held || switchedOff))
+  }, [activity, held, switchedOff])
 
-  // 2. Trạng thái bận (Indexing)
-  const isIndexing =
-    !isBlocked &&
-    (folder?.running || pending > 0 || (now?.extracting && now.extracting.length > 0))
+  const status = deriveIndexStatus({
+    summary,
+    switchedOff,
+    held,
+    ...(mode?.effective?.pauseReason ? { pauseReason: mode.effective.pauseReason } : {}),
+    modelBlocked: modelState === 'blocked',
+    reading: !!(now?.extracting && now.extracting.length > 0),
+    ready: progress?.readyFiles ?? memory?.documents ?? 0,
+    eta: reading?.eta ?? null,
+  })
+  const sentence = statusSentence(
+    status,
+    {
+      working: d.status.working,
+      left: d.status.left,
+      paused: d.status.paused,
+      ready: d.status.ready,
+      why: d.why,
+      resumeWhen: d.status.resumeWhen,
+    },
+    copy,
+    num,
+  )
 
-  // File currently being processed
-  const activeExtractingPath = now?.extracting?.[0]?.path
-  const activeEmbeddingPath = now?.activeEmbeddingPath
-  const currentFilePath = activeExtractingPath || activeEmbeddingPath || (folder?.running ? folder.root : '')
-  const currentFileName = currentFilePath ? currentFilePath.split(/[\\/]/).pop() : ''
+  const currentPath =
+    now?.extracting?.[0]?.path || now?.activeEmbeddingPath || (folder?.running ? folder.root : '')
+  const currentName = currentPath ? currentPath.split(/[\\/]/).pop() : ''
 
-  const percent = summary.percent
-
-  // Same problem groups and total as the tab badge, sidebar entry and Home chip
-  const attentionGroups = summary.problemGroups
+  // The same groups as the Issues tab, so the numbers always agree.
+  const sections = buildIssueSections(summary.problemGroups)
   const totalProblems = summary.problems
+  const tone = status.kind === 'attention' ? 'is-attention' : `is-${status.kind}`
 
   return (
     <div className="idx-overview-container">
-      {/* Blocked State (Neutral Color Banner) */}
-      {isBlocked && (
-        <div className="idx-status-banner is-neutral" role="note">
-          <div className="idx-status-banner-icon" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="12" cy="12" r="10" />
-              <line x1="12" y1="16" x2="12" y2="12" />
-              <line x1="12" y1="8" x2="12.01" y2="8" />
-            </svg>
-          </div>
-          <div className="idx-status-banner-content">
-            <strong>{o.saverTitle}</strong>
-            <p>
-              {o.saverBody}
-            </p>
-          </div>
-          <button
-            type="button"
-            className="idx-btn idx-btn-sm"
-            disabled={actionBusy}
-            onClick={onTogglePause}
+      <div className={`idx-status ${tone}`} role="status">
+        <div className="idx-status-line">
+          <span className="idx-status-dot" aria-hidden="true" />
+          <p className="idx-status-text">{sentence}</p>
+        </div>
+        {status.kind === 'working' && status.percent !== null && (
+          <div
+            className="idx-progress-bar"
+            role="progressbar"
+            aria-label={d.status.working}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={status.percent}
           >
-            {paused ? d.resume : d.pause}
-          </button>
-        </div>
-      )}
-
-      {/* Indexing State (Active with Clean Progress Bar) */}
-      {isIndexing && (
-        <div className="idx-status-card is-indexing" role="status">
-          <div className="idx-status-card-header">
-            <div className="idx-status-card-title">
-              <span className="idx-status-indicator is-busy" aria-hidden="true" />
-              <h3>{o.optimizing}</h3>
-            </div>
-            <button
-              type="button"
-              className="idx-btn idx-btn-sm"
-              disabled={actionBusy}
-              onClick={onTogglePause}
-            >
-              {paused ? d.resume : d.pause}
-            </button>
+            <div
+              className="idx-progress-fill"
+              style={{ width: `${Math.max(3, Math.min(100, status.percent))}%` }}
+            />
           </div>
+        )}
+        {status.kind === 'working' && currentName && (
+          <p className="idx-status-sub" title={currentPath}>
+            {o.reading} <code>{currentName}</code>
+          </p>
+        )}
+        {status.kind === 'paused' && status.why === 'saver' && (
+          <p className="idx-status-sub">{d.status.saverNote}</p>
+        )}
+      </div>
 
-          <div className="idx-status-card-body">
-            {percent !== null && (
-              <div className="idx-progress-wrap">
-                <div className="idx-progress-bar">
-                  <div
-                    className="idx-progress-fill"
-                    style={{ width: `${Math.max(3, Math.min(100, percent))}%` }}
-                  />
-                </div>
-                <span className="idx-progress-percent">{percent}%</span>
-              </div>
-            )}
-
-            <div className="idx-status-details">
-              <span className="idx-status-remaining">
-                <strong>{pending.toLocaleString(dateLocale)}</strong>{' '}
-                {o.remaining}
-              </span>
-
-              <ReleasedChip count={progress?.releasedFiles} />
-
-              {currentFileName && (
-                <span className="idx-status-current" title={currentFilePath}>
-                  {o.reading} <code>{currentFileName}</code>
-                </span>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Idle State (Clean, Simple Readiness Indicator) */}
-      {!isBlocked && !isIndexing && (
-        <div className="idx-status-card is-idle">
-          <div className="idx-status-card-header">
-            <div className="idx-status-ready-badge">
-              <span className="idx-ready-check" aria-hidden="true">
-                ✓
-              </span>
-              <h3>
-                {fill(o.ready, { n: readyFiles.toLocaleString(dateLocale) })}
-              </h3>
-              <ReleasedChip count={progress?.releasedFiles} />
-              {summary.empty > 0 && (
-                <span className="idx-muted">
-                  {fill(d.summary.empty, { n: summary.empty.toLocaleString(dateLocale) })}
-                </span>
-              )}
-            </div>
-            {paused && (
-              <button
-                type="button"
-                className="idx-btn idx-btn-sm"
-                disabled={actionBusy}
-                onClick={onTogglePause}
-              >
-                {d.resume}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Attention / Issues needing action card */}
-      {attentionGroups.length > 0 && (
+      {sections.needs.length > 0 && (
         <section
           className="idx-card idx-attn-simplified"
           aria-label={fill(d.summary.problems, { n: totalProblems })}
@@ -198,28 +132,23 @@ export function IndexOverview({
                 !
               </span>
               <h4>
-                {o.attention} (
-                {totalProblems.toLocaleString(dateLocale)})
+                {o.attention} ({num(totalProblems)})
               </h4>
             </div>
-            <button
-              type="button"
-              className="idx-link"
-              onClick={() => onNavigateTab('issues')}
-            >
+            <button type="button" className="idx-link" onClick={() => onNavigateTab('issues')}>
               {o.viewAll} →
             </button>
           </header>
           <ul className="idx-attn-list">
-            {attentionGroups.slice(0, 3).map((g) => (
-              <li key={g.reason}>
+            {sections.needs.slice(0, 3).map((row) => (
+              <li key={row.id}>
                 <button
                   type="button"
                   className="idx-attn-row"
-                  onClick={() => onNavigateTab('issues', g.reason)}
+                  onClick={() => onNavigateTab('issues', row.reasons[0])}
                 >
-                  <span className="idx-attn-text">{copy.reasons[g.reason]?.title ?? g.reason}</span>
-                  <span className="idx-attn-badge">{g.count.toLocaleString(dateLocale)}</span>
+                  <span className="idx-attn-text">{d.issues.cat[row.id as keyof typeof d.issues.cat].title}</span>
+                  <span className="idx-attn-badge">{num(row.count)}</span>
                 </button>
               </li>
             ))}
@@ -227,7 +156,6 @@ export function IndexOverview({
         </section>
       )}
 
-      {/* Recent Files Section */}
       <RecentFiles api={api} onOpened={onOpened} />
     </div>
   )

@@ -144,7 +144,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
         </div>
       )}
 
-      <SearchHero ref={searchInputRef} value={searchQuery} onChange={setSearchQuery} onClear={() => setSearchQuery('')} />
+      <SearchHero ref={searchInputRef} autoFocus={false} value={searchQuery} onChange={setSearchQuery} onClear={() => setSearchQuery('')} />
 
       {searchQuery.trim().length > 0 ? (
         <SearchResults api={api} query={searchQuery} onOpened={onClose} />
@@ -155,13 +155,12 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
             {tab === 'overview' && (
               <IndexOverview
                 api={api} memory={memory} activity={activity} mode={mode} now={now}
-                attention={attention} actionBusy={actionBusy}
-                onTogglePause={() => void togglePause()}
+                attention={attention}
                 onNavigateTab={(nextTab, reason) => { if (reason) setFocus(reason); setTab(nextTab) }}
                 onOpened={onClose}
               />
             )}
-            {tab === 'sources' && <div className="idx-body idx-embed"><IndexedFolders api={api} /></div>}
+            {tab === 'sources' && <div className="idx-body idx-embed"><IndexedFolders api={api} onOpenIssues={() => setTab('issues')} /></div>}
             {tab === 'issues' && (
               <div className="idx-body">
                 <TodoTab

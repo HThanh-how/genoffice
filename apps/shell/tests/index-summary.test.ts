@@ -1,9 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
-  compactCount,
+  capBadge,
   deriveIndexSummary,
   isProblemReason,
   loadIndexSummary,
+  navIndicator,
 } from '../src/renderer/src/fork/index-summary'
 import type { HomeApi, HomeIndexingActivity } from '../src/shared/home-api'
 
@@ -49,7 +50,7 @@ describe('deriveIndexSummary', () => {
     })
     expect(s.waiting).toBe(40)
     expect(s.problems).toBe(0)
-    expect(compactCount(s)).toEqual({ kind: 'waiting', n: 40 })
+    expect(navIndicator(s)).toEqual({ kind: 'working' })
   })
 
   it('counts only actionable groups: skips waiting, no-text and informational reasons', () => {
@@ -72,10 +73,23 @@ describe('deriveIndexSummary', () => {
     expect(deriveIndexSummary({ activity: activity({ errorFiles: 6, emptyFiles: 50 }) }).problems).toBe(6)
   })
 
-  it('shows problems in compact form only when the queue is empty', () => {
-    const s = deriveIndexSummary({ activity: activity({ errorFiles: 2 }) })
-    expect(compactCount(s)).toEqual({ kind: 'problems', n: 2 })
-    expect(compactCount(deriveIndexSummary({ activity: activity({}) }))).toBeNull()
+  it('sidebar badge: a number only for real problems, a quiet mark for a long queue, nothing when calm', () => {
+    const queue = deriveIndexSummary({ activity: activity({ pendingFiles: 25_000 }) })
+    expect(navIndicator(queue)).toEqual({ kind: 'working' })
+    const problems = deriveIndexSummary({
+      activity: activity({ pendingFiles: 25_000, errorFiles: 21 }),
+    })
+    expect(navIndicator(problems)).toEqual({ kind: 'problems', n: 21 })
+    expect(navIndicator(deriveIndexSummary({ activity: activity({}) }))).toBeNull()
+    const off = deriveIndexSummary({ activity: activity({ pendingFiles: 10, enabled: false }) })
+    expect(navIndicator(off)).toBeNull()
+  })
+
+  it('caps the badge number', () => {
+    expect(capBadge(7)).toBe('7')
+    expect(capBadge(99)).toBe('99')
+    expect(capBadge(100)).toBe('99+')
+    expect(capBadge(9665)).toBe('99+')
   })
 
   it('is active while scanning or queued', () => {
