@@ -1,3 +1,4 @@
+import { nextPollDelay } from './index-poll'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { HomeApi, LegacyConvertState } from '../../../shared/home-api'
 import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
@@ -215,7 +216,7 @@ export function TodoTab(props: TodoTabProps) {
     let alive = true
     let timer: ReturnType<typeof setTimeout> | undefined
     const read = async () => {
-      if (document.visibilityState === 'visible') {
+      {
         const [issues, conversion] = await Promise.allSettled([
           readIndexRequest(() => api.getDocumentIndexIssueSummary('*'), isIndexIssueSummary),
           readIndexRequest(
@@ -231,7 +232,7 @@ export function TodoTab(props: TodoTabProps) {
         } else setLoadFailed(true)
         if (conversion.status === 'fulfilled') setLegacy(conversion.value)
       }
-      if (alive) timer = setTimeout(() => void read(), 3000)
+      if (alive) timer = setTimeout(() => void read(), nextPollDelay(3000))
     }
     void read()
     return () => {

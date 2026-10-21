@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import { readIndexRequest } from './index-request'
+import { nextPollDelay } from './index-poll'
 
 interface Source {
   root: string
@@ -20,15 +21,13 @@ export function useIndexSources(api: HomeApi) {
     let alive = true
     let timer: ReturnType<typeof setTimeout>
     const refresh = async () => {
-      if (document.visibilityState === 'visible') {
-        try {
-          const result = await readIndexRequest(() => api.listIndexedFolders(), isSources)
-          if (alive) setSources(result)
-        } catch {
-          /* Keep the last confirmed source state; do not guess from an IPC timeout. */
-        }
+      try {
+        const result = await readIndexRequest(() => api.listIndexedFolders(), isSources)
+        if (alive) setSources(result)
+      } catch {
+        /* Keep the last confirmed source state; do not guess from an IPC timeout. */
       }
-      if (alive) timer = setTimeout(() => void refresh(), 10_000)
+      if (alive) timer = setTimeout(() => void refresh(), nextPollDelay(10_000))
     }
     void refresh()
     return () => {

@@ -30,7 +30,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const moreRef = useRef<HTMLDetailsElement>(null)
   const closeMore = () => moreRef.current?.removeAttribute('open')
 
-  const { snap, attention, statusFailed, kick } = useIndexSnapshot(api)
+  const { snap, attention, statusFailed, loaded, kick } = useIndexSnapshot(api)
   const { memory, activity, mode, now, storageBudget } = snap
   const progress = activity?.folderProgress ?? null
   const folder = activity?.folder ?? null
@@ -156,6 +156,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
               <IndexOverview
                 api={api} memory={memory} activity={activity} mode={mode} now={now}
                 attention={attention}
+                loading={!loaded}
                 onNavigateTab={(nextTab, reason) => { if (reason) setFocus(reason); setTab(nextTab) }}
                 onOpened={onClose}
               />

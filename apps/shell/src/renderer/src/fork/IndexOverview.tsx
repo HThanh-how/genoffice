@@ -24,6 +24,8 @@ export interface IndexOverviewProps {
   /** the header owns the one Pause/Resume button; the status card only reports */
   onNavigateTab: (tab: IndexTabId, reason?: IndexIssueReason) => void
   onOpened?: () => void
+  /** no reading has answered yet: show placeholders, never a made-up "0 files" */
+  loading?: boolean
 }
 
 export function IndexOverview({
@@ -35,6 +37,7 @@ export function IndexOverview({
   attention,
   onNavigateTab,
   onOpened,
+  loading = false,
 }: IndexOverviewProps) {
   const { lang, dateLocale } = useI18n()
   const d = TEXT[lang] ?? EN
@@ -89,8 +92,16 @@ export function IndexOverview({
   const totalProblems = summary.problems
   const tone = status.kind === 'attention' ? 'is-attention' : `is-${status.kind}`
 
+  const unknown = loading || (!activity && !memory)
+
   return (
     <div className="idx-overview-container">
+      {unknown ? (
+        <div className="idx-status is-loading" role="status" aria-busy="true" aria-label={o.loading}>
+          <span className="idx-skel idx-skel-line" />
+          <span className="idx-skel idx-skel-bar" />
+        </div>
+      ) : (
       <div className={`idx-status ${tone}`} role="status">
         <div className="idx-status-line">
           <span className="idx-status-dot" aria-hidden="true" />
@@ -120,6 +131,7 @@ export function IndexOverview({
           <p className="idx-status-sub">{d.status.saverNote}</p>
         )}
       </div>
+      )}
 
       {sections.needs.length > 0 && (
         <section

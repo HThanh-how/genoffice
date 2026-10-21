@@ -8,6 +8,7 @@ import type {
 } from '../../../shared/fork/document-index-api'
 import type { HomeApi } from '../../../shared/home-api'
 import { useI18n } from '../locale'
+import { nextPollDelay } from './index-poll'
 import { readIndexRequest } from './index-request'
 import { folderChips, folderDone, type FolderChip } from './index-folder-status'
 
@@ -409,7 +410,8 @@ export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) 
   ]
 
   const refresh = useCallback(async () => {
-    if (loading.current || document.visibilityState !== 'visible' || !effectiveApi) return
+    // No visibility gate: a window reported hidden must still get its first read (index-poll.ts).
+    if (loading.current || !effectiveApi) return
     loading.current = true
     try {
       await Promise.allSettled([
@@ -444,11 +446,15 @@ export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) 
 
   useEffect(() => {
     mounted.current = true
-    void refresh()
-    const timer = setInterval(() => void refresh(), 5_000)
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tick = async () => {
+      await refresh()
+      if (mounted.current) timer = setTimeout(() => void tick(), nextPollDelay(5_000))
+    }
+    void tick()
     return () => {
       mounted.current = false
-      clearInterval(timer)
+      clearTimeout(timer)
     }
   }, [refresh])
 

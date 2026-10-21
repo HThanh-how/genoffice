@@ -63,6 +63,7 @@ export const EN = {
     reading: 'Reading:',
     attention: 'Files need attention',
     viewAll: 'View all',
+    loading: 'Reading the index status',
   },
   issues: {
     needs: 'Needs you',
@@ -186,6 +187,7 @@ export const VI: typeof EN = {
     reading: 'Đang đọc:',
     attention: 'Có tệp cần bạn xử lý',
     viewAll: 'Xem tất cả',
+    loading: 'Đang đọc trạng thái chỉ mục',
   },
   issues: {
     needs: 'Cần bạn xử lý',

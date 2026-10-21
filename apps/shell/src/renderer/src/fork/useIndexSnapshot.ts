@@ -5,6 +5,7 @@ import type { IndexingModeState } from '../../../shared/fork/indexing-mode'
 import { INDEXING_MODES } from '../../../shared/fork/indexing-mode'
 import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
 import { isIndexIssueSummary, isIndexingNow, readIndexRequest } from './index-request'
+import { nextPollDelay } from './index-poll'
 
 const ACTIVE_POLL_MS = 2000
 const IDLE_POLL_MS = 5000
@@ -27,6 +28,8 @@ export function useIndexSnapshot(api: HomeApi) {
   })
   const [attention, setAttention] = useState<IndexIssueSummary | null>(null)
   const [statusFailed, setStatusFailed] = useState(false)
+  /** true once the first read has answered (with data or with an error) */
+  const [loaded, setLoaded] = useState(false)
   const pollKick = useRef<() => void>(() => undefined)
 
   useEffect(() => {
@@ -42,7 +45,8 @@ export function useIndexSnapshot(api: HomeApi) {
         refreshQueued = true
         return
       }
-      if (document.visibilityState !== 'visible') return
+      // Never skip a read because the window is reported hidden (see index-poll.ts): the first
+      // read must always land, later ones only slow down.
       loading = true
 
       try {
@@ -104,9 +108,11 @@ export function useIndexSnapshot(api: HomeApi) {
           pollIntervalMs = isPaused || pendingCount === 0 ? IDLE_POLL_MS : ACTIVE_POLL_MS
         }
       } finally {
+        if (alive) setLoaded(true)
         loading = false
-        if (alive && document.visibilityState === 'visible') {
-          timer = setTimeout(() => void load(), refreshQueued ? 0 : pollIntervalMs)
+        if (alive) {
+          if (timer) clearTimeout(timer)
+          timer = setTimeout(() => void load(), refreshQueued ? 0 : nextPollDelay(pollIntervalMs))
         }
         refreshQueued = false
       }
@@ -133,5 +139,5 @@ export function useIndexSnapshot(api: HomeApi) {
     }
   }, [api])
 
-  return { snap, attention, statusFailed, kick: () => pollKick.current() }
+  return { snap, attention, statusFailed, loaded, kick: () => pollKick.current() }
 }

@@ -2096,8 +2096,30 @@
   color: var(--text);
   font-size: 11.5px;
 }
+/* Placeholder blocks: same footprint as the content they stand in for */
+.idx-skel {
+  display: block;
+  border-radius: 6px;
+  background: var(--hover);
+  animation: idx-skel-pulse 1.4s ease-in-out infinite;
+}
+.idx-skel-line {
+  width: 55%;
+  height: 19px;
+}
+.idx-skel-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+}
+@keyframes idx-skel-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
 @media (prefers-reduced-motion: reduce) {
-  .idx-status.is-working .idx-status-dot {
+  .idx-status.is-working .idx-status-dot,
+  .idx-skel {
     animation: none;
   }
 }

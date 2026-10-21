@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import { fill } from '../indexing-activity-copy'
 import { TEXT, EN } from './index-dashboard-i18n'
+import { nextPollDelay } from './index-poll'
 import { capBadge, loadIndexSummary, navIndicator, type IndexSummary } from './index-summary'
 
 // zh keeps its own short label; the other languages use the dashboard dictionary (en / vi).
@@ -26,15 +27,13 @@ export function IndexNavItem({
     let alive = true
     let timer: ReturnType<typeof setTimeout> | null = null
     const tick = async () => {
-      if (document.visibilityState === 'visible') {
-        try {
-          const next = await loadIndexSummary(api)
-          if (alive && next) setSummary(next)
-        } catch {
-          /* keep the last numbers */
-        }
+      try {
+        const next = await loadIndexSummary(api)
+        if (alive && next) setSummary(next)
+      } catch {
+        /* keep the last numbers */
       }
-      if (alive) timer = setTimeout(() => void tick(), 6000)
+      if (alive) timer = setTimeout(() => void tick(), nextPollDelay(6000))
     }
     void tick()
     return () => {
