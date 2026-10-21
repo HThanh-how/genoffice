@@ -4,6 +4,7 @@ import type { AiSettings } from '@genoffice/ai-provider/browser'
 import {
   aiModelPickerGroups,
   aiModelPickerSelection,
+  resolveAgyModelAlias,
   withAiModelSelection,
   type AiModelPickerSelection,
 } from './ai-model-picker-options'
@@ -33,9 +34,12 @@ export interface AiModelPickerBridge {
 export function AiModelPicker({
   bridge,
   lang,
+  plain = false,
 }: {
   readonly bridge: AiModelPickerBridge
   readonly lang: Lang
+  /** text-only chip (no pill, no logo) and no group heading when there is a single group */
+  readonly plain?: boolean
 }): React.JSX.Element | null {
   const strings = AI_MODEL_PICKER_STRINGS[lang] ?? AI_MODEL_PICKER_STRINGS.en
   const [settings, setSettings] = useState<AiSettings | null>(null)
@@ -98,7 +102,18 @@ export function AiModelPicker({
     () => (settings ? aiModelPickerGroups(settings, loggedIn, agyState?.models) : []),
     [settings, loggedIn, agyState?.models],
   )
-  const current = settings ? aiModelPickerSelection(settings) : null
+  const rawCurrent = settings ? aiModelPickerSelection(settings) : null
+  // a model saved under an old unversioned alias reads as its versioned twin
+  const current =
+    rawCurrent && rawCurrent.provider === 'agy' && agyState?.models
+      ? {
+          ...rawCurrent,
+          model: resolveAgyModelAlias(
+            rawCurrent.model,
+            agyState.models.map((m) => m.id),
+          ),
+        }
+      : rawCurrent
   const sameGroup = (g: { id: string; endpoint?: string | undefined }) =>
     g.id === current?.provider && (g.id !== 'custom' || g.endpoint === current?.endpoint)
   const currentUsable = groups.some(sameGroup)
@@ -150,7 +165,7 @@ export function AiModelPicker({
 
   return (
     <div
-      className="ai-model-picker"
+      className={`ai-model-picker${plain ? ' ai-model-picker--plain' : ''}`}
       onKeyDown={(e) => {
         if (open && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) {
           const options = Array.from(
@@ -185,18 +200,26 @@ export function AiModelPicker({
         data-tip={`${strings.title}: ${chipText}`}
         aria-label={`${strings.title}: ${chipText}`}
       >
-        {currentUsable && current && <ProviderLogo id={current.provider} />}
+        {!plain && currentUsable && current && <ProviderLogo id={current.provider} />}
         <span className="ai-model-chip-text">{chipText}</span>
-        <svg className="ai-model-chip-caret" width="10" height="10" viewBox="0 0 10 10" aria-hidden>
-          <path
-            d="M2 6.5 5 3.5l3 3"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.4"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
+        {!plain && (
+          <svg
+            className="ai-model-chip-caret"
+            width="10"
+            height="10"
+            viewBox="0 0 10 10"
+            aria-hidden
+          >
+            <path
+              d="M2 6.5 5 3.5l3 3"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.4"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        )}
       </button>
       {open && (
         <div
@@ -209,10 +232,12 @@ export function AiModelPicker({
           <div className="ai-model-pop-list">
             {groups.map((g) => (
               <div key={g.endpoint ? `${g.id}:${g.endpoint}` : g.id} className="ai-model-group">
-                <div className="ai-model-group-head">
-                  <ProviderLogo id={g.id} />
-                  <span>{g.label}</span>
-                </div>
+                {!(plain && groups.length === 1) && (
+                  <div className="ai-model-group-head">
+                    <ProviderLogo id={g.id} />
+                    <span>{g.label}</span>
+                  </div>
+                )}
                 {(g.models.length > 0 ? g.models : ['']).map((m) => {
                   const selected = sameGroup(g) && current?.model === m
                   const itemLabel =

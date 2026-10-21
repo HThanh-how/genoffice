@@ -3,6 +3,8 @@ import { AI_PROVIDERS, defaultAiSettings } from '@genoffice/ai-provider'
 import {
   aiModelPickerGroups,
   aiModelPickerSelection,
+  dedupeAgyModelItems,
+  resolveAgyModelAlias,
   withAiModelSelection,
 } from '../src/ai-model-picker-options'
 
@@ -121,5 +123,42 @@ describe('custom endpoints', () => {
       baseUrl: 'https://gw.example.com/v1',
     })
     expect(next.customEndpoints!.find((e) => e.id === 'a')!.model).toBe('llama3')
+  })
+})
+
+describe('Antigravity alias duplicates', () => {
+  const item = (id: string, label: string) => ({ id, label })
+  const live = [
+    item('gemini-flash-medium', 'Gemini Flash Medium'),
+    item('gemini-flash-high', 'Gemini Flash High'),
+    item('gemini-3.8-flash-high', 'Gemini 3.8 Flash High'),
+    item('gemini-3.8-flash-medium', 'Gemini 3.8 Flash Medium'),
+    item('gemini-3.8-flash-low', 'Gemini 3.8 Flash Low'),
+  ]
+
+  it('folds unversioned aliases into the versioned twin', () => {
+    expect(dedupeAgyModelItems(live).map((m) => m.id)).toEqual([
+      'gemini-3.8-flash-high',
+      'gemini-3.8-flash-medium',
+      'gemini-3.8-flash-low',
+    ])
+  })
+
+  it('keeps an alias that has no versioned twin', () => {
+    const only = [item('gemini-flash-low', 'Gemini Flash Low')]
+    expect(dedupeAgyModelItems(only)).toEqual(only)
+  })
+
+  it('maps a saved alias to the newest twin and leaves other ids alone', () => {
+    const ids = live.map((m) => m.id)
+    expect(resolveAgyModelAlias('gemini-flash-high', ids)).toBe('gemini-3.8-flash-high')
+    expect(resolveAgyModelAlias('claude-sonnet-5-5-high', ids)).toBe('claude-sonnet-5-5-high')
+  })
+
+  it('lists the Antigravity group without duplicates', () => {
+    const settings = defaultAiSettings()
+    settings.provider = 'agy'
+    const g = aiModelPickerGroups(settings, false, live).find((x) => x.id === 'agy')!
+    expect(g.models).toHaveLength(3)
   })
 })

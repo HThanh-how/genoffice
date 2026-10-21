@@ -32,6 +32,7 @@ export interface AgyBarActivity {
   sessionId?: string
   phase: 'start' | 'thinking' | 'tool' | 'writing' | 'done' | 'error'
   at: number
+  model?: string
   tool?: string
   target?: string
   thinkingTokens?: number
@@ -74,6 +75,7 @@ interface Run {
   id: string
   requestId?: string
   sessionId?: string
+  model?: string
   startedAt: number
   endedAt?: number
   steps: RunStep[]
@@ -90,6 +92,7 @@ export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
       id: event.runId,
       ...(event.requestId !== undefined ? { requestId: event.requestId } : {}),
       ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
+      ...(event.model !== undefined ? { model: event.model } : {}),
       startedAt: event.at,
       steps: [],
       phase: 'thinking',
@@ -101,6 +104,7 @@ export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
         id: event.runId,
         ...(event.requestId !== undefined ? { requestId: event.requestId } : {}),
         ...(event.sessionId !== undefined ? { sessionId: event.sessionId } : {}),
+        ...(event.model !== undefined ? { model: event.model } : {}),
         startedAt: event.at,
         steps: [],
         phase: event.phase,
@@ -111,9 +115,11 @@ export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
     }
     return run
   }
+  const model = event.model ?? run.model
   if (event.phase === 'thinking')
     return {
       ...run,
+      ...(model !== undefined ? { model } : {}),
       phase: 'thinking',
       tokens: run.tokens + (event.thinkingTokens ?? 0),
       steps: [
@@ -136,10 +142,11 @@ export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
     if (open >= 0 && event.stepSeconds !== undefined) {
       const steps = run.steps.slice()
       steps[open] = { ...steps[open]!, seconds: event.stepSeconds }
-      return { ...run, steps }
+      return { ...run, ...(model !== undefined ? { model } : {}), steps }
     }
     return {
       ...run,
+      ...(model !== undefined ? { model } : {}),
       phase: 'tool',
       ...(event.tool ? { tool: event.tool } : {}),
       ...(event.target ? { target: event.target } : {}),
@@ -154,12 +161,19 @@ export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
     }
   }
   if (event.phase === 'writing')
-    return run.phase === 'writing'
+    return run.phase === 'writing' && (!model || run.model === model)
       ? run
-      : { ...run, phase: 'writing', steps: [...run.steps, { kind: 'writing' }] }
-  if (event.phase === 'done') return { ...run, phase: 'done', endedAt: event.at }
+      : {
+          ...run,
+          ...(model !== undefined ? { model } : {}),
+          phase: 'writing',
+          steps: [...run.steps, { kind: 'writing' }],
+        }
+  if (event.phase === 'done')
+    return { ...run, ...(model !== undefined ? { model } : {}), phase: 'done', endedAt: event.at }
   return {
     ...run,
+    ...(model !== undefined ? { model } : {}),
     phase: 'error',
     endedAt: event.at,
     ...(event.message ? { error: event.message } : {}),
@@ -192,6 +206,7 @@ const EN = {
   needsLogin:
     'Antigravity is not signed in on this computer. Run `agy` once in a terminal and log in.',
   none: 'No reading yet',
+  unavailable: 'Usage unavailable',
   d: 'd',
   h: 'h',
   m: 'min',
@@ -263,6 +278,7 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     needsLogin:
       'Antigravity chưa đăng nhập trên máy này. Hãy chạy `agy` một lần trong terminal và đăng nhập.',
     none: 'Chưa có số liệu',
+    unavailable: 'Không đọc được mức dùng',
     d: 'ngày',
     h: 'giờ',
     m: 'phút',
@@ -329,6 +345,7 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     failed: '无法读取用量，显示上次的数据。',
     needsLogin: '此电脑上的 Antigravity 尚未登录。请在终端运行一次 `agy` 并登录。',
     none: '暂无数据',
+    unavailable: '无法读取用量',
     d: '天',
     h: '小时',
     m: '分钟',
@@ -378,6 +395,22 @@ function fill(text: string, values: Record<string, string | number>): string {
   return text.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ''))
 }
 
+/** running clock for the home chat: `45s`, `1:05`, `1:02:03` (no unit words, so no locale keys) */
+export function clockTime(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  if (total < 60) return `${total}s`
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = String(total % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${s}` : `${m}:${s}`
+}
+
+/** `812`, `1.2k`, `15.4k`: keeps the token chip short */
+export function compactTokens(n: number): string {
+  if (n < 1000) return String(Math.max(0, Math.floor(n)))
+  return `${(n / 1000).toFixed(1)}k`
+}
+
 function span(ms: number, d: Dict): string {
   const minutes = Math.max(1, Math.round(ms / 60_000))
   if (minutes >= 2880) return `${Math.round(minutes / 1440)} ${d.d}`
@@ -394,7 +427,7 @@ function thinkTitle(run: Run, d: Dict, mode: 'default' | 'home-chat' = 'default'
   if (run.phase === 'error') return fill(d.runFailed, { m: run.error ?? '' })
 
   if (mode === 'home-chat') {
-    const time = seconds >= 60 ? span(seconds * 1000, d) : `${Math.round(seconds)}s`
+    const time = clockTime(seconds * 1000)
     let label = d.thinkingHome
     if (run.phase === 'writing') {
       label = d.writingAnswer
@@ -437,8 +470,10 @@ function thinkTitle(run: Run, d: Dict, mode: 'default' | 'home-chat' = 'default'
   return `${label}… ${defaultTime}`
 }
 
+/** tone is decided on the same rounded percent the label prints, so `20% left` is never red */
 function tone(remaining: number): 'ok' | 'warn' | 'low' {
-  return remaining >= 0.5 ? 'ok' : remaining >= 0.2 ? 'warn' : 'low'
+  const percent = Math.round(remaining * 100)
+  return percent >= 50 ? 'ok' : percent >= 20 ? 'warn' : 'low'
 }
 
 function bridge(): AgyBarApi | undefined {
@@ -593,7 +628,9 @@ export function AgyChatBar({
       setInstall(next)
       if (next.phase === 'done') setTimeout(() => setInstall({ phase: 'idle' }), 3000)
     })
-    const offRun = source.onAgyChatActivity?.((event) => {
+    // the usage chip never shows a run: only the thinking strip listens for activity
+    const subscribeRun = part === 'bar' ? undefined : source.onAgyChatActivity?.bind(source)
+    const offRun = subscribeRun?.((event) => {
       if (modeRef.current === 'home-chat' ? !busyRef.current : busyRef.current === false) return
       if (stateRef.current && !stateRef.current.active) return
       if (sessionIdRef.current && event.sessionId && event.sessionId !== sessionIdRef.current) {
@@ -693,7 +730,7 @@ export function AgyChatBar({
       reqIds.clear()
       setRun(null)
     }
-  }, [source, loadState, apply])
+  }, [source, loadState, apply, part])
 
   useEffect(() => {
     if (busy === false) {
@@ -801,10 +838,10 @@ export function AgyChatBar({
 
   if (!source || !state?.active) {
     if (part !== 'bar' && busy) {
-      const timeStr = fallbackElapsed > 0 ? ` · ${fallbackElapsed}s` : ''
+      const timeStr = fallbackElapsed > 0 ? ` · ${clockTime(fallbackElapsed * 1000)}` : ''
       return (
         <section
-          className={`agy-think is-thinking${mode === 'home-chat' ? ' is-home-chat' : ''}`}
+          className={`agy-think is-thinking is-static${mode === 'home-chat' ? ' is-home-chat' : ''}`}
           aria-live="polite"
         >
           <div className="agy-think-head">
@@ -822,6 +859,13 @@ export function AgyChatBar({
   const showSteps = part !== 'bar'
 
   const current = state.models?.find((model) => model.id === state.selected) ?? state.models?.[0]
+  const runningModelInfo =
+    running && effectiveRun?.model
+      ? (state.models?.find((model) => model.id === effectiveRun.model) ?? null)
+      : null
+  const displayModelLabel =
+    runningModelInfo?.label ??
+    (running && effectiveRun?.model ? effectiveRun.model : (current?.label ?? state.selected))
   const group = current?.group
   const buckets = usage?.groups?.find((g) => g.name === group)?.buckets ?? []
   const five = buckets.find((b) => b.window === '5h')
@@ -832,6 +876,19 @@ export function AgyChatBar({
       (min, b) => (min === null || b!.remaining < min ? b!.remaining : min),
       null,
     )
+
+  const quotaPercent = worst === null ? null : Math.round(worst * 100)
+  const usageProblem = !!(usage?.needsLogin || usage?.cliMissing || usage?.failed)
+  // always visible once there is a number; with none, only a real problem (or an open popover) shows it
+  const showUsage = open || quotaPercent !== null || usageProblem
+  const usageLabel =
+    quotaPercent !== null
+      ? fill(d.left, { p: quotaPercent })
+      : usage?.cliMissing
+        ? d.installTitle
+        : usage?.needsLogin
+          ? d.loginTitle
+          : d.unavailable
 
   const choose = async (id: string) => {
     setMenu(false)
@@ -1041,7 +1098,9 @@ export function AgyChatBar({
       )}
       {showSteps && (effectiveRun || (mode === 'home-chat' && busy)) && (
         <section
-          className={`agy-think is-${effectiveRun?.phase ?? 'thinking'}${mode === 'home-chat' ? ' is-home-chat' : ''}`}
+          className={`agy-think is-${effectiveRun?.phase ?? 'thinking'}${mode === 'home-chat' ? ' is-home-chat' : ''}${
+            effectiveRun && effectiveRun.steps.length > 0 ? '' : ' is-static'
+          }${steps && effectiveRun && effectiveRun.steps.length > 0 ? ' is-open' : ''}`}
           aria-live="polite"
         >
           <button
@@ -1056,11 +1115,11 @@ export function AgyChatBar({
             <span className="agy-think-title">
               {effectiveRun
                 ? thinkTitle(effectiveRun, d, mode)
-                : `${d.thinkingHome} · ${fallbackElapsed}s`}
+                : `${d.thinkingHome}${fallbackElapsed > 0 ? ` · ${clockTime(fallbackElapsed * 1000)}` : ''}`}
             </span>
             {effectiveRun && effectiveRun.tokens > 0 && (
               <span className="agy-think-meta">
-                {fill(d.thoughtTokens, { n: effectiveRun.tokens })}
+                {fill(d.thoughtTokens, { n: compactTokens(effectiveRun.tokens) })}
               </span>
             )}
             {effectiveRun && effectiveRun.steps.length > 0 && (
@@ -1092,7 +1151,7 @@ export function AgyChatBar({
           )}
         </section>
       )}
-      {showBar && (
+      {showBar && (showModel || showUsage) && (
         <div className="agy-bar-row-main">
           {showModel && (
             <button
@@ -1105,35 +1164,31 @@ export function AgyChatBar({
                 setMenu((value) => !value)
               }}
             >
-              <span className="agy-bar-model-name">{current?.label ?? state.selected}</span>
+              <span className="agy-bar-model-name">{displayModelLabel}</span>
               <span aria-hidden="true" className="agy-bar-caret">
                 ▾
               </span>
             </button>
           )}
-          <button
-            type="button"
-            className={`agy-bar-chip agy-bar-usage${worst === null ? '' : ` is-${tone(worst)}`}`}
-            aria-expanded={open}
-            title={usage?.failed ? `${d.usage}. ${d.failed}` : d.usage}
-            onClick={() => {
-              pinned.current = !open
-              setOpen((value) => !value)
-            }}
-          >
-            <span
-              className={`agy-bar-gauge${usage?.refreshing ? ' is-spinning' : ''}`}
-              aria-hidden="true"
-              style={{ ['--agy-fill' as string]: `${Math.round((worst ?? 0) * 100)}%` }}
-            />
-            <span>
-              {usage?.refreshing && worst === null
-                ? d.checking
-                : worst === null
-                  ? d.none
-                  : fill(d.left, { p: Math.round(worst * 100) })}
-            </span>
-          </button>
+          {showUsage && (
+            <button
+              type="button"
+              className={`agy-bar-chip agy-bar-usage${worst === null ? '' : ` is-${tone(worst)}`}`}
+              aria-expanded={open}
+              title={usage?.failed ? `${d.usage}. ${d.failed}` : d.usage}
+              onClick={() => {
+                pinned.current = !open
+                setOpen((value) => !value)
+              }}
+            >
+              <span
+                className={`agy-bar-gauge${usage?.refreshing ? ' is-spinning' : ''}`}
+                aria-hidden="true"
+                style={{ ['--agy-fill' as string]: `${Math.round((worst ?? 0) * 100)}%` }}
+              />
+              <span>{usageLabel}</span>
+            </button>
+          )}
         </div>
       )}
     </div>

@@ -31,6 +31,40 @@ export interface AiModelPickerSelection {
   readonly model: string
 }
 
+const AGY_UNVERSIONED_GEMINI = /^gemini-(flash|pro)-(low|medium|high)$/
+
+/**
+ * Older Antigravity catalogs spelled the rolling Gemini models without a version
+ * (`gemini-flash-high`), which duplicated the versioned entry (`gemini-3.8-flash-high`) in the
+ * picker. Maps such an alias to the newest versioned twin present in `ids`; any other id, or an
+ * alias with no twin, comes back unchanged.
+ */
+export function resolveAgyModelAlias(id: string, ids: readonly string[]): string {
+  const m = AGY_UNVERSIONED_GEMINI.exec(id.trim().toLowerCase())
+  if (!m) return id
+  const twin = new RegExp(`^gemini-(\\d+)\\.(\\d+)-${m[1]}-${m[2]}$`)
+  let best: { id: string; v: number } | null = null
+  for (const cand of ids) {
+    const t = twin.exec(cand)
+    if (!t) continue
+    const v = Number(t[1]) * 1000 + Number(t[2])
+    if (!best || v > best.v) best = { id: cand, v }
+  }
+  return best?.id ?? id
+}
+
+/** Live Antigravity models with alias duplicates folded into their versioned twin. */
+export function dedupeAgyModelItems(items: readonly AiModelItemMeta[]): AiModelItemMeta[] {
+  const ids = items.map((m) => m.id)
+  const seen = new Set<string>()
+  return items.filter((m) => {
+    if (resolveAgyModelAlias(m.id, ids) !== m.id) return false
+    if (seen.has(m.id)) return false
+    seen.add(m.id)
+    return true
+  })
+}
+
 /**
  * A vendor is listed once its stored config is complete enough to chat with: a model, plus a key
  * (a base URL for custom endpoints, which accept anonymous requests); CLI vendors need a model or
@@ -100,14 +134,12 @@ export function aiModelPickerGroups(
     }
     if (!pickerProviderUsable(settings, meta, liveAgyModels)) continue
     if (meta.id === 'agy' && liveAgyModels && liveAgyModels.length > 0) {
-      const stored = settings.providers?.agy?.model?.trim() ?? ''
-      const ids = liveAgyModels.map((m) => m.id)
-      const models = stored && !ids.includes(stored) ? [stored, ...ids] : ids
+      const items = dedupeAgyModelItems(liveAgyModels)
       groups.push({
         id: meta.id,
         label: meta.label,
-        models,
-        modelItems: liveAgyModels,
+        models: items.map((m) => m.id),
+        modelItems: items,
       })
       continue
     }

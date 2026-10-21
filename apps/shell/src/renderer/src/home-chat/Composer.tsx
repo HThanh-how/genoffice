@@ -5,7 +5,12 @@ export type ComposerLabels = {
   placeholder: string
   send: string
   stop: string
-  hint: string
+  /** placeholder while an answer is streaming (drafting stays possible) */
+  busyPlaceholder: string
+  /** title of the send button: where the keyboard shortcuts live now */
+  sendHint: string
+  /** transient status (e.g. AI still loading); empty = render nothing */
+  status: string
 }
 
 type Props = {
@@ -79,9 +84,8 @@ export const Composer = memo(function Composer({
               if (canSend) onSend(value)
             }
           }}
-          placeholder={labels.placeholder}
+          placeholder={busy ? labels.busyPlaceholder : labels.placeholder}
           disabled={disabled}
-          aria-describedby="home-chat-input-hint"
         />
         {busy ? (
           <button
@@ -98,7 +102,6 @@ export const Composer = memo(function Composer({
             <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <rect x="5.5" y="5.5" width="9" height="9" rx="2" fill="currentColor" />
             </svg>
-            <span>{labels.stop}</span>
           </button>
         ) : (
           <button
@@ -107,7 +110,7 @@ export const Composer = memo(function Composer({
             className="hc-send"
             disabled={!canSend}
             aria-label={labels.send}
-            title={labels.send}
+            title={labels.sendHint}
           >
             <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
               <path
@@ -121,9 +124,11 @@ export const Composer = memo(function Composer({
           </button>
         )}
       </div>
-      <span className="hc-hint" id="home-chat-input-hint">
-        {labels.hint}
-      </span>
+      {labels.status && (
+        <span className="hc-hint" role="status">
+          {labels.status}
+        </span>
+      )}
     </form>
   )
 })

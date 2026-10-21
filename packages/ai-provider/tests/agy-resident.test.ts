@@ -15,6 +15,7 @@ import {
 } from '../src/agy-resident'
 import type { AgyRunDeps } from '../src/agy-cli'
 import { streamAgy } from '../src/agy-cli'
+import { AGY_CHAT_DEFAULT_MODEL } from '../src/agy-chat'
 
 class FakeResidentChild extends EventEmitter {
   stdout = new PassThrough()
@@ -740,6 +741,52 @@ describe('agy resident transport', () => {
       ])
       await turn
 
+      shutdownAgyResidentServers(mock.deps)
+    })
+
+    it('defaults prewarmed resident worker to AGY_CHAT_DEFAULT_MODEL when model is omitted', async () => {
+      const mock = createMockDeps()
+      shutdownAgyResidentServers(mock.deps)
+
+      const configWithoutModel = { apiKey: '', cliPath: '/usr/local/bin/agy' }
+
+      await prewarmAgy(configWithoutModel, mock.deps)
+      expect(mock.children.length).toBe(1)
+      const prewarmedChild = mock.children[0]!
+      expect(prewarmedChild.stdinText).toBe('')
+
+      // Subsequent session request with AGY_CHAT_DEFAULT_MODEL binds to prewarmed worker
+      const turn = streamAgy(
+        { ...configWithoutModel, model: AGY_CHAT_DEFAULT_MODEL },
+        'sys',
+        [{ role: 'user', text: 'Chat request with default high' }],
+        sampleTools,
+        1024,
+        {
+          sessionId: 'chat-default-model',
+          sessionScope: 'scope-default',
+          signal: new AbortController().signal,
+          onDelta: vi.fn(),
+          onToolCall: vi.fn(),
+        },
+        mock.deps,
+      )
+
+      // Binds to existing worker without spawning a new one
+      expect(mock.children.length).toBe(1)
+      await vi.waitFor(() => expect(prewarmedChild.stdinText).toContain('Chat request with default high'))
+
+      prewarmedChild.emitLines([
+        JSON.stringify({
+          event: 'result',
+          result: {
+            status: 'SUCCESS',
+            structured_output: { text: 'Welcome High', tool_calls: [] },
+          },
+        }),
+      ])
+
+      await turn
       shutdownAgyResidentServers(mock.deps)
     })
 

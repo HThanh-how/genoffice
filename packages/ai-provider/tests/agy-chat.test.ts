@@ -4,6 +4,7 @@ import {
   AGY_CHAT_DEFAULT_MODEL,
   agyChatModelInfo,
   defaultEnabledChatModels,
+  defaultSelectedChatModel,
   sanitizeEnabledChatModels,
   usageForModel,
 } from '../src/agy-chat'
@@ -94,6 +95,38 @@ describe('defaultEnabledChatModels', () => {
   it('falls back to AGY_CHAT_DEFAULT_ENABLED when catalog is empty or has no Gemini models', () => {
     expect(defaultEnabledChatModels([])).toEqual([...AGY_CHAT_DEFAULT_ENABLED])
     expect(defaultEnabledChatModels(['claude-sonnet-4-6'])).toEqual([...AGY_CHAT_DEFAULT_ENABLED])
+  })
+})
+
+describe('defaultSelectedChatModel', () => {
+  it('returns AGY_CHAT_DEFAULT_MODEL when catalog is undefined or empty', () => {
+    expect(defaultSelectedChatModel(undefined)).toBe(AGY_CHAT_DEFAULT_MODEL)
+    expect(defaultSelectedChatModel([])).toBe(AGY_CHAT_DEFAULT_MODEL)
+  })
+
+  it('selects gemini-3.8-flash-high when present in catalog', () => {
+    const catalog = ['gemini-3.8-flash-low', 'gemini-3.8-flash-medium', 'gemini-3.8-flash-high']
+    expect(defaultSelectedChatModel(catalog)).toBe('gemini-3.8-flash-high')
+  })
+
+  it('falls back to gemini-3.8-flash-medium when High is absent', () => {
+    const catalog = ['gemini-3.8-flash-low', 'gemini-3.8-flash-medium', 'gemini-3.1-pro-high']
+    expect(defaultSelectedChatModel(catalog)).toBe('gemini-3.8-flash-medium')
+  })
+
+  it('falls back to gemini-3.8-flash-low when High and Medium are absent', () => {
+    const catalog = ['gemini-3.8-flash-low', 'claude-sonnet-4-6']
+    expect(defaultSelectedChatModel(catalog)).toBe('gemini-3.8-flash-low')
+  })
+
+  it('falls back to first available Gemini model when standard flash models are absent', () => {
+    const catalog = ['claude-sonnet-4-6', 'gemini-3.1-pro-high', 'gemini-3.1-pro-low']
+    expect(defaultSelectedChatModel(catalog)).toBe('gemini-3.1-pro-high')
+  })
+
+  it('returns AGY_CHAT_DEFAULT_MODEL when catalog contains only non-Gemini models', () => {
+    const catalog = ['claude-sonnet-4-6', 'gpt-oss-120b-medium']
+    expect(defaultSelectedChatModel(catalog)).toBe(AGY_CHAT_DEFAULT_MODEL)
   })
 })
 

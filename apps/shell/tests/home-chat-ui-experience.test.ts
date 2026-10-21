@@ -64,36 +64,6 @@ describe('home-chat UI experience & search presentation (Phase 3)', () => {
     expect(deduped[2]!.missing).toBeFalsy()
   })
 
-  it('IME composition keyboard guard prevents premature submission', () => {
-    let submitted = false
-    const onSend = () => {
-      submitted = true
-    }
-
-    const handleKeyDown = (event: {
-      key: string
-      shiftKey: boolean
-      isComposing: boolean
-      keyCode: number
-    }) => {
-      if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
-        onSend()
-      }
-    }
-
-    // 1. Vietnamese typing keystroke during composition (e.g. Telex entering tone)
-    handleKeyDown({ key: 'Enter', shiftKey: false, isComposing: true, keyCode: 229 })
-    expect(submitted).toBe(false)
-
-    // 2. Shift+Enter inserts newline, does not send
-    handleKeyDown({ key: 'Enter', shiftKey: true, isComposing: false, keyCode: 13 })
-    expect(submitted).toBe(false)
-
-    // 3. Normal Enter with composition completed sends
-    handleKeyDown({ key: 'Enter', shiftKey: false, isComposing: false, keyCode: 13 })
-    expect(submitted).toBe(true)
-  })
-
   it('isNearBottom correctly discriminates reading position vs bottom follow', () => {
     // Scrolled to bottom: scrollTop + clientHeight == scrollHeight
     const atBottom = { scrollTop: 600, clientHeight: 400, scrollHeight: 1000 } as HTMLElement

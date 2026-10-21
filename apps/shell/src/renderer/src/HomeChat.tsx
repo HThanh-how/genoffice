@@ -1557,11 +1557,10 @@ export function HomeChat({
       placeholder: tRef.current('homeChatPlaceholder'),
       send: tRef.current('homeChatSend'),
       stop: tRef.current('homeChatStop'),
-      hint: settingsFailed
-        ? tRef.current('homeChatSettingsFailed')
-        : settingsReady
-          ? tRef.current('homeChatEnterHint')
-          : tRef.current('homeChatLoading'),
+      busyPlaceholder: tRef.current('homeChatReplying'),
+      sendHint: `${tRef.current('homeChatSend')} · ${tRef.current('homeChatEnterHint')}`,
+      // a settings failure is reported once, by the retry notice above the composer
+      status: settingsReady || settingsFailed ? '' : tRef.current('homeChatLoading'),
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [i18n.lang, settingsFailed, settingsReady],
@@ -1598,13 +1597,14 @@ export function HomeChat({
   const showDock = !isWorkspace && !suppressDock
   const modelControls = (
     <div className="hc-model-controls">
-      <AiModelPicker bridge={modelBridge} lang={i18n.lang} />
+      <AiModelPicker bridge={modelBridge} lang={i18n.lang} plain />
       <AgyChatBar lang={i18n.lang} part="bar" showModel={false} />
     </div>
   )
   const dock = showDock ? (
     <AskDock lang={i18n.lang} api={api} away={open} inline={!!dockTarget}>
-      {modelControls}
+      {/* the open panel carries its own copy; never mount two pickers/listeners at once */}
+      {open ? null : modelControls}
     </AskDock>
   ) : null
 

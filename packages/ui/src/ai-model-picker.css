@@ -171,3 +171,29 @@
   color: var(--text-secondary, #64748b);
   font-weight: 500;
 }
+
+/* Plain variant (home chat): the chip is just the model name as text. */
+.ai-model-picker--plain .ai-model-chip {
+  height: auto;
+  padding: 2px 0;
+  border: none;
+  border-radius: var(--radius-6, 6px);
+  background: none;
+  color: var(--text-secondary);
+}
+
+.ai-model-picker--plain .ai-model-chip:hover,
+.ai-model-picker--plain .ai-model-chip.open {
+  background: none;
+  border-color: transparent;
+  color: var(--text);
+}
+
+.ai-model-picker--plain .ai-model-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ai-model-picker--plain .ai-model-item {
+  padding-left: 8px;
+}

@@ -70,5 +70,6 @@ it('an Antigravity editor composer has exactly one model selector alongside usag
     ),
   )
   expect(host.querySelectorAll('button[aria-haspopup="listbox"]')).toHaveLength(1)
-  expect(host.querySelector('.agy-bar-usage')).not.toBeNull()
+  // no reading / healthy quota: the gauge stays out of the way (see agy-bar-quota.test.ts)
+  expect(host.querySelector('.agy-bar-usage')).toBeNull()
 })

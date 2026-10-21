@@ -45,6 +45,33 @@ export function defaultEnabledChatModels(catalogModels?: readonly string[]): str
   return [...AGY_CHAT_DEFAULT_ENABLED]
 }
 
+/**
+ * Deterministic default chat model from an available catalog:
+ * 1. gemini-3.8-flash-high (if available in catalog)
+ * 2. gemini-3.8-flash-medium (if available in catalog)
+ * 3. gemini-3.8-flash-low (if available in catalog)
+ * 4. First available model starting with 'gemini-'
+ * 5. Fallback to AGY_CHAT_DEFAULT_MODEL if catalog has no Gemini models or is empty/offline.
+ */
+export function defaultSelectedChatModel(catalogModels?: readonly string[]): string {
+  if (Array.isArray(catalogModels) && catalogModels.length > 0) {
+    if (catalogModels.includes(AGY_CHAT_DEFAULT_MODEL)) {
+      return AGY_CHAT_DEFAULT_MODEL
+    }
+    if (catalogModels.includes('gemini-3.8-flash-medium')) {
+      return 'gemini-3.8-flash-medium'
+    }
+    if (catalogModels.includes('gemini-3.8-flash-low')) {
+      return 'gemini-3.8-flash-low'
+    }
+    const firstGemini = catalogModels.find((id) => id.toLowerCase().trim().startsWith('gemini-'))
+    if (firstGemini) {
+      return firstGemini
+    }
+  }
+  return AGY_CHAT_DEFAULT_MODEL
+}
+
 export type AgyQuotaGroup = 'Gemini Models' | 'Claude and GPT models'
 
 export interface AgyChatModelInfo {

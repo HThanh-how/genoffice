@@ -1450,15 +1450,12 @@
 }
 
 .hc-send.stop {
-  flex-basis: auto;
-  width: auto;
-  display: flex;
-  gap: 6px;
-  padding: 0 10px;
-  font: inherit;
-  font-size: 12px;
   color: var(--text);
   background: var(--pressed);
+}
+
+.hc-send.stop:hover {
+  background: var(--hover);
 }
 
 @container hc (max-width: 420px) {

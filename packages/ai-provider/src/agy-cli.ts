@@ -39,7 +39,7 @@ import { agyMachineSemaphore, type AgyMachineSemaphore } from './agy-lock'
  */
 
 import { AGY_DEFAULT_MODEL } from './agy-meta'
-import { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
+import { AGY_CHAT_DEFAULT_MODEL, defaultSelectedChatModel } from './agy-chat'
 import {
   AGY_SCHEMA_NATIVE_RETRY_NOTE,
   AGY_SCHEMA_TURN_NOTE,
@@ -65,7 +65,7 @@ import { createAgyLimiter, Limiter } from './agy-limiter'
 export { createAgyLimiter, Limiter }
 import { agyResidentManager, isResidentEligible } from './agy-resident'
 
-export { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
+export { AGY_CHAT_DEFAULT_MODEL, defaultSelectedChatModel } from './agy-chat'
 export {
   AGY_CAPABILITIES,
   AGY_DEFAULT_MODEL,
@@ -1633,11 +1633,7 @@ export async function listAgyModels(
 function catalogOf(models: string[]): AgyModelCatalog {
   return {
     models,
-    defaultModel: models.includes(AGY_CHAT_DEFAULT_MODEL)
-      ? AGY_CHAT_DEFAULT_MODEL
-      : models.includes(AGY_DEFAULT_MODEL)
-        ? AGY_DEFAULT_MODEL
-        : (models[0] ?? ''),
+    defaultModel: models.length === 0 ? '' : defaultSelectedChatModel(models),
   }
 }
 

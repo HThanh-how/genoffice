@@ -22,6 +22,7 @@ import {
   AGY_CHAT_DEFAULT_MODEL,
   agyChatModelInfo,
   defaultEnabledChatModels,
+  defaultSelectedChatModel,
   sanitizeEnabledChatModels,
   type AgyChatCatalog,
   type AgyChatState,
@@ -164,9 +165,19 @@ export function registerAgyChat(deps: AgyChatDeps): void {
       return defaultEnabledChatModels()
     }
   }
-  const selectedModel = (): string => {
+  const notifyAiSettingsChanged = (): void => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      if (!window.isDestroyed()) {
+        window.webContents.send('ai:settings-changed')
+      }
+    }
+  }
+
+  const selectedModel = (catalogModels?: string[]): string => {
     const saved = aiSettings().providers?.agy?.model
-    return typeof saved === 'string' && saved.trim() ? saved.trim() : AGY_CHAT_DEFAULT_MODEL
+    return typeof saved === 'string' && saved.trim()
+      ? saved.trim()
+      : defaultSelectedChatModel(catalogModels)
   }
 
   const usage = new AgyUsageCache(
@@ -182,20 +193,11 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.state, async (): Promise<AgyChatState> => {
     const settings = aiSettings()
     const ids = await enabled()
-    let current = selectedModel()
-    // A saved model that is not in the chat list (left over from before the list existed, or
-    // switched off since) gives way to the list's first model, and that choice is saved so the
-    // requests really use it.
-    if (!ids.includes(current) && ids[0] && settings.provider === 'agy') {
-      current = ids[0]
-      const providers = { ...(settings.providers ?? {}) }
-      providers.agy = { ...(providers.agy ?? {}), model: current }
-      writeJsonAtomic(deps.aiSettingsPath(), { ...settings, providers })
-    }
-    if (!ids.includes(current)) ids.unshift(current)
+    const current = selectedModel()
+    const selected = ids.includes(current) ? current : (ids[0] ?? current)
     return {
       models: ids.map(agyChatModelInfo),
-      selected: current,
+      selected,
       active: settings.provider === 'agy',
     }
   })
@@ -213,6 +215,14 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   deps.ipcMain.handle(AGY_CHAT_CHANNELS.setEnabled, (_event, ids: unknown): string[] => {
     const next = sanitizeEnabledChatModels(ids)
     writeAppSetting(deps.settingsPath(), AGY_CHAT_MODELS_KEY, next)
+    const settings = aiSettings()
+    const current = settings.providers?.agy?.model?.trim() || defaultSelectedChatModel()
+    if (next.length > 0 && !next.includes(current)) {
+      const providers = { ...(settings.providers ?? {}) }
+      providers.agy = { ...(providers.agy ?? {}), model: next[0] }
+      writeJsonAtomic(deps.aiSettingsPath(), { ...settings, providers })
+      notifyAiSettingsChanged()
+    }
     return next
   })
 
@@ -224,6 +234,7 @@ export function registerAgyChat(deps: AgyChatDeps): void {
     const providers = { ...(settings.providers ?? {}) }
     providers.agy = { ...(providers.agy ?? {}), model: id }
     writeJsonAtomic(deps.aiSettingsPath(), { ...settings, providers })
+    notifyAiSettingsChanged()
     return true
   })
 

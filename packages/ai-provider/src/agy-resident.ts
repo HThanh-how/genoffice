@@ -24,7 +24,7 @@ import {
 } from './agy-cli'
 import { createAgyLimiter, type Limiter } from './agy-limiter'
 import { classifyAgyFailure, hasAgyPrintTimeoutWarning } from './agy-errors'
-import { AGY_DEFAULT_MODEL } from './agy-meta'
+import { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
 
 // ---------------------------------------------------------------------------
 // Constants & Limits
@@ -168,6 +168,8 @@ interface ResidentWorker {
   inUse: boolean
   idleTimer?: ReturnType<typeof setTimeout> | undefined
   stderrTail: string
+  spawnedAt: number
+  turnCount: number
   stdinWrittenForCurrentTurn: boolean
   currentTurnSettled: boolean
   retireAfterCurrentTurn?: boolean | undefined
@@ -303,7 +305,7 @@ class AgyResidentManager {
 
   private async prewarmInternal(config: AiProviderConfig, deps: AgyRunDeps): Promise<void> {
     const cliPath = await resolveAgyCliPath(config.cliPath, deps)
-    const model = config.model?.trim() || AGY_DEFAULT_MODEL
+    const model = config.model?.trim() || AGY_CHAT_DEFAULT_MODEL
     const capabilities = deps.capabilities ? await deps.capabilities(cliPath) : undefined
     if (!capabilities?.jsonSchema) return // only schema protocol benefits from resident generic schema
 
@@ -423,7 +425,7 @@ class AgyResidentManager {
       }
 
       const cliPath = await resolveAgyCliPath(config.cliPath, deps)
-      const model = config.model?.trim() || AGY_DEFAULT_MODEL
+      const model = config.model?.trim() || AGY_CHAT_DEFAULT_MODEL
       const capabilities = deps.capabilities ? await deps.capabilities(cliPath) : undefined
       const effort = capabilities?.effort
         ? resolveAgyEffort({
@@ -701,6 +703,8 @@ class AgyResidentManager {
       lastUsedAt: Date.now(),
       inUse: false,
       stderrTail: '',
+      spawnedAt: Date.now(),
+      turnCount: 0,
       stdinWrittenForCurrentTurn: false,
       currentTurnSettled: false,
       stop: () => deps.killTree(child),
@@ -747,6 +751,8 @@ class AgyResidentManager {
 
     return new Promise((resolve, reject) => {
       worker.stderrTail = '' // Clear prior turn stderr so past warnings do not contaminate
+      worker.turnCount += 1
+      const turnSentAt = Date.now()
       let text = ''
       let usage: AiTokenUsage | undefined
       let conversationId: string | undefined
@@ -837,7 +843,15 @@ class AgyResidentManager {
           finish(() => {
             const truncated = hasAgyPrintTimeoutWarning(worker.stderrTail)
             if (truncated) {
-              reject(new Error('Antigravity CLI turn timed out partially'))
+              const tail = worker.stderrTail.trim().slice(-300)
+              const now = Date.now()
+              const spawnAge = Math.round((now - worker.spawnedAt) / 1000)
+              const turnAge = Math.round((now - turnSentAt) / 1000)
+              reject(
+                new Error(
+                  `Antigravity CLI turn timed out partially (worker=${worker.id} spawnAge=${spawnAge}s turnAge=${turnAge}s turns=${worker.turnCount}${tail ? ` agy stderr: ${tail}` : ''})`,
+                ),
+              )
               return
             }
             if (resultSeen?.ok) {
