@@ -7,8 +7,10 @@ import { folderMenuWords } from './fork/folder-menu-words'
 import { placeFolderMenu } from './fork/folder-menu-position'
 import {
   decideFolderIgnoreMenu,
+  folderIgnoreKey,
+  folderIgnoreUnsafe,
   isFolderIgnoreRuleFor,
-  normalizeFolderScope,
+  isUnderIgnoredFolder,
 } from '../../shared/fork/folder-ignore'
 import type { IgnoreRule, IgnoreTestResult } from '../../shared/fork/document-index-api'
 import {
@@ -1409,14 +1411,26 @@ export function Home() {
   } | null>(null)
   // fork-only: "Ignore this folder" state. The probe is the testIgnorePath answer for the open menu.
   const ignoreCI = navigator.platform.startsWith('Win')
-  const ignoreKey = (path: string) =>
-    ignoreCI ? normalizeFolderScope(path).toLowerCase() : normalizeFolderScope(path)
+  const ignoreKey = (path: string) => folderIgnoreKey(path, ignoreCI)
   const [ignoredFolderKeys, setIgnoredFolderKeys] = useState<Set<string>>(new Set())
   const [ignoreProbe, setIgnoreProbe] = useState<{
     path: string
     result: IgnoreTestResult | null
   } | null>(null)
   const [confirmIgnoreFolder, setConfirmIgnoreFolder] = useState<string | null>(null)
+  // short-lived "Ignored X / Undo" bar after a successful ignore or stop-ignoring
+  const [ignoreUndo, setIgnoreUndo] = useState<{
+    path: string
+    name: string
+    ignored: boolean
+  } | null>(null)
+  useEffect(() => {
+    if (!ignoreUndo) return
+    const timer = setTimeout(() => setIgnoreUndo(null), 8000)
+    return () => clearTimeout(timer)
+  }, [ignoreUndo])
+  // path-only: the folder or one of its ancestors carries a folder-ignore rule (no per-row IPC)
+  const isFolderIgnored = (path: string) => isUnderIgnoredFolder(path, ignoredFolderKeys, ignoreCI)
   const menuOpenAt = (where: 'tree' | 'table', path: string) =>
     folderMenu?.where === where && folderMenu.path === path
   const folderMenuWrapRef = useRef<HTMLDivElement>(null)
@@ -1643,10 +1657,12 @@ export function Home() {
   const instantHits = useMemo(() => {
     if (!q) return []
     const folderFilesLoaded = [...listings.values()].flatMap((l) => l.files)
-    return instantNameMatches([...entries, ...folderFilesLoaded], q, (e) =>
-      matchesFilter(e, filter),
+    return instantNameMatches(
+      [...entries, ...folderFilesLoaded],
+      q,
+      (e) => matchesFilter(e, filter) && !isUnderIgnoredFolder(e.path, ignoredFolderKeys, ignoreCI),
     )
-  }, [q, filter, entries, listings])
+  }, [q, filter, entries, listings, ignoredFolderKeys, ignoreCI])
 
   // Jev judges the top local hits once they settle; the main process answers null when reranking is off.
   // The key changes only with the query, filter or candidate set, so index polls do not restart the timer.
@@ -1791,7 +1807,7 @@ export function Home() {
     loadIgnoredFolders()
   }, [loadIgnoredFolders])
   // probe the index rules when a tree menu opens; the entry shows "checking" until it answers
-  const folderMenuPath = folderMenu?.where === 'tree' ? folderMenu.path : null
+  const folderMenuPath = folderMenu?.path ?? null
   useEffect(() => {
     if (!folderMenuPath) {
       setIgnoreProbe(null)
@@ -2345,7 +2361,7 @@ export function Home() {
   }
 
   /** the folder leaves the list only; whatever it held on disk stays where it is */
-  const applyFolderIgnore = async (path: string, ignore: boolean) => {
+  const applyFolderIgnore = async (path: string, ignore: boolean, quiet = false) => {
     setFolderMenu(null)
     setConfirmIgnoreFolder(null)
     const api = window.aiOffice
@@ -2354,16 +2370,26 @@ export function Home() {
     try {
       const res = await call.call(api, path)
       if (!res?.ok) throw new Error(res?.error ?? 'unknown')
+      if (quiet) setIgnoreUndo(null)
+      else if (res.changed)
+        setIgnoreUndo({
+          path,
+          name: path.split(/[\\/]/).filter(Boolean).pop() ?? path,
+          ignored: ignore,
+        })
       if (ignore) {
         // an allow rule can still win over the new ignore rule
         const check = await api.testIgnorePath?.(path, rootOf(path, roots)?.path)
         if (check && !check.ignored) appNotify(folderWords.ignoreOverridden, 'error')
       }
     } catch (e) {
-      appNotify(
-        folderWords.ignoreFailed.replace('{e}', e instanceof Error ? e.message : String(e)),
-        'error',
-      )
+      const code = e instanceof Error ? e.message : String(e)
+      const known: Record<string, string> = {
+        protected: folderWords.ignoreBlockedProtected,
+        'is-root': folderWords.ignoreBlockedRoot,
+        'contains-root': folderWords.ignoreBlockedContainsRoot,
+      }
+      appNotify(known[code] ?? folderWords.ignoreFailed.replace('{e}', code), 'error')
     }
     loadIgnoredFolders()
     refresh()
@@ -2402,10 +2428,25 @@ export function Home() {
     },
   }
 
+  const renderIgnoredBadge = () => (
+    <span
+      className="ignore-badge"
+      role="img"
+      title={folderWords.ignoredTip}
+      aria-label={folderWords.ignoredTip}
+    >
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+        <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="1.5" />
+        <path d="M3.8 12.2 12.2 3.8" stroke="currentColor" strokeWidth="1.5" />
+      </svg>
+    </span>
+  )
+
   const renderIgnoreMenuItem = (path: string, isRoot: boolean) => {
     const state = decideFolderIgnoreMenu({
       path,
       isRoot,
+      unsafe: folderIgnoreUnsafe([path], roots.map((r) => r.path), ignoreCI) !== null,
       result: ignoreProbe?.path === path ? ignoreProbe.result : undefined,
       caseInsensitive: ignoreCI,
     })
@@ -2610,7 +2651,7 @@ export function Home() {
     return (
       <li key={entry.path} className="tree-item">
         <div
-          className={`tree-row${isActive ? ' active' : ''}${dropTarget === entry.path ? ' drop-target' : ''}${unavailable ? ' unavailable' : ''}${ignoredFolderKeys.has(ignoreKey(entry.path)) ? ' ignored' : ''}`}
+          className={`tree-row${isActive ? ' active' : ''}${dropTarget === entry.path ? ' drop-target' : ''}${unavailable ? ' unavailable' : ''}${isFolderIgnored(entry.path) ? ' ignored' : ''}`}
           style={{ paddingLeft: 8 + depth * 14 }}
           role="treeitem"
           aria-selected={isActive}
@@ -2673,7 +2714,10 @@ export function Home() {
               }}
             />
           ) : (
-            <span className="tree-name">{entry.name}</span>
+            <span className="tree-name">
+              {entry.name}
+              {isFolderIgnored(entry.path) && renderIgnoredBadge()}
+            </span>
           )}
           {unavailable && <span className="tree-hint">{t('rootUnavailable')}</span>}
           {renderFolderMenu(entry, rootEntry)}
@@ -2971,7 +3015,7 @@ export function Home() {
     return (
       <li className="recent-row" key={entry.path}>
         <div
-          className={`recent-item folder-item${dropTarget === entry.path ? ' drop-target' : ''}`}
+          className={`recent-item folder-item${dropTarget === entry.path ? ' drop-target' : ''}${isFolderIgnored(entry.path) ? ' ignored' : ''}`}
           role="button"
           tabIndex={0}
           draggable={!isRenaming}
@@ -3022,7 +3066,10 @@ export function Home() {
               }}
             />
           ) : (
-            <span className="recent-name">{entry.name}</span>
+            <span className="recent-name">
+              {entry.name}
+              {isFolderIgnored(entry.path) && renderIgnoredBadge()}
+            </span>
           )}
           <span className="recent-path">{t('folderType')}</span>
           <span className="recent-time">{formatModified(entry.mtimeMs, i18n)}</span>
@@ -3089,6 +3136,10 @@ export function Home() {
                 >
                   {t('revealInFolder')}
                 </button>
+                {renderIgnoreMenuItem(
+                  entry.path,
+                  roots.some((r) => r.path === entry.path),
+                )}
                 {editable && (
                   <>
                     <div className="row-menu-divider" />
@@ -3810,6 +3861,23 @@ export function Home() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {ignoreUndo && (
+        <div className="ignore-undo" role="status">
+          <span>
+            {(ignoreUndo.ignored ? folderWords.ignoredToast : folderWords.stoppedToast).replace(
+              '{name}',
+              ignoreUndo.name,
+            )}
+          </span>
+          <button
+            type="button"
+            onClick={() => void applyFolderIgnore(ignoreUndo.path, !ignoreUndo.ignored, true)}
+          >
+            {folderWords.ignoreUndo}
+          </button>
         </div>
       )}
 

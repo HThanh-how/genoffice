@@ -95,7 +95,7 @@ export async function findFilesByName(
   if (words.length === 0) return []
   const need = words.length <= 2 ? words.length : Math.ceil(words.length * 0.6)
   const [recent, found] = await Promise.allSettled([
-    api.recents({ limit: 300 }),
+    api.recents({ limit: 300, excludeIgnored: true }),
     api.searchFiles({ q: words.join(' '), limit: Math.max(limit, fetchLimit) }),
   ])
   const byPath = new Map<string, ScoredFile>()

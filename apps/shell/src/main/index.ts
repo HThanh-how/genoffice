@@ -5321,9 +5321,12 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.getAppVersion, (): string => app.getVersion())
 
-  ipcMain.handle(HOME_CHANNELS.recents, (_event, query: unknown): RecentPage =>
-    pageRecentPaths(readRecentFiles(), query, new Set(readStarredFiles())),
-  )
+  ipcMain.handle(HOME_CHANNELS.recents, (_event, query: unknown): RecentPage => {
+    const excludeIgnored =
+      !!query && typeof query === 'object' && (query as { excludeIgnored?: unknown }).excludeIgnored === true
+    const paths = excludeIgnored ? readRecentFiles().filter((p) => !isPathIgnored(p)) : readRecentFiles()
+    return pageRecentPaths(paths, query, new Set(readStarredFiles()))
+  })
 
   ipcMain.handle(
     HOME_CHANNELS.searchFiles,
@@ -5358,7 +5361,9 @@ function registerHomeIpc(): void {
   // files (docs wires these into its panel; see knowledge-base.ts). Path
   // arguments are validated against the starred set — a corpus file is the
   // only thing a knowledge tool may read.
-  ipcMain.handle('kb:list', (): unknown => listKnowledgeFiles(readStarredFiles()))
+  ipcMain.handle('kb:list', (): unknown =>
+    listKnowledgeFiles(readStarredFiles().filter((p) => !isPathIgnored(p))),
+  )
 
   ipcMain.handle('kb:search', (_event, raw: unknown): unknown => {
     const query = (raw && typeof raw === 'object' ? raw : {}) as { q?: unknown; limit?: unknown }

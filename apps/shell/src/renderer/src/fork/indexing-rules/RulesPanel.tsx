@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { IgnoreRule } from '../../../../shared/fork/document-index-api'
+import { isFolderIgnoreRule } from '../../../../shared/fork/folder-ignore'
 import type { StudioStrings } from './studio-strings'
 import type { RuleFilters } from './policy-ui-types'
 import {
@@ -254,6 +255,8 @@ export function RulesPanel(props: RulesPanelProps) {
           {pageRules.map((rule) => {
             const editable = isEditableRule(rule)
             const source = ruleSource(rule)
+            const folderIgnore = isFolderIgnoreRule(rule)
+            const ruleName = folderIgnore ? d.folderIgnoredLabel(rule.scope) : rule.pattern
             return (
               <tr
                 key={rule.id}
@@ -264,7 +267,7 @@ export function RulesPanel(props: RulesPanelProps) {
                   {editable ? (
                     <input
                       type="checkbox"
-                      aria-label={`${d.selectRule}: ${rule.pattern}`}
+                      aria-label={`${d.selectRule}: ${ruleName}`}
                       checked={selected.has(rule.id)}
                       onChange={() => onToggleSelect(rule.id)}
                     />
@@ -273,7 +276,13 @@ export function RulesPanel(props: RulesPanelProps) {
                   )}
                 </td>
                 <td className="ixr-td-rule">
-                  <code className="ixr-pattern">{rule.pattern}</code>
+                  {folderIgnore ? (
+                    <span className="ixr-pattern" title={rule.scope}>
+                      {ruleName}
+                    </span>
+                  ) : (
+                    <code className="ixr-pattern">{rule.pattern}</code>
+                  )}
                   <div className="ixr-row-meta">
                     <span className={`ixr-src src-${source}`}>{sourceLabel(d, source)}</span>
                     {rowDescription(rule) && (
@@ -293,7 +302,7 @@ export function RulesPanel(props: RulesPanelProps) {
                       type="button"
                       role="switch"
                       aria-checked={rule.enabled}
-                      aria-label={`${rule.enabled ? d.disable : d.enable}: ${rule.pattern}`}
+                      aria-label={`${rule.enabled ? d.disable : d.enable}: ${ruleName}`}
                       className={`ixr-switch${rule.enabled ? ' on' : ''}`}
                       disabled={saving}
                       onClick={() => onToggleRule(rule)}
@@ -327,8 +336,8 @@ export function RulesPanel(props: RulesPanelProps) {
                       <button
                         type="button"
                         className="ixr-icon-btn danger"
-                        aria-label={`${d.delete}: ${rule.pattern}`}
-                        title={d.delete}
+                        aria-label={`${folderIgnore ? d.stopIgnoring : d.delete}: ${ruleName}`}
+                        title={folderIgnore ? d.stopIgnoring : d.delete}
                         onClick={() => onDeleteRule(rule)}
                       >
                         <IconTrash />

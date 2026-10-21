@@ -98,6 +98,70 @@ export function removeFolderIgnoreFromRules(
   return { rules: rest, changed: rest.length !== rules.length }
 }
 
+/** Rules created by this feature (or the same shape): user, ignore, "**" over one folder. */
+export function isFolderIgnoreRule(
+  rule: Pick<IgnoreRule, 'id' | 'pattern' | 'scope' | 'source' | 'action'>,
+): boolean {
+  return (
+    rule.source === 'user' &&
+    (rule.action ?? 'ignore') === 'ignore' &&
+    rule.pattern === '**' &&
+    rule.scope !== 'global' &&
+    rule.id.startsWith(FOLDER_IGNORE_ID_PREFIX)
+  )
+}
+
+export function folderIgnoreKey(path: string, caseInsensitive: boolean): string {
+  const norm = normalizeFolderScope(path)
+  return caseInsensitive ? norm.toLowerCase() : norm
+}
+
+/** Cheap path-only inheritance check: the folder itself or any ancestor is in `keys` (no IPC). */
+export function isUnderIgnoredFolder(
+  path: string,
+  keys: ReadonlySet<string>,
+  caseInsensitive: boolean,
+): boolean {
+  if (keys.size === 0) return false
+  let cur = folderIgnoreKey(path, caseInsensitive)
+  for (let guard = 0; guard < 64; guard++) {
+    if (keys.has(cur)) return true
+    const cut = cur.lastIndexOf('/')
+    if (cut <= 0) return false
+    cur = cur.slice(0, cut)
+  }
+  return false
+}
+
+export type FolderIgnoreUnsafe = 'protected' | 'is-root' | 'contains-root'
+
+const PROTECTED_WIN =
+  /^[a-z]:(\/(windows|program files|program files \(x86\)|programdata|\$recycle\.bin|system volume information))?$/i
+const PROTECTED_POSIX =
+  /^\/(|bin|boot|dev|etc|lib|lib64|opt|proc|root|run|sbin|sys|usr|var|system|library|applications|users|home|volumes)?$/i
+
+/**
+ * Folders that must never get an ignore rule: drive / filesystem / UNC share roots, OS folders, a configured
+ * root, or a folder that contains a root. `paths` holds every spelling of the target (as given + real path),
+ * `roots` every spelling of every configured root.
+ */
+export function folderIgnoreUnsafe(
+  paths: readonly string[],
+  roots: readonly string[],
+  caseInsensitive: boolean,
+): FolderIgnoreUnsafe | null {
+  const rootKeys = roots.map((r) => folderIgnoreKey(r, caseInsensitive))
+  for (const p of paths) {
+    const norm = normalizeFolderScope(p)
+    if (!norm || norm === '/' || /^\/\/[^/]+(\/[^/]+)?$/.test(norm)) return 'protected'
+    if (PROTECTED_WIN.test(norm) || PROTECTED_POSIX.test(norm)) return 'protected'
+    const key = folderIgnoreKey(p, caseInsensitive)
+    if (rootKeys.includes(key)) return 'is-root'
+    if (rootKeys.some((r) => r.startsWith(key.endsWith('/') ? key : key + '/'))) return 'contains-root'
+  }
+  return null
+}
+
 export type FolderIgnoreMenuState =
   | { kind: 'hidden' }
   | { kind: 'checking' }
@@ -112,10 +176,13 @@ export type FolderIgnoreMenuState =
 export function decideFolderIgnoreMenu(args: {
   path: string
   isRoot: boolean
+  /** a system / drive folder, or one holding another root: never offered */
+  unsafe?: boolean
   result: IgnoreTestResult | null | undefined
   caseInsensitive: boolean
 }): FolderIgnoreMenuState {
   if (args.isRoot) return { kind: 'hidden' }
+  if (args.unsafe && !(args.result && args.result.ignored)) return { kind: 'hidden' }
   const { result } = args
   if (result === undefined) return { kind: 'checking' }
   if (result === null) return { kind: 'hidden' }

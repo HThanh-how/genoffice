@@ -3,6 +3,7 @@ import {
   lstatSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   statSync,
   writeFileSync,
@@ -21,6 +22,7 @@ import {
 } from '../../shared/fork/document-index-api'
 import {
   addFolderIgnoreToRules,
+  folderIgnoreUnsafe,
   removeFolderIgnoreFromRules,
 } from '../../shared/fork/folder-ignore'
 
@@ -2007,6 +2009,21 @@ export function registerIgnoreIpcHandlers(
   // concurrent edits from the indexing rules Studio (which replaces the list).
   ipcMain.handle(DOCUMENT_INDEX_CHANNELS.addFolderIgnore, (_event, path: unknown) => {
     if (typeof path !== 'string' || path.trim().length === 0) return { ok: false, error: 'invalid-path' }
+    // never ignore a drive/system folder, a root, or a folder that holds a root (symlinks resolved)
+    const real = (p: string): string[] => {
+      try {
+        const r = realpathSync(p)
+        return r === p ? [p] : [p, r]
+      } catch {
+        return [p]
+      }
+    }
+    const unsafe = folderIgnoreUnsafe(
+      real(path),
+      (getRoots ? getRoots() : []).flatMap(real),
+      process.platform === 'win32',
+    )
+    if (unsafe) return { ok: false, error: unsafe }
     const next = addFolderIgnoreToRules(getActiveIgnoreRules(), path, process.platform === 'win32')
     if (!next) return { ok: false, error: 'invalid-path' }
     if (!next.changed) return { ok: true, changed: false }

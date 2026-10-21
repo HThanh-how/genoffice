@@ -87,6 +87,8 @@ export interface StudioStrings {
   emptyRules: string
   emptyAllRules: string
   confirmDeleteRule: (pattern: string) => string
+  folderIgnoredLabel: (path: string) => string
+  stopIgnoring: string
   confirmBulkDelete: (count: number) => string
   modalAddTitle: string
   modalEditTitle: string
@@ -211,6 +213,8 @@ const en: StudioStrings = {
   emptyRules: 'No rules match the current filters.',
   emptyAllRules: 'No indexing rules yet. Add one or enable a preset.',
   confirmDeleteRule: (pattern) => `Delete the rule "${pattern}"?`,
+  folderIgnoredLabel: (path) => `Ignored folder: ${path}`,
+  stopIgnoring: 'Stop ignoring',
   confirmBulkDelete: (count) => `Delete the ${count} selected rules?`,
   modalAddTitle: 'Add rule',
   modalEditTitle: 'Edit rule',
@@ -338,6 +342,8 @@ const vi: StudioStrings = {
   emptyRules: 'Không có quy tắc khớp bộ lọc.',
   emptyAllRules: 'Chưa có quy tắc nào. Thêm một quy tắc hoặc bật preset.',
   confirmDeleteRule: (pattern) => `Xóa quy tắc "${pattern}"?`,
+  folderIgnoredLabel: (path) => `Thư mục bị bỏ qua: ${path}`,
+  stopIgnoring: 'Ngừng bỏ qua',
   confirmBulkDelete: (count) => `Xóa ${count} quy tắc đã chọn?`,
   modalAddTitle: 'Thêm quy tắc',
   modalEditTitle: 'Sửa quy tắc',

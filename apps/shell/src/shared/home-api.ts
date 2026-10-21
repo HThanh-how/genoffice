@@ -169,6 +169,8 @@ export interface RecentQuery {
   ext?: string
   /** starred() only: restrict to one starred group; omit for all */
   group?: string
+  /** fork-only: recents() drops files an Ignore rule excludes (used by name lookups feeding search / AI chat) */
+  excludeIgnored?: boolean
 }
 
 export interface RecentPage {

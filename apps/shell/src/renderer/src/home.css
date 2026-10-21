@@ -1161,9 +1161,45 @@ body.vib .home {
 
 /* fork-only: folders ignored from Home are dimmed */
 .tree-row.ignored .tree-name,
-.tree-row.ignored .tree-icon {
+.tree-row.ignored .tree-icon,
+.recent-item.ignored .recent-name,
+.recent-item.ignored .recent-icon {
   color: var(--text-tertiary);
   opacity: 0.6;
+}
+
+.ignore-badge {
+  display: inline-flex;
+  margin-left: 6px;
+  vertical-align: middle;
+  color: var(--text-tertiary);
+}
+
+.ignore-undo {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 14px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-menu);
+  font-size: 13px;
+}
+
+.ignore-undo button {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
 }
 
 .tree-hint {

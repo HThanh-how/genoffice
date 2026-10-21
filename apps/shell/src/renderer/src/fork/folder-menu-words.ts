@@ -19,6 +19,13 @@ const EN = {
   ignoreConfirmAction: 'Ignore',
   ignoreFailed: 'Could not update the ignore rule: {e}',
   ignoreOverridden: 'An allow rule is overriding this, so the folder is still indexed.',
+  ignoredTip: 'Ignored — not indexed or searched',
+  ignoredToast: 'Ignored “{name}”',
+  stoppedToast: 'Stopped ignoring “{name}”',
+  ignoreUndo: 'Undo',
+  ignoreBlockedProtected: 'This is a system or drive folder and cannot be ignored.',
+  ignoreBlockedRoot: 'This is an indexed root folder. Remove it from the folder list instead.',
+  ignoreBlockedContainsRoot: 'This folder contains another indexed root, so it cannot be ignored.',
 }
 const VI: typeof EN = {
   openInExplorer: 'Mở trong File Explorer',
@@ -41,6 +48,13 @@ const VI: typeof EN = {
   ignoreConfirmAction: 'Bỏ qua',
   ignoreFailed: 'Không cập nhật được luật bỏ qua: {e}',
   ignoreOverridden: 'Có luật cho phép đang ghi đè, nên thư mục vẫn được lập chỉ mục.',
+  ignoredTip: 'Đã bỏ qua — không lập chỉ mục, không tìm thấy',
+  ignoredToast: 'Đã bỏ qua “{name}”',
+  stoppedToast: 'Đã ngừng bỏ qua “{name}”',
+  ignoreUndo: 'Hoàn tác',
+  ignoreBlockedProtected: 'Đây là thư mục hệ thống hoặc ổ đĩa nên không thể bỏ qua.',
+  ignoreBlockedRoot: 'Đây là thư mục gốc đã lập chỉ mục. Hãy gỡ khỏi danh sách thư mục thay vì bỏ qua.',
+  ignoreBlockedContainsRoot: 'Thư mục này chứa một thư mục gốc khác nên không thể bỏ qua.',
 }
 
 export const folderMenuWords = (lang: string): typeof EN => (lang === 'vi' ? VI : EN)

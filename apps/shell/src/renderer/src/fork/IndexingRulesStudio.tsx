@@ -8,6 +8,7 @@ import type {
   IndexPolicyMode,
   IndexingPreset,
 } from '../../../shared/fork/document-index-api'
+import { isFolderIgnoreRule } from '../../../shared/fork/folder-ignore'
 import { studioStrings } from './indexing-rules/studio-strings'
 import { OverviewPanel } from './indexing-rules/OverviewPanel'
 import { RulesPanel } from './indexing-rules/RulesPanel'
@@ -233,11 +234,14 @@ export function IndexingRulesStudio({ api }: { api: HomeApi }) {
 
   const deleteRule = async (rule: IgnoreRule) => {
     if (!isEditableRule(rule)) return
-    const confirmed = await appConfirm(d.confirmDeleteRule(rule.pattern), {
-      title: d.delete,
-      confirmLabel: d.delete,
-      tone: 'danger',
-    })
+    // a folder-level ignore is one click to undo (Ignore again), so it needs no confirmation
+    const confirmed =
+      isFolderIgnoreRule(rule) ||
+      (await appConfirm(d.confirmDeleteRule(rule.pattern), {
+        title: d.delete,
+        confirmLabel: d.delete,
+        tone: 'danger',
+      }))
     if (!confirmed) return
     const nextRules = rules.filter((entry) => entry.id !== rule.id)
     setRules(nextRules)
