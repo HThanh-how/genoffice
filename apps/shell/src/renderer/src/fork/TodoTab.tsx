@@ -217,6 +217,7 @@ export function TodoTab(props: TodoTabProps) {
     let timer: ReturnType<typeof setTimeout> | undefined
     const read = async () => {
       {
+        // read even while the window is reported hidden (index-poll.ts)
         const [issues, conversion] = await Promise.allSettled([
           readIndexRequest(() => api.getDocumentIndexIssueSummary('*'), isIndexIssueSummary),
           readIndexRequest(
@@ -396,15 +397,6 @@ export function TodoTab(props: TodoTabProps) {
 
   return (
     <div className="todo">
-      <header className="todo-head">
-        <div>
-          <h2>{d.heading}</h2>
-          <p>{d.sub}</p>
-        </div>
-        <span className="todo-ready">
-          {props.scanning ? d.cards.scanning[0] : d.ready.replace('{n}', num(props.ready))}
-        </span>
-      </header>
       {cards.length > 0 && <ul className="todo-operations">{cards.map(cardView)}</ul>}
       {actionFailed && (
         <p className="todo-status" role="status">
@@ -425,26 +417,28 @@ export function TodoTab(props: TodoTabProps) {
         </div>
       )}
       {!summary && !loadFailed && (
-        <p className="todo-status" role="status">
-          {d.loading}
-        </p>
+        <ul className="idx-issue-list is-placeholder" aria-busy="true" aria-label={d.loading}>
+          {[0, 1, 2].map((i) => (
+            <li key={i} className="idx-issue" aria-hidden="true">
+              <div className="idx-issue-head">
+                <span className="idx-issue-main">
+                  <span className="idx-issue-text">
+                    <span className="idx-skel idx-skel-name" />
+                    <span className="idx-skel idx-skel-path" />
+                  </span>
+                </span>
+              </div>
+            </li>
+          ))}
+        </ul>
       )}
       <div className="todo-workspace">
-        <details className="idx-view-options">
-          <summary>
-            <span>{g.options}</span>
-            <span className="idx-view-options-hint">{g.optionsHint}</span>
-          </summary>
-          <div className="todo-controls">
+        {summary && total > 0 && (
+          <div className="todo-toolbar">
             <div className="todo-search">
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
                 <circle cx="6.8" cy="6.8" r="4.3" stroke="currentColor" strokeWidth="1.4" />
-                <path
-                  d="m10 10 3.5 3.5"
-                  stroke="currentColor"
-                  strokeWidth="1.4"
-                  strokeLinecap="round"
-                />
+                <path d="m10 10 3.5 3.5" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" />
               </svg>
               <input
                 type="search"
@@ -455,12 +449,7 @@ export function TodoTab(props: TodoTabProps) {
                 onKeyDown={(event) => event.key === 'Escape' && setQuery('')}
               />
               {query && (
-                <button
-                  type="button"
-                  className="ixp-icon"
-                  aria-label={d.clear}
-                  onClick={() => setQuery('')}
-                >
+                <button type="button" className="ixp-icon" aria-label={d.clear} onClick={() => setQuery('')}>
                   ×
                 </button>
               )}
@@ -477,9 +466,7 @@ export function TodoTab(props: TodoTabProps) {
                 <option value="type">{lang === 'vi' ? 'Loại tệp' : 'File type'}</option>
                 <option value="progress">{lang === 'vi' ? 'Tiến độ' : 'Progress'}</option>
                 <option value="status">{lang === 'vi' ? 'Trạng thái' : 'Status'}</option>
-                <option value="connection">
-                  {lang === 'vi' ? 'Kết nối ổ' : 'Source connection'}
-                </option>
+                <option value="connection">{lang === 'vi' ? 'Kết nối ổ' : 'Source connection'}</option>
               </select>
               <button
                 type="button"
@@ -504,20 +491,14 @@ export function TodoTab(props: TodoTabProps) {
                 aria-label={lang === 'vi' ? 'Gom nhóm tệp' : 'Group files'}
                 onChange={(event) => setGrouping(event.target.value as IndexViewGroup)}
               >
-                <option value="reason">
-                  {lang === 'vi' ? 'Nhóm theo vấn đề' : 'Group by issue'}
-                </option>
-                <option value="folder">
-                  {lang === 'vi' ? 'Nhóm theo thư mục' : 'Group by folder'}
-                </option>
-                <option value="type">
-                  {lang === 'vi' ? 'Nhóm theo loại tệp' : 'Group by file type'}
-                </option>
+                <option value="reason">{lang === 'vi' ? 'Nhóm theo vấn đề' : 'Group by issue'}</option>
+                <option value="folder">{lang === 'vi' ? 'Nhóm theo thư mục' : 'Group by folder'}</option>
+                <option value="type">{lang === 'vi' ? 'Nhóm theo loại tệp' : 'Group by file type'}</option>
                 <option value="none">{lang === 'vi' ? 'Không gom nhóm' : 'No grouping'}</option>
               </select>
             </div>
           </div>
-        </details>
+        )}
 
         {summary && !loadFailed && total === 0 && (
           <section className="todo-empty">
@@ -572,11 +553,19 @@ export function TodoTab(props: TodoTabProps) {
                 </ul>
               </section>
             )}
-            {sections.auto && (
+            {(sections.skipped.length > 0 || sections.auto) && (
               <section aria-label={g.auto}>
                 <h3 className="idx-issues-title">{g.auto}</h3>
                 <ul className="idx-issue-list">
-                  {rowView(sections.auto, g.autoTitle, g.autoHint, true)}
+                  {sections.skipped.map((row) =>
+                    rowView(
+                      row,
+                      g.cat[row.id as keyof typeof g.cat].title,
+                      g.cat[row.id as keyof typeof g.cat].hint,
+                      true,
+                    ),
+                  )}
+                  {sections.auto && rowView(sections.auto, g.autoTitle, g.autoHint, true)}
                 </ul>
               </section>
             )}

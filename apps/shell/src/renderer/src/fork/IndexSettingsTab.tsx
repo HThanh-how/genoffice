@@ -118,51 +118,29 @@ const VI: typeof EN = {
   ignoreUserRule: 'Tuỳ chỉnh',
 }
 
-type SectionIcon = 'run' | 'pdf' | 'ocr' | 'model' | 'data' | 'diagnostics' | 'ignore'
-const ICON_PATHS: Record<SectionIcon, string> = {
-  run: 'M12 3v3m0 12v3M3 12h3m12 0h3M5.6 5.6l2.1 2.1m8.6 8.6 2.1 2.1M5.6 18.4l2.1-2.1m8.6-8.6 2.1-2.1M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0',
-  pdf: 'M7 3h7l4 4v14H7zM14 3v5h4M10 12h5m-5 4h5',
-  ocr: 'M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5M8 9h8m-4 0v7m-3 0h6',
-  model: 'M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Zm5.5-2 5 5',
-  diagnostics: 'M22 12h-4l-3 9L9 3l-3 9H2',
-  data: 'M4 6c0-4 16-4 16 0s-16 4-16 0Zm0 0v6c0 4 16 4 16 0V6M4 12v6c0 4 16 4 16 0v-6',
-  ignore:
-    'M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm-7 10a7 7 0 0 1 11.95-4.95l-9.9 9.9A6.95 6.95 0 0 1 5 12zm7 7a6.95 6.95 0 0 1-4.95-2.05l9.9-9.9A7 7 0 0 1 12 19z',
-}
+/** One settings row: title and a one-line description, expanding in place. No icon tiles. */
 function Section({
   title,
   hint,
-  icon,
   open = false,
   children,
   id,
 }: {
   title: string
   hint: string
-  icon: SectionIcon
   open?: boolean
   children: ReactNode
   id?: string
 }) {
   return (
-    <details id={id} className="idx-details" open={open}>
+    <details id={id} className="idx-details ixs-row" open={open}>
       <summary>
-        <svg className="ixs-icon" width="20" height="20" viewBox="0 0 24 24" aria-hidden="true">
-          <path
-            d={ICON_PATHS[icon]}
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
         <span className="ixs-section-text">
           <strong>{title}</strong>
           <span>{hint}</span>
         </span>
       </summary>
-      <div>{children}</div>
+      <div className="ixs-row-body">{children}</div>
     </details>
   )
 }
@@ -208,44 +186,42 @@ export function IndexSettingsTab({ api, focus }: { api: HomeApi; focus?: 'ocr' }
     }
   }
   return (
-    <div className="ixp ixs">
-      <header className="ixs-head">
-        <h2>{d.title}</h2>
-        <p>{d.hint}</p>
-      </header>
-      <Section title={d.run} hint={d.runHint} icon="run">
-        <IndexingModeSettings />
-      </Section>
-      <Section title={d.pdf} hint={d.pdfHint} icon="pdf">
-        <PdfPagesSettings api={api} />
-      </Section>
-      <Section title={d.ignore} hint={d.ignoreHint} icon="ignore">
-        <IgnoreRulesSettings api={api} />
-      </Section>
-      <div className="ixs-heading">
-        <h3>{d.advanced}</h3>
-        <p>{d.advancedHint}</p>
+    <div className="ixs">
+      <div className="ixs-list">
+        <Section title={d.run} hint={d.runHint}>
+          <IndexingModeSettings />
+        </Section>
+        <Section title={d.pdf} hint={d.pdfHint}>
+          <PdfPagesSettings api={api} />
+        </Section>
+        <Section title={d.ignore} hint={d.ignoreHint}>
+          <IgnoreRulesSettings api={api} />
+        </Section>
       </div>
-      <Section
-        id="index-settings-ocr"
-        title={d.ocr}
-        hint={d.ocrHint}
-        icon="ocr"
-        open={focus === 'ocr'}
-      >
-        <AgyOcrSettings />
-      </Section>
-      <Section title={d.model} hint={d.modelHint} icon="model">
-        <EmbeddingModelSettings />
-      </Section>
-      <Section title={d.diagnostics} hint={d.diagnosticsHint} icon="diagnostics">
-        <IndexDiagnostics api={api} />
-      </Section>
-      <EverythingSettings api={api} />
-      <Section title={d.storage} hint={d.storageHint} icon="data">
-        <DbLocationSettings api={api} />
-        <IndexStorageSettings api={api} />
-      </Section>
+      <details className="ixs-group" open={focus === 'ocr'}>
+        <summary>
+          <span className="ixs-section-text">
+            <strong>{d.advanced}</strong>
+            <span>{d.advancedHint}</span>
+          </span>
+        </summary>
+        <div className="ixs-list">
+          <Section id="index-settings-ocr" title={d.ocr} hint={d.ocrHint} open={focus === 'ocr'}>
+            <AgyOcrSettings />
+          </Section>
+          <Section title={d.model} hint={d.modelHint}>
+            <EmbeddingModelSettings />
+          </Section>
+          <Section title={d.diagnostics} hint={d.diagnosticsHint}>
+            <IndexDiagnostics api={api} />
+          </Section>
+          <EverythingSettings api={api} />
+          <Section title={d.storage} hint={d.storageHint}>
+            <DbLocationSettings api={api} />
+            <IndexStorageSettings api={api} />
+          </Section>
+        </div>
+      </details>
       <section className="ixs-danger" aria-label={d.clearTitle}>
         <div>
           <h3>{d.clearTitle}</h3>

@@ -2331,3 +2331,297 @@ button.idx-src-chip {
 .idx-src.is-offline .idx-src-title strong {
   color: var(--text-secondary);
 }
+
+/* ── Index screen, quiet pass ──────────────────────────────────────────────
+   One primary action (ink, not accent), neutral underline tabs, every panel on
+   the header's width, the status block as the first answer, rows not cards. */
+.idx-page .idx-btn:hover:not(:disabled) {
+  border-color: var(--text-tertiary);
+}
+.idx-btn.primary {
+  border-color: var(--text);
+  background: var(--text);
+  color: var(--surface);
+  font-weight: 600;
+}
+.idx-page .idx-btn.primary:hover:not(:disabled) {
+  border-color: var(--text);
+  opacity: 0.88;
+}
+.idx-tabs {
+  gap: 0;
+}
+.idx-tabs button.idx-tab-btn {
+  padding: 8px 2px;
+  margin-right: 22px;
+  min-height: 38px;
+}
+.idx-tabs button.is-active {
+  border-bottom-color: var(--text);
+}
+.idx-tabs .idx-badge {
+  margin-left: 6px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--hover);
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.idx-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+
+/* Overview status block */
+.idx-status {
+  gap: 12px;
+  padding: 18px 20px;
+}
+.idx-status .idx-progress-bar {
+  flex: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--hover);
+}
+.idx-status .idx-progress-fill {
+  border-radius: 999px;
+}
+.idx-status-text {
+  font-size: 15px;
+}
+.idx-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 32px;
+  margin: 0;
+}
+.idx-facts > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.idx-facts dt {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.idx-facts dd {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+.idx-facts-of {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--text-secondary);
+}
+.idx-status-needs {
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+.idx-status-needs-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+.idx-status-needs-head strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+.idx-status-needs ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.idx-status-need {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 7px 8px;
+  margin: 0 -8px;
+  box-sizing: content-box;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+.idx-status-need:hover {
+  background: var(--hover);
+}
+.idx-status-need-count {
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.idx-status.is-error {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+}
+.idx-status.is-error .idx-status-text {
+  font-weight: 500;
+}
+
+/* Placeholder shapes */
+.idx-skel-facts {
+  width: 40%;
+  height: 40px;
+}
+.idx-skel-icon {
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+.idx-skel-name {
+  width: 38%;
+  height: 14px;
+}
+.idx-skel-path {
+  width: 24%;
+  height: 11px;
+  margin-top: 6px;
+}
+
+/* Recent files: one framed list, rows split by rules */
+.idx-recent-section {
+  gap: 8px;
+  margin-top: 0;
+}
+.idx-recent-header {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+.idx-recent-title {
+  font-size: 13px;
+}
+.idx-recent-list {
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.idx-recent-list > li + li {
+  border-top: 1px solid var(--border-subtle);
+}
+.idx-recent-list .idx-recent-item {
+  width: 100%;
+  min-height: 52px;
+  box-sizing: border-box;
+  padding: 8px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+}
+.idx-recent-list .idx-recent-item:hover {
+  border-color: transparent;
+  background: var(--hover);
+}
+.idx-recent-list .idx-recent-item.is-placeholder {
+  cursor: default;
+}
+.idx-recent-name {
+  font-weight: 500;
+}
+.idx-recent-time {
+  flex: none;
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+.idx-recent-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  text-align: left;
+}
+.idx-recent-error p {
+  margin: 0;
+}
+
+/* Issues: one toolbar line, no outer frame around the framed lists */
+.idx-panel .todo-workspace {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.todo-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin-bottom: 16px;
+}
+.todo-toolbar .todo-search {
+  flex: 0 1 320px;
+}
+.todo-toolbar .todo-search input {
+  padding: 7px 0;
+}
+.todo-toolbar .todo-view-controls {
+  margin-top: 0;
+}
+.idx-issue-list.is-placeholder .idx-issue-main {
+  cursor: default;
+}
+
+/* Sources: rows on the panel width, split by rules */
+.idx-panel .set-folders {
+  margin: 0;
+  padding-top: 0;
+  border-top: 0;
+  gap: 0;
+}
+.idx-panel .idx-sources-head {
+  margin-bottom: 12px;
+}
+.idx-panel .set-folder.idx-src {
+  padding: 12px 0;
+  border: 0;
+  border-bottom: 1px solid var(--border-subtle);
+  border-radius: 0;
+  background: transparent;
+}
+.idx-panel .set-folder.idx-src.is-placeholder {
+  gap: 10px;
+}
+.idx-panel .idx-link {
+  padding: 0;
+  font-size: 12.5px;
+}
+.idx-panel .idx-custom-sources-header h4 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+.idx-panel .idx-custom-sources-header p {
+  margin: 4px 0 0;
+}
+.idx-recent-empty {
+  padding: 14px 16px;
+  border: 1px dashed var(--border);
+  border-radius: 12px;
+  text-align: left;
+}
+.idx-recent-empty p {
+  margin: 0;
+}

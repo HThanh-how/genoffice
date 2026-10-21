@@ -35,8 +35,13 @@ export interface IndexSummaryInput {
   attention?: IndexIssueSummary | null
 }
 
-/** A group the person has to deal with. 'no-text' (scans, blank files) is skipped, not a problem. */
+/**
+ * A group the person has to deal with. 'no-text' (scans), blank, too large and unsupported files are
+ * skipped, not problems. A password-protected file is one: the person can remove the password and try
+ * again, and the Issues tab asks exactly that.
+ */
 export function isProblemReason(reason: IndexIssueReason): boolean {
+  if (reason === 'password') return true
   return issueBucket(reason) === 'attention' && reason !== 'no-text'
 }
 

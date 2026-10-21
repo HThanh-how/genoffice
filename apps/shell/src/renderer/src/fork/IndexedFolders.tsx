@@ -530,9 +530,22 @@ export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) 
     )
   }
 
+  // Placeholder rows with the real rows' footprint while the first answer is on its way.
   if (folders === null && !failed)
     return (
-      <p role="status">{dict.loadingFolders}</p>
+      <div className="set-folders" role="status" aria-busy="true" aria-label={dict.loadingFolders}>
+        {[0, 1].map((i) => (
+          <div className="set-folder idx-src is-placeholder" key={i} aria-hidden="true">
+            <div className="idx-src-row">
+              <div className="idx-src-title">
+                <span className="idx-skel idx-skel-name" />
+                <span className="idx-skel idx-skel-path" />
+              </div>
+            </div>
+            <span className="idx-skel idx-skel-bar" />
+          </div>
+        ))}
+      </div>
     )
 
   const customFolders =

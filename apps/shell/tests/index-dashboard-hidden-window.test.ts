@@ -175,6 +175,12 @@ describe('Index screen while Windows reports the window hidden', () => {
     const status = container.querySelector('.idx-status')?.textContent ?? ''
     expect(status).not.toMatch(/Ready to search 0 files/)
     expect(status).toMatch(/77%/)
+    // searchable = ready + released (released files keep their text), out of every file
+    expect(status).toContain('33,124')
+    expect(status).toContain('42,853')
+    // one count everywhere: corrupt 2 + password 14 + other 19
+    expect(status).toContain('35 files need you')
+    expect(container.querySelector('.idx-badge')?.textContent).toBe('35')
 
     clickTab('Sources')
     await flush()
@@ -186,7 +192,6 @@ describe('Index screen while Windows reports the window hidden', () => {
     const issuesText = container.textContent ?? ''
     expect(issuesText).not.toMatch(/Loading file status/)
     expect(issuesText).not.toMatch(/\b0 searchable files/)
-    expect(issuesText).toContain('8,103')
     // corrupt (2) + password (14) fold into one group the person can act on
     expect(issuesText).toMatch(/Damaged or needs a password[^0-9]*16/)
   })

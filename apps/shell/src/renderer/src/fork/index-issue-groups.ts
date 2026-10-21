@@ -47,9 +47,18 @@ export interface IssueSectionRow {
   retryable: boolean
 }
 
+/**
+ * Groups that are reported but never counted as problems: scans that need OCR and file types or
+ * sizes GenOffice does not read. They match `isProblemReason` in index-summary.ts, so the sidebar
+ * badge, the overview and the Issues tab always print the same number.
+ */
+const SKIPPED_SECTIONS: ReadonlySet<IssueSection> = new Set<IssueSection>(['ocr', 'unsupported'])
+
 export interface IssueSections {
-  /** groups that need a person, biggest first */
+  /** groups that need a person, in the listed order */
   needs: IssueSectionRow[]
+  /** reported for information only (OCR, unsupported); not problems */
+  skipped: IssueSectionRow[]
   /** queued files; not a problem */
   waiting: IssueSectionRow | null
   /** blank files skipped automatically; not an error */
@@ -76,10 +85,15 @@ export function buildIssueSections(
     rows.set(id, row)
   }
   for (const row of rows.values()) row.retryable = groupRetryable(row.id, row.reasons)
-  const needs = ISSUE_CATEGORIES.map((id) => rows.get(id)).filter(
+  const listed = ISSUE_CATEGORIES.map((id) => rows.get(id)).filter(
     (row): row is IssueSectionRow => !!row,
   )
-  return { needs, waiting: rows.get('waiting') ?? null, auto: rows.get('auto') ?? null }
+  return {
+    needs: listed.filter((row) => !SKIPPED_SECTIONS.has(row.id)),
+    skipped: listed.filter((row) => SKIPPED_SECTIONS.has(row.id)),
+    waiting: rows.get('waiting') ?? null,
+    auto: rows.get('auto') ?? null,
+  }
 }
 
 /** The same summary narrowed to some reasons, so a list can show just one group. */

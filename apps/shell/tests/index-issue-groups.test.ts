@@ -52,23 +52,27 @@ describe('buildIssueSections', () => {
     expect(s.needs.map((r) => [r.id, r.count])).toEqual([
       ['locked', 5],
       ['damaged', 2],
-      ['unsupported', 3],
       ['gone', 6],
     ])
+    // unsupported and too-large files are reported, never counted as problems
+    expect(s.skipped.map((r) => [r.id, r.count])).toEqual([['unsupported', 3]])
     expect(s.waiting?.count).toBe(9665)
     expect(s.auto?.count).toBe(1992)
   })
 
   it('offers a retry only where trying again can change the outcome', () => {
     const byId = Object.fromEntries(
-      buildIssueSections(groups).needs.map((r) => [r.id, r.retryable]),
+      [...buildIssueSections(groups).needs, ...buildIssueSections(groups).skipped].map((r) => [
+        r.id,
+        r.retryable,
+      ]),
     )
     expect(byId).toMatchObject({ locked: true, damaged: true, unsupported: false, gone: false })
   })
 
   it('drops empty groups and tolerates no input', () => {
     expect(buildIssueSections([{ reason: 'corrupt', count: 0 }]).needs).toEqual([])
-    expect(buildIssueSections([])).toEqual({ needs: [], waiting: null, auto: null })
+    expect(buildIssueSections([])).toEqual({ needs: [], skipped: [], waiting: null, auto: null })
   })
 
   it('narrows a summary to the reasons of one group', () => {

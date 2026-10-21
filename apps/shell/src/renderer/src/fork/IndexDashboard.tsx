@@ -7,8 +7,6 @@ import { IndexedFolders } from './IndexedFolders'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
 import { deriveIndexSummary } from './index-summary'
 import { IndexSettingsTab } from './IndexSettingsTab'
-import { SearchHero } from './SearchHero'
-import { SearchResults } from './SearchResults'
 import { IndexNav, type IndexTabId } from './IndexNav'
 import { IndexOverview } from './IndexOverview'
 import { TEXT, EN } from './index-dashboard-i18n'
@@ -20,13 +18,11 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const { lang } = useI18n()
   const d = TEXT[lang] ?? EN
   const [tab, setTab] = useState<IndexTabId>('overview')
-  const [searchQuery, setSearchQuery] = useState('')
   const [settingsFocus, _setSettingsFocus] = useState<'ocr' | undefined>()
   const [focus, setFocus] = useState<IndexIssueReason | null>(null)
   const [actionBusy, setActionBusy] = useState(false)
   const [actionNote, setActionNote] = useState('')
   const actionInFlight = useRef(false)
-  const searchInputRef = useRef<HTMLInputElement>(null)
   const moreRef = useRef<HTMLDetailsElement>(null)
   const closeMore = () => moreRef.current?.removeAttribute('open')
 
@@ -37,17 +33,22 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const paused = !!mode?.effective?.paused || memory?.enabled === false
   const pending = memory?.pending ?? activity?.memory.pending ?? 0
 
+  // Search lives in the Home box: Ctrl+F leaves the index and focuses it there.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'f' || e.key === 'F')) {
-        e.preventDefault()
-        searchInputRef.current?.focus()
-        searchInputRef.current?.select()
-      }
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+      if (e.key !== 'f' && e.key !== 'F' && e.code !== 'KeyF') return
+      e.preventDefault()
+      onClose()
+      requestAnimationFrame(() => {
+        const input = document.querySelector<HTMLInputElement>('.ask-dock .ask-form input')
+        input?.focus()
+        input?.select()
+      })
     }
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [])
+  }, [onClose])
 
   const runAction = useCallback(async (work: () => Promise<void>) => {
     if (actionInFlight.current) return
@@ -96,8 +97,14 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
         </div>
         <div className="idx-actions">
           <button type="button" disabled={actionBusy} className="idx-btn" onClick={() => void addFolder()}>{d.addFolder}</button>
-          <button type="button" disabled={actionBusy || !memory} className="idx-btn primary" onClick={() => void togglePause()}>
-            {memory?.enabled === false ? d.resume : d.pause}
+          <button
+            type="button"
+            disabled={actionBusy || !memory}
+            className="idx-btn primary"
+            aria-pressed={memory?.enabled === false}
+            onClick={() => void togglePause()}
+          >
+            {memory?.enabled === false ? d.resumeIndex : d.pauseIndex}
           </button>
           <details className="idx-more" ref={moreRef}>
             <summary className="idx-btn idx-more-btn" aria-label={d.more} title={d.more}>
@@ -117,7 +124,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
         </div>
       </header>
 
-      {statusFailed && (
+      {statusFailed && loaded && (snap.activity || snap.memory) && (
         <div className="todo-status" role="status">
           <span>{d.statusFailed}</span>
           <button type="button" className="idx-btn" onClick={kick}>{d.refresh}</button>
@@ -144,40 +151,33 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
         </div>
       )}
 
-      <SearchHero ref={searchInputRef} autoFocus={false} value={searchQuery} onChange={setSearchQuery} onClear={() => setSearchQuery('')} />
-
-      {searchQuery.trim().length > 0 ? (
-        <SearchResults api={api} query={searchQuery} onOpened={onClose} />
-      ) : (
-        <>
-          <IndexNav activeTab={tab} onChangeTab={setTab} issuesCount={todo} />
-          <div id="index-tab-panel" role="tabpanel" aria-labelledby={`index-tab-${tab}`}>
-            {tab === 'overview' && (
-              <IndexOverview
-                api={api} memory={memory} activity={activity} mode={mode} now={now}
-                attention={attention}
-                loading={!loaded}
-                onNavigateTab={(nextTab, reason) => { if (reason) setFocus(reason); setTab(nextTab) }}
-                onOpened={onClose}
-              />
-            )}
-            {tab === 'sources' && <div className="idx-body idx-embed"><IndexedFolders api={api} onOpenIssues={() => setTab('issues')} /></div>}
-            {tab === 'issues' && (
-              <div className="idx-body">
-                <TodoTab
-                  api={api} ready={progress?.readyFiles ?? memory?.documents ?? 0}
-                  pending={pending} switchedOff={memory?.enabled === false}
-                  held={paused && memory?.enabled !== false} heldWhy={tierText}
-                  scanning={!!folder?.running} focus={focus}
-                  onAddFolder={() => void addFolder()} onRescan={() => void rescanAll()}
-                  onResume={() => void togglePause()} onChanged={kick}
-                />
-              </div>
-            )}
-            {tab === 'settings' && <div className="idx-body idx-embed"><IndexSettingsTab api={api} focus={settingsFocus} /></div>}
-          </div>
-        </>
-      )}
+      <IndexNav activeTab={tab} onChangeTab={setTab} issuesCount={todo} />
+      <div id="index-tab-panel" className="idx-panel" role="tabpanel" aria-labelledby={`index-tab-${tab}`}>
+        {tab === 'overview' && (
+          <IndexOverview
+            api={api} memory={memory} activity={activity} mode={mode} now={now}
+            attention={attention}
+            loading={!loaded}
+            failed={statusFailed}
+            onRetry={kick}
+            onNavigateTab={(nextTab, reason) => { if (reason) setFocus(reason); setTab(nextTab) }}
+            onOpened={onClose}
+            onViewRecent={onClose}
+          />
+        )}
+        {tab === 'sources' && <IndexedFolders api={api} onOpenIssues={() => setTab('issues')} />}
+        {tab === 'issues' && (
+          <TodoTab
+            api={api} ready={progress?.readyFiles ?? memory?.documents ?? 0}
+            pending={pending} switchedOff={memory?.enabled === false}
+            held={paused && memory?.enabled !== false} heldWhy={tierText}
+            scanning={!!folder?.running} focus={focus}
+            onAddFolder={() => void addFolder()} onRescan={() => void rescanAll()}
+            onResume={() => void togglePause()} onChanged={kick}
+          />
+        )}
+        {tab === 'settings' && <IndexSettingsTab api={api} focus={settingsFocus} />}
+      </div>
     </main>
   )
 }

@@ -7,6 +7,7 @@ import {
   navIndicator,
 } from '../src/renderer/src/fork/index-summary'
 import type { HomeApi, HomeIndexingActivity } from '../src/shared/home-api'
+import { buildIssueSections } from '../src/renderer/src/fork/index-issue-groups'
 
 function activity(over: {
   pendingFiles?: number
@@ -67,6 +68,21 @@ describe('deriveIndexSummary', () => {
     expect(s.problemGroups.map((g) => g.reason)).toEqual(['permission', 'corrupt'])
     expect(isProblemReason('no-text')).toBe(false)
     expect(isProblemReason('model')).toBe(true)
+  })
+
+  it('a password-protected file is a problem; the badge and the Issues groups agree', () => {
+    const attention = groups([
+      ['corrupt', 2],
+      ['password', 14],
+      ['other', 19],
+      ['no-text', 1467],
+      ['empty', 490],
+      ['waiting', 3],
+    ])
+    const s = deriveIndexSummary({ activity: activity({}), attention })
+    expect(s.problems).toBe(35)
+    const sections = buildIssueSections(attention.groups)
+    expect(sections.needs.reduce((n, r) => n + r.count, 0)).toBe(s.problems)
   })
 
   it('falls back to failed files of the activity without issue groups', () => {
