@@ -209,4 +209,29 @@ describe('FileIndexStore', () => {
     expect(store.search('alpha beta').hits.map((h) => h.name)).toEqual(['both.pdf'])
     expect(store.search('alpha beta', { exts: ['md'] }).hits.map((h) => h.name)).toEqual(['one.md'])
   })
+
+  it('nameOnly matches file name and folder without touching the body', () => {
+    store.upsert(meta('/docs/giao-an-toan.docx'), 'unrelated words', 'ok')
+    store.upsert(meta('/docs/notes.md'), 'giao an appears only in the body', 'ok')
+    store.upsert(meta('/giao an mon toan/readme.txt'), 'x', 'ok')
+    const full = store.search('giao an').hits.map((h) => h.name)
+    expect(full).toContain('notes.md')
+    const r = store.search('giao an', { nameOnly: true })
+    expect(r.hits.map((h) => h.name)).not.toContain('notes.md')
+    expect(r.hits.map((h) => h.name).sort()).toEqual(['giao-an-toan.docx', 'readme.txt'])
+    expect(r.total).toBe(2)
+    expect(r.hits.every((h) => h.snippet === null && h.excerpt === undefined)).toBe(true)
+  })
+
+  it('nameOnly keeps prefix matching, accent folding, the type filter and the same order as the full search', () => {
+    store.upsert(meta('/a/Báo cáo tháng.docx'), 'body', 'ok')
+    store.upsert(meta('/a/bao cao nam.xlsx'), 'body', 'ok')
+    store.upsert(meta('/a/other.docx'), 'bao cao inside body only', 'ok')
+    const names = (o: { nameOnly?: boolean; exts?: string[] }): string[] =>
+      store.search('bao ca', o).hits.map((h) => h.name)
+    expect(names({ nameOnly: true }).sort()).toEqual(['Báo cáo tháng.docx', 'bao cao nam.xlsx'])
+    expect(names({ nameOnly: true, exts: ['xlsx'] })).toEqual(['bao cao nam.xlsx'])
+    const full = names({}).filter((n) => n !== 'other.docx')
+    expect(names({ nameOnly: true })).toEqual(full)
+  })
 })

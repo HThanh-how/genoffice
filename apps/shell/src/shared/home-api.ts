@@ -186,6 +186,8 @@ export interface FileSearchQuery {
   ext?: string
   offset?: number
   limit?: number
+  /** match file name and folder only (no content); hits carry no snippet. Omit for the full search */
+  nameOnly?: boolean
 }
 
 export interface FileSearchSnippetPart {

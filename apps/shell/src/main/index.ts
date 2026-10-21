@@ -5343,7 +5343,7 @@ function registerHomeIpc(): void {
       const starred = new Set(readStarredFiles())
       const result =
         q && fileSearch
-          ? await fileSearch.search(q, { exts, offset, limit })
+          ? await fileSearch.search(q, { exts, offset, limit, nameOnly: query.nameOnly === true })
           : { hits: [], total: 0 }
       const filteredHits = result.hits.filter((h) => !isPathIgnored(h.path))
       return {

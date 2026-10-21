@@ -134,16 +134,23 @@ function makeTerm(raw: string, allowPrefix: boolean): QueryTerm | null {
 
 const BI_COLUMNS = '{name path body}'
 const UNI_COLUMNS = '{name_u path_u body_u}'
+/** name-only lookups leave the (large) body column out of the FTS filter */
+const BI_NAME_COLUMNS = '{name path}'
+const UNI_NAME_COLUMNS = '{name_u path_u}'
+
+function columnsFor(term: QueryTerm, nameOnly: boolean): string {
+  if (nameOnly) return term.bigramSafe ? BI_NAME_COLUMNS : UNI_NAME_COLUMNS
+  return term.bigramSafe ? BI_COLUMNS : UNI_COLUMNS
+}
 
 function phrase(tokens: string[], prefix: boolean): string {
   const quoted = `"${tokens.map((t) => t.replace(/"/g, '""')).join(' ')}"`
   return prefix ? `${quoted} *` : quoted
 }
 
-export function termExpr(term: QueryTerm): string {
-  return term.bigramSafe
-    ? `${BI_COLUMNS}: ${phrase(term.tokens.bi, term.prefix)}`
-    : `${UNI_COLUMNS}: ${phrase(term.tokens.uni, term.prefix)}`
+export function termExpr(term: QueryTerm, nameOnly = false): string {
+  const tokens = term.bigramSafe ? term.tokens.bi : term.tokens.uni
+  return `${columnsFor(term, nameOnly)}: ${phrase(tokens, term.prefix)}`
 }
 
 /** FTS5 MATCH expression for the parsed query, or null when nothing is searchable */
@@ -172,8 +179,8 @@ export interface TokenExpr {
  * bigrams straddling word boundaries that no file holds, and they must not
  * outvote the words that do match.
  */
-export function tokenExprs(term: QueryTerm): TokenExpr[] {
-  const cols = term.bigramSafe ? BI_COLUMNS : UNI_COLUMNS
+export function tokenExprs(term: QueryTerm, nameOnly = false): TokenExpr[] {
+  const cols = columnsFor(term, nameOnly)
   const out = new Map<string, TokenExpr>()
   const add = (tok: string, at: number[]): void => {
     const cur = out.get(tok)

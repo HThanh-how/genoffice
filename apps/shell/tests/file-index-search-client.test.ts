@@ -41,6 +41,24 @@ describe('FileIndexSearchClient', () => {
     client.close()
   })
 
+  it('keeps a waiting name-only lookup when a full search arrives, and runs it first', async () => {
+    const thread = new FakeThread()
+    const client = new FileIndexSearchClient(() => thread)
+    const busy = client.search('busy')
+    const names = client.search('gi', { nameOnly: true })
+    const full = client.search('gi')
+    thread.answer(0, page('/busy'))
+    await busy
+    await vi.waitFor(() => expect(thread.posted.map((p) => p.q)).toEqual(['busy', 'gi']))
+    expect((thread.posted[1] as unknown as { options: { nameOnly?: boolean } }).options.nameOnly).toBe(true)
+    thread.answer(1, page('/names'))
+    expect((await names).hits[0]!.path).toBe('/names')
+    await vi.waitFor(() => expect(thread.posted).toHaveLength(3))
+    thread.answer(2, page('/full'))
+    expect((await full).hits[0]!.path).toBe('/full')
+    client.close()
+  })
+
   it('never posts the heavy query itself: the caller only awaits a promise', () => {
     const thread = new FakeThread()
     const client = new FileIndexSearchClient(() => thread)

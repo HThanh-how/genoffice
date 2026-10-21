@@ -47,6 +47,11 @@ export interface SearchOptions {
   limit?: number
   /** attach this many characters of body around the first hit to each result */
   excerptChars?: number
+  /**
+   * Match only the file name and folder path: the body column is neither searched nor read, so hits carry no
+   * snippet or excerpt. Same ordering rules as a full search, just computed without the body candidates.
+   */
+  nameOnly?: boolean
 }
 
 export interface SearchResult {
@@ -316,6 +321,7 @@ export class FileIndexStore {
   search(input: string, opts: SearchOptions = {}): SearchResult {
     const parsed = parseQuery(input)
     if (parsed.include.length === 0) return { hits: [], total: 0 }
+    const nameOnly = opts.nameOnly === true
     const candidates = new Map<number, Candidate>()
     const get = (id: number): Candidate => {
       let c = candidates.get(id)
@@ -327,14 +333,14 @@ export class FileIndexStore {
     }
     for (const term of parsed.include) {
       const exactIds = new Set<number>()
-      for (const r of this.matchScored(termExpr(term))) {
+      for (const r of this.matchScored(termExpr(term, nameOnly))) {
         exactIds.add(r.rowid)
         const c = get(r.rowid)
         c.exact++
         c.score += r.score
         c.needles.add(term.text)
       }
-      for (const [id, m] of this.relaxedMatches(term)) {
+      for (const [id, m] of this.relaxedMatches(term, nameOnly)) {
         if (exactIds.has(id)) continue
         const c = get(id)
         c.relaxed++
@@ -394,7 +400,7 @@ export class FileIndexStore {
     const offset =
       opts.offset != null && Number.isFinite(opts.offset) ? Math.max(0, opts.offset) : 0
     const page = rows.slice(offset, offset + limit)
-    const bodies = this.fetchBodies(page.map((r) => r.id))
+    const bodies = nameOnly ? new Map<number, string>() : this.fetchBodies(page.map((r) => r.id))
     const hits = page.map((r) => {
       const needles = [...candidates.get(r.id)!.needles]
       const body = bodies.get(r.id)
@@ -461,8 +467,11 @@ export class FileIndexStore {
   }
 
   /** files covering more than half of the term's characters, with the tokens they hold */
-  private relaxedMatches(term: QueryTerm): Map<number, { tokens: string[]; cover: number }> {
-    const tokens = tokenExprs(term)
+  private relaxedMatches(
+    term: QueryTerm,
+    nameOnly = false,
+  ): Map<number, { tokens: string[]; cover: number }> {
+    const tokens = tokenExprs(term, nameOnly)
     const out = new Map<number, { tokens: string[]; at: Set<number> }>()
     if (tokens.length < RELAXED_MIN_TOKENS) return new Map()
     for (const t of tokens) {

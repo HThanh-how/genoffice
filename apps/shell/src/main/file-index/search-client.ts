@@ -44,8 +44,14 @@ export class FileIndexSearchClient {
   search(q: string, options: SearchOptions = {}): Promise<SearchResult> {
     if (this.closed) return Promise.resolve(EMPTY)
     return new Promise((resolve) => {
-      // typing asks for a new search per keystroke: only the newest one waits behind the running one
-      for (const older of this.waiting.splice(0)) older.resolve(EMPTY)
+      // typing asks for a new search per keystroke: only the newest one of each kind waits behind the running one.
+      // A name-only lookup and a full search are separate kinds so a cheap name lookup is never dropped for the
+      // slow full search that follows it.
+      const nameOnly = options.nameOnly === true
+      for (let i = this.waiting.length - 1; i >= 0; i--) {
+        if ((this.waiting[i]!.options.nameOnly === true) !== nameOnly) continue
+        this.waiting.splice(i, 1)[0]!.resolve(EMPTY)
+      }
       this.waiting.push({ q, options, resolve })
       this.pump()
     })
@@ -61,7 +67,9 @@ export class FileIndexSearchClient {
 
   private pump(): void {
     if (this.running || this.closed) return
-    const job = this.waiting.pop()
+    // the cheap name-only lookup goes first so names appear before the full search finishes
+    const nameIdx = this.waiting.findIndex((j) => j.options.nameOnly === true)
+    const job = nameIdx >= 0 ? this.waiting.splice(nameIdx, 1)[0] : this.waiting.pop()
     if (!job) return
     const id = this.nextId++
     const timer = setTimeout(() => {
