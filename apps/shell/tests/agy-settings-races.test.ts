@@ -685,3 +685,225 @@ describe('R4 + R6: the generic settings write is validated against the file it c
     expect(readAi(file).maxOutputTokens).toBe(4096)
   })
 })
+
+describe('S9-S14: the generic settings write commits every field it merged', () => {
+  /** a settings file plus the CLI it names, so the sanitiser keeps every field under test */
+  function settingsFile(name: string): { path: string; cli: string } {
+    const dir = mkdtempSync(join(tmpdir(), name))
+    dirs.push(dir)
+    const cli = join(dir, 'agy')
+    const path = join(dir, 'ai-settings.json')
+    writeFileSync(cli, '', 'utf8')
+    writeFileSync(
+      path,
+      JSON.stringify({
+        provider: 'agy',
+        providers: {
+          agy: { apiKey: '', cliPath: cli, model: HIGH },
+          openai: { apiKey: 'o1', model: 'gpt-5' },
+        },
+        customEndpoints: [
+          { id: 'ep1', name: 'One', baseUrl: 'https://one.example', apiKey: '', model: 'm1' },
+        ],
+        customEndpoint: 'ep1',
+        media: {
+          imageProvider: 'agy',
+          analysisProvider: 'agy',
+          videoAnalysisProvider: 'agy',
+          providers: { agy: { apiKey: 'm1', baseUrl: 'https://media.example' } },
+        },
+        search: { provider: 'parallel', providers: { parallel: { apiKey: 'p1' } } },
+        maxOutputTokens: 1024,
+        gskToolsEnabled: false,
+      }),
+      'utf8',
+    )
+    return { path, cli }
+  }
+
+  /** two windows that read the same baseline and are held in flight by one deferred catalog */
+  function inFlight({ path, cli }: { path: string; cli: string }) {
+    let release: (value: { models: string[]; error?: string }) => void = () => undefined
+    const promise = new Promise<{ models: string[]; error?: string }>((resolve) => {
+      release = resolve
+    })
+    catalogCall.mockImplementation(() => promise)
+    const read = () => JSON.parse(readFileSync(path, 'utf8')) as AiSettings
+    const write = (next: AiSettings) => writeFileSync(path, JSON.stringify(next), 'utf8')
+    const window = (changes: Record<string, unknown>) =>
+      applySettingsWrite(
+        {
+          provider: 'agy',
+          providers: {
+            agy: { apiKey: '', cliPath: cli, model: PRO },
+            openai: { apiKey: 'o1', model: 'gpt-5' },
+          },
+          customEndpoints: [
+            { id: 'ep1', name: 'One', baseUrl: 'https://one.example', apiKey: '', model: 'm1' },
+          ],
+          customEndpoint: 'ep1',
+          media: {
+            imageProvider: 'agy',
+            analysisProvider: 'agy',
+            videoAnalysisProvider: 'agy',
+            providers: { agy: { apiKey: 'm1', baseUrl: 'https://media.example' } },
+          },
+          search: { provider: 'parallel', providers: { parallel: { apiKey: 'p1' } } },
+          maxOutputTokens: 1024,
+          gskToolsEnabled: false,
+          ...changes,
+        },
+        read,
+        write,
+        (cliPath: string | undefined) => catalogCall(cliPath),
+        GEM,
+      )
+    return { release, window }
+  }
+
+  it('S9: two windows changing different scalars both land', async () => {
+    const file = settingsFile('agy-s9-')
+    const { release, window } = inFlight(file)
+    const a = window({ maxOutputTokens: 2048 })
+    const b = window({ gskToolsEnabled: true })
+    release({ models: GEM })
+    const [da, db] = await Promise.all([a, b])
+    expect(da.ok).toBe(true)
+    expect(db.ok).toBe(true)
+    const saved = readAi(file.path)
+    // neither change may be silently dropped
+    expect(saved.maxOutputTokens).toBe(2048)
+    expect(saved.gskToolsEnabled).toBe(true)
+    expect(saved.providers.agy.model).toBe(PRO)
+  })
+
+  it('S10: the same race with the opposite completion order still keeps both changes', async () => {
+    const file = settingsFile('agy-s10-')
+    const { release, window } = inFlight(file)
+    const b = window({ gskToolsEnabled: true })
+    const a = window({ maxOutputTokens: 2048 })
+    release({ models: GEM })
+    const [db, da] = await Promise.all([b, a])
+    expect(db.ok).toBe(true)
+    expect(da.ok).toBe(true)
+    const saved = readAi(file.path)
+    expect(saved.maxOutputTokens).toBe(2048)
+    expect(saved.gskToolsEnabled).toBe(true)
+    expect(saved.providers.agy.model).toBe(PRO)
+  })
+
+  it('S11: two windows changing the same scalar to different values never silently overwrite', async () => {
+    const file = settingsFile('agy-s11-')
+    const { release, window } = inFlight(file)
+    const a = window({ maxOutputTokens: 2048 })
+    const b = window({ maxOutputTokens: 4096 })
+    release({ models: GEM })
+    const [da, db] = await Promise.all([a, b])
+    expect(da.ok).toBe(true)
+    expect(db.ok).toBe(false)
+    expect(db.reason).toBe('conflict')
+    // the loser wrote nothing, and the winner's value is what is on disk
+    expect(readAi(file.path).maxOutputTokens).toBe(2048)
+  })
+
+  it('S12: provider, key, endpoint, media, search and scalar changes all survive together', async () => {
+    const file = settingsFile('agy-s12-')
+    const { release, window } = inFlight(file)
+    const a = window({
+      providers: {
+        agy: { apiKey: '', cliPath: file.cli, model: PRO },
+        openai: { apiKey: 'o-from-A', model: 'gpt-5' },
+      },
+      maxOutputTokens: 2048,
+    })
+    const b = window({
+      customEndpoints: [
+        { id: 'ep1', name: 'One', baseUrl: 'https://one.example', apiKey: '', model: 'm1' },
+        { id: 'ep2', name: 'Two', baseUrl: 'https://two.example', apiKey: 'k2', model: 'm2' },
+      ],
+      customEndpoint: 'ep2',
+      media: {
+        imageProvider: 'openai',
+        analysisProvider: 'agy',
+        videoAnalysisProvider: 'agy',
+        providers: { openai: { apiKey: 'mB', baseUrl: 'https://media-B.example' } },
+      },
+      search: { provider: 'tavily', providers: { tavily: { apiKey: 'pB' } } },
+      gskToolsEnabled: true,
+    })
+    release({ models: GEM })
+    const [da, db] = await Promise.all([a, b])
+    expect(da.ok).toBe(true)
+    expect(db.ok).toBe(true)
+    const saved = readAi(file.path)
+    const providers = saved.providers as Record<string, { apiKey: string; model: string }>
+    expect(providers.openai.apiKey).toBe('o-from-A')
+    expect(providers.agy.model).toBe(PRO)
+    expect(providers.agy.cliPath).toBe(file.cli)
+    expect(saved.maxOutputTokens).toBe(2048)
+    expect(saved.gskToolsEnabled).toBe(true)
+    expect(saved.customEndpoint).toBe('ep2')
+    expect((saved.customEndpoints as Array<{ id: string }>).map((e) => e.id)).toEqual([
+      'ep1',
+      'ep2',
+    ])
+    expect((saved.media as { imageProvider: string }).imageProvider).toBe('openai')
+    expect((saved.search as { provider: string }).provider).toBe('tavily')
+  })
+
+  it('S13: what the app accepted is what a restart reads back from the file', async () => {
+    const file = settingsFile('agy-s13-')
+    const { release, window } = inFlight(file)
+    const a = window({ maxOutputTokens: 2048 })
+    const b = window({ gskToolsEnabled: true })
+    release({ models: GEM })
+    const [da, db] = await Promise.all([a, b])
+    expect(da.ok).toBe(true)
+    expect(db.ok).toBe(true)
+
+    // a fresh process reading the settings file sees exactly the accepted changes
+    const restarted = JSON.parse(readFileSync(file.path, 'utf8')) as AiSettings
+    expect(restarted.maxOutputTokens).toBe(2048)
+    expect(restarted.gskToolsEnabled).toBe(true)
+    expect(restarted.provider).toBe('agy')
+    expect(restarted.providers.agy.cliPath).toBe(file.cli)
+    expect(restarted.providers.agy.model).toBe(PRO)
+
+    // and a write that is refused leaves the bytes a restart would read untouched
+    const before = readFileSync(file.path, 'utf8')
+    const refused = await applySettingsWrite(
+      { ...restarted, providers: { agy: { apiKey: '', cliPath: file.cli, model: 'not-a-model' } } },
+      () => JSON.parse(readFileSync(file.path, 'utf8')) as AiSettings,
+      (next) => writeFileSync(file.path, JSON.stringify(next), 'utf8'),
+      async () => ({ models: [], error: 'agy models timed out' }),
+      GEM,
+    )
+    expect(refused.ok).toBe(false)
+    expect(refused.reason).toBe('unverified')
+    expect(readFileSync(file.path, 'utf8')).toBe(before)
+  })
+
+  it('S14: a failed disk write is reported as a failure and leaves the last valid file', async () => {
+    const file = settingsFile('agy-s14-')
+    catalogCall.mockImplementation(async () => ({ models: GEM }))
+    const decision = await applySettingsWrite(
+      {
+        provider: 'agy',
+        providers: { agy: { apiKey: '', cliPath: file.cli, model: HIGH } },
+        maxOutputTokens: 8192,
+        gskToolsEnabled: true,
+      },
+      () => JSON.parse(readFileSync(file.path, 'utf8')) as AiSettings,
+      () => {
+        throw new Error('the settings file is on a read-only volume')
+      },
+      (cliPath: string | undefined) => catalogCall(cliPath),
+      GEM,
+    )
+    expect(decision.ok).toBe(false)
+    expect(decision.reason).toBe('write-failed')
+    const onDisk = readAi(file.path)
+    expect(onDisk.maxOutputTokens).toBe(1024)
+    expect(onDisk.gskToolsEnabled).toBe(false)
+  })
+})

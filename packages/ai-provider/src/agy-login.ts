@@ -109,6 +109,9 @@ export class AgyLogin {
     let opened = false
     let output = ''
     const read = (chunk: Buffer | string) => {
+      // a child that was cancelled or superseded must not move the login state, and must never
+      // open the Google URL it printed: only the active generation's child may do either
+      if (this.child !== child || this.generation !== generation) return
       const text = chunk.toString()
       output += text
       if (output.length > 200_000) output = output.slice(-100_000)

@@ -330,10 +330,120 @@ export async function decideSettingsWrite(
 }
 
 /**
- * The write boundary every editor uses. Validation is asynchronous, so the file on disk may have
- * been replaced by another window between reading the snapshot and committing. The decision is
- * therefore re-taken against the newest committed state before anything is written, and the
- * caller decides whether to persist: a refused transaction is not written at all.
+ * Every top-level field the generic writer can carry, compared as one value. `providers` is
+ * merged one provider at a time so a change to one provider never collides with a change to
+ * another, and the Antigravity entry is merged field by field because a payload can move the
+ * chat model without touching the CLI path (or the other way round).
+ */
+const WHOLE_FIELDS = [
+  'provider',
+  'customEndpoints',
+  'customEndpoint',
+  'media',
+  'search',
+  'gskToolsEnabled',
+  'maxOutputTokens',
+] as const
+
+/** how many times a write retries when the file moves under it before the swap lands */
+const COMMIT_ATTEMPTS = 3
+
+/** JSON-stable comparison, so two reads of the same file compare equal whatever key order. */
+function sameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a ?? null) === JSON.stringify(b ?? null)
+}
+
+/** the exact bytes a decision was merged against, the compare side of the swap */
+function settingsFingerprint(settings: AiSettings | null): string {
+  return JSON.stringify(settings ?? null)
+}
+
+/**
+ * Three-way merge of an accepted payload against the newest commit.
+ *
+ * `incoming` is the payload relative to `base` - the fields it differs from the base are the
+ * changes this writer made. Anything the writer did not change takes the newest committed value,
+ * so an unrelated change made in another window is never rolled back. A field both sides changed
+ * to different values is a genuine collision and is refused rather than guessed.
+ */
+function mergeSettings(
+  base: AiSettings,
+  latest: AiSettings,
+  incoming: AiSettings,
+): { settings: AiSettings } | { reason: 'stale-model' | 'conflict' } {
+  const merged: AiSettings = { ...incoming, providers: { ...incoming.providers } }
+  const fields = merged as unknown as Record<string, unknown>
+  const incomingAgy = incoming.providers.agy
+  const baseAgy = base.providers.agy
+  const latestAgy = latest.providers.agy
+
+  // 1. Antigravity chat model
+  const incomingModel = normalizeChatModel(incomingAgy?.model)
+  const baseModel = normalizeChatModel(baseAgy?.model)
+  const latestModel = normalizeChatModel(latestAgy?.model)
+  if (latestModel !== baseModel) {
+    // two windows choosing the same model is not a collision; choosing different models is
+    if (incomingModel !== baseModel && incomingModel !== latestModel)
+      return { reason: 'stale-model' }
+    merged.providers.agy = {
+      ...(merged.providers.agy ?? { apiKey: '', model: '' }),
+      model: latestModel ?? '',
+    }
+  }
+
+  // 2. Antigravity CLI identity
+  const incomingCli = sanitizeCliPath(incomingAgy?.cliPath)
+  const baseCli = sanitizeCliPath(baseAgy?.cliPath)
+  const latestCli = sanitizeCliPath(latestAgy?.cliPath)
+  if (latestCli !== baseCli) {
+    if (incomingCli !== baseCli || incomingModel !== baseModel) return { reason: 'conflict' }
+    if (merged.providers.agy) merged.providers.agy.cliPath = latestCli
+  }
+
+  // 3. active provider and every other provider configuration
+  if (!sameValue(latest.provider, base.provider)) {
+    if (!sameValue(incoming.provider, base.provider)) return { reason: 'conflict' }
+    fields.provider = latest.provider
+  }
+  for (const p of PROVIDER_IDS) {
+    if (p === 'agy') continue
+    const latestCfg = latest.providers[p]
+    const baseCfg = base.providers[p]
+    const incomingCfg = incoming.providers[p]
+    if (sameValue(latestCfg, baseCfg)) continue
+    if (!sameValue(incomingCfg, baseCfg)) return { reason: 'conflict' }
+    if (latestCfg) merged.providers[p] = latestCfg
+    else delete merged.providers[p]
+  }
+
+  // 4. every remaining persisted field: endpoints, media, search, tool switches, token caps
+  for (const field of WHOLE_FIELDS) {
+    if (field === 'provider') continue
+    const before = base[field]
+    const newest = latest[field]
+    if (sameValue(newest, before)) continue
+    if (!sameValue(incoming[field], before)) return { reason: 'conflict' }
+    if (newest === undefined) delete fields[field]
+    else fields[field] = newest
+  }
+  return { settings: merged }
+}
+
+/**
+ * The write boundary every editor uses.
+ *
+ * Validation is asynchronous, so the file on disk may have been replaced by another window
+ * between reading the snapshot and committing. The accepted payload is merged field by field
+ * against the newest committed state, re-validated against it, and then swapped in only if the
+ * bytes it was merged against are still there. If the file moved in the meantime the merge is
+ * retaken against the newer state; a collision that cannot be resolved is reported as an explicit
+ * conflict instead of silently overwriting the newer change.
+ *
+ * Limitation, stated plainly: the payload is a whole settings object and this process cannot know
+ * which baseline the renderer read it from, so this is an optimistic compare-and-swap, not a
+ * cross-process transaction. A window that submits a stale whole snapshot is indistinguishable
+ * from one that deliberately set those fields back; what is guaranteed is that no accepted change
+ * disappears without an explicit conflict being reported.
  */
 export async function applySettingsWrite(
   input: unknown,
@@ -353,119 +463,39 @@ export async function applySettingsWrite(
   )
   if (!decision.ok || !decision.settings) return decision
 
-  // Validation is asynchronous. Re-read the latest committed state before persisting.
-  const latest = readSettings()
-  if (latest && snapshot) {
-    const incomingAgy = decision.settings.providers.agy
-    const snapshotAgy = snapshot.providers.agy
-    const latestAgy = latest.providers.agy
+  // both sides of the merge are compared in the same normalised shape, so a field the sanitiser
+  // bounds (a baseUrl, a truncated key) is not mistaken for somebody else's change
+  const base = snapshot ? (sanitizeAiSettings(snapshot) ?? snapshot) : null
 
-    const incomingModel = normalizeChatModel(incomingAgy?.model)
-    const snapshotModel = normalizeChatModel(snapshotAgy?.model)
-    const latestModel = normalizeChatModel(latestAgy?.model)
+  for (let attempt = 0; attempt < COMMIT_ATTEMPTS; attempt++) {
+    const latestRaw = readSettings()
+    const latest = latestRaw ? (sanitizeAiSettings(latestRaw) ?? latestRaw) : null
+    const merged =
+      latest && base
+        ? mergeSettings(base, latest, decision.settings)
+        : { settings: decision.settings }
+    if (!('settings' in merged)) return { settings: null, ok: false, reason: merged.reason }
 
-    // 1. Antigravity model conflict check
-    if (latestModel !== snapshotModel) {
-      // If the incoming payload was changing the model, this is an unresolvable stale model conflict.
-      if (incomingModel !== snapshotModel) {
-        return { settings: null, ok: false, reason: 'stale-model' }
-      }
-      // If the incoming payload was not changing the model, preserve the newer committed model.
-      decision.settings.providers.agy = {
-        ...(decision.settings.providers.agy ?? { apiKey: '', model: '' }),
-        model: latestModel ?? '',
-      }
-    }
-
-    // 2. CLI path conflict check (S3)
-    const incomingCli = sanitizeCliPath(incomingAgy?.cliPath)
-    const snapshotCli = sanitizeCliPath(snapshotAgy?.cliPath)
-    const latestCli = sanitizeCliPath(latestAgy?.cliPath)
-
-    if (latestCli !== snapshotCli) {
-      if (incomingCli !== snapshotCli || incomingModel !== snapshotModel) {
-        return { settings: null, ok: false, reason: 'conflict' }
-      }
-      if (decision.settings.providers.agy) {
-        decision.settings.providers.agy.cliPath = latestCli
-      }
-    }
-
-    // 3. Active provider conflict check
-    if (latest.provider !== snapshot.provider) {
-      if (decision.settings.provider !== snapshot.provider) {
-        return { settings: null, ok: false, reason: 'conflict' }
-      }
-      decision.settings.provider = latest.provider
-    }
-
-    // 4. Other provider configurations (S4)
-    for (const p of PROVIDER_IDS) {
-      if (p === 'agy') continue
-      const latestCfg = latest.providers[p]
-      const snapshotCfg = snapshot.providers[p]
-      const incomingCfg = decision.settings.providers[p]
-
-      if (JSON.stringify(latestCfg) !== JSON.stringify(snapshotCfg)) {
-        if (JSON.stringify(incomingCfg) !== JSON.stringify(snapshotCfg)) {
-          return { settings: null, ok: false, reason: 'conflict' }
-        }
-        if (latestCfg) {
-          decision.settings.providers[p] = latestCfg
-        } else {
-          delete decision.settings.providers[p]
-        }
-      }
-    }
-
-    // 5. Custom endpoints conflict check
-    if (JSON.stringify(latest.customEndpoints) !== JSON.stringify(snapshot.customEndpoints)) {
-      if (
-        JSON.stringify(decision.settings.customEndpoints) !==
-        JSON.stringify(snapshot.customEndpoints)
-      ) {
-        return { settings: null, ok: false, reason: 'conflict' }
-      }
-      decision.settings.customEndpoints = latest.customEndpoints
-    }
-
-    // 6. Media configuration conflict check
-    if (JSON.stringify(latest.media) !== JSON.stringify(snapshot.media)) {
-      if (JSON.stringify(decision.settings.media) !== JSON.stringify(snapshot.media)) {
-        return { settings: null, ok: false, reason: 'conflict' }
-      }
-      decision.settings.media = latest.media
-    }
-
-    // 7. Search configuration conflict check
-    if (JSON.stringify(latest.search) !== JSON.stringify(snapshot.search)) {
-      if (JSON.stringify(decision.settings.search) !== JSON.stringify(snapshot.search)) {
-        return { settings: null, ok: false, reason: 'conflict' }
-      }
-      decision.settings.search = latest.search
-    }
-
-    // Second validation against latest state
     const rechecked = await decideSettingsWrite(
-      decision.settings,
+      merged.settings,
       latest,
       catalogFor,
       enabledModels,
       enabledPolicyKnown,
     )
-    if (!rechecked.ok || !rechecked.settings) {
-      return rechecked
+    if (!rechecked.ok || !rechecked.settings) return rechecked
+
+    // commit boundary: the swap lands only while the file still holds the state merged above
+    if (settingsFingerprint(readSettings()) === settingsFingerprint(latestRaw)) {
+      try {
+        writeSettings(rechecked.settings)
+      } catch {
+        // nothing was committed: report the failure instead of claiming the settings were saved
+        return { settings: null, ok: false, reason: 'write-failed' }
+      }
+      return { settings: rechecked.settings, ok: true }
     }
-    decision.settings = rechecked.settings
+    // the file moved while the payload was being re-validated: retry against the newer state
   }
-
-  if (!decision.ok || !decision.settings) return decision
-
-  try {
-    writeSettings(decision.settings)
-  } catch {
-    // nothing was committed: report the failure instead of claiming the settings were saved
-    return { settings: null, ok: false, reason: 'write-failed' }
-  }
-  return decision
+  return { settings: null, ok: false, reason: 'conflict' }
 }
