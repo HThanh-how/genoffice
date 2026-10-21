@@ -4,7 +4,14 @@ import { IndexDashboard } from './fork/IndexDashboard'
 import { IndexNavItem } from './fork/IndexNavItem'
 import { FOLDER_ROOTS_CHANGED_EVENT } from './fork/DefaultFolderToggle'
 import { folderMenuWords } from './fork/folder-menu-words'
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { placeFolderMenu } from './fork/folder-menu-position'
+import {
+  contentGroup,
+  instantNameMatches,
+  mergeNameGroup,
+  searchTotal,
+} from './fork/home-search-merge'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent, ReactElement } from 'react'
 import logoLockup from './assets/genoffice-logo.svg'
 import iconDocx from './assets/file-docx.svg'
@@ -1306,7 +1313,14 @@ export function Home() {
   const [groupPicker, setGroupPicker] = useState<string[] | null>(null)
   // ── File search (names + indexed content); active while the box has text ──
   const [searchQuery, setSearchQuery] = useState('')
-  const [searchPage, setSearchPage] = useState<FileSearchPage | null>(null)
+  // Each answer carries the query it was asked for (`filter\nq`): an answer for an older query is shown dimmed
+  // as "updating" instead of passing for the current one.
+  const [searchRes, setSearchRes] = useState<{ key: string; page: FileSearchPage } | null>(null)
+  // the name-only pass (file names first); an error is recorded as an empty page so the empty state can settle
+  const [nameRes, setNameRes] = useState<{ key: string; page: FileSearchPage } | null>(null)
+  // key of the query whose full search failed, so the skeleton never sticks
+  const [searchFailed, setSearchFailed] = useState<string | null>(null)
+  const [searchRetry, setSearchRetry] = useState(0)
   const [rerank, setRerank] = useState<{ key: string; result: FileSearchRerank } | null>(null)
   // bumped when the Jev settings change so the current results are judged again (or the order dropped)
   const [rerankSettingsTick, setRerankSettingsTick] = useState(0)
@@ -1323,6 +1337,7 @@ export function Home() {
   // IME composition: wait for the committed text instead of searching each keystroke
   const composingRef = useRef(false)
   const searchSeq = useRef(0)
+  const nameSeq = useRef(0)
   const searchActive = searchQuery.trim().length > 0
   // true while the query comes from the Home input (AskDock), which then stands in for this box
   const [dockSearch, setDockSearch] = useState(false)
@@ -1382,12 +1397,14 @@ export function Home() {
   const [folderMenu, setFolderMenu] = useState<{
     path: string
     where: 'tree' | 'table'
-    top: number
-    right: number
+    x: number
+    y: number
+    above: number
   } | null>(null)
   const menuOpenAt = (where: 'tree' | 'table', path: string) =>
     folderMenu?.where === where && folderMenu.path === path
   const folderMenuWrapRef = useRef<HTMLDivElement>(null)
+  const folderMenuPopRef = useRef<HTMLDivElement>(null)
   const [folderRenaming, setFolderRenaming] = useState<{
     path: string
     where: 'tree' | 'table'
@@ -1532,33 +1549,88 @@ export function Home() {
   }, [view, filter, groupFilter])
 
   const q = searchQuery.trim()
+  const searchKey = `${filter}\n${q}`
+  const searchPage = searchRes && searchRes.key === searchKey ? searchRes.page : null
+  const stalePage = searchRes && searchRes.key !== searchKey ? searchRes.page : null
+  const namePage = nameRes && nameRes.key === searchKey ? nameRes.page : null
+  // Two passes per query. File names come first: the Home lists already in memory are filtered synchronously
+  // (instantHits), the index answers a name-only query after ~30 ms, and the full name+content search follows at
+  // 150 ms. Each pass has its own sequence number so a late answer for an older query is discarded.
   useEffect(() => {
     if (!q) {
       searchSeq.current++
-      setSearchPage(null)
+      nameSeq.current++
+      setSearchRes(null)
+      setNameRes(null)
+      setSearchFailed(null)
       return
     }
     let timer = 0
+    let nameTimer = 0
+    const key = searchKey
+    const ext = filter === 'all' ? undefined : filter
+    const runNames = () => {
+      if (composingRef.current) {
+        nameTimer = window.setTimeout(runNames, 50)
+        return
+      }
+      const seq = ++nameSeq.current
+      const settle = (page: FileSearchPage) => {
+        if (seq === nameSeq.current) setNameRes({ key, page })
+      }
+      void window.aiOffice
+        .searchFiles({ q, ext, limit: 50, nameOnly: true })
+        .then(settle)
+        // the in-memory matches and the full search still answer
+        .catch(() =>
+          settle({ hits: [], total: 0, index: { indexed: 0, pending: 0, scanning: false } }),
+        )
+    }
     const run = () => {
       if (composingRef.current) {
         timer = window.setTimeout(run, 150)
         return
       }
       const seq = ++searchSeq.current
-      const ext = filter === 'all' ? undefined : filter
       const startedAt = performance.now()
-      void window.aiOffice.searchFiles({ q, ext, limit: 100 }).then((page) => {
-        if (seq !== searchSeq.current) return
-        setSearchPage(page)
-        // results grow while the background index catches up; a slow query is asked again less often, so
-        // the poll never keeps the search thread busy back to back
-        if (page.index.pending > 0 || page.index.scanning)
-          timer = window.setTimeout(run, Math.max(1500, 4 * (performance.now() - startedAt)))
-      })
+      void window.aiOffice
+        .searchFiles({ q, ext, limit: 100 })
+        .then((page) => {
+          if (seq !== searchSeq.current) return
+          setSearchRes({ key, page })
+          setSearchFailed(null)
+          // results grow while the background index catches up; a slow query is asked again less often, so
+          // the poll never keeps the search thread busy back to back
+          if (page.index.pending > 0 || page.index.scanning)
+            timer = window.setTimeout(
+              () => {
+                runNames()
+                run()
+              },
+              Math.max(1500, 4 * (performance.now() - startedAt)),
+            )
+        })
+        .catch(() => {
+          if (seq === searchSeq.current) setSearchFailed(key)
+        })
     }
+    nameTimer = window.setTimeout(runNames, 30)
     timer = window.setTimeout(run, 150)
-    return () => window.clearTimeout(timer)
-  }, [q, filter])
+    return () => {
+      window.clearTimeout(timer)
+      window.clearTimeout(nameTimer)
+    }
+  }, [q, filter, searchKey, searchRetry])
+
+  // Files already loaded in Home (the recent / starred list in view and every opened folder), filtered on the
+  // keystroke itself: no IPC, so a file in plain sight is listed at once. Nothing loaded means nothing to filter.
+  const instantHits = useMemo(() => {
+    if (!q) return []
+    const folderFilesLoaded = [...listings.values()].flatMap((l) => l.files)
+    return instantNameMatches([...entries, ...folderFilesLoaded], q, (e) =>
+      matchesFilter(e, filter),
+    )
+  }, [q, filter, entries, listings])
 
   // Jev judges the top local hits once they settle; the main process answers null when reranking is off.
   // The key changes only with the query, filter or candidate set, so index polls do not restart the timer.
@@ -1685,6 +1757,18 @@ export function Home() {
     const close = () => setFolderMenu(null)
     window.addEventListener('scroll', close, true)
     return () => window.removeEventListener('scroll', close, true)
+  }, [folderMenu])
+  // open to the right of the anchor, flipped above when short of room below, clamped to the viewport
+  useLayoutEffect(() => {
+    const el = folderMenuPopRef.current
+    if (!folderMenu || !el) return
+    const { left, top } = placeFolderMenu(
+      folderMenu,
+      { width: el.offsetWidth, height: el.offsetHeight },
+      { width: fixedViewportWidth(), height: document.documentElement.clientHeight },
+    )
+    el.style.left = `${left}px`
+    el.style.top = `${top}px`
   }, [folderMenu])
 
   // Escape closes the row menu and the confirm dialogs
@@ -2249,8 +2333,9 @@ export function Home() {
           setFolderMenu({
             path: entry.path,
             where: 'tree',
-            top: rect.bottom + 4,
-            right: fixedViewportWidth() - rect.right,
+            x: rect.right + 4,
+            y: rect.bottom + 4,
+            above: rect.top - 4,
           })
         }}
       >
@@ -2260,7 +2345,7 @@ export function Home() {
         <div
           className="folder-menu"
           role="menu"
-          style={{ top: folderMenu.top, right: folderMenu.right }}
+          ref={folderMenuPopRef}
         >
           {editableAt(entry.path) && (
             <button role="menuitem" onClick={() => startCreateFolder(entry.path)}>
@@ -2410,8 +2495,9 @@ export function Home() {
             setFolderMenu({
               path: entry.path,
               where: 'tree',
-              top: e.clientY + 2,
-              right: fixedViewportWidth() - e.clientX,
+              x: e.clientX + 2,
+              y: e.clientY + 2,
+              above: e.clientY + 2,
             })
           }}
           draggable={!isRoot && !isRenaming}
@@ -2772,8 +2858,9 @@ export function Home() {
             setFolderMenu({
               path: entry.path,
               where: 'table',
-              top: e.clientY + 2,
-              right: fixedViewportWidth() - e.clientX,
+              x: e.clientX + 2,
+              y: e.clientY + 2,
+              above: e.clientY + 2,
             })
           }}
         >
@@ -2824,8 +2911,9 @@ export function Home() {
                 setFolderMenu({
                   path: entry.path,
                   where: 'table',
-                  top: rect.bottom + 4,
-                  right: fixedViewportWidth() - rect.right,
+                  x: rect.right + 4,
+                  y: rect.bottom + 4,
+                  above: rect.top - 4,
                 })
               }}
             >
@@ -2835,7 +2923,7 @@ export function Home() {
               <div
                 className="folder-menu"
                 role="menu"
-                style={{ top: folderMenu.top, right: folderMenu.right }}
+                ref={folderMenuPopRef}
               >
                 <button
                   role="menuitem"
@@ -3032,15 +3120,55 @@ export function Home() {
   const renderSearchResults = () => {
     const page = searchPage
     const busy = !!page && (page.index.pending > 0 || page.index.scanning)
+    const view = searchView()
+    const rows = view.names.length + view.content.length
+    const failed = !page && searchFailed === searchKey
+    // the full search has not answered this query yet (names may already be on screen)
+    const updating = !page && !failed
+    const settled = !!page && !!namePage
+    const errorBar = (
+      <div className="search-status search-error" role="alert">
+        {t('searchError')}
+        <button className="search-retry" onClick={retrySearch}>
+          {t('searchRetry')}
+        </button>
+      </div>
+    )
     return (
-      <div className="search-results" aria-live="polite">
+      <div className="search-results" aria-live="polite" aria-busy={updating}>
         {busy && (
           <div className="search-status">
             <span className="load-more-spinner" />
             {t('searchIndexing', { n: page.index.pending })}
           </div>
         )}
-        {!page ? (
+        {rows > 0 ? (
+          <>
+            {view.names.length > 0 && (
+              <>
+                <div className="search-group-label">{t('searchGroupNames')}</div>
+                <ul className="search-list">{view.names.map(renderSearchRow)}</ul>
+              </>
+            )}
+            {view.content.length > 0 && (
+              <>
+                <div className="search-group-label">{t('searchGroupContent')}</div>
+                <ul className={`search-list${view.stale ? ' is-stale' : ''}`}>
+                  {view.content.map(renderSearchRow)}
+                </ul>
+              </>
+            )}
+            {updating && (
+              <div className="search-status">
+                <span className="load-more-spinner" />
+                {t('searchUpdating')}
+              </div>
+            )}
+            {failed && errorBar}
+          </>
+        ) : failed ? (
+          errorBar
+        ) : !settled ? (
           <ul className="search-skeleton" aria-hidden="true">
             {[0, 1, 2, 3].map((i) => (
               <li key={i} className="search-skeleton-row">
@@ -3052,10 +3180,8 @@ export function Home() {
               </li>
             ))}
           </ul>
-        ) : page.hits.length === 0 && !busy ? (
+        ) : busy ? null : (
           renderEmpty(t('searchNoResults', { q }))
-        ) : (
-          <ul className="search-list">{orderedSearchHits(page.hits).map(renderSearchRow)}</ul>
         )}
       </div>
     )
@@ -3070,8 +3196,25 @@ export function Home() {
     return [...hits].sort((a, b) => (rank.get(a.path) ?? Infinity) - (rank.get(b.path) ?? Infinity))
   }
 
+  const retrySearch = () => {
+    setSearchFailed(null)
+    setSearchRetry((n) => n + 1)
+  }
+
+  /**
+   * What the results list shows, top to bottom: file names (rows from the Home lists first, then the index's
+   * name-only hits), then content hits - in Jev's order once judged - without the files already listed above.
+   * Before the full search answers, the previous query's content rows stay, dimmed.
+   */
+  const searchView = () => {
+    const names = mergeNameGroup(instantHits, namePage?.hits ?? [])
+    const source = searchPage ?? stalePage
+    const content = contentGroup(orderedSearchHits(source?.hits ?? []), names)
+    return { names, content, stale: !searchPage && !!stalePage }
+  }
+
   const renderSearchHeading = () => {
-    const total = searchPage?.total ?? 0
+    const total = searchTotal(searchView().names, searchPage)
     return (
       <div className="recents-heading">
         {rerankApplied && (
