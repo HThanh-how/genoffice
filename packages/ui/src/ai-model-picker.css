@@ -172,7 +172,16 @@
   font-weight: 500;
 }
 
-/* Plain variant (home chat): the chip is just the model name as text. */
+/* Plain variant (home chat): the chip is just the model name as text. The doubled class also beats
+ * the unrelated .ai-model-picker bar in gemini-model-picker.css (padding, bottom border, surface),
+ * which drew a box and a faint line under the chip. */
+.ai-model-picker.ai-model-picker--plain {
+  display: inline-flex;
+  padding: 0;
+  border: 0;
+  background: none;
+}
+
 .ai-model-picker--plain .ai-model-chip {
   height: auto;
   padding: 2px 0;

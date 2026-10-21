@@ -38,6 +38,7 @@ import type { SettingsTarget } from './SettingsModal'
 import { skillUpdateDue } from './IntegrationsPane'
 import { onFilesChanged } from './file-events'
 import { HomeChat } from './HomeChat'
+import { HOME_SEARCH_EVENT } from './home-chat/dock-logic'
 import { ClipboardSuggest } from './ClipboardSuggest'
 import './home-workspace.css'
 
@@ -1587,6 +1588,21 @@ export function Home() {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
+
+  // The Home input (AskDock) hands a file query to this search. The box below stays: it carries the
+  // type filters, the Jev ranking settings and the full results list, which the input does not.
+  useEffect(() => {
+    const onHomeSearch = (event: Event) => {
+      const next = (event as CustomEvent<{ q?: string }>).detail?.q
+      if (typeof next !== 'string' || !next.trim()) return
+      setSearchQuery(next)
+      window.requestAnimationFrame(() =>
+        searchInputRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }),
+      )
+    }
+    window.addEventListener(HOME_SEARCH_EVENT, onHomeSearch)
+    return () => window.removeEventListener(HOME_SEARCH_EVENT, onHomeSearch)
   }, [])
 
   useEffect(() => {

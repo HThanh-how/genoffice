@@ -6,15 +6,22 @@ import type { IndexedFileHit } from '../../../shared/fork/document-index-api'
 import { requestChatPrefill } from '../chat-events'
 import { FileTypeIcon } from './FileTypeIcon'
 import { activityCopy } from '../indexing-activity-copy'
-import { OPEN_INDEX_EVENT } from '../IndexingActivity'
 import { langFor, parseIndexCommand, runIndexCommand } from '../fork/index-assistant'
 import { findFilesByName, type NamedFile } from '../fork/file-name-search'
 import { chatString } from './strings'
+import {
+  HOME_SEARCH_EVENT,
+  canAutofocusDock,
+  pickSuggestions,
+  showIndexChip,
+  type IndexBrief,
+} from './dock-logic'
 
 const EN = {
   placeholder: 'Find a file, ask AI, or give an order…',
   send: 'Send',
   enterHint: 'Enter to ask AI',
+  searchAll: 'Search all files for “{q}”',
   notIndexed: 'Not read yet',
   run: 'Run: “{q}”',
   runHint: 'Enter · runs here, no AI quota',
@@ -30,7 +37,7 @@ const EN = {
   queued: 'Queued for another try.',
   status: 'Index {p}% · {w} waiting · {e} problems',
   statusIdle: 'Index up to date · {e} problems',
-  statusOpen: 'Open the index page',
+  statusOpen: 'Ask how far indexing is',
   close: 'Close',
   suggestions: ['Find my recent files', 'How far is indexing?', 'Retry the errors'],
 }
@@ -41,6 +48,7 @@ const WORDS: Record<string, Words> = {
     placeholder: 'Tìm tệp, hỏi AI hoặc ra lệnh…',
     send: 'Gửi',
     enterHint: 'Enter để hỏi AI',
+    searchAll: 'Tìm “{q}” trong mọi tệp',
     notIndexed: 'Chưa đọc nội dung',
     run: 'Chạy: “{q}”',
     runHint: 'Enter · chạy ngay trên máy, không tốn quota AI',
@@ -56,7 +64,7 @@ const WORDS: Record<string, Words> = {
     queued: 'Đã xếp lại để thử lần nữa.',
     status: 'Index {p}% · {w} đang chờ · {e} lỗi',
     statusIdle: 'Index đã cập nhật · {e} lỗi',
-    statusOpen: 'Mở trang Chỉ mục',
+    statusOpen: 'Hỏi index tới đâu rồi',
     close: 'Đóng',
     suggestions: ['Tìm tệp gần đây của tôi', 'Index tới đâu rồi?', 'Thử lại các lỗi'],
   },
@@ -64,17 +72,11 @@ const WORDS: Record<string, Words> = {
     ...EN,
     placeholder: '查找文件、问 AI 或下达指令…',
     send: '发送',
+    searchAll: '在所有文件中搜索“{q}”',
   },
 }
 const fill = (text: string, values: Record<string, string | number>): string =>
   text.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? ''))
-
-interface Brief {
-  percent: number | null
-  waiting: number
-  errors: number
-  active: boolean
-}
 
 /**
  * The one box of the Home page. Typing finds files by name at once and says what state each is
@@ -101,7 +103,8 @@ export function AskDock({
   const [busyId, setBusyId] = useState<number | null>(null)
   const readPending = useRef(false)
   const [commandBusy, setCommandBusy] = useState(false)
-  const [brief, setBrief] = useState<Brief | null>(null)
+  const [brief, setBrief] = useState<IndexBrief | null>(null)
+  const [briefTick, setBriefTick] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
   const composingRef = useRef(false)
   const commandBusyRef = useRef(false)
@@ -122,6 +125,14 @@ export function AskDock({
   }, [])
   const focusInput = useCallback(() => {
     window.setTimeout(() => inputRef.current?.focus(), 0)
+  }, [])
+
+  // Ready to type on arrival at Home, unless a dialog, another field or a selection has the user.
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      if (canAutofocusDock(document)) inputRef.current?.focus({ preventScroll: true })
+    }, 60)
+    return () => window.clearTimeout(timer)
   }, [])
 
   useEffect(() => {
@@ -153,9 +164,9 @@ export function AskDock({
     return () => document.removeEventListener('pointerdown', onDown, true)
   }, [])
 
-  // The index in one line, read when the box is focused.
+  // The index in one line, read on arrival and whenever the box is focused again.
   useEffect(() => {
-    if (!focused || query || !api.getIndexingActivity) return
+    if (query || !api.getIndexingActivity) return
     let alive = true
     void api
       .getIndexingActivity()
@@ -173,7 +184,15 @@ export function AskDock({
     return () => {
       alive = false
     }
-  }, [api, focused, query])
+  }, [api, focused, query, briefTick])
+
+  // While indexing, the chip follows the progress.
+  const indexActive = !!brief?.active
+  useEffect(() => {
+    if (!indexActive) return
+    const timer = window.setInterval(() => setBriefTick((n) => n + 1), 6000)
+    return () => window.clearInterval(timer)
+  }, [indexActive])
 
   // Typing finds files by name right away (a command is offered too, never run by itself).
   useEffect(() => {
@@ -230,6 +249,15 @@ export function AskDock({
     requestChatPrefill({ text: message, send: true, intent: 'new' })
   }
 
+  // Hands the query to the Home file search below (names and contents, filters, results list).
+  const searchAll = () => {
+    window.dispatchEvent(new CustomEvent(HOME_SEARCH_EVENT, { detail: { q: query } }))
+    setText('')
+    setHits(null)
+    setNamed([])
+    inputRef.current?.blur()
+  }
+
   const refreshHits = async () => {
     if (query.length >= 2) setHits((await api.searchIndexedFiles(query)).slice(0, 6))
   }
@@ -266,7 +294,7 @@ export function AskDock({
     }
   }
 
-  const showChips = focused && !text && !answer && !commandBusy
+  const showChips = !text && !answer && !commandBusy
   const showPop = answer !== null || (focused && query.length > 0)
   return (
     <div
@@ -352,12 +380,12 @@ export function AskDock({
       )}
       {showChips && (
         <div className="ask-chips">
-          {brief?.active && (
+          {showIndexChip(brief) && (
             <button
               type="button"
               className="ask-status"
               onMouseDown={(event) => event.preventDefault()}
-              onClick={() => window.dispatchEvent(new Event(OPEN_INDEX_EVENT))}
+              onClick={() => void submit(w.suggestions[1])}
               title={w.statusOpen}
             >
               <i className={brief.active ? 'is-busy' : ''} aria-hidden="true" />
@@ -370,7 +398,7 @@ export function AskDock({
                 : fill(w.statusIdle, { e: brief.errors.toLocaleString() })}
             </button>
           )}
-          {w.suggestions.slice(0, 2).map((suggestion) => (
+          {pickSuggestions(w.suggestions, brief).map((suggestion) => (
             <button
               key={suggestion}
               type="button"
@@ -479,7 +507,14 @@ export function AskDock({
                   <span>{w.runHint}</span>
                 </button>
               ) : (
-                <p className="ask-note">{w.enterHint}</p>
+                <>
+                  {query.length >= 2 && (
+                    <button type="button" className="ask-act ask-search" onClick={searchAll}>
+                      <strong>{fill(w.searchAll, { q: query })}</strong>
+                    </button>
+                  )}
+                  <p className="ask-note">{w.enterHint}</p>
+                </>
               )}
             </>
           )}
