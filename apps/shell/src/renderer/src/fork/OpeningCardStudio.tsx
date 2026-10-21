@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { OpeningEffectsState } from '../../../shared/home-api'
 import {
   DEFAULT_SCENE_FOR_APP,
@@ -54,6 +54,25 @@ export function OpeningCardStudio({
   const [statusMessage, setStatusMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
+
+  // "More actions" menu: closes on outside click or Escape
+  const [menuOpen, setMenuOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!menuOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setMenuOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMenuOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [menuOpen])
 
   const showStatus = (msg: string) => {
     setStatusMessage(msg)
@@ -346,12 +365,10 @@ export function OpeningCardStudio({
 
   return (
     <div className="ocs-container">
-      {/* Studio Header Toolbar */}
+      {/* Studio Header: title, one primary action, the rest in a menu */}
       <div className="ocs-studio-header">
         <div className="ocs-studio-title-group">
-          <h2 className="ocs-studio-title">
-            {isVi ? 'Studio Thẻ Mở Tệp V2' : 'Opening Card Studio V2'}
-          </h2>
+          <h2 className="ocs-studio-title">{isVi ? 'Thẻ mở tệp' : 'Opening cards'}</h2>
           <span className="ocs-studio-count">
             {allCards.length} {isVi ? 'thẻ' : 'cards'}
           </span>
@@ -363,30 +380,67 @@ export function OpeningCardStudio({
             className="set-btn ocs-btn-primary"
             onClick={() => setShowAiModal(true)}
           >
-            {isVi ? '✨ Thẻ AI' : '✨ AI Card'}
+            {isVi ? 'Thẻ AI' : 'AI Card'}
           </button>
 
-          <button type="button" className="set-btn" onClick={() => setShowMediaModal(true)}>
-            {isVi ? '🖼️ Thêm Media' : '🖼️ Add Media'}
-          </button>
-
-          <button
-            type="button"
-            className="set-btn"
-            onClick={handleExport}
-            title={isVi ? 'Xuất danh sách thẻ ra tệp JSON' : 'Export cards to JSON file'}
-          >
-            {isVi ? 'Xuất thẻ' : 'Export'}
-          </button>
-
-          <button
-            type="button"
-            className="set-btn"
-            onClick={() => importFileInputRef.current?.click()}
-            title={isVi ? 'Nhập thẻ từ tệp JSON' : 'Import cards from JSON file'}
-          >
-            {isVi ? 'Nhập thẻ' : 'Import'}
-          </button>
+          <div className="ocs-more" ref={menuRef}>
+            <button
+              type="button"
+              className="set-btn ocs-more-btn"
+              aria-haspopup="menu"
+              aria-expanded={menuOpen}
+              aria-label={isVi ? 'Thêm thao tác' : 'More actions'}
+              onClick={() => setMenuOpen((open) => !open)}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 16 16"
+                fill="currentColor"
+                aria-hidden="true"
+              >
+                <circle cx="3" cy="8" r="1.3" />
+                <circle cx="8" cy="8" r="1.3" />
+                <circle cx="13" cy="8" r="1.3" />
+              </svg>
+            </button>
+            {menuOpen && (
+              <div className="ocs-more-menu" role="menu">
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setMenuOpen(false)
+                    setShowMediaModal(true)
+                  }}
+                >
+                  {isVi ? 'Thêm hình ảnh…' : 'Add media…'}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  title={isVi ? 'Xuất danh sách thẻ ra tệp JSON' : 'Export cards to JSON file'}
+                  onClick={() => {
+                    setMenuOpen(false)
+                    void handleExport()
+                  }}
+                >
+                  {isVi ? 'Xuất thẻ' : 'Export'}
+                </button>
+                <button
+                  type="button"
+                  role="menuitem"
+                  title={isVi ? 'Nhập thẻ từ tệp JSON' : 'Import cards from JSON file'}
+                  onClick={() => {
+                    setMenuOpen(false)
+                    importFileInputRef.current?.click()
+                  }}
+                >
+                  {isVi ? 'Nhập thẻ' : 'Import'}
+                </button>
+              </div>
+            )}
+          </div>
           <input
             ref={importFileInputRef}
             type="file"
@@ -412,7 +466,7 @@ export function OpeningCardStudio({
         </div>
       )}
 
-      {/* 2-Column Master-Detail Layout */}
+      {/* Gallery + pinned preview */}
       <div className="ocs-studio-layout">
         {/* Left Column: Gallery */}
         <div className="ocs-layout-left">

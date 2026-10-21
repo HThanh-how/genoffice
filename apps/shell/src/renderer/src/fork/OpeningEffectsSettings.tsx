@@ -14,10 +14,9 @@ const COPY = {
     on: 'On',
     off: 'Off',
     show: 'Animation while a file opens',
-    showHint:
-      'A scene plays over the tab until the document is on screen, so a half-built editor is never shown.',
+    showHint: 'Plays a scene over the tab until the document is ready.',
     tier: 'How rich the animation is',
-    tierHint: 'Automatic lightens it on a modest computer or on battery.',
+    tierHint: 'Automatic lightens it on modest computers or battery.',
     tiers: {
       auto: 'Automatic',
       full: 'Rich (60 fps)',
@@ -45,10 +44,9 @@ const COPY = {
     on: 'Bật',
     off: 'Tắt',
     show: 'Hiệu ứng khi mở tệp',
-    showHint:
-      'Một cảnh chạy phủ lên tab cho đến khi tài liệu hiện đủ trên màn hình, nên không bao giờ thấy trình soạn thảo dựng dở.',
+    showHint: 'Phát một cảnh phủ lên tab cho đến khi tài liệu sẵn sàng.',
     tier: 'Độ phong phú của hiệu ứng',
-    tierHint: 'Tự động sẽ giảm nhẹ trên máy yếu hoặc khi dùng pin.',
+    tierHint: 'Tự động giảm nhẹ trên máy yếu hoặc khi dùng pin.',
     tiers: {
       auto: 'Tự động',
       full: 'Đầy đủ (60 fps)',

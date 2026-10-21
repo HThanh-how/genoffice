@@ -84,56 +84,30 @@
   flex-wrap: wrap;
 }
 
-/* Two-Column Master-Detail Layout */
+/* Gallery + pinned preview: stacked by default, side by side when the pane is wide enough */
 .ocs-studio-layout {
-  display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(290px, 0.95fr);
+  display: flex;
+  flex-direction: column;
   gap: 16px;
-  align-items: start;
   width: 100%;
 }
 
 .ocs-layout-right {
-  position: sticky;
-  top: 8px;
-  /* Leave room for the Settings header and legacy options below the gallery. */
-  max-height: calc(min(720px, 90vh) - 144px);
-  overflow-y: auto;
+  width: 100%;
 }
 
-@container ocs-container (max-width: 640px) {
+@container ocs-container (min-width: 760px) {
   .ocs-studio-layout {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    align-items: start;
   }
   .ocs-layout-right {
-    margin-top: 14px;
-    position: static;
-    max-height: none;
-    overflow: visible;
-    width: 100%;
+    position: sticky;
+    top: 8px;
   }
-  .ocs-preview-inspector {
-    position: static;
-    max-height: none;
-  }
-}
-
-@media (max-width: 760px) {
-  .ocs-studio-layout {
-    display: flex;
-    flex-direction: column;
-  }
-  .ocs-layout-right {
-    margin-top: 14px;
-    position: static;
-    max-height: none;
-    overflow: visible;
-    width: 100%;
-  }
-  .ocs-preview-inspector {
-    position: static;
-    max-height: none;
+  .ocs-gallery-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 }
 
@@ -146,15 +120,17 @@
 
 .ocs-gallery-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
 }
 
 .ocs-search-wrapper {
   position: relative;
   display: flex;
   align-items: center;
-  width: 100%;
+  flex: 1 1 200px;
+  min-width: 0;
 }
 
 .ocs-search-icon {
@@ -176,8 +152,9 @@
   transition: border-color 0.15s ease;
 }
 
-.ocs-search-input:focus {
+.ocs-search-input:focus-visible {
   border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft, transparent);
 }
 
 .ocs-search-clear {
@@ -195,7 +172,7 @@
   color: var(--text);
 }
 
-/* Category Filter Pills */
+/* Category filter chips (only categories that hold cards) */
 .ocs-filter-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -214,7 +191,9 @@
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  transition: all 0.15s ease;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease;
 }
 
 .ocs-filter-pill:hover {
@@ -222,33 +201,46 @@
   color: var(--text);
 }
 
+.ocs-filter-pill:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
 .ocs-filter-pill.active {
-  background: var(--accent);
-  color: var(--accent-ink, var(--ocs-ink-white));
+  background: var(--hover);
+  color: var(--text);
   border-color: var(--accent);
 }
 
 .ocs-filter-count {
-  font-size: 10px;
-  opacity: 0.8;
-  padding: 0 4px;
-  border-radius: 8px;
-  background: var(--ocs-pill-count-bg);
+  font-size: 11px;
+  opacity: 0.7;
 }
 
 /* Gallery Grid */
 .ocs-gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
   gap: 12px;
   padding: 2px;
 }
 
 .ocs-empty-gallery {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
   padding: 32px 16px;
   text-align: center;
   color: var(--text-muted);
   font-size: 13px;
+  border: 1px dashed var(--border);
+  border-radius: 10px;
+}
+
+.ocs-empty-gallery p {
+  margin: 0;
 }
 
 /* Individual Card Tile */
@@ -256,30 +248,28 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-subtle);
   border-radius: 10px;
-  background: var(--surface-subtle);
+  background: var(--surface);
   overflow: hidden;
   cursor: pointer;
   transition:
-    transform 0.15s ease,
     border-color 0.15s ease,
     box-shadow 0.15s ease;
   outline: none;
 }
 
 .ocs-gallery-card-item:hover {
-  transform: translateY(-2px);
-  border-color: var(--accent);
-  box-shadow: var(--shadow-btn-hover);
+  border-color: var(--border-hover, var(--border));
 }
 
 .ocs-gallery-card-item.is-selected {
   border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
 }
 
 .ocs-gallery-card-item:focus-visible {
+  border-color: var(--accent);
   box-shadow: 0 0 0 2px var(--accent);
 }
 
@@ -324,6 +314,19 @@
   font-size: 10px;
   font-weight: 500;
   pointer-events: none;
+}
+
+.ocs-thumb-kind-pill span {
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  transition: max-width 0.15s ease;
+}
+
+.ocs-gallery-card-item:hover .ocs-thumb-kind-pill span,
+.ocs-gallery-card-item.is-selected .ocs-thumb-kind-pill span,
+.ocs-gallery-card-item:focus-visible .ocs-thumb-kind-pill span {
+  max-width: 90px;
 }
 
 .ocs-thumb-pill-dot {
@@ -431,7 +434,7 @@
   pointer-events: none;
 }
 
-/* Favorite Star Button */
+/* Favorite Star Button: visible on hover, focus, selection, or when already a favorite */
 .ocs-card-fav-btn {
   position: absolute;
   top: 6px;
@@ -447,15 +450,34 @@
   align-items: center;
   justify-content: center;
   cursor: pointer;
+  opacity: 0;
   transition:
-    color 0.15s ease,
-    background 0.15s ease;
+    opacity 0.15s ease,
+    color 0.15s ease;
   z-index: 2;
+}
+
+.ocs-gallery-card-item:hover .ocs-card-fav-btn,
+.ocs-gallery-card-item.is-selected .ocs-card-fav-btn,
+.ocs-gallery-card-item:focus-within .ocs-card-fav-btn,
+.ocs-card-fav-btn.is-favorite,
+.ocs-card-fav-btn:focus-visible {
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .ocs-card-fav-btn {
+    opacity: 1;
+  }
 }
 
 .ocs-card-fav-btn:hover {
   color: var(--ocs-star-gold);
-  background: var(--color-bg-overlay);
+}
+
+.ocs-card-fav-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .ocs-card-fav-btn.is-favorite {
@@ -486,47 +508,36 @@
   text-overflow: ellipsis;
 }
 
-.ocs-card-assignment-tags {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.ocs-assignment-tag {
-  font-size: 10px;
-  font-weight: 500;
-  padding: 1px 6px;
-  border-radius: 4px;
-  background: var(--surface-subtle);
-  border: 1px solid var(--border-subtle);
+/* One quiet line for where the card is used */
+.ocs-card-assignment-line {
+  font-size: 11px;
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ============================================================
    Right Column: Sticky WYSIWYG Inspector & Live Preview
    ============================================================ */
 
+/* Pinned preview panel */
 .ocs-preview-inspector {
   background: var(--surface-subtle);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 10px 12px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 7px;
+  gap: 10px;
 }
 
-.ocs-inspector-header {
+.ocs-inspector-head {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.ocs-inspector-title-row {
-  display: flex;
-  align-items: center;
+  align-items: baseline;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
 }
 
 .ocs-inspector-name {
@@ -534,75 +545,38 @@
   font-weight: 600;
   color: var(--text);
   margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.ocs-inspector-badge {
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--hover);
+.ocs-inspector-kind {
+  flex-shrink: 0;
+  font-size: 11px;
   color: var(--text-muted);
 }
 
-.ocs-inspector-desc {
+.ocs-inspector-app-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.ocs-inspector-app-label {
   font-size: 12px;
   color: var(--text-muted);
+}
+
+.ocs-assignment-status {
   margin: 0;
-}
-
-/* App Switcher Tabs */
-.ocs-app-tabs-container {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.ocs-app-tabs-label {
-  font-size: 10px;
-  font-weight: 500;
-  color: var(--text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.ocs-app-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-}
-
-.ocs-app-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
-  font-size: 11px;
-  font-weight: 500;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--text-muted);
-  cursor: pointer;
-  transition: all 0.15s ease;
-}
-
-.ocs-app-tab:hover {
-  background: var(--hover);
+  font-size: 12px;
   color: var(--text);
 }
 
-.ocs-app-tab.active {
-  border-color: var(--app-accent, var(--accent));
-  background: var(--hover);
-  color: var(--text);
-}
-
-.ocs-app-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
+.ocs-assignment-status.is-none {
+  color: var(--text-muted);
 }
 
 /* WYSIWYG Stage Box */
@@ -617,7 +591,7 @@
 .ocs-wysiwyg-stage-backdrop {
   position: relative;
   width: 100%;
-  height: 168px;
+  aspect-ratio: 16 / 9;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -731,51 +705,28 @@
   }
 }
 
-/* Assignment Banner */
-.ocs-assignment-banner {
-  display: flex;
-  align-items: center;
-}
-
-.ocs-banner-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 2px 8px;
-  border-radius: 6px;
-  font-size: 11px;
-}
-
-.ocs-banner-global {
-  background: var(--file-doc-soft);
-  color: var(--accent);
-  border: 1px solid var(--border-hover);
-  font-weight: 500;
-}
-
-.ocs-banner-override {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  color: var(--text);
-}
-
-.ocs-banner-unassigned {
-  background: transparent;
-  color: var(--text-muted);
-  font-size: 11px;
-}
-
-/* Inspector Action Buttons */
+/* Inspector actions: one main button, quiet secondary buttons */
 .ocs-inspector-actions {
   display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.ocs-inspector-actions .set-btn {
-  padding: 3px 8px;
-  font-size: 11px;
-  line-height: 1.35;
+.ocs-action-main {
+  width: 100%;
+  justify-content: center;
+}
+
+.ocs-action-secondary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+}
+
+.ocs-action-secondary .set-btn {
+  padding: 3px 9px;
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .ocs-btn-primary {
@@ -788,12 +739,79 @@
   opacity: 0.9;
 }
 
+.ocs-btn-primary:focus-visible,
+.ocs-inspector-actions .set-btn:focus-visible,
+.ocs-more-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
 .ocs-btn-danger {
   color: var(--danger) !important;
 }
 
 .ocs-btn-danger:hover {
   background: var(--danger-bg) !important;
+}
+
+/* "More actions" menu */
+.ocs-more {
+  position: relative;
+}
+
+.ocs-more-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+}
+
+.ocs-more-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 160px;
+  display: flex;
+  flex-direction: column;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow-menu);
+}
+
+.ocs-more-menu button {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.ocs-more-menu button:hover,
+.ocs-more-menu button:focus-visible {
+  background: var(--hover);
+  outline: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ocs-gallery-card-item,
+  .ocs-card-fav-btn,
+  .ocs-filter-pill,
+  .ocs-thumb-kind-pill span,
+  .ocs-wysiwyg-card-stage,
+  .ocs-floating-toast {
+    transition: none;
+    animation: none;
+  }
+  .ocs-wysiwyg-progress-bar {
+    animation: none;
+    transform: none;
+  }
 }
 
 /* Preview Empty State */

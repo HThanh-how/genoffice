@@ -3,15 +3,26 @@ import type { OpeningCardDefinition, StoredMediaAsset } from '../../../../shared
 import { OPENING_APPS, type OpeningPrefs } from '../../../../shared/opening-scenes-meta'
 import { CardThumbnail } from './CardThumbnail'
 import { APP_INFO } from './CardPreview'
+import {
+  computeFilterCounts,
+  matchesFilter,
+  resolveActiveFilter,
+  shouldShowFilterRow,
+  visibleFilterKeys,
+  type GalleryFilterCategory,
+} from './studio-logic'
 
-export type GalleryFilterCategory =
-  | 'all'
-  | 'curated-material'
-  | 'canvas-scene'
-  | 'personal-media'
-  | 'ai-html'
-  | 'favorites'
-  | 'custom'
+export type { GalleryFilterCategory }
+
+const FILTER_LABELS: Record<GalleryFilterCategory, { en: string; vi: string }> = {
+  all: { en: 'All', vi: 'Tất cả' },
+  'curated-material': { en: 'Materials', vi: 'Chất liệu' },
+  'canvas-scene': { en: 'Motion', vi: 'Cảnh động' },
+  'personal-media': { en: 'Media', vi: 'Phương tiện' },
+  'ai-html': { en: 'HTML', vi: 'Thẻ HTML' },
+  favorites: { en: 'Favorites', vi: 'Yêu thích' },
+  custom: { en: 'Custom', vi: 'Tự tạo' },
+}
 
 interface CardGalleryProps {
   cards: OpeningCardDefinition[]
@@ -37,62 +48,28 @@ export function CardGallery({
   const [searchQuery, setSearchQuery] = useState('')
   const cardElementsRef = useRef<(HTMLDivElement | null)[]>([])
 
-  // Category counts
-  const counts = useMemo(() => {
-    const c = {
-      all: cards.length,
-      'curated-material': 0,
-      'canvas-scene': 0,
-      'personal-media': 0,
-      'ai-html': 0,
-      favorites: 0,
-      custom: 0,
-    }
-    const favSet = new Set(prefs.favorites || [])
-    for (const card of cards) {
-      if (card.contentKind === 'curated-material') c['curated-material']++
-      if (card.contentKind === 'canvas-scene') c['canvas-scene']++
-      if (card.contentKind === 'personal-media') c['personal-media']++
-      if (card.contentKind === 'ai-html' || card.contentKind === 'custom-html') c['ai-html']++
-      if (favSet.has(card.id)) c.favorites++
-      if (!card.isBuiltIn || card.category === 'custom') c.custom++
-    }
-    return c
-  }, [cards, prefs.favorites])
+  const counts = useMemo(
+    () => computeFilterCounts(cards, prefs.favorites),
+    [cards, prefs.favorites],
+  )
+  const activeFilter = resolveActiveFilter(filterCategory, counts)
+  const filterKeys = visibleFilterKeys(counts)
 
-  // Filtered list
   const filteredCards = useMemo(() => {
-    let list = cards
+    const favSet = new Set(prefs.favorites || [])
+    let list = cards.filter((c) => matchesFilter(c, activeFilter, favSet))
     const q = searchQuery.trim().toLowerCase()
-
-    if (filterCategory === 'curated-material') {
-      list = list.filter((c) => c.contentKind === 'curated-material')
-    } else if (filterCategory === 'canvas-scene') {
-      list = list.filter((c) => c.contentKind === 'canvas-scene')
-    } else if (filterCategory === 'personal-media') {
-      list = list.filter((c) => c.contentKind === 'personal-media')
-    } else if (filterCategory === 'ai-html') {
-      list = list.filter((c) => c.contentKind === 'ai-html' || c.contentKind === 'custom-html')
-    } else if (filterCategory === 'favorites') {
-      const favSet = new Set(prefs.favorites || [])
-      list = list.filter((c) => favSet.has(c.id))
-    } else if (filterCategory === 'custom') {
-      list = list.filter((c) => !c.isBuiltIn || c.category === 'custom')
-    }
-
     if (q) {
-      list = list.filter((c) => {
-        return (
+      list = list.filter(
+        (c) =>
           c.name.toLowerCase().includes(q) ||
           c.id.toLowerCase().includes(q) ||
           (c.tags && c.tags.some((t) => t.toLowerCase().includes(q))) ||
-          (c.description && c.description.toLowerCase().includes(q))
-        )
-      })
+          (c.description && c.description.toLowerCase().includes(q)),
+      )
     }
-
     return list
-  }, [cards, filterCategory, searchQuery, prefs.favorites])
+  }, [cards, activeFilter, searchQuery, prefs.favorites])
 
   // Mapping of which cards are assigned to which apps
   const cardAssignments = useMemo(() => {
@@ -173,32 +150,26 @@ export function CardGallery({
           )}
         </div>
 
-        {/* Filter Pills */}
-        <div className="ocs-filter-tabs" role="tablist">
-          {(
-            [
-              { key: 'all', en: 'All', vi: 'Tất cả' },
-              { key: 'curated-material', en: 'Materials', vi: 'Chất liệu' },
-              { key: 'canvas-scene', en: 'Motion Scenes', vi: 'Cảnh động' },
-              { key: 'personal-media', en: 'Media', vi: 'Phương tiện' },
-              { key: 'ai-html', en: 'HTML Cards', vi: 'Thẻ HTML' },
-              { key: 'favorites', en: 'Favorites', vi: 'Yêu thích' },
-              { key: 'custom', en: 'Custom', vi: 'Tự tạo' },
-            ] as const
-          ).map((tab) => (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={filterCategory === tab.key}
-              className={`ocs-filter-pill${filterCategory === tab.key ? ' active' : ''}`}
-              onClick={() => setFilterCategory(tab.key)}
-            >
-              <span>{isVi ? tab.vi : tab.en}</span>
-              <span className="ocs-filter-count">{counts[tab.key]}</span>
-            </button>
-          ))}
-        </div>
+        {shouldShowFilterRow(counts) && (
+          <div
+            className="ocs-filter-tabs"
+            role="group"
+            aria-label={isVi ? 'Lọc theo loại' : 'Filter by type'}
+          >
+            {filterKeys.map((key) => (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={activeFilter === key}
+                className={`ocs-filter-pill${activeFilter === key ? ' active' : ''}`}
+                onClick={() => setFilterCategory(key)}
+              >
+                <span>{isVi ? FILTER_LABELS[key].vi : FILTER_LABELS[key].en}</span>
+                <span className="ocs-filter-count">{counts[key]}</span>
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* Cards Grid */}
@@ -211,9 +182,14 @@ export function CardGallery({
           <div className="ocs-empty-gallery">
             <p>
               {isVi
-                ? 'Không tìm thấy thẻ nào khớp với bộ lọc hiện tại.'
-                : 'No cards match the current filter criteria.'}
+                ? 'Không có thẻ nào khớp. Thử từ khóa khác.'
+                : 'No cards match. Try a different search.'}
             </p>
+            {searchQuery && (
+              <button type="button" className="set-btn" onClick={() => setSearchQuery('')}>
+                {isVi ? 'Xóa tìm kiếm' : 'Clear search'}
+              </button>
+            )}
           </div>
         ) : (
           (() => {
@@ -273,15 +249,8 @@ export function CardGallery({
                       </span>
                     </div>
 
-                    {/* Badges for currently assigned applications */}
                     {assignments.length > 0 && (
-                      <div className="ocs-card-assignment-tags">
-                        {assignments.map((label) => (
-                          <span key={label} className="ocs-assignment-tag">
-                            {label}
-                          </span>
-                        ))}
-                      </div>
+                      <span className="ocs-card-assignment-line">{assignments.join(' · ')}</span>
                     )}
                   </div>
                 </div>

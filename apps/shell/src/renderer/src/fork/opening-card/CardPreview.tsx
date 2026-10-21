@@ -8,6 +8,8 @@ import {
 } from '../../../../shared/opening-scenes-meta'
 import { buildMaterialCss, hexToRgb, sampleFileName } from '../../../../shared/opening-card-css'
 import { runGOScene } from '../../../../shared/opening-scenes-runner'
+import { Dropdown } from '@genoffice/ui'
+import { assignmentStatus, pickPrimaryAction } from './studio-logic'
 import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-html-sanitizer'
 
 // App colors and human-readable names
@@ -249,48 +251,42 @@ export function CardPreview({
         })()
       : undefined
 
+  const status = assignmentStatus({
+    isGlobalDefault,
+    hasAppOverride,
+    activeAppHasOtherOverride: Boolean(
+      prefs.appOverrides?.[activeApp] && prefs.appOverrides[activeApp] !== card.id,
+    ),
+    overrideCount: Object.keys(prefs.appOverrides || {}).length,
+  })
+  const appName = isVi ? APP_INFO[activeApp].nameVi : APP_INFO[activeApp].nameEn
+  const statusText = (() => {
+    switch (status.kind) {
+      case 'global-overridden':
+        return isVi
+          ? `Mặc định chung, nhưng ${appName} dùng thẻ khác`
+          : `Default for all apps, but ${appName} uses another card`
+      case 'global':
+        return status.overrides > 0
+          ? isVi
+            ? `Mặc định chung (${status.overrides} ứng dụng có thẻ riêng)`
+            : `Default for all apps (${status.overrides} with their own card)`
+          : isVi
+            ? 'Mặc định cho mọi ứng dụng'
+            : 'Default for all apps'
+      case 'app':
+        return isVi ? `Đã gán cho ${appName}` : `Assigned to ${appName}`
+      default:
+        return isVi ? `Chưa gán cho ${appName}` : `Not assigned to ${appName}`
+    }
+  })()
+
+  const primary = pickPrimaryAction({ isGlobalDefault, hasAppOverride })
+  const globalLabel = isVi ? 'Đặt làm Mặc định chung' : 'Set as Global Default'
+  const assignLabel = isVi ? `Gán cho ${appName}` : `Assign to ${appName}`
+
   return (
     <div className="ocs-preview-inspector">
-      <div className="ocs-inspector-header">
-        <div className="ocs-inspector-title-row">
-          <h3 className="ocs-inspector-name">{card.name}</h3>
-          <span className="ocs-inspector-badge">{card.contentKind}</span>
-        </div>
-        <p className="ocs-inspector-desc">
-          {card.description ||
-            (isVi
-              ? 'Thẻ mở tệp thời gian thực với hiệu ứng chuyển động mượt mà.'
-              : 'Real-time opening card with smooth transition effects.')}
-        </p>
-      </div>
-
-      {/* App Switcher Pills */}
-      <div className="ocs-app-tabs-container">
-        <span className="ocs-app-tabs-label">
-          {isVi ? 'Xem thử theo ứng dụng:' : 'Preview for application:'}
-        </span>
-        <div className="ocs-app-tabs" role="tablist">
-          {OPENING_APPS.map((app) => (
-            <button
-              key={app}
-              type="button"
-              role="tab"
-              aria-selected={activeApp === app}
-              className={`ocs-app-tab${activeApp === app ? ' active' : ''}`}
-              style={
-                activeApp === app
-                  ? ({ '--app-accent': APP_INFO[app].color } as React.CSSProperties)
-                  : undefined
-              }
-              onClick={() => setActiveApp(app)}
-            >
-              <span className="ocs-app-dot" style={{ backgroundColor: APP_INFO[app].color }} />
-              <span>{isVi ? APP_INFO[app].nameVi : APP_INFO[app].nameEn}</span>
-            </button>
-          ))}
-        </div>
-      </div>
-
       {/* Live WYSIWYG Stage Box */}
       <div className="ocs-wysiwyg-stage-wrapper">
         <div
@@ -380,130 +376,99 @@ export function CardPreview({
         </div>
       </div>
 
-      {/* Assignment Status Notice */}
-      <div className="ocs-assignment-banner">
-        {isGlobalDefault ? (
-          (() => {
-            const isOverriddenForThisApp = Boolean(
-              prefs.appOverrides?.[activeApp] && prefs.appOverrides[activeApp] !== card.id,
-            )
-            const overridesCount = Object.keys(prefs.appOverrides || {}).length
-
-            if (isOverriddenForThisApp) {
-              return (
-                <div className="ocs-banner-chip ocs-banner-override">
-                  <span>
-                    {isVi
-                      ? `Mặc định chung (nhưng ${APP_INFO[activeApp].nameVi} đang dùng thẻ khác)`
-                      : `Global Default (but ${APP_INFO[activeApp].nameEn} has an app override)`}
-                  </span>
-                </div>
-              )
-            }
-
-            if (overridesCount > 0) {
-              return (
-                <div className="ocs-banner-chip ocs-banner-global">
-                  <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                    <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.5 11.5L8 9.5l-3.5 2 1-4-3-3 4-.5L8 1l1.5 3 4 .5-3 3 1 4z" />
-                  </svg>
-                  <span>
-                    {isVi
-                      ? `Đang là Mặc định chung (${overridesCount} ứng dụng có cấu hình riêng)`
-                      : `Current Global Default (${overridesCount} app overrides configured)`}
-                  </span>
-                </div>
-              )
-            }
-
-            return (
-              <div className="ocs-banner-chip ocs-banner-global">
-                <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                  <path d="M8 0a8 8 0 1 0 0 16A8 8 0 0 0 8 0zm3.5 11.5L8 9.5l-3.5 2 1-4-3-3 4-.5L8 1l1.5 3 4 .5-3 3 1 4z" />
-                </svg>
-                <span>
-                  {isVi
-                    ? 'Đang là Mặc định chung cho tất cả ứng dụng'
-                    : 'Current Global Default for all applications'}
-                </span>
-              </div>
-            )
-          })()
-        ) : hasAppOverride ? (
-          <div className="ocs-banner-chip ocs-banner-override">
-            <span>
-              {isVi
-                ? `Được gán riêng cho ${APP_INFO[activeApp].nameVi}`
-                : `Assigned specifically to ${APP_INFO[activeApp].nameEn}`}
-            </span>
-          </div>
-        ) : (
-          <div className="ocs-banner-chip ocs-banner-unassigned">
-            <span>
-              {isVi
-                ? `Chưa gán riêng cho ${APP_INFO[activeApp].nameVi}`
-                : `Not specifically assigned to ${APP_INFO[activeApp].nameEn}`}
-            </span>
-          </div>
+      <div className="ocs-inspector-head">
+        <h3 className="ocs-inspector-name" title={card.name}>
+          {card.name}
+        </h3>
+        {card.contentKind === 'canvas-scene' && (
+          <span className="ocs-inspector-kind">{isVi ? 'Cảnh động' : 'Motion'}</span>
         )}
       </div>
 
-      {/* Action Controls */}
+      <div className="ocs-inspector-app-row">
+        <span className="ocs-inspector-app-label">{isVi ? 'Xem thử trong' : 'Preview in'}</span>
+        <Dropdown
+          className="set-dd ocs-app-select"
+          value={activeApp}
+          ariaLabel={isVi ? 'Xem thử theo ứng dụng' : 'Preview for application'}
+          options={OPENING_APPS.map((app) => ({
+            value: app,
+            label: isVi ? APP_INFO[app].nameVi : APP_INFO[app].nameEn,
+          }))}
+          onPick={(app) => setActiveApp(app)}
+        />
+      </div>
+
+      <p
+        className={`ocs-assignment-status${status.kind === 'none' ? ' is-none' : ''}`}
+        role="status"
+      >
+        {statusText}
+      </p>
+
       <div className="ocs-inspector-actions">
-        <button
-          type="button"
-          className="set-btn ocs-btn-primary"
-          disabled={busy || isGlobalDefault}
-          onClick={handleGlobal}
-        >
-          {isGlobalDefault
-            ? isVi
-              ? '✓ Mặc định chung'
-              : '✓ Global Default'
-            : isVi
-              ? 'Đặt làm Mặc định chung'
-              : 'Set as Global Default'}
-        </button>
-
-        <button
-          type="button"
-          className="set-btn"
-          disabled={busy || hasAppOverride}
-          onClick={handleAssign}
-        >
-          {isVi
-            ? `Gán cho ${APP_INFO[activeApp].nameVi}`
-            : `Assign to ${APP_INFO[activeApp].nameEn}`}
-        </button>
-
-        {hasAppOverride && (
-          <button type="button" className="set-btn" disabled={busy} onClick={handleReset}>
-            {isVi ? 'Xóa gán riêng' : 'Reset Override'}
-          </button>
-        )}
-
-        <button
-          type="button"
-          className="set-btn"
-          onClick={() => onPreviewWindow(activeApp, card.id)}
-        >
-          {isVi ? 'Xem cửa sổ thật' : 'Preview in Window'}
-        </button>
-
-        <button type="button" className="set-btn" onClick={() => onOpenCustomizer(card)}>
-          {isVi ? 'Tùy chỉnh' : 'Customize'}
-        </button>
-
-        {!card.isBuiltIn && onDeleteCard && (
+        {primary === 'global' && (
           <button
             type="button"
-            className="set-btn ocs-btn-danger"
+            className="set-btn ocs-btn-primary ocs-action-main"
             disabled={busy}
-            onClick={() => onDeleteCard(card.id)}
+            onClick={handleGlobal}
           >
-            {isVi ? 'Xóa thẻ' : 'Delete'}
+            {globalLabel}
           </button>
         )}
+        {primary === 'assign' && (
+          <button
+            type="button"
+            className="set-btn ocs-btn-primary ocs-action-main"
+            disabled={busy}
+            onClick={handleAssign}
+          >
+            {assignLabel}
+          </button>
+        )}
+
+        <div className="ocs-action-secondary">
+          {primary === 'global' && (
+            <button
+              type="button"
+              className="set-btn"
+              disabled={busy || hasAppOverride}
+              onClick={handleAssign}
+            >
+              {assignLabel}
+            </button>
+          )}
+
+          {hasAppOverride && (
+            <button type="button" className="set-btn" disabled={busy} onClick={handleReset}>
+              {isVi ? 'Xóa gán riêng' : 'Reset Override'}
+            </button>
+          )}
+
+          <button
+            type="button"
+            className="set-btn"
+            onClick={() => onPreviewWindow(activeApp, card.id)}
+          >
+            {isVi ? 'Xem cửa sổ thật' : 'Preview in Window'}
+          </button>
+
+          <button type="button" className="set-btn" onClick={() => onOpenCustomizer(card)}>
+            {isVi ? 'Tùy chỉnh' : 'Customize'}
+          </button>
+
+          {!card.isBuiltIn && onDeleteCard && (
+            <button
+              type="button"
+              className="set-btn ocs-btn-danger"
+              disabled={busy}
+              onClick={() => onDeleteCard(card.id)}
+            >
+              {isVi ? 'Xóa thẻ' : 'Delete'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )
