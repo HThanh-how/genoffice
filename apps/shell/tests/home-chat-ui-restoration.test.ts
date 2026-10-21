@@ -100,7 +100,8 @@ describe('Home UI Restoration Regression Suite (H01 - H10)', () => {
 
     // Click Ask AI in sidebar
     const askAiNav = Array.from(host.querySelectorAll('.sidebar button, .nav-item')).find(
-      (btn) => btn.textContent?.includes('Ask AI') || btn.getAttribute('aria-label')?.includes('Ask AI'),
+      (btn) =>
+        btn.textContent?.includes('Ask AI') || btn.getAttribute('aria-label')?.includes('Ask AI'),
     ) as HTMLButtonElement | undefined
 
     expect(askAiNav).toBeDefined()

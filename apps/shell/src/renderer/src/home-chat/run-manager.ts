@@ -25,11 +25,7 @@ import {
   refBridge,
   type PickedSources,
 } from './file-refs'
-import {
-  fileNameVariants,
-  fileNamesIn,
-  toSeedMessages,
-} from './utils'
+import { fileNameVariants, fileNamesIn, toSeedMessages } from './utils'
 import {
   agySystemSuffix,
   buildRetrievalContext,
@@ -48,13 +44,7 @@ import {
 } from '../fork/index-assistant'
 import { findFilesByName } from '../fork/file-name-search'
 
-export type SessionRunStatus =
-  | 'idle'
-  | 'queued'
-  | 'running'
-  | 'completed'
-  | 'failed'
-  | 'stopped'
+export type SessionRunStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'stopped'
 
 export interface SessionRun {
   sessionId: string
@@ -72,9 +62,11 @@ export interface SessionRun {
   toolTable: FileRefTable
   turnStart: number
   createdPaths: Set<string>
+  openedPaths: Set<string>
   openStates: Map<string, 'opening' | 'opened' | 'failed'>
   inFlightOpen: Map<string, Promise<boolean>>
   loop: AgentLoop | null
+  retrievalContext?: RetrievalContext | null
   needsSeed: boolean
   lastSavedItems: ChatItem[] | null
   dead: boolean
@@ -126,6 +118,8 @@ export interface RunManagerOptions {
   getActiveSessionId: () => string | null
   onOpenPath?: (path: string) => boolean | Promise<boolean> | void
   isOpenPath?: (path: string) => boolean | Promise<boolean>
+  isMounted?: () => boolean
+  onActiveRequestChange?: (sessionId: string, requestId: string | null) => void
   onStatusChange?: (sessionId: string, status: SessionRunStatus) => void
   onItemsChange?: (sessionId: string, items: ChatItem[]) => void
   onSessionUpdated?: (summary: HomeChatSessionSummary) => void
@@ -137,34 +131,16 @@ export class HomeChatRunManager {
   private corpus: KbFileInfo[] = []
   private saveChain = Promise.resolve()
   private requestToSession = new Map<string, string>()
-  private unsubscribeStream?: () => void
+  private destroyed = false
 
-  constructor(private readonly opts: RunManagerOptions) {
-    if (typeof this.opts.api.onAiStream === 'function') {
-      this.unsubscribeStream = this.opts.api.onAiStream((chunk: IpcStreamChunk) => {
-        if (!chunk || !chunk.requestId) return
-        const sessionId = this.requestToSession.get(chunk.requestId)
-        if (!sessionId) return
-        const run = this.runs.get(sessionId)
-        if (!run || run.dead || run.status !== 'running') return
-
-        if (chunk.type === 'delta' && typeof chunk.text === 'string') {
-          this.handleDelta(run, chunk.text)
-        } else if (chunk.type === 'done') {
-          this.handleDone(run, typeof chunk.text === 'string' ? chunk.text : '')
-        } else if (chunk.type === 'error') {
-          this.handleError(run, typeof chunk.error === 'string' ? chunk.error : this.opts.translate('homeChatError'))
-        }
-      })
-    }
-  }
+  constructor(private readonly opts: RunManagerOptions) {}
 
   destroy(): void {
-    if (this.unsubscribeStream) {
-      this.unsubscribeStream()
-      this.unsubscribeStream = undefined
-    }
-    for (const run of this.runs.values()) {
+    this.destroyed = true
+    const uniqueRuns = new Set(this.runs.values())
+    for (const run of uniqueRuns) {
+      run.dead = true
+      run.status = 'stopped'
       if (run.saveTimer) window.clearTimeout(run.saveTimer)
       if (run.activeRequestId) {
         void this.opts.api.aiStreamCancel(run.activeRequestId)
@@ -189,7 +165,12 @@ export class HomeChatRunManager {
     return undefined
   }
 
-  ensureRun(sessionId: string, initialItems: ChatItem[] = [], persistedId: string | null = null, title = ''): SessionRun {
+  ensureRun(
+    sessionId: string,
+    initialItems: ChatItem[] = [],
+    persistedId: string | null = null,
+    title = '',
+  ): SessionRun {
     let run = this.getRun(sessionId)
     if (!run && persistedId) {
       run = this.getRun(persistedId)
@@ -211,6 +192,7 @@ export class HomeChatRunManager {
         toolTable,
         turnStart: 1,
         createdPaths: new Set(),
+        openedPaths: new Set(),
         openStates: new Map(),
         inFlightOpen: new Map(),
         loop: null,
@@ -237,11 +219,11 @@ export class HomeChatRunManager {
   }
 
   private countActive(): number {
-    let count = 0
+    const active = new Set<SessionRun>()
     for (const run of this.runs.values()) {
-      if (!run.dead && run.status === 'running') count++
+      if (!run.dead && run.status === 'running') active.add(run)
     }
-    return count
+    return active.size
   }
 
   async submit(sessionId: string, messageText: string, baseItems?: ChatItem[]): Promise<void> {
@@ -292,13 +274,21 @@ export class HomeChatRunManager {
     const indexCommand = mentionsIndex(raw) ? parseIndexCommand(raw) : null
     if (indexCommand) {
       try {
-        const answer = await runIndexCommand(this.opts.api, indexCommand, langFor(raw, this.opts.getLang()))
+        const answer = await runIndexCommand(
+          this.opts.api,
+          indexCommand,
+          langFor(raw, this.opts.getLang()),
+        )
         if (run.dead || run.runGeneration !== currentGen) return
         this.updateLastAssistant(run, (last) => ({ ...last, text: answer, streaming: false }))
         run.status = 'completed'
       } catch {
         if (run.dead || run.runGeneration !== currentGen) return
-        this.updateLastAssistant(run, (last) => ({ ...last, error: this.opts.translate('homeChatError'), streaming: false }))
+        this.updateLastAssistant(run, (last) => ({
+          ...last,
+          error: this.opts.translate('homeChatError'),
+          streaming: false,
+        }))
         run.status = 'failed'
       } finally {
         if (!run.dead && run.runGeneration === currentGen) {
@@ -344,7 +334,9 @@ export class HomeChatRunManager {
           hits = (await this.opts.api.documentMemorySearch(query, 8)).hits
           if (this.opts.api.testIgnorePath && hits.length > 0) {
             const testResults = await Promise.all(
-              hits.map((h) => this.opts.api.testIgnorePath!(h.path).catch(() => ({ ignored: false }))),
+              hits.map((h) =>
+                this.opts.api.testIgnorePath!(h.path).catch(() => ({ ignored: false })),
+              ),
             )
             hits = hits.filter((_, idx) => !testResults[idx]?.ignored)
           }
@@ -357,7 +349,9 @@ export class HomeChatRunManager {
         run.turnStart = 1
         const context = buildRetrievalContext(hits, { table })
         if (mentionsIndex(raw)) {
-          const facts = await indexFacts(this.opts.api, langFor(raw, this.opts.getLang())).catch(() => '')
+          const facts = await indexFacts(this.opts.api, langFor(raw, this.opts.getLang())).catch(
+            () => '',
+          )
           if (facts && !run.dead && run.runGeneration === currentGen) {
             context.block = `${context.block}\n\n<<<INDEX\n${facts}\nINDEX>>>\n${INDEX_DIRECTIVE_PROMPT}`
           }
@@ -367,7 +361,9 @@ export class HomeChatRunManager {
         )
         if (this.opts.api.testIgnorePath && named.length > 0) {
           const testResults = await Promise.all(
-            named.map((f) => this.opts.api.testIgnorePath!(f.path).catch(() => ({ ignored: false }))),
+            named.map((f) =>
+              this.opts.api.testIgnorePath!(f.path).catch(() => ({ ignored: false })),
+            ),
           )
           named = named.filter((_, idx) => !testResults[idx]?.ignored)
         }
@@ -381,6 +377,7 @@ export class HomeChatRunManager {
           }
         }
         if (byName.block) context.block = `${context.block}\n\n${byName.block}`
+        run.retrievalContext = context
         this.updateLastAssistant(run, (last) => ({ ...last, candidates: table.list() }))
       }
 
@@ -395,7 +392,9 @@ export class HomeChatRunManager {
             const outcomes: string[] = []
             for (const cmd of commands) {
               if (run.dead || run.runGeneration !== currentGen) return
-              outcomes.push(await runIndexCommand(this.opts.api, cmd, langFor(raw, this.opts.getLang())))
+              outcomes.push(
+                await runIndexCommand(this.opts.api, cmd, langFor(raw, this.opts.getLang())),
+              )
             }
             if (!run.dead && run.runGeneration === currentGen) {
               this.updateLastAssistant(run, (last) => ({
@@ -415,11 +414,10 @@ export class HomeChatRunManager {
     }
   }
 
-  private handleDelta(run: SessionRun, text: string): void {
+  private handleText(run: SessionRun, text: string): void {
     const last = run.items.at(-1)
     if (!last || last.role !== 'assistant') return
-    const nextText = (last.text || '') + text
-    this.updateLastAssistant(run, (l) => ({ ...l, text: nextText }))
+    this.updateLastAssistant(run, (l) => ({ ...l, text }))
     this.scheduleSave(run, false)
   }
 
@@ -437,13 +435,14 @@ export class HomeChatRunManager {
         text: text || last.text,
         streaming: false,
         ...(picked.sources.length > 0 ? { sources: picked.sources } : {}),
-        error: (text || last.text) ? undefined : this.opts.translate('homeChatNoReply'),
+        error: text || last.text ? undefined : this.opts.translate('homeChatNoReply'),
       }
     })
 
     if (run.activeRequestId) {
       this.requestToSession.delete(run.activeRequestId)
       run.activeRequestId = null
+      this.opts.onActiveRequestChange?.(run.sessionId, null)
     }
 
     run.status = 'completed'
@@ -464,6 +463,7 @@ export class HomeChatRunManager {
     if (run.activeRequestId) {
       this.requestToSession.delete(run.activeRequestId)
       run.activeRequestId = null
+      this.opts.onActiveRequestChange?.(run.sessionId, null)
     }
     run.status = 'failed'
     this.scheduleSave(run, true)
@@ -474,6 +474,7 @@ export class HomeChatRunManager {
     if (run.activeRequestId) {
       this.requestToSession.delete(run.activeRequestId)
       run.activeRequestId = null
+      this.opts.onActiveRequestChange?.(run.sessionId, null)
     }
     this.notifyStatus(run)
     // Promote next in queue
@@ -500,6 +501,7 @@ export class HomeChatRunManager {
       void this.opts.api.aiStreamCancel(run.activeRequestId)
       this.requestToSession.delete(run.activeRequestId)
       run.activeRequestId = null
+      this.opts.onActiveRequestChange?.(run.sessionId, null)
     }
 
     run.runGeneration++
@@ -534,7 +536,10 @@ export class HomeChatRunManager {
     if (run.persistedId) this.runs.delete(run.persistedId)
   }
 
-  private ensureLoopForRun(run: SessionRun, settings: Awaited<ReturnType<HomeApi['getAiSettings']>>): AgentLoop {
+  private ensureLoopForRun(
+    run: SessionRun,
+    settings: Awaited<ReturnType<HomeApi['getAiSettings']>>,
+  ): AgentLoop {
     if (run.loop) return run.loop
 
     const transport = createIpcTransport({
@@ -543,8 +548,14 @@ export class HomeChatRunManager {
       onAttemptStarted: ({ requestId }) => {
         run.activeRequestId = requestId
         this.requestToSession.set(requestId, run.sessionId)
+        this.opts.onActiveRequestChange?.(run.sessionId, requestId)
       },
-      onStream: () => () => {},
+      onStream: (listener) => {
+        if (typeof this.opts.api.onAiStream === 'function') {
+          return this.opts.api.onAiStream(listener)
+        }
+        return () => {}
+      },
       start: (request) => this.opts.api.aiStream(request),
       cancel: (requestId) => void this.opts.api.aiStreamCancel(requestId),
       getSettings: () => settings,
@@ -644,13 +655,18 @@ export class HomeChatRunManager {
       ]),
       maxTurns: 12,
       formatUserMessage: (instruction, context) =>
-        [instruction, context].filter(Boolean).join('\n\n'),
+        [instruction, context, run.retrievalContext?.block].filter(Boolean).join('\n\n'),
       systemSuffix: () =>
-        `Reply in ${LANGUAGE_NAMES[this.opts.getLang()] ?? 'English'}. This is a home assistant: answer questions, search knowledge base and help find files the user has opened or starred. Use remembered-document and knowledge-base tools when relevant. Never guess document contents or source identifiers. ${FILE_CITATION_RULES_TOOLS}`,
+        run.retrievalContext
+          ? agySystemSuffix(LANGUAGE_NAMES[this.opts.getLang()] ?? 'English', {
+              ...run.retrievalContext,
+              block: '',
+            })
+          : `Reply in ${LANGUAGE_NAMES[this.opts.getLang()] ?? 'English'}. This is a home assistant: answer questions, search knowledge base and help find files the user has opened or starred. Use remembered-document and knowledge-base tools when relevant. Never guess document contents or source identifiers. ${FILE_CITATION_RULES_TOOLS}`,
       events: {
         onText: (text) => {
           if (isCurrent()) {
-            this.handleDelta(run, text)
+            this.handleText(run, text)
           }
         },
         onToolExecuted: ({ call }) => {
@@ -693,7 +709,9 @@ export class HomeChatRunManager {
 
   private async resolveUnlistedNames(run: SessionRun, answer: string): Promise<void> {
     const known = new Set(run.fileTable.list().map((s) => s.name.normalize('NFC').toLowerCase()))
-    const unlisted = fileNamesIn(answer).filter((name) => !known.has(name.normalize('NFC').toLowerCase()))
+    const unlisted = fileNamesIn(answer).filter(
+      (name) => !known.has(name.normalize('NFC').toLowerCase()),
+    )
     for (const name of unlisted.slice(0, 6)) {
       for (const variant of fileNameVariants(name)) {
         const wanted = variant.normalize('NFC').toLowerCase()
@@ -716,22 +734,51 @@ export class HomeChatRunManager {
   private openDocumentPath(
     run: SessionRun,
     path: string,
-    _context?: CreateDocumentExecutionContext,
+    context?: CreateDocumentExecutionContext,
   ): Promise<boolean> {
     const existing = run.inFlightOpen.get(path)
     if (existing) return existing
 
-    const openPromise = (async () => {
+    const startGen = run.runGeneration
+    const startRun = run.activeRun
+    const startTurnId = run.currentUserTurnId
+
+    const isAuthorized = () => {
+      if (this.destroyed || run.dead) return false
+      if (run.status === 'stopped' || run.status === 'failed') return false
+      if (startRun === 0 || run.activeRun !== startRun || run.runGeneration !== startGen)
+        return false
+      if (this.opts.getActiveSessionId() !== run.sessionId) return false
+      if (
+        context?.sessionId &&
+        context.sessionId !== run.executionId &&
+        context.sessionId !== run.sessionId
+      ) {
+        return false
+      }
+      if (context?.userTurnId && context.userTurnId !== startTurnId) {
+        return false
+      }
+      if (this.opts.isMounted && !this.opts.isMounted()) return false
+      return true
+    }
+
+    if (!isAuthorized()) return Promise.resolve(false)
+
+    let openPromise: Promise<boolean> | undefined
+    const task = (async () => {
       try {
-        if (run.dead || this.opts.getActiveSessionId() !== run.sessionId) return false
+        if (!isAuthorized()) return false
+
         if (this.opts.isOpenPath) {
           try {
             await this.opts.isOpenPath(path)
           } catch {
-            // ignore
+            // ignore error and proceed with opening
           }
         }
-        if (run.dead || this.opts.getActiveSessionId() !== run.sessionId) return false
+        if (!isAuthorized()) return false
+
         run.openStates.set(path, 'opening')
         let success = false
         if (this.opts.onOpenPath) {
@@ -740,20 +787,31 @@ export class HomeChatRunManager {
         } else if (typeof this.opts.api.openPath === 'function') {
           success = await this.opts.api.openPath(path)
         }
-        if (run.dead) return false
-        run.openStates.set(path, success ? 'opened' : 'failed')
+        if (!isAuthorized()) return false
+
+        if (success) {
+          run.openStates.set(path, 'opened')
+          run.openedPaths.add(path)
+        } else {
+          run.openStates.set(path, 'failed')
+        }
         return success
       } catch (err) {
         console.error('Failed to open document:', err)
-        run.openStates.set(path, 'failed')
+        if (isAuthorized()) {
+          run.openStates.set(path, 'failed')
+        }
         return false
       } finally {
-        run.inFlightOpen.delete(path)
+        if (openPromise && run.inFlightOpen.get(path) === openPromise) {
+          run.inFlightOpen.delete(path)
+        }
       }
     })()
 
-    run.inFlightOpen.set(path, openPromise)
-    return openPromise
+    openPromise = task
+    run.inFlightOpen.set(path, task)
+    return task
   }
 
   private updateLastAssistant(run: SessionRun, patch: (last: ChatItem) => ChatItem): void {

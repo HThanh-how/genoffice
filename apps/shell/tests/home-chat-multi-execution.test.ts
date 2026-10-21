@@ -8,9 +8,7 @@ import { HomeChat } from '../src/renderer/src/HomeChat'
 import type { HomeApi } from '../src/shared/home-api'
 import type { I18n } from '../src/renderer/src/locale'
 import type { HomeChatSession, HomeChatSessionSummary } from '../src/shared/fork/home-chat-types'
-import {
-  requestChatPrefill,
-} from '../src/renderer/src/chat-events'
+import { requestChatPrefill } from '../src/renderer/src/chat-events'
 
 interface StreamSubscriber {
   handler: (chunk: unknown) => void
@@ -24,28 +22,33 @@ function createMockChatApi() {
   const api = {
     homeChatList: vi.fn().mockImplementation(async () => [...sessionList]),
     homeChatGet: vi.fn().mockImplementation(async (id: string) => savedSessions.get(id) || null),
-    homeChatSave: vi.fn().mockImplementation(async (input: { id?: string; messages: unknown[]; title?: string }) => {
-      const id = input.id || `session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
-      const summary: HomeChatSessionSummary = {
-        id,
-        title: input.title || (input.messages[0] as { text?: string })?.text?.slice(0, 30) || 'New Chat',
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-        messageCount: input.messages.length,
-      }
-      const full: HomeChatSession = {
-        ...summary,
-        messages: input.messages as any,
-      }
-      savedSessions.set(id, full)
-      const existingIdx = sessionList.findIndex((s) => s.id === id)
-      if (existingIdx >= 0) {
-        sessionList[existingIdx] = summary
-      } else {
-        sessionList.unshift(summary)
-      }
-      return summary
-    }),
+    homeChatSave: vi
+      .fn()
+      .mockImplementation(async (input: { id?: string; messages: unknown[]; title?: string }) => {
+        const id = input.id || `session-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`
+        const summary: HomeChatSessionSummary = {
+          id,
+          title:
+            input.title ||
+            (input.messages[0] as { text?: string })?.text?.slice(0, 30) ||
+            'New Chat',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+          messageCount: input.messages.length,
+        }
+        const full: HomeChatSession = {
+          ...summary,
+          messages: input.messages as any,
+        }
+        savedSessions.set(id, full)
+        const existingIdx = sessionList.findIndex((s) => s.id === id)
+        if (existingIdx >= 0) {
+          sessionList[existingIdx] = summary
+        } else {
+          sessionList.unshift(summary)
+        }
+        return summary
+      }),
     homeChatDelete: vi.fn().mockImplementation(async (id: string) => {
       savedSessions.delete(id)
       const idx = sessionList.findIndex((s) => s.id === id)
@@ -93,7 +96,9 @@ function createMockChatApi() {
     testIgnorePath: vi.fn().mockResolvedValue({ ignored: false }),
     folderRoots: vi.fn().mockResolvedValue([]),
     documentMemorySearch: vi.fn().mockResolvedValue({ hits: [], total: 0 }),
-    kbCreateDocument: vi.fn().mockImplementation(async (req: any) => ({ path: `/mock/${req.title}.${req.format}` })),
+    kbCreateDocument: vi
+      .fn()
+      .mockImplementation(async (req: any) => ({ path: `/mock/${req.title}.${req.format}` })),
     kbSearch: vi.fn().mockResolvedValue([]),
     kbRead: vi.fn().mockResolvedValue(''),
     kbList: vi.fn().mockResolvedValue([]),
@@ -154,7 +159,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
     })
 
     await act(async () => {
-      root.render(createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }))
+      root.render(
+        createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }),
+      )
     })
     await act(async () => {
       await new Promise((r) => setTimeout(r, 30))
@@ -176,7 +183,11 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
 
     // Emit delta chunk for Chat A
     await act(async () => {
-      harness.emitChunk({ requestId: chatARequestId, type: 'delta', text: 'Section 1: Executive Summary' })
+      harness.emitChunk({
+        requestId: chatARequestId,
+        type: 'delta',
+        text: 'Section 1: Executive Summary',
+      })
     })
 
     // User clicks "New Chat" while Chat A is streaming
@@ -190,7 +201,11 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
 
     // Emit more chunks and completion for Chat A while Chat B is selected
     await act(async () => {
-      harness.emitChunk({ requestId: chatARequestId, type: 'delta', text: '\nSection 2: Financial Results' })
+      harness.emitChunk({
+        requestId: chatARequestId,
+        type: 'delta',
+        text: '\nSection 2: Financial Results',
+      })
       harness.emitChunk({ requestId: chatARequestId, type: 'done', text: '' })
     })
 
@@ -213,7 +228,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
     })
 
     await act(async () => {
-      root.render(createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }))
+      root.render(
+        createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }),
+      )
     })
     await act(async () => {
       await new Promise((r) => setTimeout(r, 30))
@@ -240,7 +257,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
     expect(railItems.length).toBeGreaterThan(0)
     const chatARow = Array.from(railItems).find((el) => el.textContent?.includes('Generate slides'))
     expect(chatARow).toBeDefined()
-    const spinner = chatARow?.querySelector('.hc-row-spinner, [aria-label*="running" i], [aria-label*="Running" i], .is-running')
+    const spinner = chatARow?.querySelector(
+      '.hc-row-spinner, [aria-label*="running" i], [aria-label*="Running" i], .is-running',
+    )
     expect(spinner).not.toBeNull()
 
     // When Chat A completes, its spinner should disappear
@@ -260,7 +279,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
     })
 
     await act(async () => {
-      root.render(createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }))
+      root.render(
+        createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }),
+      )
     })
     await act(async () => {
       await new Promise((r) => setTimeout(r, 30))
@@ -273,7 +294,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => {
-      host.querySelector<HTMLFormElement>('form.hc-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      host
+        .querySelector<HTMLFormElement>('form.hc-composer')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
     const idA = requestIds[0]
 
@@ -286,7 +309,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => {
-      host.querySelector<HTMLFormElement>('form.hc-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      host
+        .querySelector<HTMLFormElement>('form.hc-composer')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
     const idB = requestIds[1]
 
@@ -295,9 +320,13 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
     expect(idA).not.toBe(idB)
 
     // Stop Chat A via its rail action (or per-session stop)
-    const chatARow = Array.from(host.querySelectorAll('.hc-group li')).find((el) => el.textContent?.includes('Task A'))
+    const chatARow = Array.from(host.querySelectorAll('.hc-group li')).find((el) =>
+      el.textContent?.includes('Task A'),
+    )
     expect(chatARow).toBeDefined()
-    const stopABtn = chatARow?.querySelector<HTMLButtonElement>('.hc-row-stop, [aria-label*="Stop" i]')
+    const stopABtn = chatARow?.querySelector<HTMLButtonElement>(
+      '.hc-row-stop, [aria-label*="Stop" i]',
+    )
     expect(stopABtn).toBeDefined()
     expect(stopABtn).not.toBeNull()
     await act(async () => {
@@ -328,7 +357,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
     })
 
     await act(async () => {
-      root.render(createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }))
+      root.render(
+        createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }),
+      )
     })
     await act(async () => {
       await new Promise((r) => setTimeout(r, 30))
@@ -341,7 +372,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => {
-      host.querySelector<HTMLFormElement>('form.hc-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      host
+        .querySelector<HTMLFormElement>('form.hc-composer')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
     const idA = requestIds[0]
 
@@ -354,7 +387,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => {
-      host.querySelector<HTMLFormElement>('form.hc-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      host
+        .querySelector<HTMLFormElement>('form.hc-composer')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
 
     // Stream text to A in background
@@ -363,7 +398,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
     })
 
     // Re-select Chat A from rail
-    const chatARow = Array.from(host.querySelectorAll('.hc-group li')).find((el) => el.textContent?.includes('Topic A'))
+    const chatARow = Array.from(host.querySelectorAll('.hc-group li')).find((el) =>
+      el.textContent?.includes('Topic A'),
+    )
     const openABtn = chatARow?.querySelector<HTMLButtonElement>('.hc-row-main')!
     await act(async () => {
       openABtn.click()
@@ -387,7 +424,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
 
     try {
       await act(async () => {
-        root.render(createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }))
+        root.render(
+          createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }),
+        )
       })
       await act(async () => {
         await new Promise((r) => setTimeout(r, 30))
@@ -399,12 +438,18 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
         textarea.dispatchEvent(new Event('input', { bubbles: true }))
       })
       await act(async () => {
-        host.querySelector<HTMLFormElement>('form.hc-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+        host
+          .querySelector<HTMLFormElement>('form.hc-composer')!
+          .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
       })
 
       // Send delta and done
       await act(async () => {
-        harness.emitChunk({ requestId: lastRequestId, type: 'delta', text: 'Important background content' })
+        harness.emitChunk({
+          requestId: lastRequestId,
+          type: 'delta',
+          text: 'Important background content',
+        })
         harness.emitChunk({ requestId: lastRequestId, type: 'done', text: '' })
       })
 
@@ -413,7 +458,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
         s.messages.some((m) => m.text.includes('Background processing')),
       )
       expect(saved).toBeDefined()
-      expect(saved?.messages.find((m) => m.role === 'assistant')?.text).toContain('Important background content')
+      expect(saved?.messages.find((m) => m.role === 'assistant')?.text).toContain(
+        'Important background content',
+      )
     } finally {
       window.requestAnimationFrame = originalRaf
     }
@@ -427,7 +474,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
     })
 
     await act(async () => {
-      root.render(createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }))
+      root.render(
+        createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }),
+      )
     })
     await act(async () => {
       await new Promise((r) => setTimeout(r, 30))
@@ -439,12 +488,18 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
       textarea.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () => {
-      host.querySelector<HTMLFormElement>('form.hc-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      host
+        .querySelector<HTMLFormElement>('form.hc-composer')!
+        .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
     })
 
     // Click delete on the running session
-    const row = Array.from(host.querySelectorAll('.hc-group li')).find((el) => el.textContent?.includes('Doomed session'))
-    const deleteBtn = row?.querySelector<HTMLButtonElement>('[aria-label*="Delete" i], [aria-label*="remove" i]')
+    const row = Array.from(host.querySelectorAll('.hc-group li')).find((el) =>
+      el.textContent?.includes('Doomed session'),
+    )
+    const deleteBtn = row?.querySelector<HTMLButtonElement>(
+      '[aria-label*="Delete" i], [aria-label*="remove" i]',
+    )
     await act(async () => {
       deleteBtn?.click()
     })
@@ -471,7 +526,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
     })
 
     await act(async () => {
-      root.render(createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }))
+      root.render(
+        createElement(HomeChat, { api: harness.api, i18n: mockI18n, workspaceActive: true }),
+      )
     })
     await act(async () => {
       await new Promise((r) => setTimeout(r, 30))
@@ -484,7 +541,9 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
         textarea.dispatchEvent(new Event('input', { bubbles: true }))
       })
       await act(async () => {
-        host.querySelector<HTMLFormElement>('form.hc-composer')!.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+        host
+          .querySelector<HTMLFormElement>('form.hc-composer')!
+          .dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
       })
     }
 
@@ -509,8 +568,12 @@ describe('Home Chat Multi-Execution Regression Suite (C01 - C25)', () => {
     expect(activeStreams.length).toBe(2)
 
     // History rail should show Chat 3 with a queued indicator
-    const chat3Row = Array.from(host.querySelectorAll('.hc-group li')).find((el) => el.textContent?.includes('Job 3'))
-    expect(chat3Row?.querySelector('.hc-row-queued, [aria-label*="queued" i], .is-queued')).not.toBeNull()
+    const chat3Row = Array.from(host.querySelectorAll('.hc-group li')).find((el) =>
+      el.textContent?.includes('Job 3'),
+    )
+    expect(
+      chat3Row?.querySelector('.hc-row-queued, [aria-label*="queued" i], .is-queued'),
+    ).not.toBeNull()
 
     // Complete Job 1
     await act(async () => {

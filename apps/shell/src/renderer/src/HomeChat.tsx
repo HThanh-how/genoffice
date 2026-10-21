@@ -452,80 +452,6 @@ export function HomeChat({
     [api],
   )
 
-  const docSkillRef = useRef<ReturnType<typeof createDocumentSkill> | null>(null)
-  if (!docSkillRef.current) {
-    docSkillRef.current = createDocumentSkill({
-      getSessionId: () => convRef.current?.executionId || activeSessionIdRef.current || undefined,
-      getExecutionId: () => convRef.current?.executionId || undefined,
-      getUserTurnId: () => currentUserTurnIdRef.current || undefined,
-      fileExists: async (path: string) => {
-        try {
-          if (typeof api.statPaths === 'function') {
-            const entries = await api.statPaths([path])
-            return Boolean(entries[0] && !entries[0].missing)
-          }
-          return true
-        } catch {
-          return true
-        }
-      },
-      create: async (request) => {
-        const owner = convRef.current
-        const table = fileTableRef.current
-        const generation = runGenerationRef.current
-        const run = activeRunRef.current
-        const sessionId =
-          request.sessionId ||
-          convRef.current?.executionId ||
-          activeSessionIdRef.current ||
-          undefined
-        const userTurnId = request.userTurnId || currentUserTurnIdRef.current || undefined
-        const hostOpId = request.callId || request.documentSlot || undefined
-        const documentSlot = request.documentSlot || hostOpId
-
-        const result = await api.kbCreateDocument({
-          title: request.title,
-          format: request.format,
-          content: request.content,
-          sessionId,
-          userTurnId,
-          documentSlot,
-          callId: hostOpId,
-          documentType: request.documentType,
-        })
-
-        if (
-          mountedRef.current &&
-          convRef.current === owner &&
-          !owner.dead &&
-          generation === runGenerationRef.current &&
-          activeRunRef.current !== 0 &&
-          activeRunRef.current === run
-        ) {
-          createdPathsRef.current.add(result.path)
-          table.addFile({
-            path: result.path,
-            name: result.path.split(/[\\/]/).pop() ?? result.path,
-          })
-        }
-        return { path: result.path }
-      },
-      open: (path, context) => {
-        const owner = convRef.current
-        const generation = runGenerationRef.current
-        const run = activeRunRef.current
-        if (!isAutoOpenAuthorized(owner, generation, run, context)) {
-          return false
-        }
-        return openDocumentPath(path, context)
-      },
-      isOpen: (path) => {
-        if (isOpenPathRef.current) return isOpenPathRef.current(path)
-        return false
-      },
-    })
-  }
-
   const refreshCorpus = useCallback(async () => {
     const request = ++corpusRequestRef.current
     if (typeof api.kbList !== 'function') {
@@ -719,7 +645,9 @@ export function HomeChat({
     }
   }, [loadSettings, refreshList])
 
-  const [executionStates, setExecutionStates] = useState<Map<string, SessionRunStatus>>(() => new Map())
+  const [executionStates, setExecutionStates] = useState<Map<string, SessionRunStatus>>(
+    () => new Map(),
+  )
   const runManagerRef = useRef<HomeChatRunManager | null>(null)
   if (!runManagerRef.current) {
     runManagerRef.current = new HomeChatRunManager({
@@ -733,8 +661,17 @@ export function HomeChat({
       },
       translate: (key, params) => tRef.current(key as ChatKey, params),
       getActiveSessionId: () => activeSessionIdRef.current,
+      isMounted: () => mountedRef.current,
       onOpenPath: (path) => onOpenPathRef.current?.(path),
-      isOpenPath: (path) => (isOpenPathRef.current ? isOpenPathRef.current(path) : false),
+      isOpenPath: isOpenPath
+        ? (path) => (isOpenPathRef.current ? isOpenPathRef.current(path) : false)
+        : undefined,
+      onActiveRequestChange: (sessionId, reqId) => {
+        if (sessionId === activeSessionIdRef.current && mountedRef.current) {
+          activeRequestIdRef.current = reqId
+          setActiveRequestId(reqId)
+        }
+      },
       onStatusChange: (sessionId, status) => {
         setExecutionStates((prev) => {
           const next = new Map(prev)
@@ -745,6 +682,10 @@ export function HomeChat({
           const isBusy = status === 'running' || status === 'queued'
           setBusy(isBusy)
           busyRef.current = isBusy
+          if (!isBusy) {
+            activeRequestIdRef.current = null
+            setActiveRequestId(null)
+          }
         }
       },
       onItemsChange: (sessionId, nextItems) => {
@@ -961,6 +902,8 @@ export function HomeChat({
     adopt({ id: null, executionId: nextSessionId, dead: false, requested: false }, [], '')
     setBusy(false)
     busyRef.current = false
+    activeRequestIdRef.current = null
+    setActiveRequestId(null)
     collapseRailWhenNarrow()
     focusInput()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -988,6 +931,9 @@ export function HomeChat({
         const isBusy = existingRun.status === 'running' || existingRun.status === 'queued'
         setBusy(isBusy)
         busyRef.current = isBusy
+        const reqId = existingRun.activeRequestId ?? null
+        activeRequestIdRef.current = reqId
+        setActiveRequestId(reqId)
         collapseRailWhenNarrow()
         focusInput()
         return
@@ -1251,6 +1197,8 @@ export function HomeChat({
 
   const stop = useCallback(() => {
     runManagerRef.current?.stop(activeSessionIdRef.current)
+    activeRequestIdRef.current = null
+    setActiveRequestId(null)
     setBusy(false)
     busyRef.current = false
   }, [])
