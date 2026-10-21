@@ -213,13 +213,13 @@ export function IndexSettingsTab({ api, focus }: { api: HomeApi; focus?: 'ocr' }
         <h2>{d.title}</h2>
         <p>{d.hint}</p>
       </header>
-      <Section title={d.run} hint={d.runHint} icon="run" open>
+      <Section title={d.run} hint={d.runHint} icon="run">
         <IndexingModeSettings />
       </Section>
-      <Section title={d.pdf} hint={d.pdfHint} icon="pdf" open>
+      <Section title={d.pdf} hint={d.pdfHint} icon="pdf">
         <PdfPagesSettings api={api} />
       </Section>
-      <Section title={d.ignore} hint={d.ignoreHint} icon="ignore" open>
+      <Section title={d.ignore} hint={d.ignoreHint} icon="ignore">
         <IgnoreRulesSettings api={api} />
       </Section>
       <div className="ixs-heading">
@@ -242,7 +242,7 @@ export function IndexSettingsTab({ api, focus }: { api: HomeApi; focus?: 'ocr' }
         <IndexDiagnostics api={api} />
       </Section>
       <EverythingSettings api={api} />
-      <Section title={d.storage} hint={d.storageHint} icon="data" open>
+      <Section title={d.storage} hint={d.storageHint} icon="data">
         <DbLocationSettings api={api} />
         <IndexStorageSettings api={api} />
       </Section>

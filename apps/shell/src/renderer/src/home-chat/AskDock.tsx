@@ -3,6 +3,7 @@ import type { Lang } from '@genoffice/i18n'
 import type { HomeApi } from '../../../shared/home-api'
 import { requestChatPrefill } from '../chat-events'
 import { langFor, parseIndexCommand, runIndexCommand } from '../fork/index-assistant'
+import { loadIndexSummary } from '../fork/index-summary'
 import { chatString } from './strings'
 import {
   HOME_SEARCH_EVENT,
@@ -142,16 +143,15 @@ export function AskDock({
   useEffect(() => {
     if (query || !api.getIndexingActivity) return
     let alive = true
-    void api
-      .getIndexingActivity()
-      .then((a) => {
+    void loadIndexSummary(api)
+      .then((s) => {
+        if (!s) return
         if (!alive) return
         setBrief({
-          percent: a.folderProgress?.percent ?? null,
-          waiting: a.folderProgress?.pendingFiles ?? a.memory.pending,
-          errors:
-            (a.folderProgress?.errorFiles ?? a.memory.errors) + (a.folderProgress?.emptyFiles ?? 0),
-          active: !!a.folder?.running || a.memory.pending > 0,
+          percent: s.percent,
+          waiting: s.waiting,
+          errors: s.problems,
+          active: s.active,
         })
       })
       .catch(() => undefined)

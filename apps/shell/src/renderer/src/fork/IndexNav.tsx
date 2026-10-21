@@ -1,5 +1,7 @@
 import type { ReactNode } from 'react'
 import { useI18n } from '../locale'
+import { fill } from '../indexing-activity-copy'
+import { TEXT, EN } from './index-dashboard-i18n'
 
 export type IndexTabId = 'overview' | 'sources' | 'issues' | 'settings'
 
@@ -11,16 +13,12 @@ export interface IndexNavProps {
 
 interface TabItemConfig {
   id: IndexTabId
-  labelVi: string
-  labelEn: string
   icon: ReactNode
 }
 
 const TABS: TabItemConfig[] = [
   {
     id: 'overview',
-    labelVi: 'Tổng quan',
-    labelEn: 'Overview',
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <rect x="3" y="3" width="7" height="7" />
@@ -32,8 +30,6 @@ const TABS: TabItemConfig[] = [
   },
   {
     id: 'sources',
-    labelVi: 'Nguồn',
-    labelEn: 'Sources',
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
@@ -42,8 +38,6 @@ const TABS: TabItemConfig[] = [
   },
   {
     id: 'issues',
-    labelVi: 'Cần xử lý',
-    labelEn: 'Issues',
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" />
@@ -54,8 +48,6 @@ const TABS: TabItemConfig[] = [
   },
   {
     id: 'settings',
-    labelVi: 'Cài đặt',
-    labelEn: 'Settings',
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="3" />
@@ -67,15 +59,15 @@ const TABS: TabItemConfig[] = [
 
 export function IndexNav({ activeTab, onChangeTab, issuesCount = 0 }: IndexNavProps) {
   const { lang, dateLocale } = useI18n()
-  const isVi = lang === 'vi'
+  const d = TEXT[lang] ?? EN
 
   const tabKeys = TABS.map((t) => t.id)
 
   return (
-    <nav className="idx-tabs" role="tablist" aria-label={isVi ? 'Các mục chỉ mục' : 'Index navigation'}>
+    <nav className="idx-tabs" role="tablist" aria-label={d.summary.navAria}>
       {TABS.map((tab) => {
         const isSelected = activeTab === tab.id
-        const label = isVi ? tab.labelVi : tab.labelEn
+        const label = d.tabs[tab.id]
 
         return (
           <button
@@ -112,7 +104,7 @@ export function IndexNav({ activeTab, onChangeTab, issuesCount = 0 }: IndexNavPr
             <span className="idx-tab-icon">{tab.icon}</span>
             <span className="idx-tab-text">{label}</span>
             {tab.id === 'issues' && issuesCount > 0 && (
-              <span className="idx-badge" aria-label={`${issuesCount} ${isVi ? 'cần xử lý' : 'issues'}`}>
+              <span className="idx-badge" aria-label={fill(d.summary.problems, { n: issuesCount })}>
                 {issuesCount.toLocaleString(dateLocale)}
               </span>
             )}

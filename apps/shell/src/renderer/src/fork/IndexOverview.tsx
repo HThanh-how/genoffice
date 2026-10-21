@@ -4,8 +4,9 @@ import type { IndexingModeState } from '../../../shared/fork/indexing-mode'
 import type { IndexIssueSummary } from '../../../main/document-memory/issue-reader'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
 import { useI18n } from '../locale'
-import { activityCopy } from '../indexing-activity-copy'
-import { needsAction } from './IndexProblems'
+import { activityCopy, fill } from '../indexing-activity-copy'
+import { TEXT, EN } from './index-dashboard-i18n'
+import { deriveIndexSummary } from './index-summary'
 import { RecentFiles } from './RecentFiles'
 import { ReleasedChip } from './ReleasedChip'
 import type { IndexTabId } from './IndexNav'
@@ -36,7 +37,8 @@ export function IndexOverview({
   onOpened,
 }: IndexOverviewProps) {
   const { lang, dateLocale } = useI18n()
-  const isVi = lang === 'vi'
+  const d = TEXT[lang] ?? EN
+  const o = d.overview
   const copy = activityCopy(lang)
 
   const progress = activity?.folderProgress ?? null
@@ -44,9 +46,9 @@ export function IndexOverview({
   const paused = !!mode?.effective?.paused || memory?.enabled === false
   const pauseReason = mode?.effective?.pauseReason
   const modelState = activity?.memory.modelState ?? memory?.modelState ?? 'not-loaded'
-  const pending = memory?.pending ?? activity?.memory.pending ?? 0
+  const summary = deriveIndexSummary({ activity, memoryPending: memory?.pending, attention })
+  const pending = summary.waiting
   const readyFiles = progress?.readyFiles ?? memory?.documents ?? 0
-  const totalFiles = progress?.totalFiles ?? (readyFiles + pending)
 
   // 1. Trạng thái Blocked (Neutral): khi pin yếu / RAM thấp / chế độ tiết kiệm năng lượng
   const isBlocked =
@@ -68,15 +70,11 @@ export function IndexOverview({
   const currentFilePath = activeExtractingPath || activeEmbeddingPath || (folder?.running ? folder.root : '')
   const currentFileName = currentFilePath ? currentFilePath.split(/[\\/]/).pop() : ''
 
-  // Progress calculation
-  let percent: number | null = progress?.percent ?? null
-  if (percent === null && totalFiles > 0) {
-    percent = Math.min(100, Math.round((readyFiles / totalFiles) * 100))
-  }
+  const percent = summary.percent
 
-  // Attention summary (issues needing action)
-  const attentionGroups = (attention?.groups ?? []).filter((g) => needsAction(g.reason))
-  const totalProblems = attentionGroups.reduce((acc, g) => acc + g.count, 0)
+  // Same problem groups and total as the tab badge, sidebar entry and Home chip
+  const attentionGroups = summary.problemGroups
+  const totalProblems = summary.problems
 
   return (
     <div className="idx-overview-container">
@@ -91,11 +89,9 @@ export function IndexOverview({
             </svg>
           </div>
           <div className="idx-status-banner-content">
-            <strong>{isVi ? 'Tìm kiếm tiết kiệm tài nguyên' : 'Resource Saver Mode'}</strong>
+            <strong>{o.saverTitle}</strong>
             <p>
-              {isVi
-                ? 'Tìm kiếm nâng cao tạm dừng để tiết kiệm tài nguyên. Tìm kiếm tên tệp và nội dung văn bản vẫn hoạt động bình thường.'
-                : 'Advanced search is paused to conserve system resources. File name and text search continue to work normally.'}
+              {o.saverBody}
             </p>
           </div>
           <button
@@ -104,7 +100,7 @@ export function IndexOverview({
             disabled={actionBusy}
             onClick={onTogglePause}
           >
-            {paused ? (isVi ? 'Tiếp tục' : 'Resume') : isVi ? 'Tạm dừng' : 'Pause'}
+            {paused ? d.resume : d.pause}
           </button>
         </div>
       )}
@@ -115,7 +111,7 @@ export function IndexOverview({
           <div className="idx-status-card-header">
             <div className="idx-status-card-title">
               <span className="idx-status-indicator is-busy" aria-hidden="true" />
-              <h3>{isVi ? 'Đang tối ưu hóa tìm kiếm' : 'Optimizing search'}</h3>
+              <h3>{o.optimizing}</h3>
             </div>
             <button
               type="button"
@@ -123,7 +119,7 @@ export function IndexOverview({
               disabled={actionBusy}
               onClick={onTogglePause}
             >
-              {paused ? (isVi ? 'Tiếp tục' : 'Resume') : isVi ? 'Tạm dừng' : 'Pause'}
+              {paused ? d.resume : d.pause}
             </button>
           </div>
 
@@ -143,14 +139,14 @@ export function IndexOverview({
             <div className="idx-status-details">
               <span className="idx-status-remaining">
                 <strong>{pending.toLocaleString(dateLocale)}</strong>{' '}
-                {isVi ? 'tệp còn lại' : 'files remaining'}
+                {o.remaining}
               </span>
 
               <ReleasedChip count={progress?.releasedFiles} />
 
               {currentFileName && (
                 <span className="idx-status-current" title={currentFilePath}>
-                  {isVi ? 'Đang đọc:' : 'Reading:'} <code>{currentFileName}</code>
+                  {o.reading} <code>{currentFileName}</code>
                 </span>
               )}
             </div>
@@ -167,11 +163,14 @@ export function IndexOverview({
                 ✓
               </span>
               <h3>
-                {isVi
-                  ? `Sẵn sàng tìm kiếm - ${readyFiles.toLocaleString(dateLocale)} tệp có thể tìm kiếm`
-                  : `Ready for search - ${readyFiles.toLocaleString(dateLocale)} searchable files`}
+                {fill(o.ready, { n: readyFiles.toLocaleString(dateLocale) })}
               </h3>
               <ReleasedChip count={progress?.releasedFiles} />
+              {summary.empty > 0 && (
+                <span className="idx-muted">
+                  {fill(d.summary.empty, { n: summary.empty.toLocaleString(dateLocale) })}
+                </span>
+              )}
             </div>
             {paused && (
               <button
@@ -180,7 +179,7 @@ export function IndexOverview({
                 disabled={actionBusy}
                 onClick={onTogglePause}
               >
-                {isVi ? 'Tiếp tục' : 'Resume'}
+                {d.resume}
               </button>
             )}
           </div>
@@ -191,7 +190,7 @@ export function IndexOverview({
       {attentionGroups.length > 0 && (
         <section
           className="idx-card idx-attn-simplified"
-          aria-label={isVi ? 'Cần xử lý' : 'Needs attention'}
+          aria-label={fill(d.summary.problems, { n: totalProblems })}
         >
           <header className="idx-attn-header">
             <div className="idx-attn-title">
@@ -199,7 +198,7 @@ export function IndexOverview({
                 !
               </span>
               <h4>
-                {isVi ? 'Có tệp cần bạn xử lý' : 'Files need attention'} (
+                {o.attention} (
                 {totalProblems.toLocaleString(dateLocale)})
               </h4>
             </div>
@@ -208,7 +207,7 @@ export function IndexOverview({
               className="idx-link"
               onClick={() => onNavigateTab('issues')}
             >
-              {isVi ? 'Xem tất cả' : 'View all'} →
+              {o.viewAll} →
             </button>
           </header>
           <ul className="idx-attn-list">

@@ -5,7 +5,7 @@ import { TodoTab } from './TodoTab'
 import { fill } from '../indexing-activity-copy'
 import { IndexedFolders } from './IndexedFolders'
 import type { IndexIssueReason } from '../../../main/document-memory/issues'
-import { needsAction } from './IndexProblems'
+import { deriveIndexSummary } from './index-summary'
 import { IndexSettingsTab } from './IndexSettingsTab'
 import { SearchHero } from './SearchHero'
 import { SearchResults } from './SearchResults'
@@ -27,6 +27,8 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const [actionNote, setActionNote] = useState('')
   const actionInFlight = useRef(false)
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const moreRef = useRef<HTMLDetailsElement>(null)
+  const closeMore = () => moreRef.current?.removeAttribute('open')
 
   const { snap, attention, statusFailed, kick } = useIndexSnapshot(api)
   const { memory, activity, mode, now, storageBudget } = snap
@@ -78,7 +80,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
       : d.tier[effective.tier]
     : ''
 
-  const todo = (attention?.groups ?? []).filter((g) => needsAction(g.reason)).reduce((n, g) => n + g.count, 0)
+  const todo = deriveIndexSummary({ activity, memoryPending: memory?.pending, attention }).problems
 
   return (
     <main className="content idx-page">
@@ -93,14 +95,25 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
           <p>{d.subtitle}</p>
         </div>
         <div className="idx-actions">
-          {folder?.running && (
-            <button type="button" disabled={actionBusy} className="idx-btn" onClick={() => void stopScan()}>{d.stopScan}</button>
-          )}
-          <button type="button" disabled={actionBusy} className="idx-btn" onClick={() => void rescanAll()}>{d.scanNow}</button>
           <button type="button" disabled={actionBusy} className="idx-btn" onClick={() => void addFolder()}>{d.addFolder}</button>
           <button type="button" disabled={actionBusy || !memory} className="idx-btn primary" onClick={() => void togglePause()}>
             {memory?.enabled === false ? d.resume : d.pause}
           </button>
+          <details className="idx-more" ref={moreRef}>
+            <summary className="idx-btn idx-more-btn" aria-label={d.more} title={d.more}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                <circle cx="3.5" cy="8" r="1.3" />
+                <circle cx="8" cy="8" r="1.3" />
+                <circle cx="12.5" cy="8" r="1.3" />
+              </svg>
+            </summary>
+            <div className="idx-more-menu" role="menu">
+              <button type="button" role="menuitem" disabled={actionBusy} onClick={() => { closeMore(); void rescanAll() }}>{d.scanNow}</button>
+              {folder?.running && (
+                <button type="button" role="menuitem" disabled={actionBusy} onClick={() => { closeMore(); void stopScan() }}>{d.stopScan}</button>
+              )}
+            </div>
+          </details>
         </div>
       </header>
 
@@ -119,18 +132,14 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
       {storageBudget?.limitState === 'warning' && (
         <div className="todo-status is-warning" role="status">
           <span>
-            {lang === 'vi'
-              ? `Dung lượng chỉ mục đạt ${Math.round(storageBudget.usageRatio * 100)}% (Cảnh báo). Đang tối ưu hóa nền.`
-              : `Index storage at ${Math.round(storageBudget.usageRatio * 100)}% (Warning). Running background maintenance.`}
+            {fill(d.storageWarn, { p: Math.round(storageBudget.usageRatio * 100) })}
           </span>
         </div>
       )}
       {storageBudget?.limitState === 'full' && (
         <div className="todo-status is-full" role="status">
           <span>
-            {lang === 'vi'
-              ? `Dung lượng chỉ mục đạt giới hạn tối đa. Tạm dừng tìm kiếm ngữ nghĩa để bảo vệ dữ liệu.`
-              : `Index storage budget full. Pausing semantic indexing to protect disk space.`}
+            {d.storageFull}
           </span>
         </div>
       )}
