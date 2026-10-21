@@ -8,6 +8,13 @@
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>GenOffice</title>
+    <!-- first paint before the bundle: the window's colour scheme already follows the saved theme
+         (nativeTheme.themeSource), so prefers-color-scheme paints the right surface, not white -->
+    <style>
+      :root { --boot-bg: #ffffff; color-scheme: light dark; }
+      @media (prefers-color-scheme: dark) { :root { --boot-bg: #1e1e1e; } }
+      html, body { background: var(--boot-bg); margin: 0; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

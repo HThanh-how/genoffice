@@ -3825,6 +3825,11 @@ function createShellWindow(): void {
     minWidth: 720,
     minHeight: 550,
     title: 'GenOffice',
+    // the saved theme's surface, so the native window never flashes white before the renderer paints
+    // (nativeTheme.themeSource is already set from the saved theme in app.whenReady)
+    ...(process.platform === 'darwin'
+      ? {}
+      : { backgroundColor: nativeTheme.shouldUseDarkColors ? '#1e1e1e' : '#ffffff' }),
     ...(windowIcon ? { icon: windowIcon } : {}),
     // vibrancy: editor modules punch translucent regions (e.g. the slides
     // thumbnail pane) through to the desktop
