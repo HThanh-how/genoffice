@@ -1,99 +1,40 @@
-/* The assistant entry stays calm while search results and model controls remain close. */
+/* The one assistant entry of Home: a field, its send button, and a small model row under it. */
 .ask-dock {
-  --ask-w: min(600px, calc(100vw - 280px));
-  position: fixed;
-  z-index: 79;
-  bottom: 22px;
-  left: calc(50vw + 116px);
   display: flex;
   flex-direction: column;
   gap: 8px;
-  width: var(--ask-w);
-  transform: translateX(-50%);
-  transition:
-    opacity 180ms ease,
-    transform 180ms ease;
+  width: 100%;
   font-family: var(--gs-font-sans, system-ui, sans-serif);
-  pointer-events: none;
 }
 .ask-dock *,
 .ask-dock *::before,
 .ask-dock *::after {
   box-sizing: border-box;
 }
-.ask-dock > * {
-  pointer-events: auto;
-}
-.ask-dock.is-away {
-  opacity: 0;
-  transform: translateX(-50%) translateY(10px);
-  pointer-events: none;
-}
-.ask-dock.is-away > * {
-  pointer-events: none;
-}
-.ask-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  padding: 0 4px;
-}
-.ask-chips button {
-  padding: 7px 11px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 9px;
-  background: var(--surface);
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-.ask-chips button:hover {
-  color: var(--text);
-  border-color: var(--border-strong);
-  background: var(--hover);
-}
-.ask-bar {
-  position: relative;
-  display: flex;
-  align-items: center;
-  min-height: 54px;
-  padding: 8px 9px 8px 18px;
-  border: 1px solid var(--border);
-  border-radius: 17px;
-  background: var(--surface);
-  box-shadow: 0 8px 30px color-mix(in srgb, var(--text) 12%, transparent);
-  transition:
-    border-color 160ms ease,
-    box-shadow 160ms ease;
-}
-.ask-dock.is-focused .ask-bar {
-  border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-  box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent),
-    0 8px 30px color-mix(in srgb, var(--text) 8%, transparent);
-}
-.ask-glow,
-.ask-ring {
-  display: none;
-}
 .ask-form {
   display: flex;
-  flex: 1;
   align-items: center;
   gap: 10px;
   min-width: 0;
+  min-height: 52px;
+  padding: 7px 8px 7px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+.ask-form:focus-within {
+  border-color: var(--accent);
 }
 .ask-form input {
   flex: 1;
   min-width: 0;
-  height: 38px;
+  height: 36px;
   padding: 0;
   border: 0;
   background: transparent;
   color: var(--text);
   font: inherit;
-  font-size: 14px;
+  font-size: 15px;
   outline: none;
 }
 .ask-form input::placeholder {
@@ -107,7 +48,7 @@
   height: 36px;
   padding: 0;
   border: 0;
-  border-radius: 11px;
+  border-radius: 9px;
   background: var(--accent);
   color: var(--color-btn-primary-text);
   cursor: pointer;
@@ -125,30 +66,58 @@
   cursor: default;
 }
 .ask-extra {
-  padding: 0 6px;
+  min-width: 0;
+}
+.ask-extra .agy-bar {
+  padding: 0;
+}
+.ask-extra .hc-model-controls {
+  max-width: none;
+  margin: 0;
+}
+.ask-extra .hc-model-controls .ai-model-pop {
+  top: calc(100% + 6px);
+  bottom: auto !important;
+  z-index: 5;
 }
 .ask-working {
   margin: 0;
-  padding: 0 6px;
   color: var(--text-secondary);
   font-size: 12px;
 }
-.ask-extra .agy-bar {
-  padding-top: 0;
+.ask-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0;
+}
+.ask-chips button {
+  padding: 7px 11px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ask-chips button:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: var(--hover);
 }
 .ask-pop {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: min(48vh, 360px);
+  max-height: min(40vh, 280px);
   padding: 8px;
   overflow-y: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: 12px;
   background: var(--surface);
-  box-shadow: 0 10px 32px color-mix(in srgb, var(--text) 12%, transparent);
 }
 .ask-act,
 .ask-hit-main {
@@ -294,157 +263,11 @@
   outline-offset: 2px;
 }
 
-/* On Home this is a stable card in the content flow. */
-.ask-dock.is-inline {
-  position: relative;
-  inset: auto;
-  z-index: 2;
-  width: 100%;
-  transform: none;
-  pointer-events: auto;
-  padding: 16px;
-  gap: 12px;
-  border: 1px solid transparent;
-  border-radius: 22px;
-  background:
-    linear-gradient(135deg, var(--surface), color-mix(in srgb, var(--accent) 3%, var(--surface)))
-      padding-box,
-    linear-gradient(
-        115deg,
-        color-mix(in srgb, var(--accent) 55%, var(--border)),
-        color-mix(in srgb, var(--accent) 20%, var(--border)),
-        color-mix(in srgb, var(--accent) 40%, var(--border))
-      )
-      border-box;
-  box-shadow:
-    0 8px 30px color-mix(in srgb, var(--accent) 9%, transparent),
-    0 2px 8px color-mix(in srgb, var(--text) 3%, transparent);
-  transition:
-    opacity 180ms ease,
-    box-shadow 180ms ease,
-    border-color 180ms ease;
-  animation: ask-card-enter 650ms ease-out both;
-}
-.ask-dock.is-inline:hover,
-.ask-dock.is-inline.is-focused {
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  box-shadow:
-    0 10px 34px color-mix(in srgb, var(--accent) 13%, transparent),
-    0 0 0 3px color-mix(in srgb, var(--accent) 5%, transparent);
-}
-.ask-intro {
-  order: -1;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  color: var(--text);
-  font-size: 13px;
-  font-weight: 650;
-}
-.ask-intro-mark {
-  display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  flex: none;
-  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border-subtle));
-  border-radius: 10px;
-  color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 9%, var(--surface));
-}
-.ask-intro-mark svg {
-  width: 21px;
-  height: 21px;
-  animation: ask-mark-enter 900ms ease-out both;
-}
-.ask-intro kbd {
-  margin-left: auto;
-  padding: 3px 7px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text-tertiary);
-  background: var(--surface);
-  font: inherit;
-  font-size: 11px;
-}
-@keyframes ask-card-enter {
-  from {
-    opacity: 0.6;
-    box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 12%, transparent);
-  }
-}
-@keyframes ask-mark-enter {
-  from {
-    opacity: 0.5;
-    transform: rotate(-12deg) scale(0.82);
-  }
-  to {
-    opacity: 1;
-    transform: rotate(0) scale(1);
-  }
-}
-.ask-dock.is-inline.is-away {
-  opacity: 0.5;
-  transform: none;
-  pointer-events: none;
-}
-.ask-dock.is-inline .ask-bar {
-  min-height: 60px;
-  border-radius: 13px;
-  background: var(--surface-subtle);
-  box-shadow: none;
-}
-.ask-dock.is-inline.is-focused .ask-bar {
-  background: var(--surface);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 8%, transparent);
-}
-.ask-dock.is-inline .ask-form input {
-  font-size: 15px;
-}
-.ask-dock.is-inline .ask-extra {
-  padding: 0 4px;
-}
-.ask-dock.is-inline .ask-chips {
-  order: 2;
-}
-.ask-dock.is-inline .ask-pop {
-  order: 3;
-  box-shadow: none;
-  max-height: 280px;
-  border-radius: 12px;
-}
-.ask-dock.is-inline .ask-extra {
-  order: 1;
-}
-.ask-dock.is-inline .ask-working {
-  order: 2;
-}
-@media (max-width: 760px) {
-  .ask-dock {
-    --ask-w: calc(100vw - 32px);
-    left: 50vw;
-  }
-}
 @media (max-width: 520px) {
-  .ask-dock.is-inline {
-    padding: 12px;
-    border-radius: 18px;
-  }
-  .ask-dock.is-inline .ask-form input {
+  .ask-form input {
     font-size: 14px;
   }
   .ask-tag {
     max-width: 32%;
-  }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ask-dock,
-  .ask-bar {
-    transition: none;
-  }
-  .ask-dock.is-inline,
-  .ask-intro-mark svg {
-    animation: none;
-    transition: none;
   }
 }

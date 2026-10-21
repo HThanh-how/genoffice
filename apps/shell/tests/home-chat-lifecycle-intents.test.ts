@@ -158,7 +158,7 @@ describe('home-chat lifecycle & launch intents (Phase 1)', () => {
 
     try {
       await act(async () => {
-        root.render(createElement(HomeChat, { api, i18n: mockI18n }))
+        root.render(createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: true }))
       })
 
       // Dispatch new intent
@@ -188,7 +188,7 @@ describe('home-chat lifecycle & launch intents (Phase 1)', () => {
 
     try {
       await act(async () => {
-        root.render(createElement(HomeChat, { api, i18n: mockI18n }))
+        root.render(createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: true }))
       })
 
       // Dispatch open-existing intent
@@ -233,7 +233,7 @@ describe('home-chat lifecycle & launch intents (Phase 1)', () => {
 
     try {
       await act(async () => {
-        root.render(createElement(HomeChat, { api, i18n: mockI18n }))
+        root.render(createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: true }))
       })
 
       // Rapidly dispatch slow session, then fast session

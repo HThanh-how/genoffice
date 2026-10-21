@@ -305,7 +305,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
     const homeApi = createTestHomeApi(startedRequests, [])
 
     await act(async () => {
-      root.render(createElement(HomeChat, { api: homeApi, i18n: mockI18n }))
+      root.render(createElement(HomeChat, { api: homeApi, i18n: mockI18n, workspaceActive: true }))
     })
 
     await act(async () => {
@@ -664,7 +664,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
     const homeApi = createTestHomeApi(startedRequests, cancelledRequestIds)
 
     await act(async () => {
-      root.render(createElement(HomeChat, { api: homeApi, i18n: mockI18n }))
+      root.render(createElement(HomeChat, { api: homeApi, i18n: mockI18n, workspaceActive: true }))
     })
 
     await act(async () => {
@@ -717,7 +717,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
     const homeApi = createTestHomeApi(startedRequests, cancelledRequestIds)
 
     await act(async () => {
-      root.render(createElement(HomeChat, { api: homeApi, i18n: mockI18n }))
+      root.render(createElement(HomeChat, { api: homeApi, i18n: mockI18n, workspaceActive: true }))
     })
 
     await act(async () => {

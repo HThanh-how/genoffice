@@ -18,7 +18,6 @@ import {
   useMemo,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
 } from 'react'
 import type { HomeApi } from '../../shared/home-api'
 import type {
@@ -51,14 +50,7 @@ import {
 import { Composer, type ComposerLabels } from './home-chat/Composer'
 import { EmptyState } from './home-chat/EmptyState'
 import { HistoryRail, type HistoryLabels } from './home-chat/HistoryRail'
-import { Launcher, type LauncherLabels } from './home-chat/Launcher'
-import {
-  IDLE_STATE,
-  createLauncherController,
-  finishOf,
-  type LauncherController,
-  type LauncherState,
-} from './home-chat/launcher-status'
+import { useSlot } from './home-chat/dock-slot'
 import {
   agySystemSuffix,
   buildRetrievalContext,
@@ -86,12 +78,10 @@ import {
 } from './home-chat/utils'
 import type { I18n } from './locale'
 import './home-chat.css'
-import { fitChatPanel } from './home-chat/panel-size'
 
 type Props = {
   api: HomeApi
   i18n: I18n
-  dockLocation?: 'home' | 'floating'
   workspaceActive?: boolean
   suppressDock?: boolean
   onNavigateToRecents?: () => void
@@ -104,7 +94,6 @@ type Conversation = { id: string | null; dead: boolean; requested: boolean }
 type Toast = { kind: 'deleted'; session: HomeChatSession } | { kind: 'cleared' }
 
 const LS_LAST = 'genoffice.homeChat.last'
-const LS_SIZE = 'genoffice.homeChat.size'
 const LS_RAIL = 'genoffice.homeChat.rail'
 const NARROW = 640
 const SAVE_INTERVAL_MS = 1500
@@ -123,19 +112,6 @@ const writeStore = (key: string, value: string | null) => {
   } catch {
     // storage can be unavailable; the chat still works without remembering UI state
   }
-}
-
-const clampSize = (w: number, h: number) =>
-  fitChatPanel(w, h, window.innerWidth, window.innerHeight)
-const readSize = () => {
-  try {
-    const raw = JSON.parse(readStore(LS_SIZE) ?? 'null') as { w?: unknown; h?: unknown } | null
-    if (raw && typeof raw.w === 'number' && typeof raw.h === 'number')
-      return clampSize(raw.w, raw.h)
-  } catch {
-    // fall through to the default
-  }
-  return clampSize(880, 660)
 }
 
 const toMessages = (items: readonly ChatItem[]): HomeChatMessage[] =>
@@ -181,7 +157,6 @@ const rafSchedule = (run: () => void) => {
 export function HomeChat({
   api: homeApi,
   i18n,
-  dockLocation = 'home',
   workspaceActive = false,
   suppressDock = false,
   onNavigateToRecents,
@@ -200,21 +175,11 @@ export function HomeChat({
     [api, onOpenModelSettings],
   )
   const isWorkspace = workspaceActive
-  const [open, setOpen] = useState(false)
-  const [dockTarget, setDockTarget] = useState<HTMLElement | null>(null)
-  const [workspaceTarget, setWorkspaceTarget] = useState<HTMLElement | null>(null)
-
-  useLayoutEffect(() => {
-    const target = isWorkspace ? document.getElementById('home-ask-workspace') : null
-    setWorkspaceTarget((previous) => (previous === target ? previous : target))
-  }, [isWorkspace])
-
-  useLayoutEffect(() => {
-    const target = dockLocation === 'home' ? document.getElementById('home-assistant-slot') : null
-    setDockTarget((previous) => (previous === target ? previous : target))
-  }, [dockLocation])
-
-  const panelVisible = isWorkspace || open
+  const panelVisible = isWorkspace
+  const workspaceTarget = useSlot('home-ask-workspace', isWorkspace)
+  const dockSlot = useSlot('home-assistant-slot', !isWorkspace && !suppressDock)
+  const isWorkspaceRef = useRef(isWorkspace)
+  isWorkspaceRef.current = isWorkspace
 
   useEffect(() => {
     announceChatPanel(panelVisible)
@@ -223,7 +188,6 @@ export function HomeChat({
   const [input, setInput] = useState('')
   const [items, setItems] = useState<ChatItem[]>([])
   const [busy, setBusy] = useState(false)
-  const [invitation, setInvitation] = useState(true)
   const [settingsReady, setSettingsReady] = useState(false)
   const [settingsFailed, setSettingsFailed] = useState(false)
   const [notice, setNotice] = useState('')
@@ -240,18 +204,13 @@ export function HomeChat({
   }
   const [title, setTitle] = useState('')
   const [railOpen, setRailOpen] = useState(() => readStore(LS_RAIL) !== '0')
-  const [size, setSize] = useState(readSize)
   const [toast, setToast] = useState<Toast | null>(null)
   const [visibleCount, setVisibleCount] = useState(WINDOW_PAGE)
   const [showJump, setShowJump] = useState(false)
   const [pendingSend, setPendingSend] = useState<string | null>(null)
-  const [launcherState, setLauncherState] = useState<LauncherState>(IDLE_STATE)
-  const rootRef = useRef<HTMLDivElement>(null)
   const panelRef = useRef<HTMLElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const launcherRef = useRef<HTMLButtonElement>(null)
-  const openRef = useRef(false)
   const mountedRef = useRef(false)
   const loopRef = useRef<AgentLoop | null>(null)
   const runGenerationRef = useRef(0)
@@ -271,15 +230,6 @@ export function HomeChat({
   const initRef = useRef(false)
   const touchedRef = useRef(false)
   const toastTimerRef = useRef(0)
-  /** minimize is presentation only: the scroll spot to come back to when the panel reopens */
-  const scrollMemoRef = useRef<{ top: number; stick: boolean } | null>(null)
-  const restoreTopRef = useRef<number | null>(null)
-  const resizingRef = useRef(false)
-  const stoppedRef = useRef(false)
-  const prevBusyRef = useRef(false)
-  const launcherCtlRef = useRef<LauncherController | null>(null)
-  if (!launcherCtlRef.current) launcherCtlRef.current = createLauncherController(setLauncherState)
-  const launcherCtl = launcherCtlRef.current
   const settingsRef = useRef<Awaited<ReturnType<HomeApi['getAiSettings']>> | null>(null)
   /** the files the model has been given ids for; per turn for agy, per conversation otherwise */
   const toolTableRef = useRef<FileRefTable | null>(null)
@@ -497,11 +447,6 @@ export function HomeChat({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [i18n.lang])
-
-  useEffect(() => {
-    const timer = window.setTimeout(() => setInvitation(false), 8_000)
-    return () => window.clearTimeout(timer)
-  }, [])
 
   const loadSettings = useCallback(async () => {
     try {
@@ -856,15 +801,12 @@ export function HomeChat({
   useLayoutEffect(() => {
     const el = scrollRef.current
     if (!el) return
-    if (restoreTopRef.current !== null) {
-      el.scrollTop = restoreTopRef.current
-      restoreTopRef.current = null
-    } else if (prependHeightRef.current !== null) {
+    if (prependHeightRef.current !== null) {
       // "Show earlier messages" grew the list above; keep the reading position.
       el.scrollTop += el.scrollHeight - prependHeightRef.current
       prependHeightRef.current = null
     } else if (stickRef.current) el.scrollTop = el.scrollHeight
-  }, [items, visibleCount, open])
+  }, [items, visibleCount])
 
   const onScroll = () => {
     const el = scrollRef.current
@@ -878,72 +820,8 @@ export function HomeChat({
 
   const focusInput = useCallback(() => {
     window.setTimeout(() => {
-      if (openRef.current) inputRef.current?.focus()
+      if (isWorkspaceRef.current) inputRef.current?.focus()
     }, 0)
-  }, [])
-
-  /**
-   * Minimize (the panel is never destroyed, only hidden): the conversation, draft and any
-   * running reply live in this component. Focus goes back to the launcher unless the user
-   * clicked somewhere else on purpose.
-   */
-  const closePanel = useCallback((restoreFocus = true) => {
-    const el = scrollRef.current
-    if (el) scrollMemoRef.current = { top: el.scrollTop, stick: stickRef.current }
-    openRef.current = false
-    setOpen(false)
-    if (restoreFocus) window.setTimeout(() => launcherRef.current?.focus(), 0)
-  }, [])
-
-  useEffect(() => {
-    if (!open) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) closePanel()
-    }
-    // A press outside the assistant minimizes it. Not while the resize handle is being
-    // dragged, and not on the launcher or the clipboard chip, which have their own jobs.
-    const onPointerDown = (event: PointerEvent) => {
-      if (event.button !== 0 || resizingRef.current) return
-      const path = event.composedPath()
-      if (rootRef.current && path.includes(rootRef.current)) return
-      if (
-        path.some((node) => node instanceof HTMLElement && node.classList.contains('clip-suggest'))
-      )
-        return
-      closePanel(false)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    document.addEventListener('pointerdown', onPointerDown, true)
-    return () => {
-      window.removeEventListener('keydown', onKeyDown)
-      document.removeEventListener('pointerdown', onPointerDown, true)
-    }
-  }, [closePanel, open])
-
-  // Launcher status: the controller owns the working / answer-ready / error chip.
-  useEffect(() => {
-    launcherCtl.setPanelOpen(open)
-    if (!open) return
-    const onFocus = () => launcherCtl.acknowledge()
-    window.addEventListener('focus', onFocus)
-    return () => window.removeEventListener('focus', onFocus)
-  }, [launcherCtl, open])
-  useEffect(() => {
-    if (busy && !prevBusyRef.current) {
-      stoppedRef.current = false
-      launcherCtl.runStarted()
-    } else if (!busy && prevBusyRef.current) {
-      launcherCtl.runFinished(finishOf(itemsRef.current.at(-1), stoppedRef.current))
-      stoppedRef.current = false
-    }
-    prevBusyRef.current = busy
-  }, [busy, launcherCtl])
-  useEffect(() => () => launcherCtl.dispose(), [launcherCtl])
-
-  useEffect(() => {
-    const onResize = () => setSize((previous) => clampSize(previous.w, previous.h))
-    window.addEventListener('resize', onResize)
-    return () => window.removeEventListener('resize', onResize)
   }, [])
 
   const toggleRail = () => {
@@ -954,47 +832,6 @@ export function HomeChat({
   }
   const collapseRailWhenNarrow = () => {
     if ((panelRef.current?.clientWidth ?? NARROW) < NARROW) setRailOpen(false)
-  }
-
-  const onResizeStart = (event: ReactPointerEvent<HTMLDivElement>) => {
-    event.preventDefault()
-    const startX = event.clientX
-    const startY = event.clientY
-    const start = size
-    const target = event.currentTarget
-    target.setPointerCapture(event.pointerId)
-    resizingRef.current = true
-    let latest = start
-    const move = (e: PointerEvent) => {
-      // the panel is anchored bottom-right, so dragging up/left grows it
-      latest = clampSize(start.w + (startX - e.clientX), start.h + (startY - e.clientY))
-      setSize(latest)
-    }
-    const end = () => {
-      resizingRef.current = false
-      target.removeEventListener('pointermove', move)
-      target.removeEventListener('pointerup', end)
-      target.removeEventListener('pointercancel', end)
-      writeStore(LS_SIZE, JSON.stringify(latest))
-    }
-    target.addEventListener('pointermove', move)
-    target.addEventListener('pointerup', end)
-    target.addEventListener('pointercancel', end)
-  }
-  const onResizeKey = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    const step = event.shiftKey ? 96 : 32
-    const delta: Record<string, [number, number]> = {
-      ArrowLeft: [step, 0],
-      ArrowRight: [-step, 0],
-      ArrowUp: [0, step],
-      ArrowDown: [0, -step],
-    }
-    const d = delta[event.key]
-    if (!d) return
-    event.preventDefault()
-    const next = clampSize(size.w + d[0], size.h + d[1])
-    setSize(next)
-    writeStore(LS_SIZE, JSON.stringify(next))
   }
 
   // ---- conversation lifecycle --------------------------------------------
@@ -1039,8 +876,6 @@ export function HomeChat({
     itemId.current = nextItems.length
     lastSavedRef.current = nextItems
     stickRef.current = true
-    scrollMemoRef.current = null
-    restoreTopRef.current = null
     setItems(nextItems)
     setActiveId(conv.id)
     setTitle(nextTitle)
@@ -1208,18 +1043,11 @@ export function HomeChat({
     [openSession, refreshList],
   )
 
-  const openPanel = useCallback(
+  /** Picks the conversation the Ask AI page shows: a new one, a saved one, or the last one. */
+  const launch = useCallback(
     (intent: ChatLaunchIntent = 'resume', targetSessionId?: string) => {
-      openRef.current = true
       const token = ++launchTokenRef.current
-      // Reopening from the "answer ready" chip lands on the latest message; a plain
-      // restore returns to where the user was reading.
-      const memo = scrollMemoRef.current
-      const resume = memo && !memo.stick && !launcherCtl.getState().unread
-      stickRef.current = !resume
-      restoreTopRef.current = resume ? memo.top : null
-      setOpen(true)
-      setInvitation(true)
+      stickRef.current = true
       focusInput()
       void loadSettings()
 
@@ -1243,14 +1071,14 @@ export function HomeChat({
       // Pristine open: restore the last conversation
       void restoreLast(token)
     },
-    [focusInput, launcherCtl, loadSettings, openSession, restoreLast, startNew],
+    [focusInput, loadSettings, openSession, restoreLast, startNew],
   )
 
   useEffect(() => {
     if (workspaceActive && !initRef.current) {
-      openPanel('resume')
+      launch('resume')
     }
-  }, [workspaceActive, openPanel])
+  }, [workspaceActive, launch])
 
   // ---- sending ------------------------------------------------------------
 
@@ -1457,7 +1285,6 @@ export function HomeChat({
   submitRef.current = submit
 
   const stop = () => {
-    stoppedRef.current = true
     runGenerationRef.current++
     batcherRef.current?.flush()
     loopRef.current?.reset()
@@ -1521,9 +1348,12 @@ export function HomeChat({
     [api],
   )
 
-  // Another part of the app (clipboard suggestions) can hand the assistant some text.
-  const openPanelRef = useRef(openPanel)
-  openPanelRef.current = openPanel
+  // The Home box and other parts of the app (clipboard suggestions) hand the assistant some text:
+  // the conversation is prepared here and the Ask AI page is brought up to show it.
+  const launchRef = useRef(launch)
+  launchRef.current = launch
+  const openAskWorkspaceRef = useRef(onOpenAskWorkspace)
+  openAskWorkspaceRef.current = onOpenAskWorkspace
   useEffect(() => {
     const onPrefill = (event: Event) => {
       const detail = (event as CustomEvent<ChatPrefillDetail>).detail
@@ -1532,7 +1362,8 @@ export function HomeChat({
         detail.intent ?? (detail.continue === true ? 'resume' : 'new')
       touchedRef.current = true
       launchTokenRef.current++
-      openPanelRef.current(intent, detail.sessionId)
+      launchRef.current(intent, detail.sessionId)
+      openAskWorkspaceRef.current?.()
       setInput(detail.text)
       setPendingSend(detail.send === true ? detail.text : null)
       window.setTimeout(() => inputRef.current?.focus(), 30)
@@ -1579,17 +1410,6 @@ export function HomeChat({
   const handleStop = useCallback(() => stopRef.current(), [])
   const heading = title || t('homeChatNew')
   const lastItem = items.at(-1)
-  const launcherLabels: LauncherLabels = {
-    launch: t('homeChatLaunch'),
-    close: t('homeChatClose'),
-    invite: t('homeChatInvite'),
-    working: t('homeChatWorking'),
-    done: t('homeChatDone'),
-    error: t('homeChatErrorChip'),
-    stop: t('homeChatStopChip'),
-    elapsed: (n) => t('homeChatElapsed', { n }),
-  }
-
   const showEarlier = () => {
     prependHeightRef.current = scrollRef.current?.scrollHeight ?? null
     setVisibleCount((count) => count + WINDOW_PAGE)
@@ -1602,40 +1422,18 @@ export function HomeChat({
     </div>
   )
   const dock = showDock ? (
-    <AskDock lang={i18n.lang} api={api} away={open} inline={!!dockTarget}>
-      {/* the open panel carries its own copy; never mount two pickers/listeners at once */}
-      {open ? null : modelControls}
+    <AskDock lang={i18n.lang} api={api}>
+      {modelControls}
     </AskDock>
   ) : null
 
   const panelNode = panelVisible ? (
     <section
       ref={panelRef}
-      className={`home-chat-panel${railOpen ? ' rail-open' : ''}${isWorkspace ? ' is-workspace' : ''}`}
-      style={
-        isWorkspace
-          ? undefined
-          : ({ '--hc-w': `${size.w}px`, '--hc-h': `${size.h}px` } as React.CSSProperties)
-      }
-      role={isWorkspace ? 'region' : 'dialog'}
-      aria-modal={isWorkspace ? undefined : 'false'}
+      className={`home-chat-panel${railOpen ? ' rail-open' : ''}`}
+      role="region"
       aria-label={t('homeChatTitle')}
     >
-      {!isWorkspace && (
-        <div
-          className="hc-resize"
-          role="separator"
-          tabIndex={0}
-          aria-label={t('homeChatResize')}
-          aria-orientation="vertical"
-          aria-valuenow={size.w}
-          aria-valuemin={1}
-          aria-valuemax={Math.max(1, window.innerWidth - 32)}
-          aria-valuetext={`${size.w} × ${size.h}`}
-          onPointerDown={onResizeStart}
-          onKeyDown={onResizeKey}
-        />
-      )}
       {railOpen && (
         <div className="hc-rail-wrap">
           <header className="hc-brand">
@@ -1717,24 +1515,6 @@ export function HomeChat({
                 />
               </svg>
             </button>
-            {!isWorkspace && (
-              <button
-                type="button"
-                className="hc-icon-button"
-                aria-label={t('homeChatClose')}
-                title={t('homeChatClose')}
-                onClick={() => closePanel()}
-              >
-                <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                  <path
-                    d="m5.5 5.5 9 9m0-9-9 9"
-                    stroke="currentColor"
-                    strokeWidth="1.7"
-                    strokeLinecap="round"
-                  />
-                </svg>
-              </button>
-            )}
           </div>
         </header>
         <div className="hc-stage">
@@ -1900,9 +1680,6 @@ export function HomeChat({
     </section>
   ) : null
 
-  const target =
-    workspaceTarget ?? (isWorkspace ? document.getElementById('home-ask-workspace') : null)
-
   return (
     <>
       <span className="home-chat-sr-only" role="status" aria-live="polite">
@@ -1914,40 +1691,8 @@ export function HomeChat({
               : ''
           : ''}
       </span>
-      {isWorkspace && target ? (
-        createPortal(panelNode, target)
-      ) : !isWorkspace ? (
-        <div ref={rootRef} className="home-chat-root">
-          {panelNode}
-          {dockTarget ? createPortal(dock, dockTarget) : dock}
-          {!suppressDock && (
-            <Launcher
-              state={launcherState}
-              open={open}
-              invitation={invitation}
-              starting={
-                lastItem?.role === 'assistant' && lastItem.streaming && !lastItem.text
-                  ? (lastItem.status ?? '')
-                  : ''
-              }
-              labels={launcherLabels}
-              buttonRef={launcherRef}
-              onToggle={() => {
-                if (open) {
-                  closePanel()
-                } else if (onOpenAskWorkspace) {
-                  onOpenAskWorkspace()
-                } else {
-                  openPanel()
-                }
-              }}
-              onStop={handleStop}
-              onInvitation={setInvitation}
-              onHold={launcherCtl.setHovered}
-            />
-          )}
-        </div>
-      ) : null}
+      {panelNode ? (workspaceTarget ? createPortal(panelNode, workspaceTarget) : panelNode) : null}
+      {dock && dockSlot ? createPortal(dock, dockSlot) : null}
     </>
   )
 }

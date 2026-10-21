@@ -3590,7 +3590,6 @@ export function Home() {
       <HomeChat
         api={window.aiOffice}
         i18n={i18n}
-        dockLocation={!selectedFolder && !cloudMode && !indexOpen && !askMode ? 'home' : 'floating'}
         workspaceActive={askMode}
         suppressDock={askMode || settingsModalOpen}
         onNavigateToRecents={() => changeView('recent')}
