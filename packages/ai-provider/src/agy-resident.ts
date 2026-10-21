@@ -15,6 +15,7 @@ import {
   buildAgyPrompt,
   buildAgyStdin,
   parseAgyStreamLine,
+  shortTarget,
   resolveAgyCliPath,
   realRunDeps,
   agyUsageToTokenUsage,
@@ -817,6 +818,9 @@ class AgyResidentManager {
             say?.({
               phase: 'tool',
               tool: event.toolName,
+              ...(event.toolTarget
+                ? { target: shortTarget(event.toolTarget, event.toolTargetKind) }
+                : {}),
               ...(event.durationSeconds !== undefined
                 ? { stepSeconds: event.durationSeconds }
                 : {}),

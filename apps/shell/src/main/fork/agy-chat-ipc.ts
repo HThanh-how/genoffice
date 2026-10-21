@@ -72,6 +72,8 @@ export class AgyUsageCache {
   private state: AgyChatUsageState = { groups: null, readAt: 0, refreshing: false, failed: false }
   private inflight: Promise<AgyChatUsageState> | null = null
   private busy = false
+  /** quota group -> epoch ms until which a failed turn said it is used up (overrides the readings) */
+  private readonly exhausted = new Map<string, number>()
 
   constructor(
     private readonly read: typeof readAgyUsage,
@@ -86,6 +88,37 @@ export class AgyUsageCache {
 
   snapshot(): AgyChatUsageState {
     return { ...this.state, refreshing: this.busy }
+  }
+
+  /**
+   * A turn failed with "quota used up": show the group as empty (0% left, refilling at `resetAt`)
+   * even when the last `/usage` read said otherwise, until the reset time (or 30 min when unknown).
+   */
+  markExhausted(group: string | null | undefined, resetAt?: number): void {
+    if (!group) return
+    const until = resetAt !== undefined && resetAt > this.now() ? resetAt : this.now() + 30 * 60_000
+    this.exhausted.set(group, until)
+    this.state = this.withExhausted(this.state)
+    this.onChange(this.snapshot())
+  }
+
+  private withExhausted(state: AgyChatUsageState): AgyChatUsageState {
+    if (this.exhausted.size === 0) return state
+    const now = this.now()
+    for (const [group, until] of this.exhausted) if (until <= now) this.exhausted.delete(group)
+    const groups = [...(state.groups ?? [])]
+    for (const [group, until] of this.exhausted) {
+      const empty = (window: '5h' | 'weekly') => ({ window, remaining: 0, resetAt: until })
+      const index = groups.findIndex((g) => g.name === group)
+      const existing = index >= 0 ? groups[index]! : undefined
+      // keep a known bucket's own reset time; only the "left" is forced to zero
+      const buckets = existing?.buckets.length
+        ? existing.buckets.map((b) => ({ ...b, remaining: 0, resetAt: b.resetAt ?? until }))
+        : [empty('5h')]
+      if (index >= 0) groups[index] = { name: group, buckets }
+      else groups.push({ name: group, buckets })
+    }
+    return { ...state, groups }
   }
 
   /** Current numbers now; starts a refresh when they are older than the freshness window. */
@@ -117,6 +150,7 @@ export class AgyUsageCache {
           needsLogin: false,
           cliMissing: false,
         }
+        this.state = this.withExhausted(this.state)
         try {
           writeJsonAtomic(this.cachePath, this.state)
         } catch {
@@ -241,8 +275,10 @@ export function registerAgyChat(deps: AgyChatDeps): void {
   // live steps of every Antigravity chat turn go to the windows for the thinking strip
   let lastTurnCheck = 0
   subscribeAgyActivity((activity) => {
-    // A finished chat turn used quota: re-read it (at most once a minute) so the % stays honest.
-    if (activity.phase === 'done' && Date.now() - lastTurnCheck > 60_000) {
+    if (activity.phase === 'error' && activity.errorKind === 'quota' && activity.model)
+      usage.markExhausted(agyChatModelInfo(activity.model).group, activity.resetAt)
+    // A finished or failed chat turn used quota: re-read it (at most once a minute) so the % stays honest.
+    if ((activity.phase === 'done' || activity.phase === 'error') && Date.now() - lastTurnCheck > 60_000) {
       lastTurnCheck = Date.now()
       const timer = setTimeout(() => void usage.refresh(), 2000)
       timer.unref?.()

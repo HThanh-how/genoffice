@@ -70,4 +70,29 @@ describe('AgyUsageCache (stale-while-revalidate)', () => {
     expect(failed.failed).toBe(true)
     expect(failed.groups?.[0]?.buckets[0]?.remaining).toBe(0.7)
   })
+
+  it('shows a group as empty after a quota failure, even when a later read still says 21% left', async () => {
+    const now = 10_000
+    const resetAt = now + 58 * 3_600_000
+    const read = vi.fn(async () => reading(0.21, now))
+    const seen: Array<number | undefined> = []
+    const cache = new AgyUsageCache(read, cachePath(), () => now, (s) =>
+      seen.push(s.groups?.[0]?.buckets[0]?.remaining),
+    )
+    await cache.refresh()
+    cache.markExhausted('Gemini Models', resetAt)
+    expect(cache.snapshot().groups?.[0]?.buckets[0]).toMatchObject({ remaining: 0, resetAt })
+    const again = await cache.refresh()
+    expect(again.groups?.[0]?.buckets[0]?.remaining).toBe(0)
+    expect(seen.at(-1)).toBe(0)
+  })
+
+  it('lets the override lapse at the reset time', async () => {
+    let now = 10_000
+    const cache = new AgyUsageCache(vi.fn(async () => reading(0.9, now)), cachePath(), () => now, () => {})
+    cache.markExhausted('Gemini Models', now + 1000)
+    now += 2000
+    const done = await cache.refresh()
+    expect(done.groups?.[0]?.buckets[0]?.remaining).toBe(0.9)
+  })
 })

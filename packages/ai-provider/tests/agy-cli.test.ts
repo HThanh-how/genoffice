@@ -21,6 +21,7 @@ import {
   parseAgyModels,
   expandWindowsVariables,
   parseAgyStreamLine,
+  shortTarget,
   parseRegistryPathOutput,
   resolveAgyCliPath,
   runAgy,
@@ -368,6 +369,32 @@ describe('stream-json parsing (recorded fixtures)', () => {
       thinkingTokens: 541,
       durationSeconds: 3.3,
     })
+  })
+
+  it('picks the file, command or query of a tool call and shortens it for display', () => {
+    const step = (parameters: Record<string, unknown>) =>
+      parseAgyStreamLine(
+        JSON.stringify({
+          event: 'step_update',
+          step_update: {
+            state: 'ACTIVE',
+            step_type: 'tool',
+            tool_name: 'x',
+            tool_info: { parameters },
+          },
+        }),
+      )
+    expect(step({ Note: 'zzz', CommandLine: 'npm test' })).toMatchObject({ toolTarget: 'npm test' })
+    expect(step({ Query: 'invoice', SearchPath: 'C:\\docs' })).toMatchObject({
+      toolTarget: 'invoice',
+    })
+    expect(step({ Count: 3 })).not.toHaveProperty('toolTarget')
+    expect(shortTarget('C:\\Users\\Ann\\Reports\\q3 plan.docx', 'path')).toBe('q3 plan.docx')
+    expect(shortTarget('/home/ann/notes/todo.md')).toBe('todo.md')
+    expect(shortTarget('file:///C:/Users/Ann/a%20b.pdf')).toBe('a b.pdf')
+    expect(shortTarget('type C:\\Users\\Ann\\secret.txt | more')).toBe('type secret.txt | more')
+    expect(shortTarget(`echo ${'x'.repeat(100)}`)).toHaveLength(58)
+    expect(shortTarget('  grep   -r   foo  ')).toBe('grep -r foo')
   })
 
   it('parses init, step updates and the result with usage', () => {

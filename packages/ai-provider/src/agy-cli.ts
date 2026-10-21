@@ -18,7 +18,13 @@ import type { StreamCallbacks } from './protocols/shared'
 import type { AiChatResponse, AiProviderConfig, AiTokenUsage, CodexModelCatalog } from './types'
 import { AiTimeoutError } from './watchdog'
 import { publishAgyActivity, type AgyActivity } from './agy-activity'
-import { agyTruncatedError, classifyAgyFailure, hasAgyPrintTimeoutWarning } from './agy-errors'
+import {
+  AgyError,
+  agyErrorKindOf,
+  agyTruncatedError,
+  classifyAgyFailure,
+  hasAgyPrintTimeoutWarning,
+} from './agy-errors'
 import { resolveAgyEffort, type AgyEffort, type AgyTask } from './agy-effort'
 import { readAgyCapabilities, type AgyCapabilities } from './agy-capabilities'
 import { agyMachineSemaphore, type AgyMachineSemaphore } from './agy-lock'
@@ -408,6 +414,8 @@ export type AgyEvent =
       toolName?: string
       /** the main argument of a tool call (file, command, query), as agy reports it */
       toolTarget?: string
+      /** `path` when the target came from a file/URI parameter (shown by base name only) */
+      toolTargetKind?: 'path' | 'text'
       durationSeconds?: number
       thinkingTokens?: number
     }
@@ -441,6 +449,39 @@ function parseDeniedActions(value: unknown): AgyDeniedAction[] | undefined {
       },
     ]
   })
+}
+
+const TARGET_KEY_ORDER = [
+  'commandline',
+  'command',
+  'absolutepath',
+  'targetfile',
+  'filepath',
+  'path',
+  'file',
+  'uri',
+  'url',
+  'query',
+  'pattern',
+  'searchterm',
+  'searchpath',
+]
+
+const PATH_KEYS = new Set(['absolutepath', 'targetfile', 'filepath', 'path', 'file', 'uri', 'url'])
+
+/** The main argument of a tool call: file, command or query first, any other string as a fallback. */
+export function pickAgyToolTarget(
+  parameters: Record<string, unknown> | undefined,
+): { value: string; kind: 'path' | 'text' } | undefined {
+  if (!parameters) return undefined
+  const entries = Object.entries(parameters).filter(
+    (entry): entry is [string, string] => typeof entry[1] === 'string' && entry[1].trim() !== '',
+  )
+  for (const wanted of TARGET_KEY_ORDER) {
+    const hit = entries.find(([key]) => key.toLowerCase() === wanted)
+    if (hit) return { value: hit[1], kind: PATH_KEYS.has(wanted) ? 'path' : 'text' }
+  }
+  return entries[0] ? { value: entries[0][1], kind: 'text' } : undefined
 }
 
 /** One NDJSON line of `--output-format stream-json`; unknown or malformed lines yield null. */
@@ -477,16 +518,14 @@ export function parseAgyStreamLine(line: string): AgyEvent | null {
     }
     const info = record(step.tool_info)
     const parameters = record(info?.parameters)
-    const target = parameters
-      ? Object.values(parameters).find((value): value is string => typeof value === 'string')
-      : undefined
+    const target = pickAgyToolTarget(parameters)
     const usage = record(step.usage)
     return {
       kind: 'step',
       stepType,
       ...(typeof step.state === 'string' ? { state: step.state } : {}),
       ...(typeof step.tool_name === 'string' ? { toolName: step.tool_name } : {}),
-      ...(target ? { toolTarget: target } : {}),
+      ...(target ? { toolTarget: target.value, toolTargetKind: target.kind } : {}),
       ...(typeof step.duration_seconds === 'number'
         ? { durationSeconds: step.duration_seconds }
         : {}),
@@ -1102,6 +1141,10 @@ export async function streamAgy(
     say({
       phase: 'error',
       message: error instanceof Error ? error.message.slice(0, 160) : 'failed',
+      errorKind: agyErrorKindOf(error) ?? 'unknown',
+      ...(error instanceof AgyError && error.resetAt !== undefined
+        ? { resetAt: error.resetAt }
+        : {}),
     })
     throw error
   }
@@ -1111,14 +1154,34 @@ type AgySay = (
   activity: Omit<AgyActivity, 'runId' | 'requestId' | 'sessionId' | 'at' | 'model'>,
 ) => void
 
-/** A path or long command reduced to something that fits on one line. */
-function shortTarget(target: string): string {
-  const trimmed = target.trim().replace(/\s+/g, ' ')
-  const name =
-    /[\\/]/.test(trimmed) && !/\s/.test(trimmed)
-      ? (trimmed.split(/[\\/]/).pop() ?? trimmed)
-      : trimmed
-  return name.length > 60 ? `${name.slice(0, 57)}…` : name
+/**
+ * A path, command or query reduced to one short line for the activity strip. Paths keep only
+ * their base name and absolute paths inside a command are cut to theirs, so a full location
+ * never reaches the screen.
+ */
+export function shortTarget(target: string, kind: 'path' | 'text' = 'text'): string {
+  let text = target.trim().replace(/\s+/g, ' ')
+  if (/^file:\/\//i.test(text)) {
+    try {
+      text = decodeURIComponent(text.replace(/^file:\/+/i, ''))
+    } catch {
+      text = text.replace(/^file:\/+/i, '')
+    }
+  }
+  const base = (token: string) =>
+    token
+      .replace(/[\\/]+$/, '')
+      .split(/[\\/]/)
+      .pop() || token
+  if (/[\\/]/.test(text) && (kind === 'path' || !/\s/.test(text))) {
+    text = base(text)
+  } else {
+    text = text.replace(
+      /(^|[\s"'=(])((?:[A-Za-z]:[\\/]|\/|~[\\/]|\.{1,2}[\\/])[^\s"'|;&<>)]*)/g,
+      (_m, lead: string, path: string) => `${lead}${base(path)}`,
+    )
+  }
+  return text.length > 60 ? `${text.slice(0, 57)}…` : text
 }
 
 /**
@@ -1176,7 +1239,9 @@ async function streamAgyTurn(
             say({
               phase: 'tool',
               tool: step.toolName,
-              ...(step.toolTarget ? { target: shortTarget(step.toolTarget) } : {}),
+              ...(step.toolTarget
+                ? { target: shortTarget(step.toolTarget, step.toolTargetKind) }
+                : {}),
               ...(step.state === 'DONE' && step.durationSeconds !== undefined
                 ? { stepSeconds: step.durationSeconds }
                 : {}),

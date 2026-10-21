@@ -31,6 +31,10 @@ export interface AgyActivity {
   stepSeconds?: number
   /** `error`: short message */
   message?: string
+  /** `error`: what kind of failure it was (quota = the plan's quota is used up) */
+  errorKind?: 'quota' | 'auth' | 'model' | 'timeout' | 'unknown'
+  /** `error` with errorKind quota: epoch ms the quota is expected back, when known */
+  resetAt?: number
 }
 
 type Listener = (activity: AgyActivity) => void

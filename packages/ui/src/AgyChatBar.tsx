@@ -71,7 +71,7 @@ interface RunStep {
   tokens?: number
   seconds?: number
 }
-interface Run {
+export interface Run {
   id: string
   requestId?: string
   sessionId?: string
@@ -80,6 +80,8 @@ interface Run {
   endedAt?: number
   steps: RunStep[]
   phase: 'thinking' | 'tool' | 'writing' | 'done' | 'error'
+  /** epoch ms of the latest event of this run */
+  lastAt?: number
   tool?: string
   target?: string
   tokens: number
@@ -87,6 +89,11 @@ interface Run {
 }
 
 export function reduceRun(run: Run | null, event: AgyBarActivity): Run | null {
+  const next = reduceRunStep(run, event)
+  return next && next !== run ? { ...next, lastAt: event.at } : next
+}
+
+function reduceRunStep(run: Run | null, event: AgyBarActivity): Run | null {
   if (event.phase === 'start')
     return {
       id: event.runId,
@@ -218,6 +225,20 @@ const EN = {
   starting: 'Starting Antigravity',
   usingTool: 'Using {tool}',
   stepTool: 'Used {tool}',
+  actRead: 'Reading {t}',
+  actReadAny: 'Reading a file',
+  actWrite: 'Writing {t}',
+  actWriteAny: 'Writing a file',
+  actCommand: 'Running a command',
+  actSearch: 'Searching {t}',
+  actSearchAny: 'Searching',
+  actBrowse: 'Browsing',
+  actWork: 'Working',
+  stillWorking: 'Still working… ({n}s)',
+  stageRead: 'Reading your request…',
+  stageThink: 'Thinking it through…',
+  stageDraft: 'Drafting the answer — long documents can take 2-3 minutes',
+  stageLate: 'Still drafting… almost the limit; you can stop and try again',
   writing: 'Writing the answer',
   doneIn: 'Done in {t}',
   thoughtTokens: '{n} thinking tokens',
@@ -290,6 +311,20 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     starting: 'Đang khởi động Antigravity',
     usingTool: 'Đang dùng {tool}',
     stepTool: 'Dùng {tool}',
+    actRead: 'Đang đọc {t}',
+    actReadAny: 'Đang đọc một tệp',
+    actWrite: 'Đang ghi {t}',
+    actWriteAny: 'Đang ghi một tệp',
+    actCommand: 'Đang chạy một lệnh',
+    actSearch: 'Đang tìm {t}',
+    actSearchAny: 'Đang tìm kiếm',
+    actBrowse: 'Đang duyệt web',
+    actWork: 'Đang xử lý',
+    stillWorking: 'Vẫn đang xử lý… ({n}s)',
+    stageRead: 'Đang đọc yêu cầu của bạn…',
+    stageThink: 'Đang suy nghĩ…',
+    stageDraft: 'Đang soạn câu trả lời — tài liệu dài có thể mất 2-3 phút',
+    stageLate: 'Vẫn đang soạn… sắp hết thời gian; bạn có thể dừng và thử lại',
     writing: 'Đang viết câu trả lời',
     doneIn: 'Xong trong {t}',
     thoughtTokens: '{n} token suy nghĩ',
@@ -357,6 +392,20 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     starting: '正在启动 Antigravity',
     usingTool: '正在使用 {tool}',
     stepTool: '使用 {tool}',
+    actRead: '正在阅读 {t}',
+    actReadAny: '正在阅读文件',
+    actWrite: '正在写入 {t}',
+    actWriteAny: '正在写入文件',
+    actCommand: '正在运行命令',
+    actSearch: '正在搜索 {t}',
+    actSearchAny: '正在搜索',
+    actBrowse: '正在浏览网页',
+    actWork: '正在处理',
+    stillWorking: '仍在处理…（{n} 秒）',
+    stageRead: '正在阅读你的请求…',
+    stageThink: '正在思考…',
+    stageDraft: '正在撰写回答，长文档可能需要 2-3 分钟',
+    stageLate: '仍在撰写…接近时间上限，你可以停止后重试',
     writing: '正在撰写回答',
     doneIn: '用时 {t}',
     thoughtTokens: '{n} 个思考 token',
@@ -418,6 +467,60 @@ function span(ms: number, d: Dict): string {
   return `${minutes} ${d.m}`
 }
 
+/** What the agent is doing, in plain words: `read_file` + `a.docx` becomes "Reading a.docx". */
+export function toolActivityLabel(
+  tool: string | undefined,
+  target: string | undefined,
+  d: Pick<
+    Dict,
+    | 'actRead'
+    | 'actReadAny'
+    | 'actWrite'
+    | 'actWriteAny'
+    | 'actCommand'
+    | 'actSearch'
+    | 'actSearchAny'
+    | 'actBrowse'
+    | 'actWork'
+  >,
+): string {
+  const name = (tool ?? '').toLowerCase()
+  const t = target?.trim()
+  if (/browser|web|navigate|url/.test(name)) return d.actBrowse
+  if (/search|find|grep|glob|list_dir|ls$/.test(name)) {
+    return t ? fill(d.actSearch, { t }) : d.actSearchAny
+  }
+  if (/run_command|command|shell|bash|terminal|exec/.test(name)) return d.actCommand
+  if (/write|edit|create|replace|update|delete|save/.test(name)) {
+    return t ? fill(d.actWrite, { t }) : d.actWriteAny
+  }
+  if (/read|view|open|cat/.test(name)) return t ? fill(d.actRead, { t }) : d.actReadAny
+  return d.actWork
+}
+
+/** seconds since the run last reported a step, once that is long enough to need a word of reassurance */
+export const QUIET_AFTER_MS = 60_000
+export function quietSeconds(run: Run, now: number): number {
+  const idle = now - (run.lastAt ?? run.startedAt)
+  return idle >= QUIET_AFTER_MS ? Math.floor(idle / 1000) : 0
+}
+
+export const STAGE_THINK_MS = 10_000
+export const STAGE_DRAFT_MS = 45_000
+export const STAGE_LATE_MS = 150_000
+export type WaitStage = 'stageRead' | 'stageThink' | 'stageDraft' | 'stageLate'
+
+/**
+ * Honest text for a run that reports no steps (agy writes one long answer silently): which stage a
+ * silence of `silentMs` is in. After a real step the "reading" stage is skipped (`afterStep`).
+ */
+export function waitStage(silentMs: number, afterStep = false): WaitStage {
+  if (silentMs >= STAGE_LATE_MS) return 'stageLate'
+  if (silentMs >= STAGE_DRAFT_MS) return 'stageDraft'
+  if (silentMs >= STAGE_THINK_MS || afterStep) return 'stageThink'
+  return 'stageRead'
+}
+
 function thinkTitle(run: Run, d: Dict, mode: 'default' | 'home-chat' = 'default'): string {
   const seconds = Math.max(0, ((run.endedAt ?? Date.now()) - run.startedAt) / 1000)
   if (run.phase === 'done') {
@@ -428,42 +531,36 @@ function thinkTitle(run: Run, d: Dict, mode: 'default' | 'home-chat' = 'default'
 
   if (mode === 'home-chat') {
     const time = clockTime(seconds * 1000)
-    let label = d.thinkingHome
+    const silent = Date.now() - (run.lastAt ?? run.startedAt)
+    const afterStep = run.steps.length > 0
+    let label: string
     if (run.phase === 'writing') {
       label = d.writingAnswer
     } else if (run.phase === 'tool') {
-      const toolLower = (run.tool ?? '').toLowerCase()
-      if (
-        toolLower.includes('search') ||
-        toolLower.includes('find') ||
-        toolLower.includes('grep') ||
-        toolLower.includes('glob')
-      ) {
-        label = d.searchingFiles
-      } else if (
-        toolLower.includes('read') ||
-        toolLower.includes('view') ||
-        toolLower.includes('open')
-      ) {
-        label = d.readingDocs
-      } else {
-        label = `${fill(d.usingTool, {
-          tool: `${run.tool ?? ''}${run.target ? ` ${run.target}` : ''}`.trim(),
-        })}…`
-      }
+      // a tool step names what is happening; only a very long one gets the reassurance line
+      label =
+        silent >= QUIET_AFTER_MS
+          ? fill(d.stillWorking, { n: Math.floor(silent / 1000) })
+          : `${toolActivityLabel(run.tool, run.target, d)}…`
+    } else if (afterStep && silent < STAGE_THINK_MS) {
+      label = d.thinkingHome
+    } else {
+      label = d[waitStage(silent, afterStep)]
     }
     return `${label} · ${time}`
   }
 
   const defaultTime =
     seconds >= 60 ? span(seconds * 1000, d) : `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`
+  const quiet = quietSeconds(run, Date.now())
+  if (quiet > 0 && run.phase !== 'writing') {
+    return `${fill(d.stillWorking, { n: quiet })} ${defaultTime}`
+  }
   const label =
     run.phase === 'writing'
       ? d.writing
       : run.phase === 'tool'
-        ? fill(d.usingTool, {
-            tool: `${run.tool ?? ''}${run.target ? ` ${run.target}` : ''}`.trim(),
-          })
+        ? toolActivityLabel(run.tool, run.target, d)
         : run.steps.length === 0
           ? d.starting
           : d.thinkingNow
@@ -1136,8 +1233,7 @@ export function AgyChatBar({
                         ? d.stepThinking
                         : step.kind === 'writing'
                           ? d.stepWriting
-                          : fill(d.stepTool, { tool: step.tool ?? '' })}
-                      {step.target && <code>{step.target}</code>}
+                          : toolActivityLabel(step.tool, step.target, d)}
                     </span>
                     <span className="agy-think-step-meta">
                       {step.tokens ? fill(d.thoughtTokens, { n: step.tokens }) : ''}
