@@ -11,6 +11,14 @@ import {
 } from './knowledge-base'
 
 /** Called only by the main-process permission gate with revalidated sources. */
+function removeIfPresent(path: string): void {
+  try {
+    unlinkSync(path)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+}
+
 export async function mergeDocuments(
   action: FileAction,
   output: string,
@@ -33,15 +41,11 @@ export async function mergeDocuments(
           throw new Error('Invalid or oversized extracted document')
         markdown = readFileSync(converted, 'utf8')
       } finally {
-        try {
-          unlinkSync(converted)
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
-        }
+        removeIfPresent(converted)
       }
     }
     // Escape filenames as literal heading text, rather than interpreting Markdown/HTML.
-    const name = basename(source).replace(/[\\`*_{}\[\]()<>#+.!|~-]/g, '\\$&')
+    const name = basename(source).replace(/[\\`*_{}[\]()<>#+.!|~-]/g, '\\$&')
     const chunk = action.separator === 'heading' ? `# ${name}\n\n${markdown}` : markdown
     length += chunk.length + 4
     if (length > KB_CREATE_MAX_CHARS) throw new Error('Merged content is too long')

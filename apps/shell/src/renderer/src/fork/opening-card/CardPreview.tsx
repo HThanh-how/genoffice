@@ -48,7 +48,6 @@ export function CardPreview({
   const [htmlDoc, setHtmlDoc] = useState<string | null>(null)
 
   // Status computation
-  const isGlobalDefault = prefs.globalCard === card?.id
   const hasAppOverride = Boolean(card && prefs.appOverrides?.[activeApp] === card.id)
   const applied = Boolean(card && appliesTo(scope, prefs, card.id))
 

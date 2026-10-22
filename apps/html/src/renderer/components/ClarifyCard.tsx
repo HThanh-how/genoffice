@@ -1,4 +1,4 @@
-import { ClarifyCard as SharedClarifyCard } from '@genoffice/ui'
+import { ClarifyCard as SharedClarifyCard, clarifyText } from '@genoffice/ui'
 import { useI18n } from '../i18n/locale'
 import type { ClarifyQuestion } from '../ai/tools'
 
@@ -8,6 +8,6 @@ export function ClarifyCard(props: {
   onSubmit: (answers: string, qa: Array<{ q: string; a: string }>) => void
   onSkip: () => void
 }) {
-  const { t } = useI18n()
-  return <SharedClarifyCard {...props} t={t} />
+  const { lang } = useI18n()
+  return <SharedClarifyCard {...props} t={(key, params) => clarifyText(lang, key, params)} />
 }
