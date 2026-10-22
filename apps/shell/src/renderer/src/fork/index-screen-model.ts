@@ -11,13 +11,7 @@ import type { IndexStatus, PauseWhy } from './index-status'
 
 /** The one sentence the screen opens with. */
 export type HeadlineKind =
-  | 'working'
-  | 'scanning'
-  | 'downloading'
-  | 'modelError'
-  | 'paused'
-  | 'ready'
-  | 'empty'
+  'working' | 'scanning' | 'downloading' | 'modelError' | 'paused' | 'ready' | 'empty'
 
 export interface Headline {
   kind: HeadlineKind

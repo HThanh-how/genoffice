@@ -62,7 +62,9 @@ describe('deriveHeadline', () => {
 
   it('reports a failing model before progress, and a download with its own percent', () => {
     const working = { kind: 'working', percent: 20, waiting: 5, ready: 40, eta: null } as const
-    expect(deriveHeadline({ ...idle, status: working, modelState: 'error' }).kind).toBe('modelError')
+    expect(deriveHeadline({ ...idle, status: working, modelState: 'error' }).kind).toBe(
+      'modelError',
+    )
     const download = deriveHeadline({
       ...idle,
       status: working,

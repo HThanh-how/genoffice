@@ -128,8 +128,7 @@ export function IndexStatus(props: IndexStatusProps) {
   } else if (head.kind === 'modelError' && activity?.memory.lastError) {
     meta.push(activity.memory.lastError)
   }
-  const showBar =
-    head.kind === 'working' || head.kind === 'downloading' || head.kind === 'scanning'
+  const showBar = head.kind === 'working' || head.kind === 'downloading' || head.kind === 'scanning'
   const isOff = head.kind === 'paused' && head.why === 'user'
   const action =
     head.kind === 'modelError' ? (
@@ -223,6 +222,7 @@ export function IndexStatus(props: IndexStatusProps) {
                 root="*"
                 onChanged={props.onChanged}
                 hideEmpty
+                hideToolbar
                 summary={waiting}
                 bucket="all"
                 sort="queue"

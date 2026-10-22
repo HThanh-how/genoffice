@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 import type { HomeApi } from '../../../shared/home-api'
 import { useI18n } from '../locale'
 import { fill } from '../indexing-activity-copy'
 import { TEXT, EN } from './index-dashboard-i18n'
 import { useIndexSnapshot } from './useIndexSnapshot'
+import { useLeaveForSearch } from './use-leave-for-search'
 import { IndexStatus } from './IndexStatus'
 import { IndexFolders, useIndexFolders } from './IndexFolders'
 import { IndexAttention } from './IndexAttention'
@@ -39,22 +40,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const running = !!activity?.folder?.running
   const hasData = !!(activity || memory)
 
-  // Search lives in the Home box: Ctrl+F leaves the index and focuses it there.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
-      if (e.key !== 'f' && e.key !== 'F' && e.code !== 'KeyF') return
-      e.preventDefault()
-      onClose()
-      requestAnimationFrame(() => {
-        const input = document.querySelector<HTMLInputElement>('.ask-dock .ask-form input')
-        input?.focus()
-        input?.select()
-      })
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [onClose])
+  useLeaveForSearch(onClose)
 
   const run = async (work: () => Promise<unknown>) => {
     if (inFlight.current) return
@@ -121,7 +107,9 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
           </button>
           <h1>{s.title}</h1>
           <div className="ix-head-actions">
-            {!empty && <AddFolderButton api={api} disabled={busy} onChoose={choose} onChanged={changed} />}
+            {!empty && (
+              <AddFolderButton api={api} disabled={busy} onChoose={choose} onChanged={changed} />
+            )}
             <button
               type="button"
               ref={setMenuAnchor}

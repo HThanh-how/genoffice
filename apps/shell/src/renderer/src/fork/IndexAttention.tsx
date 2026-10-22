@@ -100,7 +100,9 @@ export const IndexAttention = forwardRef<
 
   const rowView = (row: IssueSectionRow, quiet: boolean) => {
     const text =
-      row.id === 'auto' ? { title: g.autoTitle, hint: g.autoHint } : g.cat[row.id as keyof typeof g.cat]
+      row.id === 'auto'
+        ? { title: g.autoTitle, hint: g.autoHint }
+        : g.cat[row.id as keyof typeof g.cat]
     const isOpen = open === row.id
     return (
       <li key={row.id} className={`ix-issue${quiet ? ' is-quiet' : ''}${isOpen ? ' is-open' : ''}`}>
@@ -139,6 +141,7 @@ export const IndexAttention = forwardRef<
               root="*"
               onChanged={onChanged}
               hideEmpty
+              hideToolbar
               summary={narrowSummary(attention, row.reasons)}
               bucket="all"
               sort="queue"
@@ -171,9 +174,13 @@ export const IndexAttention = forwardRef<
                 <span className="ix-issue-main is-static">
                   <span className="ix-issue-text">
                     <strong>
-                      {legacy.running ? s.legacyRunning : fill(s.legacyWaiting, { n: num(legacy.pending) })}
+                      {legacy.running
+                        ? s.legacyRunning
+                        : fill(s.legacyWaiting, { n: num(legacy.pending) })}
                     </strong>
-                    {legacy.failed > 0 && <span>{fill(s.legacyFailed, { n: num(legacy.failed) })}</span>}
+                    {legacy.failed > 0 && (
+                      <span>{fill(s.legacyFailed, { n: num(legacy.failed) })}</span>
+                    )}
                   </span>
                 </span>
                 {!legacy.running && legacy.pending > 0 && (

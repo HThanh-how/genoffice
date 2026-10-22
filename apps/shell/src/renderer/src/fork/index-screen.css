@@ -517,6 +517,13 @@
   color: var(--text-secondary);
   font-weight: 400;
 }
+/* the drill-down is a plain list of files: no second toolbar, no second heading */
+.ix-issue-body .ixp-viewbar,
+.ix-issue-body .ixp-title,
+.ix-status-queue .ixp-viewbar,
+.ix-status-queue .ixp-title {
+  display: none;
+}
 .ix-issue-body {
   padding: 0 12px 12px;
 }

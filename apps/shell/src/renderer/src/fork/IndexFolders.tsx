@@ -42,7 +42,9 @@ export function useIndexFolders(api: HomeApi, tick: unknown) {
           Array.isArray(value) &&
           value.every(
             (f) =>
-              typeof f.root === 'string' && Number.isFinite(f.totalFiles) && Array.isArray(f.history),
+              typeof f.root === 'string' &&
+              Number.isFinite(f.totalFiles) &&
+              Array.isArray(f.history),
           ),
       )
       if (alive.current) {
@@ -81,7 +83,8 @@ function useWhen(lang: string, s: Dict) {
         ['hour', 3_600_000],
         ['minute', 60_000],
       ] as const)
-        if (Math.abs(diff) >= ms || unit === 'minute') return rtf.format(Math.round(diff / ms), unit)
+        if (Math.abs(diff) >= ms || unit === 'minute')
+          return rtf.format(Math.round(diff / ms), unit)
       return ''
     },
     [lang, s],
@@ -125,7 +128,8 @@ const FolderRowView = memo(function FolderRowView({
         </span>
       </span>
     )
-  else state = (
+  else
+    state = (
       <span className="ix-fstate">
         {row.total === 1 ? s.file1 : fill(s.files, { n: num(row.total) })}
       </span>
@@ -174,13 +178,24 @@ export interface IndexFoldersProps {
   onAttention: () => void
 }
 
-export function IndexFolders({ api, folders, failed, onRefresh, onNote, onAttention }: IndexFoldersProps) {
+export function IndexFolders({
+  api,
+  folders,
+  failed,
+  onRefresh,
+  onNote,
+  onAttention,
+}: IndexFoldersProps) {
   const { lang, dateLocale } = useI18n()
   const s = (TEXT[lang] ?? EN).screen
   const num = useCallback((n: number) => n.toLocaleString(dateLocale), [dateLocale])
   const when = useWhen(lang, s)
   const [query, setQuery] = useState('')
-  const [menu, setMenu] = useState<{ root: string; anchor: HTMLElement | null; view: 'actions' | 'history' } | null>(null)
+  const [menu, setMenu] = useState<{
+    root: string
+    anchor: HTMLElement | null
+    view: 'actions' | 'history'
+  } | null>(null)
   const [busy, setBusy] = useState(false)
   const [known, setKnown] = useState<KnownSearchSourceEntry[]>([])
   const rows = useMemo(() => toFolderRows(folders), [folders])
@@ -292,7 +307,12 @@ export function IndexFolders({ api, folders, failed, onRefresh, onNote, onAttent
         </ul>
       )}
       {menu && open && (
-        <IndexMenu anchor={menu.anchor} onClose={closeMenu} width={menu.view === 'history' ? 320 : 232} label={open.name}>
+        <IndexMenu
+          anchor={menu.anchor}
+          onClose={closeMenu}
+          width={menu.view === 'history' ? 320 : 232}
+          label={open.name}
+        >
           {menu.view === 'actions' ? (
             <>
               <MenuItem
@@ -304,7 +324,9 @@ export function IndexFolders({ api, folders, failed, onRefresh, onNote, onAttent
               <MenuItem
                 checked={open.priority}
                 disabled={busy}
-                onClick={() => void act(() => api.setIndexedFolderPriority(open.root, !open.priority))}
+                onClick={() =>
+                  void act(() => api.setIndexedFolderPriority(open.root, !open.priority))
+                }
               >
                 {open.priority ? s.priorityOn : s.priority}
               </MenuItem>
@@ -347,7 +369,9 @@ function FolderHistory({
   when: (at: number) => string
 }) {
   const last = folder.completedAt ? fill(s.last, { when: when(folder.completedAt) }) : s.never
-  const checked = folder.reconciledAt ? ` · ${fill(s.checked, { when: when(folder.reconciledAt) })}` : ''
+  const checked = folder.reconciledAt
+    ? ` · ${fill(s.checked, { when: when(folder.reconciledAt) })}`
+    : ''
   return (
     <div className="ix-history">
       <p className="ix-history-last">
