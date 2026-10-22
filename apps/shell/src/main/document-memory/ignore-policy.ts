@@ -424,7 +424,11 @@ const regexCache = new Map<string, RegExp>()
 const MAX_REGEX_CACHE = 1000
 
 const evalCache = new Map<string, IgnoreMatchResult>()
-const MAX_EVAL_CACHE = 10000
+// Must stay above the size of the indexed corpus: the cache is cleared on every
+// policy change, and a periodic pass (scan, poll, reconcile) walks every file in
+// order, so a bound below the corpus makes FIFO eviction turn each pass into 100 %
+// misses. A result is a small shared object; 200k entries is a few tens of MB at most.
+const MAX_EVAL_CACHE = 200_000
 
 // Pruning-safety answers are memoized per directory and policy generation.
 // shouldSkipDirectory() calls mayContainExplicitAllow() for every candidate
@@ -464,7 +468,7 @@ function clearPolicyCaches(): void {
   regexCache.clear()
   evalCache.clear()
   evaluationRootCache.clear()
-  snapshotKnownRoots = null
+  knownRootsCache = null
   allowCheckCache.clear()
   allowRuleIndexGeneration = -1
   compiledRulesGeneration = -1
@@ -480,6 +484,8 @@ export function isPathCaseInsensitive(p: string): boolean {
 }
 
 function normalizePath(p: string): string {
+  // Hot path: most callers pass an already normalized forward-slash path.
+  if (p.indexOf('\\') === -1 && p.indexOf('//') === -1) return p
   const isUnc = p.startsWith('\\\\') || p.startsWith('//')
   const unified = p.replace(/\\/g, '/').replace(/\/+/g, '/')
   return isUnc ? '/' + unified : unified
@@ -614,14 +620,16 @@ interface CachedIgnore {
 }
 
 const genOfficeIgnoreCache = new Map<string, CachedIgnore>()
-const MAX_GENOFFICEIGNORE_CACHE = 150
+// One entry per indexed root. Eviction drops a root's last-seen rules, and the next read of an
+// evicted root re-parses its file as a "change" (bumping the policy generation and clearing every
+// cache), so the bound has to stay above any realistic number of roots.
+const MAX_GENOFFICEIGNORE_CACHE = 4096
 type RootIgnoreDetails = ReturnType<typeof readGenOfficeIgnoreDetailed>
 const evaluationRootCache = new Map<string, { details: RootIgnoreDetails; at: number }>()
 /** how long a scan snapshot may serve a root's `.genofficeignore` / the root list before re-reading */
 const ROOT_SNAPSHOT_TTL_MS = 10_000
 let rootSnapshotDepth = 0
 const unreachableSnapshotRoots = new Set<string>()
-let snapshotKnownRoots: { roots: string[]; at: number } | null = null
 
 /**
  * While a scan is in flight the per-root `.genofficeignore` check and the known-root list are
@@ -643,7 +651,7 @@ export function beginIgnoreRootSnapshot(): () => void {
     if (--rootSnapshotDepth === 0) {
       evaluationRootCache.clear()
       unreachableSnapshotRoots.clear()
-      snapshotKnownRoots = null
+      knownRootsCache = null
     }
   }
 }
@@ -689,6 +697,7 @@ let knownRootsResolver: (() => string[]) | null = null
 
 export function setKnownRootsResolver(resolver: () => string[]): void {
   knownRootsResolver = resolver
+  knownRootsCache = null
 }
 
 export function clearGenOfficeIgnoreCache(): void {
@@ -1501,26 +1510,118 @@ export function loadPersistedIgnoreRules(): IgnoreRule[] {
   return activeRules
 }
 
+interface PreparedRoots {
+  /** root keyed by its normalized form without trailing slash, case-sensitive */
+  exact: Map<string, string>
+  /** case-insensitive roots keyed by lowercased normalized form */
+  folded: Map<string, string>
+  hasFolded: boolean
+  size: number
+}
+
+/**
+ * The known-root list, resolved at most once per `KNOWN_ROOTS_TTL_MS` (and again after any policy
+ * change or `invalidateKnownRootsCache()`), indexed by normalized path so a lookup walks the
+ * target's ancestor directories instead of testing every root. The resolver is not free (it
+ * snapshots the whole folder registry), and `evaluateIgnore` needs the answer before it can even
+ * look up its cache, so asking it per call made every cache hit cost O(roots) normalizations plus
+ * a registry copy.
+ */
+const KNOWN_ROOTS_TTL_MS = 1000
+let knownRootsCache: { prepared: PreparedRoots; at: number } | null = null
+
+export function invalidateKnownRootsCache(): void {
+  knownRootsCache = null
+}
+
+function stripTrailingSlashes(p: string): string {
+  let end = p.length
+  while (end > 1 && p.charCodeAt(end - 1) === 47) end--
+  return end === p.length ? p : p.slice(0, end)
+}
+
+function prepareRoots(roots: readonly string[]): PreparedRoots {
+  const exact = new Map<string, string>()
+  const folded = new Map<string, string>()
+  for (const root of roots) {
+    const norm = stripTrailingSlashes(normalizePath(root))
+    // first registered root wins among roots that normalize alike, as the stable length sort did
+    if (!exact.has(norm)) exact.set(norm, root)
+    if (isPathCaseInsensitive(norm)) {
+      const key = norm.toLowerCase()
+      if (!folded.has(key)) folded.set(key, root)
+    }
+  }
+  return { exact, folded, hasFolded: folded.size > 0, size: roots.length }
+}
+
+function currentPreparedRoots(): PreparedRoots {
+  const now = performance.now()
+  const ttl = rootSnapshotDepth > 0 ? ROOT_SNAPSHOT_TTL_MS : KNOWN_ROOTS_TTL_MS
+  if (knownRootsCache && now - knownRootsCache.at <= ttl) return knownRootsCache.prepared
+  const roots = knownRootsResolver ? knownRootsResolver() : snapshotRoots
+  const prepared = prepareRoots(roots ?? [])
+  knownRootsCache = { prepared, at: now }
+  return prepared
+}
+
+/** Deepest ancestor-or-self of `path` (cut at each '/') that is a key of `map`. */
+function deepestAncestor(
+  map: Map<string, string>,
+  path: string,
+): { at: number; root: string } | null {
+  let end = path.length
+  while (end > 0) {
+    const root = map.get(end === path.length ? path : path.slice(0, end))
+    if (root !== undefined) return { at: end, root }
+    end = path.lastIndexOf('/', end - 1)
+  }
+  // the filesystem root '/' is a prefix of every absolute path
+  if (path.charCodeAt(0) === 47) {
+    const root = map.get('/')
+    if (root !== undefined) return { at: 1, root }
+  }
+  return null
+}
+
 export function resolveIndexedRoot(targetPath: string, explicitRoot?: string): string | undefined {
   if (explicitRoot) return explicitRoot
   try {
-    let roots: string[] | undefined
-    if (rootSnapshotDepth > 0 && knownRootsResolver) {
-      const now = performance.now()
-      if (!snapshotKnownRoots || now - snapshotKnownRoots.at > ROOT_SNAPSHOT_TTL_MS) {
-        snapshotKnownRoots = { roots: knownRootsResolver(), at: now }
-      }
-      roots = snapshotKnownRoots.roots
+    const roots = currentPreparedRoots()
+    if (roots.size === 0) return undefined
+    const normTarget = stripTrailingSlashes(normalizePath(targetPath))
+    let best: { at: number; root: string } | null = null
+    if (isPathCaseInsensitive(normTarget)) {
+      // every root is compared case-folded when the target is case-insensitive
+      const lower = normTarget.toLowerCase()
+      const foldedAll = foldedViewOf(roots)
+      best = deepestAncestor(foldedAll, lower)
     } else {
-      roots = knownRootsResolver ? knownRootsResolver() : snapshotRoots
+      best = deepestAncestor(roots.exact, normTarget)
+      if (roots.hasFolded) {
+        const f = deepestAncestor(roots.folded, normTarget.toLowerCase())
+        if (f && (!best || f.at > best.at)) best = f
+      }
     }
-    if (!roots || roots.length === 0) return undefined
-    const matching = roots.filter((r) => isSubpathOrEqual(targetPath, r))
-    if (matching.length === 0) return undefined
-    return matching.sort((a, b) => b.length - a.length)[0]
+    return best?.root
   } catch {
     return undefined
   }
+}
+
+const foldedViews = new WeakMap<PreparedRoots, Map<string, string>>()
+/** Every root keyed by its lowercased normalized form (first registered wins). */
+function foldedViewOf(roots: PreparedRoots): Map<string, string> {
+  let view = foldedViews.get(roots)
+  if (!view) {
+    view = new Map()
+    for (const [norm, root] of roots.exact) {
+      const key = norm.toLowerCase()
+      if (!view.has(key)) view.set(key, root)
+    }
+    foldedViews.set(roots, view)
+  }
+  return view
 }
 
 // ---------------------------------------------------------------------------
