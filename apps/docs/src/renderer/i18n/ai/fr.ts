@@ -68,6 +68,10 @@ export const fr = {
   aiNewChatTitle: 'Nouvelle conversation',
   aiCollapseTitle: 'Réduire le panneau',
   aiHistorySep: '—— Conversation précédente ——',
+  aiHandoffNote: 'Suite de la discussion « {title} »',
+  aiHandoffShow: 'Afficher le contexte repris',
+  aiHandoffHide: 'Masquer le contexte repris',
+  aiHandoffDismiss: 'Ne plus reprendre ce contexte',
   aiEmptyTitle: "Laissez l'IA vous aider à rédiger et à modifier",
   aiEmptyBody1: 'Donnez une instruction ou posez simplement une question ;',
   aiEmptyBody2:

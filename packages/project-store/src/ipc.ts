@@ -4,6 +4,7 @@
  */
 import type {
   ChatAttachment,
+  ChatHandoffMeta,
   ChatMessage,
   ChatMeta,
   ChatScope,
@@ -14,6 +15,7 @@ import type {
 
 export type {
   ChatAttachment,
+  ChatHandoffMeta,
   ChatMessage,
   ChatMeta,
   ChatScope,
@@ -30,6 +32,7 @@ export interface AppendChatArgs {
   tools?: ToolActivity[]
   attachments?: ChatAttachment[]
   scope?: ChatScope
+  handoff?: ChatHandoffMeta
 }
 
 export interface LoadChatArgs {

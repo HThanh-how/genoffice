@@ -731,6 +731,10 @@ export class ProjectStore {
         }
       }
 
+      if (msg.handoff !== undefined) {
+        record.handoff = { title: clampChatField(msg.handoff.title, SCOPE_LABEL_MAX_CHARS) }
+      }
+
       const key = this.seqKey(projectId, chatId)
       if (msg.role !== 'assistant' && !existsSync(this.chatPath(projectId, chatId))) {
         const buf = this.pendingFirstWrite.get(key) ?? []

@@ -50,6 +50,14 @@ export interface ChatMessage {
   attachments?: ChatAttachment[]
   /** Document selection a user message targeted */
   scope?: ChatScope
+  /** Marks a context handoff seeded from another conversation (e.g. the Home chat that created the file); `text` is the handoff body */
+  handoff?: ChatHandoffMeta
+}
+
+/** Provenance of a seeded handoff message */
+export interface ChatHandoffMeta {
+  /** Title of the conversation the context came from */
+  title: string
 }
 
 /** What a user message was scoped to: a caption plus an excerpt of the selected content */

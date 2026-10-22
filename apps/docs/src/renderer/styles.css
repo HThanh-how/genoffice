@@ -7941,6 +7941,61 @@ body.docs-crop-active
   font-size: 14px;
   color: var(--color-text-tertiary);
 }
+/* context carried over from the Home chat: one quiet line, expandable */
+.ai-handoff {
+  margin: 0 0 8px;
+  border-bottom: 1px solid var(--color-border-default);
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+}
+.ai-handoff-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.ai-handoff-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.ai-handoff-toggle:hover {
+  color: var(--color-text-secondary);
+}
+.ai-handoff-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ai-handoff-dismiss {
+  padding: 0 6px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+}
+.ai-handoff-dismiss:hover {
+  color: var(--color-text-secondary);
+}
+.ai-handoff-body {
+  margin: 0 0 6px;
+  max-height: 160px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  color: var(--color-text-secondary);
+}
 
 .ai-chat-empty {
   margin-top: 36px;

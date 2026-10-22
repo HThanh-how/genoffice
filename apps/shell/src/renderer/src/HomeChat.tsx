@@ -33,6 +33,7 @@ import '@genoffice/ui/ai-model-picker.css'
 import { AskDock } from './home-chat/AskDock'
 import { findFilesByName } from './fork/file-name-search'
 import './ask-dock.css'
+import { seedDocChatHandoff } from '@genoffice/project-store/handoff'
 import {
   INDEX_DIRECTIVE_PROMPT,
   extractIndexDirectives,
@@ -205,6 +206,8 @@ export function HomeChat({
     setActiveRequestId(null)
   }
   const [title, setTitle] = useState('')
+  const titleRef = useRef('')
+  titleRef.current = title
   const [railOpen, setRailOpen] = useState(() => readStore(LS_RAIL) !== '0')
   const [toast, setToast] = useState<Toast | null>(null)
   const [visibleCount, setVisibleCount] = useState(WINDOW_PAGE)
@@ -307,6 +310,25 @@ export function HomeChat({
     [],
   )
 
+  /**
+   * Carry this chat's context into a Word document's own chat (created by, or
+   * opened from, this conversation). Best effort: a failure never blocks the open.
+   */
+  const seedDocumentChat = useCallback(async (path: string, kind: 'created' | 'opened') => {
+    const projectApi = window.projectApi
+    if (!projectApi) return
+    try {
+      await seedDocChatHandoff(projectApi, {
+        chatTitle: titleRef.current,
+        turns: itemsRef.current.map((it) => ({ role: it.role, text: it.text })),
+        filePath: path,
+        kind,
+      })
+    } catch {
+      // the document chat just starts empty
+    }
+  }, [])
+
   const openDocumentPath = useCallback(
     (path: string, execContext?: CreateDocumentExecutionContext): Promise<boolean> => {
       const existing = inFlightOpenRef.current.get(path)
@@ -391,6 +413,7 @@ export function HomeChat({
             // best effort
           }
         }
+        await seedDocumentChat(path, createdPathsRef.current.has(path) ? 'created' : 'opened')
         if (!mountedRef.current) return false
         if (onOpenPathRef.current) {
           const res = await onOpenPathRef.current(path)
@@ -404,7 +427,7 @@ export function HomeChat({
         return false
       }
     },
-    [api],
+    [api, seedDocumentChat],
   )
 
   const docSkillRef = useRef<ReturnType<typeof createDocumentSkill> | null>(null)
@@ -448,6 +471,7 @@ export function HomeChat({
           callId: hostOpId,
           documentType: request.documentType,
         })
+        await seedDocumentChat(result.path, 'created')
 
         if (
           mountedRef.current &&
