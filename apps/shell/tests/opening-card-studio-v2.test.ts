@@ -506,7 +506,7 @@ describe('OpeningCardStudio selection retention on late delete', () => {
     })
   }
 
-  it('retains selection B when delete for card A finishes late', async () => {
+  it('keeps card B open when the removal of card A finishes late', async () => {
     const host = document.createElement('div')
     document.body.append(host)
     const root = createRoot(host)
@@ -548,7 +548,7 @@ describe('OpeningCardStudio selection retention on late delete', () => {
     }
 
     window.aiOffice = {
-      deleteOpeningCard: vi.fn().mockReturnValue(deletePromise),
+      setOpeningPrefs: vi.fn().mockReturnValue(deletePromise),
       saveOpeningCard: vi.fn().mockResolvedValue(state),
       getOpeningEffects: vi.fn().mockResolvedValue(state),
     } as unknown as typeof window.aiOffice
@@ -565,7 +565,9 @@ describe('OpeningCardStudio selection retention on late delete', () => {
     const deleteBtn = host.querySelector<HTMLButtonElement>('.ocs-btn-danger')!
     expect(deleteBtn).not.toBeNull()
     await act(async () => deleteBtn.click())
-    expect(window.aiOffice.deleteOpeningCard).toHaveBeenCalledWith('custom:card_a')
+    expect(window.aiOffice.setOpeningPrefs).toHaveBeenCalledWith(
+      expect.objectContaining({ removedCards: ['custom:card_a'] }),
+    )
 
     const cardBElement = [...host.querySelectorAll<HTMLDivElement>('.ocs-gallery-card-item')].find(
       (el) => el.textContent?.includes('Card B'),
@@ -574,7 +576,11 @@ describe('OpeningCardStudio selection retention on late delete', () => {
     await act(async () => cardBElement.click())
 
     const nextState: OpeningEffectsState = {
-      prefs: { globalCard: 'custom:card_b', customCards: [cardB] },
+      prefs: {
+        globalCard: 'custom:card_b',
+        customCards: [cardA, cardB],
+        removedCards: ['custom:card_a'],
+      },
       builtInCards: [],
       effectiveScenes: {},
       mediaAssets: [],

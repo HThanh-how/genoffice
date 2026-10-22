@@ -13,6 +13,8 @@ import { appName as appLabelOf } from './AppMarks'
 import { CardSurface } from './CardSurface'
 import { OpeningPageView } from './OpeningPageView'
 import { TargetSwitch } from './TargetSwitch'
+import { Dropdown } from '@genoffice/ui'
+import { appsShuffling, builtInGroupOf, groupName } from '../../../../shared/opening-card-groups'
 import { appliesTo, appsUsingCard, type ApplyScope } from './studio-logic'
 import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-html-sanitizer'
 
@@ -32,7 +34,9 @@ interface CardPreviewProps {
   onResetOverride: (app: OpeningApp) => Promise<void>
   onPreviewWindow: (app: OpeningApp, cardIdOrScene: string) => void
   onOpenCustomizer: (card: OpeningCardDefinition) => void
-  onDeleteCard?: (cardId: string) => Promise<void>
+  /** to the trash: nothing is lost, it can be restored */
+  onRemoveCard: (card: OpeningCardDefinition) => void
+  onMoveToGroup: (cardId: string, groupId: string | null) => void
 }
 
 type AiOfficeApi = {
@@ -53,7 +57,8 @@ export function CardPreview({
   onResetOverride,
   onPreviewWindow,
   onOpenCustomizer,
-  onDeleteCard,
+  onRemoveCard,
+  onMoveToGroup,
 }: CardPreviewProps): React.JSX.Element {
   const isVi = lang === 'vi'
   // Where "Use this card" applies: every app, or one app. The stage previews that app (Word for "all").
@@ -157,7 +162,23 @@ export function CardPreview({
 
   const appLabel = (app: OpeningApp) => appLabelOf(app, isVi)
   const usedBy = appsUsingCard(prefs, card.id)
+  const shufflers = appsShuffling(prefs)
+  const userGroups = prefs.groups ?? []
+  const currentOwnGroup = prefs.cardGroups?.[card.id]
+  const defaultGroupName = groupName(builtInGroupOf(card), prefs, lang)
   const statusText = (() => {
+    // random mode is on for what is being looked at: say so before anything about this card
+    const shuffles =
+      scope === 'all' ? shufflers.length === OPENING_APPS.length : shufflers.includes(scope)
+    if (shuffles) {
+      return scope === 'all'
+        ? isVi
+          ? 'Mọi ứng dụng đang chọn thẻ ngẫu nhiên'
+          : 'All apps are drawing a random card'
+        : isVi
+          ? `${appLabelOf(scope, isVi)} đang chọn thẻ ngẫu nhiên`
+          : `${appLabelOf(scope, isVi)} is drawing a random card`
+    }
     if (scope === 'all') {
       if (usedBy.length === OPENING_APPS.length) {
         return isVi ? 'Đang dùng cho mọi ứng dụng' : 'In use for all apps'
@@ -301,17 +322,39 @@ export function CardPreview({
                 : `Reset ${appLabel(activeApp)} to default`}
             </button>
           )}
-          {!card.isBuiltIn && onDeleteCard && (
-            <button
-              type="button"
-              className="ocs-btn-danger"
-              disabled={busy}
-              onClick={() => onDeleteCard(card.id)}
-            >
-              {isVi ? 'Xóa thẻ' : 'Delete'}
-            </button>
-          )}
+          <button
+            type="button"
+            className="ocs-btn-danger"
+            disabled={busy}
+            title={
+              isVi
+                ? 'Chuyển vào thùng rác, có thể khôi phục'
+                : 'Moves it to the trash; you can restore it'
+            }
+            onClick={() => onRemoveCard(card)}
+          >
+            {isVi ? 'Xóa khỏi thư viện' : 'Remove'}
+          </button>
         </div>
+
+        {userGroups.length > 0 && (
+          <label className="ocs-group-pick">
+            <span>{isVi ? 'Nhóm' : 'Group'}</span>
+            <Dropdown
+              className="set-dd"
+              value={currentOwnGroup ?? ''}
+              ariaLabel={isVi ? 'Nhóm của thẻ' : 'Group of this card'}
+              options={[
+                {
+                  value: '',
+                  label: isVi ? `Mặc định (${defaultGroupName})` : `Default (${defaultGroupName})`,
+                },
+                ...userGroups.map((g) => ({ value: g.id, label: g.name })),
+              ]}
+              onPick={(next) => onMoveToGroup(card.id, next || null)}
+            />
+          </label>
+        )}
       </div>
 
       <button

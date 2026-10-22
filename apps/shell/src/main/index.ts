@@ -6421,6 +6421,11 @@ function registerHomeIpc(): void {
         appOverrides: Object.keys(appOverrides).length > 0 ? appOverrides : undefined,
         globalCard,
         favorites,
+        // gone for good: no longer in the trash or in a group either
+        removedCards: (prefs.removedCards ?? []).filter((id) => id !== cardId),
+        cardGroups: Object.fromEntries(
+          Object.entries(prefs.cardGroups ?? {}).filter(([id]) => id !== cardId),
+        ),
       })
       if (cardToDelete?.htmlAssetId) {
         const stillInUse = customCards.some((c) => c.htmlAssetId === cardToDelete.htmlAssetId)

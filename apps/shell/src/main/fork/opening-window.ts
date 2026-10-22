@@ -1,11 +1,11 @@
 import { cpus, totalmem } from 'node:os'
 import { BrowserWindow, app, powerMonitor } from 'electron'
-import {
-  CUSTOM_SCENE,
-  DEFAULT_OPENING_PREFS,
-  resolveEffectiveOpeningCard,
-} from '../../shared/opening-scenes-meta'
-import type { OpeningPrefs } from '../../shared/opening-scenes-meta'
+import { CUSTOM_SCENE, DEFAULT_OPENING_PREFS } from '../../shared/opening-scenes-meta'
+import type { OpeningApp, OpeningPrefs } from '../../shared/opening-scenes-meta'
+import { chooseOpeningCardId } from '../../shared/opening-card-groups'
+
+/** What each app drew at random last time, so the next open plays another card. */
+const lastRandomPicks = new Map<OpeningApp, string>()
 
 import { sampleFileName } from '../../shared/opening-card-css'
 export * from '../../shared/opening-page'
@@ -84,8 +84,7 @@ export function buildOpeningPage(options: {
   const prefs = config.prefs()
   const words = openingWords(options.lang, options.kind)
   const tier = options.forceTier ?? (prefs.tier === 'auto' ? machineTier() : prefs.tier)
-  const effective = resolveEffectiveOpeningCard(prefs, options.app, options.scene)
-  const chosen = effective.id
+  const chosen = chooseOpeningCardId(prefs, options.app, options.scene, lastRandomPicks)
   if (chosen === CUSTOM_SCENE) {
     const user = config.customHtml(options.app)
     if (user !== null) {

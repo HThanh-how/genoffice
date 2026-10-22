@@ -183,7 +183,32 @@ export interface OpeningPrefs {
   favorites?: string[]
   /** custom user cards registered in the studio */
   customCards?: OpeningCardDefinition[]
+  /** cards moved to the trash: hidden from the gallery, never played, never picked at random, restorable */
+  removedCards?: string[]
+  /** groups the person made themselves (built-in cards belong to groups of their own, see opening-card-groups) */
+  groups?: OpeningGroup[]
+  /** which of the person's groups a card is in (one each) */
+  cardGroups?: Record<string, string>
+  /** per target, a random card each time instead of a fixed one; `all` is every app without a setting of its own */
+  random?: Partial<Record<OpeningScope, OpeningRandomPool>>
 }
+
+/** Where a choice applies: every app, or one. */
+export type OpeningScope = 'all' | OpeningApp
+
+/** Which cards a random choice draws from: these groups (none = every card), starred ones only if asked. */
+export interface OpeningRandomPool {
+  groups: string[]
+  starredOnly: boolean
+}
+
+export interface OpeningGroup {
+  id: string
+  name: string
+}
+
+export const MAX_OPENING_GROUPS = 24
+export const MAX_GROUP_NAME = 40
 
 export const DEFAULT_OPENING_PREFS: OpeningPrefs = {
   enabled: true,
@@ -213,6 +238,8 @@ export const knownSceneOrCard = (id: unknown, prefs?: OpeningPrefs): id is strin
 
 export const isCardOrSceneAvailable = (id: unknown, prefs?: OpeningPrefs): id is string => {
   if (typeof id !== 'string' || !id || id.length > 100) return false
+  // a card in the trash is not played, wherever it was chosen
+  if (id !== CUSTOM_SCENE && prefs?.removedCards?.includes(id)) return false
   if (id === CUSTOM_SCENE || SCENES.some((s) => s.id === id) || isBuiltInCard(id)) {
     return true
   }
@@ -267,9 +294,14 @@ export function resolveEffectiveOpeningCard(
     return { id: legacyScene, source: 'override', isOverride: true }
   }
 
-  // 5. Default application scene
+  // 5. Default application scene; when that one is in the trash, the first stock scene that is not
+  const stock = [
+    DEFAULT_SCENE_FOR_APP[app],
+    ...Object.values(DEFAULT_SCENE_FOR_APP),
+    ...SCENES.map((s) => s.id),
+  ]
   return {
-    id: DEFAULT_SCENE_FOR_APP[app],
+    id: stock.find((id) => isCardOrSceneAvailable(id, prefs)) ?? DEFAULT_SCENE_FOR_APP[app],
     source: 'default',
     isOverride: false,
   }
@@ -356,5 +388,64 @@ export function normalizeOpeningPrefs(stored: unknown): OpeningPrefs {
       ),
     )
   }
+
+  // Trash, groups and random pools (all optional: settings saved before they existed read as none)
+  if (Array.isArray(value.removedCards)) {
+    const removed = Array.from(
+      new Set(
+        value.removedCards.filter(
+          (id): id is string =>
+            typeof id === 'string' && id !== CUSTOM_SCENE && isAcceptableStoredCard(id),
+        ),
+      ),
+    ).slice(0, 500)
+    if (removed.length > 0) res.removedCards = removed
+  }
+  const groupIds = new Set<string>()
+  if (Array.isArray(value.groups)) {
+    const groups: OpeningGroup[] = []
+    for (const raw of value.groups) {
+      if (groups.length >= MAX_OPENING_GROUPS || !raw || typeof raw !== 'object') continue
+      const { id, name } = raw as Record<string, unknown>
+      if (typeof id !== 'string' || !GROUP_ID_RE.test(id) || groupIds.has(id)) continue
+      const clean = typeof name === 'string' ? name.trim().slice(0, MAX_GROUP_NAME) : ''
+      if (!clean || FORBIDDEN_PATTERN.test(clean)) continue
+      groupIds.add(id)
+      groups.push({ id, name: clean })
+    }
+    if (groups.length > 0) res.groups = groups
+  }
+  if (value.cardGroups && typeof value.cardGroups === 'object' && groupIds.size > 0) {
+    const cardGroups: Record<string, string> = {}
+    for (const [cardId, groupId] of Object.entries(value.cardGroups as Record<string, unknown>)) {
+      if (typeof groupId === 'string' && groupIds.has(groupId) && isAcceptableStoredCard(cardId)) {
+        cardGroups[cardId] = groupId
+      }
+    }
+    if (Object.keys(cardGroups).length > 0) res.cardGroups = cardGroups
+  }
+  if (value.random && typeof value.random === 'object') {
+    const rawRandom = value.random as Record<string, unknown>
+    const random: Partial<Record<OpeningScope, OpeningRandomPool>> = {}
+    for (const scope of ['all', ...OPENING_APPS] as OpeningScope[]) {
+      const entry = rawRandom[scope]
+      if (!entry || typeof entry !== 'object') continue
+      const { groups, starredOnly } = entry as Record<string, unknown>
+      random[scope] = {
+        groups: Array.isArray(groups)
+          ? Array.from(
+              new Set(
+                groups.filter((g): g is string => typeof g === 'string' && GROUP_ID_RE.test(g)),
+              ),
+            ).slice(0, MAX_OPENING_GROUPS + 12)
+          : [],
+        starredOnly: starredOnly === true,
+      }
+    }
+    if (Object.keys(random).length > 0) res.random = random
+  }
   return res
 }
+
+/** Ids of groups: our own built-in ones are lower-case words, the person's are `grp_…`. */
+const GROUP_ID_RE = /^[a-z][a-z0-9_-]{0,39}$/

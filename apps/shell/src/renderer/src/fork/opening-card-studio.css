@@ -572,6 +572,359 @@
 }
 
 /* ============================================================
+   Groups, stars, trash
+   ============================================================ */
+
+.ocs-filter-add,
+.ocs-filter-trash {
+  gap: 4px;
+  align-items: center;
+}
+
+.ocs-filter-trash {
+  margin-left: auto;
+}
+
+.ocs-group-input {
+  height: 26px;
+  width: 140px;
+  padding: 0 8px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  outline: none;
+}
+
+.ocs-group-actions,
+.ocs-trash-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.ocs-trash-bar {
+  justify-content: space-between;
+  padding: 10px 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 8px;
+}
+
+.ocs-trash-bar p {
+  margin: 0;
+  flex: 1 1 260px;
+}
+
+.ocs-trash-confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text);
+}
+
+.ocs-group-actions button,
+.ocs-trash-bar button,
+.ocs-restore-btn {
+  padding: 0;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.ocs-group-actions button:hover,
+.ocs-trash-bar button:hover:not(:disabled),
+.ocs-restore-btn:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
+.ocs-group-actions button:focus-visible,
+.ocs-trash-bar button:focus-visible,
+.ocs-restore-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+.ocs-trash-bar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.ocs-group-actions .ocs-btn-danger,
+.ocs-trash-bar .ocs-btn-danger {
+  color: var(--danger);
+}
+
+.ocs-restore-btn {
+  margin-left: auto;
+  flex: none;
+  color: var(--accent);
+}
+
+.ocs-gallery-card-item.is-trashed {
+  cursor: default;
+}
+
+.ocs-gallery-card-item.is-trashed .ocs-card-thumbnail-wrap {
+  filter: grayscale(0.6);
+  opacity: 0.7;
+}
+
+/* Remove: next to the star, shown with it on hover and focus */
+.ocs-card-remove-btn {
+  position: absolute;
+  top: 6px;
+  right: 36px;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--color-bg-overlay);
+  backdrop-filter: blur(4px);
+  border: none;
+  color: var(--ocs-ink-white-60);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    color 0.15s ease;
+  z-index: 2;
+}
+
+.ocs-gallery-card-item:hover .ocs-card-remove-btn,
+.ocs-gallery-card-item:focus-within .ocs-card-remove-btn {
+  opacity: 1;
+}
+
+.ocs-card-remove-btn:hover {
+  color: var(--ocs-ink-white);
+}
+
+.ocs-card-remove-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  opacity: 1;
+}
+
+@media (hover: none) {
+  .ocs-card-remove-btn {
+    opacity: 1;
+  }
+}
+
+.ocs-group-pick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   Random card: one line when closed, the pool when open
+   ============================================================ */
+
+.ocs-random {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+}
+
+.ocs-random.is-on {
+  border-color: var(--accent);
+}
+
+.ocs-random-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-height: 40px;
+  padding: 6px 12px;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ocs-random-head:hover {
+  background: var(--hover);
+}
+
+.ocs-random-head:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.ocs-random-title {
+  font-weight: 600;
+  flex: none;
+}
+
+.ocs-random-summary {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  gap: 8px;
+  min-width: 0;
+  color: var(--text-muted);
+}
+
+.ocs-random-on {
+  flex: none;
+  padding: 1px 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--accent);
+  color: var(--accent-ink, var(--ocs-ink-white));
+}
+
+.ocs-random-what {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ocs-random-chevron {
+  flex: none;
+  color: var(--text-muted);
+  transition: transform 0.18s ease;
+}
+
+.ocs-random-chevron.is-open {
+  transform: rotate(180deg);
+}
+
+.ocs-random-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 4px 14px 14px;
+}
+
+.ocs-random-hint,
+.ocs-random-count {
+  margin: 0;
+  font-size: 12.5px;
+  color: var(--text-muted);
+}
+
+.ocs-random-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 18px;
+}
+
+.ocs-random-pool {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ocs-random-pool.is-idle {
+  opacity: 0.55;
+}
+
+.ocs-chip {
+  height: 26px;
+  padding: 0 11px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+}
+
+.ocs-chip:hover {
+  color: var(--text);
+  background: var(--hover);
+}
+
+.ocs-chip.is-on {
+  color: var(--text);
+  font-weight: 600;
+  background: var(--bg-hover-strong);
+  border-color: var(--border-strong);
+}
+
+.ocs-chip:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ocs-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+}
+
+.ocs-switch-track {
+  position: relative;
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--border-strong);
+  transition: background 0.18s ease;
+}
+
+.ocs-switch.is-on .ocs-switch-track {
+  background: var(--accent);
+}
+
+.ocs-switch-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--ocs-ink-white);
+  box-shadow: var(--shadow-btn-hover);
+  transition: transform 0.18s ease;
+}
+
+.ocs-switch.is-on .ocs-switch-thumb {
+  transform: translateX(14px);
+}
+
+.ocs-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+/* ============================================================
    Details of the open card: inside the grid, under its row
    ============================================================ */
 
@@ -1094,6 +1447,11 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ocs-detail-slot,
+  .ocs-random-chevron,
+  .ocs-switch-track,
+  .ocs-switch-thumb,
+  .ocs-chip,
+  .ocs-card-remove-btn,
   .ocs-seg-pill.is-ready,
   .ocs-seg-btn,
   .ocs-seg-btn::after,

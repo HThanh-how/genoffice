@@ -1,31 +1,14 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { OpeningCardDefinition, StoredMediaAsset } from '../../../../shared/opening-card-types'
 import { cardLabel } from '../../../../shared/opening-card-text'
+import { groupName, groupOf, visibleGroupIds } from '../../../../shared/opening-card-groups'
 import type { OpeningPrefs } from '../../../../shared/opening-scenes-meta'
 import { AppLogoStack } from './AppMarks'
 import { CardThumbnail } from './CardThumbnail'
-import {
-  appsUsingCard,
-  computeFilterCounts,
-  matchesFilter,
-  orderInUseFirst,
-  resolveActiveFilter,
-  shouldShowFilterRow,
-  visibleFilterKeys,
-  type GalleryFilterCategory,
-} from './studio-logic'
+import { appsUsingCard, orderInUseFirst } from './studio-logic'
 
-export type { GalleryFilterCategory }
-
-const FILTER_LABELS: Record<GalleryFilterCategory, { en: string; vi: string }> = {
-  all: { en: 'All', vi: 'Tất cả' },
-  'curated-material': { en: 'Materials', vi: 'Chất liệu' },
-  'canvas-scene': { en: 'Motion', vi: 'Cảnh động' },
-  'personal-media': { en: 'Media', vi: 'Phương tiện' },
-  'ai-html': { en: 'HTML', vi: 'Thẻ HTML' },
-  favorites: { en: 'Favorites', vi: 'Yêu thích' },
-  custom: { en: 'Custom', vi: 'Tự tạo' },
-}
+/** What the gallery shows: every card, the starred ones, one group, or the trash. */
+export type GalleryView = 'all' | 'starred' | 'trash' | (string & {})
 
 export const DETAIL_PANEL_ID = 'ocs-detail-panel'
 
@@ -40,6 +23,13 @@ interface CardGalleryProps {
   onToggleCard: (card: OpeningCardDefinition) => void
   onCloseDetail: () => void
   onToggleFavorite: (cardId: string) => void
+  onRemoveCard: (card: OpeningCardDefinition) => void
+  onRestoreCard: (card: OpeningCardDefinition) => void
+  /** permanently delete the cards of the person's own that are in the trash */
+  onEmptyTrash: () => void
+  onCreateGroup: (name: string) => void
+  onRenameGroup: (id: string, name: string) => void
+  onDeleteGroup: (id: string) => void
   /** the details of a card, drawn by the gallery right under the row of that card */
   renderDetail: (card: OpeningCardDefinition) => React.ReactNode
 }
@@ -47,6 +37,22 @@ interface CardGalleryProps {
 const prefersCalm = (): boolean =>
   typeof window !== 'undefined' &&
   Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
+
+const TrashIcon = (): React.JSX.Element => (
+  <svg
+    width="13"
+    height="13"
+    viewBox="0 0 16 16"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="1.5"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    aria-hidden="true"
+  >
+    <path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9h6.6L12 4M6.8 6.8v3.7M9.2 6.8v3.7" />
+  </svg>
+)
 
 export function CardGallery({
   cards,
@@ -57,28 +63,68 @@ export function CardGallery({
   onToggleCard,
   onCloseDetail,
   onToggleFavorite,
+  onRemoveCard,
+  onRestoreCard,
+  onEmptyTrash,
+  onCreateGroup,
+  onRenameGroup,
+  onDeleteGroup,
   renderDetail,
 }: CardGalleryProps): React.JSX.Element {
   const isVi = lang === 'vi'
-  const [filterCategory, setFilterCategory] = useState<GalleryFilterCategory>('all')
+  const [view, setView] = useState<GalleryView>('all')
   const [searchQuery, setSearchQuery] = useState('')
+  const [naming, setNaming] = useState<{ mode: 'new' | 'rename'; value: string } | null>(null)
+  const [confirmEmpty, setConfirmEmpty] = useState(false)
   const gridRef = useRef<HTMLDivElement | null>(null)
   const itemRefs = useRef(new Map<string, HTMLDivElement>())
   const slotRef = useRef<HTMLDivElement | null>(null)
   const [layoutTick, setLayoutTick] = useState(0)
   const [slot, setSlot] = useState<{ afterId: string; notch: number } | null>(null)
 
-  const counts = useMemo(
-    () => computeFilterCounts(cards, prefs.favorites),
-    [cards, prefs.favorites],
-  )
-  const activeFilter = resolveActiveFilter(filterCategory, counts)
-  const filterKeys = visibleFilterKeys(counts)
+  const removedSet = useMemo(() => new Set(prefs.removedCards ?? []), [prefs.removedCards])
+  const favSet = useMemo(() => new Set(prefs.favorites ?? []), [prefs.favorites])
+  const live = useMemo(() => cards.filter((c) => !removedSet.has(c.id)), [cards, removedSet])
+  const trashed = useMemo(() => cards.filter((c) => removedSet.has(c.id)), [cards, removedSet])
+  const groupIds = useMemo(() => visibleGroupIds(cards, prefs), [cards, prefs])
+  const customInTrash = trashed.filter((c) => !c.isBuiltIn)
 
-  // Cards some app plays come first, the rest keep their order
+  const counts = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const card of live) {
+      const id = groupOf(card, prefs)
+      map.set(id, (map.get(id) ?? 0) + 1)
+    }
+    return map
+  }, [live, prefs])
+  const starredCount = live.filter((c) => favSet.has(c.id)).length
+
+  // A view that emptied out (last starred card un-starred, group deleted, trash emptied) falls back to all
+  const activeView: GalleryView =
+    view === 'starred'
+      ? starredCount > 0
+        ? view
+        : 'all'
+      : view === 'trash'
+        ? trashed.length > 0
+          ? view
+          : 'all'
+        : view === 'all' || groupIds.includes(view)
+          ? view
+          : 'all'
+  const inTrash = activeView === 'trash'
+  const activeCustomGroup = prefs.groups?.find((g) => g.id === activeView)
+
+  // Cards some app plays come first, then the starred ones, the rest keep their order
   const ordered = useMemo(() => {
-    const favSet = new Set(prefs.favorites || [])
-    let list = cards.filter((c) => matchesFilter(c, activeFilter, favSet))
+    let list =
+      activeView === 'trash'
+        ? trashed
+        : activeView === 'starred'
+          ? live.filter((c) => favSet.has(c.id))
+          : activeView === 'all'
+            ? live
+            : live.filter((c) => groupOf(c, prefs) === activeView)
     const q = searchQuery.trim().toLowerCase()
     if (q) {
       list = list.filter((c) => {
@@ -92,8 +138,8 @@ export function CardGallery({
         )
       })
     }
-    return orderInUseFirst(list, prefs)
-  }, [cards, activeFilter, searchQuery, prefs, lang])
+    return activeView === 'trash' ? list : orderInUseFirst(list, prefs)
+  }, [live, trashed, favSet, activeView, searchQuery, prefs, lang])
 
   // The details open under the row of the card that was clicked: after the last card on that row
   useEffect(() => {
@@ -111,7 +157,7 @@ export function CardGallery({
   }, [])
 
   useLayoutEffect(() => {
-    const openEl = openCardId ? itemRefs.current.get(openCardId) : undefined
+    const openEl = openCardId && !inTrash ? itemRefs.current.get(openCardId) : undefined
     if (!openCardId || !openEl) {
       setSlot(null)
       return
@@ -128,7 +174,7 @@ export function CardGallery({
         ? prev
         : { afterId, notch },
     )
-  }, [openCardId, ordered, layoutTick])
+  }, [openCardId, ordered, layoutTick, inTrash])
 
   // After a click, bring the details into view if they opened below the fold
   const scrolledFor = useRef<string | null>(null)
@@ -185,7 +231,11 @@ export function CardGallery({
     else if (e.key === ' ' || e.key === 'Enter') {
       if (e.target !== e.currentTarget) return
       e.preventDefault()
-      onToggleCard(ordered[index]!)
+      if (!inTrash) onToggleCard(ordered[index]!)
+      return
+    } else if (e.key === 'Delete' && e.target === e.currentTarget && !inTrash) {
+      e.preventDefault()
+      onRemoveCard(ordered[index]!)
       return
     }
     if (next >= 0) {
@@ -194,33 +244,86 @@ export function CardGallery({
     }
   }
 
-  const favSet = new Set(prefs.favorites || [])
   const openCard = openCardId ? (ordered.find((c) => c.id === openCardId) ?? null) : null
+
+  const chip = (key: string, label: React.ReactNode, count?: number, extra?: string) => (
+    <button
+      key={key}
+      type="button"
+      aria-pressed={activeView === key}
+      className={`ocs-filter-pill${activeView === key ? ' active' : ''}${extra ? ` ${extra}` : ''}`}
+      onClick={() => {
+        setView(key)
+        setNaming(null)
+        setConfirmEmpty(false)
+      }}
+    >
+      <span>{label}</span>
+      {count !== undefined && <span className="ocs-filter-count">{count}</span>}
+    </button>
+  )
+
+  const submitName = () => {
+    if (!naming) return
+    const name = naming.value.trim()
+    if (name) {
+      if (naming.mode === 'new') onCreateGroup(name)
+      else if (activeCustomGroup) onRenameGroup(activeCustomGroup.id, name)
+    }
+    setNaming(null)
+  }
 
   return (
     <div className="ocs-gallery-section">
-      {/* Search and Filters Toolbar */}
+      {/* Groups and search */}
       <div className="ocs-gallery-toolbar">
-        {shouldShowFilterRow(counts) && (
-          <div
-            className="ocs-filter-tabs"
-            role="group"
-            aria-label={isVi ? 'Lọc theo loại' : 'Filter by type'}
-          >
-            {filterKeys.map((key) => (
-              <button
-                key={key}
-                type="button"
-                aria-pressed={activeFilter === key}
-                className={`ocs-filter-pill${activeFilter === key ? ' active' : ''}`}
-                onClick={() => setFilterCategory(key)}
-              >
-                <span>{isVi ? FILTER_LABELS[key].vi : FILTER_LABELS[key].en}</span>
-                <span className="ocs-filter-count">{counts[key]}</span>
-              </button>
-            ))}
-          </div>
-        )}
+        <div
+          className="ocs-filter-tabs"
+          role="group"
+          aria-label={isVi ? 'Nhóm thẻ' : 'Card groups'}
+        >
+          {chip('all', isVi ? 'Tất cả' : 'All', live.length)}
+          {(starredCount > 0 || activeView === 'starred') &&
+            chip('starred', <>★ {isVi ? 'Gắn sao' : 'Starred'}</>, starredCount)}
+          {groupIds.map((id) => chip(id, groupName(id, prefs, lang), counts.get(id) ?? 0))}
+          {naming?.mode === 'new' ? (
+            <input
+              className="ocs-group-input"
+              autoFocus
+              value={naming.value}
+              maxLength={40}
+              placeholder={isVi ? 'Tên nhóm' : 'Group name'}
+              aria-label={isVi ? 'Tên nhóm mới' : 'New group name'}
+              onChange={(e) => setNaming({ ...naming, value: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submitName()
+                else if (e.key === 'Escape') {
+                  e.stopPropagation()
+                  setNaming(null)
+                }
+              }}
+              onBlur={() => setNaming(null)}
+            />
+          ) : (
+            <button
+              type="button"
+              className="ocs-filter-pill ocs-filter-add"
+              onClick={() => setNaming({ mode: 'new', value: '' })}
+              title={isVi ? 'Tạo nhóm mới' : 'New group'}
+            >
+              + {isVi ? 'Nhóm' : 'Group'}
+            </button>
+          )}
+          {trashed.length > 0 &&
+            chip(
+              'trash',
+              <>
+                <TrashIcon /> {isVi ? 'Thùng rác' : 'Trash'}
+              </>,
+              trashed.length,
+              'ocs-filter-trash',
+            )}
+        </div>
         <div className="ocs-search-wrapper">
           <svg
             width="14"
@@ -254,6 +357,96 @@ export function CardGallery({
         </div>
       </div>
 
+      {/* A group of the person's own: rename or delete it */}
+      {activeCustomGroup && (
+        <div className="ocs-group-actions">
+          {naming?.mode === 'rename' ? (
+            <input
+              className="ocs-group-input"
+              autoFocus
+              value={naming.value}
+              maxLength={40}
+              aria-label={isVi ? 'Tên nhóm' : 'Group name'}
+              onChange={(e) => setNaming({ ...naming, value: e.target.value })}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') submitName()
+                else if (e.key === 'Escape') {
+                  e.stopPropagation()
+                  setNaming(null)
+                }
+              }}
+              onBlur={() => setNaming(null)}
+            />
+          ) : (
+            <>
+              <button
+                type="button"
+                onClick={() => setNaming({ mode: 'rename', value: activeCustomGroup.name })}
+              >
+                {isVi ? 'Đổi tên nhóm' : 'Rename group'}
+              </button>
+              <button
+                type="button"
+                className="ocs-btn-danger"
+                onClick={() => {
+                  onDeleteGroup(activeCustomGroup.id)
+                  setView('all')
+                }}
+              >
+                {isVi ? 'Xóa nhóm (giữ các thẻ)' : 'Delete group (keeps its cards)'}
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* Trash: what it is, and the one way to get rid of cards for good */}
+      {inTrash && (
+        <div className="ocs-trash-bar">
+          <p>
+            {isVi
+              ? 'Thẻ đã xóa nằm ở đây, không hiện trong thư viện và không được chọn ngẫu nhiên. Thẻ có sẵn luôn khôi phục được.'
+              : 'Removed cards wait here: they are not shown in the gallery or drawn at random. Built-in cards can always be restored.'}
+          </p>
+          {confirmEmpty ? (
+            <span className="ocs-trash-confirm" role="alert">
+              {isVi
+                ? `Xóa vĩnh viễn ${customInTrash.length} thẻ của bạn?`
+                : `Delete ${customInTrash.length} of your own ${customInTrash.length === 1 ? 'card' : 'cards'} for good?`}
+              <button
+                type="button"
+                className="ocs-btn-danger"
+                onClick={() => {
+                  setConfirmEmpty(false)
+                  onEmptyTrash()
+                }}
+              >
+                {isVi ? 'Xóa vĩnh viễn' : 'Delete'}
+              </button>
+              <button type="button" onClick={() => setConfirmEmpty(false)}>
+                {isVi ? 'Hủy' : 'Cancel'}
+              </button>
+            </span>
+          ) : (
+            <button
+              type="button"
+              className="ocs-btn-danger"
+              disabled={customInTrash.length === 0}
+              title={
+                customInTrash.length === 0
+                  ? isVi
+                    ? 'Chỉ thẻ do bạn tạo mới bị xóa vĩnh viễn; thẻ có sẵn ở lại để khôi phục'
+                    : 'Only cards you made are deleted for good; built-in cards stay restorable'
+                  : undefined
+              }
+              onClick={() => setConfirmEmpty(true)}
+            >
+              {isVi ? 'Dọn thùng rác' : 'Empty trash'}
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Cards Grid */}
       <div
         ref={gridRef}
@@ -271,13 +464,17 @@ export function CardGallery({
         {ordered.length === 0 ? (
           <div className="ocs-empty-gallery">
             <p>
-              {cards.length === 0
+              {live.length === 0
                 ? isVi
                   ? 'Chưa có thẻ nào. Tạo thẻ bằng AI hoặc thêm hình ảnh ở góc trên.'
                   : 'No cards yet. Create one with AI or add media from the menu above.'
-                : isVi
-                  ? 'Không có thẻ nào khớp. Thử từ khóa khác.'
-                  : 'No cards match. Try a different search.'}
+                : searchQuery
+                  ? isVi
+                    ? 'Không có thẻ nào khớp. Thử từ khóa khác.'
+                    : 'No cards match. Try a different search.'
+                  : isVi
+                    ? 'Nhóm này chưa có thẻ. Mở một thẻ và chọn nhóm cho nó.'
+                    : 'This group is empty. Open a card and choose its group.'}
             </p>
             {searchQuery && (
               <button type="button" className="set-btn" onClick={() => setSearchQuery('')}>
@@ -291,7 +488,7 @@ export function CardGallery({
             const isFocusable = openCard ? isOpen : idx === 0
             const isFav = favSet.has(card.id)
             const apps = usage.get(card.id) ?? []
-            const inUse = apps.length > 0
+            const inUse = apps.length > 0 && !inTrash
             const text = cardLabel(card, lang)
 
             return (
@@ -301,13 +498,15 @@ export function CardGallery({
                     if (el) itemRefs.current.set(card.id, el)
                     else itemRefs.current.delete(card.id)
                   }}
-                  role="button"
-                  aria-expanded={isOpen}
+                  role={inTrash ? undefined : 'button'}
+                  aria-expanded={inTrash ? undefined : isOpen}
                   aria-controls={isOpen ? DETAIL_PANEL_ID : undefined}
                   aria-label={inUse ? `${text.name} (${isVi ? 'đang dùng' : 'in use'})` : text.name}
                   tabIndex={isFocusable ? 0 : -1}
-                  className={`ocs-gallery-card-item${isOpen ? ' is-open' : ''}${inUse ? ' is-inuse' : ''}`}
-                  onClick={() => onToggleCard(card)}
+                  className={`ocs-gallery-card-item${isOpen ? ' is-open' : ''}${inUse ? ' is-inuse' : ''}${inTrash ? ' is-trashed' : ''}`}
+                  onClick={() => {
+                    if (!inTrash) onToggleCard(card)
+                  }}
                   onKeyDown={(e) => handleKeyDown(e, idx)}
                 >
                   {/* Visual Thumbnail Surface */}
@@ -331,42 +530,73 @@ export function CardGallery({
                       </span>
                     )}
 
-                    {/* Favorite star toggle button */}
-                    <button
-                      type="button"
-                      className={`ocs-card-fav-btn${isFav ? ' is-favorite' : ''}`}
-                      aria-label={
-                        isFav
-                          ? isVi
-                            ? 'Bỏ yêu thích'
-                            : 'Remove from favorites'
-                          : isVi
-                            ? 'Thêm vào yêu thích'
-                            : 'Add to favorites'
-                      }
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        onToggleFavorite(card.id)
-                      }}
-                    >
-                      <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                        <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z" />
-                      </svg>
-                    </button>
+                    {!inTrash && (
+                      <>
+                        {/* Remove: to the trash, never gone at once */}
+                        <button
+                          type="button"
+                          className="ocs-card-remove-btn"
+                          aria-label={isVi ? 'Chuyển vào thùng rác' : 'Move to trash'}
+                          title={isVi ? 'Chuyển vào thùng rác' : 'Move to trash'}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onRemoveCard(card)
+                          }}
+                        >
+                          <TrashIcon />
+                        </button>
+
+                        {/* Star: starred cards come first in their group, and can be the pool of random mode */}
+                        <button
+                          type="button"
+                          className={`ocs-card-fav-btn${isFav ? ' is-favorite' : ''}`}
+                          aria-pressed={isFav}
+                          aria-label={
+                            isFav
+                              ? isVi
+                                ? 'Bỏ gắn sao'
+                                : 'Remove star'
+                              : isVi
+                                ? 'Gắn sao'
+                                : 'Add star'
+                          }
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            onToggleFavorite(card.id)
+                          }}
+                        >
+                          <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z" />
+                          </svg>
+                        </button>
+                      </>
+                    )}
 
                     {/* The apps that play this card, bottom right */}
                     {inUse && (
                       <span className="ocs-card-apps">
-                        <AppLogoStack apps={apps} isVi={isVi} size={inUse ? 18 : 16} />
+                        <AppLogoStack apps={apps} isVi={isVi} size={18} />
                       </span>
                     )}
                   </div>
 
-                  {/* Card name */}
+                  {/* Card name, or what to do with a card in the trash */}
                   <div className="ocs-card-meta">
                     <span className="ocs-card-name" title={text.name}>
                       {text.name}
                     </span>
+                    {inTrash && (
+                      <button
+                        type="button"
+                        className="ocs-restore-btn"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRestoreCard(card)
+                        }}
+                      >
+                        {isVi ? 'Khôi phục' : 'Restore'}
+                      </button>
+                    )}
                   </div>
                 </div>
 
