@@ -1,3 +1,5 @@
+import { AppActionHost, appActionSignal, reportAppAction } from '@genoffice/ui'
+import { docsAppActions } from './app-actions'
 import { DocumentIndexIndicator } from '@genoffice/ui'
 import '@genoffice/ui/index-progress.css'
 import { scriptFontHtml } from './editor/script-fonts'
@@ -2722,7 +2724,16 @@ export function App() {
   }, [pgNumModal, sections, activeSection])
 
   const exportPdf = useCallback(
-    (outPath?: string) => exportPdfImpl(fileCtxRef.current, outPath),
+    async (outPath?: string, signal = appActionSignal('export-pdf')) => {
+      try {
+        const ok = await exportPdfImpl(fileCtxRef.current, outPath, signal)
+        reportAppAction('export-pdf', { status: ok ? 'completed' : 'cancelled' })
+        return ok
+      } catch (error) {
+        reportAppAction('export-pdf', { status: 'error', error: 'PDF export failed' })
+        throw error
+      }
+    },
     [],
   )
   const exportHtml = useCallback(
@@ -2734,7 +2745,18 @@ export function App() {
     [],
   )
   const exportImages = useCallback(() => exportImagesImpl(fileCtxRef.current), [])
-  const printDoc = useCallback(() => printDocImpl(fileCtxRef.current), [])
+  const printDoc = useCallback(
+    (signal = appActionSignal('print')) => printDocImpl(fileCtxRef.current, signal),
+    [],
+  )
+
+  const appActionRegistry = useMemo(
+    () => docsAppActions(printDoc, (signal) => exportPdf(undefined, signal)),
+    [printDoc, exportPdf],
+  )
+  useEffect(() => {
+    if (showPrintDialog) reportAppAction('print', { status: 'handoff' })
+  }, [showPrintDialog])
 
   // for real-device verification: trigger export directly via CDP (same as __pageDebug)
   useEffect(() => {
@@ -2809,7 +2831,7 @@ export function App() {
         return
       }
       setExportLocksPreview(true)
-      const ok = await exportPdf(pending.outPath).catch(() => false)
+      const ok = await exportPdf(pending.outPath, pending.signal).catch(() => false)
       setExportLocksPreview(false)
       // a Print the user started meanwhile owns the preview now
       if (pending.closePreview && !showPrintDialogRef.current) setShowPagePreview(false)
@@ -7282,6 +7304,7 @@ export function App() {
       className={`app ${readMode ? 'read-mode' : ''}${revisionDisplay !== 'all' ? ` rev-display-${revisionDisplay}` : ''}${revisionDisplay === 'all' && viewMode === 'print' ? ' rev-balloon' : ''}`}
     >
       <ToastHost />
+      <AppActionHost registry={appActionRegistry} lang={lang} contextKey={aiPanelKey} />
       {docCss && <style data-doc-css="">{docCss}</style>}
       {liveLineFactor != null && (
         <style data-doc-css="">{`.doc-page { --doc-line-factor:${liveLineFactor} }`}</style>

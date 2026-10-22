@@ -106,6 +106,7 @@ import { aiPanelInitiallyOpen } from '@genoffice/ui'
 /** An export waiting for the pagination preview to mount; resolve settles the caller's exportPdf promise. */
 export type PendingPdfExport = {
   outPath?: string
+  signal?: AbortSignal | undefined
   resolve: (ok: boolean) => void
   /** the export opened the preview itself and closes it once the PDF is written */
   closePreview: boolean
@@ -1283,18 +1284,19 @@ async function saveOnce(
  * editor. Opens the Word-style print dialog (preview + range); the pagination
  * preview is mounted (visually hidden behind the dialog) as its print source.
  */
-export function printDoc(ctx: FileActionContext): void {
-  if (!ctx.doc) return
+export async function printDoc(ctx: FileActionContext, signal?: AbortSignal): Promise<boolean> {
+  if (!ctx.doc || signal?.aborted) return false
   // the print sheet prints the live preview pages: needs the whole document mounted
   if (isPhasedContentPending()) {
-    void waitForFullContent().then(() => printDoc(ctx))
-    return
+    await waitForFullContent()
+    return printDoc(ctx, signal)
   }
   if (!document.querySelector('.pagination-preview')) {
     ctx.printAutoOpenedPreviewRef.current = true
     ctx.setShowPagePreview(true)
   }
   ctx.setShowPrintDialog(true)
+  return true
 }
 
 type PrintGroup = { w: number; h: number; from: number; to: number }
@@ -1317,6 +1319,7 @@ async function printGroupsMerged(
   scale: number,
   outPath: string | undefined,
   links: PdfInternalLink[],
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const parts: string[] = []
   // every printToPDF flips the whole document between print and screen media;
@@ -1328,12 +1331,14 @@ async function printGroupsMerged(
   try {
     const queue = [...groups]
     while (queue.length > 0) {
+      if (signal?.aborted) return false
       const g = queue.shift() as PrintGroup
       pvPages.forEach((page, i) => {
         page.classList.toggle('pv-print-skip', i < g.from || i > g.to)
         page.classList.toggle('pv-print-tail', i === g.to)
       })
       const part = await window.desktop.printPdfBuffer(g.w, g.h, scale)
+      if (signal?.aborted) return false
       if (part.ok && part.base64) {
         parts.push(part.base64)
         continue
@@ -1352,6 +1357,7 @@ async function printGroupsMerged(
     appRoot?.classList.remove('pv-exporting')
     pvPages.forEach((page) => page.classList.remove('pv-print-skip', 'pv-print-tail'))
   }
+  if (signal?.aborted) return false
   const result = await window.desktop.saveMergedPdf(fileName, parts, outPath, links)
   const mixed = groups.some((g) => g.w !== groups[0].w || g.h !== groups[0].h)
   ctx.setStatus(
@@ -1367,10 +1373,32 @@ async function printGroupsMerged(
 }
 
 /** Park the export until the preview mounts; the App effect re-runs it and settles the promise. */
-function deferExportToPreview(ctx: FileActionContext, outPath?: string): Promise<boolean> {
+function deferExportToPreview(
+  ctx: FileActionContext,
+  outPath?: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
   return new Promise<boolean>((resolve) => {
     const closePreview = !document.querySelector('.pagination-preview')
-    ctx.pendingMixedExportRef.current = { outPath, resolve, closePreview }
+    const cancel = () => {
+      if (ctx.pendingMixedExportRef.current === pending) ctx.pendingMixedExportRef.current = false
+      pending.resolve(false)
+    }
+    const pending: PendingPdfExport = {
+      outPath,
+      signal,
+      closePreview,
+      resolve: (ok) => {
+        signal?.removeEventListener('abort', cancel)
+        resolve(ok)
+      },
+    }
+    ctx.pendingMixedExportRef.current = pending
+    signal?.addEventListener('abort', cancel, { once: true })
+    if (signal?.aborted) {
+      cancel()
+      return
+    }
     ctx.setShowPagePreview(true)
     ctx.bumpPendingExportTick()
   })
@@ -1385,10 +1413,15 @@ function deferExportToPreview(ctx: FileActionContext, outPath?: string): Promise
 let printJobActive = false
 
 /** Resolves true only when a PDF was written to disk. */
-export async function exportPdf(ctx: FileActionContext, outPath?: string): Promise<boolean> {
+export async function exportPdf(
+  ctx: FileActionContext,
+  outPath?: string,
+  signal?: AbortSignal,
+): Promise<boolean> {
   const { doc } = ctx
-  if (!doc) return false
+  if (!doc || signal?.aborted) return false
   await waitForFullContent()
+  if (signal?.aborted) return false
   if (printJobActive || ctx.pendingMixedExportRef.current) {
     ctx.setStatus(t('appExportingPdf'))
     return false
@@ -1420,12 +1453,22 @@ export async function exportPdf(ctx: FileActionContext, outPath?: string): Promi
       const PRINT_CHUNK = 10
       if (pvPages.length > PRINT_CHUNK) groups = chunkPrintGroups(groups, PRINT_CHUNK)
       if (groups.length > 1) {
-        return await printGroupsMerged(ctx, doc.fileName, pvPages, groups, scale, outPath, links)
+        return await printGroupsMerged(
+          ctx,
+          doc.fileName,
+          pvPages,
+          groups,
+          scale,
+          outPath,
+          links,
+          signal,
+        )
       }
       // preview open but uniform paper: single export at the preview size
       const g = groups[0]
       if (g) {
         const result = await window.desktop.exportPdf(doc.fileName, g.w, g.h, outPath, scale, links)
+        if (signal?.aborted) return false
         if (result.ok) {
           ctx.setStatus(t('appExportedPdf', { path: result.path ?? '' }))
           return true
@@ -1447,6 +1490,7 @@ export async function exportPdf(ctx: FileActionContext, outPath?: string): Promi
             scale,
             retryPath,
             links,
+            signal,
           )
         }
         ctx.setStatus(t('appExportPdfFailed', { error: result.error }))
@@ -1466,7 +1510,7 @@ export async function exportPdf(ctx: FileActionContext, outPath?: string): Promi
       ).map((st) => `${st.pageWidth}x${st.pageHeight}`),
     )
     if (sizes.size > 1) ctx.setStatus(t('appMixedExportOpening'))
-    return deferExportToPreview(ctx, outPath)
+    return deferExportToPreview(ctx, outPath, signal)
   } finally {
     clearPrintZoom()
     printJobActive = false

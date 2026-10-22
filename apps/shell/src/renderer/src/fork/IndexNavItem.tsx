@@ -54,6 +54,7 @@ export function IndexNavItem({
   const label = LABEL[lang] ?? d.summary.navLabel
   return (
     <button
+      data-app-action="index"
       className={`nav-item${active ? ' active' : ''}`}
       onClick={onOpen}
       title={hint}

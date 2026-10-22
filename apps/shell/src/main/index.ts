@@ -1,3 +1,4 @@
+import { registerAppActionIpc } from './app-action-ipc'
 import { showAppMessageBox, setFeedbackThemeGetter } from './app-message-box'
 import { DocumentMemoryManager } from './document-memory/manager'
 import type { BootstrapResult } from './document-memory/storage-bootstrap'
@@ -3652,6 +3653,7 @@ const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[
 
 // ---- the shell window + its tab manager (recreated if the user closes it on macOS) ----
 
+let validateAppActions: () => void = () => {}
 let shellWindow: BrowserWindow | null = null
 let tabManager: TabManager | null = null
 
@@ -4241,6 +4243,7 @@ function createShellWindow(): void {
   const manager = new TabManager(
     win,
     () => {
+      validateAppActions()
       win.webContents.send(TABS_CHANNELS.changed, manager.list())
       publishOpenDocumentsIfOwner([...manager.openFilePaths(), ...detachedFilePaths()])
     },
@@ -5695,8 +5698,12 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.recents, (_event, query: unknown): RecentPage => {
     const excludeIgnored =
-      !!query && typeof query === 'object' && (query as { excludeIgnored?: unknown }).excludeIgnored === true
-    const paths = excludeIgnored ? readRecentFiles().filter((p) => !isPathIgnored(p)) : readRecentFiles()
+      !!query &&
+      typeof query === 'object' &&
+      (query as { excludeIgnored?: unknown }).excludeIgnored === true
+    const paths = excludeIgnored
+      ? readRecentFiles().filter((p) => !isPathIgnored(p))
+      : readRecentFiles()
     return pageRecentPaths(paths, query, new Set(readStarredFiles()))
   })
 
@@ -8335,6 +8342,10 @@ registerIntegrationsIpc({
     : join(APPS_ROOT, '..', 'packages', 'cli', 'package.json'),
 })
 registerTabsIpc()
+validateAppActions = registerAppActionIpc({
+  home: () => shellWindow?.webContents,
+  tabs: () => tabManager,
+})
 registerDroppedFilesIpc()
 
 // sheets' project:resolveChat goes through the handler registered by docs-main; the sessionId reverse lookup hooks in here

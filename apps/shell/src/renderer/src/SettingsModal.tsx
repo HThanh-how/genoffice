@@ -2178,6 +2178,7 @@ export function SettingsModal({
             {SECTIONS.map((s) => (
               <button
                 key={s.id}
+                data-settings-pane={s.id}
                 className={`set-nav-item${section === s.id ? ' active' : ''}`}
                 aria-current={section === s.id ? 'page' : undefined}
                 onClick={() => setSection(s.id)}

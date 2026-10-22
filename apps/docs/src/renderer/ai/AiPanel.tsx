@@ -1,3 +1,4 @@
+import { useAppControl } from '@genoffice/ui'
 import {
   aiPanelWidthAtPointer,
   AiPanelSideButton,
@@ -416,6 +417,7 @@ export function AiPanel({
   notesAccess,
 }: AiPanelProps) {
   const { t, lang } = useI18n()
+  const appControl = useAppControl(lang)
   // Panel chrome follows the UI language; message text follows its own content (dir=auto below)
   const isRtl = lang === 'ar' || lang === 'he'
   const [input, setInput] = useState('')
@@ -882,6 +884,7 @@ export function AiPanel({
       transport: transportRef.current,
       systemSuffix: aiLangDirective,
       skill: composeSkills('docs+files+memory+kb', '', [
+        ...(appControl.skill ? [appControl.skill] : []),
         // the reader's starred files; empty while the user stars nothing —
         // buildContext then returns '' and the skill stays out of the way.
         // Mounted only when the bridge carries the kb channel at all: a test
@@ -1465,6 +1468,7 @@ export function AiPanel({
       }}
       onDrop={onDrop}
     >
+      {appControl.approval}
       <div
         className="ai-panel-resizer"
         onPointerDown={startResize}
