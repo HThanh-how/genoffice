@@ -4,16 +4,15 @@ import { useI18n } from '../locale'
 import { fill } from '../indexing-activity-copy'
 import { TEXT, EN } from './index-dashboard-i18n'
 import { useIndexSnapshot } from './useIndexSnapshot'
-import { IndexStatus } from './IndexStatus'
-import { IndexFolders, useIndexFolders } from './IndexFolders'
-import { IndexAttention } from './IndexAttention'
-import { IndexAdvanced } from './IndexAdvanced'
-import { AddFolderButton, IndexEmpty } from './IndexAddFolder'
+import { useIndexFolders } from './IndexFolders'
+import { IndexSettingsPage } from './IndexSettingsPage'
+import { IndexEmpty } from './IndexAddFolder'
 import { IndexMenu, MenuItem, MenuSeparator } from './IndexMenu'
 import { IconBack, IconMore } from './index-icons'
-import { withoutModel } from './index-issue-groups'
 import './index-dashboard.css'
 import './index-screen.css'
+import './index-screen-c.css'
+import '../settings.css'
 
 /**
  * The Index screen is one page, top to bottom: what is happening now (and the one control for it),
@@ -30,7 +29,6 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
   const [advancedFocus, setAdvancedFocus] = useState<'ignore' | undefined>(undefined)
   const [menuAnchor, setMenuAnchor] = useState<HTMLButtonElement | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
-  const attentionRef = useRef<HTMLElement>(null)
   const advancedRef = useRef<HTMLElement>(null)
 
   const { snap, attention, statusFailed, loaded, kick } = useIndexSnapshot(api)
@@ -93,8 +91,6 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
       advancedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }),
     )
   }
-  const toAttention = () =>
-    attentionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 
   // One notice at a time, the most important first.
   let notice: { text: string; tone?: 'warn'; dismiss?: boolean } | null = null
@@ -107,8 +103,6 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
     }
   else if (statusFailed && loaded && hasData) notice = { text: s.statusStale }
 
-  // a failing search model is already the headline; it is not listed a second time
-  const modelShown = (activity?.memory.modelState ?? memory?.modelState) === 'error'
   const empty = loaded && folders !== null && folders.length === 0 && !running
   const close = () => setMenuOpen(false)
 
@@ -121,8 +115,7 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
           </button>
           <h1>{s.title}</h1>
           <div className="ix-head-actions">
-            {!empty && <AddFolderButton api={api} disabled={busy} onChoose={choose} onChanged={changed} />}
-            <button
+                        <button
               type="button"
               ref={setMenuAnchor}
               className="ix-icon-btn"
@@ -192,57 +185,33 @@ export function IndexDashboard({ api, onClose }: { api: HomeApi; onClose: () => 
         {empty ? (
           <IndexEmpty api={api} busy={busy} onChoose={choose} onChanged={changed} />
         ) : (
-          <>
-            <IndexStatus
-              api={api}
-              memory={memory}
-              activity={activity}
-              mode={mode}
-              now={snap.now}
-              attention={attention}
-              hasFolders={!!folders?.length}
-              loading={!loaded}
-              failed={statusFailed}
-              busy={busy}
-              onToggle={() => void togglePause()}
-              onRetryModel={() => void retryModel()}
-              onRefresh={kick}
-              onChanged={changed}
-            />
-            <IndexAttention
-              ref={attentionRef}
-              api={api}
-              attention={modelShown ? withoutModel(attention) : attention}
-              onChanged={changed}
-            />
-            {folders === null ? (
-              <div className="ix-section" aria-busy="true">
-                <span className="ix-skel ix-skel-row" />
-                <span className="ix-skel ix-skel-row" />
-              </div>
-            ) : (
-              <IndexFolders
-                api={api}
-                folders={folders}
-                failed={foldersFailed}
-                onRefresh={() => void refresh()}
-                onNote={setNote}
-                onAttention={toAttention}
-              />
-            )}
-          </>
+          <IndexSettingsPage
+            api={api}
+            memory={memory}
+            activity={activity}
+            mode={mode}
+            now={snap.now}
+            attention={attention}
+            hasFolders={!!folders?.length}
+            folders={folders ?? []}
+            busy={busy}
+            unknown={hasData ? null : !loaded || !statusFailed ? 'loading' : 'failed'}
+            onRefresh={kick}
+            advancedOpen={advancedOpen}
+            advancedFocus={advancedFocus}
+            advancedRef={advancedRef}
+            onToggleAdvanced={() => {
+              setAdvancedFocus(undefined)
+              setAdvancedOpen((v) => !v)
+            }}
+            onTogglePause={() => void togglePause()}
+            onRetryModel={() => void retryModel()}
+            onChoose={() => void choose()}
+            onChanged={changed}
+            onNote={setNote}
+            onRefreshFolders={() => void refresh()}
+          />
         )}
-
-        <IndexAdvanced
-          ref={advancedRef}
-          api={api}
-          open={advancedOpen}
-          focus={advancedFocus}
-          onToggle={() => {
-            setAdvancedFocus(undefined)
-            setAdvancedOpen((v) => !v)
-          }}
-        />
       </div>
     </main>
   )

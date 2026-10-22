@@ -1,0 +1,184 @@
+/* Index screen, variant C: a settings-style page built from Settings' own cards and switches. */
+.ixc {
+  display: flex;
+  flex-direction: column;
+}
+.ixc-group.set-group {
+  margin-bottom: 20px;
+}
+.ixc-group .set-group-title {
+  padding: 14px 16px;
+  font-size: 14px;
+  font-weight: 600;
+}
+.ixc-group .set-group-text {
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+}
+.ixc-group .set-group-hint {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+.ixc-grow {
+  flex: 1;
+}
+.ixc-bar-row {
+  padding: 0 0 14px;
+}
+.ixc-select {
+  height: 32px;
+  padding: 0 28px 0 10px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-8);
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+}
+.ixc-select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.ixc-review {
+  padding: 0 0 16px;
+}
+.ixc-review .ix-section-head {
+  display: none;
+}
+
+/* folders table */
+.ixc-locations {
+  padding: 4px 0 16px;
+}
+.ixc-filter {
+  width: 100%;
+  max-width: none;
+  margin-bottom: 10px;
+}
+.ixc-table {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-8);
+  overflow: hidden;
+}
+.ixc-head,
+.ixc-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 168px;
+  align-items: center;
+  column-gap: 12px;
+  padding: 0 14px;
+}
+.ixc-head {
+  height: 32px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.is-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.ixc-scroll {
+  max-height: 336px;
+  overflow-y: auto;
+}
+.ixc-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ixc-row {
+  height: 100%;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--border-subtle);
+  font-size: 13px;
+  cursor: default;
+}
+.ixc-row:hover {
+  background: var(--hover);
+}
+.ixc-row.is-selected {
+  background: var(--active-bg);
+}
+.ixc-row:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.ixc-name {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.ixc-name-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.ixc-name-text strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ixc-name-text span {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ixc-state {
+  overflow: hidden;
+  color: var(--text-secondary);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ixc-state.is-active {
+  color: var(--text);
+}
+.ixc-need {
+  color: var(--danger);
+}
+.ixc-row.is-offline strong,
+.ixc-row.is-offline .ixc-state {
+  color: var(--text-tertiary);
+}
+.ixc-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-top: 12px;
+}
+.ixc-hint {
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+.ix-btn.is-danger {
+  color: var(--danger);
+}
+.ixc-name-text .ixc-inline {
+  display: none;
+}
+@container ix (max-width: 560px) {
+  .ixc-name-text .ixc-path {
+    display: none;
+  }
+  .ixc-name-text .ixc-inline {
+    display: block;
+    color: var(--text-secondary);
+  }
+  .ixc-head,
+  .ixc-row {
+    grid-template-columns: minmax(0, 1fr) 64px;
+  }
+  .ixc-head span:last-child,
+  .ixc-row > span:last-child {
+    display: none;
+  }
+}

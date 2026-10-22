@@ -18,8 +18,8 @@ import { IconChevron } from './index-icons'
  */
 export const IndexAttention = forwardRef<
   HTMLElement,
-  { api: HomeApi; attention: IndexIssueSummary | null; onChanged: () => void }
->(function IndexAttention({ api, attention, onChanged }, ref) {
+  { api: HomeApi; attention: IndexIssueSummary | null; onChanged: () => void; bare?: boolean }
+>(function IndexAttention({ api, attention, onChanged, bare }, ref) {
   const { lang, dateLocale } = useI18n()
   const d = TEXT[lang] ?? EN
   const s = d.screen
@@ -153,7 +153,7 @@ export const IndexAttention = forwardRef<
 
   return (
     <section className="ix-section" ref={ref} aria-labelledby="ix-attention-h">
-      {(needs.length > 0 || showLegacy) && (
+      {!bare && (needs.length > 0 || showLegacy) && (
         <div className="ix-section-head">
           <h2 id="ix-attention-h">{s.attention}</h2>
         </div>
