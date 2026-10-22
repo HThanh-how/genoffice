@@ -8,6 +8,7 @@ import {
   buildChatHandoff,
   handoffTitle,
   isHandoffTarget,
+  parseHandoffFile,
   seedDocChatHandoff,
   shouldSeedHandoff,
   splitHandoff,
@@ -31,9 +32,42 @@ describe('buildChatHandoff', () => {
     expect(out).toContain('"Giao an"')
     expect(out).toContain('Original request: Soạn giáo án lớp 6, 3 tiết')
     expect(out).toContain('- Dùng Times New Roman')
-    expect(out).toContain('Document created in that chat: Giao an lop 6.docx')
+    expect(out).toContain('I created this document in that chat: Giao an lop 6.docx')
     expect(out).toContain(path)
-    expect(out).not.toContain('Đã soạn xong')
+    // the assistant's own delivery message is carried so the document chat can speak as its author
+    expect(out).toContain('My reply to the user at the time: Đã soạn xong')
+  })
+
+  it('does not claim a reply for a document that was only opened', () => {
+    const out = buildChatHandoff({
+      turns: [user('mở file'), ai('Đây là file')],
+      filePath: path,
+      kind: 'opened',
+    })
+    expect(out).not.toContain('My reply')
+  })
+
+  it('trims a very long reply before dropping the file line, and stays under the cap', () => {
+    const out = buildChatHandoff({
+      turns: [user('Soạn giáo án'), ai('y'.repeat(5000))],
+      filePath: path,
+      kind: 'created',
+    })
+    expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS)
+    expect(out).toContain('I created this document in that chat: Giao an lop 6.docx')
+    expect(out).toContain('My reply to the user at the time: yyy')
+  })
+
+  it('reads the file back from the text it wrote', () => {
+    const created = buildChatHandoff({
+      turns: [user('a'), ai('b')],
+      filePath: path,
+      kind: 'created',
+    })
+    expect(parseHandoffFile(created)).toEqual({ kind: 'created', fileName: 'Giao an lop 6.docx' })
+    const opened = buildChatHandoff({ turns: [user('a')], filePath: path, kind: 'opened' })
+    expect(parseHandoffFile(opened)).toEqual({ kind: 'opened', fileName: 'Giao an lop 6.docx' })
+    expect(parseHandoffFile('nothing here')).toBeNull()
   })
 
   it('says "opened" for a document merely opened from the chat', () => {
@@ -42,7 +76,7 @@ describe('buildChatHandoff', () => {
       filePath: path,
       kind: 'opened',
     })
-    expect(out).toContain('Document opened from that chat')
+    expect(out).toContain('This document was opened from that chat')
     expect(out).not.toContain('Later requests')
   })
 

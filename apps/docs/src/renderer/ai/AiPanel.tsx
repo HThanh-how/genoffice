@@ -70,7 +70,7 @@ import { currentDocGeneration } from '../file-actions'
 import { createFilesSkill } from './files-skill'
 import { createSkillsSkill } from './skills-skill'
 import { boundChatHistory } from './chat-retention'
-import { splitHandoff } from '@genoffice/project-store/handoff'
+import { parseHandoffFile, splitHandoff } from '@genoffice/project-store/handoff'
 import { createElectronTransport } from './transport'
 import { useI18n, t as tModule, aiLangDirective, type StringKey } from '../i18n/locale'
 import { createFileNav, Markdown } from '@genoffice/ui'
@@ -138,17 +138,26 @@ function markHandoffDismissed(chatId: string): void {
   }
 }
 
-/** Model-context pair for a carried handoff (restore() drops an unanswered lone user message, so it is paired with an acknowledgement). */
+/**
+ * Model-context pair for a carried handoff (restore() drops an unanswered lone user message, so it is
+ * paired with an assistant turn). The assistant turn is written in the assistant's own voice: when the
+ * Home chat created this document, the model answers "I created it" instead of treating the file as foreign.
+ */
 export function handoffModelContext(
   text: string,
 ): Array<{ role: 'user' | 'assistant'; text: string }> {
+  const file = parseHandoffFile(text)
+  const acknowledgement =
+    file?.kind === 'created'
+      ? `Understood. I created "${file.fileName}" for you in that chat, so this document is my own work: I can say what I wrote, and revise or extend it when you ask.`
+      : 'Understood. I will keep this context in mind.'
   return [
     {
       role: 'user',
       text: `${text}
 Use this as background for the user's requests about this document (language, style, formatting and audience instructions still apply unless the user changes them).`,
     },
-    { role: 'assistant', text: 'Understood. I will keep this context in mind.' },
+    { role: 'assistant', text: acknowledgement },
   ]
 }
 

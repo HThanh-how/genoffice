@@ -14,11 +14,15 @@
 import type { ChatHandoffMeta, ChatMessage, ProjectApi } from './ipc.js'
 
 export const HANDOFF_MAX_CHARS = 1500
+const CREATED_PREFIX = 'I created this document in that chat: '
+const OPENED_PREFIX = 'This document was opened from that chat: '
 /** Recent user turns considered for standing instructions. */
 export const HANDOFF_RECENT_TURNS = 6
 const ORIGINAL_MAX_CHARS = 400
 const TURN_MAX_CHARS = 220
 const TITLE_MAX_CHARS = 60
+/** The assistant's own last reply of the turn that produced the document. */
+const REPLY_MAX_CHARS = 450
 
 export interface HandoffTurn {
   role: 'user' | 'assistant'
@@ -65,26 +69,38 @@ export function buildChatHandoff(input: HandoffInput): string {
     .map((t) => squash(t.text, TURN_MAX_CHARS))
   const fileLine =
     input.kind === 'created'
-      ? `Document created in that chat: ${baseName(input.filePath)} (${input.filePath})`
-      : `Document opened from that chat: ${baseName(input.filePath)} (${input.filePath})`
-  const head = `Context carried over from the Home chat "${title}".`
+      ? `${CREATED_PREFIX}${baseName(input.filePath)} (${input.filePath})`
+      : `${OPENED_PREFIX}${baseName(input.filePath)} (${input.filePath})`
+  const head = `Context carried over from the Home chat "${title}", where I (the assistant) was talking with the user.`
   const originalLine = `Original request: ${original}`
   const recentHead = 'Later requests and standing instructions from the user (oldest first):'
+  // What I said when I delivered the work, so the document chat can speak as its author.
+  const lastReply =
+    input.kind === 'created'
+      ? [...input.turns].reverse().find((t) => t.role === 'assistant' && t.text.trim())
+      : undefined
 
-  const compose = (bullets: string[]): string =>
+  const compose = (bullets: string[], reply: string): string =>
     [
       head,
       originalLine,
       ...(bullets.length > 0 ? [recentHead, ...bullets.map((b) => `- ${b}`)] : []),
+      ...(reply ? [`My reply to the user at the time: ${reply}`] : []),
       fileLine,
     ].join('\n')
 
+  let reply = lastReply ? squash(lastReply.text, REPLY_MAX_CHARS) : ''
   // Drop the oldest bullets first: the newest instructions win on conflict.
   let bullets = recent
-  let out = compose(bullets)
+  let out = compose(bullets, reply)
   while (out.length > HANDOFF_MAX_CHARS && bullets.length > 0) {
     bullets = bullets.slice(1)
-    out = compose(bullets)
+    out = compose(bullets, reply)
+  }
+  if (out.length > HANDOFF_MAX_CHARS && reply) {
+    const overflow = out.length - HANDOFF_MAX_CHARS
+    reply = squash(reply, Math.max(0, reply.length - overflow - 1))
+    out = compose(bullets, reply.length > 20 ? reply : '')
   }
   if (out.length > HANDOFF_MAX_CHARS) {
     // A pathological path/title: shrink the request, never the file line.
@@ -143,4 +159,22 @@ export function splitHandoff<T extends Pick<ChatMessage, 'text' | 'handoff'>>(
     }
   }
   return { handoff: null, rest: [...messages] }
+}
+
+/** Reads back which document a handoff is about (same format buildChatHandoff writes). */
+export function parseHandoffFile(
+  text: string,
+): { kind: 'created' | 'opened'; fileName: string } | null {
+  for (const [prefix, kind] of [
+    [CREATED_PREFIX, 'created'],
+    [OPENED_PREFIX, 'opened'],
+  ] as const) {
+    const at = text.lastIndexOf(prefix)
+    if (at < 0) continue
+    const rest = text.slice(at + prefix.length).split('\n')[0] ?? ''
+    const paren = rest.lastIndexOf(' (')
+    const fileName = (paren > 0 ? rest.slice(0, paren) : rest).trim()
+    if (fileName) return { kind, fileName }
+  }
+  return null
 }
