@@ -356,7 +356,7 @@ describe('home-chat activity states and thinking UX (Phase 2)', () => {
       })
 
       let title = host.querySelector('.agy-think-title')
-      expect(title?.textContent).toContain('Thinking…')
+      expect(title?.textContent).toContain('Reading your request…')
 
       // 2. User stops / session completes: busy becomes false
       await act(async () => {
@@ -410,7 +410,7 @@ describe('home-chat activity states and thinking UX (Phase 2)', () => {
 
       // Old session tool activity must NOT be displayed in session 2!
       title = host.querySelector('.agy-think-title')
-      expect(title?.textContent).not.toContain('Searching files…')
+      expect(title?.textContent).not.toContain('Searching…')
     } finally {
       await act(async () => {
         root.unmount()

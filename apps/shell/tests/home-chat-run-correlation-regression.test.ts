@@ -112,7 +112,7 @@ describe('Home Chat Run Correlation Regression Tests (Phase C)', () => {
 
     const title = host.querySelector('.agy-think-title')
     expect(title).not.toBeNull()
-    expect(title?.textContent).toContain('Thinking…')
+    expect(title?.textContent).toContain('Reading your request…')
   })
 
   it("2. Another window's request is ignored", async () => {
@@ -144,9 +144,9 @@ describe('Home Chat Run Correlation Regression Tests (Phase C)', () => {
       })
     })
 
-    // Should NOT show window 2's tool activity ("Searching files…")
+    // Should NOT show window 2's tool activity ("Searching…")
     const title = host.querySelector('.agy-think-title')
-    expect(title?.textContent).not.toContain('Searching files…')
+    expect(title?.textContent).not.toContain('Searching…')
     expect(host.querySelector('.agy-think.is-tool')).toBeNull()
   })
 
@@ -209,7 +209,7 @@ describe('Home Chat Run Correlation Regression Tests (Phase C)', () => {
       })
     })
 
-    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading documents…')
+    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading docA.docx…')
 
     // Switch rapidly to session B (new chat)
     await act(async () => {
@@ -248,7 +248,7 @@ describe('Home Chat Run Correlation Regression Tests (Phase C)', () => {
       })
     })
 
-    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Thinking…')
+    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading your request…')
   })
 
   it('5. Cancellation invalidates old activity', async () => {
@@ -533,11 +533,11 @@ describe('Home Chat Run Correlation Regression Tests (Phase C)', () => {
       const title1 = host1.querySelector('.agy-think-title')?.textContent
       const title2 = host2.querySelector('.agy-think-title')?.textContent
 
-      expect(title1).toContain('Searching files…')
-      expect(title1).not.toContain('Reading documents…')
+      expect(title1).toContain('Searching finance.xlsx…')
+      expect(title1).not.toContain('Reading notes.md…')
 
-      expect(title2).toContain('Reading documents…')
-      expect(title2).not.toContain('Searching files…')
+      expect(title2).toContain('Reading notes.md…')
+      expect(title2).not.toContain('Searching finance.xlsx…')
 
       // Also verify createIpcTransport dynamically resolves sessionId per attempt
       let sentSessionId = ''

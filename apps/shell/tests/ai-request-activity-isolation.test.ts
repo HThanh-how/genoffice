@@ -326,7 +326,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
         at: Date.now(),
       })
     })
-    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Searching files…')
+    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Searching…')
   })
 
   it('6. AgyChatBar rejects unrelated request activity and activity missing requestId', async () => {
@@ -362,7 +362,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
       })
     })
 
-    expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Searching files…')
+    expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Searching…')
     expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Writing answer…')
   })
 
@@ -455,7 +455,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
         at: Date.now() + 250,
       })
     })
-    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading documents…')
+    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading actual-B.docx…')
   })
 
   it('8. Old TOOL and WRITING activity from previous request in same conversation is rejected', async () => {
@@ -492,7 +492,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
       })
     })
 
-    expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Searching files…')
+    expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Searching…')
     expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Writing answer…')
   })
 
@@ -530,7 +530,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
       })
     })
 
-    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading documents…')
+    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading a file…')
     expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Done in')
   })
 
@@ -585,7 +585,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
         })
       })
 
-      expect(host.querySelector('.agy-think-title')?.textContent).toContain('Searching files…')
+      expect(host.querySelector('.agy-think-title')?.textContent).toContain('Searching…')
       expect(host2.querySelector('.agy-think-title')?.textContent).toContain('Writing answer…')
     } finally {
       await act(async () => {
@@ -623,7 +623,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
         at: Date.now(),
       })
     })
-    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Searching files…')
+    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Searching…')
 
     // Turn 2 starts in same conversation -> activeRequestId updates to req-turn-2
     await act(async () => {
@@ -641,7 +641,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
     })
 
     // Turn 1's tool state is immediately cleared
-    expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Searching files…')
+    expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Searching…')
 
     // Late event from Turn 1 is rejected even with matching sessionId
     await act(async () => {
@@ -685,7 +685,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
         at: Date.now(),
       })
     })
-    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading documents…')
+    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading a file…')
 
     const stopBtn = host.querySelector<HTMLButtonElement>('button.hc-send.stop')
     expect(stopBtn).not.toBeNull()
@@ -751,7 +751,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
         at: Date.now(),
       })
     })
-    expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Searching files…')
+    expect(host.querySelector('.agy-think-title')?.textContent).not.toContain('Searching…')
   })
 
   it('14. Provider fallback preserves the correct new attempt requestId', async () => {
@@ -831,7 +831,7 @@ describe('AI Request Activity Isolation Regression Suite (Phase C)', () => {
       })
     })
 
-    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading documents…')
+    expect(host.querySelector('.agy-think-title')?.textContent).toContain('Reading a file…')
   })
 
   it('15. Non-Antigravity Thinking fallback and Editor mode continue to work', async () => {
