@@ -24,7 +24,8 @@
     "./index-progress.css": "./src/index-progress.css",
     "./fonts/*": "./src/fonts/*",
     "./ai-model-picker.css": "./src/ai-model-picker.css",
-    "./clarify-card.css": "./src/clarify-card.css"
+    "./clarify-card.css": "./src/clarify-card.css",
+    "./ai-skills.css": "./src/ai-skills.css"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -36,7 +37,7 @@
   "devDependencies": {
     "@types/react": "^19.2.14",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "dependencies": {
     "@genoffice/i18n": "*",

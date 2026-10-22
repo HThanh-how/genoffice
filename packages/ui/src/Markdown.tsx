@@ -59,13 +59,8 @@ function renderInline(
     const tok = m[0] ?? ''
     if (tok.startsWith('`')) out.push(<code key={key++}>{tok.slice(1, -1)}</code>)
     else if (tok.startsWith('**'))
-      out.push(
-        <strong key={key++}>
-          {navs.some((n) => n.render)
-            ? renderInline(tok.slice(2, -2), navs, images)
-            : tok.slice(2, -2)}
-        </strong>,
-      )
+      // emphasis wraps inline content, so a cite link inside it still navigates
+      out.push(<strong key={key++}>{renderInline(tok.slice(2, -2), navs, images)}</strong>)
     else if (tok.startsWith('![')) {
       // An image sharing a line with prose, a list step or a table cell — not
       // just a line of its own. parseBlocks only ever made a *whole* line an
@@ -103,14 +98,7 @@ function renderInline(
       } else {
         out.push(tok) // non-nav links keep today's literal rendering
       }
-    } else
-      out.push(
-        <em key={key++}>
-          {navs.some((n) => n.render)
-            ? renderInline(tok.slice(1, -1), navs, images)
-            : tok.slice(1, -1)}
-        </em>,
-      )
+    } else out.push(<em key={key++}>{renderInline(tok.slice(1, -1), navs, images)}</em>)
     last = i + tok.length
   }
   if (last < text.length) out.push(text.slice(last))

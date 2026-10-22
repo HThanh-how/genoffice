@@ -25,6 +25,7 @@ import { htmlIsDirty, requestHtmlClose } from '../../../html/src/main/html-main'
 import { canonicalPath } from './tab-manager'
 import type { DetachedTab } from './tab-manager'
 import { quitCoordinator } from './quit-coordinator'
+import { shellQuitTracker } from './window-close-guard'
 import type { OpenDocumentTab, TabKind } from '../shared/tabs-api'
 import {
   DOCK_BAND_SLACK,
@@ -156,6 +157,10 @@ export function findDetachedTabByPath(
 
 /** the detached window hosting this webContents (dialog parenting: fromWebContents
  *  cannot resolve a WebContentsView's host) */
+export function detachedFileForWebContents(wcId: number): string | undefined {
+  return detached.get(wcId)?.filePath
+}
+
 export function detachedWindowForWebContents(wcId: number): BrowserWindow | undefined {
   const rec = detached.get(wcId)
   return rec && !rec.window.isDestroyed() ? rec.window : undefined
@@ -552,6 +557,10 @@ export function createDetachedEditorWindow(options: {
   // Unsaved-changes guard, same helpers as the tab close path.
   // a second close event while the prompt is open must not re-enter the prompt
   let promptInFlight = false
+  const vetoQuit = (): void => {
+    resetSheetsShuttingDown()
+    shellQuitTracker().reset()
+  }
   win.on('close', (event) => {
     if (closeConfirmed || rec.released || quitCoordinator.isConfirmed()) return
     event.preventDefault()
@@ -559,14 +568,13 @@ export function createDetachedEditorWindow(options: {
     promptInFlight = true
     void (async () => {
       try {
-        if (await confirmDetachedClose(rec)) {
-          tearDown()
-        } else {
-          resetSheetsShuttingDown()
-        }
+        // a denied close vetoes any quit that was in flight: the sheets close
+        // guard must prompt again on later closes instead of silently proceeding
+        if (await confirmDetachedClose(rec)) tearDown()
+        else vetoQuit()
       } catch (err) {
         console.error('[shell] detached window close prompt failed:', err)
-        resetSheetsShuttingDown()
+        vetoQuit()
       } finally {
         promptInFlight = false
       }

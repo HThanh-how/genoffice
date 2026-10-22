@@ -74,9 +74,18 @@ const WORKER_REQUEST_TIMEOUT_MS = 120_000
 /**
  * heap cap for the extraction worker: without resourceLimits a parse that
  * exhausts V8's heap is a process-wide fatal OOM and takes the whole app down
- * with it; with one, only the worker dies and the file is recorded as an error
+ * with it; with one, only the worker dies and the file is recorded as an error.
+ * 256 MB fits the heaviest extraction measured (a 40 MB, 7.6 M-cell xlsx) and
+ * keeps V8 collecting instead of letting a scan's garbage pile up to a gigabyte
  */
-const WORKER_HEAP_LIMIT_MB = 1024
+const WORKER_HEAP_LIMIT_MB = 256
+/**
+ * The worker is a thread of the main process, so its heap shows up as the
+ * app's memory. Once a scan and its extractions are done nothing is lost by
+ * retiring it: the next refresh spawns a fresh one in milliseconds, while an
+ * idle worker would have held the scan's heap until V8 got around to shrinking it
+ */
+const WORKER_IDLE_MS = 5_000
 
 /** Slow disks and network paths must never hold Electron's UI thread in statSync. */
 type FileStatResult = { kind: 'file'; file: ScannedFile } | { kind: 'missing' | 'unavailable' }
@@ -152,6 +161,7 @@ export class FileIndexer {
   private scanning = false
   private scanRequested = false
   private rescanTimer: NodeJS.Timeout | null = null
+  private idleTimer: NodeJS.Timeout | null = null
   private lastScanAt = 0
   private stopped = false
   private workerPolicyVersion = 0
@@ -172,6 +182,7 @@ export class FileIndexer {
      * (tests, and callers whose worker cannot reach the database).
      */
     private readonly workerWritesDb?: string,
+    private readonly workerIdleMs = WORKER_IDLE_MS,
   ) {
     this.stopPolicyWatch = subscribeIndexingPolicy((policy) => {
       if (!policy.paused) void this.drain()
@@ -227,6 +238,11 @@ export class FileIndexer {
       applied: false,
       status: 'rejected-invalid',
     }
+  }
+
+  /** whether an extraction worker is currently alive (test seam) */
+  workerIsRunning(): boolean {
+    return this.worker !== null
   }
 
   progress(): IndexProgress {
@@ -329,6 +345,7 @@ export class FileIndexer {
     } finally {
       endRootSnapshot()
       this.scanning = false
+      this.scheduleIdleRecycle()
       if (!this.stopped) void this.drain()
     }
     // a refresh that arrived mid-scan runs now, whether or not the walk succeeded
@@ -478,6 +495,7 @@ export class FileIndexer {
     const task = this.runDrainLoop().finally(() => {
       this.draining = false
       if (this.drainTask === task) this.drainTask = null
+      this.scheduleIdleRecycle()
     })
     this.drainTask = task
     return task
@@ -555,6 +573,16 @@ export class FileIndexer {
       await this.removeRows([f.path])
       this.preserveCachedBody.delete(f.path)
     }
+  }
+
+  private scheduleIdleRecycle(): void {
+    if (this.idleTimer) clearTimeout(this.idleTimer)
+    this.idleTimer = setTimeout(() => {
+      this.idleTimer = null
+      if (this.scanning || this.draining || this.queue.length > 0 || this.waiting.size > 0) return
+      this.recycleWorker()
+    }, this.workerIdleMs)
+    this.idleTimer.unref?.()
   }
 
   private apply(f: ScannedFile, r: Extracted): void {
@@ -650,6 +678,10 @@ export class FileIndexer {
   }
 
   private ensureWorker(): Worker {
+    if (this.idleTimer) {
+      clearTimeout(this.idleTimer)
+      this.idleTimer = null
+    }
     if (this.worker) return this.worker
     this.workerPolicyVersion = 0
     this.workerSupportsIgnorePolicyMsg = false
@@ -730,6 +762,7 @@ export class FileIndexer {
     this.stopPolicyWatch()
     this.stopIgnorePolicyWatch()
     if (this.rescanTimer) clearTimeout(this.rescanTimer)
+    if (this.idleTimer) clearTimeout(this.idleTimer)
     this.queue.length = 0
     this.queued.clear()
     this.failPending('indexer stopped')

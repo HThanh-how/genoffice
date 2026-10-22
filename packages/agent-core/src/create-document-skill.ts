@@ -69,6 +69,8 @@ export interface CreateDocumentDeps {
   ) => boolean | Promise<boolean>
   isOpen?: (path: string) => boolean | Promise<boolean>
   isDocumentOpen?: (path: string) => boolean | Promise<boolean>
+  /** sibling tools whose success also makes "I saved it" a true statement */
+  alsoSaves?: readonly string[]
 }
 
 export interface CreateDocumentSkill extends AgentSkill {
@@ -748,9 +750,8 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
       }
     },
     verifyResponse: (finalText, executed: readonly ExecutedToolCall[]) => {
-      const saved = executed.some(
-        (c) => (c.name === CREATE_DOCUMENT_TOOL || c.name === APPEND_TO_DOCUMENT_TOOL) && c.ok,
-      )
+      const savers = [CREATE_DOCUMENT_TOOL, APPEND_TO_DOCUMENT_TOOL, ...(deps.alsoSaves ?? [])]
+      const saved = executed.some((c) => savers.includes(c.name) && c.ok)
       if (saved || !CLAIMS_SAVED.test(finalText)) return null
       return (
         'The reply says a file was saved, but create_document did not succeed in this run. ' +

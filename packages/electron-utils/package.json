@@ -12,6 +12,7 @@
     "./atomic-write": "./src/atomic-write.ts",
     "./default-save-dir": "./src/default-save-dir.ts",
     "./clipboard-history-labels": "./src/clipboard-history-labels.ts",
+    "./disk-watch": "./src/disk-watch.ts",
     "./drop-open": "./src/drop-open.ts",
     "./font-catalog": "./src/font-catalog.ts",
     "./font-store": "./src/font-store.ts",
@@ -38,7 +39,7 @@
   },
   "devDependencies": {
     "typescript": "^5.9.3",
-    "vitest": "^4.1.11"
+    "vitest": "^4.1.12"
   },
   "dependencies": {
     "@genoffice/ai-provider": "*",
