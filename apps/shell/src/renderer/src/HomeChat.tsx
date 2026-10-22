@@ -5,20 +5,14 @@ import {
   createDocumentSkill,
   createIpcTransport,
   createKnowledgeBaseSkill,
+  type CreateDocumentExecutionContext,
   type IpcStreamChunk,
   type KbFileInfo,
 } from '@genoffice/agent-core'
 import { agyErrorText, createGeminiRouter } from '@genoffice/ai-provider/browser'
 import { createPortal } from 'react-dom'
 import type { Params } from '@genoffice/i18n'
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { HomeApi } from '../../shared/home-api'
 import type {
   HomeChatMessage,
@@ -86,11 +80,17 @@ type Props = {
   suppressDock?: boolean
   onNavigateToRecents?: () => void
   onOpenPath?: (path: string) => boolean | Promise<boolean> | void
+  isOpenPath?: (path: string) => boolean | Promise<boolean>
   onOpenAskWorkspace?: () => void
   onOpenModelSettings?: () => void
 }
 
-type Conversation = { id: string | null; dead: boolean; requested: boolean }
+type Conversation = {
+  id: string | null
+  executionId?: string
+  dead: boolean
+  requested: boolean
+}
 type Toast = { kind: 'deleted'; session: HomeChatSession } | { kind: 'cleared' }
 
 const LS_LAST = 'genoffice.homeChat.last'
@@ -161,6 +161,7 @@ export function HomeChat({
   suppressDock = false,
   onNavigateToRecents,
   onOpenPath,
+  isOpenPath,
   onOpenAskWorkspace,
   onOpenModelSettings,
 }: Props) {
@@ -208,6 +209,11 @@ export function HomeChat({
   const [visibleCount, setVisibleCount] = useState(WINDOW_PAGE)
   const [showJump, setShowJump] = useState(false)
   const [pendingSend, setPendingSend] = useState<string | null>(null)
+  const currentUserTurnIdRef = useRef<string>('')
+  const openedSlotsRef = useRef<Set<string>>(new Set())
+  const openedPathsRef = useRef<Set<string>>(new Set())
+  const openStatesRef = useRef<Map<string, 'opening' | 'opened' | 'failed'>>(new Map())
+  const inFlightOpenRef = useRef<Map<string, Promise<boolean>>>(new Map())
   const panelRef = useRef<HTMLElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -221,7 +227,12 @@ export function HomeChat({
   const stickRef = useRef(true)
   const prependHeightRef = useRef<number | null>(null)
   const needsSeedRef = useRef(false)
-  const convRef = useRef<Conversation>({ id: null, dead: false, requested: false })
+  const convRef = useRef<Conversation>({
+    id: null,
+    executionId: activeSessionId,
+    dead: false,
+    requested: false,
+  })
   const lastSavedRef = useRef<ChatItem[] | null>(null)
   const saveTimerRef = useRef(0)
   const saveChainRef = useRef<Promise<unknown>>(Promise.resolve())
@@ -260,20 +271,183 @@ export function HomeChat({
   const corpusRequestRef = useRef(0)
   const createdPathsRef = useRef(new Set<string>())
   const [corpusCount, setCorpusCount] = useState<number | null>(null)
+  const onOpenPathRef = useRef(onOpenPath)
+  onOpenPathRef.current = onOpenPath
+  const isOpenPathRef = useRef(isOpenPath)
+  isOpenPathRef.current = isOpenPath
+
+  const isAutoOpenAuthorized = useCallback(
+    (
+      owner: Conversation,
+      generation: number,
+      run: number,
+      context?: CreateDocumentExecutionContext,
+    ): boolean => {
+      if (!mountedRef.current) return false
+      if (convRef.current !== owner || owner.dead) return false
+      if (generation !== runGenerationRef.current) return false
+      if (run === 0 || activeRunRef.current === 0 || activeRunRef.current !== run) return false
+      if (
+        !context?.sessionId ||
+        !convRef.current?.executionId ||
+        convRef.current.executionId !== context.sessionId
+      ) {
+        return false
+      }
+      if (
+        !context?.userTurnId ||
+        !currentUserTurnIdRef.current ||
+        currentUserTurnIdRef.current !== context.userTurnId
+      ) {
+        return false
+      }
+      return true
+    },
+    [],
+  )
+
+  const openDocumentPath = useCallback(
+    (path: string, execContext?: CreateDocumentExecutionContext): Promise<boolean> => {
+      const existing = inFlightOpenRef.current.get(path)
+      if (existing) {
+        return existing
+      }
+
+      const owner = convRef.current
+      const generation = runGenerationRef.current
+      const run = activeRunRef.current
+
+      let cleanup = () => {}
+      const openPromise = (async () => {
+        try {
+          if (!isAutoOpenAuthorized(owner, generation, run, execContext)) {
+            return false
+          }
+
+          if (isOpenPathRef.current) {
+            try {
+              await isOpenPathRef.current(path)
+            } catch {
+              // ignore error and proceed with opening
+            }
+          }
+
+          if (!isAutoOpenAuthorized(owner, generation, run, execContext)) {
+            return false
+          }
+
+          openStatesRef.current.set(path, 'opening')
+          let success = false
+          if (onOpenPathRef.current) {
+            const res = await onOpenPathRef.current(path)
+            success = typeof res === 'boolean' ? res : true
+          } else if (typeof api.openPath === 'function') {
+            success = await api.openPath(path)
+          }
+
+          if (!isAutoOpenAuthorized(owner, generation, run, execContext)) {
+            return false
+          }
+
+          if (success) {
+            openStatesRef.current.set(path, 'opened')
+            openedPathsRef.current.add(path)
+          } else {
+            openStatesRef.current.set(path, 'failed')
+          }
+          return success
+        } catch (err) {
+          console.error('Failed to open document:', err)
+          if (isAutoOpenAuthorized(owner, generation, run, execContext)) {
+            openStatesRef.current.set(path, 'failed')
+          }
+          return false
+        } finally {
+          cleanup()
+        }
+      })()
+
+      cleanup = () => {
+        if (inFlightOpenRef.current.get(path) === openPromise) {
+          inFlightOpenRef.current.delete(path)
+        }
+      }
+
+      inFlightOpenRef.current.set(path, openPromise)
+      return openPromise
+    },
+    [api, isAutoOpenAuthorized],
+  )
+
+  const manualOpenPath = useCallback(
+    async (path: string): Promise<boolean> => {
+      if (!mountedRef.current) return false
+      try {
+        if (isOpenPathRef.current) {
+          try {
+            await isOpenPathRef.current(path)
+          } catch {
+            // best effort
+          }
+        }
+        if (!mountedRef.current) return false
+        if (onOpenPathRef.current) {
+          const res = await onOpenPathRef.current(path)
+          return typeof res === 'boolean' ? res : true
+        } else if (typeof api.openPath === 'function') {
+          return await api.openPath(path)
+        }
+        return false
+      } catch (err) {
+        console.error('Failed to open document manually:', err)
+        return false
+      }
+    },
+    [api],
+  )
+
   const docSkillRef = useRef<ReturnType<typeof createDocumentSkill> | null>(null)
   if (!docSkillRef.current) {
     docSkillRef.current = createDocumentSkill({
+      getSessionId: () => convRef.current?.executionId || activeSessionIdRef.current || undefined,
+      getExecutionId: () => convRef.current?.executionId || undefined,
+      getUserTurnId: () => currentUserTurnIdRef.current || undefined,
+      fileExists: async (path: string) => {
+        try {
+          if (typeof api.statPaths === 'function') {
+            const entries = await api.statPaths([path])
+            return Boolean(entries[0] && !entries[0].missing)
+          }
+          return true
+        } catch {
+          return true
+        }
+      },
       create: async (request) => {
         const owner = convRef.current
         const table = fileTableRef.current
         const generation = runGenerationRef.current
         const run = activeRunRef.current
+        const sessionId =
+          request.sessionId ||
+          convRef.current?.executionId ||
+          activeSessionIdRef.current ||
+          undefined
+        const userTurnId = request.userTurnId || currentUserTurnIdRef.current || undefined
+        const hostOpId = request.callId || request.documentSlot || undefined
+        const documentSlot = request.documentSlot || hostOpId
+
         const result = await api.kbCreateDocument({
           title: request.title,
           format: request.format,
           content: request.content,
+          sessionId,
+          userTurnId,
+          documentSlot,
+          callId: hostOpId,
+          documentType: request.documentType,
         })
-        let opened = false
+
         if (
           mountedRef.current &&
           convRef.current === owner &&
@@ -287,22 +461,21 @@ export function HomeChat({
             path: result.path,
             name: result.path.split(/[\\/]/).pop() ?? result.path,
           })
-          const shouldAutoOpen = request.open ?? request.format === 'docx'
-          if (shouldAutoOpen) {
-            try {
-              if (onOpenPath) {
-                const res = await onOpenPath(result.path)
-                opened = typeof res === 'boolean' ? res : true
-              } else if (typeof api.openPath === 'function') {
-                opened = await api.openPath(result.path)
-              }
-            } catch (err) {
-              console.error('Failed to open created document:', err)
-              opened = false
-            }
-          }
         }
-        return { path: result.path, opened }
+        return { path: result.path }
+      },
+      open: (path, context) => {
+        const owner = convRef.current
+        const generation = runGenerationRef.current
+        const run = activeRunRef.current
+        if (!isAutoOpenAuthorized(owner, generation, run, context)) {
+          return false
+        }
+        return openDocumentPath(path, context)
+      },
+      isOpen: (path) => {
+        if (isOpenPathRef.current) return isOpenPathRef.current(path)
+        return false
       },
     })
   }
@@ -869,7 +1042,10 @@ export function HomeChat({
   const adopt = (conv: Conversation, nextItems: ChatItem[], nextTitle: string) => {
     convRef.current = conv
     createdPathsRef.current = new Set()
-    const nextSessionId = conv.id ?? crypto.randomUUID()
+    openStatesRef.current.clear()
+    inFlightOpenRef.current.clear()
+    const nextSessionId = conv.id ?? conv.executionId ?? crypto.randomUUID()
+    conv.executionId = nextSessionId
     setActiveSessionId(nextSessionId)
     activeSessionIdRef.current = nextSessionId
     clearActiveRequest()
@@ -892,7 +1068,7 @@ export function HomeChat({
     openTokenRef.current++
     launchTokenRef.current++
     detachCurrent()
-    adopt({ id: null, dead: false, requested: false }, [], '')
+    adopt({ id: null, executionId: crypto.randomUUID(), dead: false, requested: false }, [], '')
     collapseRailWhenNarrow()
     focusInput()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -937,7 +1113,11 @@ export function HomeChat({
           error: tRef.current('homeChatInterrupted'),
         })
       }
-      adopt({ id: session.id, dead: false, requested: true }, restored, session.title)
+      adopt(
+        { id: session.id, executionId: session.id, dead: false, requested: true },
+        restored,
+        session.title,
+      )
       collapseRailWhenNarrow()
       focusInput()
     },
@@ -1144,6 +1324,11 @@ export function HomeChat({
       }
       const generation = ++runGenerationRef.current
       activeRunRef.current = generation
+      currentUserTurnIdRef.current = crypto.randomUUID()
+      openedSlotsRef.current.clear()
+      openedPathsRef.current.clear()
+      openStatesRef.current.clear()
+      inFlightOpenRef.current.clear()
       clearActiveRequest()
       const userId = ++itemId.current
       const assistantId = ++itemId.current
@@ -1286,6 +1471,9 @@ export function HomeChat({
 
   const stop = () => {
     runGenerationRef.current++
+    activeRunRef.current = 0
+    currentUserTurnIdRef.current = ''
+    inFlightOpenRef.current.clear()
     batcherRef.current?.flush()
     loopRef.current?.reset()
     clearActiveRequest()
@@ -1603,7 +1791,7 @@ export function HomeChat({
                     onRevealSource={revealSource}
                     onRetry={retry}
                     onSaveAnswer={handleSaveAnswer}
-                    onOpenPath={onOpenPath ?? ((p) => void api.openPath(p))}
+                    onOpenPath={(p) => void manualOpenPath(p)}
                   />
                 ))}
               </div>

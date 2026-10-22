@@ -225,3 +225,142 @@ describe('legacy HTML content degrades to plain runs in docx export', () => {
     expect(parsed.blocks.every((b) => b.format?.align !== 'center')).toBe(true)
   })
 })
+
+describe('unknown block fallback and profile preservation (P0 regression tests)', () => {
+  it('A: unknown block containing direct text preserves text and inline formatting', async () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'customNoticeBox',
+          content: [
+            { type: 'text', text: 'Important: ', marks: [{ type: 'bold' }] },
+            { type: 'text', text: 'Direct notice text' },
+          ],
+        },
+      ],
+    }
+    const mapping = await mapDocToSaveBlocks(doc, noImages)
+    expect(mapping.blocks).toHaveLength(1)
+    const block = mapping.blocks[0]!
+    expect(block.kind).toBe('generated')
+    if (block.kind === 'generated') {
+      expect(block.block.type).toBe('paragraph')
+      const text = block.block.runs.map((r) => r.text).join('')
+      expect(text).toBe('Important: Direct notice text')
+      expect(block.block.runs[0]?.bold).toBe(true)
+    }
+  })
+
+  it('B: unknown block containing nested paragraphs preserves all nested visible text', async () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'calloutCard',
+          content: [
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'First nested paragraph inside callout.' }],
+            },
+            {
+              type: 'paragraph',
+              content: [{ type: 'text', text: 'Second nested paragraph inside callout.' }],
+            },
+          ],
+        },
+      ],
+    }
+    const mapping = await mapDocToSaveBlocks(doc, noImages)
+    expect(mapping.blocks).toHaveLength(1)
+    const block = mapping.blocks[0]!
+    expect(block.kind).toBe('generated')
+    if (block.kind === 'generated') {
+      const text = block.block.runs.map((r) => r.text).join('')
+      expect(text).toContain('First nested paragraph inside callout.')
+      expect(text).toContain('Second nested paragraph inside callout.')
+    }
+  })
+
+  it('C: unknown block containing multiple nested text nodes preserves text without loss', async () => {
+    const doc = {
+      type: 'doc',
+      content: [
+        {
+          type: 'deepContainer',
+          content: [
+            {
+              type: 'nestedWrapper',
+              content: [
+                { type: 'text', text: 'Deeply ' },
+                { type: 'text', text: 'nested ' },
+                { type: 'text', text: 'content' },
+              ],
+            },
+          ],
+        },
+      ],
+    }
+    const mapping = await mapDocToSaveBlocks(doc, noImages)
+    expect(mapping.blocks).toHaveLength(1)
+    const block = mapping.blocks[0]!
+    expect(block.kind).toBe('generated')
+    if (block.kind === 'generated') {
+      const text = block.block.runs.map((r) => r.text).join('')
+      expect(text).toBe('Deeply nested content')
+    }
+  })
+
+  it('D & E: existing supported paragraph and heading formatting are preserved', async () => {
+    const parsed = await exportAndParse('# Level 1 Heading\n\nRegular paragraph with **bold**.')
+    const heading = parsed.blocks.find((b) => b.type === 'heading')
+    expect(heading?.level).toBe(1)
+    expect(heading?.runs?.map((r) => r.text).join('')).toBe('Level 1 Heading')
+
+    const para = parsed.blocks.find((b) => b.type === 'paragraph')
+    expect(para?.runs?.some((r) => r.bold && r.text === 'bold')).toBe(true)
+  })
+
+  it('F & G: existing tables, images, and fallback alt text are preserved', async () => {
+    const parsed = await exportAndParse(
+      '| Header A | Header B |\n| --- | --- |\n| Cell 1 | Cell 2 |\n\n![diagram alt text](missing.png)',
+    )
+    const table = parsed.blocks.find((b) => b.type === 'table')
+    expect(table?.table?.rows.length).toBe(2)
+    expect(table?.table?.rows[0]?.[0]?.paras.join('')).toBe('Header A')
+    expect(table?.table?.rows[1]?.[1]?.paras.join('')).toBe('Cell 2')
+
+    const texts = parsed.blocks.map((b) => (b.runs ?? []).map((r) => r.text).join(''))
+    expect(texts.some((t) => t.includes('diagram alt text'))).toBe(true)
+  })
+
+  it('H: export without document profile uses default styling and succeeds', async () => {
+    const editor = createEditor('# Plain Title\n\nContent without custom profile.')
+    const bytes = await exportDocxBytes(editor.getJSON(), noImages)
+    expect(bytes.length).toBeGreaterThan(1000)
+    const parsed = await parseDocx(bytes)
+    const heading = parsed.blocks.find((b) => b.type === 'heading')
+    expect(heading?.runs?.map((r) => r.text).join('')).toBe('Plain Title')
+  })
+
+  it('I: export with scientific-report profile applies typography and layout', async () => {
+    const profile = {
+      documentType: 'scientific-report' as const,
+      paperSize: 'A4' as const,
+      orientation: 'portrait' as const,
+      margins: { top: 25.0, bottom: 25.0, left: 25.0, right: 25.0 },
+      typography: {
+        bodyFont: 'Times New Roman',
+        bodySizePt: 12,
+        lineSpacing: 1.3,
+        paragraphSpacingAfterPt: 6,
+      },
+      includeFooterPageNumber: true,
+    }
+    const editor = createEditor('# Scientific Method\n\nExperimental results and discussion.')
+    const bytes = await exportDocxBytes(editor.getJSON(), noImages, undefined, undefined, profile)
+    expect(bytes.length).toBeGreaterThan(1000)
+    const parsed = await parseDocx(bytes)
+    expect(parsed.blocks.length).toBeGreaterThan(0)
+  })
+})

@@ -63,7 +63,7 @@ describe('Antigravity CLI web search', () => {
     })
   })
 
-  it('uses chat CLI/model settings by default and prefers explicit search overrides', async () => {
+  it('shares the CLI path with the chat provider but keeps its own search model', async () => {
     vi.mocked(runAgy).mockResolvedValue({ text: '[]' })
     const settings = defaultAiSettings()
     settings.provider = 'agy'
@@ -89,7 +89,8 @@ describe('Antigravity CLI web search', () => {
     await webSearchTool('/settings.json', 'q'.repeat(700))
     const inherited = vi.mocked(runAgy).mock.calls[0]![0]
     expect(inherited.cliPath).toBe('/chat/agy')
-    expect(inherited.model).toBe('chat-model')
+    // the chat model (chat-model) must not leak into retrieval work
+    expect(inherited.model).toBe('default-model')
     expect(inherited.prompt).toContain(`Query: ${'q'.repeat(700)}`)
 
     settings.search.providers.agy = { apiKey: '', cliPath: '/search/agy', model: 'search-model' }

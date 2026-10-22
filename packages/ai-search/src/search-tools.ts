@@ -37,10 +37,11 @@ export function searchOptionsFromSettings(settings: AiSettings): SearchOptions {
 function agySearchConfig(settings: AiSettings) {
   const search = settings.search?.providers.agy
   const chat = settings.providers.agy
-  const [primary, fallback] = settings.provider === 'agy' ? [chat, search] : [search, chat]
+  // The CLI path is shared, the model is not: retrieval work keeps its own low-effort model so
+  // a chat model choice (Gemini …-high) never quietly changes search or indexing.
   return {
-    cliPath: primary?.cliPath?.trim() || fallback?.cliPath?.trim(),
-    model: primary?.model?.trim() || fallback?.model?.trim(),
+    cliPath: search?.cliPath?.trim() || chat?.cliPath?.trim(),
+    model: search?.model?.trim() ?? '',
   }
 }
 

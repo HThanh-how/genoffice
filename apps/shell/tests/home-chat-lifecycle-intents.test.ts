@@ -253,4 +253,90 @@ describe('home-chat lifecycle & launch intents (Phase 1)', () => {
       host.remove()
     }
   })
+
+  it('leaving the Ask AI workspace closes the panel instead of leaving it floating', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const workspace = document.createElement('div')
+    workspace.id = 'home-ask-workspace'
+    document.body.appendChild(workspace)
+    const root = createRoot(host)
+    const api = mockChatApi()
+
+    try {
+      // inside the workspace: the panel is hosted by the workspace, nothing floats elsewhere
+      await act(async () => {
+        root.render(createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: true }))
+      })
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      expect(workspace.querySelector('.home-chat-panel')).not.toBeNull()
+      expect(host.querySelector('.home-chat-panel')).toBeNull()
+
+      // back to another home view: the panel is closed
+      await act(async () => {
+        root.render(createElement(HomeChat, { api, i18n: mockI18n, workspaceActive: false }))
+      })
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      expect(host.querySelector('.home-chat-panel')).toBeNull()
+      expect(workspace.querySelector('.home-chat-panel')).toBeNull()
+      // nothing is left floating anywhere on the home page
+      expect(document.querySelector('.home-chat-panel')).toBeNull()
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+    }
+  })
+
+  it('a launch intent brings up the Ask AI workspace instead of a floating panel', async () => {
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    const root = createRoot(host)
+    const api = mockChatApi()
+    const onOpenAskWorkspace = vi.fn()
+
+    try {
+      await act(async () => {
+        root.render(
+          createElement(HomeChat, {
+            api,
+            i18n: mockI18n,
+            workspaceActive: false,
+            onOpenAskWorkspace,
+          }),
+        )
+      })
+      // the Home input hands the text over and asks the host to show the Ask AI page; there is no
+      // floating panel any more, so nothing is drawn until the workspace is active
+      await act(async () => {
+        requestChatPrefill({ text: 'hello there', send: false, intent: 'resume' })
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      expect(onOpenAskWorkspace).toHaveBeenCalled()
+      expect(host.querySelector('.home-chat-panel')).toBeNull()
+      await act(async () => {
+        root.render(
+          createElement(HomeChat, {
+            api,
+            i18n: mockI18n,
+            workspaceActive: true,
+            onOpenAskWorkspace,
+          }),
+        )
+        await new Promise((r) => setTimeout(r, 50))
+      })
+      // drawn in the workspace slot when the page has one, inline otherwise
+      expect(document.querySelector('.home-chat-panel')).not.toBeNull()
+    } finally {
+      await act(async () => {
+        root.unmount()
+      })
+      host.remove()
+    }
+  })
 })

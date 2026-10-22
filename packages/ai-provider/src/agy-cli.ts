@@ -45,7 +45,8 @@ import { agyMachineSemaphore, type AgyMachineSemaphore } from './agy-lock'
  */
 
 import { AGY_DEFAULT_MODEL } from './agy-meta'
-import { AGY_CHAT_DEFAULT_MODEL, defaultSelectedChatModel } from './agy-chat'
+import { AGY_CHAT_DEFAULT_MODEL, firstRunChatModel, normalizeChatModel } from './agy-chat'
+import { agyChatDefaultRecord, recordAgyChatDefault } from './agy-default'
 import {
   AGY_SCHEMA_NATIVE_RETRY_NOTE,
   AGY_SCHEMA_TURN_NOTE,
@@ -71,7 +72,7 @@ import { createAgyLimiter, Limiter } from './agy-limiter'
 export { createAgyLimiter, Limiter }
 import { agyResidentManager, isResidentEligible } from './agy-resident'
 
-export { AGY_CHAT_DEFAULT_MODEL, defaultSelectedChatModel } from './agy-chat'
+export { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
 export {
   AGY_CAPABILITIES,
   AGY_DEFAULT_MODEL,
@@ -1106,6 +1107,28 @@ export async function runAgy(
 // ---------------------------------------------------------------------------
 
 /**
+ * The model a chat turn really uses.
+ *  - a model stored in the settings is the person's choice and is sent as-is, even when the CLI
+ *    no longer lists it (the UI reports it as unavailable rather than silently swapping it);
+ *  - a first run with nothing stored uses the model the CLI at this path was last seen to offer,
+ *    so the command never names an id that executable cannot serve;
+ *  - when that CLI answered and has no usable chat model, this throws instead of inventing one.
+ * No I/O: the answer comes from the catalog reads already recorded in agy-default.ts.
+ */
+export function chatModelFor(config: AiProviderConfig): string {
+  const stored = normalizeChatModel(config.model)
+  if (stored) return stored
+  const cliPath = typeof config.cliPath === 'string' ? config.cliPath.trim() : ''
+  const known = agyChatDefaultRecord(cliPath)
+  if (known?.model) return known.model
+  if (known && known.verified)
+    throw new Error(
+      'The Antigravity CLI does not offer a chat model GenOffice can use. Check the Antigravity connection in Settings, or pick another chat provider.',
+    )
+  return AGY_CHAT_DEFAULT_MODEL
+}
+
+/**
  * Streaming turn. With tools, agy answers either as one object under `--json-schema` (default
  * whenever the installed agy has the flag) or through <tool_call> text blocks (agy-tools.ts);
  * see agy-structured-turn.ts. Either way the reply is shown once complete, so a tool request
@@ -1123,7 +1146,7 @@ export async function streamAgy(
   const runId = randomUUID()
   const requestId = cb.requestId
   const sessionId = cb.sessionId
-  const model = config.model?.trim() || AGY_CHAT_DEFAULT_MODEL
+  const model = chatModelFor(config)
   const say: AgySay = (activity) =>
     publishAgyActivity({
       runId,
@@ -1135,7 +1158,7 @@ export async function streamAgy(
     })
   say({ phase: 'start' })
   try {
-    await streamAgyTurn(config, system, messages, tools, maxTokens, cb, deps, say)
+    await streamAgyTurn(config, model, system, messages, tools, maxTokens, cb, deps, say)
     say({ phase: 'done' })
   } catch (error) {
     say({
@@ -1214,6 +1237,7 @@ async function chooseToolProtocol(
 
 async function streamAgyTurn(
   config: AiProviderConfig,
+  model: string,
   system: string,
   messages: AgentMessage[],
   tools: AgentToolDef[],
@@ -1256,7 +1280,7 @@ async function streamAgyTurn(
         },
         onFirstText: () => say({ phase: 'writing' }),
         cliPath: config.cliPath,
-        model: config.model?.trim() || AGY_CHAT_DEFAULT_MODEL,
+        model,
         prompt: prompt.prompt,
         files: prompt.files,
         signal: cb.signal,
@@ -1310,7 +1334,8 @@ async function streamAgyTurn(
   ) {
     try {
       const turn = await agyResidentManager.executeTurn({
-        config,
+        // the model resolved for this turn, so a resident worker never runs a different one
+        config: { ...config, model },
         system,
         messages,
         tools,
@@ -1561,7 +1586,7 @@ export async function chatAgy(
     const result = await runAgy(
       {
         cliPath: config.cliPath,
-        model: config.model?.trim() || AGY_CHAT_DEFAULT_MODEL,
+        model: chatModelFor(config),
         prompt: plan.prompt,
         signal,
         task: 'chat',
@@ -1650,10 +1675,17 @@ const realModelsDeps: AgyModelsDeps = {
     }),
 }
 
-const modelsCache = new Map<string, { at: number; models: string[] }>()
+/**
+ * Catalog reads are keyed by the resolved executable. `startedAt` is when the read began, so a
+ * read that began earlier can never overwrite a newer catalog that already landed.
+ */
+const modelsCache = new Map<string, { at: number; startedAt: number; models: string[] }>()
+/** one in-flight `agy models` per executable: two simultaneous probes would race to the cache */
+const modelsInflight = new Map<string, Promise<AgyModelCatalog>>()
 
 export function clearAgyModelsCache(): void {
   modelsCache.clear()
+  modelsInflight.clear()
 }
 
 /** `agy models`, cached for a few minutes. Never throws: failures come back as `error`. */
@@ -1668,21 +1700,42 @@ export async function listAgyModels(
     if (!options.force && cached && deps.now() - cached.at < AGY_MODELS_CACHE_MS) {
       return catalogOf(cached.models)
     }
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), AGY_MODELS_TIMEOUT_MS)
-    let output: string
+    const pending = modelsInflight.get(resolved)
+    if (pending) return pending
+    const startedAt = deps.now()
+    const read = (async (): Promise<AgyModelCatalog> => {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), AGY_MODELS_TIMEOUT_MS)
+      let output: string
+      try {
+        output = await deps.run(resolved, controller.signal)
+      } finally {
+        clearTimeout(timer)
+      }
+      const models = parseAgyModels(output)
+      if (models.length === 0)
+        throw new Error('Antigravity CLI returned no models. Are you signed in?')
+      const existing = modelsCache.get(resolved)
+      // an older probe finishing later must not replace a newer catalog
+      if (!existing || existing.startedAt <= startedAt)
+        modelsCache.set(resolved, { at: deps.now(), startedAt, models })
+      // every successful catalog read refreshes the first-run chat model for the configured path
+      recordAgyChatDefault(cliPath, { models }, deps.now())
+      return catalogOf(models)
+    })()
+    modelsInflight.set(resolved, read)
     try {
-      output = await deps.run(resolved, controller.signal)
+      return await read
     } finally {
-      clearTimeout(timer)
+      if (modelsInflight.get(resolved) === read) modelsInflight.delete(resolved)
     }
-    const models = parseAgyModels(output)
-    if (models.length === 0)
-      throw new Error('Antigravity CLI returned no models. Are you signed in?')
-    modelsCache.set(resolved, { at: deps.now(), models })
-    return catalogOf(models)
   } catch (error) {
     const aborted = error instanceof Error && error.name === 'AbortError'
+    recordAgyChatDefault(
+      cliPath,
+      { models: [], error: aborted ? 'timeout' : 'catalog read failed' },
+      deps.now(),
+    )
     return {
       models: [],
       defaultModel: '',
@@ -1698,7 +1751,8 @@ export async function listAgyModels(
 function catalogOf(models: string[]): AgyModelCatalog {
   return {
     models,
-    defaultModel: models.length === 0 ? '' : defaultSelectedChatModel(models),
+    // what the CLI can actually serve, never a hardcoded id it did not report
+    defaultModel: firstRunChatModel({ models }) ?? models[0] ?? '',
   }
 }
 

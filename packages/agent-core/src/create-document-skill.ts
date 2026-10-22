@@ -1,6 +1,7 @@
 import type { AgentToolDef } from './types'
 import type { AgentSkill, ExecutedToolCall } from './skill'
 import { kbCiteHref } from './knowledge-base-skill'
+import type { DocumentType } from './rich-document-spec'
 
 /**
  * Lets a chat that has no open document write its result to disk: the model
@@ -22,11 +23,34 @@ export interface CreateDocumentRequest {
   format: CreateDocumentFormat
   /** the whole document as markdown */
   content: string
-  open?: boolean
+  open?: boolean | undefined
+  sessionId?: string | undefined
+  userTurnId?: string | undefined
+  documentSlot?: string | undefined
+  callId?: string | undefined
+  documentType?: DocumentType | undefined
+}
+
+export interface CreateDocumentExecutionContext {
+  sessionId?: string | undefined
+  userTurnId?: string | undefined
+  callId?: string | undefined
+  documentSlot?: string | undefined
 }
 
 export interface CreateDocumentDeps {
   create(request: CreateDocumentRequest): Promise<{ path: string; opened?: boolean }>
+  getSessionId?: () => string | undefined
+  getExecutionId?: () => string | undefined
+  getUserTurnId?: () => string | undefined
+  fileExists?: (path: string) => boolean | Promise<boolean>
+  open?: (path: string, context?: CreateDocumentExecutionContext) => boolean | Promise<boolean>
+  openDocument?: (
+    path: string,
+    context?: CreateDocumentExecutionContext,
+  ) => boolean | Promise<boolean>
+  isOpen?: (path: string) => boolean | Promise<boolean>
+  isDocumentOpen?: (path: string) => boolean | Promise<boolean>
 }
 
 export interface CreateDocumentSkill extends AgentSkill {
@@ -42,12 +66,19 @@ export const CREATE_DOCUMENT_MAX_CHARS = 2_000_000
 const CREATE_SYSTEM_PROMPT = `## Creating documents
 When the user asks for a file — a report, summary, memo, notes, "save this",
 "export this", "make a document / markdown / Word file" — write the complete
-content and call create_document; do not paste the document into the chat and
-do not describe what the file would contain.
-- Write the content in Markdown (headings, lists, tables, bold). format "docx"
-  gives a Word document (.docx, văn bản / tài liệu Word), "md" a Markdown file (.md);
-  pick what the user asked for, default to "docx" when they only said "document" /
-  "Word" / "tài liệu" / "văn bản" and "md" when they said Markdown.
+content and call create_document ONCE; do not paste the document into the chat and
+do not describe what the file would contain. Never call create_document repeatedly
+or in a loop for the same document request.
+- Always read existing sources thoroughly first using available search and read tools
+  before synthesizing the document content.
+- Write the content in Markdown (headings #/##, bullet/numbered lists, tables with
+  pipes, bold). format "docx" gives a Word document (.docx, văn bản / tài liệu Word),
+  "md" a Markdown file (.md); pick what the user asked for, default to "docx" when
+  they only said "document" / "Word" / "tài liệu" / "văn bản" and "md" when they said Markdown.
+- Specify "documentType" if applicable: "scientific-report", "report", "memo", "proposal",
+  "letter", or "general".
+- In tables, use real columns and headers. Do not collapse tabular data into unstructured text.
+- Include a References or Sources section citing source files where applicable.
 - Keep the knowledge-base citations inside the document as plain text (file
   name and folder), not as cite links.
 - The tool returns the saved path with a cite link: reply briefly and link the
@@ -61,6 +92,32 @@ const CLAIMS_SAVED =
 
 export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSkill {
   const created: string[] = []
+  const inFlightOps = new Map<
+    string,
+    {
+      promise: Promise<{ path: string; opened?: boolean }>
+      payloadFingerprint: string
+      conversationKey?: string | undefined
+      userTurnId?: string | undefined
+      slot?: string | undefined
+    }
+  >()
+  const committedSlots = new Map<
+    string,
+    {
+      path: string
+      opened?: boolean
+      payloadFingerprint: string
+      conversationKey?: string | undefined
+      userTurnId?: string | undefined
+      slot?: string | undefined
+    }
+  >()
+  const callBindings = new Map<string, { sessionId?: string | undefined; userTurnId: string }>()
+
+  const openFn = deps.open ?? deps.openDocument
+  const isOpenFn = deps.isOpen ?? deps.isDocumentOpen
+
   const tool: AgentToolDef = {
     name: CREATE_DOCUMENT_TOOL,
     description:
@@ -81,6 +138,15 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
         open: {
           type: 'boolean',
           description: 'whether to open the document immediately in the editor after saving',
+        },
+        documentType: {
+          type: 'string',
+          enum: ['general', 'report', 'scientific-report', 'memo', 'proposal', 'letter'],
+          description: 'Document profile/type for layout and formatting',
+        },
+        documentSlot: {
+          type: 'string',
+          description: 'Logical document slot (default: "primary")',
         },
       },
       required: ['title', 'format', 'content'],
@@ -119,19 +185,262 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
           summary: 'content too long',
         }
       }
-      try {
-        const open = typeof call.input.open === 'boolean' ? call.input.open : undefined
-        const { path, opened } = await deps.create({
+
+      const hasHostSession = typeof deps.getSessionId === 'function'
+      const hasHostExecution = typeof deps.getExecutionId === 'function'
+      const hasHostUserTurn = typeof deps.getUserTurnId === 'function'
+
+      const hostExecId = hasHostExecution ? deps.getExecutionId?.() : undefined
+      const hostSessionId = hasHostSession ? deps.getSessionId?.() : undefined
+      const hostUserTurnId = hasHostUserTurn ? deps.getUserTurnId?.() : undefined
+      const hostConvId = hostExecId || hostSessionId
+
+      const hostCallId =
+        typeof call.input.callId === 'string' && call.input.callId.trim()
+          ? call.input.callId.trim()
+          : undefined
+      const rawSlot =
+        typeof call.input.documentSlot === 'string' && call.input.documentSlot.trim()
+          ? call.input.documentSlot.trim()
+          : undefined
+      const providerCallId =
+        call.id && typeof call.id === 'string' && call.id.trim() ? call.id.trim() : undefined
+      const effectiveCallId = providerCallId || hostCallId
+      const hostOpId = effectiveCallId || rawSlot
+
+      // Identity Authority & Stability:
+      // Host-owned getters are strictly authoritative. Model-supplied sessionId and userTurnId
+      // arguments are never trusted or promoted to authoritative context.
+      let sessionId: string | undefined = hostSessionId
+      let userTurnId: string | undefined = hostUserTurnId
+
+      const bindingKey = effectiveCallId
+        ? hostConvId
+          ? `${hostConvId}:${effectiveCallId}`
+          : effectiveCallId
+        : undefined
+
+      if (bindingKey && callBindings.has(bindingKey)) {
+        const bound = callBindings.get(bindingKey)!
+        if (!hasHostUserTurn || hostUserTurnId === bound.userTurnId) {
+          sessionId = bound.sessionId
+          userTurnId = bound.userTurnId
+        } else {
+          // Genuinely distinct user turn reusing call ID -> bind to new turn
+          sessionId = hostSessionId
+          userTurnId = hostUserTurnId
+          if (userTurnId) {
+            callBindings.set(bindingKey, { sessionId, userTurnId })
+          }
+        }
+      } else if (bindingKey && userTurnId) {
+        if (callBindings.size >= 100) {
+          const oldest = callBindings.keys().next().value
+          if (oldest !== undefined) callBindings.delete(oldest)
+        }
+        callBindings.set(bindingKey, { sessionId, userTurnId })
+      }
+
+      const documentType =
+        typeof call.input.documentType === 'string'
+          ? (call.input.documentType as DocumentType)
+          : undefined
+
+      const conversationKey = hostConvId || sessionId
+      const slotKey =
+        conversationKey && userTurnId && hostOpId
+          ? `${conversationKey}:${userTurnId}:${hostOpId}`
+          : null
+
+      const execContext: CreateDocumentExecutionContext = {
+        sessionId: conversationKey,
+        userTurnId,
+        callId: effectiveCallId,
+        documentSlot: rawSlot,
+      }
+
+      const payloadFingerprint = JSON.stringify({
+        title,
+        format,
+        content,
+        documentType: documentType ?? null,
+      })
+
+      const targetSlot = rawSlot || 'primary'
+
+      let matchedCached =
+        slotKey && committedSlots.has(slotKey) ? committedSlots.get(slotKey) : undefined
+      let matchedKey = slotKey
+
+      if (!matchedCached && conversationKey && userTurnId) {
+        for (const [key, entry] of committedSlots.entries()) {
+          if (
+            entry.conversationKey === conversationKey &&
+            entry.userTurnId === userTurnId &&
+            entry.slot === targetSlot &&
+            entry.payloadFingerprint === payloadFingerprint
+          ) {
+            matchedCached = entry
+            matchedKey = key
+            break
+          }
+        }
+      }
+
+      if (matchedCached) {
+        if (matchedCached.payloadFingerprint !== payloadFingerprint) {
+          return {
+            output:
+              'could not save the document: Operation identity conflict: conflicting payload for slot',
+            isError: true,
+            summary: 'identity conflict',
+          }
+        }
+        const exists = deps.fileExists ? await deps.fileExists(matchedCached.path) : true
+        if (exists) {
+          const shouldAutoOpen =
+            typeof call.input.open === 'boolean' ? call.input.open : format === 'docx'
+          let opened = false
+          if (shouldAutoOpen) {
+            if (openFn) {
+              try {
+                opened = Boolean(await openFn(matchedCached.path, execContext))
+              } catch {
+                opened = false
+              }
+            } else if (isOpenFn) {
+              try {
+                opened = Boolean(await isOpenFn(matchedCached.path))
+              } catch {
+                opened = false
+              }
+            } else {
+              opened = Boolean(matchedCached.opened)
+            }
+          }
+          matchedCached.opened = opened
+          const name = matchedCached.path.split(/[\\/]/).pop() ?? matchedCached.path
+          const status = opened ? 'opened in editor' : 'saved to disk (not opened)'
+          return {
+            output: `saved ${name} (${status})\n  path: ${matchedCached.path}\n  cite: ${kbCiteHref(matchedCached.path)}\n  opened: ${Boolean(opened)}`,
+            summary: name,
+          }
+        } else if (matchedKey) {
+          committedSlots.delete(matchedKey)
+        }
+      }
+
+      let matchedInFlight =
+        slotKey && inFlightOps.has(slotKey) ? inFlightOps.get(slotKey) : undefined
+
+      if (!matchedInFlight && conversationKey && userTurnId) {
+        for (const entry of inFlightOps.values()) {
+          if (
+            entry.conversationKey === conversationKey &&
+            entry.userTurnId === userTurnId &&
+            entry.slot === targetSlot &&
+            entry.payloadFingerprint === payloadFingerprint
+          ) {
+            matchedInFlight = entry
+            break
+          }
+        }
+      }
+
+      if (matchedInFlight) {
+        if (matchedInFlight.payloadFingerprint !== payloadFingerprint) {
+          return {
+            output:
+              'could not save the document: Operation identity conflict: conflicting payload for slot',
+            isError: true,
+            summary: 'identity conflict',
+          }
+        }
+        try {
+          const cached = await matchedInFlight.promise
+          const name = cached.path.split(/[\\/]/).pop() ?? cached.path
+          const status = cached.opened ? 'opened in editor' : 'saved to disk (not opened)'
+          return {
+            output: `saved ${name} (${status})\n  path: ${cached.path}\n  cite: ${kbCiteHref(cached.path)}\n  opened: ${Boolean(cached.opened)}`,
+            summary: name,
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          return {
+            output: `could not save the document: ${message}`,
+            isError: true,
+            summary: 'save failed',
+          }
+        }
+      }
+
+      const open = typeof call.input.open === 'boolean' ? call.input.open : undefined
+      const shouldAutoOpen =
+        typeof call.input.open === 'boolean' ? call.input.open : format === 'docx'
+
+      const opPromise = (async () => {
+        const res = await deps.create({
           title: title || 'Untitled',
           format,
           content,
           ...(open !== undefined ? { open } : {}),
+          ...(sessionId ? { sessionId } : {}),
+          ...(userTurnId ? { userTurnId } : {}),
+          ...(rawSlot ? { documentSlot: rawSlot } : {}),
+          ...(effectiveCallId ? { callId: effectiveCallId } : {}),
+          ...(documentType ? { documentType } : {}),
         })
-        created.push(path)
-        const name = path.split(/[\\/]/).pop() ?? path
-        const status = opened ? 'opened in editor' : 'saved to disk (not opened)'
+
+        let opened = Boolean(res.opened)
+        if (shouldAutoOpen) {
+          if (openFn) {
+            try {
+              opened = Boolean(await openFn(res.path, execContext))
+            } catch {
+              opened = false
+            }
+          } else if (isOpenFn) {
+            try {
+              opened = Boolean(await isOpenFn(res.path))
+            } catch {
+              opened = false
+            }
+          }
+        } else {
+          opened = false
+        }
+        return { path: res.path, opened }
+      })()
+
+      if (slotKey) {
+        inFlightOps.set(slotKey, {
+          promise: opPromise,
+          payloadFingerprint,
+          conversationKey,
+          userTurnId,
+          slot: targetSlot,
+        })
+      }
+      try {
+        const res = await opPromise
+        if (slotKey) {
+          if (committedSlots.size >= 100) {
+            const oldest = committedSlots.keys().next().value
+            if (oldest !== undefined) committedSlots.delete(oldest)
+          }
+          committedSlots.set(slotKey, {
+            ...res,
+            payloadFingerprint,
+            conversationKey,
+            userTurnId,
+            slot: targetSlot,
+          })
+        }
+        if (!created.includes(res.path)) created.push(res.path)
+        const name = res.path.split(/[\\/]/).pop() ?? res.path
+        const status = res.opened ? 'opened in editor' : 'saved to disk (not opened)'
         return {
-          output: `saved ${name} (${status})\n  path: ${path}\n  cite: ${kbCiteHref(path)}\n  opened: ${Boolean(opened)}`,
+          output: `saved ${name} (${status})\n  path: ${res.path}\n  cite: ${kbCiteHref(res.path)}\n  opened: ${Boolean(res.opened)}`,
           summary: name,
         }
       } catch (error) {
@@ -141,6 +450,8 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
           isError: true,
           summary: 'save failed',
         }
+      } finally {
+        if (slotKey) inFlightOps.delete(slotKey)
       }
     },
     verifyResponse: (finalText, executed: readonly ExecutedToolCall[]) => {

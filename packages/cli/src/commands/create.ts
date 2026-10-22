@@ -21,8 +21,16 @@ import {
   type TableInput,
 } from '../formats/xlsx'
 import { exportViaApp } from '../formats/app-export'
-import { blankDocument, closeDocument, fillFromHtml, saveDocument } from '../formats/docx'
+import {
+  blankDocxOptionsFromProfile,
+  blankDocument,
+  closeDocument,
+  fillFromHtml,
+  saveDocument,
+} from '../formats/docx'
 import { markdownToDocx } from '../formats/markdown'
+import { validateGeneratedDocx } from '../formats/docx-validation'
+import { DOCUMENT_PROFILES, type DocumentType } from '@genoffice/agent-core'
 import { runWorkbookDsl } from '../formats/xlsx-dsl'
 import { columnLabel } from '@genoffice/xlsx-gateway/domain/cell-address'
 import { sheetNameFromStem } from '../formats/csv'
@@ -89,6 +97,17 @@ export const createCommand: CommandDef = {
       name: 'audit',
       description:
         'pptx: run the geometry audit on the written deck and report it under detail.audit (advisory findings, with setTransform suggestions)',
+    },
+    {
+      name: 'profile',
+      value: 'profile',
+      description:
+        'docx: document layout/typography profile: general, report, scientific-report, memo, proposal, letter',
+    },
+    {
+      name: 'document-type',
+      value: 'type',
+      description: 'docx: alias for --profile',
     },
   ],
   async run(args, ctx) {
@@ -382,17 +401,59 @@ async function createDocx(
   const source = resolveInput(from, ctx)
   const text = readFileSync(source, 'utf-8')
   const ext = extname(source).toLowerCase()
+
+  const rawType = flagString(args, 'profile') || flagString(args, 'document-type')
+  if (rawType && !Object.prototype.hasOwnProperty.call(DOCUMENT_PROFILES, rawType)) {
+    throw new CliError(
+      EXIT.usage,
+      `unknown profile "${rawType}", expected one of: ${Object.keys(DOCUMENT_PROFILES).join(', ')}`,
+      { supported: Object.keys(DOCUMENT_PROFILES) },
+      { reason: 'invalid_argument', suggestion: 'pick a profile from detail.supported' },
+    )
+  }
+  const documentType = (rawType as DocumentType) || undefined
+
   if (ext === '.md' || ext === '.markdown') {
+    const bytes = await markdownToDocx(text, { file: source, ctx }, { documentType })
+    const validation = await validateGeneratedDocx(bytes)
+    if (!validation.ok) {
+      throw new CliError(
+        EXIT.conversion,
+        `Generated DOCX failed validation: ${validation.errors.join('; ')}`,
+        undefined,
+        { reason: 'conversion_failed' },
+      )
+    }
     return {
-      bytes: await markdownToDocx(text, { file: source, ctx }),
-      detail: { source: 'markdown' },
+      bytes,
+      detail: { source: 'markdown', profile: documentType || 'general', stats: validation.stats },
     }
   }
   if (ext === '.html' || ext === '.htm') {
-    const doc = await blankDocument()
+    const profile = DOCUMENT_PROFILES[documentType || 'general']
+    const blankOptions = blankDocxOptionsFromProfile(profile)
+    const doc = await blankDocument(blankOptions)
     try {
       const blocks = fillFromHtml(doc, text)
-      return { bytes: await saveDocument(doc), detail: { source: 'html', blocks } }
+      const bytes = await saveDocument(doc)
+      const validation = await validateGeneratedDocx(bytes)
+      if (!validation.ok) {
+        throw new CliError(
+          EXIT.conversion,
+          `Generated DOCX failed validation: ${validation.errors.join('; ')}`,
+          undefined,
+          { reason: 'conversion_failed' },
+        )
+      }
+      return {
+        bytes,
+        detail: {
+          source: 'html',
+          profile: documentType || 'general',
+          blocks,
+          stats: validation.stats,
+        },
+      }
     } finally {
       closeDocument(doc)
     }

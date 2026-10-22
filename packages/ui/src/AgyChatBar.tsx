@@ -9,11 +9,19 @@ export interface AgyBarModel {
   group: string | null
   relativeCost: number
   speed: 'fast' | 'balanced' | 'slow'
+  /** false when the person switched this model off in the AGY model settings */
+  enabled?: boolean
 }
 export interface AgyBarState {
   models: AgyBarModel[]
   selected: string
   active: boolean
+  /** ids the installed CLI confirmed it can serve (empty when the catalog could not be read) */
+  available?: string[]
+  /** how well the selected model is supported by the CLI configured now */
+  selectedStatus?: 'verified' | 'unavailable' | 'unverified' | 'none'
+  /** set when `agy models` could not be read, so the list is unverified */
+  catalogError?: string
 }
 export interface AgyBarUsage {
   groups: Array<{
@@ -57,11 +65,12 @@ export interface AgyBarApi {
   cancelAgyLogin?(): Promise<void>
   onAgyLogin?(handler: (state: AgyBarLogin) => void): () => void
   getAgyChatState(): Promise<AgyBarState>
-  selectAgyChatModel(id: string): Promise<boolean>
+  selectAgyChatModel(id: string, activateProvider?: boolean): Promise<boolean>
   getAgyChatUsage(): Promise<AgyBarUsage>
   refreshAgyChatUsage(): Promise<AgyBarUsage>
   onAgyChatUsage(handler: (state: AgyBarUsage) => void): () => void
   onAgyChatActivity?(handler: (activity: AgyBarActivity) => void): () => void
+  onAgyChatModelChanged?(handler: () => void): () => void
 }
 
 interface RunStep {
@@ -199,6 +208,13 @@ const EN = {
   cost: 'Uses about {n}× the quota',
   costBase: 'Lightest on quota',
   more: 'More models can be turned on in Settings → AI model.',
+  unverified:
+    'The Antigravity CLI did not return a model list, so these models are not confirmed as available.',
+  unavailableModel:
+    'The model you chose is not in the Antigravity CLI list any more. Pick one below.',
+  noModel: 'No chat model available',
+  noModelHint:
+    'The Antigravity CLI reported no chat model it can serve. Check the Antigravity connection in Settings, or choose another chat provider.',
   usage: 'Antigravity usage',
   fiveHour: '5-hour limit',
   weekly: 'Weekly limit',
@@ -285,6 +301,12 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     cost: 'Tốn quota khoảng {n} lần',
     costBase: 'Tiết kiệm quota nhất',
     more: 'Có thể bật thêm model trong Cài đặt → Mô hình AI.',
+    unverified: 'Antigravity CLI không trả danh sách model, nên chưa xác nhận được model khả dụng.',
+    unavailableModel:
+      'Model bạn đã chọn không còn trong danh sách của Antigravity CLI. Hãy chọn model bên dưới.',
+    noModel: 'Không có model chat khả dụng',
+    noModelHint:
+      'Antigravity CLI không báo model chat nào có thể dùng. Hãy kiểm tra kết nối Antigravity trong Cài đặt, hoặc chọn provider chat khác.',
     usage: 'Mức dùng Antigravity',
     fiveHour: 'Hạn mức 5 giờ',
     weekly: 'Hạn mức tuần',
@@ -367,6 +389,11 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     cost: '约消耗 {n} 倍额度',
     costBase: '最省额度',
     more: '可在 设置 → AI 模型 中启用更多模型。',
+    unverified: 'Antigravity CLI 未返回模型列表，因此这些模型未被确认可用。',
+    unavailableModel: '你选择的模型已不在 Antigravity CLI 列表中。请在下方选择另一个模型。',
+    noModel: '无可用聊天模型',
+    noModelHint:
+      'Antigravity CLI 未报告可使用的聊天模型。请在设置中检查 Antigravity 连接，或选择其他聊天提供商。',
     usage: 'Antigravity 用量',
     fiveHour: '5 小时额度',
     weekly: '每周额度',
@@ -658,6 +685,17 @@ export function AgyChatBar({
   busyRef.current = busy
   const supersededRunIds = useRef(new Set<string>())
   const supersededRequestIds = useRef(new Set<string>())
+  /** generation of the last state read, and whether this component is still mounted */
+  const loadSeq = useRef(0)
+  const alive = useRef(true)
+  // the mount flag is tied to the component, not to the bridge: swapping the api (or re-rendering
+  // with a different source) must not mark a still-mounted bar as gone
+  useEffect(() => {
+    alive.current = true
+    return () => {
+      alive.current = false
+    }
+  }, [])
 
   if (prevActiveRequestIdRef.current !== activeRequestId) {
     if (prevActiveRequestIdRef.current) {
@@ -673,14 +711,39 @@ export function AgyChatBar({
   const source = api ?? bridge()
 
   const loadState = useCallback(async () => {
+    // generation token: when two reads overlap (focus + model change + another window), the
+    // answer of an older request must never overwrite the state a newer one already produced
+    const mine = ++loadSeq.current
     try {
       const next = await source?.getAgyChatState()
+      if (mine !== loadSeq.current || !alive.current) return
       if (next) {
         stateRef.current = next
         setState(next)
+      } else {
+        setState((previous) => {
+          if (!previous) return previous
+          const updated: AgyBarState = {
+            ...previous,
+            selectedStatus: 'unverified',
+            catalogError: previous.catalogError ?? 'unavailable',
+          }
+          stateRef.current = updated
+          return updated
+        })
       }
     } catch {
-      // keep what is shown
+      if (mine !== loadSeq.current || !alive.current) return
+      setState((previous) => {
+        if (!previous) return previous
+        const updated: AgyBarState = {
+          ...previous,
+          selectedStatus: 'unverified',
+          catalogError: previous.catalogError ?? 'unavailable',
+        }
+        stateRef.current = updated
+        return updated
+      })
     }
   }, [source])
 
@@ -813,12 +876,20 @@ export function AgyChatBar({
     const onFocus = () => void loadState()
     window.addEventListener('focus', onFocus)
     window.addEventListener(MODEL_CHANGED, onFocus)
+    // a change made in another window reaches this one through the main process
+    let offModel: (() => void) | undefined
+    try {
+      offModel = source.onAgyChatModelChanged?.(onFocus)
+    } catch {
+      offModel = undefined
+    }
     const clock = setInterval(() => tick((n) => n + 1), 30_000)
     return () => {
       off()
       offLogin?.()
       offInstall?.()
       offRun?.()
+      offModel?.()
       window.removeEventListener('focus', onFocus)
       window.removeEventListener(MODEL_CHANGED, onFocus)
       clearInterval(clock)
@@ -962,7 +1033,11 @@ export function AgyChatBar({
       : null
   const displayModelLabel =
     runningModelInfo?.label ??
-    (running && effectiveRun?.model ? effectiveRun.model : (current?.label ?? state.selected))
+    (running && effectiveRun?.model
+      ? effectiveRun.model
+      : state.selectedStatus === 'none'
+        ? d.noModel
+        : (current?.label ?? state.selected))
   const group = current?.group
   const buckets = usage?.groups?.find((g) => g.name === group)?.buckets ?? []
   const five = buckets.find((b) => b.window === '5h')
@@ -1172,24 +1247,38 @@ export function AgyChatBar({
       )}
       {showBar && showModel && menu && (
         <div className="agy-bar-menu" role="listbox" aria-label={d.model}>
-          {state.models.map((model) => (
-            <button
-              key={model.id}
-              type="button"
-              role="option"
-              aria-selected={model.id === state.selected}
-              className={model.id === state.selected ? 'is-selected' : ''}
-              onClick={() => void choose(model.id)}
-            >
-              <span className="agy-bar-menu-main">
-                <strong>{model.label}</strong>
-                <span className={`agy-bar-pill is-${model.speed}`}>{speedLabel(model)}</span>
-              </span>
-              <span className="agy-bar-menu-sub">
-                {model.relativeCost <= 1 ? d.costBase : fill(d.cost, { n: model.relativeCost })}
-              </span>
-            </button>
-          ))}
+          {state.models.map((model) => {
+            // the chat box lists what the person switched on, but only a model the CLI
+            // confirmed can actually be chosen: the main process refuses the rest, so the
+            // menu must not look like it accepts them
+            const blocked =
+              (state.available !== undefined && !state.available.includes(model.id)) ||
+              model.enabled === false
+            return (
+              <button
+                key={model.id}
+                type="button"
+                role="option"
+                aria-selected={model.id === state.selected}
+                aria-disabled={blocked}
+                disabled={blocked}
+                title={blocked ? `${model.label} - ${d.unverified}` : model.label}
+                className={model.id === state.selected ? 'is-selected' : ''}
+                onClick={() => {
+                  if (blocked) return
+                  void choose(model.id)
+                }}
+              >
+                <span className="agy-bar-menu-main">
+                  <strong>{model.label}</strong>
+                  <span className={`agy-bar-pill is-${model.speed}`}>{speedLabel(model)}</span>
+                </span>
+                <span className="agy-bar-menu-sub">
+                  {model.relativeCost <= 1 ? d.costBase : fill(d.cost, { n: model.relativeCost })}
+                </span>
+              </button>
+            )
+          })}
           <p className="agy-bar-note">{d.more}</p>
         </div>
       )}
@@ -1253,9 +1342,18 @@ export function AgyChatBar({
             <button
               type="button"
               className="agy-bar-chip agy-bar-model"
+              data-status={state.selectedStatus}
               aria-haspopup="listbox"
               aria-expanded={menu}
-              title={d.model}
+              title={
+                state.selectedStatus === 'none'
+                  ? d.noModelHint
+                  : state.selectedStatus === 'unavailable'
+                    ? d.unavailableModel
+                    : state.catalogError
+                      ? d.unverified
+                      : d.model
+              }
               onClick={() => {
                 setMenu((value) => !value)
               }}

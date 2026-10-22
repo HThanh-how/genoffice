@@ -14,6 +14,10 @@ export interface AiModelItemMeta {
   readonly label: string
   readonly speed?: 'fast' | 'balanced' | 'slow' | undefined
   readonly relativeCost?: number | undefined
+  /** Antigravity only: false means the person switched this model off */
+  readonly enabled?: boolean | undefined
+  /** Antigravity only: false means the CLI could not be reached, so availability is unconfirmed */
+  readonly verified?: boolean | undefined
 }
 
 export interface AiModelPickerGroup {
@@ -22,6 +26,8 @@ export interface AiModelPickerGroup {
   readonly endpoint?: string | undefined
   readonly label: string
   readonly models: readonly string[]
+  /** Antigravity only: the stored model, shown as the current configuration but not selectable */
+  readonly unusable?: readonly string[] | undefined
   readonly modelItems?: readonly AiModelItemMeta[] | undefined
 }
 
@@ -105,6 +111,14 @@ export function aiModelPickerGroups(
   input: AiSettings,
   _gskLoggedIn: boolean,
   liveAgyModels?: readonly AiModelItemMeta[],
+  /** true when the Antigravity catalog could not be read, so nothing is confirmed */
+  agyCatalogFailed = false,
+  /**
+   * true when this window can reach the Antigravity selection handler. Without it an Antigravity
+   * model could only be written through the generic settings route, which checks nothing, so no
+   * Antigravity model is offered as selectable.
+   */
+  agySelectionAvailable = true,
 ): AiModelPickerGroup[] {
   const settings = resolveCustomEndpoints(input)
   const groups: AiModelPickerGroup[] = []
@@ -133,12 +147,53 @@ export function aiModelPickerGroups(
       continue
     }
     if (!pickerProviderUsable(settings, meta, liveAgyModels)) continue
-    if (meta.id === 'agy' && liveAgyModels && liveAgyModels.length > 0) {
+    // Once the chat box has answered, its list is the only truth about Antigravity: an empty
+    // answer means "no model is selectable", not "use the hardcoded seed". The seed is only used
+    // when there is no live state at all (no preload bridge).
+    if (meta.id === 'agy') {
+      const stored = settings.providers?.agy?.model?.trim() ?? ''
+      if (!agySelectionAvailable) {
+        // This window cannot reach the Antigravity selection handler, so no Antigravity model can
+        // be validated here. The group stays visible when Antigravity is already the provider (the
+        // chip then keeps naming it), but nothing in it is clickable.
+        if (stored || settings.provider === 'agy') {
+          groups.push({
+            id: meta.id,
+            label: meta.label,
+            models: [],
+            unusable: stored ? [stored] : [],
+            modelItems: liveAgyModels,
+          })
+        }
+        continue
+      }
+      // Only models the person switched on *and* the CLI positively confirmed are selectable. A
+      // catalog that could not be read proves nothing, so it can never widen this list: an
+      // unconfirmed model is not the same as an empty catalog, and a failure is not permission.
+      // A stored model that is switched off, unconfirmed or absent from the verified catalog is
+      // still shown, as the current configuration, so the chip never lies about what is saved -
+      // but it is marked unusable and cannot be clicked. With nothing usable and nothing stored
+      // the group is omitted: the hardcoded provider seed is not evidence that a model exists.
+      if (liveAgyModels === undefined) continue
+      // Older catalogs also list unversioned aliases (`gemini-flash-high`) next to their
+      // versioned twin; fold them so the picker shows each model once.
       const items = dedupeAgyModelItems(liveAgyModels)
+      const usable = items
+        .filter((m) => m.enabled !== false && !agyCatalogFailed && m.verified === true)
+        .map((m) => m.id)
+      const storedId = stored
+        ? resolveAgyModelAlias(
+            stored,
+            liveAgyModels.map((m) => m.id),
+          )
+        : ''
+      const unusable = storedId && !usable.includes(storedId) ? [storedId] : []
+      if (usable.length === 0 && unusable.length === 0) continue
       groups.push({
         id: meta.id,
         label: meta.label,
-        models: items.map((m) => m.id),
+        models: usable,
+        unusable,
         modelItems: items,
       })
       continue
@@ -151,11 +206,23 @@ export function aiModelPickerGroups(
   return groups
 }
 
-export function aiModelPickerSelection(input: AiSettings): AiModelPickerSelection {
+/**
+ * What the composer chip should show. For Antigravity the live chat selection wins over the
+ * stored model: the CLI decides the first-run model, and the picker must not display a model the
+ * chat box is not actually using.
+ */
+export function aiModelPickerSelection(
+  input: AiSettings,
+  liveAgySelected?: string | undefined,
+): AiModelPickerSelection {
   const settings = resolveCustomEndpoints(input)
   const provider = activeProvider(settings)
   const meta = AI_PROVIDERS.find((m) => m.id === provider)
-  const model = settings.providers?.[provider]?.model?.trim() || meta?.defaultModel || ''
+  const live = provider === 'agy' ? (liveAgySelected?.trim() ?? '') : ''
+  const stored = settings.providers?.[provider]?.model?.trim() ?? ''
+  // Antigravity has no seeded default: when neither the chat box nor the stored settings name a
+  // model, the chip shows "choose a model" rather than a model the CLI never confirmed.
+  const model = live || stored || (provider === 'agy' ? '' : (meta?.defaultModel ?? ''))
   if (provider === 'custom' && settings.customEndpoint) {
     return { provider, endpoint: settings.customEndpoint, model }
   }

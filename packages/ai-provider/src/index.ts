@@ -103,13 +103,21 @@ export type {
   ProviderCapabilities,
   ResolvedEndpoint,
 } from './registry'
-export { sanitizeAiSettings, sanitizeCliPath, validCliPath } from './ai-settings-guard'
+export {
+  applySettingsWrite,
+  decideSettingsWrite,
+  sanitizeAiSettings,
+  sanitizeCliPath,
+  validCliPath,
+  type SettingsWriteDecision,
+} from './ai-settings-guard'
 export { chatForProvider } from './chat'
 export { listGeminiModels } from './gemini-models'
 export type { GeminiModelInfo } from './gemini-models'
 export { setAiUserAgent, setRescueFetch } from './fetch'
 export { isAiNetworkError } from './network-error'
 export { isAiOverloadedError } from './overload-error'
+export { isAiRegionBlockedError } from './region-error'
 export { parseOutputCapRejection } from './output-cap'
 export { AiCreditsError, sseLines, streamForProvider } from './stream'
 export type { StreamCallbacks } from './stream'

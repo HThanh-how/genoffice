@@ -1,4 +1,4 @@
-import { basename, join } from 'node:path'
+import { basename, join, resolve } from 'node:path'
 import { realpathSync } from 'node:fs'
 import { BrowserWindow, shell, WebContentsView } from 'electron'
 import type { Rectangle, WebContents } from 'electron'
@@ -459,6 +459,13 @@ export class TabManager {
     openPath?: string,
     options?: { newBlank?: boolean; aiContent?: AiDocContent },
   ): string {
+    if (openPath && !options?.newBlank) {
+      const existing = this.findDocsTabByPath(openPath)
+      if (existing) {
+        this.activateTab(existing)
+        return existing
+      }
+    }
     const view = createDocsView(openPath)
     const id = `t${this.nextId++}`
     if (options?.newBlank) markDocsNewBlank(view.webContents.id)
@@ -861,15 +868,15 @@ export class TabManager {
     }
   }
 
-  /** Remove a tab from the strip WITHOUT destroying its WebContentsView and
-   *  hand it to the caller ("Open in New Window" — the live document, unsaved
-   *  edits included, moves into a detached editor window). Null while a close
-   *  prompt is pending on the tab. */
   /** told when a tab with a file is closed (not detached), so it can be reopened */
   setClosedListener(listener: ((tab: { kind: TabKind; filePath: string }) => void) | null): void {
     this.closedListener = listener
   }
 
+  /** Remove a tab from the strip WITHOUT destroying its WebContentsView and
+   *  hand it to the caller ("Open in New Window" — the live document, unsaved
+   *  edits included, moves into a detached editor window). Null while a close
+   *  prompt is pending on the tab. */
   detachTab(id: string): DetachedTab | null {
     if (id === HOME_ID) return null
     const idx = this.tabs.findIndex((t) => t.id === id)
@@ -1008,9 +1015,11 @@ export class TabManager {
 export function canonicalPath(path: string | undefined): string | undefined {
   if (path === undefined) return undefined
   try {
-    return realpathSync.native(path)
+    const real = realpathSync.native(path)
+    return process.platform === 'win32' ? real.toLowerCase() : real
   } catch {
-    return path
+    const res = resolve(path)
+    return process.platform === 'win32' ? res.toLowerCase() : res
   }
 }
 

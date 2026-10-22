@@ -44,8 +44,9 @@ describe('settings defaults', () => {
     })
     expect(merged.localOcr).toEqual({ enabled: false, lightPages: 5, engine: 'auto' })
     expect(
-      agyOcrSettingsFrom({ [AGY_OCR_SETTINGS_KEY]: { localOcr: { engine: 'tesseract-vie', lightPages: 1 } } })
-        .localOcr,
+      agyOcrSettingsFrom({
+        [AGY_OCR_SETTINGS_KEY]: { localOcr: { engine: 'tesseract-vie', lightPages: 1 } },
+      }).localOcr,
     ).toEqual({ enabled: true, lightPages: 1, engine: 'tesseract-vie' })
   })
 
@@ -283,5 +284,19 @@ describe('popup line', () => {
   it('is translated in vi and zh', () => {
     expect(popupLine('vi', { ...baseStatus, quota }, NOW)).toMatch(/Đọc PDF quét: đang chạy/)
     expect(popupLine('zh', { ...baseStatus, quota }, NOW)).toMatch(/读取扫描版 PDF：运行中/)
+  })
+})
+
+describe('OCR model stays task-specific (T27/T30)', () => {
+  it('T27: OCR defaults to the low-effort model whatever the chat default is', () => {
+    expect(DEFAULT_AGY_OCR_SETTINGS.model).toBe('gemini-3.8-flash-low')
+    expect(agyOcrSettingsFrom({}).model).toBe('gemini-3.8-flash-low')
+  })
+
+  it('T30: an OCR model the person picked is kept, and junk does not replace it', () => {
+    const picked = mergeAgyOcrSettings(DEFAULT_AGY_OCR_SETTINGS, { model: 'gemini-3.1-pro-high' })
+    expect(picked.model).toBe('gemini-3.1-pro-high')
+    expect(mergeAgyOcrSettings(picked, { model: '   ' }).model).toBe('gemini-3.1-pro-high')
+    expect(mergeAgyOcrSettings(picked, { model: 7 }).model).toBe('gemini-3.1-pro-high')
   })
 })

@@ -94,6 +94,14 @@ const api: DesktopApi = {
     ipcRenderer.on('app:auto-save-default-changed', listener)
     return () => ipcRenderer.removeListener('app:auto-save-default-changed', listener)
   },
+  getAuthorName: () => ipcRenderer.invoke('app:get-author-name'),
+  onAuthorNameChanged: (handler) => {
+    const listener = (_event: IpcRendererEvent, name: unknown) => {
+      if (typeof name === 'string') handler(name)
+    }
+    ipcRenderer.on('app:author-name-changed', listener)
+    return () => ipcRenderer.removeListener('app:author-name-changed', listener)
+  },
   getAiPanelPrefs: () => ipcRenderer.invoke('app:get-ai-panel-prefs'),
   setAiPanelPrefs: (patch) => ipcRenderer.invoke('app:set-ai-panel-prefs', patch),
   onAiPanelPrefsChanged: (handler) => {
@@ -253,7 +261,14 @@ const api: DesktopApi = {
   },
   getAiSettings: () => ipcRenderer.invoke('ai:get-settings'),
   getGeminiModels: () => ipcRenderer.invoke('ai:gemini-chat-models'),
-  setAiSettings: (settings: AiSettings) => ipcRenderer.invoke('ai:set-settings', settings),
+  setAiSettings: async (settings: AiSettings) => {
+    const result = (await ipcRenderer.invoke('ai:set-settings', settings)) as {
+      ok?: boolean
+      reason?: string
+    } | null
+    // a refused write must not look like a saved one to the renderer
+    if (result?.ok !== true) throw new Error(`settings not saved: ${result?.reason ?? 'invalid'}`)
+  },
   onAiSettingsChanged: (handler) => {
     const listener = () => handler()
     ipcRenderer.on('ai:settings-changed', listener)

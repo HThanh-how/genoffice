@@ -15,7 +15,7 @@ import {
 } from '../src/agy-resident'
 import type { AgyRunDeps } from '../src/agy-cli'
 import { streamAgy } from '../src/agy-cli'
-import { AGY_CHAT_DEFAULT_MODEL } from '../src/agy-chat'
+import { clearAgyChatDefaults, recordAgyChatDefault } from '../src/agy-default'
 
 class FakeResidentChild extends EventEmitter {
   stdout = new PassThrough()
@@ -55,6 +55,7 @@ class FakeResidentChild extends EventEmitter {
 function createMockDeps() {
   let nextPid = 1000
   const children: FakeResidentChild[] = []
+  const spawned: Array<{ command: string; args: string[] }> = []
   const createdDirs: string[] = []
   const removedDirs: string[] = []
   const writtenFiles: Array<{ path: string; content: string }> = []
@@ -68,9 +69,10 @@ function createMockDeps() {
     isFile: async () => true,
     isExecutable: async () => true,
     loginShellLookup: async () => undefined,
-    spawn: () => {
+    spawn: (command, args) => {
       const child = new FakeResidentChild(nextPid++)
       children.push(child)
+      spawned.push({ command, args })
       return child.asChild()
     },
     killTree: (child) => {
@@ -105,6 +107,7 @@ function createMockDeps() {
   return {
     deps: mockDeps,
     children,
+    spawned,
     createdDirs,
     removedDirs,
     writtenFiles,
@@ -744,22 +747,21 @@ describe('agy resident transport', () => {
       shutdownAgyResidentServers(mock.deps)
     })
 
-    it('defaults prewarmed resident worker to AGY_CHAT_DEFAULT_MODEL when model is omitted', async () => {
+    it('T17: a resident chat turn with no stored model uses the High chat default', async () => {
       const mock = createMockDeps()
       shutdownAgyResidentServers(mock.deps)
 
-      const configWithoutModel = { apiKey: '', cliPath: '/usr/local/bin/agy' }
+      // an unreachable CLI path keeps the catalog probe from touching the real machine
+      const config = { apiKey: '', model: '', cliPath: '/nonexistent/agy' }
+      const modelOf = (args: string[]) => args[args.indexOf('--model') + 1]
+      await prewarmAgy(config, mock.deps)
+      expect(modelOf(mock.spawned[0]!.args)).toBe('gemini-3.8-flash-high')
 
-      await prewarmAgy(configWithoutModel, mock.deps)
-      expect(mock.children.length).toBe(1)
-      const prewarmedChild = mock.children[0]!
-      expect(prewarmedChild.stdinText).toBe('')
-
-      // Subsequent session request with AGY_CHAT_DEFAULT_MODEL binds to prewarmed worker
+      const child = mock.children[0]!
       const turn = streamAgy(
-        { ...configWithoutModel, model: AGY_CHAT_DEFAULT_MODEL },
+        config,
         'sys',
-        [{ role: 'user', text: 'Chat request with default high' }],
+        [{ role: 'user', text: 'Hello' }],
         sampleTools,
         1024,
         {
@@ -771,21 +773,65 @@ describe('agy resident transport', () => {
         },
         mock.deps,
       )
-
-      // Binds to existing worker without spawning a new one
+      // the prewarmed worker is reused, and it was warmed for the same model
       expect(mock.children.length).toBe(1)
-      await vi.waitFor(() => expect(prewarmedChild.stdinText).toContain('Chat request with default high'))
-
-      prewarmedChild.emitLines([
+      child.emitLines([
         JSON.stringify({
           event: 'result',
-          result: {
-            status: 'SUCCESS',
-            structured_output: { text: 'Welcome High', tool_calls: [] },
-          },
+          result: { status: 'SUCCESS', structured_output: { text: 'ok', tool_calls: [] } },
         }),
       ])
+      await turn
+      shutdownAgyResidentServers(mock.deps)
+    })
 
+    it('T40: a resident turn sends a stored High even when this CLI only reported Low', async () => {
+      const mock = createMockDeps()
+      shutdownAgyResidentServers(mock.deps)
+      clearAgyChatDefaults()
+      recordAgyChatDefault('/nonexistent/agy', { models: ['gemini-3.8-flash-low'] }, 0)
+      const modelOf = (args: string[]) => args[args.indexOf('--model') + 1]
+      await prewarmAgy(
+        { apiKey: '', model: 'gemini-3.8-flash-high', cliPath: '/nonexistent/agy' },
+        mock.deps,
+      )
+      expect(modelOf(mock.spawned[0]!.args)).toBe('gemini-3.8-flash-high')
+      clearAgyChatDefaults()
+      shutdownAgyResidentServers(mock.deps)
+    })
+
+    it('T18: switching models never reuses a worker warmed for another model', async () => {
+      const mock = createMockDeps()
+      shutdownAgyResidentServers(mock.deps)
+
+      await prewarmAgy({ apiKey: '', model: '', cliPath: '/nonexistent/agy' }, mock.deps)
+      const modelOf = (args: string[]) => args[args.indexOf('--model') + 1]
+      expect(modelOf(mock.spawned[0]!.args)).toBe('gemini-3.8-flash-high')
+
+      const turn = streamAgy(
+        { apiKey: '', model: 'gemini-3.1-pro-high', cliPath: '/nonexistent/agy' },
+        'sys',
+        [{ role: 'user', text: 'Pro turn' }],
+        sampleTools,
+        1024,
+        {
+          sessionId: 'chat-pro',
+          sessionScope: 'scope-pro',
+          signal: new AbortController().signal,
+          onDelta: vi.fn(),
+          onToolCall: vi.fn(),
+        },
+        mock.deps,
+      )
+      await vi.waitFor(() => expect(mock.spawned.length).toBe(2))
+      expect(modelOf(mock.spawned[1]!.args)).toBe('gemini-3.1-pro-high')
+      const proChild = mock.children[1]!
+      proChild.emitLines([
+        JSON.stringify({
+          event: 'result',
+          result: { status: 'SUCCESS', structured_output: { text: 'pro', tool_calls: [] } },
+        }),
+      ])
       await turn
       shutdownAgyResidentServers(mock.deps)
     })
@@ -1081,6 +1127,15 @@ describe('agy resident transport', () => {
       )
 
       // Even during concurrent asynchronous setup, children spawned must NEVER exceed AGY_MAX_RESIDENT_WORKERS (2)
+      for (let i = 0; i < 20; i++) {
+        await new Promise((r) => setTimeout(r, 100))
+        console.log(
+          'children',
+          mock.children.length,
+          'spawned',
+          mock.spawned.map((x) => x.args[x.args.indexOf('--model') + 1]),
+        )
+      }
       await vi.waitFor(() => expect(mock.children.length).toBe(2))
       expect(mock.children.length).toBeLessThanOrEqual(2)
 

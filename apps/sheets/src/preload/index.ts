@@ -521,6 +521,13 @@ const desktopApi: DesktopApi = {
     const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.userDisplayName)
     return typeof result === 'string' ? result : ''
   },
+  onUserDisplayNameChanged(handler) {
+    const listener = (_event: Electron.IpcRendererEvent, name: unknown) => {
+      if (typeof name === 'string') handler(name)
+    }
+    ipcRenderer.on('app:author-name-changed', listener)
+    return () => ipcRenderer.removeListener('app:author-name-changed', listener)
+  },
   async getAiSettings() {
     const result: unknown = await ipcRenderer.invoke(IPC_CHANNELS.aiGetSettings)
     if (!isRecord(result)) throw new Error('Invalid AI settings response.')
@@ -530,7 +537,12 @@ const desktopApi: DesktopApi = {
     return ipcRenderer.invoke('ai:gemini-chat-models')
   },
   async setAiSettings(settings) {
-    await ipcRenderer.invoke(IPC_CHANNELS.aiSetSettings, settings)
+    const result = (await ipcRenderer.invoke(IPC_CHANNELS.aiSetSettings, settings)) as {
+      ok?: boolean
+      reason?: string
+    } | null
+    // a refused write must not look like a saved one to the renderer
+    if (result?.ok !== true) throw new Error(`settings not saved: ${result?.reason ?? 'invalid'}`)
   },
   onAiSettingsChanged(handler) {
     const listener = () => handler()

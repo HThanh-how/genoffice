@@ -1,7 +1,7 @@
 {
   "name": "@genoffice/shell",
   "productName": "GenOffice",
-  "version": "0.11.117",
+  "version": "0.11.920",
   "license": "Apache-2.0",
   "homepage": "https://github.com/HThanh-how/genoffice",
   "private": true,
@@ -34,6 +34,7 @@
     "@genoffice/pptx-render": "*",
     "@genoffice/sheets": "*",
     "@genoffice/slides": "*",
+    "@genoffice/project-store": "*",
     "@genoffice/ui": "*",
     "@genoffice/xlsx-gateway": "*",
     "@modelcontextprotocol/sdk": "^1.32.1",

@@ -76,8 +76,11 @@ describe('AgyUsageCache (stale-while-revalidate)', () => {
     const resetAt = now + 58 * 3_600_000
     const read = vi.fn(async () => reading(0.21, now))
     const seen: Array<number | undefined> = []
-    const cache = new AgyUsageCache(read, cachePath(), () => now, (s) =>
-      seen.push(s.groups?.[0]?.buckets[0]?.remaining),
+    const cache = new AgyUsageCache(
+      read,
+      cachePath(),
+      () => now,
+      (s) => seen.push(s.groups?.[0]?.buckets[0]?.remaining),
     )
     await cache.refresh()
     cache.markExhausted('Gemini Models', resetAt)
@@ -89,10 +92,117 @@ describe('AgyUsageCache (stale-while-revalidate)', () => {
 
   it('lets the override lapse at the reset time', async () => {
     let now = 10_000
-    const cache = new AgyUsageCache(vi.fn(async () => reading(0.9, now)), cachePath(), () => now, () => {})
+    const cache = new AgyUsageCache(
+      vi.fn(async () => reading(0.9, now)),
+      cachePath(),
+      () => now,
+      () => {},
+    )
     cache.markExhausted('Gemini Models', now + 1000)
     now += 2000
     const done = await cache.refresh()
     expect(done.groups?.[0]?.buckets[0]?.remaining).toBe(0.9)
+  })
+
+  it('F1/F2: the quota is read from the configured executable, not from an auto-detected one', async () => {
+    const path = cachePath()
+    const read = vi.fn(async (cliPath?: string) => reading(cliPath === '/cli/a' ? 0.9 : 0.1, 100))
+    const cache = new AgyUsageCache(
+      read,
+      path,
+      () => 100,
+      () => {},
+      () => '/cli/a',
+    )
+    await cache.refresh()
+    expect(read.mock.calls.map(([cliPath]) => cliPath)).toEqual(['/cli/a'])
+    expect(cache.get().groups?.[0]?.buckets[0]?.remaining).toBe(0.9)
+
+    const auto = new AgyUsageCache(
+      read,
+      cachePath(),
+      () => 100,
+      () => {},
+      () => undefined,
+    )
+    await auto.refresh()
+    expect(read.mock.calls.at(-1)?.[0]).toBeUndefined()
+  })
+
+  it('F3/F4: pointing Antigravity at another executable drops the previous quota instead of reusing it', async () => {
+    const path = cachePath()
+    let cli = '/cli/a'
+    const read = vi.fn(async (cliPath?: string) =>
+      reading(cliPath === '/cli/a' ? 0.9 : cliPath === '/cli/b' ? 0.2 : 0.5, 100),
+    )
+    const cache = new AgyUsageCache(
+      read,
+      path,
+      () => 100,
+      () => {},
+      () => cli,
+    )
+    await cache.refresh()
+    expect(cache.get().groups?.[0]?.buckets[0]?.remaining).toBe(0.9)
+    cli = '/cli/b'
+    const afterSwitch = cache.get()
+    expect(afterSwitch.groups).toBeNull() // A's numbers are not B's quota
+    expect(afterSwitch.refreshing).toBe(true)
+    const done = await cache.refresh()
+    expect(done.groups?.[0]?.buckets[0]?.remaining).toBe(0.2)
+    cli = undefined
+    const backToAuto = cache.get()
+    expect(backToAuto.groups).toBeNull()
+    expect((await cache.refresh()).groups?.[0]?.buckets[0]?.remaining).toBe(0.5)
+  })
+
+  it("F5: a quota read that fails after a CLI switch reports failure rather than the old CLI's numbers", async () => {
+    const path = cachePath()
+    let cli = '/cli/a'
+    const read = vi.fn(async (cliPath?: string) =>
+      cliPath === '/cli/a' ? reading(0.9, 100) : null,
+    )
+    const cache = new AgyUsageCache(
+      read,
+      path,
+      () => 100,
+      () => {},
+      () => cli,
+    )
+    await cache.refresh()
+    cli = '/cli/b'
+    const failed = await cache.refresh()
+    expect(failed.failed).toBe(true)
+    expect(failed.groups).toBeNull()
+  })
+
+  it('F6: a cache written by one CLI is not presented as the quota of another before it answers', async () => {
+    const path = cachePath()
+    writeFileSync(
+      path,
+      JSON.stringify({ groups: reading(0.9, 100).groups, readAt: 100, cliKey: '/cli/a' }),
+      'utf8',
+    )
+    const read = vi.fn(async () => reading(0.3, 200))
+    const cache = new AgyUsageCache(
+      read,
+      path,
+      () => 200,
+      () => {},
+      () => '/cli/b',
+    )
+    const first = cache.get()
+    expect(first.groups).toBeNull()
+    expect(first.refreshing).toBe(true)
+    expect((await cache.refresh()).groups?.[0]?.buckets[0]?.remaining).toBe(0.3)
+    // the file now records which executable the numbers belong to
+    const restored = new AgyUsageCache(
+      read,
+      path,
+      () => 200,
+      () => {},
+      () => '/cli/b',
+    )
+    expect(restored.get().groups?.[0]?.buckets[0]?.remaining).toBe(0.3)
   })
 })

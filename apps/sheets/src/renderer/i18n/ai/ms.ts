@@ -61,7 +61,9 @@ export const ms = {
   aiSave: 'Simpan',
   aiUnknownError: 'Ralat tidak diketahui',
   aiTimeoutError:
-    'Permintaan AI melebihi had masa lalu dihentikan. Cuba lagi atau pilih model yang lebih pantas untuk permintaan panjang.',
+    'Permintaan AI tamat masa: rangkaian tidak memberi respons, proses dihentikan. Semak sambungan anda dan cuba lagi',
+  aiRegionError:
+    'Penyedia model ini tidak memberi perkhidmatan di rantau semasa anda — pilih model lain atau tukar rangkaian',
   aiOverloadedError: 'Perkhidmatan AI sedang sibuk — sila cuba lagi sebentar lagi',
   aiNetworkError:
     'Masalah rangkaian: tidak dapat menghubungi perkhidmatan AI. Semak sambungan anda dan cuba lagi',
