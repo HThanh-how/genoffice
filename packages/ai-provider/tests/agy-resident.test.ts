@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PassThrough } from 'node:stream'
 import { EventEmitter } from 'node:events'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
-import type { AgentMessage, AgentToolDef } from '@genoffice/agent-core'
+import type { AgentMessage, AgentToolCall, AgentToolDef } from '@genoffice/agent-core'
 import { agyGenericToolTurnSchema } from '../src/agy-structured-turn'
 import {
   AGY_RESIDENT_IDLE_TTL_MS,
@@ -126,6 +126,168 @@ const sampleTools: AgentToolDef[] = [
     },
   },
 ]
+
+describe('resident conversation resume after worker eviction', () => {
+  let mock: ReturnType<typeof createMockDeps>
+  afterEach(() => {
+    if (mock) shutdownAgyResidentServers(mock.deps)
+    vi.useRealTimers()
+  })
+
+  function setup(replies: Array<{ id?: string; error?: string; text?: string }>) {
+    mock = createMockDeps()
+    mock.deps.env.GENOFFICE_AGY_RESUME = '1'
+    const spawn = mock.deps.spawn
+    mock.deps.spawn = (...args) => {
+      const child = spawn(...args)
+      child.stdin.on('finish', () => setImmediate(() => child.emit('close', 0)))
+      child.stdin.on('data', () => {
+        queueMicrotask(() => {
+          const reply = replies.shift()
+          if (!reply) throw new Error('Unexpected resident turn')
+          child.stdout.emit(
+            'data',
+            Buffer.from(
+              JSON.stringify({
+                event: 'result',
+                result: {
+                  status: reply.error ? 'ERROR' : 'SUCCESS',
+                  error: reply.error,
+                  response: reply.text ?? 'answer',
+                  conversation_id: reply.id,
+                  structured_output: { text: reply.text ?? 'answer', tool_calls: [] },
+                },
+              }) + '\n',
+            ),
+          )
+        })
+      })
+      return child
+    }
+    return async (
+      messages: AgentMessage[],
+      options: { sessionId?: string; model?: string; cliPath?: string } = {},
+    ) => {
+      const deltas: string[] = []
+      await streamAgy(
+        {
+          apiKey: '',
+          model: options.model ?? 'm',
+          cliPath: options.cliPath ?? '/usr/local/bin/agy',
+        },
+        'system instructions',
+        messages,
+        sampleTools,
+        1024,
+        {
+          sessionId: options.sessionId ?? 'chat',
+          sessionScope: 'scope',
+          signal: new AbortController().signal,
+          onDelta: (text) => deltas.push(text),
+          onToolCall: vi.fn(),
+        },
+        mock.deps,
+      )
+      return deltas.join('')
+    }
+  }
+  const first: AgentMessage[] = [{ role: 'user', text: 'first' }]
+  const next: AgentMessage[] = [
+    ...first,
+    { role: 'assistant', text: 'answer' },
+    { role: 'user', text: 'next' },
+  ]
+
+  it('restarts with --conversation and the delta while preserving stream-json worker stdin', async () => {
+    vi.useFakeTimers()
+    const turn = setup([{ id: 'c1' }, { id: 'c1' }])
+    await turn(first)
+    await vi.advanceTimersByTimeAsync(AGY_RESIDENT_IDLE_TTL_MS + 1)
+    expect(mock.children[0]!.killed).toBe(true)
+    await turn(next)
+    expect(mock.spawned[1]!.args).toContain('--conversation')
+    expect(mock.spawned[1]!.args).toContain('c1')
+    expect(mock.spawned[1]!.args).toContain('stream-json')
+    expect(JSON.parse(mock.children[1]!.stdinText).message.content).toBe('User: next')
+    expect(mock.children[1]!.stdin.writableEnded).toBe(false)
+    expect(mock.removedDirs).toEqual([mock.createdDirs[0]])
+  })
+
+  it('falls back once to a full seed after a conversation error', async () => {
+    vi.useFakeTimers()
+    const turn = setup([
+      { id: 'c1' },
+      { error: 'Conversation c1 is unavailable' },
+      { id: 'c2', text: 'fresh answer' },
+    ])
+    await turn(first)
+    await vi.advanceTimersByTimeAsync(AGY_RESIDENT_IDLE_TTL_MS + 1)
+    expect(await turn(next)).toBe('fresh answer')
+    expect(mock.spawned).toHaveLength(3)
+    expect(mock.spawned[1]!.args).toContain('c1')
+    expect(mock.spawned[2]!.args).not.toContain('--conversation')
+    expect(mock.children[2]!.stdinText).toContain('system instructions')
+    expect(mock.children[2]!.stdinText).toContain('User: first')
+    expect(mock.children[1]!.killed).toBe(true)
+  })
+
+  it.each(['prefix', 'retry', 'model', 'executable'])(
+    'starts fresh after %s changes',
+    async (change) => {
+      vi.useFakeTimers()
+      const turn = setup([{ id: 'c1' }, { id: 'c2' }])
+      await turn(first)
+      await vi.advanceTimersByTimeAsync(AGY_RESIDENT_IDLE_TTL_MS + 1)
+      const messages =
+        change === 'retry'
+          ? first
+          : change === 'prefix'
+            ? [{ role: 'user', text: 'edited' } as AgentMessage, ...next.slice(1)]
+            : next
+      await turn(messages, {
+        model: change === 'model' ? 'new-model' : 'm',
+        cliPath: change === 'executable' ? '/opt/other/agy' : '/usr/local/bin/agy',
+      })
+      expect(mock.spawned[1]!.args).not.toContain('--conversation')
+      expect(mock.children[1]!.stdinText).toContain('system instructions')
+    },
+  )
+
+  it('keeps two concurrent evicted sessions bound to their own conversation ids', async () => {
+    vi.useFakeTimers()
+    const turn = setup([{ id: 'a' }, { id: 'b' }, { id: 'a' }, { id: 'b' }])
+    await Promise.all([turn(first, { sessionId: 'a' }), turn(first, { sessionId: 'b' })])
+    await vi.advanceTimersByTimeAsync(AGY_RESIDENT_IDLE_TTL_MS + 1)
+    await Promise.all([turn(next, { sessionId: 'a' }), turn(next, { sessionId: 'b' })])
+    expect(mock.spawned[2]!.args).toContain('a')
+    expect(mock.spawned[3]!.args).toContain('b')
+    expect(
+      mock.children.slice(2).every((child) => !child.stdinText.includes('system instructions')),
+    ).toBe(true)
+  })
+
+  it('forgets evicted conversations when their window scope is retired', async () => {
+    vi.useFakeTimers()
+    const turn = setup([{ id: 'c1' }, { id: 'c2' }])
+    await turn(first)
+    await vi.advanceTimersByTimeAsync(AGY_RESIDENT_IDLE_TTL_MS + 1)
+    retireAgyResidentScope('scope', mock.deps)
+    await turn(next)
+    expect(mock.spawned[1]!.args).not.toContain('--conversation')
+  })
+
+  it('starts fresh when switching between the text and schema tool protocols', async () => {
+    const turn = setup([{ id: 'text' }, { id: 'schema' }, { id: 'text2' }])
+    mock.deps.env.GENOFFICE_AGY_TOOL_MODE = 'text'
+    await turn(first)
+    delete mock.deps.env.GENOFFICE_AGY_TOOL_MODE
+    await turn(next)
+    mock.deps.env.GENOFFICE_AGY_TOOL_MODE = 'text'
+    await turn([...next, { role: 'assistant', text: 'answer' }, { role: 'user', text: 'third' }])
+    expect(mock.spawned).toHaveLength(3)
+    expect(mock.spawned.every(({ args }) => !args.includes('--conversation'))).toBe(true)
+  })
+})
 
 describe('agy resident transport', () => {
   it('builds a generic tool turn schema without hardcoded name enum', () => {
@@ -368,6 +530,7 @@ describe('agy resident transport', () => {
 
     it('reuses the same worker process for multi-turn conversations and passes causal tail', async () => {
       const mock = createMockDeps()
+      const returnedCalls: AgentToolCall[] = []
       shutdownAgyResidentServers(mock.deps)
 
       const config = { apiKey: '', model: 'gemini-3.8-flash-low', cliPath: '/usr/local/bin/agy' }
@@ -385,7 +548,7 @@ describe('agy resident transport', () => {
           sessionScope: 'window-1',
           signal: new AbortController().signal,
           onDelta: vi.fn(),
-          onToolCall: vi.fn(),
+          onToolCall: (call) => returnedCalls.push(call),
         },
         mock.deps,
       )
@@ -420,12 +583,12 @@ describe('agy resident transport', () => {
         {
           role: 'assistant',
           text: 'Creating document now',
-          toolCalls: [{ id: 'agy-call-0', name: 'create_document', input: { name: 'Doc1' } }],
+          toolCalls: returnedCalls,
         },
         {
           role: 'tool',
           results: [
-            { id: 'agy-call-0', name: 'create_document', output: 'Document created: Doc1' },
+            { id: returnedCalls[0]!.id, name: 'create_document', output: 'Document created: Doc1' },
           ],
         },
       ]

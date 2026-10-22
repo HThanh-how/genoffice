@@ -39,7 +39,7 @@ import { agyMachineSemaphore, type AgyMachineSemaphore } from './agy-lock'
  *    agy's internal tools, so they go through a text protocol instead: the tools are
  *    described in the prompt, agy answers with <tool_call> blocks and the host runs
  *    them (see agy-tools.ts);
- *  - stateless: every call flattens the chat history into one prompt;
+ *  - fresh calls flatten history; verified append-only turns can resume by conversation id;
  *  - slower than an API call: each request starts the agent (several seconds)
  *    and carries ~15-30k tokens of agent overhead on the account's quota.
  */
@@ -70,7 +70,16 @@ import {
 } from './agy-tools'
 import { createAgyLimiter, Limiter } from './agy-limiter'
 export { createAgyLimiter, Limiter }
-import { agyResidentManager, isResidentEligible } from './agy-resident'
+import { agyResidentManager, isResidentEligible, renderCausalMessages } from './agy-resident'
+import {
+  agyAppendOnly,
+  agyConversationError,
+  agyConversationStore,
+  agyHash,
+  agyMessageHash,
+  agyResumeEnabled,
+  type AgyConversationTurn,
+} from './agy-conversation'
 
 export { AGY_CHAT_DEFAULT_MODEL } from './agy-chat'
 export {
@@ -337,6 +346,7 @@ export interface AgyArgsInput {
   effort?: AgyEffort | undefined
   /** `--json-schema <file>`: absolute path of a schema file whose root is an object */
   jsonSchemaPath?: string | undefined
+  conversationId?: string | undefined
 }
 
 /**
@@ -347,6 +357,11 @@ export interface AgyArgsInput {
  */
 export function buildAgyArgs(input: AgyArgsInput): string[] {
   if (!isSafeAgyModelId(input.model)) throw new Error('Invalid Antigravity model id')
+  if (
+    input.conversationId !== undefined &&
+    !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(input.conversationId)
+  )
+    throw new Error('Invalid Antigravity conversation id')
   const printTimeoutS = Math.max(10, Math.floor(input.timeoutMs / 1000) - 5)
   return [
     '-p',
@@ -363,6 +378,7 @@ export function buildAgyArgs(input: AgyArgsInput): string[] {
     `${printTimeoutS}s`,
     ...(input.effort ? ['--effort', input.effort] : []),
     ...(input.jsonSchemaPath ? ['--json-schema', input.jsonSchemaPath] : []),
+    ...(input.conversationId ? ['--conversation', input.conversationId] : []),
     '--add-dir',
     input.stagingDir,
   ]
@@ -866,6 +882,7 @@ const requestLimiter = createAgyLimiter(AGY_MAX_CONCURRENCY)
 export interface AgyRunOptions {
   cliPath?: string | undefined
   model: string
+  conversationId?: string | undefined
   prompt: string
   files?: AgyStagedFile[]
   signal?: AbortSignal | undefined
@@ -978,6 +995,7 @@ export async function runAgy(
       timeoutMs,
       effort,
       jsonSchemaPath,
+      conversationId: options.conversationId,
     })
     return await new Promise<AgyRunResult>((resolve, reject) => {
       const child = deps.spawn(cliPath, args, { cwd: stagingDir!, env: { ...deps.env } })
@@ -990,6 +1008,12 @@ export async function runAgy(
       let stderr = ''
       const decoder = new StringDecoder('utf8')
       let pending = ''
+      const startedAt = Date.now()
+      const trace: string[] = []
+      const withTimeline = (error: Error): Error => {
+        error.message += ` (steps=[${trace.join(', ') || 'none'}])`
+        return error
+      }
       const cleanup = () => {
         clearTimeout(timer)
         clearInterval(heartbeat)
@@ -1007,7 +1031,7 @@ export async function runAgy(
           reject(error)
         })
       const onAbort = () => fail(abortError())
-      const timer = setTimeout(() => fail(new AiTimeoutError(timeoutMs)), timeoutMs)
+      const timer = setTimeout(() => fail(withTimeline(new AiTimeoutError(timeoutMs))), timeoutMs)
       const heartbeat = setInterval(() => options.onActivity?.(), PING_INTERVAL_MS)
       if (options.signal?.aborted) return fail(abortError())
       options.signal?.addEventListener('abort', onAbort, { once: true })
@@ -1016,7 +1040,13 @@ export async function runAgy(
         const event = parseAgyStreamLine(line)
         if (!event) return
         if (event.kind === 'init' && event.conversationId) conversationId = event.conversationId
-        if (event.kind === 'step') options.onStep?.(event)
+        if (event.kind === 'step') {
+          if (trace.length < 40)
+            trace.push(
+              `${Math.round((Date.now() - startedAt) / 1000)}s ${event.stepType}${event.toolName ? `:${event.toolName}` : ''}`,
+            )
+          options.onStep?.(event)
+        }
         if (event.kind === 'text') {
           if (!text) options.onFirstText?.()
           // a new agent_response step (after tool use) starts a new paragraph
@@ -1065,7 +1095,7 @@ export async function runAgy(
           // only a stderr warning to tell the two apart
           const truncated = hasAgyPrintTimeoutWarning(stderr)
           if (truncated && !options.allowPartial) {
-            reject(agyTruncatedError(partial, code))
+            reject(withTimeline(agyTruncatedError(partial, code)))
             return
           }
           // exit code 3 = the model or agent failed (possibly after streaming part of an answer)
@@ -1143,6 +1173,9 @@ export async function streamAgy(
   cb: StreamCallbacks,
   deps?: AgyRunDeps,
 ): Promise<void> {
+  // Snapshot the request before asynchronous capability/path reads and queued turns.
+  messages = structuredClone(messages)
+  tools = structuredClone(tools)
   const runId = randomUUID()
   const requestId = cb.requestId
   const sessionId = cb.sessionId
@@ -1169,7 +1202,51 @@ export async function streamAgy(
     },
   }
   try {
-    await streamAgyTurn(config, model, system, messages, tools, maxTokens, turnCb, deps, say)
+    const d = deps ?? realRunDeps
+    if (sessionId?.trim()) {
+      const key = JSON.stringify([cb.sessionScope ?? 'global', sessionId])
+      await agyConversationStore(d).turn(key, async (previous) => {
+        const conversation: AgyConversationTurn = { previous }
+        const sentHashes = messages.map(agyMessageHash)
+        let text = ''
+        const calls: AgentToolCall[] = []
+        await streamAgyTurn(
+          config,
+          model,
+          system,
+          messages,
+          tools,
+          maxTokens,
+          {
+            ...turnCb,
+            onDelta: (delta) => {
+              text += delta
+              turnCb.onDelta(delta)
+            },
+            onToolCall: (call) => {
+              calls.push(call)
+              turnCb.onToolCall(call)
+            },
+          },
+          deps,
+          say,
+          conversation,
+        )
+        if (
+          !conversation.conversationId ||
+          !agyResumeEnabled(d.env) ||
+          messages.some((message) => message.role === 'user' && message.images?.length)
+        )
+          return
+        return {
+          id: conversation.conversationId,
+          signature: conversation.signature!,
+          hashes: [...sentHashes, agyMessageHash({ role: 'assistant', text, toolCalls: calls })],
+        }
+      })
+    } else {
+      await streamAgyTurn(config, model, system, messages, tools, maxTokens, turnCb, deps, say)
+    }
     if (appCalls.length === 0) {
       say({ phase: 'done' })
     } else {
@@ -1327,18 +1404,40 @@ async function streamAgyTurn(
   cb: StreamCallbacks,
   deps: AgyRunDeps | undefined,
   say: AgySay,
+  conversation?: AgyConversationTurn,
 ): Promise<void> {
   const known: ReadonlySet<string> = new Set(tools.map((t) => t.name))
   const { protocol, schemaSupported } = await chooseToolProtocol(config, tools, deps)
   const schema = protocol === 'schema' ? agyToolTurnSchema(tools) : undefined
   const plan = buildAgyPrompt(system, messages, tools, protocol)
+  const d = deps ?? realRunDeps
+  const cliPath = await resolveAgyCliPath(config.cliPath, d)
+  const signature = agyHash({
+    system,
+    tools,
+    model,
+    protocol,
+    cliPath,
+    effort: d.env.GENOFFICE_AGY_EFFORT,
+  })
+  const previous = conversation?.previous
+  let resume =
+    agyResumeEnabled(d.env) &&
+    previous?.signature === signature &&
+    agyAppendOnly(messages, previous.hashes)
+      ? previous
+      : undefined
+  const delta = resume ? renderCausalMessages(messages.slice(resume.hashes.length)) : ''
+  if (delta.length > AGY_MAX_PROMPT_CHARS) resume = undefined
+  if (conversation) conversation.signature = signature
   const deadline = Date.now() + AGY_REQUEST_TIMEOUT_MS
   const run = async (
     prompt: AgyPromptPlan,
     timeoutMs: number,
     jsonSchema?: Record<string, unknown>,
-  ) =>
-    runAgy(
+    conversationId?: string,
+  ) => {
+    const result = await runAgy(
       {
         onStep: (step) => {
           if (step.stepType === 'tool' && step.toolName) {
@@ -1361,20 +1460,25 @@ async function streamAgyTurn(
           }
         },
         onFirstText: () => say({ phase: 'writing' }),
-        cliPath: config.cliPath,
+        cliPath,
         model,
+        ...(conversationId ? { conversationId } : {}),
         prompt: prompt.prompt,
         files: prompt.files,
         signal: cb.signal,
         timeoutMs,
         task: 'chat',
         ...(jsonSchema ? { jsonSchema } : {}),
-        ...(tools.length ? {} : { onText: cb.onDelta }),
+        ...(tools.length || conversationId ? {} : { onText: cb.onDelta }),
         ...(cb.onUsage ? { onUsage: cb.onUsage } : {}),
         ...(cb.onActivity ? { onActivity: cb.onActivity } : {}),
       },
       deps,
     )
+    // A rejected resume may have streamed partial prose. Publish only its successful result.
+    if (!tools.length && conversationId && result.text) cb.onDelta(result.text)
+    return result
+  }
 
   let attempts = 1
 
@@ -1405,7 +1509,6 @@ async function streamAgyTurn(
     cb.onStopReason?.(calls.length ? 'tool_use' : 'end_turn')
   }
 
-  const d = deps ?? realRunDeps
   if (
     isResidentEligible({
       sessionId: cb.sessionId,
@@ -1443,6 +1546,7 @@ async function streamAgyTurn(
   let result: AgyRunResult
 
   const retryMalformedNativeCall = async (): Promise<AgyRunResult> => {
+    if (conversation) conversation.conversationId = undefined
     reportAgyDiagnostic(cb, {
       provider: 'agy',
       status: 'retry',
@@ -1510,6 +1614,7 @@ async function streamAgyTurn(
    * or no `--json-schema` to ask with.
    */
   const retryOtherProtocol = async (): Promise<StructuredToolTurn | null> => {
+    if (conversation) conversation.conversationId = undefined
     if (cb.signal.aborted) throw abortError()
     const remainingMs = deadline - Date.now()
     if (remainingMs <= 0) return null
@@ -1570,7 +1675,20 @@ async function streamAgyTurn(
   }
 
   try {
-    result = await run(plan, AGY_REQUEST_TIMEOUT_MS, schema)
+    try {
+      result = await run(
+        resume ? { prompt: delta, files: [] } : plan,
+        AGY_REQUEST_TIMEOUT_MS,
+        schema,
+        resume?.id,
+      )
+    } catch (error) {
+      if (!resume || cb.signal.aborted || !agyConversationError(error)) throw error
+      if (Date.now() >= deadline) throw error
+      attempts++
+      result = await run(plan, Math.max(1, deadline - Date.now()), schema)
+    }
+    if (conversation) conversation.conversationId = result.conversationId
   } catch (error) {
     if (tools.length && isMalformedNativeFunctionCall(error)) {
       result = await retryMalformedNativeCall()
