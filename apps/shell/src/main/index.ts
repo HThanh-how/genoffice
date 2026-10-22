@@ -10,6 +10,7 @@ import { mergeDocuments } from './merge-documents'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { rotatingFileWriter } from './fork/renderer-diagnostics'
 import {
+  machineTier,
   openingEnabled,
   previewOpeningScene,
   setOpeningConfig,
@@ -4934,6 +4935,7 @@ function openingEffectsState(): OpeningEffectsState {
   }
   return {
     prefs,
+    machineTier: machineTier(),
     effectiveScenes: Object.fromEntries(
       OPENING_APPS.map((a) => [a, resolveEffectiveOpeningCard(prefs, a)]),
     ) as Record<OpeningApp, EffectiveOpeningCard>,

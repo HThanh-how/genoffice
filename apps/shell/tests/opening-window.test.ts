@@ -86,7 +86,7 @@ describe('one scene for each app', () => {
       sceneMeta,
     } = await import('../src/main/fork/opening-scenes')
     for (const scene of SCENES) {
-      expect(SCENE_LIB).toContain(`scenes.${scene.id}={`)
+      expect(SCENE_LIB).toMatch(new RegExp(`scenes\\.${scene.id}\\s*=\\s*\\{`))
       expect(scene.bg).toHaveLength(2)
     }
     for (const app of Object.keys(SPLASH_THEMES) as Array<keyof typeof SPLASH_THEMES>) {
@@ -109,6 +109,17 @@ describe('one scene for each app', () => {
       expect(script).not.toContain('${')
       expect(script).not.toContain('`')
     }
+  })
+
+  it('runs, in the window, the very function the studio calls: one implementation of the scenes', async () => {
+    const { SCENE_LIB } = await import('../src/main/fork/opening-scenes')
+    const { runGOScene } = await import('../src/shared/opening-scenes-runner')
+    expect(SCENE_LIB).toBe(`window.GOScene=${runGOScene.toString()};`)
+    // self-contained: nothing from the module around it (such as a compiler helper) is needed
+    expect(SCENE_LIB).not.toMatch(/__name|__publicField|__spread|__async/)
+    const win: { GOScene?: unknown } = {}
+    new Function('window', SCENE_LIB)(win)
+    expect(typeof win.GOScene).toBe('function')
   })
 
   it('says "opening" for a plain open too', () => {
