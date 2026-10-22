@@ -45,15 +45,21 @@ try {
   if (/\bSELECT\b/i.test(managerContent)) managerViolations.push('SELECT')
   if (/\bINSERT\b/i.test(managerContent)) managerViolations.push('INSERT')
   if (/\bUPDATE\b/i.test(managerContent)) managerViolations.push('UPDATE')
-  if (/\bDELETE\b/.test(managerContent) || /\bDELETE\s+FROM\b/i.test(managerContent)) managerViolations.push('DELETE')
+  if (/\bDELETE\b/.test(managerContent) || /\bDELETE\s+FROM\b/i.test(managerContent))
+    managerViolations.push('DELETE')
   if (/\bPRAGMA\b/i.test(managerContent)) managerViolations.push('PRAGMA')
-  if (/\b(?:CREATE|DROP|ALTER)\s+TABLE\b/i.test(managerContent)) managerViolations.push('RAW_SQL_DDL')
+  if (/\b(?:CREATE|DROP|ALTER)\s+TABLE\b/i.test(managerContent))
+    managerViolations.push('RAW_SQL_DDL')
 
   if (managerViolations.length > 0) {
-    console.error(`[FAIL] Manager boundary violated (${managerRelPath}): forbidden pattern(s) found: ${managerViolations.join(', ')}`)
+    console.error(
+      `[FAIL] Manager boundary violated (${managerRelPath}): forbidden pattern(s) found: ${managerViolations.join(', ')}`,
+    )
     hasErrors = true
   } else {
-    console.log('[PASS] Manager: NO DatabaseSync, NO .prepare(, NO SELECT, NO INSERT, NO UPDATE, NO DELETE, NO PRAGMA')
+    console.log(
+      '[PASS] Manager: NO DatabaseSync, NO .prepare(, NO SELECT, NO INSERT, NO UPDATE, NO DELETE, NO PRAGMA',
+    )
   }
 } catch (err) {
   console.error(`[FAIL] Unable to read Manager (${managerRelPath}): ${err.message}`)
@@ -65,7 +71,7 @@ try {
 const snapshotFiles = [
   'apps/shell/src/renderer/src/fork/useIndexSnapshot.ts',
   'apps/shell/src/renderer/src/fork/IndexDashboard.tsx',
-  'apps/shell/src/renderer/src/fork/IndexOverview.tsx',
+  'apps/shell/src/renderer/src/fork/IndexStatus.tsx',
   'apps/shell/src/renderer/src/fork/IndexDiagnostics.tsx',
 ]
 let snapshotPassed = true
@@ -74,11 +80,18 @@ for (const relPath of snapshotFiles) {
   try {
     const content = readFileSync(fullPath, 'utf8')
     const violations = []
-    if (content.includes('getDocumentIndexDiagnostics(') || /getDocumentIndexDiagnostics\s*\(/.test(content)) violations.push('getDocumentIndexDiagnostics(')
-    if (content.includes('getStorageDiagnostics(') || /\.getStorageDiagnostics\s*\(/.test(content)) violations.push('getStorageDiagnostics(')
+    if (
+      content.includes('getDocumentIndexDiagnostics(') ||
+      /getDocumentIndexDiagnostics\s*\(/.test(content)
+    )
+      violations.push('getDocumentIndexDiagnostics(')
+    if (content.includes('getStorageDiagnostics(') || /\.getStorageDiagnostics\s*\(/.test(content))
+      violations.push('getStorageDiagnostics(')
 
     if (violations.length > 0) {
-      console.error(`[FAIL] Snapshot boundary violated (${relPath}): forbidden call(s) found: ${violations.join(', ')}`)
+      console.error(
+        `[FAIL] Snapshot boundary violated (${relPath}): forbidden call(s) found: ${violations.join(', ')}`,
+      )
       hasErrors = true
       snapshotPassed = false
     }
@@ -95,21 +108,36 @@ const snapshotServiceRelPath = 'apps/shell/src/main/fork/document-index-snapshot
 const snapshotServicePath = resolve(rootDir, snapshotServiceRelPath)
 try {
   const serviceContent = readFileSync(snapshotServicePath, 'utf8')
-  if (serviceContent.includes('.getStorageDiagnostics(') || /\.getStorageDiagnostics\s*\(/.test(serviceContent)) {
-    console.error(`[FAIL] Snapshot service boundary violated (${snapshotServiceRelPath}): forbidden call ".getStorageDiagnostics(" found`)
+  if (
+    serviceContent.includes('.getStorageDiagnostics(') ||
+    /\.getStorageDiagnostics\s*\(/.test(serviceContent)
+  ) {
+    console.error(
+      `[FAIL] Snapshot service boundary violated (${snapshotServiceRelPath}): forbidden call ".getStorageDiagnostics(" found`,
+    )
     hasErrors = true
     snapshotPassed = false
   }
 
   // Remove the declaration of getDocumentIndexDiagnostics to check for any forbidden invocations/calls
-  const withoutDeclaration = serviceContent.replace(/(?:export\s+)?(?:async\s+)?function\s+getDocumentIndexDiagnostics\s*\(/g, '')
-  if (withoutDeclaration.includes('getDocumentIndexDiagnostics(') || /getDocumentIndexDiagnostics\s*\(/.test(withoutDeclaration)) {
-    console.error(`[FAIL] Snapshot service boundary violated (${snapshotServiceRelPath}): forbidden call "getDocumentIndexDiagnostics(" found`)
+  const withoutDeclaration = serviceContent.replace(
+    /(?:export\s+)?(?:async\s+)?function\s+getDocumentIndexDiagnostics\s*\(/g,
+    '',
+  )
+  if (
+    withoutDeclaration.includes('getDocumentIndexDiagnostics(') ||
+    /getDocumentIndexDiagnostics\s*\(/.test(withoutDeclaration)
+  ) {
+    console.error(
+      `[FAIL] Snapshot service boundary violated (${snapshotServiceRelPath}): forbidden call "getDocumentIndexDiagnostics(" found`,
+    )
     hasErrors = true
     snapshotPassed = false
   }
 } catch (err) {
-  console.error(`[FAIL] Unable to read Snapshot service file (${snapshotServiceRelPath}): ${err.message}`)
+  console.error(
+    `[FAIL] Unable to read Snapshot service file (${snapshotServiceRelPath}): ${err.message}`,
+  )
   hasErrors = true
   snapshotPassed = false
 }
@@ -136,7 +164,8 @@ function getRendererFiles(dir) {
 
 try {
   const rendererFiles = getRendererFiles(rendererDir)
-  const importRegex = /(?:import\s+(?:[\s\S]*?from\s+)?|export\s+[\s\S]*?from\s+|require\s*\(\s*|import\s*\(\s*)['"]([^'"]+)['"]/g
+  const importRegex =
+    /(?:import\s+(?:[\s\S]*?from\s+)?|export\s+[\s\S]*?from\s+|require\s*\(\s*|import\s*\(\s*)['"]([^'"]+)['"]/g
   let rendererViolations = 0
   for (const filePath of rendererFiles) {
     const content = readFileSync(filePath, 'utf8')
@@ -146,14 +175,18 @@ try {
       const normalizedSpecifier = specifier.replace(/\\/g, '/')
       if (/(?:^|\/)(?:storage|repository|repositories)(?:\/|$)/i.test(normalizedSpecifier)) {
         const relPath = filePath.replace(rootDir + '\\', '').replace(rootDir + '/', '')
-        console.error(`[FAIL] Renderer boundary violated in ${relPath}: forbidden storage/repository import "${specifier}"`)
+        console.error(
+          `[FAIL] Renderer boundary violated in ${relPath}: forbidden storage/repository import "${specifier}"`,
+        )
         hasErrors = true
         rendererViolations++
       }
     }
   }
   if (rendererViolations === 0) {
-    console.log(`[PASS] Renderer: NO storage/repository imports (${rendererFiles.length} files scanned)`)
+    console.log(
+      `[PASS] Renderer: NO storage/repository imports (${rendererFiles.length} files scanned)`,
+    )
   }
 } catch (err) {
   console.error(`[FAIL] Unable to scan Renderer files: ${err.message}`)
@@ -173,7 +206,9 @@ function getIpcFiles(dir) {
         results.push(full)
       }
     }
-  } catch { /* ignore */ }
+  } catch {
+    /* ignore */
+  }
   return results
 }
 
@@ -219,9 +254,13 @@ const schemaRelPath = 'apps/shell/src/main/document-memory/storage/schema-v3.ts'
 const schemaPath = resolve(rootDir, schemaRelPath)
 try {
   const schemaContent = readFileSync(schemaPath, 'utf8')
-  const chunksMatch = schemaContent.match(/CREATE TABLE\s+(?:IF NOT EXISTS\s+)?chunks\s*\(([\s\S]*?)\);/i)
+  const chunksMatch = schemaContent.match(
+    /CREATE TABLE\s+(?:IF NOT EXISTS\s+)?chunks\s*\(([\s\S]*?)\);/i,
+  )
   if (!chunksMatch) {
-    console.error(`[FAIL] Schema check failed: could not locate "chunks" table in ${schemaRelPath}!`)
+    console.error(
+      `[FAIL] Schema check failed: could not locate "chunks" table in ${schemaRelPath}!`,
+    )
     hasErrors = true
   } else {
     const chunkColumns = chunksMatch[1]
@@ -254,14 +293,18 @@ try {
     while ((alterMatch = alterChunksRegex.exec(schemaContent)) !== null) {
       const colName = alterMatch[1].toLowerCase()
       if (['vector', 'vector_dim', 'normalized', 'embedding', 'dim', 'dims'].includes(colName)) {
-        console.error(`[FAIL] Invariant INV-03 violated: chunks table contains "${alterMatch[1]}" column via ALTER TABLE!`)
+        console.error(
+          `[FAIL] Invariant INV-03 violated: chunks table contains "${alterMatch[1]}" column via ALTER TABLE!`,
+        )
         hasErrors = true
         schemaViolations++
       }
     }
 
     if (schemaViolations === 0) {
-      console.log('[PASS] Schema: chunks table contains NO vector, vector_dim, normalized, or obsolete vector columns')
+      console.log(
+        '[PASS] Schema: chunks table contains NO vector, vector_dim, normalized, or obsolete vector columns',
+      )
     }
   }
 } catch (err) {
