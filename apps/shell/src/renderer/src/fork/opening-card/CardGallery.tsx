@@ -30,7 +30,8 @@ interface CardGalleryProps {
   prefs: OpeningPrefs
   lang: string
   mediaAssets?: StoredMediaAsset[]
-  onSelectCard: (card: OpeningCardDefinition) => void
+  /** `pointer` = chosen by click, `keyboard` = moved with the arrow keys (focus stays in the grid). */
+  onSelectCard: (card: OpeningCardDefinition, via?: 'pointer' | 'keyboard') => void
   onToggleFavorite: (cardId: string) => void
 }
 
@@ -102,12 +103,12 @@ export function CardGallery({
       nextIndex = (index - 1 + filteredCards.length) % filteredCards.length
     } else if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault()
-      onSelectCard(filteredCards[index])
+      onSelectCard(filteredCards[index], 'keyboard')
       return
     }
 
     if (nextIndex >= 0 && filteredCards[nextIndex]) {
-      onSelectCard(filteredCards[nextIndex])
+      onSelectCard(filteredCards[nextIndex], 'keyboard')
       cardElementsRef.current[nextIndex]?.focus()
     }
   }
@@ -181,9 +182,13 @@ export function CardGallery({
         {filteredCards.length === 0 ? (
           <div className="ocs-empty-gallery">
             <p>
-              {isVi
-                ? 'Không có thẻ nào khớp. Thử từ khóa khác.'
-                : 'No cards match. Try a different search.'}
+              {cards.length === 0
+                ? isVi
+                  ? 'Chưa có thẻ nào. Tạo thẻ bằng AI hoặc thêm hình ảnh ở góc trên.'
+                  : 'No cards yet. Create one with AI or add media from the menu above.'
+                : isVi
+                  ? 'Không có thẻ nào khớp. Thử từ khóa khác.'
+                  : 'No cards match. Try a different search.'}
             </p>
             {searchQuery && (
               <button type="button" className="set-btn" onClick={() => setSearchQuery('')}>
@@ -210,12 +215,28 @@ export function CardGallery({
                   aria-checked={isSelected}
                   tabIndex={isFocusable ? 0 : -1}
                   className={`ocs-gallery-card-item${isSelected ? ' is-selected' : ''}`}
-                  onClick={() => onSelectCard(card)}
+                  onClick={() => onSelectCard(card, 'pointer')}
                   onKeyDown={(e) => handleKeyDown(e, idx)}
                 >
                   {/* Visual Thumbnail Surface */}
                   <div className="ocs-card-thumbnail-wrap">
                     <CardThumbnail card={card} isVi={isVi} mediaAssets={mediaAssets} />
+                    {isSelected && (
+                      <span className="ocs-card-check" aria-hidden="true">
+                        <svg
+                          width="12"
+                          height="12"
+                          viewBox="0 0 16 16"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2.2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        >
+                          <path d="M3.5 8.5l3 3 6-7" />
+                        </svg>
+                      </span>
+                    )}
 
                     {/* Favorite star toggle button */}
                     <button

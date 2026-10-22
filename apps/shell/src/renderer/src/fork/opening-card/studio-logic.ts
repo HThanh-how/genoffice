@@ -1,4 +1,5 @@
 import type { OpeningCardDefinition } from '../../../../shared/opening-card-types'
+import type { OpeningApp } from '../../../../shared/opening-scenes-meta'
 
 export type GalleryFilterCategory =
   | 'all'
@@ -86,19 +87,17 @@ export function resolveActiveFilter(
   return wanted === 'all' || counts[wanted] > 0 ? wanted : 'all'
 }
 
-export type PrimaryAction = 'global' | 'assign' | 'none'
+export type ApplyScope = 'all' | OpeningApp
 
-/**
- * One main button: make the card the default for every app first; once it is the global default,
- * the next useful step is pinning it to the app being previewed; when both are done there is none.
- */
-export function pickPrimaryAction(state: {
-  isGlobalDefault: boolean
-  hasAppOverride: boolean
-}): PrimaryAction {
-  if (!state.isGlobalDefault) return 'global'
-  if (!state.hasAppOverride) return 'assign'
-  return 'none'
+/** Whether "Use this card" would change nothing: the card already is what that scope plays. */
+export function appliesTo(
+  scope: ApplyScope,
+  prefs: { globalCard?: string; appOverrides?: Partial<Record<OpeningApp, string>> },
+  cardId: string,
+): boolean {
+  if (scope === 'all') return prefs.globalCard === cardId
+  const override = prefs.appOverrides?.[scope]
+  return override ? override === cardId : prefs.globalCard === cardId
 }
 
 export type AssignmentStatus =

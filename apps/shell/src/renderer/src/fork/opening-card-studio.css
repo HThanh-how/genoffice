@@ -1,11 +1,9 @@
 :root {
   --ocs-star-gold: #ffd700;
   --ocs-dark-stage: #090c10;
-  --ocs-conic-tint: rgba(128, 128, 128, 0.08);
   --ocs-ink-white: #ffffff;
   --ocs-ink-white-85: rgba(255, 255, 255, 0.85);
   --ocs-ink-white-60: rgba(255, 255, 255, 0.6);
-  --ocs-pill-count-bg: rgba(0, 0, 0, 0.14);
 }
 
 .ocs-container {
@@ -48,15 +46,14 @@
   color: var(--text-muted);
 }
 
-/* Studio Header Toolbar */
+/* Studio header: title, one quiet action, overflow menu */
 .ocs-studio-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
   flex-wrap: wrap;
   gap: 12px;
-  padding-bottom: 12px;
-  border-bottom: 1px solid var(--border-subtle);
+  margin-top: 10px;
 }
 
 .ocs-studio-title-group {
@@ -84,52 +81,52 @@
   flex-wrap: wrap;
 }
 
-/* Gallery + pinned preview: stacked by default, side by side when the pane is wide enough */
+/* Preview beside the gallery and always in view; stacked with the preview on top when narrow */
 .ocs-studio-layout {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 20px;
   width: 100%;
 }
 
 .ocs-layout-right {
+  order: -1;
   width: 100%;
+  scroll-margin-top: 8px;
 }
 
-@container ocs-container (min-width: 760px) {
+@container ocs-container (min-width: 560px) {
   .ocs-studio-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-columns: minmax(0, 1fr) 288px;
+    gap: 28px;
     align-items: start;
   }
   .ocs-layout-right {
+    order: 0;
     position: sticky;
     top: 8px;
   }
-  .ocs-gallery-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
 }
 
-/* Left Column: Gallery & Search Toolbar */
+/* Left column: search, category tabs, gallery */
 .ocs-gallery-section {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 14px;
+  min-width: 0;
 }
 
 .ocs-gallery-toolbar {
   display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px 10px;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .ocs-search-wrapper {
   position: relative;
   display: flex;
   align-items: center;
-  flex: 1 1 200px;
   min-width: 0;
 }
 
@@ -142,14 +139,20 @@
 
 .ocs-search-input {
   width: 100%;
-  padding: 7px 30px 7px 32px;
+  height: 32px;
+  padding: 0 30px 0 32px;
+  font: inherit;
   font-size: 13px;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
   outline: none;
   transition: border-color 0.15s ease;
+}
+
+.ocs-search-input::placeholder {
+  color: var(--text-muted);
 }
 
 .ocs-search-input:focus-visible {
@@ -159,70 +162,80 @@
 
 .ocs-search-clear {
   position: absolute;
-  right: 8px;
+  right: 6px;
+  width: 22px;
+  height: 22px;
   background: transparent;
   border: none;
+  border-radius: 6px;
   font-size: 16px;
+  line-height: 1;
   color: var(--text-muted);
   cursor: pointer;
-  padding: 0 4px;
 }
 
 .ocs-search-clear:hover {
   color: var(--text);
 }
 
-/* Category filter chips (only categories that hold cards) */
+.ocs-search-clear:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Category tabs: plain text, the current one in full ink with an underline */
 .ocs-filter-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 2px 16px;
 }
 
 .ocs-filter-pill {
   display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
-  font-weight: 500;
-  border: 1px solid var(--border-subtle);
-  border-radius: 16px;
+  align-items: baseline;
+  gap: 5px;
+  padding: 4px 0 5px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 400;
+  border: none;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
-  transition:
-    background 0.15s ease,
-    color 0.15s ease;
+  transition: color 0.15s ease;
 }
 
 .ocs-filter-pill:hover {
-  background: var(--hover);
   color: var(--text);
 }
 
 .ocs-filter-pill:focus-visible {
   outline: 2px solid var(--accent);
-  outline-offset: 1px;
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 .ocs-filter-pill.active {
-  background: var(--hover);
   color: var(--text);
-  border-color: var(--accent);
+  font-weight: 600;
+  border-bottom-color: var(--text);
 }
 
 .ocs-filter-count {
   font-size: 11px;
-  opacity: 0.7;
+  font-weight: 400;
+  color: var(--text-muted);
 }
 
-/* Gallery Grid */
+/* Gallery grid: every tile the same 16:9 picture over a one-line name */
 .ocs-gallery-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 12px;
-  padding: 2px;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
+  gap: 18px 14px;
+  padding: 4px;
+  margin: -4px;
 }
 
 .ocs-empty-gallery {
@@ -236,50 +249,62 @@
   color: var(--text-muted);
   font-size: 13px;
   border: 1px dashed var(--border);
-  border-radius: 10px;
+  border-radius: 8px;
 }
 
 .ocs-empty-gallery p {
   margin: 0;
 }
 
-/* Individual Card Tile */
 .ocs-gallery-card-item {
   position: relative;
   display: flex;
   flex-direction: column;
-  border: 1px solid var(--border-subtle);
-  border-radius: 10px;
-  background: var(--surface);
-  overflow: hidden;
+  gap: 8px;
+  min-width: 0;
   cursor: pointer;
-  transition:
-    border-color 0.15s ease,
-    box-shadow 0.15s ease;
   outline: none;
 }
 
-.ocs-gallery-card-item:hover {
-  border-color: var(--border-hover, var(--border));
-}
-
-.ocs-gallery-card-item.is-selected {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-
-.ocs-gallery-card-item:focus-visible {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 2px var(--accent);
-}
-
-/* Card Thumbnail Box */
 .ocs-card-thumbnail-wrap {
   position: relative;
   width: 100%;
   aspect-ratio: 16 / 9;
+  border-radius: 8px;
   overflow: hidden;
   background: var(--ocs-dark-stage);
+  transition: box-shadow 0.15s ease;
+}
+
+.ocs-gallery-card-item:hover .ocs-card-thumbnail-wrap {
+  box-shadow: 0 0 0 2px var(--border-strong);
+}
+
+.ocs-gallery-card-item.is-selected .ocs-card-thumbnail-wrap {
+  box-shadow:
+    0 0 0 2px var(--surface),
+    0 0 0 4px var(--accent);
+}
+
+.ocs-gallery-card-item:focus-visible .ocs-card-thumbnail-wrap {
+  outline: 2px solid var(--text);
+  outline-offset: 5px;
+}
+
+.ocs-card-check {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  z-index: 2;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent);
+  color: var(--accent-ink, var(--ocs-ink-white));
+  pointer-events: none;
 }
 
 .ocs-thumb-box {
@@ -299,43 +324,6 @@
   display: block;
 }
 
-.ocs-thumb-kind-pill {
-  position: absolute;
-  bottom: 6px;
-  left: 6px;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 6px;
-  border-radius: 4px;
-  background: var(--color-bg-overlay);
-  backdrop-filter: blur(4px);
-  color: var(--ocs-ink-white);
-  font-size: 10px;
-  font-weight: 500;
-  pointer-events: none;
-}
-
-.ocs-thumb-kind-pill span {
-  max-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  transition: max-width 0.15s ease;
-}
-
-.ocs-gallery-card-item:hover .ocs-thumb-kind-pill span,
-.ocs-gallery-card-item.is-selected .ocs-thumb-kind-pill span,
-.ocs-gallery-card-item:focus-visible .ocs-thumb-kind-pill span {
-  max-width: 90px;
-}
-
-.ocs-thumb-pill-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  display: inline-block;
-}
-
 /* Mini Material Card in Thumbnail */
 .ocs-thumb-material-backdrop {
   width: 100%;
@@ -343,8 +331,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background: repeating-conic-gradient(var(--ocs-conic-tint) 0% 25%, transparent 0% 50%) 50% / 12px
-    12px;
+  background: var(--ocs-dark-stage);
   padding: 8px;
   box-sizing: border-box;
 }
@@ -484,33 +471,35 @@
   color: var(--ocs-star-gold);
 }
 
-/* Card Meta */
+/* Card meta: name and one quiet line for where it is used */
 .ocs-card-meta {
-  padding: 8px 10px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  background: var(--surface);
+  gap: 2px;
+  padding: 0 2px;
+  min-width: 0;
 }
 
 .ocs-card-name-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
 }
 
 .ocs-card-name {
-  font-size: 12.5px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* One quiet line for where the card is used */
+.ocs-gallery-card-item.is-selected .ocs-card-name {
+  font-weight: 600;
+}
+
 .ocs-card-assignment-line {
-  font-size: 11px;
+  font-size: 11.5px;
   color: var(--text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -518,18 +507,14 @@
 }
 
 /* ============================================================
-   Right Column: Sticky WYSIWYG Inspector & Live Preview
+   Right column: live preview and the one action
    ============================================================ */
 
-/* Pinned preview panel */
 .ocs-preview-inspector {
-  background: var(--surface-subtle);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
 }
 
 .ocs-inspector-head {
@@ -538,10 +523,11 @@
   justify-content: space-between;
   gap: 8px;
   min-width: 0;
+  margin-top: 4px;
 }
 
 .ocs-inspector-name {
-  font-size: 15px;
+  font-size: 16px;
   font-weight: 600;
   color: var(--text);
   margin: 0;
@@ -553,37 +539,21 @@
 
 .ocs-inspector-kind {
   flex-shrink: 0;
-  font-size: 11px;
-  color: var(--text-muted);
-}
-
-.ocs-inspector-app-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.ocs-inspector-app-label {
   font-size: 12px;
   color: var(--text-muted);
 }
 
 .ocs-assignment-status {
-  margin: 0;
-  font-size: 12px;
-  color: var(--text);
-}
-
-.ocs-assignment-status.is-none {
+  margin: -4px 0 4px;
+  font-size: 12.5px;
+  line-height: 1.4;
   color: var(--text-muted);
 }
 
-/* WYSIWYG Stage Box */
+/* Stage: the card as it will appear while a file opens */
 .ocs-wysiwyg-stage-wrapper {
   width: 100%;
   border-radius: 10px;
-  border: 1px solid var(--border);
   overflow: hidden;
   background: var(--ocs-dark-stage);
 }
@@ -595,7 +565,7 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 8px 10px;
+  padding: 12px;
   box-sizing: border-box;
 }
 
@@ -607,17 +577,16 @@
   display: block;
 }
 
-/* Live Card Stage */
 .ocs-wysiwyg-card-stage {
   position: relative;
   z-index: 1;
-  width: 100%;
-  max-width: 300px;
+  width: 86%;
+  max-width: 340px;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
-  gap: 6px;
-  padding: 8px 10px;
+  gap: 8px;
+  padding: 10px 12px;
   box-sizing: border-box;
   transition: all 0.2s ease;
 }
@@ -629,8 +598,8 @@
 }
 
 .ocs-wysiwyg-app-badge {
-  width: 26px;
-  height: 26px;
+  width: 28px;
+  height: 28px;
   border-radius: 6px;
   color: var(--ocs-ink-white);
   font-weight: 700;
@@ -639,7 +608,6 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  box-shadow: var(--shadow-btn-hover);
 }
 
 .ocs-wysiwyg-doc-info {
@@ -658,7 +626,7 @@
 }
 
 .ocs-wysiwyg-status {
-  font-size: 10.5px;
+  font-size: 11px;
   opacity: 0.7;
 }
 
@@ -705,28 +673,35 @@
   }
 }
 
-/* Inspector actions: one main button, quiet secondary buttons */
-.ocs-inspector-actions {
+/* One row: where to apply it, and the one primary action */
+.ocs-apply-row {
   display: flex;
-  flex-direction: column;
+  align-items: center;
   gap: 8px;
 }
 
+.ocs-apply-row .ocs-app-select {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.ocs-apply-row .set-btn,
+.ocs-apply-row .gs-dd-btn {
+  height: 34px;
+}
+
+/* The scope select reads as a control, not as loose text */
+.ocs-apply-row .gs-dd-btn {
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
 .ocs-action-main {
-  width: 100%;
+  flex: 1 1 auto;
   justify-content: center;
-}
-
-.ocs-action-secondary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 6px;
-}
-
-.ocs-action-secondary .set-btn {
-  padding: 3px 9px;
-  font-size: 12px;
-  line-height: 1.4;
+  padding: 0 14px;
 }
 
 .ocs-btn-primary {
@@ -735,23 +710,63 @@
   border-color: var(--accent) !important;
 }
 
-.ocs-btn-primary:hover {
+.ocs-btn-primary:hover:not(:disabled) {
   opacity: 0.9;
 }
 
+.ocs-btn-primary:disabled {
+  background: var(--surface-subtle) !important;
+  color: var(--text-muted) !important;
+  border-color: var(--border) !important;
+  opacity: 1;
+  cursor: default;
+}
+
 .ocs-btn-primary:focus-visible,
-.ocs-inspector-actions .set-btn:focus-visible,
+.ocs-apply-row .set-btn:focus-visible,
+.ocs-studio-header-actions .set-btn:focus-visible,
 .ocs-more-btn:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-.ocs-btn-danger {
-  color: var(--danger) !important;
+/* Quiet text actions: no fills, no borders */
+.ocs-text-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 16px;
 }
 
-.ocs-btn-danger:hover {
-  background: var(--danger-bg) !important;
+.ocs-text-actions button {
+  padding: 3px 0;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.ocs-text-actions button:hover:not(:disabled) {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.ocs-text-actions button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.ocs-text-actions button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.ocs-btn-danger,
+.ocs-text-actions .ocs-btn-danger {
+  color: var(--danger) !important;
 }
 
 /* "More actions" menu */
@@ -799,10 +814,9 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ocs-gallery-card-item,
+  .ocs-card-thumbnail-wrap,
   .ocs-card-fav-btn,
   .ocs-filter-pill,
-  .ocs-thumb-kind-pill span,
   .ocs-wysiwyg-card-stage,
   .ocs-floating-toast {
     transition: none;
@@ -812,6 +826,13 @@
     animation: none;
     transform: none;
   }
+}
+
+/* Cards are still loading: say so instead of showing nothing */
+.ocs-loading {
+  padding: 24px 0;
+  font-size: 13px;
+  color: var(--text-muted);
 }
 
 /* Preview Empty State */

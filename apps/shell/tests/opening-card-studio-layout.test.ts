@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   assignmentStatus,
   computeFilterCounts,
-  pickPrimaryAction,
+  appliesTo,
   resolveActiveFilter,
   shouldShowFilterRow,
   visibleFilterKeys,
@@ -58,12 +58,18 @@ describe('opening card gallery filters', () => {
   })
 })
 
-describe('opening card preview actions', () => {
-  it('makes the global default the main action first, then the app assignment', () => {
-    expect(pickPrimaryAction({ isGlobalDefault: false, hasAppOverride: false })).toBe('global')
-    expect(pickPrimaryAction({ isGlobalDefault: false, hasAppOverride: true })).toBe('global')
-    expect(pickPrimaryAction({ isGlobalDefault: true, hasAppOverride: false })).toBe('assign')
-    expect(pickPrimaryAction({ isGlobalDefault: true, hasAppOverride: true })).toBe('none')
+describe('opening card apply scope', () => {
+  it('treats "Use this card" as done only when the chosen scope already plays the card', () => {
+    const prefs = { globalCard: 'a', appOverrides: { docs: 'b' } as const }
+    expect(appliesTo('all', prefs, 'a')).toBe(true)
+    expect(appliesTo('all', prefs, 'b')).toBe(false)
+    expect(appliesTo('docs', prefs, 'b')).toBe(true)
+    // Word has its own card, so the global default does not reach it
+    expect(appliesTo('docs', prefs, 'a')).toBe(false)
+    // Excel has no override and follows the global default
+    expect(appliesTo('sheets', prefs, 'a')).toBe(true)
+    expect(appliesTo('sheets', prefs, 'b')).toBe(false)
+    expect(appliesTo('all', {}, 'a')).toBe(false)
   })
 
   it('describes assignment in a single status', () => {

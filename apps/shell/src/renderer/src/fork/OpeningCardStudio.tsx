@@ -54,6 +54,19 @@ export function OpeningCardStudio({
   const [statusMessage, setStatusMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
+  const previewRef = useRef<HTMLDivElement | null>(null)
+
+  // In the stacked (narrow) layout the preview sits above the gallery: after a click, bring it back into view.
+  const handleSelectCard = (card: OpeningCardDefinition, via?: 'pointer' | 'keyboard') => {
+    setSelectedCard(card)
+    if (via !== 'pointer') return
+    const el = previewRef.current
+    if (!el || typeof el.scrollIntoView !== 'function') return
+    const rect = el.getBoundingClientRect()
+    if (rect.top >= 0 && rect.bottom <= window.innerHeight) return
+    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    el.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' })
+  }
 
   // "More actions" menu: closes on outside click or Escape
   const [menuOpen, setMenuOpen] = useState(false)
@@ -375,12 +388,8 @@ export function OpeningCardStudio({
         </div>
 
         <div className="ocs-studio-header-actions">
-          <button
-            type="button"
-            className="set-btn ocs-btn-primary"
-            onClick={() => setShowAiModal(true)}
-          >
-            {isVi ? 'Thẻ AI' : 'AI Card'}
+          <button type="button" className="set-btn" onClick={() => setShowAiModal(true)}>
+            {isVi ? 'Tạo bằng AI' : 'Create with AI'}
           </button>
 
           <div className="ocs-more" ref={menuRef}>
@@ -476,13 +485,13 @@ export function OpeningCardStudio({
             prefs={prefs}
             lang={lang}
             mediaAssets={state.mediaAssets}
-            onSelectCard={setSelectedCard}
+            onSelectCard={handleSelectCard}
             onToggleFavorite={handleToggleFavorite}
           />
         </div>
 
         {/* Right Column: Sticky WYSIWYG Inspector */}
-        <div className="ocs-layout-right">
+        <div className="ocs-layout-right" ref={previewRef}>
           <CardPreview
             card={selectedCard}
             prefs={prefs}

@@ -93,7 +93,13 @@ export function OpeningEffectsSettings({ lang }: { lang: string }) {
     }
   }, [api])
 
-  if (!state) return null
+  if (!state) {
+    return typeof api.getOpeningEffects === 'function' ? (
+      <div className="ocs-loading" role="status" aria-busy="true">
+        {lang === 'vi' ? 'Đang tải thẻ…' : 'Loading cards…'}
+      </div>
+    ) : null
+  }
   const { prefs, custom } = state
   const save = (next: OpeningPrefs) => {
     setState((curr) => (curr ? { ...curr, prefs: next } : null))

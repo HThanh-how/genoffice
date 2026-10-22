@@ -9,7 +9,7 @@ import {
 import { buildMaterialCss, hexToRgb, sampleFileName } from '../../../../shared/opening-card-css'
 import { runGOScene } from '../../../../shared/opening-scenes-runner'
 import { Dropdown } from '@genoffice/ui'
-import { assignmentStatus, pickPrimaryAction } from './studio-logic'
+import { appliesTo, assignmentStatus, type ApplyScope } from './studio-logic'
 import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-html-sanitizer'
 
 // App colors and human-readable names
@@ -49,7 +49,9 @@ export function CardPreview({
   onDeleteCard,
 }: CardPreviewProps): React.JSX.Element {
   const isVi = lang === 'vi'
-  const [activeApp, setActiveApp] = useState<OpeningApp>('docs')
+  // Where "Use this card" applies: every app, or one app. The stage previews that app (Word for "all").
+  const [scope, setScope] = useState<ApplyScope>('all')
+  const activeApp: OpeningApp = scope === 'all' ? 'docs' : scope
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const [busy, setBusy] = useState(false)
   const [htmlDoc, setHtmlDoc] = useState<string | null>(null)
@@ -57,6 +59,7 @@ export function CardPreview({
   // Status computation
   const isGlobalDefault = prefs.globalCard === card?.id
   const hasAppOverride = Boolean(card && prefs.appOverrides?.[activeApp] === card.id)
+  const applied = Boolean(card && appliesTo(scope, prefs, card.id))
 
   const fileName = sampleFileName(activeApp, lang)
 
@@ -214,19 +217,11 @@ export function CardPreview({
 
   const matCss = buildMaterialCss(card.material, { appColor: APP_INFO[activeApp].color })
 
-  const handleGlobal = async () => {
+  const handleApply = async () => {
     setBusy(true)
     try {
-      await onSetGlobal(card.id)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const handleAssign = async () => {
-    setBusy(true)
-    try {
-      await onAssignToApp(activeApp, card.id)
+      if (scope === 'all') await onSetGlobal(card.id)
+      else await onAssignToApp(scope, card.id)
     } finally {
       setBusy(false)
     }
@@ -251,224 +246,230 @@ export function CardPreview({
         })()
       : undefined
 
-  const status = assignmentStatus({
-    isGlobalDefault,
-    hasAppOverride,
-    activeAppHasOtherOverride: Boolean(
-      prefs.appOverrides?.[activeApp] && prefs.appOverrides[activeApp] !== card.id,
-    ),
-    overrideCount: Object.keys(prefs.appOverrides || {}).length,
-  })
-  const appName = isVi ? APP_INFO[activeApp].nameVi : APP_INFO[activeApp].nameEn
+  const appLabel = (app: OpeningApp) => (isVi ? APP_INFO[app].nameVi : APP_INFO[app].nameEn)
+  const appName = appLabel(activeApp)
+  const usedBy = OPENING_APPS.filter((app) => prefs.appOverrides?.[app] === card.id)
+  const overrideCount = Object.keys(prefs.appOverrides || {}).length
   const statusText = (() => {
+    if (scope === 'all') {
+      if (prefs.globalCard === card.id) {
+        return overrideCount > 0
+          ? isVi
+            ? `Đang dùng cho mọi ứng dụng (${overrideCount} ứng dụng có thẻ riêng)`
+            : `In use for all apps (${overrideCount} have their own card)`
+          : isVi
+            ? 'Đang dùng cho mọi ứng dụng'
+            : 'In use for all apps'
+      }
+      return usedBy.length > 0
+        ? isVi
+          ? `Đang dùng cho ${usedBy.map(appLabel).join(', ')}`
+          : `In use for ${usedBy.map(appLabel).join(', ')}`
+        : isVi
+          ? 'Chưa dùng ở đâu'
+          : 'Not in use yet'
+    }
+    const status = assignmentStatus({
+      isGlobalDefault: prefs.globalCard === card.id,
+      hasAppOverride,
+      activeAppHasOtherOverride: Boolean(
+        prefs.appOverrides?.[activeApp] && prefs.appOverrides[activeApp] !== card.id,
+      ),
+      overrideCount,
+    })
     switch (status.kind) {
       case 'global-overridden':
         return isVi
-          ? `Mặc định chung, nhưng ${appName} dùng thẻ khác`
-          : `Default for all apps, but ${appName} uses another card`
+          ? `Là thẻ chung, nhưng ${appName} dùng thẻ khác`
+          : `The default, but ${appName} uses another card`
       case 'global':
-        return status.overrides > 0
-          ? isVi
-            ? `Mặc định chung (${status.overrides} ứng dụng có thẻ riêng)`
-            : `Default for all apps (${status.overrides} with their own card)`
-          : isVi
-            ? 'Mặc định cho mọi ứng dụng'
-            : 'Default for all apps'
+        return isVi ? `Đang dùng cho ${appName} (thẻ chung)` : `In use for ${appName} (default)`
       case 'app':
-        return isVi ? `Đã gán cho ${appName}` : `Assigned to ${appName}`
+        return isVi ? `Đang dùng cho ${appName}` : `In use for ${appName}`
       default:
-        return isVi ? `Chưa gán cho ${appName}` : `Not assigned to ${appName}`
+        return isVi ? `${appName} chưa dùng thẻ này` : `${appName} does not use this card`
     }
   })()
+  const kindLabel =
+    card.contentKind === 'canvas-scene'
+      ? isVi
+        ? 'Cảnh động'
+        : 'Motion'
+      : card.contentKind === 'personal-media'
+        ? isVi
+          ? 'Hình ảnh'
+          : 'Media'
+        : card.contentKind === 'ai-html' || card.contentKind === 'custom-html'
+          ? 'HTML'
+          : isVi
+            ? 'Chất liệu'
+            : 'Material'
 
-  const primary = pickPrimaryAction({ isGlobalDefault, hasAppOverride })
-  const globalLabel = isVi ? 'Đặt làm Mặc định chung' : 'Set as Global Default'
-  const assignLabel = isVi ? `Gán cho ${appName}` : `Assign to ${appName}`
+  const scopeOptions = [
+    { value: 'all', label: isVi ? 'Cho mọi ứng dụng' : 'For all apps' },
+    ...OPENING_APPS.map((app) => ({
+      value: app,
+      label: isVi ? `Cho ${APP_INFO[app].nameVi}` : `For ${APP_INFO[app].nameEn}`,
+    })),
+  ]
+
+  const stageBlock = (
+    <div
+      className="ocs-wysiwyg-stage-wrapper"
+      role="img"
+      aria-label={isVi ? `Xem thử trực tiếp: ${card.name}` : `Live preview: ${card.name}`}
+    >
+      <div
+        className="ocs-wysiwyg-stage-backdrop"
+        style={sceneBg ? { background: sceneBg } : undefined}
+      >
+        {/* If motion scene, draw real canvas in background */}
+        {card.contentKind === 'canvas-scene' && (
+          <canvas ref={canvasRef} width={420} height={220} className="ocs-wysiwyg-canvas" />
+        )}
+
+        {/* If personal media, draw media background in stage backdrop */}
+        {card.contentKind === 'personal-media' && mediaDataUrl && (
+          <div
+            className="ocs-wysiwyg-media-stage"
+            style={{
+              position: 'absolute',
+              inset: 0,
+              backgroundImage: `linear-gradient(rgba(0,0,0,${card.mediaDim ?? 0.25}), rgba(0,0,0,${card.mediaDim ?? 0.25})), url('${mediaDataUrl}')`,
+              backgroundSize: card.mediaFit === 'center' ? 'auto' : (card.mediaFit ?? 'cover'),
+              backgroundPosition: 'center',
+              backgroundRepeat: 'no-repeat',
+              borderRadius: matCss.borderRadius,
+            }}
+          />
+        )}
+
+        {/* HTML Card Preview via sandboxed iframe */}
+        {(card.contentKind === 'ai-html' || card.contentKind === 'custom-html') && htmlDoc ? (
+          <iframe
+            title="HTML Card Preview"
+            sandbox="allow-scripts"
+            srcDoc={htmlDoc}
+            className="ocs-wysiwyg-html-iframe"
+            style={{
+              width: '100%',
+              height: '100%',
+              border: 'none',
+              borderRadius: matCss.borderRadius,
+              boxShadow: matCss.boxShadow,
+            }}
+          />
+        ) : (
+          /* Actual Card Surface */
+          <div
+            className="ocs-wysiwyg-card-stage"
+            style={{
+              background: matCss.background,
+              backdropFilter: matCss.backdropFilter,
+              WebkitBackdropFilter: matCss.backdropFilter,
+              border: matCss.border,
+              borderRadius: matCss.borderRadius,
+              boxShadow: matCss.boxShadow,
+              color: matCss.color,
+            }}
+          >
+            {/* Top row */}
+            <div className="ocs-wysiwyg-card-top">
+              <div
+                className="ocs-wysiwyg-app-badge"
+                style={{ backgroundColor: APP_INFO[activeApp].color }}
+              >
+                {APP_INFO[activeApp].ext.toUpperCase().replace('.', '')}
+              </div>
+              <div className="ocs-wysiwyg-doc-info">
+                <span className="ocs-wysiwyg-filename" title={fileName}>
+                  {fileName}
+                </span>
+                <span className="ocs-wysiwyg-status">
+                  {isVi ? 'Đang mở tài liệu…' : 'Opening document…'}
+                </span>
+              </div>
+              <span className="ocs-wysiwyg-close-indicator" aria-hidden="true">
+                &times;
+              </span>
+            </div>
+
+            {/* Bottom Progress Bar */}
+            <div className="ocs-wysiwyg-progress-container">
+              <div
+                className="ocs-wysiwyg-progress-bar"
+                style={{ backgroundColor: APP_INFO[activeApp].color }}
+              />
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+
+  const useLabel = applied
+    ? isVi
+      ? 'Đang dùng'
+      : 'In use'
+    : isVi
+      ? 'Dùng thẻ này'
+      : 'Use this card'
 
   return (
     <div className="ocs-preview-inspector">
-      {/* Live WYSIWYG Stage Box */}
-      <div className="ocs-wysiwyg-stage-wrapper">
-        <div
-          className="ocs-wysiwyg-stage-backdrop"
-          style={sceneBg ? { background: sceneBg } : undefined}
-        >
-          {/* If motion scene, draw real canvas in background */}
-          {card.contentKind === 'canvas-scene' && (
-            <canvas ref={canvasRef} width={420} height={220} className="ocs-wysiwyg-canvas" />
-          )}
-
-          {/* If personal media, draw media background in stage backdrop */}
-          {card.contentKind === 'personal-media' && mediaDataUrl && (
-            <div
-              className="ocs-wysiwyg-media-stage"
-              style={{
-                position: 'absolute',
-                inset: 0,
-                backgroundImage: `linear-gradient(rgba(0,0,0,${card.mediaDim ?? 0.25}), rgba(0,0,0,${card.mediaDim ?? 0.25})), url('${mediaDataUrl}')`,
-                backgroundSize: card.mediaFit === 'center' ? 'auto' : (card.mediaFit ?? 'cover'),
-                backgroundPosition: 'center',
-                backgroundRepeat: 'no-repeat',
-                borderRadius: matCss.borderRadius,
-              }}
-            />
-          )}
-
-          {/* HTML Card Preview via sandboxed iframe */}
-          {(card.contentKind === 'ai-html' || card.contentKind === 'custom-html') && htmlDoc ? (
-            <iframe
-              title="HTML Card Preview"
-              sandbox="allow-scripts"
-              srcDoc={htmlDoc}
-              className="ocs-wysiwyg-html-iframe"
-              style={{
-                width: '100%',
-                height: '100%',
-                border: 'none',
-                borderRadius: matCss.borderRadius,
-                boxShadow: matCss.boxShadow,
-              }}
-            />
-          ) : (
-            /* Actual Card Surface */
-            <div
-              className="ocs-wysiwyg-card-stage"
-              style={{
-                background: matCss.background,
-                backdropFilter: matCss.backdropFilter,
-                WebkitBackdropFilter: matCss.backdropFilter,
-                border: matCss.border,
-                borderRadius: matCss.borderRadius,
-                boxShadow: matCss.boxShadow,
-                color: matCss.color,
-              }}
-            >
-              {/* Top row */}
-              <div className="ocs-wysiwyg-card-top">
-                <div
-                  className="ocs-wysiwyg-app-badge"
-                  style={{ backgroundColor: APP_INFO[activeApp].color }}
-                >
-                  {APP_INFO[activeApp].ext.toUpperCase().replace('.', '')}
-                </div>
-                <div className="ocs-wysiwyg-doc-info">
-                  <span className="ocs-wysiwyg-filename" title={fileName}>
-                    {fileName}
-                  </span>
-                  <span className="ocs-wysiwyg-status">
-                    {isVi ? 'Đang mở tài liệu…' : 'Opening document…'}
-                  </span>
-                </div>
-                <span className="ocs-wysiwyg-close-indicator" aria-hidden="true">
-                  &times;
-                </span>
-              </div>
-
-              {/* Bottom Progress Bar */}
-              <div className="ocs-wysiwyg-progress-container">
-                <div
-                  className="ocs-wysiwyg-progress-bar"
-                  style={{ backgroundColor: APP_INFO[activeApp].color }}
-                />
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      {stageBlock}
 
       <div className="ocs-inspector-head">
         <h3 className="ocs-inspector-name" title={card.name}>
           {card.name}
         </h3>
-        {card.contentKind === 'canvas-scene' && (
-          <span className="ocs-inspector-kind">{isVi ? 'Cảnh động' : 'Motion'}</span>
-        )}
+        <span className="ocs-inspector-kind">{kindLabel}</span>
       </div>
 
-      <div className="ocs-inspector-app-row">
-        <span className="ocs-inspector-app-label">{isVi ? 'Xem thử trong' : 'Preview in'}</span>
-        <Dropdown
-          className="set-dd ocs-app-select"
-          value={activeApp}
-          ariaLabel={isVi ? 'Xem thử theo ứng dụng' : 'Preview for application'}
-          options={OPENING_APPS.map((app) => ({
-            value: app,
-            label: isVi ? APP_INFO[app].nameVi : APP_INFO[app].nameEn,
-          }))}
-          onPick={(app) => setActiveApp(app)}
-        />
-      </div>
-
-      <p
-        className={`ocs-assignment-status${status.kind === 'none' ? ' is-none' : ''}`}
-        role="status"
-      >
+      <p className="ocs-assignment-status" role="status">
         {statusText}
       </p>
 
-      <div className="ocs-inspector-actions">
-        {primary === 'global' && (
-          <button
-            type="button"
-            className="set-btn ocs-btn-primary ocs-action-main"
-            disabled={busy}
-            onClick={handleGlobal}
-          >
-            {globalLabel}
+      <div className="ocs-apply-row">
+        <Dropdown
+          className="set-dd ocs-app-select"
+          value={scope}
+          ariaLabel={isVi ? 'Áp dụng cho' : 'Apply to'}
+          options={scopeOptions}
+          onPick={(next) => setScope(next as ApplyScope)}
+        />
+        <button
+          type="button"
+          className="set-btn ocs-btn-primary ocs-action-main"
+          disabled={busy || applied}
+          onClick={handleApply}
+        >
+          {useLabel}
+        </button>
+      </div>
+
+      <div className="ocs-text-actions">
+        <button type="button" onClick={() => onPreviewWindow(activeApp, card.id)}>
+          {isVi ? 'Xem trong cửa sổ' : 'Preview in window'}
+        </button>
+        <button type="button" onClick={() => onOpenCustomizer(card)}>
+          {isVi ? 'Tùy chỉnh' : 'Customize'}
+        </button>
+        {scope !== 'all' && hasAppOverride && (
+          <button type="button" disabled={busy} onClick={handleReset}>
+            {isVi ? `Trả ${appName} về mặc định` : `Reset ${appName} to default`}
           </button>
         )}
-        {primary === 'assign' && (
+        {!card.isBuiltIn && onDeleteCard && (
           <button
             type="button"
-            className="set-btn ocs-btn-primary ocs-action-main"
+            className="ocs-btn-danger"
             disabled={busy}
-            onClick={handleAssign}
+            onClick={() => onDeleteCard(card.id)}
           >
-            {assignLabel}
+            {isVi ? 'Xóa thẻ' : 'Delete'}
           </button>
         )}
-
-        <div className="ocs-action-secondary">
-          {primary === 'global' && (
-            <button
-              type="button"
-              className="set-btn"
-              disabled={busy || hasAppOverride}
-              onClick={handleAssign}
-            >
-              {assignLabel}
-            </button>
-          )}
-
-          {hasAppOverride && (
-            <button type="button" className="set-btn" disabled={busy} onClick={handleReset}>
-              {isVi ? 'Xóa gán riêng' : 'Reset Override'}
-            </button>
-          )}
-
-          <button
-            type="button"
-            className="set-btn"
-            onClick={() => onPreviewWindow(activeApp, card.id)}
-          >
-            {isVi ? 'Xem cửa sổ thật' : 'Preview in Window'}
-          </button>
-
-          <button type="button" className="set-btn" onClick={() => onOpenCustomizer(card)}>
-            {isVi ? 'Tùy chỉnh' : 'Customize'}
-          </button>
-
-          {!card.isBuiltIn && onDeleteCard && (
-            <button
-              type="button"
-              className="set-btn ocs-btn-danger"
-              disabled={busy}
-              onClick={() => onDeleteCard(card.id)}
-            >
-              {isVi ? 'Xóa thẻ' : 'Delete'}
-            </button>
-          )}
-        </div>
       </div>
     </div>
   )

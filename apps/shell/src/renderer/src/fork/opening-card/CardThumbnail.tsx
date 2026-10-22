@@ -301,12 +301,6 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
             style={{ width: '100%', height: '100%' }}
           />
         )}
-        <div className="ocs-thumb-kind-pill">
-          <svg width="10" height="10" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
-            <path d="M4 3.5v9l8-4.5-8-4.5z" />
-          </svg>
-          <span>{isVi ? 'Động' : 'Motion'}</span>
-        </div>
       </div>
     )
   }
@@ -314,23 +308,6 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
   // 2. Curated material (or custom material) thumbnail
   if (card.contentKind === 'curated-material' || (!card.contentKind && card.material)) {
     const matCss = buildMaterialCss(card.material)
-    const presetLabel =
-      card.material.preset === 'frosted-glass'
-        ? isVi
-          ? 'Kính mờ'
-          : 'Glass'
-        : card.material.preset === 'liquid-glass'
-          ? isVi
-            ? 'Kính lỏng'
-            : 'Liquid'
-          : card.material.preset === 'solid'
-            ? isVi
-              ? 'Đặc'
-              : 'Solid'
-            : isVi
-              ? 'Tối giản'
-              : 'Mono'
-
     return (
       <div className="ocs-thumb-box ocs-thumb-material">
         <div className="ocs-thumb-material-backdrop">
@@ -358,13 +335,6 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
               <div className="ocs-thumb-mini-line w-60" />
             </div>
           </div>
-        </div>
-        <div className="ocs-thumb-kind-pill">
-          <span
-            className="ocs-thumb-pill-dot"
-            style={{ backgroundColor: card.material.accentColor ?? '#2b7cd3' }}
-          />
-          <span>{presetLabel}</span>
         </div>
       </div>
     )
@@ -409,9 +379,6 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
             </svg>
           </div>
         )}
-        <div className="ocs-thumb-kind-pill">
-          <span>{isVi ? 'Ảnh/Media' : 'Media'}</span>
-        </div>
       </div>
     )
   }
@@ -452,9 +419,6 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
           </svg>
         </div>
       )}
-      <div className="ocs-thumb-kind-pill">
-        <span>{card.contentKind === 'custom-html' ? 'HTML' : 'AI HTML'}</span>
-      </div>
     </div>
   )
 }
