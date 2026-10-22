@@ -134,6 +134,7 @@ export function IndexFolderDetail({
             root={row.root}
             onChanged={onChanged}
             hideEmpty
+            hideToolbar
             bucket="all"
             sort="queue"
             grouping="reason"
