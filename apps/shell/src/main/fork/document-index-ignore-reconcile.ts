@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import type { FolderScanManager } from '../document-memory/folder-scan'
 import {
   getIgnorePolicyGeneration,
+  invalidateKnownRootsCache,
   isPathCaseInsensitive,
   registerIgnoreIpcHandlers,
   subscribeIgnorePolicyChanges,
@@ -389,6 +390,8 @@ export function createIgnoreReconcileController(
 
   const onScanLifecycleChange = (): void => {
     if (disposed) return
+    // the root list changed: ignore evaluation must not keep resolving against the old one
+    invalidateKnownRootsCache()
     const snapshot = inspectScanRoots()
     if (!snapshot.scan || snapshot.kind === 'unavailable') return
 

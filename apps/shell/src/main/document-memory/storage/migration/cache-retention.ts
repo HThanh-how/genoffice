@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { memoizePositive } from '../statement-cache'
 import { ensureVectorEvictionSchema } from '../vector-eviction-marker'
 
 export const CACHE_RETENTION_MIGRATION_ID = '20261008_cache_retention_columns'
@@ -15,16 +16,20 @@ export interface CacheRetentionMigrationResult {
  * Checks if the `content_evicted` column is present on the `documents` table.
  */
 export function hasContentEvictedColumn(db: DatabaseSync): boolean {
-  try {
-    const tableInfo = db
-      .prepare("PRAGMA table_info('documents')")
-      .all() as Array<{ name: string }>
-    return tableInfo.some((col) => col.name === 'content_evicted')
-  } catch (err: unknown) {
-    console.debug('[cache-retention] table_info failed:', err)
-    return false
-  }
+  // The poll asks this once per 512-row page; a present column is never removed, so only the first positive answer pays for the PRAGMA.
+  return memoizePositive(contentEvictedColumnPresent, db, () => {
+    try {
+      const tableInfo = db.prepare("PRAGMA table_info('documents')").all() as Array<{
+        name: string
+      }>
+      return tableInfo.some((col) => col.name === 'content_evicted')
+    } catch (err: unknown) {
+      console.debug('[cache-retention] table_info failed:', err)
+      return false
+    }
+  })
 }
+const contentEvictedColumnPresent = new WeakMap<DatabaseSync, true>()
 
 /**
  * Enterprise Cache Content Eviction Schema Migration Hook.
@@ -86,14 +91,20 @@ export function migrateCacheRetentionSchema(db: DatabaseSync): CacheRetentionMig
     // 4. Record migration entry in schema_migrations if available
     try {
       const hasSchemaMigrations = Boolean(
-        db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get(),
+        db
+          .prepare(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'",
+          )
+          .get(),
       )
       if (hasSchemaMigrations) {
-        db.prepare(`
+        db.prepare(
+          `
           INSERT INTO schema_migrations (id, applied_at)
           VALUES (?, unixepoch())
           ON CONFLICT(id) DO NOTHING
-        `).run(CACHE_RETENTION_MIGRATION_ID)
+        `,
+        ).run(CACHE_RETENTION_MIGRATION_ID)
       }
     } catch (err: unknown) {
       console.warn('[cache-retention] recording schema migration entry warning:', err)
