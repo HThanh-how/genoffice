@@ -149,7 +149,7 @@ export function IgnoreRulesSettings({ api }: { api: HomeApi }) {
   return <IndexingRulesStudio api={api} />
 }
 
-export function IndexSettingsTab({ api, focus }: { api: HomeApi; focus?: 'ocr' }) {
+export function IndexSettingsTab({ api, focus }: { api: HomeApi; focus?: 'ocr' | 'ignore' }) {
   const { lang } = useI18n()
   const d = lang === 'vi' ? VI : EN
   const [note, setNote] = useState('')
@@ -157,8 +157,10 @@ export function IndexSettingsTab({ api, focus }: { api: HomeApi; focus?: 'ocr' }
   const [clearing, setClearing] = useState(false)
   const clearPending = useRef(false)
   useEffect(() => {
-    if (focus === 'ocr')
-      document.getElementById('index-settings-ocr')?.scrollIntoView({ block: 'nearest' })
+    if (focus === 'ocr' || focus === 'ignore')
+      document
+        .getElementById(focus === 'ocr' ? 'index-settings-ocr' : 'index-settings-ignore')
+        ?.scrollIntoView({ block: 'nearest' })
   }, [focus])
   const clear = async () => {
     if (clearPending.current) return
@@ -194,7 +196,12 @@ export function IndexSettingsTab({ api, focus }: { api: HomeApi; focus?: 'ocr' }
         <Section title={d.pdf} hint={d.pdfHint}>
           <PdfPagesSettings api={api} />
         </Section>
-        <Section title={d.ignore} hint={d.ignoreHint}>
+        <Section
+          id="index-settings-ignore"
+          title={d.ignore}
+          hint={d.ignoreHint}
+          open={focus === 'ignore'}
+        >
           <IgnoreRulesSettings api={api} />
         </Section>
       </div>

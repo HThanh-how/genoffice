@@ -158,14 +158,6 @@ async function flush(times = 6) {
   }
 }
 
-function clickTab(label: string) {
-  const tab = Array.from(container.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((b) =>
-    (b.textContent ?? '').trim().startsWith(label),
-  )
-  if (!tab) throw new Error(`tab ${label} not found`)
-  act(() => tab.click())
-}
-
 describe('Index screen while Windows reports the window hidden', () => {
   beforeEach(() => {
     Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
@@ -181,7 +173,7 @@ describe('Index screen while Windows reports the window hidden', () => {
     vi.useRealTimers()
   })
 
-  it('reads the real numbers on every tab instead of showing zero or loading forever', async () => {
+  it('reads the real numbers on the one page instead of showing zero or loading forever', async () => {
     const { api, calls } = makeApi()
     act(() => {
       root.render(
@@ -194,28 +186,23 @@ describe('Index screen while Windows reports the window hidden', () => {
     await flush()
 
     expect(calls.getDocumentIndexSnapshot ?? 0).toBeGreaterThan(0)
-    const status = container.querySelector('.idx-status')?.textContent ?? ''
+    const status = container.querySelector('.ix-status')?.textContent ?? ''
     expect(status).not.toMatch(/Ready to search 0 files/)
-    expect(status).toMatch(/77%/)
     // searchable = ready + released (released files keep their text), out of every file
-    expect(status).toContain('33,124')
-    expect(status).toContain('42,853')
-    // one count everywhere: corrupt 2 + password 14 + other 19
-    expect(status).toContain('35 files need you')
-    expect(container.querySelector('.idx-badge')?.textContent).toBe('35')
+    expect(status).toContain('33,124 of 42,853 files')
+    // one headline, no tabs and no second progress figure
+    expect(container.querySelector('[role="tab"]')).toBeNull()
+    expect(status).not.toMatch(/77%/)
 
-    clickTab('Sources')
-    await flush()
+    // the folders are on the same page
     expect(container.textContent).not.toMatch(/Loading folder progress/)
     expect(container.textContent).toContain('G:\\Mr Quoc')
 
-    clickTab('Issues')
-    await flush()
-    const issuesText = container.textContent ?? ''
-    expect(issuesText).not.toMatch(/Loading file status/)
-    expect(issuesText).not.toMatch(/\b0 searchable files/)
-    // corrupt (2) + password (14) fold into one group the person can act on
+    // problems are a short list: corrupt (2) + password (14) fold into one group the person can act on
+    const attention = container.querySelector('#ix-attention-h')?.parentElement?.parentElement
+    const issuesText = attention?.textContent ?? ''
     expect(issuesText).toMatch(/Damaged or needs a password[^0-9]*16/)
+    expect(issuesText).not.toMatch(/Loading file status/)
   })
 
   it('shows a placeholder, not "0 files", before the first answer arrives', async () => {
@@ -242,11 +229,11 @@ describe('Index screen while Windows reports the window hidden', () => {
       )
     })
     await flush(2)
-    const status = container.querySelector('.idx-status')
+    const status = container.querySelector('.ix-status')
     expect(status?.getAttribute('aria-busy')).toBe('true')
     expect(status?.textContent ?? '').not.toMatch(/0 files/)
     release()
     await flush()
-    expect(container.querySelector('.idx-status')?.textContent ?? '').toMatch(/77%/)
+    expect(container.querySelector('.ix-status')?.textContent ?? '').toMatch(/of 42,853 files/)
   })
 })

@@ -65,7 +65,7 @@ try {
 const snapshotFiles = [
   'apps/shell/src/renderer/src/fork/useIndexSnapshot.ts',
   'apps/shell/src/renderer/src/fork/IndexDashboard.tsx',
-  'apps/shell/src/renderer/src/fork/IndexOverview.tsx',
+  'apps/shell/src/renderer/src/fork/IndexStatus.tsx',
   'apps/shell/src/renderer/src/fork/IndexDiagnostics.tsx',
 ]
 let snapshotPassed = true
