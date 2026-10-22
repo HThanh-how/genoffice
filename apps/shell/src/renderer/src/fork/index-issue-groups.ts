@@ -104,3 +104,10 @@ export function narrowSummary(
   const groups = summary.groups.filter((g) => reasons.includes(g.reason))
   return { ...summary, groups, total: groups.reduce((n, g) => n + g.count, 0) }
 }
+
+/** The same summary without the search-model failure, for when the screen already says it up top. */
+export function withoutModel(summary: IndexIssueSummary | null): IndexIssueSummary | null {
+  if (!summary) return summary
+  const groups = summary.groups.filter((g) => g.reason !== 'model')
+  return { ...summary, groups, total: groups.reduce((n, g) => n + g.count, 0) }
+}
