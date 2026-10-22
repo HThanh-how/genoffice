@@ -28,7 +28,7 @@ test('folder progress collapses independently and document ring completes withou
             skipped: 0,
             errors: 0,
           },
-          memory: { enabled: true, modelState: 'ready', pending: 4, errors: 0 },
+          memory: { enabled: true, modelState: 'ready', pending: 3, errors: 0 },
           folderProgress: {
             totalFiles: 4,
             readyFiles: 1,
@@ -104,10 +104,10 @@ test('folder progress collapses independently and document ring completes withou
       .click()
     await expect(home.locator('.idx-page')).toBeVisible()
 
-    const statusCard = home.locator('.idx-status-card.is-indexing')
+    const statusCard = home.locator('.idx-status.is-working')
     await expect(statusCard).toBeVisible()
-    await expect(statusCard.locator('.idx-progress-percent')).toHaveText('25%')
-    await expect(statusCard).toContainText('4')
+    await expect(statusCard.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '25')
+    await expect(statusCard.locator('.idx-facts > div').nth(1).locator('dd')).toHaveText('3')
 
     await home.screenshot({ path: 'e2e/artifacts/index-progress-folder.png' })
 
@@ -124,10 +124,8 @@ test('folder progress collapses independently and document ring completes withou
       })
     })
 
-    await expect(home.locator('.idx-status-card.is-idle')).toBeVisible()
-    await expect(home.locator('.idx-status-card.is-idle')).toContainText(
-      /Ready for search|Sẵn sàng tìm kiếm/,
-    )
+    await expect(home.locator('.idx-status.is-ready')).toBeVisible()
+    await expect(home.locator('.idx-status.is-ready')).toContainText('Ready to search 4 files')
 
     await home.locator('.idx-back').click()
     await expect(home.locator('.idx-page')).toHaveCount(0)

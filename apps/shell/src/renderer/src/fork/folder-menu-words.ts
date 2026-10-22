@@ -53,7 +53,8 @@ const VI: typeof EN = {
   stoppedToast: 'Đã ngừng bỏ qua “{name}”',
   ignoreUndo: 'Hoàn tác',
   ignoreBlockedProtected: 'Đây là thư mục hệ thống hoặc ổ đĩa nên không thể bỏ qua.',
-  ignoreBlockedRoot: 'Đây là thư mục gốc đã lập chỉ mục. Hãy gỡ khỏi danh sách thư mục thay vì bỏ qua.',
+  ignoreBlockedRoot:
+    'Đây là thư mục gốc đã lập chỉ mục. Hãy gỡ khỏi danh sách thư mục thay vì bỏ qua.',
   ignoreBlockedContainsRoot: 'Thư mục này chứa một thư mục gốc khác nên không thể bỏ qua.',
 }
 

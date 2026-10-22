@@ -20,6 +20,9 @@ function normalizePathIdentity(p: string): string {
 const PDF_FIXTURE = join(__dirname, 'fixtures', 'mixed-scan.pdf')
 
 class InProcessWorker extends EventEmitter {
+  private stopped = false
+  private readonly pending = new Set<Promise<void>>()
+
   constructor(
     private readonly dbPath: string,
     private readonly failPaths: Set<string>,
@@ -34,7 +37,9 @@ class InProcessWorker extends EventEmitter {
     texts?: string[]
     maxPdfPages?: number
   }): void {
-    setTimeout(async () => {
+    if (this.stopped) return
+    const task = new Promise<void>((resolve) => setTimeout(resolve, 0)).then(async () => {
+      if (this.stopped) return
       try {
         const ack = storageBudgetAckReply(message)
         if (ack) {
@@ -77,11 +82,16 @@ class InProcessWorker extends EventEmitter {
           error: err instanceof Error ? err.message : String(err),
         })
       }
-    }, 0)
+    })
+    this.pending.add(task)
+    void task.finally(() => this.pending.delete(task))
   }
 
-  terminate(): Promise<number> {
-    return Promise.resolve(0)
+  async terminate(): Promise<number> {
+    this.stopped = true
+    // Match Worker.terminate(): no extraction or open SQLite handle survives completion.
+    await Promise.all(this.pending)
+    return 0
   }
 }
 

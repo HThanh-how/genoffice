@@ -5695,8 +5695,12 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.recents, (_event, query: unknown): RecentPage => {
     const excludeIgnored =
-      !!query && typeof query === 'object' && (query as { excludeIgnored?: unknown }).excludeIgnored === true
-    const paths = excludeIgnored ? readRecentFiles().filter((p) => !isPathIgnored(p)) : readRecentFiles()
+      !!query &&
+      typeof query === 'object' &&
+      (query as { excludeIgnored?: unknown }).excludeIgnored === true
+    const paths = excludeIgnored
+      ? readRecentFiles().filter((p) => !isPathIgnored(p))
+      : readRecentFiles()
     return pageRecentPaths(paths, query, new Set(readStarredFiles()))
   })
 

@@ -17,7 +17,12 @@ function activity(over: {
   enabled?: boolean
 }): HomeIndexingActivity {
   return {
-    memory: { enabled: over.enabled ?? true, modelState: 'ready', pending: over.pendingFiles ?? 0, errors: over.errorFiles ?? 0 },
+    memory: {
+      enabled: over.enabled ?? true,
+      modelState: 'ready',
+      pending: over.pendingFiles ?? 0,
+      errors: over.errorFiles ?? 0,
+    },
     folder: over.running ? { running: true } : null,
     folderProgress: {
       totalFiles: 100,
@@ -32,10 +37,11 @@ function activity(over: {
   } as unknown as HomeIndexingActivity
 }
 
-const groups = (g: Array<[string, number]>) => ({
-  total: g.reduce((n, [, c]) => n + c, 0),
-  groups: g.map(([reason, count]) => ({ reason, count })),
-}) as never
+const groups = (g: Array<[string, number]>) =>
+  ({
+    total: g.reduce((n, [, c]) => n + c, 0),
+    groups: g.map(([reason, count]) => ({ reason, count })),
+  }) as never
 
 describe('deriveIndexSummary', () => {
   it('empty files are not problems', () => {
@@ -86,7 +92,9 @@ describe('deriveIndexSummary', () => {
   })
 
   it('falls back to failed files of the activity without issue groups', () => {
-    expect(deriveIndexSummary({ activity: activity({ errorFiles: 6, emptyFiles: 50 }) }).problems).toBe(6)
+    expect(
+      deriveIndexSummary({ activity: activity({ errorFiles: 6, emptyFiles: 50 }) }).problems,
+    ).toBe(6)
   })
 
   it('sidebar badge: a number only for real problems, a quiet mark for a long queue, nothing when calm', () => {
@@ -116,7 +124,10 @@ describe('deriveIndexSummary', () => {
 })
 
 describe('loadIndexSummary (sidebar, dock and dashboard share it)', () => {
-  const attention = groups([['permission', 3], ['no-text', 100]])
+  const attention = groups([
+    ['permission', 3],
+    ['no-text', 100],
+  ])
   it('gives the same numbers as the dashboard derivation', async () => {
     const a = activity({ pendingFiles: 5, errorFiles: 120, emptyFiles: 100 })
     const api = {

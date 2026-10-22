@@ -25,6 +25,10 @@ async function openStudio(page: Page): Promise<void> {
   const settingsTab = page.locator('#index-tab-settings')
   await expect(settingsTab).toBeVisible()
   await settingsTab.click()
+  await page
+    .locator('.ixs-row > summary')
+    .filter({ hasText: /Ignore rules|Quy tắc loại trừ/ })
+    .click()
   await expect(page.locator('.ixr')).toBeVisible()
   await page.locator('.ixr').scrollIntoViewIfNeeded()
   await page.waitForTimeout(300)

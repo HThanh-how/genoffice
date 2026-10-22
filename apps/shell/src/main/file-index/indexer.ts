@@ -417,16 +417,11 @@ export class FileIndexer {
       // A refresh must not erase the last searchable body before parsing succeeds. Keeping
       // the old metadata also ensures an interrupted refresh is retried after reconnecting.
       if (k?.status === 'ok') this.preserveCachedBody.add(f.path)
-      if (this.workerWritesDb) {
-        // new names are written in batches by the worker; files already in the index are queued as they are
-        if (!k) {
-          fresh.push(f)
-          if (fresh.length >= PENDING_BATCH) await flushFresh()
-        } else this.enqueue(f)
-      } else {
-        if (!k) this.store.upsert(f, null, 'pending')
-        this.enqueue(f)
-      }
+      // Batch new names in both write modes; one transaction per file stalls slow disks.
+      if (!k) {
+        fresh.push(f)
+        if (fresh.length >= PENDING_BATCH) await flushFresh()
+      } else this.enqueue(f)
     }
     await flushFresh()
     this.lastScanAt = Date.now()
@@ -461,9 +456,9 @@ export class FileIndexer {
         return allowed.filter((f) => !isPathIgnored(f.path))
       }
     } else {
-      for (const f of allowed) {
-        if (!isPathIgnored(f.path)) this.store.upsert(f, null, 'pending')
-      }
+      const current = allowed.filter((f) => !isPathIgnored(f.path))
+      this.store.upsertPendingBatch(current)
+      return current
     }
     return allowed
   }

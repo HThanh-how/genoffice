@@ -34,11 +34,7 @@ export function RecentFiles({ api, limit = 5, onOpened, onViewAll }: RecentFiles
         }
       } catch (err) {
         if (alive) {
-          setError(
-            isVi
-              ? 'Không thể tải danh sách tệp gần đây.'
-              : 'Could not load recent files.',
-          )
+          setError(isVi ? 'Không thể tải danh sách tệp gần đây.' : 'Could not load recent files.')
         }
       } finally {
         if (alive) setLoading(false)
@@ -171,7 +167,12 @@ export function RecentFiles({ api, limit = 5, onOpened, onViewAll }: RecentFiles
                   className="idx-recent-item"
                   onClick={() => void handleOpen(file.path)}
                 >
-                  <img src={iconFor(file.name)} alt="" className="idx-recent-icon" aria-hidden="true" />
+                  <img
+                    src={iconFor(file.name)}
+                    alt=""
+                    className="idx-recent-icon"
+                    aria-hidden="true"
+                  />
                   <span className="idx-recent-info">
                     <span className="idx-recent-name" title={file.name}>
                       {file.name}

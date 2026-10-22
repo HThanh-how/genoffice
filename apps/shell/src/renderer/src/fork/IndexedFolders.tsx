@@ -277,7 +277,10 @@ function getStatusLabel(status: KnownSearchSourceStatus | undefined, d: Dict): s
 
 export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) {
   const effectiveApi =
-    api ?? (typeof window !== 'undefined' ? (window as unknown as { aiOffice?: HomeApi }).aiOffice : undefined)
+    api ??
+    (typeof window !== 'undefined'
+      ? (window as unknown as { aiOffice?: HomeApi }).aiOffice
+      : undefined)
 
   const { lang } = useI18n()
   const dict: Dict = (STRINGS as Record<string, Dict | undefined>)[lang] ?? STRINGS.en
@@ -309,7 +312,8 @@ export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) 
           setKnownSources((prev) => {
             return (res as KnownSearchSourceEntry[]).map((entry) => {
               const isBusy = busySourcesRef.current[entry.id]
-              const seqChanged = (sourceActionSeqRef.current[entry.id] ?? 0) !== (capturedSeqs[entry.id] ?? 0)
+              const seqChanged =
+                (sourceActionSeqRef.current[entry.id] ?? 0) !== (capturedSeqs[entry.id] ?? 0)
               if (isBusy || seqChanged) {
                 const existing = prev.find((s) => s.id === entry.id)
                 if (existing) return existing
@@ -350,11 +354,9 @@ export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) 
     try {
       const setFn = (effectiveApi as Record<string, unknown> | undefined)?.setKnownSearchSource
       if (typeof setFn === 'function') {
-        const res = await (setFn as (sourceId: string, isEnabled: boolean) => Promise<unknown>).call(
-          effectiveApi,
-          id,
-          enabled,
-        )
+        const res = await (
+          setFn as (sourceId: string, isEnabled: boolean) => Promise<unknown>
+        ).call(effectiveApi, id, enabled)
         if (res && typeof res === 'object' && 'id' in res) {
           const updated = res as KnownSearchSourceEntry
           setKnownSources((prev) => prev.map((s) => (s.id === id ? updated : s)))
@@ -368,15 +370,10 @@ export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) 
       // Rollback optimistic update
       setKnownSources((prev) =>
         prev.map((s) =>
-          s.id === id
-            ? previousEntry
-              ? { ...previousEntry }
-              : { ...s, enabled: !enabled }
-            : s,
+          s.id === id ? (previousEntry ? { ...previousEntry } : { ...s, enabled: !enabled }) : s,
         ),
       )
-      const errorMsg =
-        err instanceof Error && err.message ? err.message : dict.sourceToggleFailed
+      const errorMsg = err instanceof Error && err.message ? err.message : dict.sourceToggleFailed
       setSourceErrors((prev) => ({ ...prev, [id]: errorMsg }))
     } finally {
       busySourcesRef.current[id] = false
@@ -570,8 +567,7 @@ export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) 
         return dict.chipReady
     }
   }
-  const closeMenu = (target: HTMLElement) =>
-    target.closest('details')?.removeAttribute('open')
+  const closeMenu = (target: HTMLElement) => target.closest('details')?.removeAttribute('open')
 
   return (
     <div className="set-folders">
@@ -703,7 +699,13 @@ export function IndexedFolders({ api, onOpenIssues }: IndexedFoldersProps = {}) 
                   aria-label={dict.moreActions}
                   title={dict.moreActions}
                 >
-                  <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 16 16"
+                    fill="currentColor"
+                    aria-hidden="true"
+                  >
                     <circle cx="3.5" cy="8" r="1.3" />
                     <circle cx="8" cy="8" r="1.3" />
                     <circle cx="12.5" cy="8" r="1.3" />

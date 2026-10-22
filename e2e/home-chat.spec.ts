@@ -79,7 +79,7 @@ test('home chat finds remembered content, opens its source and preserves the hom
 
     const askBtn = home.locator('.sidebar').getByRole('button', { name: 'Ask AI', exact: true })
     await askBtn.click()
-    await expect(home.locator('.home-chat-panel.is-workspace')).toBeVisible()
+    await expect(home.locator('#home-ask-workspace .home-chat-panel')).toBeVisible()
     await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
 
     const input = home.locator('.home-chat-panel textarea')
@@ -92,13 +92,13 @@ test('home chat finds remembered content, opens its source and preserves the hom
       }),
     )
     await homeTab.click()
-    await expect(home.locator('.home-chat-panel.is-workspace')).toBeHidden()
+    await expect(home.locator('#home-ask-workspace .home-chat-panel')).toBeHidden()
     await expect(homeTab).toHaveAttribute('data-test-click-received', 'true')
     await expect(home.locator('.home-hero')).toBeVisible()
     await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
 
     await askBtn.click()
-    await expect(home.locator('.home-chat-panel.is-workspace')).toBeVisible()
+    await expect(home.locator('#home-ask-workspace .home-chat-panel')).toBeVisible()
     await expect(home.locator('.home-chat-launcher')).toHaveCount(0)
     await expect(input).toHaveValue('draft should remain after collapsing')
 
@@ -108,20 +108,21 @@ test('home chat finds remembered content, opens its source and preserves the hom
       timeout: 30_000,
     })
     expect(requests).toHaveLength(3)
-    // 1. Empty knowledge base (no starred files): only 4 baseline tools are exposed
-    expect(requests[0]!.tools).toHaveLength(4)
+    // Empty knowledge base: remembered documents and incremental document creation.
+    expect(requests[0]!.tools).toHaveLength(5)
     expect(requests[0]!.tools?.map((t) => t.function.name)).toEqual([
       'search_remembered_documents',
       'read_remembered_document',
       'open_remembered_document',
       'create_document',
+      'append_to_document',
     ])
     const evidence = JSON.parse(
       requests[2]!.messages.filter((m) => m.role === 'tool').at(-1)!.content!,
     )
     expect(evidence.verified).toBe(true)
 
-    // 2. Nonempty knowledge base: star a file and verify all 6 tools are offered
+    // Starred files add the two knowledge-base tools.
     await home.evaluate(async (p) => {
       const api = (window as Window & { aiOffice: HomeApi }).aiOffice
       await api.toggleStar(p)
@@ -133,7 +134,7 @@ test('home chat finds remembered content, opens its source and preserves the hom
       { timeout: 30_000 },
     )
     const starredRequest = requests[3]!
-    expect(starredRequest.tools).toHaveLength(6)
+    expect(starredRequest.tools).toHaveLength(7)
     expect(starredRequest.tools?.map((t) => t.function.name)).toEqual([
       'search_remembered_documents',
       'read_remembered_document',
@@ -141,6 +142,7 @@ test('home chat finds remembered content, opens its source and preserves the hom
       'read_knowledge_file',
       'search_knowledge_base',
       'create_document',
+      'append_to_document',
     ])
     await home.screenshot({ path: screenshotPath('home-chat-glass') })
     await home.evaluate(() => document.documentElement.setAttribute('data-theme', 'dark'))

@@ -174,7 +174,8 @@ export const VI: typeof EN = {
   },
   tabs: { overview: 'Tổng quan', sources: 'Nguồn', issues: 'Cần xử lý', settings: 'Cài đặt' },
   storageWarn: 'Dung lượng chỉ mục đạt {p}% (Cảnh báo). Đang tối ưu hóa nền.',
-  storageFull: 'Dung lượng chỉ mục đạt giới hạn tối đa. Tạm dừng tìm kiếm ngữ nghĩa để bảo vệ dữ liệu.',
+  storageFull:
+    'Dung lượng chỉ mục đạt giới hạn tối đa. Tạm dừng tìm kiếm ngữ nghĩa để bảo vệ dữ liệu.',
   status: {
     working: 'Đang chuẩn bị để tìm kiếm trong tệp của bạn',
     left: 'còn {n} tệp',

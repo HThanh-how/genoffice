@@ -77,6 +77,7 @@ export async function launchShell(options: LaunchOptions): Promise<LaunchedApp> 
   // Switches go before the app path so Chromium is guaranteed to consume them
   // and they never leak into the argv the app parses for documents to open.
   const args: string[] = []
+  args.push(`--user-data-dir=${userDataDir}`)
   if (process.platform === 'linux') args.push('--no-sandbox', '--disable-gpu')
   args.push(SHELL_DIR)
   if (options.openFile) args.push(options.openFile)

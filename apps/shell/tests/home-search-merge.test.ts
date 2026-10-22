@@ -51,7 +51,10 @@ describe('instantNameMatches', () => {
     expect(instantNameMatches(files, 'giao an', () => true, 1)).toHaveLength(1)
   })
   it('puts the better name match first', () => {
-    const r = instantNameMatches([entry('/giao an/readme.txt'), entry('/x/giao an.docx')], 'giao an')
+    const r = instantNameMatches(
+      [entry('/giao an/readme.txt'), entry('/x/giao an.docx')],
+      'giao an',
+    )
     expect(r[0]!.path).toBe('/x/giao an.docx')
   })
 })

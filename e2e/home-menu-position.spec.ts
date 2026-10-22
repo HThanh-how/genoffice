@@ -61,10 +61,10 @@ test.describe('home row menu position', () => {
           },
         }
       })
-      // inside the window, right edge on the button's right edge, below it
+      // inside the window, left edge just to the right of the button, below it
       expect(m.left).toBeGreaterThanOrEqual(0)
       expect(m.right).toBeLessThanOrEqual(vp.w)
-      expect(Math.abs(m.right - b.right)).toBeLessThanOrEqual(2)
+      expect(Math.abs(m.left - (b.right + 4))).toBeLessThanOrEqual(2)
       expect(m.top).toBeGreaterThanOrEqual(b.bottom - 1)
       expect(m.top).toBeLessThanOrEqual(b.bottom + 12)
     } finally {

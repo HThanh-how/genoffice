@@ -29,9 +29,7 @@ function hashHex(input: string): string {
   }
   h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909)
   h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909)
-  return (
-    (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0')
-  )
+  return (h2 >>> 0).toString(16).padStart(8, '0') + (h1 >>> 0).toString(16).padStart(8, '0')
 }
 
 export function folderIgnoreRuleId(path: string, caseInsensitive: boolean): string {
@@ -72,7 +70,9 @@ export function isFolderIgnoreRuleFor(
 ): boolean {
   if (rule.source !== 'user' || (rule.action ?? 'ignore') !== 'ignore') return false
   if (rule.id === folderIgnoreRuleId(path, caseInsensitive)) return true
-  return rule.pattern === '**' && rule.scope !== 'global' && sameScope(rule.scope, path, caseInsensitive)
+  return (
+    rule.pattern === '**' && rule.scope !== 'global' && sameScope(rule.scope, path, caseInsensitive)
+  )
 }
 
 /** Pure list edits used by the atomic main-process handlers. `changed` is false for no-ops. */
@@ -157,7 +157,8 @@ export function folderIgnoreUnsafe(
     if (PROTECTED_WIN.test(norm) || PROTECTED_POSIX.test(norm)) return 'protected'
     const key = folderIgnoreKey(p, caseInsensitive)
     if (rootKeys.includes(key)) return 'is-root'
-    if (rootKeys.some((r) => r.startsWith(key.endsWith('/') ? key : key + '/'))) return 'contains-root'
+    if (rootKeys.some((r) => r.startsWith(key.endsWith('/') ? key : key + '/')))
+      return 'contains-root'
   }
   return null
 }

@@ -41,7 +41,15 @@ const memory = {
   files: [],
 }
 const activity = {
-  folder: { state: 'complete', running: false, root: 'D:\\', discovered: 25189, enrolled: 25163, skipped: 260307, errors: 0 },
+  folder: {
+    state: 'complete',
+    running: false,
+    root: 'D:\\',
+    discovered: 25189,
+    enrolled: 25163,
+    skipped: 260307,
+    errors: 0,
+  },
   progressScope: 'library',
   memory: { enabled: true, cpuMode: 'gentle', modelState: 'ready', pending: 9680, errors: 35 },
   folderProgress,
@@ -60,7 +68,14 @@ const issues = {
 const mode = {
   mode: 'fast',
   pauseOnBattery: true,
-  effective: { tier: 'battery', paused: false, threads: 1, cpuShare: 0.3, onBattery: true, memoryTier: 'high' },
+  effective: {
+    tier: 'battery',
+    paused: false,
+    threads: 1,
+    cpuShare: 0.3,
+    onBattery: true,
+    memoryTier: 'high',
+  },
 }
 const folders = [
   {
@@ -98,7 +113,14 @@ const folders = [
 function makeApi() {
   const calls: Record<string, number> = {}
   const known: Record<string, (...args: unknown[]) => unknown> = {
-    getDocumentIndexSnapshot: async () => ({ memory, activity, mode, issues, now: { extracting: [] }, timestamp: 1 }),
+    getDocumentIndexSnapshot: async () => ({
+      memory,
+      activity,
+      mode,
+      issues,
+      now: { extracting: [] },
+      timestamp: 1,
+    }),
     getDocumentMemoryStatus: async () => memory,
     getIndexingActivity: async () => activity,
     getIndexingModeState: async () => mode,
@@ -203,7 +225,11 @@ describe('Index screen while Windows reports the window hidden', () => {
     const slow = new Proxy(api as object, {
       get(t, key: string) {
         const fn = (t as Record<string, unknown>)[key] as (...a: unknown[]) => Promise<unknown>
-        if (key === 'getDocumentIndexSnapshot') return async (...a: unknown[]) => { await gate; return fn(...a) }
+        if (key === 'getDocumentIndexSnapshot')
+          return async (...a: unknown[]) => {
+            await gate
+            return fn(...a)
+          }
         return fn
       },
     }) as unknown as HomeApi
