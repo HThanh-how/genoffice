@@ -156,6 +156,11 @@ export const EN = {
     emptyBody:
       'Add a folder and GenOffice reads the files in it, so you can search inside them. Your files stay where they are.',
     file1: '1 file',
+    overview: 'All folders',
+    statSearchable: 'Searchable',
+    statWaiting: 'Waiting',
+    statNeedYou: 'Need you',
+    back: 'All folders',
     files: '{n} files',
     filesOf: '{done} of {total} files',
     scanning: 'Scanning…',
@@ -374,6 +379,11 @@ export const VI: typeof EN = {
     emptyBody:
       'Thêm một thư mục, GenOffice sẽ đọc các tệp trong đó để bạn tìm được cả nội dung bên trong. Tệp vẫn nằm nguyên chỗ cũ.',
     file1: '1 tệp',
+    overview: 'Tất cả thư mục',
+    statSearchable: 'Tìm được',
+    statWaiting: 'Đang chờ',
+    statNeedYou: 'Cần xử lý',
+    back: 'Tất cả thư mục',
     files: '{n} tệp',
     filesOf: '{done} / {total} tệp',
     scanning: 'Đang quét…',

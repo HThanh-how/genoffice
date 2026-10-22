@@ -70,7 +70,7 @@ export function useIndexFolders(api: HomeApi, tick: unknown) {
   return { folders, failed, refresh: load }
 }
 
-function useWhen(lang: string, s: Dict) {
+export function useWhen(lang: string, s: Dict) {
   return useCallback(
     (at: number): string => {
       const diff = at - Date.now()

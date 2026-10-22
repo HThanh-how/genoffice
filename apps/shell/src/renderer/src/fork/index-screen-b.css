@@ -1,0 +1,261 @@
+/* Index screen, variant B: master and detail. Builds on index-screen.css. */
+.ixb-col {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  max-width: 1080px;
+  margin: 0 auto;
+}
+.ixb {
+  display: grid;
+  grid-template-columns: 296px minmax(0, 1fr);
+  gap: 28px;
+  height: max(440px, calc(100vh - 170px));
+  min-height: 0;
+}
+.ixb-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+.ixb-overview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: var(--radius-8);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ixb-overview:hover,
+.ixb-row:hover {
+  background: var(--hover);
+}
+.ixb-overview.is-selected,
+.ixb-row.is-selected {
+  background: var(--active-bg);
+}
+.ixb-overview-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.ixb-overview-text strong {
+  font-size: 14px;
+  font-weight: 600;
+}
+.ixb-overview-text span {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ixb-badge {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--danger);
+  color: var(--color-btn-primary-text);
+  font-size: 12px;
+  line-height: 20px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.ixb-side-head {
+  padding: 8px 12px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.ixb-filter {
+  width: auto;
+  max-width: none;
+  margin: 0 4px;
+}
+.ixb-list-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ixb-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ixb-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  height: 100%;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--radius-8);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ixb-row-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.ixb-row-text strong {
+  overflow: hidden;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ixb-row-text span {
+  overflow: hidden;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.ixb-row.is-offline strong,
+.ixb-row.is-offline .ixb-row-text span {
+  color: var(--text-tertiary);
+}
+.ixb-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.ixb-dot.is-alert {
+  background: var(--danger);
+}
+.ixb-dot.is-busy {
+  background: var(--accent);
+}
+.ixb-row:focus-visible,
+.ixb-overview:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+.ixb-main {
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+}
+.ixb-overview-pane {
+  display: flex;
+  flex-direction: column;
+  gap: 32px;
+}
+.ixb-back {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+.ixb-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.ixb-detail-head h2 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  line-height: 28px;
+}
+.ixb-path {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+  font-size: 13px;
+  user-select: text;
+}
+.ixb-last {
+  margin: 4px 0 0;
+  color: var(--text-tertiary);
+  font-size: 12px;
+}
+.ixb-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.ix-btn.is-danger {
+  color: var(--danger);
+}
+.ixb-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin: 0;
+  padding: 16px 0;
+  border-block: 1px solid var(--border-subtle);
+}
+.ixb-stats dt {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.ixb-stats dd {
+  margin: 2px 0 0;
+  font-size: 24px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.ixb-stats dd.is-alert {
+  color: var(--danger);
+}
+.ixb-block h3 {
+  margin: 0 0 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.ixb-error {
+  color: var(--danger);
+}
+.ixb-history {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ixb-history li {
+  display: grid;
+  grid-template-columns: 120px 110px minmax(0, 1fr);
+  gap: 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.ixb-run {
+  color: var(--text-tertiary);
+}
+@container ix (max-width: 760px) {
+  .ixb {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ixb:not(.has-selection) .ixb-main {
+    display: none;
+  }
+  .ixb.has-selection .ixb-side {
+    display: none;
+  }
+  .ixb-back {
+    display: inline-flex;
+  }
+  .ixb-history li {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+}
