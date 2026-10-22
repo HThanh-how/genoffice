@@ -13,7 +13,7 @@ import type {
 } from '../../shared/opening-card-types'
 import { isBuiltInCard } from '../../shared/opening-card-families'
 import { SCENES } from '../../shared/opening-scenes-meta'
-import { sanitizeBorderColor, sanitizeHexColor } from './opening-card-css'
+import { sanitizeBorderColor, sanitizeHexColor, sanitizeMaterialExtras } from './opening-card-css'
 import {
   deleteMediaAsset,
   isSafeAssetId,
@@ -171,6 +171,7 @@ export function validateCardDefinition(raw: unknown): {
     ...(borderColor ? { borderColor } : {}),
     shadowIntensity,
     ...(reduceTransparency ? { reduceTransparency: true } : {}),
+    ...sanitizeMaterialExtras(matRaw),
   }
 
   // Validate optional mediaAssetId

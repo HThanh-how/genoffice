@@ -18,6 +18,8 @@ export interface SceneMeta {
   en: string
   /** page background behind the scene: top-left and middle */
   bg: [string, string]
+  /** how long the scene runs before its gallery thumbnail is taken, for scenes that start empty (default 100) */
+  thumbMs?: number
 }
 
 export const SCENES: SceneMeta[] = [
@@ -80,7 +82,13 @@ export const SCENES: SceneMeta[] = [
     en: 'Sunrise, hot-air balloons',
     bg: ['#2b1233', '#7d3140'],
   },
-  { id: 'cloudsea', vi: 'Biển mây', en: 'Sea of clouds', bg: ['#2a1b45', '#a45a70'] },
+  {
+    id: 'cloudsea',
+    vi: 'Biển mây',
+    en: 'Sea of clouds',
+    bg: ['#2a1b45', '#a45a70'],
+    thumbMs: 1400,
+  },
   { id: 'kites', vi: 'Thả diều', en: 'Flying kites', bg: ['#0f3a6e', '#3c8fd0'] },
   {
     id: 'sunsetbeach',
@@ -95,6 +103,7 @@ export const SCENES: SceneMeta[] = [
     vi: 'Pháo hoa bên sông',
     en: 'Fireworks by the river',
     bg: ['#050612', '#101a3a'],
+    thumbMs: 3200,
   },
   { id: 'city', vi: 'Thành phố đêm', en: 'City at night', bg: ['#070912', '#17203a'] },
   {
@@ -126,7 +135,13 @@ export const SCENES: SceneMeta[] = [
   { id: 'waves', vi: 'Sóng neon', en: 'Neon waves', bg: ['#060a1a', '#101a40'] },
   { id: 'lava', vi: 'Đèn dung nham', en: 'Lava lamp', bg: ['#14061a', '#34102e'] },
   { id: 'bubbles', vi: 'Bong bóng xà phòng', en: 'Soap bubbles', bg: ['#0c1424', '#223a5c'] },
-  { id: 'ink', vi: 'Mực loang trong nước', en: 'Ink in water', bg: ['#070b1a', '#13204a'] },
+  {
+    id: 'ink',
+    vi: 'Mực loang trong nước',
+    en: 'Ink in water',
+    bg: ['#070b1a', '#13204a'],
+    thumbMs: 2400,
+  },
   {
     id: 'sakura',
     vi: 'Hoa anh đào rơi',

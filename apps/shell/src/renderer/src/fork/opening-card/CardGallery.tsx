@@ -2,7 +2,7 @@ import React, { useMemo, useRef, useState } from 'react'
 import type { OpeningCardDefinition, StoredMediaAsset } from '../../../../shared/opening-card-types'
 import { OPENING_APPS, type OpeningPrefs } from '../../../../shared/opening-scenes-meta'
 import { CardThumbnail } from './CardThumbnail'
-import { APP_INFO } from './CardPreview'
+import { APP_INFO } from './app-info'
 import {
   computeFilterCounts,
   matchesFilter,
@@ -119,6 +119,26 @@ export function CardGallery({
     <div className="ocs-gallery-section">
       {/* Search and Filters Toolbar */}
       <div className="ocs-gallery-toolbar">
+        {shouldShowFilterRow(counts) && (
+          <div
+            className="ocs-filter-tabs"
+            role="group"
+            aria-label={isVi ? 'Lọc theo loại' : 'Filter by type'}
+          >
+            {filterKeys.map((key) => (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={activeFilter === key}
+                className={`ocs-filter-pill${activeFilter === key ? ' active' : ''}`}
+                onClick={() => setFilterCategory(key)}
+              >
+                <span>{isVi ? FILTER_LABELS[key].vi : FILTER_LABELS[key].en}</span>
+                <span className="ocs-filter-count">{counts[key]}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <div className="ocs-search-wrapper">
           <svg
             width="14"
@@ -150,27 +170,6 @@ export function CardGallery({
             </button>
           )}
         </div>
-
-        {shouldShowFilterRow(counts) && (
-          <div
-            className="ocs-filter-tabs"
-            role="group"
-            aria-label={isVi ? 'Lọc theo loại' : 'Filter by type'}
-          >
-            {filterKeys.map((key) => (
-              <button
-                key={key}
-                type="button"
-                aria-pressed={activeFilter === key}
-                className={`ocs-filter-pill${activeFilter === key ? ' active' : ''}`}
-                onClick={() => setFilterCategory(key)}
-              >
-                <span>{isVi ? FILTER_LABELS[key].vi : FILTER_LABELS[key].en}</span>
-                <span className="ocs-filter-count">{counts[key]}</span>
-              </button>
-            ))}
-          </div>
-        )}
       </div>
 
       {/* Cards Grid */}
@@ -264,14 +263,16 @@ export function CardGallery({
 
                   {/* Card Meta & Badges */}
                   <div className="ocs-card-meta">
-                    <div className="ocs-card-name-row">
-                      <span className="ocs-card-name" title={card.name}>
-                        {card.name}
-                      </span>
-                    </div>
-
+                    <span className="ocs-card-name" title={card.name}>
+                      {card.name}
+                    </span>
                     {assignments.length > 0 && (
-                      <span className="ocs-card-assignment-line">{assignments.join(' · ')}</span>
+                      <span
+                        className="ocs-card-inuse"
+                        role="img"
+                        aria-label={(isVi ? 'Đang dùng: ' : 'In use: ') + assignments.join(', ')}
+                        title={assignments.join(' · ')}
+                      />
                     )}
                   </div>
                 </div>

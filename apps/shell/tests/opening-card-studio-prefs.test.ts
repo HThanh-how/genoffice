@@ -40,8 +40,8 @@ describe('Opening Card Studio: Curated Card Families & Data Models', () => {
       expect(card.isBuiltIn).toBe(true)
       expect(card.material.opacity).toBeGreaterThanOrEqual(0.1)
       expect(card.material.opacity).toBeLessThanOrEqual(1.0)
-      expect(card.thumbnailColors).toBeDefined()
-      expect(card.thumbnailColors).toHaveLength(2)
+      // thumbnails are drawn from the material itself (see opening-card-material-fidelity.test.ts)
+      expect(card.thumbnailColors).toBeUndefined()
     }
   })
 

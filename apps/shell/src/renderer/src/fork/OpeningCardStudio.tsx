@@ -382,9 +382,6 @@ export function OpeningCardStudio({
       <div className="ocs-studio-header">
         <div className="ocs-studio-title-group">
           <h2 className="ocs-studio-title">{isVi ? 'Thẻ mở tệp' : 'Opening cards'}</h2>
-          <span className="ocs-studio-count">
-            {allCards.length} {isVi ? 'thẻ' : 'cards'}
-          </span>
         </div>
 
         <div className="ocs-studio-header-actions">
@@ -475,22 +472,8 @@ export function OpeningCardStudio({
         </div>
       )}
 
-      {/* Gallery + pinned preview */}
+      {/* The preview stays pinned on top while the gallery scrolls beneath it */}
       <div className="ocs-studio-layout">
-        {/* Left Column: Gallery */}
-        <div className="ocs-layout-left">
-          <CardGallery
-            cards={allCards}
-            selectedCard={selectedCard}
-            prefs={prefs}
-            lang={lang}
-            mediaAssets={state.mediaAssets}
-            onSelectCard={handleSelectCard}
-            onToggleFavorite={handleToggleFavorite}
-          />
-        </div>
-
-        {/* Right Column: Sticky WYSIWYG Inspector */}
         <div className="ocs-layout-right" ref={previewRef}>
           <CardPreview
             card={selectedCard}
@@ -502,6 +485,18 @@ export function OpeningCardStudio({
             onPreviewWindow={onPreview}
             onOpenCustomizer={setCustomizingCard}
             onDeleteCard={handleDeleteCard}
+          />
+        </div>
+
+        <div className="ocs-layout-left">
+          <CardGallery
+            cards={allCards}
+            selectedCard={selectedCard}
+            prefs={prefs}
+            lang={lang}
+            mediaAssets={state.mediaAssets}
+            onSelectCard={handleSelectCard}
+            onToggleFavorite={handleToggleFavorite}
           />
         </div>
       </div>

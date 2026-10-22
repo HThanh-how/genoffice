@@ -157,6 +157,8 @@ function CardCustomizerSession({
   // Compute live CSS
   const previewMaterial = useMemo(
     () => ({
+      // keep the card's own look refinements (tint, gradient, grain…) that the sliders do not touch
+      ...card.material,
       preset,
       themeMode,
       opacity,
@@ -175,6 +177,7 @@ function CardCustomizerSession({
       shadowIntensity,
       borderWidthPx,
       accentColor,
+      card.material,
     ],
   )
 

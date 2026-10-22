@@ -32,6 +32,35 @@ export interface OpeningMaterialConfig {
   shadowIntensity?: number
   /** Accessibility fallback: disables blur and enforces high-opacity solid background */
   reduceTransparency?: boolean
+  /**
+   * Optional look refinements. Every one is optional and purely CSS; a card without them renders exactly
+   * as before. Colors are `#rrggbb`; strengths are 0..1.
+   */
+  /** Color wash laid over the card surface (a lavender or paper tone), at `tintStrength` */
+  tint?: string
+  /** How strongly the tint covers the surface (0 to 1, default 0.3) */
+  tintStrength?: number
+  /** Two-stop surface gradient (a pastel mist to dusk); dimmed on dark surfaces so it stays calm */
+  gradient?: OpeningMaterialGradient
+  /** A soft diagonal band of reflected light across the surface (silk, crystal) */
+  sheen?: number
+  /** Fine fibre/paper texture drawn in CSS (paper, parchment) */
+  grain?: number
+  /** Bright hairline plus inner luster along the perimeter (glass edges, charcoal edge light) */
+  edgeHighlight?: number
+  /** Outer aura in the accent color; breathes slowly unless motion is reduced */
+  glow?: number
+  /** How the drop shadow falls: the preset's own, a wide diffused atmospheric one, or none */
+  shadowStyle?: OpeningShadowStyle
+}
+
+export type OpeningShadowStyle = 'default' | 'diffuse' | 'flat'
+
+export interface OpeningMaterialGradient {
+  from: string
+  to: string
+  /** CSS angle in degrees (0 to 360, default 145) */
+  angle?: number
 }
 
 export interface OpeningCardDefinition {

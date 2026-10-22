@@ -9,21 +9,12 @@ import {
 import { buildMaterialCss, hexToRgb, sampleFileName } from '../../../../shared/opening-card-css'
 import { runGOScene } from '../../../../shared/opening-scenes-runner'
 import { Dropdown } from '@genoffice/ui'
+import { APP_INFO } from './app-info'
+import { CardSurface } from './CardSurface'
 import { appliesTo, assignmentStatus, type ApplyScope } from './studio-logic'
 import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-html-sanitizer'
 
-// App colors and human-readable names
-export const APP_INFO: Record<
-  OpeningApp,
-  { nameEn: string; nameVi: string; ext: string; color: string }
-> = {
-  docs: { nameEn: 'Word', nameVi: 'Word', ext: '.docx', color: '#2b7cd3' },
-  sheets: { nameEn: 'Excel', nameVi: 'Excel', ext: '.xlsx', color: '#107c41' },
-  slides: { nameEn: 'PowerPoint', nameVi: 'PowerPoint', ext: '.pptx', color: '#d24726' },
-  pdf: { nameEn: 'PDF', nameVi: 'PDF', ext: '.pdf', color: '#e03e2d' },
-  markdown: { nameEn: 'Markdown', nameVi: 'Markdown', ext: '.md', color: '#3880ff' },
-  html: { nameEn: 'HTML', nameVi: 'HTML', ext: '.html', color: '#e44d26' },
-}
+export { APP_INFO }
 
 interface CardPreviewProps {
   card: OpeningCardDefinition | null
@@ -313,97 +304,110 @@ export function CardPreview({
     })),
   ]
 
+  const isSurfaceCard =
+    card.contentKind === 'curated-material' || card.contentKind === 'ai-declarative'
+
   const stageBlock = (
     <div
       className="ocs-wysiwyg-stage-wrapper"
       role="img"
       aria-label={isVi ? `Xem thử trực tiếp: ${card.name}` : `Live preview: ${card.name}`}
     >
-      <div
-        className="ocs-wysiwyg-stage-backdrop"
-        style={sceneBg ? { background: sceneBg } : undefined}
-      >
-        {/* If motion scene, draw real canvas in background */}
-        {card.contentKind === 'canvas-scene' && (
-          <canvas ref={canvasRef} width={420} height={220} className="ocs-wysiwyg-canvas" />
-        )}
+      {isSurfaceCard ? (
+        <CardSurface
+          material={card.material}
+          app={activeApp}
+          lang={lang}
+          title={isVi ? 'Đang mở tài liệu…' : 'Opening document…'}
+          animate
+        />
+      ) : (
+        <div
+          className="ocs-wysiwyg-stage-backdrop"
+          style={sceneBg ? { background: sceneBg } : undefined}
+        >
+          {/* If motion scene, draw real canvas in background */}
+          {card.contentKind === 'canvas-scene' && (
+            <canvas ref={canvasRef} width={420} height={220} className="ocs-wysiwyg-canvas" />
+          )}
 
-        {/* If personal media, draw media background in stage backdrop */}
-        {card.contentKind === 'personal-media' && mediaDataUrl && (
-          <div
-            className="ocs-wysiwyg-media-stage"
-            style={{
-              position: 'absolute',
-              inset: 0,
-              backgroundImage: `linear-gradient(rgba(0,0,0,${card.mediaDim ?? 0.25}), rgba(0,0,0,${card.mediaDim ?? 0.25})), url('${mediaDataUrl}')`,
-              backgroundSize: card.mediaFit === 'center' ? 'auto' : (card.mediaFit ?? 'cover'),
-              backgroundPosition: 'center',
-              backgroundRepeat: 'no-repeat',
-              borderRadius: matCss.borderRadius,
-            }}
-          />
-        )}
+          {/* If personal media, draw media background in stage backdrop */}
+          {card.contentKind === 'personal-media' && mediaDataUrl && (
+            <div
+              className="ocs-wysiwyg-media-stage"
+              style={{
+                position: 'absolute',
+                inset: 0,
+                backgroundImage: `linear-gradient(rgba(0,0,0,${card.mediaDim ?? 0.25}), rgba(0,0,0,${card.mediaDim ?? 0.25})), url('${mediaDataUrl}')`,
+                backgroundSize: card.mediaFit === 'center' ? 'auto' : (card.mediaFit ?? 'cover'),
+                backgroundPosition: 'center',
+                backgroundRepeat: 'no-repeat',
+                borderRadius: matCss.borderRadius,
+              }}
+            />
+          )}
 
-        {/* HTML Card Preview via sandboxed iframe */}
-        {(card.contentKind === 'ai-html' || card.contentKind === 'custom-html') && htmlDoc ? (
-          <iframe
-            title="HTML Card Preview"
-            sandbox="allow-scripts"
-            srcDoc={htmlDoc}
-            className="ocs-wysiwyg-html-iframe"
-            style={{
-              width: '100%',
-              height: '100%',
-              border: 'none',
-              borderRadius: matCss.borderRadius,
-              boxShadow: matCss.boxShadow,
-            }}
-          />
-        ) : (
-          /* Actual Card Surface */
-          <div
-            className="ocs-wysiwyg-card-stage"
-            style={{
-              background: matCss.background,
-              backdropFilter: matCss.backdropFilter,
-              WebkitBackdropFilter: matCss.backdropFilter,
-              border: matCss.border,
-              borderRadius: matCss.borderRadius,
-              boxShadow: matCss.boxShadow,
-              color: matCss.color,
-            }}
-          >
-            {/* Top row */}
-            <div className="ocs-wysiwyg-card-top">
-              <div
-                className="ocs-wysiwyg-app-badge"
-                style={{ backgroundColor: APP_INFO[activeApp].color }}
-              >
-                {APP_INFO[activeApp].ext.toUpperCase().replace('.', '')}
-              </div>
-              <div className="ocs-wysiwyg-doc-info">
-                <span className="ocs-wysiwyg-filename" title={fileName}>
-                  {fileName}
+          {/* HTML Card Preview via sandboxed iframe */}
+          {(card.contentKind === 'ai-html' || card.contentKind === 'custom-html') && htmlDoc ? (
+            <iframe
+              title="HTML Card Preview"
+              sandbox="allow-scripts"
+              srcDoc={htmlDoc}
+              className="ocs-wysiwyg-html-iframe"
+              style={{
+                width: '100%',
+                height: '100%',
+                border: 'none',
+                borderRadius: matCss.borderRadius,
+                boxShadow: matCss.boxShadow,
+              }}
+            />
+          ) : (
+            /* Actual Card Surface */
+            <div
+              className="ocs-wysiwyg-card-stage"
+              style={{
+                background: matCss.background,
+                backdropFilter: matCss.backdropFilter,
+                WebkitBackdropFilter: matCss.backdropFilter,
+                border: matCss.border,
+                borderRadius: matCss.borderRadius,
+                boxShadow: matCss.boxShadow,
+                color: matCss.color,
+              }}
+            >
+              {/* Top row */}
+              <div className="ocs-wysiwyg-card-top">
+                <div
+                  className="ocs-wysiwyg-app-badge"
+                  style={{ backgroundColor: APP_INFO[activeApp].color }}
+                >
+                  {APP_INFO[activeApp].ext.toUpperCase().replace('.', '')}
+                </div>
+                <div className="ocs-wysiwyg-doc-info">
+                  <span className="ocs-wysiwyg-filename" title={fileName}>
+                    {fileName}
+                  </span>
+                  <span className="ocs-wysiwyg-status">
+                    {isVi ? 'Đang mở tài liệu…' : 'Opening document…'}
+                  </span>
+                </div>
+                <span className="ocs-wysiwyg-close-indicator" aria-hidden="true">
+                  &times;
                 </span>
-                <span className="ocs-wysiwyg-status">
-                  {isVi ? 'Đang mở tài liệu…' : 'Opening document…'}
-                </span>
               </div>
-              <span className="ocs-wysiwyg-close-indicator" aria-hidden="true">
-                &times;
-              </span>
-            </div>
 
-            {/* Bottom Progress Bar */}
-            <div className="ocs-wysiwyg-progress-container">
-              <div
-                className="ocs-wysiwyg-progress-bar"
-                style={{ backgroundColor: APP_INFO[activeApp].color }}
-              />
+              {/* Bottom Progress Bar */}
+              <div className="ocs-wysiwyg-progress-container">
+                <div
+                  className="ocs-wysiwyg-progress-bar"
+                  style={{ backgroundColor: APP_INFO[activeApp].color }}
+                />
+              </div>
             </div>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   )
 
@@ -417,59 +421,66 @@ export function CardPreview({
 
   return (
     <div className="ocs-preview-inspector">
-      {stageBlock}
-
-      <div className="ocs-inspector-head">
-        <h3 className="ocs-inspector-name" title={card.name}>
-          {card.name}
-        </h3>
-        <span className="ocs-inspector-kind">{kindLabel}</span>
-      </div>
-
-      <p className="ocs-assignment-status" role="status">
-        {statusText}
-      </p>
-
-      <div className="ocs-apply-row">
-        <Dropdown
-          className="set-dd ocs-app-select"
-          value={scope}
-          ariaLabel={isVi ? 'Áp dụng cho' : 'Apply to'}
-          options={scopeOptions}
-          onPick={(next) => setScope(next as ApplyScope)}
-        />
-        <button
-          type="button"
-          className="set-btn ocs-btn-primary ocs-action-main"
-          disabled={busy || applied}
-          onClick={handleApply}
-        >
-          {useLabel}
-        </button>
-      </div>
-
-      <div className="ocs-text-actions">
-        <button type="button" onClick={() => onPreviewWindow(activeApp, card.id)}>
-          {isVi ? 'Xem trong cửa sổ' : 'Preview in window'}
-        </button>
-        <button type="button" onClick={() => onOpenCustomizer(card)}>
-          {isVi ? 'Tùy chỉnh' : 'Customize'}
-        </button>
-        {scope !== 'all' && hasAppOverride && (
-          <button type="button" disabled={busy} onClick={handleReset}>
-            {isVi ? `Trả ${appName} về mặc định` : `Reset ${appName} to default`}
-          </button>
-        )}
-        {!card.isBuiltIn && onDeleteCard && (
+      <div className="ocs-preview-media">
+        {stageBlock}
+        <div className="ocs-apply-row">
+          <Dropdown
+            className="set-dd ocs-app-select"
+            value={scope}
+            ariaLabel={isVi ? 'Áp dụng cho' : 'Apply to'}
+            options={scopeOptions}
+            onPick={(next) => setScope(next as ApplyScope)}
+          />
           <button
             type="button"
-            className="ocs-btn-danger"
-            disabled={busy}
-            onClick={() => onDeleteCard(card.id)}
+            className="set-btn ocs-btn-primary ocs-action-main"
+            disabled={busy || applied}
+            onClick={handleApply}
           >
-            {isVi ? 'Xóa thẻ' : 'Delete'}
+            {useLabel}
           </button>
+        </div>
+      </div>
+
+      <div className="ocs-preview-info">
+        <div className="ocs-inspector-head">
+          <h3 className="ocs-inspector-name" title={card.name}>
+            {card.name}
+          </h3>
+          <span className="ocs-inspector-kind">{kindLabel}</span>
+        </div>
+
+        {card.description && card.description !== card.name && (
+          <p className="ocs-inspector-desc">{card.description}</p>
         )}
+
+        <p className="ocs-assignment-status" role="status">
+          {statusText}
+        </p>
+
+        <div className="ocs-text-actions">
+          <button type="button" onClick={() => onPreviewWindow(activeApp, card.id)}>
+            {isVi ? 'Xem trong cửa sổ' : 'Preview in window'}
+          </button>
+          <button type="button" onClick={() => onOpenCustomizer(card)}>
+            {isVi ? 'Tùy chỉnh' : 'Customize'}
+          </button>
+          {scope !== 'all' && hasAppOverride && (
+            <button type="button" disabled={busy} onClick={handleReset}>
+              {isVi ? `Trả ${appName} về mặc định` : `Reset ${appName} to default`}
+            </button>
+          )}
+          {!card.isBuiltIn && onDeleteCard && (
+            <button
+              type="button"
+              className="ocs-btn-danger"
+              disabled={busy}
+              onClick={() => onDeleteCard(card.id)}
+            >
+              {isVi ? 'Xóa thẻ' : 'Delete'}
+            </button>
+          )}
+        </div>
       </div>
     </div>
   )

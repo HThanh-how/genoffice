@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react'
 import type { OpeningCardDefinition, StoredMediaAsset } from '../../../../shared/opening-card-types'
-import { buildMaterialCss } from '../../../../shared/opening-card-css'
+import { CardSurface } from './CardSurface'
 import { runGOScene } from '../../../../shared/opening-scenes-runner'
 import { sceneMeta } from '../../../../shared/opening-scenes-meta'
 import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-html-sanitizer'
@@ -8,7 +8,7 @@ import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-h
 // Bounded concurrency queue for canvas scene thumbnail generation
 class ThumbnailRenderQueue {
   private active = 0
-  private maxConcurrency = 2
+  private maxConcurrency = 4
   private queue: Array<() => Promise<void>> = []
 
   enqueue(task: (isCancelled: () => boolean) => Promise<void>): () => void {
@@ -161,25 +161,28 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
         resolveTask = resolve
         try {
           stop = runGOScene(canvas, sceneId, 'lite', '43,124,211', '138,183,233')
-          timer = setTimeout(() => {
-            if (isMounted && !isCancelled()) {
-              try {
-                const url = canvas.toDataURL('image/png')
-                if (url && url.length > 50) {
-                  setBoundedCache(sceneThumbnailCache, sceneKey, url)
-                  setCachedDataUrl(url)
+          timer = setTimeout(
+            () => {
+              if (isMounted && !isCancelled()) {
+                try {
+                  const url = canvas.toDataURL('image/png')
+                  if (url && url.length > 50) {
+                    setBoundedCache(sceneThumbnailCache, sceneKey, url)
+                    setCachedDataUrl(url)
+                  }
+                } catch {
+                  // Canvas tainted or read failed; fallback is fine
                 }
-              } catch {
-                // Canvas tainted or read failed; fallback is fine
               }
-            }
-            if (stop) {
-              stop()
-              stop = null
-            }
-            resolve()
-            resolveTask = null
-          }, 100)
+              if (stop) {
+                stop()
+                stop = null
+              }
+              resolve()
+              resolveTask = null
+            },
+            sceneMeta(sceneId)?.thumbMs ?? 100,
+          )
         } catch {
           if (stop) {
             stop()
@@ -305,37 +308,22 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
     )
   }
 
-  // 2. Curated material (or custom material) thumbnail
-  if (card.contentKind === 'curated-material' || (!card.contentKind && card.material)) {
-    const matCss = buildMaterialCss(card.material)
+  // 2. Material card: the very same surface as the large preview, drawn small
+  if (
+    card.contentKind === 'curated-material' ||
+    card.contentKind === 'ai-declarative' ||
+    (!card.contentKind && card.material)
+  ) {
     return (
       <div className="ocs-thumb-box ocs-thumb-material">
-        <div className="ocs-thumb-material-backdrop">
-          {/* Representative mini card surface */}
-          <div
-            className="ocs-thumb-mini-card"
-            style={{
-              background: matCss.background,
-              backdropFilter: matCss.backdropFilter,
-              WebkitBackdropFilter: matCss.backdropFilter,
-              border: matCss.border,
-              boxShadow: matCss.boxShadow,
-              borderRadius: matCss.borderRadius,
-            }}
-          >
-            <div className="ocs-thumb-mini-header">
-              <span
-                className="ocs-thumb-mini-dot"
-                style={{ backgroundColor: matCss.accentColor }}
-              />
-              <div className="ocs-thumb-mini-title-bar" />
-            </div>
-            <div className="ocs-thumb-mini-body">
-              <div className="ocs-thumb-mini-line w-80" />
-              <div className="ocs-thumb-mini-line w-60" />
-            </div>
-          </div>
-        </div>
+        <CardSurface
+          material={card.material}
+          app="docs"
+          lang={isVi ? 'vi' : 'en'}
+          title={isVi ? 'Đang mở tài liệu…' : 'Opening document…'}
+          decorative
+          zoom={1.4}
+        />
       </div>
     )
   }

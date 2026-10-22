@@ -9,7 +9,7 @@ import type {
 } from '../../shared/opening-card-types'
 import { activeProvider, chatForProvider } from '@genoffice/ai-provider'
 import type { AiSettings } from '@genoffice/ai-provider'
-import { sanitizeHexColor } from './opening-card-css'
+import { MATERIAL_EXTRA_KEYS, sanitizeHexColor, sanitizeMaterialExtras } from './opening-card-css'
 import { sanitizeOpeningCss, sanitizeOpeningHtml } from './opening-card-html-sanitizer'
 
 const ALLOWED_PRESETS: readonly OpeningMaterialPreset[] = [
@@ -47,6 +47,7 @@ const MATERIAL_WHITELIST = new Set([
   'borderColor',
   'shadowIntensity',
   'reduceTransparency',
+  ...MATERIAL_EXTRA_KEYS,
 ])
 
 const FORBIDDEN_PATTERN = /<script|javascript:|on\w+=|<\/|<[a-z]|expression\(|eval\(/i
@@ -170,6 +171,7 @@ export function validateAiCardSchema(raw: unknown): {
     borderRadiusPx,
     borderWidthPx,
     shadowIntensity,
+    ...sanitizeMaterialExtras(matRaw),
   }
 
   const cardId = `ai:card_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
@@ -232,7 +234,15 @@ Allowed fields:
   "accentColor": "#hexcode",
   "borderRadiusPx": 18,
   "borderWidthPx": 1,
-  "shadowIntensity": 0.35
+  "shadowIntensity": 0.35,
+  "tint": "optional #hexcode wash over the surface (e.g. lavender, paper)",
+  "tintStrength": 0.3,
+  "gradient": { "from": "#hexcode", "to": "#hexcode", "angle": 145 },
+  "sheen": 0.0,
+  "grain": 0.0,
+  "edgeHighlight": 0.0,
+  "glow": 0.0,
+  "shadowStyle": "default | diffuse | flat"
 }
 
 DO NOT include HTML, scripts, code, or markdown. Output ONLY the JSON object.
@@ -255,7 +265,15 @@ JSON schema:
   "accentColor": "#2b7cd3",
   "borderRadiusPx": 18,
   "borderWidthPx": 1,
-  "shadowIntensity": 0.35
+  "shadowIntensity": 0.35,
+  "tint": "optional #hexcode wash over the surface (e.g. lavender, paper)",
+  "tintStrength": 0.3,
+  "gradient": { "from": "#hexcode", "to": "#hexcode", "angle": 145 },
+  "sheen": 0.0,
+  "grain": 0.0,
+  "edgeHighlight": 0.0,
+  "glow": 0.0,
+  "shadowStyle": "default | diffuse | flat"
 }
 
 Rules:
