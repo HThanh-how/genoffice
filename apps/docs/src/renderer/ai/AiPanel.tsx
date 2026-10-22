@@ -10,6 +10,8 @@ import {
   addTokenUsage,
   type AiTokenUsageView,
   useChatRunQueue,
+  FileActionApproval,
+  useFileActionApproval,
 } from '@genoffice/ui'
 import { useEffect, useRef, useState } from 'react'
 import type { Editor } from '@tiptap/core'
@@ -19,6 +21,7 @@ import {
   composeSkills,
   createDocumentMemorySkill,
   createKnowledgeBaseSkill,
+  createFileManagementSkill,
   streamText,
   type AgentImage,
   type KbFileInfo,
@@ -416,6 +419,7 @@ export function AiPanel({
   notesAccess,
 }: AiPanelProps) {
   const { t, lang } = useI18n()
+  const fileApproval = useFileActionApproval()
   // Panel chrome follows the UI language; message text follows its own content (dir=auto below)
   const isRtl = lang === 'ar' || lang === 'he'
   const [input, setInput] = useState('')
@@ -912,6 +916,9 @@ export function AiPanel({
         ),
         createFilesSkill(availableAttachments),
         createDocumentMemorySkill(window.desktop),
+        ...(typeof window.desktop?.fileActionPropose === 'function'
+          ? [createFileManagementSkill(window.desktop, fileApproval.confirm)]
+          : []),
       ]),
       captureSnapshot: () => editorRef.current.getJSON() as PmNode,
       events: {
@@ -1738,6 +1745,11 @@ export function AiPanel({
         })}
       </div>
 
+      <FileActionApproval
+        pending={fileApproval.pending}
+        lang={lang}
+        onDecide={fileApproval.decide}
+      />
       <div className="ai-composer">
         {attachNotice && <div className="ai-attach-notice">{attachNotice}</div>}
         {activePartial && (

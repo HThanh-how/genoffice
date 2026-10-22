@@ -35,6 +35,8 @@ ipcRenderer.on('docs:info-toast', (_event, value: unknown) => {
 })
 
 const api: DesktopApi = {
+  fileActionPropose: (action) => ipcRenderer.invoke('file-action:propose', action),
+  fileActionDecide: (id, approve) => ipcRenderer.invoke('file-action:decide', id, approve),
   getDocumentIndexProgress: (path) => ipcRenderer.invoke('document-memory:progress', path),
   documentMemorySearch: (query, limit) =>
     typeof query === 'string' &&

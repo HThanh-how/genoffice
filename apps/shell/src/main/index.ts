@@ -4,6 +4,7 @@ import type { BootstrapResult } from './document-memory/storage-bootstrap'
 import { runStorageBootstrapOffThread } from './document-memory/runtime/storage-bootstrap-runner'
 import { currentMachineSpec } from './document-memory/embedding/initial-profile'
 import { isPathIgnored } from './document-memory/ignore-policy'
+import { FileManagementService } from './file-management'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { rotatingFileWriter } from './fork/renderer-diagnostics'
 import {
@@ -5695,8 +5696,12 @@ function registerHomeIpc(): void {
 
   ipcMain.handle(HOME_CHANNELS.recents, (_event, query: unknown): RecentPage => {
     const excludeIgnored =
-      !!query && typeof query === 'object' && (query as { excludeIgnored?: unknown }).excludeIgnored === true
-    const paths = excludeIgnored ? readRecentFiles().filter((p) => !isPathIgnored(p)) : readRecentFiles()
+      !!query &&
+      typeof query === 'object' &&
+      (query as { excludeIgnored?: unknown }).excludeIgnored === true
+    const paths = excludeIgnored
+      ? readRecentFiles().filter((p) => !isPathIgnored(p))
+      : readRecentFiles()
     return pageRecentPaths(paths, query, new Set(readStarredFiles()))
   })
 
@@ -5797,6 +5802,32 @@ function registerHomeIpc(): void {
         return null
       }
     },
+  })
+
+  const fileManagement = new FileManagementService({
+    roots: () => [
+      ...folderRootPaths(),
+      ...(folderScan?.folders() ?? []).map((entry) => entry.root),
+    ],
+    userData: () => app.getPath('userData'),
+    trashItem: (path) => shell.trashItem(path),
+    exportPdf: async (input, output) => {
+      const outcome = await runHeadlessExport(
+        { input, outPath: output, targetFormat: 'pdf', json: false },
+        headlessExporters,
+      )
+      if (!outcome.ok) throw new Error(outcome.message)
+    },
+  })
+  ipcMain.handle('file-action:propose', (event, raw: unknown) => {
+    if (event.senderFrame !== event.sender.mainFrame) throw new Error('Main frame required')
+    return fileManagement.propose(event.sender.id, raw)
+  })
+  ipcMain.handle('file-action:decide', (event, id: unknown, approve: unknown) => {
+    if (event.senderFrame !== event.sender.mainFrame || typeof id !== 'string') {
+      throw new Error('Invalid file action decision')
+    }
+    return fileManagement.decide(event.sender.id, id, approve)
   })
 
   ipcMain.handle('kb:create-document', async (_event, raw: unknown): Promise<unknown> => {

@@ -153,3 +153,4 @@ export {
 export { ProviderLogo } from './provider-logos'
 export { useRedactLabelField } from './use-redact-label'
 export type { RedactLabelField } from './use-redact-label'
+export { FileActionApproval, useFileActionApproval } from './FileActionApproval'

@@ -1,4 +1,4 @@
-import type { DocumentIndexProgress } from '@genoffice/agent-core'
+import type { DocumentIndexProgress, FileManagementBridge } from '@genoffice/agent-core'
 export interface OpenFileResult {
   path: string
   name: string
@@ -358,7 +358,7 @@ export interface PrinterInfo {
   displayName: string
 }
 
-export interface DesktopApi {
+export interface DesktopApi extends FileManagementBridge {
   /** Search content indexed from documents previously opened in GenOffice. */
   documentMemorySearch(
     query: string,

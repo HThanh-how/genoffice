@@ -3,6 +3,7 @@ import {
   composeSkills,
   createDocumentMemorySkill,
   createDocumentSkill,
+  createFileManagementSkill,
   createIpcTransport,
   createKnowledgeBaseSkill,
   type CreateDocumentExecutionContext,
@@ -30,6 +31,7 @@ import {
 import { ChatMessage, type ChatItem, type ChatLabels } from './home-chat/ChatMessage'
 import { AgyChatBar, AiModelPicker, type AiModelPickerBridge } from '@genoffice/ui'
 import '@genoffice/ui/ai-model-picker.css'
+import { FileActionApproval, useFileActionApproval } from '@genoffice/ui'
 import { AskDock } from './home-chat/AskDock'
 import { findFilesByName } from './fork/file-name-search'
 import './ask-dock.css'
@@ -168,6 +170,7 @@ export function HomeChat({
   onOpenModelSettings,
 }: Props) {
   const api = homeApi
+  const fileApproval = useFileActionApproval()
   const modelBridge = useMemo<AiModelPickerBridge>(
     () => ({
       getSettings: () => api.getAiSettings(),
@@ -871,6 +874,9 @@ export function HomeChat({
           alsoCitable: () => [...createdPathsRef.current],
         }),
         docSkillRef.current!,
+        ...(typeof api.fileActionPropose === 'function'
+          ? [createFileManagementSkill(api, fileApproval.confirm)]
+          : []),
       ]),
       // a sectioned document is create + up to 12 appends + the answer, after a few searches
       maxTurns: 20,
@@ -1894,6 +1900,11 @@ export function HomeChat({
             )}
           </div>
         )}
+        <FileActionApproval
+          pending={fileApproval.pending}
+          lang={i18n.lang}
+          onDecide={fileApproval.decide}
+        />
         <Composer
           value={input}
           busy={busy}

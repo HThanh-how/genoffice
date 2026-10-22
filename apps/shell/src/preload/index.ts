@@ -157,6 +157,8 @@ function normalizeAuthorNameSetting(result: unknown): AuthorNameSetting {
 }
 
 const homeApi: HomeApi = {
+  fileActionPropose: (action) => ipcRenderer.invoke('file-action:propose', action),
+  fileActionDecide: (id, approve) => ipcRenderer.invoke('file-action:decide', id, approve),
   ...createClipboardSuggestPreloadApi(ipcRenderer),
   ...createClipboardHistoryPreloadApi(ipcRenderer),
   ...createDocumentIndexPreloadApi(ipcRenderer),

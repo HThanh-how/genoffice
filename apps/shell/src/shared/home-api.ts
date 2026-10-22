@@ -1,3 +1,4 @@
+import type { FileManagementBridge } from '@genoffice/agent-core'
 import type { IndexIssue } from '../main/document-memory/issues'
 import type { IndexIssueReason } from '../main/document-memory/issues'
 import type { FolderScanStatus } from '../main/document-memory/folder-scan'
@@ -329,7 +330,7 @@ export interface HomeIndexingActivity {
   } | null
 }
 
-export interface HomeApi extends ForkHomeApi {
+export interface HomeApi extends ForkHomeApi, FileManagementBridge {
   /** unified recents across document types, newest first (paged) */
   recents(query?: RecentQuery): Promise<RecentPage>
   /** search indexed files by name, folder and content */
