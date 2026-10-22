@@ -5,11 +5,14 @@ import { isRetryableReason } from '../../../main/document-memory/issues'
 import { useI18n } from '../locale'
 import { fill } from '../indexing-activity-copy'
 import { TEXT, EN } from './index-dashboard-i18n'
-import { buildIssueSections, narrowSummary, type IssueSectionRow } from './index-issue-groups'
+import { buildIssueSections, type IssueSectionRow } from './index-issue-groups'
 import { runIndexMutation } from './index-mutation'
 import { isLegacyConvertState } from './todo-model'
-import { IndexProblems } from './IndexProblems'
+import { IndexIssueFiles } from './IndexIssueFiles'
 import { IconChevron } from './index-icons'
+
+/** Kinds of trouble listed before the rest fold behind "Show N more". */
+const TOP_GROUPS = 3
 
 /**
  * What needs a person, as a short list: one line per kind of trouble with a count, one button to try
@@ -27,6 +30,7 @@ export const IndexAttention = forwardRef<
   const num = (n: number) => n.toLocaleString(dateLocale)
   const [open, setOpen] = useState<string | null>(null)
   const [skippedOpen, setSkippedOpen] = useState(false)
+  const [showAll, setShowAll] = useState(false)
   const [retrying, setRetrying] = useState<string | null>(null)
   const [note, setNote] = useState('')
   const inFlight = useRef(false)
@@ -136,17 +140,11 @@ export const IndexAttention = forwardRef<
         </div>
         {isOpen && attention && (
           <div className="ix-issue-body">
-            <IndexProblems
+            <IndexIssueFiles
               api={api}
-              root="*"
+              reasons={row.reasons}
+              count={row.count}
               onChanged={onChanged}
-              hideEmpty
-              hideToolbar
-              summary={narrowSummary(attention, row.reasons)}
-              bucket="all"
-              sort="queue"
-              grouping="reason"
-              descending={false}
             />
           </div>
         )}
@@ -196,8 +194,18 @@ export const IndexAttention = forwardRef<
               </div>
             </li>
           )}
-          {needs.map((row) => rowView(row, false))}
+          {(showAll ? needs : needs.slice(0, TOP_GROUPS)).map((row) => rowView(row, false))}
         </ul>
+      )}
+      {needs.length > TOP_GROUPS && (
+        <button
+          type="button"
+          className="ix-link ix-more-groups"
+          aria-expanded={showAll}
+          onClick={() => setShowAll((v) => !v)}
+        >
+          {showAll ? s.groupsFewer : s.groupsMore.replace('{n}', num(needs.length - TOP_GROUPS))}
+        </button>
       )}
       {skipped.length > 0 && (
         <div className="ix-skipped">

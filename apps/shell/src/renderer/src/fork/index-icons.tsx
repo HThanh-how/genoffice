@@ -76,3 +76,13 @@ export const IconOffline = () => (
     />
   </Svg>
 )
+export const IconOpen = () => (
+  <Svg>
+    <path d="M9 3h4v4M13 3 7.5 8.5M12 9.5V12a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h2.5" />
+  </Svg>
+)
+export const IconRetry = () => (
+  <Svg>
+    <path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5v3h-3" />
+  </Svg>
+)

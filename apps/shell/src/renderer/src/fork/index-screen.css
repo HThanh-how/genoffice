@@ -524,8 +524,82 @@
 .ix-status-queue .ixp-title {
   display: none;
 }
+.ix-more-groups {
+  align-self: flex-start;
+  margin-top: 8px;
+}
+.ix-icon-btn.is-small {
+  width: 28px;
+  height: 28px;
+}
+.ix-files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ix-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 4px 0 4px 8px;
+  border-radius: var(--radius-8);
+}
+.ix-file:hover,
+.ix-file:focus-within {
+  background: var(--surface-subtle);
+}
+.ix-file-icon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+.ix-file-text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+.ix-file-text strong {
+  overflow: hidden;
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ix-file-text span {
+  overflow: hidden;
+  color: var(--text-tertiary);
+  font-size: 12px;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ix-file.is-gone .ix-file-text strong {
+  color: var(--text-tertiary);
+  text-decoration: line-through;
+}
+.ix-file-actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+}
+.ix-file:hover .ix-file-actions,
+.ix-file:focus-within .ix-file-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .ix-file-actions {
+    opacity: 1;
+  }
+}
+.ix-files-more {
+  margin: 4px 0 0 8px;
+}
 .ix-issue-body {
-  padding: 0 12px 12px;
+  padding: 0 8px 10px 28px;
 }
 .ix-skipped {
   margin-top: 8px;
