@@ -9,7 +9,9 @@
  *
  * The printer job's scale is a whole percent, so its zoom is that percent's
  * exact inverse (1.5 against 67% spills a 0.5% strip onto a blank page), and
- * Windows ignores `scaleFactor` outright (genoffice#1970), so it prints unzoomed.
+ * Windows ignores `scaleFactor` (genoffice#1970). Its printer sheets keep the
+ * zoom for text layout, then undo it with a paint-only transform inside an
+ * unzoomed paper box. The native job therefore needs no scale compensation.
  */
 
 export type PrintJob = 'pdf' | 'printer'
@@ -26,9 +28,8 @@ export function printZoom(
   platform: string = navigator.platform,
 ): number {
   if (!(dpr > 0) || Math.abs(dpr - 1) < 1e-3) return 1
-  if (job === 'printer' && isWindows(platform)) return 1
   const zoom = Math.min(Math.max(dpr, MIN_ZOOM), MAX_ZOOM)
-  return job === 'printer' ? 100 / Math.round(100 / zoom) : zoom
+  return job === 'printer' && !isWindows(platform) ? 100 / Math.round(100 / zoom) : zoom
 }
 
 const previewRoot = () => document.querySelector<HTMLElement>('.pagination-preview')
@@ -36,10 +37,19 @@ const previewRoot = () => document.querySelector<HTMLElement>('.pagination-previ
 /** Zooms the preview sheets for print (print media only) and returns the job's print scale. */
 export function setPrintZoom(job: PrintJob = 'pdf'): number {
   const zoom = printZoom(undefined, job)
-  if (zoom !== 1) previewRoot()?.style.setProperty('--pv-print-zoom', String(zoom))
-  return 1 / zoom
+  const root = previewRoot()
+  const nativeScale = job === 'printer' && isWindows(navigator.platform) && zoom !== 1
+  root?.classList.toggle('pv-print-native-scale', nativeScale)
+  if (zoom !== 1) root?.style.setProperty('--pv-print-zoom', String(zoom))
+  else root?.style.removeProperty('--pv-print-zoom')
+  if (nativeScale) root?.style.setProperty('--pv-print-scale', String(1 / zoom))
+  else root?.style.removeProperty('--pv-print-scale')
+  return nativeScale ? 1 : 1 / zoom
 }
 
 export function clearPrintZoom(): void {
-  previewRoot()?.style.removeProperty('--pv-print-zoom')
+  const root = previewRoot()
+  root?.classList.remove('pv-print-native-scale')
+  root?.style.removeProperty('--pv-print-zoom')
+  root?.style.removeProperty('--pv-print-scale')
 }

@@ -146,7 +146,11 @@ export function PrintDialog({
     setPrinting(true)
     // pv-print-skip only takes effect in the print stylesheet: the on-screen
     // (hidden) preview keeps its layout while unselected sheets don't print.
-    els.forEach((el, i) => el.classList.toggle('pv-print-skip', !sel.has(i)))
+    const lastSelected = Math.max(...selected)
+    els.forEach((el, i) => {
+      el.classList.toggle('pv-print-skip', !sel.has(i))
+      el.classList.toggle('pv-print-tail', i === lastSelected)
+    })
     const scale = setPrintZoom('printer')
     try {
       const r = await window.desktop.print(
@@ -161,7 +165,7 @@ export function PrintDialog({
       // not ok without an error = canceled in the system dialog: keep the dialog open
     } finally {
       clearPrintZoom()
-      els.forEach((el) => el.classList.remove('pv-print-skip'))
+      els.forEach((el) => el.classList.remove('pv-print-skip', 'pv-print-tail'))
       setPrinting(false)
     }
   }
