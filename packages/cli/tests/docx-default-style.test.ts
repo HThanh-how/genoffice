@@ -3,8 +3,8 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_DOCUMENT_PAGE } from '@genoffice/agent-core'
 import { DEFAULT_DOCUMENT_STYLES } from '@genoffice/docx-engine'
 import { validateGeneratedDocx } from '../src/formats/docx-validation'
-import { closeDocument, openDocument } from '../src/formats/docx'
-import { markdownToDocx } from '../src/formats/markdown'
+import { closeDocument, documentHtml, openDocument } from '../src/formats/docx'
+import { htmlToMarkdown, markdownToDocx } from '../src/formats/markdown'
 
 const VI_MARKDOWN = [
   '# Báo cáo tổng kết năm học',
@@ -45,6 +45,36 @@ async function parts(bytes: Uint8Array) {
 }
 
 describe('AI-created docx default style (Vietnamese office standard)', () => {
+  it('retains source headings, native lists and tables through the DOCX to Markdown conversion used by merges', async () => {
+    const doc = await openDocument(await markdownToDocx(VI_MARKDOWN))
+    let markdown: string
+    try {
+      markdown = await htmlToMarkdown(documentHtml(doc).html)
+    } finally {
+      closeDocument(doc)
+    }
+    expect(markdown).toContain('# Báo cáo tổng kết năm học')
+    expect(markdown).toMatch(/[-*] Ý thứ nhất/)
+    expect(markdown).toMatch(/1\. Bước một/)
+    expect(markdown).toContain('|')
+    const merged = await openDocument(await markdownToDocx(`${markdown}\n\n\f\n\n# Next source`))
+    try {
+      const json = JSON.stringify(merged.editor.getJSON())
+      for (const expected of ['Ý thứ hai', 'Bước hai', 'Học sinh khá', '240', 'Next source'])
+        expect(json).toContain(expected)
+      expect(json).toMatch(/"type":"[a-zA-Z]*[Tt]able[a-zA-Z]*"/)
+    } finally {
+      closeDocument(merged)
+    }
+  })
+  it('turns form-feed document boundaries into Word page breaks while retaining default styles', async () => {
+    const plain = await parts(await markdownToDocx('# First\n\n- one\n\n# Second'))
+    const merged = await parts(await markdownToDocx('# First\n\n- one\n\n\f\n\n# Second'))
+    expect(merged.styles).toBe(plain.styles)
+    expect(merged.document).toContain('<w:pageBreakBefore/>')
+    expect(merged.document.indexOf('First')).toBeLessThan(merged.document.indexOf('Second'))
+    expect(merged.document).toContain('<w:numPr>')
+  })
   it('declares the default page setup and body typography in the package', () => {
     expect(DEFAULT_DOCUMENT_PAGE).toEqual({
       paperSize: 'A4',

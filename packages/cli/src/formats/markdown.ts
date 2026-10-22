@@ -148,15 +148,28 @@ export async function markdownToDocx(
     title: options.title,
   })
 
-  return withMarkdownEditor(markdown, (editor, mods) =>
-    mods.docxExport.exportDocxBytes(
-      editor.getJSON(),
+  return withMarkdownEditor(markdown, (editor, mods) => {
+    // A form feed is the plain-text page boundary used by document concatenation.
+    // Parse each part separately so a boundary also closes lists and tables.
+    const doc = markdown.includes('\f')
+      ? {
+          type: 'doc',
+          content: markdown
+            .split('\f')
+            .flatMap((part, index) => [
+              ...(index ? [{ type: 'pageBreak' }] : []),
+              ...mods.ops.parseMarkdownToNodes(editor, part).map((node) => node.toJSON()),
+            ]),
+        }
+      : editor.getJSON()
+    return mods.docxExport.exportDocxBytes(
+      doc,
       async (src) => loadLocalImage(src, images),
       undefined,
       saveOptions,
       profile,
-    ),
-  )
+    )
+  })
 }
 
 async function loadLocalImage(src: string, images?: MarkdownImageSource) {

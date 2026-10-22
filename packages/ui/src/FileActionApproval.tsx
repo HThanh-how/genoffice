@@ -80,7 +80,7 @@ export function FileActionApproval({
       <strong>{labels.title}</strong>
       <p>{labels[a.tool]}</p>
       <pre dir="auto" style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>
-        {a.source ?? a.path}
+        {a.sources?.join('\n') ?? a.source ?? a.path}
         {a.destination ? `\n→ ${a.destination}` : ''}
       </pre>
       <div style={{ display: 'flex', gap: 8 }}>

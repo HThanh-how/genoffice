@@ -8,5 +8,6 @@ export const strings = {
   move_file: 'ย้ายหรือเปลี่ยนชื่อไฟล์',
   delete_file: 'ย้ายไปถังขยะของระบบ',
   list_folder: 'แสดงรายการโฟลเดอร์',
+  merge_documents: 'รวมเอกสารเป็นไฟล์ใหม่',
   export_pdf: 'ส่งออกไฟล์ที่บันทึกแล้วเป็น PDF',
 } satisfies Record<keyof typeof zh, string>

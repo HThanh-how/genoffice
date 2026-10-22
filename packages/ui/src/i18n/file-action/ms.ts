@@ -8,5 +8,6 @@ export const strings = {
   move_file: 'Pindah atau namakan semula fail',
   delete_file: 'Pindah ke tong sampah sistem',
   list_folder: 'Senaraikan folder',
+  merge_documents: 'Gabungkan dokumen ke fail baharu',
   export_pdf: 'Eksport fail tersimpan ke PDF',
 } satisfies Record<keyof typeof zh, string>

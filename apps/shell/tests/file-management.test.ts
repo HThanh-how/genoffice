@@ -23,6 +23,7 @@ let clock: number
 let service: FileManagementService
 let trash: ReturnType<typeof vi.fn>
 let exporter: ReturnType<typeof vi.fn>
+let merger: ReturnType<typeof vi.fn>
 const file = (name: string) => join(root, name)
 const propose = (action: FileAction, owner = 1): PendingFileAction => {
   const proposal = service.propose(owner, action)
@@ -44,11 +45,13 @@ beforeEach(() => {
   exporter = vi.fn(async (_input: string, output: string) => {
     writeFileSync(output, '%PDF-test')
   })
+  merger = vi.fn(async (_action: FileAction, output: string) => writeFileSync(output, '# Merged'))
   service = new FileManagementService({
     roots: () => [root],
     userData: () => userData,
     trashItem: trash,
     exportPdf: exporter,
+    mergeDocuments: merger,
     now: () => clock,
   })
   setActiveIgnoreRules([])
@@ -63,6 +66,106 @@ afterEach(() => {
 })
 
 describe('main-process file permissions', () => {
+  const merge = (): FileAction => ({
+    tool: 'merge_documents',
+    sources: [file('a.md'), file('b.md')],
+    title: 'Combined',
+    format: 'md',
+    separator: 'heading',
+  })
+
+  it('gates merging, lists every source and exact destination, and never mutates sources', async () => {
+    writeFileSync(file('a.md'), '# A')
+    writeFileSync(file('b.md'), '- B')
+    let p = propose(merge())
+    expect(p.action.sources).toEqual(merge().sources)
+    expect(p.action.destination).toBe(file('Combined.md'))
+    expect(merger).not.toHaveBeenCalled()
+    await service.decide(1, p.id, false)
+    expect(merger).not.toHaveBeenCalled()
+    expect(existsSync(file('Combined.md'))).toBe(false)
+    p = propose(merge())
+    await expect(service.decide(2, p.id, true)).rejects.toThrow(/missing/)
+    await service.decide(1, p.id, true)
+    expect(merger).toHaveBeenCalledOnce()
+    expect(readFileSync(file('a.md'), 'utf8')).toBe('# A')
+    expect(readFileSync(file('b.md'), 'utf8')).toBe('- B')
+    await expect(service.decide(1, p.id, true)).rejects.toThrow(/missing/)
+    expect(() => propose(merge())).toThrow(/exists/)
+  })
+
+  it('rejects invalid merge inputs, excluded paths, symlinks and total source size', () => {
+    writeFileSync(file('a.md'), 'A')
+    writeFileSync(file('b.md'), 'B')
+    writeFileSync(file('c.txt'), 'C')
+    for (const change of [
+      { sources: [file('a.md')] },
+      { sources: Array(21).fill(file('a.md')) },
+      { sources: [file('a.md'), 'relative.md'] },
+      { sources: [file('a.md'), file('c.txt')] },
+      { sources: [file('a.md'), join(userData, 'private.md')] },
+      { title: '../escape' },
+      { outputFolder: sandbox },
+      { format: 'pdf' },
+      { separator: 'invalid' },
+    ])
+      expect(() => propose({ ...merge(), ...change } as FileAction)).toThrow()
+    symlinkSync(root, file('alias'), process.platform === 'win32' ? 'junction' : 'dir')
+    expect(() => propose({ ...merge(), sources: [file('a.md'), file('alias/b.md')] })).toThrow(
+      /Symlink/,
+    )
+    truncateSync(file('a.md'), 70 * 1024 * 1024)
+    truncateSync(file('b.md'), 70 * 1024 * 1024)
+    expect(() => propose(merge())).toThrow(/128 MiB/)
+  })
+
+  it('allows an explicit approved output folder while keeping source files in place', async () => {
+    writeFileSync(file('a.md'), 'A')
+    writeFileSync(file('b.md'), 'B')
+    const outputFolder = file('outputs')
+    mkdirSync(outputFolder)
+    const p = propose({ ...merge(), outputFolder })
+    expect(p.action.destination).toBe(join(outputFolder, 'Combined.md'))
+    await service.decide(1, p.id, true)
+    expect(readFileSync(join(outputFolder, 'Combined.md'), 'utf8')).toBe('# Merged')
+    expect(readFileSync(file('a.md'), 'utf8')).toBe('A')
+    expect(readFileSync(file('b.md'), 'utf8')).toBe('B')
+  })
+
+  it('rechecks all merge sources after approval and refuses a destination race', async () => {
+    writeFileSync(file('a.md'), 'A')
+    writeFileSync(file('b.md'), 'B')
+    let p = propose(merge())
+    writeFileSync(file('b.md'), 'changed')
+    await expect(service.decide(1, p.id, true)).rejects.toThrow(/changed/)
+    expect(merger).not.toHaveBeenCalled()
+    p = propose(merge())
+    merger.mockImplementationOnce(async (_a: FileAction, output: string) => {
+      writeFileSync(output, 'new')
+      writeFileSync(file('Combined.md'), 'keep')
+    })
+    await expect(service.decide(1, p.id, true)).rejects.toThrow(/exists/)
+    expect(readFileSync(file('Combined.md'), 'utf8')).toBe('keep')
+  })
+
+  it('rechecks sources during merge and bounds generated output', async () => {
+    writeFileSync(file('a.md'), 'A')
+    writeFileSync(file('b.md'), 'B')
+    let p = propose(merge())
+    merger.mockImplementationOnce(async (_a: FileAction, output: string) => {
+      writeFileSync(output, 'new')
+      writeFileSync(file('a.md'), 'external edit')
+    })
+    await expect(service.decide(1, p.id, true)).rejects.toThrow(/changed/)
+    expect(existsSync(file('Combined.md'))).toBe(false)
+    p = propose(merge())
+    merger.mockImplementationOnce(async (_a: FileAction, output: string) => {
+      writeFileSync(output, '')
+      truncateSync(output, 129 * 1024 * 1024)
+    })
+    await expect(service.decide(1, p.id, true)).rejects.toThrow(/oversized/)
+    expect(existsSync(file('Combined.md'))).toBe(false)
+  })
   it('rejects relative paths, traversal, siblings outside roots, userData and existing destinations', () => {
     writeFileSync(file('a.md'), 'a')
     writeFileSync(file('b.md'), 'b')

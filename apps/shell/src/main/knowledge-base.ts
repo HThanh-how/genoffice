@@ -213,6 +213,17 @@ export interface KbCreateDeps {
   replaceFile?: (tmpPath: string, destPath: string) => Promise<void>
 }
 
+/** Shared content writer for create_document and approved document merges. */
+export async function writeKnowledgeDocumentContent(
+  deps: KbCreateDeps,
+  req: Pick<KbCreateRequest, 'format' | 'content' | 'documentType'>,
+  out: string,
+): Promise<void> {
+  if (req.content.length > KB_CREATE_MAX_CHARS) throw new Error('content is too long')
+  if (req.format === 'md') await deps.writeText(out, req.content)
+  else await deps.markdownToDocx(req.content, out, req.documentType)
+}
+
 interface CommittedDocCreation {
   path: string
   createdAt: number
@@ -524,11 +535,7 @@ export async function createKnowledgeDocument(
             const tmpName = `.${basename(targetPath, ext)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp${ext}`
             const tmpPath = join(dirname(targetPath), tmpName)
             try {
-              if (req.format === 'md') {
-                await deps.writeText(tmpPath, req.content)
-              } else {
-                await deps.markdownToDocx(req.content, tmpPath, req.documentType)
-              }
+              await writeKnowledgeDocumentContent(deps, req, tmpPath)
               await deps.publishExclusive(tmpPath, targetPath)
             } finally {
               const exists = deps.fileExists ? deps.fileExists(tmpPath) : existsSync(tmpPath)
@@ -545,22 +552,14 @@ export async function createKnowledgeDocument(
               err.code = 'EEXIST'
               throw err
             }
-            if (req.format === 'md') {
-              await deps.writeText(targetPath, req.content)
-            } else {
-              await deps.markdownToDocx(req.content, targetPath, req.documentType)
-            }
+            await writeKnowledgeDocumentContent(deps, req, targetPath)
           } else {
             // Real filesystem environment (production): use exclusive same-directory temp file + atomic publish
             const ext = req.format === 'docx' ? '.docx' : '.md'
             const tmpName = `.${basename(targetPath, ext)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp${ext}`
             const tmpPath = join(dirname(targetPath), tmpName)
             try {
-              if (req.format === 'md') {
-                await deps.writeText(tmpPath, req.content)
-              } else {
-                await deps.markdownToDocx(req.content, tmpPath, req.documentType)
-              }
+              await writeKnowledgeDocumentContent(deps, req, tmpPath)
               await publishFileExclusive(tmpPath, targetPath)
             } finally {
               if (existsSync(tmpPath)) {

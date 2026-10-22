@@ -207,7 +207,7 @@ export function createKnowledgeBaseSkill(deps: KnowledgeBaseDeps): AgentSkill {
       }
       return { output: `unknown tool: ${call.name}`, isError: true, summary: call.name }
     },
-    verifyResponse: (response) => {
+    verifyResponse: (response, executed) => {
       const cited = [...response.matchAll(/\]\((filenav:\/\/[^)\s]+)\)/g)].map((m) => m[1]!)
       if (cited.length === 0) return null
       // hrefs arrive percent-encoded (the renderer's own generator encodes
@@ -216,6 +216,21 @@ export function createKnowledgeBaseSkill(deps: KnowledgeBaseDeps): AgentSkill {
         ...deps.listFiles().map((f) => f.path),
         ...(deps.alsoCitable?.() ?? []),
       ])
+      // A sibling file tool may have just produced a new, approved citation.
+      for (const call of executed) {
+        if (call.name !== 'merge_documents' || !call.ok || !call.output) continue
+        try {
+          const result = JSON.parse(call.output)
+          if (
+            result.ok === true &&
+            typeof result.path === 'string' &&
+            result.cite === kbCiteHref(result.path)
+          )
+            known.add(result.path)
+        } catch {
+          /* Only structured successful tool output grants a citation. */
+        }
+      }
       const unknown = cited.filter((href) => {
         const raw = href.slice(FILE_NAV_SCHEME.length)
         let decoded = raw

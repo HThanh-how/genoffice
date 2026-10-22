@@ -20,6 +20,75 @@ function setup() {
 }
 
 describe('file management skill', () => {
+  it('gates merges, ignores model approval and destination fields, and returns the standard cite', async () => {
+    const bridge = setup()
+    const destination = '/allowed/Combined.docx'
+    bridge.fileActionDecide = vi.fn(async () => ({ ok: true, path: destination }))
+    const opened = vi.fn(async () => true)
+    const capture = vi.fn(() => opened)
+    let approve!: (value: boolean) => void
+    const confirm = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          approve = resolve
+        }),
+    )
+    const task = createFileManagementSkill(bridge, confirm, capture).executeTool({
+      id: 'merge',
+      name: 'merge_documents',
+      input: {
+        sources: ['/allowed/B.md', '/allowed/A.docx'],
+        title: 'Combined',
+        format: 'docx',
+        separator: 'heading',
+        destination: '/outside/injected.docx',
+        approved: true,
+      },
+    })
+    await vi.waitFor(() => expect(confirm).toHaveBeenCalled())
+    expect(bridge.fileActionDecide).not.toHaveBeenCalled()
+    expect(opened).not.toHaveBeenCalled()
+    expect(bridge.fileActionPropose).toHaveBeenCalledWith({
+      tool: 'merge_documents',
+      sources: ['/allowed/B.md', '/allowed/A.docx'],
+      title: 'Combined',
+      format: 'docx',
+      separator: 'heading',
+      outputFolder: undefined,
+    })
+    approve(true)
+    const result = await task
+    expect(JSON.parse(result.output)).toMatchObject({
+      path: destination,
+      cite: 'filenav:///allowed/Combined.docx',
+      opened: true,
+    })
+    expect(capture).toHaveBeenCalledOnce()
+    expect(opened).toHaveBeenCalledExactlyOnceWith(destination)
+  })
+
+  it('reports a saved merge even when the host declines or fails automatic opening', async () => {
+    const bridge = setup()
+    bridge.fileActionDecide = vi.fn(async () => ({ ok: true, path: '/allowed/new.md' }))
+    const result = await createFileManagementSkill(
+      bridge,
+      async () => true,
+      () => async () => {
+        throw new Error('stale conversation')
+      },
+    ).executeTool({
+      id: 'merge',
+      name: 'merge_documents',
+      input: {
+        sources: ['/allowed/a.md', '/allowed/b.md'],
+        title: 'new',
+        format: 'md',
+        separator: 'none',
+      },
+    })
+    expect(JSON.parse(result.output)).toMatchObject({ ok: true, opened: false })
+    expect(result.isError).not.toBe(true)
+  })
   it('uses MCP filesystem path / source / destination argument shapes', () => {
     expect(FILE_MANAGEMENT_TOOLS.map((tool) => tool.name)).toEqual([
       'create_folder',
@@ -27,8 +96,17 @@ describe('file management skill', () => {
       'delete_file',
       'list_folder',
       'export_pdf',
+      'merge_documents',
     ])
     for (const tool of FILE_MANAGEMENT_TOOLS) {
+      if (tool.name === 'merge_documents') {
+        expect(tool.inputSchema).toMatchObject({
+          additionalProperties: false,
+          required: ['sources', 'title', 'format', 'separator'],
+          properties: { sources: { minItems: 2, maxItems: 20 } },
+        })
+        continue
+      }
       expect(tool.inputSchema).toMatchObject({
         type: 'object',
         additionalProperties: false,

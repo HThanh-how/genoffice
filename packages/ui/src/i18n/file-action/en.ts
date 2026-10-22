@@ -8,5 +8,6 @@ export const strings = {
   move_file: 'Move or rename file',
   delete_file: 'Move to OS trash',
   list_folder: 'List folder',
+  merge_documents: 'Merge documents into a new file',
   export_pdf: 'Export saved file to PDF',
 } satisfies Record<keyof typeof zh, string>
