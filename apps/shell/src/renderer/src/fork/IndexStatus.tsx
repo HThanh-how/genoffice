@@ -87,7 +87,7 @@ export function IndexStatus(props: IndexStatusProps) {
     total: progress?.totalFiles ?? null,
   })
 
-  if (props.loading && !activity && !memory) {
+  if (!activity && !memory) {
     return props.failed ? (
       <section className="ix-status is-failed" role="alert">
         <p className="ix-status-title">{s.failed}</p>
