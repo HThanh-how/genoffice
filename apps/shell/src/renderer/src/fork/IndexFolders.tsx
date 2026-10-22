@@ -8,13 +8,12 @@ import { TEXT, EN } from './index-dashboard-i18n'
 import { readIndexRequest } from './index-request'
 import {
   FILTER_FROM,
-  WINDOW_FROM,
   filterFolderRows,
   shortPath,
   toFolderRows,
-  windowRange,
   type FolderRow,
 } from './index-screen-model'
+import { useWindowedRows } from './use-windowed-rows'
 import { IconAlert, IconFolder, IconMore, IconOffline, IconSearch } from './index-icons'
 import { IndexMenu, MenuItem, MenuSeparator } from './IndexMenu'
 
@@ -189,38 +188,13 @@ export function IndexFolders({ api, folders, failed, onRefresh, onNote, onAttent
   const open = menu ? rows.find((r) => r.root === menu.root) : undefined
 
   // Long lists draw only the rows near the viewport, measured against the page's own scroller.
-  const windowed = shown.length > WINDOW_FROM
   const listRef = useRef<HTMLUListElement>(null)
-  const [range, setRange] = useState({ start: 0, end: WINDOW_FROM })
-  useEffect(() => {
-    const list = listRef.current
-    if (!windowed || !list) return
-    const scroller = list.closest<HTMLElement>('.ix-page')
-    if (!scroller) return
-    let frame = 0
-    const measure = () => {
-      frame = 0
-      const scrolledPast = scroller.getBoundingClientRect().top - list.getBoundingClientRect().top
-      const next = windowRange({
-        scrolledPast,
-        viewport: scroller.clientHeight,
-        rowHeight: ROW_HEIGHT,
-        count: shown.length,
-      })
-      setRange((prev) => (prev.start === next.start && prev.end === next.end ? prev : next))
-    }
-    const schedule = () => {
-      if (!frame) frame = requestAnimationFrame(measure)
-    }
-    measure()
-    scroller.addEventListener('scroll', schedule, { passive: true })
-    window.addEventListener('resize', schedule)
-    return () => {
-      cancelAnimationFrame(frame)
-      scroller.removeEventListener('scroll', schedule)
-      window.removeEventListener('resize', schedule)
-    }
-  }, [windowed, shown.length])
+  const { windowed, range, padTop, padBottom } = useWindowedRows(
+    listRef,
+    shown.length,
+    ROW_HEIGHT,
+    '.ix-page',
+  )
 
   const onMenu = useCallback((root: string, anchor: HTMLElement | null) => {
     setMenu((prev) => (prev?.root === root ? null : { root, anchor, view: 'actions' }))
@@ -267,8 +241,6 @@ export function IndexFolders({ api, folders, failed, onRefresh, onNote, onAttent
   }
 
   const slice = windowed ? shown.slice(range.start, range.end) : shown
-  const padTop = windowed ? range.start * ROW_HEIGHT : 0
-  const padBottom = windowed ? Math.max(0, (shown.length - range.end) * ROW_HEIGHT) : 0
 
   return (
     <section className="ix-section" aria-labelledby="ix-folders-h">
