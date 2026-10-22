@@ -2,13 +2,21 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { OpeningEffectsState } from '../../../shared/home-api'
 import {
   DEFAULT_SCENE_FOR_APP,
+  MAX_OPENING_GROUPS,
+  OPENING_APPS,
   type OpeningApp,
   type OpeningPrefs,
+  type OpeningRandomPool,
 } from '../../../shared/opening-scenes-meta'
 import type { OpeningCardDefinition } from '../../../shared/opening-card-types'
 import { getAllBuiltInCards } from '../../../shared/opening-card-families'
-import { CardGallery } from './opening-card/CardGallery'
+import { visibleGroupIds } from '../../../shared/opening-card-groups'
+import type { SplashTier } from '../../../shared/opening-page'
+import { appName as appLabelOf } from './opening-card/AppMarks'
+import { CardGallery, DETAIL_PANEL_ID } from './opening-card/CardGallery'
 import { CardPreview } from './opening-card/CardPreview'
+import { RandomPanel } from './opening-card/RandomPanel'
+import { appsUsingCard, effectiveCardId, type ApplyScope } from './opening-card/studio-logic'
 import { CardCustomizer } from './opening-card/CardCustomizer'
 import { AiCardModal } from './opening-card/AiCardModal'
 import { MediaImportModal } from './opening-card/MediaImportModal'
@@ -19,6 +27,14 @@ interface StudioProps {
   lang: string
   onUpdateState: (next: OpeningEffectsState) => void
   onPreview: (app: OpeningApp, sceneOrCard: string) => void
+}
+
+/** The random settings without the one for this app (a card chosen for the app replaces it). */
+function withoutRandom(random: OpeningPrefs['random'], app: OpeningApp): OpeningPrefs['random'] {
+  if (!random?.[app]) return random
+  const rest = { ...random }
+  delete rest[app]
+  return Object.keys(rest).length > 0 ? rest : undefined
 }
 
 export function OpeningCardStudio({
@@ -38,12 +54,13 @@ export function OpeningCardStudio({
     return [...builtIn, ...custom]
   }, [state.builtInCards, prefs.customCards])
 
-  // Initial selected card
-  const [selectedCard, setSelectedCard] = useState<OpeningCardDefinition | null>(() => {
-    const defaultId =
-      prefs.globalCard || state.effectiveScenes?.docs?.id || DEFAULT_SCENE_FOR_APP.docs
-    return allCards.find((c) => c.id === defaultId) || allCards[0] || null
-  })
+  // The card whose details are open (under its row in the gallery). None until one is clicked.
+  const [openCardId, setOpenCardId] = useState<string | null>(null)
+  const toggleCard = (card: OpeningCardDefinition) =>
+    setOpenCardId((current) => (current === card.id ? null : card.id))
+
+  // How rich the preview is: the person's choice, or what the opening window would pick here
+  const tier: SplashTier = prefs.tier === 'auto' ? (state.machineTier ?? 'lite') : prefs.tier
 
   // Modals state
   const [customizingCard, setCustomizingCard] = useState<OpeningCardDefinition | null>(null)
@@ -54,19 +71,6 @@ export function OpeningCardStudio({
   const [statusMessage, setStatusMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
-  const previewRef = useRef<HTMLDivElement | null>(null)
-
-  // In the stacked (narrow) layout the preview sits above the gallery: after a click, bring it back into view.
-  const handleSelectCard = (card: OpeningCardDefinition, via?: 'pointer' | 'keyboard') => {
-    setSelectedCard(card)
-    if (via !== 'pointer') return
-    const el = previewRef.current
-    if (!el || typeof el.scrollIntoView !== 'function') return
-    const rect = el.getBoundingClientRect()
-    if (rect.top >= 0 && rect.bottom <= window.innerHeight) return
-    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-    el.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' })
-  }
 
   // "More actions" menu: closes on outside click or Escape
   const [menuOpen, setMenuOpen] = useState(false)
@@ -113,9 +117,15 @@ export function OpeningCardStudio({
   }
 
   const handleSetGlobal = async (cardId: string) => {
+    // "All apps" means every app: the apps' own choices give way to it
+    const nextScenes = { ...prefs.scenes }
+    for (const app of OPENING_APPS) nextScenes[app] = cardId
     const nextPrefs: OpeningPrefs = {
       ...prefs,
       globalCard: cardId,
+      appOverrides: undefined,
+      random: undefined,
+      scenes: nextScenes,
     }
     try {
       const nextState = await api.setOpeningPrefs?.(nextPrefs)
@@ -140,6 +150,7 @@ export function OpeningCardStudio({
     const nextPrefs: OpeningPrefs = {
       ...prefs,
       appOverrides: nextOverrides,
+      random: withoutRandom(prefs.random, app),
       scenes: nextScenes,
     }
     try {
@@ -171,6 +182,7 @@ export function OpeningCardStudio({
     const nextPrefs: OpeningPrefs = {
       ...prefs,
       appOverrides: Object.keys(nextOverrides).length > 0 ? nextOverrides : undefined,
+      random: withoutRandom(prefs.random, app),
       scenes: nextScenes,
     }
     try {
@@ -194,29 +206,150 @@ export function OpeningCardStudio({
     }
   }
 
-  const handleDeleteCard = async (cardId: string) => {
+  /** Save new settings; `done` is said when they were kept. */
+  const savePrefs = async (nextPrefs: OpeningPrefs, done?: string): Promise<boolean> => {
     try {
-      const nextState = await api.deleteOpeningCard?.(cardId)
-      if (nextState) {
-        onUpdateState(nextState)
-        setSelectedCard((current) => {
-          if (current?.id !== cardId) return current
-          const builtIn = nextState.builtInCards?.length
-            ? nextState.builtInCards
-            : getAllBuiltInCards()
-          return (
-            [...builtIn, ...(nextState.prefs.customCards || [])].find(
-              (card) => card.id !== cardId,
-            ) || null
-          )
-        })
-        showStatus(isVi ? 'Đã xóa thẻ tùy chỉnh.' : 'Custom card deleted.')
-      } else {
-        showError(isVi ? 'Không thể xóa thẻ này.' : 'Failed to delete card.')
+      const nextState = await api.setOpeningPrefs?.(nextPrefs)
+      if (!nextState) {
+        showError(isVi ? 'Không thể lưu cài đặt.' : 'Could not save the settings.')
+        return false
       }
+      onUpdateState(nextState)
+      if (done) showStatus(done)
+      return true
+    } catch (err) {
+      showError(err instanceof Error ? err.message : String(err))
+      return false
+    }
+  }
+
+  // Remove: to the trash, never gone at once. A card some app played gives way to the default.
+  const handleRemoveCard = async (card: OpeningCardDefinition) => {
+    const affected = appsUsingCard(prefs, card.id)
+    const nextOverrides = { ...(prefs.appOverrides || {}) }
+    const nextScenes = { ...prefs.scenes }
+    for (const app of OPENING_APPS) {
+      if (nextOverrides[app] === card.id) delete nextOverrides[app]
+      if (nextScenes[app] === card.id) nextScenes[app] = DEFAULT_SCENE_FOR_APP[app]
+    }
+    const nextPrefs: OpeningPrefs = {
+      ...prefs,
+      removedCards: [...(prefs.removedCards ?? []), card.id],
+      globalCard: prefs.globalCard === card.id ? undefined : prefs.globalCard,
+      appOverrides: Object.keys(nextOverrides).length > 0 ? nextOverrides : undefined,
+      scenes: nextScenes,
+    }
+    const names = affected.map((app) => appLabelOf(app, isVi)).join(', ')
+    const ok = await savePrefs(
+      nextPrefs,
+      affected.length > 0
+        ? isVi
+          ? `Đã chuyển vào thùng rác. ${names} quay về thẻ mặc định.`
+          : `Moved to the trash. ${names} now ${affected.length === 1 ? 'uses' : 'use'} the default card.`
+        : isVi
+          ? 'Đã chuyển vào thùng rác.'
+          : 'Moved to the trash.',
+    )
+    if (ok) setOpenCardId((current) => (current === card.id ? null : current))
+  }
+
+  const handleRestoreCard = (card: OpeningCardDefinition) =>
+    savePrefs(
+      {
+        ...prefs,
+        removedCards: (prefs.removedCards ?? []).filter((id) => id !== card.id),
+      },
+      isVi ? 'Đã khôi phục thẻ.' : 'Card restored.',
+    )
+
+  // Empty the trash: the cards the person made are deleted for good, built-in ones stay restorable
+  const handleEmptyTrash = async () => {
+    const mine = allCards.filter((c) => !c.isBuiltIn && prefs.removedCards?.includes(c.id))
+    try {
+      let latest: OpeningEffectsState | undefined
+      for (const card of mine) latest = (await api.deleteOpeningCard?.(card.id)) ?? latest
+      if (latest) onUpdateState(latest)
+      showStatus(
+        isVi
+          ? `Đã xóa vĩnh viễn ${mine.length} thẻ của bạn.`
+          : `Deleted ${mine.length} of your own ${mine.length === 1 ? 'card' : 'cards'} for good.`,
+      )
     } catch (err) {
       showError(err instanceof Error ? err.message : String(err))
     }
+  }
+
+  const handleCreateGroup = (name: string) => {
+    if ((prefs.groups?.length ?? 0) >= MAX_OPENING_GROUPS) {
+      showError(isVi ? 'Đã đạt số nhóm tối đa.' : 'That is the most groups there can be.')
+      return
+    }
+    const id = `grp_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`
+    void savePrefs({ ...prefs, groups: [...(prefs.groups ?? []), { id, name }] })
+  }
+
+  const handleRenameGroup = (id: string, name: string) =>
+    savePrefs({
+      ...prefs,
+      groups: (prefs.groups ?? []).map((g) => (g.id === id ? { ...g, name } : g)),
+    })
+
+  const handleDeleteGroup = (id: string) => {
+    const cardGroups = Object.fromEntries(
+      Object.entries(prefs.cardGroups ?? {}).filter(([, group]) => group !== id),
+    )
+    const groups = (prefs.groups ?? []).filter((g) => g.id !== id)
+    const random = prefs.random
+      ? (Object.fromEntries(
+          Object.entries(prefs.random).map(([scope, pool]) => [
+            scope,
+            { ...pool, groups: pool.groups.filter((g) => g !== id) },
+          ]),
+        ) as OpeningPrefs['random'])
+      : undefined
+    return savePrefs({
+      ...prefs,
+      groups: groups.length > 0 ? groups : undefined,
+      cardGroups: Object.keys(cardGroups).length > 0 ? cardGroups : undefined,
+      random,
+    })
+  }
+
+  const handleMoveToGroup = (cardId: string, groupId: string | null) => {
+    const cardGroups = { ...(prefs.cardGroups ?? {}) }
+    if (groupId) cardGroups[cardId] = groupId
+    else delete cardGroups[cardId]
+    return savePrefs({
+      ...prefs,
+      cardGroups: Object.keys(cardGroups).length > 0 ? cardGroups : undefined,
+    })
+  }
+
+  // Random mode for a target: on with a pool, or off (null)
+  const handleSetRandom = (scope: ApplyScope, pool: OpeningRandomPool | null) => {
+    const random: NonNullable<OpeningPrefs['random']> = { ...(prefs.random ?? {}) }
+    let appOverrides = { ...(prefs.appOverrides ?? {}) }
+    if (pool) {
+      if (scope === 'all') {
+        // every app, replacing what the apps chose for themselves
+        for (const app of OPENING_APPS) delete random[app]
+        appOverrides = {}
+      } else {
+        delete appOverrides[scope]
+      }
+      random[scope] = pool
+    } else if (scope === 'all') {
+      for (const key of ['all', ...OPENING_APPS] as ApplyScope[]) delete random[key]
+    } else {
+      delete random[scope]
+      // still drawing because of the setting for all apps: this app gets a fixed card of its own
+      if (random.all) appOverrides[scope] = effectiveCardId(prefs, scope)
+    }
+    return savePrefs({
+      ...prefs,
+      random: Object.keys(random).length > 0 ? random : undefined,
+      appOverrides: Object.keys(appOverrides).length > 0 ? appOverrides : undefined,
+    })
   }
 
   const handleSaveCustomCard = async (
@@ -232,9 +365,7 @@ export function OpeningCardStudio({
         })
         if (res?.ok) {
           onUpdateState(res.state)
-          setSelectedCard(
-            res.state.prefs.customCards?.find((card) => card.id === customCard.id) ?? customCard,
-          )
+          setOpenCardId(customCard.id)
           showStatus(isVi ? 'Đã lưu thẻ tùy chỉnh!' : 'Custom card saved!')
           return
         }
@@ -244,7 +375,7 @@ export function OpeningCardStudio({
       const res = await api.saveOpeningCard?.(customCard)
       if (res) {
         onUpdateState(res)
-        setSelectedCard(customCard)
+        setOpenCardId(customCard.id)
         showStatus(isVi ? 'Đã lưu thẻ tùy chỉnh!' : 'Custom card saved!')
       } else {
         throw new Error(isVi ? 'Không thể lưu thẻ tùy chỉnh' : 'Failed to save custom card')
@@ -300,7 +431,7 @@ export function OpeningCardStudio({
 
       if (savedState) {
         onUpdateState(savedState)
-        setSelectedCard(newCard)
+        setOpenCardId(newCard.id)
         showStatus(
           isVi
             ? 'Đã nhập hình ảnh và tạo thẻ thành công!'
@@ -472,31 +603,49 @@ export function OpeningCardStudio({
         </div>
       )}
 
-      {/* The preview stays pinned on top while the gallery scrolls beneath it */}
+      {/* The details of a card open right under its row when it is clicked, and scroll with the list */}
       <div className="ocs-studio-layout">
-        <div className="ocs-layout-right" ref={previewRef}>
-          <CardPreview
-            card={selectedCard}
-            prefs={prefs}
-            lang={lang}
-            onSetGlobal={handleSetGlobal}
-            onAssignToApp={handleAssignToApp}
-            onResetOverride={handleResetOverride}
-            onPreviewWindow={onPreview}
-            onOpenCustomizer={setCustomizingCard}
-            onDeleteCard={handleDeleteCard}
-          />
-        </div>
-
+        <RandomPanel
+          cards={allCards.filter((c) => !prefs.removedCards?.includes(c.id))}
+          prefs={prefs}
+          lang={lang}
+          groupIds={visibleGroupIds(allCards, prefs)}
+          onChange={handleSetRandom}
+        />
         <div className="ocs-layout-left">
           <CardGallery
             cards={allCards}
-            selectedCard={selectedCard}
+            openCardId={openCardId}
             prefs={prefs}
             lang={lang}
             mediaAssets={state.mediaAssets}
-            onSelectCard={handleSelectCard}
+            onToggleCard={toggleCard}
+            onCloseDetail={() => setOpenCardId(null)}
             onToggleFavorite={handleToggleFavorite}
+            onRemoveCard={handleRemoveCard}
+            onRestoreCard={handleRestoreCard}
+            onEmptyTrash={handleEmptyTrash}
+            onCreateGroup={handleCreateGroup}
+            onRenameGroup={handleRenameGroup}
+            onDeleteGroup={handleDeleteGroup}
+            renderDetail={(card) => (
+              <CardPreview
+                key={card.id}
+                card={card}
+                prefs={prefs}
+                lang={lang}
+                tier={tier}
+                panelId={DETAIL_PANEL_ID}
+                onClose={() => setOpenCardId(null)}
+                onSetGlobal={handleSetGlobal}
+                onAssignToApp={handleAssignToApp}
+                onResetOverride={handleResetOverride}
+                onPreviewWindow={onPreview}
+                onOpenCustomizer={setCustomizingCard}
+                onRemoveCard={handleRemoveCard}
+                onMoveToGroup={handleMoveToGroup}
+              />
+            )}
           />
         </div>
       </div>

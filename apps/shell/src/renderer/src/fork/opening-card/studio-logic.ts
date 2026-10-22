@@ -1,5 +1,9 @@
 import type { OpeningCardDefinition } from '../../../../shared/opening-card-types'
-import type { OpeningApp } from '../../../../shared/opening-scenes-meta'
+import {
+  DEFAULT_SCENE_FOR_APP,
+  OPENING_APPS,
+  type OpeningApp,
+} from '../../../../shared/opening-scenes-meta'
 
 export type GalleryFilterCategory =
   | 'all'
@@ -89,15 +93,82 @@ export function resolveActiveFilter(
 
 export type ApplyScope = 'all' | OpeningApp
 
-/** Whether "Use this card" would change nothing: the card already is what that scope plays. */
-export function appliesTo(
-  scope: ApplyScope,
-  prefs: { globalCard?: string; appOverrides?: Partial<Record<OpeningApp, string>> },
-  cardId: string,
-): boolean {
-  if (scope === 'all') return prefs.globalCard === cardId
-  const override = prefs.appOverrides?.[scope]
-  return override ? override === cardId : prefs.globalCard === cardId
+type PrefsLike = {
+  globalCard?: string
+  appOverrides?: Partial<Record<OpeningApp, string>>
+  scenes?: Partial<Record<OpeningApp, string>>
+  favorites?: string[]
+  removedCards?: string[]
+  random?: Partial<Record<ApplyScope, { groups: string[]; starredOnly: boolean }>>
+}
+
+/**
+ * The fixed card an app plays: its own choice, else the one for all apps, else (older settings) the
+ * scene saved for it, else the app's stock scene; a card in the trash is passed over. The same order
+ * the opening window uses (an app set to random does not use it, see `isShuffling`).
+ */
+export function effectiveCardId(prefs: PrefsLike, app: OpeningApp): string {
+  const gone = (id: string) => Boolean(prefs.removedCards?.includes(id))
+  const own = prefs.appOverrides?.[app]
+  if (own && own !== 'inherit' && !gone(own)) return own
+  if (prefs.globalCard && !gone(prefs.globalCard)) return prefs.globalCard
+  const saved = prefs.scenes?.[app]
+  if (saved && saved !== 'inherit' && saved !== DEFAULT_SCENE_FOR_APP[app] && !gone(saved)) {
+    return saved
+  }
+  const stock = [DEFAULT_SCENE_FOR_APP[app], ...Object.values(DEFAULT_SCENE_FOR_APP)]
+  return stock.find((id) => !gone(id)) ?? DEFAULT_SCENE_FOR_APP[app]
+}
+
+/** Whether an app draws a random card each time (a setting of its own, else one made for all apps, unless a card was picked for it). */
+export function isShuffling(prefs: PrefsLike, app: OpeningApp): boolean {
+  if (prefs.random?.[app]) return true
+  const fixed = prefs.appOverrides?.[app]
+  if (fixed && fixed !== 'inherit') return false
+  return Boolean(prefs.random?.all)
+}
+
+/** The apps that play this card right now, in the usual app order. */
+export function appsUsingCard(prefs: PrefsLike, cardId: string): OpeningApp[] {
+  return OPENING_APPS.filter(
+    (app) => !isShuffling(prefs, app) && effectiveCardId(prefs, app) === cardId,
+  )
+}
+
+/**
+ * Cards that some app plays come first (the one used by the most apps, then the usual app order),
+ * then the starred ones, then the rest, each in its own order. Stable, so a list that is already in
+ * order does not move.
+ */
+export function orderInUseFirst<T extends { id: string }>(
+  cards: readonly T[],
+  prefs: PrefsLike,
+): T[] {
+  const rank = new Map<string, number>()
+  OPENING_APPS.forEach((app, index) => {
+    if (isShuffling(prefs, app)) return
+    const id = effectiveCardId(prefs, app)
+    if (!rank.has(id)) rank.set(id, index)
+  })
+  const used = (card: T) => appsUsingCard(prefs, card.id).length
+  const inUse = cards
+    .filter((card) => rank.has(card.id))
+    .sort((a, b) => used(b) - used(a) || (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0))
+  const starred = new Set(prefs.favorites ?? [])
+  const others = cards.filter((card) => !rank.has(card.id))
+  return [
+    ...inUse,
+    ...others.filter((card) => starred.has(card.id)),
+    ...others.filter((card) => !starred.has(card.id)),
+  ]
+}
+
+/** Whether "Use this card" would change nothing: every app in that scope already plays the card (and none draws at random). */
+export function appliesTo(scope: ApplyScope, prefs: PrefsLike, cardId: string): boolean {
+  const plays = (app: OpeningApp) =>
+    !isShuffling(prefs, app) && effectiveCardId(prefs, app) === cardId
+  if (scope === 'all') return OPENING_APPS.every(plays)
+  return plays(scope)
 }
 
 export type AssignmentStatus =

@@ -1,8 +1,15 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import type { OpeningCardDefinition, StoredMediaAsset } from '../../../../shared/opening-card-types'
 import { CardSurface } from './CardSurface'
 import { runGOScene } from '../../../../shared/opening-scenes-runner'
 import { sceneMeta } from '../../../../shared/opening-scenes-meta'
+import {
+  SPLASH_THEMES,
+  THUMB_SIZE,
+  lighterRgbOf,
+  rgbOf,
+  sceneStageBackground,
+} from '../../../../shared/opening-page'
 import { buildIsolatedHtmlHostDocument } from '../../../../shared/opening-card-html-sanitizer'
 
 // Bounded concurrency queue for canvas scene thumbnail generation
@@ -58,7 +65,6 @@ interface CardThumbnailProps {
 }
 
 export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): React.JSX.Element {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const cacheKey = card.id || card.sceneId || ''
   const [cachedDataUrl, setCachedDataUrl] = useState<string | null>(() => {
     if (cacheKey && sceneThumbnailCache.has(cacheKey)) {
@@ -147,11 +153,15 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
       return
     }
 
-    const canvas = canvasRef.current
-    if (!canvas) return
+    // The frame is drawn by the scene code the opening window runs, on a canvas of the size of its
+    // stage (kept out of sight), so a scene is composed in the tile as it is in the window.
+    const canvas = document.createElement('canvas')
+    canvas.setAttribute('aria-hidden', 'true')
+    canvas.style.cssText = `position:fixed;left:-10000px;top:0;width:${THUMB_SIZE.width}px;height:${THUMB_SIZE.height}px;pointer-events:none`
+    document.body.appendChild(canvas)
 
     let stop: (() => void) | null = null
-    let timer: ReturnType<typeof setTimeout> | null = null
+    let timer: number | null = null
     let isMounted = true
     let resolveTask: (() => void) | null = null
 
@@ -160,29 +170,48 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
       return new Promise<void>((resolve) => {
         resolveTask = resolve
         try {
-          stop = runGOScene(canvas, sceneId, 'lite', '43,124,211', '138,183,233')
-          timer = setTimeout(
-            () => {
-              if (isMounted && !isCancelled()) {
-                try {
-                  const url = canvas.toDataURL('image/png')
-                  if (url && url.length > 50) {
-                    setBoundedCache(sceneThumbnailCache, sceneKey, url)
-                    setCachedDataUrl(url)
-                  }
-                } catch {
-                  // Canvas tainted or read failed; fallback is fine
-                }
-              }
-              if (stop) {
-                stop()
-                stop = null
-              }
-              resolve()
-              resolveTask = null
-            },
-            sceneMeta(sceneId)?.thumbMs ?? 100,
+          stop = runGOScene(
+            canvas,
+            sceneId,
+            'lite',
+            rgbOf(SPLASH_THEMES.docs.color),
+            lighterRgbOf(SPLASH_THEMES.docs.color),
           )
+          // Take the frame once the scene has run as long as it needs AND has drawn a few frames
+          // (a timer alone can fire before the first frame when the page is busy)
+          const started = performance.now()
+          const runFor = sceneMeta(sceneId)?.thumbMs ?? 100
+          let frames = 0
+          const capture = () => {
+            frames += 1
+            if (
+              isMounted &&
+              !isCancelled() &&
+              (frames < 4 || performance.now() - started < runFor)
+            ) {
+              timer = requestAnimationFrame(capture)
+              return
+            }
+            if (isMounted && !isCancelled()) {
+              try {
+                const url = canvas.toDataURL('image/png')
+                if (url && url.length > 50) {
+                  setBoundedCache(sceneThumbnailCache, sceneKey, url)
+                  setCachedDataUrl(url)
+                }
+              } catch {
+                // Canvas tainted or read failed; fallback is fine
+              }
+            }
+            timer = null
+            if (stop) {
+              stop()
+              stop = null
+            }
+            resolve()
+            resolveTask = null
+          }
+          timer = requestAnimationFrame(capture)
         } catch {
           if (stop) {
             stop()
@@ -198,7 +227,7 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
       isMounted = false
       cancelQueue()
       if (timer) {
-        clearTimeout(timer)
+        cancelAnimationFrame(timer)
         timer = null
       }
       if (stop) {
@@ -209,6 +238,7 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
         resolveTask()
         resolveTask = null
       }
+      canvas.remove()
     }
   }, [card.contentKind, card.sceneId, card.id, cachedDataUrl])
 
@@ -283,25 +313,17 @@ export function CardThumbnail({ card, isVi, mediaAssets }: CardThumbnailProps): 
   // 1. Motion scene thumbnail
   if (card.contentKind === 'canvas-scene' && card.sceneId) {
     const meta = sceneMeta(card.sceneId)
-    const bgGrad = meta?.bg
-      ? `linear-gradient(135deg, ${meta.bg[0]} 0%, ${meta.bg[1]} 100%)`
-      : 'linear-gradient(135deg, #0b1226 0%, #1e3a6a 100%)'
-
+    // the backdrop is the one the opening window paints behind the scene
     return (
-      <div className="ocs-thumb-box ocs-thumb-scene" style={{ background: bgGrad }}>
-        {cachedDataUrl ? (
+      <div
+        className="ocs-thumb-box ocs-thumb-scene"
+        style={{ background: sceneStageBackground(card.sceneId, 'docs') }}
+      >
+        {cachedDataUrl && (
           <img
             src={cachedDataUrl}
             alt={isVi ? (meta?.vi ?? card.name) : (meta?.en ?? card.name)}
             className="ocs-thumb-img"
-          />
-        ) : (
-          <canvas
-            ref={canvasRef}
-            width={240}
-            height={135}
-            className="ocs-thumb-canvas"
-            style={{ width: '100%', height: '100%' }}
           />
         )}
       </div>

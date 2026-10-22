@@ -1,3 +1,4 @@
+import { SCENE_TEXT } from './opening-card-text'
 import { SCENES } from './opening-scenes-meta'
 import type { OpeningCardDefinition } from './opening-card-types'
 
@@ -9,7 +10,8 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:frosted-blue',
     name: 'Frosted Blue',
-    description: 'Translucent glass with an icy blue tint that softly blurs what is behind it',
+    description:
+      'Translucent frosted glass with an icy blue tint that softly blurs what is behind it.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -32,7 +34,8 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:crystal-white',
     name: 'Crystal White',
-    description: 'Bright translucent panel with crisp white edges and a faint band of light',
+    description:
+      'Bright translucent white glass with crisp light edges and a diagonal band of light.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -54,7 +57,8 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:graphite',
     name: 'Graphite',
-    description: 'Deep charcoal with a fine light edge and a quiet top-to-bottom fall-off',
+    description:
+      'Deep charcoal that shades from lighter grey at the top to near-black, with a fine light edge.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -77,7 +81,7 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
     id: 'curated:midnight-glass',
     name: 'Midnight Glass',
     description:
-      'Dark obsidian glass shading from near-black to deep indigo, with a luster along its edge',
+      'Dark glass shading from near-black to deep indigo, with a faint band of light and a bright edge.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -100,7 +104,7 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:soft-lavender',
     name: 'Soft Lavender',
-    description: 'Muted lavender tone over gentle frosted glass',
+    description: 'Frosted glass with a soft lavender tint.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -123,7 +127,7 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:clean-paper',
     name: 'Clean Paper',
-    description: 'Warm paper-toned card with a fine fibre grain, like heavy archival paper',
+    description: 'Warm paper-toned card with a fine fibre grain.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -146,7 +150,7 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:floating-card',
     name: 'Floating Card',
-    description: 'Opaque surface that seems to hover, with a wide, soft, diffused shadow',
+    description: 'Near-opaque card with a wide, soft shadow that makes it look like it hovers.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -168,7 +172,8 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:pastel-gradient',
     name: 'Pastel Gradient',
-    description: 'Very gentle pastel gradient from morning mist blue to dusky lilac',
+    description:
+      'Frosted glass with a soft gradient from pale blue to lilac; deeper and quieter in a dark theme.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -190,7 +195,8 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:silk',
     name: 'Silk',
-    description: 'Smooth, slightly iridescent surface with a drifting band of reflected light',
+    description:
+      'Smooth glass with a silvery-blue gradient, a still diagonal band of light and a bright edge.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -213,7 +219,7 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:minimal-white',
     name: 'Minimal White',
-    description: 'Flat white plane with a hairline border and no texture',
+    description: 'Flat white card with a hairline border and no texture.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -235,7 +241,7 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:minimal-black',
     name: 'Minimal Black',
-    description: 'Pure black plane for OLED screens, with a hairline border and no texture',
+    description: 'Flat pure-black card with a hairline border and no texture.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -257,7 +263,7 @@ export const CURATED_CARD_FAMILIES: readonly OpeningCardDefinition[] = [
   {
     id: 'curated:soft-glow',
     name: 'Soft Glow',
-    description: 'Frosted dark glass with a blue aura that slowly breathes around it',
+    description: 'Frosted dark glass with a blue aura that slowly breathes around it.',
     category: 'curated',
     contentKind: 'curated-material',
     material: {
@@ -289,7 +295,7 @@ export function getCanvasSceneCards(): readonly OpeningCardDefinition[] {
     cachedCanvasCards = SCENES.map((scene) => ({
       id: scene.id,
       name: scene.en.split(':')[0] ?? scene.id,
-      description: scene.en,
+      description: SCENE_TEXT[scene.id]?.en ?? scene.en,
       category: 'canvas',
       contentKind: 'canvas-scene',
       sceneId: scene.id,

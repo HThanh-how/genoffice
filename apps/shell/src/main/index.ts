@@ -10,6 +10,7 @@ import { mergeDocuments } from './merge-documents'
 import { electronOverlayDeps } from './fork/opening-overlay-view'
 import { rotatingFileWriter } from './fork/renderer-diagnostics'
 import {
+  machineTier,
   openingEnabled,
   previewOpeningScene,
   setOpeningConfig,
@@ -5010,6 +5011,7 @@ function openingEffectsState(): OpeningEffectsState {
   }
   return {
     prefs,
+    machineTier: machineTier(),
     effectiveScenes: Object.fromEntries(
       OPENING_APPS.map((a) => [a, resolveEffectiveOpeningCard(prefs, a)]),
     ) as Record<OpeningApp, EffectiveOpeningCard>,
@@ -6521,6 +6523,11 @@ function registerHomeIpc(): void {
         appOverrides: Object.keys(appOverrides).length > 0 ? appOverrides : undefined,
         globalCard,
         favorites,
+        // gone for good: no longer in the trash or in a group either
+        removedCards: (prefs.removedCards ?? []).filter((id) => id !== cardId),
+        cardGroups: Object.fromEntries(
+          Object.entries(prefs.cardGroups ?? {}).filter(([id]) => id !== cardId),
+        ),
       })
       if (cardToDelete?.htmlAssetId) {
         const stillInUse = customCards.some((c) => c.htmlAssetId === cardToDelete.htmlAssetId)

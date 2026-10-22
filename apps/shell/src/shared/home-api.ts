@@ -90,6 +90,7 @@ export type UiLanguage =
 
 /** UI theme preference */
 import type { OpeningApp, OpeningPrefs } from './opening-scenes-meta'
+import type { SplashTier } from './opening-page'
 import type {
   AiCardGenerationInput,
   AiCardGenerationResult,
@@ -126,6 +127,8 @@ export interface OpeningEffectsState {
   mediaAssets?: StoredMediaAsset[]
   canGenerateImages?: boolean
   effectiveScenes?: Record<OpeningApp, EffectiveOpeningCard>
+  /** the animation tier the opening window picks on this machine when the choice is Automatic */
+  machineTier?: SplashTier
 }
 
 export type SaveOpeningHtmlCardResult =
