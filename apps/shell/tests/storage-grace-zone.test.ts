@@ -554,6 +554,8 @@ class GraceWorker extends EventEmitter {
     path?: string
     texts?: string[]
     maxPdfPages?: number
+    query?: string
+    limit?: number
     runId?: string
     epoch?: number
     neededBytes?: number
@@ -596,6 +598,16 @@ class GraceWorker extends EventEmitter {
             id: message.id,
             result: (message.texts ?? []).map(() => new Array(PROFILE.dimensions).fill(0.01)),
           })
+        } else if (message.type === 'search-lexical') {
+          const lexStore = new DocumentMemoryStore(this.dbPath, { role: 'worker' })
+          try {
+            this.emit('message', {
+              id: message.id,
+              result: lexStore.searchLexical(message.query ?? '', message.limit ?? 200),
+            })
+          } finally {
+            lexStore.close()
+          }
         } else {
           this.emit('message', { id: message.id, result: [] })
         }

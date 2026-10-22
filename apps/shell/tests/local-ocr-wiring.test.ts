@@ -69,6 +69,8 @@ class InProcessWorker extends EventEmitter {
     path?: string
     texts?: string[]
     ocr?: never
+    query?: string
+    limit?: number
     bytes?: Uint8Array
     dpi?: number
   }) {
@@ -105,6 +107,16 @@ class InProcessWorker extends EventEmitter {
               new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.1),
             ),
           })
+        } else if (message.type === 'search-lexical') {
+          const lexStore = new DocumentMemoryStore(this.dbPath, { role: 'worker' })
+          try {
+            this.emit('message', {
+              id: message.id,
+              result: lexStore.searchLexical(message.query ?? '', message.limit ?? 200),
+            })
+          } finally {
+            lexStore.close()
+          }
         } else this.emit('message', { id: message.id, result: [] })
       } catch (error) {
         this.emit('message', {

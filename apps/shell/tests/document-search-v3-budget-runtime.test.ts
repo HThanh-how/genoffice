@@ -31,6 +31,8 @@ class MockBudgetWorker extends EventEmitter {
     type: string
     path?: string
     texts?: string[]
+    query?: string
+    limit?: number
     maxPdfPages?: number
   }): void {
     setTimeout(async () => {
@@ -62,6 +64,16 @@ class MockBudgetWorker extends EventEmitter {
               new Array(EMBEDDING_PROFILES.standard.dimensions).fill(0.01),
             ),
           })
+        } else if (message.type === 'search-lexical') {
+          const store = new DocumentMemoryStore(this.dbPath, { role: 'worker' })
+          try {
+            this.emit('message', {
+              id: message.id,
+              result: store.searchLexical(message.query ?? '', message.limit ?? 200),
+            })
+          } finally {
+            store.close()
+          }
         } else if (message.type === 'search-semantic') {
           this.emit('message', { id: message.id, result: [] })
         } else {

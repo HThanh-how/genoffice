@@ -119,9 +119,7 @@ export class DocumentMemoryManager {
         if (this.modelState === 'downloading' || this.modelState === 'error' || this.modelState === 'blocked') return null
         const r = await this.ask({ type: 'embed', texts: [t], kind: 'query' }, this.workerTimeoutMs); return r && 'result' in r && Array.isArray(r.result) ? (r.result[0] as number[]) : null
       },
-      askSemantic: async (v, lim, sp) => { const r = await this.ask({ type: 'search-semantic', vector: v, limit: lim, embeddingSpaceId: sp }, 30_000); return r && 'result' in r && Array.isArray(r.result) ? (r.result as any) : null },
-      // Lexical candidates come from the worker's own connection so a 0.3-1.5 s FTS5 query does not freeze every window; null (worker down / slow) falls back to the main connection.
-      askLexical: async (q, lim) => { const r = await this.ask({ type: 'search-lexical', query: q, limit: lim }, 4_000); return r && 'result' in r && Array.isArray(r.result) ? (r.result as any) : null },
+      askSemantic: async (v, lim, sp) => { const r = await this.ask({ type: 'search-semantic', vector: v, limit: lim, embeddingSpaceId: sp }, 30_000); return r && 'result' in r && Array.isArray(r.result) ? (r.result as any) : null }, askLexical: async (q, lim) => { const r = await this.ask({ type: 'search-lexical', query: q, limit: lim }, 4_000); return r && 'result' in r && Array.isArray(r.result) ? (r.result as any) : null },
       annotateFreshness: (hits) => this.freshnessCoord.annotateFreshness(hits),
     })
     this.stabilityGate = new FileStabilityGate(options.stabilityGateOptions); this.backgroundGate = new BackgroundWorkGate()

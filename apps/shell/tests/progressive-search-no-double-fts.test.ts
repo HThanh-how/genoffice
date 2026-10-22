@@ -21,6 +21,7 @@ class FakeSearchWorker extends EventEmitter {
   postMessage(message: {
     id: number
     type: string
+    query?: string
     vector?: number[] | null
     limit?: number
     embeddingSpaceId?: string
@@ -40,6 +41,11 @@ class FakeSearchWorker extends EventEmitter {
           id: message.id,
           result: (message.texts ?? []).map(() => mockVector320()),
         })
+      } else if (message.type === 'search-lexical') {
+        const store = new DocumentMemoryStore(this.dbPath, { role: 'worker' })
+        const result = store.searchLexical(message.query ?? '', message.limit ?? 200)
+        store.close()
+        this.emit('message', { id: message.id, result })
       } else if (message.type === 'search-semantic') {
         const store = new DocumentMemoryStore(this.dbPath, { role: 'worker' })
         const result = store.searchSemantic(
@@ -123,8 +129,9 @@ describe('Progressive Search: No Double Lexical FTS Query', () => {
       },
     })
 
-    // Assert lexical was queried exactly ONCE
-    expect(searchLexicalSpy).toHaveBeenCalledTimes(1)
+    // Assert lexical was queried exactly ONCE, on the worker (the main connection is only the fallback)
+    expect(searchLexicalSpy).not.toHaveBeenCalled()
+    expect(fakeWorker!.sentMessages.filter((m) => m.type === 'search-lexical')).toHaveLength(1)
 
     // Assert filename search was called exactly ONCE
     expect(searchNamesSpy).toHaveBeenCalledTimes(1)
@@ -135,7 +142,7 @@ describe('Progressive Search: No Double Lexical FTS Query', () => {
     // Assert single query batch chunk hydration was used
     expect(hydrateChunkHitsSpy).toHaveBeenCalled()
 
-    // Worker was queried for semantic search only, never for lexical search
+    // Worker answers the lexical candidates once and the semantic candidates once
     expect(fakeWorker).not.toBeNull()
     const workerTypes = fakeWorker!.sentMessages.map((m) => m.type)
     expect(workerTypes).not.toContain('search') // Legacy full search must not be sent
