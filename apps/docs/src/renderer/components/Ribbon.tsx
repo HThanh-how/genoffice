@@ -2018,6 +2018,7 @@ function RibbonInner({
   ).map(([format, key]) => (
     <button
       key={format}
+      data-app-action={format === 'pdf' ? 'export-pdf' : undefined}
       disabled={!hasDoc}
       onClick={() => {
         setDropdown(null)

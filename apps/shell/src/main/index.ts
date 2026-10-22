@@ -1,3 +1,4 @@
+import { registerAppActionIpc } from './app-action-ipc'
 import { showAppMessageBox, setFeedbackThemeGetter } from './app-message-box'
 import { DocumentMemoryManager } from './document-memory/manager'
 import type { BootstrapResult } from './document-memory/storage-bootstrap'
@@ -3658,6 +3659,7 @@ const tm = (key: Parameters<typeof tMain>[1], params?: Parameters<typeof tMain>[
 
 // ---- the shell window + its tab manager (recreated if the user closes it on macOS) ----
 
+let validateAppActions: () => void = () => {}
 let shellWindow: BrowserWindow | null = null
 let tabManager: TabManager | null = null
 
@@ -4247,6 +4249,7 @@ function createShellWindow(): void {
   const manager = new TabManager(
     win,
     () => {
+      validateAppActions()
       win.webContents.send(TABS_CHANNELS.changed, manager.list())
       publishOpenDocumentsIfOwner([...manager.openFilePaths(), ...detachedFilePaths()])
     },
@@ -8419,6 +8422,10 @@ registerIntegrationsIpc({
     : join(APPS_ROOT, '..', 'packages', 'cli', 'package.json'),
 })
 registerTabsIpc()
+validateAppActions = registerAppActionIpc({
+  home: () => shellWindow?.webContents,
+  tabs: () => tabManager,
+})
 registerDroppedFilesIpc()
 registerUserSkillsIpc({ cliRunner: makeUserCliRunner })
 

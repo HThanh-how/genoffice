@@ -1,3 +1,4 @@
+import { createAppActionPreload } from '@genoffice/agent-core/app-action-preload'
 import { installRendererDialogs } from '@genoffice/electron-utils/renderer-dialogs'
 import { createAgyChatPreloadApi } from '@genoffice/electron-utils/agy-chat-preload'
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
@@ -317,8 +318,14 @@ const api: DesktopApi = {
     return () => ipcRenderer.removeListener('ai:stream-chunk', listener)
   },
   onMenuCommand: (handler: (command: MenuCommand, payload?: string) => void) => {
-    const listener = (_event: IpcRendererEvent, command: MenuCommand, payload?: string) =>
-      handler(command, payload)
+    const listener = (
+      _event: IpcRendererEvent,
+      command: MenuCommand,
+      payload?: string,
+      appAction?: unknown,
+    ) => {
+      if (!appAction) handler(command, payload)
+    }
     ipcRenderer.on('menu:command', listener)
     return () => ipcRenderer.removeListener('menu:command', listener)
   },
@@ -364,3 +371,5 @@ installDropOpenBridge()
 installRendererDialogs()
 // Antigravity chat model chooser + quota readout (see packages/ui AgyChatBar)
 contextBridge.exposeInMainWorld('agyChat', createAgyChatPreloadApi(ipcRenderer))
+
+contextBridge.exposeInMainWorld('appActions', createAppActionPreload(ipcRenderer, true))

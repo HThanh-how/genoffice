@@ -156,3 +156,7 @@ export type { RedactLabelField } from './use-redact-label'
 export { FileActionApproval, useFileActionApproval } from './FileActionApproval'
 export { ClarifyCard, type ClarifyQuestion } from './ClarifyCard'
 export { clarifyText, type ClarifyKey } from './strings-clarify'
+
+export { AppActionHost, appActionBridge, appActionSignal, reportAppAction } from './AppActionHost'
+export { useAppControl, appActionLabel } from './use-app-control'
+export { waitForActionStep } from './app-action-steps'

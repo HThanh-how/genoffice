@@ -1,3 +1,5 @@
+import { reportAppAction, useAppControl } from '@genoffice/ui'
+import { NEW_CHAT_ACTION } from './home-app-actions'
 import {
   AgentLoop,
   AskUserController,
@@ -180,6 +182,7 @@ export function HomeChat({
   onOpenAskWorkspace,
   onOpenModelSettings,
 }: Props) {
+  const appControl = useAppControl(i18n.lang)
   const api = homeApi
   const fileApproval = useFileActionApproval()
   const modelBridge = useMemo<AiModelPickerBridge>(
@@ -850,6 +853,7 @@ export function HomeChat({
       transport,
       skill: composeSkills('home+remembered-documents+kb', '', [
         createAskUserSkill({ ask: questionControllerRef.current.ask }),
+        ...(appControl.skill ? [appControl.skill] : []),
         createDocumentMemorySkill(refBridge(api, () => fileTableRef.current)),
         createKnowledgeBaseSkill({
           listFiles: () => {
@@ -1135,8 +1139,20 @@ export function HomeChat({
     adopt({ id: null, executionId: crypto.randomUUID(), dead: false, requested: false }, [], '')
     collapseRailWhenNarrow()
     focusInput()
+    reportAppAction('new-chat', { status: 'completed' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusInput])
+
+  useEffect(() => {
+    const onNew = (event: Event) => {
+      onOpenAskWorkspace?.()
+      const acknowledge = (event as CustomEvent<() => void>).detail
+      startNew()
+      acknowledge?.()
+    }
+    window.addEventListener(NEW_CHAT_ACTION, onNew)
+    return () => window.removeEventListener(NEW_CHAT_ACTION, onNew)
+  }, [startNew, onOpenAskWorkspace])
 
   const openSession = useCallback(
     async (id: string) => {
@@ -1756,6 +1772,7 @@ export function HomeChat({
               className="hc-icon-button"
               aria-label={t('homeChatNew')}
               title={t('homeChatNew')}
+              data-app-action="new-chat"
               onClick={startNew}
             >
               <svg viewBox="0 0 20 20" fill="none" aria-hidden="true">
@@ -1967,6 +1984,7 @@ export function HomeChat({
               : ''
           : ''}
       </span>
+      {appControl.approval}
       {panelNode ? (workspaceTarget ? createPortal(panelNode, workspaceTarget) : panelNode) : null}
       {dock && dockSlot ? createPortal(dock, dockSlot) : null}
     </>

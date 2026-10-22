@@ -1,3 +1,5 @@
+import { AppActionHost } from '@genoffice/ui'
+import { homeAppActions } from './home-app-actions'
 import { appNotify } from './ui-feedback'
 import { IndexingActivity, OPEN_INDEX_EVENT } from './IndexingActivity'
 import { IndexDashboard } from './fork/IndexDashboard'
@@ -1354,6 +1356,18 @@ export function Home() {
   const [rerankSettingsTick, setRerankSettingsTick] = useState(0)
   const [settingsRequest, setSettingsRequest] = useState<SettingsTarget | null>(null)
   const openModelSettings = useCallback(() => setSettingsRequest({ section: 'aiModel' }), [])
+  const languageSetter = useRef(i18n.setLang)
+  languageSetter.current = i18n.setLang
+  const actionRegistry = useMemo(
+    () =>
+      homeAppActions(
+        window.aiOffice,
+        () => window.dispatchEvent(new Event(OPEN_INDEX_EVENT)),
+        (pane) => setSettingsRequest({ section: pane }),
+        (next) => languageSetter.current(next),
+      ),
+    [],
+  )
   useEffect(
     () =>
       window.aiOffice.onOpenSettings?.((target) =>
@@ -3729,6 +3743,7 @@ export function Home() {
 
   return (
     <div className="home">
+      <AppActionHost registry={actionRegistry} lang={lang} />
       <aside className="sidebar">
         <div className="sidebar-logo">
           <img className="logo-lockup" src={logoLockup} alt="GenOffice" />
@@ -3779,6 +3794,7 @@ export function Home() {
             }}
           />
           <button
+            data-app-action="ask"
             className={`nav-item${askMode && !selectedFolder && !cloudMode ? ' active' : ''}`}
             onClick={openAskWorkspace}
           >

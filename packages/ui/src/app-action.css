@@ -1,0 +1,57 @@
+.app-action-guide {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483000;
+  pointer-events: none;
+}
+.app-action-spotlight {
+  position: absolute;
+  inset: 0;
+}
+.app-action-shade {
+  fill: var(--color-bg-overlay);
+}
+.app-action-outline {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 2;
+}
+.app-action-narration {
+  position: absolute;
+  bottom: 24px;
+  inset-inline: 24px;
+  width: fit-content;
+  max-width: calc(100% - 48px);
+  margin: auto;
+  padding: 12px 18px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow-menu);
+  font: 14px/1.5 system-ui;
+}
+.app-action-approval {
+  position: fixed;
+  inset: auto 24px 24px auto;
+  width: min(420px, calc(100vw - 48px));
+  z-index: 2147483001;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-menu);
+}
+@media (prefers-reduced-motion: reduce) {
+  .app-action-guide *,
+  .app-action-approval * {
+    animation: none;
+    transition: none;
+  }
+}
+@media print {
+  .app-action-guide,
+  .app-action-approval {
+    display: none;
+  }
+}
