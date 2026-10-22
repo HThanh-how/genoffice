@@ -64,6 +64,7 @@ import { DOCS_CONTINUE_INSTRUCTION } from './continuation'
 import { waitForFullContent } from '../phased-content'
 import { currentDocGeneration } from '../file-actions'
 import { createFilesSkill } from './files-skill'
+import { createSkillsSkill } from './skills-skill'
 import { boundChatHistory } from './chat-retention'
 import { splitHandoff } from '@genoffice/project-store/handoff'
 import { createElectronTransport } from './transport'
@@ -881,7 +882,7 @@ export function AiPanel({
     loopRef.current = new AgentLoop<PmNode>({
       transport: transportRef.current,
       systemSuffix: aiLangDirective,
-      skill: composeSkills('docs+files+memory+kb', '', [
+      skill: composeSkills('docs+files+memory+kb+skills', '', [
         // the reader's starred files; empty while the user stars nothing —
         // buildContext then returns '' and the skill stays out of the way.
         // Mounted only when the bridge carries the kb channel at all: a test
@@ -912,6 +913,7 @@ export function AiPanel({
         ),
         createFilesSkill(availableAttachments),
         createDocumentMemorySkill(window.desktop),
+        createSkillsSkill(),
       ]),
       captureSnapshot: () => editorRef.current.getJSON() as PmNode,
       events: {

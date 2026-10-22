@@ -34,6 +34,7 @@ import {
   MIN_MAX_OUTPUT_TOKENS,
   activeCustomEndpoint,
   clampMaxOutputTokens,
+  providerPickerModels,
   customEndpointLabel,
   newCustomEndpointId,
   removeCustomEndpoint,
@@ -904,7 +905,10 @@ function AiModelPane({ t }: { t: TFunc }) {
             className="set-dd"
             value={config.model || meta.defaultModel}
             ariaLabel={t('setAiModelId')}
-            options={meta.models.map((m) => ({ value: m, label: m }))}
+            options={providerPickerModels(provider, meta.models, config.model).map((m) => ({
+              value: m,
+              label: m,
+            }))}
             onPick={(m) => updateConfig({ model: m })}
             searchPlaceholder={meta.models.length > 12 ? t('setAiModelSearch') : undefined}
           />
@@ -1772,11 +1776,13 @@ function AiMediaPane({
               ? t('setAiSearchGensparkHint')
               : search.provider === 'parallel'
                 ? t('setAiSearchParallelHint')
-                : search.provider === 'serply'
-                  ? t('setAiSearchSerplyHint')
-                  : searchMeta?.imageSearch
-                    ? t('setAiSearchSerperHint')
-                    : t('setAiSearchTavilyHint')}
+                : search.provider === 'keenable'
+                  ? t('setAiSearchKeenableHint')
+                  : search.provider === 'serply'
+                    ? t('setAiSearchSerplyHint')
+                    : searchMeta?.imageSearch
+                      ? t('setAiSearchSerperHint')
+                      : t('setAiSearchTavilyHint')}
         </div>
         {search.provider !== 'genspark' &&
           search.provider !== 'agy' &&

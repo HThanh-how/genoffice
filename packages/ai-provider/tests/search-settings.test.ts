@@ -19,6 +19,7 @@ describe('search settings', () => {
         agy: { apiKey: '', cliPath: '', model: '' },
         exa: { apiKey: '' },
         firecrawl: { apiKey: '' },
+        keenable: { apiKey: '' },
       },
     })
     expect(defaultAiSettings().search?.provider).toBe('parallel')
@@ -66,6 +67,7 @@ describe('search settings', () => {
             agy: { apiKey: '' },
             exa: { apiKey: '' },
             firecrawl: { apiKey: '' },
+            keenable: { apiKey: '' },
           },
         },
       }),
@@ -82,6 +84,7 @@ describe('search settings', () => {
             agy: { apiKey: '' },
             exa: { apiKey: '' },
             firecrawl: { apiKey: '' },
+            keenable: { apiKey: '' },
           },
         },
       }),
@@ -98,6 +101,7 @@ describe('search settings', () => {
             agy: { apiKey: '' },
             exa: { apiKey: '' },
             firecrawl: { apiKey: '' },
+            keenable: { apiKey: '' },
           },
         },
       }),
@@ -189,6 +193,7 @@ describe('exa and firecrawl providers', () => {
           agy: { apiKey: '' },
           exa: { apiKey: id === 'exa' ? apiKey : '' },
           firecrawl: { apiKey: id === 'firecrawl' ? apiKey : '' },
+          keenable: { apiKey: '' },
         },
       },
     })
@@ -254,5 +259,39 @@ describe('effective AGY search routing and provider retention', () => {
       },
     }
     expect(activeSearchProvider(settings)).toBe('parallel')
+  })
+})
+
+describe('Keenable search settings', () => {
+  it('is in the catalog without image search and defaults to an empty key', () => {
+    expect(AI_SEARCH_PROVIDERS.find((m) => m.id === 'keenable')?.imageSearch).toBe(false)
+    expect(defaultAiSearchSettings().providers.keenable.apiKey).toBe('')
+  })
+
+  it('keeps Keenable selected for free search when the key is blank', () => {
+    const settings = resolveAiSearchSettings(
+      JSON.parse(
+        JSON.stringify({
+          provider: 'keenable',
+          providers: { keenable: { apiKey: '   ' } },
+        }),
+      ),
+    )
+    expect(settings.providers.keenable.apiKey).toBe('')
+    expect(activeSearchProvider({ search: settings })).toBe('keenable')
+  })
+
+  it('restores and trims a saved Keenable key', () => {
+    const settings = resolveAiSearchSettings({
+      provider: 'keenable',
+      providers: { keenable: { apiKey: ' kn-key ' } } as never,
+    })
+    expect(settings.providers.keenable.apiKey).toBe('kn-key')
+    expect(activeSearchProvider({ search: settings })).toBe('keenable')
+  })
+
+  it('preserves the keyless Parallel default when AGY is unavailable', () => {
+    expect(defaultAiSearchSettings(false).provider).toBe('parallel')
+    expect(activeSearchProvider({ search: defaultAiSearchSettings(false) })).toBe('parallel')
   })
 })

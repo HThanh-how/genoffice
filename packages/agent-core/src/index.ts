@@ -41,6 +41,8 @@ export type {
   DocumentMemorySearchResult,
 } from './document-memory-skill'
 export type { DocumentIndexProgress } from './document-memory-progress'
+export type { SkillFrontmatter, SkillRelevance } from './imported-skill'
+export { classifySkill, parseSkillFrontmatter, SKILL_FORMAT_TOKENS } from './imported-skill'
 export {
   AgentLoop,
   COMPLETED_VIA_TOOLS_TEXT,
