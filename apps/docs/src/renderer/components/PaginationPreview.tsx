@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type ComponentProps } from 'react'
 import type {
   CommentInfo,
   HeaderFooter,
@@ -78,6 +78,15 @@ import {
   wordArtSvgMarkup,
 } from '../editor/hf-dom'
 import { HeaderFooterArea } from './HeaderFooterArea'
+
+/** A physical paper box around the layout-zoomed page (Windows native printing). */
+function PreviewSheet({ style, ...props }: ComponentProps<'div'>) {
+  return (
+    <div className="pv-print-sheet" style={style}>
+      <div {...props} style={style} />
+    </div>
+  )
+}
 
 const twipsToPx = (twips: number) => (twips / 1440) * 96
 
@@ -1666,7 +1675,7 @@ export function PaginationPreview({
             transformOrigin: '0 0',
           } as const
           return (
-            <div
+            <PreviewSheet
               key={i}
               className="pv-page"
               data-pv-page={i}
@@ -2336,7 +2345,7 @@ export function PaginationPreview({
                     </div>
                   )
                 })()}
-            </div>
+            </PreviewSheet>
           )
         })}
       </div>

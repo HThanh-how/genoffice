@@ -5052,6 +5052,10 @@ th.cell-rev-del {
   padding: 24px 0 48px;
 }
 
+.pv-print-sheet {
+  display: contents;
+}
+
 .pv-page {
   position: relative;
   /* own stacking context: behind-text layers (picture watermarks, z-index -1)
@@ -11275,13 +11279,44 @@ body.docs-crop-active
     contain: size;
   }
 
-  .pv-page:last-child {
+  .pv-print-sheet:last-child > .pv-page {
     break-after: auto;
   }
 
   /* grouped export: the job's last page is rarely :last-child; its forced
      break emitted one trailing blank sheet per merged chunk */
   .pv-page.pv-print-tail {
+    break-after: auto;
+  }
+
+  /* Windows ignores the native job's scaleFactor. Zoom only the inner page
+     for screen-equivalent font rounding, then undo its painted size. The outer
+     sheet owns fragmentation at the document's physical paper size. */
+  .pagination-preview.pv-print-native-scale {
+    zoom: 1;
+  }
+
+  .pv-print-native-scale .pv-print-sheet {
+    display: block;
+    height: calc(var(--pv-page-h, 1056px) - 2px) !important;
+    contain: size;
+    overflow: hidden;
+    break-after: page;
+  }
+
+  .pv-print-native-scale .pv-print-sheet > .pv-page {
+    zoom: var(--pv-print-zoom, 1);
+    transform: scale(var(--pv-print-scale, 1));
+    transform-origin: 0 0;
+    break-after: auto;
+  }
+
+  .pv-print-native-scale .pv-print-sheet:has(> .pv-print-skip) {
+    display: none;
+  }
+
+  .pv-print-native-scale .pv-print-sheet:last-child,
+  .pv-print-native-scale .pv-print-sheet:has(> .pv-print-tail) {
     break-after: auto;
   }
 

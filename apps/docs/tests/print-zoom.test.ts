@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { clearPrintZoom, printZoom, setPrintZoom } from '../src/renderer/print-zoom'
 
 const setDpr = (dpr: number) =>
@@ -18,9 +18,9 @@ describe('printZoom', () => {
     expect(printZoom(1.5, 'pdf', 'MacIntel')).toBe(1.5)
   })
 
-  it('Windows printer jobs print unzoomed: the print pipeline ignores scaleFactor', () => {
-    expect(printZoom(2, 'printer', 'Win32')).toBe(1)
-    expect(printZoom(1.5, 'printer', 'Win32')).toBe(1)
+  it('Windows printer sheets retain screen layout metrics without percent rounding', () => {
+    expect(printZoom(2, 'printer', 'Win32')).toBe(2)
+    expect(printZoom(1.5, 'printer', 'Win32')).toBe(1.5)
     expect(printZoom(2, 'pdf', 'Win32')).toBe(2)
   })
 
@@ -32,9 +32,39 @@ describe('printZoom', () => {
 })
 
 describe('setPrintZoom', () => {
+  it.each([1, 1.25, 1.5, 2])(
+    'Windows at DPR %s uses CSS compensation and an unscaled native job',
+    (dpr) => {
+      vi.stubGlobal('navigator', { platform: 'Win32' })
+      document.body.innerHTML = '<div class="pagination-preview"></div>'
+      setDpr(dpr)
+      const root = document.querySelector<HTMLElement>('.pagination-preview')!
+      expect(setPrintZoom('printer')).toBe(1)
+      expect(root.classList.contains('pv-print-native-scale')).toBe(dpr !== 1)
+      expect(root.style.getPropertyValue('--pv-print-scale')).toBe(dpr === 1 ? '' : String(1 / dpr))
+      expect(root.style.getPropertyValue('--pv-print-zoom')).toBe(dpr === 1 ? '' : String(dpr))
+      clearPrintZoom()
+      expect(root.classList.contains('pv-print-native-scale')).toBe(false)
+      expect(root.style.cssText).toBe('')
+    },
+  )
+
+  it('a PDF job after Windows printing restores the PDF pipeline', () => {
+    vi.stubGlobal('navigator', { platform: 'Win32' })
+    document.body.innerHTML = '<div class="pagination-preview"></div>'
+    setDpr(1.5)
+    setPrintZoom('printer')
+    expect(setPrintZoom('pdf')).toBe(1 / 1.5)
+    const root = document.querySelector<HTMLElement>('.pagination-preview')!
+    expect(root.classList.contains('pv-print-native-scale')).toBe(false)
+    expect(root.style.getPropertyValue('--pv-print-scale')).toBe('')
+    expect(root.style.getPropertyValue('--pv-print-zoom')).toBe('1.5')
+  })
+
   afterEach(() => {
     document.body.innerHTML = ''
     setDpr(1)
+    vi.unstubAllGlobals()
   })
 
   it('zooms the preview root by the device scale and returns the inverse print scale', () => {
