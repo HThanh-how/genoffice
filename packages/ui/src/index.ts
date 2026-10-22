@@ -153,3 +153,6 @@ export {
 export { ProviderLogo } from './provider-logos'
 export { useRedactLabelField } from './use-redact-label'
 export type { RedactLabelField } from './use-redact-label'
+
+export { ClarifyCard, type ClarifyQuestion } from './ClarifyCard'
+export { clarifyText, type ClarifyKey } from './strings-clarify'

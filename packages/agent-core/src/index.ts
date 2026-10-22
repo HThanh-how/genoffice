@@ -14,6 +14,8 @@ export type {
   ToolExecution,
 } from './types'
 export { composeSkills } from './skill'
+export { AskUserController, createAskUserSkill } from './ask-user-skill'
+export type { AskUserQuestion, AskUserAnswer, AskUserRequest } from './ask-user-skill'
 export { createKnowledgeBaseSkill, formatKbSize } from './knowledge-base-skill'
 export type { KnowledgeBaseDeps, KbFileInfo, KbSearchHit, KbReadPage } from './knowledge-base-skill'
 export {

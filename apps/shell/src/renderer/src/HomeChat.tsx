@@ -1,10 +1,13 @@
 import {
   AgentLoop,
+  AskUserController,
+  createAskUserSkill,
   composeSkills,
   createDocumentMemorySkill,
   createDocumentSkill,
   createIpcTransport,
   createKnowledgeBaseSkill,
+  type AskUserRequest,
   type CreateDocumentExecutionContext,
   type CreateDocumentRewriteRequest,
   type IpcStreamChunk,
@@ -28,8 +31,15 @@ import {
   type ChatLaunchIntent,
 } from './chat-events'
 import { ChatMessage, type ChatItem, type ChatLabels } from './home-chat/ChatMessage'
-import { AgyChatBar, AiModelPicker, type AiModelPickerBridge } from '@genoffice/ui'
+import {
+  AgyChatBar,
+  AiModelPicker,
+  ClarifyCard,
+  clarifyText,
+  type AiModelPickerBridge,
+} from '@genoffice/ui'
 import '@genoffice/ui/ai-model-picker.css'
+import '@genoffice/ui/clarify-card.css'
 import { AskDock } from './home-chat/AskDock'
 import { findFilesByName } from './fork/file-name-search'
 import './ask-dock.css'
@@ -191,6 +201,11 @@ export function HomeChat({
   const [input, setInput] = useState('')
   const [items, setItems] = useState<ChatItem[]>([])
   const [busy, setBusy] = useState(false)
+  const [questionRequest, setQuestionRequest] = useState<AskUserRequest | null>(null)
+  const questionControllerRef = useRef<AskUserController | null>(null)
+  if (!questionControllerRef.current) {
+    questionControllerRef.current = new AskUserController(setQuestionRequest)
+  }
   const [settingsReady, setSettingsReady] = useState(false)
   const [settingsFailed, setSettingsFailed] = useState(false)
   const [notice, setNotice] = useState('')
@@ -830,6 +845,7 @@ export function HomeChat({
     loopRef.current = new AgentLoop({
       transport,
       skill: composeSkills('home+remembered-documents+kb', '', [
+        createAskUserSkill({ ask: questionControllerRef.current.ask }),
         createDocumentMemorySkill(refBridge(api, () => fileTableRef.current)),
         createKnowledgeBaseSkill({
           listFiles: () => {
@@ -1893,6 +1909,25 @@ export function HomeChat({
               </div>
             )}
           </div>
+        )}
+        {questionRequest && (
+          <ClarifyCard
+            key={questionRequest.id}
+            questions={questionRequest.questions.map((q, index) => ({
+              id: String(index),
+              label: q.question,
+              header: q.header,
+              options: q.options.map((o) => o.label),
+              optionDescriptions: Object.fromEntries(
+                q.options.map((o) => [o.label, o.description]),
+              ),
+              multi: q.multiSelect,
+            }))}
+            t={(key, params) => clarifyText(i18n.lang, key, params)}
+            allowDecide={false}
+            onSubmit={(_text, answers) => questionRequest.respond({ answers })}
+            onSkip={() => questionRequest.respond({ answers: [], cancelled: true })}
+          />
         )}
         <Composer
           value={input}
