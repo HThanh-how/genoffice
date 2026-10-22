@@ -199,7 +199,8 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.ix-status > .ix-link {
+.ix-status > .ix-link,
+.ix-status > .ix-btn {
   align-self: flex-start;
 }
 .ix-status-queue {
