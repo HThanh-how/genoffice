@@ -1,11 +1,14 @@
-import React, { useMemo, useRef, useState } from 'react'
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { OpeningCardDefinition, StoredMediaAsset } from '../../../../shared/opening-card-types'
-import { OPENING_APPS, type OpeningPrefs } from '../../../../shared/opening-scenes-meta'
+import { cardLabel } from '../../../../shared/opening-card-text'
+import type { OpeningPrefs } from '../../../../shared/opening-scenes-meta'
+import { AppLogoStack } from './AppMarks'
 import { CardThumbnail } from './CardThumbnail'
-import { APP_INFO } from './app-info'
 import {
+  appsUsingCard,
   computeFilterCounts,
   matchesFilter,
+  orderInUseFirst,
   resolveActiveFilter,
   shouldShowFilterRow,
   visibleFilterKeys,
@@ -24,30 +27,46 @@ const FILTER_LABELS: Record<GalleryFilterCategory, { en: string; vi: string }> =
   custom: { en: 'Custom', vi: 'Tự tạo' },
 }
 
+export const DETAIL_PANEL_ID = 'ocs-detail-panel'
+
 interface CardGalleryProps {
   cards: OpeningCardDefinition[]
-  selectedCard: OpeningCardDefinition | null
+  /** the card whose details are open under its row, if any */
+  openCardId: string | null
   prefs: OpeningPrefs
   lang: string
   mediaAssets?: StoredMediaAsset[]
-  /** `pointer` = chosen by click, `keyboard` = moved with the arrow keys (focus stays in the grid). */
-  onSelectCard: (card: OpeningCardDefinition, via?: 'pointer' | 'keyboard') => void
+  /** a click on a card: open its details, or close them when they already are */
+  onToggleCard: (card: OpeningCardDefinition) => void
+  onCloseDetail: () => void
   onToggleFavorite: (cardId: string) => void
+  /** the details of a card, drawn by the gallery right under the row of that card */
+  renderDetail: (card: OpeningCardDefinition) => React.ReactNode
 }
+
+const prefersCalm = (): boolean =>
+  typeof window !== 'undefined' &&
+  Boolean(window.matchMedia?.('(prefers-reduced-motion: reduce)').matches)
 
 export function CardGallery({
   cards,
-  selectedCard,
+  openCardId,
   prefs,
   lang,
   mediaAssets,
-  onSelectCard,
+  onToggleCard,
+  onCloseDetail,
   onToggleFavorite,
+  renderDetail,
 }: CardGalleryProps): React.JSX.Element {
   const isVi = lang === 'vi'
   const [filterCategory, setFilterCategory] = useState<GalleryFilterCategory>('all')
   const [searchQuery, setSearchQuery] = useState('')
-  const cardElementsRef = useRef<(HTMLDivElement | null)[]>([])
+  const gridRef = useRef<HTMLDivElement | null>(null)
+  const itemRefs = useRef(new Map<string, HTMLDivElement>())
+  const slotRef = useRef<HTMLDivElement | null>(null)
+  const [layoutTick, setLayoutTick] = useState(0)
+  const [slot, setSlot] = useState<{ afterId: string; notch: number } | null>(null)
 
   const counts = useMemo(
     () => computeFilterCounts(cards, prefs.favorites),
@@ -56,64 +75,127 @@ export function CardGallery({
   const activeFilter = resolveActiveFilter(filterCategory, counts)
   const filterKeys = visibleFilterKeys(counts)
 
-  const filteredCards = useMemo(() => {
+  // Cards some app plays come first, the rest keep their order
+  const ordered = useMemo(() => {
     const favSet = new Set(prefs.favorites || [])
     let list = cards.filter((c) => matchesFilter(c, activeFilter, favSet))
     const q = searchQuery.trim().toLowerCase()
     if (q) {
-      list = list.filter(
-        (c) =>
+      list = list.filter((c) => {
+        const text = cardLabel(c, lang)
+        return (
           c.name.toLowerCase().includes(q) ||
+          text.name.toLowerCase().includes(q) ||
           c.id.toLowerCase().includes(q) ||
           (c.tags && c.tags.some((t) => t.toLowerCase().includes(q))) ||
-          (c.description && c.description.toLowerCase().includes(q)),
-      )
+          text.description.toLowerCase().includes(q)
+        )
+      })
     }
-    return list
-  }, [cards, activeFilter, searchQuery, prefs.favorites])
+    return orderInUseFirst(list, prefs)
+  }, [cards, activeFilter, searchQuery, prefs, lang])
 
-  // Mapping of which cards are assigned to which apps
-  const cardAssignments = useMemo(() => {
-    const map = new Map<string, string[]>()
-    if (prefs.globalCard) {
-      map.set(prefs.globalCard, [isVi ? 'Mặc định chung' : 'Global Default'])
-    }
-    for (const app of OPENING_APPS) {
-      const overrideId = prefs.appOverrides?.[app]
-      if (overrideId) {
-        const appLabel = isVi ? APP_INFO[app].nameVi : APP_INFO[app].nameEn
-        const existing = map.get(overrideId) ?? []
-        if (!existing.includes(appLabel)) {
-          existing.push(appLabel)
-          map.set(overrideId, existing)
-        }
+  // The details open under the row of the card that was clicked: after the last card on that row
+  useEffect(() => {
+    const grid = gridRef.current
+    if (!grid || typeof ResizeObserver !== 'function') return
+    let width = grid.clientWidth
+    const observer = new ResizeObserver(() => {
+      if (grid.clientWidth !== width) {
+        width = grid.clientWidth
+        setLayoutTick((n) => n + 1)
       }
-    }
-    return map
-  }, [prefs.globalCard, prefs.appOverrides, isVi])
+    })
+    observer.observe(grid)
+    return () => observer.disconnect()
+  }, [])
 
-  // Keyboard navigation
-  const handleKeyDown = (e: React.KeyboardEvent, index: number) => {
-    let nextIndex = -1
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
-      e.preventDefault()
-      nextIndex = (index + 1) % filteredCards.length
-    } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
-      e.preventDefault()
-      nextIndex = (index - 1 + filteredCards.length) % filteredCards.length
-    } else if (e.key === ' ' || e.key === 'Enter') {
-      e.preventDefault()
-      onSelectCard(filteredCards[index], 'keyboard')
+  useLayoutEffect(() => {
+    const openEl = openCardId ? itemRefs.current.get(openCardId) : undefined
+    if (!openCardId || !openEl) {
+      setSlot(null)
       return
     }
+    const top = openEl.offsetTop
+    let afterId = openCardId
+    for (const card of ordered) {
+      const el = itemRefs.current.get(card.id)
+      if (el && el.offsetTop === top) afterId = card.id
+    }
+    const notch = openEl.offsetLeft + openEl.offsetWidth / 2
+    setSlot((prev) =>
+      prev && prev.afterId === afterId && Math.abs(prev.notch - notch) < 1
+        ? prev
+        : { afterId, notch },
+    )
+  }, [openCardId, ordered, layoutTick])
 
-    if (nextIndex >= 0 && filteredCards[nextIndex]) {
-      onSelectCard(filteredCards[nextIndex], 'keyboard')
-      cardElementsRef.current[nextIndex]?.focus()
+  // After a click, bring the details into view if they opened below the fold
+  const scrolledFor = useRef<string | null>(null)
+  useEffect(() => {
+    if (!openCardId) {
+      scrolledFor.current = null
+      return
+    }
+    if (!slot || scrolledFor.current === openCardId) return
+    scrolledFor.current = openCardId
+    const el = slotRef.current
+    if (el && typeof el.scrollIntoView === 'function') {
+      el.scrollIntoView({ block: 'nearest', behavior: prefersCalm() ? 'auto' : 'smooth' })
+    }
+  }, [openCardId, slot])
+
+  const usage = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof appsUsingCard>>()
+    for (const card of ordered) map.set(card.id, appsUsingCard(prefs, card.id))
+    return map
+  }, [ordered, prefs])
+
+  const focusCard = (id: string | undefined) => {
+    if (id) itemRefs.current.get(id)?.focus()
+  }
+
+  const handleKeyDown = (e: React.KeyboardEvent, index: number) => {
+    const count = ordered.length
+    let next = -1
+    if (e.key === 'ArrowRight') next = (index + 1) % count
+    else if (e.key === 'ArrowLeft') next = (index - 1 + count) % count
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+      // the card right below / above: the nearest one in the next row at the same place
+      const here = itemRefs.current.get(ordered[index]!.id)
+      if (here) {
+        const dir = e.key === 'ArrowDown' ? 1 : -1
+        let best = -1
+        let bestScore = Infinity
+        ordered.forEach((c, i) => {
+          const el = itemRefs.current.get(c.id)
+          if (!el || (dir > 0 ? el.offsetTop <= here.offsetTop : el.offsetTop >= here.offsetTop))
+            return
+          const score =
+            Math.abs(el.offsetTop - here.offsetTop) * 10 + Math.abs(el.offsetLeft - here.offsetLeft)
+          if (score < bestScore) {
+            bestScore = score
+            best = i
+          }
+        })
+        next = best
+      }
+    } else if (e.key === 'Home') next = 0
+    else if (e.key === 'End') next = count - 1
+    else if (e.key === ' ' || e.key === 'Enter') {
+      if (e.target !== e.currentTarget) return
+      e.preventDefault()
+      onToggleCard(ordered[index]!)
+      return
+    }
+    if (next >= 0) {
+      e.preventDefault()
+      focusCard(ordered[next]?.id)
     }
   }
 
   const favSet = new Set(prefs.favorites || [])
+  const openCard = openCardId ? (ordered.find((c) => c.id === openCardId) ?? null) : null
 
   return (
     <div className="ocs-gallery-section">
@@ -174,11 +256,19 @@ export function CardGallery({
 
       {/* Cards Grid */}
       <div
+        ref={gridRef}
         className="ocs-gallery-grid"
-        role="radiogroup"
+        role="group"
         aria-label={isVi ? 'Danh sách thẻ mở tệp' : 'Opening card library'}
+        onKeyDown={(e) => {
+          if (e.key === 'Escape' && openCard) {
+            e.stopPropagation()
+            onCloseDetail()
+            focusCard(openCard.id)
+          }
+        }}
       >
-        {filteredCards.length === 0 ? (
+        {ordered.length === 0 ? (
           <div className="ocs-empty-gallery">
             <p>
               {cards.length === 0
@@ -196,35 +286,38 @@ export function CardGallery({
             )}
           </div>
         ) : (
-          (() => {
-            const hasSelectedInView = filteredCards.some((c) => c.id === selectedCard?.id)
-            return filteredCards.map((card, idx) => {
-              const isSelected = selectedCard?.id === card.id
-              const isFocusable = hasSelectedInView ? isSelected : idx === 0
-              const isFav = favSet.has(card.id)
-              const assignments = cardAssignments.get(card.id) || []
+          ordered.map((card, idx) => {
+            const isOpen = openCardId === card.id
+            const isFocusable = openCard ? isOpen : idx === 0
+            const isFav = favSet.has(card.id)
+            const apps = usage.get(card.id) ?? []
+            const inUse = apps.length > 0
+            const text = cardLabel(card, lang)
 
-              return (
+            return (
+              <React.Fragment key={card.id}>
                 <div
-                  key={card.id}
                   ref={(el) => {
-                    cardElementsRef.current[idx] = el
+                    if (el) itemRefs.current.set(card.id, el)
+                    else itemRefs.current.delete(card.id)
                   }}
-                  role="radio"
-                  aria-checked={isSelected}
+                  role="button"
+                  aria-expanded={isOpen}
+                  aria-controls={isOpen ? DETAIL_PANEL_ID : undefined}
+                  aria-label={inUse ? `${text.name} (${isVi ? 'đang dùng' : 'in use'})` : text.name}
                   tabIndex={isFocusable ? 0 : -1}
-                  className={`ocs-gallery-card-item${isSelected ? ' is-selected' : ''}`}
-                  onClick={() => onSelectCard(card, 'pointer')}
+                  className={`ocs-gallery-card-item${isOpen ? ' is-open' : ''}${inUse ? ' is-inuse' : ''}`}
+                  onClick={() => onToggleCard(card)}
                   onKeyDown={(e) => handleKeyDown(e, idx)}
                 >
                   {/* Visual Thumbnail Surface */}
                   <div className="ocs-card-thumbnail-wrap">
                     <CardThumbnail card={card} isVi={isVi} mediaAssets={mediaAssets} />
-                    {isSelected && (
-                      <span className="ocs-card-check" aria-hidden="true">
+                    {inUse && (
+                      <span className="ocs-inuse-badge" aria-hidden="true">
                         <svg
-                          width="12"
-                          height="12"
+                          width="11"
+                          height="11"
                           viewBox="0 0 16 16"
                           fill="none"
                           stroke="currentColor"
@@ -234,6 +327,7 @@ export function CardGallery({
                         >
                           <path d="M3.5 8.5l3 3 6-7" />
                         </svg>
+                        {isVi ? 'Đang dùng' : 'In use'}
                       </span>
                     )}
 
@@ -259,26 +353,36 @@ export function CardGallery({
                         <path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z" />
                       </svg>
                     </button>
-                  </div>
 
-                  {/* Card Meta & Badges */}
-                  <div className="ocs-card-meta">
-                    <span className="ocs-card-name" title={card.name}>
-                      {card.name}
-                    </span>
-                    {assignments.length > 0 && (
-                      <span
-                        className="ocs-card-inuse"
-                        role="img"
-                        aria-label={(isVi ? 'Đang dùng: ' : 'In use: ') + assignments.join(', ')}
-                        title={assignments.join(' · ')}
-                      />
+                    {/* The apps that play this card, bottom right */}
+                    {inUse && (
+                      <span className="ocs-card-apps">
+                        <AppLogoStack apps={apps} isVi={isVi} size={inUse ? 18 : 16} />
+                      </span>
                     )}
                   </div>
+
+                  {/* Card name */}
+                  <div className="ocs-card-meta">
+                    <span className="ocs-card-name" title={text.name}>
+                      {text.name}
+                    </span>
+                  </div>
                 </div>
-              )
-            })
-          })()
+
+                {openCard && slot?.afterId === card.id && (
+                  <div
+                    key={`detail-${openCard.id}`}
+                    ref={slotRef}
+                    className="ocs-detail-slot"
+                    style={{ '--ocs-notch': `${slot.notch}px` } as React.CSSProperties}
+                  >
+                    {renderDetail(openCard)}
+                  </div>
+                )}
+              </React.Fragment>
+            )
+          })
         )}
       </div>
     </div>

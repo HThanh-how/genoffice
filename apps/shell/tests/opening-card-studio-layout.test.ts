@@ -3,10 +3,14 @@ import {
   assignmentStatus,
   computeFilterCounts,
   appliesTo,
+  appsUsingCard,
+  effectiveCardId,
+  orderInUseFirst,
   resolveActiveFilter,
   shouldShowFilterRow,
   visibleFilterKeys,
 } from '../src/renderer/src/fork/opening-card/studio-logic'
+import { DEFAULT_SCENE_FOR_APP } from '../src/shared/opening-scenes-meta'
 import type { OpeningCardDefinition } from '../src/shared/opening-card-types'
 
 const card = (id: string, extra: Partial<OpeningCardDefinition> = {}): OpeningCardDefinition =>
@@ -59,17 +63,53 @@ describe('opening card gallery filters', () => {
 })
 
 describe('opening card apply scope', () => {
-  it('treats "Use this card" as done only when the chosen scope already plays the card', () => {
+  it('treats "Use this card" as done only when every app in the scope already plays the card', () => {
     const prefs = { globalCard: 'a', appOverrides: { docs: 'b' } as const }
-    expect(appliesTo('all', prefs, 'a')).toBe(true)
+    // Word has its own card, so "all apps" is not yet true of the default
+    expect(appliesTo('all', prefs, 'a')).toBe(false)
+    expect(appliesTo('all', { globalCard: 'a' }, 'a')).toBe(true)
     expect(appliesTo('all', prefs, 'b')).toBe(false)
     expect(appliesTo('docs', prefs, 'b')).toBe(true)
-    // Word has its own card, so the global default does not reach it
     expect(appliesTo('docs', prefs, 'a')).toBe(false)
     // Excel has no override and follows the global default
     expect(appliesTo('sheets', prefs, 'a')).toBe(true)
     expect(appliesTo('sheets', prefs, 'b')).toBe(false)
+    // nothing chosen: each app plays its own stock scene
     expect(appliesTo('all', {}, 'a')).toBe(false)
+    expect(appliesTo('docs', {}, DEFAULT_SCENE_FOR_APP.docs)).toBe(true)
+  })
+
+  it('says which apps play a card, following the same order as the opening window', () => {
+    expect(effectiveCardId({}, 'sheets')).toBe(DEFAULT_SCENE_FOR_APP.sheets)
+    expect(effectiveCardId({ globalCard: 'g' }, 'sheets')).toBe('g')
+    expect(effectiveCardId({ globalCard: 'g', appOverrides: { sheets: 'x' } }, 'sheets')).toBe('x')
+    expect(
+      effectiveCardId({ globalCard: 'g', appOverrides: { sheets: 'inherit' } }, 'sheets'),
+    ).toBe('g')
+    expect(effectiveCardId({ scenes: { pdf: 'old' } }, 'pdf')).toBe('old')
+    expect(appsUsingCard({ globalCard: 'g', appOverrides: { docs: 'x' } }, 'g')).toEqual([
+      'sheets',
+      'slides',
+      'pdf',
+      'markdown',
+      'html',
+    ])
+    expect(appsUsingCard({ globalCard: 'g' }, 'nobody')).toEqual([])
+  })
+
+  it('lists the cards in use first, the busiest first, and leaves the rest in order', () => {
+    const cards = ['a', 'b', 'c', 'd', 'e'].map((id) => ({ id }))
+    const prefs = { globalCard: 'd', appOverrides: { docs: 'c' } as const }
+    expect(orderInUseFirst(cards, prefs).map((c) => c.id)).toEqual(['d', 'c', 'a', 'b', 'e'])
+    // nothing chosen: the stock scenes of the apps are the ones in use
+    const stock = Object.values(DEFAULT_SCENE_FOR_APP).map((id) => ({ id }))
+    const rest = [{ id: 'zzz' }, ...stock]
+    expect(orderInUseFirst(rest, {}).at(-1)?.id).toBe('zzz')
+    // a list with nothing in use does not move
+    expect(orderInUseFirst(cards, prefs).length).toBe(cards.length)
+    expect(
+      orderInUseFirst([{ id: 'q' }, { id: 'r' }], { globalCard: 'z' }).map((c) => c.id),
+    ).toEqual(['q', 'r'])
   })
 
   it('describes assignment in a single status', () => {

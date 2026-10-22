@@ -557,6 +557,11 @@ describe('OpeningCardStudio selection retention on late delete', () => {
       root.render(createElement(StudioHarness, { initialState: state }))
     })
 
+    // nothing is open until a card is clicked; the card in use is listed first
+    expect(host.querySelector('.ocs-btn-danger')).toBeNull()
+    const items = [...host.querySelectorAll<HTMLDivElement>('.ocs-gallery-card-item')]
+    expect(items[0]?.textContent).toContain('Card A')
+    await act(async () => items[0]!.click())
     const deleteBtn = host.querySelector<HTMLButtonElement>('.ocs-btn-danger')!
     expect(deleteBtn).not.toBeNull()
     await act(async () => deleteBtn.click())
@@ -576,9 +581,9 @@ describe('OpeningCardStudio selection retention on late delete', () => {
     }
     await act(async () => resolveDelete(nextState))
 
-    const activeItem = host.querySelector<HTMLDivElement>('.ocs-gallery-card-item.is-selected')
+    const activeItem = host.querySelector<HTMLDivElement>('.ocs-gallery-card-item.is-open')
     expect(activeItem?.textContent).toContain('Card B')
-    expect(activeItem?.getAttribute('aria-checked')).toBe('true')
+    expect(activeItem?.getAttribute('aria-expanded')).toBe('true')
 
     await act(async () => root.unmount())
     host.remove()

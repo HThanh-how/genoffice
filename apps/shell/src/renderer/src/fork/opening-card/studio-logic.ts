@@ -1,5 +1,9 @@
 import type { OpeningCardDefinition } from '../../../../shared/opening-card-types'
-import type { OpeningApp } from '../../../../shared/opening-scenes-meta'
+import {
+  DEFAULT_SCENE_FOR_APP,
+  OPENING_APPS,
+  type OpeningApp,
+} from '../../../../shared/opening-scenes-meta'
 
 export type GalleryFilterCategory =
   | 'all'
@@ -89,15 +93,54 @@ export function resolveActiveFilter(
 
 export type ApplyScope = 'all' | OpeningApp
 
-/** Whether "Use this card" would change nothing: the card already is what that scope plays. */
-export function appliesTo(
-  scope: ApplyScope,
-  prefs: { globalCard?: string; appOverrides?: Partial<Record<OpeningApp, string>> },
-  cardId: string,
-): boolean {
-  if (scope === 'all') return prefs.globalCard === cardId
-  const override = prefs.appOverrides?.[scope]
-  return override ? override === cardId : prefs.globalCard === cardId
+type PrefsLike = {
+  globalCard?: string
+  appOverrides?: Partial<Record<OpeningApp, string>>
+  scenes?: Partial<Record<OpeningApp, string>>
+}
+
+/**
+ * The card an app plays: its own choice, else the one for all apps, else (older settings) the
+ * scene saved for it, else the app's stock scene. The same order the opening window uses.
+ */
+export function effectiveCardId(prefs: PrefsLike, app: OpeningApp): string {
+  const own = prefs.appOverrides?.[app]
+  if (own && own !== 'inherit') return own
+  if (prefs.globalCard) return prefs.globalCard
+  const saved = prefs.scenes?.[app]
+  if (saved && saved !== 'inherit' && saved !== DEFAULT_SCENE_FOR_APP[app]) return saved
+  return DEFAULT_SCENE_FOR_APP[app]
+}
+
+/** The apps that play this card right now, in the usual app order. */
+export function appsUsingCard(prefs: PrefsLike, cardId: string): OpeningApp[] {
+  return OPENING_APPS.filter((app) => effectiveCardId(prefs, app) === cardId)
+}
+
+/**
+ * Cards that some app plays come first (the one used by the most apps, then the usual app order),
+ * the rest keep their order. Stable, so a list that is already in order does not move.
+ */
+export function orderInUseFirst<T extends { id: string }>(
+  cards: readonly T[],
+  prefs: PrefsLike,
+): T[] {
+  const rank = new Map<string, number>()
+  OPENING_APPS.forEach((app, index) => {
+    const id = effectiveCardId(prefs, app)
+    if (!rank.has(id)) rank.set(id, index)
+  })
+  const used = (card: T) => appsUsingCard(prefs, card.id).length
+  const inUse = cards
+    .filter((card) => rank.has(card.id))
+    .sort((a, b) => used(b) - used(a) || (rank.get(a.id) ?? 0) - (rank.get(b.id) ?? 0))
+  return [...inUse, ...cards.filter((card) => !rank.has(card.id))]
+}
+
+/** Whether "Use this card" would change nothing: every app in that scope already plays the card. */
+export function appliesTo(scope: ApplyScope, prefs: PrefsLike, cardId: string): boolean {
+  if (scope === 'all') return OPENING_APPS.every((app) => effectiveCardId(prefs, app) === cardId)
+  return effectiveCardId(prefs, scope) === cardId
 }
 
 export type AssignmentStatus =

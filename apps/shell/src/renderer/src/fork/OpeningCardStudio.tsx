@@ -2,12 +2,14 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { OpeningEffectsState } from '../../../shared/home-api'
 import {
   DEFAULT_SCENE_FOR_APP,
+  OPENING_APPS,
   type OpeningApp,
   type OpeningPrefs,
 } from '../../../shared/opening-scenes-meta'
 import type { OpeningCardDefinition } from '../../../shared/opening-card-types'
 import { getAllBuiltInCards } from '../../../shared/opening-card-families'
-import { CardGallery } from './opening-card/CardGallery'
+import type { SplashTier } from '../../../shared/opening-page'
+import { CardGallery, DETAIL_PANEL_ID } from './opening-card/CardGallery'
 import { CardPreview } from './opening-card/CardPreview'
 import { CardCustomizer } from './opening-card/CardCustomizer'
 import { AiCardModal } from './opening-card/AiCardModal'
@@ -38,12 +40,13 @@ export function OpeningCardStudio({
     return [...builtIn, ...custom]
   }, [state.builtInCards, prefs.customCards])
 
-  // Initial selected card
-  const [selectedCard, setSelectedCard] = useState<OpeningCardDefinition | null>(() => {
-    const defaultId =
-      prefs.globalCard || state.effectiveScenes?.docs?.id || DEFAULT_SCENE_FOR_APP.docs
-    return allCards.find((c) => c.id === defaultId) || allCards[0] || null
-  })
+  // The card whose details are open (under its row in the gallery). None until one is clicked.
+  const [openCardId, setOpenCardId] = useState<string | null>(null)
+  const toggleCard = (card: OpeningCardDefinition) =>
+    setOpenCardId((current) => (current === card.id ? null : card.id))
+
+  // How rich the preview is: the person's choice, or what the opening window would pick here
+  const tier: SplashTier = prefs.tier === 'auto' ? (state.machineTier ?? 'lite') : prefs.tier
 
   // Modals state
   const [customizingCard, setCustomizingCard] = useState<OpeningCardDefinition | null>(null)
@@ -54,19 +57,6 @@ export function OpeningCardStudio({
   const [statusMessage, setStatusMessage] = useState('')
   const [errorMessage, setErrorMessage] = useState('')
   const importFileInputRef = useRef<HTMLInputElement | null>(null)
-  const previewRef = useRef<HTMLDivElement | null>(null)
-
-  // In the stacked (narrow) layout the preview sits above the gallery: after a click, bring it back into view.
-  const handleSelectCard = (card: OpeningCardDefinition, via?: 'pointer' | 'keyboard') => {
-    setSelectedCard(card)
-    if (via !== 'pointer') return
-    const el = previewRef.current
-    if (!el || typeof el.scrollIntoView !== 'function') return
-    const rect = el.getBoundingClientRect()
-    if (rect.top >= 0 && rect.bottom <= window.innerHeight) return
-    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-    el.scrollIntoView({ block: 'nearest', behavior: calm ? 'auto' : 'smooth' })
-  }
 
   // "More actions" menu: closes on outside click or Escape
   const [menuOpen, setMenuOpen] = useState(false)
@@ -113,9 +103,14 @@ export function OpeningCardStudio({
   }
 
   const handleSetGlobal = async (cardId: string) => {
+    // "All apps" means every app: the apps' own choices give way to it
+    const nextScenes = { ...prefs.scenes }
+    for (const app of OPENING_APPS) nextScenes[app] = cardId
     const nextPrefs: OpeningPrefs = {
       ...prefs,
       globalCard: cardId,
+      appOverrides: undefined,
+      scenes: nextScenes,
     }
     try {
       const nextState = await api.setOpeningPrefs?.(nextPrefs)
@@ -199,17 +194,7 @@ export function OpeningCardStudio({
       const nextState = await api.deleteOpeningCard?.(cardId)
       if (nextState) {
         onUpdateState(nextState)
-        setSelectedCard((current) => {
-          if (current?.id !== cardId) return current
-          const builtIn = nextState.builtInCards?.length
-            ? nextState.builtInCards
-            : getAllBuiltInCards()
-          return (
-            [...builtIn, ...(nextState.prefs.customCards || [])].find(
-              (card) => card.id !== cardId,
-            ) || null
-          )
-        })
+        setOpenCardId((current) => (current === cardId ? null : current))
         showStatus(isVi ? 'Đã xóa thẻ tùy chỉnh.' : 'Custom card deleted.')
       } else {
         showError(isVi ? 'Không thể xóa thẻ này.' : 'Failed to delete card.')
@@ -232,9 +217,7 @@ export function OpeningCardStudio({
         })
         if (res?.ok) {
           onUpdateState(res.state)
-          setSelectedCard(
-            res.state.prefs.customCards?.find((card) => card.id === customCard.id) ?? customCard,
-          )
+          setOpenCardId(customCard.id)
           showStatus(isVi ? 'Đã lưu thẻ tùy chỉnh!' : 'Custom card saved!')
           return
         }
@@ -244,7 +227,7 @@ export function OpeningCardStudio({
       const res = await api.saveOpeningCard?.(customCard)
       if (res) {
         onUpdateState(res)
-        setSelectedCard(customCard)
+        setOpenCardId(customCard.id)
         showStatus(isVi ? 'Đã lưu thẻ tùy chỉnh!' : 'Custom card saved!')
       } else {
         throw new Error(isVi ? 'Không thể lưu thẻ tùy chỉnh' : 'Failed to save custom card')
@@ -300,7 +283,7 @@ export function OpeningCardStudio({
 
       if (savedState) {
         onUpdateState(savedState)
-        setSelectedCard(newCard)
+        setOpenCardId(newCard.id)
         showStatus(
           isVi
             ? 'Đã nhập hình ảnh và tạo thẻ thành công!'
@@ -472,31 +455,35 @@ export function OpeningCardStudio({
         </div>
       )}
 
-      {/* The preview stays pinned on top while the gallery scrolls beneath it */}
+      {/* The details of a card open right under its row when it is clicked, and scroll with the list */}
       <div className="ocs-studio-layout">
-        <div className="ocs-layout-right" ref={previewRef}>
-          <CardPreview
-            card={selectedCard}
-            prefs={prefs}
-            lang={lang}
-            onSetGlobal={handleSetGlobal}
-            onAssignToApp={handleAssignToApp}
-            onResetOverride={handleResetOverride}
-            onPreviewWindow={onPreview}
-            onOpenCustomizer={setCustomizingCard}
-            onDeleteCard={handleDeleteCard}
-          />
-        </div>
-
         <div className="ocs-layout-left">
           <CardGallery
             cards={allCards}
-            selectedCard={selectedCard}
+            openCardId={openCardId}
             prefs={prefs}
             lang={lang}
             mediaAssets={state.mediaAssets}
-            onSelectCard={handleSelectCard}
+            onToggleCard={toggleCard}
+            onCloseDetail={() => setOpenCardId(null)}
             onToggleFavorite={handleToggleFavorite}
+            renderDetail={(card) => (
+              <CardPreview
+                key={card.id}
+                card={card}
+                prefs={prefs}
+                lang={lang}
+                tier={tier}
+                panelId={DETAIL_PANEL_ID}
+                onClose={() => setOpenCardId(null)}
+                onSetGlobal={handleSetGlobal}
+                onAssignToApp={handleAssignToApp}
+                onResetOverride={handleResetOverride}
+                onPreviewWindow={onPreview}
+                onOpenCustomizer={setCustomizingCard}
+                onDeleteCard={handleDeleteCard}
+              />
+            )}
           />
         </div>
       </div>
