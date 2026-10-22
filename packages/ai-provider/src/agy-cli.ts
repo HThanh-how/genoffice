@@ -86,7 +86,7 @@ export {
 // ---------------------------------------------------------------------------
 
 export const AGY_MAX_CONCURRENCY = 2
-export const AGY_REQUEST_TIMEOUT_MS = 240_000
+export const AGY_REQUEST_TIMEOUT_MS = 480_000
 export const AGY_MODELS_TIMEOUT_MS = 30_000
 export const AGY_MODELS_CACHE_MS = 3 * 60_000
 /** one staged file */

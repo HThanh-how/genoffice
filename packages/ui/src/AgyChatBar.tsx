@@ -254,7 +254,7 @@ const EN = {
   stageRead: 'Reading your request…',
   stageThink: 'Thinking it through…',
   stageDraft: 'Drafting the answer — long documents can take 2-3 minutes',
-  stageLate: 'Still drafting… almost the limit; you can stop and try again',
+  stageLate: 'Taking longer than usual… still working; you can stop and try again',
   writing: 'Writing the answer',
   doneIn: 'Done in {t}',
   thoughtTokens: '{n} thinking tokens',
@@ -346,7 +346,7 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     stageRead: 'Đang đọc yêu cầu của bạn…',
     stageThink: 'Đang suy nghĩ…',
     stageDraft: 'Đang soạn câu trả lời — tài liệu dài có thể mất 2-3 phút',
-    stageLate: 'Vẫn đang soạn… sắp hết thời gian; bạn có thể dừng và thử lại',
+    stageLate: 'Lâu hơn bình thường… vẫn đang làm; bạn có thể dừng và thử lại',
     writing: 'Đang viết câu trả lời',
     doneIn: 'Xong trong {t}',
     thoughtTokens: '{n} token suy nghĩ',
@@ -432,7 +432,7 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     stageRead: '正在阅读你的请求…',
     stageThink: '正在思考…',
     stageDraft: '正在撰写回答，长文档可能需要 2-3 分钟',
-    stageLate: '仍在撰写…接近时间上限，你可以停止后重试',
+    stageLate: '耗时比平时长…仍在处理；你可以停止后重试',
     writing: '正在撰写回答',
     doneIn: '用时 {t}',
     thoughtTokens: '{n} 个思考 token',
@@ -534,7 +534,7 @@ export function quietSeconds(run: Run, now: number): number {
 
 export const STAGE_THINK_MS = 10_000
 export const STAGE_DRAFT_MS = 45_000
-export const STAGE_LATE_MS = 150_000
+export const STAGE_LATE_MS = 240_000
 export type WaitStage = 'stageRead' | 'stageThink' | 'stageDraft' | 'stageLate'
 
 /**

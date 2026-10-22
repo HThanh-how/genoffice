@@ -33,7 +33,7 @@ import { chatModelFor } from './agy-cli'
 
 export const AGY_MAX_RESIDENT_WORKERS = 2
 export const AGY_RESIDENT_IDLE_TTL_MS = 120_000
-export const AGY_RESIDENT_TURN_TIMEOUT_MS = 240_000
+export const AGY_RESIDENT_TURN_TIMEOUT_MS = 480_000
 const MAX_STDERR_CHARS = 8_000
 const MAX_LINE_BYTES = MAX_SSE_LINE_BYTES // 4 MB cap
 
@@ -760,6 +760,7 @@ class AgyResidentManager {
       let resultSeen: Extract<AgyEvent, { kind: 'result' }> | undefined
       const decoder = new StringDecoder('utf8')
       let pending = ''
+      const trace: string[] = []
 
       const onClose = (code: number | null) => {
         fail(
@@ -810,6 +811,11 @@ class AgyResidentManager {
       const handleLine = (line: string) => {
         const event = parseAgyStreamLine(line)
         if (!event) return
+        if (event.kind === 'step' && trace.length < 40) {
+          trace.push(
+            `${Math.round((Date.now() - turnSentAt) / 1000)}s ${event.stepType}${event.toolName ? `:${event.toolName}` : ''}`,
+          )
+        }
         if (event.kind === 'init' && event.conversationId) {
           conversationId = event.conversationId
         }
@@ -853,7 +859,7 @@ class AgyResidentManager {
               const turnAge = Math.round((now - turnSentAt) / 1000)
               reject(
                 new Error(
-                  `Antigravity CLI turn timed out partially (worker=${worker.id} spawnAge=${spawnAge}s turnAge=${turnAge}s turns=${worker.turnCount}${tail ? ` agy stderr: ${tail}` : ''})`,
+                  `Antigravity CLI turn timed out partially (worker=${worker.id} spawnAge=${spawnAge}s turnAge=${turnAge}s turns=${worker.turnCount} steps=[${trace.join(', ') || 'none'}]${tail ? ` agy stderr: ${tail}` : ''})`,
                 ),
               )
               return

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { QUIET_AFTER_MS, quietSeconds, reduceRun, toolActivityLabel, waitStage } from '../src/AgyChatBar'
+import {
+  QUIET_AFTER_MS,
+  quietSeconds,
+  reduceRun,
+  toolActivityLabel,
+  waitStage,
+} from '../src/AgyChatBar'
 
 const d = {
   actRead: 'Reading {t}',
@@ -48,7 +54,7 @@ describe('waitStage', () => {
     expect(waitStage(44_999)).toBe('stageThink')
     expect(waitStage(45_000)).toBe('stageDraft')
     expect(waitStage(149_999)).toBe('stageDraft')
-    expect(waitStage(150_000)).toBe('stageLate')
+    expect(waitStage(240_000)).toBe('stageLate')
   })
   it('skips the reading stage after a real step', () => {
     expect(waitStage(0, true)).toBe('stageThink')
