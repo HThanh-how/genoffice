@@ -126,6 +126,8 @@ export { scanBody, type BodyElement, type BodyScan } from './scan'
 export {
   BLANK_BULLET_NUM_ID,
   BLANK_ORDERED_NUM_ID,
+  DEFAULT_DOCUMENT_STYLES,
+  DOC_STYLE_IDS,
   buildBlankDocx,
   customLevelFromNumberingLevel,
   customLevelXml,
@@ -136,6 +138,7 @@ export {
   type BlankDocxOptions,
   type BlankPaperSize,
   type CustomNumberingLevel,
+  type DocumentStyles,
 } from './blank'
 export {
   DEFAULT_SECTION,

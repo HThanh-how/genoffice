@@ -2160,7 +2160,11 @@ function tableCellXml(
     // (rich paragraphs carry their own align; the plain-paras fallback above sets it).
     // The parsed format, not just w:jc: hand-building the pPr here dropped w:bidi and
     // discarded every other paragraph property the model carries.
-    const pPr = mergePPrFormat(`<w:pPr>${numPr}</w:pPr>`, paragraph)
+    const pStyle =
+      'styleId' in paragraph && paragraph.styleId
+        ? `<w:pStyle w:val="${escapeXmlAttr(paragraph.styleId)}"/>`
+        : ''
+    const pPr = mergePPrFormat(`<w:pPr>${pStyle}${numPr}</w:pPr>`, paragraph)
     return `<w:p>${pPr}${runsXml(paragraph.runs, null)}</w:p>`
   })
   // nested tables are regenerated from the model at their paragraph anchors (reverse

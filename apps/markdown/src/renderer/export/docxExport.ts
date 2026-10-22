@@ -2,6 +2,8 @@ import type { JSONContent } from '@tiptap/core'
 import type { DocumentTypeProfile } from '@genoffice/agent-core'
 import {
   BLANK_BULLET_NUM_ID,
+  DEFAULT_DOCUMENT_STYLES,
+  DOC_STYLE_IDS,
   TABLE_HEADER_FILL,
   buildBlankDocx,
   generateTableModelXml,
@@ -51,11 +53,7 @@ const CODE_FILL = 'F2F3F5'
 
 // ── inline content → Run[] ──
 
-function runsFromInline(
-  content: JSONContent[] | undefined,
-  defaultFont?: string,
-  defaultSize?: number,
-): Run[] {
+function runsFromInline(content: JSONContent[] | undefined): Run[] {
   const runs: Run[] = []
   for (const child of content ?? []) {
     if (child.type === 'hardBreak') {
@@ -83,8 +81,6 @@ function runsFromInline(
         run.link = { href: mark.attrs.href }
       }
     }
-    if (!run.font && defaultFont) run.font = defaultFont
-    if (!run.sizeHalfPoints && defaultSize) run.sizeHalfPoints = defaultSize
     runs.push(run)
   }
   return runs
@@ -105,6 +101,10 @@ interface WalkContext {
   renderDiagram?: DiagramRenderer
   pendingImages: Array<{ index: number; src: string; alt: string }>
   pendingDiagrams: Array<{ index: number; source: string; language: DiagramLanguage }>
+  /** a profile is set: content names the document styles instead of carrying formatting */
+  styled: boolean
+  /** width between the margins in twips (tables fill it) */
+  textWidthTwips: number
 }
 
 function mergeFormat(base: ParaFormat | undefined, extra: ParaFormat): ParaFormat {
@@ -128,17 +128,15 @@ function pushTextblock(
   ctx: WalkContext,
   content: JSONContent[] | undefined,
   block: (runs: Run[]) => GeneratedBlock,
-  defaultFont?: string,
-  defaultSize?: number,
 ): void {
   if (!content?.some((child) => child.type === 'image')) {
-    pushParagraph(ctx, block(runsFromInline(content, defaultFont, defaultSize)))
+    pushParagraph(ctx, block(runsFromInline(content)))
     return
   }
   let segment: JSONContent[] = []
   const flush = () => {
     if (segment.some((child) => child.type !== 'text' || child.text?.trim())) {
-      pushParagraph(ctx, block(runsFromInline(segment, defaultFont, defaultSize)))
+      pushParagraph(ctx, block(runsFromInline(segment)))
     }
     segment = []
   }
@@ -165,16 +163,13 @@ function walkList(
   ilvl: number,
   numId: string,
   base?: ParaFormat,
-  profile?: DocumentTypeProfile,
 ): void {
-  const defaultFont = profile?.typography.bodyFont
-  const defaultSize = profile ? Math.round(profile.typography.bodySizePt * 2) : undefined
   for (const item of node.content ?? []) {
     if (item.type !== 'listItem' && item.type !== 'taskItem') continue
     let firstPara = true
     for (const child of item.content ?? []) {
       if (child.type === 'paragraph') {
-        const runs = runsFromInline(child.content, defaultFont, defaultSize)
+        const runs = runsFromInline(child.content)
         if (item.type === 'taskItem') {
           runs.unshift({ text: item.attrs?.checked ? '☑ ' : '☐ ' })
         }
@@ -182,6 +177,9 @@ function walkList(
           pushParagraph(ctx, {
             type: 'listItem',
             list: { kind, numId, ilvl: Math.min(ilvl, MAX_LIST_LEVEL) },
+            ...(ctx.styled
+              ? { styleId: kind === 'bullet' ? DOC_STYLE_IDS.listBullet : DOC_STYLE_IDS.listNumber }
+              : {}),
             runs,
             format: base,
           })
@@ -195,11 +193,11 @@ function walkList(
         }
         firstPara = false
       } else if (child.type === 'bulletList' || child.type === 'taskList') {
-        walkList(ctx, child, 'bullet', ilvl + 1, BLANK_BULLET_NUM_ID, base, profile)
+        walkList(ctx, child, 'bullet', ilvl + 1, BLANK_BULLET_NUM_ID, base)
       } else if (child.type === 'orderedList') {
-        walkList(ctx, child, 'ordered', ilvl + 1, allocOrderedNumId(ctx), base, profile)
+        walkList(ctx, child, 'ordered', ilvl + 1, allocOrderedNumId(ctx), base)
       } else {
-        walkBlock(ctx, child, mergeFormat(base, { indentLeft: INDENT_STEP * (ilvl + 1) }), profile)
+        walkBlock(ctx, child, mergeFormat(base, { indentLeft: INDENT_STEP * (ilvl + 1) }))
       }
     }
   }
@@ -215,91 +213,116 @@ function allocOrderedNumId(ctx: WalkContext): string {
   return numId
 }
 
-function tableParagraphs(
-  cell: JSONContent,
-  defaultFont?: string,
-  defaultSize?: number,
-): TableParagraph[] {
+function tableParagraphs(cell: JSONContent, styled: boolean, bold: boolean): TableParagraph[] {
   const paras: TableParagraph[] = []
   for (const child of cell.content ?? []) {
-    if (child.type === 'paragraph')
-      paras.push({ runs: runsFromInline(child.content, defaultFont, defaultSize) })
+    if (child.type !== 'paragraph') continue
+    const runs = runsFromInline(child.content)
+    if (bold) for (const run of runs) run.bold = true
+    paras.push({ runs, ...(styled ? { styleId: DOC_STYLE_IDS.tableText } : {}) })
   }
-  return paras.length > 0 ? paras : [{ runs: [] }]
+  return paras.length > 0
+    ? paras
+    : [{ runs: [], ...(styled ? { styleId: DOC_STYLE_IDS.tableText } : {}) }]
 }
 
-function mapTable(node: JSONContent, profile?: DocumentTypeProfile): TableModel {
-  const defaultFont = profile?.typography.bodyFont
-  const defaultSize = profile ? Math.round(profile.typography.bodySizePt * 2) : undefined
+function mapTable(node: JSONContent, ctx: WalkContext): TableModel {
+  const styles = DEFAULT_DOCUMENT_STYLES
   const rows: TableCell[][] = []
+  const repeatHeaderRows: Array<boolean | null> = []
   for (const row of node.content ?? []) {
     if (row.type !== 'tableRow') continue
     const cells: TableCell[] = []
     for (const cell of row.content ?? []) {
       if (cell.type !== 'tableCell' && cell.type !== 'tableHeader') continue
       const isHeader = cell.type === 'tableHeader'
-      const rich = tableParagraphs(cell, defaultFont, defaultSize)
+      const rich = tableParagraphs(cell, ctx.styled, isHeader && ctx.styled)
       cells.push({
         paras: rich.map((p) => p.runs.map((r) => r.text).join('')),
         richParas: rich,
         ...(Number(cell.attrs?.colspan) > 1 ? { colSpan: Number(cell.attrs?.colspan) } : {}),
-        ...(isHeader ? { bold: true, fill: TABLE_HEADER_FILL } : {}),
+        ...(isHeader
+          ? { bold: true, fill: ctx.styled ? styles.tableHeaderFill : TABLE_HEADER_FILL }
+          : {}),
       })
     }
-    if (cells.length > 0) rows.push(cells)
+    if (cells.length > 0) {
+      rows.push(cells)
+      repeatHeaderRows.push(row.content?.some((c) => c.type === 'tableHeader') ? true : null)
+    }
   }
-  return { rows }
+  if (!ctx.styled) return { rows }
+  const columns = Math.max(1, ...rows.map((r) => r.reduce((n, c) => n + (c.colSpan ?? 1), 0)))
+  const colWidth = Math.floor(ctx.textWidthTwips / columns)
+  return {
+    rows,
+    // thin borders and padding come from the Table Grid style; the table fills the text width
+    tblStyleId: DOC_STYLE_IDS.tableGrid,
+    autoFit: 'window',
+    colWidthsTwips: Array.from({ length: columns }, () => colWidth),
+    cellMarTwips: styles.tableCellMarginTwips,
+    tableLook: {
+      firstRow: true,
+      lastRow: false,
+      firstColumn: false,
+      lastColumn: false,
+      bandedRows: false,
+      bandedColumns: false,
+    },
+    // a header row repeats on every page; no row splits across pages
+    repeatHeaderRows,
+    rowCantSplit: rows.map(() => true),
+  }
 }
 
-function walkBlock(
-  ctx: WalkContext,
-  node: JSONContent,
-  base?: ParaFormat,
-  profile?: DocumentTypeProfile,
-): void {
-  const bodyFont = profile?.typography.bodyFont
-  const bodySize = profile ? Math.round(profile.typography.bodySizePt * 2) : undefined
+function walkBlock(ctx: WalkContext, node: JSONContent, base?: ParaFormat): void {
   switch (node.type) {
     case 'paragraph':
-      pushTextblock(
-        ctx,
-        node.content,
-        (runs) => ({ type: 'paragraph', runs, format: base }),
-        bodyFont,
-        bodySize,
-      )
+      pushTextblock(ctx, node.content, (runs) => ({ type: 'paragraph', runs, format: base }))
       break
     case 'heading': {
       const level = Math.min(Math.max(Number(node.attrs?.level) || 1, 1), 6) as number
-      pushTextblock(
-        ctx,
-        node.content,
-        (runs) => ({ type: 'heading', level, runs, format: base }),
-        bodyFont,
-      )
+      pushTextblock(ctx, node.content, (runs) => ({ type: 'heading', level, runs, format: base }))
       break
     }
     case 'bulletList':
-      walkList(ctx, node, 'bullet', 0, BLANK_BULLET_NUM_ID, base, profile)
+      walkList(ctx, node, 'bullet', 0, BLANK_BULLET_NUM_ID, base)
       break
     case 'orderedList':
-      walkList(ctx, node, 'ordered', 0, allocOrderedNumId(ctx), base, profile)
+      walkList(ctx, node, 'ordered', 0, allocOrderedNumId(ctx), base)
       break
     case 'taskList':
-      walkList(ctx, node, 'bullet', 0, BLANK_BULLET_NUM_ID, base, profile)
+      walkList(ctx, node, 'bullet', 0, BLANK_BULLET_NUM_ID, base)
       break
     case 'blockquote':
       for (const child of node.content ?? []) {
-        walkBlock(ctx, child, mergeFormat(base, { indentLeft: INDENT_STEP, borders: 'l' }), profile)
+        if (ctx.styled && child.type === 'paragraph') {
+          // the Quote style carries the indent and the left rule
+          pushTextblock(ctx, child.content, (runs) => ({
+            type: 'paragraph',
+            styleId: DOC_STYLE_IDS.quote,
+            runs,
+            format: base,
+          }))
+        } else {
+          walkBlock(ctx, child, mergeFormat(base, { indentLeft: INDENT_STEP, borders: 'l' }))
+        }
       }
       break
     case 'codeBlock': {
       const source = plainText(node)
-      const code: GeneratedBlock = {
-        type: 'paragraph',
-        runs: [{ text: source, font: CODE_FONT, sizeHalfPoints: 19 }],
-        format: mergeFormat(base, { shadingFill: CODE_FILL }),
-      }
+      const code: GeneratedBlock = ctx.styled
+        ? {
+            type: 'paragraph',
+            styleId: DOC_STYLE_IDS.code,
+            runs: [{ text: source }],
+            format: base,
+          }
+        : {
+            type: 'paragraph',
+            runs: [{ text: source, font: CODE_FONT, sizeHalfPoints: 19 }],
+            format: mergeFormat(base, { shadingFill: CODE_FILL }),
+          }
       const language = diagramLanguage(node.attrs?.language)
       if (language && ctx.renderDiagram && source.trim()) {
         ctx.pendingDiagrams.push({ index: ctx.blocks.length, source, language })
@@ -315,7 +338,7 @@ function walkBlock(
       })
       break
     case 'table':
-      ctx.blocks.push({ kind: 'xml', xml: generateTableModelXml(mapTable(node, profile)) })
+      ctx.blocks.push({ kind: 'xml', xml: generateTableModelXml(mapTable(node, ctx)) })
       break
     case 'blockMath': {
       const latex = String(node.attrs?.latex ?? '')
@@ -335,7 +358,7 @@ function walkBlock(
       // unknown block: keep its text so nothing silently disappears
       const text = plainText(node)
       if (text.trim()) {
-        const inlineRuns = runsFromInline(node.content, bodyFont, bodySize)
+        const inlineRuns = runsFromInline(node.content)
         const inlineText = inlineRuns.map((r) => r.text).join('')
         if (inlineRuns.length > 0 && inlineText.trim() === text.trim()) {
           pushParagraph(ctx, {
@@ -344,18 +367,41 @@ function walkBlock(
             format: base,
           })
         } else {
-          const run: Run = { text }
-          if (bodyFont) run.font = bodyFont
-          if (bodySize) run.sizeHalfPoints = bodySize
           pushParagraph(ctx, {
             type: 'paragraph',
-            runs: [run],
+            runs: [{ text }],
             format: base,
           })
         }
       }
     }
   }
+}
+
+const MM_TO_TWIPS = 56.6929
+
+/** width between the page margins in twips */
+function textWidthTwips(profile: DocumentTypeProfile): number {
+  const pageWidth = profile.paperSize === 'A4' ? 11906 : 12240
+  const pageHeight = profile.paperSize === 'A4' ? 16838 : 15840
+  const width = profile.orientation === 'landscape' ? pageHeight : pageWidth
+  return width - Math.round((profile.margins.left + profile.margins.right) * MM_TO_TWIPS)
+}
+
+// letters only Vietnamese uses (circumflex/breve/horn vowels, d-stroke) and vowels with a dot or hook below
+const VIETNAMESE_RE = /[ăâđêôơưĂÂĐÊÔƠƯẠ-ỹ]/g
+
+/** vi-VN when the text is Vietnamese (Vietnamese-only letters in over 1% of the characters), else en-US */
+export function detectDocumentLang(text: string): 'vi-VN' | 'en-US' {
+  const hits = text.match(VIETNAMESE_RE)?.length ?? 0
+  return hits >= 3 && hits / Math.max(text.length, 1) > 0.01 ? 'vi-VN' : 'en-US'
+}
+
+/** document title: the first level-1 heading */
+function documentTitle(doc: JSONContent): string | undefined {
+  const h1 = (doc.content ?? []).find((n) => n.type === 'heading' && Number(n.attrs?.level) === 1)
+  const text = h1 ? plainText(h1).trim() : ''
+  return text || undefined
 }
 
 /** Map a ProseMirror document to docx-engine SaveBlocks (pure except image loading) */
@@ -373,14 +419,12 @@ export async function mapDocToSaveBlocks(
     renderDiagram,
     pendingImages: [],
     pendingDiagrams: [],
+    styled: Boolean(profile),
+    textWidthTwips: profile ? textWidthTwips(profile) : 9360,
   }
-  const base: ParaFormat | undefined = profile
-    ? {
-        lineSpacing: profile.typography.lineSpacing,
-        spaceAfter: Math.round(profile.typography.paragraphSpacingAfterPt * 20),
-      }
-    : undefined
-  for (const node of doc.content ?? []) walkBlock(ctx, node, base, profile)
+  // line spacing, paragraph gap and fonts come from the document styles (blank.ts), not from
+  // each paragraph: the same markdown always lands on one consistent set of styles
+  for (const node of doc.content ?? []) walkBlock(ctx, node)
 
   for (const pending of ctx.pendingDiagrams) {
     const image = await ctx.renderDiagram!(pending.source, pending.language).catch(() => null)
@@ -437,11 +481,14 @@ export async function exportDocxBytes(
         paragraphSpacingAfterTwips: Math.round(profile.typography.paragraphSpacingAfterPt * 20),
         paperSize: profile.paperSize,
         pageMarginsTwips: {
-          top: Math.round(profile.margins.top * 56.6929),
-          right: Math.round(profile.margins.right * 56.6929),
-          bottom: Math.round(profile.margins.bottom * 56.6929),
-          left: Math.round(profile.margins.left * 56.6929),
+          top: Math.round(profile.margins.top * MM_TO_TWIPS),
+          right: Math.round(profile.margins.right * MM_TO_TWIPS),
+          bottom: Math.round(profile.margins.bottom * MM_TO_TWIPS),
+          left: Math.round(profile.margins.left * MM_TO_TWIPS),
         },
+        documentStyles: DEFAULT_DOCUMENT_STYLES,
+        lang: detectDocumentLang(plainText({ type: 'doc', content: doc.content })),
+        title: documentTitle(doc),
       }
     : undefined
   const parsed = await parseDocx(await buildBlankDocx(blankOptions))

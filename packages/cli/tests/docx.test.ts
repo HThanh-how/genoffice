@@ -1488,11 +1488,11 @@ describe('genoffice docs: comments, revisions, header/footer, images, charts', (
     }> = [
       {
         profile: 'general',
-        font: 'Calibri',
-        sz: 22,
-        line: 276,
+        font: 'Times New Roman',
+        sz: 26,
+        line: 312,
         after: 120,
-        margins: { top: 1440, right: 1440, bottom: 1440, left: 1440 },
+        margins: { top: 1134, right: 1134, bottom: 1134, left: 1701 },
       },
       {
         profile: 'report',
@@ -1598,9 +1598,9 @@ describe('genoffice docs: comments, revisions, header/footer, images, charts', (
 
     const zip = await JSZip.loadAsync(bytes)
     const stylesXml = await zip.file('word/styles.xml')!.async('string')
-    expect(stylesXml).toContain('w:ascii="Calibri"')
-    expect(stylesXml).toContain('w:sz w:val="22"')
-    expect(stylesXml).toContain('w:line="276"')
+    expect(stylesXml).toContain('w:ascii="Times New Roman"')
+    expect(stylesXml).toContain('w:sz w:val="26"')
+    expect(stylesXml).toContain('w:line="312"')
   })
 
   it('rejects unknown profile name with usage error', async () => {

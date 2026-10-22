@@ -89,18 +89,31 @@ export interface DocumentTypeProfile {
   includeFooterPageNumber?: boolean | undefined
 }
 
+/**
+ * Default page setup and body typography of AI-created documents: the Vietnamese
+ * administrative standard (A4 portrait; margins top/bottom 2 cm, left 3 cm,
+ * right 2 cm; Times New Roman 13 pt; line spacing 1.3; 6 pt after paragraphs).
+ * The single place to change how a document looks by default.
+ */
+export const DEFAULT_DOCUMENT_PAGE: Pick<
+  DocumentTypeProfile,
+  'paperSize' | 'orientation' | 'margins' | 'typography'
+> = {
+  paperSize: 'A4',
+  orientation: 'portrait',
+  margins: { top: 20, bottom: 20, left: 30, right: 20 },
+  typography: {
+    bodyFont: 'Times New Roman',
+    bodySizePt: 13,
+    lineSpacing: 1.3,
+    paragraphSpacingAfterPt: 6,
+  },
+}
+
 export const DOCUMENT_PROFILES: Record<DocumentType, DocumentTypeProfile> = {
   general: {
     documentType: 'general',
-    paperSize: 'A4',
-    orientation: 'portrait',
-    margins: { top: 25.4, bottom: 25.4, left: 25.4, right: 25.4 },
-    typography: {
-      bodyFont: 'Calibri',
-      bodySizePt: 11,
-      lineSpacing: 1.15,
-      paragraphSpacingAfterPt: 6,
-    },
+    ...DEFAULT_DOCUMENT_PAGE,
     includeFooterPageNumber: true,
   },
   report: {

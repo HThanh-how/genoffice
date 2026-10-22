@@ -36,15 +36,134 @@ function tocStyle(level: number): string {
   )
 }
 
-function headingStyle(level: number, sizeHalfPoints: number, font?: string): string {
+function headingStyle(
+  level: number,
+  sizeHalfPoints: number,
+  font?: string,
+  office?: DocumentStyles,
+): string {
   // Word lists Heading 3+ in the gallery only once the document uses them
-  const hidden = level >= 3 ? '<w:semiHidden/><w:unhideWhenUsed/>' : ''
-  const rFonts = font ? `<w:rFonts w:ascii="${font}" w:hAnsi="${font}"/>` : ''
+  const hidden = level >= 3 && !office ? '<w:semiHidden/><w:unhideWhenUsed/>' : ''
+  const rFonts = font
+    ? `<w:rFonts w:ascii="${font}" w:hAnsi="${font}"${office ? ` w:eastAsia="${font}" w:cs="${font}"` : ''}/>`
+    : ''
+  const spacing = office
+    ? `<w:spacing w:before="${office.headingSpaceBeforeTwips[Math.min(level, 3) - 1]}" w:after="${office.headingSpaceAfterTwips}"/>`
+    : `<w:spacing w:before="${level <= 2 ? 240 : 160}" w:after="120"/>`
+  const keep = office ? '<w:keepNext/><w:keepLines/>' : '<w:keepNext/>'
+  const italic = office?.headingItalicLevels.includes(level) ? '<w:i/><w:iCs/>' : ''
+  const bold = office ? '<w:b/><w:bCs/>' : '<w:b/>'
   return (
     `<w:style w:type="paragraph" w:styleId="Heading${level}"><w:name w:val="heading ${level}"/>` +
     `<w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:uiPriority w:val="9"/>${hidden}<w:qFormat/>` +
-    `<w:pPr><w:keepNext/><w:spacing w:before="${level <= 2 ? 240 : 160}" w:after="120"/><w:outlineLvl w:val="${level - 1}"/></w:pPr>` +
-    `<w:rPr>${rFonts}<w:b/><w:sz w:val="${sizeHalfPoints}"/><w:szCs w:val="${sizeHalfPoints}"/></w:rPr></w:style>`
+    `<w:pPr>${keep}${spacing}<w:outlineLvl w:val="${level - 1}"/></w:pPr>` +
+    `<w:rPr>${rFonts}${bold}${italic}<w:sz w:val="${sizeHalfPoints}"/><w:szCs w:val="${sizeHalfPoints}"/></w:rPr></w:style>`
+  )
+}
+
+/**
+ * The default document style set (the pandoc reference.docx idea): one place
+ * that fixes how headings, tables, quotes, code and captions look, so content
+ * only names a style and never carries per-element formatting. Applied when
+ * BlankDocxOptions.documentStyles is set (AI-created documents).
+ */
+export interface DocumentStyles {
+  /** Heading 1..3 sizes in half-points (Heading 4-6 follow the body size) */
+  headingSizesHalfPoints: [number, number, number]
+  /** heading levels that are also italic */
+  headingItalicLevels: number[]
+  /** space before Heading 1..3 in twips */
+  headingSpaceBeforeTwips: [number, number, number]
+  /** space after every heading in twips */
+  headingSpaceAfterTwips: number
+  /** Title style size in half-points */
+  titleSizeHalfPoints: number
+  /** table cell margins (padding) in twips */
+  tableCellMarginTwips: { top: number; bottom: number; left: number; right: number }
+  /** table border width in eighths of a point (4 = 0.5 pt) */
+  tableBorderEighths: number
+  /** header-row shading, hex without '#' */
+  tableHeaderFill: string
+  /** monospace face and size (half-points) of code */
+  codeFont: string
+  codeSizeHalfPoints: number
+  codeFill: string
+}
+
+export const DEFAULT_DOCUMENT_STYLES: DocumentStyles = {
+  headingSizesHalfPoints: [32, 28, 26], // 16 / 14 / 13 pt
+  headingItalicLevels: [3],
+  headingSpaceBeforeTwips: [360, 280, 200], // 18 / 14 / 10 pt
+  headingSpaceAfterTwips: 120, // 6 pt
+  titleSizeHalfPoints: 40, // 20 pt
+  tableCellMarginTwips: { top: 40, bottom: 40, left: 100, right: 100 },
+  tableBorderEighths: 4,
+  tableHeaderFill: 'F2F2F2',
+  codeFont: 'Consolas',
+  codeSizeHalfPoints: 20,
+  codeFill: 'F2F3F5',
+}
+
+/** paragraph / table style ids the default style set defines and the markdown export references */
+export const DOC_STYLE_IDS = {
+  tableText: 'TableText',
+  tableGrid: 'TableGrid',
+  code: 'SourceCode',
+  quote: 'Quote',
+  caption: 'Caption',
+  listBullet: 'ListBullet',
+  listNumber: 'ListNumber',
+} as const
+
+/** styles added by the default style set (Quote and Title are swapped in quickStylesXml) */
+function officeStylesXml(o: DocumentStyles): string {
+  const border = (side: string) =>
+    `<w:${side} w:val="single" w:sz="${o.tableBorderEighths}" w:space="0" w:color="auto"/>`
+  const m = o.tableCellMarginTwips
+  const mar = (side: string, w: number) => `<w:${side} w:w="${w}" w:type="dxa"/>`
+  return (
+    '<w:style w:type="table" w:default="1" w:styleId="TableNormal"><w:name w:val="Normal Table"/>' +
+    '<w:uiPriority w:val="99"/><w:semiHidden/><w:unhideWhenUsed/>' +
+    '<w:tblPr><w:tblInd w:w="0" w:type="dxa"/><w:tblCellMar><w:top w:w="0" w:type="dxa"/><w:left w:w="108" w:type="dxa"/><w:bottom w:w="0" w:type="dxa"/><w:right w:w="108" w:type="dxa"/></w:tblCellMar></w:tblPr></w:style>' +
+    // Table Grid: thin single borders, padded cells
+    `<w:style w:type="table" w:styleId="${DOC_STYLE_IDS.tableGrid}"><w:name w:val="Table Grid"/>` +
+    '<w:basedOn w:val="TableNormal"/><w:uiPriority w:val="39"/>' +
+    '<w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr>' +
+    `<w:tblPr><w:tblBorders>${['top', 'left', 'bottom', 'right', 'insideH', 'insideV'].map(border).join('')}</w:tblBorders>` +
+    `<w:tblCellMar>${mar('top', m.top)}${mar('left', m.left)}${mar('bottom', m.bottom)}${mar('right', m.right)}</w:tblCellMar></w:tblPr></w:style>` +
+    // text inside table cells: no paragraph gap
+    paraStyle(
+      DOC_STYLE_IDS.tableText,
+      'Table Text',
+      40,
+      '<w:spacing w:before="0" w:after="0" w:line="264" w:lineRule="auto"/>',
+    ) +
+    paraStyle(
+      DOC_STYLE_IDS.code,
+      'Source Code',
+      41,
+      `<w:shd w:val="clear" w:color="auto" w:fill="${o.codeFill}"/><w:spacing w:before="60" w:after="120" w:line="240" w:lineRule="auto"/>`,
+      `<w:rFonts w:ascii="${o.codeFont}" w:hAnsi="${o.codeFont}" w:cs="${o.codeFont}"/><w:sz w:val="${o.codeSizeHalfPoints}"/><w:szCs w:val="${o.codeSizeHalfPoints}"/>`,
+    ) +
+    paraStyle(
+      DOC_STYLE_IDS.caption,
+      'caption',
+      35,
+      '<w:spacing w:before="60" w:after="120" w:line="240" w:lineRule="auto"/><w:jc w:val="center"/>',
+      '<w:i/><w:iCs/><w:sz w:val="24"/><w:szCs w:val="24"/>',
+    ) +
+    paraStyle(
+      DOC_STYLE_IDS.listBullet,
+      'List Bullet',
+      36,
+      `<w:numPr><w:numId w:val="${BLANK_BULLET_NUM_ID}"/></w:numPr><w:contextualSpacing/>`,
+    ) +
+    paraStyle(
+      DOC_STYLE_IDS.listNumber,
+      'List Number',
+      37,
+      `<w:numPr><w:numId w:val="${BLANK_ORDERED_NUM_ID}"/></w:numPr><w:contextualSpacing/>`,
+    )
   )
 }
 
@@ -70,16 +189,24 @@ function charStyle(id: string, name: string, priority: number, rPr: string): str
 }
 
 /** Word's Quick Style set (Normal and the headings are defined separately), in gallery order */
-const QUICK_STYLES_XML =
+const quickStylesXml = (office?: DocumentStyles): string =>
   '<w:style w:type="paragraph" w:styleId="NoSpacing"><w:name w:val="No Spacing"/><w:uiPriority w:val="1"/><w:qFormat/>' +
   '<w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr></w:style>' +
-  paraStyle(
-    'Title',
-    'Title',
-    10,
-    '<w:spacing w:after="80" w:line="240" w:lineRule="auto"/><w:contextualSpacing/>',
-    '<w:spacing w:val="-10"/><w:kern w:val="28"/><w:sz w:val="56"/><w:szCs w:val="56"/>',
-  ) +
+  (office
+    ? paraStyle(
+        'Title',
+        'Title',
+        10,
+        '<w:keepNext/><w:spacing w:before="0" w:after="240" w:line="240" w:lineRule="auto"/><w:jc w:val="center"/>',
+        `<w:b/><w:bCs/><w:sz w:val="${office.titleSizeHalfPoints}"/><w:szCs w:val="${office.titleSizeHalfPoints}"/>`,
+      )
+    : paraStyle(
+        'Title',
+        'Title',
+        10,
+        '<w:spacing w:after="80" w:line="240" w:lineRule="auto"/><w:contextualSpacing/>',
+        '<w:spacing w:val="-10"/><w:kern w:val="28"/><w:sz w:val="56"/><w:szCs w:val="56"/>',
+      )) +
   paraStyle(
     'Subtitle',
     'Subtitle',
@@ -91,13 +218,21 @@ const QUICK_STYLES_XML =
   charStyle('Emphasis', 'Emphasis', 20, '<w:i/><w:iCs/>') +
   charStyle('IntenseEmphasis', 'Intense Emphasis', 21, `<w:i/><w:iCs/><w:color ${ACCENT_DARK}/>`) +
   charStyle('Strong', 'Strong', 22, '<w:b/><w:bCs/>') +
-  paraStyle(
-    'Quote',
-    'Quote',
-    29,
-    '<w:spacing w:before="200" w:after="480"/><w:jc w:val="center"/>',
-    `<w:i/><w:iCs/><w:color ${TEXT_BF}/>`,
-  ) +
+  (office
+    ? paraStyle(
+        'Quote',
+        'Quote',
+        29,
+        '<w:pBdr><w:left w:val="single" w:sz="12" w:space="8" w:color="A6A6A6"/></w:pBdr><w:spacing w:before="120" w:after="120"/><w:ind w:left="567"/>',
+        '<w:i/><w:iCs/>',
+      )
+    : paraStyle(
+        'Quote',
+        'Quote',
+        29,
+        '<w:spacing w:before="200" w:after="480"/><w:jc w:val="center"/>',
+        `<w:i/><w:iCs/><w:color ${TEXT_BF}/>`,
+      )) +
   paraStyle(
     'IntenseQuote',
     'Intense Quote',
@@ -126,25 +261,33 @@ const stylesXml = (options?: BlankDocxOptions): string => {
     : 276
   const spaceAfter =
     options?.paragraphSpacingAfterTwips !== undefined ? options.paragraphSpacingAfterTwips : 120
-  const eastAsiaFont = options?.eastAsiaFont
+  const office = options?.documentStyles
+  // the default style set pins every font slot (ascii/hAnsi/eastAsia/cs) to the body
+  // face so Vietnamese diacritics and complex scripts never fall back to another font
+  const eastAsiaFont = options?.eastAsiaFont ?? (office ? font : undefined)
+  const csAttr = office ? ` w:cs="${font}"` : ''
+  const lang = options?.lang ?? 'en-US'
+  const langXml = office ? `<w:lang w:val="${lang}" w:eastAsia="${lang}" w:bidi="ar-SA"/>` : ''
+  const [h1, h2, h3] = office?.headingSizesHalfPoints ?? [32, 28, 26]
   return (
     XML_DECL +
     '<w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">' +
     '<w:docDefaults><w:rPrDefault><w:rPr>' +
-    `<w:rFonts w:ascii="${font}"${eastAsiaFont ? ` w:eastAsia="${eastAsiaFont}"` : ''} w:hAnsi="${font}"/><w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/>` +
+    `<w:rFonts w:ascii="${font}"${eastAsiaFont ? ` w:eastAsia="${eastAsiaFont}"` : ''} w:hAnsi="${font}"${csAttr}/><w:sz w:val="${sz}"/><w:szCs w:val="${sz}"/>${langXml}` +
     '</w:rPr></w:rPrDefault>' +
     `<w:pPrDefault><w:pPr><w:spacing w:after="${spaceAfter}" w:line="${line}" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>` +
     '<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>' +
-    headingStyle(1, 32, font) +
-    headingStyle(2, 28, font) +
-    headingStyle(3, 26, font) +
-    headingStyle(4, 24, font) +
-    headingStyle(5, 22, font) +
-    headingStyle(6, 22, font) +
-    QUICK_STYLES_XML +
+    headingStyle(1, h1, font, office) +
+    headingStyle(2, h2, font, office) +
+    headingStyle(3, h3, font, office) +
+    headingStyle(4, office ? sz : 24, font, office) +
+    headingStyle(5, office ? sz : 22, font, office) +
+    headingStyle(6, office ? sz : 22, font, office) +
+    quickStylesXml(office) +
     '<w:style w:type="character" w:styleId="Hyperlink"><w:name w:val="Hyperlink"/>' +
     '<w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr></w:style>' +
     Array.from({ length: 9 }, (_, i) => tocStyle(i + 1)).join('') +
+    (office ? officeStylesXml(office) : '') +
     '</w:styles>'
   )
 }
@@ -388,6 +531,9 @@ export function mergeLevelXml(existing: string, l: CustomNumberingLevel, ilvl: n
   return `${openTag.replace(/\/>$/, '>')}${body}</w:lvl>`
 }
 
+const escXml = (s: string): string =>
+  s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
 const escAttr = (s: string): string =>
   s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 
@@ -529,6 +675,12 @@ export interface BlankDocxOptions {
   paragraphSpacingAfterTwips?: number
   pageMarginsTwips?: { top: number; right: number; bottom: number; left: number }
   includePageNumbers?: boolean
+  /** default document style set (headings, tables, quote, code, caption, list styles) */
+  documentStyles?: DocumentStyles
+  /** BCP 47 language of the content, written to docDefaults (w:lang) with documentStyles; default en-US */
+  lang?: string
+  /** document title, written to docProps/core.xml */
+  title?: string
 }
 
 /** Build a minimal valid .docx: one empty paragraph, portrait page, standard styles. */
@@ -549,6 +701,9 @@ export async function buildBlankDocx(options?: BlankDocxOptions): Promise<Uint8A
       '<Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/>' +
       '<Override PartName="/word/numbering.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml"/>' +
       footerOverride +
+      (options?.title
+        ? '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>'
+        : '') +
       '</Types>',
   )
 
@@ -556,8 +711,24 @@ export async function buildBlankDocx(options?: BlankDocxOptions): Promise<Uint8A
     '_rels/.rels',
     `${XML_DECL}<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
       '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>' +
+      (options?.title
+        ? '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/>'
+        : '') +
       '</Relationships>',
   )
+  if (options?.title) {
+    const now = new Date().toISOString().replace(/.d{3}Z$/, 'Z')
+    zip.file(
+      'docProps/core.xml',
+      `${XML_DECL}<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" ` +
+        'xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" ' +
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' +
+        `<dc:title>${escXml(options.title)}</dc:title>` +
+        `<dcterms:created xsi:type="dcterms:W3CDTF">${now}</dcterms:created>` +
+        `<dcterms:modified xsi:type="dcterms:W3CDTF">${now}</dcterms:modified>` +
+        '</cp:coreProperties>',
+    )
+  }
 
   const footerRel = includePageNumbers
     ? '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/footer" Target="footer1.xml"/>'

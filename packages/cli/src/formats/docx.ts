@@ -6,6 +6,7 @@ import {
   BLANK_BULLET_NUM_ID,
   BLANK_ORDERED_NUM_ID,
   buildBlankDocx,
+  DEFAULT_DOCUMENT_STYLES,
   countTrackedChangesXml,
   findChartWorkbookPath,
   nextNoteId,
@@ -230,6 +231,7 @@ export function blankDocxOptionsFromProfile(profile: DocumentTypeProfile): Blank
       right: mmToTwips(profile.margins.right),
     },
     includePageNumbers: profile.includeFooterPageNumber,
+    documentStyles: DEFAULT_DOCUMENT_STYLES,
   }
 }
 
