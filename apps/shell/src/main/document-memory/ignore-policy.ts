@@ -1006,7 +1006,7 @@ export function getGenOfficeIgnoreFileData(root: string): GenOfficeIgnoreFileRes
 
 const MAX_GENOFFICEIGNORE_SIZE_BYTES = 512 * 1024 // 512 KB
 
-function isRestrictedRoot(rootPath: string): boolean {
+export function isRestrictedRoot(rootPath: string): boolean {
   const norm = resolve(rootPath).replace(/\\/g, '/')
   const lower = norm.toLowerCase()
   if (norm === '/' || /^[a-zA-Z]:\/?$/.test(norm)) return true
