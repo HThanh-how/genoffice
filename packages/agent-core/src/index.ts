@@ -20,8 +20,12 @@ export {
   createDocumentSkill,
   CREATE_DOCUMENT_MAX_CHARS,
   CREATE_DOCUMENT_TOOL,
+  APPEND_TO_DOCUMENT_TOOL,
+  APPEND_TO_DOCUMENT_MAX_CALLS,
+  createDocumentSystemPrompt,
 } from './create-document-skill'
 export type {
+  CreateDocumentRewriteRequest,
   CreateDocumentDeps,
   CreateDocumentExecutionContext,
   CreateDocumentFormat,

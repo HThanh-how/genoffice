@@ -1157,9 +1157,32 @@ export async function streamAgy(
       ...activity,
     })
   say({ phase: 'start' })
+  // GenOffice's own tools (create_document, search_knowledge_base, ...) run in the chat's agent
+  // loop after this turn returns, not inside agy, so agy reports no step for them. Name them on the
+  // strip instead of "done": the run is not finished, the app is now carrying out what was asked.
+  const appCalls: AgentToolCall[] = []
+  const turnCb: StreamCallbacks = {
+    ...cb,
+    onToolCall: (call) => {
+      appCalls.push(call)
+      cb.onToolCall(call)
+    },
+  }
   try {
-    await streamAgyTurn(config, model, system, messages, tools, maxTokens, cb, deps, say)
-    say({ phase: 'done' })
+    await streamAgyTurn(config, model, system, messages, tools, maxTokens, turnCb, deps, say)
+    if (appCalls.length === 0) {
+      say({ phase: 'done' })
+    } else {
+      // agent loops run a turn's calls in order; each one is a visible step, the last stays shown
+      appCalls.forEach((call, i) =>
+        say(
+          appToolActivity(call, [
+            ...messages,
+            { role: 'assistant', text: '', toolCalls: appCalls.slice(0, i) },
+          ]),
+        ),
+      )
+    }
   } catch (error) {
     say({
       phase: 'error',
@@ -1176,6 +1199,65 @@ export async function streamAgy(
 type AgySay = (
   activity: Omit<AgyActivity, 'runId' | 'requestId' | 'sessionId' | 'at' | 'model'>,
 ) => void
+
+/** first markdown heading of a chunk (`## Lesson goals` -> `Lesson goals`) */
+function firstHeading(markdown: unknown): string | undefined {
+  if (typeof markdown !== 'string') return undefined
+  const match = /^[ \t]{0,3}#{1,6}[ \t]+(.+?)[ \t]*#*[ \t]*$/m.exec(markdown)
+  return match?.[1]?.trim() || undefined
+}
+
+function stringField(input: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = input[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return undefined
+}
+
+/**
+ * The strip entry for one GenOffice tool call the model asked for. Long documents follow the
+ * plan-then-work pattern of agent CLIs (a checklist first, then one item at a time):
+ * create_document announces the section titles in `outline`, and each append_to_document is shown
+ * as `k/n heading`, k counted from the append calls already made since that create in this
+ * conversation (the create itself writes section 1).
+ */
+export function appToolActivity(
+  call: AgentToolCall,
+  messages: readonly AgentMessage[],
+): { phase: 'tool'; tool: string; target?: string } {
+  const input = (call.input ?? {}) as Record<string, unknown>
+  let target: string | undefined
+  if (call.name === 'append_to_document') {
+    let total = 0
+    let done = 0
+    for (const message of messages) {
+      if (message.role !== 'assistant') continue
+      for (const prior of message.toolCalls ?? []) {
+        if (prior.name === 'create_document') {
+          const outline = (prior.input as Record<string, unknown> | undefined)?.outline
+          total = Array.isArray(outline) ? outline.length : 0
+          done = 1
+        } else if (prior.name === 'append_to_document') {
+          done++
+        }
+      }
+    }
+    const heading = stringField(input, 'heading') ?? firstHeading(input.content)
+    const k = Math.max(2, done + 1)
+    target =
+      total > 1 && k <= total
+        ? `${k}/${total}${heading ? ` ${shortTarget(heading)}` : ''}`
+        : heading
+          ? shortTarget(heading)
+          : undefined
+  } else {
+    const named = stringField(input, 'title', 'query', 'q', 'name')
+    const path = stringField(input, 'path')
+    target = named ? shortTarget(named) : path ? shortTarget(path, 'path') : undefined
+  }
+  return { phase: 'tool', tool: call.name, ...(target ? { target } : {}) }
+}
 
 /**
  * A path, command or query reduced to one short line for the activity strip. Paths keep only

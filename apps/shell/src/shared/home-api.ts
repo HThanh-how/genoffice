@@ -368,6 +368,16 @@ export interface HomeApi extends ForkHomeApi {
     callId?: string
     documentType?: string
   }): Promise<{ path: string }>
+  /**
+   * replace a document kbCreateDocument wrote in this app run with its whole, grown Markdown
+   * (append_to_document); an open, unsaved-change-free editor tab of it is reloaded
+   */
+  kbRewriteDocument?(request: {
+    path: string
+    format: 'md' | 'docx'
+    content: string
+    documentType?: string
+  }): Promise<{ path: string; reloaded?: boolean }>
   /** the user's AI provider settings (shared with every app's panel) */
   aiGetSettings(): Promise<AiSettings>
   /** authentication status for the knowledge-base ask panel */

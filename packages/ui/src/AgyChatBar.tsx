@@ -250,6 +250,11 @@ const EN = {
   actSearchAny: 'Searching',
   actBrowse: 'Browsing',
   actWork: 'Working',
+  actDocCreate: 'Creating the document',
+  actDocCreateNamed: 'Creating “{t}”',
+  actDocSection: 'Writing the next section',
+  actDocSectionNamed: 'Writing section: {t}',
+  actDocSectionOf: 'Writing section {k} of {n}: {t}',
   stillWorking: 'Still working… ({n}s)',
   stageRead: 'Reading your request…',
   stageThink: 'Thinking it through…',
@@ -342,6 +347,11 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     actSearchAny: 'Đang tìm kiếm',
     actBrowse: 'Đang duyệt web',
     actWork: 'Đang xử lý',
+    actDocCreate: 'Đang tạo tài liệu',
+    actDocCreateNamed: 'Đang tạo “{t}”',
+    actDocSection: 'Đang viết phần tiếp theo',
+    actDocSectionNamed: 'Đang viết phần: {t}',
+    actDocSectionOf: 'Đang viết phần {k}/{n}: {t}',
     stillWorking: 'Vẫn đang xử lý… ({n}s)',
     stageRead: 'Đang đọc yêu cầu của bạn…',
     stageThink: 'Đang suy nghĩ…',
@@ -428,6 +438,11 @@ const TEXT: Record<'en' | 'vi' | 'zh', Dict> = {
     actSearchAny: '正在搜索',
     actBrowse: '正在浏览网页',
     actWork: '正在处理',
+    actDocCreate: '正在创建文档',
+    actDocCreateNamed: '正在创建“{t}”',
+    actDocSection: '正在撰写下一部分',
+    actDocSectionNamed: '正在撰写：{t}',
+    actDocSectionOf: '正在撰写第 {k}/{n} 部分：{t}',
     stillWorking: '仍在处理…（{n} 秒）',
     stageRead: '正在阅读你的请求…',
     stageThink: '正在思考…',
@@ -509,10 +524,25 @@ export function toolActivityLabel(
     | 'actSearchAny'
     | 'actBrowse'
     | 'actWork'
+    | 'actDocCreate'
+    | 'actDocCreateNamed'
+    | 'actDocSection'
+    | 'actDocSectionNamed'
+    | 'actDocSectionOf'
   >,
 ): string {
   const name = (tool ?? '').toLowerCase()
   const t = target?.trim()
+  // the app's own document tools (run by the chat between agy turns): a plan-style progress line
+  if (name === 'create_document') return t ? fill(d.actDocCreateNamed, { t }) : d.actDocCreate
+  if (name === 'append_to_document') {
+    // target `3/6 Heading` = section 3 of the 6 the outline announced
+    const step = t ? /^(\d+)\/(\d+)(?:\s+(.*))?$/.exec(t) : null
+    if (step && step[3]) return fill(d.actDocSectionOf, { k: step[1]!, n: step[2]!, t: step[3] })
+    if (step)
+      return fill(d.actDocSectionOf, { k: step[1]!, n: step[2]!, t: '' }).replace(/[:：]\s*$/, '')
+    return t ? fill(d.actDocSectionNamed, { t }) : d.actDocSection
+  }
   if (/browser|web|navigate|url/.test(name)) return d.actBrowse
   if (/search|find|grep|glob|list_dir|ls$/.test(name)) {
     return t ? fill(d.actSearch, { t }) : d.actSearchAny

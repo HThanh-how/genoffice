@@ -1,4 +1,4 @@
-import type { AgentToolDef } from './types'
+import type { AgentToolCall, AgentToolDef } from './types'
 import type { AgentSkill, ExecutedToolCall } from './skill'
 import { kbCiteHref } from './knowledge-base-skill'
 import type { DocumentType } from './rich-document-spec'
@@ -38,8 +38,26 @@ export interface CreateDocumentExecutionContext {
   documentSlot?: string | undefined
 }
 
+/**
+ * Replace a document this skill created with its grown Markdown (append_to_document). The skill
+ * keeps the accumulated Markdown and always sends the whole text: an .md is rewritten, a .docx is
+ * regenerated from it, so the host never has to patch a Word file in place.
+ */
+export interface CreateDocumentRewriteRequest {
+  path: string
+  format: CreateDocumentFormat
+  /** the whole document as Markdown, previous sections included */
+  content: string
+  sessionId?: string | undefined
+  userTurnId?: string | undefined
+  callId?: string | undefined
+  documentType?: DocumentType | undefined
+}
+
 export interface CreateDocumentDeps {
   create(request: CreateDocumentRequest): Promise<{ path: string; opened?: boolean }>
+  /** enables append_to_document; never opens an editor tab (the create already did) */
+  rewrite?: (request: CreateDocumentRewriteRequest) => Promise<{ path: string }>
   getSessionId?: () => string | undefined
   getExecutionId?: () => string | undefined
   getUserTurnId?: () => string | undefined
@@ -59,16 +77,41 @@ export interface CreateDocumentSkill extends AgentSkill {
 }
 
 export const CREATE_DOCUMENT_TOOL = 'create_document'
+export const APPEND_TO_DOCUMENT_TOOL = 'append_to_document'
 
 /** keep in step with the main-process gate, which refuses larger bodies */
 export const CREATE_DOCUMENT_MAX_CHARS = 2_000_000
 
-const CREATE_SYSTEM_PROMPT = `## Creating documents
-When the user asks for a file — a report, summary, memo, notes, "save this",
+/** append_to_document calls one user request may make (a runaway loop stops here) */
+export const APPEND_TO_DOCUMENT_MAX_CALLS = 12
+
+const SINGLE_CALL_RULE = `When the user asks for a file — a report, summary, memo, notes, "save this",
 "export this", "make a document / markdown / Word file" — write the complete
 content and call create_document ONCE; do not paste the document into the chat and
 do not describe what the file would contain. Never call create_document repeatedly
-or in a loop for the same document request.
+or in a loop for the same document request.`
+
+// Long documents follow the plan-then-work pattern of agent CLIs (a short checklist first, then
+// one item per step): every step is a short model turn the user sees on the progress strip, and
+// no single turn has to generate the whole document.
+const SECTIONED_RULE = `When the user asks for a file — a report, summary, memo, notes, lesson plan (giáo án),
+"save this", "export this", "make a document / markdown / Word file" — write it into a
+file with create_document; do not paste the document into the chat and do not describe
+what the file would contain.
+- Short document (under about 1500 words, one or two sections): write the complete
+  content and call create_document once.
+- Longer or multi-section document: work through it like a checklist, one short step per reply.
+  1. Call create_document with the title, "outline" = every section heading in order,
+     and "content" = the document title plus the FIRST section only.
+  2. Then call append_to_document once per remaining section, in outline order, with the
+     "path" create_document returned, "heading" = that section's heading and "content" =
+     that section's Markdown (at most about 800 words). One call per reply; wait for its
+     result before writing the next section.
+  3. After the last section, reply briefly with the file link.
+- Never call create_document again for the same document, never re-send a section that
+  was already written, and make at most ${APPEND_TO_DOCUMENT_MAX_CALLS} append_to_document calls per request.`
+
+const CREATE_SYSTEM_PROMPT_TAIL = `
 - Always read existing sources thoroughly first using available search and read tools
   before synthesizing the document content.
 - Write the content in Markdown (headings #/##, bullet/numbered lists, tables with
@@ -84,6 +127,51 @@ or in a loop for the same document request.
 - The tool returns the saved path with a cite link: reply briefly and link the
   file as [file name](cite link), copying the link exactly.
 - Only claim a file was saved when create_document returned ok.`
+
+export function createDocumentSystemPrompt(sectioned: boolean): string {
+  return `## Creating documents\n${sectioned ? SECTIONED_RULE : SINGLE_CALL_RULE}${CREATE_SYSTEM_PROMPT_TAIL}`
+}
+
+/** a document create_document wrote, kept so append_to_document can grow it */
+interface WrittenDocument {
+  path: string
+  format: CreateDocumentFormat
+  documentType?: DocumentType | undefined
+  /** the Markdown the file currently holds */
+  markdown: string
+  /** section headings create_document announced (the checklist) */
+  outline: string[]
+  /** sections written so far: 1 after create, +1 per applied append */
+  sections: number
+  conversationKey?: string | undefined
+  userTurnId?: string | undefined
+  /** append results by operation id, so a retried call never appends twice */
+  ops: Map<string, Promise<AppendOutcome>>
+  /** fingerprints of the chunks already appended (a re-sent section is skipped) */
+  chunks: Set<string>
+  /** appends apply one after another, in call order */
+  queue: Promise<unknown>
+}
+
+type AppendOutcome = { output: string; isError?: true; summary: string }
+
+function chunkFingerprint(text: string): string {
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  let hash = 0x811c9dc5
+  for (let i = 0; i < normalized.length; i++) {
+    hash ^= normalized.charCodeAt(i)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return `${normalized.length}:${(hash >>> 0).toString(36)}`
+}
+
+function readOutline(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
+    .map((item) => item.trim().slice(0, 200))
+    .slice(0, 40)
+}
 
 // save-only phrasing: "created" / "generated" also describe corpus facts
 // ("the file was created in 2019"), so they are not claims here
@@ -148,16 +236,205 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
           type: 'string',
           description: 'Logical document slot (default: "primary")',
         },
+        ...(deps.rewrite
+          ? {
+              outline: {
+                type: 'array',
+                items: { type: 'string' },
+                description:
+                  'long documents: every section heading in order; content then holds only the first section and append_to_document adds the rest',
+              },
+            }
+          : {}),
       },
       required: ['title', 'format', 'content'],
     },
   }
+  const appendTool: AgentToolDef = {
+    name: APPEND_TO_DOCUMENT_TOOL,
+    description:
+      'Add the next section to a document create_document wrote in this request. ' +
+      'Pass the path create_document returned and the section as Markdown (at most about 800 words). ' +
+      'One section per call, in outline order; the open document is updated, no new tab opens.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'the path create_document returned' },
+        heading: { type: 'string', description: 'the heading of this section' },
+        content: { type: 'string', description: 'this section as Markdown' },
+      },
+      required: ['path', 'content'],
+    },
+  }
+
+  const written = new Map<string, WrittenDocument>()
+  const appendsPerTurn = new Map<string, number>()
+
+  const remember = (
+    path: string,
+    format: CreateDocumentFormat,
+    content: string,
+    documentType: DocumentType | undefined,
+    outline: string[],
+    conversationKey: string | undefined,
+    userTurnId: string | undefined,
+  ) => {
+    if (written.has(path)) return
+    if (written.size >= 50) {
+      const oldest = written.keys().next().value
+      if (oldest !== undefined) written.delete(oldest)
+    }
+    written.set(path, {
+      path,
+      format,
+      ...(documentType ? { documentType } : {}),
+      markdown: content,
+      outline,
+      sections: 1,
+      conversationKey,
+      userTurnId,
+      ops: new Map(),
+      chunks: new Set([chunkFingerprint(content)]),
+      queue: Promise.resolve(),
+    })
+  }
+
+  /** the checklist line the model reads after each write: what is done, what comes next */
+  const progressNote = (doc: WrittenDocument): string => {
+    if (doc.outline.length < 2) return ''
+    const next = doc.outline[doc.sections]
+    return next
+      ? `\n  progress: section ${Math.min(doc.sections, doc.outline.length)} of ${doc.outline.length} written; next: append_to_document with "${next}"`
+      : `\n  progress: all ${doc.outline.length} sections written; give the final answer now`
+  }
+
+  const executeAppend = async (call: AgentToolCall): Promise<AppendOutcome> => {
+    const rewrite = deps.rewrite
+    if (!rewrite) {
+      return { output: `unknown tool: ${call.name}`, isError: true, summary: call.name }
+    }
+    const path = typeof call.input.path === 'string' ? call.input.path.trim() : ''
+    const heading = typeof call.input.heading === 'string' ? call.input.heading.trim() : ''
+    const raw = typeof call.input.content === 'string' ? call.input.content.trim() : ''
+    if (!raw) {
+      return { output: 'content must not be empty', isError: true, summary: 'empty content' }
+    }
+    const doc = path && created.includes(path) ? written.get(path) : undefined
+    if (!doc) {
+      return {
+        output:
+          'append_to_document only extends a document create_document wrote in this request; pass the exact path it returned (call create_document first)',
+        isError: true,
+        summary: 'unknown document',
+      }
+    }
+    // the same host-owned identity create_document uses; the model's arguments are never trusted
+    const hostSessionId = deps.getSessionId?.()
+    const conversationKey = deps.getExecutionId?.() || hostSessionId
+    const userTurnId = deps.getUserTurnId?.()
+    if (
+      (doc.conversationKey && conversationKey && doc.conversationKey !== conversationKey) ||
+      (doc.userTurnId && userTurnId !== undefined && doc.userTurnId !== userTurnId)
+    ) {
+      // a later request must not overwrite a file the user may have edited since
+      return {
+        output:
+          'this document belongs to an earlier request and cannot be extended now; create a new document instead',
+        isError: true,
+        summary: 'other request',
+      }
+    }
+    const section = heading && !/^\s{0,3}#{1,6}\s/.test(raw) ? `## ${heading}\n\n${raw}` : raw
+    const providerCallId =
+      typeof call.id === 'string' && call.id.trim() ? call.id.trim() : undefined
+    const inputCallId =
+      typeof call.input.callId === 'string' && call.input.callId.trim()
+        ? call.input.callId.trim()
+        : undefined
+    const opId = providerCallId || inputCallId
+    const fingerprint = chunkFingerprint(section)
+    const opKey = opId ? `id:${opId}` : `chunk:${fingerprint}`
+    const known = doc.ops.get(opKey)
+    if (known) return known
+
+    const turnKey = `${conversationKey ?? ''}:${userTurnId ?? doc.userTurnId ?? ''}:${doc.path}`
+    const used = appendsPerTurn.get(turnKey) ?? 0
+    if (used >= APPEND_TO_DOCUMENT_MAX_CALLS) {
+      return {
+        output: `append limit reached (${APPEND_TO_DOCUMENT_MAX_CALLS} append_to_document calls per request); stop adding sections and give the final answer with the file link`,
+        isError: true,
+        summary: 'append limit',
+      }
+    }
+    appendsPerTurn.set(turnKey, used + 1)
+    if (appendsPerTurn.size > 100) {
+      const oldest = appendsPerTurn.keys().next().value
+      if (oldest !== undefined) appendsPerTurn.delete(oldest)
+    }
+
+    const name = doc.path.split(/[\\/]/).pop() ?? doc.path
+    const outcome = doc.queue.then(async (): Promise<AppendOutcome> => {
+      if (doc.chunks.has(fingerprint)) {
+        // a re-sent section (provider retry with a new id): already in the file
+        appendsPerTurn.set(turnKey, Math.max(0, (appendsPerTurn.get(turnKey) ?? 1) - 1))
+        return {
+          output: `that section is already in ${name}; nothing was added${progressNote(doc)}\n  path: ${doc.path}\n  cite: ${kbCiteHref(doc.path)}`,
+          summary: name,
+        }
+      }
+      const next = `${doc.markdown.replace(/\s+$/, '')}\n\n${section}\n`
+      if (next.length > CREATE_DOCUMENT_MAX_CHARS) {
+        return {
+          output: `the document would grow past ${CREATE_DOCUMENT_MAX_CHARS} characters; nothing was added — finish here and give the final answer`,
+          isError: true,
+          summary: 'content too long',
+        }
+      }
+      await rewrite({
+        path: doc.path,
+        format: doc.format,
+        content: next,
+        ...(hostSessionId || conversationKey
+          ? { sessionId: (hostSessionId || conversationKey)! }
+          : {}),
+        ...(userTurnId ? { userTurnId } : {}),
+        ...(opId ? { callId: opId } : {}),
+        ...(doc.documentType ? { documentType: doc.documentType } : {}),
+      })
+      doc.markdown = next
+      doc.chunks.add(fingerprint)
+      doc.sections++
+      return {
+        output: `added a section to ${name} (${next.length} characters in total)${progressNote(doc)}\n  path: ${doc.path}\n  cite: ${kbCiteHref(doc.path)}`,
+        summary: name,
+      }
+    })
+    const settled = outcome.catch((error: unknown): AppendOutcome => {
+      const message = error instanceof Error ? error.message : String(error)
+      return {
+        output: `could not add the section: ${message}`,
+        isError: true,
+        summary: 'append failed',
+      }
+    })
+    doc.queue = settled
+    doc.ops.set(opKey, settled)
+    const result = await settled
+    if (result.isError) {
+      // a failed append may be retried with the same id; it did not count against the cap
+      doc.ops.delete(opKey)
+      appendsPerTurn.set(turnKey, Math.max(0, (appendsPerTurn.get(turnKey) ?? 1) - 1))
+    }
+    return result
+  }
+
   return {
     id: 'create-document',
-    systemPrompt: CREATE_SYSTEM_PROMPT,
-    tools: [tool],
+    systemPrompt: createDocumentSystemPrompt(Boolean(deps.rewrite)),
+    tools: deps.rewrite ? [tool, appendTool] : [tool],
     createdPaths: () => created,
     executeTool: async (call) => {
+      if (call.name === APPEND_TO_DOCUMENT_TOOL && deps.rewrite) return executeAppend(call)
       if (call.name !== CREATE_DOCUMENT_TOOL) {
         return { output: `unknown tool: ${call.name}`, isError: true, summary: call.name }
       }
@@ -437,10 +714,20 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
           })
         }
         if (!created.includes(res.path)) created.push(res.path)
+        remember(
+          res.path,
+          format,
+          content,
+          documentType,
+          readOutline(call.input.outline),
+          conversationKey,
+          userTurnId,
+        )
+        const doc = written.get(res.path)
         const name = res.path.split(/[\\/]/).pop() ?? res.path
         const status = res.opened ? 'opened in editor' : 'saved to disk (not opened)'
         return {
-          output: `saved ${name} (${status})\n  path: ${res.path}\n  cite: ${kbCiteHref(res.path)}\n  opened: ${Boolean(res.opened)}`,
+          output: `saved ${name} (${status})\n  path: ${res.path}\n  cite: ${kbCiteHref(res.path)}\n  opened: ${Boolean(res.opened)}${doc ? progressNote(doc) : ''}`,
           summary: name,
         }
       } catch (error) {
@@ -455,7 +742,9 @@ export function createDocumentSkill(deps: CreateDocumentDeps): CreateDocumentSki
       }
     },
     verifyResponse: (finalText, executed: readonly ExecutedToolCall[]) => {
-      const saved = executed.some((c) => c.name === CREATE_DOCUMENT_TOOL && c.ok)
+      const saved = executed.some(
+        (c) => (c.name === CREATE_DOCUMENT_TOOL || c.name === APPEND_TO_DOCUMENT_TOOL) && c.ok,
+      )
       if (saved || !CLAIMS_SAVED.test(finalText)) return null
       return (
         'The reply says a file was saved, but create_document did not succeed in this run. ' +

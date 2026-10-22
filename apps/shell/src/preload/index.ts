@@ -226,6 +226,9 @@ const homeApi: HomeApi = {
   async kbCreateDocument(request) {
     return ipcRenderer.invoke('kb:create-document', request)
   },
+  async kbRewriteDocument(request) {
+    return ipcRenderer.invoke('kb:rewrite-document', request)
+  },
   async aiGetSettings() {
     return (await ipcRenderer.invoke('ai:get-settings')) as AiSettings
   },

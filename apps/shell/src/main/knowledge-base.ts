@@ -207,6 +207,10 @@ export interface KbCreateDeps {
   fileExists?: (path: string) => boolean
   isCaseSensitive?: boolean
   publishExclusive?: (tmpPath: string, destPath: string) => Promise<void>
+  /** size/mtime of a file, null when missing (rewrite: detect edits made outside the chat) */
+  statFile?: (path: string) => KbFileStamp | null
+  /** rewrite: move the finished temp file over the document (default fs.rename) */
+  replaceFile?: (tmpPath: string, destPath: string) => Promise<void>
 }
 
 interface CommittedDocCreation {
@@ -240,11 +244,118 @@ const committedDocCreations = new Map<string, CommittedDocCreation>()
 const reservedPaths = new Set<string>()
 const reservedCanonicalKeys = new Set<string>()
 
+/**
+ * Files kb:create-document wrote during this app run: the only ones kb:rewrite-document may
+ * replace. `stamp` is the size/mtime of our last write, so a file the user saved from the
+ * editor in the meantime is never overwritten.
+ */
+interface CreatedDocumentFile {
+  path: string
+  format: KbCreateFormat
+  stamp?: KbFileStamp | null
+}
+const createdDocumentFiles = new Map<string, CreatedDocumentFile>()
+const rewriteQueues = new Map<string, Promise<unknown>>()
+
 export function clearKnowledgeDocumentCaches(): void {
   inFlightDocCreations.clear()
   committedDocCreations.clear()
   reservedPaths.clear()
   reservedCanonicalKeys.clear()
+  createdDocumentFiles.clear()
+  rewriteQueues.clear()
+}
+
+export interface KbFileStamp {
+  size: number
+  mtimeMs: number
+}
+
+function noteCreatedDocument(deps: KbCreateDeps, path: string, format: KbCreateFormat): void {
+  const key = pathReservationKey(path, deps.isCaseSensitive)
+  if (createdDocumentFiles.size >= 200) {
+    const oldest = createdDocumentFiles.keys().next().value
+    if (oldest !== undefined) createdDocumentFiles.delete(oldest)
+  }
+  createdDocumentFiles.set(key, { path, format, stamp: deps.statFile?.(path) ?? null })
+}
+
+// ---- append_to_document: replace a just-created document with its grown Markdown ----
+
+export interface KbRewriteRequest {
+  path: string
+  format: KbCreateFormat
+  /** the whole document as Markdown */
+  content: string
+  documentType?: string
+}
+
+export function parseKbRewriteRequest(raw: unknown): KbRewriteRequest {
+  const req = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>
+  const path = typeof req.path === 'string' ? req.path : ''
+  if (!path.trim()) throw new Error('path is required')
+  const format = req.format
+  if (format !== 'md' && format !== 'docx') throw new Error('format must be "md" or "docx"')
+  const content = typeof req.content === 'string' ? req.content : ''
+  if (!content.trim()) throw new Error('content must not be empty')
+  if (content.length > KB_CREATE_MAX_CHARS) throw new Error('content is too long')
+  const documentType = typeof req.documentType === 'string' ? req.documentType : undefined
+  return { path, format, content, ...(documentType ? { documentType } : {}) }
+}
+
+/**
+ * Rewrite a document kb:create-document wrote in this app run with its full, grown Markdown.
+ * The new bytes are produced next to the file and moved over it in one rename, so a reader never
+ * sees half a document; a .docx is regenerated from the Markdown (no in-place Word patching).
+ * Refuses any path this run did not create, a format change, and a file changed on disk since
+ * our last write. Calls for one path run one after another.
+ */
+export async function rewriteKnowledgeDocument(
+  deps: KbCreateDeps,
+  req: KbRewriteRequest,
+): Promise<{ path: string }> {
+  const key = pathReservationKey(req.path, deps.isCaseSensitive)
+  const entry = createdDocumentFiles.get(key)
+  if (!entry) throw new Error('this file was not created by create_document in this session')
+  if (entry.format !== req.format) throw new Error('format does not match the created document')
+  const previous = rewriteQueues.get(key) ?? Promise.resolve()
+  const run = previous.then(async () => {
+    const target = entry.path
+    if (deps.statFile) {
+      const current = deps.statFile(target)
+      if (!current) throw new Error('the document no longer exists')
+      if (
+        entry.stamp &&
+        (current.size !== entry.stamp.size || current.mtimeMs !== entry.stamp.mtimeMs)
+      ) {
+        throw new Error('the document was changed outside this chat, so it was not overwritten')
+      }
+    } else if (!(deps.fileExists ?? existsSync)(target)) {
+      throw new Error('the document no longer exists')
+    }
+    const ext = req.format === 'docx' ? '.docx' : '.md'
+    const tmpPath = join(
+      dirname(target),
+      `.${basename(target, ext)}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp${ext}`,
+    )
+    try {
+      if (req.format === 'md') await deps.writeText(tmpPath, req.content)
+      else await deps.markdownToDocx(req.content, tmpPath, req.documentType)
+      await (deps.replaceFile ?? ((from, to) => fsPromises.rename(from, to)))(tmpPath, target)
+    } finally {
+      const leftover = deps.fileExists ? deps.fileExists(tmpPath) : existsSync(tmpPath)
+      if (leftover) await fsPromises.unlink(tmpPath).catch(() => {})
+    }
+    entry.stamp = deps.statFile?.(target) ?? null
+    return { path: target }
+  })
+  const settled = run.catch(() => undefined)
+  rewriteQueues.set(key, settled)
+  try {
+    return await run
+  } finally {
+    if (rewriteQueues.get(key) === settled) rewriteQueues.delete(key)
+  }
 }
 
 function allocateUniquePath(deps: KbCreateDeps, title: string, format: string): string {
@@ -484,6 +595,7 @@ export async function createKnowledgeDocument(
           slot: req.documentSlot || 'primary',
         })
       }
+      noteCreatedDocument(deps, targetPath, req.format)
 
       try {
         deps.recordRecent(targetPath)

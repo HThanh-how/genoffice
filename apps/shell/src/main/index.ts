@@ -456,8 +456,11 @@ import {
   createKnowledgeDocument,
   listKnowledgeFiles,
   parseKbCreateRequest,
+  parseKbRewriteRequest,
   readKnowledgeFilePage,
+  rewriteKnowledgeDocument,
   searchKnowledgeBase,
+  type KbCreateDeps,
 } from './knowledge-base'
 import { createFileViaCli } from './mcp/headless-cli'
 import { sanitizeFileBase } from './mcp/tools/document-tools'
@@ -5772,26 +5775,55 @@ function registerHomeIpc(): void {
     return readKnowledgeFilePage(path, offset)
   })
 
+  const kbDocumentDeps = (): KbCreateDeps => ({
+    dir: defaultSaveDir,
+    uniquePath: uniquePathIn,
+    sanitizeBase: sanitizeFileBase,
+    writeText: (path, text) => atomicWriteFile(path, Buffer.from(text, 'utf8')),
+    markdownToDocx: async (markdown, out, documentType) => {
+      await createFileViaCli(bundledCliRunner(), {
+        type: 'docx',
+        input: { name: 'content.md', content: markdown },
+        out,
+        documentType,
+      })
+    },
+    recordRecent: recordRecentFile,
+    statFile: (path) => {
+      try {
+        const stat = statSync(path)
+        return { size: stat.size, mtimeMs: stat.mtimeMs }
+      } catch {
+        return null
+      }
+    },
+  })
+
   ipcMain.handle('kb:create-document', async (_event, raw: unknown): Promise<unknown> => {
     const req = parseKbCreateRequest(raw)
-    return createKnowledgeDocument(
-      {
-        dir: defaultSaveDir,
-        uniquePath: uniquePathIn,
-        sanitizeBase: sanitizeFileBase,
-        writeText: (path, text) => atomicWriteFile(path, Buffer.from(text, 'utf8')),
-        markdownToDocx: async (markdown, out, documentType) => {
-          await createFileViaCli(bundledCliRunner(), {
-            type: 'docx',
-            input: { name: 'content.md', content: markdown },
-            out,
-            documentType,
-          })
-        },
-        recordRecent: recordRecentFile,
-      },
-      req,
-    )
+    return createKnowledgeDocument(kbDocumentDeps(), req)
+  })
+
+  // append_to_document: the chat grew a document it created this run. The editor tab the create
+  // opened (if any) is reloaded from disk so it shows the new section; never a second tab, and a
+  // tab with unsaved edits is left alone.
+  ipcMain.handle('kb:rewrite-document', async (_event, raw: unknown): Promise<unknown> => {
+    const req = parseKbRewriteRequest(raw)
+    const result = await rewriteKnowledgeDocument(kbDocumentDeps(), req)
+    let reloaded = false
+    try {
+      const tab = tabManager?.findTabByPath(result.path)
+      if (tab && tabManager) {
+        const open = (await tabManager.openDocuments()).find((doc) => doc.id === tab.id)
+        if (open && !open.dirty) {
+          tabManager.reloadTab(tab.id)
+          reloaded = true
+        }
+      }
+    } catch {
+      // the file is written; a stale view is refreshed by reopening it
+    }
+    return { path: result.path, reloaded }
   })
 
   ipcMain.handle(

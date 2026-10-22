@@ -6,6 +6,7 @@ import {
   createIpcTransport,
   createKnowledgeBaseSkill,
   type CreateDocumentExecutionContext,
+  type CreateDocumentRewriteRequest,
   type IpcStreamChunk,
   type KbFileInfo,
 } from '@genoffice/agent-core'
@@ -464,6 +465,21 @@ export function HomeChat({
         }
         return { path: result.path }
       },
+      // long documents grow section by section (append_to_document); the host refreshes the tab
+      // the first create opened, so no second editor tab appears
+      ...(typeof api.kbRewriteDocument === 'function'
+        ? {
+            rewrite: async (request: CreateDocumentRewriteRequest) => {
+              const result = await api.kbRewriteDocument!({
+                path: request.path,
+                format: request.format,
+                content: request.content,
+                ...(request.documentType ? { documentType: request.documentType } : {}),
+              })
+              return { path: result.path }
+            },
+          }
+        : {}),
       open: (path, context) => {
         const owner = convRef.current
         const generation = runGenerationRef.current
@@ -832,7 +848,8 @@ export function HomeChat({
         }),
         docSkillRef.current!,
       ]),
-      maxTurns: 12,
+      // a sectioned document is create + up to 12 appends + the answer, after a few searches
+      maxTurns: 20,
       formatUserMessage: (instruction, context) =>
         [instruction, context, agyContextRef.current?.block].filter(Boolean).join('\n\n'),
       systemSuffix: () =>

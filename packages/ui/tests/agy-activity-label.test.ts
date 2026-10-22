@@ -17,6 +17,11 @@ const d = {
   actSearchAny: 'Searching',
   actBrowse: 'Browsing',
   actWork: 'Working',
+  actDocCreate: 'Creating the document',
+  actDocCreateNamed: 'Creating “{t}”',
+  actDocSection: 'Writing the next section',
+  actDocSectionNamed: 'Writing section: {t}',
+  actDocSectionOf: 'Writing section {k} of {n}: {t}',
 }
 
 describe('toolActivityLabel', () => {
@@ -31,6 +36,21 @@ describe('toolActivityLabel', () => {
     expect(toolActivityLabel('browser_navigate', 'x', d)).toBe('Browsing')
     expect(toolActivityLabel('mystery', 'x', d)).toBe('Working')
     expect(toolActivityLabel(undefined, undefined, d)).toBe('Working')
+  })
+
+  it('names the chat’s own document steps, with the outline position when known', () => {
+    expect(toolActivityLabel('create_document', undefined, d)).toBe('Creating the document')
+    expect(toolActivityLabel('create_document', 'Giáo án Toán 6', d)).toBe(
+      'Creating “Giáo án Toán 6”',
+    )
+    expect(toolActivityLabel('append_to_document', undefined, d)).toBe('Writing the next section')
+    expect(toolActivityLabel('append_to_document', 'Hoạt động 2', d)).toBe(
+      'Writing section: Hoạt động 2',
+    )
+    expect(toolActivityLabel('append_to_document', '3/6 Hoạt động 2', d)).toBe(
+      'Writing section 3 of 6: Hoạt động 2',
+    )
+    expect(toolActivityLabel('append_to_document', '3/6', d)).toBe('Writing section 3 of 6')
   })
 })
 
